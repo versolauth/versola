@@ -1,0 +1,22 @@
+services:
+  postgres:
+    image: postgres:18beta1
+    platform: linux/amd64
+    container_name: postgres
+    restart: always
+    environment:
+      POSTGRES_USER: ${PG_USER:-dev}
+      POSTGRES_PASSWORD: ${PG_PASSWORD:-1234}
+      POSTGRES_DB: auth
+    #volumes:
+    #  - ./postgres/init-sql:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "5432:5432"
+
+  jaeger:
+    image: jaegertracing/jaeger
+    container_name: jaeger
+    restart: always
+    ports:
+      - "16686:16686"
+      - "4317:4317"

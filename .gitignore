@@ -1,0 +1,12 @@
+target/
+.vscode/
+.DS_Store
+.bsp/
+.idea/
+.metals/
+.bloop/
+**/metals.sbt
+/images
+idea.properties
+.scala-build/
+country/

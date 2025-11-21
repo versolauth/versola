@@ -1,0 +1,31 @@
+ и поstages:
+  - build
+
+build:
+  stage: build
+  image: sbtscala/scala-sbt:eclipse-temurin-alpine-21.0.7_6_1.11.0_3.7.0
+  services:
+    - name: postgres:18beta1
+      alias: postgres
+      volumes:
+        - ./migrations:/migrations
+  variables:
+    POSTGRES_HOST_AUTH_METHOD: trust
+    POSTGRES_DB: auth
+    POSTGRES_USER: dev
+    POSTGRES_PASSWORD: 1234
+  script:
+    - sbt "coverage; compile; test; coverageAggregate"
+  artifacts:
+    reports:
+      junit: "**/target/test-reports/TEST-*.xml"
+      coverage_report:
+        coverage_format: cobertura
+        path: "target/scala-3.7.0/coverage-report/cobertura.xml"
+  coverage: '/Branch coverage....:\s*([\d.]+)%/'
+  cache:
+    paths:
+      - ~/.sbt
+      - ~/.ivy2/cache
+      - target/
+      - project/target/
