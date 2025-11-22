@@ -3,8 +3,8 @@ package versola.oauth
 import com.augustnagro.magnum.*
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.oauth.model.OauthProviderName
+import versola.security.{SecurityService, SecureRandom}
 import versola.util.postgres.PostgresSpec
-import versola.util.{CryptoService, SecureRandom}
 import zio.*
 
 import javax.crypto.spec.SecretKeySpec
@@ -15,10 +15,10 @@ object PostgresExternalOAuthClientRepositorySpec extends PostgresSpec, ExternalO
     new SecretKeySpec(Array.fill(32)(0x42.toByte), "AES")
 
   override lazy val environment =
-    SecureRandom.live >>> CryptoService.live >>> ZLayer {
+    SecureRandom.live >>> SecurityService.live >>> ZLayer {
       for {
         xa <- ZIO.service[TransactorZIO]
-        cryptoService <- ZIO.service[CryptoService]
+        cryptoService <- ZIO.service[SecurityService]
         repository = PostgresExternalOAuthClientRepository(xa, cryptoService, testSecretKey)
       } yield ExternalOAuthClientRepositorySpec.Env(repository)
     }

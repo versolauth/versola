@@ -3,8 +3,8 @@ package versola.auth
 import versola.auth.model.{AttemptsLeft, AuthId, ConversationStep, DeviceId, EmailVerificationRecord, IssuedTokens, OtpCode, RefreshToken, StartPasskeyResponse}
 import versola.user.UserRepository
 import versola.user.model.{Email, UserId}
-import versola.util.{EnvName, ReloadingCache, SecureRandom}
-import versola.email.EmailService
+import versola.util.{EnvName, ReloadingCache}
+import versola.security.SecureRandom
 import zio.*
 
 import java.time.Instant
@@ -40,7 +40,6 @@ object AuthService:
 
   class Impl(
       envName: EnvName,
-      emailService: EmailService,
       userRepository: UserRepository,
       tokenService: TokenService,
       emailVerificationsRepository: EmailVerificationsRepository,
@@ -97,9 +96,9 @@ object AuthService:
               case Some(previous) =>
                 ZIO.succeed((previous.code, previous.authId))
 
-        _ <- emailService.sendVerificationEmail(email, code)
+       /* _ <- emailService.sendVerificationEmail(email, code)
           .unlessZIO(bans.get.map(_.contains(email) || envName != EnvName.Prod))
-          .unit
+          .unit */
       yield authId
 
     override def verifyEmail(code: OtpCode, authId: AuthId): IO[Throwable | AttemptsLeft, IssuedTokens] = {

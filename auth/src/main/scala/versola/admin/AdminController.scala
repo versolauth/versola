@@ -3,8 +3,8 @@ package versola.admin
 import versola.admin.AdminControllerDescription.*
 import versola.http.Controller
 import versola.oauth.model.*
-import versola.oauth.{OAuthScopeRepository, OauthClientService}
-import versola.util.SecureRandom
+import versola.oauth.{OAuthScopeRepository, OAuthClientService}
+import versola.security.SecureRandom
 import zio.*
 import zio.http.*
 import zio.http.codec.HttpContentCodec
@@ -13,7 +13,7 @@ import zio.schema.*
 import zio.telemetry.opentelemetry.tracing.Tracing
 
 object AdminController extends Controller:
-  type Env = OauthClientService & OAuthScopeRepository & SecureRandom & Tracing
+  type Env = OAuthClientService & OAuthScopeRepository & SecureRandom & Tracing
 
   // Frontend serving endpoints (non-declarative for simplicity)
   private val frontendRoutes = Routes(
@@ -28,7 +28,7 @@ object AdminController extends Controller:
 
     createClientEndpoint.implement { request =>
       (for
-        clientService <- ZIO.service[OauthClientService]
+        clientService <- ZIO.service[OAuthClientService]
         clientSecret <- clientService.register(
           ClientId(request.id),
           request.clientName,
@@ -41,25 +41,25 @@ object AdminController extends Controller:
     },
     rotateSecretEndpoint.implement { request =>
       (for
-        clientService <- ZIO.service[OauthClientService]
+        clientService <- ZIO.service[OAuthClientService]
         newSecret <- clientService.rotateSecret(ClientId(request.clientId))
         response = RotateSecretResponse(newSecret)
       yield response)
         .tapError(ex => Controller.exceptions.set(Some(ex)))
     },
     deleteClientsEndpoint.implement { request =>
-      ZIO.serviceWithZIO[OauthClientService](_.deleteClients(request.clientIds.toVector))
+      ZIO.serviceWithZIO[OAuthClientService](_.deleteClients(request.clientIds.toVector))
         .tapError(ex => Controller.exceptions.set(Some(ex)))
     },
     deletePreviousSecretEndpoint.implement { request =>
-      ZIO.serviceWithZIO[OauthClientService](_.deletePreviousSecret(ClientId(request.clientId)))
+      ZIO.serviceWithZIO[OAuthClientService](_.deletePreviousSecret(ClientId(request.clientId)))
         .tapError(ex => Controller.exceptions.set(Some(ex)))
     },
 
 
     getAllDataEndpoint.implement { _ =>
       for
-        clientService <- ZIO.service[OauthClientService]
+        clientService <- ZIO.service[OAuthClientService]
         clients <- clientService.getAll
         scopes <- clientService.getAllScopes
         clientsResponse = clients.map { case (clientId, client) => OauthClientResponse(
@@ -67,7 +67,7 @@ object AdminController extends Controller:
           clientName = client.clientName,
           redirectUris = client.redirectUris,
           scope = client.scope,
-          hasPreviousSecret = client.hasPreviousSecret
+          hasPreviousSecret = client.previousSecret.nonEmpty
         )}.toVector
         scopesResponse = scopes.map { case (scopeName, scope) =>
           OneScope(
@@ -86,12 +86,12 @@ object AdminController extends Controller:
         )
         (ScopeToken(oneScope.name), backendScope)
       }.toVector
-      ZIO.serviceWithZIO[OauthClientService](_.registerScopes(scopesToCreate))
+      ZIO.serviceWithZIO[OAuthClientService](_.registerScopes(scopesToCreate))
         .tapError(ex => Controller.exceptions.set(Some(ex)))
     },
     deleteScopesEndpoint.implement { request =>
       val scopeNames = request.scopeNames.map(ScopeToken(_)).toVector
-      ZIO.serviceWithZIO[OauthClientService](_.deleteScopes(scopeNames))
+      ZIO.serviceWithZIO[OAuthClientService](_.deleteScopes(scopeNames))
         .tapError(ex => Controller.exceptions.set(Some(ex)))
     },
   )

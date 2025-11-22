@@ -4,7 +4,6 @@ import com.augustnagro.magnum.*
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.oauth.model.*
 import versola.util.postgres.BasicCodecs
-import versola.util.{Argon2Hash, Argon2Salt}
 import zio.*
 
 class PostgresOAuthClientRepository(
@@ -15,10 +14,9 @@ class PostgresOAuthClientRepository(
   override def create(client: OAuthClient): Task[Unit] =
     xa.connect:
       sql"""
-        INSERT INTO oauth_clients (id, client_name, redirect_uris, scope,
-                                  secret_hash, secret_salt, previous_secret_hash, previous_secret_salt)
+        INSERT INTO oauth_clients (id, client_name, redirect_uris, scope, secret, previous_secret)
         VALUES (${client.id}, ${client.clientName}, ${client.redirectUris}, ${client.scope},
-                ${client.secretHash}, ${client.secretSalt}, ${client.previousSecretHash}, ${client.previousSecretSalt})
+                ${client.secret}, ${client.previousSecret})
       """.update.run()
     .unit
 
@@ -33,14 +31,12 @@ class PostgresOAuthClientRepository(
       """.update.run()
     .unit
 
-  override def rotateSecret(clientId: ClientId, newHash: Argon2Hash, newSalt: Argon2Salt): Task[Unit] =
+  override def rotateSecret(clientId: ClientId, newSecret: Array[Byte]): Task[Unit] =
     xa.connect:
       sql"""
         UPDATE oauth_clients
-        SET previous_secret_hash = secret_hash,
-            previous_secret_salt = secret_salt,
-            secret_hash = $newHash,
-            secret_salt = $newSalt
+        SET previous_secret = secret,
+            secret = $newSecret
         WHERE id = $clientId
       """.update.run()
     .unit
@@ -49,8 +45,7 @@ class PostgresOAuthClientRepository(
     xa.connect:
       sql"""
         UPDATE oauth_clients
-        SET previous_secret_hash = NULL,
-            previous_secret_salt = NULL
+        SET previous_secret = NULL
         WHERE id = $clientId
       """.update.run()
     .unit
@@ -64,8 +59,7 @@ class PostgresOAuthClientRepository(
   override def getAll: Task[Map[ClientId, OAuthClient]] =
     xa.connect:
       sql"""
-        SELECT id, client_name, redirect_uris, scope,
-               secret_hash, secret_salt, previous_secret_hash, previous_secret_salt
+        SELECT id, client_name, redirect_uris, scope, secret, previous_secret
         FROM oauth_clients
       """.query[OAuthClient].run()
         .map(client => client.id -> client).toMap

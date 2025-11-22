@@ -1,20 +1,22 @@
-package versola.util
+package versola.security
 
-import zio.{Task, ULayer, URLayer, ZIO, ZLayer}
+import org.apache.commons.codec.digest.Blake3
+import zio.{Task, URLayer, ZIO, ZLayer}
 
-import javax.crypto.spec.{GCMParameterSpec, SecretKeySpec}
+import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.{Cipher, SecretKey}
-import java.security.SecureRandom as JSecureRandom
 
-trait CryptoService:
+trait SecurityService:
   def encryptAes256(data: Array[Byte], key: SecretKey): Task[Array[Byte]]
   def decryptAes256(data: Array[Byte], key: SecretKey): Task[Array[Byte]]
 
-object CryptoService:
-  def live: URLayer[SecureRandom, CryptoService] =
+  def macBlake3(secret: Secret, key: Array[Byte]): Task[MAC]
+
+object SecurityService:
+  def live: URLayer[SecureRandom, SecurityService] =
     ZLayer.fromFunction(Impl(_))
 
-  class Impl(secureRandom: SecureRandom) extends CryptoService:
+  class Impl(secureRandom: SecureRandom) extends SecurityService:
 
     private val Algorithm = "AES"
     private val Transformation = "AES/GCM/NoPadding"
@@ -48,3 +50,13 @@ object CryptoService:
 
         cipher.doFinal(encrypted)
       }
+
+    override def macBlake3(data: Secret, key: Array[Byte]): Task[MAC] =
+      ZIO.succeed:
+        val mac = Array.ofDim[Byte](32)
+        Blake3.initKeyedHash(key)
+          .update(data)
+          .doFinalize(mac)
+        MAC(mac)
+        
+    

@@ -2,6 +2,7 @@ package versola.auth
 
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.auth.model.{AuthId, DeviceId, UserDeviceRecord}
+import versola.security.MAC
 import versola.user.model.UserId
 import versola.util.DatabaseSpecBase
 import zio.test.*
@@ -23,6 +24,9 @@ trait UserDeviceRepositorySpec extends DatabaseSpecBase[UserDeviceRepositorySpec
   val blake3Hash1 = "hash1"
   val blake3Hash2 = "hash2"
   val blake3Hash3 = "hash3"
+  val mac1 = MAC(Array.fill(32)(1.toByte))
+  val mac2 = MAC(Array.fill(32)(2.toByte))
+  val mac3 = MAC(Array.fill(32)(3.toByte))
   val now = Instant.now().truncatedTo(ChronoUnit.MICROS)
   val expireAt = now.plusSeconds(90 * 24 * 3600) // 90 days
 
@@ -33,7 +37,7 @@ trait UserDeviceRepositorySpec extends DatabaseSpecBase[UserDeviceRepositorySpec
   override def testCases(env: UserDeviceRepositorySpec.Env) =
     List(
       overwriteTests(env),
-      findByRefreshTokenHashTests(env),
+      findByRefreshTokenTests(env),
       updateTests(env),
       listByUserIdTests(env),
       clearRefreshByUserIdAndDeviceIdTests(env),
@@ -44,7 +48,7 @@ trait UserDeviceRepositorySpec extends DatabaseSpecBase[UserDeviceRepositorySpec
       test("create new record when it doesn't exist") {
         for
           _ <- env.userDeviceRepository.overwrite(record1)
-          found <- env.userDeviceRepository.findByRefreshTokenHash(blake3Hash1)
+          found <- env.userDeviceRepository.findByRefreshToken(mac1)
         yield assertTrue(found.contains(record1))
       },
       test("update existing record when user-device combination exists") {
@@ -52,8 +56,8 @@ trait UserDeviceRepositorySpec extends DatabaseSpecBase[UserDeviceRepositorySpec
         for
           _ <- env.userDeviceRepository.overwrite(record1)
           _ <- env.userDeviceRepository.overwrite(updatedRecord)
-          found <- env.userDeviceRepository.findByRefreshTokenHash(blake3Hash2)
-          notFound <- env.userDeviceRepository.findByRefreshTokenHash(blake3Hash1)
+          found <- env.userDeviceRepository.findByRefreshToken(mac2)
+          notFound <- env.userDeviceRepository.findByRefreshToken(mac1)
         yield assertTrue(
           found.contains(updatedRecord),
           notFound.isEmpty
@@ -63,8 +67,8 @@ trait UserDeviceRepositorySpec extends DatabaseSpecBase[UserDeviceRepositorySpec
         for
           _ <- env.userDeviceRepository.overwrite(record1)
           _ <- env.userDeviceRepository.overwrite(record2)
-          found1 <- env.userDeviceRepository.findByRefreshTokenHash(blake3Hash1)
-          found2 <- env.userDeviceRepository.findByRefreshTokenHash(blake3Hash2)
+          found1 <- env.userDeviceRepository.findByRefreshToken(mac1)
+          found2 <- env.userDeviceRepository.findByRefreshToken(mac2)
         yield assertTrue(
           found1.contains(record1),
           found2.contains(record2)
@@ -74,8 +78,8 @@ trait UserDeviceRepositorySpec extends DatabaseSpecBase[UserDeviceRepositorySpec
         for
           _ <- env.userDeviceRepository.overwrite(record1)
           _ <- env.userDeviceRepository.overwrite(record3)
-          found1 <- env.userDeviceRepository.findByRefreshTokenHash(blake3Hash1)
-          found3 <- env.userDeviceRepository.findByRefreshTokenHash(blake3Hash3)
+          found1 <- env.userDeviceRepository.findByRefreshToken(mac1)
+          found3 <- env.userDeviceRepository.findByRefreshToken(mac3)
         yield assertTrue(
           found1.contains(record1),
           found3.contains(record3)
@@ -83,17 +87,18 @@ trait UserDeviceRepositorySpec extends DatabaseSpecBase[UserDeviceRepositorySpec
       },
     )
 
-  def findByRefreshTokenHashTests(env: UserDeviceRepositorySpec.Env) =
+  def findByRefreshTokenTests(env: UserDeviceRepositorySpec.Env) =
     suite("findByRefreshTokenHash")(
       test("return Some when record exists") {
         for
           _ <- env.userDeviceRepository.overwrite(record1)
-          found <- env.userDeviceRepository.findByRefreshTokenHash(blake3Hash1)
+          found <- env.userDeviceRepository.findByRefreshToken(mac1)
         yield assertTrue(found.contains(record1))
       },
       test("return None when record does not exist") {
+        val nonexistentMac = MAC(Array.fill(32)(99.toByte))
         for
-          found <- env.userDeviceRepository.findByRefreshTokenHash("nonexistent")
+          found <- env.userDeviceRepository.findByRefreshToken(nonexistentMac)
         yield assertTrue(found.isEmpty)
       },
     )
@@ -104,9 +109,9 @@ trait UserDeviceRepositorySpec extends DatabaseSpecBase[UserDeviceRepositorySpec
         val newExpireAt = expireAt.plusSeconds(3600)
         for
           _ <- env.userDeviceRepository.overwrite(record1)
-          _ <- env.userDeviceRepository.update(blake3Hash1, blake3Hash2, newExpireAt)
-          notFound <- env.userDeviceRepository.findByRefreshTokenHash(blake3Hash1)
-          found <- env.userDeviceRepository.findByRefreshTokenHash(blake3Hash2)
+          _ <- env.userDeviceRepository.update(mac1, mac2, newExpireAt)
+          notFound <- env.userDeviceRepository.findByRefreshToken(mac1)
+          found <- env.userDeviceRepository.findByRefreshToken(mac2)
         yield assertTrue(
           notFound.isEmpty,
           found.isDefined,
@@ -115,9 +120,10 @@ trait UserDeviceRepositorySpec extends DatabaseSpecBase[UserDeviceRepositorySpec
         )
       },
       test("do nothing when old hash doesn't exist") {
+        val nonexistentMac = MAC(Array.fill(32)(99.toByte))
         for
-          _ <- env.userDeviceRepository.update("nonexistent", blake3Hash2, expireAt)
-          found <- env.userDeviceRepository.findByRefreshTokenHash(blake3Hash2)
+          _ <- env.userDeviceRepository.update(nonexistentMac, mac2, expireAt)
+          found <- env.userDeviceRepository.findByRefreshToken(mac2)
         yield assertTrue(found.isEmpty)
       },
     )
@@ -151,8 +157,8 @@ trait UserDeviceRepositorySpec extends DatabaseSpecBase[UserDeviceRepositorySpec
           _ <- env.userDeviceRepository.overwrite(record1)
           _ <- env.userDeviceRepository.overwrite(record2)
           _ <- env.userDeviceRepository.clearRefreshByUserIdAndDeviceId(userId1, deviceId1)
-          clearedRecord <- env.userDeviceRepository.findByRefreshTokenHash(blake3Hash1)
-          untouchedRecord <- env.userDeviceRepository.findByRefreshTokenHash(blake3Hash2)
+          clearedRecord <- env.userDeviceRepository.findByRefreshToken(mac1)
+          untouchedRecord <- env.userDeviceRepository.findByRefreshToken(mac2)
         yield assertTrue(
           clearedRecord.isEmpty, // Should not be found by refresh token hash anymore
           untouchedRecord.contains(record2), // Other device should remain untouched
@@ -162,7 +168,7 @@ trait UserDeviceRepositorySpec extends DatabaseSpecBase[UserDeviceRepositorySpec
         for
           _ <- env.userDeviceRepository.overwrite(record1)
           _ <- env.userDeviceRepository.clearRefreshByUserIdAndDeviceId(userId2, deviceId2) // Different user/device
-          untouchedRecord <- env.userDeviceRepository.findByRefreshTokenHash(blake3Hash1)
+          untouchedRecord <- env.userDeviceRepository.findByRefreshToken(mac1)
         yield assertTrue(
           untouchedRecord.contains(record1), // Original record should remain untouched
         )
@@ -172,8 +178,8 @@ trait UserDeviceRepositorySpec extends DatabaseSpecBase[UserDeviceRepositorySpec
           _ <- env.userDeviceRepository.overwrite(record1) // userId1, deviceId1
           _ <- env.userDeviceRepository.overwrite(record2) // userId1, deviceId2
           _ <- env.userDeviceRepository.clearRefreshByUserIdAndDeviceId(userId1, deviceId1)
-          clearedRecord <- env.userDeviceRepository.findByRefreshTokenHash(blake3Hash1)
-          remainingRecord <- env.userDeviceRepository.findByRefreshTokenHash(blake3Hash2)
+          clearedRecord <- env.userDeviceRepository.findByRefreshToken(mac1)
+          remainingRecord <- env.userDeviceRepository.findByRefreshToken(mac2)
         yield assertTrue(
           clearedRecord.isEmpty, // First device should be cleared
           remainingRecord.contains(record2), // Second device should remain

@@ -1,13 +1,12 @@
 package versola.oauth
 
-import org.bouncycastle.crypto.generators.Argon2BytesGenerator
-import org.bouncycastle.crypto.params.Argon2Parameters
 import versola.oauth.model.{ClientId, ClientSecret, OAuthClient, Scope, ScopeRecord, ScopeToken}
-import versola.util.{Argon2Hash, Argon2Salt, ReloadingCache, SecureRandom}
+import versola.security.{Secret, SecureRandom, SecurityService}
+import versola.util.{CoreConfig, ReloadingCache}
 import zio.*
 import zio.prelude.NonEmptySet
 
-trait OauthClientService:
+trait OAuthClientService:
   /** Returns all clients from in-memory cache **/
   def getAll: Task[Map[ClientId, OAuthClient]]
 
@@ -18,7 +17,7 @@ trait OauthClientService:
   def find(id: ClientId): UIO[Option[OAuthClient]]
 
   /** Validate a client secret against both active and previous secrets */
-  def verifySecret(id: ClientId, providedSecret: Option[ClientSecret]): Task[Boolean]
+  def verifySecret(id: ClientId, providedSecret: Option[ClientSecret]): Task[Option[OAuthClient]]
 
   /** Create a private client with a generated secret and return both the client and the plain secret */
   def register(
@@ -49,14 +48,16 @@ trait OauthClientService:
   /** Delete multiple scopes */
   def deleteScopes(names: Vector[ScopeToken]): IO[Throwable, Unit]
 
-object OauthClientService:
+object OAuthClientService:
   case class Impl(
       cache: ReloadingCache[Map[ClientId, OAuthClient]],
       repository: OAuthClientRepository,
       scopeCache: ReloadingCache[Map[ScopeToken, Scope]],
       scopeRepository: OAuthScopeRepository,
       secureRandom: SecureRandom,
-  ) extends OauthClientService:
+      securityService: SecurityService,
+      clientSecretsConfig: CoreConfig.Security.ClientSecrets,
+  ) extends OAuthClientService:
 
     def getAll: Task[Map[ClientId, OAuthClient]] =
       repository.getAll
@@ -76,85 +77,72 @@ object OauthClientService:
     ): Task[ClientSecret] =
       for
         secret <- generateSecret
-        (hash, salt) <- hashSecret(secret)
+        macWithSalt <- generateMacWithSalt(secret)
         client = OAuthClient(
           id = id,
           clientName = clientName,
           redirectUris = redirectUris,
           scope = scope,
-          secretHash = Some(hash),
-          secretSalt = Some(salt),
-          previousSecretHash = None,
-          previousSecretSalt = None,
+          secret = Some(macWithSalt),
+          previousSecret = None,
         )
         _ <- repository.create(client)
-      yield secret
+      yield ClientSecret.fromBytes(secret)
 
     private def verifyOneSecret(
         secret: ClientSecret,
-        hash: Option[Argon2Hash],
-        salt: Option[Argon2Salt],
+        stored: Option[Secret],
     ): Task[Boolean] =
-      hash.zip(salt) match
-        case Some((hash, salt)) =>
-          ZIO.attemptBlocking(java.util.Arrays.equals(computeArgon2Hash(secret, salt), hash))
+      stored match
+        case Some(stored) =>
+          val (mac, salt) = stored.splitAt(32)
+          securityService.macBlake3(
+            secret = Secret.fromBase64Url(secret),
+            key = salt ++ clientSecretsConfig.pepper,
+          )
+            .map(_.sameElements(mac))
+
         case None =>
           ZIO.succeed(false)
 
-    override def verifySecret(clientId: ClientId, secret: Option[ClientSecret]): Task[Boolean] =
+    override def verifySecret(clientId: ClientId, secret: Option[ClientSecret]): Task[Option[OAuthClient]] =
       find(clientId).some.foldZIO(
-        _ => ZIO.succeed(false),
+        _ => ZIO.none,
         client =>
           secret match
             case Some(secret) if client.isConfidential =>
-              val firstSecretValid = verifyOneSecret(secret, client.secretHash, client.secretSalt)
-              ZIO.whenZIO(firstSecretValid)(ZIO.succeed(true))
-                .someOrElseZIO(verifyOneSecret(secret, client.previousSecretHash, client.previousSecretSalt))
-            case None if client.isPublic =>
-              ZIO.succeed(true)
-            case _ =>
-              ZIO.succeed(false),
-      )
-    end verifySecret
+              verifyOneSecret(secret, client.secret)
+                .flatMap {
+                  case false => verifyOneSecret(secret, client.previousSecret)
+                  case true => ZIO.succeed(true)
+                }
+                .map(Option.when(_)(client))
 
-    private def hashSecret(secret: ClientSecret): Task[(Argon2Hash, Argon2Salt)] =
+            case None if client.isPublic =>
+              ZIO.some(client)
+
+            case _ =>
+              ZIO.none,
+      )
+
+    private def generateMacWithSalt(secret: Secret): Task[Secret] =
       for
-        salt <- secureRandom.nextBytes(16).map(Argon2Salt(_))
-        hash <- ZIO.attempt(computeArgon2Hash(secret, salt))
-      yield (hash, salt)
+        salt <- secureRandom.nextBytes(16)
+        mac <- securityService.macBlake3(secret, salt ++ clientSecretsConfig.pepper)
+      yield Secret(mac ++ salt)
 
     override def rotateSecret(clientId: ClientId): Task[ClientSecret] =
       for
         secret <- generateSecret
-        (hash, salt) <- hashSecret(secret)
-        _ <- repository.rotateSecret(clientId, hash, salt)
-      yield secret
+        macWithSalt <- generateMacWithSalt(secret)
+        _ <- repository.rotateSecret(clientId, macWithSalt)
+      yield ClientSecret.fromBytes(secret)
 
     override def deletePreviousSecret(clientId: ClientId): Task[Unit] =
       repository.deletePreviousSecret(clientId)
 
-    private def generateSecret: Task[ClientSecret] =
-      secureRandom.nextHex(32).map(ClientSecret(_))
-
-    private def createArgon2Parameters(salt: Array[Byte]): Argon2Parameters =
-      new Argon2Parameters.Builder(Argon2Parameters.ARGON2_id)
-        .withVersion(Argon2Parameters.ARGON2_VERSION_13)
-        .withIterations(2)
-        .withMemoryAsKB(19 * 1024) // 19 MB
-        .withParallelism(1)
-        .withSalt(salt)
-        .build()
-
-    private def computeArgon2Hash(secret: ClientSecret, salt: Array[Byte]): Argon2Hash =
-      val secretBytes = secret.getBytes
-      val params = createArgon2Parameters(salt)
-
-      val generator = new Argon2BytesGenerator()
-      generator.init(params)
-
-      val hash = new Array[Byte](32)
-      generator.generateBytes(secretBytes, hash)
-      Argon2Hash(hash)
+    private def generateSecret: Task[Secret] =
+      secureRandom.nextBytes(32).map(Secret(_))
 
     override def getAllScopes: Task[Map[ScopeToken, Scope]] =
       scopeRepository.getAll

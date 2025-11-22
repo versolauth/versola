@@ -1,26 +1,26 @@
 import sbt.*
 
 object Versions {
-  val tethys = "0.29.5"
-  val zio = "2.1.19"
-  val zioConfig = "4.0.4"
-  val zioMetrics = "2.3.1"
-  val zioSchema = "1.7.3"
-  val zioJson = "0.7.44"
-  val zioOpenTelemetry = "3.1.6"
-  val openTelemetry = "1.51.0"
-  val openTelemetrySemConv = "1.34.0"
-  val openTelemetrySemConvIncubating = "1.34.0-alpha"
-  val zioHttp = "3.3.3"
-  val zioLogging = "2.5.0"
-  val flyway = "11.10.0"
+  val tethys = "0.29.7"
+  val zio = "2.1.22"
+  val zioConfig = "4.0.5"
+  val zioMetrics = "2.5.4"
+  val zioSchema = "1.7.5"
+  val zioJson = "0.7.45"
+  val zioOpenTelemetry = "3.1.11"
+  val openTelemetry = "1.56.0"
+  val openTelemetrySemConv = "1.37.0"
+  val openTelemetrySemConvIncubating = "1.37.0-alpha"
+  val zioHttp = "3.5.1"
+  val zioLogging = "2.5.1"
+  val flyway = "11.17.1"
   val magnum = "2.0.0-M2"
-  val postgresql = "42.7.7"
-  val hikari = "6.3.0"
-  val libphonenumber = "9.0.8"
-  val uuidGenerator = "5.1.0"
+  val postgresql = "42.7.8"
+  val hikari = "7.0.2"
+  val libphonenumber = "9.0.19"
+  val uuidGenerator = "5.1.1"
   val webauthn = "2.7.0"
-  val bouncyCastle = "1.81"
+  val bouncyCastle = "1.82"
   val scalajsDom = "2.8.0"
   val scalajsJavaTime = "2.6.0"
   val laminar = "17.2.0"
@@ -47,12 +47,13 @@ object Dependencies {
     "dev.zio" %% "zio-schema-derivation" % Versions.zioSchema,
     "dev.zio" %% "zio-test" % Versions.zio % Test,
     "dev.zio" %% "zio-test-sbt" % Versions.zio % Test,
-    "org.scalamock" %% "scalamock-zio" % "7.3.3" % Test,
-    "commons-codec" % "commons-codec" % "1.18.0",
+    "org.scalamock" %% "scalamock-zio" % "7.5.2" % Test,
+    "commons-codec" % "commons-codec" % "1.20.0",
     "dev.zio" %% "zio-json" % Versions.zioJson,
     "org.bouncycastle" % "bcprov-jdk18on" % Versions.bouncyCastle,
     "jakarta.mail" % "jakarta.mail-api" % Versions.javamail,
     "org.eclipse.angus" % "angus-mail" % Versions.javamail,
+    "com.nimbusds" % "nimbus-jose-jwt" % "10.6",
   )
 
 
@@ -76,7 +77,6 @@ object Dependencies {
     "dev.zio" %% "zio-metrics-connectors-prometheus" % Versions.zioMetrics,
     "dev.zio" %% "zio-schema-derivation" % Versions.zioSchema,
     "dev.zio" %% "zio-schema-json" % Versions.zioSchema,
-    "com.nimbusds" % "nimbus-jose-jwt" % "10.3.1",
     "com.tethys-json" %% "tethys-core" % Versions.tethys,
     "com.tethys-json" %% "tethys-jackson213" % Versions.tethys
   )

@@ -16,7 +16,7 @@ import io.opentelemetry.sdk.trace.`export`.{BatchSpanProcessor, SpanExporter}
 import io.opentelemetry.sdk.trace.data.SpanData
 import io.opentelemetry.semconv.ServiceAttributes
 import io.opentelemetry.semconv.incubating.ServiceIncubatingAttributes
-import versola.util.{EnvConfig, EnvName}
+import versola.util.{CoreConfig, EnvName}
 import zio.telemetry.opentelemetry.OpenTelemetry
 import zio.telemetry.opentelemetry.context.ContextStorage
 import zio.telemetry.opentelemetry.tracing.Tracing
@@ -25,9 +25,9 @@ import zio.{Exit, RIO, RLayer, Scope, TaskLayer, ZIO, ZLayer}
 private[http] object OpenTelemetryBuilder:
   def live(
       serviceName: String,
-  ): RLayer[ContextStorage & EnvConfig[Any], api.OpenTelemetry & Tracing] =
+  ): RLayer[ContextStorage & CoreConfig, api.OpenTelemetry & Tracing] =
     ZLayer.fromZIO {
-      ZIO.serviceWith[EnvConfig[Any]]: config =>
+      ZIO.serviceWith[CoreConfig]: config =>
         openTelemetryProvider(
           env = config.runtime.env,
           serviceName = serviceName,
@@ -41,7 +41,7 @@ private[http] object OpenTelemetryBuilder:
   private def openTelemetryProvider(
       env: EnvName,
       serviceName: String,
-      config: Option[EnvConfig.Telemetry],
+      config: Option[CoreConfig.Telemetry],
   ): TaskLayer[api.OpenTelemetry] = {
     val resource = config.fold(Resource.empty())(_ =>
       Resource.create(
@@ -73,7 +73,7 @@ private[http] object OpenTelemetryBuilder:
 
   private def buildTracerProvider(
       resource: Resource,
-      config: Option[EnvConfig.Telemetry],
+      config: Option[CoreConfig.Telemetry],
   ): RIO[Scope, SdkTracerProvider] =
     for
       spanExporter <- config match

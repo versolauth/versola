@@ -3,16 +3,16 @@ package versola.oauth
 import com.augustnagro.magnum.*
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.oauth.model.{ClientId, ClientSecret, ExternalOAuthClient, OAuthProvider, OauthProviderName}
-import versola.util.CryptoService
+import versola.security.SecurityService
 import versola.util.postgres.BasicCodecs
 import zio.{Task, ZIO}
 
 import javax.crypto.SecretKey
 
 class PostgresExternalOAuthClientRepository(
-    xa: TransactorZIO,
-    cryptoService: CryptoService,
-    secretKey: SecretKey,
+                                             xa: TransactorZIO,
+                                             cryptoService: SecurityService,
+                                             secretKey: SecretKey,
 ) extends ExternalOAuthClientRepository, BasicCodecs:
 
   // Database record for external OAuth clients

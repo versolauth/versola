@@ -3,6 +3,7 @@ package versola.auth
 import com.augustnagro.magnum.*
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.auth.model.{AuthId, DeviceId, RefreshToken, UserDeviceRecord}
+import versola.security.MAC
 import versola.user.model.UserId
 import zio.Task
 
@@ -12,10 +13,12 @@ import java.util.UUID
 class PostgresUserDeviceRepository(xa: TransactorZIO) extends UserDeviceRepository:
 
   override def update(
-      oldBlake3Hash: String,
-      newBlake3Hash: String,
+      oldRefreshToken: MAC,
+      newRefreshToken: MAC,
       expireAt: Instant,
   ): Task[Unit] =
+    val oldBlake3Hash = RefreshToken.fromBytes(oldRefreshToken)
+    val newBlake3Hash = RefreshToken.fromBytes(newRefreshToken)
     xa.connect:
       sql"""update user_devices
             set refresh_token_blake3 = $newBlake3Hash, expire_at = $expireAt
@@ -32,7 +35,8 @@ class PostgresUserDeviceRepository(xa: TransactorZIO) extends UserDeviceReposito
               expire_at = excluded.expire_at
        """.update.run()
 
-  override def findByRefreshTokenHash(blake3Hash: String): Task[Option[UserDeviceRecord]] =
+  override def findByRefreshToken(refreshToken: MAC): Task[Option[UserDeviceRecord]] =
+    val blake3Hash = RefreshToken.fromBytes(refreshToken)
     xa.connect:
       sql"""
            select * from user_devices where refresh_token_blake3 = $blake3Hash

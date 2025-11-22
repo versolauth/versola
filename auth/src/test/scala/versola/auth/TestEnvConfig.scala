@@ -6,10 +6,9 @@ import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm, JWSHeader}
 import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 import versola.AuthServer
 import versola.auth.model.{AccessToken, AuthId, DeviceId}
-import versola.email.config.{EmailProviderConfig, SmtpConfig}
-import versola.email.model.EmailAddress
+import versola.security.Secret
 import versola.user.model.UserId
-import versola.util.{EnvConfig, EnvName}
+import versola.util.{CoreConfig, EnvName}
 import zio.json.ast.Json
 
 import java.security.KeyPairGenerator
@@ -49,53 +48,24 @@ object TestEnvConfig:
       ),
     )
 
-  val jwtConfig = AuthServer.JwtConfig(
+  val jwtConfig = CoreConfig.JwtConfig(
     privateKey = privateKey,
     publicKey = jwksJson,
   )
 
-  val providersConfig = AuthServer.ProvidersConfig(
-    google = AuthServer.OAuthProviderConfig(
-      clientId = "test-google-client-id",
-      clientSecret = "test-google-client-secret",
-    ),
-    github = AuthServer.OAuthProviderConfig(
-      clientId = "test-github-client-id",
-      clientSecret = "test-github-client-secret",
-    ),
-  )
 
-  val authConfig = AuthServer.AuthConfig(
-    jwt = jwtConfig,
-    providers = providersConfig
-  )
-
-  val emailProviderConfig = EmailProviderConfig(
-    smtp = Some(SmtpConfig(
-      host = "localhost",
-      port = 587,
-      username = "test@example.com",
-      password = "test-password",
-      fromAddress = EmailAddress("noreply@test.com"),
-      fromName = Some("Test Service"),
-      useTls = Some(false),
-      useStartTls = Some(true),
-      connectionTimeout = Some(10000),
-      timeout = Some(10000)
-    )),
-    mailgun = None
-  )
-
-  val appConfig = AuthServer.AppConfig(
-    databases = Map.empty,
-    auth = authConfig,
-    emailProvider = emailProviderConfig
-  )
-
-  val envConfig = EnvConfig(
-    runtime = EnvConfig.Runtime(EnvName.Test("test")),
+  val coreConfig = CoreConfig(
+    runtime = CoreConfig.Runtime(EnvName.Test("test")),
     telemetry = None,
-    app = appConfig,
+    security = CoreConfig.Security(
+      clientSecrets = CoreConfig.Security.ClientSecrets(
+        Secret.Bytes16(Array.fill(16)(0.toByte)),
+      ),
+      refreshTokens = CoreConfig.Security.RefreshTokens(
+        Secret.Bytes32(Array.fill(32)(0.toByte)),
+      ),
+    ),
+    jwt = jwtConfig,
   )
 
   // Create a valid test access token following the same rules as TokenService

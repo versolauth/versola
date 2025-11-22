@@ -4,8 +4,9 @@ import com.nimbusds.jose.crypto.RSASSAVerifier
 import com.nimbusds.jwt.SignedJWT
 import org.apache.commons.codec.digest.Blake3
 import versola.auth.model.{AuthId, DeviceId, RefreshToken, UserDeviceRecord}
+import versola.security.{MAC, Secret, SecureRandom, SecurityService}
 import versola.user.model.{Email, UserId, UserRecord}
-import versola.util.{SecureRandom, UnitSpecBase}
+import versola.util.UnitSpecBase
 import zio.*
 import zio.test.*
 
@@ -29,7 +30,14 @@ object TokenServiceSpec extends UnitSpecBase:
   class Env:
     val secureRandom = stub[SecureRandom]
     val userDeviceRepository = stub[UserDeviceRepository]
-    val tokenService = TokenService.Impl(userDeviceRepository, secureRandom, TestEnvConfig.jwtConfig)
+    val securityService = stub[SecurityService]
+    val tokenService = TokenService.Impl(
+      userDeviceRepository,
+      secureRandom,
+      securityService,
+      TestEnvConfig.jwtConfig,
+      TestEnvConfig.coreConfig.security.refreshTokens,
+    )
 
   val spec = suite("TokenService")(
     suite("issueTokens")(
@@ -87,18 +95,28 @@ object TokenServiceSpec extends UnitSpecBase:
       test("successfully reissue tokens for valid refresh token") {
         val env = Env()
         val refreshToken = RefreshToken("test-refresh-token")
-        val blake3Hash = Base64.getUrlEncoder.withoutPadding().encodeToString(Blake3.hash(refreshToken.getBytes))
+
+        // Compute MAC the same way TokenService does
+        val refreshTokenBytes = Base64.getUrlDecoder.decode(refreshToken)
+        val mac = Array.ofDim[Byte](32)
+        Blake3.initKeyedHash(TestEnvConfig.coreConfig.security.refreshTokens.pepper)
+          .update(refreshTokenBytes)
+          .doFinalize(mac)
+        val expectedMac = MAC(mac)
+
+        val blake3Hash = RefreshToken.fromBytes(expectedMac)
         val existingRecord = UserDeviceRecord(userId1, deviceId1, authId1, Some(blake3Hash), Some(now.plusSeconds(90 * 24 * 3600)))
 
         for
           _ <- TestClock.setTime(now) // Set fixed time to avoid timing issues
           _ <- env.secureRandom.nextHex.succeedsWith("newtoken123456")
           _ <- env.secureRandom.nextBytes.succeedsWith(Array.fill(64)(2.toByte))
-          _ <- env.userDeviceRepository.findByRefreshTokenHash.succeedsWith(Some(existingRecord))
+          _ <- env.securityService.macBlake3.succeedsWith(expectedMac)
+          _ <- env.userDeviceRepository.findByRefreshToken.succeedsWith(Some(existingRecord))
           _ <- env.userDeviceRepository.update.succeedsWith(())
           _ <- env.userDeviceRepository.clearRefreshByUserIdAndDeviceId.succeedsWith(()) // Should not be called but stub it anyway
           result <- env.tokenService.reissueTokens(refreshToken, deviceId1)
-          findCalls = env.userDeviceRepository.findByRefreshTokenHash.calls
+          findCalls = env.userDeviceRepository.findByRefreshToken.calls
           updateCalls = env.userDeviceRepository.update.calls
           clearCalls = env.userDeviceRepository.clearRefreshByUserIdAndDeviceId.calls
 
@@ -115,7 +133,7 @@ object TokenServiceSpec extends UnitSpecBase:
           }.catchAll(_ => ZIO.succeed(false))
         yield assertTrue(
           findCalls.length == 1,
-          findCalls.head == blake3Hash,
+          findCalls.head.equals(expectedMac),
           updateCalls.length == 1,
           clearCalls.length == 0, // Should not be called in successful case
           accessTokenValid,
@@ -126,19 +144,36 @@ object TokenServiceSpec extends UnitSpecBase:
         val env = Env()
         val refreshToken = RefreshToken("nonexistent-token")
 
+        val refreshTokenBytes = Base64.getUrlDecoder.decode(refreshToken)
+        val mac = Array.ofDim[Byte](32)
+        Blake3.initKeyedHash(TestEnvConfig.coreConfig.security.refreshTokens.pepper)
+          .update(refreshTokenBytes)
+          .doFinalize(mac)
+        val expectedMac = MAC(mac)
+
         for
-          _ <- env.userDeviceRepository.findByRefreshTokenHash.succeedsWith(None)
+          _ <- env.securityService.macBlake3.succeedsWith(expectedMac)
+          _ <- env.userDeviceRepository.findByRefreshToken.succeedsWith(None)
           result <- env.tokenService.reissueTokens(refreshToken, deviceId1).exit
         yield assertTrue(result.isFailure)
       },
       test("fail when refresh token expired") {
         val env = Env()
         val refreshToken = RefreshToken("expired-token")
-        val blake3Hash = Base64.getUrlEncoder.encodeToString(Blake3.hash(refreshToken.getBytes))
+
+        val refreshTokenBytes = Base64.getUrlDecoder.decode(refreshToken)
+        val mac = Array.ofDim[Byte](32)
+        Blake3.initKeyedHash(TestEnvConfig.coreConfig.security.refreshTokens.pepper)
+          .update(refreshTokenBytes)
+          .doFinalize(mac)
+        val expectedMac = MAC(mac)
+
+        val blake3Hash = RefreshToken.fromBytes(expectedMac)
         val expiredRecord = UserDeviceRecord(userId1, deviceId1, authId1, Some(blake3Hash), Some(now.minusSeconds(3600)))
 
         for
-          _ <- env.userDeviceRepository.findByRefreshTokenHash.succeedsWith(Some(expiredRecord))
+          _ <- env.securityService.macBlake3.succeedsWith(expectedMac)
+          _ <- env.userDeviceRepository.findByRefreshToken.succeedsWith(Some(expiredRecord))
           _ <- env.userDeviceRepository.clearRefreshByUserIdAndDeviceId.succeedsWith(())
           result <- env.tokenService.reissueTokens(refreshToken, deviceId1).exit
         yield assertTrue(result.isFailure)
@@ -146,12 +181,21 @@ object TokenServiceSpec extends UnitSpecBase:
       test("fail when device ID doesn't match") {
         val env = Env()
         val refreshToken = RefreshToken("valid-token")
-        val blake3Hash = Base64.getUrlEncoder.encodeToString(Blake3.hash(refreshToken.getBytes))
+
+        val refreshTokenBytes = Base64.getUrlDecoder.decode(refreshToken)
+        val mac = Array.ofDim[Byte](32)
+        Blake3.initKeyedHash(TestEnvConfig.coreConfig.security.refreshTokens.pepper)
+          .update(refreshTokenBytes)
+          .doFinalize(mac)
+        val expectedMac = MAC(mac)
+
+        val blake3Hash = RefreshToken.fromBytes(expectedMac)
         val wrongDeviceRecord = UserDeviceRecord(userId1, deviceId1, authId1, Some(blake3Hash), Some(now.plusSeconds(90 * 24 * 3600)))
         val differentDeviceId = DeviceId(UUID.fromString("99999999-8888-7777-6666-555555555555"))
 
         for
-          _ <- env.userDeviceRepository.findByRefreshTokenHash.succeedsWith(Some(wrongDeviceRecord))
+          _ <- env.securityService.macBlake3.succeedsWith(expectedMac)
+          _ <- env.userDeviceRepository.findByRefreshToken.succeedsWith(Some(wrongDeviceRecord))
           _ <- env.userDeviceRepository.clearRefreshByUserIdAndDeviceId.succeedsWith(())
           result <- env.tokenService.reissueTokens(refreshToken, differentDeviceId).exit
         yield assertTrue(result.isFailure)

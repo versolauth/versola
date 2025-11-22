@@ -63,7 +63,7 @@ lazy val util = project.in(modules / "util")
 
 lazy val commonSettings =
   Seq(
-    scalaVersion := "3.7.0",
+    scalaVersion := "3.7.4",
     scalacOptions ++= Seq(
       "-deprecation",
       "-source:future",

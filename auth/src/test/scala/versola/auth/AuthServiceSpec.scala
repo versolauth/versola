@@ -1,10 +1,10 @@
 package versola.auth
 
 import versola.auth.model.*
-import versola.email.EmailService
+import versola.security.SecureRandom
 import versola.user.UserRepository
 import versola.user.model.*
-import versola.util.{EnvName, ReloadingCache, SecureRandom, UnitSpecBase}
+import versola.util.{EnvName, ReloadingCache, UnitSpecBase}
 import zio.test.*
 
 import java.time.Instant
@@ -52,13 +52,10 @@ object AuthServiceSpec extends UnitSpecBase:
     val secureRandom = stub[SecureRandom]
     val bans = ReloadingCache.constant(Set(bannedEmail))
 
-    val emailService = stub[EmailService]
-
     val conversationService = stub[ConversationService]
 
     val authService = new AuthService.Impl(
       envName,
-      emailService,
       userRepository,
       tokenService,
       emailVerificationsRepository,
@@ -91,17 +88,17 @@ object AuthServiceSpec extends UnitSpecBase:
           _ <- env.emailVerificationsRepository.create.succeedsWith(wonRaceRecord)
           _ <- env.emailVerificationsRepository.update.succeedsWith(())
           _ <- env.emailVerificationsRepository.overwrite.succeedsWith(())
-          _ <- env.emailService.sendVerificationEmail.succeedsWith(())
+         // _ <- env.emailService.sendVerificationEmail.succeedsWith(())
           _ <- env.secureRandom.nextNumeric.succeedsWith(generatedOtpCode)
           _ <- env.secureRandom.nextUUIDv7.succeedsWith(generatedAuthId)
           _ <- env.conversationService.create.succeedsWith(ConversationRecord.create(generatedAuthId, ConversationStep.email))
           result <- env.authService.sendEmail(email, None)
-          sendEmailTimes = env.emailService.sendVerificationEmail.times
+          //sendEmailTimes = env.emailService.sendVerificationEmail.times
           updateTimes = env.emailVerificationsRepository.update.times
           overwriteTimes = env.emailVerificationsRepository.overwrite.times
         yield assertTrue(
           result == expectedResult,
-          sendEmailTimes == Option.when(verify.emailSent)(1).getOrElse(0),
+          //sendEmailTimes == Option.when(verify.emailSent)(1).getOrElse(0),
           updateTimes == Option.when(verify.updated)(1).getOrElse(0),
           overwriteTimes == Option.when(verify.overwritten)(1).getOrElse(0),
           env.secureRandom.nextNumeric.calls.forall(_ == 6),

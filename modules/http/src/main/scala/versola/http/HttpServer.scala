@@ -2,12 +2,13 @@ package versola.http
 
 import com.typesafe.config.ConfigFactory
 import io.opentelemetry.api
-import versola.util.{EnvConfig, EnvName}
-import zio.*
+import versola.security.Secret
+import versola.util.{ByteArrayNewType, CoreConfig, EnvName, PrivateKeyUtil}
 import zio.config.magnolia.{DeriveConfig, deriveConfig}
 import zio.config.typesafe.*
 import zio.http.*
 import zio.http.Server.RequestStreaming
+import zio.json.*
 import zio.logging.slf4j.bridge.Slf4jBridge
 import zio.logging.{ConsoleLoggerConfig, LogFilter, LogFormat, LoggerNameExtractor}
 import zio.metrics.connectors.MetricsConfig
@@ -16,6 +17,10 @@ import zio.telemetry.opentelemetry.OpenTelemetry
 import zio.telemetry.opentelemetry.context.ContextStorage
 import zio.telemetry.opentelemetry.tracing.Tracing
 import zio.telemetry.opentelemetry.zio.logging.{LogFormats, ZioLogging}
+import zio.*
+
+import java.security.PrivateKey
+import scala.util.Try
 
 /**
  * Базовый трейт для приложений на основе HTTP сервера.
@@ -27,13 +32,14 @@ import zio.telemetry.opentelemetry.zio.logging.{LogFormats, ZioLogging}
  * - Сервисные эндпоинтов liveness, readiness, metrics
  * - Graceful shutdown
  */
-trait HttpServer[AppConfig: {Tag, DeriveConfig}](serviceName: String) extends ZIOApp:
-  
-  override type Environment = ContextStorage & EnvConfig[AppConfig] & LogFormats & api.OpenTelemetry & Tracing
+trait HttpServer(serviceName: String) extends ZIOApp:
+
+  override type Environment =
+    ContextStorage & CoreConfig & ConfigProvider & LogFormats & api.OpenTelemetry & Tracing
 
   type Services
 
-  def services: ZLayer[EnvConfig[AppConfig] & api.OpenTelemetry & Tracing, Throwable, Services]
+  def services: ZLayer[CoreConfig & ConfigProvider & api.OpenTelemetry & Tracing, Throwable, Services]
 
   /**
    * Конфигурация HTTP сервера.
@@ -51,7 +57,7 @@ trait HttpServer[AppConfig: {Tag, DeriveConfig}](serviceName: String) extends ZI
    *
    * @return маршруты HTTP приложения
    */
-  def routes: Routes[Services & Tracing & EnvConfig[AppConfig] & api.OpenTelemetry, Response]
+  def routes: Routes[Services & Tracing & CoreConfig & api.OpenTelemetry, Response]
 
   /**
    * Слой инициализации окружения приложения.
@@ -64,12 +70,12 @@ trait HttpServer[AppConfig: {Tag, DeriveConfig}](serviceName: String) extends ZI
    * - OpenTelemetry провайдер
    */
   override val bootstrap: ZLayer[Any, Any, Environment] =
-    HttpServer.config[AppConfig] >+>
+    HttpServer.config >+>
       OpenTelemetry.contextZIO >+>
       ZioLogging.logFormats >+>
       HttpServer.jsonLoggerLayer(serviceName) >+>
       OpenTelemetryBuilder.live(
-        serviceName = serviceName
+        serviceName = serviceName,
       )
 
   /**
@@ -84,7 +90,8 @@ trait HttpServer[AppConfig: {Tag, DeriveConfig}](serviceName: String) extends ZI
   override def run: ZIO[Environment & ZIOAppArgs & Scope, Any, Any] = {
     for
       opentelemetry <- ZIO.service[api.OpenTelemetry]
-      envConfig <- ZIO.service[EnvConfig[AppConfig]]
+      coreConfig <- ZIO.service[CoreConfig]
+      envConfig <- ZIO.service[ConfigProvider]
       tracing <- ZIO.service[Tracing]
       readinessService <- ReadinessService.make
 
@@ -116,6 +123,7 @@ trait HttpServer[AppConfig: {Tag, DeriveConfig}](serviceName: String) extends ZI
         ZLayer.succeed(config.observability),
         ZLayer.succeed(opentelemetry),
         ZLayer.succeed(tracing),
+        ZLayer.succeed(coreConfig),
         ZLayer.succeed(envConfig),
       )
     yield ()
@@ -186,22 +194,29 @@ object HttpServer:
    * Загружает конфигурацию из файла, указанного в системном свойстве 'env.path'.
    * Файл конфигурации должен быть в формате HOCON.
    */
-  private def config[AppConfig: {DeriveConfig, Tag}]: ZLayer[Any, zio.Config.Error | Throwable, EnvConfig[AppConfig]] =
-    ZLayer.fromZIO:
+  private def config: ZLayer[Any, zio.Config.Error | Throwable, CoreConfig & ConfigProvider] = {
+    val layer = ZLayer.fromZIO:
       for
         path <- System.property("env.path")
           .someOrFail(RuntimeException("Property 'env.path' is not set. Provide it via `-Denv.path=...`"))
 
         absolutePath <- ZIO.attempt(java.nio.file.Paths.get(path).toAbsolutePath.toString)
 
-        provider <- ConfigProvider.fromTypesafeConfigZIO:
-          ConfigFactory.parseString:
-            s"""
-               |include required(file("$absolutePath"))
-               |""".stripMargin
+        config = ConfigFactory.parseString:
+          s"""
+             |include required(file("$absolutePath"))
+             |""".stripMargin
 
-        config <- provider.kebabCase.load(deriveConfig[EnvConfig[AppConfig]])
-      yield config
+        core <- ConfigProvider
+          .fromTypesafeConfig(config.getConfig("core")).kebabCase
+          .load(deriveConfig[CoreConfig])
+
+        app <- ConfigProvider
+          .fromTypesafeConfigZIO(config.getConfig("app")).map(_.kebabCase)
+      yield (core, app)
+
+    layer.map(env => ZEnvironment(env.get._1) ++ ZEnvironment(env.get._2))
+  }
 
   private given DeriveConfig[EnvName] = DeriveConfig:
     zio.Config.string.map:
@@ -211,12 +226,12 @@ object HttpServer:
   /**
    * Создает слой для JSON логгирования в описанном формате
    */
-  private def jsonLoggerLayer(serviceName: String): ZLayer[LogFormats & EnvConfig[Any], Nothing, Unit] =
+  private def jsonLoggerLayer(serviceName: String): ZLayer[LogFormats & CoreConfig, Nothing, Unit] =
     zio.Runtime.removeDefaultLoggers >>> ZLayer {
       import LogFormat.*
       for
         formats <- ZIO.service[LogFormats]
-        envConfig <- ZIO.service[EnvConfig[Any]]
+        envConfig <- ZIO.service[CoreConfig]
         config = ConsoleLoggerConfig.default.copy(
           format =
             List(
@@ -243,3 +258,26 @@ object HttpServer:
         new MetricsService {
           override def get: UIO[String] = publisher.get
         }
+
+  given DeriveConfig[Secret.Bytes16] = DeriveConfig[String]
+    .mapOrFail(parseBase64UrlSecret(Secret.Bytes16))
+
+  given DeriveConfig[Secret.Bytes32] = DeriveConfig[String]
+    .mapOrFail(parseBase64UrlSecret(Secret.Bytes32))
+
+  given DeriveConfig[PrivateKey] = DeriveConfig[String]
+    .mapOrFail: string =>
+      PrivateKeyUtil.parse(key = string, algorithm = "RSA")
+        .left
+        .map(ex => zio.Config.Error.InvalidData(message = ex.getMessage))
+
+  given DeriveConfig[zio.json.ast.Json.Obj] = DeriveConfig[String]
+    .mapOrFail(_.fromJson[ast.Json.Obj].left.map(message => zio.Config.Error.InvalidData(message = message)))
+
+  given DeriveConfig[URL] = DeriveConfig[String]
+    .mapOrFail(URL.decode(_).left.map(ex => zio.Config.Error.InvalidData(message = ex.getMessage)))
+
+  private def parseBase64UrlSecret(newType: ByteArrayNewType.FixedLength)(str: String) =
+    Try(newType.fromBase64Url(str)).toEither
+      .left.map(ex => zio.Config.Error.InvalidData(message = ex.getMessage))
+      .filterOrElse(_.length == newType.length, zio.Config.Error.InvalidData(message = s"Base64-encoded string must be ${newType.length} bytes. '$str' is '"))

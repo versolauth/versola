@@ -1,62 +1,69 @@
 package versola.oauth
 
-import org.bouncycastle.crypto.generators.Argon2BytesGenerator
-import org.bouncycastle.crypto.params.Argon2Parameters
+import org.apache.commons.codec.digest.Blake3
 import versola.oauth.model.*
+import versola.security.{MAC, Secret, SecureRandom, SecurityService}
 import versola.util.*
 import zio.*
 import zio.prelude.NonEmptySet
 import zio.test.*
+
+import java.nio.charset.StandardCharsets
 
 object OauthClientServiceSpec extends UnitSpecBase:
 
   // Test data
   val clientId1 = ClientId("test-client-1")
   val clientId2 = ClientId("test-client-2")
-  val clientId3 = ClientId("public-client-1")
+  val publicClientId = ClientId("public-client-1")
   val nonExistentClientId = ClientId("non-existent")
 
-  val testSecret = ClientSecret("test-secret-123")
-  val previousSecret = ClientSecret("previous-secret-456")
-  val wrongSecret = ClientSecret("wrong-secret")
+  // Generate proper 32-byte base64url encoded secrets
+  val testSecretBytes = Array.fill(32)(5.toByte)
+  val previousSecretBytes = Array.fill(32)(6.toByte)
+  val wrongSecretBytes = Array.fill(32)(99.toByte)
 
-  val salt1 = Argon2Salt(Array.fill(16)(1.toByte))
-  val salt2 = Argon2Salt(Array.fill(16)(2.toByte))
-  val newSalt = Argon2Salt(Array.fill(16)(3.toByte))
+  val testClientSecret = ClientSecret(java.util.Base64.getUrlEncoder.withoutPadding().encodeToString(testSecretBytes))
+  val previousClientSecret = ClientSecret(java.util.Base64.getUrlEncoder.withoutPadding().encodeToString(previousSecretBytes))
+  val wrongClientSecret = ClientSecret(java.util.Base64.getUrlEncoder.withoutPadding().encodeToString(wrongSecretBytes))
 
-  // Compute actual Argon2 hashes for test secrets
-  def computeTestArgon2Hash(secret: ClientSecret, salt: Argon2Salt): Argon2Hash =
-    val secretBytes = secret.getBytes
-    val params = new Argon2Parameters.Builder(Argon2Parameters.ARGON2_id)
-      .withVersion(Argon2Parameters.ARGON2_VERSION_13)
-      .withIterations(2)
-      .withMemoryAsKB(19 * 1024) // 19 MB
-      .withParallelism(1)
-      .withSalt(salt)
-      .build()
+  // Test pepper (16 bytes) - base64url encoded
+  val pepperBytes = Array.fill(16)(10.toByte)
+  val testPepper = Secret.Bytes16(pepperBytes)
 
-    val generator = new Argon2BytesGenerator()
-    generator.init(params)
+  val salt1 = Array.fill(16)(1.toByte)
+  val salt2 = Array.fill(16)(2.toByte)
+  val newSalt = Array.fill(16)(3.toByte)
 
-    val hash = new Array[Byte](32)
-    generator.generateBytes(secretBytes, hash)
-    Argon2Hash(hash)
+  // Compute BLAKE3 MAC with salt||pepper as key
+  // Returns: MAC (32 bytes) || salt (16 bytes) = 48 bytes
+  def computeTestBlake3MAC(secretBytes: Array[Byte], salt: Array[Byte]): MAC =
+    require(salt.length == 16)
+    require(pepperBytes.length == 16)
+    require(secretBytes.length == 32)
+    val macKey = salt ++ pepperBytes // 16 + 16 = 32 bytes
+    val mac = Array.ofDim[Byte](32)
+    Blake3.initKeyedHash(macKey)
+      .update(secretBytes)
+      .doFinalize(mac)
+    MAC(mac) // MAC (32 bytes) || salt (16 bytes)
 
-  // Compute hashes that match our test secrets
-  val hash1 = computeTestArgon2Hash(testSecret, salt1)  // hash for testSecret with salt1
-  val hash2 = computeTestArgon2Hash(testSecret, salt2)  // hash for testSecret with salt2
-  val previousHash = computeTestArgon2Hash(previousSecret, salt1)  // hash for previousSecret with salt1
-  val newHash = Argon2Hash(Array.fill(32)(3.toByte))
+  // Compute MACs that match our test secrets
+  val mac1 = computeTestBlake3MAC(testSecretBytes, salt1)
+  val secret1 = Secret(mac1 ++ salt1)
+  val mac2 = computeTestBlake3MAC(testSecretBytes, salt2)
+  val secret2 = Secret(mac2 ++ salt2)
+  val previousMac = computeTestBlake3MAC(previousSecretBytes, salt1)
+  val previousSecret = Secret(previousMac ++ salt1)
+  val newMacWithSalt = Secret(Array.fill(48)(3.toByte))
 
   val privateClient1 = OAuthClient(
     id = clientId1,
     clientName = "Test Private Client 1",
     redirectUris = NonEmptySet("https://example.com/callback"),
     scope = Set("read", "write"),
-    secretHash = Some(hash1),  // hash for testSecret with salt1
-    secretSalt = Some(salt1),
-    previousSecretHash = None,
-    previousSecretSalt = None,
+    secret = Some(secret1), // MAC for testSecret with salt1
+    previousSecret = None,
   )
 
   val privateClientWithPrevious = OAuthClient(
@@ -64,27 +71,23 @@ object OauthClientServiceSpec extends UnitSpecBase:
     clientName = "Test Private Client 2",
     redirectUris = NonEmptySet("https://example2.com/callback"),
     scope = Set("read"),
-    secretHash = Some(hash2),  // hash for testSecret with salt2
-    secretSalt = Some(salt2),
-    previousSecretHash = Some(previousHash),  // hash for previousSecret with salt1
-    previousSecretSalt = Some(salt1),
+    secret = Some(secret2),
+    previousSecret = Some(previousSecret),
   )
 
   val publicClient = OAuthClient(
-    id = clientId3,
+    id = publicClientId,
     clientName = "Test Public Client",
     redirectUris = NonEmptySet("https://public.example.com/callback"),
     scope = Set("read"),
-    secretHash = None,
-    secretSalt = None,
-    previousSecretHash = None,
-    previousSecretSalt = None,
+    secret = None,
+    previousSecret = None,
   )
 
   val testClients = Map(
     clientId1 -> privateClient1,
     clientId2 -> privateClientWithPrevious,
-    clientId3 -> publicClient,
+    publicClientId -> publicClient,
   )
 
   // Test scope data
@@ -119,12 +122,23 @@ object OauthClientServiceSpec extends UnitSpecBase:
     val scopeCache = stub[Ref[Map[ScopeToken, versola.oauth.model.Scope]]]
     val scopeRepository = stub[OAuthScopeRepository]
     val secureRandom = stub[SecureRandom]
-    val service = OauthClientService.Impl(
+    val securityService = stub[SecurityService]
+    securityService.macBlake3.returns { (secret, key) =>
+      ZIO.succeed:
+        val mac = Array.ofDim[Byte](32)
+        Blake3.initKeyedHash(key)
+          .update(secret)
+          .doFinalize(mac)
+        MAC(mac)
+    }
+    val service = OAuthClientService.Impl(
       ReloadingCache(cache),
       repository,
       ReloadingCache(scopeCache),
       scopeRepository,
-      secureRandom
+      secureRandom,
+      securityService,
+      CoreConfig.Security.ClientSecrets(testPepper),
     )
 
   val spec = suite("OauthClientService")(
@@ -160,27 +174,21 @@ object OauthClientServiceSpec extends UnitSpecBase:
       test("return Some when client exists") {
         val env = Env()
         for
-          _ <- (env.cache.get(using
-            _: Trace,
-          )).succeedsWith(testClients)
+          _ <- (env.cache.get(using _: Trace)).succeedsWith(testClients)
           result <- env.service.find(clientId1)
         yield assertTrue(result.contains(privateClient1))
       },
       test("return None when client does not exist") {
         val env = Env()
         for
-          _ <- (env.cache.get(using
-            _: Trace,
-          )).succeedsWith(testClients)
+          _ <- (env.cache.get(using _: Trace)).succeedsWith(testClients)
           result <- env.service.find(nonExistentClientId)
         yield assertTrue(result.isEmpty)
       },
       test("return None when cache is empty") {
         val env = Env()
         for
-          _ <- (env.cache.get(using
-            _: Trace,
-          )).succeedsWith(Map.empty)
+          _ <- (env.cache.get(using _: Trace)).succeedsWith(Map.empty)
           result <- env.service.find(clientId1)
         yield assertTrue(result.isEmpty)
       },
@@ -191,76 +199,70 @@ object OauthClientServiceSpec extends UnitSpecBase:
       test("return true for public client without secret") {
         val env = Env()
         for
-          _ <- (env.cache.get(using
-            _: Trace,
-          )).succeedsWith(testClients)
-          result <- env.service.verifySecret(clientId3, None)
-        yield assertTrue(result)
+          _ <- (env.cache.get(using _: Trace)).succeedsWith(testClients)
+          result <- env.service.verifySecret(publicClientId, None)
+        yield assertTrue(result.isDefined)
       },
       test("return false for public client with secret provided") {
         val env = Env()
         for
-          _ <- (env.cache.get(using
-            _: Trace,
-          )).succeedsWith(testClients)
-          result <- env.service.verifySecret(clientId3, Some(testSecret))
-        yield assertTrue(!result)
+          _ <- (env.cache.get(using _: Trace)).succeedsWith(testClients)
+          result <- env.service.verifySecret(publicClientId, Some(testClientSecret))
+        yield assertTrue(result.isEmpty)
       },
       test("return false for private client without secret") {
         val env = Env()
         for
-          _ <- (env.cache.get(using
-            _: Trace,
-          )).succeedsWith(testClients)
+          _ <- (env.cache.get(using _: Trace)).succeedsWith(testClients)
           result <- env.service.verifySecret(clientId1, None)
-        yield assertTrue(!result)
+        yield assertTrue(result.isEmpty)
       },
       test("return false for non-existent client") {
         val env = Env()
         for
-          _ <- (env.cache.get(using
-            _: Trace,
-          )).succeedsWith(testClients)
-          result <- env.service.verifySecret(nonExistentClientId, Some(testSecret))
-        yield assertTrue(!result)
+          _ <- (env.cache.get(using _: Trace)).succeedsWith(testClients)
+          result <- env.service.verifySecret(nonExistentClientId, Some(testClientSecret))
+        yield assertTrue(result.isEmpty)
       },
       test("return true for private client with correct current secret") {
         val env = Env()
         for
-          _ <- (env.cache.get(using
-            _: Trace,
-          )).succeedsWith(testClients)
-          result <- env.service.verifySecret(clientId1, Some(testSecret))
-        yield assertTrue(result)
+          _ <- (env.cache.get(using _: Trace)).succeedsWith(testClients)
+          result <- env.service.verifySecret(clientId1, Some(testClientSecret))
+        yield assertTrue(result.isDefined)
       },
       test("return true for private client with correct previous secret when current fails") {
         val env = Env()
         for
-          _ <- (env.cache.get(using
-            _: Trace,
-          )).succeedsWith(testClients)
-          result <- env.service.verifySecret(clientId2, Some(previousSecret))
-        yield assertTrue(result)
+          _ <- (env.cache.get(using _: Trace)).succeedsWith(testClients)
+          result <- env.service.verifySecret(clientId2, Some(previousClientSecret))
+        yield assertTrue(result.isDefined)
       },
       test("return false for private client with wrong secret") {
         val env = Env()
+        val wrongMac = MAC(Array.fill(32)(99.toByte)) // Wrong MAC
         for
-          _ <- (env.cache.get(using
-            _: Trace,
-          )).succeedsWith(testClients)
-          result <- env.service.verifySecret(clientId1, Some(wrongSecret))
-        yield assertTrue(!result)
+          _ <- (env.cache.get(using _: Trace)).succeedsWith(testClients)
+          result <- env.service.verifySecret(clientId1, Some(wrongClientSecret))
+        yield assertTrue(result.isEmpty)
       },
-
     )
 
   def registerTests =
     suite("register")(
       test("create private client with generated secret") {
         val env = Env()
+        val secretBytes = Array.fill(32)(11.toByte)
+        val saltBytes = Array.fill(16)(13.toByte)
+        val testMac = MAC.fromBase64Url("jzaMcn2zEvgXA7UoCh86TKMrhSKCZ84LTEG3Xx4F0jc")
+        val expectedSecret = Secret(testMac ++ saltBytes)
+        val expectedClientSecret =
+          ClientSecret(java.util.Base64.getUrlEncoder.withoutPadding().encodeToString(secretBytes))
+
         for
-          _ <- env.secureRandom.nextHex.succeedsWith("abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890")
-          _ <- env.secureRandom.nextBytes.succeedsWith(Array.fill(16)(5.toByte))
+          _ <- env.secureRandom.nextBytes.returnsZIOOnCall:
+            case 1 => ZIO.succeed(secretBytes)
+            case _ => ZIO.succeed(saltBytes)
           _ <- env.repository.create.succeedsWith(())
           result <- env.service.register(
             clientId1,
@@ -270,18 +272,15 @@ object OauthClientServiceSpec extends UnitSpecBase:
           )
           registerCalls = env.repository.create.calls
         yield assertTrue(
-          result == ClientSecret("abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"),
-          env.secureRandom.nextHex.calls.length == 1,
-          env.secureRandom.nextBytes.calls.length == 1,
+          result == ClientSecret(expectedClientSecret),
+          env.secureRandom.nextBytes.calls.length == 2, // Once for secret, once for salt
           registerCalls.length == 1,
           registerCalls.head.id == clientId1,
           registerCalls.head.clientName == "Test Client",
           registerCalls.head.redirectUris == NonEmptySet("https://example.com/callback"),
           registerCalls.head.scope == Set("read", "write"),
-          registerCalls.head.secretHash.isDefined,
-          registerCalls.head.secretSalt.isDefined,
-          registerCalls.head.previousSecretHash.isEmpty,
-          registerCalls.head.previousSecretSalt.isEmpty,
+          registerCalls.head.secret.exists(_.sameElements(testMac ++ saltBytes)),
+          registerCalls.head.previousSecret.isEmpty,
         )
       },
     )
@@ -290,21 +289,26 @@ object OauthClientServiceSpec extends UnitSpecBase:
     suite("rotateSecret")(
       test("generate new secret and update repository") {
         val env = Env()
-        val newSecretBytes = Array.fill(16)(7.toByte)
+        val secretBytes = Array.fill(32)(11.toByte)
+        val saltBytes = Array.fill(16)(13.toByte)
+        val testMac = MAC.fromBase64Url("jzaMcn2zEvgXA7UoCh86TKMrhSKCZ84LTEG3Xx4F0jc")
+        val expectedSecret = Secret(testMac ++ saltBytes)
+        val expectedClientSecret =
+          ClientSecret(java.util.Base64.getUrlEncoder.withoutPadding().encodeToString(secretBytes))
+
         for
-          _ <- env.secureRandom.nextHex.succeedsWith("newfedcba0987654321fedcba0987654321fedcba0987654321fedcba0987654321")
-          _ <- env.secureRandom.nextBytes.succeedsWith(newSecretBytes)
+          _ <- env.secureRandom.nextBytes.returnsZIOOnCall:
+              case 1 => ZIO.succeed(secretBytes)
+              case _ => ZIO.succeed(saltBytes)
+
           _ <- env.repository.rotateSecret.succeedsWith(())
+
           result <- env.service.rotateSecret(clientId1)
           rotateCalls = env.repository.rotateSecret.calls
         yield assertTrue(
-          result == ClientSecret("newfedcba0987654321fedcba0987654321fedcba0987654321fedcba0987654321"),
-          env.secureRandom.nextHex.calls.length == 1,
-          env.secureRandom.nextBytes.calls.length == 1,
-          rotateCalls.length == 1,
+          result == expectedClientSecret,
           rotateCalls.head._1 == clientId1,
-          // Note: We can't easily verify the exact hash/salt values due to Argon2 computation
-          // but we can verify the method was called with the right client ID
+          rotateCalls.head._2.sameElements(expectedSecret),
         )
       },
     )

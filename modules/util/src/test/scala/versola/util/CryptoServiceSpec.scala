@@ -1,5 +1,6 @@
 package versola.util
 
+import versola.security.{SecurityService, SecureRandom}
 import zio.*
 import zio.test.*
 
@@ -12,13 +13,13 @@ object CryptoServiceSpec extends ZIOSpecDefault:
     suite("CryptoServiceSpec")(
       encryptDecryptTests,
       errorHandlingTests,
-    ).provide(SecureRandom.live >>> ZLayer.fromFunction(CryptoService.Impl(_)))
+    ).provide(SecureRandom.live >>> ZLayer.fromFunction(SecurityService.Impl(_)))
 
   private def encryptDecryptTests =
     suite("encrypt/decrypt")(
       test("encrypt and decrypt data successfully") {
         for
-          cryptoService <- ZIO.service[CryptoService]
+          cryptoService <- ZIO.service[SecurityService]
           key = createTestKey()
           originalData = "Hello, World!".getBytes("UTF-8")
           encrypted <- cryptoService.encryptAes256(originalData, key)
@@ -30,7 +31,7 @@ object CryptoServiceSpec extends ZIOSpecDefault:
       },
       test("encrypt empty data") {
         for
-          cryptoService <- ZIO.service[CryptoService]
+          cryptoService <- ZIO.service[SecurityService]
           key = createTestKey()
           originalData = Array.empty[Byte]
           encrypted <- cryptoService.encryptAes256(originalData, key)
@@ -42,7 +43,7 @@ object CryptoServiceSpec extends ZIOSpecDefault:
       },
       test("encrypt large data") {
         for
-          cryptoService <- ZIO.service[CryptoService]
+          cryptoService <- ZIO.service[SecurityService]
           key = createTestKey()
           originalData = Array.fill(1024)('A'.toByte)
           encrypted <- cryptoService.encryptAes256(originalData, key)
@@ -53,7 +54,7 @@ object CryptoServiceSpec extends ZIOSpecDefault:
       },
       test("different encryptions of same data produce different results") {
         for
-          cryptoService <- ZIO.service[CryptoService]
+          cryptoService <- ZIO.service[SecurityService]
           key = createTestKey()
           originalData = "Same data".getBytes("UTF-8")
           encrypted1 <- cryptoService.encryptAes256(originalData, key)
@@ -72,7 +73,7 @@ object CryptoServiceSpec extends ZIOSpecDefault:
     suite("error handling")(
       test("decrypt fails with wrong key") {
         for
-          cryptoService <- ZIO.service[CryptoService]
+          cryptoService <- ZIO.service[SecurityService]
           key1 = createTestKey()
           key2 = createTestKey(seed = 42)
           originalData = "Secret data".getBytes("UTF-8")
@@ -82,7 +83,7 @@ object CryptoServiceSpec extends ZIOSpecDefault:
       },
       test("decrypt fails with corrupted data") {
         for
-          cryptoService <- ZIO.service[CryptoService]
+          cryptoService <- ZIO.service[SecurityService]
           key = createTestKey()
           originalData = "Secret data".getBytes("UTF-8")
           encrypted <- cryptoService.encryptAes256(originalData, key)
@@ -92,7 +93,7 @@ object CryptoServiceSpec extends ZIOSpecDefault:
       },
       test("decrypt fails with too short data") {
         for
-          cryptoService <- ZIO.service[CryptoService]
+          cryptoService <- ZIO.service[SecurityService]
           key = createTestKey()
           shortData = Array.fill(10)(0x42.toByte) // Less than IV + tag length
           result <- cryptoService.decryptAes256(shortData, key).exit

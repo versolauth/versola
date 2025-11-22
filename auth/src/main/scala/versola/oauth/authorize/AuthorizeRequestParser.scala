@@ -1,6 +1,6 @@
 package versola.oauth.authorize
 
-import versola.oauth.OauthClientService
+import versola.oauth.OAuthClientService
 import versola.oauth.authorize.model.{AuthorizeRequest, Error, RenderableError, ResponseTypeEntry}
 import versola.oauth.model.{ClientId, CodeChallenge, CodeChallengeMethod, ScopeToken, State}
 import zio.http.URL
@@ -15,7 +15,7 @@ trait AuthorizeRequestParser:
 object AuthorizeRequestParser:
   def live = ZLayer.fromFunction(Impl(_))
 
-  class Impl(oauthClientService: OauthClientService) extends AuthorizeRequestParser:
+  class Impl(oauthClientService: OAuthClientService) extends AuthorizeRequestParser:
 
     def parse(
         params: Map[String, Chunk[String]],

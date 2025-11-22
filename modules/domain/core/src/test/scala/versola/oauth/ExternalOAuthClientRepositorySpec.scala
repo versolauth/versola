@@ -2,7 +2,8 @@ package versola.oauth
 
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.oauth.model.{ClientId, ClientSecret, ExternalOAuthClient, OauthProviderName}
-import versola.util.{CryptoService, DatabaseSpecBase}
+import versola.security.SecurityService
+import versola.util.DatabaseSpecBase
 import zio.*
 import zio.test.*
 

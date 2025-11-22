@@ -1,6 +1,6 @@
 package versola.oauth.authorize
 
-import versola.oauth.OauthClientService
+import versola.oauth.OAuthClientService
 import versola.oauth.authorize.model.{AuthorizeRequest, Error, RenderableError, ResponseTypeEntry}
 import versola.oauth.model.{ClientId, CodeChallenge, CodeChallengeMethod, OAuthClient, ScopeToken, State}
 import versola.util.UnitSpecBase
@@ -26,14 +26,12 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
     clientName = "Test Client",
     redirectUris = NonEmptySet(validRedirectUri, "https://example.com/callback2"),
     scope = Set("read", "write", "admin"),
-    secretHash = None,
-    secretSalt = None,
-    previousSecretHash = None,
-    previousSecretSalt = None,
+    secret = None,
+    previousSecret = None,
   )
 
   class Env:
-    val oauthClientService = stub[OauthClientService]
+    val oauthClientService = stub[OAuthClientService]
     val parser = AuthorizeRequestParser.Impl(oauthClientService)
 
   def validParams(

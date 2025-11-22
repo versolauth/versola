@@ -9,8 +9,16 @@ trait ByteArrayNewType:
 
   given Schema[Type] = Schema.chunk[Byte].transform(_.toArray, Chunk.fromArray)
 
-  extension (bytes: Type)
-    def toBase64Url: String = java.util.Base64.getUrlEncoder.withoutPadding().encodeToString(bytes)
-
-  def fromBase64Url(base64: String): Type =
+  inline def fromBase64Url(base64: String): Type =
     java.util.Base64.getUrlDecoder.decode(base64)
+
+object ByteArrayNewType:
+  trait FixedLength(val ref: ByteArrayNewType, val length: Int):
+    opaque type Type <: ref.Type = ref.Type
+
+    inline def apply(bytes: Array[Byte]): Type = ref.apply(bytes)
+
+    inline def fromBase64Url(base64: String): Type =
+      ref.fromBase64Url(base64)
+
+    given Schema[Type] = ref.given_Schema_Type

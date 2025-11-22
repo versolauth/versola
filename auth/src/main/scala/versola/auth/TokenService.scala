@@ -1,14 +1,17 @@
 package versola.auth
 
 import com.nimbusds.jose.crypto.RSASSASigner
+import com.nimbusds.jose.jwk.JWKSet
 import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm, JWSHeader}
 import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 import org.apache.commons.codec.digest.Blake3
 import versola.AuthServer
 import versola.auth.model.{AccessToken, AuthId, DeviceId, IssuedTokens, RefreshToken, TokenType, UserDeviceRecord}
+import versola.security.{MAC, Secret, SecureRandom, SecurityService}
 import versola.user.model.{UserId, UserRecord, UserResponse}
-import versola.util.SecureRandom
+import versola.util.CoreConfig
 import zio.*
+import zio.json.*
 
 import java.time.Instant
 import java.util.{Base64, Date}
@@ -31,14 +34,15 @@ trait TokenService:
   ): Task[Unit]
 
 object TokenService:
-  def live = ZLayer.fromFunction(Impl(_, _, _))
+  def live = ZLayer.fromFunction(Impl(_, _, _, _, _))
 
   class Impl(
-              userDevicesRepository: UserDeviceRepository,
-              secureRandom: SecureRandom,
-              config: AuthServer.JwtConfig,
+      userDevicesRepository: UserDeviceRepository,
+      secureRandom: SecureRandom,
+      securityService: SecurityService,
+      jwtConfig: CoreConfig.JwtConfig,
+      refreshTokensConfig: CoreConfig.Security.RefreshTokens
   ) extends TokenService:
-    private val Issuer = "app.dvor"
     private val encoder = Base64.getUrlEncoder.withoutPadding()
 
     override def issueTokens(
@@ -52,14 +56,14 @@ object TokenService:
           .orElse(secureRandom.nextUUIDv7.map(DeviceId(_)))
 
         accessToken <- createAccessToken(user.id, authId, deviceId, now)
-        (refreshToken, blake3hash) <- createRefreshToken
+        (refreshToken, mac) <- createRefreshToken
 
         _ <- userDevicesRepository.overwrite(
           UserDeviceRecord(
             userId = user.id,
             deviceId = deviceId,
             authId = authId,
-            refreshTokenBlake3 = Some(blake3hash),
+            refreshTokenBlake3 = Some(RefreshToken.fromBytes(mac)),
             expireAt = Some(now.plusSeconds(TokenType.RefreshToken.ttl.toSeconds)),
           ),
         )
@@ -70,12 +74,11 @@ object TokenService:
         user = Some(UserResponse.from(user)),
       )
 
-    private def createRefreshToken: Task[(RefreshToken, String)] =
+    private def createRefreshToken: Task[(RefreshToken, MAC)] =
       for
         bytes <- secureRandom.nextBytes(64)
-        encoded <- ZIO.succeed(encoder.encode(bytes))
-        blake3hash <- ZIO.succeed(encoder.encodeToString(Blake3.hash(encoded)))
-      yield (RefreshToken(String(encoded)), blake3hash)
+        mac <- securityService.macBlake3(Secret(bytes), refreshTokensConfig.pepper)
+      yield (RefreshToken.fromBytes(bytes), mac)
 
     private def createAccessToken(
         userId: UserId,
@@ -87,9 +90,9 @@ object TokenService:
         id <- secureRandom.nextHex(16)
         claims =
           JWTClaimsSet.Builder()
-            .issuer(Issuer)
+            .issuer("???")
             .subject(userId.toString)
-            .audience(Issuer)
+            .audience("???")
             .issueTime(Date.from(now))
             .expirationTime(Date.from(now.plusSeconds(TokenType.AccessToken.ttl.toSeconds)))
             .jwtID(id)
@@ -100,10 +103,10 @@ object TokenService:
         jwt <- ZIO.attemptBlocking:
           val header = JWSHeader.Builder(JWSAlgorithm.RS256)
             .`type`(JOSEObjectType(TokenType.AccessToken.typ))
-            .keyID(config.jwkSet.getKeys.get(0).getKeyID)
+            .keyID(jwtConfig.jwkSet.getKeys.get(0).getKeyID)
             .build()
           val jwt = SignedJWT(header, claims)
-          val signer = RSASSASigner(config.privateKey)
+          val signer = RSASSASigner(jwtConfig.privateKey)
           jwt.sign(signer)
           jwt.serialize()
       yield AccessToken(jwt)
@@ -114,13 +117,11 @@ object TokenService:
     ): IO[Throwable | Unit, IssuedTokens] =
       for
         now <- Clock.instant
-        blake3Hash <- ZIO.succeed(encoder.encodeToString(Blake3.hash(refreshToken.getBytes)))
-        record <- userDevicesRepository.findByRefreshTokenHash(blake3Hash).someOrFail(())
-        _ <-
-          if (record.expireAt.forall(_.isBefore(now)) || record.deviceId != deviceId) then
-            userDevicesRepository.clearRefreshByUserIdAndDeviceId(record.userId, record.deviceId) *> ZIO.fail(())
-          else
-            ZIO.unit
+        mac <- securityService.macBlake3(Secret.fromBase64Url(refreshToken), refreshTokensConfig.pepper)
+        record <- userDevicesRepository.findByRefreshToken(mac).someOrFail(())
+
+        _ <- (userDevicesRepository.clearRefreshByUserIdAndDeviceId(record.userId, record.deviceId) *> ZIO.fail(()))
+          .when(record.expireAt.forall(_.isBefore(now)) || record.deviceId != deviceId)
 
         accessToken <- createAccessToken(
           userId = record.userId,
@@ -129,11 +130,11 @@ object TokenService:
           now = now,
         )
 
-        (newRefreshToken, newBlake3Hash) <- createRefreshToken
+        (newRefreshToken, newMAC) <- createRefreshToken
 
         _ <- userDevicesRepository.update(
-          oldBlake3Hash = blake3Hash,
-          newBlake3Hash = newBlake3Hash,
+          oldRefreshToken = mac,
+          newRefreshToken = newMAC,
           expireAt = now.plusSeconds(TokenType.RefreshToken.ttl.toSeconds),
         )
       yield IssuedTokens(

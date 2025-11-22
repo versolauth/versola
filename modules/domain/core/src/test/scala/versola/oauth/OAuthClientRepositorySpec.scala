@@ -2,7 +2,8 @@ package versola.oauth
 
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.oauth.model.*
-import versola.util.{Argon2Hash, Argon2Salt, DatabaseSpecBase}
+import versola.security.Secret
+import versola.util.DatabaseSpecBase
 import zio.*
 import zio.prelude.NonEmptySet
 import zio.test.*
@@ -15,22 +16,18 @@ trait OAuthClientRepositorySpec extends DatabaseSpecBase[OAuthClientRepositorySp
   val clientId2 = ClientId("test-client-2")
   val clientId3 = ClientId("public-client-1")
 
-  val hash1 = Argon2Hash(Array.fill(32)(1.toByte))
-  val salt1 = Argon2Salt(Array.fill(16)(1.toByte))
-  val hash2 = Argon2Hash(Array.fill(32)(2.toByte))
-  val salt2 = Argon2Salt(Array.fill(16)(2.toByte))
-  val hash3 = Argon2Hash(Array.fill(32)(3.toByte))
-  val salt3 = Argon2Salt(Array.fill(16)(3.toByte))
+  // BLAKE3 MAC (32 bytes) || salt (16 bytes) = 48 bytes
+  val macWithSalt1 = Secret(Array.fill(32)(1.toByte) ++ Array.fill(16)(1.toByte))
+  val macWithSalt2 = Secret(Array.fill(32)(2.toByte) ++ Array.fill(16)(2.toByte))
+  val macWithSalt3 = Secret(Array.fill(32)(3.toByte) ++ Array.fill(16)(3.toByte))
 
   val privateClient1 = OAuthClient(
     id = clientId1,
     clientName = "Test Private Client 1",
     redirectUris = NonEmptySet("https://example.com/callback"),
     scope = Set("read", "write"),
-    secretHash = Some(hash1),
-    secretSalt = Some(salt1),
-    previousSecretHash = None,
-    previousSecretSalt = None,
+    secret = Some(macWithSalt1),
+    previousSecret = None,
   )
 
   val privateClient2 = OAuthClient(
@@ -38,10 +35,8 @@ trait OAuthClientRepositorySpec extends DatabaseSpecBase[OAuthClientRepositorySp
     clientName = "Test Private Client 2",
     redirectUris = NonEmptySet("https://example2.com/callback", "https://example2.com/callback2"),
     scope = Set("read"),
-    secretHash = Some(hash2),
-    secretSalt = Some(salt2),
-    previousSecretHash = Some(hash1),
-    previousSecretSalt = Some(salt1),
+    secret = Some(macWithSalt2),
+    previousSecret = Some(macWithSalt1),
   )
 
   val publicClient = OAuthClient(
@@ -49,10 +44,8 @@ trait OAuthClientRepositorySpec extends DatabaseSpecBase[OAuthClientRepositorySp
     clientName = "Test Public Client",
     redirectUris = NonEmptySet("https://public.example.com/callback"),
     scope = Set("read"),
-    secretHash = None,
-    secretSalt = None,
-    previousSecretHash = None,
-    previousSecretSalt = None,
+    secret = None,
+    previousSecret = None,
   )
 
   def testCases(env: OAuthClientRepositorySpec.Env): List[Spec[OAuthClientRepositorySpec.Env & zio.Scope, Any]] =
@@ -143,27 +136,23 @@ trait OAuthClientRepositorySpec extends DatabaseSpecBase[OAuthClientRepositorySp
       test("rotate secret successfully") {
         for
           _ <- env.repository.create(privateClient1)
-          _ <- env.repository.rotateSecret(clientId1, hash3, salt3)
+          _ <- env.repository.rotateSecret(clientId1, macWithSalt3)
           clients <- env.repository.getAll
           updatedClient = clients(clientId1)
         yield assertTrue(
-          updatedClient.secretHash.map(_.toBase64Url).contains(hash3.toBase64Url),
-          updatedClient.secretSalt.map(_.toBase64Url).contains(salt3.toBase64Url),
-          updatedClient.previousSecretHash.map(_.toBase64Url).contains(hash1.toBase64Url),
-          updatedClient.previousSecretSalt.map(_.toBase64Url).contains(salt1.toBase64Url)
+          updatedClient.secret.exists(java.util.Arrays.equals(_, macWithSalt3)),
+          updatedClient.previousSecret.exists(java.util.Arrays.equals(_, macWithSalt1))
         )
       },
       test("rotate secret when previous secret already exists") {
         for
           _ <- env.repository.create(privateClient2)
-          _ <- env.repository.rotateSecret(clientId2, hash3, salt3)
+          _ <- env.repository.rotateSecret(clientId2, macWithSalt3)
           clients <- env.repository.getAll
           updatedClient = clients(clientId2)
         yield assertTrue(
-          updatedClient.secretHash.map(_.toBase64Url).contains(hash3.toBase64Url),
-          updatedClient.secretSalt.map(_.toBase64Url).contains(salt3.toBase64Url),
-          updatedClient.previousSecretHash.map(_.toBase64Url).contains(hash2.toBase64Url),
-          updatedClient.previousSecretSalt.map(_.toBase64Url).contains(salt2.toBase64Url)
+          updatedClient.secret.exists(java.util.Arrays.equals(_, macWithSalt3)),
+          updatedClient.previousSecret.exists(java.util.Arrays.equals(_, macWithSalt2))
         )
       },
     )
@@ -177,10 +166,8 @@ trait OAuthClientRepositorySpec extends DatabaseSpecBase[OAuthClientRepositorySp
           clients <- env.repository.getAll
           updatedClient = clients(clientId2)
         yield assertTrue(
-          updatedClient.secretHash.map(_.toBase64Url).contains(hash2.toBase64Url),
-          updatedClient.secretSalt.map(_.toBase64Url).contains(salt2.toBase64Url),
-          updatedClient.previousSecretHash.isEmpty,
-          updatedClient.previousSecretSalt.isEmpty
+          updatedClient.secret.exists(java.util.Arrays.equals(_, macWithSalt2)),
+          updatedClient.previousSecret.isEmpty
         )
       },
       test("delete previous secret when none exists") {
@@ -190,10 +177,8 @@ trait OAuthClientRepositorySpec extends DatabaseSpecBase[OAuthClientRepositorySp
           clients <- env.repository.getAll
           updatedClient = clients(clientId1)
         yield assertTrue(
-          updatedClient.secretHash.map(_.toBase64Url).contains(hash1.toBase64Url),
-          updatedClient.secretSalt.map(_.toBase64Url).contains(salt1.toBase64Url),
-          updatedClient.previousSecretHash.isEmpty,
-          updatedClient.previousSecretSalt.isEmpty
+          updatedClient.secret.exists(java.util.Arrays.equals(_, macWithSalt1)),
+          updatedClient.previousSecret.isEmpty
         )
       },
     )

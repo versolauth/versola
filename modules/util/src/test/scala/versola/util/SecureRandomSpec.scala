@@ -1,5 +1,6 @@
 package versola.util
 
+import versola.security.SecureRandom
 import zio.ZIO
 import zio.test.*
 
