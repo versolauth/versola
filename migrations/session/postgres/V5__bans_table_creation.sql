@@ -1,3 +1,0 @@
-CREATE TABLE bans (
-    id TEXT NOT NULL PRIMARY KEY
-);

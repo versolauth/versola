@@ -2,9 +2,10 @@ package versola.util
 
 import com.nimbusds.jose.jwk.JWKSet
 import versola.security.Secret
+import zio.Duration
+import zio.json.*
 
 import java.security.PrivateKey
-import zio.json.*
 
 case class CoreConfig(
     runtime: CoreConfig.Runtime,
@@ -22,6 +23,7 @@ object CoreConfig:
   )
 
   case class JwtConfig(
+      issuer: String,
       privateKey: PrivateKey,
       publicKey: zio.json.ast.Json.Obj,
   ):
@@ -29,14 +31,24 @@ object CoreConfig:
 
   case class Security(
       clientSecrets: CoreConfig.Security.ClientSecrets,
-      refreshTokens: CoreConfig.Security.RefreshTokens
+      refreshTokens: CoreConfig.Security.RefreshTokens,
+      authConversation: CoreConfig.Security.AuthConversation,
+      authCodes: CoreConfig.Security.AuthorizationCodes,
   )
 
   object Security:
     case class ClientSecrets(
         pepper: Secret.Bytes16,
     )
-    
+
     case class RefreshTokens(
         pepper: Secret.Bytes32,
+    )
+
+    case class AuthorizationCodes(
+        pepper: Secret.Bytes32,
+    )
+
+    case class AuthConversation(
+        ttl: Duration,
     )

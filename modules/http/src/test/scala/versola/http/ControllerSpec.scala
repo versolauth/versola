@@ -13,7 +13,7 @@ import zio.{Tag, Trace, UIO, ZIO}
 abstract class ControllerSpec[C <: Controller](val controller: C) extends UnitSpecBase, ZIOStubs:
   type Service
 
-  def testCase[Args, Result, RResult <: Result](
+  def jsonTestCase[Args, Result, RResult <: Result](
       description: String,
       request: Request,
       expectedResponse: Response,

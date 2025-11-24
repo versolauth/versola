@@ -1,18 +1,13 @@
 package versola.oauth.token.model
 
-import versola.oauth.model.{AuthorizationCode, ClientId, ClientSecret, CodeVerifier, GrantType}
+import versola.oauth.client.model.{ClientId, ClientSecret}
+import versola.oauth.model.{AuthorizationCode, CodeVerifier, GrantType}
+import zio.http.URL
 
-/**
- * OAuth 2.0 Token Request
- * RFC 6749 Section 4.1.3: https://datatracker.ietf.org/doc/html/rfc6749#section-4.1.3
- * RFC 7636 (PKCE): https://datatracker.ietf.org/doc/html/rfc7636
- */
-private[token] case class TokenRequest(
-    grantType: GrantType,
+sealed trait TokenRequest
+
+case class CodeExchangeRequest(
     code: AuthorizationCode,
-    redirectUri: String,
-    clientId: ClientId,
-    clientSecret: Option[ClientSecret],
+    redirectUri: URL,
     codeVerifier: CodeVerifier,
-)
-
+) extends TokenRequest

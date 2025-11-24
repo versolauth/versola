@@ -10,7 +10,7 @@ import zio.telemetry.opentelemetry.tracing.Tracing
 import java.io.{PrintWriter, StringWriter}
 import java.time.Instant
 
-private[http] object Observability:
+object Observability:
   val receiveHttp = LogAnnotation[ReceiveHttpLog]("http", (_, r) => r, _.toJson)
 
   private def toLog(request: Request, config: Option[HttpObservabilityConfig.Masking]): UIO[HttpRequestLog] = {
@@ -52,10 +52,12 @@ private[http] object Observability:
     for
       logResponseBody = config.fold(true)(_.logResponseBody)
       body <-
-        if logResponseBody then
-          response.body.asString.asSome.orElseSucceed(None)
-        else
+        if !logResponseBody then
           ZIO.none
+        else if response.header(Header.ContentType).exists(_.mediaType == MediaType.text.html) then
+          ZIO.some("<html>")
+        else
+          response.body.asString.asSome.orElseSucceed(None)
     yield HttpResponseLog(
       code = response.status.code,
       body = body,
@@ -86,14 +88,14 @@ private[http] object Observability:
                     ),
                   )
                   loggerName = logging.loggerName("versola.http.HttpServer")
-                  ex <- Controller.exceptions.get
-                  error = ex.map(logCause(_)).getOrElse(ZIOAspect.identity)
+                  //ex <- Controller.exceptions.get
+                  //error = ex.map(logCause(_)).getOrElse(ZIOAspect.identity)
                   _ <-
                     if response.status.isServerError then
-                      ZIO.logError("receive-http") @@ log @@ loggerName @@ error
+                      ZIO.logError("receive-http") @@ log @@ loggerName// @@ error
                     else
                       ZIO.logInfo("receive-http") @@ log @@ loggerName
-                  _ <- Controller.exceptions.set(None).when(ex.nonEmpty)
+                  //_ <- Controller.exceptions.set(None).when(ex.nonEmpty)
                 yield response
               ) @@ tracing.aspects.root(s"${request.method.name} ${request.path.encode}", SpanKind.SERVER)
 

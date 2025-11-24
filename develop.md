@@ -1,16 +1,16 @@
-## Локальная разработка
+## Local Development
 
-1. Компиляция - `compile`
-2. Компиляция тестов `Test / compile`
-3. Запуск тестов `test`. Предварительно нужно поднять postgres - `docker-compose -f services.yml up -d postgres`
-4. Поднять сервер локально
-    - `docker-compose -f services.yml up -d postgres` - БД
-    - `docker-compose -f services.yml up -d jaeger` - Jaeger (не обязательно)
-    - `sbt -Denv.path=auth/dev/env.conf "project auth; run"` - auth сервис
+1. Compilation - `compile`
+2. Test compilation - `Test / compile`
+3. Run tests - `test`. First, you need to start postgres - `docker-compose -f services.yml up -d postgres`
+4. Start server locally
+    - `docker-compose -f services.yml up -d postgres` - Database
+    - `docker-compose -f services.yml up -d jaeger` - Jaeger (optional)
+    - `sbt -Denv.path=auth/dev/env.conf "project postgres-implementation; run"` - postgres impl
 
-## Http Server
+## HTTP Server
 
-Метрики находятся на 9345 порту по пути `/metrics`
-`Liveness` проба находится на 9345 порту по пути `/liveness`
-`Readiness` проба находится на 9345 порту по пути `/readiness`
-Само приложение находится на порту 8080
+Metrics are available on port 9345 at path `/metrics`
+Liveness probe is available on port 9345 at path `/liveness`
+Readiness probe is available on port 9345 at path `/readiness`
+The application itself runs on port 8080

@@ -1,16 +1,17 @@
 package versola.oauth.authorize
 
-import versola.oauth.OAuthClientService
-import versola.oauth.authorize.model.{AuthorizeRequest, Error, RenderableError, ResponseTypeEntry}
-import versola.oauth.model.{ClientId, CodeChallenge, CodeChallengeMethod, ScopeToken, State}
-import zio.http.URL
+import versola.oauth.authorize.model.{AuthorizeRequest, Error, ResponseTypeEntry}
+import versola.oauth.client.OAuthClientService
+import versola.oauth.client.model.{ClientId, OAuthClientRecord, ScopeToken}
+import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, State}
+import zio.http.{Method, Request, URL}
 import zio.prelude.NonEmptySet
-import zio.{Chunk, IO, ZIO, ZLayer}
+import zio.{Chunk, IO, Task, ZIO, ZLayer}
 
 trait AuthorizeRequestParser:
   def parse(
-      params: Map[String, Chunk[String]],
-  ): IO[RenderableError, AuthorizeRequest]
+      request: Request,
+  ): IO[Error, AuthorizeRequest]
 
 object AuthorizeRequestParser:
   def live = ZLayer.fromFunction(Impl(_))
@@ -18,95 +19,97 @@ object AuthorizeRequestParser:
   class Impl(oauthClientService: OAuthClientService) extends AuthorizeRequestParser:
 
     def parse(
-        params: Map[String, Chunk[String]],
-    ): IO[RenderableError, AuthorizeRequest] =
+        request: Request,
+    ): IO[Error, AuthorizeRequest] =
       for
+        params <- extractRequestParams(request).orElseFail(Error.BadRequest)
         (redirectUri, redirectUriString) <- parseRedirectUri(params)
 
         clientId <- getParam(params, "client_id")
-          .someOrFail(Error.ClientIdMissing)
-          .mapBoth(RenderableError(_, redirectUri = None, state = None), ClientId(_))
+          .orElseFail(Error.BadRequest)
+          .someOrFail(Error.BadRequest)
+          .map(ClientId(_))
 
-        client <- oauthClientService.find(clientId)
-          .someOrFail(RenderableError(Error.UknownClientId(clientId), redirectUri = None, state = None))
-
-        _ <- ZIO.fail(
-          RenderableError(
-            error = Error.RedirectUriIsNotRegistered(redirectUriString),
-            redirectUri = None,
-            state = None,
-          ),
-        ).unless(client.redirectUris.contains(redirectUriString))
+        _ <- oauthClientService.findCached(clientId)
+          .someOrFail(Error.BadRequest)
+          .filterOrFail(_.redirectUris.contains(redirectUriString))(Error.BadRequest)
 
         state <- getParam(params, "state")
           .mapBoth(
-            RenderableError(_, redirectUri = Some(redirectUri), state = None),
+            _ => Error.MultipleValuesProvided(redirectUri, None, "state"),
             _.map(State(_)),
           )
 
         responseTypeEntries <- getParam(params, "response_type")
-          .someOrFail(Error.ResponseTypeMissing)
+          .orElseFail(Error.MultipleValuesProvided(redirectUri, state, "response_type"))
+          .someOrFail(Error.ResponseTypeMissing(redirectUri, state))
           .flatMap:
             case "code" =>
               ZIO.succeed(NonEmptySet(ResponseTypeEntry.Code))
             case "code id_token" =>
               ZIO.succeed(NonEmptySet(ResponseTypeEntry.Code, ResponseTypeEntry.IdToken))
             case other =>
-              ZIO.fail(Error.UnsupportedResponseType(other))
-          .mapError(RenderableError(_, redirectUri = Some(redirectUri), state = state))
+              ZIO.fail(Error.UnsupportedResponseType(redirectUri, state, other))
 
         codeChallenge <- getParam(params, "code_challenge")
-          .someOrFail(Error.CodeChallengeMissing)
+          .orElseFail(Error.MultipleValuesProvided(redirectUri, state, "code_challenge"))
+          .someOrFail(Error.CodeChallengeMissing(redirectUri, state))
           .flatMap { string =>
             ZIO.fromEither(CodeChallenge.from(string))
-              .orElseFail(Error.CodeChallengeInvalid(string))
+              .orElseFail(Error.CodeChallengeInvalid(redirectUri, state, string))
           }
-          .mapError(RenderableError(_, redirectUri = Some(redirectUri), state = state))
 
         codeChallengeMethod <- getParam(params, "code_challenge_method")
+          .orElseFail(Error.MultipleValuesProvided(redirectUri, state, "code_challenge_method"))
           .flatMap {
             case Some("S256") => ZIO.succeed(CodeChallengeMethod.S256)
             case Some("plain") | None => ZIO.succeed(CodeChallengeMethod.Plain)
-            case Some(other) => ZIO.fail(Error.CodeChallengeMethodInvalid(other))
+            case Some(other) => ZIO.fail(Error.CodeChallengeMethodInvalid(redirectUri, state, other))
           }
-          .mapError(RenderableError(_, redirectUri = Some(redirectUri), state = state))
 
         // TODO implement default scope
         scope <- getParam(params, "scope")
-          .someOrFail(Error.ScopeMissing)
-          .mapBoth(
-            RenderableError(_, redirectUri = Some(redirectUri), state = state),
-            _.split(',').toSet.map(ScopeToken(_)),
-          )
-      yield AuthorizeRequest(
-        clientId = clientId,
-        redirectUri = redirectUri,
-        scope = scope,
-        state = state,
-        codeChallenge = codeChallenge,
-        codeChallengeMethod = codeChallengeMethod,
-        responseType = responseTypeEntries,
-      )
+          .orElseFail(Error.MultipleValuesProvided(redirectUri, state, "scope"))
+          .someOrFail(Error.ScopeMissing(redirectUri, state))
+          .map(_.split(',').toSet.map(ScopeToken(_)))
 
-    private def parseRedirectUri(params: Map[String, Chunk[String]]): IO[RenderableError, (URL, String)] =
+        authorizeRequest = AuthorizeRequest(
+          clientId = clientId,
+          redirectUri = redirectUri,
+          scope = scope,
+          state = state,
+          codeChallenge = codeChallenge,
+          codeChallengeMethod = codeChallengeMethod,
+          responseType = responseTypeEntries,
+        )
+      yield authorizeRequest
+
+    private def parseRedirectUri(params: Map[String, Chunk[String]]): IO[Error, (URL, String)] =
       getParam(params, "redirect_uri")
-        .orElseFail(Error.RedirectUriMissingOrInvalid)
-        .someOrFail(Error.RedirectUriMissingOrInvalid)
+        .orElseFail(Error.BadRequest)
+        .someOrFail(Error.BadRequest)
         .flatMap { uri =>
           ZIO.fromEither(URL.decode(uri))
-            .orElseFail(Error.RedirectUriMissingOrInvalid)
-            .filterOrFail(uri => uri.isAbsolute && uri.fragment.isEmpty)(Error.RedirectUriMissingOrInvalid)
+            .orElseFail(Error.BadRequest)
+            .filterOrFail(uri => uri.isAbsolute && uri.fragment.isEmpty)(Error.BadRequest)
             .map(_ -> uri)
         }
-        .mapError(RenderableError(_, redirectUri = None, state = None))
 
-    private def getParam(params: Map[String, Chunk[String]], key: String): IO[Error, Option[String]] =
+    private def extractRequestParams(request: Request): Task[Map[String, Chunk[String]]] =
+      request.method match
+        case Method.GET =>
+          ZIO.succeed(request.url.queryParams.map)
+        case Method.POST | _ =>
+          request.body.asURLEncodedForm
+            .map(_.formData.flatMap(fd => fd.stringValue.map(v => fd.name -> Chunk(v))).toMap)
+
+    private def getParam(params: Map[String, Chunk[String]], key: String): IO[Unit, Option[String]] =
       ZIO.succeed(params.get(key))
         .flatMap {
           case Some(Chunk(one)) =>
             ZIO.some(one)
           case Some(chunk) =>
-            ZIO.fail(Error.MultipleValuesProvided(key))
+            ZIO.fail(())
           case None =>
             ZIO.none
         }

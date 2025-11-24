@@ -84,6 +84,9 @@ MAC = BLAKE3-keyed-hash(client_secret, MAC Key)
 - Modern design (2020) with simpler keyed hash construction
 - HMAC-SHA256 more standardized (FIPS 198-1), but BLAKE3 well-established
 
+
+**Potentially, HMAC-SHA256 option can be considered as alternative in the future.**
+
 **Advantages:**
 1. **Performance:** Microseconds per operation (critical for high-load endpoints)
 2. **Security:** 256-bit security level, constant-time operation (in our case)

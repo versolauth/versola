@@ -4,8 +4,9 @@ import com.nimbusds.jose.crypto.RSASSASigner
 import com.nimbusds.jose.jwk.RSAKey
 import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm, JWSHeader}
 import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
-import versola.AuthServer
-import versola.auth.model.{AccessToken, AuthId, DeviceId}
+import versola.OAuthApp
+import versola.auth.model.{AccessToken, DeviceId}
+import versola.oauth.conversation.model.AuthId
 import versola.security.Secret
 import versola.user.model.UserId
 import versola.util.{CoreConfig, EnvName}
@@ -15,6 +16,7 @@ import java.security.KeyPairGenerator
 import java.security.interfaces.{RSAPrivateKey, RSAPublicKey}
 import java.time.Instant
 import java.util.{Date, UUID}
+import zio.durationInt
 
 object TestEnvConfig:
 
@@ -51,6 +53,7 @@ object TestEnvConfig:
   val jwtConfig = CoreConfig.JwtConfig(
     privateKey = privateKey,
     publicKey = jwksJson,
+    issuer = "https://versolauth.com",
   )
 
 
@@ -64,9 +67,20 @@ object TestEnvConfig:
       refreshTokens = CoreConfig.Security.RefreshTokens(
         Secret.Bytes32(Array.fill(32)(0.toByte)),
       ),
+      authConversation = CoreConfig.Security.AuthConversation(
+        ttl = 15.minutes,
+      ),
+      authCodes = CoreConfig.Security.AuthorizationCodes(
+        Secret.Bytes32(Array.fill(32)(0.toByte)),
+      ),
     ),
     jwt = jwtConfig,
   )
+
+  def buildCoreConfig(envName: EnvName): CoreConfig =
+    coreConfig.copy(
+      runtime = coreConfig.runtime.copy(env = envName),
+    )
 
   // Create a valid test access token following the same rules as TokenService
   def createTestAccessToken(

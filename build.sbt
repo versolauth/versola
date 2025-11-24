@@ -3,15 +3,24 @@ lazy val root = project.in(file("."))
     commonSettings,
   )
   .aggregate(
-    domain,
-    `domain-postgres`,
+    `postgres-implementation`,
     http,
     util,
     auth
   )
 
+lazy val implementations = file("implementations")
+
 lazy val modules = file("modules")
-lazy val postgres = modules / "postgres"
+
+lazy val `postgres-implementation` = project.in(implementations / "postgres")
+  .settings(
+    name := "postgres-implementation",
+    commonSettings,
+    libraryDependencies ++= Dependencies.database.postgres,
+  ).dependsOn(
+    auth % CompileTest
+  )
 
 lazy val auth = project
   .in(file("auth"))
@@ -23,27 +32,8 @@ lazy val auth = project
   .dependsOn(
     http % CompileTest,
     util % CompileTest,
-    domain % CompileTest,
-    `domain-postgres` % CompileTest
   )
 
-lazy val domain = project.in(modules / "domain" / "core")
-  .settings(
-    name := "domain",
-    commonSettings,
-  ).dependsOn(
-    util % CompileTest,
-  )
-
-lazy val `domain-postgres` = project.in(modules / "domain" / "postgres")
-  .settings(
-    name := "domain-postgres",
-    commonSettings,
-    libraryDependencies ++= Dependencies.database.postgres,
-  ).dependsOn(
-    util % CompileTest,
-    domain % CompileTest,
-  )
 
 lazy val http = project.in(modules / "http")
   .settings(

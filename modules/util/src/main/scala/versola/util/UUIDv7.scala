@@ -16,9 +16,13 @@ trait UUIDv7:
   )
   
   inline def apply(id: UUID): Type = id
+  inline def wrapAll[F[_]](value: F[UUID]): F[Type] = value
 
   def fromInstant(now: Instant): Type = 
     Generators.timeBasedEpochGenerator().construct(now.toEpochMilli)
+    
+  def parse(s: String): Option[Type] = 
+    util.Try(UUIDUtil.uuid(s)).toOption
     
   extension (uuid: Type)
     def createdAt: Instant = Instant.ofEpochMilli(UUIDUtil.extractTimestamp(uuid))

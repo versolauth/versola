@@ -1,57 +1,72 @@
 package versola.oauth.token
 
-import versola.auth.model.{AccessToken, RefreshToken}
-import versola.oauth.model.{AuthorizationCode, AuthorizationCodeRecord, ClientId, ClientSecret, CodeVerifier}
-import versola.oauth.token.model.{TokenEndpointError, TokenResponse}
+import versola.auth.TokenService
+import versola.auth.model.TokenType
+import versola.oauth.client.OAuthClientService
+import versola.oauth.client.model.{ClientId, ClientSecret, ScopeToken}
+import versola.oauth.model.{AuthorizationCode, AuthorizationCodeRecord, CodeVerifier}
+import versola.oauth.token.model.{ClientIdWithSecret, CodeExchangeRequest, TokenCredentials, TokenEndpointError, TokenResponse}
+import versola.security.{Secret, SecurityService}
+import versola.user.UserRepository
 import versola.user.model.UserId
-import zio.{IO, Task, ZIO, ZLayer}
+import versola.util.CoreConfig
+import zio.{Clock, IO, Task, ZIO, ZLayer}
 
-/**
- * OAuth 2.0/2.1 Token Service
- * Handles authorization code exchange and token issuance
- */
 trait OAuthTokenService:
-  
-  /**
-   * Exchange authorization code for access token
-   * Implements OAuth 2.0 RFC 6749 Section 4.1.3 and PKCE RFC 7636
-   */
+
   def exchangeAuthorizationCode(
-      code: AuthorizationCode,
-      clientId: ClientId,
-      clientSecret: Option[ClientSecret],
-      redirectUri: String,
-      codeVerifier: CodeVerifier,
-  ): IO[TokenEndpointError, TokenResponse]
+      codeExchangeRequest: CodeExchangeRequest,
+      tokenCredentials: TokenCredentials,
+  ): IO[Throwable | TokenEndpointError, TokenResponse]
 
 object OAuthTokenService:
-  def live = ZLayer.fromFunction(() => Impl())
-  
+  def live = ZLayer.fromFunction(Impl(_, _, _, _, _, _))
+
   class Impl(
-      // Repository will be defined later - stubbed for now
-      // authorizationCodeRepository: AuthorizationCodeRepository,
-      // oauthClientService: OauthClientService,
-      // tokenService: TokenService,
+      authorizationCodeRepository: AuthorizationCodeRepository,
+      oauthClientService: OAuthClientService,
+      userRepository: UserRepository,
+      tokenService: TokenService,
+      securityService: SecurityService,
+      config: CoreConfig
   ) extends OAuthTokenService:
-    
+
     override def exchangeAuthorizationCode(
-        code: AuthorizationCode,
-        clientId: ClientId,
-        clientSecret: Option[ClientSecret],
-        redirectUri: String,
-        codeVerifier: CodeVerifier,
-    ): IO[TokenEndpointError, TokenResponse] =
-      // TODO: Implement when repository is available
-      // This is the business logic structure:
-      // 1. Validate client credentials
-      // 2. Retrieve authorization code record
-      // 3. Validate code is not expired
-      // 4. Validate code is not already used
-      // 5. Validate client_id matches
-      // 6. Validate redirect_uri matches
-      // 7. Validate PKCE code_verifier
-      // 8. Mark code as used
-      // 9. Issue access token and refresh token
-      // 10. Return token response
-      ZIO.fail(???)
+        codeExchangeRequest: CodeExchangeRequest,
+        tokenCredentials: TokenCredentials,
+    ): IO[Throwable | TokenEndpointError, TokenResponse] =
+      import codeExchangeRequest.{code, codeVerifier, redirectUri}
+      for
+        client <- tokenCredentials match
+          case ClientIdWithSecret(clientId, clientSecret) =>
+            oauthClientService.verifySecret(clientId, clientSecret)
+              .someOrFail(TokenEndpointError.InvalidClient)
+
+        codeMac <- securityService.macBlake3(Secret(code), config.security.authCodes.pepper)
+
+        codeRecord <- authorizationCodeRepository.find(codeMac)
+          .someOrFail(TokenEndpointError.InvalidGrant)
+          .filterOrFail(_.clientId == client.id)(TokenEndpointError.InvalidGrant)
+          .filterOrFail(_.redirectUri == redirectUri)(TokenEndpointError.InvalidGrant)
+          .filterOrFail(_.verify(codeVerifier))(TokenEndpointError.InvalidGrant)
+
+        _ <- authorizationCodeRepository.delete(codeMac)
+
+        accessToken = stubAccessToken
+        refreshToken = stubRefreshToken
+
+      yield TokenResponse(
+        accessToken = accessToken,
+        tokenType = TokenResponse.TokenType,
+        expiresIn = TokenType.AccessToken.ttl.toSeconds,
+        refreshToken = Some(refreshToken),
+        scope = formatScope(codeRecord.scope),
+      )
+
+    private def formatScope(scope: Set[ScopeToken]): Option[String] =
+      Option.when(scope.nonEmpty)(scope.mkString(" "))
+
+    // Stub values - will be replaced when TokenService is integrated
+    private val stubAccessToken = "stub_access_token"
+    private val stubRefreshToken = "stub_refresh_token"
 

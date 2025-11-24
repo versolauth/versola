@@ -22,7 +22,7 @@ import zio.telemetry.opentelemetry.context.ContextStorage
 import zio.telemetry.opentelemetry.tracing.Tracing
 import zio.{Exit, RIO, RLayer, Scope, TaskLayer, ZIO, ZLayer}
 
-private[http] object OpenTelemetryBuilder:
+object OpenTelemetryBuilder:
   def live(
       serviceName: String,
   ): RLayer[ContextStorage & CoreConfig, api.OpenTelemetry & Tracing] =

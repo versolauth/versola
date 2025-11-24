@@ -1,6 +1,6 @@
 package versola.admin
 
-import versola.oauth.model.{ClientId, ScopeToken}
+import versola.oauth.client.model.{ClientId, ScopeToken}
 import zio.http.codec.HttpContentCodec
 import zio.http.endpoint.Endpoint
 import zio.http.{RoutePattern, Status}

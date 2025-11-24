@@ -1,23 +1,34 @@
 package versola.oauth.model
 
+import versola.oauth.client.model.{ClientId, ScopeToken}
 import versola.user.model.UserId
+import zio.http.URL
 import zio.schema.*
 
+import java.nio.charset.StandardCharsets
+import java.security.MessageDigest
 import java.time.Instant
 
-/** 
- * Authorization code record stored in the database
- * Compliant with OAuth 2.0 (RFC 6749) and OAuth 2.1 (draft)
- */
 case class AuthorizationCodeRecord(
-    code: AuthorizationCode,
     clientId: ClientId,
     userId: UserId,
-    redirectUri: String,
+    redirectUri: URL,
     scope: Set[ScopeToken],
     codeChallenge: CodeChallenge,
     codeChallengeMethod: CodeChallengeMethod,
-    expiresAt: Instant,
-    used: Boolean = false,
-)
+):
+  def verify(verifier: CodeVerifier): Boolean =
+    codeChallengeMethod match {
+      case CodeChallengeMethod.S256 =>
+        val digest = MessageDigest.getInstance("SHA-256")
+          .digest(verifier.getBytes(StandardCharsets.UTF_8))
 
+        val encoded = java.util.Base64.getUrlEncoder
+          .withoutPadding()
+          .encodeToString(digest)
+
+        encoded == codeChallenge
+
+      case CodeChallengeMethod.Plain =>
+        verifier == codeChallenge
+    }

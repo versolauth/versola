@@ -47,8 +47,7 @@ object FileService:
           for
             exists <- ZIO.attempt(Files.exists(path))
             stream = Option.when(exists):
-              ZStream.fromFile(path.toFile)
-                .mapErrorZIO(ex => Controller.exceptions.set(Some(ex)).as(ex)).orDie
+              ZStream.fromFile(path.toFile).orDie
           yield stream
 
     override def delete(path: Path): IO[Throwable, Unit] =

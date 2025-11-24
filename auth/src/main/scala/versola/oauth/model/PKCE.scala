@@ -16,24 +16,7 @@ object CodeVerifier extends StringNewType {
   private val regex = "[a-zA-Z0-9~.\\-_]{43,128}".r
 
   def from(s: String): Either[String, CodeVerifier] =
-    Either.cond(regex.matches(s), apply(s), "not a code verifier")
-
-  extension (verifier: CodeVerifier)
-    def verify(method: CodeChallengeMethod, challenge: CodeChallenge): Boolean =
-      method match {
-        case CodeChallengeMethod.S256 =>
-          val digest = MessageDigest.getInstance("SHA-256")
-            .digest(verifier.getBytes(StandardCharsets.UTF_8))
-
-          val encoded = java.util.Base64.getUrlEncoder
-            .withoutPadding()
-            .encodeToString(digest)
-
-          encoded == challenge
-
-        case CodeChallengeMethod.Plain =>
-          verifier == challenge
-      }
+    Either.cond(regex.matches(s), apply(s), "invalid code verifier")
 
   val example: CodeVerifier = CodeVerifier(
     "CAf4vLXr-lVEB8Qwr6a9njjggfqhuAo2I-WoZTKthKYE5qIfMN_HlNvCtyw320hdt7OS1GmfyqpoBPx_EhWubLzUWnb9mq_5CYncvBpE9I6wBb3xIsuLSdxbbUUS7roJ",

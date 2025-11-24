@@ -3,24 +3,24 @@ import sbt.*
 object Versions {
   val tethys = "0.29.7"
   val zio = "2.1.22"
-  val zioConfig = "4.0.5"
+  val zioConfig = "4.0.6"
   val zioMetrics = "2.5.4"
   val zioSchema = "1.7.5"
   val zioJson = "0.7.45"
-  val zioOpenTelemetry = "3.1.11"
+  val zioOpenTelemetry = "3.1.12"
   val openTelemetry = "1.56.0"
   val openTelemetrySemConv = "1.37.0"
   val openTelemetrySemConvIncubating = "1.37.0-alpha"
-  val zioHttp = "3.5.1"
+  val zioHttp = "3.6.0"
   val zioLogging = "2.5.1"
-  val flyway = "11.17.1"
+  val flyway = "11.17.2"
   val magnum = "2.0.0-M2"
   val postgresql = "42.7.8"
   val hikari = "7.0.2"
   val libphonenumber = "9.0.19"
   val uuidGenerator = "5.1.1"
   val webauthn = "2.7.0"
-  val bouncyCastle = "1.82"
+  val bouncyCastle = "1.83"
   val scalajsDom = "2.8.0"
   val scalajsJavaTime = "2.6.0"
   val laminar = "17.2.0"
@@ -54,12 +54,14 @@ object Dependencies {
     "jakarta.mail" % "jakarta.mail-api" % Versions.javamail,
     "org.eclipse.angus" % "angus-mail" % Versions.javamail,
     "com.nimbusds" % "nimbus-jose-jwt" % "10.6",
+    "com.yubico" % "webauthn-server-core" % Versions.webauthn,
+    "com.yubico" % "webauthn-server-attestation" % Versions.webauthn,
   )
-
 
   val http = Seq(
     "dev.zio" %% "zio-http" % Versions.zioHttp,
     "dev.zio" %% "zio-http-testkit" % Versions.zioHttp % Test,
+    "dev.zio" %% "zio-http-datastar-sdk" % Versions.zioHttp,
     "dev.zio" %% "zio-opentelemetry" % Versions.zioOpenTelemetry,
     "dev.zio" %% "zio-opentelemetry-zio-logging" % Versions.zioOpenTelemetry,
     "dev.zio" %% "zio-logging" % Versions.zioLogging,
@@ -78,9 +80,6 @@ object Dependencies {
     "dev.zio" %% "zio-schema-derivation" % Versions.zioSchema,
     "dev.zio" %% "zio-schema-json" % Versions.zioSchema,
     "com.tethys-json" %% "tethys-core" % Versions.tethys,
-    "com.tethys-json" %% "tethys-jackson213" % Versions.tethys
+    "com.tethys-json" %% "tethys-jackson213" % Versions.tethys,
   )
-
-
-
 }

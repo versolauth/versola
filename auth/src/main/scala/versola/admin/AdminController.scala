@@ -2,9 +2,12 @@ package versola.admin
 
 import versola.admin.AdminControllerDescription.*
 import versola.http.Controller
+import versola.oauth.client.{OAuthClientService, OAuthScopeRepository, model}
+import versola.oauth.client.model.{Claim, ClientId, ScopeDescription, ScopeToken}
 import versola.oauth.model.*
-import versola.oauth.{OAuthScopeRepository, OAuthClientService}
+import versola.oauth.client.{OAuthClientService, OAuthScopeRepository}
 import versola.security.SecureRandom
+import versola.util.Base64Url
 import zio.*
 import zio.http.*
 import zio.http.codec.HttpContentCodec
@@ -25,7 +28,6 @@ object AdminController extends Controller:
   // Endpoints are now defined in AdminControllerDescription (shared)
 
   def routes: Routes[Env, Nothing] = frontendRoutes ++ Routes(
-
     createClientEndpoint.implement { request =>
       (for
         clientService <- ZIO.service[OAuthClientService]
@@ -35,25 +37,25 @@ object AdminController extends Controller:
           request.redirectUris,
           request.allowedScopes,
         )
-        response = CreateClientResponse(clientSecret)
+        response = CreateClientResponse(Base64Url.encode(clientSecret))
       yield response)
-        .tapError(ex => Controller.exceptions.set(Some(ex)))
+        //.tapError(ex => Controller.exceptions.set(Some(ex)))
     },
     rotateSecretEndpoint.implement { request =>
       (for
         clientService <- ZIO.service[OAuthClientService]
         newSecret <- clientService.rotateSecret(ClientId(request.clientId))
-        response = RotateSecretResponse(newSecret)
+        response = RotateSecretResponse(Base64Url.encode(newSecret))
       yield response)
-        .tapError(ex => Controller.exceptions.set(Some(ex)))
+        //.tapError(ex => Controller.exceptions.set(Some(ex)))
     },
     deleteClientsEndpoint.implement { request =>
       ZIO.serviceWithZIO[OAuthClientService](_.deleteClients(request.clientIds.toVector))
-        .tapError(ex => Controller.exceptions.set(Some(ex)))
+        //.tapError(ex => Controller.exceptions.set(Some(ex)))
     },
     deletePreviousSecretEndpoint.implement { request =>
       ZIO.serviceWithZIO[OAuthClientService](_.deletePreviousSecret(ClientId(request.clientId)))
-        .tapError(ex => Controller.exceptions.set(Some(ex)))
+        //.tapError(ex => Controller.exceptions.set(Some(ex)))
     },
 
 
@@ -80,19 +82,19 @@ object AdminController extends Controller:
     },
     createScopesEndpoint.implement { request =>
       val scopesToCreate = request.scopes.map { oneScope =>
-        val backendScope = versola.oauth.model.Scope(
+        val backendScope = model.Scope(
           claims = oneScope.claims.map(Claim(_)),
           description = ScopeDescription(oneScope.description)
         )
         (ScopeToken(oneScope.name), backendScope)
       }.toVector
       ZIO.serviceWithZIO[OAuthClientService](_.registerScopes(scopesToCreate))
-        .tapError(ex => Controller.exceptions.set(Some(ex)))
+        //.tapError(ex => Controller.exceptions.set(Some(ex)))
     },
     deleteScopesEndpoint.implement { request =>
       val scopeNames = request.scopeNames.map(ScopeToken(_)).toVector
       ZIO.serviceWithZIO[OAuthClientService](_.deleteScopes(scopeNames))
-        .tapError(ex => Controller.exceptions.set(Some(ex)))
+        //.tapError(ex => Controller.exceptions.set(Some(ex)))
     },
   )
 
