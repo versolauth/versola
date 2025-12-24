@@ -22,10 +22,8 @@ object PostgresHikariDataSource:
           }
           _ <- ZIO.when(migrate):
             ZIO.succeed:
-              Flyway.configure().locations(
-                  "filesystem:./migrations/session/postgres",
-                  "filesystem:./migrations/main/postgres",
-                )
+              Flyway.configure()
+                .locations("filesystem:./implementations/postgres/migrations")
                 .dataSource(dataSource)
                 .load()
                 .migrate()
