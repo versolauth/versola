@@ -1,7 +1,7 @@
 package versola.oauth.conversation
 
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
-import versola.security.SecureRandom
+import versola.util.SecureRandom
 import zio.{Task, UIO, ZIO, ZLayer}
 
 trait ConversationRouter:

@@ -1,12 +1,12 @@
 package versola.oauth.authorize
 
-import versola.http.Controller
 import versola.oauth.authorize.model.{AuthorizeRequest, AuthorizeResponse, Error, ResponseTypeEntry}
 import versola.oauth.client.model.ClientId
+import versola.oauth.conversation.ConversationRenderService
 import versola.oauth.conversation.model.{ConversationRecord, ConversationStep}
-import versola.oauth.forms.ConversationRenderService
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, ConversationCookie}
 import versola.util.CoreConfig
+import versola.util.http.Controller
 import zio.*
 import zio.http.*
 import zio.prelude.NonEmptySet

@@ -5,7 +5,7 @@ import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.auth.model.OtpCode
 import versola.oauth.client.model.{ClientId, ScopeToken}
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep, PrimaryCredential}
-import versola.oauth.model.{CodeChallenge, CodeChallengeMethod}
+import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, State}
 import versola.user.model.UserId
 import versola.util.postgres.BasicCodecs
 import versola.util.{Email, Phone}
@@ -30,6 +30,7 @@ class PostgresConversationRepository(xa: TransactorZIO) extends ConversationRepo
   given DbCodec[ScopeToken] = DbCodec.StringCodec.biMap(ScopeToken(_), identity[String])
   given DbCodec[CodeChallengeMethod] = DbCodec.StringCodec.biMap(CodeChallengeMethod.valueOf, _.toString)
   given DbCodec[CodeChallenge] = DbCodec.StringCodec.biMap(CodeChallenge(_), identity[String])
+  given DbCodec[State] = DbCodec.StringCodec.biMap(State(_), identity[String])
   given DbCodec[URL] = DbCodec.StringCodec.biMap(URL.decode(_).fold(throw _, identity), _.toString)
   given DbCodec[UserId] = DbCodec.UUIDCodec.biMap(UserId(_), identity[UUID])
   given DbCodec[AuthId] = DbCodec.UUIDCodec.biMap(AuthId(_), identity[UUID])
@@ -40,7 +41,7 @@ class PostgresConversationRepository(xa: TransactorZIO) extends ConversationRepo
   override def find(authId: AuthId): Task[Option[ConversationRecord]] =
     Clock.instant.flatMap: now =>
       xa.connect {
-        sql"""select client_id, redirect_uri, scope, code_challenge, code_challenge_method, user_id, credential, step, expires_at
+        sql"""select client_id, redirect_uri, scope, code_challenge, code_challenge_method, state, user_id, credential, step, expires_at
               from auth_conversations
               where id = $authId"""
           .query[(ConversationRecord, Instant)]
@@ -51,7 +52,7 @@ class PostgresConversationRepository(xa: TransactorZIO) extends ConversationRepo
 
   override def create(authId: AuthId, record: ConversationRecord, ttl: Duration): Task[Unit] =
     xa.connect {
-      sql"""insert into auth_conversations (id, client_id, redirect_uri, scope, code_challenge, code_challenge_method, user_id, credential, step, expires_at)
+      sql"""insert into auth_conversations (id, client_id, redirect_uri, scope, code_challenge, code_challenge_method, state, user_id, credential, step, expires_at)
               values (
                 $authId,
                 ${record.clientId},
@@ -59,6 +60,7 @@ class PostgresConversationRepository(xa: TransactorZIO) extends ConversationRepo
                 ${record.scope},
                 ${record.codeChallenge},
                 ${record.codeChallengeMethod},
+                ${record.state},
                 ${record.userId},
                 ${record.credential},
                 ${record.step},

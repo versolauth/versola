@@ -3,10 +3,9 @@ package versola.oauth.conversation
 import versola.auth.model.OtpCode
 import versola.oauth.client.model.{ClientId, ScopeToken}
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep, PrimaryCredential}
-import versola.oauth.model.{AuthorizationCode, CodeChallenge, CodeChallengeMethod}
+import versola.oauth.model.{AuthorizationCode, CodeChallenge, CodeChallengeMethod, State}
 import versola.oauth.session.model.SessionId
-import versola.security.SecureRandom
-import versola.util.{Email, Phone, UnitSpecBase}
+import versola.util.{Email, MAC, Phone, SecureRandom, UnitSpecBase}
 import zio.http.URL
 import zio.test.*
 
@@ -39,6 +38,7 @@ object ConversationRouterSpec extends UnitSpecBase:
     scope = scope,
     codeChallenge = codeChallenge,
     codeChallengeMethod = codeChallengeMethod,
+    state = Some(State("test-state")),
     userId = None,
     credential = None,
     step = ConversationStep.Empty(PrimaryCredential.Phone, passkey = false)
@@ -51,6 +51,7 @@ object ConversationRouterSpec extends UnitSpecBase:
     scope = scope,
     codeChallenge = codeChallenge,
     codeChallengeMethod = codeChallengeMethod,
+    state = Some(State("test-state")),
     userId = None,
     credential = Some(Left(email)),
     step = otp,
@@ -115,8 +116,8 @@ object ConversationRouterSpec extends UnitSpecBase:
         val submission = OtpSubmission(otpCode)
         val successResult = ConversationResult.StepPassed(otp)
         val testCode = AuthorizationCode(Array.fill(32)(1.toByte))
-        val testSessionId = SessionId(Array.fill(32)(2.toByte))
-        val completeResult = ConversationResult.Complete(testCode, testSessionId)
+        val testSessionId: MAC.Of[SessionId] = MAC(Array.fill(32)(2.toByte))
+        val completeResult = ConversationResult.Complete(redirectUri, Some(State("test-state")), testCode, testSessionId)
         for
           _ <- env.otpConversationService.find.succeedsWith(Some(otpRecord))
           _ <- env.otpConversationService.checkOtp.succeedsWith(successResult)

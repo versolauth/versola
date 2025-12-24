@@ -4,11 +4,11 @@ import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.oauth.client.model.{ClientId, ScopeToken}
 import versola.oauth.model.*
 import versola.oauth.token.AuthorizationCodeRepository
-import versola.security.MAC
 import versola.user.model.UserId
-import versola.util.DatabaseSpecBase
+import versola.util.{DatabaseSpecBase, MAC}
 import zio.*
 import zio.http.URL
+import zio.prelude.EqualOps
 import zio.test.*
 
 import java.util.UUID
@@ -35,7 +35,10 @@ trait AuthorizationCodeRepositorySpec extends DatabaseSpecBase[AuthorizationCode
 
   val ttl = 5.minutes
 
+  val sessionId1 = MAC(Array.fill(32)(3.toByte))
+
   val record = AuthorizationCodeRecord(
+    sessionId = sessionId1,
     clientId = clientId1,
     userId = userId1,
     redirectUri = redirectUri1,
@@ -53,7 +56,7 @@ trait AuthorizationCodeRepositorySpec extends DatabaseSpecBase[AuthorizationCode
           _ <- env.repository.delete(code1)
           foundAfterDelete <- env.repository.find(code1)
         yield assertTrue(
-          found.contains(record),
+          found.exists(_ === record),
           foundAfterDelete.isEmpty,
         )
       },

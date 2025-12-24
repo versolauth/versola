@@ -1,23 +1,23 @@
 package versola.oauth.token
 
-import versola.auth.TokenService
-import versola.auth.model.TokenType
+import versola.auth.model.{AccessToken, RefreshToken}
 import versola.oauth.client.OAuthClientService
-import versola.oauth.client.model.{ClientId, ClientSecret, ScopeToken}
-import versola.oauth.model.{AuthorizationCode, AuthorizationCodeRecord, CodeVerifier}
-import versola.oauth.token.model.{ClientIdWithSecret, CodeExchangeRequest, TokenCredentials, TokenEndpointError, TokenResponse}
-import versola.security.{Secret, SecurityService}
-import versola.user.UserRepository
-import versola.user.model.UserId
-import versola.util.CoreConfig
-import zio.{Clock, IO, Task, ZIO, ZLayer}
+import versola.oauth.client.model.{AccessTokenType, OAuthClientRecord, ScopeToken}
+import versola.oauth.model.AuthorizationCodeRecord
+import versola.oauth.session.model.{TokenRecord, WithTtl}
+import versola.oauth.session.{SessionRepository, TokenRepository}
+import versola.oauth.token.model.{CodeExchangeRequest, IssuedTokens, TokenEndpointError}
+import versola.util.http.{ClientCredentials, ClientIdWithSecret}
+import versola.util.{AuthPropertyGenerator, CoreConfig, MAC, Secret, SecurityService}
+import zio.prelude.These
+import zio.{Duration, IO, Task, ZIO, ZLayer}
 
 trait OAuthTokenService:
 
   def exchangeAuthorizationCode(
       codeExchangeRequest: CodeExchangeRequest,
-      tokenCredentials: TokenCredentials,
-  ): IO[Throwable | TokenEndpointError, TokenResponse]
+      tokenCredentials: ClientCredentials,
+  ): IO[Throwable | TokenEndpointError, IssuedTokens]
 
 object OAuthTokenService:
   def live = ZLayer.fromFunction(Impl(_, _, _, _, _, _))
@@ -25,16 +25,16 @@ object OAuthTokenService:
   class Impl(
       authorizationCodeRepository: AuthorizationCodeRepository,
       oauthClientService: OAuthClientService,
-      userRepository: UserRepository,
-      tokenService: TokenService,
+      tokenRepository: TokenRepository,
       securityService: SecurityService,
-      config: CoreConfig
+      authPropertyGenerator: AuthPropertyGenerator,
+      config: CoreConfig,
   ) extends OAuthTokenService:
 
     override def exchangeAuthorizationCode(
         codeExchangeRequest: CodeExchangeRequest,
-        tokenCredentials: TokenCredentials,
-    ): IO[Throwable | TokenEndpointError, TokenResponse] =
+        tokenCredentials: ClientCredentials,
+    ): IO[Throwable | TokenEndpointError, IssuedTokens] =
       import codeExchangeRequest.{code, codeVerifier, redirectUri}
       for
         client <- tokenCredentials match
@@ -51,22 +51,51 @@ object OAuthTokenService:
           .filterOrFail(_.verify(codeVerifier))(TokenEndpointError.InvalidGrant)
 
         _ <- authorizationCodeRepository.delete(codeMac)
+        issuedTokens <- issueTokens(client, codeRecord)
+      yield issuedTokens
 
-        accessToken = stubAccessToken
-        refreshToken = stubRefreshToken
+    private def issueTokens(
+        client: OAuthClientRecord,
+        codeRecord: AuthorizationCodeRecord,
+    ): Task[IssuedTokens] =
+      for
+        accessToken <- authPropertyGenerator.nextAccessToken
+        tokenProperties <-
+          if client.accessTokenType == AccessTokenType.Jwt then
+            ZIO.right(IssuedTokens.JwtProperties(codeRecord.userId))
+          else
+            securityService.macBlake3(Secret(accessToken), config.security.accessTokens.pepper).asLeft
 
-      yield TokenResponse(
+        hasOfflineAccess = codeRecord.scope.contains(ScopeToken.OfflineAccess)
+
+        refreshTokenWithMac <- ZIO.when(hasOfflineAccess)(
+          for
+            token <- authPropertyGenerator.nextRefreshToken
+            mac <- securityService.macBlake3(Secret(token), config.security.refreshTokens.pepper)
+          yield (token, mac),
+        )
+
+        tokens = These.fromOptions(
+          tokenProperties.left.toOption.map(WithTtl(_, client.accessTokenTtl)),
+          refreshTokenWithMac.map(_._2).map(WithTtl(_, config.security.refreshTokens.ttl)),
+        )
+
+        tokenRecord = TokenRecord(
+          sessionId = codeRecord.sessionId,
+          userId = codeRecord.userId,
+          clientId = codeRecord.clientId,
+          scope = codeRecord.scope,
+          issuedAt = ???,
+          expiresAt = ???
+        )
+
+        _ <- ZIO.fromOption(tokens)
+          .flatMap(tokenRepository.create(_, tokenRecord))
+          .orElseSucceed(())
+      yield IssuedTokens(
         accessToken = accessToken,
-        tokenType = TokenResponse.TokenType,
-        expiresIn = TokenType.AccessToken.ttl.toSeconds,
-        refreshToken = Some(refreshToken),
-        scope = formatScope(codeRecord.scope),
+        accessTokenTtl = client.accessTokenTtl,
+        accessTokenJwtProperties = tokenProperties.toOption,
+        refreshToken = refreshTokenWithMac.map(_._1),
+        scope = codeRecord.scope,
       )
-
-    private def formatScope(scope: Set[ScopeToken]): Option[String] =
-      Option.when(scope.nonEmpty)(scope.mkString(" "))
-
-    // Stub values - will be replaced when TokenService is integrated
-    private val stubAccessToken = "stub_access_token"
-    private val stubRefreshToken = "stub_refresh_token"
-

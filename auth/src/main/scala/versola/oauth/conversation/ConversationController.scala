@@ -1,10 +1,9 @@
 package versola.oauth.conversation
 
 import versola.auth.model.OtpCode
-import versola.http.Controller
 import versola.oauth.conversation.model.{AuthId, ConversationStep, Error}
-import versola.oauth.forms.ConversationRenderService
 import versola.oauth.model.ConversationCookie
+import versola.util.http.Controller
 import versola.util.{Email, FormDecoder, Phone}
 import zio.*
 import zio.http.*
@@ -79,7 +78,7 @@ object ConversationController extends Controller:
   ): IO[Error, AuthId] =
     request.cookie(ConversationCookie.name) match
       case Some(cookie) =>
-        ZIO.fromEither(AuthId.parse(cookie.content).toRight(Error.BadRequest))
+        ZIO.fromEither(AuthId.parse(cookie.content).left.map(_ => Error.BadRequest))
       case None =>
         ZIO.fail(Error.BadRequest)
 

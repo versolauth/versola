@@ -1,8 +1,7 @@
 package versola.oauth.client
 
-import versola.oauth.client.model.{ClientId, ClientSecret, OAuthClientRecord, ScopeRecord, ScopeToken}
-import versola.security.{Secret, SecureRandom, SecurityService}
-import versola.util.{CoreConfig, ReloadingCache}
+import versola.oauth.client.model.{AccessTokenType, ClientId, ClientSecret, OAuthClientRecord, ScopeRecord, ScopeToken}
+import versola.util.{CoreConfig, ReloadingCache, Secret, SecureRandom, SecurityService}
 import zio.*
 import zio.prelude.NonEmptySet
 
@@ -17,7 +16,7 @@ trait OAuthClientService:
   def findCached(id: ClientId): UIO[Option[OAuthClientRecord]]
 
   /** Validate a client secret against both active and previous secrets */
-  def verifySecret(id: ClientId, providedSecret: Option[Secret]): Task[Option[OAuthClientRecord]]
+  def verifySecret(id: ClientId, providedSecret: Option[Secret]): UIO[Option[OAuthClientRecord]]
 
   /** Create a private client with a generated secret and return both the client and the plain secret */
   def register(
@@ -85,6 +84,8 @@ object OAuthClientService:
           scope = scope,
           secret = Some(macWithSalt),
           previousSecret = None,
+          accessTokenTtl = 10.minutes,
+          accessTokenType = AccessTokenType.Opaque,
         )
         _ <- repository.create(client)
       yield secret
@@ -105,7 +106,7 @@ object OAuthClientService:
         case None =>
           ZIO.succeed(false)
 
-    override def verifySecret(clientId: ClientId, secret: Option[Secret]): Task[Option[OAuthClientRecord]] =
+    override def verifySecret(clientId: ClientId, secret: Option[Secret]): UIO[Option[OAuthClientRecord]] =
       findCached(clientId).some.foldZIO(
         _ => ZIO.none,
         client =>
@@ -117,6 +118,7 @@ object OAuthClientService:
                   case true => ZIO.succeed(true)
                 }
                 .map(Option.when(_)(client))
+                .orElseSucceed(None)
 
             case None if client.isPublic =>
               ZIO.some(client)

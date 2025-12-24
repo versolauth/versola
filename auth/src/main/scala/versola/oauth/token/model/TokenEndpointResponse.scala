@@ -15,6 +15,3 @@ case class TokenResponse(
     scope: Option[String],
 ) derives Schema, JsonCodec
 
-object TokenResponse:
-  val TokenType = "Bearer"
-

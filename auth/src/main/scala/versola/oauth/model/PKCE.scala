@@ -1,11 +1,12 @@
 package versola.oauth.model
 
 import versola.util.StringNewType
+import zio.prelude.Equal
 
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 
-enum CodeChallengeMethod:
+enum CodeChallengeMethod derives Equal:
   case S256, Plain
 
 type CodeVerifier = CodeVerifier.Type
@@ -32,3 +33,5 @@ object CodeChallenge:
 
   def from(s: String): Either[String, CodeChallenge] =
     Either.cond(regex.matches(s), apply(s), "not a code challenge")
+
+  given Equal[Type] = _ == _

@@ -8,9 +8,8 @@ import versola.oauth.model.{AuthorizationCode, AuthorizationCodeRecord}
 import versola.oauth.session.SessionRepository
 import versola.oauth.session.model.SessionRecord
 import versola.oauth.token.AuthorizationCodeRepository
-import versola.security.{Secret, SecureRandom, SecurityService}
 import versola.user.UserRepository
-import versola.util.{AuthPropertyGenerator, Base64, CoreConfig, Email, Phone}
+import versola.util.{AuthPropertyGenerator, Base64, CoreConfig, Email, Phone, Secret, SecureRandom, SecurityService}
 import zio.*
 
 trait ConversationService:
@@ -39,14 +38,14 @@ object ConversationService:
     ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _))
 
   class Impl(
-      otpService: OtpService,
-      conversationRepository: ConversationRepository,
-      userRepository: UserRepository,
-      authorizationCodeRepository: AuthorizationCodeRepository,
-      sessionRepository: SessionRepository,
-      authPropertyGenerator: AuthPropertyGenerator,
-      securityService: SecurityService,
-      config: CoreConfig,
+              otpService: OtpService,
+              conversationRepository: ConversationRepository,
+              userRepository: UserRepository,
+              authorizationCodeRepository: AuthorizationCodeRepository,
+              sessionRepository: SessionRepository,
+              authPropertyGenerator: AuthPropertyGenerator,
+              securityService: SecurityService,
+              config: CoreConfig,
   ) extends ConversationService:
     export conversationRepository.find
 
@@ -99,7 +98,9 @@ object ConversationService:
         code <- authPropertyGenerator.nextAuthorizationCode
         userId = conversation.userId.get // TODO handle illegal state
         sessionId <- authPropertyGenerator.nextSessionId
+        sessionIdMac <- securityService.macBlake3(Secret(sessionId), config.security.sessions.pepper)
         record = AuthorizationCodeRecord(
+          sessionId = sessionIdMac,
           clientId = conversation.clientId,
           userId = userId,
           redirectUri = conversation.redirectUri,
@@ -109,10 +110,11 @@ object ConversationService:
         )
         session = SessionRecord(
           userId = userId,
+          clientId = conversation.clientId,
         )
         codeMac <- securityService.macBlake3(Secret(code), config.security.authCodes.pepper)
 
         _ <- authorizationCodeRepository.create(codeMac, record, 1.minute)
-        _ <- sessionRepository.create(sessionId, session, 1.day)
+        _ <- sessionRepository.create(sessionIdMac, session, 1.day)
         _ <- conversationRepository.delete(authId)
-      yield ConversationResult.Complete(code, sessionId)
+      yield ConversationResult.Complete(conversation.redirectUri, conversation.state, code, sessionIdMac)

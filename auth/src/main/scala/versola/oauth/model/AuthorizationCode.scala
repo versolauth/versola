@@ -1,7 +1,6 @@
 package versola.oauth.model
 
-import versola.security.Secret
-import versola.util.{ByteArrayNewType, StringNewType}
+import versola.util.{ByteArrayNewType, Secret, StringNewType}
 
 type AuthorizationCode = AuthorizationCode.Type
 

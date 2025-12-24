@@ -4,5 +4,7 @@ CREATE TABLE oauth_clients (
     redirect_uris TEXT[] NOT NULL,
     scope TEXT[] NOT NULL,
     secret BYTEA,
-    previous_secret BYTEA
+    previous_secret BYTEA,
+    access_token_ttl BIGINT NOT NULL,
+    access_token_type TEXT NOT NULL
 );

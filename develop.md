@@ -6,7 +6,7 @@
 4. Start server locally
     - `docker-compose -f services.yml up -d postgres` - Database
     - `docker-compose -f services.yml up -d jaeger` - Jaeger (optional)
-    - `sbt -Denv.path=auth/dev/env.conf "project postgres-implementation; run"` - postgres impl
+    - `sbt -Denv.path=auth/dev/env.conf "project postgres-impl; run"` - postgres impl
 
 ## HTTP Server
 

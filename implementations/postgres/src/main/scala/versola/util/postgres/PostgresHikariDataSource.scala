@@ -25,6 +25,7 @@ object PostgresHikariDataSource:
               Flyway.configure()
                 .locations("filesystem:./implementations/postgres/migrations")
                 .dataSource(dataSource)
+                .outOfOrder(true)
                 .load()
                 .migrate()
         yield dataSource,

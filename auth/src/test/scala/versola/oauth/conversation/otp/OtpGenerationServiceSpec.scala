@@ -2,8 +2,7 @@ package versola.oauth.conversation.otp
 
 import versola.auth.TestEnvConfig
 import versola.auth.model.OtpCode
-import versola.security.{Secret, SecureRandom}
-import versola.util.{CoreConfig, EnvName, UnitSpecBase}
+import versola.util.{CoreConfig, EnvName, Secret, SecureRandom, UnitSpecBase}
 import zio.*
 import zio.test.*
 import zio.json.ast

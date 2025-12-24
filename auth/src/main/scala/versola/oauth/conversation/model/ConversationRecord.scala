@@ -1,7 +1,7 @@
 package versola.oauth.conversation.model
 
 import versola.oauth.client.model.{ClientId, ScopeToken}
-import versola.oauth.model.{CodeChallenge, CodeChallengeMethod}
+import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, State}
 import versola.user.model.UserId
 import versola.util.{Email, Phone}
 import zio.http.URL
@@ -12,6 +12,7 @@ case class ConversationRecord(
     scope: Set[ScopeToken],
     codeChallenge: CodeChallenge,
     codeChallengeMethod: CodeChallengeMethod,
+    state: Option[State],
     userId: Option[UserId],
     credential: Option[Either[Email, Phone]],
     step: ConversationStep,

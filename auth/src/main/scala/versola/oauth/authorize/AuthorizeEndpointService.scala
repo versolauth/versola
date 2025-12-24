@@ -3,8 +3,7 @@ package versola.oauth.authorize
 import versola.oauth.authorize.model.{AuthorizeRequest, AuthorizeResponse}
 import versola.oauth.conversation.ConversationRepository
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep, PrimaryCredential}
-import versola.security.SecureRandom
-import versola.util.CoreConfig
+import versola.util.{CoreConfig, SecureRandom}
 import zio.{Task, ZLayer}
 
 trait AuthorizeEndpointService:
@@ -32,6 +31,7 @@ object AuthorizeEndpointService:
           scope = request.scope,
           codeChallenge = request.codeChallenge,
           codeChallengeMethod = request.codeChallengeMethod,
+          state = request.state,
           userId = None,
           credential = None,
           step = ConversationStep.Empty(PrimaryCredential.Phone, passkey = false),

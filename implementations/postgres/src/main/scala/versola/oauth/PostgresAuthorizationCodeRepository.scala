@@ -5,8 +5,8 @@ import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.oauth.client.model.{ClientId, ScopeToken}
 import versola.oauth.model.*
 import versola.oauth.token.AuthorizationCodeRepository
-import versola.security.{MAC, Secret}
 import versola.user.model.UserId
+import versola.util.{MAC, Secret}
 import versola.util.postgres.BasicCodecs
 import zio.http.URL
 import zio.{Clock, Duration, Task}
@@ -28,12 +28,12 @@ class PostgresAuthorizationCodeRepository(
   private given DbCodec[URL] = DbCodec.StringCodec.biMap(URL.decode(_).fold(throw _, identity), _.toString)
   private given DbCodec[AuthorizationCodeRecord] = DbCodec.derived[AuthorizationCodeRecord]
 
-  override def find(code: MAC): Task[Option[AuthorizationCodeRecord]] =
+  override def find(code: MAC.Of[AuthorizationCode]): Task[Option[AuthorizationCodeRecord]] =
     for
       now <- Clock.instant
       result <- xa.connect:
         sql"""
-          SELECT client_id, user_id, redirect_uri, scope, code_challenge, code_challenge_method, expires_at
+          SELECT session_id, client_id, user_id, redirect_uri, scope, code_challenge, code_challenge_method, expires_at
           FROM authorization_codes
           WHERE code = $code
         """.query[(AuthorizationCodeRecord, Instant)].run().headOption
@@ -41,16 +41,17 @@ class PostgresAuthorizationCodeRepository(
     yield result
 
   override def create(
-      code: MAC,
+      code: MAC.Of[AuthorizationCode],
       record: AuthorizationCodeRecord,
       ttl: Duration,
   ): Task[Unit] =
     Clock.instant.flatMap: now =>
       xa.connect:
         sql"""
-          INSERT INTO authorization_codes (code, client_id, user_id, redirect_uri, scope, code_challenge, code_challenge_method, expires_at)
+          INSERT INTO authorization_codes (code, session_id, client_id, user_id, redirect_uri, scope, code_challenge, code_challenge_method, expires_at)
           VALUES (
             $code,
+            ${record.sessionId},
             ${record.clientId},
             ${record.userId},
             ${record.redirectUri},
@@ -62,7 +63,7 @@ class PostgresAuthorizationCodeRepository(
         """.update.run()
     .unit
 
-  override def delete(code: MAC): Task[Unit] =
+  override def delete(code: MAC.Of[AuthorizationCode]): Task[Unit] =
     xa.connect:
       sql"""DELETE FROM authorization_codes WHERE code = $code""".update.run()
     .unit

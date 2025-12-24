@@ -7,18 +7,16 @@ import com.typesafe.config.ConfigFactory
 import io.opentelemetry.api
 import versola.admin.AdminController
 import versola.auth.*
-import versola.http.*
 import versola.oauth.authorize.{AuthorizeEndpointController, AuthorizeEndpointService, AuthorizeRequestParser}
 import versola.oauth.client.{OAuthClientRepository, OAuthClientService, OAuthScopeRepository}
 import versola.oauth.client.model.{ClientId, OAuthClientRecord, Scope, ScopeToken}
 import versola.oauth.conversation.otp.{EmailOtpProvider, OtpDecisionService, OtpGenerationService, OtpService}
-import versola.oauth.conversation.{ConversationController, ConversationRepository, ConversationRouter, ConversationService}
-import versola.oauth.forms.ConversationRenderService
+import versola.oauth.conversation.{ConversationController, ConversationRenderService, ConversationRepository, ConversationRouter, ConversationService}
 import versola.oauth.session.SessionRepository
 import versola.oauth.token.AuthorizationCodeRepository
-import versola.security.{Secret, SecureRandom, SecurityService}
 import versola.user.*
 import versola.util.*
+import versola.util.http.{HttpObservabilityConfig, MetricsService, Observability, OpenTelemetryBuilder, ReadinessService}
 import zio.*
 import zio.config.magnolia.{DeriveConfig, deriveConfig}
 import zio.config.typesafe.*
@@ -43,7 +41,7 @@ abstract class OAuthApp extends ZIOApp:
   override type Environment =
     ContextStorage & CoreConfig & ConfigProvider & LogFormats & api.OpenTelemetry & Tracing
 
-  import HttpObservabilityConfig.Masking
+  import versola.util.http.HttpObservabilityConfig.Masking
 
   val config = OAuthApp.Config.default
     .withPort(8080)
@@ -111,7 +109,6 @@ abstract class OAuthApp extends ZIOApp:
         ZLayer.fromFunction(OtpService.Impl(_, _, _)),
         ZLayer.fromFunction(OtpGenerationService.Impl(_, _)),
         ZLayer.succeed(OtpDecisionService.Impl()),
-        TokenService.live,
         SecureRandom.live,
         SecurityService.live,
         // SmsClient.live,

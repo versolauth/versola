@@ -5,6 +5,7 @@ CREATE TABLE auth_conversations (
     scope TEXT[] NOT NULL,
     code_challenge TEXT NOT NULL,
     code_challenge_method TEXT NOT NULL,
+    state TEXT,
     user_id UUID,
     credential TEXT,
     step JSON NOT NULL,

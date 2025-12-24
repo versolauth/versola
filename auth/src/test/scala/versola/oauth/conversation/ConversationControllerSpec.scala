@@ -3,10 +3,9 @@ package versola.oauth.conversation
 import org.scalamock.stubs.Stub
 import versola.auth.TestEnvConfig
 import versola.auth.model.OtpCode
-import versola.http.{ControllerSpec, NoopTracing}
 import versola.oauth.conversation.model.{AuthId, ConversationStep}
-import versola.oauth.forms.ConversationRenderService
 import versola.oauth.model.ConversationCookie
+import versola.util.http.{ControllerSpec, NoopTracing}
 import versola.util.{Email, Phone, UnitSpecBase}
 import zio.*
 import zio.http.*

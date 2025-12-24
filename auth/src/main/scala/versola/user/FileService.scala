@@ -1,6 +1,6 @@
 package versola.user
 
-import versola.http.Controller
+import versola.util.http.Controller
 import zio.stream.{UStream, ZStream}
 import zio.{IO, ZIO, ZLayer}
 

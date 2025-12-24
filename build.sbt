@@ -3,19 +3,15 @@ lazy val root = project.in(file("."))
     commonSettings,
   )
   .aggregate(
-    `postgres-implementation`,
-    http,
-    util,
+    `postgres-impl`,
     auth
   )
 
 lazy val implementations = file("implementations")
 
-lazy val modules = file("modules")
-
-lazy val `postgres-implementation` = project.in(implementations / "postgres")
+lazy val `postgres-impl` = project.in(implementations / "postgres")
   .settings(
-    name := "postgres-implementation",
+    name := "postgres-impl",
     commonSettings,
     libraryDependencies ++= Dependencies.database.postgres,
   ).dependsOn(
@@ -27,28 +23,8 @@ lazy val auth = project
   .settings(
     name := "auth",
     commonSettings,
-    libraryDependencies ++= Dependencies.core
-  )
-  .dependsOn(
-    http % CompileTest,
-    util % CompileTest,
-  )
-
-
-lazy val http = project.in(modules / "http")
-  .settings(
-    name := "http",
-    commonSettings,
-    libraryDependencies ++= Dependencies.http,
-  ).dependsOn(
-    util % CompileTest,
-  )
-
-lazy val util = project.in(modules / "util")
-  .settings(
-    name := "util",
-    commonSettings,
     libraryDependencies ++= Dependencies.core,
+    libraryDependencies ++= Dependencies.http
   )
 
 lazy val commonSettings =

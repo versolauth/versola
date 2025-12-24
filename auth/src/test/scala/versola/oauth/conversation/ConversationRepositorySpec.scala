@@ -4,7 +4,7 @@ import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.auth.model.OtpCode
 import versola.oauth.client.model.{ClientId, ScopeToken}
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep, PrimaryCredential}
-import versola.oauth.model.{CodeChallenge, CodeChallengeMethod}
+import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, State}
 import versola.user.model.UserId
 import versola.util.{DatabaseSpecBase, Email, Phone}
 import zio.*
@@ -48,6 +48,7 @@ trait ConversationRepositorySpec extends DatabaseSpecBase[ConversationRepository
     scope = scope,
     codeChallenge = codeChallenge,
     codeChallengeMethod = codeChallengeMethod,
+    state = Some(State("test-state")),
     userId = Some(userId1),
     credential = Some(Left(email)),
     step = realOtp,
@@ -65,6 +66,7 @@ trait ConversationRepositorySpec extends DatabaseSpecBase[ConversationRepository
     scope = scope,
     codeChallenge = codeChallenge,
     codeChallengeMethod = codeChallengeMethod,
+    state = None,
     userId = None,
     credential = None,
     step = ConversationStep.Empty(PrimaryCredential.Phone, passkey = false),

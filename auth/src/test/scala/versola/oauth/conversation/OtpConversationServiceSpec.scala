@@ -9,10 +9,9 @@ import versola.oauth.conversation.otp.model.SubmitOtpResult
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod}
 import versola.oauth.session.SessionRepository
 import versola.oauth.token.AuthorizationCodeRepository
-import versola.security.{Secret, SecureRandom, SecurityService}
 import versola.user.UserRepository
 import versola.user.model.{UserId, UserRecord}
-import versola.util.{AuthPropertyGenerator, CoreConfig, Email, EnvName, UnitSpecBase}
+import versola.util.{AuthPropertyGenerator, CoreConfig, Email, EnvName, Secret, SecureRandom, SecurityService, UnitSpecBase}
 import zio.http.URL
 import zio.json.ast
 import zio.test.*
@@ -65,6 +64,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
     scope = scope,
     codeChallenge = codeChallenge,
     codeChallengeMethod = codeChallengeMethod,
+    state = None,
     userId = None,
     credential = None,
     step = ConversationStep.Empty(PrimaryCredential.Phone, passkey = false),
@@ -105,6 +105,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           scope = scope,
           codeChallenge = codeChallenge,
           codeChallengeMethod = codeChallengeMethod,
+          state = None,
           userId = Some(userId),
           credential = Some(Left(email)),
           step = otp,
@@ -123,6 +124,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           scope = scope,
           codeChallenge = codeChallenge,
           codeChallengeMethod = codeChallengeMethod,
+          state = None,
           userId = Some(userId),
           credential = Some(Left(email)),
           step = otp,

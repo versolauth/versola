@@ -1,8 +1,8 @@
 package versola.auth.model
 
-import versola.util.StringNewType
+import versola.util.{ByteArrayNewType, StringNewType}
 
 type AccessToken = AccessToken.Type
 
-object AccessToken extends StringNewType
+object AccessToken extends ByteArrayNewType
 

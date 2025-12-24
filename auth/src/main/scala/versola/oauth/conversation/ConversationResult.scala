@@ -1,9 +1,10 @@
 package versola.oauth.conversation
 
 import versola.oauth.conversation.model.{AuthId, ConversationStep}
-import versola.oauth.model.AuthorizationCode
+import versola.oauth.model.{AuthorizationCode, State}
 import versola.oauth.session.model.SessionId
-import versola.util.Base64Url
+import versola.util.{Base64Url, MAC}
+import zio.http.URL
 
 sealed trait ConversationResult
 
@@ -20,8 +21,10 @@ object ConversationResult:
   case class RenderStep(step: ConversationStep) extends Render
 
   case class Complete(
+      redirectUri: URL,
+      state: Option[State],
       code: AuthorizationCode,
-      sessionId: SessionId
+      sessionId: MAC.Of[SessionId]
   ) extends Render
 
   case class StepPassed(step: ConversationStep) extends Decision

@@ -2,8 +2,8 @@ package versola.oauth.client
 
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.oauth.client.model.*
-import versola.security.Secret
-import versola.util.DatabaseSpecBase
+import versola.util.{DatabaseSpecBase, Secret}
+import zio.durationInt
 import zio.prelude.{EqualOps, NonEmptySet}
 import zio.test.*
 
@@ -27,6 +27,8 @@ trait OAuthClientRepositorySpec extends DatabaseSpecBase[OAuthClientRepositorySp
     scope = Set("read", "write"),
     secret = Some(macWithSalt1),
     previousSecret = None,
+    accessTokenTtl = 10.minutes,
+    accessTokenType = AccessTokenType.Opaque,
   )
 
   val privateClient2 = OAuthClientRecord(
@@ -36,6 +38,8 @@ trait OAuthClientRepositorySpec extends DatabaseSpecBase[OAuthClientRepositorySp
     scope = Set("read"),
     secret = Some(macWithSalt2),
     previousSecret = Some(macWithSalt1),
+    accessTokenTtl = 10.minutes,
+    accessTokenType = AccessTokenType.Opaque,
   )
 
   val publicClient = OAuthClientRecord(
@@ -45,6 +49,8 @@ trait OAuthClientRepositorySpec extends DatabaseSpecBase[OAuthClientRepositorySp
     scope = Set("read"),
     secret = None,
     previousSecret = None,
+    accessTokenTtl = 10.minutes,
+    accessTokenType = AccessTokenType.Opaque,
   )
 
   def testCases(env: OAuthClientRepositorySpec.Env): List[Spec[OAuthClientRepositorySpec.Env & zio.Scope, Any]] =

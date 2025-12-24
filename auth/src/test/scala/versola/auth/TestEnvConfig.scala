@@ -7,9 +7,8 @@ import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 import versola.OAuthApp
 import versola.auth.model.{AccessToken, DeviceId}
 import versola.oauth.conversation.model.AuthId
-import versola.security.Secret
 import versola.user.model.UserId
-import versola.util.{CoreConfig, EnvName}
+import versola.util.{CoreConfig, EnvName, Secret}
 import zio.json.ast.Json
 
 import java.security.KeyPairGenerator
@@ -61,17 +60,27 @@ object TestEnvConfig:
     runtime = CoreConfig.Runtime(EnvName.Test("test")),
     telemetry = None,
     security = CoreConfig.Security(
+      accessTokens = CoreConfig.Security.AccessTokens(
+        pepper = Secret.Bytes32(Array.fill(32)(0.toByte)),
+      ),
       clientSecrets = CoreConfig.Security.ClientSecrets(
         Secret.Bytes16(Array.fill(16)(0.toByte)),
       ),
       refreshTokens = CoreConfig.Security.RefreshTokens(
-        Secret.Bytes32(Array.fill(32)(0.toByte)),
+        pepper = Secret.Bytes32(Array.fill(32)(0.toByte)),
+        ttl = 90.days,
       ),
       authConversation = CoreConfig.Security.AuthConversation(
         ttl = 15.minutes,
       ),
       authCodes = CoreConfig.Security.AuthorizationCodes(
         Secret.Bytes32(Array.fill(32)(0.toByte)),
+      ),
+      sessions = CoreConfig.Security.Sessions(
+        Secret.Bytes32(Array.fill(32)(0.toByte)),
+      ),
+      ssoSession = CoreConfig.Security.SsoSession(
+        ttl = 30.days,
       ),
     ),
     jwt = jwtConfig,
@@ -87,7 +96,7 @@ object TestEnvConfig:
       userId: UserId = UserId(UUID.randomUUID()),
       authId: AuthId = AuthId(UUID.fromString("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")),
       deviceId: DeviceId = DeviceId(UUID.fromString("11111111-2222-3333-4444-555555555555")),
-  ): AccessToken = {
+  ): String = {
     val now = Instant.now()
     val claims = new JWTClaimsSet.Builder()
       .issuer("app.dvor")
@@ -109,5 +118,5 @@ object TestEnvConfig:
     val signer = new RSASSASigner(privateKey)
     jwt.sign(signer)
 
-    AccessToken(jwt.serialize())
+    jwt.serialize()
   }

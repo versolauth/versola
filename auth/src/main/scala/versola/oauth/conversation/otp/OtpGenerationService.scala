@@ -1,8 +1,7 @@
 package versola.oauth.conversation.otp
 
 import versola.auth.model.OtpCode
-import versola.security.SecureRandom
-import versola.util.CoreConfig
+import versola.util.{CoreConfig, SecureRandom}
 import zio.{UIO, ZIO, ZLayer}
 
 trait OtpGenerationService:

@@ -1,20 +1,27 @@
 package versola.oauth.token
 
-import versola.http.Controller
-import versola.oauth
+import com.nimbusds.jose.crypto.RSASSASigner
+import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm, JWSHeader}
+import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
+import versola.auth.model.AccessToken
 import versola.oauth.client.OAuthClientService
-import versola.oauth.client.model.{ClientId, ClientSecret}
-import versola.oauth.model.{AuthorizationCode, CodeVerifier, GrantType}
-import versola.oauth.token.model.{ClientIdWithSecret, CodeExchangeRequest, TokenCredentials, TokenEndpointError, TokenErrorResponse, TokenRequest, TokenResponse}
-import versola.security.Secret
-import versola.util.FormDecoder
+import versola.oauth.client.model.ClientId
+import versola.oauth.model.{AuthorizationCode, CodeVerifier}
+import versola.oauth.token.model.{CodeExchangeRequest, IssuedTokens, TokenEndpointError, TokenErrorResponse, TokenRequest, TokenResponse}
+import versola.user.model.UserId
+import versola.util.CoreConfig.JwtConfig
+import versola.util.http.{ClientCredentials, ClientIdWithSecret, Controller}
+import versola.util.{Base64, Base64Url, CoreConfig, FormDecoder, Secret}
 import zio.*
 import zio.http.*
 import zio.json.*
 import zio.telemetry.opentelemetry.tracing.Tracing
 
+import java.time.Instant
+import java.util.Date
+
 object TokenEndpointController extends Controller:
-  type Env = Tracing & OAuthTokenService & OAuthClientService
+  type Env = Tracing & OAuthTokenService & OAuthClientService & CoreConfig
 
   def routes: Routes[Env, Nothing] = Routes(
     tokenEndpoint,
@@ -24,11 +31,13 @@ object TokenEndpointController extends Controller:
     Method.POST / "v1" / "token" -> handler { (request: Request) =>
       (for
         oauthTokenService <- ZIO.service[OAuthTokenService]
+        config <- ZIO.service[CoreConfig]
         tokenRequest <- parseRequest(request)
-        credentials <- parseCredentials(request)
-        response <- tokenRequest match
+        credentials <- request.extractCredentials.orElseFail(TokenEndpointError.InvalidClient)
+        issuedTokens <- tokenRequest match
           case codeExchangeRequest: CodeExchangeRequest =>
             oauthTokenService.exchangeAuthorizationCode(codeExchangeRequest, credentials)
+        response <- toTokenResponse(issuedTokens, config)
       yield Response.json(response.toJson))
         .catchAll {
           case error: TokenEndpointError =>
@@ -44,6 +53,55 @@ object TokenEndpointController extends Controller:
         }
     }
 
+  private def toTokenResponse(tokens: IssuedTokens, config: CoreConfig): Task[TokenResponse] =
+    for
+      now <- Clock.instant
+      accessTokenString <- tokens.accessTokenJwtProperties match
+        case None =>
+          ZIO.succeed(Base64.urlEncode(tokens.accessToken))
+
+        case Some(props) =>
+          buildJWT(
+            accessToken = tokens.accessToken,
+            ttl = tokens.accessTokenTtl,
+            userId = props.userId,
+            config = config.jwt
+          )
+
+    yield TokenResponse(
+      accessToken = accessTokenString,
+      tokenType = "Bearer",
+      expiresIn = tokens.accessTokenTtl.toSeconds,
+      refreshToken = tokens.refreshToken.map(Base64.urlEncode),
+      scope = Option.when(tokens.scope.nonEmpty)(tokens.scope.mkString(" ")),
+    )
+
+  private def buildJWT(
+      accessToken: AccessToken,
+      ttl: Duration,
+      userId: UserId,
+      config: JwtConfig,
+  ) =
+    Clock.instant.flatMap: now =>
+      ZIO.attemptBlocking:
+        val claims = JWTClaimsSet.Builder()
+          .issuer(config.issuer)
+          .subject(userId.toString)
+          .jwtID(Base64Url.encode(accessToken))
+          .issueTime(Date.from(now))
+          .expirationTime(Date.from(now.plusSeconds(ttl.toSeconds)))
+          .build()
+
+        val header = JWSHeader.Builder(JWSAlgorithm.RS256)
+          .`type`(JOSEObjectType("at+jwt"))
+          .keyID(config.jwkSet.getKeys.get(0).getKeyID)
+          .build()
+
+        val jwt = SignedJWT(header, claims)
+        val signer = RSASSASigner(config.privateKey)
+        jwt.sign(signer)
+        jwt.serialize()
+
   private def parseRequest(request: Request): IO[TokenEndpointError, TokenRequest] =
     for
       form <- request.body.asURLEncodedForm.orElseFail(TokenEndpointError.InvalidRequest)
@@ -53,23 +111,6 @@ object TokenEndpointController extends Controller:
         case _ =>
           ZIO.fail(TokenEndpointError.UnsupportedGrantType)
     yield request
-
-  private def parseCredentials(
-      request: Request,
-  ): IO[TokenEndpointError, TokenCredentials] =
-    request.header(Header.Authorization) match
-      case Some(Header.Authorization.Basic(username, password)) =>
-        val secret = password.stringValue
-        if secret.isEmpty then
-          ZIO.succeed(ClientIdWithSecret(ClientId(username), None))
-        else
-          ZIO.fromEither(Secret.fromBase64Url(secret))
-            .mapBoth(
-              _ => TokenEndpointError.InvalidClient,
-              secret => ClientIdWithSecret(ClientId(username), Some(secret)),
-            )
-      case _ =>
-        ZIO.fail(TokenEndpointError.InvalidClient)
 
   val codeExchangeRequestDecoder: FormDecoder[CodeExchangeRequest] = (form: Form) =>
     for

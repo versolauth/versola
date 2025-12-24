@@ -1,13 +1,12 @@
 package versola.admin
 
 import versola.admin.AdminControllerDescription.*
-import versola.http.Controller
 import versola.oauth.client.{OAuthClientService, OAuthScopeRepository, model}
 import versola.oauth.client.model.{Claim, ClientId, ScopeDescription, ScopeToken}
 import versola.oauth.model.*
 import versola.oauth.client.{OAuthClientService, OAuthScopeRepository}
-import versola.security.SecureRandom
-import versola.util.Base64Url
+import versola.util.{Base64Url, SecureRandom}
+import versola.util.http.Controller
 import zio.*
 import zio.http.*
 import zio.http.codec.HttpContentCodec

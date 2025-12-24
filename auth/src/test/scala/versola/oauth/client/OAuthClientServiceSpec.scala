@@ -1,8 +1,7 @@
 package versola.oauth.client
 
 import org.apache.commons.codec.digest.Blake3
-import versola.oauth.client.model.{Claim, ClientId, ClientSecret, OAuthClientRecord, Scope as OAuthScope, ScopeDescription, ScopeToken}
-import versola.security.{MAC, Secret, SecureRandom, SecurityService}
+import versola.oauth.client.model.{AccessTokenType, Claim, ClientId, ClientSecret, OAuthClientRecord, ScopeDescription, ScopeToken, Scope as OAuthScope}
 import versola.util.*
 import zio.*
 import zio.prelude.NonEmptySet
@@ -62,6 +61,8 @@ object OAuthClientServiceSpec extends UnitSpecBase:
     scope = Set("read", "write"),
     secret = Some(secret1), // MAC for testSecret with salt1
     previousSecret = None,
+    accessTokenTtl = 10.minutes,
+    accessTokenType = AccessTokenType.Opaque,
   )
 
   val privateClientWithPrevious = OAuthClientRecord(
@@ -71,6 +72,8 @@ object OAuthClientServiceSpec extends UnitSpecBase:
     scope = Set("read"),
     secret = Some(secret2),
     previousSecret = Some(previousSecret),
+    accessTokenTtl = 10.minutes,
+    accessTokenType = AccessTokenType.Opaque,
   )
 
   val publicClient = OAuthClientRecord(
@@ -80,6 +83,8 @@ object OAuthClientServiceSpec extends UnitSpecBase:
     scope = Set("read"),
     secret = None,
     previousSecret = None,
+    accessTokenTtl = 10.minutes,
+    accessTokenType = AccessTokenType.Opaque,
   )
 
   val testClients = Map(
