@@ -10,10 +10,12 @@ lazy val root = project.in(file("."))
 lazy val implementations = file("implementations")
 
 lazy val `postgres-impl` = project.in(implementations / "postgres")
+  .enablePlugins(JavaAppPackaging)
   .settings(
     name := "postgres-impl",
     commonSettings,
     libraryDependencies ++= Dependencies.database.postgres,
+    Compile / mainClass := Some("versola.PostgresOAuthApp"),
   ).dependsOn(
     auth % CompileTest
   )

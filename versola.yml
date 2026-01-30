@@ -1,0 +1,13 @@
+services:
+  auth:
+    image: ghcr.io/versolauth/versola:latest
+    container_name: versola-auth
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+      - "9345:9345"
+    volumes:
+      - ./config/env.conf:/app/config/env.conf:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
