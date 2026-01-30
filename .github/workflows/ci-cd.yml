@@ -21,16 +21,13 @@ jobs:
           POSTGRES_USER: dev
           POSTGRES_PASSWORD: 1234
         ports:
-          - 5432/tcp
+          - 5432:5432
         options: >-
           --health-cmd="pg_isready -U dev -d auth"
           --health-interval=10s
           --health-timeout=5s
           --health-retries=10
           --health-start-period=10s
-
-    env:
-      POSTGRES_HOST: localhost:${{ job.services.postgres.ports[5432] }}
 
     steps:
       - uses: actions/checkout@v4
@@ -46,6 +43,8 @@ jobs:
         run: sbt compile
 
       - name: Run tests
+        env:
+          POSTGRES_HOST: localhost:5432
         run: sbt test
 
   docker:
