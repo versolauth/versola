@@ -106,6 +106,13 @@ jobs:
         env:
           VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
 
+      - name: Clone env-config
+        run: |
+          git clone https://${{ github.repository_owner }}:${{ secrets.GH_PAT }}@github.com/versolauth/env-config.git
+          echo "ENV_CONFIG<<EOF" >> $GITHUB_ENV
+          cat env-config/dev/env.conf >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+
       - name: Copy docker-compose to VPS
         uses: appleboy/scp-action@v0.1.7
         with:
@@ -114,14 +121,13 @@ jobs:
           key: ${{ secrets.VPS_SSH_KEY }}
           source: "versola.yml"
           target: "~/versola"
-          debug: true
 
       - name: Deploy to VPS
         uses: appleboy/ssh-action@v1.2.0
         env:
           GH_PAT: ${{ secrets.GH_PAT }}
           GH_USER: ${{ github.repository_owner }}
-          ENV_CONFIG: ${{ secrets.ENV_CONFIG }}
+          ENV_CONFIG: ${{ env.ENV_CONFIG }}
         with:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
@@ -131,10 +137,9 @@ jobs:
             cd ~/versola
 
             # Login to GitHub Container Registry
-            echo $GH_PAT | docker login ghcr.io -u "$GH_USER" --password-stdin
+            echo "$GH_PAT" | docker login ghcr.io -u "$GH_USER" --password-stdin
 
             # Pull latest image and restart
-            export ENV_CONFIG="$ENV_CONFIG"
             docker compose -f versola.yml pull
             docker compose -f versola.yml up -d
 

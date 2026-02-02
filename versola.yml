@@ -3,6 +3,8 @@ services:
     image: ghcr.io/versolauth/versola:latest
     container_name: versola-auth
     restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "8080:8080"
       - "9345:9345"
