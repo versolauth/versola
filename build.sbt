@@ -31,7 +31,7 @@ lazy val auth = project
 
 lazy val commonSettings =
   Seq(
-    scalaVersion := "3.7.4",
+    scalaVersion := "3.8.1",
     scalacOptions ++= Seq(
       "-deprecation",
       "-source:future",
