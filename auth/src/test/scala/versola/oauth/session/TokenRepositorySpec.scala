@@ -3,7 +3,7 @@ package versola.oauth.session
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.auth.model.{AccessToken, RefreshToken}
 import versola.oauth.client.model.{ClientId, ScopeToken}
-import versola.oauth.session.model.{SessionId, TokenRecord, WithTtl}
+import versola.oauth.session.model.{SessionId, TokenCreationRecord, TokenRecord, WithTtl}
 import versola.user.model.UserId
 import versola.util.{DatabaseSpecBase, MAC}
 import zio.*
@@ -39,25 +39,31 @@ trait TokenRepositorySpec extends DatabaseSpecBase[TokenRepositorySpec.Env]:
   val accessTtl = 15.minutes
   val refreshTtl = 30.days
 
-  val now = Instant.now()
-
-  val record1 = TokenRecord(
+  def creationRecord1(now: Instant) = TokenCreationRecord(
     sessionId = sessionId1,
     userId = userId1,
     clientId = clientId1,
     scope = scope1,
     issuedAt = now,
-    expiresAt = now.plusSeconds(accessTtl.toSeconds),
   )
 
-  val record2 = TokenRecord(
+  def creationRecord2(now: Instant) = TokenCreationRecord(
     sessionId = sessionId2,
     userId = userId2,
     clientId = clientId2,
     scope = scope2,
     issuedAt = now,
-    expiresAt = now.plusSeconds(accessTtl.toSeconds),
   )
+
+  def expectedTokenRecord(creation: TokenCreationRecord, ttl: Duration): TokenRecord =
+    TokenRecord(
+      sessionId = creation.sessionId,
+      userId = creation.userId,
+      clientId = creation.clientId,
+      scope = creation.scope,
+      issuedAt = creation.issuedAt,
+      expiresAt = creation.issuedAt.plusSeconds(ttl.toSeconds),
+    )
 
   def testCases(env: TokenRepositorySpec.Env): List[Spec[TokenRepositorySpec.Env & Scope, Any]] =
     List(
@@ -75,34 +81,44 @@ trait TokenRepositorySpec extends DatabaseSpecBase[TokenRepositorySpec.Env]:
           WithTtl(refreshToken1, refreshTtl),
         )
         for
-          _ <- env.repository.create(tokens, record1)
+          now <- Clock.instant
+          creation = creationRecord1(now)
+          expectedAccessRecord = expectedTokenRecord(creation, accessTtl)
+          expectedRefreshRecord = expectedTokenRecord(creation, refreshTtl)
+          _ <- env.repository.create(tokens, creation)
           foundAccess <- env.repository.findAccessToken(accessToken1)
           foundRefresh <- env.repository.findRefreshToken(refreshToken1)
         yield assertTrue(
-          foundAccess.exists(_ === record1),
-          foundRefresh.exists(_ === record1),
+          foundAccess.exists(_ === expectedAccessRecord),
+          foundRefresh.exists(_ === expectedRefreshRecord),
         )
       },
       test("create with only access token") {
         val tokens = These.Left(WithTtl(accessToken1, accessTtl))
         for
-          _ <- env.repository.create(tokens, record1)
+          now <- Clock.instant
+          creation = creationRecord1(now)
+          expectedRecord = expectedTokenRecord(creation, accessTtl)
+          _ <- env.repository.create(tokens, creation)
           foundAccess <- env.repository.findAccessToken(accessToken1)
           foundRefresh <- env.repository.findRefreshToken(refreshToken1)
         yield assertTrue(
-          foundAccess.exists(_ === record1),
+          foundAccess.exists(_ === expectedRecord),
           foundRefresh.isEmpty,
         )
       },
       test("create with only refresh token") {
         val tokens = These.Right(WithTtl(refreshToken1, refreshTtl))
         for
-          _ <- env.repository.create(tokens, record1)
+          now <- Clock.instant
+          creation = creationRecord1(now)
+          expectedRefreshRecord = expectedTokenRecord(creation, refreshTtl)
+          _ <- env.repository.create(tokens, creation)
           foundAccess <- env.repository.findAccessToken(accessToken1)
           foundRefresh <- env.repository.findRefreshToken(refreshToken1)
         yield assertTrue(
           foundAccess.isEmpty,
-          foundRefresh.exists(_ === record1),
+          foundRefresh.exists(_ === expectedRefreshRecord),
         )
       },
     )
@@ -118,13 +134,18 @@ trait TokenRepositorySpec extends DatabaseSpecBase[TokenRepositorySpec.Env]:
         val tokens1 = These.Left(WithTtl(accessToken1, accessTtl))
         val tokens2 = These.Left(WithTtl(accessToken2, accessTtl))
         for
-          _ <- env.repository.create(tokens1, record1)
-          _ <- env.repository.create(tokens2, record2)
+          now <- Clock.instant
+          creation1 = creationRecord1(now)
+          creation2 = creationRecord2(now)
+          expected1 = expectedTokenRecord(creation1, accessTtl)
+          expected2 = expectedTokenRecord(creation2, accessTtl)
+          _ <- env.repository.create(tokens1, creation1)
+          _ <- env.repository.create(tokens2, creation2)
           found1 <- env.repository.findAccessToken(accessToken1)
           found2 <- env.repository.findAccessToken(accessToken2)
         yield assertTrue(
-          found1.exists(_ === record1),
-          found2.exists(_ === record2),
+          found1.exists(_ === expected1),
+          found2.exists(_ === expected2),
         )
       },
     )
@@ -140,13 +161,18 @@ trait TokenRepositorySpec extends DatabaseSpecBase[TokenRepositorySpec.Env]:
         val tokens1 = These.Right(WithTtl(refreshToken1, refreshTtl))
         val tokens2 = These.Right(WithTtl(refreshToken2, refreshTtl))
         for
-          _ <- env.repository.create(tokens1, record1)
-          _ <- env.repository.create(tokens2, record2)
+          now <- Clock.instant
+          creation1 = creationRecord1(now)
+          creation2 = creationRecord2(now)
+          expected1 = expectedTokenRecord(creation1, refreshTtl)
+          expected2 = expectedTokenRecord(creation2, refreshTtl)
+          _ <- env.repository.create(tokens1, creation1)
+          _ <- env.repository.create(tokens2, creation2)
           found1 <- env.repository.findRefreshToken(refreshToken1)
           found2 <- env.repository.findRefreshToken(refreshToken2)
         yield assertTrue(
-          found1.exists(_ === record1),
-          found2.exists(_ === record2),
+          found1.exists(_ === expected1),
+          found2.exists(_ === expected2),
         )
       },
     )
@@ -154,26 +180,34 @@ trait TokenRepositorySpec extends DatabaseSpecBase[TokenRepositorySpec.Env]:
   def expirationTests(env: TokenRepositorySpec.Env) =
     suite("expiration")(
       test("access token expires after TTL") {
-        val tokens = These.Left(WithTtl(accessToken1, 2.minutes))
+        val shortTtl = 2.minutes
+        val tokens = These.Left(WithTtl(accessToken1, shortTtl))
         for
-          _ <- env.repository.create(tokens, record1)
+          now <- Clock.instant
+          creation = creationRecord1(now)
+          expectedRecord = expectedTokenRecord(creation, shortTtl)
+          _ <- env.repository.create(tokens, creation)
           foundBefore <- env.repository.findAccessToken(accessToken1)
           _ <- TestClock.adjust(3.minutes)
           foundAfter <- env.repository.findAccessToken(accessToken1)
         yield assertTrue(
-          foundBefore.exists(_ === record1),
+          foundBefore.exists(_ === expectedRecord),
           foundAfter.isEmpty,
         )
       },
       test("refresh token expires after TTL") {
-        val tokens = These.Right(WithTtl(refreshToken1, 2.minutes))
+        val shortTtl = 2.minutes
+        val tokens = These.Right(WithTtl(refreshToken1, shortTtl))
         for
-          _ <- env.repository.create(tokens, record1)
+          now <- Clock.instant
+          creation = creationRecord1(now)
+          expectedRecord = expectedTokenRecord(creation, shortTtl)
+          _ <- env.repository.create(tokens, creation)
           foundBefore <- env.repository.findRefreshToken(refreshToken1)
           _ <- TestClock.adjust(3.minutes)
           foundAfter <- env.repository.findRefreshToken(refreshToken1)
         yield assertTrue(
-          foundBefore.exists(_ === record1),
+          foundBefore.exists(_ === expectedRecord),
           foundAfter.isEmpty,
         )
       },

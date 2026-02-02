@@ -4,7 +4,7 @@ import com.augustnagro.magnum.magzio.TransactorZIO
 import com.augustnagro.magnum.{DbCodec, sql}
 import versola.auth.model.{AccessToken, RefreshToken}
 import versola.oauth.client.model.{ClientId, ScopeToken}
-import versola.oauth.session.model.{SessionId, TokenRecord, WithTtl}
+import versola.oauth.session.model.{SessionId, TokenCreationRecord, TokenRecord, WithTtl}
 import versola.user.model.UserId
 import versola.util.MAC
 import versola.util.postgres.BasicCodecs
@@ -23,27 +23,25 @@ class PostgresTokenRepository(xa: TransactorZIO) extends TokenRepository, BasicC
 
   override def create(
       tokens: These[WithTtl[MAC.Of[AccessToken]], WithTtl[MAC.Of[RefreshToken]]],
-      record: TokenRecord,
-  ): Task[Unit] = {
-    Clock.instant.flatMap: now =>
-      xa.transact:
-        tokens match
-          case These.Both(accessToken, refreshToken) =>
-            createAccessToken(accessToken, record, now).update.run()
-            createRefreshToken(refreshToken, record, now).update.run()
+      record: TokenCreationRecord,
+  ): Task[Unit] =
+    xa.transact:
+      tokens match
+        case These.Both(accessToken, refreshToken) =>
+          createAccessToken(accessToken, record).update.run()
+          createRefreshToken(refreshToken, record).update.run()
 
-          case These.Left(accessToken) =>
-            createAccessToken(accessToken, record, now).update.run()
+        case These.Left(accessToken) =>
+          createAccessToken(accessToken, record).update.run()
 
-          case These.Right(refreshToken) =>
-            createRefreshToken(refreshToken, record, now).update.run()
-  }
+        case These.Right(refreshToken) =>
+          createRefreshToken(refreshToken, record).update.run()
 
   private def createAccessToken(
       accessToken: WithTtl[MAC.Of[AccessToken]],
-      record: TokenRecord,
-      now: Instant,
+      record: TokenCreationRecord,
   ) =
+    val expiresAt = record.issuedAt.plusSeconds(accessToken.ttl.toSeconds)
     sql"""
       INSERT INTO access_tokens (id, session_id, user_id, client_id, scope, issued_at, expires_at)
       VALUES (
@@ -53,14 +51,14 @@ class PostgresTokenRepository(xa: TransactorZIO) extends TokenRepository, BasicC
         ${record.clientId},
         ${record.scope},
         ${record.issuedAt},
-        ${now.plusSeconds(accessToken.ttl.toSeconds)})
+        $expiresAt)
     """
 
   private def createRefreshToken(
       refreshToken: WithTtl[MAC.Of[RefreshToken]],
-      record: TokenRecord,
-      now: Instant,
+      record: TokenCreationRecord,
   ) =
+    val expiresAt = record.issuedAt.plusSeconds(refreshToken.ttl.toSeconds)
     sql"""
       INSERT INTO refresh_tokens (id, session_id, user_id, client_id, scope, issued_at, expires_at)
       VALUES (
@@ -70,7 +68,7 @@ class PostgresTokenRepository(xa: TransactorZIO) extends TokenRepository, BasicC
         ${record.clientId},
         ${record.scope},
         ${record.issuedAt},
-        ${now.plusSeconds(refreshToken.ttl.toSeconds)})
+        $expiresAt)
     """
 
   override def findAccessToken(token: MAC.Of[AccessToken]): Task[Option[TokenRecord]] =

@@ -4,7 +4,7 @@ import versola.auth.model.{AccessToken, RefreshToken}
 import versola.oauth.client.OAuthClientService
 import versola.oauth.client.model.{AccessTokenType, OAuthClientRecord, ScopeToken}
 import versola.oauth.model.AuthorizationCodeRecord
-import versola.oauth.session.model.{TokenRecord, WithTtl}
+import versola.oauth.session.model.{TokenCreationRecord, WithTtl}
 import versola.oauth.session.{SessionRepository, TokenRepository}
 import versola.oauth.token.model.{CodeExchangeRequest, IssuedTokens, TokenEndpointError}
 import versola.util.http.{ClientCredentials, ClientIdWithSecret}
@@ -68,6 +68,8 @@ object OAuthTokenService:
 
         hasOfflineAccess = codeRecord.scope.contains(ScopeToken.OfflineAccess)
 
+        now <- zio.Clock.instant
+
         refreshTokenWithMac <- ZIO.when(hasOfflineAccess)(
           for
             token <- authPropertyGenerator.nextRefreshToken
@@ -80,13 +82,12 @@ object OAuthTokenService:
           refreshTokenWithMac.map(_._2).map(WithTtl(_, config.security.refreshTokens.ttl)),
         )
 
-        tokenRecord = TokenRecord(
+        tokenRecord = TokenCreationRecord(
           sessionId = codeRecord.sessionId,
           userId = codeRecord.userId,
           clientId = codeRecord.clientId,
           scope = codeRecord.scope,
-          issuedAt = ???,
-          expiresAt = ???
+          issuedAt = now,
         )
 
         _ <- ZIO.fromOption(tokens)
@@ -94,7 +95,7 @@ object OAuthTokenService:
           .orElseSucceed(())
       yield IssuedTokens(
         accessToken = accessToken,
-        accessTokenTtl = client.accessTokenTtl,
+        accessTokenTtl = accessTokenTtl,
         accessTokenJwtProperties = tokenProperties.toOption,
         refreshToken = refreshTokenWithMac.map(_._1),
         scope = codeRecord.scope,
