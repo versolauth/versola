@@ -95,6 +95,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Verify secrets are set
+        run: |
+          if [ -z "${{ secrets.VPS_SSH_KEY }}" ]; then
+            echo "VPS_SSH_KEY is empty!"
+            exit 1
+          else
+            echo "VPS_SSH_KEY is set (length: ${#VPS_SSH_KEY} chars)"
+          fi
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+
       - name: Copy docker-compose to VPS
         uses: appleboy/scp-action@v0.1.7
         with:
@@ -103,6 +114,7 @@ jobs:
           key: ${{ secrets.VPS_SSH_KEY }}
           source: "versolaversola.yml"
           target: "/opt/versola"
+          debug: true
 
       - name: Deploy to VPS
         uses: appleboy/ssh-action@v1.2.0
