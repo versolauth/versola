@@ -229,15 +229,16 @@ object OAuthApp:
   private def config: ZLayer[Any, zio.Config.Error | Throwable, CoreConfig & ConfigProvider] = {
     val layer = ZLayer.fromZIO:
       for
-        path <- System.property("env.path")
-          .someOrFail(RuntimeException("Property 'env.path' is not set. Provide it via `-Denv.path=...`"))
+        configString <- System.env("ENV_CONFIG").flatMap:
+          case Some(envConfig) => ZIO.succeed(envConfig)
+          case None =>
+            for
+              path <- System.property("env.path")
+                .someOrFail(RuntimeException("Neither 'ENV_CONFIG' env var nor 'env.path' property is set"))
+              absolutePath <- ZIO.attempt(java.nio.file.Paths.get(path).toAbsolutePath.toString)
+            yield s"""include required(file("$absolutePath"))"""
 
-        absolutePath <- ZIO.attempt(java.nio.file.Paths.get(path).toAbsolutePath.toString)
-
-        config = ConfigFactory.parseString:
-          s"""
-             |include required(file("$absolutePath"))
-             |""".stripMargin
+        config = ConfigFactory.parseString(configString)
 
         core <- ConfigProvider
           .fromTypesafeConfig(config.getConfig("core")).kebabCase

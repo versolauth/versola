@@ -6,5 +6,5 @@ services:
     ports:
       - "8080:8080"
       - "9345:9345"
-    volumes:
-      - ./config/env.conf:/app/config/env.conf:ro
+    environment:
+      - ENV_CONFIG=${ENV_CONFIG}

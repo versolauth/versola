@@ -121,18 +121,20 @@ jobs:
         env:
           GH_PAT: ${{ secrets.GH_PAT }}
           GH_USER: ${{ github.repository_owner }}
+          ENV_CONFIG: ${{ secrets.ENV_CONFIG }}
         with:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
-          envs: GH_PAT,GH_USER
+          envs: GH_PAT,GH_USER,ENV_CONFIG
           script: |
             cd ~/versola
 
             # Login to GitHub Container Registry
-            echo $GH_PAT | docker login ghcr.io -u $GH_USER --password-stdin
+            echo $GH_PAT | docker login ghcr.io -u "$GH_USER" --password-stdin
 
             # Pull latest image and restart
+            export ENV_CONFIG="$ENV_CONFIG"
             docker compose -f versola.yml pull
             docker compose -f versola.yml up -d
 
