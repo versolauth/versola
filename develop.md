@@ -6,7 +6,7 @@
 4. Start server locally
     - `docker-compose -f services.yml up -d postgres` - Database
     - `docker-compose -f services.yml up -d jaeger` - Jaeger (optional)
-    - `sbt -Denv.path=auth/dev/env.conf "project postgres-impl; run"` - postgres impl
+    - `sbt -Denv.path=dev/env.conf "project postgres-impl; run"` - postgres impl
 
 ## Docker
 
@@ -20,7 +20,7 @@ docker build -t versola-auth .
 Run the Docker image (mount config file):
 ```bash
 docker run -p 8080:8080 -p 9345:9345 \
-  -v $(pwd)/auth/dev/env.conf:/app/config/env.conf:ro \
+  -v $(pwd)/dev/env.conf:/app/config/env.conf:ro \
   versola-auth
 ```
 

@@ -10,3 +10,4 @@ target/
 idea.properties
 .scala-build/
 country/
+dev/
