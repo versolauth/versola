@@ -112,7 +112,7 @@ jobs:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
-          source: "versolaversola.yml"
+          source: "versola.yml"
           target: "/opt/versola"
           debug: true
 
@@ -133,8 +133,8 @@ jobs:
             echo $GH_PAT | docker login ghcr.io -u $GH_USER --password-stdin
 
             # Pull latest image and restart
-            docker compose -f docker-compose.prod.yml pull
-            docker compose -f docker-compose.prod.yml up -d
+            docker compose -f versola.yml pull
+            docker compose -f versola.yml up -d
 
             # Cleanup old images
             docker image prune -f
