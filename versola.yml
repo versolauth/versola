@@ -8,6 +8,3 @@ services:
       - "9345:9345"
     volumes:
       - ./config/env.conf:/app/config/env.conf:ro
-    depends_on:
-      postgres:
-        condition: service_healthy
