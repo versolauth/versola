@@ -77,6 +77,8 @@ object OAuthTokenService:
           yield (token, mac),
         )
 
+        accessTokenTtl = client.accessTokenTtl
+
         tokens = These.fromOptions(
           tokenProperties.left.toOption.map(WithTtl(_, client.accessTokenTtl)),
           refreshTokenWithMac.map(_._2).map(WithTtl(_, config.security.refreshTokens.ttl)),
