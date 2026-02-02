@@ -37,7 +37,6 @@ lazy val commonSettings =
       "-source:future",
       "-new-syntax",
       "-indent",
-      "-preview",
       "-Wconf:msg=unused import:e",
       "-Wconf:msg=pattern selector should be an instance of Matchable:s",
     ),
