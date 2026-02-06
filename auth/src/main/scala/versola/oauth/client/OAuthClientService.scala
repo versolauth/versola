@@ -55,7 +55,7 @@ object OAuthClientService:
       scopeRepository: OAuthScopeRepository,
       secureRandom: SecureRandom,
       securityService: SecurityService,
-      clientSecretsConfig: CoreConfig.Security.ClientSecrets,
+      config: CoreConfig,
   ) extends OAuthClientService:
 
     def getAll: Task[Map[ClientId, OAuthClientRecord]] =
@@ -99,7 +99,7 @@ object OAuthClientService:
           val (mac, salt) = stored.splitAt(32)
           securityService.macBlake3(
             secret = secret,
-            key = salt ++ clientSecretsConfig.pepper,
+            key = salt ++ config.security.clientSecrets.pepper,
           )
             .map(_.sameElements(mac))
 
@@ -130,7 +130,7 @@ object OAuthClientService:
     private def generateMacWithSalt(secret: Secret): Task[Secret] =
       for
         salt <- secureRandom.nextBytes(16)
-        mac <- securityService.macBlake3(secret, salt ++ clientSecretsConfig.pepper)
+        mac <- securityService.macBlake3(secret, salt ++ config.security.clientSecrets.pepper)
       yield Secret(mac ++ salt)
 
     override def rotateSecret(clientId: ClientId): Task[Secret] =

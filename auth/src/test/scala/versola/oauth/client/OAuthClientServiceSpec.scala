@@ -1,6 +1,7 @@
 package versola.oauth.client
 
 import org.apache.commons.codec.digest.Blake3
+import versola.auth.TestEnvConfig
 import versola.oauth.client.model.{AccessTokenType, Claim, ClientId, ClientSecret, OAuthClientRecord, ScopeDescription, ScopeToken, Scope as OAuthScope}
 import versola.util.*
 import zio.*
@@ -52,6 +53,16 @@ object OAuthClientServiceSpec extends UnitSpecBase:
   val secret2 = Secret(mac2 ++ salt2)
   val previousMac = computeTestBlake3MAC(previousSecretBytes, salt1)
   val previousSecret = Secret(previousMac ++ salt1)
+
+  // Build a test CoreConfig using TestEnvConfig but with custom clientSecrets pepper
+  private def buildTestCoreConfig(): CoreConfig =
+    TestEnvConfig.coreConfig.copy(
+      security = TestEnvConfig.coreConfig.security.copy(
+        clientSecrets = CoreConfig.Security.ClientSecrets(
+          pepper = testPepper,
+        ),
+      ),
+    )
   val newMacWithSalt = Secret(Array.fill(48)(3.toByte))
 
   val privateClient1 = OAuthClientRecord(
@@ -134,6 +145,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
           .doFinalize(mac)
         MAC(mac)
     }
+    val coreConfig = buildTestCoreConfig()
     val service = OAuthClientService.Impl(
       ReloadingCache(cache),
       repository,
@@ -141,7 +153,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
       scopeRepository,
       secureRandom,
       securityService,
-      CoreConfig.Security.ClientSecrets(testPepper),
+      coreConfig,
     )
 
   val spec = suite("OauthClientService")(

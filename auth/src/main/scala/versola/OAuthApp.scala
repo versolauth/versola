@@ -2,7 +2,6 @@ package versola
 
 import com.augustnagro.magnum.magzio.TransactorZIO
 import com.fasterxml.uuid.Generators
-import com.nimbusds.jose.jwk.JWKSet
 import com.typesafe.config.ConfigFactory
 import io.opentelemetry.api
 import versola.admin.AdminController
@@ -70,8 +69,7 @@ abstract class OAuthApp extends ZIOApp:
     EmailOtpProvider
 
   type Services =
-    JWKSet &
-      ConversationService &
+    ConversationService &
       ConversationRouter &
       OAuthClientService &
       OAuthScopeRepository &
@@ -91,14 +89,6 @@ abstract class OAuthApp extends ZIOApp:
   def dependencies: RLayer[zio.Scope & ConfigProvider, Repositories & ServiceProviders]
 
   val services: ZLayer[ConfigProvider & CoreConfig & Tracing, Throwable, Services] =
-    val configs =
-      val root = ZLayer.service[CoreConfig]
-      root.project(_.jwt) ++
-        root.project(_.jwt.jwkSet) ++
-        root.project(_.security.clientSecrets) ++
-        root.project(_.security.refreshTokens) ++
-        root.project(_.security.authConversation)
-
     (zio.Scope.default >+> dependencies) >>>
       ZLayer.makeSome[zio.Scope & CoreConfig & Repositories & ServiceProviders & Tracing, Services](
         ConversationService.live,
@@ -120,7 +110,6 @@ abstract class OAuthApp extends ZIOApp:
         ZLayer.fromZIO(ReloadingCache.make[Map[ScopeToken, Scope]](Schedule.spaced(1.minute))),
         ZLayer.fromZIO(ReloadingCache.make[Map[ClientId, OAuthClientRecord]](Schedule.spaced(1.minute))),
         Client.default,
-        configs,
       ) >+> ZLayer(ZIO.serviceWithZIO[PostInitializationService](_.postInitialize().map(identity[Any])))
 
   override val bootstrap: ZLayer[Any, Any, Environment] =
