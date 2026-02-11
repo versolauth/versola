@@ -19,10 +19,9 @@ RUN sbt update
 
 # Copy source code
 COPY auth auth
-COPY implementations implementations
 
 # Build the application
-RUN sbt "project postgres-impl" stage
+RUN sbt "project oauth-postgres-impl" stage
 
 # Runtime stage
 FROM eclipse-temurin:21-jre
@@ -30,10 +29,10 @@ FROM eclipse-temurin:21-jre
 WORKDIR /app
 
 # Copy the staged application from builder
-COPY --from=builder /app/implementations/postgres/target/universal/stage /app
+COPY --from=builder /app/auth/implementations/postgres/target/universal/stage /app
 
 # Copy migrations to the path expected by Flyway
-COPY --from=builder /app/implementations/postgres/migrations /app/implementations/postgres/migrations
+COPY --from=builder /app/auth/implementations/postgres/migrations /app/auth/implementations/postgres/migrations
 
 # Expose ports
 EXPOSE 8080 9345
@@ -43,5 +42,5 @@ ENV JAVA_OPTS="-XX:+UseG1GC -XX:MaxRAMPercentage=75.0"
 ENV CONFIG_PATH="/app/config/env.conf"
 
 # Run the application with config path
-ENTRYPOINT ["/bin/sh", "-c", "/app/bin/postgres-impl -Denv.path=$CONFIG_PATH $JAVA_OPTS"]
+ENTRYPOINT ["/bin/sh", "-c", "/app/bin/oauth-postgres-impl -Denv.path=$CONFIG_PATH $JAVA_OPTS"]
 

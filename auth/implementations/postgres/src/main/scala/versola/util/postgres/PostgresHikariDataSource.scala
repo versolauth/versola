@@ -23,7 +23,7 @@ object PostgresHikariDataSource:
           _ <- ZIO.when(migrate):
             ZIO.succeed:
               Flyway.configure()
-                .locations("filesystem:./implementations/postgres/migrations")
+                .locations("filesystem:./auth/implementations/postgres/migrations")
                 .dataSource(dataSource)
                 .outOfOrder(true)
                 .load()

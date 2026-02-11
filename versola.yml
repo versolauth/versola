@@ -1,8 +1,0 @@
-services:
-  auth:
-    image: ghcr.io/versolauth/versola:latest
-    container_name: versola-auth
-    restart: unless-stopped
-    network_mode: host
-    environment:
-      - ENV_CONFIG=${ENV_CONFIG}
