@@ -1,7 +1,7 @@
 package versola
 
 import com.augustnagro.magnum.magzio.TransactorZIO
-import versola.edge.{CallbackController, EdgeSessionController, PostgresEdgeSessionRepository}
+import versola.edge.{CompleteController, EdgeSessionController, PostgresEdgeSessionRepository}
 import versola.util.postgres.{PostgresConfig, PostgresHikariDataSource}
 import zio.{ConfigProvider, RLayer, ZLayer}
 
@@ -21,7 +21,7 @@ object PostgresEdgeApp extends EdgeApp:
 
   def routes =
     List(
-      CallbackController.routes,
+      CompleteController.routes,
       EdgeSessionController.routes,
     ).reduce(_ ++ _)
 

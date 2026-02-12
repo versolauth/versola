@@ -19,7 +19,6 @@ object EdgeModelCompilationTest extends ZIOSpecDefault:
       val now = Instant.now()
       val session = EdgeSession(
         clientId = ClientId("test-client"),
-        userIdentifier = "user123",
         state = Some("state123"),
         accessTokenEncrypted = "encrypted-access-token",
         refreshTokenEncrypted = Some("encrypted-refresh-token"),
@@ -28,7 +27,7 @@ object EdgeModelCompilationTest extends ZIOSpecDefault:
         createdAt = now,
         sessionExpiresAt = now.plusSeconds(86400),
       )
-      assertTrue(session.userIdentifier == "user123")
+      assertTrue(session.clientId == ClientId("test-client"))
       assertTrue(session.accessTokenEncrypted == "encrypted-access-token")
     },
     test("WithTtl can be created") {

@@ -37,7 +37,6 @@ object EdgeSessionController extends Controller:
         
         // Create session
         sessionId <- sessionService.createSession(
-          createRequest.userIdentifier,
           createRequest.state,
         )
         
@@ -69,7 +68,6 @@ object EdgeSessionController extends Controller:
         // Return session details
         response = SessionResponse(
           clientId = session.clientId,
-          userIdentifier = session.userIdentifier,
           state = session.state,
           tokenExpiresAt = session.tokenExpiresAt,
           createdAt = session.createdAt,
@@ -157,7 +155,6 @@ object EdgeSessionController extends Controller:
 
   // Request/Response models
   case class CreateSessionRequest(
-      @jsonField("user_identifier") userIdentifier: String,
       state: Option[String],
   ) derives JsonCodec
 
@@ -165,9 +162,10 @@ object EdgeSessionController extends Controller:
       @jsonField("session_id") sessionId: String,
   ) derives JsonCodec
 
+  given JsonCodec[ClientId] = JsonCodec.string.transform(ClientId(_), identity[String])
+
   case class SessionResponse(
       @jsonField("client_id") clientId: ClientId,
-      @jsonField("user_identifier") userIdentifier: String,
       state: Option[String],
       @jsonField("token_expires_at") tokenExpiresAt: Instant,
       @jsonField("created_at") createdAt: Instant,

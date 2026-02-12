@@ -13,10 +13,9 @@ import javax.crypto.SecretKey
 import javax.crypto.spec.SecretKeySpec
 
 trait EdgeSessionService:
-  def createSession(userIdentifier: String, state: Option[String]): Task[MAC.Of[EdgeSessionId]]
+  def createSession(state: Option[String]): Task[MAC.Of[EdgeSessionId]]
 
   def createSessionWithTokens(
-      userIdentifier: String,
       state: Option[String],
       code: String,
       clientId: ClientId,
@@ -58,13 +57,12 @@ object EdgeSessionService:
       val keyBytes = Array.fill(32)(0.toByte) // TODO: Load from config
       new SecretKeySpec(keyBytes, "AES")
 
-    override def createSession(userIdentifier: String, state: Option[String]): Task[MAC.Of[EdgeSessionId]] =
+    override def createSession(state: Option[String]): Task[MAC.Of[EdgeSessionId]] =
       ZIO.fail(new UnsupportedOperationException(
         "Use createSessionWithTokens instead - sessions must include OAuth tokens"
       ))
 
     override def createSessionWithTokens(
-        userIdentifier: String,
         state: Option[String],
         code: String,
         clientId: ClientId,
@@ -104,7 +102,6 @@ object EdgeSessionService:
 
         session = EdgeSession(
           clientId = clientId,
-          userIdentifier = userIdentifier,
           state = state,
           accessTokenEncrypted = accessTokenEncrypted,
           refreshTokenEncrypted = refreshTokenEncrypted,

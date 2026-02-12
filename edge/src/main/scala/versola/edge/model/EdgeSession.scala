@@ -12,7 +12,6 @@ import java.time.Instant
  */
 case class EdgeSession(
     clientId: ClientId,
-    userIdentifier: String,
     state: Option[String],
     accessTokenEncrypted: String,
     refreshTokenEncrypted: Option[String],

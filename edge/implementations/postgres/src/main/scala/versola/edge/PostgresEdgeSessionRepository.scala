@@ -25,14 +25,13 @@ class PostgresEdgeSessionRepository(xa: TransactorZIO) extends EdgeSessionReposi
       xa.connect:
         sql"""
           INSERT INTO edge_sessions (
-            id, client_id, user_identifier, state,
+            id, client_id, state,
             access_token_encrypted, refresh_token_encrypted,
             token_expires_at, scope, created_at, session_expires_at
           )
           VALUES (
             $id,
             ${session.clientId},
-            ${session.userIdentifier},
             ${session.state},
             ${session.accessTokenEncrypted},
             ${session.refreshTokenEncrypted},
@@ -49,7 +48,7 @@ class PostgresEdgeSessionRepository(xa: TransactorZIO) extends EdgeSessionReposi
       now <- Clock.instant
       result <- xa.connect:
         sql"""
-          SELECT client_id, user_identifier, state,
+          SELECT client_id, state,
                  access_token_encrypted, refresh_token_encrypted,
                  token_expires_at, scope, created_at, session_expires_at
           FROM edge_sessions
@@ -62,13 +61,13 @@ class PostgresEdgeSessionRepository(xa: TransactorZIO) extends EdgeSessionReposi
       now <- Clock.instant
       result <- xa.connect:
         sql"""
-          SELECT client_id, user_identifier, state,
+          SELECT client_id, state,
                  access_token_encrypted, refresh_token_encrypted,
                  token_expires_at, scope, created_at, session_expires_at
           FROM edge_sessions
           WHERE client_id = $clientId AND session_expires_at > $now
         """.query[EdgeSession].run()
-    yield result
+    yield result.toList
 
   override def delete(id: MAC.Of[EdgeSessionId]): Task[Unit] =
     xa.connect:
