@@ -1,25 +1,19 @@
 package versola.util
 
 import com.nimbusds.jose.jwk.JWKSet
+import versola.util.postgres.PostgresConfig
 import zio.Duration
 import zio.json.*
 
 import java.security.PrivateKey
 
 case class CoreConfig(
-    runtime: CoreConfig.Runtime,
-    telemetry: Option[CoreConfig.Telemetry],
     security: CoreConfig.Security,
     jwt: CoreConfig.JwtConfig,
+    postgres: PostgresConfig,
 )
 
 object CoreConfig:
-  case class Telemetry(
-      collector: String,
-  )
-  case class Runtime(
-      env: EnvName,
-  )
 
   case class JwtConfig(
       issuer: String,

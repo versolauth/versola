@@ -1,4 +1,4 @@
-package versola
+package versola.util.http
 
 import com.typesafe.config.ConfigFactory
 import io.opentelemetry.api
@@ -11,72 +11,51 @@ import io.opentelemetry.sdk.resources.Resource
 import io.opentelemetry.sdk.trace.SdkTracerProvider
 import io.opentelemetry.sdk.trace.`export`.BatchSpanProcessor
 import io.opentelemetry.semconv.ServiceAttributes
-import versola.edge.{EdgeConfig, EdgeCredentialsService, EdgeSessionRepository, EdgeSessionService}
-import versola.util.*
-import zio.http.Client
-import versola.util.http.{HttpObservabilityConfig, MetricsService, Observability, ReadinessService}
+import izumi.reflect.Tag
+import versola.util.EnvName
 import zio.*
-import zio.config.magnolia.{DeriveConfig, deriveConfig}
-import zio.config.typesafe.*
-import zio.http.*
-import zio.http.Server.RequestStreaming
+import zio.config.magnolia.deriveConfig
+import zio.config.typesafe.FromConfigSourceTypesafe
+import zio.http.{Method, Middleware, Request, Response, Routes, Server, Status, handler}
+import zio.logging.LogFormat.{cause, fiberId, label, level, line, logAnnotation, quoted, space, text, timestamp}
 import zio.logging.slf4j.bridge.Slf4jBridge
 import zio.logging.{ConsoleLoggerConfig, LogFilter, LogFormat, LoggerNameExtractor}
 import zio.metrics.connectors.MetricsConfig
-import zio.metrics.connectors.prometheus.*
+import zio.metrics.connectors.prometheus.{PrometheusPublisher, prometheusLayer, publisherLayer}
 import zio.telemetry.opentelemetry.OpenTelemetry
 import zio.telemetry.opentelemetry.context.ContextStorage
 import zio.telemetry.opentelemetry.tracing.Tracing
 import zio.telemetry.opentelemetry.zio.logging.{LogFormats, ZioLogging}
 
-abstract class EdgeApp extends ZIOApp:
-  private val serviceName = "edge"
+trait VersolaApp(serviceName: String) extends ZIOApp:
+  import VersolaApp.*
+
+  type Dependencies
+
+  given Tag[Dependencies] = scala.compiletime.deferred
 
   override type Environment =
-    ContextStorage & EdgeConfig & ConfigProvider & LogFormats & api.OpenTelemetry & Tracing
-
-  import versola.util.http.HttpObservabilityConfig.Masking
-
-  val config = EdgeApp.Config.default
-    .withPort(8081)
-    .withDiagnosticsPort(9346)
-    .withRequestStreaming(RequestStreaming.Disabled(1024 * 500))
-
-  type Repositories =
-    EdgeSessionRepository
-
-  type Services =
-    SecureRandom &
-      EdgeSessionService &
-      EdgeCredentialsService &
-      SecurityService &
-      Client
-
-  def routes: Routes[Services & EdgeConfig & Tracing, Nothing]
-
-  def dependencies: RLayer[zio.Scope & ConfigProvider, Repositories]
-
-  val services: ZLayer[ConfigProvider & EdgeConfig & Tracing, Throwable, Services] =
-    (zio.Scope.default >+> dependencies) >>>
-      ZLayer.makeSome[zio.Scope & EdgeConfig & Repositories & Tracing, Services](
-        SecureRandom.live,
-        EdgeSessionService.live,
-        EdgeCredentialsService.live,
-        SecurityService.live,
-        Client.default,
-      )
+    ContextStorage & ConfigProvider & LogFormats & api.OpenTelemetry & Tracing
 
   override val bootstrap: ZLayer[Any, Any, Environment] =
-    EdgeApp.config >+>
-      OpenTelemetry.contextZIO >+>
+    OpenTelemetry.contextZIO >+> configProvider >+> envName >+>
       ZioLogging.logFormats >+>
-      EdgeApp.jsonLoggerLayer(serviceName) >+>
-      EdgeApp.openTelemetryLayer(serviceName)
+      jsonLoggerLayer(serviceName) >+>
+      openTelemetryLayer(serviceName)
+
+  def dependencies: ZLayer[ConfigProvider & Tracing, Throwable, Dependencies]
+
+  def routes: Routes[Dependencies & Tracing, Nothing]
+
+  def diagnosticsConfig: Server.Config
+
+  def serverConfig: Server.Config
+
+  def observabilityConfig: HttpObservabilityConfig = HttpObservabilityConfig.default
 
   override def run: ZIO[Environment & ZIOAppArgs & zio.Scope, Any, Any] = {
     for
       opentelemetry <- ZIO.service[api.OpenTelemetry]
-      edgeConfig <- ZIO.service[EdgeConfig]
       envConfig <- ZIO.service[ConfigProvider]
       tracing <- ZIO.service[Tracing]
       readinessService <- ReadinessService.make
@@ -84,9 +63,9 @@ abstract class EdgeApp extends ZIOApp:
       _ <- (Server.install[MetricsService](serviceRoutes(readinessService)) *> ZIO.never)
         .provide(
           Server.live,
-          EdgeApp.prometheusMetricsService,
+          prometheusMetricsService,
           ZLayer.succeed(MetricsConfig(1.second)),
-          ZLayer.succeed(config.diagnostics),
+          ZLayer.succeed(diagnosticsConfig),
         ).fork
 
       _ <- {
@@ -103,13 +82,12 @@ abstract class EdgeApp extends ZIOApp:
           _ <- ZIO.never
         yield ()
       }.provide(
-        services,
+        dependencies,
         Server.live,
-        ZLayer.succeed(config.server),
-        ZLayer.succeed(config.observability),
+        ZLayer.succeed(serverConfig),
+        ZLayer.succeed(observabilityConfig),
         ZLayer.succeed(opentelemetry),
         ZLayer.succeed(tracing),
-        ZLayer.succeed(edgeConfig),
         ZLayer.succeed(envConfig),
       )
     yield ()
@@ -132,43 +110,16 @@ abstract class EdgeApp extends ZIOApp:
       },
     )
 
-  given environmentTag: Tag[Environment] = Tag[Environment]
+object VersolaApp:
 
-  given Tag[Services] = Tag[Services]
+  private def envName: ZLayer[ConfigProvider, Config.Error, EnvName] =
+    ZLayer.fromZIO:
+      ZIO.serviceWithZIO[ConfigProvider](_.load(Config.string("env"))).map:
+        case "prod" => EnvName.Prod
+        case value => EnvName.Test(value)
 
-  def parseConfig[A: {DeriveConfig, Tag}] =
-    ZLayer:
-      ZIO.serviceWithZIO[ConfigProvider](_.load(deriveConfig[A]))
-
-object EdgeApp:
-  case class Config(
-      server: Server.Config,
-      diagnostics: Server.Config,
-      observability: HttpObservabilityConfig,
-  ):
-    def withPort(port: Int): Config =
-      copy(server = server.port(port))
-
-    def withRequestStreaming(streaming: RequestStreaming): Config =
-      copy(server = server.requestStreaming(streaming))
-
-    def withDiagnosticsPort(port: Int): Config =
-      copy(diagnostics = diagnostics.port(port))
-
-    def withMasking(masking: (Path, HttpObservabilityConfig.Masking)*) =
-      copy(
-        observability = observability.copy(masking = observability.masking ++ masking),
-      )
-
-  object Config:
-    val default = Config(
-      server = Server.Config.default.port(8081),
-      diagnostics = Server.Config.default.port(9346),
-      observability = HttpObservabilityConfig.default,
-    )
-
-  private def config: ZLayer[Any, zio.Config.Error | Throwable, EdgeConfig & ConfigProvider] = {
-    val layer = ZLayer.fromZIO:
+  private def configProvider: TaskLayer[ConfigProvider] =
+    ZLayer.fromZIO:
       for
         configString <- System.env("ENV_CONFIG").flatMap:
           case Some(envConfig) => ZIO.succeed(envConfig)
@@ -179,36 +130,21 @@ object EdgeApp:
               absolutePath <- ZIO.attempt(java.nio.file.Paths.get(path).toAbsolutePath.toString)
             yield s"""include required(file("$absolutePath"))"""
 
-        config = ConfigFactory.parseString(configString)
+        cp <- ConfigProvider.fromTypesafeConfigZIO(ConfigFactory.parseString(configString)).map(_.kebabCase)
+      yield cp
 
-        core <- ConfigProvider
-          .fromTypesafeConfig(config.getConfig("core")).kebabCase
-          .load(deriveConfig[EdgeConfig])
-
-        app <- ConfigProvider
-          .fromTypesafeConfigZIO(config.getConfig("app")).map(_.kebabCase)
-      yield (core, app)
-
-    layer.map(env => ZEnvironment(env.get._1) ++ ZEnvironment(env.get._2))
-  }
-
-  private given DeriveConfig[EnvName] = DeriveConfig:
-    zio.Config.string.map:
-      case "prod" => EnvName.Prod
-      case value => EnvName.Test(value)
-
-  private def jsonLoggerLayer(serviceName: String): ZLayer[LogFormats & EdgeConfig, Nothing, Unit] =
+  private def jsonLoggerLayer(serviceName: String): ZLayer[LogFormats & ConfigProvider, Config.Error, Unit] =
     zio.Runtime.removeDefaultLoggers >>> ZLayer {
       import LogFormat.*
       for
         formats <- ZIO.service[LogFormats]
-        envConfig <- ZIO.service[EdgeConfig]
+        env <- ZIO.serviceWithZIO[ConfigProvider](_.load(Config.string("env")))
         config = ConsoleLoggerConfig.default.copy(
           format =
             List(
               label("timestamp", timestamp.fixed(32)),
               label("system", text(serviceName)),
-              label("env", text(envConfig.runtime.env.value)),
+              label("env", text(env)),
               label("level", level),
               label("thread", fiberId),
               label("message", quoted(line)) +
@@ -223,34 +159,37 @@ object EdgeApp:
       yield zio.logging.consoleJsonLogger(config) >+> Slf4jBridge.initialize
     }.flatten
 
-  /**
-   * OpenTelemetry layer for EdgeApp that works with EdgeConfig instead of CoreConfig.
-   *
-   * This is a minimal implementation that builds OpenTelemetry from EdgeConfig's telemetry settings.
-   * EdgeConfig.Telemetry has the same structure as CoreConfig.Telemetry (just a collector URL).
-   */
-  private def openTelemetryLayer(serviceName: String): RLayer[ContextStorage & EdgeConfig, api.OpenTelemetry & Tracing] =
+  private val prometheusMetricsService: ZLayer[MetricsConfig, Throwable, MetricsService] =
+    (publisherLayer >+> prometheusLayer) >+> ZLayer.fromZIO:
+      ZIO.serviceWith[PrometheusPublisher]: publisher =>
+        new MetricsService {
+          override def get: UIO[String] = publisher.get
+        }
+
+  private def openTelemetryLayer(serviceName: String): RLayer[ContextStorage & EnvName & ConfigProvider, api.OpenTelemetry & Tracing] =
     ZLayer.fromZIO {
-      ZIO.serviceWith[EdgeConfig]: config =>
-        val resource = config.telemetry.fold(Resource.empty())(_ =>
+      for
+        envName <- ZIO.service[EnvName]
+        exporter <- ZIO.serviceWithZIO[ConfigProvider](_.load(Config.Optional(Config.string("otel-exporter"))))
+        resource = exporter.fold(Resource.empty())(_ =>
           Resource.create(
             Attributes.of(
               ServiceAttributes.SERVICE_NAME,
-              s"$serviceName-${config.runtime.env.value}",
+              s"$serviceName-$envName",
             ),
           ),
         )
 
-        OpenTelemetry.custom(
+        otel = OpenTelemetry.custom(
           for {
-            spanExporter <- config.telemetry match
+            spanExporter <- exporter match
               case None =>
                 ZIO.succeed(NoopSpanExporter)
-              case Some(telemetry) =>
+              case Some(edp) =>
                 ZIO.fromAutoCloseable:
                   ZIO.succeed:
                     OtlpGrpcSpanExporter.builder()
-                      .setEndpoint(telemetry.collector)
+                      .setEndpoint(edp)
                       .build()
 
             spanProcessor <- ZIO.fromAutoCloseable:
@@ -274,6 +213,7 @@ object EdgeApp:
             )
           } yield openTelemetry,
         )
+      yield otel
     }.flatten >+> OpenTelemetry.tracing(
       instrumentationScopeName = "versola.http",
       instrumentationVersion = None,
@@ -288,28 +228,3 @@ object EdgeApp:
 
     override def shutdown() =
       io.opentelemetry.sdk.common.CompletableResultCode.ofSuccess()
-
-  private val prometheusMetricsService: ZLayer[MetricsConfig, Throwable, MetricsService] =
-    (publisherLayer >+> prometheusLayer) >+> ZLayer.fromZIO:
-      ZIO.serviceWith[PrometheusPublisher]: publisher =>
-        new MetricsService {
-          override def get: UIO[String] = publisher.get
-        }
-
-  given DeriveConfig[Secret.Bytes16] = DeriveConfig[String]
-    .mapOrFail(parseBase64UrlSecret(Secret.Bytes16))
-
-  given DeriveConfig[Secret.Bytes32] = DeriveConfig[String]
-    .mapOrFail(parseBase64UrlSecret(Secret.Bytes32))
-
-  given DeriveConfig[URL] = DeriveConfig[String]
-    .mapOrFail(URL.decode(_).left.map(ex => zio.Config.Error.InvalidData(message = ex.getMessage)))
-
-  private def parseBase64UrlSecret(newType: ByteArrayNewType.FixedLength)(str: String) =
-    newType.fromBase64Url(str)
-      .left.map(message => zio.Config.Error.InvalidData(message = message))
-      .filterOrElse(
-        _.length == newType.length,
-        zio.Config.Error.InvalidData(message = s"Base64-encoded string must be ${newType.length} bytes. '$str' is '"),
-      )
-

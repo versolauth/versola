@@ -1,27 +1,79 @@
 package versola
 
 import com.augustnagro.magnum.magzio.TransactorZIO
-import versola.edge.{CompleteController, EdgeSessionController, PostgresEdgeSessionRepository}
+import com.typesafe.config.ConfigFactory
+import versola.edge.{
+  CompleteController,
+  EdgeConfig,
+  EdgeCredentialsService,
+  EdgeSessionController,
+  EdgeSessionRepository,
+  EdgeSessionService,
+  PostgresEdgeSessionRepository,
+}
+import versola.util.*
+import versola.util.http.{HttpObservabilityConfig, VersolaApp}
 import versola.util.postgres.{PostgresConfig, PostgresHikariDataSource}
-import zio.{ConfigProvider, RLayer, ZLayer}
+import zio.*
+import zio.config.magnolia.{DeriveConfig, deriveConfig}
+import zio.config.typesafe.*
+import zio.http.*
+import zio.http.Client
+import zio.http.Server.RequestStreaming
+import zio.telemetry.opentelemetry.tracing.Tracing
 
-object PostgresEdgeApp extends EdgeApp:
+object PostgresEdgeApp extends VersolaApp("edge"):
+  val environmentTag = Tag[Environment]
 
-  case class AppConfig(
-      databases: Map[String, PostgresConfig],
-  )
+  val diagnosticsConfig: Server.Config =
+    Server.Config.default.port(8081)
 
-  val repositories =
-    ZLayer.service[AppConfig].project(_.databases("postgres")) >>>
-      (PostgresHikariDataSource.layer(migrate = true) >>> TransactorZIO.layer) >>>
-        ZLayer.fromFunction(PostgresEdgeSessionRepository(_))
+  val serverConfig: Server.Config =
+    Server.Config.default.port(9346)
 
-  val dependencies: RLayer[zio.Scope & ConfigProvider, Repositories] =
-    parseConfig[AppConfig] >+> repositories
+  type Dependencies = EdgeSessionRepository &
+    EdgeConfig &
+    SecureRandom &
+    EdgeSessionService &
+    EdgeCredentialsService &
+    SecurityService &
+    Client
 
-  def routes =
+  override def routes: Routes[Dependencies & Tracing, Nothing] =
     List(
       CompleteController.routes,
       EdgeSessionController.routes,
     ).reduce(_ ++ _)
 
+  val dependencies: ZLayer[ConfigProvider & Tracing, Throwable, Dependencies] =
+    ZLayer.scopedEnvironment:
+      (parseConfig[EdgeConfig] >+>
+        (ZLayer.service[EdgeConfig].project(_.postgres) >>>
+          (PostgresHikariDataSource.layer(migrate = true) >>> TransactorZIO.layer) >>>
+          ZLayer.fromFunction(PostgresEdgeSessionRepository(_))) >+>
+        SecureRandom.live >+>
+        EdgeCredentialsService.live >+>
+        Client.default >+>
+        SecurityService.live >+>
+        EdgeSessionService.live).build
+
+  def parseConfig[A: {DeriveConfig, Tag}] =
+    ZLayer:
+      ZIO.serviceWithZIO[ConfigProvider](_.load(deriveConfig[A]))
+
+  given DeriveConfig[Secret.Bytes16] = DeriveConfig[String]
+    .mapOrFail(parseBase64UrlSecret(Secret.Bytes16))
+
+  given DeriveConfig[Secret.Bytes32] = DeriveConfig[String]
+    .mapOrFail(parseBase64UrlSecret(Secret.Bytes32))
+
+  given DeriveConfig[URL] = DeriveConfig[String]
+    .mapOrFail(URL.decode(_).left.map(ex => zio.Config.Error.InvalidData(message = ex.getMessage)))
+
+  private def parseBase64UrlSecret(newType: ByteArrayNewType.FixedLength)(str: String) =
+    newType.fromBase64Url(str)
+      .left.map(message => zio.Config.Error.InvalidData(message = message))
+      .filterOrElse(
+        _.length == newType.length,
+        zio.Config.Error.InvalidData(message = s"Base64-encoded string must be ${newType.length} bytes. '$str' is '"),
+      )

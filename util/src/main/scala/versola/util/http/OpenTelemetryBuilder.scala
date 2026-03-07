@@ -24,25 +24,24 @@ import zio.{Exit, RIO, RLayer, Scope, TaskLayer, ZIO, ZLayer}
 object OpenTelemetryBuilder:
   def live(
       serviceName: String,
-  ): RLayer[ContextStorage & CoreConfig, api.OpenTelemetry & Tracing] =
+  ): RLayer[ContextStorage & EnvName & zio.ConfigProvider, api.OpenTelemetry & Tracing] =
     ZLayer.fromZIO {
-      ZIO.serviceWith[CoreConfig]: config =>
-        openTelemetryProvider(
-          env = config.runtime.env,
-          serviceName = serviceName,
-          config = config.telemetry,
-        )
-    }.flatten >+> OpenTelemetry.tracing(
-      instrumentationScopeName = "versola.http",
-      instrumentationVersion = None,
-    ) ++ ZLayer.service[api.OpenTelemetry]
+      for
+        env <- ZIO.service[EnvName]
+        exporter <- ZIO.serviceWithZIO[zio.ConfigProvider](_.load(zio.Config.Optional(zio.Config.string("otel-exporter"))))
+      yield openTelemetryProvider(env, serviceName, exporter)
+    }.flatten >+>
+      OpenTelemetry.tracing(
+        instrumentationScopeName = "versola.http",
+        instrumentationVersion = None,
+      ) ++ ZLayer.service[api.OpenTelemetry]
 
   private def openTelemetryProvider(
       env: EnvName,
       serviceName: String,
-      config: Option[CoreConfig.Telemetry],
+      exporter: Option[String],
   ): TaskLayer[api.OpenTelemetry] = {
-    val resource = config.fold(Resource.empty())(_ =>
+    val resource = exporter.fold(Resource.empty())(_ =>
       Resource.create(
         Attributes.of(
           ServiceAttributes.SERVICE_NAME,
@@ -52,7 +51,7 @@ object OpenTelemetryBuilder:
     )
     OpenTelemetry.custom(
       for {
-        tracerProvider <- buildTracerProvider(resource, config)
+        tracerProvider <- buildTracerProvider(resource, exporter)
         meterProvider <- noopMeterProvider(resource)
         loggerProvider <- noopLogger(resource)
         openTelemetry <- ZIO.fromAutoCloseable(
@@ -72,17 +71,17 @@ object OpenTelemetryBuilder:
 
   private def buildTracerProvider(
       resource: Resource,
-      config: Option[CoreConfig.Telemetry],
+      exporter: Option[String],
   ): RIO[Scope, SdkTracerProvider] =
     for
-      spanExporter <- config match
+      spanExporter <- exporter match
         case None =>
           Exit.succeed(NoopSpanExporter)
-        case Some(config) =>
+        case Some(endpoint) =>
           ZIO.fromAutoCloseable:
             ZIO.succeed:
               OtlpGrpcSpanExporter.builder()
-                .setEndpoint(config.collector)
+                .setEndpoint(endpoint)
                 .build()
 
       spanProcessor <-

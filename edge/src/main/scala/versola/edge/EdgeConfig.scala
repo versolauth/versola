@@ -1,36 +1,21 @@
 package versola.edge
 
 import versola.util.{EnvName, Secret}
+import versola.util.postgres.PostgresConfig
 import zio.Duration
 
 /**
  * Configuration for the Edge service.
- * 
+ *
  * Unlike CoreConfig used by the auth service, EdgeConfig does not include JWT configuration
  * since the edge service doesn't issue JWTs - it only stores and forwards tokens.
  */
 case class EdgeConfig(
-    runtime: EdgeConfig.Runtime,
-    telemetry: Option[EdgeConfig.Telemetry],
     security: EdgeConfig.Security,
+    postgres: PostgresConfig,
 )
 
 object EdgeConfig:
-  /**
-   * Runtime configuration (environment name)
-   * Reuses the same structure as CoreConfig.Runtime
-   */
-  case class Runtime(
-      env: EnvName,
-  )
-
-  /**
-   * Telemetry configuration (optional)
-   * Reuses the same structure as CoreConfig.Telemetry
-   */
-  case class Telemetry(
-      collector: String,
-  )
 
   /**
    * Security configuration for the edge service.

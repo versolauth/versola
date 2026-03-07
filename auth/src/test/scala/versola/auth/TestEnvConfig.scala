@@ -4,7 +4,6 @@ import com.nimbusds.jose.crypto.RSASSASigner
 import com.nimbusds.jose.jwk.RSAKey
 import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm, JWSHeader}
 import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
-import versola.OAuthApp
 import versola.auth.model.{AccessToken, DeviceId}
 import versola.oauth.conversation.model.AuthId
 import versola.user.model.UserId
@@ -57,8 +56,6 @@ object TestEnvConfig:
 
 
   val coreConfig = CoreConfig(
-    runtime = CoreConfig.Runtime(EnvName.Test("test")),
-    telemetry = None,
     security = CoreConfig.Security(
       accessTokens = CoreConfig.Security.AccessTokens(
         pepper = Secret.Bytes32(Array.fill(32)(0.toByte)),
@@ -84,12 +81,15 @@ object TestEnvConfig:
       ),
     ),
     jwt = jwtConfig,
+    postgres = versola.util.postgres.PostgresConfig(
+      url = "jdbc:postgresql://localhost:5432/auth_test",
+      user = "test",
+      password = "test",
+    ),
   )
 
   def buildCoreConfig(envName: EnvName): CoreConfig =
-    coreConfig.copy(
-      runtime = coreConfig.runtime.copy(env = envName),
-    )
+    coreConfig
 
   // Create a valid test access token following the same rules as TokenService
   def createTestAccessToken(

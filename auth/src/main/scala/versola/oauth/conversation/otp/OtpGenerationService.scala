@@ -1,7 +1,7 @@
 package versola.oauth.conversation.otp
 
 import versola.auth.model.OtpCode
-import versola.util.{CoreConfig, SecureRandom}
+import versola.util.{EnvName, SecureRandom}
 import zio.{UIO, ZIO, ZLayer}
 
 trait OtpGenerationService:
@@ -9,14 +9,14 @@ trait OtpGenerationService:
 
 object OtpGenerationService:
   def live = ZLayer.fromFunction(Impl(_, _))
-  
+
   class Impl(
       secureRandom: SecureRandom,
-      config: CoreConfig,
+      env: EnvName,
   ) extends OtpGenerationService:
-    
+
     override def generateOtpCode: UIO[OtpCode] =
-      if config.runtime.env.isProd then
+      if env.isProd then
         secureRandom.nextNumeric(length = 6).map(OtpCode(_))
       else
         ZIO.succeed(OtpCode("123456"))
