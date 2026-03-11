@@ -2,10 +2,10 @@ package versola.oauth.token
 
 import versola.auth.model.{AccessToken, RefreshToken}
 import versola.oauth.client.OAuthClientService
-import versola.oauth.client.model.{AccessTokenType, OAuthClientRecord, ScopeToken}
+import versola.oauth.client.model.{OAuthClientRecord, ScopeToken}
 import versola.oauth.model.AuthorizationCodeRecord
 import versola.oauth.session.model.{TokenCreationRecord, WithTtl}
-import versola.oauth.session.{SessionRepository, TokenRepository}
+import versola.oauth.session.{SessionRepository, RefreshTokenRepository}
 import versola.oauth.token.model.{CodeExchangeRequest, IssuedTokens, TokenEndpointError}
 import versola.util.http.{ClientCredentials, ClientIdWithSecret}
 import versola.util.{AuthPropertyGenerator, CoreConfig, MAC, Secret, SecurityService}
@@ -23,12 +23,12 @@ object OAuthTokenService:
   def live = ZLayer.fromFunction(Impl(_, _, _, _, _, _))
 
   class Impl(
-      authorizationCodeRepository: AuthorizationCodeRepository,
-      oauthClientService: OAuthClientService,
-      tokenRepository: TokenRepository,
-      securityService: SecurityService,
-      authPropertyGenerator: AuthPropertyGenerator,
-      config: CoreConfig,
+              authorizationCodeRepository: AuthorizationCodeRepository,
+              oauthClientService: OAuthClientService,
+              tokenRepository: RefreshTokenRepository,
+              securityService: SecurityService,
+              authPropertyGenerator: AuthPropertyGenerator,
+              config: CoreConfig,
   ) extends OAuthTokenService:
 
     override def exchangeAuthorizationCode(
@@ -60,11 +60,6 @@ object OAuthTokenService:
     ): Task[IssuedTokens] =
       for
         accessToken <- authPropertyGenerator.nextAccessToken
-        tokenProperties <-
-          if client.accessTokenType == AccessTokenType.Jwt then
-            ZIO.right(IssuedTokens.JwtProperties(codeRecord.userId))
-          else
-            securityService.macBlake3(Secret(accessToken), config.security.accessTokens.pepper).asLeft
 
         hasOfflineAccess = codeRecord.scope.contains(ScopeToken.OfflineAccess)
 
@@ -79,11 +74,6 @@ object OAuthTokenService:
 
         accessTokenTtl = client.accessTokenTtl
 
-        tokens = These.fromOptions(
-          tokenProperties.left.toOption.map(WithTtl(_, client.accessTokenTtl)),
-          refreshTokenWithMac.map(_._2).map(WithTtl(_, config.security.refreshTokens.ttl)),
-        )
-
         tokenRecord = TokenCreationRecord(
           sessionId = codeRecord.sessionId,
           userId = codeRecord.userId,
@@ -92,13 +82,13 @@ object OAuthTokenService:
           issuedAt = now,
         )
 
-        _ <- ZIO.fromOption(tokens)
-          .flatMap(tokenRepository.create(_, tokenRecord))
-          .orElseSucceed(())
+        _ <- ZIO.foreach(refreshTokenWithMac) { case (_, mac) =>
+          tokenRepository.create(mac, config.security.refreshTokens.ttl, tokenRecord)
+        }
       yield IssuedTokens(
         accessToken = accessToken,
         accessTokenTtl = accessTokenTtl,
-        accessTokenJwtProperties = tokenProperties.toOption,
+        accessTokenJwtProperties = Some(IssuedTokens.JwtProperties(codeRecord.userId)),
         refreshToken = refreshTokenWithMac.map(_._1),
         scope = codeRecord.scope,
       )

@@ -11,8 +11,7 @@ object OtpGenerationServiceSpec extends UnitSpecBase:
 
   class Env(envName: EnvName = EnvName.Prod):
     val secureRandom = stub[SecureRandom]
-    val coreConfig = TestEnvConfig.buildCoreConfig(envName)
-    val service = OtpGenerationService.Impl(secureRandom, coreConfig)
+    val service = OtpGenerationService.Impl(secureRandom, envName)
 
   val spec = suite("OtpGenerationService")(
     suite("generateOtpCode")(

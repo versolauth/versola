@@ -2,7 +2,7 @@ package versola.oauth.authorize
 
 import versola.oauth.authorize.model.{AuthorizeRequest, Error, ResponseTypeEntry}
 import versola.oauth.client.OAuthClientService
-import versola.oauth.client.model.{AccessTokenType, ClientId, OAuthClientRecord, ScopeToken}
+import versola.oauth.client.model.{ClientId, OAuthClientRecord, ScopeToken}
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, State}
 import versola.util.UnitSpecBase
 import zio.http.{Request, URL}
@@ -32,7 +32,6 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
     secret = None,
     previousSecret = None,
     accessTokenTtl = 10.minutes,
-    accessTokenType = AccessTokenType.Opaque,
   )
 
   class Env:

@@ -7,7 +7,7 @@ import versola.oauth.client.{OAuthClientService, OAuthScopeRepository}
 import versola.oauth.conversation.otp.{EmailOtpProvider, OtpGenerationService, OtpService}
 import versola.oauth.conversation.{ConversationController, ConversationRenderService, ConversationRepository, ConversationRouter, ConversationService, PostgresConversationRepository}
 import versola.oauth.introspect.{IntrospectionController, IntrospectionService}
-import versola.oauth.session.{PostgresSessionRepository, PostgresTokenRepository, SessionRepository, TokenRepository}
+import versola.oauth.session.{PostgresSessionRepository, PostgresRefreshTokenRepository, SessionRepository, RefreshTokenRepository}
 import versola.oauth.token.{AuthorizationCodeRepository, OAuthTokenService, TokenEndpointController}
 import versola.oauth.{PostgresAuthorizationCodeRepository, PostgresOAuthClientRepository, PostgresOAuthScopeRepository}
 import versola.user.{PostgresUserRepository, UserRepository}
@@ -39,7 +39,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
     ConversationRepository &
     AuthorizationCodeRepository &
     SessionRepository &
-    TokenRepository &
+    RefreshTokenRepository &
     SecureRandom &
     SecurityService &
     AuthPropertyGenerator &
@@ -76,26 +76,23 @@ object PostgresOAuthApp extends VersolaApp("auth"):
             ZLayer.fromFunction(PostgresConversationRepository(_)) >+>
             ZLayer.fromFunction(PostgresAuthorizationCodeRepository(_)) >+>
             ZLayer.fromFunction(PostgresSessionRepository(_)) >+>
-            ZLayer.fromFunction(PostgresTokenRepository(_)))) >+>
+            ZLayer.fromFunction(PostgresRefreshTokenRepository(_)))) >+>
         SecureRandom.live >+>
         SecurityService.live >+>
         AuthPropertyGenerator.live >+>
-        ReloadingCache.live[Map[versola.oauth.client.model.ClientId, versola.oauth.client.model.OAuthClientRecord]](
-          ZIO.serviceWithZIO[versola.oauth.client.OAuthClientRepository](_.getAll)
-        ) >+>
-        ReloadingCache.live[Map[versola.oauth.client.model.ScopeToken, versola.oauth.client.model.Scope]](
-          ZIO.serviceWithZIO[OAuthScopeRepository](_.getAll)
-        ) >+>
-        OAuthClientService.live >+>
+        ZLayer.scoped(ReloadingCache.make[Map[versola.oauth.client.model.ClientId, versola.oauth.client.model.OAuthClientRecord]]()) >+>
+        ZLayer.scoped(ReloadingCache.make[Map[versola.oauth.client.model.ScopeToken, versola.oauth.client.model.Scope]]()) >+>
+        ZLayer.fromFunction(OAuthClientService.Impl(_, _, _, _, _, _, _)) >+>
         OAuthTokenService.live >+>
         IntrospectionService.live >+>
         AuthorizeRequestParser.live >+>
         AuthorizeEndpointService.live >+>
-        ConversationRouter.live >+>
         OtpGenerationService.live >+>
-        OtpService.live >+>
+        ZLayer.succeed(versola.oauth.conversation.otp.OtpDecisionService.Impl()) >+>
         EmailOtpProvider.live >+>
+        OtpService.live >+>
         ConversationService.live >+>
+        ConversationRouter.live >+>
         ConversationRenderService.live).build
 
   def parseConfig[A: {DeriveConfig, Tag}] =
@@ -113,7 +110,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
 
   given DeriveConfig[PrivateKey] = DeriveConfig[String]
     .mapOrFail: str =>
-      PrivateKeyParser.parsePrivateKey(str)
+      PrivateKeyUtil.parse(str, "RSA")
         .left.map(ex => zio.Config.Error.InvalidData(message = ex.getMessage))
 
   given DeriveConfig[zio.json.ast.Json.Obj] = DeriveConfig[String]
@@ -122,7 +119,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
         .flatMap:
           case obj: zio.json.ast.Json.Obj => Right(obj)
           case _ => Left("Expected JSON object")
-        .left.map(zio.Config.Error.InvalidData.apply)
+        .left.map(msg => zio.Config.Error.InvalidData(message = msg))
 
   given DeriveConfig[EnvName] = DeriveConfig[String]
     .map:

@@ -31,11 +31,8 @@ object IntrospectionController extends Controller:
         credentials <- request.extractCredentials.orElseFail(TokenEndpointError.InvalidClient)
         introspectionRequest <- request.formAs[IntrospectionRequest]
         response <- introspectionRequest.token match
-          case AccessTokenOption(accessToken) =>
-            introspectionService.introspectOpaqueAccessToken(accessToken, credentials)
-
           case JWTAccessTokenOption(accessToken) =>
-            introspectionService.introspectJWTAccessToken(accessToken, credentials)
+            introspectionService.introspectAccessToken(accessToken, credentials)
 
           case RefreshTokenOption(refreshToken) =>
             introspectionService.introspectRefreshToken(refreshToken, credentials)
@@ -72,14 +69,11 @@ object IntrospectionController extends Controller:
   sealed trait TokenOption
 
   case class RefreshTokenOption(refreshToken: RefreshToken) extends TokenOption
-  case class AccessTokenOption(accessToken: AccessToken) extends TokenOption
   case class JWTAccessTokenOption(accessToken: SignedJWT) extends TokenOption
 
   given FormDecoder[IntrospectionRequest] = form =>
     val parse = (s: String) =>
-      if s.startsWith("t.") then
-        AccessToken.fromBase64Url(s.drop(2)).map(AccessTokenOption(_))
-      else if s.startsWith("r.") then
+      if s.startsWith("r.") then
         RefreshToken.fromBase64Url(s.drop(2)).map(RefreshTokenOption(_))
       else
         util.Try(SignedJWT.parse(s))

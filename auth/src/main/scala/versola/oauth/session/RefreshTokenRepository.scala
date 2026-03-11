@@ -6,12 +6,11 @@ import versola.util.MAC
 import zio.Task
 import zio.prelude.These
 
-trait TokenRepository:
+trait RefreshTokenRepository:
   def create(
-      tokens: These[WithTtl[MAC.Of[AccessToken]], WithTtl[MAC.Of[RefreshToken]]],
+      refreshToken: MAC.Of[RefreshToken],
+      refreshTokenTtl: zio.Duration,
       record: TokenCreationRecord,
   ): Task[Unit]
-
-  def findAccessToken(token: MAC.Of[AccessToken]): Task[Option[TokenRecord]]
 
   def findRefreshToken(token: MAC.Of[RefreshToken]): Task[Option[TokenRecord]]

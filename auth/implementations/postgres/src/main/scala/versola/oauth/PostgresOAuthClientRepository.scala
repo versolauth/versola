@@ -3,7 +3,7 @@ package versola.oauth
 import com.augustnagro.magnum.*
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.oauth.client.OAuthClientRepository
-import versola.oauth.client.model.{AccessTokenType, ClientId, OAuthClientRecord}
+import versola.oauth.client.model.{ClientId, OAuthClientRecord}
 import versola.oauth.model.*
 import versola.util.Secret
 import versola.util.postgres.BasicCodecs
@@ -12,7 +12,6 @@ import zio.*
 class PostgresOAuthClientRepository(
     xa: TransactorZIO,
 ) extends OAuthClientRepository, BasicCodecs:
-  given DbCodec[AccessTokenType] = DbCodec.StringCodec.biMap(AccessTokenType.valueOf, _.toString)
   given DbCodec[ClientId] = DbCodec.StringCodec.biMap(ClientId(_), identity[String])
   given DbCodec[Secret] = DbCodec.ByteArrayCodec.biMap(Secret(_), identity[Array[Byte]])
   given DbCodec[Duration] = DbCodec.LongCodec.biMap(Duration.fromSeconds, _.toSeconds)
@@ -21,9 +20,9 @@ class PostgresOAuthClientRepository(
   override def create(client: OAuthClientRecord): Task[Unit] =
     xa.connect:
       sql"""
-        INSERT INTO oauth_clients (id, client_name, redirect_uris, scope, secret, previous_secret, access_token_ttl, access_token_type)
+        INSERT INTO oauth_clients (id, client_name, redirect_uris, scope, secret, previous_secret, access_token_ttl)
         VALUES (${client.id}, ${client.clientName}, ${client.redirectUris}, ${client.scope},
-                ${client.secret}, ${client.previousSecret}, ${client.accessTokenTtl}, ${client.accessTokenType.toString})
+                ${client.secret}, ${client.previousSecret}, ${client.accessTokenTtl})
       """.update.run()
     .unit
 
@@ -71,7 +70,7 @@ class PostgresOAuthClientRepository(
   override def getAll: Task[Map[ClientId, OAuthClientRecord]] =
     xa.connect:
       sql"""
-        SELECT id, client_name, redirect_uris, scope, secret, previous_secret, access_token_ttl, access_token_type
+        SELECT id, client_name, redirect_uris, scope, secret, previous_secret, access_token_ttl
         FROM oauth_clients
       """.query[OAuthClientRecord].run()
         .map(client => client.id -> client).toMap

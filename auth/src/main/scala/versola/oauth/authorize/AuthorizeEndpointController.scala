@@ -40,8 +40,8 @@ object AuthorizeEndpointController extends Controller:
             ZIO.succeed(Response.seeOther(error.redirectUriWithErrorParams))
 
           case ex: Throwable =>
-            ZIO.logErrorCause("Unknown exception", Cause.fail(ex)) *>
-              ZIO.succeed(Response.internalServerError)
+            ZIO.logErrorCause("Unknown exception", Cause.fail(ex))
+              .as(Response.internalServerError)
         }
     }
 

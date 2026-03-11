@@ -71,34 +71,6 @@ class PostgresUserRepository(
   private def findByEmailQuery(email: Email) =
     sql"select id, email, phone from users where email = $email".query[UserRecord]
 
-  override def update(
-      userId: UserId,
-      email: Option[Option[Email]],
-      firstName: Option[Option[FirstName]],
-      middleName: Option[Option[MiddleName]],
-      lastName: Option[Option[LastName]],
-      birthDate: Option[Option[BirthDate]],
-  ): Task[Unit] =
-    for
-      now <- Clock.instant
-      updateEmailPart = email.map(email => sql"email = ${email.orNull}")
-      updateFirstNamePart = firstName.map(firstName => sql"first_name = ${firstName.orNull}")
-      updateMiddleNamePart = middleName.map(middleName => sql"middle_name = ${middleName.orNull}")
-      updateLastNamePart = lastName.map(lastName => sql"last_name = ${lastName.orNull}")
-      updateBirthDatePart = birthDate.map(birthDate => sql"birth_date = ${birthDate.orNull}")
-      fragments = List(
-        updateEmailPart,
-        updateFirstNamePart,
-        updateMiddleNamePart,
-        updateLastNamePart,
-        updateBirthDatePart,
-      ).flatten
-      _ <- ZIO.unit.when(fragments.isEmpty).someOrElseZIO:
-        val fragment = fragments.reduce((a, b) => sql"$a, $b")
-        xa.connect:
-          val query = sql"update users set $fragment, updated_at = $now where id = $userId".update
-          query.run()
-    yield ()
 
   given DbCodec[UserId] = DbCodec.UUIDCodec.biMap(UserId(_), identity[UUID])
   given DbCodec[Email] = DbCodec.StringCodec.biMap(Email(_), identity[String])

@@ -13,12 +13,4 @@ trait UserRepository:
 
   def findByCredential(credential: Either[Email, Phone]): Task[Option[UserRecord]]
 
-  def update(
-      userId: UserId,
-      email: Option[Option[Email]],
-      firstName: Option[Option[FirstName]],
-      middleName: Option[Option[MiddleName]],
-      lastName: Option[Option[LastName]],
-      birthDate: Option[Option[BirthDate]],
-  ): Task[Unit]
 

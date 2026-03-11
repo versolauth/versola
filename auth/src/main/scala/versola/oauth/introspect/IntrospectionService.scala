@@ -7,7 +7,7 @@ import versola.auth.model.{AccessToken, RefreshToken}
 import versola.oauth.client.OAuthClientService
 import versola.oauth.client.model.OAuthClientRecord
 import versola.oauth.introspect.model.{IntrospectionError, IntrospectionResponse}
-import versola.oauth.session.TokenRepository
+import versola.oauth.session.RefreshTokenRepository
 import versola.oauth.session.model.TokenRecord
 import versola.util.http.{ClientCredentials, ClientIdWithSecret}
 import versola.util.{CoreConfig, Secret, SecurityService}
@@ -16,15 +16,10 @@ import zio.{IO, ZIO, ZLayer}
 import scala.jdk.CollectionConverters.*
 
 trait IntrospectionService:
-  def introspectJWTAccessToken(
+  def introspectAccessToken(
       token: SignedJWT,
       credentials: ClientCredentials,
   ): IO[IntrospectionError, IntrospectionResponse]
-
-  def introspectOpaqueAccessToken(
-      token: AccessToken,
-      credentials: ClientCredentials,
-  ): IO[Throwable | IntrospectionError, IntrospectionResponse]
 
   def introspectRefreshToken(
       token: RefreshToken,
@@ -33,19 +28,19 @@ trait IntrospectionService:
 
 object IntrospectionService:
   def live: ZLayer[
-    OAuthClientService & TokenRepository & SecurityService & CoreConfig,
+    OAuthClientService & RefreshTokenRepository & SecurityService & CoreConfig,
     Nothing,
     IntrospectionService,
   ] = ZLayer.fromFunction(Impl(_, _, _, _))
 
   class Impl(
-      oauthClientService: OAuthClientService,
-      tokenRepository: TokenRepository,
-      securityService: SecurityService,
-      config: CoreConfig,
+              oauthClientService: OAuthClientService,
+              tokenRepository: RefreshTokenRepository,
+              securityService: SecurityService,
+              config: CoreConfig,
   ) extends IntrospectionService:
 
-    override def introspectJWTAccessToken(
+    override def introspectAccessToken(
         token: SignedJWT,
         credentials: ClientCredentials,
     ): IO[IntrospectionError, IntrospectionResponse] =
@@ -86,17 +81,6 @@ object IntrospectionService:
           case key: ECKey => token.verify(ECDSAVerifier(key))
           case key: OctetSequenceKey => token.verify(MACVerifier(key))
           case _ => false
-
-
-    override def introspectOpaqueAccessToken(
-        token: AccessToken,
-        credentials: ClientCredentials,
-    ): IO[Throwable | IntrospectionError, IntrospectionResponse] =
-      for
-        _ <- authenticateClient(credentials)
-        tokenMac <- securityService.macBlake3(Secret(token), config.security.accessTokens.pepper)
-        tokenRecord <- tokenRepository.findAccessToken(tokenMac)
-      yield buildIntrospectionResponse(tokenRecord)
 
     override def introspectRefreshToken(
         token: RefreshToken,

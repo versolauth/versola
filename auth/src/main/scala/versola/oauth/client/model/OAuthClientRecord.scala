@@ -13,7 +13,6 @@ case class OAuthClientRecord(
     secret: Option[Secret],
     previousSecret: Option[Secret],
     accessTokenTtl: Duration,
-    accessTokenType: AccessTokenType
 ) derives Schema, CanEqual, Equal:
 
   def isConfidential: Boolean = secret.nonEmpty

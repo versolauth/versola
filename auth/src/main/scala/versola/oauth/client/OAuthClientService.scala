@@ -1,6 +1,6 @@
 package versola.oauth.client
 
-import versola.oauth.client.model.{AccessTokenType, ClientId, ClientSecret, OAuthClientRecord, ScopeRecord, ScopeToken}
+import versola.oauth.client.model.{ClientId, ClientSecret, OAuthClientRecord, ScopeRecord, ScopeToken}
 import versola.util.{CoreConfig, ReloadingCache, Secret, SecureRandom, SecurityService}
 import zio.*
 import zio.prelude.NonEmptySet
@@ -85,7 +85,6 @@ object OAuthClientService:
           secret = Some(macWithSalt),
           previousSecret = None,
           accessTokenTtl = 10.minutes,
-          accessTokenType = AccessTokenType.Opaque,
         )
         _ <- repository.create(client)
       yield secret

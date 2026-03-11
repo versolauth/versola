@@ -5,17 +5,17 @@ import com.augustnagro.magnum.sql
 import versola.util.postgres.PostgresSpec
 import zio.{ZIO, ZLayer}
 
-object PostgresTokenRepositorySpec extends PostgresSpec, TokenRepositorySpec:
+object PostgresRefreshTokenRepositorySpec extends PostgresSpec, RefreshTokenRepositorySpec:
 
   override lazy val environment =
     ZLayer:
       for
         xa <- ZIO.service[TransactorZIO]
-      yield TokenRepositorySpec.Env(PostgresTokenRepository(xa))
+      yield RefreshTokenRepositorySpec.Env(PostgresRefreshTokenRepository(xa))
 
-  override def beforeEach(env: TokenRepositorySpec.Env) =
+  override def beforeEach(env: RefreshTokenRepositorySpec.Env) =
     for
       xa <- ZIO.service[TransactorZIO]
-      _ <- xa.connect(sql"TRUNCATE TABLE access_tokens, refresh_tokens".update.run())
+      _ <- xa.connect(sql"TRUNCATE TABLE refresh_tokens".update.run())
     yield ()
 

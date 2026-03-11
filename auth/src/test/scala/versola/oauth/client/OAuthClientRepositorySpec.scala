@@ -28,7 +28,6 @@ trait OAuthClientRepositorySpec extends DatabaseSpecBase[OAuthClientRepositorySp
     secret = Some(macWithSalt1),
     previousSecret = None,
     accessTokenTtl = 10.minutes,
-    accessTokenType = AccessTokenType.Opaque,
   )
 
   val privateClient2 = OAuthClientRecord(
@@ -39,7 +38,6 @@ trait OAuthClientRepositorySpec extends DatabaseSpecBase[OAuthClientRepositorySp
     secret = Some(macWithSalt2),
     previousSecret = Some(macWithSalt1),
     accessTokenTtl = 10.minutes,
-    accessTokenType = AccessTokenType.Opaque,
   )
 
   val publicClient = OAuthClientRecord(
@@ -50,7 +48,6 @@ trait OAuthClientRepositorySpec extends DatabaseSpecBase[OAuthClientRepositorySp
     secret = None,
     previousSecret = None,
     accessTokenTtl = 10.minutes,
-    accessTokenType = AccessTokenType.Opaque,
   )
 
   def testCases(env: OAuthClientRepositorySpec.Env): List[Spec[OAuthClientRepositorySpec.Env & zio.Scope, Any]] =
