@@ -27,7 +27,6 @@
 - [ ] **Distributed Claims** - Client-fetched external claims (Section 5.6.2)
 - [ ] **Signed UserInfo Response** - Return UserInfo as JWT (Section 5.3.2)
 - [ ] **Encrypted UserInfo Response** - JWE encryption for privacy (Section 5.3.2)
-- [ ] **Multi-Valued Claims** - Array support for email, phone (Section 5.1)
 - [ ] **Essential Claims Enforcement** - Deny authorization if essential claims missing (Section 5.5.1)
 - [ ] **Claim Value Filtering** - Match specific claim values (Section 5.5.1)
 
@@ -756,33 +755,7 @@ ALTER TABLE oauth_clients ADD COLUMN jwks_uri TEXT;
 ALTER TABLE oauth_clients ADD COLUMN jwks JSONB;
 ```
 
-### 8.3 Multi-Valued Claims
-
-**Status:** Planned
-**Specification:** OpenID Connect Core 1.0 Section 5.1
-
-**Array-Based Claims:**
-Support claims with multiple values (e.g., multiple email addresses, phone numbers).
-
-**Example:**
-```json
-{
-  "sub": "550e8400-e29b-41d4-a716-446655440000",
-  "name": "John Doe",
-  "email": ["john@example.com", "john.doe@work.com"],
-  "email_verified": [true, false],
-  "phone_number": ["+1234567890", "+0987654321"],
-  "phone_number_verified": [true, true]
-}
-```
-
-**Implementation Requirements:**
-- JSONB already supports arrays natively
-- Update claim validation to accept both single values and arrays
-- Document which claims support multiple values
-- Ensure backward compatibility (single value = array of one)
-
-### 8.4 Essential Claims Enforcement
+### 8.3 Essential Claims Enforcement
 
 **Status:** Planned
 **Specification:** OpenID Connect Core 1.0 Section 5.5.1
