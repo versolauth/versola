@@ -24,7 +24,7 @@ trait OAuthClientService:
       audience: List[ClientId],
       clientName: String,
       redirectUris: NonEmptySet[String],
-      allowedScopes: Set[String],
+      allowedScopes: Set[ScopeToken],
   ): Task[Secret]
 
   /** Rotate a client secret: generate new secret, update client, return new secret */
@@ -74,7 +74,7 @@ object OAuthClientService:
         audience: List[ClientId],
         clientName: String,
         redirectUris: NonEmptySet[String],
-        scope: Set[String],
+        scope: Set[ScopeToken],
     ): Task[Secret] =
       for
         secret <- generateSecret

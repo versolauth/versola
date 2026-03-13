@@ -4,7 +4,7 @@ import com.augustnagro.magnum.*
 import com.augustnagro.magnum.magzio.TransactorZIO
 import com.augustnagro.magnum.pg.PgCodec
 import versola.oauth.client.OAuthClientRepository
-import versola.oauth.client.model.{ClientId, OAuthClientRecord}
+import versola.oauth.client.model.{ClientId, OAuthClientRecord, ScopeToken}
 import versola.oauth.model.*
 import versola.util.Secret
 import versola.util.postgres.BasicCodecs
@@ -16,6 +16,7 @@ class PostgresOAuthClientRepository(
   given DbCodec[ClientId] = DbCodec.StringCodec.biMap(ClientId(_), identity[String])
   given DbCodec[Secret] = DbCodec.ByteArrayCodec.biMap(Secret(_), identity[Array[Byte]])
   given DbCodec[Duration] = DbCodec.LongCodec.biMap(Duration.fromSeconds, _.toSeconds)
+  given DbCodec[ScopeToken] = DbCodec.StringCodec.biMap(ScopeToken(_), identity[String])
   given DbCodec[List[ClientId]] = PgCodec.SeqCodec[String].biMap(_.map(ClientId(_)).toList, _.map(identity[String]))
   given DbCodec[OAuthClientRecord] = DbCodec.derived[OAuthClientRecord]
 

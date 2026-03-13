@@ -69,7 +69,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
     id = clientId1,
     clientName = "Test Private Client 1",
     redirectUris = NonEmptySet("https://example.com/callback"),
-    scope = Set("read", "write"),
+    scope = Set(ScopeToken("read"), ScopeToken("write")),
     externalAudience = List.empty,
     secret = Some(secret1), // MAC for testSecret with salt1
     previousSecret = None,
@@ -80,7 +80,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
     id = clientId2,
     clientName = "Test Private Client 2",
     redirectUris = NonEmptySet("https://example2.com/callback"),
-    scope = Set("read"),
+    scope = Set(ScopeToken("read")),
     externalAudience = List.empty,
     secret = Some(secret2),
     previousSecret = Some(previousSecret),
@@ -91,7 +91,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
     id = publicClientId,
     clientName = "Test Public Client",
     redirectUris = NonEmptySet("https://public.example.com/callback"),
-    scope = Set("read"),
+    scope = Set(ScopeToken("read")),
     externalAudience = List.empty,
     secret = None,
     previousSecret = None,
@@ -283,7 +283,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
             List(),
             "Test Client",
             NonEmptySet("https://example.com/callback"),
-            Set("read", "write"),
+            Set(ScopeToken("read"), ScopeToken("write")),
           )
           registerCalls = env.repository.create.calls
         yield assertTrue(

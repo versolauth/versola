@@ -57,7 +57,7 @@ private[admin] object AdminControllerDescription:
       audience: List[ClientId],
       clientName: String,
       redirectUris: NonEmptySet[String],
-      allowedScopes: Set[String],
+      allowedScopes: Set[ScopeToken],
   ) derives Schema
 
   case class CreateClientResponse(

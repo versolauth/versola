@@ -4,9 +4,9 @@ import versola.auth.model.{AccessToken, RefreshToken}
 import versola.oauth.client.OAuthClientService
 import versola.oauth.client.model.{OAuthClientRecord, ScopeToken}
 import versola.oauth.model.AuthorizationCodeRecord
-import versola.oauth.session.model.{TokenCreationRecord, WithTtl}
+import versola.oauth.session.model.{RefreshAlreadyExchanged, RefreshTokenRecord, WithTtl}
 import versola.oauth.session.{RefreshTokenRepository, SessionRepository}
-import versola.oauth.token.model.{CodeExchangeRequest, IssuedTokens, TokenEndpointError}
+import versola.oauth.token.model.{CodeExchangeRequest, IssuedTokens, RefreshTokenRequest, TokenEndpointError}
 import versola.util.http.{ClientCredentials, ClientIdWithSecret}
 import versola.util.{AuthPropertyGenerator, CoreConfig, MAC, Secret, SecurityService}
 import zio.prelude.These
@@ -16,6 +16,11 @@ trait OAuthTokenService:
 
   def exchangeAuthorizationCode(
       codeExchangeRequest: CodeExchangeRequest,
+      tokenCredentials: ClientCredentials,
+  ): IO[Throwable | TokenEndpointError, IssuedTokens]
+
+  def refreshAccessToken(
+      refreshTokenRequest: RefreshTokenRequest,
       tokenCredentials: ClientCredentials,
   ): IO[Throwable | TokenEndpointError, IssuedTokens]
 
@@ -51,46 +56,85 @@ object OAuthTokenService:
           .filterOrFail(_.verify(codeVerifier))(TokenEndpointError.InvalidGrant)
 
         _ <- authorizationCodeRepository.delete(codeMac)
-        issuedTokens <- issueTokens(client, codeRecord)
+        now <- zio.Clock.instant
+
+        issuedTokens <- issueTokens(
+          client = client,
+          record = RefreshTokenRecord(
+            sessionId = codeRecord.sessionId,
+            userId = codeRecord.userId,
+            clientId = codeRecord.clientId,
+            scope = codeRecord.scope,
+            issuedAt = now,
+            expiresAt = now.plusSeconds(client.accessTokenTtl.toSeconds),
+            requestedClaims = codeRecord.requestedClaims,
+            uiLocales = codeRecord.uiLocales,
+            previousRefreshToken = None,
+          ),
+        ).mapError {
+          case ex: Throwable => ex
+          case _ => TokenEndpointError.InvalidGrant // illegal state
+        }
+      yield issuedTokens
+
+    override def refreshAccessToken(
+        refreshTokenRequest: RefreshTokenRequest,
+        tokenCredentials: ClientCredentials,
+    ): IO[Throwable | TokenEndpointError, IssuedTokens] =
+      import refreshTokenRequest.{refreshToken, scope}
+      for
+        client <- tokenCredentials match
+          case ClientIdWithSecret(clientId, clientSecret) =>
+            oauthClientService.verifySecret(clientId, clientSecret)
+              .someOrFail(TokenEndpointError.InvalidClient)
+
+        refreshTokenMac <- securityService.macBlake3(Secret(refreshToken), config.security.refreshTokens.pepper)
+
+        tokenRecord <- tokenRepository.findRefreshToken(refreshTokenMac)
+          .someOrFail(TokenEndpointError.InvalidGrant)
+          .filterOrFail(_.clientId == client.id)(TokenEndpointError.InvalidGrant)
+
+        _ <- ZIO.fail(TokenEndpointError.InvalidScope)
+          .when(scope.exists(!_.subsetOf(client.scope)))
+
+        now <- zio.Clock.instant
+
+        issuedTokens <- issueTokens(
+          client = client,
+          record = tokenRecord.copy(
+            scope = scope.getOrElse(tokenRecord.scope),
+            previousRefreshToken = Some(refreshTokenMac),
+            issuedAt = now,
+            expiresAt = now.plusSeconds(config.security.refreshTokens.ttl.toSeconds),
+          ),
+        )
       yield issuedTokens
 
     private def issueTokens(
         client: OAuthClientRecord,
-        codeRecord: AuthorizationCodeRecord,
-    ): Task[IssuedTokens] =
+        record: RefreshTokenRecord,
+    ): IO[Throwable | TokenEndpointError, IssuedTokens] =
       for
         accessToken <- authPropertyGenerator.nextAccessToken
 
-        hasOfflineAccess = codeRecord.scope.contains(ScopeToken.OfflineAccess)
-
-        now <- zio.Clock.instant
-
-        refreshTokenWithMac <- ZIO.when(hasOfflineAccess)(
+        refreshToken <- ZIO.when(record.scope.contains(ScopeToken.OfflineAccess))(
           for
             token <- authPropertyGenerator.nextRefreshToken
             mac <- securityService.macBlake3(Secret(token), config.security.refreshTokens.pepper)
-          yield (token, mac),
+            _ <- tokenRepository.create(mac, record)
+              .mapError:
+                case ex: Throwable => ex
+                case _ => TokenEndpointError.InvalidGrant
+          yield token,
         )
-
-        tokenRecord = TokenCreationRecord(
-          sessionId = codeRecord.sessionId,
-          userId = codeRecord.userId,
-          clientId = codeRecord.clientId,
-          scope = codeRecord.scope,
-          issuedAt = now,
-        )
-
-        _ <- ZIO.foreachDiscard(refreshTokenWithMac) { case (_, mac) =>
-          tokenRepository.create(mac, config.security.refreshTokens.ttl, tokenRecord)
-        }
       yield IssuedTokens(
         accessToken = accessToken,
-        clientId = codeRecord.clientId,
+        clientId = record.clientId,
         audience = client.audience,
         accessTokenTtl = client.accessTokenTtl,
-        userId = codeRecord.userId,
-        refreshToken = refreshTokenWithMac.map(_._1),
-        scope = codeRecord.scope,
-        requestedClaims = codeRecord.requestedClaims,
-        uiLocales = codeRecord.uiLocales,
+        userId = record.userId,
+        refreshToken = refreshToken,
+        scope = record.scope,
+        requestedClaims = record.requestedClaims,
+        uiLocales = record.uiLocales,
       )

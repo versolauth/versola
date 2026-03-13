@@ -20,6 +20,7 @@ import java.util.UUID
 class PostgresAuthorizationCodeRepository(
     xa: TransactorZIO,
 ) extends AuthorizationCodeRepository, BasicCodecs:
+  import PgCodec.ListCodec
 
   private given JsonCodec[Claim] = JsonCodec.string.transform(Claim(_), identity[String])
   private given JsonFieldEncoder[Claim] = JsonFieldEncoder.string.contramap(identity)
@@ -36,7 +37,6 @@ class PostgresAuthorizationCodeRepository(
   private given DbCodec[CodeChallenge] = DbCodec.StringCodec.biMap(CodeChallenge(_), identity[String])
   private given DbCodec[URL] = DbCodec.StringCodec.biMap(URL.decode(_).fold(throw _, identity), _.toString)
   private given DbCodec[RequestedClaims] = jsonCodec[RequestedClaims]
-  private given DbCodec[Vector[String]] = PgCodec.SeqCodec[String].biMap(_.toVector, _.toSeq)
   private given DbCodec[AuthorizationCodeRecord] = DbCodec.derived[AuthorizationCodeRecord]
 
   override def find(code: MAC.Of[AuthorizationCode]): Task[Option[AuthorizationCodeRecord]] =

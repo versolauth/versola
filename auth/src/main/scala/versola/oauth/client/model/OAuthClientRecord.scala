@@ -9,7 +9,7 @@ case class OAuthClientRecord(
     id: ClientId,
     clientName: String,
     redirectUris: NonEmptySet[String],
-    scope: Set[String],
+    scope: Set[ScopeToken],
     externalAudience: List[ClientId],
     secret: Option[Secret],
     previousSecret: Option[Secret],

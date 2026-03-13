@@ -1,5 +1,6 @@
 CREATE TABLE refresh_tokens(
     id BYTEA PRIMARY KEY,
+    previous_id BYTEA,
     session_id BYTEA NOT NULL,
     user_id UUID NOT NULL,
     client_id TEXT NOT NULL,
@@ -11,4 +12,4 @@ CREATE TABLE refresh_tokens(
 );
 
 CREATE INDEX refresh_tokens_user_id_idx ON refresh_tokens (user_id);
-CREATE INDEX refresh_tokens_expires_at_idx ON refresh_tokens (expires_at);
+CREATE INDEX refresh_tokens_expires_at_idx ON refresh_tokens (expires_at) where expires_at is not null;

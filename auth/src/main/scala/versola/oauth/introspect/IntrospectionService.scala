@@ -6,7 +6,7 @@ import versola.oauth.client.model.OAuthClientRecord
 import versola.oauth.introspect.model.{IntrospectionError, IntrospectionResponse}
 import versola.oauth.model.AccessToken
 import versola.oauth.session.RefreshTokenRepository
-import versola.oauth.session.model.TokenRecord
+import versola.oauth.session.model.RefreshTokenRecord
 import versola.util.http.{ClientCredentials, ClientIdWithSecret}
 import versola.util.{CoreConfig, Secret, SecurityService}
 import zio.{IO, ZIO, ZLayer}
@@ -78,7 +78,7 @@ object IntrospectionService:
           oauthClientService.verifySecret(clientId, clientSecret)
             .someOrFail(IntrospectionError.Unauthenticated())
 
-    private def buildIntrospectionResponse(record: Option[TokenRecord]): IntrospectionResponse =
+    private def buildIntrospectionResponse(record: Option[RefreshTokenRecord]): IntrospectionResponse =
       record match
         case Some(record) =>
           IntrospectionResponse(

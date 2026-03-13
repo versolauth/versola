@@ -1,12 +1,12 @@
 package versola.admin
 
 import versola.admin.AdminControllerDescription.*
-import versola.oauth.client.{OAuthClientService, OAuthScopeRepository, model}
 import versola.oauth.client.model.{Claim, ClientId, ScopeDescription, ScopeToken}
-import versola.oauth.model.*
+import versola.oauth.client.{OAuthClientService, OAuthScopeRepository, model}
 import versola.oauth.client.{OAuthClientService, OAuthScopeRepository}
-import versola.util.{Base64Url, SecureRandom}
+import versola.oauth.model.*
 import versola.util.http.Controller
+import versola.util.{Base64Url, SecureRandom}
 import zio.*
 import zio.http.*
 import zio.http.codec.HttpContentCodec
@@ -39,7 +39,7 @@ object AdminController extends Controller:
         )
         response = CreateClientResponse(Base64Url.encode(clientSecret))
       yield response)
-        //.tapError(ex => Controller.exceptions.set(Some(ex)))
+      // .tapError(ex => Controller.exceptions.set(Some(ex)))
     },
     rotateSecretEndpoint.implement { request =>
       (for
@@ -47,35 +47,35 @@ object AdminController extends Controller:
         newSecret <- clientService.rotateSecret(ClientId(request.clientId))
         response = RotateSecretResponse(Base64Url.encode(newSecret))
       yield response)
-        //.tapError(ex => Controller.exceptions.set(Some(ex)))
+      // .tapError(ex => Controller.exceptions.set(Some(ex)))
     },
     deleteClientsEndpoint.implement { request =>
       ZIO.serviceWithZIO[OAuthClientService](_.deleteClients(request.clientIds.toVector))
-        //.tapError(ex => Controller.exceptions.set(Some(ex)))
+      // .tapError(ex => Controller.exceptions.set(Some(ex)))
     },
     deletePreviousSecretEndpoint.implement { request =>
       ZIO.serviceWithZIO[OAuthClientService](_.deletePreviousSecret(ClientId(request.clientId)))
-        //.tapError(ex => Controller.exceptions.set(Some(ex)))
+      // .tapError(ex => Controller.exceptions.set(Some(ex)))
     },
-
-
     getAllDataEndpoint.implement { _ =>
       for
         clientService <- ZIO.service[OAuthClientService]
         clients <- clientService.getAll
         scopes <- clientService.getAllScopes
-        clientsResponse = clients.map { case (clientId, client) => OauthClientResponse(
-          id = clientId,
-          clientName = client.clientName,
-          redirectUris = client.redirectUris,
-          scope = client.scope,
-          hasPreviousSecret = client.previousSecret.nonEmpty
-        )}.toVector
+        clientsResponse = clients.map { case (clientId, client) =>
+          OauthClientResponse(
+            id = clientId,
+            clientName = client.clientName,
+            redirectUris = client.redirectUris,
+            scope = client.scope.map(_.toString),
+            hasPreviousSecret = client.previousSecret.nonEmpty,
+          )
+        }.toVector
         scopesResponse = scopes.map { case (scopeName, scope) =>
           OneScope(
             name = scopeName,
             description = scope.description,
-            claims = scope.claims.map(identity)
+            claims = scope.claims.map(identity),
           )
         }.toVector
       yield AllDataResponse(clients = clientsResponse, scopes = scopesResponse)
@@ -84,17 +84,17 @@ object AdminController extends Controller:
       val scopesToCreate = request.scopes.map { oneScope =>
         val backendScope = model.Scope(
           claims = oneScope.claims.map(Claim(_)),
-          description = ScopeDescription(oneScope.description)
+          description = ScopeDescription(oneScope.description),
         )
         (ScopeToken(oneScope.name), backendScope)
       }.toVector
       ZIO.serviceWithZIO[OAuthClientService](_.registerScopes(scopesToCreate))
-        //.tapError(ex => Controller.exceptions.set(Some(ex)))
+      // .tapError(ex => Controller.exceptions.set(Some(ex)))
     },
     deleteScopesEndpoint.implement { request =>
       val scopeNames = request.scopeNames.map(ScopeToken(_)).toVector
       ZIO.serviceWithZIO[OAuthClientService](_.deleteScopes(scopeNames))
-        //.tapError(ex => Controller.exceptions.set(Some(ex)))
+      // .tapError(ex => Controller.exceptions.set(Some(ex)))
     },
   )
 

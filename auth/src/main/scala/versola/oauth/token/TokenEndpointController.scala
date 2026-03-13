@@ -7,7 +7,7 @@ import versola.auth.model.AccessToken
 import versola.oauth.client.OAuthClientService
 import versola.oauth.client.model.ClientId
 import versola.oauth.model.{AuthorizationCode, CodeVerifier}
-import versola.oauth.token.model.{CodeExchangeRequest, IssuedTokens, TokenEndpointError, TokenErrorResponse, TokenRequest, TokenResponse}
+import versola.oauth.token.model.{CodeExchangeRequest, IssuedTokens, RefreshTokenRequest, TokenEndpointError, TokenErrorResponse, TokenRequest, TokenResponse}
 import versola.user.model.UserId
 import versola.util.CoreConfig.JwtConfig
 import versola.util.http.{ClientCredentials, ClientIdWithSecret, Controller}
@@ -38,6 +38,8 @@ object TokenEndpointController extends Controller:
         issuedTokens <- tokenRequest match
           case codeExchangeRequest: CodeExchangeRequest =>
             oauthTokenService.exchangeAuthorizationCode(codeExchangeRequest, credentials)
+          case refreshTokenRequest: RefreshTokenRequest =>
+            oauthTokenService.refreshAccessToken(refreshTokenRequest, credentials)
         response <- toTokenResponse(issuedTokens, config)
       yield Response.json(response.toJson))
         .catchAll {
@@ -95,6 +97,8 @@ object TokenEndpointController extends Controller:
       request <- form.get("grant_type").flatMap(_.stringValue) match
         case Some("authorization_code") =>
           codeExchangeRequestDecoder.decode(form).orElseFail(TokenEndpointError.InvalidRequest)
+        case Some("refresh_token") =>
+          refreshTokenRequestDecoder.decode(form).orElseFail(TokenEndpointError.InvalidRequest)
         case _ =>
           ZIO.fail(TokenEndpointError.UnsupportedGrantType)
     yield request
@@ -105,3 +109,12 @@ object TokenEndpointController extends Controller:
       redirectUri <- FormDecoder.single(form, "redirect_uri", URL.decode(_).left.map(_.getMessage))
       codeVerifier <- FormDecoder.single(form, "code_verifier", CodeVerifier.from)
     yield CodeExchangeRequest(code, redirectUri, codeVerifier)
+
+  val refreshTokenRequestDecoder: FormDecoder[RefreshTokenRequest] = (form: Form) =>
+    import versola.auth.model.RefreshToken
+    import versola.oauth.client.model.ScopeToken
+    for
+      refreshToken <- FormDecoder.single(form, "refresh_token", versola.auth.model.RefreshToken.fromBase64Url)
+      scopeStr <- ZIO.succeed(form.get("scope").flatMap(_.stringValue))
+      scope = scopeStr.map(_.split(" ").map(ScopeToken(_)).toSet)
+    yield RefreshTokenRequest(refreshToken, scope)

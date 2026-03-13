@@ -35,3 +35,9 @@ object TokenEndpointError:
     val error = ErrorCode.UnsupportedGrantType
     val errorDescription = Some("Unsupported grant type")
     val errorUri = Some("https://datatracker.ietf.org/doc/html/rfc6749#section-5.2")
+
+  case object InvalidScope extends TokenEndpointError:
+    val status = Status.BadRequest
+    val error = ErrorCode.InvalidScope
+    val errorDescription = Some("The requested scope is invalid, unknown, or malformed, or exceeds the scope granted by the resource owner")
+    val errorUri = Some("https://datatracker.ietf.org/doc/html/rfc6749#section-5.2")

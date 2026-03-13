@@ -38,14 +38,14 @@ object ConversationService:
     ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _))
 
   class Impl(
-              otpService: OtpService,
-              conversationRepository: ConversationRepository,
-              userRepository: UserRepository,
-              authorizationCodeRepository: AuthorizationCodeRepository,
-              sessionRepository: SessionRepository,
-              authPropertyGenerator: AuthPropertyGenerator,
-              securityService: SecurityService,
-              config: CoreConfig,
+      otpService: OtpService,
+      conversationRepository: ConversationRepository,
+      userRepository: UserRepository,
+      authorizationCodeRepository: AuthorizationCodeRepository,
+      sessionRepository: SessionRepository,
+      authPropertyGenerator: AuthPropertyGenerator,
+      securityService: SecurityService,
+      config: CoreConfig,
   ) extends ConversationService:
     export conversationRepository.find
 
@@ -108,7 +108,7 @@ object ConversationService:
           codeChallenge = conversation.codeChallenge,
           codeChallengeMethod = conversation.codeChallengeMethod,
           requestedClaims = None, // TODO: Add to ConversationRecord
-          uiLocales = None, // TODO: Add to ConversationRecord
+          uiLocales = None,       // TODO: Add to ConversationRecord
         )
         session = SessionRecord(
           userId = userId,

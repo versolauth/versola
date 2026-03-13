@@ -15,5 +15,5 @@ case class IssuedTokens(
     refreshToken: Option[RefreshToken],
     scope: Set[ScopeToken],
     requestedClaims: Option[RequestedClaims],
-    uiLocales: Option[Vector[String]],
+    uiLocales: Option[List[String]],
 )

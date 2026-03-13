@@ -48,8 +48,8 @@ trait AuthorizationCodeRepositorySpec extends DatabaseSpecBase[AuthorizationCode
     ),
   )
 
-  val uiLocales1 = Vector("en-US", "fr-CA")
-  val uiLocales2 = Vector("de-DE", "es-ES", "ja-JP")
+  val uiLocales1 = List("en-US", "fr-CA")
+  val uiLocales2 = List("de-DE", "es-ES", "ja-JP")
 
   val record = AuthorizationCodeRecord(
     sessionId = sessionId1,
