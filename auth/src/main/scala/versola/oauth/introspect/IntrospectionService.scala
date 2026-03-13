@@ -1,24 +1,20 @@
 package versola.oauth.introspect
 
-import com.nimbusds.jose.crypto.{ECDSAVerifier, MACVerifier, RSASSAVerifier}
-import com.nimbusds.jose.jwk.{ECKey, OctetSequenceKey, RSAKey}
-import com.nimbusds.jwt.SignedJWT
-import versola.auth.model.{AccessToken, RefreshToken}
+import versola.auth.model.RefreshToken
 import versola.oauth.client.OAuthClientService
 import versola.oauth.client.model.OAuthClientRecord
 import versola.oauth.introspect.model.{IntrospectionError, IntrospectionResponse}
+import versola.oauth.model.AccessToken
 import versola.oauth.session.RefreshTokenRepository
 import versola.oauth.session.model.TokenRecord
 import versola.util.http.{ClientCredentials, ClientIdWithSecret}
 import versola.util.{CoreConfig, Secret, SecurityService}
 import zio.{IO, ZIO, ZLayer}
 
-import scala.jdk.CollectionConverters.*
-
 trait IntrospectionService:
   def introspectAccessToken(
-      token: SignedJWT,
-      credentials: ClientCredentials,
+                             token: AccessToken,
+                             credentials: ClientCredentials,
   ): IO[IntrospectionError, IntrospectionResponse]
 
   def introspectRefreshToken(
@@ -34,53 +30,35 @@ object IntrospectionService:
   ] = ZLayer.fromFunction(Impl(_, _, _, _))
 
   class Impl(
-              oauthClientService: OAuthClientService,
-              tokenRepository: RefreshTokenRepository,
-              securityService: SecurityService,
-              config: CoreConfig,
+      oauthClientService: OAuthClientService,
+      tokenRepository: RefreshTokenRepository,
+      securityService: SecurityService,
+      config: CoreConfig,
   ) extends IntrospectionService:
 
     override def introspectAccessToken(
-        token: SignedJWT,
-        credentials: ClientCredentials,
+                                        token: AccessToken,
+                                        credentials: ClientCredentials,
     ): IO[IntrospectionError, IntrospectionResponse] =
       for
         _ <- authenticateClient(credentials)
-        response <- ZIO.succeed:
-          if !validSignature(token) then IntrospectionResponse.Inactive
-          else buildJwtIntrospectionResponse(token)
-      yield response
+      yield buildJwtIntrospectionResponse(token)
 
-    private def buildJwtIntrospectionResponse(token: SignedJWT): IntrospectionResponse =
-      val claims = token.getJWTClaimsSet
-      val now = java.time.Instant.now()
-      val expiration = Option(claims.getExpirationTime).map(_.toInstant)
-
-      // Check if token is expired
-      if expiration.exists(_.isBefore(now)) then IntrospectionResponse.Inactive
-      else
-        IntrospectionResponse(
-          active = true,
-          clientId = None, // JWT doesn't contain client_id in current implementation
-          scope = None, // JWT doesn't contain scope in current implementation
-          username = None,
-          tokenType = Some("Bearer"),
-          exp = expiration.map(_.getEpochSecond),
-          iat = Option(claims.getIssueTime).map(_.toInstant.getEpochSecond),
-          nbf = Option(claims.getNotBeforeTime).map(_.toInstant.getEpochSecond),
-          sub = Option(claims.getSubject),
-          aud = Option(claims.getAudience).flatMap(_.asScala.headOption),
-          iss = Option(claims.getIssuer),
-          jti = Option(claims.getJWTID),
-        )
-
-    private def validSignature(token: SignedJWT): Boolean =
-      Option(config.jwt.jwkSet.getKeyByKeyId(token.getHeader.getKeyID))
-        .exists:
-          case key: RSAKey => token.verify(RSASSAVerifier(key))
-          case key: ECKey => token.verify(ECDSAVerifier(key))
-          case key: OctetSequenceKey => token.verify(MACVerifier(key))
-          case _ => false
+    private def buildJwtIntrospectionResponse(token: AccessToken): IntrospectionResponse =
+      IntrospectionResponse(
+        active = true,
+        clientId = Some(token.clientId),
+        scope = Some(token.scope.mkString(" ")),
+        username = None,
+        tokenType = Some("Bearer"),
+        exp = Some(token.expiresAt.getEpochSecond),
+        iat = Some(token.issuedAt.getEpochSecond),
+        nbf = token.notBefore.map(_.getEpochSecond),
+        sub = Some(token.userId),
+        aud = Some(token.audience),
+        iss = token.issuer,
+        jti = token.jwtId,
+      )
 
     override def introspectRefreshToken(
         token: RefreshToken,
@@ -107,7 +85,7 @@ object IntrospectionService:
             active = true,
             scope = Some(record.scope.mkString(" ")),
             clientId = Some(record.clientId),
-            sub = Some(record.userId.toString),
+            sub = Some(record.userId),
             tokenType = Some("Bearer"),
             username = None,
             exp = Some(record.expiresAt.getEpochSecond),

@@ -16,3 +16,5 @@ INSERT INTO oauth_scopes (name, description, claims) VALUES
     ('read', 'Read access to user data', ARRAY['sub', 'name', 'email']),
     ('write', 'Write access to user data', ARRAY['sub']),
     ('admin', 'Administrative access', ARRAY['sub', 'name', 'email', 'role', 'permissions']);
+
+-- TODO delete read/write/admin

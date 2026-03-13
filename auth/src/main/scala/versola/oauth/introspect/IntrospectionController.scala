@@ -1,13 +1,11 @@
 package versola.oauth.introspect
 
-import com.nimbusds.jose.JOSEObjectType
-import com.nimbusds.jwt.SignedJWT
-import versola.auth.model.{AccessToken, RefreshToken}
-import versola.oauth.client.model.ClientId
-import versola.oauth.introspect.model.IntrospectionError
+import versola.auth.model.RefreshToken
+import versola.oauth.introspect.model.{IntrospectionError, IntrospectionResponse}
+import versola.oauth.model.AccessToken
 import versola.oauth.token.model.{TokenEndpointError, TokenErrorResponse}
-import versola.util.{FormDecoder, Secret}
-import versola.util.http.{ClientCredentials, ClientIdWithSecret, Controller}
+import versola.util.{Base64, Base64Url, CoreConfig, FormDecoder}
+import versola.util.http.Controller
 import zio.*
 import zio.http.*
 import zio.json.*
@@ -18,7 +16,7 @@ import zio.telemetry.opentelemetry.tracing.Tracing
  * RFC 7662: https://datatracker.ietf.org/doc/html/rfc7662
  */
 object IntrospectionController extends Controller:
-  type Env = Tracing & IntrospectionService
+  type Env = Tracing & IntrospectionService & CoreConfig
 
   def routes: Routes[Env, Nothing] = Routes(
     introspectEndpoint,
@@ -28,13 +26,18 @@ object IntrospectionController extends Controller:
     Method.POST / "v1" / "introspect" -> handler { (request: Request) =>
       (for
         introspectionService <- ZIO.service[IntrospectionService]
+        config <- ZIO.service[CoreConfig]
         credentials <- request.extractCredentials.orElseFail(TokenEndpointError.InvalidClient)
-        introspectionRequest <- request.formAs[IntrospectionRequest]
-        response <- introspectionRequest.token match
-          case JWTAccessTokenOption(accessToken) =>
-            introspectionService.introspectAccessToken(accessToken, credentials)
+        tokenEither <- request.formAs[Either[RefreshToken, String]].orElseFail(TokenEndpointError.InvalidRequest)
+        response <- tokenEither match
+          case Right(tokenString) =>
+            AccessToken.parseAndValidate(tokenString, config.jwt.jwkSet).either.flatMap:
+              case Right(jwt) =>
+                introspectionService.introspectAccessToken(jwt, credentials)
+              case Left(_) =>
+                ZIO.succeed(IntrospectionResponse.Inactive)
 
-          case RefreshTokenOption(refreshToken) =>
+          case Left(refreshToken) =>
             introspectionService.introspectRefreshToken(refreshToken, credentials)
 
       yield Response.json(response.toJson)
@@ -62,24 +65,11 @@ object IntrospectionController extends Controller:
         }
     }
 
-  case class IntrospectionRequest(
-      token: TokenOption,
-  )
-
-  sealed trait TokenOption
-
-  case class RefreshTokenOption(refreshToken: RefreshToken) extends TokenOption
-  case class JWTAccessTokenOption(accessToken: SignedJWT) extends TokenOption
-
-  given FormDecoder[IntrospectionRequest] = form =>
+  given FormDecoder[Either[RefreshToken, String]] = form =>
     val parse = (s: String) =>
-      if s.startsWith("r.") then
-        RefreshToken.fromBase64Url(s.drop(2)).map(RefreshTokenOption(_))
+      if s.split("\\.").headOption.exists(str => Base64Url.decodeStr(str).startsWith("{")) then
+        Right(Right(s))
       else
-        util.Try(SignedJWT.parse(s))
-          .map(JWTAccessTokenOption(_))
-          .toEither.left.map(_.getMessage)
+        RefreshToken.fromBase64Url(s).map(Left(_))
 
-    for
-      token <- FormDecoder.single(form, "token", parse)
-    yield IntrospectionRequest(token)
+    FormDecoder.single(form, "token", parse)

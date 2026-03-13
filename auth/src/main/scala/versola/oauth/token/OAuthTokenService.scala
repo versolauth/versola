@@ -5,7 +5,7 @@ import versola.oauth.client.OAuthClientService
 import versola.oauth.client.model.{OAuthClientRecord, ScopeToken}
 import versola.oauth.model.AuthorizationCodeRecord
 import versola.oauth.session.model.{TokenCreationRecord, WithTtl}
-import versola.oauth.session.{SessionRepository, RefreshTokenRepository}
+import versola.oauth.session.{RefreshTokenRepository, SessionRepository}
 import versola.oauth.token.model.{CodeExchangeRequest, IssuedTokens, TokenEndpointError}
 import versola.util.http.{ClientCredentials, ClientIdWithSecret}
 import versola.util.{AuthPropertyGenerator, CoreConfig, MAC, Secret, SecurityService}
@@ -23,12 +23,12 @@ object OAuthTokenService:
   def live = ZLayer.fromFunction(Impl(_, _, _, _, _, _))
 
   class Impl(
-              authorizationCodeRepository: AuthorizationCodeRepository,
-              oauthClientService: OAuthClientService,
-              tokenRepository: RefreshTokenRepository,
-              securityService: SecurityService,
-              authPropertyGenerator: AuthPropertyGenerator,
-              config: CoreConfig,
+      authorizationCodeRepository: AuthorizationCodeRepository,
+      oauthClientService: OAuthClientService,
+      tokenRepository: RefreshTokenRepository,
+      securityService: SecurityService,
+      authPropertyGenerator: AuthPropertyGenerator,
+      config: CoreConfig,
   ) extends OAuthTokenService:
 
     override def exchangeAuthorizationCode(
@@ -82,7 +82,7 @@ object OAuthTokenService:
           issuedAt = now,
         )
 
-        _ <- ZIO.foreach(refreshTokenWithMac) { case (_, mac) =>
+        _ <- ZIO.foreachDiscard(refreshTokenWithMac) { case (_, mac) =>
           tokenRepository.create(mac, config.security.refreshTokens.ttl, tokenRecord)
         }
       yield IssuedTokens(

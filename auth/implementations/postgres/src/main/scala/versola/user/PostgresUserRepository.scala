@@ -6,6 +6,8 @@ import com.augustnagro.magnum.pg.PgCodec.given
 import versola.user.model.*
 import versola.util.{Email, Phone}
 import zio.{Clock, Task, ZIO}
+import zio.json.*
+import zio.json.ast.Json
 
 import java.time.{Instant, LocalDate}
 import java.util.UUID
@@ -31,30 +33,30 @@ class PostgresUserRepository(
     yield user
 
   private def createByEmailQuery(id: UserId, email: Email, now: Instant) =
-    sql"""insert into users (id, email, phone)
-          values ($id, $email, null)
+    sql"""insert into users (id, email, phone, claims)
+          values ($id, $email, null, '{}'::jsonb)
           on conflict (email) where email is not null
           do update set email = excluded.email
-          returning id, email, phone, (xmax = 0) as created
+          returning id, email, phone, claims, (xmax = 0) as created
        """.returning[(UserRecord, Boolean)]
 
   private def createByPhoneQuery(id: UserId, phone: Phone, now: Instant) =
-    sql"""insert into users (id, email, phone)
-          values ($id, null, $phone)
+    sql"""insert into users (id, email, phone, claims)
+          values ($id, null, $phone, '{}'::jsonb)
           on conflict (phone) where phone is not null
             do update set phone = excluded.phone
-          returning id, email, phone, (xmax = 0) as created
+          returning id, email, phone, claims, (xmax = 0) as created
        """.returning[(UserRecord, Boolean)]
 
   private def createQuery(id: UserId, now: Instant) =
-    sql"""insert into users (id, updated_at)
-          values ($id, $now)
-          returning id, email, phone
+    sql"""insert into users (id, email, phone, claims)
+          values ($id, null, null, '{}'::jsonb)
+          returning id, email, phone, claims
        """.returning[UserRecord]
 
   override def find(id: UserId): Task[Option[UserRecord]] =
     xa.connect:
-      sql"select id, email, phone from users where id = $id"
+      sql"select id, email, phone, claims from users where id = $id"
         .query[UserRecord]
         .run()
         .headOption
@@ -66,10 +68,10 @@ class PostgresUserRepository(
         case Right(phone) => findByPhoneQuery(phone).run().headOption
 
   private def findByPhoneQuery(phone: Phone) =
-    sql"select id, email, phone from users where phone = $phone".query[UserRecord]
+    sql"select id, email, phone, claims from users where phone = $phone".query[UserRecord]
 
   private def findByEmailQuery(email: Email) =
-    sql"select id, email, phone from users where email = $email".query[UserRecord]
+    sql"select id, email, phone, claims from users where email = $email".query[UserRecord]
 
 
   given DbCodec[UserId] = DbCodec.UUIDCodec.biMap(UserId(_), identity[UUID])
@@ -79,4 +81,10 @@ class PostgresUserRepository(
   given DbCodec[MiddleName] = DbCodec.StringCodec.biMap(MiddleName(_), identity[String])
   given DbCodec[LastName] = DbCodec.StringCodec.biMap(LastName(_), identity[String])
   given DbCodec[BirthDate] = DbCodec.LocalDateCodec.biMap(BirthDate(_), identity[LocalDate])
+
+  given DbCodec[Json] = DbCodec.StringCodec.biMap(
+    jsonString => jsonString.fromJson[Json].getOrElse(Json.Obj()),
+    json => json.toJson
+  )
+
   given DbCodec[UserRecord] = DbCodec.derived[UserRecord]

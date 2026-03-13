@@ -7,7 +7,9 @@ CREATE TABLE authorization_codes (
     scope TEXT[] NOT NULL,
     code_challenge TEXT NOT NULL,
     code_challenge_method TEXT NOT NULL,
-    expires_at TIMESTAMP WITH TIME ZONE NOT NULL
+    expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    requested_claims JSONB,
+    ui_locales TEXT[]
 );
 
 CREATE INDEX authorization_codes_expires_at_idx

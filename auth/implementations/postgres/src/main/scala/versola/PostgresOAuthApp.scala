@@ -9,6 +9,7 @@ import versola.oauth.conversation.{ConversationController, ConversationRenderSer
 import versola.oauth.introspect.{IntrospectionController, IntrospectionService}
 import versola.oauth.session.{PostgresSessionRepository, PostgresRefreshTokenRepository, SessionRepository, RefreshTokenRepository}
 import versola.oauth.token.{AuthorizationCodeRepository, OAuthTokenService, TokenEndpointController}
+import versola.oauth.userinfo.{UserInfoController, UserInfoService}
 import versola.oauth.{PostgresAuthorizationCodeRepository, PostgresOAuthClientRepository, PostgresOAuthScopeRepository}
 import versola.user.{PostgresUserRepository, UserRepository}
 import versola.util.*
@@ -53,6 +54,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
     OtpService &
     OtpGenerationService &
     EmailOtpProvider &
+    UserInfoService &
     EnvName
 
   override def routes: Routes[Dependencies & Tracing, Nothing] =
@@ -62,6 +64,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       TokenEndpointController.routes,
       IntrospectionController.routes,
       ConversationController.routes,
+      UserInfoController.routes,
     ).reduce(_ ++ _)
 
   val dependencies: ZLayer[ConfigProvider & Tracing, Throwable, Dependencies] =
@@ -93,7 +96,8 @@ object PostgresOAuthApp extends VersolaApp("auth"):
         OtpService.live >+>
         ConversationService.live >+>
         ConversationRouter.live >+>
-        ConversationRenderService.live).build
+        ConversationRenderService.live >+>
+        UserInfoService.live).build
 
   def parseConfig[A: {DeriveConfig, Tag}] =
     ZLayer:

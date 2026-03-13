@@ -1,7 +1,8 @@
 CREATE TABLE users (
     id UUID NOT NULL PRIMARY KEY,
     email TEXT,
-    phone TEXT
+    phone TEXT,
+    claims JSONB NOT NULL
 );
 
 CREATE UNIQUE INDEX users_email_idx

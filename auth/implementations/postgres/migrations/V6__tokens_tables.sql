@@ -5,7 +5,9 @@ CREATE TABLE refresh_tokens(
     client_id TEXT NOT NULL,
     scope TEXT[] NOT NULL,
     issued_at TIMESTAMP WITH TIME ZONE NOT NULL,
-    expires_at TIMESTAMP WITH TIME ZONE NOT NULL
+    expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    requested_claims JSONB,
+    ui_locales TEXT[]
 );
 
 CREATE INDEX refresh_tokens_user_id_idx ON refresh_tokens (user_id);

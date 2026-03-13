@@ -1,6 +1,6 @@
 services:
   postgres:
-    image: postgres:18beta1
+    image: postgres:18
     platform: linux/amd64
     container_name: postgres
     restart: always
