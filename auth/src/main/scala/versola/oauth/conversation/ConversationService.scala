@@ -107,6 +107,8 @@ object ConversationService:
           scope = conversation.scope,
           codeChallenge = conversation.codeChallenge,
           codeChallengeMethod = conversation.codeChallengeMethod,
+          requestedClaims = None, // TODO: Add to ConversationRecord
+          uiLocales = None, // TODO: Add to ConversationRecord
         )
         session = SessionRecord(
           userId = userId,

@@ -31,7 +31,8 @@ object AdminController extends Controller:
       (for
         clientService <- ZIO.service[OAuthClientService]
         clientSecret <- clientService.register(
-          ClientId(request.id),
+          request.id,
+          request.audience,
           request.clientName,
           request.redirectUris,
           request.allowedScopes,

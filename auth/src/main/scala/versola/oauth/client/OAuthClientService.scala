@@ -21,6 +21,7 @@ trait OAuthClientService:
   /** Create a private client with a generated secret and return both the client and the plain secret */
   def register(
       id: ClientId,
+      audience: List[ClientId],
       clientName: String,
       redirectUris: NonEmptySet[String],
       allowedScopes: Set[String],
@@ -70,6 +71,7 @@ object OAuthClientService:
     /** Create a private client with a generated secret and return both the client and the plain secret */
     override def register(
         id: ClientId,
+        audience: List[ClientId],
         clientName: String,
         redirectUris: NonEmptySet[String],
         scope: Set[String],
@@ -82,6 +84,7 @@ object OAuthClientService:
           clientName = clientName,
           redirectUris = redirectUris,
           scope = scope,
+          externalAudience = audience,
           secret = Some(macWithSalt),
           previousSecret = None,
           accessTokenTtl = 10.minutes,

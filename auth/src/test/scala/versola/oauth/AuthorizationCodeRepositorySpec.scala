@@ -1,9 +1,10 @@
 package versola.oauth
 
 import com.augustnagro.magnum.magzio.TransactorZIO
-import versola.oauth.client.model.{ClientId, ScopeToken}
+import versola.oauth.client.model.{Claim, ClientId, ScopeToken}
 import versola.oauth.model.*
 import versola.oauth.token.AuthorizationCodeRepository
+import versola.oauth.userinfo.model.{ClaimRequest, RequestedClaims}
 import versola.user.model.UserId
 import versola.util.{DatabaseSpecBase, MAC}
 import zio.*
@@ -37,6 +38,19 @@ trait AuthorizationCodeRepositorySpec extends DatabaseSpecBase[AuthorizationCode
 
   val sessionId1 = MAC(Array.fill(32)(3.toByte))
 
+  val requestedClaims1 = RequestedClaims(
+    userinfo = Map(
+      Claim("email") -> ClaimRequest(Some(true), None, None),
+      Claim("name") -> ClaimRequest(None, None, None),
+    ),
+    idToken = Map(
+      "auth_time" -> ClaimRequest(Some(true), None, None),
+    ),
+  )
+
+  val uiLocales1 = Vector("en-US", "fr-CA")
+  val uiLocales2 = Vector("de-DE", "es-ES", "ja-JP")
+
   val record = AuthorizationCodeRecord(
     sessionId = sessionId1,
     clientId = clientId1,
@@ -45,6 +59,20 @@ trait AuthorizationCodeRepositorySpec extends DatabaseSpecBase[AuthorizationCode
     scope = scope1,
     codeChallenge = codeChallenge1,
     codeChallengeMethod = CodeChallengeMethod.S256,
+    requestedClaims = None,
+    uiLocales = None,
+  )
+
+  val recordWithClaims = AuthorizationCodeRecord(
+    sessionId = sessionId1,
+    clientId = clientId1,
+    userId = userId1,
+    redirectUri = redirectUri1,
+    scope = scope1,
+    codeChallenge = codeChallenge1,
+    codeChallengeMethod = CodeChallengeMethod.S256,
+    requestedClaims = Some(requestedClaims1),
+    uiLocales = Some(uiLocales1),
   )
 
   def testCases(env: AuthorizationCodeRepositorySpec.Env): List[Spec[AuthorizationCodeRepositorySpec.Env & Scope, Any]] =
@@ -56,7 +84,7 @@ trait AuthorizationCodeRepositorySpec extends DatabaseSpecBase[AuthorizationCode
           _ <- env.repository.delete(code1)
           foundAfterDelete <- env.repository.find(code1)
         yield assertTrue(
-          found.exists(_ === record),
+          found === Some(record),
           foundAfterDelete.isEmpty,
         )
       },
@@ -71,6 +99,45 @@ trait AuthorizationCodeRepositorySpec extends DatabaseSpecBase[AuthorizationCode
         for
           found <- env.repository.find(code1)
         yield assertTrue(found.isEmpty)
+      },
+      test("persist and retrieve authorization code with requested_claims and ui_locales") {
+        for
+          _ <- env.repository.create(code1, recordWithClaims, ttl)
+          found <- env.repository.find(code1)
+          _ <- env.repository.delete(code1)
+        yield assertTrue(
+          found.isDefined,
+          found.get.requestedClaims.isDefined,
+          found.get.requestedClaims.get.userinfo.size == 2,
+          found.get.requestedClaims.get.idToken.size == 1,
+          found.get.uiLocales.isDefined,
+          found.get.uiLocales.get == uiLocales1,
+        )
+      },
+      test("persist and retrieve authorization code with only requested_claims") {
+        val recordWithOnlyClaims = record.copy(requestedClaims = Some(requestedClaims1))
+        for
+          _ <- env.repository.create(code1, recordWithOnlyClaims, ttl)
+          found <- env.repository.find(code1)
+          _ <- env.repository.delete(code1)
+        yield assertTrue(
+          found.isDefined,
+          found.get.requestedClaims.isDefined,
+          found.get.uiLocales.isEmpty,
+        )
+      },
+      test("persist and retrieve authorization code with only ui_locales") {
+        val recordWithOnlyLocales = record.copy(uiLocales = Some(uiLocales2))
+        for
+          _ <- env.repository.create(code1, recordWithOnlyLocales, ttl)
+          found <- env.repository.find(code1)
+          _ <- env.repository.delete(code1)
+        yield assertTrue(
+          found.isDefined,
+          found.get.requestedClaims.isEmpty,
+          found.get.uiLocales.isDefined,
+          found.get.uiLocales.get == uiLocales2,
+        )
       },
     )
 

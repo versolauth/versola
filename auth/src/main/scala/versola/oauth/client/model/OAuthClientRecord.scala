@@ -10,10 +10,13 @@ case class OAuthClientRecord(
     clientName: String,
     redirectUris: NonEmptySet[String],
     scope: Set[String],
+    externalAudience: List[ClientId],
     secret: Option[Secret],
     previousSecret: Option[Secret],
     accessTokenTtl: Duration,
 ) derives Schema, CanEqual, Equal:
+
+  def audience: List[ClientId] = id :: externalAudience
 
   def isConfidential: Boolean = secret.nonEmpty
 

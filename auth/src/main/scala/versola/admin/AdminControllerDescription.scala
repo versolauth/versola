@@ -54,6 +54,7 @@ private[admin] object AdminControllerDescription:
   // Request/Response models
   case class CreateClientRequest(
       id: ClientId,
+      audience: List[ClientId],
       clientName: String,
       redirectUris: NonEmptySet[String],
       allowedScopes: Set[String],

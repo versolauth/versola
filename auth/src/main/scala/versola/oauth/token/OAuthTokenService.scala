@@ -72,8 +72,6 @@ object OAuthTokenService:
           yield (token, mac),
         )
 
-        accessTokenTtl = client.accessTokenTtl
-
         tokenRecord = TokenCreationRecord(
           sessionId = codeRecord.sessionId,
           userId = codeRecord.userId,
@@ -87,8 +85,12 @@ object OAuthTokenService:
         }
       yield IssuedTokens(
         accessToken = accessToken,
-        accessTokenTtl = accessTokenTtl,
-        accessTokenJwtProperties = Some(IssuedTokens.JwtProperties(codeRecord.userId)),
+        clientId = codeRecord.clientId,
+        audience = client.audience,
+        accessTokenTtl = client.accessTokenTtl,
+        userId = codeRecord.userId,
         refreshToken = refreshTokenWithMac.map(_._1),
         scope = codeRecord.scope,
+        requestedClaims = codeRecord.requestedClaims,
+        uiLocales = codeRecord.uiLocales,
       )

@@ -29,6 +29,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
     clientName = "Test Client",
     redirectUris = NonEmptySet(validRedirectUriString, "https://example.com/callback2"),
     scope = Set("read", "write", "admin"),
+    externalAudience = List.empty,
     secret = None,
     previousSecret = None,
     accessTokenTtl = 10.minutes,

@@ -61,14 +61,13 @@ object UserInfoController extends Controller:
               claims = JWT.Claims(
                 issuer = config.jwt.issuer,
                 subject = token.userId.toString,
-                audience = token.clientId,
+                audience = List(token.clientId),
                 custom = userInfo.toJsonAST,
               ),
               ttl = 5.minutes,
               signature = JWT.Signature(
-                algorithm = JWT.Algorithm.RS256,
-                keyId = config.jwt.publicKeys.active.id,
-                key = config.jwt.privateKey,
+                publicKeys = config.jwt.publicKeys,
+                privateKey = config.jwt.privateKey,
               ),
             ).map { signedJwt =>
               Response(

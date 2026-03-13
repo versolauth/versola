@@ -2,6 +2,7 @@ package versola.oauth.model
 
 import versola.oauth.client.model.{ClientId, ScopeToken}
 import versola.oauth.session.model.{SessionId, SessionRecord}
+import versola.oauth.userinfo.model.RequestedClaims
 import versola.user.model.UserId
 import versola.util.MAC
 import zio.http.URL
@@ -20,6 +21,8 @@ case class AuthorizationCodeRecord(
     scope: Set[ScopeToken],
     codeChallenge: CodeChallenge,
     codeChallengeMethod: CodeChallengeMethod,
+    requestedClaims: Option[RequestedClaims],
+    uiLocales: Option[Vector[String]],
 ) derives CanEqual, Equal:
 
   def session: SessionRecord = SessionRecord(

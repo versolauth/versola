@@ -11,10 +11,11 @@ import versola.oauth.token.model.{CodeExchangeRequest, IssuedTokens, TokenEndpoi
 import versola.user.model.UserId
 import versola.util.CoreConfig.JwtConfig
 import versola.util.http.{ClientCredentials, ClientIdWithSecret, Controller}
-import versola.util.{Base64, Base64Url, CoreConfig, FormDecoder, Secret}
+import versola.util.{Base64, Base64Url, CoreConfig, FormDecoder, JWT, Secret}
 import zio.*
 import zio.http.*
 import zio.json.*
+import zio.json.ast.Json
 import zio.telemetry.opentelemetry.tracing.Tracing
 
 import java.time.Instant
@@ -54,53 +55,39 @@ object TokenEndpointController extends Controller:
     }
 
   private def toTokenResponse(tokens: IssuedTokens, config: CoreConfig): Task[TokenResponse] =
+    import versola.oauth.userinfo.model.RequestedClaims.given
     for
       now <- Clock.instant
-      accessTokenString <- tokens.accessTokenJwtProperties match
-        case None =>
-          ZIO.succeed(Base64.urlEncode(tokens.accessToken))
 
-        case Some(props) =>
-          buildJWT(
-            accessToken = tokens.accessToken,
-            ttl = tokens.accessTokenTtl,
-            userId = props.userId,
-            config = config.jwt
-          )
+      customClaims = Map(
+        "client_id" -> Json.Str(tokens.clientId),
+        "scope" -> Json.Str(tokens.scope.mkString(" ")),
+        "jti" -> Json.Str(Base64Url.encode(tokens.accessToken)),
+      ) ++
+        tokens.requestedClaims.map(rc => "requested_claims" -> rc.toJsonAST.toOption.get) ++
+        tokens.uiLocales.map(locales => "ui_locales" -> Json.Arr(locales.map(Json.Str(_))*))
 
+      serializedAT <- JWT.serialize(
+        typ = JWT.Type.AccessToken,
+        claims = JWT.Claims(
+          issuer = config.jwt.issuer,
+          subject = tokens.userId.toString,
+          audience = tokens.audience,
+          custom = Json.Obj(customClaims.toSeq*),
+        ),
+        ttl = tokens.accessTokenTtl,
+        signature = JWT.Signature(
+          publicKeys = config.jwt.publicKeys,
+          privateKey = config.jwt.privateKey,
+        ),
+      )
     yield TokenResponse(
-      accessToken = accessTokenString,
+      accessToken = serializedAT,
       tokenType = "Bearer",
       expiresIn = tokens.accessTokenTtl.toSeconds,
       refreshToken = tokens.refreshToken.map(Base64.urlEncode),
       scope = Option.when(tokens.scope.nonEmpty)(tokens.scope.mkString(" ")),
     )
-
-  private def buildJWT(
-      accessToken: AccessToken,
-      ttl: Duration,
-      userId: UserId,
-      config: JwtConfig,
-  ) =
-    Clock.instant.flatMap: now =>
-      ZIO.attemptBlocking:
-        val claims = JWTClaimsSet.Builder()
-          .issuer(config.issuer)
-          .subject(userId.toString)
-          .jwtID(Base64Url.encode(accessToken))
-          .issueTime(Date.from(now))
-          .expirationTime(Date.from(now.plusSeconds(ttl.toSeconds)))
-          .build()
-
-        val header = JWSHeader.Builder(JWSAlgorithm.RS256)
-          .`type`(JOSEObjectType("at+jwt"))
-          .keyID(config.publicKeys.active.id)
-          .build()
-
-        val jwt = SignedJWT(header, claims)
-        val signer = RSASSASigner(config.privateKey)
-        jwt.sign(signer)
-        jwt.serialize()
 
   private def parseRequest(request: Request): IO[TokenEndpointError, TokenRequest] =
     for

@@ -70,6 +70,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
     clientName = "Test Private Client 1",
     redirectUris = NonEmptySet("https://example.com/callback"),
     scope = Set("read", "write"),
+    externalAudience = List.empty,
     secret = Some(secret1), // MAC for testSecret with salt1
     previousSecret = None,
     accessTokenTtl = 10.minutes,
@@ -80,6 +81,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
     clientName = "Test Private Client 2",
     redirectUris = NonEmptySet("https://example2.com/callback"),
     scope = Set("read"),
+    externalAudience = List.empty,
     secret = Some(secret2),
     previousSecret = Some(previousSecret),
     accessTokenTtl = 10.minutes,
@@ -90,6 +92,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
     clientName = "Test Public Client",
     redirectUris = NonEmptySet("https://public.example.com/callback"),
     scope = Set("read"),
+    externalAudience = List.empty,
     secret = None,
     previousSecret = None,
     accessTokenTtl = 10.minutes,
@@ -277,6 +280,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
           _ <- env.repository.create.succeedsWith(())
           result <- env.service.register(
             clientId1,
+            List(),
             "Test Client",
             NonEmptySet("https://example.com/callback"),
             Set("read", "write"),

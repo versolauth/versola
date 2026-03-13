@@ -2,7 +2,7 @@ package versola.util
 
 import com.nimbusds.jose.crypto.{ECDSAVerifier, MACVerifier, RSASSASigner, RSASSAVerifier}
 import com.nimbusds.jose.jwk.*
-import com.nimbusds.jose.{JWSAlgorithm, JWSHeader}
+import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm, JWSHeader}
 import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 import zio.json.*
 import zio.json.ast.Json
@@ -11,24 +11,27 @@ import zio.{Chunk, Clock, Duration, IO, Task, ZIO}
 import java.security.PrivateKey
 import java.time.Instant
 import java.util.Date
-import scala.jdk.CollectionConverters.{IterableHasAsJava, ListHasAsScala, MapHasAsScala}
+import scala.jdk.CollectionConverters.*
 
 object JWT:
   def serialize(
       claims: Claims,
       ttl: Duration,
       signature: Signature,
+      typ: Type = Type.JWT,
   ): Task[String] =
     Clock.instant.flatMap { now =>
       ZIO.attemptBlocking {
-        val header = JWSHeader.Builder(signature.algorithm.jwsAlgorithm)
-          .keyID(signature.keyId)
+        val algorithm = signature.publicKeys.active.algorithm
+
+        val header = JWSHeader.Builder(algorithm.jwsAlgorithm)
+          .keyID(signature.publicKeys.active.id)
           .build()
 
         val claimsBuilder = JWTClaimsSet.Builder()
           .issuer(claims.issuer)
           .subject(claims.subject)
-          .audience(claims.audience)
+          .audience(claims.audience.asJava)
           .issueTime(Date.from(now))
           .expirationTime(Date.from(now.plusSeconds(ttl.toSeconds)))
 
@@ -47,8 +50,8 @@ object JWT:
         val claimsSet = claimsBuilder.build()
 
         val jwt = new com.nimbusds.jwt.SignedJWT(header, claimsSet)
-        val signer = signature.algorithm match
-          case Algorithm.RS256 => new RSASSASigner(signature.key)
+        val signer = algorithm match
+          case Algorithm.RS256 => new RSASSASigner(signature.privateKey)
 
         jwt.sign(signer)
         jwt.serialize()
@@ -67,15 +70,18 @@ object JWT:
   case class Claims(
       issuer: String,
       subject: String,
-      audience: String,
+      audience: List[String],
       custom: Json.Obj,
   )
 
   case class Signature(
-      algorithm: Algorithm,
-      keyId: String,
-      key: PrivateKey,
+      publicKeys: PublicKeys,
+      privateKey: PrivateKey,
   )
+
+  enum Type(val joseObjectType: JOSEObjectType):
+    case JWT extends Type(JOSEObjectType.JWT)
+    case AccessToken extends Type(JOSEObjectType("at+jwt"))
 
   enum Algorithm(val jwsAlgorithm: JWSAlgorithm):
     case RS256 extends Algorithm(JWSAlgorithm.RS256)
@@ -90,6 +96,8 @@ object JWT:
 
   case class PublicKey(key: JWK):
     def id: String = key.getKeyID
+    def algorithm: Algorithm = key.getAlgorithm.getName match
+      case "RS256" => Algorithm.RS256
 
   /**
    * Deserialize and validate a JWT

@@ -2,6 +2,7 @@ package versola.oauth.userinfo.model
 
 import versola.oauth.client.model.Claim
 import zio.json.*
+import zio.prelude.Equal
 import zio.schema.*
 
 /**
@@ -11,7 +12,7 @@ import zio.schema.*
 case class RequestedClaims(
     userinfo: Map[Claim, ClaimRequest],
     @jsonField("id_token") idToken: Map[String, ClaimRequest],
-) derives Schema
+) derives Schema, Equal
 
 object RequestedClaims:
   given JsonCodec[Claim] = JsonCodec.string.transform(Claim(_), identity[String])
@@ -28,8 +29,7 @@ case class ClaimRequest(
     essential: Option[Boolean],
     value: Option[String],
     values: Option[Vector[String]],
-) derives Schema, JsonCodec
+) derives Schema, JsonCodec, Equal
 
 object ClaimRequest:
   val default: ClaimRequest = ClaimRequest(None, None, None)
-
