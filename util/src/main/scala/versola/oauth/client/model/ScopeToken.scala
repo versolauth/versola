@@ -6,3 +6,4 @@ type ScopeToken = ScopeToken.Type
 
 object ScopeToken extends StringNewType:
   val OfflineAccess = ScopeToken("offline_access")
+  val OpenId = ScopeToken("openid")

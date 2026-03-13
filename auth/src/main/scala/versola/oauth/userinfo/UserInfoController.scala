@@ -1,13 +1,20 @@
 package versola.oauth.userinfo
 
+import com.nimbusds.jose.crypto.RSASSASigner
+import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm, JWSHeader}
+import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 import versola.oauth.model.AccessToken
 import versola.oauth.userinfo.model.{UserInfoError, UserInfoResponse}
 import versola.util.http.Controller
-import versola.util.CoreConfig
+import versola.util.{CoreConfig, JWT}
 import zio.*
 import zio.http.*
 import zio.json.*
+import zio.json.ast.Json
 import zio.telemetry.opentelemetry.tracing.Tracing
+
+import java.util.Date
+import scala.jdk.CollectionConverters.*
 
 /**
  * UserInfo endpoint controller
@@ -38,10 +45,39 @@ object UserInfoController extends Controller:
         userInfoService <- ZIO.service[UserInfoService]
         config <- ZIO.service[CoreConfig]
         tokenString <- extractBearerToken(request)
-        jwt <- AccessToken.parseAndValidate(tokenString, config.jwt.jwkSet)
+        token <- JWT.deserialize[AccessToken](tokenString, config.jwt.publicKeys)
           .orElseFail(UserInfoError.InvalidToken)
-        response <- userInfoService.getUserInfo(jwt)
-      yield Response.json(response.toJsonAST.toJson))
+
+        userInfo <- userInfoService.getUserInfo(token)
+
+        jwtNeeded = request.header(Header.Accept)
+          .exists(_.mimeTypes.exists(_.mediaType == MediaType.application.jwt))
+
+        response <-
+          if !jwtNeeded then
+            ZIO.succeed(Response.json(userInfo.toJsonAST.toJson))
+          else
+            JWT.serialize(
+              claims = JWT.Claims(
+                issuer = config.jwt.issuer,
+                subject = token.userId.toString,
+                audience = token.clientId,
+                custom = userInfo.toJsonAST,
+              ),
+              ttl = 5.minutes,
+              signature = JWT.Signature(
+                algorithm = JWT.Algorithm.RS256,
+                keyId = config.jwt.publicKeys.active.id,
+                key = config.jwt.privateKey,
+              ),
+            ).map { signedJwt =>
+              Response(
+                status = Status.Ok,
+                headers = Headers(Header.ContentType(MediaType.application.jwt)),
+                body = Body.fromString(signedJwt),
+              )
+            }
+      yield response)
         .catchAll:
           case UserInfoError.InvalidToken =>
             ZIO.succeed:
@@ -51,8 +87,8 @@ object UserInfoController extends Controller:
                   Header.WWWAuthenticate.Bearer(
                     realm = "UserInfo",
                     error = Some("invalid_token"),
-                    errorDescription = Some("The access token is invalid or expired")
-                  )
+                    errorDescription = Some("The access token is invalid or expired"),
+                  ),
                 )
 
           case UserInfoError.InsufficientScope =>
@@ -63,8 +99,8 @@ object UserInfoController extends Controller:
                   Header.WWWAuthenticate.Bearer(
                     realm = "UserInfo",
                     error = Some("insufficient_scope"),
-                    errorDescription = Some("The access token does not have sufficient scope")
-                  )
+                    errorDescription = Some("The access token does not have sufficient scope"),
+                  ),
                 )
 
           case UserInfoError.Unauthorized =>
@@ -75,9 +111,14 @@ object UserInfoController extends Controller:
                   Header.WWWAuthenticate.Bearer(
                     realm = "UserInfo",
                     error = Some("invalid_request"),
-                    errorDescription = Some("The request is missing a required parameter or is otherwise malformed")
-                  )
+                    errorDescription = Some("The request is missing a required parameter or is otherwise malformed"),
+                  ),
                 )
+
+          case _: Throwable =>
+            ZIO.succeed:
+              Response
+                .status(Status.InternalServerError)
     }
 
   private def extractBearerToken(request: Request): IO[UserInfoError, String] =
@@ -85,4 +126,3 @@ object UserInfoController extends Controller:
       request.header(Header.Authorization).collect:
         case Header.Authorization.Bearer(token) => token.value.asString
     .orElseFail(UserInfoError.Unauthorized)
-

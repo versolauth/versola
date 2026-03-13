@@ -13,9 +13,9 @@ import zio.{IO, ZIO, ZLayer}
 
 trait IntrospectionService:
   def introspectAccessToken(
-                             token: AccessToken,
-                             credentials: ClientCredentials,
-  ): IO[IntrospectionError, IntrospectionResponse]
+      token: AccessToken,
+      credentials: ClientCredentials,
+  ): IO[Throwable | IntrospectionError, IntrospectionResponse]
 
   def introspectRefreshToken(
       token: RefreshToken,
@@ -37,9 +37,9 @@ object IntrospectionService:
   ) extends IntrospectionService:
 
     override def introspectAccessToken(
-                                        token: AccessToken,
-                                        credentials: ClientCredentials,
-    ): IO[IntrospectionError, IntrospectionResponse] =
+        token: AccessToken,
+        credentials: ClientCredentials,
+    ): IO[Throwable | IntrospectionError, IntrospectionResponse] =
       for
         _ <- authenticateClient(credentials)
       yield buildJwtIntrospectionResponse(token)

@@ -9,7 +9,7 @@ case class UserRecord(
     id: UserId,
     email: Option[Email],
     phone: Option[Phone],
-    claims: Json,
+    claims: Json.Obj,
 ):
   def createdAt: Instant = id.createdAt
 

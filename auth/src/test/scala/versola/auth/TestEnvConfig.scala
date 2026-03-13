@@ -50,7 +50,7 @@ object TestEnvConfig:
 
   val jwtConfig = CoreConfig.JwtConfig(
     privateKey = privateKey,
-    publicKey = jwksJson,
+    publicKeys = versola.util.JWT.PublicKeys.fromJson(jwksJson),
     issuer = "https://versolauth.com",
   )
 

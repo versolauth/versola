@@ -94,7 +94,7 @@ object TokenEndpointController extends Controller:
 
         val header = JWSHeader.Builder(JWSAlgorithm.RS256)
           .`type`(JOSEObjectType("at+jwt"))
-          .keyID(config.jwkSet.getKeys.get(0).getKeyID)
+          .keyID(config.publicKeys.active.id)
           .build()
 
         val jwt = SignedJWT(header, claims)
@@ -107,7 +107,7 @@ object TokenEndpointController extends Controller:
       form <- request.body.asURLEncodedForm.orElseFail(TokenEndpointError.InvalidRequest)
       request <- form.get("grant_type").flatMap(_.stringValue) match
         case Some("authorization_code") =>
-          ZIO.fromEither(codeExchangeRequestDecoder.decode(form)).orElseFail(TokenEndpointError.InvalidRequest)
+          codeExchangeRequestDecoder.decode(form).orElseFail(TokenEndpointError.InvalidRequest)
         case _ =>
           ZIO.fail(TokenEndpointError.UnsupportedGrantType)
     yield request

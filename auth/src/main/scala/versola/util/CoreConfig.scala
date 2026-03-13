@@ -1,9 +1,7 @@
 package versola.util
 
-import com.nimbusds.jose.jwk.JWKSet
 import versola.util.postgres.PostgresConfig
 import zio.Duration
-import zio.json.*
 
 import java.security.PrivateKey
 
@@ -18,9 +16,8 @@ object CoreConfig:
   case class JwtConfig(
       issuer: String,
       privateKey: PrivateKey,
-      publicKey: zio.json.ast.Json.Obj,
-  ):
-    val jwkSet = JWKSet.parse(publicKey.toJson)
+      publicKeys: JWT.PublicKeys,
+  )
 
   case class Security(
       accessTokens: CoreConfig.Security.AccessTokens,

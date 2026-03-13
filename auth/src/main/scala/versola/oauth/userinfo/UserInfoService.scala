@@ -1,11 +1,11 @@
 package versola.oauth.userinfo
 
-import versola.oauth.client.model.{Claim, ScopeToken}
 import versola.oauth.client.OAuthClientService
+import versola.oauth.client.model.{Claim, ScopeToken}
 import versola.oauth.model.AccessToken
 import versola.oauth.userinfo.model.{RequestedClaims, UserInfoError, UserInfoResponse}
 import versola.user.UserRepository
-import versola.user.model.UserId
+import versola.user.model.{UserId, UserRecord}
 import zio.json.ast.Json
 import zio.{IO, UIO, ZIO, ZLayer}
 
@@ -26,15 +26,27 @@ object UserInfoService:
 
     override def getUserInfo(token: AccessToken): IO[Throwable | UserInfoError, UserInfoResponse] =
       for
+        _ <- ZIO.fail(UserInfoError.InsufficientScope)
+          .unless(token.scope.contains(ScopeToken.OpenId))
+
         authorizedClaims <- getAuthorizedClaims(token.scope, token.requestedClaims)
         user <- userRepository.find(token.userId).someOrFail(UserInfoError.InvalidToken)
-        response <- buildResponse(
-          token.userId,
-          authorizedClaims,
-          user.claims,
-          token.uiLocales.getOrElse(Vector.empty),
-        )
-      yield response
+
+        userClaimsMap = user.claims.fields.toMap ++
+          user.email.map(email => ("email", Json.Str(email))) ++
+          user.phone.map(phone => ("phone_number", Json.Str(phone)))
+
+        uiLocales = token.uiLocales.getOrElse(Vector.empty)
+        resolvedClaims = authorizedClaims.flatMap { claimName =>
+          if uiLocales.nonEmpty then
+            resolveLocalizedClaim(claimName, userClaimsMap, uiLocales)
+          else
+            userClaimsMap.get(claimName).map(value => (claimName, value))
+        }.toMap
+
+        finalClaims = resolvedClaims + ("sub" -> Json.Str(token.userId.toString))
+
+      yield UserInfoResponse(finalClaims)
 
     private def getAuthorizedClaims(
         tokenScopes: Set[ScopeToken],
@@ -52,29 +64,6 @@ object UserInfoService:
             tokenScopeClaims
       yield finalClaims
 
-    private def buildResponse(
-        userId: UserId,
-        authorizedClaims: Set[Claim],
-        userClaims: Json,
-        uiLocales: Vector[String],
-    ): IO[UserInfoError, UserInfoResponse] =
-      ZIO.succeed:
-        val userClaimsMap = userClaims match
-          case Json.Obj(fields) => fields.toMap
-          case _ => Map.empty[String, Json]
-
-        // Resolve localized claims for each authorized claim
-        val resolvedClaims = authorizedClaims.flatMap { claimName =>
-          if uiLocales.nonEmpty then
-            resolveLocalizedClaim(claimName, userClaimsMap, uiLocales)
-          else
-            userClaimsMap.get(claimName).map(value => (claimName, value))
-        }.toMap
-
-        // Always include 'sub' claim if openid scope was granted
-        val finalClaims = resolvedClaims + ("sub" -> Json.Str(userId.toString))
-
-        UserInfoResponse(finalClaims)
 
     /**
      * Resolve localized claims based on locale preferences

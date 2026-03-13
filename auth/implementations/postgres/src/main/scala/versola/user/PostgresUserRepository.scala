@@ -82,9 +82,9 @@ class PostgresUserRepository(
   given DbCodec[LastName] = DbCodec.StringCodec.biMap(LastName(_), identity[String])
   given DbCodec[BirthDate] = DbCodec.LocalDateCodec.biMap(BirthDate(_), identity[LocalDate])
 
-  given DbCodec[Json] = DbCodec.StringCodec.biMap(
-    jsonString => jsonString.fromJson[Json].getOrElse(Json.Obj()),
-    json => json.toJson
+  given DbCodec[Json.Obj] = DbCodec.StringCodec.biMap(
+    _.fromJson[Json.Obj].getOrElse(Json.Obj()),
+    _.toJson
   )
 
   given DbCodec[UserRecord] = DbCodec.derived[UserRecord]

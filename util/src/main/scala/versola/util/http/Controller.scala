@@ -26,5 +26,5 @@ trait Controller:
 
     def formAs[A: FormDecoder as decoder]: IO[String, A] =
       request.body.asURLEncodedForm.mapError(_.getMessage)
-        .flatMap(form => ZIO.fromEither(decoder.decode(form)))
+        .flatMap(decoder.decode)
 

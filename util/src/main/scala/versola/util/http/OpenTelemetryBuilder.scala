@@ -15,7 +15,7 @@ import io.opentelemetry.sdk.trace.SdkTracerProvider
 import io.opentelemetry.sdk.trace.`export`.{BatchSpanProcessor, SpanExporter}
 import io.opentelemetry.sdk.trace.data.SpanData
 import io.opentelemetry.semconv.ServiceAttributes
-import versola.util.{CoreConfig, EnvName}
+import versola.util.EnvName
 import zio.telemetry.opentelemetry.OpenTelemetry
 import zio.telemetry.opentelemetry.context.ContextStorage
 import zio.telemetry.opentelemetry.tracing.Tracing

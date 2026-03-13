@@ -21,11 +21,14 @@
 - [x] **Error Handling (RFC 6750)** - `invalid_token`, `insufficient_scope` with WWW-Authenticate header
 - [x] **Performance Optimization** - Cached scope mappings, single DB query for user claims
 
+### ✅ Additional Features (Implemented)
+
+- [x] **Signed UserInfo Response** - Return UserInfo as JWT when `Accept: application/jwt` header is present (Section 5.3.2)
+
 ### 🔮 Future Enhancements (Planned - OIDC Core 1.0)
 
 - [ ] **Aggregated Claims** - External claims as signed JWT (Section 5.6.2)
 - [ ] **Distributed Claims** - Client-fetched external claims (Section 5.6.2)
-- [ ] **Signed UserInfo Response** - Return UserInfo as JWT (Section 5.3.2)
 - [ ] **Encrypted UserInfo Response** - JWE encryption for privacy (Section 5.3.2)
 - [ ] **Essential Claims Enforcement** - Deny authorization if essential claims missing (Section 5.5.1)
 - [ ] **Claim Value Filtering** - Match specific claim values (Section 5.5.1)
@@ -698,11 +701,12 @@ Claims that the client must fetch directly from external sources.
 
 ### 8.2 Signed and Encrypted UserInfo Responses
 
-**Status:** Planned
+**Status:** Signed responses implemented, encryption planned
 **Specification:** OpenID Connect Core 1.0 Section 5.3.2
 
-**Signed UserInfo Response (JWT):**
-Return UserInfo as a signed JWT instead of plain JSON.
+**Signed UserInfo Response (JWT):** ✅ **Implemented**
+
+Return UserInfo as a signed JWT instead of plain JSON when client requests it.
 
 **Request:**
 ```http
@@ -720,11 +724,12 @@ Content-Type: application/jwt
 eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI1NTBlODQwMC1lMjliLTQxZDQtYTcxNi00NDY2NTU0NDAwMDAiLCJuYW1lIjoiSm9obiBEb2UiLCJlbWFpbCI6ImpvaG5AZXhhbXBsZS5jb20ifQ.signature
 ```
 
-**Implementation Requirements:**
-- Check `Accept: application/jwt` header
-- Sign UserInfo response using server's private key
-- Include standard JWT claims: `iss`, `sub`, `aud`, `iat`, `exp`
-- Support client-specific signing algorithm preferences (from client registration)
+**Implementation:**
+- ✅ Check `Accept: application/jwt` header in UserInfoController
+- ✅ Sign UserInfo response using server's private key (RS256)
+- ✅ Include standard JWT claims: `iss`, `sub`, `aud`, `iat`, `exp` (5 minute expiration)
+- ✅ Convert all UserInfo claims to JWT claims (strings, numbers, booleans, objects, arrays)
+- ⬜ Support client-specific signing algorithm preferences (future enhancement)
 
 **Encrypted UserInfo Response (JWE):**
 Return UserInfo as an encrypted JWT for enhanced privacy.

@@ -17,7 +17,7 @@ import zio.schema.*
  * - Arrays as JSON arrays
  */
 case class UserInfoResponse(claims: Map[String, Json]) derives Schema:
-  def toJsonAST: Json = Json.Obj(Chunk.fromIterable(claims))
+  def toJsonAST: Json.Obj = Json.Obj(Chunk.fromIterable(claims))
 
 object UserInfoResponse:
   given JsonEncoder[UserInfoResponse] = JsonEncoder[Json].contramap(_.toJsonAST)

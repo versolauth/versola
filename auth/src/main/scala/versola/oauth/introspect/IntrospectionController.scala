@@ -4,7 +4,7 @@ import versola.auth.model.RefreshToken
 import versola.oauth.introspect.model.{IntrospectionError, IntrospectionResponse}
 import versola.oauth.model.AccessToken
 import versola.oauth.token.model.{TokenEndpointError, TokenErrorResponse}
-import versola.util.{Base64, Base64Url, CoreConfig, FormDecoder}
+import versola.util.{Base64, Base64Url, CoreConfig, FormDecoder, JWT}
 import versola.util.http.Controller
 import zio.*
 import zio.http.*
@@ -22,6 +22,7 @@ object IntrospectionController extends Controller:
     introspectEndpoint,
   )
 
+  //TODO remove TokenEndpointError
   val introspectEndpoint =
     Method.POST / "v1" / "introspect" -> handler { (request: Request) =>
       (for
@@ -30,12 +31,10 @@ object IntrospectionController extends Controller:
         credentials <- request.extractCredentials.orElseFail(TokenEndpointError.InvalidClient)
         tokenEither <- request.formAs[Either[RefreshToken, String]].orElseFail(TokenEndpointError.InvalidRequest)
         response <- tokenEither match
-          case Right(tokenString) =>
-            AccessToken.parseAndValidate(tokenString, config.jwt.jwkSet).either.flatMap:
-              case Right(jwt) =>
-                introspectionService.introspectAccessToken(jwt, credentials)
-              case Left(_) =>
-                ZIO.succeed(IntrospectionResponse.Inactive)
+          case Right(token) =>
+            JWT.deserialize[AccessToken](token, config.jwt.publicKeys)
+              .flatMap(introspectionService.introspectAccessToken(_, credentials))
+              .catchSome { case _: IntrospectionError => ZIO.succeed(IntrospectionResponse.Inactive) }
 
           case Left(refreshToken) =>
             introspectionService.introspectRefreshToken(refreshToken, credentials)
@@ -44,6 +43,9 @@ object IntrospectionController extends Controller:
         .addHeader(Header.CacheControl.NoStore)
         .addHeader(Header.Pragma.NoCache))
         .catchAll {
+          case _: JWT.Error =>
+            ZIO.succeed(Response.json(IntrospectionResponse.Inactive.toJson))
+
           case _: IntrospectionError =>
             ZIO.succeed:
               Response
@@ -60,8 +62,8 @@ object IntrospectionController extends Controller:
                 .addHeader(Header.CacheControl.NoStore)
 
           case ex: Throwable =>
-            ZIO.logErrorCause("Introspection error", Cause.fail(ex)) *>
-              ZIO.succeed(Response.internalServerError)
+            ZIO.logErrorCause("Introspection error", Cause.fail(ex))
+              .as(Response.internalServerError)
         }
     }
 

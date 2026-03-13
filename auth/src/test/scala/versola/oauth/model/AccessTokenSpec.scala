@@ -8,7 +8,7 @@ import versola.auth.TestEnvConfig
 import versola.oauth.client.model.{Claim, ClientId, ScopeToken}
 import versola.oauth.userinfo.model.{ClaimRequest, RequestedClaims}
 import versola.user.model.UserId
-import versola.util.UnitSpecBase
+import versola.util.{JWT, UnitSpecBase}
 import zio.json.*
 import zio.test.*
 import zio.{Clock, ZIO}
@@ -36,6 +36,7 @@ object AccessTokenSpec extends UnitSpecBase:
     .build()
 
   private val jwkSet = new JWKSet(rsaJWK)
+  private val publicKeysForVerification = JWT.PublicKeys(jwkSet)
 
   // Test data
   private val testUserId = UserId(UUID.fromString("550e8400-e29b-41d4-a716-446655440000"))
@@ -139,7 +140,7 @@ object AccessTokenSpec extends UnitSpecBase:
       val tokenString = createSignedJWT()
 
       for
-        result <- AccessToken.parseAndValidate(tokenString, jwkSet)
+        result <- JWT.deserialize[AccessToken](tokenString, publicKeysForVerification)
       yield assertTrue(
         result.userId == testUserId,
         result.clientId == testClientId,
@@ -163,7 +164,7 @@ object AccessTokenSpec extends UnitSpecBase:
       )
 
       for
-        result <- AccessToken.parseAndValidate(tokenString, jwkSet)
+        result <- JWT.deserialize[AccessToken](tokenString, publicKeysForVerification)
       yield assertTrue(
         result.userId == testUserId,
         result.clientId == testClientId,
@@ -180,18 +181,18 @@ object AccessTokenSpec extends UnitSpecBase:
   def invalidTokenTests = suite("invalid tokens")(
     test("fail with NotJWT for non-JWT string") {
       for
-        result <- AccessToken.parseAndValidate("not-a-jwt", jwkSet).either
-      yield assertTrue(result == Left(AccessToken.Error.NotJWT))
+        result <- JWT.deserialize[AccessToken]("not-a-jwt", publicKeysForVerification).either
+      yield assertTrue(result == Left(JWT.Error.NotJWT))
     },
     test("fail with NotJWT for empty string") {
       for
-        result <- AccessToken.parseAndValidate("", jwkSet).either
-      yield assertTrue(result == Left(AccessToken.Error.NotJWT))
+        result <- JWT.deserialize[AccessToken]("", publicKeysForVerification).either
+      yield assertTrue(result == Left(JWT.Error.NotJWT))
     },
     test("fail with NotJWT for malformed JWT") {
       for
-        result <- AccessToken.parseAndValidate("header.payload", jwkSet).either
-      yield assertTrue(result == Left(AccessToken.Error.NotJWT))
+        result <- JWT.deserialize[AccessToken]("header.payload", publicKeysForVerification).either
+      yield assertTrue(result == Left(JWT.Error.NotJWT))
     },
   )
 
@@ -208,8 +209,8 @@ object AccessTokenSpec extends UnitSpecBase:
       val plainJWT = new PlainJWT(claims)
 
       for
-        result <- AccessToken.parseAndValidate(plainJWT.serialize(), jwkSet).either
-      yield assertTrue(result == Left(AccessToken.Error.NotJWT))
+        result <- JWT.deserialize[AccessToken](plainJWT.serialize(), publicKeysForVerification).either
+      yield assertTrue(result == Left(JWT.Error.NotJWT))
     },
     test("fail with InvalidSignature for JWT signed with different key") {
       // Generate a different key pair
@@ -234,15 +235,15 @@ object AccessTokenSpec extends UnitSpecBase:
       jwt.sign(differentSigner)
 
       for
-        result <- AccessToken.parseAndValidate(jwt.serialize(), jwkSet).either
-      yield assertTrue(result == Left(AccessToken.Error.InvalidSignature))
+        result <- JWT.deserialize[AccessToken](jwt.serialize(), publicKeysForVerification).either
+      yield assertTrue(result == Left(JWT.Error.InvalidSignature))
     },
     test("fail with InvalidSignature for wrong key ID") {
       val tokenString = createSignedJWT(keyId = "wrong-key-id")
 
       for
-        result <- AccessToken.parseAndValidate(tokenString, jwkSet).either
-      yield assertTrue(result == Left(AccessToken.Error.InvalidSignature))
+        result <- JWT.deserialize[AccessToken](tokenString, publicKeysForVerification).either
+      yield assertTrue(result == Left(JWT.Error.InvalidSignature))
     },
     test("fail with InvalidSignature for tampered payload") {
       val tokenString = createSignedJWT()
@@ -251,8 +252,8 @@ object AccessTokenSpec extends UnitSpecBase:
       val tamperedToken = parts(0) + "." + parts(1).replace('A', 'B') + "." + parts(2)
 
       for
-        result <- AccessToken.parseAndValidate(tamperedToken, jwkSet).either
-      yield assertTrue(result == Left(AccessToken.Error.InvalidSignature))
+        result <- JWT.deserialize[AccessToken](tamperedToken, publicKeysForVerification).either
+      yield assertTrue(result == Left(JWT.Error.InvalidSignature))
     },
   )
 
@@ -261,14 +262,14 @@ object AccessTokenSpec extends UnitSpecBase:
       for
         now <- Clock.instant
         expiredToken = createSignedJWT(expiresAt = Some(now.minusSeconds(3600)))
-        result <- AccessToken.parseAndValidate(expiredToken, jwkSet).either
-      yield assertTrue(result == Left(AccessToken.Error.Expired))
+        result <- JWT.deserialize[AccessToken](expiredToken, publicKeysForVerification).either
+      yield assertTrue(result == Left(JWT.Error.Expired))
     },
     test("succeed for token expiring in the future") {
       for
         now <- Clock.instant
         validToken = createSignedJWT(expiresAt = Some(now.plusSeconds(3600)))
-        result <- AccessToken.parseAndValidate(validToken, jwkSet)
+        result <- JWT.deserialize[AccessToken](validToken, publicKeysForVerification)
       yield assertTrue(result.expiresAt.isAfter(now))
     },
     test("fail with InvalidClaims for token without expiration") {
@@ -290,8 +291,8 @@ object AccessTokenSpec extends UnitSpecBase:
       jwt.sign(signer)
 
       for
-        result <- AccessToken.parseAndValidate(jwt.serialize(), jwkSet).either
-      yield assertTrue(result == Left(AccessToken.Error.InvalidClaims))
+        result <- JWT.deserialize[AccessToken](jwt.serialize(), publicKeysForVerification).either
+      yield assertTrue(result == Left(JWT.Error.InvalidClaims))
     },
   )
 
@@ -307,7 +308,7 @@ object AccessTokenSpec extends UnitSpecBase:
       )
 
       for
-        result <- AccessToken.parseAndValidate(tokenString, jwkSet)
+        result <- JWT.deserialize[AccessToken](tokenString, publicKeysForVerification)
       yield assertTrue(
         result.scope.size == 4,
         result.scope.contains(ScopeToken("openid")),
@@ -330,7 +331,7 @@ object AccessTokenSpec extends UnitSpecBase:
       val tokenString = createSignedJWT(requestedClaims = Some(requestedClaims))
 
       for
-        result <- AccessToken.parseAndValidate(tokenString, jwkSet)
+        result <- JWT.deserialize[AccessToken](tokenString, publicKeysForVerification)
       yield assertTrue(
         result.requestedClaims.isDefined,
         result.requestedClaims.get.userinfo.size == 3,
@@ -342,7 +343,7 @@ object AccessTokenSpec extends UnitSpecBase:
       val tokenString = createSignedJWT(uiLocales = Some(locales))
 
       for
-        result <- AccessToken.parseAndValidate(tokenString, jwkSet)
+        result <- JWT.deserialize[AccessToken](tokenString, publicKeysForVerification)
       yield assertTrue(
         result.uiLocales == Some(locales),
       )
@@ -357,7 +358,7 @@ object AccessTokenSpec extends UnitSpecBase:
           issuer = Some("https://auth.example.com"),
           jwtId = Some("unique-jwt-id-123"),
         )
-        result <- AccessToken.parseAndValidate(tokenString, jwkSet)
+        result <- JWT.deserialize[AccessToken](tokenString, publicKeysForVerification)
       yield assertTrue(
         result.issuedAt != null,
         result.notBefore.isDefined,
@@ -389,7 +390,7 @@ object AccessTokenSpec extends UnitSpecBase:
       jwt.sign(signer)
 
       for
-        result <- AccessToken.parseAndValidate(jwt.serialize(), jwkSet)
+        result <- JWT.deserialize[AccessToken](jwt.serialize(), publicKeysForVerification)
       yield assertTrue(
         result.audience == Vector(ClientId("client-456")),
       )
@@ -417,7 +418,7 @@ object AccessTokenSpec extends UnitSpecBase:
       jwt.sign(signer)
 
       for
-        result <- AccessToken.parseAndValidate(jwt.serialize(), jwkSet)
+        result <- JWT.deserialize[AccessToken](jwt.serialize(), publicKeysForVerification)
       yield assertTrue(
         result.audience == Vector(ClientId("client-1"), ClientId("client-2"), ClientId("client-3")),
       )
@@ -440,8 +441,8 @@ object AccessTokenSpec extends UnitSpecBase:
       jwt.sign(signer)
 
       for
-        result <- AccessToken.parseAndValidate(jwt.serialize(), jwkSet).either
-      yield assertTrue(result == Left(AccessToken.Error.InvalidClaims))
+        result <- JWT.deserialize[AccessToken](jwt.serialize(), publicKeysForVerification).either
+      yield assertTrue(result == Left(JWT.Error.InvalidClaims))
     },
     test("fail with InvalidClaims for invalid UserId format") {
       val claimsBuilder = new JWTClaimsSet.Builder()
@@ -461,7 +462,7 @@ object AccessTokenSpec extends UnitSpecBase:
       jwt.sign(signer)
 
       for
-        result <- AccessToken.parseAndValidate(jwt.serialize(), jwkSet).either
-      yield assertTrue(result == Left(AccessToken.Error.InvalidClaims))
+        result <- JWT.deserialize[AccessToken](jwt.serialize(), publicKeysForVerification).either
+      yield assertTrue(result == Left(JWT.Error.InvalidClaims))
     },
   )

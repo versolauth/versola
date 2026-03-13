@@ -36,8 +36,8 @@ object ConversationController extends Controller:
           html = formService.renderStep(record.step)
         yield Response.html(html)
       ).catchAll { ex =>
-        ZIO.logErrorCause("Unknown exception", Cause.fail(ex)) *>
-          ZIO.succeed(Response.internalServerError)
+        ZIO.logErrorCause("Unknown exception", Cause.fail(ex))
+          .as(Response.internalServerError)
       }
     }
 
@@ -53,7 +53,7 @@ object ConversationController extends Controller:
   val submitResendOtpRoute =
     submit[OtpResendSubmission](Method.POST / "v1" / "challenge" / "otp" / "resend")
 
-  private def submit[Body <: Submission: FormDecoder as decoder](
+  private def submit[Body <: Submission: FormDecoder](
       pattern: RoutePattern[Unit],
   ): Route[ConversationRouter & ConversationRenderService, Nothing] =
     pattern -> handler { (request: Request) =>
@@ -61,15 +61,14 @@ object ConversationController extends Controller:
         router <- ZIO.service[ConversationRouter]
         conversationRenderService <- ZIO.service[ConversationRenderService]
         authId <- extractAuthId(request)
-        form <- request.body.asURLEncodedForm
-        body <- ZIO.fromEither(decoder.decode(form)).orElseFail(Error.BadRequest)
+        body <- request.formAs[Body].orElseFail(Error.BadRequest)
         submissionResult <- router.submit(authId, body)
         response = conversationRenderService.renderSubmit(submissionResult)
       yield response
     }.catchAll { err =>
       Handler.fromZIO(
-        ZIO.logError(s"Error in submit: $err") *>
-          ZIO.succeed(Response.status(Status.InternalServerError)),
+        ZIO.logError(s"Error in submit: $err")
+          .as(Response.status(Status.InternalServerError)),
       )
     }
 
@@ -91,7 +90,9 @@ object ConversationController extends Controller:
       .map(EmailSubmission(_))
 
   given FormDecoder[OtpResendSubmission] = (form: Form) =>
-    Either.cond(form.formData.isEmpty, OtpResendSubmission(), "Form data is not empty")
+    ZIO.succeed(OtpResendSubmission())
+      .when(form.formData.isEmpty)
+      .someOrFail("Form data is not empty")
 
   given FormDecoder[OtpSubmission] = (form: Form) =>
     FormDecoder.single[OtpCode](form, "code", code => Right(OtpCode(code)))
