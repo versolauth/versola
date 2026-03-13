@@ -52,6 +52,8 @@ trait ConversationRepositorySpec extends DatabaseSpecBase[ConversationRepository
     userId = Some(userId1),
     credential = Some(Left(email)),
     step = realOtp,
+    requestedClaims = None,
+    uiLocales = None,
   )
 
   val record2 = record1.copy(
@@ -70,6 +72,8 @@ trait ConversationRepositorySpec extends DatabaseSpecBase[ConversationRepository
     userId = None,
     credential = None,
     step = ConversationStep.Empty(PrimaryCredential.Phone, passkey = false),
+    requestedClaims = None,
+    uiLocales = None,
   )
 
   def testCases(env: ConversationRepositorySpec.Env): List[Spec[ConversationRepositorySpec.Env & zio.Scope, Any]] =

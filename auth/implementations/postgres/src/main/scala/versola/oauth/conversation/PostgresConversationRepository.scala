@@ -6,6 +6,7 @@ import versola.auth.model.OtpCode
 import versola.oauth.client.model.{ClientId, ScopeToken}
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep, PrimaryCredential}
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, State}
+import versola.oauth.userinfo.model.RequestedClaims
 import versola.user.model.UserId
 import versola.util.postgres.BasicCodecs
 import versola.util.{Email, Phone}
@@ -17,6 +18,8 @@ import java.time.Instant
 import java.util.UUID
 
 class PostgresConversationRepository(xa: TransactorZIO) extends ConversationRepository, BasicCodecs:
+  import com.augustnagro.magnum.pg.PgCodec.ListCodec
+
   given JsonCodec[OtpCode] = JsonCodec.string.transform(OtpCode(_), identity[String])
   given JsonCodec[ConversationStep.Otp.Real] = DeriveJsonCodec.gen[ConversationStep.Otp.Real]
   given JsonCodec[PrimaryCredential] = JsonCodec.string.transform(PrimaryCredential.valueOf, _.toString)
@@ -36,12 +39,13 @@ class PostgresConversationRepository(xa: TransactorZIO) extends ConversationRepo
   given DbCodec[AuthId] = DbCodec.UUIDCodec.biMap(AuthId(_), identity[UUID])
   given DbCodec[Instant] = DbCodec.InstantCodec
   given DbCodec[ConversationStep] = jsonCodec[ConversationStep]
+  given DbCodec[RequestedClaims] = jsonCodec[RequestedClaims]
   given DbCodec[ConversationRecord] = DbCodec.derived[ConversationRecord]
 
   override def find(authId: AuthId): Task[Option[ConversationRecord]] =
     Clock.instant.flatMap: now =>
       xa.connect {
-        sql"""select client_id, redirect_uri, scope, code_challenge, code_challenge_method, state, user_id, credential, step, expires_at
+        sql"""select client_id, redirect_uri, scope, code_challenge, code_challenge_method, state, user_id, credential, step, requested_claims, ui_locales, expires_at
               from auth_conversations
               where id = $authId"""
           .query[(ConversationRecord, Instant)]
@@ -52,7 +56,7 @@ class PostgresConversationRepository(xa: TransactorZIO) extends ConversationRepo
 
   override def create(authId: AuthId, record: ConversationRecord, ttl: Duration): Task[Unit] =
     xa.connect {
-      sql"""insert into auth_conversations (id, client_id, redirect_uri, scope, code_challenge, code_challenge_method, state, user_id, credential, step, expires_at)
+      sql"""insert into auth_conversations (id, client_id, redirect_uri, scope, code_challenge, code_challenge_method, state, user_id, credential, step, requested_claims, ui_locales, expires_at)
               values (
                 $authId,
                 ${record.clientId},
@@ -64,6 +68,8 @@ class PostgresConversationRepository(xa: TransactorZIO) extends ConversationRepo
                 ${record.userId},
                 ${record.credential},
                 ${record.step},
+                ${record.requestedClaims},
+                ${record.uiLocales}::text[],
                 ${authId.createdAt.plusSeconds(ttl.toSeconds)})
          """
         .update.run()

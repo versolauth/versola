@@ -4,7 +4,9 @@ import versola.oauth.authorize.model.{AuthorizeRequest, Error, ResponseTypeEntry
 import versola.oauth.client.OAuthClientService
 import versola.oauth.client.model.{ClientId, OAuthClientRecord, ScopeToken}
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, State}
+import versola.oauth.userinfo.model.RequestedClaims
 import zio.http.{Method, Request, URL}
+import zio.json.*
 import zio.prelude.NonEmptySet
 import zio.{Chunk, IO, Task, ZIO, ZLayer}
 
@@ -73,6 +75,21 @@ object AuthorizeRequestParser:
           .someOrFail(Error.ScopeMissing(redirectUri, state))
           .map(_.split(',').toSet.map(ScopeToken(_)))
 
+        uiLocales <- getParam(params, "ui_locales")
+          .orElseFail(Error.MultipleValuesProvided(redirectUri, state, "ui_locales"))
+          .map(_.map(_.split(' ').toList))
+
+        requestedClaims <- getParam(params, "claims")
+          .orElseFail(Error.MultipleValuesProvided(redirectUri, state, "claims"))
+          .flatMap {
+            case Some(claimsJson) =>
+              ZIO.fromEither(claimsJson.fromJson[RequestedClaims])
+                .mapError(_ => Error.InvalidClaims(redirectUri, state))
+                .map(Some(_))
+            case None =>
+              ZIO.none
+          }
+
         authorizeRequest = AuthorizeRequest(
           clientId = clientId,
           redirectUri = redirectUri,
@@ -81,6 +98,8 @@ object AuthorizeRequestParser:
           codeChallenge = codeChallenge,
           codeChallengeMethod = codeChallengeMethod,
           responseType = responseTypeEntries,
+          requestedClaims = requestedClaims,
+          uiLocales = uiLocales,
         )
       yield authorizeRequest
 

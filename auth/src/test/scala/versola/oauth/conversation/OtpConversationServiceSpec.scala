@@ -68,6 +68,8 @@ object OtpConversationServiceSpec extends UnitSpecBase:
     userId = None,
     credential = None,
     step = ConversationStep.Empty(PrimaryCredential.Phone, passkey = false),
+    requestedClaims = None,
+    uiLocales = None,
   )
 
   val spec = suite("OtpConversationService")(
@@ -109,6 +111,8 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           userId = Some(userId),
           credential = Some(Left(email)),
           step = otp,
+          requestedClaims = None,
+          uiLocales = None,
         )
         for
           _ <- env.otpService.checkOtp.succeedsWith(SubmitOtpResult.Success)
@@ -128,6 +132,8 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           userId = Some(userId),
           credential = Some(Left(email)),
           step = otp,
+          requestedClaims = None,
+          uiLocales = None,
         )
         for
           _ <- env.otpService.checkOtp.succeedsWith(SubmitOtpResult.LimitsExceeded)

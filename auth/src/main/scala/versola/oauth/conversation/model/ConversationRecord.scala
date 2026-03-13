@@ -2,6 +2,7 @@ package versola.oauth.conversation.model
 
 import versola.oauth.client.model.{ClientId, ScopeToken}
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, State}
+import versola.oauth.userinfo.model.RequestedClaims
 import versola.user.model.UserId
 import versola.util.{Email, Phone}
 import zio.http.URL
@@ -16,6 +17,8 @@ case class ConversationRecord(
     userId: Option[UserId],
     credential: Option[Either[Email, Phone]],
     step: ConversationStep,
+    requestedClaims: Option[RequestedClaims],
+    uiLocales: Option[List[String]],
 ):
   def patch(patch: ConversationRecord.Patch): ConversationRecord =
     this.copy(

@@ -69,3 +69,9 @@ private[authorize] object Error:
       errorDescription = "Missing required parameter - scope",
       errorUri = Some("https://datatracker.ietf.org/doc/html/rfc6749#section-4.1.1"),
     )
+
+  case class InvalidClaims(uri: URL, state: Option[State]) extends RedirectError(
+      error = ErrorCode.InvalidRequest,
+      errorDescription = "Invalid claims parameter - must be valid JSON",
+      errorUri = Some("https://openid.net/specs/openid-connect-core-1_0.html#ClaimsParameter"),
+    )

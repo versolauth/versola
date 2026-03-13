@@ -41,7 +41,9 @@ object ConversationRouterSpec extends UnitSpecBase:
     state = Some(State("test-state")),
     userId = None,
     credential = None,
-    step = ConversationStep.Empty(PrimaryCredential.Phone, passkey = false)
+    step = ConversationStep.Empty(PrimaryCredential.Phone, passkey = false),
+    requestedClaims = None,
+    uiLocales = None,
   )
 
 
@@ -55,6 +57,8 @@ object ConversationRouterSpec extends UnitSpecBase:
     userId = None,
     credential = Some(Left(email)),
     step = otp,
+    requestedClaims = None,
+    uiLocales = None,
   )
 
   class Env:

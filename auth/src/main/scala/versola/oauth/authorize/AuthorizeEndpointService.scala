@@ -35,6 +35,8 @@ object AuthorizeEndpointService:
           userId = None,
           credential = None,
           step = ConversationStep.Empty(PrimaryCredential.Phone, passkey = false),
+          requestedClaims = request.requestedClaims,
+          uiLocales = request.uiLocales,
         )
         _ <- conversationRepository.create(authId, conversation, config.security.authConversation.ttl)
       yield AuthorizeResponse.Initialize(authId)
