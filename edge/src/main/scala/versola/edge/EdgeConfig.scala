@@ -1,7 +1,6 @@
 package versola.edge
 
 import versola.util.{EnvName, Secret}
-import versola.util.postgres.PostgresConfig
 import zio.Duration
 
 /**
@@ -12,7 +11,6 @@ import zio.Duration
  */
 case class EdgeConfig(
     security: EdgeConfig.Security,
-    postgres: PostgresConfig,
 )
 
 object EdgeConfig:

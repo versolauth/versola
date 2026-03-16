@@ -4,12 +4,14 @@ import com.augustnagro.magnum.magzio.TransactorZIO
 import zio.*
 import zio.test.ZIOSpec
 
-
 abstract class PostgresSpec extends ZIOSpec[TransactorZIO]:
+
   override val bootstrap = PostgresSpec.transactor
 
 object PostgresSpec:
-  val config =
+
+
+  def config =
     ZLayer.fromZIO:
       System.env("POSTGRES_HOST")
         .someOrElse("localhost:5432").map: host =>
@@ -20,4 +22,8 @@ object PostgresSpec:
           )
 
   val transactor =
-    config >>> (Scope.default >>> PostgresHikariDataSource.layer(migrate = true)) >>> TransactorZIO.layer
+    config >>> (Scope.default >>> PostgresHikariDataSource.layer(
+      serviceName = None,
+      migrate = true
+    )) >>> TransactorZIO.layer
+

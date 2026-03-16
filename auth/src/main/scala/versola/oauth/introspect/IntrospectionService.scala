@@ -66,7 +66,7 @@ object IntrospectionService:
     ): IO[Throwable | IntrospectionError, IntrospectionResponse] =
       for
         _ <- authenticateClient(credentials)
-        tokenMac <- securityService.macBlake3(Secret(token), config.security.refreshTokens.pepper)
+        tokenMac <- securityService.mac(Secret(token), config.security.refreshTokens.pepper)
         tokenRecord <- tokenRepository.findRefreshToken(tokenMac)
       yield buildIntrospectionResponse(tokenRecord)
 

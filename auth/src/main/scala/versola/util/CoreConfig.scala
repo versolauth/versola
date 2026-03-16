@@ -1,14 +1,12 @@
 package versola.util
 
-import versola.util.postgres.PostgresConfig
 import zio.Duration
 
 import java.security.PrivateKey
 
 case class CoreConfig(
     security: CoreConfig.Security,
-    jwt: CoreConfig.JwtConfig,
-    postgres: PostgresConfig,
+    jwt: CoreConfig.JwtConfig
 )
 
 object CoreConfig:
@@ -27,6 +25,7 @@ object CoreConfig:
       authCodes: CoreConfig.Security.AuthorizationCodes,
       sessions: CoreConfig.Security.Sessions,
       ssoSession: CoreConfig.Security.SsoSession,
+      passwords: CoreConfig.Security.Passwords,
   )
 
   object Security:
@@ -57,4 +56,10 @@ object CoreConfig:
 
     case class SsoSession(
         ttl: Duration,
+    )
+
+    case class Passwords(
+        pepper: Secret.Bytes16,
+        historySize: Int, // Number of passwords to keep in history (including current)
+        numDifferent: Int // Number of different passwords required before allowing reuse
     )

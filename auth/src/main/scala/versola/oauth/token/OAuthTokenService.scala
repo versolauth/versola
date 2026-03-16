@@ -47,7 +47,7 @@ object OAuthTokenService:
             oauthClientService.verifySecret(clientId, clientSecret)
               .someOrFail(TokenEndpointError.InvalidClient)
 
-        codeMac <- securityService.macBlake3(Secret(code), config.security.authCodes.pepper)
+        codeMac <- securityService.mac(Secret(code), config.security.authCodes.pepper)
 
         codeRecord <- authorizationCodeRepository.find(codeMac)
           .someOrFail(TokenEndpointError.InvalidGrant)
@@ -88,7 +88,7 @@ object OAuthTokenService:
             oauthClientService.verifySecret(clientId, clientSecret)
               .someOrFail(TokenEndpointError.InvalidClient)
 
-        refreshTokenMac <- securityService.macBlake3(Secret(refreshToken), config.security.refreshTokens.pepper)
+        refreshTokenMac <- securityService.mac(Secret(refreshToken), config.security.refreshTokens.pepper)
 
         tokenRecord <- tokenRepository.findRefreshToken(refreshTokenMac)
           .someOrFail(TokenEndpointError.InvalidGrant)
@@ -120,7 +120,7 @@ object OAuthTokenService:
         refreshToken <- ZIO.when(record.scope.contains(ScopeToken.OfflineAccess))(
           for
             token <- authPropertyGenerator.nextRefreshToken
-            mac <- securityService.macBlake3(Secret(token), config.security.refreshTokens.pepper)
+            mac <- securityService.mac(Secret(token), config.security.refreshTokens.pepper)
             _ <- tokenRepository.create(mac, record)
               .mapError:
                 case ex: Throwable => ex

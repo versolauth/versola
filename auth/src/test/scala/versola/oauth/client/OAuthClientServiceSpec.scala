@@ -137,7 +137,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
     val scopeRepository = stub[OAuthScopeRepository]
     val secureRandom = stub[SecureRandom]
     val securityService = stub[SecurityService]
-    securityService.macBlake3.returns { (secret, key) =>
+    securityService.mac.returns { (secret, key) =>
       ZIO.succeed:
         val mac = Array.ofDim[Byte](32)
         Blake3.initKeyedHash(key)

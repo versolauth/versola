@@ -99,7 +99,7 @@ object OAuthClientService:
       stored match
         case Some(stored) =>
           val (mac, salt) = stored.splitAt(32)
-          securityService.macBlake3(
+          securityService.mac(
             secret = secret,
             key = salt ++ config.security.clientSecrets.pepper,
           )
@@ -132,7 +132,7 @@ object OAuthClientService:
     private def generateMacWithSalt(secret: Secret): Task[Secret] =
       for
         salt <- secureRandom.nextBytes(16)
-        mac <- securityService.macBlake3(secret, salt ++ config.security.clientSecrets.pepper)
+        mac <- securityService.mac(secret, salt ++ config.security.clientSecrets.pepper)
       yield Secret(mac ++ salt)
 
     override def rotateSecret(clientId: ClientId): Task[Secret] =

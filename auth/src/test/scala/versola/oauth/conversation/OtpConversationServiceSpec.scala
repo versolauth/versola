@@ -2,6 +2,7 @@ package versola.oauth.conversation
 
 import versola.auth.model.OtpCode
 import versola.auth.TestEnvConfig
+import versola.oauth.challenge.password.PasswordService
 import versola.oauth.client.model.{ClientId, ScopeToken}
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep, PrimaryCredential}
 import versola.oauth.conversation.otp.OtpService
@@ -40,6 +41,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
 
   class Env:
     val otpService = stub[OtpService]
+    val passwordService = stub[PasswordService]
     val conversationRepository = stub[ConversationRepository]
     val userRepository = stub[UserRepository]
     val authorizationCodeRepository = stub[AuthorizationCodeRepository]
@@ -49,6 +51,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
     val config = TestEnvConfig.coreConfig
     val service = ConversationService.Impl(
       otpService,
+      passwordService,
       conversationRepository,
       userRepository,
       authorizationCodeRepository,

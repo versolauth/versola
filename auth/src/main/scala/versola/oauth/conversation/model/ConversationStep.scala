@@ -2,6 +2,8 @@ package versola.oauth.conversation.model
 
 import versola.auth.model.{OtpCode, StepId}
 
+import java.time.Instant
+
 sealed trait ConversationStep(val id: StepId)
 
 object ConversationStep:
@@ -19,3 +21,8 @@ object ConversationStep:
 
   object Otp:
     case class Real(code: OtpCode)
+
+  case class Password(
+      timesSubmitted: Int,
+      oldPasswordChangedAt: Option[Instant], // Set when user enters old password
+  ) extends ConversationStep(StepId.Password)

@@ -1,8 +1,9 @@
 package versola.oauth.conversation
 
-import versola.auth.model.OtpCode
+import versola.auth.model.{OtpCode, Password}
 import versola.oauth.conversation.model.{AuthId, ConversationStep, Error}
 import versola.oauth.model.ConversationCookie
+import versola.user.model.Login
 import versola.util.http.Controller
 import versola.util.{Email, FormDecoder, Phone}
 import zio.*
@@ -46,6 +47,9 @@ object ConversationController extends Controller:
 
   val submitPhoneRoute =
     submit[PhoneSubmission](Method.POST / "v1" / "challenge" / "phone")
+
+  val submitLoginPasswordRoute =
+    submit[LoginPasswordSubmission](Method.POST / "v1" / "challenge" / "login-password")
 
   val submitOtpRoute =
     submit[OtpSubmission](Method.POST / "v1" / "challenge" / "otp")
@@ -97,3 +101,11 @@ object ConversationController extends Controller:
   given FormDecoder[OtpSubmission] = (form: Form) =>
     FormDecoder.single[OtpCode](form, "code", code => Right(OtpCode(code)))
       .map(OtpSubmission(_))
+
+  given FormDecoder[LoginPasswordSubmission] = (form: Form) =>
+    for
+      login <- FormDecoder.single[String](form, "login", Right(_))
+      password <- FormDecoder.single[String](form, "password", Right(_))
+    yield LoginPasswordSubmission(Login(login), Password(password))
+
+  //TODO login/password validation

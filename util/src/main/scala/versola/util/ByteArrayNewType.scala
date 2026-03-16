@@ -4,6 +4,8 @@ import zio.Chunk
 import zio.prelude.Equal
 import zio.schema.Schema
 
+import java.nio.charset.StandardCharsets
+
 trait ByteArrayNewType:
   opaque type Type <: Array[Byte] = Array[Byte]
   inline def apply(bytes: Array[Byte]): Type = bytes
@@ -14,6 +16,8 @@ trait ByteArrayNewType:
 
   inline def fromBase64Url(base64: String): Either[String, Type] =
     util.Try(java.util.Base64.getUrlDecoder.decode(base64)).toEither.left.map(_.getMessage)
+
+  inline def fromString(str: String): Type = apply(str.getBytes(StandardCharsets.UTF_8))
 
 object ByteArrayNewType:
   trait FixedLength(val ref: ByteArrayNewType, val length: Int):

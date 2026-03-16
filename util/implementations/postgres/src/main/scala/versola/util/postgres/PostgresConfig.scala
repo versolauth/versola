@@ -5,4 +5,3 @@ case class PostgresConfig(
     user: String,
     password: String,
 )
-

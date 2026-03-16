@@ -1,5 +1,6 @@
 package versola.util.http
 
+import com.augustnagro.magnum.magzio.TransactorZIO
 import com.typesafe.config.ConfigFactory
 import io.opentelemetry.api
 import io.opentelemetry.api.common.Attributes
@@ -11,10 +12,10 @@ import io.opentelemetry.sdk.resources.Resource
 import io.opentelemetry.sdk.trace.SdkTracerProvider
 import io.opentelemetry.sdk.trace.`export`.BatchSpanProcessor
 import io.opentelemetry.semconv.ServiceAttributes
-import izumi.reflect.Tag
-import versola.util.EnvName
+import versola.cleanup.{CleanupConfig, CleanupManager}
+import versola.util.{EnvName, PostInitializationService}
 import zio.*
-import zio.config.magnolia.deriveConfig
+import zio.config.magnolia.{DeriveConfig, deriveConfig}
 import zio.config.typesafe.FromConfigSourceTypesafe
 import zio.http.{Method, Middleware, Request, Response, Routes, Server, Status, handler}
 import zio.logging.LogFormat.{cause, fiberId, label, level, line, logAnnotation, quoted, space, text, timestamp}
@@ -35,7 +36,7 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
   given Tag[Dependencies] = scala.compiletime.deferred
 
   override type Environment =
-    ContextStorage & ConfigProvider & LogFormats & api.OpenTelemetry & Tracing
+    ContextStorage & ConfigProvider & LogFormats & api.OpenTelemetry & Tracing & EnvName
 
   override val bootstrap: ZLayer[Any, Any, Environment] =
     OpenTelemetry.contextZIO >+> configProvider >+> envName >+>
@@ -43,7 +44,7 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
       jsonLoggerLayer(serviceName) >+>
       openTelemetryLayer(serviceName)
 
-  def dependencies: ZLayer[ConfigProvider & Tracing, Throwable, Dependencies]
+  def dependencies: ZLayer[Scope & EnvName & ConfigProvider & Tracing, Throwable, Dependencies]
 
   def routes: Routes[Dependencies & Tracing, Nothing]
 
@@ -58,6 +59,8 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
       opentelemetry <- ZIO.service[api.OpenTelemetry]
       envConfig <- ZIO.service[ConfigProvider]
       tracing <- ZIO.service[Tracing]
+      envName <- ZIO.service[EnvName]
+      scope <- ZIO.scope
       readinessService <- ReadinessService.make
 
       _ <- (Server.install[MetricsService](serviceRoutes(readinessService)) *> ZIO.never)
@@ -89,11 +92,18 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
         ZLayer.succeed(opentelemetry),
         ZLayer.succeed(tracing),
         ZLayer.succeed(envConfig),
+        ZLayer.succeed(envName),
+        ZLayer.succeed(scope)
       )
     yield ()
   }
     .catchAll { (ex: Throwable) => ZIO.logErrorCause("Could not start application", Cause.fail(ex)) }
     .catchAllDefect(ex => ZIO.logErrorCause("Could not start application", Cause.die(ex)))
+
+
+  def parseConfig[A: {DeriveConfig, Tag}] =
+    ZLayer:
+      ZIO.serviceWithZIO[ConfigProvider](_.load(deriveConfig[A]))
 
   private def serviceRoutes(
       readinessService: ReadinessService,

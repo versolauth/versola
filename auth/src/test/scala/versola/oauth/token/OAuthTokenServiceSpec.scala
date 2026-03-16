@@ -95,12 +95,12 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           )
 
           _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
-          _ <- env.securityService.macBlake3.succeedsWith(codeMac1)
+          _ <- env.securityService.mac.succeedsWith(codeMac1)
           _ <- env.authCodeRepo.find.succeedsWith(Some(codeRecord))
           _ <- env.authCodeRepo.delete.succeedsWith(())
           _ <- env.propertyGenerator.nextAccessToken.succeedsWith(accessToken1)
           _ <- env.propertyGenerator.nextRefreshToken.succeedsWith(refreshToken1)
-          _ <- env.securityService.macBlake3.succeedsWith(refreshTokenMac1)
+          _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
           _ <- env.tokenRepo.create.succeedsWith(())
 
           request = CodeExchangeRequest(authCode1, redirectUri1, codeVerifier1)
@@ -133,7 +133,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           )
 
           _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
-          _ <- env.securityService.macBlake3.succeedsWith(codeMac1)
+          _ <- env.securityService.mac.succeedsWith(codeMac1)
           _ <- env.authCodeRepo.find.succeedsWith(Some(codeRecord))
           _ <- env.authCodeRepo.delete.succeedsWith(())
           _ <- env.propertyGenerator.nextAccessToken.succeedsWith(accessToken1)
@@ -165,7 +165,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
         val env = new Env
         for
           _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
-          _ <- env.securityService.macBlake3.succeedsWith(codeMac1)
+          _ <- env.securityService.mac.succeedsWith(codeMac1)
           _ <- env.authCodeRepo.find.succeedsWith(None)
 
           request = CodeExchangeRequest(authCode1, redirectUri1, codeVerifier1)
@@ -193,7 +193,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           )
 
           _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
-          _ <- env.securityService.macBlake3.succeedsWith(codeMac1)
+          _ <- env.securityService.mac.succeedsWith(codeMac1)
           _ <- env.authCodeRepo.find.succeedsWith(Some(codeRecord))
 
           request = CodeExchangeRequest(authCode1, wrongRedirectUri, codeVerifier1)
@@ -227,8 +227,8 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           newRefreshTokenMac = MAC(Array.fill(32)(8.toByte))
 
           _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
-          _ <- env.securityService.macBlake3.succeedsWith(newRefreshTokenMac)
-          _ <- env.securityService.macBlake3.succeedsWith(refreshTokenMac1)
+          _ <- env.securityService.mac.succeedsWith(newRefreshTokenMac)
+          _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
           _ <- env.tokenRepo.findRefreshToken.succeedsWith(Some(tokenRecord))
           _ <- env.propertyGenerator.nextAccessToken.succeedsWith(accessToken1)
           _ <- env.propertyGenerator.nextRefreshToken.succeedsWith(newRefreshToken)
@@ -271,8 +271,8 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           newRefreshTokenMac = MAC(Array.fill(32)(10.toByte))
 
           _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
-          _ <- env.securityService.macBlake3.succeedsWith(refreshTokenMac1)
-          _ <- env.securityService.macBlake3.succeedsWith(newRefreshTokenMac)
+          _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
+          _ <- env.securityService.mac.succeedsWith(newRefreshTokenMac)
           _ <- env.tokenRepo.findRefreshToken.succeedsWith(Some(tokenRecord))
           _ <- env.propertyGenerator.nextAccessToken.succeedsWith(accessToken1)
           _ <- env.propertyGenerator.nextRefreshToken.succeedsWith(newRefreshToken)
@@ -306,7 +306,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
         val env = new Env
         for
           _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
-          _ <- env.securityService.macBlake3.succeedsWith(refreshTokenMac1)
+          _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
           _ <- env.tokenRepo.findRefreshToken.succeedsWith(None)
 
           request = RefreshTokenRequest(refreshToken1, None)
@@ -336,7 +336,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           )
 
           _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
-          _ <- env.securityService.macBlake3.succeedsWith(refreshTokenMac1)
+          _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
           _ <- env.tokenRepo.findRefreshToken.succeedsWith(Some(tokenRecord))
 
           request = RefreshTokenRequest(refreshToken1, Some(invalidScope))
@@ -368,8 +368,8 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           newRefreshTokenMac = MAC(Array.fill(32)(8.toByte))
 
           _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
-          _ <- env.securityService.macBlake3.succeedsWith(refreshTokenMac1)
-          _ <- env.securityService.macBlake3.succeedsWith(newRefreshTokenMac)
+          _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
+          _ <- env.securityService.mac.succeedsWith(newRefreshTokenMac)
           _ <- env.tokenRepo.findRefreshToken.succeedsWith(Some(tokenRecord))
           _ <- env.propertyGenerator.nextAccessToken.succeedsWith(accessToken1)
           _ <- env.propertyGenerator.nextRefreshToken.succeedsWith(newRefreshToken)

@@ -79,13 +79,13 @@ object TestEnvConfig:
       ssoSession = CoreConfig.Security.SsoSession(
         ttl = 30.days,
       ),
+      passwords = CoreConfig.Security.Passwords(
+        pepper = Secret.Bytes16(Array.fill(16)(0.toByte)),
+        historySize = 12,
+        numDifferent = 4
+      ),
     ),
     jwt = jwtConfig,
-    postgres = versola.util.postgres.PostgresConfig(
-      url = "jdbc:postgresql://localhost:5432/auth_test",
-      user = "test",
-      password = "test",
-    ),
   )
 
   def buildCoreConfig(envName: EnvName): CoreConfig =

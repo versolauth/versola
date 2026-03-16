@@ -4,6 +4,7 @@ lazy val root = project.in(file("."))
   )
   .aggregate(
     util,
+    `util-postgres`,
     `oauth-postgres-impl`,
     auth,
     `edge-postgres-impl`,
@@ -19,6 +20,17 @@ lazy val util = project
     libraryDependencies ++= Dependencies.http
   )
 
+lazy val utilImplementations = file("util/implementations")
+
+lazy val `util-postgres` = project.in(utilImplementations / "postgres")
+  .settings(
+    name := "util-postgres",
+    commonSettings,
+    libraryDependencies ++= Dependencies.database.postgres,
+  ).dependsOn(
+    util % CompileTest
+  )
+
 lazy val implementations = file("auth/implementations")
 
 lazy val `oauth-postgres-impl` = project.in(implementations / "postgres")
@@ -27,10 +39,10 @@ lazy val `oauth-postgres-impl` = project.in(implementations / "postgres")
     name := "oauth-postgres-impl",
     commonSettings,
     libraryDependencies ++= Dependencies.database.postgres,
-    Compile / mainClass := Some("versola.PostgresOAuthApp"),
+    Compile / mainClass := Some("versola.PostgresOAuthApp")
   ).dependsOn(
     auth % CompileTest,
-    util % CompileTest
+    `util-postgres` % CompileTest
   )
 
 lazy val auth = project
@@ -56,7 +68,7 @@ lazy val `edge-postgres-impl` = project.in(edgeImplementations / "postgres")
     Compile / mainClass := Some("versola.PostgresEdgeApp"),
   ).dependsOn(
     edge % CompileTest,
-    util % CompileTest
+    `util-postgres` % CompileTest
   )
 
 lazy val edge = project

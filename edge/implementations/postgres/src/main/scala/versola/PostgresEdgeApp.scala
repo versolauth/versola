@@ -14,16 +14,18 @@ import versola.edge.{
 import versola.util.*
 import versola.util.http.{HttpObservabilityConfig, VersolaApp}
 import versola.util.postgres.{PostgresConfig, PostgresHikariDataSource}
-import zio.*
 import zio.config.magnolia.{DeriveConfig, deriveConfig}
 import zio.config.typesafe.*
 import zio.http.*
 import zio.http.Client
 import zio.http.Server.RequestStreaming
 import zio.telemetry.opentelemetry.tracing.Tracing
+import zio.{ZLayer, *}
 
 object PostgresEdgeApp extends VersolaApp("edge"):
   val environmentTag = Tag[Environment]
+
+  override given Tag[Dependencies] = Tag[Dependencies]
 
   val diagnosticsConfig: Server.Config =
     Server.Config.default.port(8081)
@@ -45,21 +47,16 @@ object PostgresEdgeApp extends VersolaApp("edge"):
       EdgeSessionController.routes,
     ).reduce(_ ++ _)
 
-  val dependencies: ZLayer[ConfigProvider & Tracing, Throwable, Dependencies] =
-    ZLayer.scopedEnvironment:
-      (parseConfig[EdgeConfig] >+>
-        (ZLayer.service[EdgeConfig].project(_.postgres) >>>
-          (PostgresHikariDataSource.layer(migrate = true) >>> TransactorZIO.layer) >>>
-          ZLayer.fromFunction(PostgresEdgeSessionRepository(_))) >+>
-        SecureRandom.live >+>
-        EdgeCredentialsService.live >+>
-        Client.default >+>
-        SecurityService.live >+>
-        EdgeSessionService.live).build
+  val dependencies: ZLayer[Scope & EnvName & ConfigProvider & Tracing, Throwable, Dependencies] =
+    parseConfig[EdgeConfig] >+>
+      (PostgresHikariDataSource.transactor(serviceName = Some("edge"), migrate = true) >>>
+        ZLayer.fromFunction(PostgresEdgeSessionRepository(_))) >+>
+      SecureRandom.live >+>
+      EdgeCredentialsService.live >+>
+      Client.default >+>
+      SecurityService.live >+>
+      EdgeSessionService.live
 
-  def parseConfig[A: {DeriveConfig, Tag}] =
-    ZLayer:
-      ZIO.serviceWithZIO[ConfigProvider](_.load(deriveConfig[A]))
 
   given DeriveConfig[Secret.Bytes16] = DeriveConfig[String]
     .mapOrFail(parseBase64UrlSecret(Secret.Bytes16))

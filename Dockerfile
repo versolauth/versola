@@ -18,6 +18,7 @@ COPY build.sbt .
 RUN sbt update
 
 # Copy source code
+COPY util util
 COPY auth auth
 
 # Build the application
