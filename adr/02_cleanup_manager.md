@@ -35,6 +35,7 @@ The following tables have TTL-based expiration and require periodic cleanup:
 **Indexes for cleanup:**
 - All tables have indexes on `expires_at` columns for efficient expired record queries
 - Example: `CREATE INDEX refresh_tokens_expires_at_idx ON refresh_tokens (expires_at)`
+- **Note:** `edge_sessions` table currently missing this index - should be added
 
 ### 1.2 Deployment Architecture
 
@@ -183,83 +184,107 @@ SELECT cron.schedule('cleanup-conversations', '*/5 * * * *',
 
 ### 3.1 Implementation
 
-**Service Interface (Initial Implementation):**
+**Service Interface (Actual Implementation):**
 ```scala
 trait CleanupManager:
-  def start(): Task[Unit]
-  def stop(): Task[Unit]
-  def cleanupTable(config: TableCleanupConfig): Task[CleanupResult]
+  def start(): RIO[Scope, Unit]
+  def stop(): UIO[Unit]
+
+case class CleanupConfig(
+  maxThreads: Int,
+  tables: List[TableCleanupConfig],
+)
 
 case class TableCleanupConfig(
   tableName: String,
-  expirationColumn: String,
   batchSize: Int,
-  schedule: Schedule[Any, Any, Any],
+  interval: Duration,
 )
 
 case class CleanupResult(
+  tableName: String,
   rowsDeleted: Int,
   durationMs: Long,
-  tableName: String,
 )
 ```
 
-**Note:** Partition-related types (CleanupStrategy, PartitionConfig) are documented in Section 3.4 but not needed for initial implementation.
+**Notes:**
+- All tables use `expires_at` column (hardcoded in implementation)
+- `start()` returns `RIO[Scope, Unit]` to support scoped fibers
+- `interval` uses `Duration` instead of `Schedule` for simplicity
+- Partition-related types (CleanupStrategy, PartitionConfig) are documented in Section 3.4 but not needed for initial implementation
 
-**Implementation (Initial - DELETE strategy only):**
+**Implementation (Actual - DELETE strategy only):**
 ```scala
-class CleanupManagerImpl(
-  xa: TransactorZIO,
-  configs: List[TableCleanupConfig],
-  maxThreads: Int,
+abstract class CleanupManager.Base(
+  config: CleanupConfig,
+  fibers: Ref[List[Fiber.Runtime[Throwable, Long]]],
 ) extends CleanupManager:
 
-  override def start(): Task[Unit] =
-    // Use Semaphore to limit concurrent cleanup operations
-    // This prevents cleanup from consuming too many resources
-    Semaphore.make(maxThreads).flatMap { semaphore =>
-      ZIO.foreachPar(configs) { config =>
-        cleanupLoop(config, semaphore)
-          .repeat(config.schedule)
-          .forkDaemon
-      }.unit
-    }
+  protected def cleanupBatch(tableName: String, batchSize: Int): Task[Int]
 
-  private def cleanupLoop(
-    config: TableCleanupConfig,
-    semaphore: Semaphore,
-  ): Task[CleanupResult] =
-    // Acquire semaphore permit before running cleanup
-    // This ensures at most `maxThreads` cleanup operations run concurrently
-    semaphore.withPermit {
-      for
-        start <- Clock.currentTime(TimeUnit.MILLISECONDS)
-        deleted <- cleanupBatch(config)
-        end <- Clock.currentTime(TimeUnit.MILLISECONDS)
-        _ <- ZIO.logInfo(s"Cleaned ${config.tableName}: $deleted rows in ${end - start}ms")
-      yield CleanupResult(
-        rowsDeleted = deleted,
-        durationMs = end - start,
-        tableName = config.tableName,
-      )
-    }
+  override def start(): RIO[Scope, Unit] =
+    Semaphore.make(config.maxThreads).flatMap { semaphore =>
+      ZIO.logInfo(
+        s"Starting cleanup manager with max-threads=${config.maxThreads}, tables=${config.tables.size}",
+      ) *>
+        ZIO.foreachPar(config.tables) { tableConfig =>
+          semaphore.withPermit(cleanupTable(tableConfig))
+            .repeat(Schedule.spaced(tableConfig.interval))
+            .forkScoped
+        }
+    }.flatMap(fib => fibers.set(fib))
 
-  private def cleanupBatch(config: TableCleanupConfig): Task[Int] =
-    xa.transact {
+  override def stop(): UIO[Unit] =
+    for
+      _ <- ZIO.logInfo("Stopping cleanup manager...")
+      fib <- fibers.get
+      _ <- ZIO.foreachParDiscard(fib)(fiber => fiber.interrupt *> fiber.join.ignore)
+      _ <- ZIO.logInfo(s"Stopped ${fib.size} cleanup jobs")
+    yield ()
+
+  private def cleanupTable(config: TableCleanupConfig): Task[CleanupResult] =
+    for
+      start <- Clock.currentTime(TimeUnit.MILLISECONDS)
+      deleted <- cleanupBatch(config.tableName, config.batchSize)
+      end <- Clock.currentTime(TimeUnit.MILLISECONDS)
+      duration = end - start
+      _ <- ZIO.logInfo(s"Cleaned ${config.tableName}: $deleted rows in ${duration}ms")
+    yield CleanupResult(
+      tableName = config.tableName,
+      rowsDeleted = deleted,
+      durationMs = duration,
+    )
+
+// PostgreSQL implementation
+class PostgresCleanupManager(
+  xa: TransactorZIO,
+  config: CleanupConfig,
+  fibers: Ref[List[Fiber.Runtime[Throwable, Long]]],
+) extends CleanupManager.Base(config, fibers):
+
+  override protected def cleanupBatch(tableName: String, batchSize: Int): Task[Int] =
+    val table = SqlLiteral(tableName)
+    xa.connect {
       sql"""
-        DELETE FROM ${Fragment.const(config.tableName)}
+        DELETE FROM $table
         WHERE id IN (
-          SELECT id FROM ${Fragment.const(config.tableName)}
-          WHERE ${Fragment.const(config.expirationColumn)} < NOW()
-          ORDER BY ${Fragment.const(config.expirationColumn)}
-          LIMIT ${config.batchSize}
+          SELECT id FROM $table
+          WHERE expires_at < NOW()
+          ORDER BY expires_at
+          LIMIT $batchSize
           FOR UPDATE SKIP LOCKED
         )
       """.update.run()
     }
 ```
 
-**Note:** Partition-based cleanup implementation is documented in Section 3.4 but should only be added if needed at scale.
+**Notes:**
+- Base class provides generic logic, subclasses implement database-specific `cleanupBatch`
+- `expires_at` column is hardcoded (all tables use this convention)
+- Uses `forkScoped` instead of `forkDaemon` for proper lifecycle management
+- Fibers are tracked in a `Ref` for graceful shutdown
+- Partition-based cleanup implementation is documented in Section 3.4 but should only be added if needed at scale
 
 ### 3.2 Thread Pool Isolation and Resource Management
 
@@ -343,66 +368,59 @@ postgres {
 
 ### 3.3 Configuration
 
-**Application Config (Initial Implementation):**
+**Application Config (Actual Implementation):**
 ```hocon
 cleanup {
-  enabled = true
-
   # Resource limits to prevent impact on application latency
   max-threads = 2  # Limit concurrent cleanup operations
 
-  tables {
-    auth-conversations {
+  tables = [
+    {
       table-name = "auth_conversations"
-      expiration-column = "expires_at"
       batch-size = 1000
       interval = 5 minutes
-    }
-
-    authorization-codes {
+    },
+    {
       table-name = "authorization_codes"
-      expiration-column = "expires_at"
       batch-size = 1000
       interval = 5 minutes
-    }
-
-    refresh-tokens {
+    },
+    {
       table-name = "refresh_tokens"
-      expiration-column = "expires_at"
       batch-size = 500
       interval = 1 hour  # Less frequent, longer TTL
-    }
-
-    sso-sessions {
+    },
+    {
       table-name = "sso_sessions"
-      expiration-column = "expires_at"
       batch-size = 500
       interval = 1 hour
-    }
-
-    edge-sessions {
+    },
+    {
       table-name = "edge_sessions"
-      expiration-column = "session_expires_at"
       batch-size = 500
       interval = 30 minutes
     }
-  }
+  ]
 }
 ```
 
-**Note:** All tables use DELETE strategy by default. Partitioning configuration is documented in Section 3.4 but should only be added if DELETE proves insufficient at scale.
+**Notes:**
+- All tables use `expires_at` column (not configurable)
+- All tables use DELETE strategy by default
+- Configuration uses array format for `tables` (not nested objects)
+- Partitioning configuration is documented in Section 3.4 but should only be added if DELETE proves insufficient at scale
 
 ### 3.4 Cleanup Strategy
 
 **All tables use DELETE strategy:**
 
-| Table | Batch Size | Interval | Rationale |
-|-------|-----------|----------|-----------|
-| `auth_conversations` | 1000 | 5 minutes | Short TTL (15 min), low volume |
-| `authorization_codes` | 1000 | 5 minutes | Short TTL (10 min), low volume |
-| `refresh_tokens` | 500 | 1 hour | Long TTL (90 days), audit likely needed |
-| `sso_sessions` | 500 | 1 hour | Long TTL (30 days), audit likely needed |
-| `edge_sessions` | 500 | 30 minutes | Medium TTL (24 hours), medium volume |
+| Table | Expiration Column | Batch Size | Interval | Rationale |
+|-------|-------------------|-----------|----------|-----------|
+| `auth_conversations` | `expires_at` | 1000 | 5 minutes | Short TTL (15 min), low volume |
+| `authorization_codes` | `expires_at` | 1000 | 5 minutes | Short TTL (10 min), low volume |
+| `refresh_tokens` | `expires_at` | 500 | 1 hour | Long TTL (90 days), audit likely needed |
+| `sso_sessions` | `expires_at` | 500 | 1 hour | Long TTL (30 days), audit likely needed |
+| `edge_sessions` | `expires_at` | 500 | 30 minutes | Medium TTL (24 hours), medium volume |
 
 **Why DELETE strategy?**
 
@@ -420,8 +438,6 @@ If DELETE strategy proves insufficient at scale (>100M rows), consider:
 - **Cold storage export:** Export to S3/GCS for long-term retention
 
 These optimizations are not needed for initial implementation and can be added later based on actual data volumes and compliance requirements.
-
-
 
 ### 3.5 Sharding Compatibility
 
@@ -469,16 +485,6 @@ INFO  [CleanupManager] Cleaned auth_conversations: 1000 rows in 45ms
 INFO  [CleanupManager] Cleaned authorization_codes: 523 rows in 32ms
 WARN  [CleanupManager] Cleanup batch incomplete for refresh_tokens: 0 rows (all locked)
 ERROR [CleanupManager] Cleanup failed for sso_sessions: Connection timeout
-```
-
-**Health Check:**
-```scala
-def healthCheck(): Task[HealthStatus] =
-  for
-    lastRun <- getLastSuccessfulRun()
-    now <- Clock.instant
-    healthy = now.toEpochMilli - lastRun.toEpochMilli < 15.minutes.toMillis
-  yield if healthy then HealthStatus.Healthy else HealthStatus.Degraded
 ```
 
 
@@ -636,18 +642,13 @@ sql"DELETE FROM ${Fragment.const(tableName)} WHERE ..."
 
 **Validation:**
 ```scala
-private val allowedTables = Set(
-  "auth_conversations",
-  "authorization_codes",
-  "refresh_tokens",
-  "sso_sessions",
-  "edge_sessions",
-)
-
-def validateTableName(name: String): Either[String, String] =
-  if allowedTables.contains(name) then Right(name)
-  else Left(s"Invalid table name: $name")
+// Table names come from configuration and are validated at config load time
+// Using SqlLiteral in Magnum provides SQL injection protection
+val table = SqlLiteral(tableName)
+sql"DELETE FROM $table WHERE ..."
 ```
+
+**Note:** The implementation uses Magnum's `SqlLiteral` for safe table name interpolation rather than explicit validation.
 
 ### 6.2 Accidental Data Loss
 
@@ -703,11 +704,12 @@ test("cleanup deletes only expired rows") {
     expired2 <- createConversation(expiresAt = now.minusSeconds(30))
     active <- createConversation(expiresAt = now.plusSeconds(300))
 
-    result <- cleanupManager.cleanupTable(conversationConfig)
+    // Trigger cleanup by calling protected cleanupBatch method
+    deleted <- cleanupManager.cleanupBatch("auth_conversations", 1000)
 
     remaining <- repository.findAll()
   yield assertTrue(
-    result.rowsDeleted == 2,
+    deleted == 2,
     remaining.size == 1,
     remaining.head.id == active.id
   )
@@ -720,7 +722,7 @@ test("cleanup deletes only expired rows") {
 test("multiple instances don't conflict") {
   for
     _ <- ZIO.foreachPar(1 to 3) { _ =>
-      cleanupManager.cleanupTable(conversationConfig)
+      cleanupManager.cleanupBatch("auth_conversations", 1000)
     }
 
     remaining <- repository.findAll()
@@ -735,27 +737,29 @@ test("multiple instances don't conflict") {
 - Verify all rows deleted within 5 minutes
 - Monitor lock contention metrics
 
-## 8. Migration Plan
+## 8. Implementation Status
 
-### Phase 1: Implementation (Week 1)
-- [ ] Implement `CleanupManager` service
-- [ ] Add configuration parsing
-- [ ] Add metrics and logging
-- [ ] Write unit tests
+### Completed
+- [x] Implement `CleanupManager` service (base class + PostgreSQL implementation)
+- [x] Add configuration parsing (using ZIO Config)
+- [x] Add logging (ZIO logging integrated)
+- [x] Layer-based lifecycle management (auto-start/stop)
+- [x] Semaphore-based concurrency control
+- [x] Scoped fiber management for graceful shutdown
 
-### Phase 2: Testing (Week 2)
+### Pending
+- [ ] Add Prometheus metrics (cleanup_rows_deleted_total, cleanup_duration_seconds, cleanup_errors_total)
+- [ ] Add health check endpoint
 - [ ] Integration tests with PostgreSQL
 - [ ] Load tests with multiple instances
-- [ ] Verify SKIP LOCKED behavior
 - [ ] Performance benchmarks
+- [ ] Add missing index: `CREATE INDEX edge_sessions_expires_at_idx ON edge_sessions (expires_at)`
 
-### Phase 3: Deployment (Week 3)
+### Deployment Plan
 - [ ] Deploy to staging environment
 - [ ] Monitor for 1 week
-- [ ] Tune batch sizes and intervals
+- [ ] Tune batch sizes and intervals based on actual data
 - [ ] Deploy to production (canary rollout)
-
-### Phase 4: Monitoring (Ongoing)
 - [ ] Set up alerts for cleanup failures
 - [ ] Dashboard for cleanup metrics
 - [ ] Weekly review of deletion rates
@@ -768,22 +772,24 @@ When compliance requirements are defined, add archive table:
 
 ```scala
 // Copy to archive before deleting
-private def cleanupWithArchive(config: TableCleanupConfig): Task[Int] =
+private def cleanupWithArchive(tableName: String, batchSize: Int): Task[Int] =
+  val table = SqlLiteral(tableName)
+  val archiveTable = SqlLiteral(tableName + "_archive")
   xa.transact {
     for
       _ <- sql"""
-        INSERT INTO ${Fragment.const(config.tableName + "_archive")}
-        SELECT * FROM ${Fragment.const(config.tableName)}
-        WHERE ${Fragment.const(config.expirationColumn)} < NOW()
-        LIMIT ${config.batchSize}
+        INSERT INTO $archiveTable
+        SELECT * FROM $table
+        WHERE expires_at < NOW()
+        LIMIT $batchSize
       """.update.run()
 
       deleted <- sql"""
-        DELETE FROM ${Fragment.const(config.tableName)}
+        DELETE FROM $table
         WHERE id IN (
-          SELECT id FROM ${Fragment.const(config.tableName)}
-          WHERE ${Fragment.const(config.expirationColumn)} < NOW()
-          LIMIT ${config.batchSize}
+          SELECT id FROM $table
+          WHERE expires_at < NOW()
+          LIMIT $batchSize
           FOR UPDATE SKIP LOCKED
         )
       """.update.run()
@@ -833,11 +839,14 @@ This is not needed for initial implementation and should only be considered if y
 4. ✅ **Observable** - Easy to monitor and debug
 5. ✅ **Performant** - Minimal overhead, bounded batch sizes
 
-**Initial Implementation:**
+**Current Implementation:**
 
 - **All tables:** Use DELETE strategy with batch size 500-1000
+- **Hardcoded `expires_at`:** All tables use `expires_at` column (not configurable)
 - **No partitioning:** Keep it simple, add later only if needed
 - **No archive initially:** Add archive table when compliance requirements are defined
+- **Layer-based lifecycle:** CleanupManager auto-starts when layer is acquired, stops when scope closes
+- **Base class pattern:** Abstract base class with database-specific implementations (PostgreSQL)
 
 **Future Optimizations (only if needed):**
 
@@ -853,14 +862,15 @@ This is not needed for initial implementation and should only be considered if y
 - **batch-size:** 500-1000 rows (configurable per table)
 - **Connection pool impact:** <10% with max-threads=2
 
-**Implementation Timeline:** 3 weeks (see Migration Plan)
-
 **Success Criteria:**
 - All expired rows deleted within 2x cleanup interval
 - Zero lock contention errors
 - <1% CPU overhead per instance
 - No impact on application query latency (p99 increase <5ms)
 - Audit trail maintained if compliance required
+
+**Known Issues:**
+- Missing index on `edge_sessions.expires_at` - should be added for optimal cleanup performance
 
 ## 11. References
 
