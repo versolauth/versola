@@ -142,7 +142,8 @@ object AccessTokenSpec extends UnitSpecBase:
       for
         result <- JWT.deserialize[AccessToken](tokenString, publicKeysForVerification)
       yield assertTrue(
-        result.userId == testUserId,
+        result.subject == testUserId.toString,
+        result.userId == Some(testUserId),
         result.clientId == testClientId,
         result.scope == testScopes,
         result.requestedClaims == Some(testRequestedClaims),
@@ -166,7 +167,8 @@ object AccessTokenSpec extends UnitSpecBase:
       for
         result <- JWT.deserialize[AccessToken](tokenString, publicKeysForVerification)
       yield assertTrue(
-        result.userId == testUserId,
+        result.subject == testUserId.toString,
+        result.userId == Some(testUserId),
         result.clientId == testClientId,
         result.scope == testScopes,
         result.requestedClaims.isEmpty,
@@ -444,9 +446,9 @@ object AccessTokenSpec extends UnitSpecBase:
         result <- JWT.deserialize[AccessToken](jwt.serialize(), publicKeysForVerification).either
       yield assertTrue(result == Left(JWT.Error.InvalidClaims))
     },
-    test("fail with InvalidClaims for invalid UserId format") {
+    test("parse JWT with non-UUID subject (client_credentials token)") {
       val claimsBuilder = new JWTClaimsSet.Builder()
-        .subject("not-a-valid-uuid")
+        .subject("test-client-123") // client_id as subject
         .claim("client_id", testClientId.toString)
         .claim("scope", "openid")
 
@@ -462,7 +464,11 @@ object AccessTokenSpec extends UnitSpecBase:
       jwt.sign(signer)
 
       for
-        result <- JWT.deserialize[AccessToken](jwt.serialize(), publicKeysForVerification).either
-      yield assertTrue(result == Left(JWT.Error.InvalidClaims))
+        result <- JWT.deserialize[AccessToken](jwt.serialize(), publicKeysForVerification)
+      yield assertTrue(
+        result.subject == "test-client-123",
+        result.userId.isEmpty, // No userId for client_credentials tokens
+        result.clientId == testClientId,
+      )
     },
   )

@@ -8,7 +8,7 @@ import versola.oauth.client.model.{ClientId, OAuthClientRecord, ScopeToken}
 import versola.oauth.model.{AuthorizationCode, AuthorizationCodeRecord, CodeChallenge, CodeChallengeMethod, CodeVerifier}
 import versola.oauth.session.RefreshTokenRepository
 import versola.oauth.session.model.{RefreshAlreadyExchanged, RefreshTokenRecord, SessionId}
-import versola.oauth.token.model.{CodeExchangeRequest, RefreshTokenRequest, TokenEndpointError}
+import versola.oauth.token.model.{ClientCredentialsRequest, CodeExchangeRequest, RefreshTokenRequest, TokenEndpointError}
 import versola.oauth.client.model.Claim
 import versola.oauth.userinfo.model.{ClaimRequest, RequestedClaims}
 import versola.user.model.UserId
@@ -56,6 +56,18 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
     scope = scope1,
     externalAudience = List.empty,
     secret = Some(clientSecret1),
+    previousSecret = None,
+    accessTokenTtl = 10.minutes,
+  )
+
+  val publicClientId = ClientId("public-client-1")
+  val publicClient = OAuthClientRecord(
+    id = publicClientId,
+    clientName = "Public Client",
+    redirectUris = NonEmptySet("https://example.com/callback"),
+    scope = scope2,
+    externalAudience = List.empty,
+    secret = None, // Public client has no secret
     previousSecret = None,
     accessTokenTtl = 10.minutes,
   )
@@ -111,7 +123,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           result.accessToken == accessToken1,
           result.refreshToken.contains(refreshToken1),
           result.clientId == clientId1,
-          result.userId == userId1,
+          result.userId.contains(userId1),
           result.scope == scope1,
           result.requestedClaims.contains(requestedClaims1),
           result.uiLocales.contains(uiLocales1),
@@ -381,6 +393,83 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           result <- env.service.refreshAccessToken(request, credentials).either
         yield assertTrue(
           result == Left(TokenEndpointError.InvalidGrant),
+        )
+      },
+    ),
+    suite("clientCredentials")(
+      test("successfully issue access token for confidential client") {
+        val env = new Env
+        for
+          _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
+          _ <- env.propertyGenerator.nextAccessToken.succeedsWith(accessToken1)
+
+          request = ClientCredentialsRequest(scope = None)
+          credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
+
+          result <- env.service.clientCredentials(request, credentials)
+        yield assertTrue(
+          result.accessToken == accessToken1,
+          result.clientId == clientId1,
+          result.userId.isEmpty, // No user context for client_credentials
+          result.refreshToken.isEmpty, // No refresh token for client_credentials
+          result.scope == scope1, // Uses client's default scope
+          result.requestedClaims.isEmpty,
+          result.uiLocales.isEmpty,
+        )
+      },
+      test("successfully issue access token with requested scope") {
+        val env = new Env
+        val requestedScope = Some(scope2) // Subset of client's scope
+        for
+          _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
+          _ <- env.propertyGenerator.nextAccessToken.succeedsWith(accessToken1)
+
+          request = ClientCredentialsRequest(scope = requestedScope)
+          credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
+
+          result <- env.service.clientCredentials(request, credentials)
+        yield assertTrue(
+          result.scope == scope2,
+        )
+      },
+      test("fail with InvalidClient when client verification fails") {
+        val env = new Env
+        for
+          _ <- env.clientService.verifySecret.succeedsWith(None)
+
+          request = ClientCredentialsRequest(scope = None)
+          credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
+
+          result <- env.service.clientCredentials(request, credentials).either
+        yield assertTrue(
+          result == Left(TokenEndpointError.InvalidClient),
+        )
+      },
+      test("fail with InvalidClient when public client attempts to use client_credentials") {
+        val env = new Env
+        for
+          _ <- env.clientService.verifySecret.succeedsWith(Some(publicClient))
+
+          request = ClientCredentialsRequest(scope = None)
+          credentials = ClientIdWithSecret(publicClientId, None)
+
+          result <- env.service.clientCredentials(request, credentials).either
+        yield assertTrue(
+          result == Left(TokenEndpointError.InvalidClient),
+        )
+      },
+      test("fail with InvalidScope when requested scope exceeds client scope") {
+        val env = new Env
+        val invalidScope = Some(Set(ScopeToken("admin"), ScopeToken("superuser")))
+        for
+          _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
+
+          request = ClientCredentialsRequest(scope = invalidScope)
+          credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
+
+          result <- env.service.clientCredentials(request, credentials).either
+        yield assertTrue(
+          result == Left(TokenEndpointError.InvalidScope),
         )
       },
     ),

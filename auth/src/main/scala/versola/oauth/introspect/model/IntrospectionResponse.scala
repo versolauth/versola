@@ -16,7 +16,7 @@ case class IntrospectionResponse(
     exp: Option[Long],
     iat: Option[Long],
     nbf: Option[Long],
-    sub: Option[UserId],
+    sub: Option[String],
     aud: Option[Vector[ClientId]],
     iss: Option[String],
     jti: Option[String],

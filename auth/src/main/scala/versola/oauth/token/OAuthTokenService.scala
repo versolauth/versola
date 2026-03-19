@@ -6,7 +6,7 @@ import versola.oauth.client.model.{OAuthClientRecord, ScopeToken}
 import versola.oauth.model.AuthorizationCodeRecord
 import versola.oauth.session.model.{RefreshAlreadyExchanged, RefreshTokenRecord, WithTtl}
 import versola.oauth.session.{RefreshTokenRepository, SessionRepository}
-import versola.oauth.token.model.{CodeExchangeRequest, IssuedTokens, RefreshTokenRequest, TokenEndpointError}
+import versola.oauth.token.model.{ClientCredentialsRequest, CodeExchangeRequest, IssuedTokens, RefreshTokenRequest, TokenEndpointError}
 import versola.util.http.{ClientCredentials, ClientIdWithSecret}
 import versola.util.{AuthPropertyGenerator, CoreConfig, MAC, Secret, SecurityService}
 import zio.prelude.These
@@ -21,6 +21,11 @@ trait OAuthTokenService:
 
   def refreshAccessToken(
       refreshTokenRequest: RefreshTokenRequest,
+      tokenCredentials: ClientCredentials,
+  ): IO[Throwable | TokenEndpointError, IssuedTokens]
+
+  def clientCredentials(
+      clientCredentialsRequest: ClientCredentialsRequest,
       tokenCredentials: ClientCredentials,
   ): IO[Throwable | TokenEndpointError, IssuedTokens]
 
@@ -110,6 +115,35 @@ object OAuthTokenService:
         )
       yield issuedTokens
 
+    override def clientCredentials(
+        request: ClientCredentialsRequest,
+        tokenCredentials: ClientCredentials,
+    ): IO[Throwable | TokenEndpointError, IssuedTokens] =
+      for
+        client <- tokenCredentials match
+          case ClientIdWithSecret(clientId, clientSecret) =>
+            oauthClientService.verifySecret(clientId, clientSecret)
+              .someOrFail(TokenEndpointError.InvalidClient)
+
+        _ <- ZIO.fail(TokenEndpointError.InvalidClient)
+          .when(client.isPublic)
+
+        _ <- ZIO.fail(TokenEndpointError.InvalidScope)
+          .when(request.scope.exists(!_.subsetOf(client.scope)))
+
+        accessToken <- authPropertyGenerator.nextAccessToken
+      yield IssuedTokens(
+        accessToken = accessToken,
+        clientId = client.id,
+        audience = client.audience,
+        accessTokenTtl = client.accessTokenTtl,
+        userId = None,
+        refreshToken = None,
+        scope = request.scope.getOrElse(client.scope),
+        requestedClaims = None,
+        uiLocales = None,
+      )
+
     private def issueTokens(
         client: OAuthClientRecord,
         record: RefreshTokenRecord,
@@ -132,7 +166,7 @@ object OAuthTokenService:
         clientId = record.clientId,
         audience = client.audience,
         accessTokenTtl = client.accessTokenTtl,
-        userId = record.userId,
+        userId = Some(record.userId),
         refreshToken = refreshToken,
         scope = record.scope,
         requestedClaims = record.requestedClaims,

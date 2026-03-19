@@ -48,7 +48,9 @@ object UserInfoController extends Controller:
         token <- JWT.deserialize[AccessToken](tokenString, config.jwt.publicKeys)
           .orElseFail(UserInfoError.InvalidToken)
 
-        userInfo <- userInfoService.getUserInfo(token)
+        userId <- ZIO.fromOption(token.userId).orElseFail(UserInfoError.InvalidToken)
+
+        userInfo <- userInfoService.getUserInfo(userId, token.scope, token.requestedClaims, token.uiLocales)
 
         jwtNeeded = request.header(Header.Accept)
           .exists(_.mimeTypes.exists(_.mediaType == MediaType.application.jwt))
@@ -60,7 +62,7 @@ object UserInfoController extends Controller:
             JWT.serialize(
               claims = JWT.Claims(
                 issuer = config.jwt.issuer,
-                subject = token.userId.toString,
+                subject = userId.toString,
                 audience = List(token.clientId),
                 custom = userInfo.toJsonAST,
               ),

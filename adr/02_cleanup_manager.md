@@ -25,12 +25,12 @@ Sharding: Each instance cleans only its connected database
 The following tables have TTL-based expiration and require periodic cleanup:
 
 | Table | Expiration Column | Typical TTL | Estimated Volume |
-|-------|------------------|-------------|------------------|
-| `auth_conversations` | `expires_at` | 15 minutes | High (every auth flow) |
-| `authorization_codes` | `expires_at` | 10 minutes | High (every auth flow) |
-| `refresh_tokens` | `expires_at` | 90 days | Very High (long-lived) |
-| `sso_sessions` | `expires_at` | 30 days | High (per user session) |
-| `edge_sessions` | `session_expires_at` | 24 hours | Medium (edge proxy) |
+|-------|-------------------|-------------|------------------|
+| `auth_conversations` | `expires_at`      | 15 minutes | High (every auth flow) |
+| `authorization_codes` | `expires_at`      | 10 minutes | High (every auth flow) |
+| `refresh_tokens` | `expires_at`      | 90 days | Very High (long-lived) |
+| `sso_sessions` | `expires_at`      | 30 days | High (per user session) |
+| `edge_sessions` | `expires_at`      | 24 hours | Medium (edge proxy) |
 
 **Indexes for cleanup:**
 - All tables have indexes on `expires_at` columns for efficient expired record queries
@@ -46,7 +46,6 @@ The following tables have TTL-based expiration and require periodic cleanup:
 **Future (Sharded Multi-Region):**
 - Multiple shards, each with dedicated PostgreSQL instance
 - Each application instance connects to exactly one shard
-- Sharding by user_id hash (20M users per shard)
 - No cross-shard queries
 
 ### 1.3 Requirements

@@ -10,7 +10,12 @@ import zio.json.ast.Json
 import zio.{IO, UIO, ZIO, ZLayer}
 
 trait UserInfoService:
-  def getUserInfo(token: AccessToken): IO[Throwable | UserInfoError, UserInfoResponse]
+  def getUserInfo(
+      userId: UserId,
+      scope: Set[ScopeToken],
+      requestedClaims: Option[RequestedClaims],
+      uiLocales: Option[List[String]],
+  ): IO[Throwable | UserInfoError, UserInfoResponse]
 
 object UserInfoService:
   def live: ZLayer[
@@ -24,19 +29,24 @@ object UserInfoService:
       clientService: OAuthClientService,
   ) extends UserInfoService:
 
-    override def getUserInfo(token: AccessToken): IO[Throwable | UserInfoError, UserInfoResponse] =
+    override def getUserInfo(
+        userId: UserId,
+        scope: Set[ScopeToken],
+        requestedClaims: Option[RequestedClaims],
+        tokenUiLocales: Option[List[String]],
+    ): IO[Throwable | UserInfoError, UserInfoResponse] =
       for
         _ <- ZIO.fail(UserInfoError.InsufficientScope)
-          .unless(token.scope.contains(ScopeToken.OpenId))
+          .unless(scope.contains(ScopeToken.OpenId))
 
-        authorizedClaims <- getAuthorizedClaims(token.scope, token.requestedClaims)
-        user <- userRepository.find(token.userId).someOrFail(UserInfoError.InvalidToken)
+        authorizedClaims <- getAuthorizedClaims(scope, requestedClaims)
+        user <- userRepository.find(userId).someOrFail(UserInfoError.InvalidToken)
 
         userClaimsMap = user.claims.fields.toMap ++
           user.email.map(email => ("email", Json.Str(email))) ++
           user.phone.map(phone => ("phone_number", Json.Str(phone)))
 
-        uiLocales = token.uiLocales.getOrElse(Vector.empty)
+        uiLocales = tokenUiLocales.getOrElse(Nil)
         resolvedClaims = authorizedClaims.flatMap { claimName =>
           if uiLocales.nonEmpty then
             resolveLocalizedClaim(claimName, userClaimsMap, uiLocales)
@@ -44,8 +54,7 @@ object UserInfoService:
             userClaimsMap.get(claimName).map(value => (claimName, value))
         }.toMap
 
-        finalClaims = resolvedClaims + ("sub" -> Json.Str(token.userId.toString))
-
+        finalClaims = resolvedClaims + ("sub" -> Json.Str(userId.toString))
       yield UserInfoResponse(finalClaims)
 
     private def getAuthorizedClaims(
@@ -64,7 +73,6 @@ object UserInfoService:
             tokenScopeClaims
       yield finalClaims
 
-
     /**
      * Resolve localized claims based on locale preferences
      *
@@ -81,7 +89,7 @@ object UserInfoService:
     private def resolveLocalizedClaim(
         claimName: String,
         userClaims: Map[String, Json],
-        locales: Vector[String],
+        locales: List[String],
     ): Option[(String, Json)] =
       // Try exact locale matches first
       locales

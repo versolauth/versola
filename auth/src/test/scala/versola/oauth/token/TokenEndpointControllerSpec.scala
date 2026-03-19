@@ -6,7 +6,7 @@ import versola.auth.model.{AccessToken, RefreshToken}
 import versola.oauth.client.OAuthClientService
 import versola.oauth.client.model.{ClientId, ScopeToken}
 import versola.oauth.model.{AuthorizationCode, CodeVerifier}
-import versola.oauth.token.model.{CodeExchangeRequest, IssuedTokens, RefreshTokenRequest, TokenEndpointError, TokenResponse}
+import versola.oauth.token.model.{ClientCredentialsRequest, CodeExchangeRequest, IssuedTokens, RefreshTokenRequest, TokenEndpointError, TokenResponse}
 import versola.user.model.UserId
 import versola.util.http.{ClientIdWithSecret, ControllerSpec, NoopTracing}
 import versola.util.{Base64, CoreConfig, Secret, UnitSpecBase}
@@ -35,7 +35,7 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
     clientId = clientId1,
     audience = List(clientId1),
     accessTokenTtl = 10.minutes,
-    userId = userId1,
+    userId = Some(userId1),
     refreshToken = Some(refreshToken1),
     scope = scope1,
     requestedClaims = None,
@@ -256,6 +256,105 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
             body <- response.body.asString
           yield assertTrue(
             body.contains("invalid_grant"),
+          ),
+      ),
+    ),
+    suite("POST /v1/token - client_credentials grant")(
+      tokenEndpointTestCase(
+        description = "successfully issue access token for confidential client",
+        request = Request.post(
+          url = URL.empty / "v1" / "token",
+          body = Body.fromURLEncodedForm(
+            Form.fromStrings(
+              "grant_type" -> "client_credentials",
+            )
+          )
+        ).addHeader(authHeader(clientId1, Some(clientSecret1))),
+        expectedStatus = Status.Ok,
+        setup = tokenService =>
+          tokenService.clientCredentials.succeedsWith(
+            issuedTokens.copy(
+              userId = None,
+              refreshToken = None,
+            )
+          ),
+        verify = response =>
+          for
+            body <- response.body.asString
+            tokenResponse <- ZIO.fromEither(body.fromJson[TokenResponse]).mapError(new RuntimeException(_))
+          yield assertTrue(
+            tokenResponse.tokenType == "Bearer",
+            tokenResponse.refreshToken.isEmpty,
+            tokenResponse.scope.contains("read write offline_access"),
+          ),
+      ),
+      tokenEndpointTestCase(
+        description = "successfully issue access token with requested scope",
+        request = Request.post(
+          url = URL.empty / "v1" / "token",
+          body = Body.fromURLEncodedForm(
+            Form.fromStrings(
+              "grant_type" -> "client_credentials",
+              "scope" -> "read",
+            )
+          )
+        ).addHeader(authHeader(clientId1, Some(clientSecret1))),
+        expectedStatus = Status.Ok,
+        setup = tokenService =>
+          tokenService.clientCredentials.succeedsWith(
+            issuedTokens.copy(
+              userId = None,
+              refreshToken = None,
+              scope = Set(ScopeToken("read")),
+            )
+          ),
+        verify = response =>
+          for
+            body <- response.body.asString
+            tokenResponse <- ZIO.fromEither(body.fromJson[TokenResponse]).mapError(new RuntimeException(_))
+          yield assertTrue(
+            tokenResponse.scope.contains("read"),
+          ),
+      ),
+      tokenEndpointTestCase(
+        description = "fail with InvalidClient when client authentication fails",
+        request = Request.post(
+          url = URL.empty / "v1" / "token",
+          body = Body.fromURLEncodedForm(
+            Form.fromStrings(
+              "grant_type" -> "client_credentials",
+            )
+          )
+        ).addHeader(authHeader(clientId1, Some(clientSecret1))),
+        expectedStatus = Status.BadRequest,
+        setup = tokenService =>
+          tokenService.clientCredentials.failsWith(TokenEndpointError.InvalidClient),
+        verify = response =>
+          for
+            body <- response.body.asString
+          yield assertTrue(
+            body.contains("invalid_client"),
+          ),
+      ),
+      tokenEndpointTestCase(
+        description = "fail with InvalidScope when requested scope exceeds client scope",
+        request = Request.post(
+          url = URL.empty / "v1" / "token",
+          body = Body.fromURLEncodedForm(
+            Form.fromStrings(
+              "grant_type" -> "client_credentials",
+              "scope" -> "admin superuser",
+            )
+          )
+        ).addHeader(authHeader(clientId1, Some(clientSecret1))),
+        expectedStatus = Status.BadRequest,
+        setup = tokenService =>
+          tokenService.clientCredentials.failsWith(TokenEndpointError.InvalidScope),
+        verify = response =>
+          for
+            body <- response.body.asString
+          yield assertTrue(
+            body.contains("invalid_scope"),
           ),
       ),
     ),

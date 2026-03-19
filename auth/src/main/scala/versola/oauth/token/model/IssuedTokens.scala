@@ -11,7 +11,7 @@ case class IssuedTokens(
     clientId: ClientId,
     audience: List[ClientId],
     accessTokenTtl: Duration,
-    userId: UserId,
+    userId: Option[UserId], // None for client_credentials grant
     refreshToken: Option[RefreshToken],
     scope: Set[ScopeToken],
     requestedClaims: Option[RequestedClaims],

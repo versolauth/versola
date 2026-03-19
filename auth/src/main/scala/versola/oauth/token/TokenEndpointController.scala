@@ -3,11 +3,11 @@ package versola.oauth.token
 import com.nimbusds.jose.crypto.RSASSASigner
 import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm, JWSHeader}
 import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
-import versola.auth.model.AccessToken
+import versola.auth.model.{AccessToken, RefreshToken}
 import versola.oauth.client.OAuthClientService
-import versola.oauth.client.model.ClientId
+import versola.oauth.client.model.{ClientId, ScopeToken}
 import versola.oauth.model.{AuthorizationCode, CodeVerifier}
-import versola.oauth.token.model.{CodeExchangeRequest, IssuedTokens, RefreshTokenRequest, TokenEndpointError, TokenErrorResponse, TokenRequest, TokenResponse}
+import versola.oauth.token.model.{ClientCredentialsRequest, CodeExchangeRequest, IssuedTokens, RefreshTokenRequest, TokenEndpointError, TokenErrorResponse, TokenRequest, TokenResponse}
 import versola.user.model.UserId
 import versola.util.CoreConfig.JwtConfig
 import versola.util.http.{ClientCredentials, ClientIdWithSecret, Controller}
@@ -40,6 +40,8 @@ object TokenEndpointController extends Controller:
             oauthTokenService.exchangeAuthorizationCode(codeExchangeRequest, credentials)
           case refreshTokenRequest: RefreshTokenRequest =>
             oauthTokenService.refreshAccessToken(refreshTokenRequest, credentials)
+          case clientCredentialsRequest: ClientCredentialsRequest =>
+            oauthTokenService.clientCredentials(clientCredentialsRequest, credentials)
         response <- toTokenResponse(issuedTokens, config)
       yield Response.json(response.toJson))
         .catchAll {
@@ -69,11 +71,14 @@ object TokenEndpointController extends Controller:
         tokens.requestedClaims.map(rc => "requested_claims" -> rc.toJsonAST.toOption.get) ++
         tokens.uiLocales.map(locales => "ui_locales" -> Json.Arr(locales.map(Json.Str(_))*))
 
+      // For client_credentials grant, use client_id as subject; otherwise use user_id
+      subject = tokens.userId.map(_.toString).getOrElse(tokens.clientId)
+
       serializedAT <- JWT.serialize(
         typ = JWT.Type.AccessToken,
         claims = JWT.Claims(
           issuer = config.jwt.issuer,
-          subject = tokens.userId.toString,
+          subject = subject,
           audience = tokens.audience,
           custom = Json.Obj(customClaims.toSeq*),
         ),
@@ -99,6 +104,8 @@ object TokenEndpointController extends Controller:
           codeExchangeRequestDecoder.decode(form).orElseFail(TokenEndpointError.InvalidRequest)
         case Some("refresh_token") =>
           refreshTokenRequestDecoder.decode(form).orElseFail(TokenEndpointError.InvalidRequest)
+        case Some("client_credentials") =>
+          clientCredentialsRequestDecoder.decode(form).orElseFail(TokenEndpointError.InvalidRequest)
         case _ =>
           ZIO.fail(TokenEndpointError.UnsupportedGrantType)
     yield request
@@ -111,10 +118,12 @@ object TokenEndpointController extends Controller:
     yield CodeExchangeRequest(code, redirectUri, codeVerifier)
 
   val refreshTokenRequestDecoder: FormDecoder[RefreshTokenRequest] = (form: Form) =>
-    import versola.auth.model.RefreshToken
-    import versola.oauth.client.model.ScopeToken
     for
-      refreshToken <- FormDecoder.single(form, "refresh_token", versola.auth.model.RefreshToken.fromBase64Url)
-      scopeStr <- ZIO.succeed(form.get("scope").flatMap(_.stringValue))
-      scope = scopeStr.map(_.split(" ").map(ScopeToken(_)).toSet)
+      refreshToken <- FormDecoder.single(form, "refresh_token", RefreshToken.fromBase64Url)
+      scope <- FormDecoder.optional(form, "scope", scope => Right(ScopeToken.parseTokens(scope)))
     yield RefreshTokenRequest(refreshToken, scope)
+
+  val clientCredentialsRequestDecoder: FormDecoder[ClientCredentialsRequest] = (form: Form) =>
+    for
+      scope <- FormDecoder.optional(form, "scope", scope => Right(ScopeToken.parseTokens(scope)))
+    yield ClientCredentialsRequest(scope)

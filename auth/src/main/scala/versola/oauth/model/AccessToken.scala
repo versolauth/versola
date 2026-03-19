@@ -11,23 +11,22 @@ import zio.{IO, ZIO}
 import java.time.Instant
 
 case class AccessToken(
-    @jsonField("sub") userId: UserId,
+    @jsonField("sub") subject: String, // UserId for user tokens, ClientId for client_credentials
     @jsonField("client_id") clientId: ClientId,
     scope: Set[ScopeToken],
     @jsonField("requested_claims") requestedClaims: Option[RequestedClaims],
-    @jsonField("ui_locales") uiLocales: Option[Vector[String]],
+    @jsonField("ui_locales") uiLocales: Option[List[String]],
     @jsonField("exp") expiresAt: Instant,
     @jsonField("iat") issuedAt: Instant,
     @jsonField("nbf") notBefore: Option[Instant],
     @jsonField("aud") audience: Vector[ClientId],
     @jsonField("iss") issuer: Option[String],
     @jsonField("jti") jwtId: Option[String],
-)
+):
+  /** Parse userId from subject if it's a valid UUID, otherwise None (for client_credentials tokens) */
+  def userId: Option[UserId] = UserId.parse(subject).toOption
 
 object AccessToken:
-
-  given JsonDecoder[UserId] = JsonDecoder[String].mapOrFail: s =>
-    UserId.parse(s).left.map(_.getMessage)
 
   given JsonDecoder[ClientId] = JsonDecoder[String].map(ClientId(_))
 

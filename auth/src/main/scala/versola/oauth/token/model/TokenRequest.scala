@@ -17,3 +17,7 @@ case class RefreshTokenRequest(
     refreshToken: RefreshToken,
     scope: Option[Set[ScopeToken]],
 ) extends TokenRequest
+
+case class ClientCredentialsRequest(
+    scope: Option[Set[ScopeToken]],
+) extends TokenRequest
