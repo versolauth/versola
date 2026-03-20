@@ -5,6 +5,7 @@ import versola.auth.TestEnvConfig
 import versola.oauth.client.OAuthClientService
 import versola.oauth.client.model.{ClientId, OAuthClientRecord, ScopeToken}
 import versola.oauth.model.{AccessToken, AuthorizationCode, AuthorizationCodeRecord, CodeChallenge, CodeChallengeMethod, CodeVerifier, RefreshToken}
+import versola.oauth.revoke.AccessTokenRevocationService
 import versola.oauth.session.RefreshTokenRepository
 import versola.oauth.session.model.{RefreshAlreadyExchanged, RefreshTokenRecord, SessionId}
 import versola.oauth.token.model.{ClientCredentialsRequest, CodeExchangeRequest, RefreshTokenRequest, TokenEndpointError}
@@ -75,12 +76,14 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
     val authCodeRepo = stub[AuthorizationCodeRepository]
     val clientService = stub[OAuthClientService]
     val tokenRepo = stub[RefreshTokenRepository]
+    val accessTokenRevocationService = stub[AccessTokenRevocationService]
     val securityService = stub[SecurityService]
     val propertyGenerator = stub[AuthPropertyGenerator]
     val service = OAuthTokenService.Impl(
       authCodeRepo,
       clientService,
       tokenRepo,
+      accessTokenRevocationService,
       securityService,
       propertyGenerator,
       TestEnvConfig.coreConfig,
@@ -103,11 +106,13 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             codeChallengeMethod = CodeChallengeMethod.S256,
             requestedClaims = Some(requestedClaims1),
             uiLocales = Some(uiLocales1),
+            accessToken = accessToken1,
           )
 
           _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
           _ <- env.securityService.mac.succeedsWith(codeMac1)
           _ <- env.authCodeRepo.find.succeedsWith(Some(codeRecord))
+          _ <- env.authCodeRepo.markAsUsed.succeedsWith(Right(()))
           _ <- env.authCodeRepo.delete.succeedsWith(())
           _ <- env.propertyGenerator.nextAccessToken.succeedsWith(accessToken1)
           _ <- env.propertyGenerator.nextRefreshToken.succeedsWith(refreshToken1)
@@ -141,11 +146,13 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             codeChallengeMethod = CodeChallengeMethod.S256,
             requestedClaims = None,
             uiLocales = None,
+            accessToken = accessToken1,
           )
 
           _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
           _ <- env.securityService.mac.succeedsWith(codeMac1)
           _ <- env.authCodeRepo.find.succeedsWith(Some(codeRecord))
+          _ <- env.authCodeRepo.markAsUsed.succeedsWith(Right(()))
           _ <- env.authCodeRepo.delete.succeedsWith(())
           _ <- env.propertyGenerator.nextAccessToken.succeedsWith(accessToken1)
 
@@ -201,6 +208,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             codeChallengeMethod = CodeChallengeMethod.S256,
             requestedClaims = None,
             uiLocales = None,
+            accessToken = accessToken1,
           )
 
           _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))

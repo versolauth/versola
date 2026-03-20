@@ -23,6 +23,7 @@ case class AuthorizationCodeRecord(
     codeChallengeMethod: CodeChallengeMethod,
     requestedClaims: Option[RequestedClaims],
     uiLocales: Option[List[String]],
+    accessToken: AccessToken,
 ) derives CanEqual, Equal:
 
   def session: SessionRecord = SessionRecord(

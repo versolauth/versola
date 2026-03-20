@@ -97,9 +97,9 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       ZLayer(ReloadingCache.make[Map[versola.oauth.client.model.ClientId, versola.oauth.client.model.OAuthClientRecord]]()) >+>
       ZLayer(ReloadingCache.make[Map[versola.oauth.client.model.ScopeToken, versola.oauth.client.model.Scope]]()) >+>
       ZLayer.fromFunction(OAuthClientService.Impl(_, _, _, _, _, _, _)) >+>
+      AccessTokenRevocationService.noop >+>
       OAuthTokenService.live >+>
       IntrospectionService.live >+>
-      AccessTokenRevocationService.noop >+>
       RevocationService.live >+>
       AuthorizeRequestParser.live >+>
       AuthorizeEndpointService.live >+>

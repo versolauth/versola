@@ -51,6 +51,9 @@ trait AuthorizationCodeRepositorySpec extends DatabaseSpecBase[AuthorizationCode
   val uiLocales1 = List("en-US", "fr-CA")
   val uiLocales2 = List("de-DE", "es-ES", "ja-JP")
 
+  val accessToken1 = AccessToken(Array.fill(32)(5.toByte))
+  val accessToken2 = AccessToken(Array.fill(32)(6.toByte))
+
   val record = AuthorizationCodeRecord(
     sessionId = sessionId1,
     clientId = clientId1,
@@ -61,6 +64,7 @@ trait AuthorizationCodeRepositorySpec extends DatabaseSpecBase[AuthorizationCode
     codeChallengeMethod = CodeChallengeMethod.S256,
     requestedClaims = None,
     uiLocales = None,
+    accessToken = accessToken1,
   )
 
   val recordWithClaims = AuthorizationCodeRecord(
@@ -73,6 +77,7 @@ trait AuthorizationCodeRepositorySpec extends DatabaseSpecBase[AuthorizationCode
     codeChallengeMethod = CodeChallengeMethod.S256,
     requestedClaims = Some(requestedClaims1),
     uiLocales = Some(uiLocales1),
+    accessToken = accessToken1,
   )
 
   def testCases(env: AuthorizationCodeRepositorySpec.Env): List[Spec[AuthorizationCodeRepositorySpec.Env & Scope, Any]] =
@@ -137,6 +142,66 @@ trait AuthorizationCodeRepositorySpec extends DatabaseSpecBase[AuthorizationCode
           found.get.requestedClaims.isEmpty,
           found.get.uiLocales.isDefined,
           found.get.uiLocales.get == uiLocales2,
+        )
+      },
+      test("markAsUsed returns Right on first use") {
+        for
+          _ <- env.repository.create(code1, record, ttl)
+          result <- env.repository.markAsUsed(code1)
+          _ <- env.repository.delete(code1)
+        yield assertTrue(result == Right(()))
+      },
+      test("markAsUsed returns Left with accessToken on second use") {
+        for
+          _ <- env.repository.create(code1, record, ttl)
+          firstUse <- env.repository.markAsUsed(code1)
+          secondUse <- env.repository.markAsUsed(code1)
+          _ <- env.repository.delete(code1)
+        yield assertTrue(
+          firstUse === Right(()),
+          secondUse === Left(accessToken1),
+        )
+      },
+      test("code reuse detection workflow") {
+        for
+          // Create authorization code with accessToken2
+          recordWithToken2 <- ZIO.succeed(record.copy(accessToken = accessToken2))
+          _ <- env.repository.create(code1, recordWithToken2, ttl)
+
+          // First exchange - mark as used
+          firstUse <- env.repository.markAsUsed(code1)
+
+          // Second exchange attempt - should detect reuse and return the stored token
+          secondUse <- env.repository.markAsUsed(code1)
+
+          // Retrieve the stored token for verification
+          codeWithToken <- env.repository.find(code1)
+
+          _ <- env.repository.delete(code1)
+        yield assertTrue(
+          firstUse === Right(()),
+          secondUse === Left(accessToken2),
+          codeWithToken.get.accessToken === accessToken2,
+        )
+      },
+      test("concurrent markAsUsed attempts - only one should succeed") {
+        for
+          _ <- env.repository.create(code1, record, ttl)
+
+          // Simulate concurrent attempts to mark as used
+          results <- ZIO.collectAllPar(
+            List.fill(10)(env.repository.markAsUsed(code1))
+          )
+
+          _ <- env.repository.delete(code1)
+
+          // Count how many succeeded (Right) vs detected reuse (Left)
+          successCount = results.count(_.isRight)
+          reuseCount = results.count(_.isLeft)
+        yield assertTrue(
+          successCount == 1, // Exactly one should succeed
+          reuseCount == 9, // The other 9 should detect reuse
+          results.collect { case Left(token) => token }.forall(_ === accessToken1),
         )
       },
     )

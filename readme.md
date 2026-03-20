@@ -47,7 +47,7 @@ Under active development.
 - [x] JWT access tokens (stateless, RS256)
 - [x] Opaque refresh tokens (database-stored, BLAKE3-MAC)
 - [x] Error responses (RFC 6749 Section 5.2)
-- [ ] Token revocation on authorization code reuse
+- [x] Token revocation on authorization code reuse
 - [ ] Device Code Grant (RFC 8628)
 - [ ] JWT Bearer Grant (RFC 7523)
 

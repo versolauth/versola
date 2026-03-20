@@ -99,3 +99,8 @@ class PostgresRefreshTokenRepository(xa: TransactorZIO) extends RefreshTokenRepo
     xa.connect:
       sql"""DELETE FROM refresh_tokens WHERE id = $token""".update.run()
     .unit
+
+  override def deleteByAccessToken(token: AccessToken): Task[Unit] =
+    xa.connect:
+      sql"""DELETE FROM refresh_tokens WHERE access_token = $token""".update.run()
+    .unit

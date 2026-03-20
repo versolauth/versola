@@ -5,15 +5,17 @@ import com.augustnagro.magnum.magzio.TransactorZIO
 import com.augustnagro.magnum.pg.PgCodec
 import versola.oauth.client.model.{Claim, ClientId, ScopeToken}
 import versola.oauth.model.*
+import versola.oauth.session.model.SessionId
 import versola.oauth.token.AuthorizationCodeRepository
 import versola.oauth.userinfo.model.{ClaimRequest, RequestedClaims}
 import versola.user.model.UserId
-import versola.util.{MAC, Secret}
 import versola.util.postgres.BasicCodecs
+import versola.util.{MAC, Secret}
 import zio.http.URL
 import zio.json.*
-import zio.{Clock, Duration, Task}
+import zio.{Clock, Duration, Task, ZIO}
 
+import java.sql.Connection
 import java.time.Instant
 import java.util.UUID
 
@@ -37,6 +39,7 @@ class PostgresAuthorizationCodeRepository(
   private given DbCodec[CodeChallenge] = DbCodec.StringCodec.biMap(CodeChallenge(_), identity[String])
   private given DbCodec[URL] = DbCodec.StringCodec.biMap(URL.decode(_).fold(throw _, identity), _.toString)
   private given DbCodec[RequestedClaims] = jsonCodec[RequestedClaims]
+  private given DbCodec[AccessToken] = DbCodec.ByteArrayCodec.biMap(AccessToken(_), identity[Array[Byte]])
   private given DbCodec[AuthorizationCodeRecord] = DbCodec.derived[AuthorizationCodeRecord]
 
   override def find(code: MAC.Of[AuthorizationCode]): Task[Option[AuthorizationCodeRecord]] =
@@ -44,7 +47,10 @@ class PostgresAuthorizationCodeRepository(
       now <- Clock.instant
       result <- xa.connect:
         sql"""
-          SELECT session_id, client_id, user_id, redirect_uri, scope, code_challenge, code_challenge_method, requested_claims, ui_locales, expires_at
+          SELECT session_id, client_id, user_id, redirect_uri,
+                 scope, code_challenge, code_challenge_method,
+                 requested_claims, ui_locales, access_token,
+                 expires_at
           FROM authorization_codes
           WHERE code = $code
         """.query[(AuthorizationCodeRecord, Instant)].run().headOption
@@ -59,7 +65,21 @@ class PostgresAuthorizationCodeRepository(
     Clock.instant.flatMap: now =>
       xa.connect:
         sql"""
-          INSERT INTO authorization_codes (code, session_id, client_id, user_id, redirect_uri, scope, code_challenge, code_challenge_method, requested_claims, ui_locales, expires_at)
+          INSERT INTO authorization_codes (
+            code,
+            session_id,
+            client_id,
+            user_id,
+            redirect_uri,
+            scope,
+            code_challenge,
+            code_challenge_method,
+            requested_claims,
+            ui_locales,
+            access_token,
+            used,
+            expires_at
+          )
           VALUES (
             $code,
             ${record.sessionId},
@@ -71,6 +91,8 @@ class PostgresAuthorizationCodeRepository(
             ${record.codeChallengeMethod.toString},
             ${record.requestedClaims},
             ${record.uiLocales}::text[],
+            ${record.accessToken},
+            ${false},
             ${now.plusSeconds(ttl.toSeconds)}
           )
         """.update.run()
@@ -80,3 +102,21 @@ class PostgresAuthorizationCodeRepository(
     xa.connect:
       sql"""DELETE FROM authorization_codes WHERE code = $code""".update.run()
     .unit
+
+  override def markAsUsed(code: MAC.Of[AuthorizationCode]): Task[Either[AccessToken, Unit]] =
+    xa.connect:
+      val affectedRows = sql"""
+        UPDATE authorization_codes
+        SET used = TRUE
+        WHERE code = $code AND used = FALSE
+      """.update.run()
+
+      if affectedRows > 0 then
+        // Successfully marked as used (first use)
+        Right(())
+      else
+        // UPDATE affected 0 rows - either code doesn't exist or already used
+        // Check which case it is
+        sql"""SELECT access_token FROM authorization_codes WHERE code = $code"""
+          .query[AccessToken].run().headOption
+          .toLeft(())

@@ -3,6 +3,7 @@ package versola.oauth.token
 import versola.oauth.client.OAuthClientService
 import versola.oauth.client.model.{OAuthClientRecord, ScopeToken}
 import versola.oauth.model.{AccessToken, AuthorizationCodeRecord, RefreshToken}
+import versola.oauth.revoke.AccessTokenRevocationService
 import versola.oauth.session.model.{RefreshAlreadyExchanged, RefreshTokenRecord, WithTtl}
 import versola.oauth.session.{RefreshTokenRepository, SessionRepository}
 import versola.oauth.token.model.{ClientCredentialsRequest, CodeExchangeRequest, IssuedTokens, RefreshTokenRequest, TokenEndpointError}
@@ -29,12 +30,13 @@ trait OAuthTokenService:
   ): IO[Throwable | TokenEndpointError, IssuedTokens]
 
 object OAuthTokenService:
-  def live = ZLayer.fromFunction(Impl(_, _, _, _, _, _))
+  def live = ZLayer.fromFunction(Impl(_, _, _, _, _, _, _))
 
   class Impl(
       authorizationCodeRepository: AuthorizationCodeRepository,
       oauthClientService: OAuthClientService,
       tokenRepository: RefreshTokenRepository,
+      accessTokenRevocationService: AccessTokenRevocationService,
       securityService: SecurityService,
       authPropertyGenerator: AuthPropertyGenerator,
       config: CoreConfig,
@@ -59,9 +61,15 @@ object OAuthTokenService:
           .filterOrFail(_.redirectUri == redirectUri)(TokenEndpointError.InvalidGrant)
           .filterOrFail(_.verify(codeVerifier))(TokenEndpointError.InvalidGrant)
 
-        _ <- authorizationCodeRepository.delete(codeMac)
-        now <- zio.Clock.instant
+        _ <- authorizationCodeRepository.markAsUsed(codeMac).flatMap:
+          case Left(at) =>
+            accessTokenRevocationService.revoke(at) *>
+              tokenRepository.deleteByAccessToken(at)
 
+          case Right(_) =>
+            ZIO.unit
+
+        now <- zio.Clock.instant
         accessToken <- authPropertyGenerator.nextAccessToken
 
         issuedTokens <- issueTokens(

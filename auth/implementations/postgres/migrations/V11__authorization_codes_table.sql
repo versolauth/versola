@@ -9,7 +9,9 @@ CREATE TABLE authorization_codes (
     code_challenge_method TEXT NOT NULL,
     expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
     requested_claims JSONB,
-    ui_locales TEXT[]
+    ui_locales TEXT[],
+    used BOOLEAN NOT NULL,
+    access_token BYTEA NOT NULL
 );
 
 CREATE INDEX authorization_codes_expires_at_idx

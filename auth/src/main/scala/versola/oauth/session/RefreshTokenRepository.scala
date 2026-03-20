@@ -15,3 +15,5 @@ trait RefreshTokenRepository:
   def find(token: MAC.Of[RefreshToken]): Task[Option[RefreshTokenRecord]]
 
   def delete(token: MAC.Of[RefreshToken]): Task[Unit]
+
+  def deleteByAccessToken(token: AccessToken): Task[Unit]

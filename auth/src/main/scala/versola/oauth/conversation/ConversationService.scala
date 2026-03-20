@@ -160,6 +160,7 @@ object ConversationService:
         userId = conversation.userId.get // TODO handle illegal state
         sessionId <- authPropertyGenerator.nextSessionId
         sessionIdMac <- securityService.mac(Secret(sessionId), config.security.sessions.pepper)
+        accessToken <- authPropertyGenerator.nextAccessToken
         record = AuthorizationCodeRecord(
           sessionId = sessionIdMac,
           clientId = conversation.clientId,
@@ -170,6 +171,7 @@ object ConversationService:
           codeChallengeMethod = conversation.codeChallengeMethod,
           requestedClaims = conversation.requestedClaims,
           uiLocales = conversation.uiLocales,
+          accessToken = accessToken,
         )
         session = SessionRecord(
           userId = userId,
@@ -180,4 +182,9 @@ object ConversationService:
         _ <- authorizationCodeRepository.create(codeMac, record, 1.minute)
         _ <- sessionRepository.create(sessionIdMac, session, 1.day)
         _ <- conversationRepository.delete(authId)
-      yield ConversationResult.Complete(conversation.redirectUri, conversation.state, code, sessionIdMac)
+      yield ConversationResult.Complete(
+        redirectUri = conversation.redirectUri,
+        state = conversation.state,
+        code = code,
+        sessionId = sessionIdMac,
+      )
