@@ -2,7 +2,6 @@ package versola.oauth.userinfo
 
 import versola.oauth.client.OAuthClientService
 import versola.oauth.client.model.{Claim, ScopeToken}
-import versola.oauth.model.AccessToken
 import versola.oauth.userinfo.model.{RequestedClaims, UserInfoError, UserInfoResponse}
 import versola.user.UserRepository
 import versola.user.model.{UserId, UserRecord}

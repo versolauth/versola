@@ -1,9 +1,8 @@
 package versola.oauth.token
 
-import versola.auth.model.{AccessToken, RefreshToken}
 import versola.oauth.client.OAuthClientService
 import versola.oauth.client.model.{OAuthClientRecord, ScopeToken}
-import versola.oauth.model.AuthorizationCodeRecord
+import versola.oauth.model.{AccessToken, AuthorizationCodeRecord, RefreshToken}
 import versola.oauth.session.model.{RefreshAlreadyExchanged, RefreshTokenRecord, WithTtl}
 import versola.oauth.session.{RefreshTokenRepository, SessionRepository}
 import versola.oauth.token.model.{ClientCredentialsRequest, CodeExchangeRequest, IssuedTokens, RefreshTokenRequest, TokenEndpointError}
@@ -63,12 +62,17 @@ object OAuthTokenService:
         _ <- authorizationCodeRepository.delete(codeMac)
         now <- zio.Clock.instant
 
+        accessToken <- authPropertyGenerator.nextAccessToken
+
         issuedTokens <- issueTokens(
+          accessToken = accessToken,
           client = client,
           record = RefreshTokenRecord(
             sessionId = codeRecord.sessionId,
+            accessToken = accessToken,
             userId = codeRecord.userId,
             clientId = codeRecord.clientId,
+            externalAudience = client.externalAudience,
             scope = codeRecord.scope,
             issuedAt = now,
             expiresAt = now.plusSeconds(client.accessTokenTtl.toSeconds),
@@ -95,7 +99,7 @@ object OAuthTokenService:
 
         refreshTokenMac <- securityService.mac(Secret(refreshToken), config.security.refreshTokens.pepper)
 
-        tokenRecord <- tokenRepository.findRefreshToken(refreshTokenMac)
+        tokenRecord <- tokenRepository.find(refreshTokenMac)
           .someOrFail(TokenEndpointError.InvalidGrant)
           .filterOrFail(_.clientId == client.id)(TokenEndpointError.InvalidGrant)
 
@@ -104,9 +108,13 @@ object OAuthTokenService:
 
         now <- zio.Clock.instant
 
+        accessToken <- authPropertyGenerator.nextAccessToken
+
         issuedTokens <- issueTokens(
+          accessToken = accessToken,
           client = client,
           record = tokenRecord.copy(
+            accessToken = accessToken,
             scope = scope.getOrElse(tokenRecord.scope),
             previousRefreshToken = Some(refreshTokenMac),
             issuedAt = now,
@@ -145,12 +153,11 @@ object OAuthTokenService:
       )
 
     private def issueTokens(
+        accessToken: AccessToken,
         client: OAuthClientRecord,
         record: RefreshTokenRecord,
     ): IO[Throwable | TokenEndpointError, IssuedTokens] =
       for
-        accessToken <- authPropertyGenerator.nextAccessToken
-
         refreshToken <- ZIO.when(record.scope.contains(ScopeToken.OfflineAccess))(
           for
             token <- authPropertyGenerator.nextRefreshToken

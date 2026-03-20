@@ -2,10 +2,9 @@ package versola.oauth.token
 
 import org.scalamock.stubs.Stub
 import versola.auth.TestEnvConfig
-import versola.auth.model.{AccessToken, RefreshToken}
 import versola.oauth.client.OAuthClientService
 import versola.oauth.client.model.{ClientId, ScopeToken}
-import versola.oauth.model.{AuthorizationCode, CodeVerifier}
+import versola.oauth.model.{AccessToken, AuthorizationCode, CodeVerifier, RefreshToken}
 import versola.oauth.token.model.{ClientCredentialsRequest, CodeExchangeRequest, IssuedTokens, RefreshTokenRequest, TokenEndpointError, TokenResponse}
 import versola.user.model.UserId
 import versola.util.http.{ClientIdWithSecret, ControllerSpec, NoopTracing}
@@ -114,7 +113,7 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
             )
           )
         ),
-        expectedStatus = Status.BadRequest,
+        expectedStatus = Status.Unauthorized,
         verify = response =>
           for
             body <- response.body.asString
@@ -326,7 +325,7 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
             )
           )
         ).addHeader(authHeader(clientId1, Some(clientSecret1))),
-        expectedStatus = Status.BadRequest,
+        expectedStatus = Status.Unauthorized,
         setup = tokenService =>
           tokenService.clientCredentials.failsWith(TokenEndpointError.InvalidClient),
         verify = response =>

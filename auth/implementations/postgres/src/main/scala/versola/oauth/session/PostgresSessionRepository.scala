@@ -2,8 +2,8 @@ package versola.oauth.session
 
 import com.augustnagro.magnum.magzio.TransactorZIO
 import com.augustnagro.magnum.*
-import versola.auth.model.{AccessToken, RefreshToken}
 import versola.oauth.client.model.ClientId
+import versola.oauth.model.{AccessToken, RefreshToken}
 import versola.oauth.session.model.{SessionId, SessionRecord, WithTtl}
 import versola.user.model.UserId
 import versola.util.MAC

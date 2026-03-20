@@ -3,10 +3,9 @@ package versola.oauth.token
 import com.nimbusds.jose.crypto.RSASSASigner
 import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm, JWSHeader}
 import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
-import versola.auth.model.{AccessToken, RefreshToken}
 import versola.oauth.client.OAuthClientService
 import versola.oauth.client.model.{ClientId, ScopeToken}
-import versola.oauth.model.{AuthorizationCode, CodeVerifier}
+import versola.oauth.model.{AccessToken, AuthorizationCode, CodeVerifier, RefreshToken}
 import versola.oauth.token.model.{ClientCredentialsRequest, CodeExchangeRequest, IssuedTokens, RefreshTokenRequest, TokenEndpointError, TokenErrorResponse, TokenRequest, TokenResponse}
 import versola.user.model.UserId
 import versola.util.CoreConfig.JwtConfig
@@ -50,8 +49,9 @@ object TokenEndpointController extends Controller:
               val errorResponse = TokenErrorResponse.from(error)
               Response
                 .json(errorResponse.toJson)
-                .status(Status.BadRequest)
+                .status(error.status)
                 .addHeader(Header.CacheControl.NoStore)
+                .addHeader(Header.Pragma.NoCache)
 
           case ex: Throwable =>
             ZIO.succeed(Response.internalServerError)

@@ -1,8 +1,8 @@
 package versola.oauth.session
 
 import com.augustnagro.magnum.magzio.TransactorZIO
-import versola.auth.model.RefreshToken
 import versola.oauth.client.model.{ClientId, ScopeToken}
+import versola.oauth.model.{AccessToken, RefreshToken}
 import versola.oauth.session.model.{RefreshTokenRecord, SessionId}
 import versola.user.model.UserId
 import versola.util.{DatabaseSpecBase, MAC}
@@ -33,6 +33,9 @@ trait RefreshTokenRepositorySpec extends DatabaseSpecBase[RefreshTokenRepository
   val userId1 = UserId(UUID.fromString("f077fb08-9935-4a6d-8643-bf97c073bf0f"))
   val userId2 = UserId(UUID.fromString("a077fb08-9935-4a6d-8643-bf97c073bf0f"))
 
+  val accessToken1 = AccessToken(Array.fill(16)(10.toByte))
+  val accessToken2 = AccessToken(Array.fill(16)(11.toByte))
+
   val scope1 = Set(ScopeToken("read"), ScopeToken("write"))
   val scope2 = Set(ScopeToken("admin"))
 
@@ -40,8 +43,10 @@ trait RefreshTokenRepositorySpec extends DatabaseSpecBase[RefreshTokenRepository
 
   def tokenRecord1(now: Instant, ttl: Duration) = RefreshTokenRecord(
     sessionId = sessionId1,
+    accessToken = accessToken1,
     userId = userId1,
     clientId = clientId1,
+    externalAudience = List.empty,
     scope = scope1,
     issuedAt = now,
     expiresAt = now.plusSeconds(ttl.toSeconds),
@@ -52,8 +57,10 @@ trait RefreshTokenRepositorySpec extends DatabaseSpecBase[RefreshTokenRepository
 
   def tokenRecord2(now: Instant, ttl: Duration) = RefreshTokenRecord(
     sessionId = sessionId2,
+    accessToken = accessToken2,
     userId = userId2,
     clientId = clientId2,
+    externalAudience = List.empty,
     scope = scope2,
     issuedAt = now,
     expiresAt = now.plusSeconds(ttl.toSeconds),
@@ -71,8 +78,8 @@ trait RefreshTokenRepositorySpec extends DatabaseSpecBase[RefreshTokenRepository
           record2 = tokenRecord2(now, refreshTtl)
           _ <- env.repository.create(refreshToken1, record1)
           _ <- env.repository.create(refreshToken2, record2)
-          found1 <- env.repository.findRefreshToken(refreshToken1)
-          found2 <- env.repository.findRefreshToken(refreshToken2)
+          found1 <- env.repository.find(refreshToken1)
+          found2 <- env.repository.find(refreshToken2)
         yield assertTrue(
           found1.isDefined,
           found2.isDefined,
@@ -80,7 +87,7 @@ trait RefreshTokenRepositorySpec extends DatabaseSpecBase[RefreshTokenRepository
       },
       test("find returns None for non-existent refresh token") {
         for
-          found <- env.repository.findRefreshToken(refreshToken1)
+          found <- env.repository.find(refreshToken1)
         yield assertTrue(found.isEmpty)
       },
       test("refresh token expires after TTL") {
@@ -89,9 +96,9 @@ trait RefreshTokenRepositorySpec extends DatabaseSpecBase[RefreshTokenRepository
           now <- Clock.instant
           record = tokenRecord1(now, shortTtl)
           _ <- env.repository.create(refreshToken1, record)
-          foundBefore <- env.repository.findRefreshToken(refreshToken1)
+          foundBefore <- env.repository.find(refreshToken1)
           _ <- TestClock.adjust(3.minutes)
-          foundAfter <- env.repository.findRefreshToken(refreshToken1)
+          foundAfter <- env.repository.find(refreshToken1)
         yield assertTrue(
           foundBefore.exists(_ === record),
           foundAfter.isEmpty,
@@ -104,8 +111,8 @@ trait RefreshTokenRepositorySpec extends DatabaseSpecBase[RefreshTokenRepository
           record2 = record1.copy(previousRefreshToken = Some(refreshToken1))
           _ <- env.repository.create(refreshToken1, record1)
           _ <- env.repository.create(refreshToken2, record2)
-          oldTokenFound <- env.repository.findRefreshToken(refreshToken1)
-          newTokenFound <- env.repository.findRefreshToken(refreshToken2)
+          oldTokenFound <- env.repository.find(refreshToken1)
+          newTokenFound <- env.repository.find(refreshToken2)
         yield assertTrue(
           oldTokenFound.isEmpty,
           newTokenFound.isDefined,
@@ -125,13 +132,19 @@ trait RefreshTokenRepositorySpec extends DatabaseSpecBase[RefreshTokenRepository
             refreshToken6,
             refreshToken7,
           )
-          results <- ZIO.foreachPar(refreshTokens)(
-            env.repository.create(_, record1.copy(previousRefreshToken = Some(refreshToken1))).either,
+          results <- ZIO.foreachPar(refreshTokens)(token =>
+            env.repository.create(token, record1.copy(previousRefreshToken = Some(refreshToken1))).either,
           )
 
         yield assertTrue(
-          results.count(_.isRight) == 1,
-          results.count(_.isLeft) == 5,
+          results.count {
+            case Right(_) => true
+            case Left(_) => false
+          } == 1,
+          results.count {
+            case Right(_) => false
+            case Left(_) => true
+          } == 5,
         )
       },
     )

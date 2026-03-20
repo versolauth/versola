@@ -4,8 +4,9 @@ import com.nimbusds.jose.crypto.RSASSASigner
 import com.nimbusds.jose.jwk.RSAKey
 import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm, JWSHeader}
 import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
-import versola.auth.model.{AccessToken, DeviceId}
+import versola.auth.model.DeviceId
 import versola.oauth.conversation.model.AuthId
+import versola.oauth.model.AccessToken
 import versola.user.model.UserId
 import versola.util.{CoreConfig, EnvName, Secret}
 import zio.json.ast.Json

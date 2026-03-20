@@ -52,12 +52,8 @@ Under active development.
 - [ ] JWT Bearer Grant (RFC 7523)
 
 #### RFC 7009 - Token Revocation
-- [ ] `/v1/revoke` endpoint
-- [ ] Access token revocation
-- [ ] Refresh token revocation
-- [ ] Cascade revocation (revoke all tokens in session)
-- [ ] Client authentication required
-- [ ] `token_type_hint` parameter
+- [x] `/v1/revoke` endpoint
+- [x] Refresh token revocation
 
 #### RFC 7662 - Token Introspection
 - [x] `/v1/introspect` endpoint
@@ -67,14 +63,12 @@ Under active development.
 - [x] `active` boolean response
 - [x] Token metadata (scope, client_id, exp, iat, sub)
 - [x] Inactive response for invalid/expired tokens
-- [ ] Audience validation (`aud` claim check)
-- [ ] `token_type_hint` parameter
+- [x] Audience validation (`aud` claim check)
 
 #### RFC 7636 - PKCE (Proof Key for Code Exchange)
 - [x] `code_challenge` parameter (43-128 characters, base64url)
 - [x] `code_challenge_method` (S256, plain)
 - [x] `code_verifier` validation (43-128 characters)
-- [x] SHA-256 hashing for S256 method
 - [x] **Mandatory for all clients** (OAuth 2.1 requirement)
 - [x] Authorization code storage with challenge
 - [x] Token endpoint verification
@@ -209,8 +203,7 @@ Under active development.
   - [x] Edge sessions (24 hours TTL)
 - [x] SELECT FOR UPDATE SKIP LOCKED for concurrent cleanup
 - [x] Configurable batch sizes and intervals
-- [ ] Multi-region deployment support
-- [ ] Database sharding (planned)
+- [ ] Database sharding (premium)
 
 #### External OAuth Providers
 - [x] Google OAuth integration
@@ -242,25 +235,3 @@ Under active development.
 - [ ] Audit logging
 - [ ] Consent management UI
 - [ ] Account management UI
-
-## Architecture
-
-- **Language**: Scala 3
-- **Effect System**: ZIO 2
-- **HTTP**: zio-http
-- **Database**: PostgreSQL with Magnum
-- **Frontend**: Laminar (Scala.js)
-- **Migrations**: Flyway
-- **Observability**: OpenTelemetry, Prometheus
-- **Security**: Bouncy Castle, BLAKE3
-
-## Documentation
-
-See [adr/](adr/) directory for Architecture Decision Records:
-- [ADR 00: Client Secret Storage](adr/00_client_secret_storage.md)
-- [ADR 01: UserInfo Endpoint](adr/01_userinfo_endpoint.md)
-- [ADR 02: Cleanup Manager](adr/02_cleanup_manager.md)
-
-## License
-
-TBD

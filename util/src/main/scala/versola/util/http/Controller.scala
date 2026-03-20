@@ -1,7 +1,7 @@
 package versola.util.http
 
 import versola.oauth.client.model.ClientId
-import versola.util.{FormDecoder, Secret}
+import versola.util.{Base64Url, FormDecoder, Secret}
 import zio.{IO, ZIO}
 import zio.http.*
 
@@ -28,3 +28,6 @@ trait Controller:
       request.body.asURLEncodedForm.mapError(_.getMessage)
         .flatMap(decoder.decode)
 
+  extension (s: String)
+    def isJWT = s.split("\\.").headOption
+      .exists(str => Base64Url.decodeStr(str).startsWith("{"))

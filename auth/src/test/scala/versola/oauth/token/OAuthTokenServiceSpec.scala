@@ -2,10 +2,9 @@ package versola.oauth.token
 
 import org.scalamock.stubs.{Stub, ZIOStubs}
 import versola.auth.TestEnvConfig
-import versola.auth.model.{AccessToken, RefreshToken}
 import versola.oauth.client.OAuthClientService
 import versola.oauth.client.model.{ClientId, OAuthClientRecord, ScopeToken}
-import versola.oauth.model.{AuthorizationCode, AuthorizationCodeRecord, CodeChallenge, CodeChallengeMethod, CodeVerifier}
+import versola.oauth.model.{AccessToken, AuthorizationCode, AuthorizationCodeRecord, CodeChallenge, CodeChallengeMethod, CodeVerifier, RefreshToken}
 import versola.oauth.session.RefreshTokenRepository
 import versola.oauth.session.model.{RefreshAlreadyExchanged, RefreshTokenRecord, SessionId}
 import versola.oauth.token.model.{ClientCredentialsRequest, CodeExchangeRequest, RefreshTokenRequest, TokenEndpointError}
@@ -225,8 +224,10 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
 
           tokenRecord = RefreshTokenRecord(
             sessionId = sessionId1,
+            accessToken = accessToken1,
             userId = userId1,
             clientId = clientId1,
+            externalAudience = List.empty,
             scope = scope1,
             issuedAt = now.minusSeconds(3600),
             expiresAt = now.plusSeconds(TestEnvConfig.coreConfig.security.refreshTokens.ttl.toSeconds),
@@ -241,7 +242,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
           _ <- env.securityService.mac.succeedsWith(newRefreshTokenMac)
           _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
-          _ <- env.tokenRepo.findRefreshToken.succeedsWith(Some(tokenRecord))
+          _ <- env.tokenRepo.find.succeedsWith(Some(tokenRecord))
           _ <- env.propertyGenerator.nextAccessToken.succeedsWith(accessToken1)
           _ <- env.propertyGenerator.nextRefreshToken.succeedsWith(newRefreshToken)
           _ <- env.tokenRepo.create.succeedsWith(())
@@ -269,8 +270,10 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
 
           tokenRecord = RefreshTokenRecord(
             sessionId = sessionId1,
+            accessToken = accessToken1,
             userId = userId1,
             clientId = clientId1,
+            externalAudience = List.empty,
             scope = scope1,
             issuedAt = now.minusSeconds(3600),
             expiresAt = now.plusSeconds(TestEnvConfig.coreConfig.security.refreshTokens.ttl.toSeconds),
@@ -285,7 +288,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
           _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
           _ <- env.securityService.mac.succeedsWith(newRefreshTokenMac)
-          _ <- env.tokenRepo.findRefreshToken.succeedsWith(Some(tokenRecord))
+          _ <- env.tokenRepo.find.succeedsWith(Some(tokenRecord))
           _ <- env.propertyGenerator.nextAccessToken.succeedsWith(accessToken1)
           _ <- env.propertyGenerator.nextRefreshToken.succeedsWith(newRefreshToken)
           _ <- env.tokenRepo.create.succeedsWith(())
@@ -319,7 +322,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
         for
           _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
           _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
-          _ <- env.tokenRepo.findRefreshToken.succeedsWith(None)
+          _ <- env.tokenRepo.find.succeedsWith(None)
 
           request = RefreshTokenRequest(refreshToken1, None)
           credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
@@ -337,8 +340,10 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
 
           tokenRecord = RefreshTokenRecord(
             sessionId = sessionId1,
+            accessToken = accessToken1,
             userId = userId1,
             clientId = clientId1,
+            externalAudience = List.empty,
             scope = scope1,
             issuedAt = now.minusSeconds(3600),
             expiresAt = now.plusSeconds(TestEnvConfig.coreConfig.security.refreshTokens.ttl.toSeconds),
@@ -349,7 +354,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
 
           _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
           _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
-          _ <- env.tokenRepo.findRefreshToken.succeedsWith(Some(tokenRecord))
+          _ <- env.tokenRepo.find.succeedsWith(Some(tokenRecord))
 
           request = RefreshTokenRequest(refreshToken1, Some(invalidScope))
           credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
@@ -366,8 +371,10 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
 
           tokenRecord = RefreshTokenRecord(
             sessionId = sessionId1,
+            accessToken = accessToken1,
             userId = userId1,
             clientId = clientId1,
+            externalAudience = List.empty,
             scope = scope1,
             issuedAt = now.minusSeconds(3600),
             expiresAt = now.plusSeconds(TestEnvConfig.coreConfig.security.refreshTokens.ttl.toSeconds),
@@ -382,7 +389,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
           _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
           _ <- env.securityService.mac.succeedsWith(newRefreshTokenMac)
-          _ <- env.tokenRepo.findRefreshToken.succeedsWith(Some(tokenRecord))
+          _ <- env.tokenRepo.find.succeedsWith(Some(tokenRecord))
           _ <- env.propertyGenerator.nextAccessToken.succeedsWith(accessToken1)
           _ <- env.propertyGenerator.nextRefreshToken.succeedsWith(newRefreshToken)
           _ <- env.tokenRepo.create.failsWith(RefreshAlreadyExchanged())

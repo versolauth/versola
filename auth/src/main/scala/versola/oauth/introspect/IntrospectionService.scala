@@ -1,10 +1,9 @@
 package versola.oauth.introspect
 
-import versola.auth.model.RefreshToken
 import versola.oauth.client.OAuthClientService
-import versola.oauth.client.model.OAuthClientRecord
+import versola.oauth.client.model.{ClientId, OAuthClientRecord}
 import versola.oauth.introspect.model.{IntrospectionError, IntrospectionResponse}
-import versola.oauth.model.AccessToken
+import versola.oauth.model.{AccessTokenPayload, RefreshToken}
 import versola.oauth.session.RefreshTokenRepository
 import versola.oauth.session.model.RefreshTokenRecord
 import versola.util.http.{ClientCredentials, ClientIdWithSecret}
@@ -13,7 +12,7 @@ import zio.{IO, ZIO, ZLayer}
 
 trait IntrospectionService:
   def introspectAccessToken(
-      token: AccessToken,
+      token: AccessTokenPayload,
       credentials: ClientCredentials,
   ): IO[Throwable | IntrospectionError, IntrospectionResponse]
 
@@ -37,14 +36,17 @@ object IntrospectionService:
   ) extends IntrospectionService:
 
     override def introspectAccessToken(
-        token: AccessToken,
+        token: AccessTokenPayload,
         credentials: ClientCredentials,
     ): IO[Throwable | IntrospectionError, IntrospectionResponse] =
       for
-        _ <- authenticateClient(credentials)
+        client <- authenticateClient(credentials)
+
+        _ <- ZIO.fail(IntrospectionError.Unauthenticated)
+          .when(!token.audience.contains(client.id))
       yield buildJwtIntrospectionResponse(token)
 
-    private def buildJwtIntrospectionResponse(token: AccessToken): IntrospectionResponse =
+    private def buildJwtIntrospectionResponse(token: AccessTokenPayload): IntrospectionResponse =
       IntrospectionResponse(
         active = true,
         clientId = Some(token.clientId),
@@ -56,8 +58,8 @@ object IntrospectionService:
         nbf = token.notBefore.map(_.getEpochSecond),
         sub = Some(token.subject),
         aud = Some(token.audience),
-        iss = token.issuer,
-        jti = token.jwtId,
+        iss = Some(token.issuer),
+        jti = Some(token.id.encoded),
       )
 
     override def introspectRefreshToken(
@@ -65,9 +67,12 @@ object IntrospectionService:
         credentials: ClientCredentials,
     ): IO[Throwable | IntrospectionError, IntrospectionResponse] =
       for
-        _ <- authenticateClient(credentials)
+        client <- authenticateClient(credentials)
         tokenMac <- securityService.mac(Secret(token), config.security.refreshTokens.pepper)
-        tokenRecord <- tokenRepository.findRefreshToken(tokenMac)
+        tokenRecord <- tokenRepository.find(tokenMac)
+
+        _ <- ZIO.fail(IntrospectionError.Unauthenticated)
+          .when(tokenRecord.exists(_.clientId != client.id))
       yield buildIntrospectionResponse(tokenRecord)
 
     private def authenticateClient(
@@ -76,7 +81,7 @@ object IntrospectionService:
       credentials match
         case ClientIdWithSecret(clientId, clientSecret) =>
           oauthClientService.verifySecret(clientId, clientSecret)
-            .someOrFail(IntrospectionError.Unauthenticated())
+            .someOrFail(IntrospectionError.InvalidClient)
 
     private def buildIntrospectionResponse(record: Option[RefreshTokenRecord]): IntrospectionResponse =
       record match
@@ -91,9 +96,9 @@ object IntrospectionService:
             exp = Some(record.expiresAt.getEpochSecond),
             nbf = None,
             iss = Some(config.jwt.issuer),
-            jti = None,
             iat = Some(record.issuedAt.getEpochSecond),
-            aud = None,
+            aud = Some((record.clientId :: record.externalAudience).toVector),
+            jti = None,
           )
         case None =>
           IntrospectionResponse.Inactive

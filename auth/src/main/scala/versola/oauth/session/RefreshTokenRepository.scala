@@ -1,6 +1,6 @@
 package versola.oauth.session
 
-import versola.auth.model.{AccessToken, RefreshToken}
+import versola.oauth.model.{AccessToken, RefreshToken}
 import versola.oauth.session.model.{RefreshAlreadyExchanged, SessionId, RefreshTokenRecord, WithTtl}
 import versola.util.MAC
 import zio.{IO, Task}
@@ -12,4 +12,6 @@ trait RefreshTokenRepository:
       record: RefreshTokenRecord,
   ): IO[Throwable | RefreshAlreadyExchanged, Unit]
 
-  def findRefreshToken(token: MAC.Of[RefreshToken]): Task[Option[RefreshTokenRecord]]
+  def find(token: MAC.Of[RefreshToken]): Task[Option[RefreshTokenRecord]]
+
+  def delete(token: MAC.Of[RefreshToken]): Task[Unit]

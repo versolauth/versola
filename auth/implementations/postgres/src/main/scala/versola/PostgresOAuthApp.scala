@@ -9,6 +9,7 @@ import versola.oauth.client.{OAuthClientService, OAuthScopeRepository}
 import versola.oauth.conversation.otp.{EmailOtpProvider, OtpGenerationService, OtpService}
 import versola.oauth.conversation.{ConversationController, ConversationRenderService, ConversationRepository, ConversationRouter, ConversationService, PostgresConversationRepository}
 import versola.oauth.introspect.{IntrospectionController, IntrospectionService}
+import versola.oauth.revoke.{AccessTokenRevocationService, RevocationController, RevocationService}
 import versola.oauth.session.{PostgresRefreshTokenRepository, PostgresSessionRepository, RefreshTokenRepository, SessionRepository}
 import versola.oauth.token.{AuthorizationCodeRepository, OAuthTokenService, TokenEndpointController}
 import versola.oauth.userinfo.{UserInfoController, UserInfoService}
@@ -55,6 +56,8 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       AuthPropertyGenerator &
       OAuthTokenService &
       IntrospectionService &
+      RevocationService &
+      AccessTokenRevocationService &
       AuthorizeRequestParser &
       AuthorizeEndpointService &
       ConversationRouter &
@@ -71,6 +74,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       AuthorizeEndpointController.routes,
       TokenEndpointController.routes,
       IntrospectionController.routes,
+      RevocationController.routes,
       ConversationController.routes,
       UserInfoController.routes,
     ).reduce(_ ++ _)
@@ -95,6 +99,8 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       ZLayer.fromFunction(OAuthClientService.Impl(_, _, _, _, _, _, _)) >+>
       OAuthTokenService.live >+>
       IntrospectionService.live >+>
+      AccessTokenRevocationService.noop >+>
+      RevocationService.live >+>
       AuthorizeRequestParser.live >+>
       AuthorizeEndpointService.live >+>
       OtpGenerationService.live >+>

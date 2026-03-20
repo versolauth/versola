@@ -1,4 +1,4 @@
-package versola.auth.model
+package versola.oauth.model
 
 import versola.util.ByteArrayNewType
 

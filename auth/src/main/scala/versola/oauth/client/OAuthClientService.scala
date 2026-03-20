@@ -1,9 +1,10 @@
 package versola.oauth.client
 
 import versola.oauth.client.model.{ClientId, ClientSecret, OAuthClientRecord, ScopeRecord, ScopeToken}
+import versola.util.http.{ClientCredentials, ClientIdWithSecret}
 import versola.util.{CoreConfig, ReloadingCache, Secret, SecureRandom, SecurityService}
 import zio.*
-import zio.prelude.NonEmptySet
+import zio.prelude.{EqualOps, NonEmptySet}
 
 trait OAuthClientService:
   /** Returns all clients from database **/

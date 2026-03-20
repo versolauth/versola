@@ -1,7 +1,7 @@
 package versola.oauth.token.model
 
-import versola.auth.model.{AccessToken, RefreshToken}
 import versola.oauth.client.model.{ClientId, ScopeToken}
+import versola.oauth.model.{AccessToken, RefreshToken}
 import versola.oauth.userinfo.model.RequestedClaims
 import versola.user.model.UserId
 import zio.Duration

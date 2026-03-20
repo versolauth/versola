@@ -1,7 +1,6 @@
 package versola.util
 
-import versola.auth.model.{AccessToken, RefreshToken}
-import versola.oauth.model.AuthorizationCode
+import versola.oauth.model.{AccessToken, AuthorizationCode, RefreshToken}
 import versola.oauth.session.model.SessionId
 import zio.{UIO, ZLayer}
 

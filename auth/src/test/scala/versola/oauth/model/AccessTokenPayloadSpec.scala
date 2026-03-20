@@ -18,7 +18,7 @@ import java.security.interfaces.{RSAPrivateKey, RSAPublicKey}
 import java.time.Instant
 import java.util.{Date, UUID}
 
-object AccessTokenSpec extends UnitSpecBase:
+object AccessTokenPayloadSpec extends UnitSpecBase:
 
   // Test RSA key pair
   private val keyPairGenerator = KeyPairGenerator.getInstance("RSA")
@@ -51,6 +51,10 @@ object AccessTokenSpec extends UnitSpecBase:
   )
   private val testUiLocales = Vector("en-US", "fr-CA")
 
+  // Default jti as base64url-encoded bytes (AccessToken is a byte array)
+  private val defaultJtiBytes = Array.fill(32)(1.toByte)
+  private val defaultJti = java.util.Base64.getUrlEncoder.withoutPadding().encodeToString(defaultJtiBytes)
+
   /**
    * Helper to create a signed JWT with custom claims
    */
@@ -65,7 +69,7 @@ object AccessTokenSpec extends UnitSpecBase:
       notBefore: Option[Instant] = None,
       audience: Option[String] = Some("test-client-123"),
       issuer: Option[String] = Some("https://auth.example.com"),
-      jwtId: Option[String] = Some("test-jwt-id"),
+      jwtId: Option[String] = Some(defaultJti),
       keyId: String = testKeyId,
   ): String =
     val now = Instant.now()
@@ -140,7 +144,7 @@ object AccessTokenSpec extends UnitSpecBase:
       val tokenString = createSignedJWT()
 
       for
-        result <- JWT.deserialize[AccessToken](tokenString, publicKeysForVerification)
+        result <- JWT.deserialize[AccessTokenPayload](tokenString, publicKeysForVerification)
       yield assertTrue(
         result.subject == testUserId.toString,
         result.userId == Some(testUserId),
@@ -151,21 +155,19 @@ object AccessTokenSpec extends UnitSpecBase:
         result.expiresAt != null,
         result.issuedAt != null,
         result.audience == Vector(ClientId("test-client-123")),
-        result.issuer == Some("https://auth.example.com"),
-        result.jwtId == Some("test-jwt-id"),
+        result.issuer == "https://auth.example.com",
+        // id is AccessToken, just verify it's not null
+        result.id != null,
       )
     },
     test("parse JWT with minimal claims (only sub and scope)") {
       val tokenString = createSignedJWT(
         requestedClaims = None,
         uiLocales = None,
-        audience = None,
-        issuer = None,
-        jwtId = None,
       )
 
       for
-        result <- JWT.deserialize[AccessToken](tokenString, publicKeysForVerification)
+        result <- JWT.deserialize[AccessTokenPayload](tokenString, publicKeysForVerification)
       yield assertTrue(
         result.subject == testUserId.toString,
         result.userId == Some(testUserId),
@@ -173,9 +175,6 @@ object AccessTokenSpec extends UnitSpecBase:
         result.scope == testScopes,
         result.requestedClaims.isEmpty,
         result.uiLocales.isEmpty,
-        result.audience.isEmpty,
-        result.issuer.isEmpty,
-        result.jwtId.isEmpty,
       )
     },
   )
@@ -183,17 +182,17 @@ object AccessTokenSpec extends UnitSpecBase:
   def invalidTokenTests = suite("invalid tokens")(
     test("fail with NotJWT for non-JWT string") {
       for
-        result <- JWT.deserialize[AccessToken]("not-a-jwt", publicKeysForVerification).either
+        result <- JWT.deserialize[AccessTokenPayload]("not-a-jwt", publicKeysForVerification).either
       yield assertTrue(result == Left(JWT.Error.NotJWT))
     },
     test("fail with NotJWT for empty string") {
       for
-        result <- JWT.deserialize[AccessToken]("", publicKeysForVerification).either
+        result <- JWT.deserialize[AccessTokenPayload]("", publicKeysForVerification).either
       yield assertTrue(result == Left(JWT.Error.NotJWT))
     },
     test("fail with NotJWT for malformed JWT") {
       for
-        result <- JWT.deserialize[AccessToken]("header.payload", publicKeysForVerification).either
+        result <- JWT.deserialize[AccessTokenPayload]("header.payload", publicKeysForVerification).either
       yield assertTrue(result == Left(JWT.Error.NotJWT))
     },
   )
@@ -211,7 +210,7 @@ object AccessTokenSpec extends UnitSpecBase:
       val plainJWT = new PlainJWT(claims)
 
       for
-        result <- JWT.deserialize[AccessToken](plainJWT.serialize(), publicKeysForVerification).either
+        result <- JWT.deserialize[AccessTokenPayload](plainJWT.serialize(), publicKeysForVerification).either
       yield assertTrue(result == Left(JWT.Error.NotJWT))
     },
     test("fail with InvalidSignature for JWT signed with different key") {
@@ -237,14 +236,14 @@ object AccessTokenSpec extends UnitSpecBase:
       jwt.sign(differentSigner)
 
       for
-        result <- JWT.deserialize[AccessToken](jwt.serialize(), publicKeysForVerification).either
+        result <- JWT.deserialize[AccessTokenPayload](jwt.serialize(), publicKeysForVerification).either
       yield assertTrue(result == Left(JWT.Error.InvalidSignature))
     },
     test("fail with InvalidSignature for wrong key ID") {
       val tokenString = createSignedJWT(keyId = "wrong-key-id")
 
       for
-        result <- JWT.deserialize[AccessToken](tokenString, publicKeysForVerification).either
+        result <- JWT.deserialize[AccessTokenPayload](tokenString, publicKeysForVerification).either
       yield assertTrue(result == Left(JWT.Error.InvalidSignature))
     },
     test("fail with InvalidSignature for tampered payload") {
@@ -254,7 +253,7 @@ object AccessTokenSpec extends UnitSpecBase:
       val tamperedToken = parts(0) + "." + parts(1).replace('A', 'B') + "." + parts(2)
 
       for
-        result <- JWT.deserialize[AccessToken](tamperedToken, publicKeysForVerification).either
+        result <- JWT.deserialize[AccessTokenPayload](tamperedToken, publicKeysForVerification).either
       yield assertTrue(result == Left(JWT.Error.InvalidSignature))
     },
   )
@@ -264,14 +263,14 @@ object AccessTokenSpec extends UnitSpecBase:
       for
         now <- Clock.instant
         expiredToken = createSignedJWT(expiresAt = Some(now.minusSeconds(3600)))
-        result <- JWT.deserialize[AccessToken](expiredToken, publicKeysForVerification).either
+        result <- JWT.deserialize[AccessTokenPayload](expiredToken, publicKeysForVerification).either
       yield assertTrue(result == Left(JWT.Error.Expired))
     },
     test("succeed for token expiring in the future") {
       for
         now <- Clock.instant
         validToken = createSignedJWT(expiresAt = Some(now.plusSeconds(3600)))
-        result <- JWT.deserialize[AccessToken](validToken, publicKeysForVerification)
+        result <- JWT.deserialize[AccessTokenPayload](validToken, publicKeysForVerification)
       yield assertTrue(result.expiresAt.isAfter(now))
     },
     test("fail with InvalidClaims for token without expiration") {
@@ -293,7 +292,7 @@ object AccessTokenSpec extends UnitSpecBase:
       jwt.sign(signer)
 
       for
-        result <- JWT.deserialize[AccessToken](jwt.serialize(), publicKeysForVerification).either
+        result <- JWT.deserialize[AccessTokenPayload](jwt.serialize(), publicKeysForVerification).either
       yield assertTrue(result == Left(JWT.Error.InvalidClaims))
     },
   )
@@ -310,7 +309,7 @@ object AccessTokenSpec extends UnitSpecBase:
       )
 
       for
-        result <- JWT.deserialize[AccessToken](tokenString, publicKeysForVerification)
+        result <- JWT.deserialize[AccessTokenPayload](tokenString, publicKeysForVerification)
       yield assertTrue(
         result.scope.size == 4,
         result.scope.contains(ScopeToken("openid")),
@@ -333,7 +332,7 @@ object AccessTokenSpec extends UnitSpecBase:
       val tokenString = createSignedJWT(requestedClaims = Some(requestedClaims))
 
       for
-        result <- JWT.deserialize[AccessToken](tokenString, publicKeysForVerification)
+        result <- JWT.deserialize[AccessTokenPayload](tokenString, publicKeysForVerification)
       yield assertTrue(
         result.requestedClaims.isDefined,
         result.requestedClaims.get.userinfo.size == 3,
@@ -345,12 +344,16 @@ object AccessTokenSpec extends UnitSpecBase:
       val tokenString = createSignedJWT(uiLocales = Some(locales))
 
       for
-        result <- JWT.deserialize[AccessToken](tokenString, publicKeysForVerification)
+        result <- JWT.deserialize[AccessTokenPayload](tokenString, publicKeysForVerification)
       yield assertTrue(
         result.uiLocales == Some(locales),
       )
     },
     test("parse standard JWT claims (iat, nbf, aud, iss, jti)") {
+      // Create a valid base64url-encoded jti (AccessToken is a byte array)
+      val jtiBytes = Array.fill(32)(42.toByte)
+      val jtiBase64 = java.util.Base64.getUrlEncoder.withoutPadding().encodeToString(jtiBytes)
+
       for
         now <- Clock.instant
         tokenString = createSignedJWT(
@@ -358,15 +361,16 @@ object AccessTokenSpec extends UnitSpecBase:
           notBefore = Some(now.minusSeconds(60)),
           audience = Some("https://api.example.com"),
           issuer = Some("https://auth.example.com"),
-          jwtId = Some("unique-jwt-id-123"),
+          jwtId = Some(jtiBase64),
         )
-        result <- JWT.deserialize[AccessToken](tokenString, publicKeysForVerification)
+        result <- JWT.deserialize[AccessTokenPayload](tokenString, publicKeysForVerification)
       yield assertTrue(
-        result.issuedAt != null,
+        result.issuedAt.getEpochSecond == now.getEpochSecond,
         result.notBefore.isDefined,
         result.audience == Vector(ClientId("https://api.example.com")),
-        result.issuer == Some("https://auth.example.com"),
-        result.jwtId == Some("unique-jwt-id-123"),
+        result.issuer == "https://auth.example.com",
+        // id is AccessToken (byte array), just verify it's not null
+        result.id != null,
       )
     },
     test("parse audience as single string") {
@@ -377,6 +381,8 @@ object AccessTokenSpec extends UnitSpecBase:
         .claim("client_id", testClientId.toString)
         .claim("scope", "openid")
         .audience("client-456")
+        .issuer("https://auth.example.com")
+        .jwtID(defaultJti)
         .expirationTime(Date.from(now.plusSeconds(3600)))
         .issueTime(Date.from(now))
 
@@ -392,7 +398,7 @@ object AccessTokenSpec extends UnitSpecBase:
       jwt.sign(signer)
 
       for
-        result <- JWT.deserialize[AccessToken](jwt.serialize(), publicKeysForVerification)
+        result <- JWT.deserialize[AccessTokenPayload](jwt.serialize(), publicKeysForVerification)
       yield assertTrue(
         result.audience == Vector(ClientId("client-456")),
       )
@@ -405,6 +411,8 @@ object AccessTokenSpec extends UnitSpecBase:
         .claim("client_id", testClientId.toString)
         .claim("scope", "openid")
         .audience(java.util.Arrays.asList("client-1", "client-2", "client-3"))
+        .issuer("https://auth.example.com")
+        .jwtID(defaultJti)
         .expirationTime(Date.from(now.plusSeconds(3600)))
         .issueTime(Date.from(now))
 
@@ -420,7 +428,7 @@ object AccessTokenSpec extends UnitSpecBase:
       jwt.sign(signer)
 
       for
-        result <- JWT.deserialize[AccessToken](jwt.serialize(), publicKeysForVerification)
+        result <- JWT.deserialize[AccessTokenPayload](jwt.serialize(), publicKeysForVerification)
       yield assertTrue(
         result.audience == Vector(ClientId("client-1"), ClientId("client-2"), ClientId("client-3")),
       )
@@ -443,14 +451,20 @@ object AccessTokenSpec extends UnitSpecBase:
       jwt.sign(signer)
 
       for
-        result <- JWT.deserialize[AccessToken](jwt.serialize(), publicKeysForVerification).either
+        result <- JWT.deserialize[AccessTokenPayload](jwt.serialize(), publicKeysForVerification).either
       yield assertTrue(result == Left(JWT.Error.InvalidClaims))
     },
     test("parse JWT with non-UUID subject (client_credentials token)") {
+      val now = Instant.now()
       val claimsBuilder = new JWTClaimsSet.Builder()
         .subject("test-client-123") // client_id as subject
         .claim("client_id", testClientId.toString)
         .claim("scope", "openid")
+        .audience("test-client-123")
+        .issuer("https://auth.example.com")
+        .jwtID(defaultJti)
+        .expirationTime(Date.from(now.plusSeconds(3600)))
+        .issueTime(Date.from(now))
 
       val claims = claimsBuilder.build()
 
@@ -464,7 +478,7 @@ object AccessTokenSpec extends UnitSpecBase:
       jwt.sign(signer)
 
       for
-        result <- JWT.deserialize[AccessToken](jwt.serialize(), publicKeysForVerification)
+        result <- JWT.deserialize[AccessTokenPayload](jwt.serialize(), publicKeysForVerification)
       yield assertTrue(
         result.subject == "test-client-123",
         result.userId.isEmpty, // No userId for client_credentials tokens

@@ -3,8 +3,8 @@ package versola.oauth.session
 import com.augustnagro.magnum.*
 import com.augustnagro.magnum.magzio.TransactorZIO
 import com.augustnagro.magnum.pg.PgCodec
-import versola.auth.model.{AccessToken, RefreshToken}
 import versola.oauth.client.model.{ClientId, ScopeToken}
+import versola.oauth.model.{AccessToken, RefreshToken}
 import versola.oauth.session.model.{RefreshAlreadyExchanged, RefreshTokenRecord, SessionId, WithTtl}
 import versola.oauth.userinfo.model.RequestedClaims
 import versola.user.model.UserId
@@ -21,6 +21,7 @@ class PostgresRefreshTokenRepository(xa: TransactorZIO) extends RefreshTokenRepo
   import PgCodec.ListCodec
 
   given DbCodec[MAC] = DbCodec.ByteArrayCodec.biMap(MAC(_), identity[Array[Byte]])
+  given DbCodec[AccessToken] = DbCodec.ByteArrayCodec.biMap(AccessToken(_), identity[Array[Byte]])
   given DbCodec[UserId] = DbCodec.UUIDCodec.biMap(UserId(_), identity[UUID])
   given DbCodec[ClientId] = DbCodec.StringCodec.biMap(ClientId(_), identity[String])
   given DbCodec[ScopeToken] = DbCodec.StringCodec.biMap(ScopeToken(_), identity[String])
@@ -40,13 +41,28 @@ class PostgresRefreshTokenRepository(xa: TransactorZIO) extends RefreshTokenRepo
         } match
         case Some(1) | None =>
           sql"""
-            INSERT INTO refresh_tokens (id, previous_id, session_id, user_id, client_id, scope, issued_at, expires_at, requested_claims, ui_locales)
+            INSERT INTO refresh_tokens (
+              id,
+              previous_id,
+              session_id,
+              access_token,
+              user_id,
+              client_id,
+              external_audience,
+              scope,
+              issued_at,
+              expires_at,
+              requested_claims,
+              ui_locales
+            )
             VALUES (
               $refreshToken,
               ${record.previousRefreshToken},
               ${record.sessionId},
+              ${record.accessToken},
               ${record.userId},
               ${record.clientId},
+              ${record.externalAudience},
               ${record.scope},
               ${record.issuedAt},
               ${record.expiresAt},
@@ -63,12 +79,14 @@ class PostgresRefreshTokenRepository(xa: TransactorZIO) extends RefreshTokenRepo
         ZIO.fail(RefreshAlreadyExchanged())
     }
 
-  override def findRefreshToken(token: MAC.Of[RefreshToken]): Task[Option[RefreshTokenRecord]] =
+  override def find(token: MAC.Of[RefreshToken]): Task[Option[RefreshTokenRecord]] =
     for
       now <- Clock.instant
       result <- xa.connect:
         sql"""
-          SELECT session_id, user_id, client_id, scope, issued_at, expires_at, requested_claims, ui_locales, previous_id
+          SELECT session_id, access_token, user_id, client_id,
+                 external_audience, scope, issued_at,
+                 expires_at, requested_claims, ui_locales, previous_id
           FROM refresh_tokens
           WHERE id = $token
         """.query[RefreshTokenRecord]
@@ -76,3 +94,8 @@ class PostgresRefreshTokenRepository(xa: TransactorZIO) extends RefreshTokenRepo
           .headOption
           .filter(_.expiresAt.isAfter(now))
     yield result
+
+  override def delete(token: MAC.Of[RefreshToken]): Task[Unit] =
+    xa.connect:
+      sql"""DELETE FROM refresh_tokens WHERE id = $token""".update.run()
+    .unit

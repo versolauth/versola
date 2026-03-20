@@ -1,9 +1,7 @@
 package versola.oauth.introspect
 
-import versola.auth.model.RefreshToken
-import versola.oauth.introspect.model.{IntrospectionError, IntrospectionResponse}
-import versola.oauth.model.AccessToken
-import versola.oauth.token.model.{TokenEndpointError, TokenErrorResponse}
+import versola.oauth.introspect.model.{IntrospectionError, IntrospectionErrorResponse, IntrospectionResponse}
+import versola.oauth.model.{AccessTokenPayload, RefreshToken}
 import versola.util.{Base64, Base64Url, CoreConfig, FormDecoder, JWT}
 import versola.util.http.Controller
 import zio.*
@@ -22,17 +20,16 @@ object IntrospectionController extends Controller:
     introspectEndpoint,
   )
 
-  //TODO remove TokenEndpointError
   val introspectEndpoint =
     Method.POST / "v1" / "introspect" -> handler { (request: Request) =>
       (for
         introspectionService <- ZIO.service[IntrospectionService]
         config <- ZIO.service[CoreConfig]
-        credentials <- request.extractCredentials.orElseFail(TokenEndpointError.InvalidClient)
-        tokenEither <- request.formAs[Either[RefreshToken, String]].orElseFail(TokenEndpointError.InvalidRequest)
+        credentials <- request.extractCredentials.orElseFail(IntrospectionError.InvalidClient)
+        tokenEither <- request.formAs[Either[RefreshToken, String]].orElseFail(IntrospectionError.InvalidRequest)
         response <- tokenEither match
           case Right(token) =>
-            JWT.deserialize[AccessToken](token, config.jwt.publicKeys)
+            JWT.deserialize[AccessTokenPayload](token, config.jwt.publicKeys)
               .flatMap(introspectionService.introspectAccessToken(_, credentials))
               .catchSome { case _: IntrospectionError => ZIO.succeed(IntrospectionResponse.Inactive) }
 
@@ -46,18 +43,10 @@ object IntrospectionController extends Controller:
           case _: JWT.Error =>
             ZIO.succeed(Response.json(IntrospectionResponse.Inactive.toJson))
 
-          case _: IntrospectionError =>
+          case error: IntrospectionError =>
             ZIO.succeed:
               Response
-                .json(TokenErrorResponse.from(TokenEndpointError.InvalidClient).toJson)
-                .status(Status.Unauthorized)
-                .addHeader(Header.CacheControl.NoStore)
-
-          case error: TokenEndpointError =>
-            ZIO.succeed:
-              val errorResponse = TokenErrorResponse.from(error)
-              Response
-                .json(errorResponse.toJson)
+                .json(IntrospectionErrorResponse.from(error).toJson)
                 .status(error.status)
                 .addHeader(Header.CacheControl.NoStore)
 
@@ -69,7 +58,7 @@ object IntrospectionController extends Controller:
 
   given FormDecoder[Either[RefreshToken, String]] = form =>
     val parse = (s: String) =>
-      if s.split("\\.").headOption.exists(str => Base64Url.decodeStr(str).startsWith("{")) then
+      if s.isJWT then
         Right(Right(s))
       else
         RefreshToken.fromBase64Url(s).map(Left(_))

@@ -1,6 +1,7 @@
 package versola.oauth.introspect.model
 
 import versola.oauth.client.model.ClientId
+import versola.oauth.model.AccessToken
 import versola.user.model.UserId
 import zio.json.*
 import zio.schema.*
