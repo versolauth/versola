@@ -89,6 +89,7 @@ object JWT:
 
   case class PublicKeys(keys: JWKSet):
     def active: PublicKey = PublicKey(keys.getKeys.get(0))
+    override def toString: String = keys.toString(true)
 
   object PublicKeys:
     def fromJson(json: Json.Obj): PublicKeys =

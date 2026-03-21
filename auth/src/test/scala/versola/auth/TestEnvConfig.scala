@@ -88,36 +88,3 @@ object TestEnvConfig:
     ),
     jwt = jwtConfig,
   )
-
-  def buildCoreConfig(envName: EnvName): CoreConfig =
-    coreConfig
-
-  // Create a valid test access token following the same rules as TokenService
-  def createTestAccessToken(
-      userId: UserId = UserId(UUID.randomUUID()),
-      authId: AuthId = AuthId(UUID.fromString("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")),
-      deviceId: DeviceId = DeviceId(UUID.fromString("11111111-2222-3333-4444-555555555555")),
-  ): String = {
-    val now = Instant.now()
-    val claims = new JWTClaimsSet.Builder()
-      .issuer("app.dvor")
-      .subject(userId.toString)
-      .audience("app.dvor")
-      .issueTime(Date.from(now))
-      .expirationTime(Date.from(now.plusSeconds(12 * 3600))) // 12 hours like TokenService.AccessToken
-      .jwtID(UUID.randomUUID().toString.replace("-", ""))
-      .claim("auth_id", authId)
-      .claim("device_id", deviceId)
-      .build()
-
-    val header = new JWSHeader.Builder(JWSAlgorithm.RS256)
-      .`type`(JOSEObjectType("at+jwt")) // Same type as TokenService.AccessToken
-      .keyID(testKeyId)
-      .build()
-
-    val jwt = new SignedJWT(header, claims)
-    val signer = new RSASSASigner(privateKey)
-    jwt.sign(signer)
-
-    jwt.serialize()
-  }

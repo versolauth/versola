@@ -116,12 +116,12 @@ Under active development.
 - [ ] Supported claims
 - [ ] Supported code challenge methods
 
-**JWKS Endpoint** (`/v1/jwks` or `/.well-known/jwks.json`)
-- [ ] Public key exposure (RSA)
-- [ ] Key rotation support
-- [ ] `kid` (Key ID) in JWT header
-- [ ] Multiple keys support
-- [ ] Key expiration and caching headers
+**JWKS Endpoint** (`/.well-known/jwks.json`)
+- [x] Public key exposure (RSA)
+- [x] `kid` (Key ID) in JWT header
+- [x] Multiple keys support
+- [x] Caching headers (24 hours)
+- [ ] Key rotation support (infrastructure ready)
 
 #### OAuth 2.1 Compliance
 - [x] PKCE mandatory for all clients
@@ -130,8 +130,8 @@ Under active development.
 - [x] No resource owner password credentials grant (removed in OAuth 2.1)
 - [x] Bearer token usage (RFC 6750)
 - [x] Short-lived authorization codes (10 minutes)
-- [ ] Exact redirect URI matching (no wildcards)
-- [ ] Authorization code reuse detection with token revocation
+- [x] Exact redirect URI matching (RFC 9700 Section 4.1.3)
+- [x] Authorization code reuse detection with token revocation
 - [ ] Refresh token sender-constrained (DPoP or mTLS)
 
 #### Client Management

@@ -9,6 +9,7 @@ import versola.oauth.client.{OAuthClientService, OAuthScopeRepository}
 import versola.oauth.conversation.otp.{EmailOtpProvider, OtpGenerationService, OtpService}
 import versola.oauth.conversation.{ConversationController, ConversationRenderService, ConversationRepository, ConversationRouter, ConversationService, PostgresConversationRepository}
 import versola.oauth.introspect.{IntrospectionController, IntrospectionService}
+import versola.oauth.jwks.JwksController
 import versola.oauth.revoke.{AccessTokenRevocationService, RevocationController, RevocationService}
 import versola.oauth.session.{PostgresRefreshTokenRepository, PostgresSessionRepository, RefreshTokenRepository, SessionRepository}
 import versola.oauth.token.{AuthorizationCodeRepository, OAuthTokenService, TokenEndpointController}
@@ -77,6 +78,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       RevocationController.routes,
       ConversationController.routes,
       UserInfoController.routes,
+      JwksController.routes,
     ).reduce(_ ++ _)
 
   val dependencies: ZLayer[Scope & EnvName & ConfigProvider & Tracing, Throwable, Dependencies] =
