@@ -37,6 +37,7 @@ class PostgresAuthorizationCodeRepository(
   private given DbCodec[ScopeToken] = DbCodec.StringCodec.biMap(ScopeToken(_), identity[String])
   private given DbCodec[CodeChallengeMethod] = DbCodec.StringCodec.biMap(CodeChallengeMethod.valueOf, _.toString)
   private given DbCodec[CodeChallenge] = DbCodec.StringCodec.biMap(CodeChallenge(_), identity[String])
+  private given DbCodec[Nonce] = DbCodec.StringCodec.biMap(Nonce(_), identity[String])
   private given DbCodec[URL] = DbCodec.StringCodec.biMap(URL.decode(_).fold(throw _, identity), _.toString)
   private given DbCodec[RequestedClaims] = jsonCodec[RequestedClaims]
   private given DbCodec[AccessToken] = DbCodec.ByteArrayCodec.biMap(AccessToken(_), identity[Array[Byte]])
@@ -49,7 +50,7 @@ class PostgresAuthorizationCodeRepository(
         sql"""
           SELECT session_id, client_id, user_id, redirect_uri,
                  scope, code_challenge, code_challenge_method,
-                 requested_claims, ui_locales, access_token,
+                 requested_claims, ui_locales, nonce, access_token,
                  expires_at
           FROM authorization_codes
           WHERE code = $code
@@ -76,6 +77,7 @@ class PostgresAuthorizationCodeRepository(
             code_challenge_method,
             requested_claims,
             ui_locales,
+            nonce,
             access_token,
             used,
             expires_at
@@ -91,6 +93,7 @@ class PostgresAuthorizationCodeRepository(
             ${record.codeChallengeMethod.toString},
             ${record.requestedClaims},
             ${record.uiLocales}::text[],
+            ${record.nonce},
             ${record.accessToken},
             ${false},
             ${now.plusSeconds(ttl.toSeconds)}

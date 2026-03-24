@@ -11,7 +11,7 @@ import zio.schema.*
  */
 case class RequestedClaims(
     userinfo: Map[Claim, ClaimRequest],
-    @jsonField("id_token") idToken: Map[String, ClaimRequest],
+    @jsonField("id_token") idToken: Map[Claim, ClaimRequest],
 ) derives Schema, Equal
 
 object RequestedClaims:

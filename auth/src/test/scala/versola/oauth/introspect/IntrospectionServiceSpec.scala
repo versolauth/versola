@@ -55,6 +55,7 @@ object IntrospectionServiceSpec extends UnitSpecBase:
     expiresAt = now.plusSeconds(3600),
     requestedClaims = None,
     uiLocales = None,
+    nonce = None,
     previousRefreshToken = None,
   )
 

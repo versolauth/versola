@@ -44,7 +44,7 @@ trait AuthorizationCodeRepositorySpec extends DatabaseSpecBase[AuthorizationCode
       Claim("name") -> ClaimRequest(None, None, None),
     ),
     idToken = Map(
-      "auth_time" -> ClaimRequest(Some(true), None, None),
+      Claim("auth_time") -> ClaimRequest(Some(true), None, None),
     ),
   )
 
@@ -64,6 +64,7 @@ trait AuthorizationCodeRepositorySpec extends DatabaseSpecBase[AuthorizationCode
     codeChallengeMethod = CodeChallengeMethod.S256,
     requestedClaims = None,
     uiLocales = None,
+    nonce = None,
     accessToken = accessToken1,
   )
 
@@ -77,6 +78,7 @@ trait AuthorizationCodeRepositorySpec extends DatabaseSpecBase[AuthorizationCode
     codeChallengeMethod = CodeChallengeMethod.S256,
     requestedClaims = Some(requestedClaims1),
     uiLocales = Some(uiLocales1),
+    nonce = None,
     accessToken = accessToken1,
   )
 

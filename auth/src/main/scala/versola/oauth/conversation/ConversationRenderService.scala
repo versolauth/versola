@@ -2,16 +2,17 @@ package versola.oauth.conversation
 
 import versola.oauth.conversation.model.{ConversationStep, PrimaryCredential}
 import versola.oauth.model.SessionCookie
-import versola.util.{Base64Url, CoreConfig, Email, Phone}
+import versola.util.{Base64Url, CoreConfig, Email, Phone, JWT}
 import zio.http.datastar.*
 import zio.http.template2.*
 import zio.http.{Header, MediaType, Response, datastar}
-import zio.{Chunk, ZLayer}
+import zio.json.ast.Json
+import zio.{Chunk, Task, ZIO, ZLayer, durationInt}
 
 trait ConversationRenderService:
   def renderStep(step: ConversationStep): Dom.Element
 
-  def renderSubmit(step: ConversationResult.Render): Response
+  def renderSubmit(step: ConversationResult.Render): Task[Response]
 
 object ConversationRenderService:
   val live = ZLayer.fromFunction(Impl(_))
@@ -25,7 +26,7 @@ object ConversationRenderService:
         case _: ConversationStep.Otp =>
           otpForm()
 
-    override def renderSubmit(result: ConversationResult.Render): Response =
+    override def renderSubmit(result: ConversationResult.Render): Task[Response] =
       result match
         case ConversationResult.RenderStep(step) =>
           val html = step match
@@ -35,21 +36,45 @@ object ConversationRenderService:
             case _: ConversationStep.Otp =>
               otpFormBody()
 
-          eventToResponse(
-            DatastarEvent.patchElements(html, Some(CssSelector.element("body")), ElementPatchMode.Inner)
+          ZIO.succeed(
+            eventToResponse(
+              DatastarEvent.patchElements(html, Some(CssSelector.element("body")), ElementPatchMode.Inner)
+            )
           )
 
         case ConversationResult.NotFound =>
-          Response.notFound
+          ZIO.succeed(Response.notFound)
 
         case ConversationResult.LimitsExceeded =>
-          Response.forbidden
+          ZIO.succeed(Response.forbidden)
 
-        case ConversationResult.Complete(redirectUri, state, code, sessionId) =>
-          val params = List("code" -> Base64Url.encode(code)) ++ state.map("state" -> _)
-          val redirectUrl = redirectUri.addQueryParams(params)
-          Response.seeOther(redirectUrl)
+        case ConversationResult.Complete(redirectUri, state, code, sessionId, idTokenData) =>
+          for
+            idToken <- idTokenData match
+              case Some(data) => serializeIdToken(data).map(Some(_))
+              case None => ZIO.none
+            params = List("code" -> Base64Url.encode(code)) ++
+              state.map("state" -> _) ++
+              idToken.map("id_token" -> _)
+            redirectUrl = redirectUri.addQueryParams(params)
+          yield Response.seeOther(redirectUrl)
             .addCookie(SessionCookie(sessionId, config.security.ssoSession.ttl))
+
+    private def serializeIdToken(data: ConversationResult.IdTokenData): Task[String] =
+      JWT.serialize(
+        typ = JWT.Type.JWT,
+        claims = JWT.Claims(
+          issuer = config.jwt.issuer,
+          subject = data.userId.toString,
+          audience = List(data.clientId),
+          custom = Json.Obj(Chunk.fromIterable(data.claims)),
+        ),
+        ttl = 15.minutes,
+        signature = JWT.Signature(
+          publicKeys = config.jwt.publicKeys,
+          privateKey = config.jwt.privateKey,
+        ),
+      )
 
     private def maskCredential(credential: Either[Email, Phone]): String =
       credential match

@@ -1,9 +1,9 @@
 package versola.oauth.token.model
 
 import versola.oauth.client.model.{ClientId, ScopeToken}
-import versola.oauth.model.{AccessToken, RefreshToken}
+import versola.oauth.model.{AccessToken, Nonce, RefreshToken}
 import versola.oauth.userinfo.model.RequestedClaims
-import versola.user.model.UserId
+import versola.user.model.{UserId, UserRecord}
 import zio.Duration
 
 case class IssuedTokens(
@@ -16,4 +16,6 @@ case class IssuedTokens(
     scope: Set[ScopeToken],
     requestedClaims: Option[RequestedClaims],
     uiLocales: Option[List[String]],
+    nonce: Option[Nonce],
+    user: Option[UserRecord],
 )

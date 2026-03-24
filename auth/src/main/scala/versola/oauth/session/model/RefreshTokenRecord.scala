@@ -1,7 +1,7 @@
 package versola.oauth.session.model
 
 import versola.oauth.client.model.{ClientId, ScopeToken}
-import versola.oauth.model.{AccessToken, RefreshToken}
+import versola.oauth.model.{AccessToken, Nonce, RefreshToken}
 import versola.oauth.userinfo.model.RequestedClaims
 import versola.user.model.UserId
 import versola.util.MAC
@@ -22,5 +22,6 @@ case class RefreshTokenRecord(
     expiresAt: Instant,
     requestedClaims: Option[RequestedClaims],
     uiLocales: Option[List[String]],
+    nonce: Option[Nonce],
     previousRefreshToken: Option[MAC.Of[RefreshToken]],
 ) derives CanEqual, Equal

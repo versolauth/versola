@@ -175,7 +175,7 @@ object UserInfoControllerSpec extends UnitSpecBase:
           ),
       ),
       userInfoTestCase(
-        description = "fail with Unauthorized when token has insufficient scope",
+        description = "fail with Unauthorized when token has insufficient scope (missing openid)",
         request = Request.get(
           url = URL.empty / "v1" / "userinfo"
         ).addHeader(
@@ -183,14 +183,13 @@ object UserInfoControllerSpec extends UnitSpecBase:
             createAccessToken(
               userId1,
               clientId1,
-              Set(ScopeToken.OpenId),
+              Set(ScopeToken("profile")), // Missing openid scope
               TestEnvConfig.coreConfig,
             )
           )
         ),
         expectedStatus = Status.Unauthorized,
-        setup = userInfoService =>
-          userInfoService.getUserInfo.failsWith(UserInfoError.InsufficientScope),
+        // No setup needed - controller checks scope before calling service
         verify = response =>
           for
             wwwAuth <- ZIO.fromOption(response.header(Header.WWWAuthenticate))

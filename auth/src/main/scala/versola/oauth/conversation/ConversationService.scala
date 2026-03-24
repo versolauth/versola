@@ -1,7 +1,10 @@
 package versola.oauth.conversation
 
 import versola.auth.model.{OtpCode, Password, StepId}
+import versola.oauth.authorize.model.ResponseTypeEntry
 import versola.oauth.challenge.password.PasswordService
+import versola.oauth.challenge.password.model.CheckPassword
+import versola.oauth.client.model.ScopeToken
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
 import versola.oauth.conversation.otp.OtpService
 import versola.oauth.conversation.otp.model.SubmitOtpResult
@@ -9,9 +12,12 @@ import versola.oauth.model.{AuthorizationCode, AuthorizationCodeRecord}
 import versola.oauth.session.SessionRepository
 import versola.oauth.session.model.SessionRecord
 import versola.oauth.token.AuthorizationCodeRepository
+import versola.oauth.userinfo.UserInfoService
 import versola.user.UserRepository
+import versola.user.model.{UserId, UserRecord}
 import versola.util.{AuthPropertyGenerator, Base64, CoreConfig, Email, Phone, Secret, SecureRandom, SecurityService}
 import zio.*
+import zio.json.ast.Json
 
 trait ConversationService:
   def find(authId: AuthId): Task[Option[ConversationRecord]]
@@ -48,7 +54,7 @@ trait ConversationService:
 
 object ConversationService:
   def live =
-    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _))
+    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _))
 
   class Impl(
       otpService: OtpService,
@@ -59,6 +65,7 @@ object ConversationService:
       sessionRepository: SessionRepository,
       authPropertyGenerator: AuthPropertyGenerator,
       securityService: SecurityService,
+      userInfoService: UserInfoService,
       config: CoreConfig,
   ) extends ConversationService:
     export conversationRepository.find
@@ -69,17 +76,21 @@ object ConversationService:
         credential: Either[Email, Phone],
     ): Task[ConversationResult.Render] =
       for
-        userIdOpt <- userRepository.findByCredential(credential).map(_.map(_.id))
-        otpOpt <- otpService.prepareOtp(previous = None, userId = userIdOpt)
+        userOpt <- userRepository.findByCredential(credential)
+        otpOpt <- otpService.prepareOtp(previous = None, userId = userOpt.map(_.id))
         result <- otpOpt match
           case None =>
             ZIO.succeed(ConversationResult.LimitsExceeded)
 
           case Some(otp) =>
             val updatedConversation = conversation.copy(
-              userId = userIdOpt,
+              userId = userOpt.map(_.id),
               credential = Some(credential),
               step = otp,
+              userEmail = userOpt.flatMap(_.email),
+              userPhone = userOpt.flatMap(_.phone),
+              userLogin = userOpt.flatMap(_.login),
+              userClaims = userOpt.map(_.claims),
             )
             conversationRepository.overwrite(authId, updatedConversation)
               .zipRight(otpService.sendOtp(otp, credential, authId))
@@ -124,8 +135,6 @@ object ConversationService:
         submittedPassword: Password,
         authId: AuthId,
     ): Task[ConversationResult] =
-      import versola.oauth.challenge.password.model.CheckPassword
-
       record.userId match
         case None =>
           ZIO.succeed(ConversationResult.IllegalState)
@@ -171,6 +180,7 @@ object ConversationService:
           codeChallengeMethod = conversation.codeChallengeMethod,
           requestedClaims = conversation.requestedClaims,
           uiLocales = conversation.uiLocales,
+          nonce = conversation.nonce,
           accessToken = accessToken,
         )
         session = SessionRecord(
@@ -182,9 +192,39 @@ object ConversationService:
         _ <- authorizationCodeRepository.create(codeMac, record, 1.minute)
         _ <- sessionRepository.create(sessionIdMac, session, 1.day)
         _ <- conversationRepository.delete(authId)
+
+        idTokenData <- if conversation.responseType.contains(ResponseTypeEntry.IdToken) && conversation.scope.contains(ScopeToken.OpenId) then
+          generateIdTokenData(userId, conversation)
+        else
+          ZIO.none
       yield ConversationResult.Complete(
         redirectUri = conversation.redirectUri,
         state = conversation.state,
         code = code,
         sessionId = sessionIdMac,
+        idTokenData = idTokenData,
+      )
+
+    private def generateIdTokenData(userId: UserId, conversation: ConversationRecord): Task[Option[ConversationResult.IdTokenData]] =
+      for
+        user = UserRecord(
+          id = userId,
+          email = conversation.userEmail,
+          phone = conversation.userPhone,
+          login = conversation.userLogin,
+          claims = conversation.userClaims.getOrElse(Json.Obj()),
+        )
+        userInfo <- userInfoService.getUserInfoForIdToken(
+          user = user,
+          scope = conversation.scope,
+          requestedClaims = conversation.requestedClaims,
+          uiLocales = conversation.uiLocales,
+          nonce = conversation.nonce,
+        )
+      yield Some(
+        ConversationResult.IdTokenData(
+          userId = user.id,
+          claims = userInfo.claims,
+          clientId = conversation.clientId,
+        ),
       )

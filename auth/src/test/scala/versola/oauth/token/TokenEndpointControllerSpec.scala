@@ -2,11 +2,15 @@ package versola.oauth.token
 
 import org.scalamock.stubs.Stub
 import versola.auth.TestEnvConfig
+import com.nimbusds.jwt.SignedJWT
 import versola.oauth.client.OAuthClientService
 import versola.oauth.client.model.{ClientId, ScopeToken}
-import versola.oauth.model.{AccessToken, AuthorizationCode, CodeVerifier, RefreshToken}
+import versola.oauth.model.{AccessToken, AuthorizationCode, CodeVerifier, Nonce, RefreshToken}
 import versola.oauth.token.model.{ClientCredentialsRequest, CodeExchangeRequest, IssuedTokens, RefreshTokenRequest, TokenEndpointError, TokenResponse}
-import versola.user.model.UserId
+import versola.oauth.userinfo.UserInfoService
+import versola.oauth.userinfo.model.UserInfoResponse
+import versola.user.model.{UserId, UserRecord}
+import zio.json.ast.Json
 import versola.util.http.{ClientIdWithSecret, ControllerSpec, NoopTracing}
 import versola.util.{Base64, CoreConfig, Secret, UnitSpecBase}
 import zio.*
@@ -17,8 +21,6 @@ import zio.test.*
 import java.util.UUID
 
 object TokenEndpointControllerSpec extends UnitSpecBase:
-  type Service = OAuthTokenService
-
   val clientId1 = ClientId("test-client-1")
   val userId1 = UserId(UUID.fromString("f077fb08-9935-4a6d-8643-bf97c073bf0f"))
   val authCode1 = AuthorizationCode(Array.fill(16)(1.toByte))
@@ -39,17 +41,24 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
     scope = scope1,
     requestedClaims = None,
     uiLocales = None,
+    nonce = None,
+    user = None,
   )
 
   def authHeader(clientId: ClientId, secret: Option[Secret]): Header.Authorization =
     val secretStr = secret.map(s => Base64.urlEncode(s)).getOrElse("")
     Header.Authorization.Basic(clientId, secretStr)
 
+  case class Services(
+      oauthTokenService: Stub[OAuthTokenService],
+      userInfoService: Stub[UserInfoService],
+  )
+
   def tokenEndpointTestCase(
       description: String,
       request: Request,
       expectedStatus: Status,
-      setup: Stub[OAuthTokenService] => UIO[Unit] = _ => ZIO.unit,
+      setup: Services => UIO[Unit] = _ => ZIO.unit,
       verify: Response => Task[TestResult] = _ => ZIO.succeed(assertTrue(true)),
   ) =
     test(description) {
@@ -57,14 +66,17 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
         client <- ZIO.service[Client]
         tokenService = stub[OAuthTokenService]
         clientService = stub[OAuthClientService]
+        userInfoService = stub[UserInfoService]
         config = TestEnvConfig.coreConfig
         tracing <- NoopTracing.layer.build
 
+        services = Services(tokenService, userInfoService)
+
         _ <- TestClient.addRoutes(
           TokenEndpointController.routes
-            .provideEnvironment(ZEnvironment(tokenService) ++ ZEnvironment(clientService) ++ ZEnvironment(config) ++ tracing)
+            .provideEnvironment(ZEnvironment(tokenService) ++ ZEnvironment(clientService) ++ ZEnvironment(userInfoService) ++ ZEnvironment(config) ++ tracing)
         )
-        _ <- setup(tokenService)
+        _ <- setup(services)
 
         response <- client.batched(request)
         verifyResult <- verify(response)
@@ -87,8 +99,8 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
           )
         ).addHeader(authHeader(clientId1, Some(clientSecret1))),
         expectedStatus = Status.Ok,
-        setup = tokenService =>
-          tokenService.exchangeAuthorizationCode.succeedsWith(issuedTokens),
+        setup = services =>
+          services.oauthTokenService.exchangeAuthorizationCode.succeedsWith(issuedTokens),
         verify = response =>
           for
             body <- response.body.asString
@@ -136,8 +148,8 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
           )
         ).addHeader(authHeader(clientId1, Some(clientSecret1))),
         expectedStatus = Status.BadRequest,
-        setup = tokenService =>
-          tokenService.exchangeAuthorizationCode.failsWith(TokenEndpointError.InvalidGrant),
+        setup = services =>
+          services.oauthTokenService.exchangeAuthorizationCode.failsWith(TokenEndpointError.InvalidGrant),
         verify = response =>
           for
             body <- response.body.asString
@@ -159,8 +171,8 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
           )
         ).addHeader(authHeader(clientId1, Some(clientSecret1))),
         expectedStatus = Status.Ok,
-        setup = tokenService =>
-          tokenService.refreshAccessToken.succeedsWith(issuedTokens),
+        setup = services =>
+          services.oauthTokenService.refreshAccessToken.succeedsWith(issuedTokens),
         verify = response =>
           for
             body <- response.body.asString
@@ -183,8 +195,8 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
           )
         ).addHeader(authHeader(clientId1, Some(clientSecret1))),
         expectedStatus = Status.Ok,
-        setup = tokenService =>
-          tokenService.refreshAccessToken.succeedsWith(issuedTokens.copy(scope = Set(ScopeToken("read")))),
+        setup = services =>
+          services.oauthTokenService.refreshAccessToken.succeedsWith(issuedTokens.copy(scope = Set(ScopeToken("read")))),
         verify = response =>
           for
             body <- response.body.asString
@@ -205,8 +217,8 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
           )
         ).addHeader(authHeader(clientId1, Some(clientSecret1))),
         expectedStatus = Status.BadRequest,
-        setup = tokenService =>
-          tokenService.refreshAccessToken.failsWith(TokenEndpointError.InvalidGrant),
+        setup = services =>
+          services.oauthTokenService.refreshAccessToken.failsWith(TokenEndpointError.InvalidGrant),
         verify = response =>
           for
             body <- response.body.asString
@@ -227,8 +239,8 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
           )
         ).addHeader(authHeader(clientId1, Some(clientSecret1))),
         expectedStatus = Status.BadRequest,
-        setup = tokenService =>
-          tokenService.refreshAccessToken.failsWith(TokenEndpointError.InvalidScope),
+        setup = services =>
+          services.oauthTokenService.refreshAccessToken.failsWith(TokenEndpointError.InvalidScope),
         verify = response =>
           for
             body <- response.body.asString
@@ -248,8 +260,8 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
           )
         ).addHeader(authHeader(clientId1, Some(clientSecret1))),
         expectedStatus = Status.BadRequest,
-        setup = tokenService =>
-          tokenService.refreshAccessToken.failsWith(TokenEndpointError.InvalidGrant),
+        setup = services =>
+          services.oauthTokenService.refreshAccessToken.failsWith(TokenEndpointError.InvalidGrant),
         verify = response =>
           for
             body <- response.body.asString
@@ -270,8 +282,8 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
           )
         ).addHeader(authHeader(clientId1, Some(clientSecret1))),
         expectedStatus = Status.Ok,
-        setup = tokenService =>
-          tokenService.clientCredentials.succeedsWith(
+        setup = services =>
+          services.oauthTokenService.clientCredentials.succeedsWith(
             issuedTokens.copy(
               userId = None,
               refreshToken = None,
@@ -299,8 +311,8 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
           )
         ).addHeader(authHeader(clientId1, Some(clientSecret1))),
         expectedStatus = Status.Ok,
-        setup = tokenService =>
-          tokenService.clientCredentials.succeedsWith(
+        setup = services =>
+          services.oauthTokenService.clientCredentials.succeedsWith(
             issuedTokens.copy(
               userId = None,
               refreshToken = None,
@@ -326,8 +338,8 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
           )
         ).addHeader(authHeader(clientId1, Some(clientSecret1))),
         expectedStatus = Status.Unauthorized,
-        setup = tokenService =>
-          tokenService.clientCredentials.failsWith(TokenEndpointError.InvalidClient),
+        setup = services =>
+          services.oauthTokenService.clientCredentials.failsWith(TokenEndpointError.InvalidClient),
         verify = response =>
           for
             body <- response.body.asString
@@ -347,8 +359,8 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
           )
         ).addHeader(authHeader(clientId1, Some(clientSecret1))),
         expectedStatus = Status.BadRequest,
-        setup = tokenService =>
-          tokenService.clientCredentials.failsWith(TokenEndpointError.InvalidScope),
+        setup = services =>
+          services.oauthTokenService.clientCredentials.failsWith(TokenEndpointError.InvalidScope),
         verify = response =>
           for
             body <- response.body.asString
@@ -392,6 +404,158 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
             body <- response.body.asString
           yield assertTrue(
             body.contains("unsupported_grant_type"),
+          ),
+      ),
+    ),
+    suite("ID Token Issuance")(
+      tokenEndpointTestCase(
+        description = "issue ID token when openid scope is present in authorization code exchange",
+        request = Request.post(
+          url = URL.empty / "v1" / "token",
+          body = Body.fromURLEncodedForm(
+            Form.fromStrings(
+              "grant_type" -> "authorization_code",
+              "code" -> Base64.urlEncode(authCode1),
+              "redirect_uri" -> redirectUri,
+              "code_verifier" -> codeVerifier1,
+            )
+          )
+        ).addHeader(authHeader(clientId1, Some(clientSecret1))),
+        expectedStatus = Status.Ok,
+        setup = services =>
+          val nonce1 = Nonce("test-nonce-value")
+          val testUser = UserRecord.empty(userId1)
+          val tokensWithOpenId = issuedTokens.copy(
+            scope = Set(ScopeToken.OpenId, ScopeToken("profile"), ScopeToken.OfflineAccess),
+            nonce = Some(nonce1),
+            user = Some(testUser),
+          )
+          val userInfoResponse = UserInfoResponse(
+            claims = Map(
+              "sub" -> Json.Str(userId1.toString),
+              "name" -> Json.Str("John Doe"),
+              "nonce" -> Json.Str(nonce1.toString),
+            )
+          )
+          for
+            _ <- services.oauthTokenService.exchangeAuthorizationCode.succeedsWith(tokensWithOpenId)
+            _ <- services.userInfoService.getUserInfoForIdToken.succeedsWith(userInfoResponse)
+          yield (),
+        verify = response =>
+          for
+            body <- response.body.asString
+            tokenResponse <- ZIO.fromEither(body.fromJson[TokenResponse]).mapError(new RuntimeException(_))
+
+            idToken = tokenResponse.idToken
+              .map(SignedJWT.parse)
+              .map(_.getJWTClaimsSet)
+
+          yield assertTrue(
+            idToken.map(_.getSubject) == Some(userId1.toString),
+            idToken.map(_.getClaim("nonce")) == Some("test-nonce-value"),
+            idToken.map(_.getClaim("name")) != null,
+          ),
+      ),
+      tokenEndpointTestCase(
+        description = "not issue ID token when openid scope is missing",
+        request = Request.post(
+          url = URL.empty / "v1" / "token",
+          body = Body.fromURLEncodedForm(
+            Form.fromStrings(
+              "grant_type" -> "authorization_code",
+              "code" -> Base64.urlEncode(authCode1),
+              "redirect_uri" -> redirectUri,
+              "code_verifier" -> codeVerifier1,
+            )
+          )
+        ).addHeader(authHeader(clientId1, Some(clientSecret1))),
+        expectedStatus = Status.Ok,
+        setup = services =>
+          val tokensWithoutOpenId = issuedTokens.copy(
+            scope = Set(ScopeToken("profile"), ScopeToken.OfflineAccess),
+            user = Some(UserRecord.empty(userId1)),
+          )
+          services.oauthTokenService.exchangeAuthorizationCode.succeedsWith(tokensWithoutOpenId),
+        verify = response =>
+          for
+            body <- response.body.asString
+            tokenResponse <- ZIO.fromEither(body.fromJson[TokenResponse]).mapError(new RuntimeException(_))
+          yield assertTrue(
+            tokenResponse.idToken.isEmpty,
+          ),
+      ),
+      tokenEndpointTestCase(
+        description = "issue ID token with nonce from refresh token flow",
+        request = Request.post(
+          url = URL.empty / "v1" / "token",
+          body = Body.fromURLEncodedForm(
+            Form.fromStrings(
+              "grant_type" -> "refresh_token",
+              "refresh_token" -> Base64.urlEncode(refreshToken1),
+            )
+          )
+        ).addHeader(authHeader(clientId1, Some(clientSecret1))),
+        expectedStatus = Status.Ok,
+        setup = services =>
+          val nonce1 = Nonce("refresh-nonce")
+          val testUser = UserRecord.empty(userId1)
+          val tokensWithOpenId = issuedTokens.copy(
+            scope = Set(ScopeToken.OpenId, ScopeToken("email"), ScopeToken.OfflineAccess),
+            nonce = Some(nonce1),
+            user = Some(testUser),
+          )
+          val userInfoResponse = UserInfoResponse(
+            claims = Map(
+              "sub" -> Json.Str(userId1.toString),
+              "email" -> Json.Str("test@example.com"),
+              "nonce" -> Json.Str(nonce1.toString),
+            )
+          )
+          for
+            _ <- services.oauthTokenService.refreshAccessToken.succeedsWith(tokensWithOpenId)
+            _ <- services.userInfoService.getUserInfoForIdToken.succeedsWith(userInfoResponse)
+          yield (),
+        verify = response =>
+          for
+            body <- response.body.asString
+            tokenResponse <- ZIO.fromEither(body.fromJson[TokenResponse]).mapError(new RuntimeException(_))
+
+            idToken = tokenResponse.idToken
+              .map(SignedJWT.parse)
+              .map(_.getJWTClaimsSet)
+
+          yield assertTrue(
+            idToken.map(_.getSubject) == Some(userId1.toString),
+            idToken.map(_.getClaim("nonce")) == Some("refresh-nonce"),
+            idToken.map(_.getClaim("email")) != null,
+          ),
+      ),
+      tokenEndpointTestCase(
+        description = "not issue ID token for client_credentials grant",
+        request = Request.post(
+          url = URL.empty / "v1" / "token",
+          body = Body.fromURLEncodedForm(
+            Form.fromStrings(
+              "grant_type" -> "client_credentials",
+              "scope" -> "openid api",
+            )
+          )
+        ).addHeader(authHeader(clientId1, Some(clientSecret1))),
+        expectedStatus = Status.Ok,
+        setup = services =>
+          val clientCredentialsTokens = issuedTokens.copy(
+            scope = Set(ScopeToken.OpenId, ScopeToken("api")),
+            userId = None,
+            refreshToken = None,
+            user = None,
+          )
+          services.oauthTokenService.clientCredentials.succeedsWith(clientCredentialsTokens),
+        verify = response =>
+          for
+            body <- response.body.asString
+            tokenResponse <- ZIO.fromEither(body.fromJson[TokenResponse]).mapError(new RuntimeException(_))
+          yield assertTrue(
+            tokenResponse.idToken.isEmpty, // No ID token for client_credentials
           ),
       ),
     ),

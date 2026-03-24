@@ -7,6 +7,7 @@ import versola.oauth.revoke.AccessTokenRevocationService
 import versola.oauth.session.model.{RefreshAlreadyExchanged, RefreshTokenRecord, WithTtl}
 import versola.oauth.session.{RefreshTokenRepository, SessionRepository}
 import versola.oauth.token.model.{ClientCredentialsRequest, CodeExchangeRequest, IssuedTokens, RefreshTokenRequest, TokenEndpointError}
+import versola.user.UserRepository
 import versola.util.http.{ClientCredentials, ClientIdWithSecret}
 import versola.util.{AuthPropertyGenerator, CoreConfig, MAC, Secret, SecurityService}
 import zio.prelude.These
@@ -30,7 +31,7 @@ trait OAuthTokenService:
   ): IO[Throwable | TokenEndpointError, IssuedTokens]
 
 object OAuthTokenService:
-  def live = ZLayer.fromFunction(Impl(_, _, _, _, _, _, _))
+  def live = ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _))
 
   class Impl(
       authorizationCodeRepository: AuthorizationCodeRepository,
@@ -39,6 +40,7 @@ object OAuthTokenService:
       accessTokenRevocationService: AccessTokenRevocationService,
       securityService: SecurityService,
       authPropertyGenerator: AuthPropertyGenerator,
+      userRepository: UserRepository,
       config: CoreConfig,
   ) extends OAuthTokenService:
 
@@ -86,6 +88,7 @@ object OAuthTokenService:
             expiresAt = now.plusSeconds(client.accessTokenTtl.toSeconds),
             requestedClaims = codeRecord.requestedClaims,
             uiLocales = codeRecord.uiLocales,
+            nonce = codeRecord.nonce,
             previousRefreshToken = None,
           ),
         ).mapError {
@@ -158,6 +161,8 @@ object OAuthTokenService:
         scope = request.scope.getOrElse(client.scope),
         requestedClaims = None,
         uiLocales = None,
+        nonce = None,
+        user = None,
       )
 
     private def issueTokens(
@@ -176,6 +181,11 @@ object OAuthTokenService:
                 case _ => TokenEndpointError.InvalidGrant
           yield token,
         )
+
+        // Fetch user if openid scope is present (needed for ID token generation)
+        user <- ZIO.when(record.scope.contains(ScopeToken.OpenId))(
+          userRepository.find(record.userId)
+        )
       yield IssuedTokens(
         accessToken = accessToken,
         clientId = record.clientId,
@@ -186,4 +196,6 @@ object OAuthTokenService:
         scope = record.scope,
         requestedClaims = record.requestedClaims,
         uiLocales = record.uiLocales,
+        nonce = record.nonce,
+        user = user.flatten,
       )

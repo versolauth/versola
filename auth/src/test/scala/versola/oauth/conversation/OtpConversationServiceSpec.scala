@@ -10,12 +10,15 @@ import versola.oauth.conversation.otp.model.SubmitOtpResult
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod}
 import versola.oauth.session.SessionRepository
 import versola.oauth.token.AuthorizationCodeRepository
+import versola.oauth.userinfo.UserInfoService
+import versola.oauth.userinfo.model.UserInfoResponse
 import versola.user.UserRepository
 import versola.user.model.{UserId, UserRecord}
 import versola.util.{AuthPropertyGenerator, CoreConfig, Email, EnvName, Secret, SecureRandom, SecurityService, UnitSpecBase}
 import zio.http.URL
 import zio.json.ast
 import zio.test.*
+import zio.ZIO
 
 import java.security.KeyFactory
 import java.security.spec.RSAPublicKeySpec
@@ -48,6 +51,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
     val sessionRepository = stub[SessionRepository]
     val authPropertyGenerator = stub[AuthPropertyGenerator]
     val securityService = stub[SecurityService]
+    val userInfoService = stub[versola.oauth.userinfo.UserInfoService]
     val config = TestEnvConfig.coreConfig
     val service = ConversationService.Impl(
       otpService,
@@ -58,6 +62,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
       sessionRepository,
       authPropertyGenerator,
       securityService,
+      userInfoService,
       config,
     )
 
@@ -73,6 +78,12 @@ object OtpConversationServiceSpec extends UnitSpecBase:
     step = ConversationStep.Empty(PrimaryCredential.Phone, passkey = false),
     requestedClaims = None,
     uiLocales = None,
+    nonce = None,
+    responseType = zio.prelude.NonEmptySet(versola.oauth.authorize.model.ResponseTypeEntry.Code),
+    userEmail = None,
+    userPhone = None,
+    userLogin = None,
+    userClaims = None,
   )
 
   val spec = suite("OtpConversationService")(
@@ -99,6 +110,53 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           result == ConversationResult.LimitsExceeded,
         )
       },
+      test("cache user information when user exists") {
+        val env = Env()
+        val userEmail = Email("user@example.com")
+        val userPhone = versola.util.Phone("+1234567890")
+        val userLogin = versola.user.model.Login("testuser")
+        val userClaims = ast.Json.Obj("name" -> ast.Json.Str("Test User"))
+        val user = UserRecord(
+          id = userId,
+          email = Some(userEmail),
+          phone = Some(userPhone),
+          login = Some(userLogin),
+          claims = userClaims,
+        )
+        for
+          _ <- env.userRepository.findByCredential.succeedsWith(Some(user))
+          _ <- env.otpService.prepareOtp.succeedsWith(Some(realOtp))
+          _ <- env.conversationRepository.overwrite.succeedsWith(())
+          _ <- env.otpService.sendOtp.succeedsWith(())
+          result <- env.service.prepareInitialOtp(authId, initialConversation, Left(email))
+          overwriteCalls = env.conversationRepository.overwrite.calls
+        yield assertTrue(
+          result == ConversationResult.RenderStep(realOtp),
+          overwriteCalls.length == 2,
+          overwriteCalls.head._2.userEmail.contains(userEmail),
+          overwriteCalls.head._2.userPhone.contains(userPhone),
+          overwriteCalls.head._2.userLogin.contains(userLogin),
+          overwriteCalls.head._2.userClaims.contains(userClaims),
+        )
+      },
+      test("not cache user information when user does not exist") {
+        val env = Env()
+        for
+          _ <- env.userRepository.findByCredential.succeedsWith(None)
+          _ <- env.otpService.prepareOtp.succeedsWith(Some(realOtp))
+          _ <- env.conversationRepository.overwrite.succeedsWith(())
+          _ <- env.otpService.sendOtp.succeedsWith(())
+          result <- env.service.prepareInitialOtp(authId, initialConversation, Left(email))
+          overwriteCalls = env.conversationRepository.overwrite.calls
+        yield assertTrue(
+          result == ConversationResult.RenderStep(realOtp),
+          overwriteCalls.length == 2,
+          overwriteCalls.head._2.userEmail.isEmpty,
+          overwriteCalls.head._2.userPhone.isEmpty,
+          overwriteCalls.head._2.userLogin.isEmpty,
+          overwriteCalls.head._2.userClaims.isEmpty,
+        )
+      },
     ),
     suite("checkOtp")(
       test("return Success when OTP is correct") {
@@ -116,6 +174,12 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           step = otp,
           requestedClaims = None,
           uiLocales = None,
+          nonce = None,
+          responseType = zio.prelude.NonEmptySet(versola.oauth.authorize.model.ResponseTypeEntry.Code),
+          userEmail = Some(email),
+          userPhone = None,
+          userLogin = None,
+          userClaims = Some(zio.json.ast.Json.Obj()),
         )
         for
           _ <- env.otpService.checkOtp.succeedsWith(SubmitOtpResult.Success)
@@ -137,12 +201,120 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           step = otp,
           requestedClaims = None,
           uiLocales = None,
+          nonce = None,
+          responseType = zio.prelude.NonEmptySet(versola.oauth.authorize.model.ResponseTypeEntry.Code),
+          userEmail = Some(email),
+          userPhone = None,
+          userLogin = None,
+          userClaims = Some(zio.json.ast.Json.Obj()),
         )
         for
           _ <- env.otpService.checkOtp.succeedsWith(SubmitOtpResult.LimitsExceeded)
           _ <- env.conversationRepository.delete.succeedsWith(())
           result <- env.service.checkOtp(record, otp, otpCode, authId)
         yield assertTrue(result == ConversationResult.LimitsExceeded)
+      },
+    ),
+    suite("finish")(
+      test("generate ID token when openid scope is present and response_type includes id_token") {
+        val env = Env()
+        val userEmail = Email("user@example.com")
+        val userClaims = ast.Json.Obj("name" -> ast.Json.Str("Test User"))
+        val nonce = versola.oauth.model.Nonce("test-nonce")
+        val conversation = initialConversation.copy(
+          userId = Some(userId),
+          scope = Set(ScopeToken.OpenId, ScopeToken("profile")),
+          responseType = zio.prelude.NonEmptySet(
+            versola.oauth.authorize.model.ResponseTypeEntry.Code,
+            versola.oauth.authorize.model.ResponseTypeEntry.IdToken,
+          ),
+          nonce = Some(nonce),
+          userEmail = Some(userEmail),
+          userClaims = Some(userClaims),
+        )
+        val testCode = versola.oauth.model.AuthorizationCode(Array.fill(32)(1.toByte))
+        val testSessionId = versola.oauth.session.model.SessionId(Array.fill(32)(2.toByte))
+        val testAccessToken = versola.oauth.model.AccessToken(Array.fill(32)(3.toByte))
+        val testSessionIdMac: versola.util.MAC = versola.util.MAC(Array.fill(32)(4.toByte))
+        val testCodeMac: versola.util.MAC = versola.util.MAC(Array.fill(32)(5.toByte))
+
+        for
+          _ <- env.authPropertyGenerator.nextAuthorizationCode.succeedsWith(testCode)
+          _ <- env.authPropertyGenerator.nextSessionId.succeedsWith(testSessionId)
+          _ <- env.authPropertyGenerator.nextAccessToken.succeedsWith(testAccessToken)
+          _ <- env.securityService.mac.returnsZIOOnCall:
+            case 1 => ZIO.succeed(testSessionIdMac)
+            case 2 => ZIO.succeed(testCodeMac)
+          _ <- env.authorizationCodeRepository.create.succeedsWith(())
+          _ <- env.sessionRepository.create.succeedsWith(())
+          _ <- env.conversationRepository.delete.succeedsWith(())
+          _ <- env.userInfoService.getUserInfoForIdToken.succeedsWith(
+            UserInfoResponse(
+              claims = Map("sub" -> ast.Json.Str(userId.toString), "email" -> ast.Json.Str(userEmail)),
+            )
+          )
+          result <- env.service.finish(authId, conversation)
+        yield assertTrue(
+          result.idTokenData.isDefined,
+          result.idTokenData.get.claims.contains("sub"),
+          result.idTokenData.get.claims.contains("email"),
+          result.idTokenData.get.clientId == clientId,
+        )
+      },
+      test("not generate ID token when openid scope is missing") {
+        val env = Env()
+        val conversation = initialConversation.copy(
+          userId = Some(userId),
+          scope = Set(ScopeToken("profile")),
+          responseType = zio.prelude.NonEmptySet(
+            versola.oauth.authorize.model.ResponseTypeEntry.Code,
+            versola.oauth.authorize.model.ResponseTypeEntry.IdToken,
+          ),
+        )
+        val testCode = versola.oauth.model.AuthorizationCode(Array.fill(32)(1.toByte))
+        val testSessionId = versola.oauth.session.model.SessionId(Array.fill(32)(2.toByte))
+        val testAccessToken = versola.oauth.model.AccessToken(Array.fill(32)(3.toByte))
+        val testSessionIdMac: versola.util.MAC = versola.util.MAC(Array.fill(32)(4.toByte))
+        val testCodeMac: versola.util.MAC = versola.util.MAC(Array.fill(32)(5.toByte))
+
+        for
+          _ <- env.authPropertyGenerator.nextAuthorizationCode.succeedsWith(testCode)
+          _ <- env.authPropertyGenerator.nextSessionId.succeedsWith(testSessionId)
+          _ <- env.authPropertyGenerator.nextAccessToken.succeedsWith(testAccessToken)
+          _ <- env.securityService.mac.returnsZIOOnCall:
+            case 1 => ZIO.succeed(testSessionIdMac)
+            case 2 => ZIO.succeed(testCodeMac)
+          _ <- env.authorizationCodeRepository.create.succeedsWith(())
+          _ <- env.sessionRepository.create.succeedsWith(())
+          _ <- env.conversationRepository.delete.succeedsWith(())
+          result <- env.service.finish(authId, conversation)
+        yield assertTrue(result.idTokenData.isEmpty)
+      },
+      test("not generate ID token when response_type does not include id_token") {
+        val env = Env()
+        val conversation = initialConversation.copy(
+          userId = Some(userId),
+          scope = Set(ScopeToken.OpenId, ScopeToken("profile")),
+          responseType = zio.prelude.NonEmptySet(versola.oauth.authorize.model.ResponseTypeEntry.Code),
+        )
+        val testCode = versola.oauth.model.AuthorizationCode(Array.fill(32)(1.toByte))
+        val testSessionId = versola.oauth.session.model.SessionId(Array.fill(32)(2.toByte))
+        val testAccessToken = versola.oauth.model.AccessToken(Array.fill(32)(3.toByte))
+        val testSessionIdMac: versola.util.MAC = versola.util.MAC(Array.fill(32)(4.toByte))
+        val testCodeMac: versola.util.MAC = versola.util.MAC(Array.fill(32)(5.toByte))
+
+        for
+          _ <- env.authPropertyGenerator.nextAuthorizationCode.succeedsWith(testCode)
+          _ <- env.authPropertyGenerator.nextSessionId.succeedsWith(testSessionId)
+          _ <- env.authPropertyGenerator.nextAccessToken.succeedsWith(testAccessToken)
+          _ <- env.securityService.mac.returnsZIOOnCall:
+            case 1 => ZIO.succeed(testSessionIdMac)
+            case 2 => ZIO.succeed(testCodeMac)
+          _ <- env.authorizationCodeRepository.create.succeedsWith(())
+          _ <- env.sessionRepository.create.succeedsWith(())
+          _ <- env.conversationRepository.delete.succeedsWith(())
+          result <- env.service.finish(authId, conversation)
+        yield assertTrue(result.idTokenData.isEmpty)
       },
     ),
   )

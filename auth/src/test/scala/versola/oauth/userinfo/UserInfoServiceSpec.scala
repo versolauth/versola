@@ -3,7 +3,8 @@ package versola.oauth.userinfo
 import org.scalamock.stubs.ZIOStubs
 import versola.oauth.client.OAuthClientService
 import versola.oauth.client.model.{Claim, Scope, ScopeDescription, ScopeToken}
-import versola.oauth.userinfo.model.{RequestedClaims, UserInfoError, UserInfoResponse}
+import versola.oauth.model.Nonce
+import versola.oauth.userinfo.model.{ClaimRequest, RequestedClaims, UserInfoError, UserInfoResponse}
 import versola.user.UserRepository
 import versola.user.model.{UserId, UserRecord}
 import versola.util.{Email, UnitSpecBase}
@@ -28,6 +29,7 @@ object UserInfoServiceSpec extends UnitSpecBase, ZIOStubs:
     id = userId1,
     email = Some(email1),
     phone = None,
+    login = None,
     claims = userClaims,
   )
 
@@ -125,17 +127,25 @@ object UserInfoServiceSpec extends UnitSpecBase, ZIOStubs:
           !result.claims.contains("family_name"), // Not requested
         )
       },
-      test("fail with InsufficientScope when openid scope is missing") {
+      test("successfully return user info even without openid scope (scope check moved to controller)") {
         val env = Env()
         for
+          _ <- env.userRepo.find.succeedsWith(Some(testUser))
+          _ <- env.clientService.getAllScopesCached.succeedsWith(
+            Map(
+              ScopeToken("profile") -> profileScope,
+            )
+          )
+
           result <- env.service.getUserInfo(
             userId = userId1,
-            scope = Set(ScopeToken("profile")), // Missing openid
+            scope = Set(ScopeToken("profile")), // No openid scope - service doesn't check
             requestedClaims = None,
             tokenUiLocales = None,
-          ).either
+          )
         yield assertTrue(
-          result == Left(UserInfoError.InsufficientScope),
+          result.claims.contains("sub"),
+          result.claims.contains("name"),
         )
       },
       test("fail with InvalidToken when user not found") {
@@ -154,6 +164,115 @@ object UserInfoServiceSpec extends UnitSpecBase, ZIOStubs:
           ).either
         yield assertTrue(
           result == Left(UserInfoError.InvalidToken),
+        )
+      },
+    ),
+    suite("getUserInfoForIdToken")(
+      test("include nonce in ID token claims when provided") {
+        val env = Env()
+        val nonce1 = Nonce("test-nonce-123")
+        for
+          _ <- env.clientService.getAllScopesCached.succeedsWith(
+            Map(
+              ScopeToken.OpenId -> Scope(Set.empty, ScopeDescription("OpenID")),
+              ScopeToken("profile") -> profileScope,
+            )
+          )
+
+          result <- env.service.getUserInfoForIdToken(
+            user = testUser,
+            scope = Set(ScopeToken.OpenId, ScopeToken("profile")),
+            requestedClaims = None,
+            uiLocales = None,
+            nonce = Some(nonce1),
+          )
+        yield assertTrue(
+          result.claims.contains("nonce"),
+          result.claims("nonce") == Json.Str(nonce1.toString),
+          result.claims.contains("sub"),
+          result.claims.contains("name"),
+        )
+      },
+      test("not include nonce in ID token claims when not provided") {
+        val env = Env()
+        for
+          _ <- env.clientService.getAllScopesCached.succeedsWith(
+            Map(
+              ScopeToken.OpenId -> Scope(Set.empty, ScopeDescription("OpenID")),
+              ScopeToken("profile") -> profileScope,
+            )
+          )
+
+          result <- env.service.getUserInfoForIdToken(
+            user = testUser,
+            scope = Set(ScopeToken.OpenId, ScopeToken("profile")),
+            requestedClaims = None,
+            uiLocales = None,
+            nonce = None,
+          )
+        yield assertTrue(
+          !result.claims.contains("nonce"),
+          result.claims.contains("sub"),
+          result.claims.contains("name"),
+        )
+      },
+      test("filter claims based on requestedClaims.idToken") {
+        val env = Env()
+        val requestedClaims = RequestedClaims(
+          userinfo = Map(
+            Claim("email") -> ClaimRequest(Some(true), None, None),
+          ),
+          idToken = Map(
+            Claim("name") -> ClaimRequest(Some(true), None, None),
+          ),
+        )
+
+        for
+          _ <- env.clientService.getAllScopesCached.succeedsWith(
+            Map(
+              ScopeToken.OpenId -> Scope(Set.empty, ScopeDescription("OpenID")),
+              ScopeToken("profile") -> profileScope,
+              ScopeToken("email") -> emailScope,
+            )
+          )
+
+          result <- env.service.getUserInfoForIdToken(
+            user = testUser,
+            scope = Set(ScopeToken.OpenId, ScopeToken("profile"), ScopeToken("email")),
+            requestedClaims = Some(requestedClaims),
+            uiLocales = None,
+            nonce = None,
+          )
+        yield assertTrue(
+          result.claims.contains("sub"),
+          result.claims.contains("name"),
+          !result.claims.contains("email"), // email is in userinfo, not idToken
+          !result.claims.contains("given_name"), // not requested in idToken
+          !result.claims.contains("family_name"), // not requested in idToken
+        )
+      },
+      test("include all scope claims when requestedClaims.idToken is empty") {
+        val env = Env()
+        for
+          _ <- env.clientService.getAllScopesCached.succeedsWith(
+            Map(
+              ScopeToken.OpenId -> Scope(Set.empty, ScopeDescription("OpenID")),
+              ScopeToken("profile") -> profileScope,
+            )
+          )
+
+          result <- env.service.getUserInfoForIdToken(
+            user = testUser,
+            scope = Set(ScopeToken.OpenId, ScopeToken("profile")),
+            requestedClaims = None,
+            uiLocales = None,
+            nonce = None,
+          )
+        yield assertTrue(
+          result.claims.contains("sub"),
+          result.claims.contains("name"),
+          result.claims.contains("given_name"),
+          result.claims.contains("family_name"),
         )
       },
     ),

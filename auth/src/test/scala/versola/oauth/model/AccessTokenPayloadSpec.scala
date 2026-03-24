@@ -87,7 +87,7 @@ object AccessTokenPayloadSpec extends UnitSpecBase:
         value.essential.foreach(e => claimReqMap.put("essential", java.lang.Boolean.valueOf(e)))
         value.value.foreach(v => claimReqMap.put("value", v))
         value.values.foreach(vs => claimReqMap.put("values", java.util.Arrays.asList(vs*)))
-        userinfoMap.put(key, claimReqMap)
+        userinfoMap.put(key.toString, claimReqMap)
 
       val idTokenMap = new java.util.HashMap[String, Object]()
       rc.idToken.foreach: (key, value) =>
@@ -95,7 +95,7 @@ object AccessTokenPayloadSpec extends UnitSpecBase:
         value.essential.foreach(e => claimReqMap.put("essential", java.lang.Boolean.valueOf(e)))
         value.value.foreach(v => claimReqMap.put("value", v))
         value.values.foreach(vs => claimReqMap.put("values", java.util.Arrays.asList(vs*)))
-        idTokenMap.put(key, claimReqMap)
+        idTokenMap.put(key.toString, claimReqMap)
 
       val requestedClaimsMap = new java.util.HashMap[String, Object]()
       requestedClaimsMap.put("userinfo", userinfoMap)
@@ -326,7 +326,7 @@ object AccessTokenPayloadSpec extends UnitSpecBase:
           Claim("locale") -> ClaimRequest(None, None, Some(Vector("en-US", "fr-CA"))),
         ),
         idToken = Map(
-          "auth_time" -> ClaimRequest(Some(true), None, None),
+          Claim("auth_time") -> ClaimRequest(Some(true), None, None),
         ),
       )
       val tokenString = createSignedJWT(requestedClaims = Some(requestedClaims))

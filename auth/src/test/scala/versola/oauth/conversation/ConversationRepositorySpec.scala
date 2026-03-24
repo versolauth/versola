@@ -54,6 +54,12 @@ trait ConversationRepositorySpec extends DatabaseSpecBase[ConversationRepository
     step = realOtp,
     requestedClaims = None,
     uiLocales = None,
+    nonce = None,
+    responseType = zio.prelude.NonEmptySet(versola.oauth.authorize.model.ResponseTypeEntry.Code),
+    userEmail = Some(email),
+    userPhone = None,
+    userLogin = None,
+    userClaims = Some(zio.json.ast.Json.Obj()),
   )
 
   val record2 = record1.copy(
@@ -74,6 +80,12 @@ trait ConversationRepositorySpec extends DatabaseSpecBase[ConversationRepository
     step = ConversationStep.Empty(PrimaryCredential.Phone, passkey = false),
     requestedClaims = None,
     uiLocales = None,
+    nonce = None,
+    responseType = zio.prelude.NonEmptySet(versola.oauth.authorize.model.ResponseTypeEntry.Code),
+    userEmail = None,
+    userPhone = None,
+    userLogin = None,
+    userClaims = None,
   )
 
   def testCases(env: ConversationRepositorySpec.Env): List[Spec[ConversationRepositorySpec.Env & zio.Scope, Any]] =

@@ -10,6 +10,7 @@ CREATE TABLE authorization_codes (
     expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
     requested_claims JSONB,
     ui_locales TEXT[],
+    nonce TEXT,
     used BOOLEAN NOT NULL,
     access_token BYTEA NOT NULL
 );

@@ -1,7 +1,7 @@
 package versola.oauth.authorize.model
 
 import versola.oauth.client.model.{ClientId, ScopeToken}
-import versola.oauth.model.{AuthorizationCode, CodeChallenge, CodeChallengeMethod, State}
+import versola.oauth.model.{AuthorizationCode, CodeChallenge, CodeChallengeMethod, Nonce, State}
 import versola.oauth.userinfo.model.RequestedClaims
 import versola.util.Base64Url
 import zio.http.URL
@@ -18,6 +18,7 @@ case class AuthorizeRequest(
     responseType: NonEmptySet[ResponseTypeEntry],
     requestedClaims: Option[RequestedClaims],
     uiLocales: Option[List[String]],
+    nonce: Option[Nonce],
 ):
   def buildResponseUri(code: AuthorizationCode): URL =
     val params = List(

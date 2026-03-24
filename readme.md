@@ -19,6 +19,7 @@ Under active development.
 - [x] `state` parameter
 - [x] `redirect_uri` validation
 - [x] `claims` parameter (OpenID Connect)
+- [x] `nonce` parameter (OpenID Connect)
 - [x] `ui_locales` parameter (OpenID Connect)
 - [x] GET and POST methods
 - [x] Error handling with redirect
@@ -91,14 +92,17 @@ Under active development.
 - [ ] Distributed claims (client-fetched claims)
 
 **ID Token**
-- [ ] ID Token generation
-- [ ] Required claims (`iss`, `sub`, `aud`, `exp`, `iat`)
-- [ ] `nonce` parameter and claim
+- [x] ID Token generation
+- [x] Required claims (`iss`, `sub`, `aud`, `exp`, `iat`)
+- [x] `nonce` parameter and claim
+- [x] `claims` parameter filtering (id_token vs userinfo)
+- [x] Scope-based claims filtering
+- [x] ID Token signing (RS256)
+- [x] User claims from UserInfoService
 - [ ] `auth_time` claim
 - [ ] `acr` (Authentication Context Class Reference)
 - [ ] `amr` (Authentication Methods References)
 - [ ] `azp` (Authorized Party) for multiple audiences
-- [ ] ID Token signing (RS256)
 - [ ] ID Token encryption (optional)
 - [ ] `at_hash` and `c_hash` claims
 - [ ] Max age validation

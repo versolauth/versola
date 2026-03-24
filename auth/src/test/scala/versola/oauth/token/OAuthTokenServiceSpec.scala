@@ -11,6 +11,7 @@ import versola.oauth.session.model.{RefreshAlreadyExchanged, RefreshTokenRecord,
 import versola.oauth.token.model.{ClientCredentialsRequest, CodeExchangeRequest, RefreshTokenRequest, TokenEndpointError}
 import versola.oauth.client.model.Claim
 import versola.oauth.userinfo.model.{ClaimRequest, RequestedClaims}
+import versola.user.UserRepository
 import versola.user.model.UserId
 import versola.util.http.ClientIdWithSecret
 import versola.util.{AuthPropertyGenerator, CoreConfig, MAC, Secret, SecurityService}
@@ -79,6 +80,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
     val accessTokenRevocationService = stub[AccessTokenRevocationService]
     val securityService = stub[SecurityService]
     val propertyGenerator = stub[AuthPropertyGenerator]
+    val userRepo = stub[UserRepository]
     val service = OAuthTokenService.Impl(
       authCodeRepo,
       clientService,
@@ -86,6 +88,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
       accessTokenRevocationService,
       securityService,
       propertyGenerator,
+      userRepo,
       TestEnvConfig.coreConfig,
     )
 
@@ -106,6 +109,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             codeChallengeMethod = CodeChallengeMethod.S256,
             requestedClaims = Some(requestedClaims1),
             uiLocales = Some(uiLocales1),
+            nonce = None,
             accessToken = accessToken1,
           )
 
@@ -146,6 +150,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             codeChallengeMethod = CodeChallengeMethod.S256,
             requestedClaims = None,
             uiLocales = None,
+            nonce = None,
             accessToken = accessToken1,
           )
 
@@ -208,6 +213,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             codeChallengeMethod = CodeChallengeMethod.S256,
             requestedClaims = None,
             uiLocales = None,
+            nonce = None,
             accessToken = accessToken1,
           )
 
@@ -241,6 +247,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             expiresAt = now.plusSeconds(TestEnvConfig.coreConfig.security.refreshTokens.ttl.toSeconds),
             requestedClaims = Some(requestedClaims1),
             uiLocales = Some(uiLocales1),
+            nonce = None,
             previousRefreshToken = None,
           )
 
@@ -287,6 +294,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             expiresAt = now.plusSeconds(TestEnvConfig.coreConfig.security.refreshTokens.ttl.toSeconds),
             requestedClaims = None,
             uiLocales = None,
+            nonce = None,
             previousRefreshToken = None,
           )
 
@@ -357,6 +365,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             expiresAt = now.plusSeconds(TestEnvConfig.coreConfig.security.refreshTokens.ttl.toSeconds),
             requestedClaims = None,
             uiLocales = None,
+            nonce = None,
             previousRefreshToken = None,
           )
 
@@ -388,6 +397,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             expiresAt = now.plusSeconds(TestEnvConfig.coreConfig.security.refreshTokens.ttl.toSeconds),
             requestedClaims = Some(requestedClaims1),
             uiLocales = Some(uiLocales1),
+            nonce = None,
             previousRefreshToken = None,
           )
 

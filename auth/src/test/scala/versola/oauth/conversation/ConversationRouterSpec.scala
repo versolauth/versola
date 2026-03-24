@@ -44,6 +44,12 @@ object ConversationRouterSpec extends UnitSpecBase:
     step = ConversationStep.Empty(PrimaryCredential.Phone, passkey = false),
     requestedClaims = None,
     uiLocales = None,
+    nonce = None,
+    responseType = zio.prelude.NonEmptySet(versola.oauth.authorize.model.ResponseTypeEntry.Code),
+    userEmail = None,
+    userPhone = None,
+    userLogin = None,
+    userClaims = None,
   )
 
 
@@ -59,6 +65,12 @@ object ConversationRouterSpec extends UnitSpecBase:
     step = otp,
     requestedClaims = None,
     uiLocales = None,
+    nonce = None,
+    responseType = zio.prelude.NonEmptySet(versola.oauth.authorize.model.ResponseTypeEntry.Code),
+    userEmail = None,
+    userPhone = None,
+    userLogin = None,
+    userClaims = None,
   )
 
   class Env:
@@ -121,7 +133,7 @@ object ConversationRouterSpec extends UnitSpecBase:
         val successResult = ConversationResult.StepPassed(otp)
         val testCode = AuthorizationCode(Array.fill(32)(1.toByte))
         val testSessionId: MAC.Of[SessionId] = MAC(Array.fill(32)(2.toByte))
-        val completeResult = ConversationResult.Complete(redirectUri, Some(State("test-state")), testCode, testSessionId)
+        val completeResult = ConversationResult.Complete(redirectUri, Some(State("test-state")), testCode, testSessionId, None)
         for
           _ <- env.otpConversationService.find.succeedsWith(Some(otpRecord))
           _ <- env.otpConversationService.checkOtp.succeedsWith(successResult)

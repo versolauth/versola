@@ -67,7 +67,7 @@ object ConversationController extends Controller:
         authId <- extractAuthId(request)
         body <- request.formAs[Body].orElseFail(Error.BadRequest)
         submissionResult <- router.submit(authId, body)
-        response = conversationRenderService.renderSubmit(submissionResult)
+        response <- conversationRenderService.renderSubmit(submissionResult)
       yield response
     }.catchAll { err =>
       Handler.fromZIO(

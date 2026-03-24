@@ -3,7 +3,7 @@ package versola.oauth.authorize
 import versola.oauth.authorize.model.{AuthorizeRequest, Error, ResponseTypeEntry}
 import versola.oauth.client.OAuthClientService
 import versola.oauth.client.model.{ClientId, OAuthClientRecord, ScopeToken}
-import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, State}
+import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, Nonce, State}
 import versola.oauth.userinfo.model.RequestedClaims
 import zio.http.{Method, Request, URL}
 import zio.json.*
@@ -90,6 +90,10 @@ object AuthorizeRequestParser:
               ZIO.none
           }
 
+        nonce <- getParam(params, "nonce")
+          .orElseFail(Error.MultipleValuesProvided(redirectUri, state, "nonce"))
+          .map(_.map(Nonce(_)))
+
         authorizeRequest = AuthorizeRequest(
           clientId = clientId,
           redirectUri = redirectUri,
@@ -100,6 +104,7 @@ object AuthorizeRequestParser:
           responseType = responseTypeEntries,
           requestedClaims = requestedClaims,
           uiLocales = uiLocales,
+          nonce = nonce,
         )
       yield authorizeRequest
 

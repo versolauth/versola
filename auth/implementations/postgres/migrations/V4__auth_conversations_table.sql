@@ -11,6 +11,12 @@ CREATE TABLE auth_conversations (
     step JSON NOT NULL,
     requested_claims JSON,
     ui_locales TEXT[],
+    nonce TEXT,
+    response_type TEXT NOT NULL,
+    user_email TEXT,
+    user_phone TEXT,
+    user_login TEXT,
+    user_claims JSON,
     expires_at TIMESTAMP WITH TIME ZONE NOT NULL
 );
 

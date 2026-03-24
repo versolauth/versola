@@ -6,7 +6,17 @@ import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 import versola.oauth.client.OAuthClientService
 import versola.oauth.client.model.{ClientId, ScopeToken}
 import versola.oauth.model.{AccessToken, AuthorizationCode, CodeVerifier, RefreshToken}
-import versola.oauth.token.model.{ClientCredentialsRequest, CodeExchangeRequest, IssuedTokens, RefreshTokenRequest, TokenEndpointError, TokenErrorResponse, TokenRequest, TokenResponse}
+import versola.oauth.token.model.{
+  ClientCredentialsRequest,
+  CodeExchangeRequest,
+  IssuedTokens,
+  RefreshTokenRequest,
+  TokenEndpointError,
+  TokenErrorResponse,
+  TokenRequest,
+  TokenResponse,
+}
+import versola.oauth.userinfo.UserInfoService
 import versola.user.model.UserId
 import versola.util.CoreConfig.JwtConfig
 import versola.util.http.{ClientCredentials, ClientIdWithSecret, Controller}
@@ -21,7 +31,7 @@ import java.time.Instant
 import java.util.Date
 
 object TokenEndpointController extends Controller:
-  type Env = Tracing & OAuthTokenService & OAuthClientService & CoreConfig
+  type Env = Tracing & OAuthTokenService & OAuthClientService & UserInfoService & CoreConfig
 
   def routes: Routes[Env, Nothing] = Routes(
     tokenEndpoint,
@@ -58,7 +68,10 @@ object TokenEndpointController extends Controller:
         }
     }
 
-  private def toTokenResponse(tokens: IssuedTokens, config: CoreConfig): Task[TokenResponse] =
+  private def toTokenResponse(
+      tokens: IssuedTokens,
+      config: CoreConfig,
+  ): ZIO[UserInfoService, Throwable, TokenResponse] =
     import versola.oauth.userinfo.model.RequestedClaims.given
     for
       now <- Clock.instant
@@ -88,13 +101,48 @@ object TokenEndpointController extends Controller:
           privateKey = config.jwt.privateKey,
         ),
       )
+      idToken <- generateIdToken(tokens, config)
     yield TokenResponse(
       accessToken = serializedAT,
       tokenType = "Bearer",
       expiresIn = tokens.accessTokenTtl.toSeconds,
       refreshToken = tokens.refreshToken.map(Base64.urlEncode),
       scope = Option.when(tokens.scope.nonEmpty)(tokens.scope.mkString(" ")),
+      idToken = idToken,
     )
+
+  private def generateIdToken(tokens: IssuedTokens, config: CoreConfig): ZIO[UserInfoService, Throwable, Option[String]] =
+    (tokens.user, tokens.userId) match
+      case (Some(user), Some(userId)) if tokens.scope.contains(ScopeToken.OpenId) =>
+        for
+          userInfoService <- ZIO.service[UserInfoService]
+
+          userInfo <- userInfoService.getUserInfoForIdToken(
+            user = user,
+            scope = tokens.scope,
+            requestedClaims = tokens.requestedClaims,
+            uiLocales = tokens.uiLocales,
+            nonce = tokens.nonce,
+          )
+
+          serializedIdToken <- JWT.serialize(
+            typ = JWT.Type.JWT,
+            claims = JWT.Claims(
+              issuer = config.jwt.issuer,
+              subject = userId.toString,
+              audience = List(tokens.clientId),
+              custom = Json.Obj(Chunk.fromIterable(userInfo.claims)),
+            ),
+            ttl = tokens.accessTokenTtl,
+            signature = JWT.Signature(
+              publicKeys = config.jwt.publicKeys,
+              privateKey = config.jwt.privateKey,
+            ),
+          )
+        yield Some(serializedIdToken)
+
+      case _ =>
+        ZIO.none
 
   private def parseRequest(request: Request): IO[TokenEndpointError, TokenRequest] =
     for

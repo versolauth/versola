@@ -2,6 +2,7 @@ package versola.oauth.userinfo
 
 import versola.oauth.client.OAuthClientService
 import versola.oauth.client.model.{Claim, ScopeToken}
+import versola.oauth.model.Nonce
 import versola.oauth.userinfo.model.{RequestedClaims, UserInfoError, UserInfoResponse}
 import versola.user.UserRepository
 import versola.user.model.{UserId, UserRecord}
@@ -15,6 +16,14 @@ trait UserInfoService:
       requestedClaims: Option[RequestedClaims],
       uiLocales: Option[List[String]],
   ): IO[Throwable | UserInfoError, UserInfoResponse]
+
+  def getUserInfoForIdToken(
+      user: UserRecord,
+      scope: Set[ScopeToken],
+      requestedClaims: Option[RequestedClaims],
+      uiLocales: Option[List[String]],
+      nonce: Option[Nonce],
+  ): UIO[UserInfoResponse]
 
 object UserInfoService:
   def live: ZLayer[
@@ -35,11 +44,29 @@ object UserInfoService:
         tokenUiLocales: Option[List[String]],
     ): IO[Throwable | UserInfoError, UserInfoResponse] =
       for
-        _ <- ZIO.fail(UserInfoError.InsufficientScope)
-          .unless(scope.contains(ScopeToken.OpenId))
-
-        authorizedClaims <- getAuthorizedClaims(scope, requestedClaims)
         user <- userRepository.find(userId).someOrFail(UserInfoError.InvalidToken)
+        response <- getUserInfoInternal(user, scope, requestedClaims, tokenUiLocales, forIdToken = false, nonce = None)
+      yield response
+
+    override def getUserInfoForIdToken(
+        user: UserRecord,
+        scope: Set[ScopeToken],
+        requestedClaims: Option[RequestedClaims],
+        uiLocales: Option[List[String]],
+        nonce: Option[Nonce],
+    ): UIO[UserInfoResponse] =
+      getUserInfoInternal(user, scope, requestedClaims, uiLocales, forIdToken = true, nonce = nonce)
+
+    private def getUserInfoInternal(
+        user: UserRecord,
+        scope: Set[ScopeToken],
+        requestedClaims: Option[RequestedClaims],
+        tokenUiLocales: Option[List[String]],
+        forIdToken: Boolean,
+        nonce: Option[Nonce],
+    ): UIO[UserInfoResponse] =
+      for
+        authorizedClaims <- getAuthorizedClaims(scope, requestedClaims, forIdToken)
 
         userClaimsMap = user.claims.fields.toMap ++
           user.email.map(email => ("email", Json.Str(email))) ++
@@ -53,12 +80,20 @@ object UserInfoService:
             userClaimsMap.get(claimName).map(value => (claimName, value))
         }.toMap
 
-        finalClaims = resolvedClaims + ("sub" -> Json.Str(userId.toString))
+        claimsWithSub = resolvedClaims + ("sub" -> Json.Str(user.id.toString))
+
+        finalClaims = if forIdToken then
+          nonce match
+            case Some(n) => claimsWithSub + ("nonce" -> Json.Str(n))
+            case None => claimsWithSub
+        else
+          claimsWithSub
       yield UserInfoResponse(finalClaims)
 
     private def getAuthorizedClaims(
         tokenScopes: Set[ScopeToken],
         requestedClaims: Option[RequestedClaims],
+        forIdToken: Boolean,
     ): UIO[Set[Claim]] =
       for
         registeredScopes <- clientService.getAllScopesCached
@@ -66,8 +101,12 @@ object UserInfoService:
           .flatMap(scope => registeredScopes.get(scope).map(_.claims).getOrElse(Set.empty))
 
         finalClaims = requestedClaims match
-          case Some(rc) if rc.userinfo.nonEmpty =>
-            tokenScopeClaims.intersect(rc.userinfo.keySet)
+          case Some(rc) =>
+            val requestedClaimsMap = if forIdToken then rc.idToken else rc.userinfo
+            if requestedClaimsMap.nonEmpty then
+              tokenScopeClaims.intersect(requestedClaimsMap.keys.toSet)
+            else
+              tokenScopeClaims
           case _ =>
             tokenScopeClaims
       yield finalClaims

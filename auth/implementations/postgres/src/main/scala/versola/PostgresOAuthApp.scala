@@ -110,10 +110,10 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       EmailOtpProvider.live >+>
       OtpService.live >+>
       PasswordService.live >+>
+      UserInfoService.live >+>
       ConversationService.live >+>
       ConversationRouter.live >+>
-      ConversationRenderService.live >+>
-      UserInfoService.live
+      ConversationRenderService.live
 
   given DeriveConfig[Secret.Bytes16] = DeriveConfig[String]
     .mapOrFail(parseBase64UrlSecret(Secret.Bytes16))

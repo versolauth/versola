@@ -52,6 +52,7 @@ trait RefreshTokenRepositorySpec extends DatabaseSpecBase[RefreshTokenRepository
     expiresAt = now.plusSeconds(ttl.toSeconds),
     requestedClaims = None,
     uiLocales = None,
+    nonce = None,
     previousRefreshToken = None,
   )
 
@@ -66,6 +67,7 @@ trait RefreshTokenRepositorySpec extends DatabaseSpecBase[RefreshTokenRepository
     expiresAt = now.plusSeconds(ttl.toSeconds),
     requestedClaims = None,
     uiLocales = None,
+    nonce = None,
     previousRefreshToken = None,
   )
 

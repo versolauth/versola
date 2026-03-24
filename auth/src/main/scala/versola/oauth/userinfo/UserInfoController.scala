@@ -3,6 +3,7 @@ package versola.oauth.userinfo
 import com.nimbusds.jose.crypto.RSASSASigner
 import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm, JWSHeader}
 import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
+import versola.oauth.client.model.ScopeToken
 import versola.oauth.model.AccessTokenPayload
 import versola.oauth.userinfo.model.{UserInfoError, UserInfoResponse}
 import versola.util.http.Controller
@@ -50,7 +51,15 @@ object UserInfoController extends Controller:
 
         userId <- ZIO.fromOption(token.userId).orElseFail(UserInfoError.InvalidToken)
 
-        userInfo <- userInfoService.getUserInfo(userId, token.scope, token.requestedClaims, token.uiLocales)
+        _ <- ZIO.fail(UserInfoError.InsufficientScope)
+          .unless(token.scope.contains(ScopeToken.OpenId))
+
+        userInfo <- userInfoService.getUserInfo(
+          userId = userId,
+          scope = token.scope,
+          requestedClaims = token.requestedClaims,
+          uiLocales = token.uiLocales
+        )
 
         jwtNeeded = request.header(Header.Accept)
           .exists(_.mimeTypes.exists(_.mediaType == MediaType.application.jwt))
@@ -62,7 +71,7 @@ object UserInfoController extends Controller:
                 status = Status.Ok,
                 headers = Headers(Header.ContentType(MediaType.application.json)),
                 body = Body.fromString(userInfo.toJsonAST.toJson),
-              )
+              ),
             )
           else
             JWT.serialize(

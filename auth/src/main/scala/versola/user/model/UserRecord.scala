@@ -9,6 +9,7 @@ case class UserRecord(
     id: UserId,
     email: Option[Email],
     phone: Option[Phone],
+    login: Option[Login],
     claims: Json.Obj,
 ):
   def createdAt: Instant = id.createdAt
@@ -19,5 +20,6 @@ object UserRecord:
       id = id,
       email = None,
       phone = None,
+      login = None,
       claims = Json.Obj(),
     )
