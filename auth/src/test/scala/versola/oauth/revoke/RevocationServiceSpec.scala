@@ -2,14 +2,13 @@ package versola.oauth.revoke
 
 import org.scalamock.stubs.ZIOStubs
 import versola.auth.TestEnvConfig
-import versola.oauth.client.OAuthClientService
-import versola.oauth.client.model.{ClientId, OAuthClientRecord, ScopeToken}
+import versola.oauth.client.OAuthConfigurationService
+import versola.oauth.client.model.{ClientId, ClientIdWithSecret, OAuthClientRecord, ScopeToken, TenantId}
 import versola.oauth.model.{AccessToken, AccessTokenPayload, RefreshToken}
 import versola.oauth.revoke.model.RevocationError
 import versola.oauth.session.RefreshTokenRepository
 import versola.oauth.session.model.{RefreshTokenRecord, SessionId}
 import versola.user.model.UserId
-import versola.util.http.ClientIdWithSecret
 import versola.util.{CoreConfig, MAC, Secret, SecurityService, UnitSpecBase}
 import zio.*
 import zio.prelude.NonEmptySet
@@ -35,6 +34,7 @@ object RevocationServiceSpec extends UnitSpecBase:
   
   val testClient = OAuthClientRecord(
     id = clientId1,
+    tenantId = TenantId("default"),
     clientName = "Test Client",
     redirectUris = NonEmptySet("https://example.com/callback"),
     scope = scope1,
@@ -74,7 +74,7 @@ object RevocationServiceSpec extends UnitSpecBase:
   )
 
   class Env:
-    val oauthClientService = stub[OAuthClientService]
+    val oauthClientService = stub[OAuthConfigurationService]
     val tokenRepository = stub[RefreshTokenRepository]
     val accessTokenRevocationService = stub[AccessTokenRevocationService]
     val securityService = stub[SecurityService]

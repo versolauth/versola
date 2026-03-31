@@ -5,7 +5,7 @@ import com.augustnagro.magnum.magzio.TransactorZIO
 import com.augustnagro.magnum.pg.PgCodec.given
 import versola.user.model.*
 import versola.util.{Email, Phone}
-import zio.{Clock, Task, ZIO}
+import zio.{Clock, Task, ZIO, ZLayer}
 import zio.json.*
 import zio.json.ast.Json
 
@@ -89,3 +89,7 @@ class PostgresUserRepository(
   )
 
   given DbCodec[UserRecord] = DbCodec.derived[UserRecord]
+
+object PostgresUserRepository:
+  def live: ZLayer[TransactorZIO, Throwable, UserRepository] =
+    ZLayer.fromFunction(PostgresUserRepository(_))

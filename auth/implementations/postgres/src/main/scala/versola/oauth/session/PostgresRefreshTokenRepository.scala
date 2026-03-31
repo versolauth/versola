@@ -2,7 +2,7 @@ package versola.oauth.session
 
 import com.augustnagro.magnum.*
 import com.augustnagro.magnum.magzio.TransactorZIO
-import com.augustnagro.magnum.pg.PgCodec
+import com.augustnagro.magnum.pg.{PgCodec, SqlArrayCodec}
 import versola.oauth.client.model.{ClientId, ScopeToken}
 import versola.oauth.model.{AccessToken, Nonce, RefreshToken}
 import versola.oauth.session.model.{RefreshAlreadyExchanged, RefreshTokenRecord, SessionId, WithTtl}
@@ -11,7 +11,7 @@ import versola.user.model.UserId
 import versola.util.MAC
 import versola.util.postgres.BasicCodecs
 import zio.prelude.These
-import zio.{Clock, IO, Task, ZIO}
+import zio.{Clock, IO, Task, ZIO, ZLayer}
 
 import java.sql.Connection
 import java.time.Instant
@@ -19,12 +19,16 @@ import java.util.UUID
 
 class PostgresRefreshTokenRepository(xa: TransactorZIO) extends RefreshTokenRepository, BasicCodecs:
   import PgCodec.ListCodec
+  import SqlArrayCodec.ListSqlArrayCodec
 
   given DbCodec[MAC] = DbCodec.ByteArrayCodec.biMap(MAC(_), identity[Array[Byte]])
   given DbCodec[AccessToken] = DbCodec.ByteArrayCodec.biMap(AccessToken(_), identity[Array[Byte]])
   given DbCodec[UserId] = DbCodec.UUIDCodec.biMap(UserId(_), identity[UUID])
   given DbCodec[ClientId] = DbCodec.StringCodec.biMap(ClientId(_), identity[String])
+  given SqlArrayCodec[ClientId] = SqlArrayCodec.StringSqlArrayCodec.asInstanceOf[SqlArrayCodec[ClientId]]
   given DbCodec[ScopeToken] = DbCodec.StringCodec.biMap(ScopeToken(_), identity[String])
+  given listStringDbCodec: DbCodec[List[String]] = PgCodec.SeqCodec[String].biMap(_.toList, _.toSeq)
+  given listClientIdDbCodec: DbCodec[List[ClientId]] = PgCodec.SeqCodec[String].biMap(_.map(ClientId(_)).toList, _.map(identity[String]))
   given DbCodec[Nonce] = DbCodec.StringCodec.biMap(Nonce(_), identity[String])
   given DbCodec[RequestedClaims] = jsonCodec[RequestedClaims]
   given DbCodec[RefreshTokenRecord] = DbCodec.derived[RefreshTokenRecord]
@@ -80,6 +84,9 @@ class PostgresRefreshTokenRepository(xa: TransactorZIO) extends RefreshTokenRepo
       case e: java.sql.SQLException if e.getSQLState == "40001" =>
         // Serialization failure (SQLSTATE 40001) - concurrent rotation detected
         ZIO.fail(RefreshAlreadyExchanged())
+      case e: java.sql.SQLException if e.getSQLState == "23505" =>
+        // Unique constraint violation (SQLSTATE 23505) - previous_id already used
+        ZIO.fail(RefreshAlreadyExchanged())
     }
 
   override def find(token: MAC.Of[RefreshToken]): Task[Option[RefreshTokenRecord]] =
@@ -107,3 +114,7 @@ class PostgresRefreshTokenRepository(xa: TransactorZIO) extends RefreshTokenRepo
     xa.connect:
       sql"""DELETE FROM refresh_tokens WHERE access_token = $token""".update.run()
     .unit
+
+object PostgresRefreshTokenRepository:
+  def live: ZLayer[TransactorZIO, Throwable, RefreshTokenRepository] =
+    ZLayer.fromFunction(PostgresRefreshTokenRepository(_))

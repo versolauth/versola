@@ -1,12 +1,11 @@
 package versola.oauth.introspect
 
-import versola.oauth.client.OAuthClientService
-import versola.oauth.client.model.{ClientId, OAuthClientRecord}
+import versola.oauth.client.OAuthConfigurationService
+import versola.oauth.client.model.{ClientCredentials, ClientIdWithSecret, OAuthClientRecord}
 import versola.oauth.introspect.model.{IntrospectionError, IntrospectionResponse}
 import versola.oauth.model.{AccessTokenPayload, RefreshToken}
 import versola.oauth.session.RefreshTokenRepository
 import versola.oauth.session.model.RefreshTokenRecord
-import versola.util.http.{ClientCredentials, ClientIdWithSecret}
 import versola.util.{CoreConfig, Secret, SecurityService}
 import zio.{IO, ZIO, ZLayer}
 
@@ -23,16 +22,16 @@ trait IntrospectionService:
 
 object IntrospectionService:
   def live: ZLayer[
-    OAuthClientService & RefreshTokenRepository & SecurityService & CoreConfig,
+    OAuthConfigurationService & RefreshTokenRepository & SecurityService & CoreConfig,
     Nothing,
     IntrospectionService,
   ] = ZLayer.fromFunction(Impl(_, _, _, _))
 
   class Impl(
-      oauthClientService: OAuthClientService,
-      tokenRepository: RefreshTokenRepository,
-      securityService: SecurityService,
-      config: CoreConfig,
+              oauthClientService: OAuthConfigurationService,
+              tokenRepository: RefreshTokenRepository,
+              securityService: SecurityService,
+              config: CoreConfig,
   ) extends IntrospectionService:
 
     override def introspectAccessToken(

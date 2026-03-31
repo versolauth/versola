@@ -2,7 +2,7 @@ package versola.oauth
 
 import com.augustnagro.magnum.*
 import com.augustnagro.magnum.magzio.TransactorZIO
-import com.augustnagro.magnum.pg.PgCodec
+import com.augustnagro.magnum.pg.{PgCodec, SqlArrayCodec}
 import versola.oauth.client.model.{Claim, ClientId, ScopeToken}
 import versola.oauth.model.*
 import versola.oauth.session.model.SessionId
@@ -13,7 +13,7 @@ import versola.util.postgres.BasicCodecs
 import versola.util.{MAC, Secret}
 import zio.http.URL
 import zio.json.*
-import zio.{Clock, Duration, Task, ZIO}
+import zio.{Clock, Duration, Task, ZIO, ZLayer}
 
 import java.sql.Connection
 import java.time.Instant
@@ -22,7 +22,8 @@ import java.util.UUID
 class PostgresAuthorizationCodeRepository(
     xa: TransactorZIO,
 ) extends AuthorizationCodeRepository, BasicCodecs:
-  import PgCodec.ListCodec
+  import PgCodec.{ListCodec, SeqCodec}
+  import SqlArrayCodec.{ListSqlArrayCodec, StringSqlArrayCodec}
 
   private given JsonCodec[Claim] = JsonCodec.string.transform(Claim(_), identity[String])
   private given JsonFieldEncoder[Claim] = JsonFieldEncoder.string.contramap(identity)
@@ -35,6 +36,7 @@ class PostgresAuthorizationCodeRepository(
   private given DbCodec[Instant] = DbCodec.InstantCodec
   private given DbCodec[ClientId] = DbCodec.StringCodec.biMap(ClientId(_), identity[String])
   private given DbCodec[ScopeToken] = DbCodec.StringCodec.biMap(ScopeToken(_), identity[String])
+  private given DbCodec[List[String]] = PgCodec.SeqCodec[String].biMap(_.toList, _.toSeq)
   private given DbCodec[CodeChallengeMethod] = DbCodec.StringCodec.biMap(CodeChallengeMethod.valueOf, _.toString)
   private given DbCodec[CodeChallenge] = DbCodec.StringCodec.biMap(CodeChallenge(_), identity[String])
   private given DbCodec[Nonce] = DbCodec.StringCodec.biMap(Nonce(_), identity[String])
@@ -123,3 +125,8 @@ class PostgresAuthorizationCodeRepository(
         sql"""SELECT access_token FROM authorization_codes WHERE code = $code"""
           .query[AccessToken].run().headOption
           .toLeft(())
+
+
+object PostgresAuthorizationCodeRepository:
+  def live: ZLayer[TransactorZIO, Throwable, AuthorizationCodeRepository] =
+    ZLayer.fromFunction(PostgresAuthorizationCodeRepository(_))

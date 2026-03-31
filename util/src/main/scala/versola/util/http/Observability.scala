@@ -1,6 +1,6 @@
 package versola.util.http
 
-import io.opentelemetry.api.trace.SpanKind
+import io.opentelemetry.api.trace.{SpanKind, StatusCode}
 import zio.*
 import zio.http.*
 import zio.json.*
@@ -11,6 +11,16 @@ import java.time.Instant
 
 object Observability:
   val receiveHttp = LogAnnotation[ReceiveHttpLog]("http", (_, r) => r, _.toJson)
+
+  val cause = zio.Unsafe.unsafe { case given zio.Unsafe =>
+    FiberRef.unsafe.make(Option.empty[Cause[Any]])
+  }
+
+  def handleErrors[Env](routes: Routes[Env, Throwable]): Routes[Env, Nothing] =
+    routes.handleErrorZIO {
+      case Unauthorized => ZIO.succeed(Response.unauthorized)
+      case ex: Throwable => Observability.cause.set(Some(Cause.fail(ex))).as(Response.internalServerError)
+    }
 
   private def toLog(request: Request, config: Option[HttpObservabilityConfig.Masking]): UIO[HttpRequestLog] = {
     val query = request.url.queryParams.map
@@ -66,37 +76,37 @@ object Observability:
 
   val middleware: Middleware[Tracing & HttpObservabilityConfig] = new Middleware[Tracing & HttpObservabilityConfig]:
     def apply[Env1 <: Tracing & HttpObservabilityConfig, Err](routes: Routes[Env1, Err]): Routes[Env1, Err] =
-      routes.transform: handler =>
-        Handler.scoped[Env1]:
-          Handler.fromFunctionZIO: request =>
-            ZIO.serviceWithZIO[Tracing]: tracing =>
-              (
-                for
-                  now <- Clock.nanoTime
-                  response <- handler(request)
-                  config <- ZIO.service[HttpObservabilityConfig]
-                  pathConfig = config.masking.get(request.path)
-                  (requestLog, responseLog) <- toLog(request, pathConfig) <&> toLog(request, response, pathConfig)
-                  after <- Clock.nanoTime
-                  log = receiveHttp(
-                    ReceiveHttpLog(
-                      request = requestLog,
-                      response = responseLog,
-                      startTime = Instant.ofEpochMilli(now / 1000000),
-                      elapsedMillis = (after - now) / 1000000,
-                    ),
-                  )
-                  loggerName = logging.loggerName("versola.http.HttpServer")
-                  //ex <- Controller.exceptions.get
-                  //error = ex.map(logCause(_)).getOrElse(ZIOAspect.identity)
-                  _ <-
-                    if response.status.isServerError then
-                      ZIO.logError("receive-http") @@ log @@ loggerName// @@ error
-                    else
-                      ZIO.logInfo("receive-http") @@ log @@ loggerName
-                  //_ <- Controller.exceptions.set(None).when(ex.nonEmpty)
-                yield response
-              ) @@ tracing.aspects.root(s"${request.method.name} ${request.path.encode}", SpanKind.SERVER)
+      routes
+        .transform: handler =>
+          Handler.scoped[Env1]:
+            Handler.fromFunctionZIO[Request]: request =>
+              ZIO.serviceWithZIO[Tracing]: tracing =>
+                (
+                  for
+                    now <- Clock.nanoTime
+                    response <- handler(request)
+                    config <- ZIO.service[HttpObservabilityConfig]
+                    pathConfig = config.masking.get(request.path)
+                    (requestLog, responseLog) <- toLog(request, pathConfig) <&> toLog(request, response, pathConfig)
+                    after <- Clock.nanoTime
+                    log = receiveHttp(
+                      ReceiveHttpLog(
+                        request = requestLog,
+                        response = responseLog,
+                        startTime = Instant.ofEpochMilli(now / 1000000),
+                        elapsedMillis = (after - now) / 1000000,
+                      ),
+                    )
+                    loggerName = logging.loggerName("versola.http.HttpServer")
+                    cause <- cause.get
+                    _ <- cause match
+                      case Some(cause) =>
+                        ZIO.logErrorCause("receive-http", cause) @@ log @@ loggerName
+                      case None =>
+                        ZIO.logInfo("receive-http") @@ log @@ loggerName
+                    _ <- Observability.cause.set(None)
+                  yield response
+                ) @@ tracing.aspects.root(s"${request.method.name} ${request.path.encode}", SpanKind.SERVER)
 
   case class HttpRequestLog(
       method: String,
@@ -142,5 +152,5 @@ object Observability:
           str.append("\n")
       }
       str.toString()
-  })
-
+    },
+  )

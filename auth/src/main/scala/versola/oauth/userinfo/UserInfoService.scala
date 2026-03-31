@@ -1,6 +1,6 @@
 package versola.oauth.userinfo
 
-import versola.oauth.client.OAuthClientService
+import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{Claim, ScopeToken}
 import versola.oauth.model.Nonce
 import versola.oauth.userinfo.model.{RequestedClaims, UserInfoError, UserInfoResponse}
@@ -27,14 +27,14 @@ trait UserInfoService:
 
 object UserInfoService:
   def live: ZLayer[
-    UserRepository & OAuthClientService,
+    UserRepository & OAuthConfigurationService,
     Nothing,
     UserInfoService,
   ] = ZLayer.fromFunction(Impl(_, _))
 
   class Impl(
-      userRepository: UserRepository,
-      clientService: OAuthClientService,
+              userRepository: UserRepository,
+              clientService: OAuthConfigurationService,
   ) extends UserInfoService:
 
     override def getUserInfo(
@@ -96,9 +96,10 @@ object UserInfoService:
         forIdToken: Boolean,
     ): UIO[Set[Claim]] =
       for
-        registeredScopes <- clientService.getAllScopesCached
-        tokenScopeClaims = tokenScopes
-          .flatMap(scope => registeredScopes.get(scope).map(_.claims).getOrElse(Set.empty))
+        registeredScopes <- clientService.getScopes
+        tokenScopeClaims = registeredScopes
+          .filter(s => tokenScopes.contains(s.scope))
+          .flatMap(_.claims.map(_.claim)).toSet
 
         finalClaims = requestedClaims match
           case Some(rc) =>

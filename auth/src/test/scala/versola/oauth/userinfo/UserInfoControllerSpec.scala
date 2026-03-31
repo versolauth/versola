@@ -1,6 +1,6 @@
 package versola.oauth.userinfo
 
-import com.nimbusds.jose.JWSAlgorithm
+import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm}
 import com.nimbusds.jose.crypto.RSASSASigner
 import com.nimbusds.jose.jwk.RSAKey
 import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
@@ -9,7 +9,7 @@ import versola.auth.TestEnvConfig
 import versola.oauth.client.model.{ClientId, ScopeToken}
 import versola.oauth.userinfo.model.{UserInfoError, UserInfoResponse}
 import versola.user.model.UserId
-import versola.util.http.{ControllerSpec, NoopTracing}
+import versola.util.http.{ControllerSpec, NoopTracing, Observability}
 import versola.util.{CoreConfig, UnitSpecBase}
 import zio.*
 import zio.http.*
@@ -55,6 +55,7 @@ object UserInfoControllerSpec extends UnitSpecBase:
 
     val header = new com.nimbusds.jose.JWSHeader.Builder(JWSAlgorithm.RS256)
       .keyID("test-key-id")
+      .`type`(new JOSEObjectType("at+jwt"))
       .build()
 
     val jwt = new SignedJWT(header, claims)
@@ -77,8 +78,10 @@ object UserInfoControllerSpec extends UnitSpecBase:
         tracing <- NoopTracing.layer.build
 
         _ <- TestClient.addRoutes(
-          UserInfoController.routes
-            .provideEnvironment(ZEnvironment(userInfoService) ++ ZEnvironment(config) ++ tracing)
+          Observability.handleErrors(
+            UserInfoController.routes
+              .provideEnvironment(ZEnvironment(userInfoService) ++ ZEnvironment(config) ++ tracing)
+          )
         )
         _ <- setup(userInfoService)
 

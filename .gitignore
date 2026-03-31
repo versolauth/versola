@@ -11,3 +11,17 @@ idea.properties
 .scala-build/
 country/
 dev/
+
+# Node.js
+node_modules/
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# Playwright
+test-results/
+playwright-report/
+playwright/.cache/
+
+# Local development
+.local/

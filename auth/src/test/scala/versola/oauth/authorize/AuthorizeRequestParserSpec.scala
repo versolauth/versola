@@ -1,8 +1,8 @@
 package versola.oauth.authorize
 
 import versola.oauth.authorize.model.{AuthorizeRequest, Error, ResponseTypeEntry}
-import versola.oauth.client.OAuthClientService
-import versola.oauth.client.model.{ClientId, OAuthClientRecord, ScopeToken}
+import versola.oauth.client.OAuthConfigurationService
+import versola.oauth.client.model.{ClientId, OAuthClientRecord, ScopeToken, TenantId}
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, State}
 import versola.util.UnitSpecBase
 import zio.http.{Request, URL}
@@ -26,6 +26,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
 
   val testClient = OAuthClientRecord(
     id = validClientId,
+    tenantId = TenantId("default"),
     clientName = "Test Client",
     redirectUris = NonEmptySet(validRedirectUriString, "https://example.com/callback2"),
     scope = Set(ScopeToken("read"), ScopeToken("write"), ScopeToken("admin")),
@@ -36,7 +37,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
   )
 
   class Env:
-    val oauthClientService = stub[OAuthClientService]
+    val oauthClientService = stub[OAuthConfigurationService]
     val parser = AuthorizeRequestParser.Impl(oauthClientService)
 
   def validRequest(
@@ -76,7 +77,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
       val request = validRequest()
 
       for
-        _ <- env.oauthClientService.findCached.succeedsWith(Some(testClient))
+        _ <- env.oauthClientService.find.succeedsWith(Some(testClient))
         result <- env.parser.parse(request)
       yield assertTrue(
         result.clientId == validClientId,
@@ -93,7 +94,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
       val request = validRequest(codeChallengeMethod = Some("plain"))
 
       for
-        _ <- env.oauthClientService.findCached.succeedsWith(Some(testClient))
+        _ <- env.oauthClientService.find.succeedsWith(Some(testClient))
         result <- env.parser.parse(request)
       yield assertTrue(
         result.codeChallengeMethod == CodeChallengeMethod.Plain,
@@ -104,7 +105,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
       val request = validRequest(codeChallengeMethod = None)
 
       for
-        _ <- env.oauthClientService.findCached.succeedsWith(Some(testClient))
+        _ <- env.oauthClientService.find.succeedsWith(Some(testClient))
         result <- env.parser.parse(request)
       yield assertTrue(
         result.codeChallengeMethod == CodeChallengeMethod.Plain,
@@ -115,7 +116,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
       val request = validRequest(state = None)
 
       for
-        _ <- env.oauthClientService.findCached.succeedsWith(Some(testClient))
+        _ <- env.oauthClientService.find.succeedsWith(Some(testClient))
         result <- env.parser.parse(request)
       yield assertTrue(
         result.state.isEmpty,
@@ -126,7 +127,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
       val request = validRequest(responseType = "code id_token")
 
       for
-        _ <- env.oauthClientService.findCached.succeedsWith(Some(testClient))
+        _ <- env.oauthClientService.find.succeedsWith(Some(testClient))
         result <- env.parser.parse(request)
       yield assertTrue(
         result.responseType == NonEmptySet(ResponseTypeEntry.Code, ResponseTypeEntry.IdToken),
@@ -178,7 +179,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
       val request = validRequest(redirectUri = unregisteredRedirectUri)
 
       for
-        _ <- env.oauthClientService.findCached.succeedsWith(Some(testClient))
+        _ <- env.oauthClientService.find.succeedsWith(Some(testClient))
         result <- env.parser.parse(request).either
       yield assertTrue(
         result == Left(Error.BadRequest),
@@ -210,7 +211,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
       val request = validRequest(clientId = unknownClientId)
 
       for
-        _ <- env.oauthClientService.findCached.succeedsWith(None)
+        _ <- env.oauthClientService.find.succeedsWith(None)
         result <- env.parser.parse(request).either
       yield assertTrue(
         result == Left(Error.BadRequest),
@@ -232,7 +233,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
       val request = Request.get(URL.root.addQueryParams(queryParams))
 
       for
-        _ <- env.oauthClientService.findCached.succeedsWith(Some(testClient))
+        _ <- env.oauthClientService.find.succeedsWith(Some(testClient))
         result <- env.parser.parse(request).either
       yield assertTrue(
         result == Left(
@@ -248,7 +249,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
       val request = validRequest(responseType = "token")
 
       for
-        _ <- env.oauthClientService.findCached.succeedsWith(Some(testClient))
+        _ <- env.oauthClientService.find.succeedsWith(Some(testClient))
         result <- env.parser.parse(request).either
       yield assertTrue(
         result == Left(
@@ -276,7 +277,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
       val request = Request.get(URL.root.addQueryParams(queryParams))
 
       for
-        _ <- env.oauthClientService.findCached.succeedsWith(Some(testClient))
+        _ <- env.oauthClientService.find.succeedsWith(Some(testClient))
         result <- env.parser.parse(request).either
       yield assertTrue(
         result == Left(
@@ -292,7 +293,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
       val request = validRequest(codeChallenge = invalidCodeChallenge)
 
       for
-        _ <- env.oauthClientService.findCached.succeedsWith(Some(testClient))
+        _ <- env.oauthClientService.find.succeedsWith(Some(testClient))
         result <- env.parser.parse(request).either
       yield assertTrue(
         result == Left(
@@ -309,7 +310,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
       val request = validRequest(codeChallengeMethod = Some("invalid"))
 
       for
-        _ <- env.oauthClientService.findCached.succeedsWith(Some(testClient))
+        _ <- env.oauthClientService.find.succeedsWith(Some(testClient))
         result <- env.parser.parse(request).either
       yield assertTrue(
         result == Left(
@@ -337,7 +338,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
       val request = Request.get(URL.root.addQueryParams(queryParams))
 
       for
-        _ <- env.oauthClientService.findCached.succeedsWith(Some(testClient))
+        _ <- env.oauthClientService.find.succeedsWith(Some(testClient))
         result <- env.parser.parse(request).either
       yield assertTrue(
         result == Left(
@@ -353,7 +354,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
       val request = validRequest(scope = "read")
 
       for
-        _ <- env.oauthClientService.findCached.succeedsWith(Some(testClient))
+        _ <- env.oauthClientService.find.succeedsWith(Some(testClient))
         result <- env.parser.parse(request)
       yield assertTrue(
         result.scope == Set(ScopeToken("read")),
@@ -364,7 +365,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
       val request = validRequest(scope = "read,write,admin")
 
       for
-        _ <- env.oauthClientService.findCached.succeedsWith(Some(testClient))
+        _ <- env.oauthClientService.find.succeedsWith(Some(testClient))
         result <- env.parser.parse(request)
       yield assertTrue(
         result.scope == Set(ScopeToken("read"), ScopeToken("write"), ScopeToken("admin")),
@@ -425,7 +426,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
       val request = Request.get(url)
 
       for
-        _ <- env.oauthClientService.findCached.succeedsWith(Some(testClient))
+        _ <- env.oauthClientService.find.succeedsWith(Some(testClient))
         result <- env.parser.parse(request).either
       yield assertTrue(
         result == Left(
@@ -451,7 +452,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
       val request = Request.get(url)
 
       for
-        _ <- env.oauthClientService.findCached.succeedsWith(Some(testClient))
+        _ <- env.oauthClientService.find.succeedsWith(Some(testClient))
         result <- env.parser.parse(request).either
       yield assertTrue(
         result == Left(
@@ -477,7 +478,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
       val request = Request.get(url)
 
       for
-        _ <- env.oauthClientService.findCached.succeedsWith(Some(testClient))
+        _ <- env.oauthClientService.find.succeedsWith(Some(testClient))
         result <- env.parser.parse(request).either
       yield assertTrue(
         result == Left(Error.MultipleValuesProvided(
@@ -501,7 +502,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
       val request = Request.get(url)
 
       for
-        _ <- env.oauthClientService.findCached.succeedsWith(Some(testClient))
+        _ <- env.oauthClientService.find.succeedsWith(Some(testClient))
         result <- env.parser.parse(request).either
       yield assertTrue(
         result == Left(Error.MultipleValuesProvided(
@@ -525,7 +526,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
       val request = Request.get(url)
 
       for
-        _ <- env.oauthClientService.findCached.succeedsWith(Some(testClient))
+        _ <- env.oauthClientService.find.succeedsWith(Some(testClient))
         result <- env.parser.parse(request).either
       yield assertTrue(
         result == Left(Error.MultipleValuesProvided(

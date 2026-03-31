@@ -1,9 +1,12 @@
 package versola.oauth.client.model
 
+import zio.json.JsonCodec
+import zio.json.ast.Json
 import zio.schema.*
 
+import java.time.Instant
+
 case class ScopeRecord(
-                        name: ScopeToken,
-                        description: ScopeDescription,
-                        claims: Set[Claim],
-) derives Schema
+    scope: ScopeToken,
+    claims: Vector[ClaimRecord],
+) derives Schema, JsonCodec

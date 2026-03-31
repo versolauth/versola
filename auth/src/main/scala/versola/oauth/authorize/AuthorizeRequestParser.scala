@@ -1,7 +1,7 @@
 package versola.oauth.authorize
 
 import versola.oauth.authorize.model.{AuthorizeRequest, Error, ResponseTypeEntry}
-import versola.oauth.client.OAuthClientService
+import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{ClientId, OAuthClientRecord, ScopeToken}
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, Nonce, State}
 import versola.oauth.userinfo.model.RequestedClaims
@@ -18,7 +18,7 @@ trait AuthorizeRequestParser:
 object AuthorizeRequestParser:
   def live = ZLayer.fromFunction(Impl(_))
 
-  class Impl(oauthClientService: OAuthClientService) extends AuthorizeRequestParser:
+  class Impl(oauthClientService: OAuthConfigurationService) extends AuthorizeRequestParser:
 
     def parse(
         request: Request,
@@ -32,7 +32,7 @@ object AuthorizeRequestParser:
           .someOrFail(Error.BadRequest)
           .map(ClientId(_))
 
-        _ <- oauthClientService.findCached(clientId)
+        _ <- oauthClientService.find(clientId)
           .someOrFail(Error.BadRequest)
           .filterOrFail(_.redirectUris.contains(redirectUriString))(Error.BadRequest)
 
@@ -69,7 +69,6 @@ object AuthorizeRequestParser:
             case Some(other) => ZIO.fail(Error.CodeChallengeMethodInvalid(redirectUri, state, other))
           }
 
-        // TODO implement default scope
         scope <- getParam(params, "scope")
           .orElseFail(Error.MultipleValuesProvided(redirectUri, state, "scope"))
           .someOrFail(Error.ScopeMissing(redirectUri, state))
@@ -84,7 +83,7 @@ object AuthorizeRequestParser:
           .flatMap {
             case Some(claimsJson) =>
               ZIO.fromEither(claimsJson.fromJson[RequestedClaims])
-                .mapError(_ => Error.InvalidClaims(redirectUri, state))
+                .orElseFail(Error.InvalidClaims(redirectUri, state))
                 .map(Some(_))
             case None =>
               ZIO.none

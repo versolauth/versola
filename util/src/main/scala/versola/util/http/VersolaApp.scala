@@ -17,7 +17,7 @@ import versola.util.{EnvName, PostInitializationService}
 import zio.*
 import zio.config.magnolia.{DeriveConfig, deriveConfig}
 import zio.config.typesafe.FromConfigSourceTypesafe
-import zio.http.{Method, Middleware, Request, Response, Routes, Server, Status, handler}
+import zio.http.{Method, Middleware, Request, RequestStore, Response, Routes, Server, Status, handler}
 import zio.logging.LogFormat.{cause, fiberId, label, level, line, logAnnotation, quoted, space, text, timestamp}
 import zio.logging.slf4j.bridge.Slf4jBridge
 import zio.logging.{ConsoleLoggerConfig, LogFilter, LogFormat, LoggerNameExtractor}
@@ -46,7 +46,7 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
 
   def dependencies: ZLayer[Scope & EnvName & ConfigProvider & Tracing, Throwable, Dependencies]
 
-  def routes: Routes[Dependencies & Tracing, Nothing]
+  def routes: Routes[Dependencies & Tracing & EnvName, Throwable]
 
   def diagnosticsConfig: Server.Config
 
@@ -63,20 +63,20 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
       scope <- ZIO.scope
       readinessService <- ReadinessService.make
 
-      _ <- (Server.install[MetricsService](serviceRoutes(readinessService)) *> ZIO.never)
+      _ <- Server.install[MetricsService](serviceRoutes(readinessService))
         .provide(
           Server.live,
           prometheusMetricsService,
           ZLayer.succeed(MetricsConfig(1.second)),
           ZLayer.succeed(diagnosticsConfig),
-        ).fork
+        )
 
       _ <- {
         for
           _ <- ZIO.logInfo("Starting application server")
 
           port <- Server.install {
-            routes @@
+            Observability.handleErrors(routes) @@
               Observability.middleware @@
               Middleware.metrics()
           }
@@ -93,13 +93,12 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
         ZLayer.succeed(tracing),
         ZLayer.succeed(envConfig),
         ZLayer.succeed(envName),
-        ZLayer.succeed(scope)
+        ZLayer.succeed(scope),
       )
     yield ()
   }
-    .catchAll { (ex: Throwable) => ZIO.logErrorCause("Could not start application", Cause.fail(ex)) }
-    .catchAllDefect(ex => ZIO.logErrorCause("Could not start application", Cause.die(ex)))
-
+    .catchAll { (ex: Throwable) => ZIO.logErrorCause("Could not start application", Cause.fail(ex)).as(ExitCode.failure) }
+    .catchAllDefect(ex => ZIO.logErrorCause("Could not start application", Cause.die(ex)).as(ExitCode.failure))
 
   def parseConfig[A: {DeriveConfig, Tag}] =
     ZLayer:
@@ -161,7 +160,6 @@ object VersolaApp:
                 (space + label("stack_trace", cause)).filter(LogFilter.causeNonEmpty),
               formats.spanIdLabel,
               formats.traceIdLabel,
-              logAnnotation(Observability.logCause),
               logAnnotation(Observability.receiveHttp),
               label("logger", LoggerNameExtractor.loggerNameAnnotationOrTrace.toLogFormat()),
             ).reduce(_ |-| _),

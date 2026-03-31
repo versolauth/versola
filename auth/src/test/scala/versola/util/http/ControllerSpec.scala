@@ -29,7 +29,7 @@ abstract class ControllerSpec[C <: Controller](val controller: C) extends UnitSp
         client <- ZIO.service[Client]
         service <- ZIO.service[Stub[Service]]
         env <- ZIO.environment[controller.Env]
-        _ <- TestClient.addRoutes(controller.routes.provideEnvironment(env))
+        _ <- TestClient.addRoutes(Observability.handleErrors(controller.routes.provideEnvironment(env)))
         _ <- setup(service)
 
         testRequest = request

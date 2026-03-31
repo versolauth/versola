@@ -9,7 +9,7 @@ import versola.user.model.UserId
 import versola.util.MAC
 import versola.util.postgres.BasicCodecs
 import zio.prelude.These
-import zio.{Clock, Duration, Task}
+import zio.{Clock, Duration, Task, ZLayer}
 
 import java.time.Instant
 import java.util.UUID
@@ -50,3 +50,6 @@ class PostgresSessionRepository(xa: TransactorZIO) extends SessionRepository, Ba
           .collect { case (record, expiresAt) if expiresAt.isAfter(now) => record }
     yield result
 
+object PostgresSessionRepository:
+  def live: ZLayer[TransactorZIO, Throwable, SessionRepository] =
+    ZLayer.fromFunction(PostgresSessionRepository(_))
