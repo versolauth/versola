@@ -1,20 +1,26 @@
 package versola
 
 import com.augustnagro.magnum.magzio.TransactorZIO
-import versola.admin.AdminController
 import versola.cleanup.PostgresCleanupManager
+import versola.oauth.PostgresAuthorizationCodeRepository
 import versola.oauth.authorize.{AuthorizeEndpointController, AuthorizeEndpointService, AuthorizeRequestParser}
 import versola.oauth.challenge.password.{PasswordRepository, PasswordService, PostgresPasswordRepository}
-import versola.oauth.client.{OAuthClientService, OAuthScopeRepository}
+import versola.oauth.client.{OAuthClientSyncClient, OAuthConfigurationService, OAuthScopeSyncClient}
 import versola.oauth.conversation.otp.{EmailOtpProvider, OtpGenerationService, OtpService}
-import versola.oauth.conversation.{ConversationController, ConversationRenderService, ConversationRepository, ConversationRouter, ConversationService, PostgresConversationRepository}
+import versola.oauth.conversation.{
+  ConversationController,
+  ConversationRenderService,
+  ConversationRepository,
+  ConversationRouter,
+  ConversationService,
+  PostgresConversationRepository,
+}
 import versola.oauth.introspect.{IntrospectionController, IntrospectionService}
 import versola.oauth.jwks.JwksController
 import versola.oauth.revoke.{AccessTokenRevocationService, RevocationController, RevocationService}
 import versola.oauth.session.{PostgresRefreshTokenRepository, PostgresSessionRepository, RefreshTokenRepository, SessionRepository}
 import versola.oauth.token.{AuthorizationCodeRepository, OAuthTokenService, TokenEndpointController}
 import versola.oauth.userinfo.{UserInfoController, UserInfoService}
-import versola.oauth.{PostgresAuthorizationCodeRepository, PostgresOAuthClientRepository, PostgresOAuthScopeRepository}
 import versola.user.{PostgresUserRepository, UserRepository}
 import versola.util.*
 import versola.util.JWT.PublicKeys
@@ -29,6 +35,8 @@ import zio.json.ast.Json
 import zio.telemetry.opentelemetry.tracing.Tracing
 
 import java.security.PrivateKey
+import javax.crypto.SecretKey
+import javax.crypto.spec.SecretKeySpec
 
 object PostgresOAuthApp extends VersolaApp("auth"):
   val environmentTag = Tag[Environment]
@@ -44,8 +52,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
   type Dependencies =
     CoreConfig &
       UserRepository &
-      OAuthClientService &
-      OAuthScopeRepository &
+      OAuthConfigurationService &
       ConversationRepository &
       AuthorizationCodeRepository &
       SessionRepository &
@@ -69,9 +76,8 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       EmailOtpProvider &
       UserInfoService
 
-  override def routes: Routes[Dependencies & Tracing, Nothing] =
+  override def routes: Routes[Dependencies & Tracing & EnvName, Throwable] =
     List(
-      AdminController.routes,
       AuthorizeEndpointController.routes,
       TokenEndpointController.routes,
       IntrospectionController.routes,
@@ -81,24 +87,24 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       JwksController.routes,
     ).reduce(_ ++ _)
 
+  val repositories = PostgresHikariDataSource.transactor(serviceName = Some("auth"), migrate = true) >+> (
+    PostgresUserRepository.live >+>
+      PostgresConversationRepository.live >+>
+      PostgresAuthorizationCodeRepository.live >+>
+      PostgresSessionRepository.live >+>
+      PostgresRefreshTokenRepository.live >+>
+      PostgresPasswordRepository.live >+>
+      PostgresCleanupManager.live
+  )
+
   val dependencies: ZLayer[Scope & EnvName & ConfigProvider & Tracing, Throwable, Dependencies] =
-    PostgresHikariDataSource.transactor(serviceName = Some("auth"), migrate = true) >>> (
-      ZLayer.fromFunction(PostgresUserRepository(_)) >+>
-        ZLayer.fromFunction(PostgresOAuthClientRepository(_)) >+>
-        ZLayer.fromFunction(PostgresOAuthScopeRepository(_)) >+>
-        ZLayer.fromFunction(PostgresConversationRepository(_)) >+>
-        ZLayer.fromFunction(PostgresAuthorizationCodeRepository(_)) >+>
-        ZLayer.fromFunction(PostgresSessionRepository(_)) >+>
-        ZLayer.fromFunction(PostgresRefreshTokenRepository(_)) >+>
-        ZLayer.fromFunction(PostgresPasswordRepository(_)) >+>
-        PostgresCleanupManager.layer
-    ) >+> parseConfig[CoreConfig] >+>
+    repositories >+>
+      parseConfig[CoreConfig] >+>
+      Client.default >+>
       SecureRandom.live >+>
       SecurityService.live >+>
+      OAuthConfigurationService.live(Schedule.spaced(1.minute)) >+>
       AuthPropertyGenerator.live >+>
-      ZLayer(ReloadingCache.make[Map[versola.oauth.client.model.ClientId, versola.oauth.client.model.OAuthClientRecord]]()) >+>
-      ZLayer(ReloadingCache.make[Map[versola.oauth.client.model.ScopeToken, versola.oauth.client.model.Scope]]()) >+>
-      ZLayer.fromFunction(OAuthClientService.Impl(_, _, _, _, _, _, _)) >+>
       AccessTokenRevocationService.noop >+>
       OAuthTokenService.live >+>
       IntrospectionService.live >+>
@@ -120,6 +126,10 @@ object PostgresOAuthApp extends VersolaApp("auth"):
 
   given DeriveConfig[Secret.Bytes32] = DeriveConfig[String]
     .mapOrFail(parseBase64UrlSecret(Secret.Bytes32))
+
+  given DeriveConfig[SecretKey] = DeriveConfig[String]
+    .mapOrFail(parseBase64UrlSecret(Secret.Bytes32))
+    .map(bytes => SecretKeySpec(bytes, "AES"))
 
   given DeriveConfig[URL] = DeriveConfig[String]
     .mapOrFail(URL.decode(_).left.map(ex => zio.Config.Error.InvalidData(message = ex.getMessage)))

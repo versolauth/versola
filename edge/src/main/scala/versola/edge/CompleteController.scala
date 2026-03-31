@@ -1,7 +1,6 @@
 package versola.edge
 
-import versola.edge.model.EdgeSessionId
-import versola.oauth.client.model.ClientId
+import versola.edge.model.{ClientId, EdgeSessionId}
 import versola.util.MAC
 import versola.util.http.Controller
 import zio.*

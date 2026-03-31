@@ -7,7 +7,7 @@ import versola.oauth.challenge.password.model.PasswordReuseError
 import versola.user.model.UserId
 import versola.util.{Salt, Secret}
 import zio.prelude.EqualOps
-import zio.{Clock, IO, Task}
+import zio.{Clock, IO, Task, ZLayer}
 
 import java.util.UUID
 
@@ -58,3 +58,7 @@ class PostgresPasswordRepository(xa: TransactorZIO) extends PasswordRepository:
         }
       }.absolve
     yield result
+
+object PostgresPasswordRepository:
+  def live: ZLayer[TransactorZIO, Throwable, PasswordRepository] =
+    ZLayer.fromFunction(PostgresPasswordRepository(_))

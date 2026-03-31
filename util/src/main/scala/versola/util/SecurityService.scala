@@ -3,8 +3,12 @@ package versola.util
 import org.apache.commons.codec.digest.Blake3
 import org.bouncycastle.crypto.generators.Argon2BytesGenerator
 import org.bouncycastle.crypto.params.Argon2Parameters
-import zio.{Task, URLayer, ZIO, ZLayer}
+import zio.{Clock, Task, UIO, URLayer, ZIO, ZLayer}
 
+import java.security.KeyPairGenerator
+import java.security.interfaces.{RSAPrivateKey, RSAPublicKey}
+import java.time.ZoneOffset
+import java.time.format.DateTimeFormatter
 import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.{Cipher, SecretKey}
 
@@ -15,6 +19,8 @@ trait SecurityService:
   def mac(secret: Secret, key: Array[Byte]): Task[MAC]
 
   def hashPassword(password: Secret, salt: Salt, pepper: Secret.Bytes16): Task[MAC]
+
+  def generateRsaKeyPair: UIO[RsaKeyPair]
 
 object SecurityService:
   def live: URLayer[SecureRandom, SecurityService] =
@@ -88,3 +94,24 @@ object SecurityService:
         val hash = Array.ofDim[Byte](Argon2HashLength)
         generator.generateBytes(password, hash)
         MAC(hash)
+
+    override def generateRsaKeyPair: UIO[RsaKeyPair] =
+      for
+        now <- Clock.instant
+        keyPair <- ZIO.succeedBlocking:
+          val gen = KeyPairGenerator.getInstance("RSA")
+          gen.initialize(2048)
+          gen.generateKeyPair()
+      yield
+        val publicKey = keyPair.getPublic.asInstanceOf[RSAPublicKey]
+        val privateKey = keyPair.getPrivate.asInstanceOf[RSAPrivateKey]
+
+        // Format timestamp as YYYY-MM-DD_HH-MM-SS (up to seconds precision)
+        val formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss")
+        val keyId = formatter.format(now.atZone(ZoneOffset.UTC))
+
+        RsaKeyPair(
+          keyId = keyId,
+          publicKey = publicKey,
+          privateKey = privateKey,
+        )

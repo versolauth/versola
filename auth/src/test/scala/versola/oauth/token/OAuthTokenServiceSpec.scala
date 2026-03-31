@@ -2,8 +2,8 @@ package versola.oauth.token
 
 import org.scalamock.stubs.{Stub, ZIOStubs}
 import versola.auth.TestEnvConfig
-import versola.oauth.client.OAuthClientService
-import versola.oauth.client.model.{ClientId, OAuthClientRecord, ScopeToken}
+import versola.oauth.client.OAuthConfigurationService
+import versola.oauth.client.model.{ClientId, ClientIdWithSecret, OAuthClientRecord, ScopeToken}
 import versola.oauth.model.{AccessToken, AuthorizationCode, AuthorizationCodeRecord, CodeChallenge, CodeChallengeMethod, CodeVerifier, RefreshToken}
 import versola.oauth.revoke.AccessTokenRevocationService
 import versola.oauth.session.RefreshTokenRepository
@@ -13,7 +13,6 @@ import versola.oauth.client.model.Claim
 import versola.oauth.userinfo.model.{ClaimRequest, RequestedClaims}
 import versola.user.UserRepository
 import versola.user.model.UserId
-import versola.util.http.ClientIdWithSecret
 import versola.util.{AuthPropertyGenerator, CoreConfig, MAC, Secret, SecurityService}
 import zio.*
 import zio.http.URL
@@ -75,7 +74,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
 
   class Env:
     val authCodeRepo = stub[AuthorizationCodeRepository]
-    val clientService = stub[OAuthClientService]
+    val clientService = stub[OAuthConfigurationService]
     val tokenRepo = stub[RefreshTokenRepository]
     val accessTokenRevocationService = stub[AccessTokenRevocationService]
     val securityService = stub[SecurityService]

@@ -2,14 +2,13 @@ package versola.oauth.introspect
 
 import org.scalamock.stubs.ZIOStubs
 import versola.auth.TestEnvConfig
-import versola.oauth.client.OAuthClientService
-import versola.oauth.client.model.{ClientId, OAuthClientRecord, ScopeToken}
+import versola.oauth.client.OAuthConfigurationService
+import versola.oauth.client.model.{ClientId, ClientIdWithSecret, OAuthClientRecord, ScopeToken}
 import versola.oauth.introspect.model.{IntrospectionError, IntrospectionResponse}
 import versola.oauth.model.{AccessToken, AccessTokenPayload, RefreshToken}
 import versola.oauth.session.RefreshTokenRepository
 import versola.oauth.session.model.{RefreshTokenRecord, SessionId}
 import versola.user.model.UserId
-import versola.util.http.ClientIdWithSecret
 import versola.util.{CoreConfig, MAC, Secret, SecurityService, UnitSpecBase}
 import zio.*
 import zio.prelude.NonEmptySet
@@ -74,7 +73,7 @@ object IntrospectionServiceSpec extends UnitSpecBase:
   )
 
   class Env:
-    val oauthClientService = stub[OAuthClientService]
+    val oauthClientService = stub[OAuthConfigurationService]
     val tokenRepository = stub[RefreshTokenRepository]
     val securityService = stub[SecurityService]
     val config = TestEnvConfig.coreConfig

@@ -2,7 +2,7 @@ package versola.oauth.conversation
 
 import versola.oauth.conversation.model.{ConversationStep, PrimaryCredential}
 import versola.oauth.model.SessionCookie
-import versola.util.{Base64Url, CoreConfig, Email, Phone, JWT}
+import versola.util.{Base64Url, CoreConfig, Email, EnvName, JWT, Phone}
 import zio.http.datastar.*
 import zio.http.template2.*
 import zio.http.{Header, MediaType, Response, datastar}
@@ -15,9 +15,9 @@ trait ConversationRenderService:
   def renderSubmit(step: ConversationResult.Render): Task[Response]
 
 object ConversationRenderService:
-  val live = ZLayer.fromFunction(Impl(_))
+  val live = ZLayer.fromFunction(Impl(_, _))
 
-  class Impl(config: CoreConfig) extends ConversationRenderService:
+  class Impl(config: CoreConfig, envName: EnvName) extends ConversationRenderService:
     override def renderStep(step: ConversationStep): Dom.Element =
       step match
         case ConversationStep.Empty(primaryCredential, passkey) =>
@@ -38,8 +38,8 @@ object ConversationRenderService:
 
           ZIO.succeed(
             eventToResponse(
-              DatastarEvent.patchElements(html, Some(CssSelector.element("body")), ElementPatchMode.Inner)
-            )
+              DatastarEvent.patchElements(html, Some(CssSelector.element("body")), ElementPatchMode.Inner),
+            ),
           )
 
         case ConversationResult.NotFound =>
@@ -57,8 +57,17 @@ object ConversationRenderService:
               state.map("state" -> _) ++
               idToken.map("id_token" -> _)
             redirectUrl = redirectUri.addQueryParams(params)
-          yield Response.seeOther(redirectUrl)
-            .addCookie(SessionCookie(sessionId, config.security.ssoSession.ttl))
+            redirectScript = script(Js(s"window.location.href = '${redirectUrl.encode}'"))
+          yield eventToResponse(
+              DatastarEvent.patchElements(redirectScript, Some(CssSelector.element("body")), ElementPatchMode.Append)
+            )
+            .addCookie(
+              SessionCookie(
+                value = sessionId,
+                ttl = config.security.ssoSession.ttl,
+                secure = envName.isProd
+              ),
+            )
 
     private def serializeIdToken(data: ConversationResult.IdTokenData): Task[String] =
       JWT.serialize(
@@ -70,7 +79,7 @@ object ConversationRenderService:
           custom = Json.Obj(Chunk.fromIterable(data.claims)),
         ),
         ttl = 15.minutes,
-        signature = JWT.Signature(
+        signature = JWT.Signature.Asymmetric(
           publicKeys = config.jwt.publicKeys,
           privateKey = config.jwt.privateKey,
         ),
@@ -101,14 +110,14 @@ object ConversationRenderService:
           title("Sign In - Versola Auth"),
           datastarScript,
           if primaryCredential == PrimaryCredential.Phone then
-            script(src := "https://cdn.jsdelivr.net/npm/libphonenumber-js@1.11.11/bundle/libphonenumber-js.min.js")
+            script(src := "https://cdn.jsdelivr.net/npm/libphonenumber-js@1.11.11/bundle/libphonenumber-max.js")
           else
             Seq.empty
           ,
           style.inlineCss(css),
         ),
         body(
-          entryFormBody(primaryCredential, passkeySupported)
+          entryFormBody(primaryCredential, passkeySupported),
         ),
       )
 
@@ -122,7 +131,7 @@ object ConversationRenderService:
           case PrimaryCredential.Email =>
             renderEmailForm(hasPasskey = passkeySupported)
           case PrimaryCredential.Phone =>
-            renderPhoneForm(hasPasskey = passkeySupported)
+            renderPhoneForm(hasPasskey = passkeySupported),
       )
 
     private def renderEmailForm(hasPasskey: Boolean) =
@@ -141,7 +150,7 @@ object ConversationRenderService:
           ),
           button(
             `type`("button"),
-            dataOn.click := Js("@post('/api/v1/challenge/email', {contentType: 'form'})"),
+            dataOn.click := Js("@post('/v1/challenge/email', {contentType: 'form'})"),
             className := "submit-button",
             "Continue",
           ),
@@ -197,7 +206,7 @@ object ConversationRenderService:
                 if (!pn || !pn.isValid()) { $phoneError = 'Please enter a valid phone number with country code'; return; }
                 input.value = pn.number;
               } catch (e) { $phoneError = 'Please enter a valid phone number with country code'; return; }
-              @post('/api/v1/challenge/phone', {contentType: 'form'})
+              @post('/v1/challenge/phone', {contentType: 'form'})
               """,
             ),
             "Continue",
@@ -264,7 +273,7 @@ object ConversationRenderService:
           ),
           button(
             `type`("button"),
-            dataOn.click := Js("@post('/api/v1/challenge/otp', {contentType: 'form'})"),
+            dataOn.click := Js("@post('/v1/challenge/otp', {contentType: 'form'})"),
             className := "submit-button",
             "Verify",
           ),
@@ -274,13 +283,12 @@ object ConversationRenderService:
           ),
           button(
             `type`("button"),
-            dataOn.click := Js("@post('/api/v1/challenge/otp/resend', {contentType: 'form'})"),
+            dataOn.click := Js("@post('/v1/challenge/otp/resend', {contentType: 'form'})"),
             className := "resend-button",
             "Resend Code",
           ),
         ),
       )
-
 
     private def eventToResponse(event: DatastarEvent) =
       datastar.datastarEventCodec.encodeResponse(

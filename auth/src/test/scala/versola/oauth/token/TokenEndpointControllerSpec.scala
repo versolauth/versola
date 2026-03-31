@@ -3,15 +3,15 @@ package versola.oauth.token
 import org.scalamock.stubs.Stub
 import versola.auth.TestEnvConfig
 import com.nimbusds.jwt.SignedJWT
-import versola.oauth.client.OAuthClientService
-import versola.oauth.client.model.{ClientId, ScopeToken}
+import versola.oauth.client.OAuthConfigurationService
+import versola.oauth.client.model.{ClientId, ClientIdWithSecret, ScopeToken}
 import versola.oauth.model.{AccessToken, AuthorizationCode, CodeVerifier, Nonce, RefreshToken}
 import versola.oauth.token.model.{ClientCredentialsRequest, CodeExchangeRequest, IssuedTokens, RefreshTokenRequest, TokenEndpointError, TokenResponse}
 import versola.oauth.userinfo.UserInfoService
 import versola.oauth.userinfo.model.UserInfoResponse
 import versola.user.model.{UserId, UserRecord}
 import zio.json.ast.Json
-import versola.util.http.{ClientIdWithSecret, ControllerSpec, NoopTracing}
+import versola.util.http.{ControllerSpec, NoopTracing, Observability}
 import versola.util.{Base64, CoreConfig, Secret, UnitSpecBase}
 import zio.*
 import zio.http.*
@@ -65,7 +65,7 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
       for
         client <- ZIO.service[Client]
         tokenService = stub[OAuthTokenService]
-        clientService = stub[OAuthClientService]
+        clientService = stub[OAuthConfigurationService]
         userInfoService = stub[UserInfoService]
         config = TestEnvConfig.coreConfig
         tracing <- NoopTracing.layer.build
@@ -73,8 +73,10 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
         services = Services(tokenService, userInfoService)
 
         _ <- TestClient.addRoutes(
-          TokenEndpointController.routes
-            .provideEnvironment(ZEnvironment(tokenService) ++ ZEnvironment(clientService) ++ ZEnvironment(userInfoService) ++ ZEnvironment(config) ++ tracing)
+          Observability.handleErrors(
+            TokenEndpointController.routes
+              .provideEnvironment(ZEnvironment(tokenService) ++ ZEnvironment(clientService) ++ ZEnvironment(userInfoService) ++ ZEnvironment(config) ++ tracing)
+          )
         )
         _ <- setup(services)
 

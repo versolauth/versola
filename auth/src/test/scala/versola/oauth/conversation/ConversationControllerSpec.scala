@@ -5,7 +5,7 @@ import versola.auth.TestEnvConfig
 import versola.auth.model.OtpCode
 import versola.oauth.conversation.model.{AuthId, ConversationStep}
 import versola.oauth.model.ConversationCookie
-import versola.util.http.{ControllerSpec, NoopTracing}
+import versola.util.http.{ControllerSpec, NoopTracing, Observability}
 import versola.util.{Email, Phone, UnitSpecBase}
 import zio.*
 import zio.http.*
@@ -48,13 +48,15 @@ object ConversationControllerSpec extends UnitSpecBase:
         router = stub[ConversationRouter]
         formService <- ConversationRenderService.live
           .build
-          .provideSome[zio.Scope](ZLayer.succeed(TestEnvConfig.coreConfig))
+          .provideSome[zio.Scope](ZLayer.succeed(TestEnvConfig.coreConfig) >+> ZLayer.succeed(versola.util.EnvName.Test("test")))
 
         tracing <- NoopTracing.layer.build
 
         _ <- TestClient.addRoutes(
-          ConversationController.routes
-            .provideEnvironment(ZEnvironment(router) ++ formService ++ tracing)
+          Observability.handleErrors(
+            ConversationController.routes
+              .provideEnvironment(ZEnvironment(router) ++ formService ++ tracing)
+          )
         )
         _ <- router.submit.succeedsWith(conversationResult)
 

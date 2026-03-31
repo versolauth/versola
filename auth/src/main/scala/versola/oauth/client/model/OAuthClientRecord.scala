@@ -2,6 +2,7 @@ package versola.oauth.client.model
 
 import versola.util.Secret
 import zio.Duration
+import zio.json.{JsonCodec, JsonEncoder}
 import zio.prelude.{Equal, NonEmptySet}
 import zio.schema.*
 
@@ -14,7 +15,7 @@ case class OAuthClientRecord(
     secret: Option[Secret],
     previousSecret: Option[Secret],
     accessTokenTtl: Duration,
-) derives Schema, CanEqual, Equal:
+) derives CanEqual, Equal:
 
   def audience: List[ClientId] = id :: externalAudience
 

@@ -18,6 +18,7 @@ object ReloadingCache:
     for
       source <- ZIO.service[CacheSource[A]]
       values <- source.getAll
+        .tapErrorCause(err => ZIO.logErrorCause(s"Couldn't initialize cache ${Tag[A].tag}", err))
       ref <- Ref.make(values)
       _ <- source.getAll
         .foldZIO(
