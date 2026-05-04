@@ -2,7 +2,7 @@ package versola.oauth.conversation
 
 import com.augustnagro.magnum.*
 import com.augustnagro.magnum.magzio.TransactorZIO
-import com.augustnagro.magnum.pg.PgCodec
+import com.augustnagro.magnum.pg.{PgCodec, SqlArrayCodec}
 import versola.auth.model.OtpCode
 import versola.oauth.authorize.model.ResponseTypeEntry
 import versola.oauth.client.model.{ClientId, ScopeToken}
@@ -15,13 +15,14 @@ import versola.util.{Email, Phone}
 import zio.http.URL
 import zio.json.*
 import zio.prelude.NonEmptySet
-import zio.{Clock, Duration, Task}
+import zio.{Clock, Duration, Task, ZLayer}
 
 import java.time.Instant
 import java.util.UUID
 
 class PostgresConversationRepository(xa: TransactorZIO) extends ConversationRepository, BasicCodecs:
-  import PgCodec.ListCodec
+  import PgCodec.{ListCodec, SeqCodec}
+  import SqlArrayCodec.ListSqlArrayCodec
 
   given JsonCodec[OtpCode] = JsonCodec.string.transform(OtpCode(_), identity[String])
   given JsonCodec[ConversationStep.Otp.Real] = DeriveJsonCodec.gen[ConversationStep.Otp.Real]
@@ -37,6 +38,7 @@ class PostgresConversationRepository(xa: TransactorZIO) extends ConversationRepo
   )
   given DbCodec[ClientId] = DbCodec.StringCodec.biMap(ClientId(_), identity[String])
   given DbCodec[ScopeToken] = DbCodec.StringCodec.biMap(ScopeToken(_), identity[String])
+  given DbCodec[List[String]] = PgCodec.SeqCodec[String].biMap(_.toList, _.toSeq)
   given DbCodec[CodeChallengeMethod] = DbCodec.StringCodec.biMap(CodeChallengeMethod.valueOf, _.toString)
   given DbCodec[CodeChallenge] = DbCodec.StringCodec.biMap(CodeChallenge(_), identity[String])
   given DbCodec[State] = DbCodec.StringCodec.biMap(State(_), identity[String])
@@ -132,3 +134,7 @@ class PostgresConversationRepository(xa: TransactorZIO) extends ConversationRepo
       sql"""delete from auth_conversations where id = $authId"""
         .update.run()
     }.unit
+
+object PostgresConversationRepository:
+  def live: ZLayer[TransactorZIO, Throwable, ConversationRepository] =
+    ZLayer.fromFunction(PostgresConversationRepository(_))

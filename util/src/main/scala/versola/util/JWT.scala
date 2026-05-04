@@ -1,8 +1,8 @@
 package versola.util
 
-import com.nimbusds.jose.crypto.{ECDSAVerifier, MACVerifier, RSASSASigner, RSASSAVerifier}
+import com.nimbusds.jose.crypto.{ECDSAVerifier, MACSigner, MACVerifier, RSASSASigner, RSASSAVerifier}
 import com.nimbusds.jose.jwk.*
-import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm, JWSHeader}
+import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm, JWSHeader, JWSSigner}
 import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 import zio.json.*
 import zio.json.ast.Json
@@ -11,6 +11,7 @@ import zio.{Chunk, Clock, Duration, IO, Task, ZIO}
 import java.security.PrivateKey
 import java.time.Instant
 import java.util.Date
+import javax.crypto.SecretKey
 import scala.jdk.CollectionConverters.*
 
 object JWT:
@@ -22,10 +23,8 @@ object JWT:
   ): Task[String] =
     Clock.instant.flatMap { now =>
       ZIO.attemptBlocking {
-        val algorithm = signature.publicKeys.active.algorithm
-
-        val header = JWSHeader.Builder(algorithm.jwsAlgorithm)
-          .keyID(signature.publicKeys.active.id)
+        val header = JWSHeader.Builder(signature.algorithm.jwsAlgorithm)
+          .keyID(signature.keyId.orNull)
           .build()
 
         val claimsBuilder = JWTClaimsSet.Builder()
@@ -50,9 +49,14 @@ object JWT:
         val claimsSet = claimsBuilder.build()
 
         val jwt = new com.nimbusds.jwt.SignedJWT(header, claimsSet)
-        val signer = algorithm match
-          case Algorithm.RS256 => new RSASSASigner(signature.privateKey)
-
+        val signer = signature match {
+          case Signature.Asymmetric(_, privateKey) if signature.algorithm == Algorithm.RS256 =>
+            new RSASSASigner(privateKey)
+          case Signature.Symmetric(key) =>
+            new MACSigner(key)
+          case _ =>
+            throw new IllegalArgumentException("Unsupported signature type")
+        }
         jwt.sign(signer)
         jwt.serialize()
       }
@@ -74,10 +78,28 @@ object JWT:
       custom: Json.Obj,
   )
 
-  case class Signature(
-      publicKeys: PublicKeys,
-      privateKey: PrivateKey,
-  )
+  sealed trait Signature:
+    def keyId: Option[String] = this match
+      case Signature.Asymmetric(publicKeys, _) =>
+        Some(publicKeys.active.id)
+      case _ =>
+        None
+
+    def algorithm: Algorithm = this match
+      case Signature.Asymmetric(publicKeys, _) =>
+        publicKeys.active.algorithm
+      case Signature.Symmetric(_) =>
+        Algorithm.HS256
+
+  object Signature:
+    case class Asymmetric(
+        publicKeys: PublicKeys,
+        privateKey: PrivateKey,
+    ) extends Signature
+
+    case class Symmetric(
+        key: SecretKey
+    ) extends Signature
 
   enum Type(val joseObjectType: JOSEObjectType):
     case JWT extends Type(JOSEObjectType.JWT)
@@ -85,7 +107,7 @@ object JWT:
 
   enum Algorithm(val jwsAlgorithm: JWSAlgorithm):
     case RS256 extends Algorithm(JWSAlgorithm.RS256)
-
+    case HS256 extends Algorithm(JWSAlgorithm.HS256)
 
   case class PublicKeys(keys: JWKSet):
     def active: PublicKey = PublicKey(keys.getKeys.get(0))
@@ -101,7 +123,7 @@ object JWT:
       case "RS256" => Algorithm.RS256
 
   /**
-   * Deserialize and validate a JWT
+   * Deserialize and validate a JWT with asymmetric signature.
    *
    * Performs generic JWT validation:
    * 1. JWT parsing
@@ -130,6 +152,39 @@ object JWT:
         .orElseFail(Error.InvalidClaims)
     yield result
 
+  /**
+   * Deserialize and validate a JWT with symmetric signature.
+   *
+   * Performs generic JWT validation:
+   * 1. JWT parsing
+   * 2. Signature verification using secret key
+   * 3. Expiration check
+   * 4. Claims extraction and deserialization to type A
+   *
+   * @param token The JWT token string
+   * @param key   Secret key for signature verification
+   * @return Validated and deserialized JWT claims or error
+   */
+  def deserialize[A: JsonDecoder](token: String, key: SecretKey): IO[Error, A] =
+    for
+      now <- Clock.instant
+
+      jwt <- ZIO.attempt(SignedJWT.parse(token))
+        .orElseFail(Error.NotJWT)
+
+      _ <- verifySymmetricSignature(jwt, key)
+      _ <- checkExpiration(jwt, now)
+
+      result <- ZIO.fromEither(claimsToJson(jwt.getJWTClaimsSet).as[A])
+        .orElseFail(Error.InvalidClaims)
+    yield result
+
+  private def verifySymmetricSignature(jwt: SignedJWT, key: SecretKey): IO[Error, Unit] =
+    ZIO.attempt(jwt.verify(MACVerifier(key)))
+      .orElseFail(Error.InvalidSignature)
+      .filterOrFail(identity)(Error.InvalidSignature)
+      .unit
+
   private def verifySignature(jwt: SignedJWT, keys: PublicKeys): IO[Error, Unit] =
     for
       jwk <- ZIO.attempt(Option(jwt.getHeader.getKeyID))
@@ -139,16 +194,15 @@ object JWT:
         .someOrFail(Error.InvalidSignature)
 
       _ <- ZIO.attempt(
-          jwk match
-            case key: RSAKey => jwt.verify(RSASSAVerifier(key))
-            case key: ECKey => jwt.verify(ECDSAVerifier(key))
-            case key: OctetSequenceKey => jwt.verify(MACVerifier(key))
-            case _ => false
-        )
+        jwk match
+          case key: RSAKey => jwt.verify(RSASSAVerifier(key))
+          case key: ECKey => jwt.verify(ECDSAVerifier(key))
+          case key: OctetSequenceKey => jwt.verify(MACVerifier(key))
+          case _ => false,
+      )
         .orElseFail(Error.InvalidSignature)
         .filterOrFail(identity)(Error.InvalidSignature)
         .unit
-
     yield ()
 
   private def checkExpiration(jwt: SignedJWT, now: Instant): IO[Error, Unit] =

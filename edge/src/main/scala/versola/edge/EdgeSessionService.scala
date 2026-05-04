@@ -1,7 +1,6 @@
 package versola.edge
 
-import versola.edge.model.{EdgeSession, EdgeSessionId}
-import versola.oauth.client.model.{ClientId, ScopeToken}
+import versola.edge.model.{ClientId, EdgeSession, EdgeSessionId, ScopeToken}
 import versola.util.{MAC, SecureRandom, SecurityService}
 import zio.{Duration, Task, ZIO, ZLayer}
 import zio.durationInt

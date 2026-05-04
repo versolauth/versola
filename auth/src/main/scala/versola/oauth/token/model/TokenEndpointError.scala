@@ -1,6 +1,5 @@
 package versola.oauth.token.model
 
-import versola.oauth.client.model.ClientId
 import versola.oauth.model.GrantType
 import zio.http.Status
 

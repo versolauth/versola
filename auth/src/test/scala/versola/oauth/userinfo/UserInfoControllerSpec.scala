@@ -9,7 +9,7 @@ import versola.auth.TestEnvConfig
 import versola.oauth.client.model.{ClientId, ScopeToken}
 import versola.oauth.userinfo.model.{UserInfoError, UserInfoResponse}
 import versola.user.model.UserId
-import versola.util.http.{ControllerSpec, NoopTracing}
+import versola.util.http.{ControllerSpec, NoopTracing, Observability}
 import versola.util.{CoreConfig, UnitSpecBase}
 import zio.*
 import zio.http.*
@@ -77,8 +77,10 @@ object UserInfoControllerSpec extends UnitSpecBase:
         tracing <- NoopTracing.layer.build
 
         _ <- TestClient.addRoutes(
-          UserInfoController.routes
-            .provideEnvironment(ZEnvironment(userInfoService) ++ ZEnvironment(config) ++ tracing)
+          Observability.handleErrors(
+            UserInfoController.routes
+              .provideEnvironment(ZEnvironment(userInfoService) ++ ZEnvironment(config) ++ tracing)
+          )
         )
         _ <- setup(userInfoService)
 

@@ -41,7 +41,7 @@ object PostgresEdgeApp extends VersolaApp("edge"):
     SecurityService &
     Client
 
-  override def routes: Routes[Dependencies & Tracing, Nothing] =
+  override def routes: Routes[Dependencies & Tracing, Throwable] =
     List(
       CompleteController.routes,
       EdgeSessionController.routes,

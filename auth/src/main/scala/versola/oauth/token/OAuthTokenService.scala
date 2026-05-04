@@ -1,14 +1,13 @@
 package versola.oauth.token
 
-import versola.oauth.client.OAuthClientService
-import versola.oauth.client.model.{OAuthClientRecord, ScopeToken}
+import versola.oauth.client.OAuthConfigurationService
+import versola.oauth.client.model.{ClientCredentials, ClientIdWithSecret, OAuthClientRecord, ScopeToken}
 import versola.oauth.model.{AccessToken, AuthorizationCodeRecord, RefreshToken}
 import versola.oauth.revoke.AccessTokenRevocationService
 import versola.oauth.session.model.{RefreshAlreadyExchanged, RefreshTokenRecord, WithTtl}
 import versola.oauth.session.{RefreshTokenRepository, SessionRepository}
 import versola.oauth.token.model.{ClientCredentialsRequest, CodeExchangeRequest, IssuedTokens, RefreshTokenRequest, TokenEndpointError}
 import versola.user.UserRepository
-import versola.util.http.{ClientCredentials, ClientIdWithSecret}
 import versola.util.{AuthPropertyGenerator, CoreConfig, MAC, Secret, SecurityService}
 import zio.prelude.These
 import zio.{Duration, IO, Task, ZIO, ZLayer}
@@ -34,14 +33,14 @@ object OAuthTokenService:
   def live = ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _))
 
   class Impl(
-      authorizationCodeRepository: AuthorizationCodeRepository,
-      oauthClientService: OAuthClientService,
-      tokenRepository: RefreshTokenRepository,
-      accessTokenRevocationService: AccessTokenRevocationService,
-      securityService: SecurityService,
-      authPropertyGenerator: AuthPropertyGenerator,
-      userRepository: UserRepository,
-      config: CoreConfig,
+              authorizationCodeRepository: AuthorizationCodeRepository,
+              oauthClientService: OAuthConfigurationService,
+              tokenRepository: RefreshTokenRepository,
+              accessTokenRevocationService: AccessTokenRevocationService,
+              securityService: SecurityService,
+              authPropertyGenerator: AuthPropertyGenerator,
+              userRepository: UserRepository,
+              config: CoreConfig,
   ) extends OAuthTokenService:
 
     override def exchangeAuthorizationCode(

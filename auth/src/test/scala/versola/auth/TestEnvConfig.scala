@@ -15,7 +15,9 @@ import java.security.KeyPairGenerator
 import java.security.interfaces.{RSAPrivateKey, RSAPublicKey}
 import java.time.Instant
 import java.util.{Date, UUID}
+import javax.crypto.spec.SecretKeySpec
 import zio.durationInt
+import zio.http.URL
 
 object TestEnvConfig:
 
@@ -87,4 +89,8 @@ object TestEnvConfig:
       ),
     ),
     jwt = jwtConfig,
+    central = CoreConfig.CentralSyncConfig(
+      url = URL.empty,
+      secretKey = SecretKeySpec(Array.fill(32)(0.toByte), "AES"),
+    ),
   )

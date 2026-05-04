@@ -1,7 +1,7 @@
 package versola.oauth.model
 
 import versola.oauth.client.model.{ClientId, ScopeToken}
-import versola.oauth.session.model.{SessionId, SessionRecord, RefreshTokenRecord}
+import versola.oauth.session.model.{RefreshTokenRecord, SessionId, SessionRecord}
 import versola.oauth.userinfo.model.RequestedClaims
 import versola.user.model.UserId
 import versola.util.MAC

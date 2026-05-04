@@ -1,6 +1,5 @@
 package versola.edge.model
 
-import versola.oauth.client.model.{ClientId, ScopeToken}
 import zio.schema.*
 
 import java.time.Instant

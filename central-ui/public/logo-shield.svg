@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="g" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#58a6ff"/>
+      <stop offset="100%" stop-color="#a371f7"/>
+    </linearGradient>
+    <linearGradient id="shieldFill" x1="50%" y1="0%" x2="50%" y2="100%">
+      <stop offset="0%" stop-color="#1c2230"/>
+      <stop offset="100%" stop-color="#131920"/>
+    </linearGradient>
+  </defs>
+  <!-- Background -->
+  <rect width="64" height="64" rx="14" fill="#0d1117"/>
+  <!-- Shield shape — clean modern pointed shield -->
+  <path d="M32 6 C32 6 52 10 54 12 L54 30 Q54 48 32 58 Q10 48 10 30 L10 12 C12 10 32 6 32 6Z"
+        fill="url(#shieldFill)" stroke="url(#g)" stroke-width="1.8"/>
+  <!-- V letter -->
+  <text x="32" y="41" font-family="Inter, sans-serif" font-weight="800" font-size="28" fill="url(#g)" text-anchor="middle">V</text>
+</svg>

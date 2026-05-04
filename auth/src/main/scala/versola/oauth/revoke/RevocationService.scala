@@ -1,11 +1,10 @@
 package versola.oauth.revoke
 
-import versola.oauth.client.OAuthClientService
-import versola.oauth.client.model.{ClientId, OAuthClientRecord}
+import versola.oauth.client.OAuthConfigurationService
+import versola.oauth.client.model.{ClientCredentials, ClientIdWithSecret, OAuthClientRecord}
 import versola.oauth.model.{AccessTokenPayload, RefreshToken}
 import versola.oauth.revoke.model.RevocationError
 import versola.oauth.session.RefreshTokenRepository
-import versola.util.http.{ClientCredentials, ClientIdWithSecret}
 import versola.util.{CoreConfig, Secret, SecurityService}
 import zio.{IO, Task, ZIO, ZLayer}
 
@@ -22,17 +21,17 @@ trait RevocationService:
 
 object RevocationService:
   def live: ZLayer[
-    OAuthClientService & RefreshTokenRepository & AccessTokenRevocationService & SecurityService & CoreConfig,
+    OAuthConfigurationService & RefreshTokenRepository & AccessTokenRevocationService & SecurityService & CoreConfig,
     Nothing,
     RevocationService,
   ] = ZLayer.fromFunction(Impl(_, _, _, _, _))
 
   private class Impl(
-      oauthClientService: OAuthClientService,
-      tokenRepository: RefreshTokenRepository,
-      accessTokenRevocationService: AccessTokenRevocationService,
-      securityService: SecurityService,
-      config: CoreConfig,
+                      oauthClientService: OAuthConfigurationService,
+                      tokenRepository: RefreshTokenRepository,
+                      accessTokenRevocationService: AccessTokenRevocationService,
+                      securityService: SecurityService,
+                      config: CoreConfig,
   ) extends RevocationService:
 
     override def revokeRefreshToken(

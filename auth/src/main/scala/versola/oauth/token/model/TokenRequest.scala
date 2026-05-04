@@ -1,6 +1,6 @@
 package versola.oauth.token.model
 
-import versola.oauth.client.model.{ClientId, ClientSecret, ScopeToken}
+import versola.oauth.client.model.{ClientSecret, ScopeToken}
 import versola.oauth.model.{AuthorizationCode, CodeVerifier, GrantType, RefreshToken}
 import zio.http.URL
 

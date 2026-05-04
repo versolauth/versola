@@ -43,7 +43,7 @@ object PostgresCleanupManager:
     *
     * The manager is started automatically when the layer is acquired and stopped when the scope is closed.
     */
-  val layer: ZLayer[TransactorZIO & ConfigProvider & Scope, Throwable, CleanupManager] =
+  val live: ZLayer[TransactorZIO & ConfigProvider & Scope, Throwable, CleanupManager] =
     cleanupConfig >>> ZLayer:
       ZIO.acquireRelease(
         acquire = for

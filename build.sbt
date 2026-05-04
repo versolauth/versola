@@ -5,10 +5,12 @@ lazy val root = project.in(file("."))
   .aggregate(
     util,
     `util-postgres`,
-    `oauth-postgres-impl`,
+    `auth-postgres-impl`,
     auth,
     `edge-postgres-impl`,
-    edge
+    edge,
+    central,
+    `central-postgres-impl`
   )
 
 lazy val util = project
@@ -33,13 +35,14 @@ lazy val `util-postgres` = project.in(utilImplementations / "postgres")
 
 lazy val implementations = file("auth/implementations")
 
-lazy val `oauth-postgres-impl` = project.in(implementations / "postgres")
+lazy val `auth-postgres-impl` = project.in(implementations / "postgres")
   .enablePlugins(JavaAppPackaging)
   .settings(
-    name := "oauth-postgres-impl",
+    name := "auth-postgres-impl",
     commonSettings,
     libraryDependencies ++= Dependencies.database.postgres,
-    Compile / mainClass := Some("versola.PostgresOAuthApp")
+    Compile / mainClass := Some("versola.PostgresOAuthApp"),
+    sbtForkSettings
   ).dependsOn(
     auth % CompileTest,
     `util-postgres` % CompileTest
@@ -66,6 +69,7 @@ lazy val `edge-postgres-impl` = project.in(edgeImplementations / "postgres")
     commonSettings,
     libraryDependencies ++= Dependencies.database.postgres,
     Compile / mainClass := Some("versola.PostgresEdgeApp"),
+    sbtForkSettings
   ).dependsOn(
     edge % CompileTest,
     `util-postgres` % CompileTest
@@ -82,6 +86,43 @@ lazy val edge = project
   .dependsOn(
     util % CompileTest
   )
+
+
+lazy val central = project
+  .in(file("central"))
+  .settings(
+    name := "central",
+    commonSettings,
+    libraryDependencies ++= Dependencies.core,
+    libraryDependencies ++= Dependencies.http
+  )
+  .dependsOn(
+    util % CompileTest
+  )
+
+lazy val centralImplementations = file("central/implementations")
+
+lazy val `central-postgres-impl` = project.in(centralImplementations / "postgres")
+  .enablePlugins(JavaAppPackaging)
+  .settings(
+    name := "central-postgres-impl",
+    commonSettings,
+    libraryDependencies ++= Dependencies.database.postgres,
+    Compile / mainClass := Some("versola.PostgresCentralApp"),
+    sbtForkSettings,
+  ).dependsOn(
+    central % CompileTest,
+    `util-postgres` % CompileTest
+  )
+
+lazy val sbtForkSettings = Seq(
+  fork := true,
+  run / baseDirectory := (ThisBuild / baseDirectory).value,
+  run / envVars := sys.env,
+  run / javaOptions ++= sys.props
+    .collect { case (key, value) if key.startsWith("env.") => s"-D$key=$value"}
+    .toSeq,
+)
 
 lazy val commonSettings =
   Seq(

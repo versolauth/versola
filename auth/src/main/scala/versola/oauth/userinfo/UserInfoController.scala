@@ -31,7 +31,7 @@ import scala.jdk.CollectionConverters.*
 object UserInfoController extends Controller:
   type Env = Tracing & UserInfoService & CoreConfig
 
-  def routes: Routes[Env, Nothing] = Routes(
+  def routes: Routes[Env, Throwable] = Routes(
     userInfoGetEndpoint,
     userInfoPostEndpoint,
   )
@@ -82,7 +82,7 @@ object UserInfoController extends Controller:
                 custom = userInfo.toJsonAST,
               ),
               ttl = 5.minutes,
-              signature = JWT.Signature(
+              signature = JWT.Signature.Asymmetric(
                 publicKeys = config.jwt.publicKeys,
                 privateKey = config.jwt.privateKey,
               ),
@@ -131,10 +131,8 @@ object UserInfoController extends Controller:
                   ),
                 )
 
-          case _: Throwable =>
-            ZIO.succeed:
-              Response
-                .status(Status.InternalServerError)
+          case error: Throwable =>
+            ZIO.fail(error)
     }
 
   private def extractBearerToken(request: Request): IO[UserInfoError, String] =

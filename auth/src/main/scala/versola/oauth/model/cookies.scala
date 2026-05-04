@@ -9,12 +9,12 @@ import zio.http.{Cookie, Path}
 object ConversationCookie:
   val name = "SSO_CONVERSATION"
 
-  inline def apply(value: AuthId, ttl: Duration): Cookie.Response = Cookie.Response(
+  inline def apply(value: AuthId, ttl: Duration, secure: Boolean): Cookie.Response = Cookie.Response(
     name = name,
     content = value.toString,
     domain = None,
     path = Some(Path.root / "v1" / "challenge"),
-    isSecure = true,
+    isSecure = secure,
     isHttpOnly = true,
     maxAge = Some(ttl),
     sameSite = None,
@@ -23,12 +23,12 @@ object ConversationCookie:
 object SessionCookie:
   val name = "SSO_SESSION"
 
-  inline def apply(value: MAC.Of[SessionId], ttl: Duration): Cookie.Response = Cookie.Response(
+  inline def apply(value: MAC.Of[SessionId], ttl: Duration, secure: Boolean): Cookie.Response = Cookie.Response(
     name = name,
     content = Base64Url.encode(value),
     domain = None,
     path = Some(Path.root),
-    isSecure = true,
+    isSecure = false,
     isHttpOnly = true,
     maxAge = Some(ttl),
     sameSite = None,
