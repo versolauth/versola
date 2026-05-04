@@ -84,6 +84,9 @@ class PostgresRefreshTokenRepository(xa: TransactorZIO) extends RefreshTokenRepo
       case e: java.sql.SQLException if e.getSQLState == "40001" =>
         // Serialization failure (SQLSTATE 40001) - concurrent rotation detected
         ZIO.fail(RefreshAlreadyExchanged())
+      case e: java.sql.SQLException if e.getSQLState == "23505" =>
+        // Unique constraint violation (SQLSTATE 23505) - previous_id already used
+        ZIO.fail(RefreshAlreadyExchanged())
     }
 
   override def find(token: MAC.Of[RefreshToken]): Task[Option[RefreshTokenRecord]] =
