@@ -1,6 +1,6 @@
 CREATE TABLE refresh_tokens(
     id BYTEA PRIMARY KEY,
-    previous_id BYTEA,
+    previous_id BYTEA UNIQUE,
     access_token BYTEA UNIQUE NOT NULL,
     session_id BYTEA NOT NULL,
     user_id UUID NOT NULL,

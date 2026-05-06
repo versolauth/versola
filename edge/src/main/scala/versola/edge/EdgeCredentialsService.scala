@@ -1,8 +1,7 @@
 package versola.edge
 
 import com.typesafe.config.{Config, ConfigFactory}
-import versola.edge.model.EdgeCredentials
-import versola.oauth.client.model.{ClientId, ScopeToken}
+import versola.edge.model.{ClientId, EdgeCredentials, ScopeToken}
 import versola.util.Secret
 import zio.{Task, UIO, ZIO, ZLayer}
 

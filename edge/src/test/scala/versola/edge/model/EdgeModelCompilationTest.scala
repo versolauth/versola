@@ -1,6 +1,5 @@
 package versola.edge.model
 
-import versola.oauth.client.model.{ClientId, ScopeToken}
 import versola.util.MAC
 import zio.test.*
 

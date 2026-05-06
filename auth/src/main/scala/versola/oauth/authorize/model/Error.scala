@@ -1,6 +1,5 @@
 package versola.oauth.authorize.model
 
-import versola.oauth.client.model.ClientId
 import versola.oauth.model.State
 import zio.http.URL
 

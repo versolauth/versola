@@ -2,8 +2,7 @@ package versola.edge
 
 import com.augustnagro.magnum.magzio.TransactorZIO
 import com.augustnagro.magnum.*
-import versola.edge.model.{EdgeSession, EdgeSessionId}
-import versola.oauth.client.model.{ClientId, ScopeToken}
+import versola.edge.model.{ClientId, EdgeSession, EdgeSessionId, ScopeToken}
 import versola.util.MAC
 import versola.util.postgres.BasicCodecs
 import zio.{Clock, Duration, Task}

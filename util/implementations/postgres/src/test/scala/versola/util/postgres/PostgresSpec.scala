@@ -24,6 +24,7 @@ object PostgresSpec:
   val transactor =
     config >>> (Scope.default >>> PostgresHikariDataSource.layer(
       serviceName = None,
-      migrate = true
+      migrate = true,
+      validateOnMigrate = false,
     )) >>> TransactorZIO.layer
 

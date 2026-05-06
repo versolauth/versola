@@ -3,7 +3,7 @@ package versola.oauth.introspect
 import versola.oauth.introspect.model.{IntrospectionError, IntrospectionErrorResponse, IntrospectionResponse}
 import versola.oauth.model.{AccessTokenPayload, RefreshToken}
 import versola.util.{Base64, Base64Url, CoreConfig, FormDecoder, JWT}
-import versola.util.http.Controller
+import versola.util.http.{Controller, extractCredentials}
 import zio.*
 import zio.http.*
 import zio.json.*
@@ -16,7 +16,7 @@ import zio.telemetry.opentelemetry.tracing.Tracing
 object IntrospectionController extends Controller:
   type Env = Tracing & IntrospectionService & CoreConfig
 
-  def routes: Routes[Env, Nothing] = Routes(
+  def routes: Routes[Env, Throwable] = Routes(
     introspectEndpoint,
   )
 
@@ -29,7 +29,7 @@ object IntrospectionController extends Controller:
         tokenEither <- request.formAs[Either[RefreshToken, String]].orElseFail(IntrospectionError.InvalidRequest)
         response <- tokenEither match
           case Right(token) =>
-            JWT.deserialize[AccessTokenPayload](token, config.jwt.publicKeys)
+            JWT.deserialize[AccessTokenPayload](token, config.jwt.publicKeys, JWT.Type.AccessToken)
               .flatMap(introspectionService.introspectAccessToken(_, credentials))
               .catchSome { case _: IntrospectionError => ZIO.succeed(IntrospectionResponse.Inactive) }
 
@@ -50,9 +50,8 @@ object IntrospectionController extends Controller:
                 .status(error.status)
                 .addHeader(Header.CacheControl.NoStore)
 
-          case ex: Throwable =>
-            ZIO.logErrorCause("Introspection error", Cause.fail(ex))
-              .as(Response.internalServerError)
+          case error: Throwable =>
+            ZIO.fail(error)
         }
     }
 

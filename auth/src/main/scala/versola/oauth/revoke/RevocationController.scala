@@ -2,7 +2,7 @@ package versola.oauth.revoke
 
 import versola.oauth.model.{AccessTokenPayload, RefreshToken}
 import versola.oauth.revoke.model.{RevocationError, RevocationErrorResponse}
-import versola.util.http.Controller
+import versola.util.http.{Controller, extractCredentials}
 import versola.util.{CoreConfig, FormDecoder, JWT}
 import zio.*
 import zio.http.*
@@ -16,7 +16,7 @@ import zio.telemetry.opentelemetry.tracing.Tracing
 object RevocationController extends Controller:
   type Env = Tracing & RevocationService & CoreConfig
 
-  def routes: Routes[Env, Nothing] = Routes(
+  def routes: Routes[Env, Throwable] = Routes(
     revokeEndpoint,
   )
 
@@ -33,7 +33,7 @@ object RevocationController extends Controller:
 
         _ <- token match
           case Right(accessToken) =>
-            JWT.deserialize[AccessTokenPayload](accessToken, config.jwt.publicKeys)
+            JWT.deserialize[AccessTokenPayload](accessToken, config.jwt.publicKeys, JWT.Type.AccessToken)
               .flatMap(revocationService.revokeAccessToken(_, credentials))
               .catchSome {
                 case _: RevocationError => ZIO.unit
@@ -52,9 +52,9 @@ object RevocationController extends Controller:
                 .status(error.status)
           case _: JWT.Error =>
             ZIO.succeed(Response.ok)
-          case ex: Throwable =>
-            ZIO.logErrorCause("Token revocation error", Cause.fail(ex))
-              .as(Response.internalServerError)
+
+          case error: Throwable =>
+            ZIO.fail(error)
         }
     }
 

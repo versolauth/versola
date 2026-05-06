@@ -3,23 +3,14 @@ package versola.oauth.token
 import com.nimbusds.jose.crypto.RSASSASigner
 import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm, JWSHeader}
 import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
-import versola.oauth.client.OAuthClientService
-import versola.oauth.client.model.{ClientId, ScopeToken}
+import versola.oauth.client.OAuthConfigurationService
+import versola.oauth.client.model.ScopeToken
 import versola.oauth.model.{AccessToken, AuthorizationCode, CodeVerifier, RefreshToken}
-import versola.oauth.token.model.{
-  ClientCredentialsRequest,
-  CodeExchangeRequest,
-  IssuedTokens,
-  RefreshTokenRequest,
-  TokenEndpointError,
-  TokenErrorResponse,
-  TokenRequest,
-  TokenResponse,
-}
+import versola.oauth.token.model.{ClientCredentialsRequest, CodeExchangeRequest, IssuedTokens, RefreshTokenRequest, TokenEndpointError, TokenErrorResponse, TokenRequest, TokenResponse}
 import versola.oauth.userinfo.UserInfoService
 import versola.user.model.UserId
 import versola.util.CoreConfig.JwtConfig
-import versola.util.http.{ClientCredentials, ClientIdWithSecret, Controller}
+import versola.util.http.{Controller, extractCredentials}
 import versola.util.{Base64, Base64Url, CoreConfig, FormDecoder, JWT, Secret}
 import zio.*
 import zio.http.*
@@ -31,9 +22,9 @@ import java.time.Instant
 import java.util.Date
 
 object TokenEndpointController extends Controller:
-  type Env = Tracing & OAuthTokenService & OAuthClientService & UserInfoService & CoreConfig
+  type Env = Tracing & OAuthTokenService & OAuthConfigurationService & UserInfoService & CoreConfig
 
-  def routes: Routes[Env, Nothing] = Routes(
+  def routes: Routes[Env, Throwable] = Routes(
     tokenEndpoint,
   )
 
@@ -63,8 +54,8 @@ object TokenEndpointController extends Controller:
                 .addHeader(Header.CacheControl.NoStore)
                 .addHeader(Header.Pragma.NoCache)
 
-          case ex: Throwable =>
-            ZIO.succeed(Response.internalServerError)
+          case error: Throwable =>
+            ZIO.fail(error)
         }
     }
 
@@ -96,7 +87,7 @@ object TokenEndpointController extends Controller:
           custom = Json.Obj(customClaims.toSeq*),
         ),
         ttl = tokens.accessTokenTtl,
-        signature = JWT.Signature(
+        signature = JWT.Signature.Asymmetric(
           publicKeys = config.jwt.publicKeys,
           privateKey = config.jwt.privateKey,
         ),
@@ -134,7 +125,7 @@ object TokenEndpointController extends Controller:
               custom = Json.Obj(Chunk.fromIterable(userInfo.claims)),
             ),
             ttl = tokens.accessTokenTtl,
-            signature = JWT.Signature(
+            signature = JWT.Signature.Asymmetric(
               publicKeys = config.jwt.publicKeys,
               privateKey = config.jwt.privateKey,
             ),

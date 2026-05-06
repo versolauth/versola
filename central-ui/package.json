@@ -1,0 +1,38 @@
+{
+  "name": "@versola/admin-ui",
+  "version": "1.0.0",
+  "description": "Versola Central UI - OAuth 2.0 & OpenID Connect Admin Dashboard",
+  "type": "module",
+  "main": "dist/versola-admin.js",
+  "module": "dist/versola-admin.js",
+  "exports": {
+    ".": "./dist/versola-admin.js"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "type-check": "tsc --noEmit",
+    "test:ui": "npx playwright test",
+    "test:ui:headed": "npx playwright test --headed"
+  },
+  "keywords": [
+    "oauth",
+    "openid-connect",
+    "admin",
+    "web-components",
+    "lit"
+  ],
+  "author": "Versola",
+  "license": "MIT",
+  "dependencies": {
+    "lit": "^3.2.1"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.48.2",
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.5"
+  }
+}
+

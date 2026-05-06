@@ -18,7 +18,7 @@ import zio.telemetry.opentelemetry.tracing.Tracing
 object ConversationController extends Controller:
   type Env = Tracing & ConversationRouter & ConversationRenderService
 
-  def routes: Routes[Env, Nothing] = Routes(
+  def routes: Routes[Env, Throwable] = Routes(
     getFormRoute,
     submitEmailRoute,
     submitPhoneRoute,
@@ -59,21 +59,20 @@ object ConversationController extends Controller:
 
   private def submit[Body <: Submission: FormDecoder](
       pattern: RoutePattern[Unit],
-  ): Route[ConversationRouter & ConversationRenderService, Nothing] =
+  ): Route[ConversationRouter & ConversationRenderService, Throwable] =
     pattern -> handler { (request: Request) =>
-      for
+      (for
         router <- ZIO.service[ConversationRouter]
         conversationRenderService <- ZIO.service[ConversationRenderService]
         authId <- extractAuthId(request)
         body <- request.formAs[Body].orElseFail(Error.BadRequest)
         submissionResult <- router.submit(authId, body)
         response <- conversationRenderService.renderSubmit(submissionResult)
-      yield response
-    }.catchAll { err =>
-      Handler.fromZIO(
-        ZIO.logError(s"Error in submit: $err")
-          .as(Response.status(Status.InternalServerError)),
-      )
+      yield response)
+        .catchAll {
+          case error: Error => ZIO.succeed(Response.badRequest)
+          case ex: Throwable => ZIO.fail(ex)
+        }
     }
 
   private def extractAuthId(
@@ -108,4 +107,4 @@ object ConversationController extends Controller:
       password <- FormDecoder.single[String](form, "password", Right(_))
     yield LoginPasswordSubmission(Login(login), Password(password))
 
-  //TODO login/password validation
+  // TODO login/password validation

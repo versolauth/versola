@@ -1,15 +1,22 @@
 package versola.util
 
 import zio.Duration
+import zio.http.URL
 
 import java.security.PrivateKey
+import javax.crypto.SecretKey
 
 case class CoreConfig(
     security: CoreConfig.Security,
-    jwt: CoreConfig.JwtConfig
+    jwt: CoreConfig.JwtConfig,
+    central: CoreConfig.CentralSyncConfig
 )
 
 object CoreConfig:
+  case class CentralSyncConfig(
+      url: URL,
+      secretKey: SecretKey,
+  )
 
   case class JwtConfig(
       issuer: String,
@@ -61,5 +68,5 @@ object CoreConfig:
     case class Passwords(
         pepper: Secret.Bytes16,
         historySize: Int, // Number of passwords to keep in history (including current)
-        numDifferent: Int // Number of different passwords required before allowing reuse
+        numDifferent: Int, // Number of different passwords required before allowing reuse
     )
