@@ -3,7 +3,7 @@ import { customElement, property, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
 import { buttonStyles, cardStyles, formStyles } from '../styles/components';
 import { AuthorizationPreset, OAuthClient, OAuthScope } from '../types';
-import { validateClientId } from '../utils/validators';
+import { validateRedirectUri } from '../utils/validators';
 import { getLocalizedDescription } from '../utils/helpers';
 
 @customElement('versola-preset-form')
@@ -16,16 +16,20 @@ export class VersolaPresetForm extends LitElement {
     id: '',
     description: '',
     redirectUri: '',
+    postLoginRedirectUri: 'https://',
     scope: [],
     responseType: 'code',
     uiLocales: [],
     customParameters: {},
+    cookieDomain: '',
+    cookiePath: '',
   };
 
   @state() private uiLocaleInput = '';
   @state() private customParamKey = '';
   @state() private customParamValue = '';
   @state() private presetIdError = '';
+  @state() private postLoginRedirectUriError = '';
   @state() private uiLocaleError = '';
   @state() private customParamError = '';
   @state() private openInfoKey: string | null = null;
@@ -74,6 +78,14 @@ export class VersolaPresetForm extends LitElement {
         display: flex;
         gap: var(--spacing-sm);
         justify-content: flex-end;
+        margin-top: var(--spacing-lg);
+        padding-top: var(--spacing-lg);
+        border-top: 1px solid var(--border-dark);
+      }
+
+      .form-section {
+        display: grid;
+        gap: var(--spacing-lg);
         margin-top: var(--spacing-lg);
         padding-top: var(--spacing-lg);
         border-top: 1px solid var(--border-dark);
@@ -353,10 +365,13 @@ export class VersolaPresetForm extends LitElement {
         id: '',
         description: '',
         redirectUri: this.client?.redirectUris[0] || '',
+        postLoginRedirectUri: 'https://',
         scope: [],
         responseType: 'code',
         uiLocales: [],
         customParameters: {},
+        cookieDomain: '',
+        cookiePath: '',
       };
     }
   }
@@ -387,7 +402,20 @@ export class VersolaPresetForm extends LitElement {
     return true;
   }
 
-
+  private validatePostLoginRedirectUri(): boolean {
+    const uri = (this.formData.postLoginRedirectUri || '').trim();
+    if (!uri) {
+      this.postLoginRedirectUriError = '';
+      return false;
+    }
+    const result = validateRedirectUri(uri);
+    if (!result.valid) {
+      this.postLoginRedirectUriError = result.error || 'Invalid post-login redirect URI';
+      return false;
+    }
+    this.postLoginRedirectUriError = '';
+    return true;
+  }
 
   private handleSubmit(e: Event) {
     e.preventDefault();
@@ -415,14 +443,28 @@ export class VersolaPresetForm extends LitElement {
 
     this.presetIdError = '';
 
+    const postLoginRedirectUri = (this.formData.postLoginRedirectUri || '').trim();
+    const postLoginValidation = validateRedirectUri(postLoginRedirectUri);
+    if (!postLoginValidation.valid) {
+      this.postLoginRedirectUriError = postLoginValidation.error || 'Invalid post-login redirect URI';
+      return;
+    }
+    this.postLoginRedirectUriError = '';
+
+    const cookieDomain = (this.formData.cookieDomain || '').trim();
+    const cookiePath = (this.formData.cookiePath || '').trim();
+
     const preset: AuthorizationPreset = {
       id: finalId,
       description: this.formData.description!,
       redirectUri: this.formData.redirectUri!,
+      postLoginRedirectUri,
       scope: this.formData.scope || [],
       responseType: this.formData.responseType as 'code' | 'code id_token',
       uiLocales: (this.formData.uiLocales && this.formData.uiLocales.length > 0) ? this.formData.uiLocales : undefined,
       customParameters: this.formData.customParameters || {},
+      cookieDomain: cookieDomain || undefined,
+      cookiePath: cookiePath || undefined,
     };
 
     this.dispatchEvent(new CustomEvent('submit', {
@@ -772,6 +814,53 @@ export class VersolaPresetForm extends LitElement {
                   `)}
                 </div>
               ` : ''}
+            </div>
+
+            <div class="form-section">
+              <div class="form-group">
+                <label for="preset-post-login-redirect-uri">Post-login redirect URI *</label>
+                <input
+                  type="text"
+                  id="preset-post-login-redirect-uri"
+                  class="form-input compact-input ${this.postLoginRedirectUriError ? 'input-error' : ''}"
+                  .value=${this.formData.postLoginRedirectUri || ''}
+                  @input=${(e: Event) => {
+                    this.formData = { ...this.formData, postLoginRedirectUri: (e.target as HTMLInputElement).value };
+                    this.validatePostLoginRedirectUri();
+                  }}
+                  placeholder="https://app.example.com/dashboard"
+                  required
+                />
+                ${this.postLoginRedirectUriError
+                  ? html`<div class="error-text">${this.postLoginRedirectUriError}</div>`
+                  : html`<div class="hint">Browser is redirected here after the OAuth code exchange completes</div>`}
+              </div>
+
+              <div class="form-group">
+                <label for="preset-cookie-domain">Session cookie domain (optional)</label>
+                <input
+                  type="text"
+                  id="preset-cookie-domain"
+                  class="form-input compact-input"
+                  .value=${this.formData.cookieDomain || ''}
+                  @input=${(e: Event) => this.formData = { ...this.formData, cookieDomain: (e.target as HTMLInputElement).value }}
+                  placeholder="example.com"
+                />
+                <div class="hint">Leave empty to scope the session cookie to the edge host only</div>
+              </div>
+
+              <div class="form-group">
+                <label for="preset-cookie-path">Session cookie path (optional)</label>
+                <input
+                  type="text"
+                  id="preset-cookie-path"
+                  class="form-input compact-input"
+                  .value=${this.formData.cookiePath || ''}
+                  @input=${(e: Event) => this.formData = { ...this.formData, cookiePath: (e.target as HTMLInputElement).value }}
+                  placeholder="/"
+                />
+                <div class="hint">Leave empty to use the root path "/"</div>
+              </div>
             </div>
           </div>
 

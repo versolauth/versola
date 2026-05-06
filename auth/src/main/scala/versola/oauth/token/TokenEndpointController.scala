@@ -29,7 +29,7 @@ object TokenEndpointController extends Controller:
   )
 
   val tokenEndpoint =
-    Method.POST / "v1" / "token" -> handler { (request: Request) =>
+    Method.POST / "token" -> handler { (request: Request) =>
       (for
         oauthTokenService <- ZIO.service[OAuthTokenService]
         config <- ZIO.service[CoreConfig]
@@ -73,7 +73,8 @@ object TokenEndpointController extends Controller:
         "jti" -> Json.Str(Base64Url.encode(tokens.accessToken)),
       ) ++
         tokens.requestedClaims.map(rc => "requested_claims" -> rc.toJsonAST.toOption.get) ++
-        tokens.uiLocales.map(locales => "ui_locales" -> Json.Arr(locales.map(Json.Str(_))*))
+        Option.when(tokens.roles.nonEmpty)("roles" -> Json.Arr(tokens.roles.map(Json.Str(_))*))
+
 
       // For client_credentials grant, use client_id as subject; otherwise use user_id
       subject = tokens.userId.map(_.toString).getOrElse(tokens.clientId)
@@ -88,7 +89,8 @@ object TokenEndpointController extends Controller:
         ),
         ttl = tokens.accessTokenTtl,
         signature = JWT.Signature.Asymmetric(
-          publicKeys = config.jwt.publicKeys,
+          algorithm = config.jwt.publicKeys.active.algorithm,
+          keyId = config.jwt.publicKeys.active.id,
           privateKey = config.jwt.privateKey,
         ),
       )
@@ -126,7 +128,8 @@ object TokenEndpointController extends Controller:
             ),
             ttl = tokens.accessTokenTtl,
             signature = JWT.Signature.Asymmetric(
-              publicKeys = config.jwt.publicKeys,
+              algorithm = config.jwt.publicKeys.active.algorithm,
+              keyId = config.jwt.publicKeys.active.id,
               privateKey = config.jwt.privateKey,
             ),
           )

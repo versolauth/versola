@@ -51,7 +51,7 @@ object OAuthScopeSyncClientSpec extends ZIOSpecDefault:
         claims <- JWT.deserialize[SignedClaims](token, secretKey).mapError(e => new RuntimeException(e.toString))
       yield assertTrue(
         request.method == Method.GET,
-        request.url.encode.contains("v1/configuration/scopes/sync"),
+        request.url.encode.contains("configuration/scopes/sync"),
         claims.iss == "auth",
         claims.sub == "internal-auth",
         claims.aud == List("central"),

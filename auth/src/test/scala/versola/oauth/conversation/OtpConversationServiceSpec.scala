@@ -122,6 +122,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           phone = Some(userPhone),
           login = Some(userLogin),
           claims = userClaims,
+          uiLocales = None,
         )
         for
           _ <- env.userRepository.findByCredential.succeedsWith(Some(user))

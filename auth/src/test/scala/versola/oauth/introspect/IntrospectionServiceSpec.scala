@@ -42,6 +42,7 @@ object IntrospectionServiceSpec extends UnitSpecBase:
     secret = Some(clientSecret1),
     previousSecret = None,
     accessTokenTtl = 10.minutes,
+    refreshTokenTtl = 7776000.seconds,
   )
 
   def tokenRecord(now: Instant) = RefreshTokenRecord(
@@ -64,7 +65,6 @@ object IntrospectionServiceSpec extends UnitSpecBase:
     clientId = clientId1,
     scope = scope1,
     requestedClaims = None,
-    uiLocales = None,
     expiresAt = now.plusSeconds(3600),
     issuedAt = now,
     notBefore = Some(now),

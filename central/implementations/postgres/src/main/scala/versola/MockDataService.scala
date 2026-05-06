@@ -4,6 +4,7 @@ import com.augustnagro.magnum.*
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.central.configuration.CreateClientRequest
 import versola.central.configuration.clients.{ClientAlreadyExists, OAuthClientService}
+import versola.central.configuration.edges.EdgeRepository
 import versola.central.configuration.permissions.PermissionRepository
 import versola.central.configuration.resources.{ResourceEndpointId, ResourceEndpointRecord, ResourceId, ResourceRepository}
 import versola.central.configuration.roles.RoleRepository
@@ -17,11 +18,11 @@ trait MockDataService:
 
 object MockDataService:
   val live: ZLayer[
-    TenantRepository & PermissionRepository & ResourceRepository & OAuthScopeRepository & RoleRepository & OAuthClientService & TransactorZIO,
+    TenantRepository & PermissionRepository & ResourceRepository & OAuthScopeRepository & RoleRepository & OAuthClientService & EdgeRepository & TransactorZIO,
     Throwable,
     MockDataService,
   ] =
-    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _))
+    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _))
       >>> ZLayer(ZIO.serviceWithZIO[MockDataService](service => service.insert().as(service)))
 
   final case class Impl(
@@ -31,7 +32,8 @@ object MockDataService:
       resourceRepository: ResourceRepository,
       scopeRepository: OAuthScopeRepository,
       roleRepository: RoleRepository,
-      clientService: OAuthClientService
+      clientService: OAuthClientService,
+      edgeRepository: EdgeRepository,
   ) extends MockDataService:
 
     private def cleanup(): Task[Unit] =
@@ -39,7 +41,7 @@ object MockDataService:
         sql"""TRUNCATE TABLE tenants, permissions, resources, oauth_scopes, roles, oauth_clients, edges RESTART IDENTITY CASCADE""".update.run()
 
     override def insert(): Task[Unit] =
-      cleanup() *> insertTenants() *> insertResources() *> insertPermissions() *> insertScopes() *> insertRoles() *> insertClients()
+      cleanup() *> insertTenants() *> insertResources() *> insertPermissions() *> insertScopes() *> insertRoles() *> insertClients() *> insertEdges()
 
     private def insertTenants(): Task[Unit] =
       ZIO.foreachDiscard(CentralMockData.tenants): tenant =>
@@ -58,6 +60,7 @@ object MockDataService:
       ZIO.foreach(CentralMockData.resources): resource =>
         resourceRepository.createResource(
           tenantId = resource.tenantId,
+          alias = resource.alias,
           resource = resource.resource,
           endpoints = resource.endpoints.map { endpoint =>
             ResourceEndpointRecord(
@@ -65,9 +68,8 @@ object MockDataService:
               method = endpoint.method,
               path = endpoint.path,
               fetchUserInfo = endpoint.fetchUserInfo,
-              allowRules = endpoint.allowRules,
-              denyRules = endpoint.denyRules,
-              injectHeaders = endpoint.injectHeaders,
+              allowExpression = endpoint.allow,
+              inject = endpoint.inject,
             )
           },
         )
@@ -110,3 +112,7 @@ object MockDataService:
           }
           _ <- ZIO.when(client.hasPreviousSecret)(clientService.rotateClientSecret(client.id).unit)
         yield ()
+
+    private def insertEdges(): Task[Unit] =
+      ZIO.foreachDiscard(CentralMockData.edges): edge =>
+        edgeRepository.createEdge(edge.id, edge.publicKeyJwk)

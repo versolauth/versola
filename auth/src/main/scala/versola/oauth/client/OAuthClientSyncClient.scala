@@ -21,14 +21,14 @@ object OAuthClientSyncClient:
       securityService: SecurityService,
       centralSyncTokenService: CentralSyncTokenService,
   ) extends OAuthClientSyncClient:
-    private val ClientsURL = config.central.url / "v1" / "configuration" / "clients" / "sync"
+    private val ClientsURL = config.central.url / "configuration" / "clients" / "sync"
 
     override def getAll: Task[ClientsWithPepper] =
       for
         token <- centralSyncTokenService.getToken
         request = Request.get(ClientsURL).addHeader(Header.Authorization.Bearer(token))
-        response <- ZIO.scoped(httpClient.request(request))
-        clients <- response.bodyAs[OAuthClientsWithPepperEncrypted]
+        clients <- ZIO.scoped:
+          httpClient.request(request).flatMap(_.bodyAs[OAuthClientsWithPepperEncrypted])
         decryptedPepper <- decryptSecret(clients.pepper)
         decryptedClients <- ZIO.foreach(clients.clients) { client =>
           for
@@ -44,6 +44,7 @@ object OAuthClientSyncClient:
             secret = secret,
             previousSecret = previousSecret,
             accessTokenTtl = client.accessTokenTtl,
+            refreshTokenTtl = client.refreshTokenTtl,
           )
         }
       yield ClientsWithPepper(decryptedClients.map(it => it.id -> it).toMap, decryptedPepper)
@@ -67,6 +68,7 @@ object OAuthClientSyncClient:
         secret: Option[String],
         previousSecret: Option[String],
         accessTokenTtl: Duration,
+        refreshTokenTtl: Duration,
     ) derives JsonCodec
 
     private case class OAuthClientsWithPepperEncrypted(

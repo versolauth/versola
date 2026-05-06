@@ -26,6 +26,8 @@
   "author": "Versola",
   "license": "MIT",
   "dependencies": {
+    "@marcbachmann/cel-js": "^7.6.1",
+    "libphonenumber-js": "^1.13.3",
     "lit": "^3.2.1"
   },
   "devDependencies": {
@@ -35,4 +37,3 @@
     "vite": "^6.0.5"
   }
 }
-

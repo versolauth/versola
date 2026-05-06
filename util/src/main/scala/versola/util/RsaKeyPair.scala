@@ -1,7 +1,7 @@
 package versola.util
 
 import com.nimbusds.jose.JWSAlgorithm
-import com.nimbusds.jose.jwk.{KeyUse, RSAKey}
+import com.nimbusds.jose.jwk.{JWKSet, KeyUse, RSAKey}
 import zio.json.ast.Json
 import zio.json.{DecoderOps, EncoderOps}
 

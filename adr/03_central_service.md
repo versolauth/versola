@@ -94,7 +94,7 @@ Versola is composed of control-plane services plus client-side deployed traffic 
 
 **auth** is the OAuth 2.1 / OIDC authorization server. It handles end-user authorization flows, token issuance, token introspection, revocation, and the UserInfo endpoint. It persists its own state (sessions, authorization codes, refresh tokens, users) in a dedicated database and fetches the full client and scope configuration set from `central`.
 
-**edge** is a client-side deployed session and token entry-point service. It fronts browser interactions and `/v1/token` requests before delegating OAuth handling to the `auth` service. It maintains its own session store and retrieves only tenant-specific client configuration from `central`, including secret-bearing settings required for tenant integrations.
+**edge** is a client-side deployed session and token entry-point service. It fronts browser interactions and `/token` requests before delegating OAuth handling to the `auth` service. It maintains its own session store and retrieves only tenant-specific client configuration from `central`, including secret-bearing settings required for tenant integrations.
 
 **central** is the configuration service described in this ADR. It holds the canonical definition of tenants, clients, scopes, roles, and permissions in its own database.
 
@@ -114,7 +114,7 @@ Observability is built into every service via OpenTelemetry tracing, structured 
 
 The frontend communicates with the central service over **synchronous HTTP REST**. Requests originate from the browser, target the central service API, and receive JSON responses. There is no real-time channel, no WebSocket, and no event streaming at this stage.
 
-All API paths are versioned under `/v1/configuration/`. Listing endpoints accept optional `offset` and `limit` query parameters for pagination. All resource endpoints require a `tenantId` query parameter to enforce tenant isolation.
+All API paths are mounted under `/configuration/`. Listing endpoints accept optional `offset` and `limit` query parameters for pagination. All resource endpoints require a `tenantId` query parameter to enforce tenant isolation.
 
 The client list response contains only non-sensitive metadata — name, redirect URIs, allowed scopes. No secret material is ever returned to the UI.
 
@@ -129,7 +129,7 @@ sequenceDiagram
     participant Central as central
 
     Admin->>UI: Opens admin dashboard
-    UI->>Central: GET /v1/configuration/tenants
+    UI->>Central: GET /configuration/tenants
     Central-->>UI: [{id, description}, ...]
     UI-->>Admin: Render tenant selector
 
@@ -148,7 +148,7 @@ sequenceDiagram
     participant DB as PostgreSQL
 
     Admin->>UI: Navigates to Clients section
-    UI->>Central: GET /v1/configuration/clients?tenantId=...&offset=0&limit=10
+    UI->>Central: GET /configuration/clients?tenantId=...&offset=0&limit=10
     Central->>DB: Query oauth_clients by tenant
     DB-->>Central: Client rows
     Central-->>UI: [{id, clientName, redirectUris, scope, ...}, ...]
@@ -167,7 +167,7 @@ sequenceDiagram
     participant DB as PostgreSQL
 
     Admin->>UI: Fills client form and submits
-    UI->>Central: POST /v1/configuration/clients
+    UI->>Central: POST /configuration/clients
     Central->>Central: Generate 256-bit secret
     Central->>Central: Compute MAC with salt+pepper
     Central->>DB: INSERT into oauth_clients
@@ -189,7 +189,7 @@ sequenceDiagram
     participant Client as Client Application
 
     Admin->>UI: Clicks "Rotate Secret" for a client
-    UI->>Central: POST /v1/configuration/clients/rotate-secret?clientId=...
+    UI->>Central: POST /configuration/clients/rotate-secret?clientId=...
     Central->>Central: Generate new 256-bit secret
     Central->>Central: Compute MAC with new salt+pepper
     Central->>DB: Move current secret to previous_secret, store new MAC
@@ -202,7 +202,7 @@ sequenceDiagram
     Client-->>Admin: Confirmed — client is working with new secret
 
     Admin->>UI: Clicks "Delete Previous Secret" for the client
-    UI->>Central: DELETE /v1/configuration/clients/previous-secret?clientId=...
+    UI->>Central: DELETE /configuration/clients/previous-secret?clientId=...
     Central->>DB: Set previous_secret = NULL
     DB-->>Central: OK
     Central-->>UI: 204 No Content
@@ -219,7 +219,7 @@ sequenceDiagram
     participant DB as PostgreSQL
 
     Admin->>UI: Fills scope form (token, description, claims)
-    UI->>Central: POST /v1/configuration/scopes
+    UI->>Central: POST /configuration/scopes
     Central->>DB: INSERT into oauth_scopes + oauth_claims
     DB-->>Central: OK
     Central-->>UI: 201 Created
@@ -236,7 +236,7 @@ The decision on how to authenticate the admin dashboard against the central serv
 
 The frontend is distributed as a compiled ES module (`versola-admin.js`). The entry point is a single `<versola-admin>` custom element that hosts the entire dashboard. Internally it composes smaller Web Components (`versola-clients-list`, `versola-client-form`, etc.) that each own a slice of the UI.
 
-At the time of this writing the frontend uses static mock data for development purposes. The integration with the central service REST API is the immediate next step and will replace all mock data imports with fetch calls to `/v1/configuration/...` endpoints.
+At the time of this writing the frontend uses static mock data for development purposes. The integration with the central service REST API is the immediate next step and will replace all mock data imports with fetch calls to `/configuration/...` endpoints.
 
 ---
 

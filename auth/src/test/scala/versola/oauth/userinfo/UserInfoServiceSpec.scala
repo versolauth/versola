@@ -22,6 +22,7 @@ object UserInfoServiceSpec extends UnitSpecBase, ZIOStubs:
     None,
     None,
     Json.Obj("name" -> Json.Str("John Doe"), "given_name" -> Json.Str("John"), "family_name" -> Json.Str("Doe")),
+    None,
   )
 
   private def scope(id: ScopeToken, claims: Claim*) = ScopeRecord(id, claims.toVector.map(ClaimRecord(_)))
@@ -40,7 +41,7 @@ object UserInfoServiceSpec extends UnitSpecBase, ZIOStubs:
       for
         _ <- env.userRepo.find.succeedsWith(Some(testUser))
         _ <- env.clientService.getScopes.succeedsWith(Vector(openIdScope, profileScope, emailScope))
-        result <- env.service.getUserInfo(userId1, Set(ScopeToken.OpenId, ScopeToken("profile")), None, None)
+        result <- env.service.getUserInfo(userId1, Set(ScopeToken.OpenId, ScopeToken("profile")), None)
       yield assertTrue(
         result.claims.contains("sub"),
         result.claims.contains("name"),
@@ -56,7 +57,7 @@ object UserInfoServiceSpec extends UnitSpecBase, ZIOStubs:
       for
         _ <- env.userRepo.find.succeedsWith(Some(testUser))
         _ <- env.clientService.getScopes.succeedsWith(Vector(openIdScope, profileScope))
-        result <- env.service.getUserInfo(userId1, Set(ScopeToken.OpenId, ScopeToken("profile")), Some(requestedClaims), None)
+        result <- env.service.getUserInfo(userId1, Set(ScopeToken.OpenId, ScopeToken("profile")), Some(requestedClaims))
       yield assertTrue(result.claims.contains("name"), !result.claims.contains("given_name"), !result.claims.contains("family_name"))
     },
     test("getUserInfo fails when user is missing") {
@@ -64,7 +65,7 @@ object UserInfoServiceSpec extends UnitSpecBase, ZIOStubs:
       for
         _ <- env.userRepo.find.succeedsWith(None)
         _ <- env.clientService.getScopes.succeedsWith(Vector(openIdScope))
-        result <- env.service.getUserInfo(userId1, Set(ScopeToken.OpenId), None, None).either
+        result <- env.service.getUserInfo(userId1, Set(ScopeToken.OpenId), None).either
       yield assertTrue(result == Left(UserInfoError.InvalidToken))
     },
     test("getUserInfoForIdToken includes nonce and uses requested_claims.id_token") {

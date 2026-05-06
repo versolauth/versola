@@ -21,7 +21,7 @@ object RevocationController extends Controller:
   )
 
   val revokeEndpoint =
-    Method.POST / "v1" / "revoke" -> handler { (request: Request) =>
+    Method.POST / "revoke" -> handler { (request: Request) =>
       (for
         revocationService <- ZIO.service[RevocationService]
         config <- ZIO.service[CoreConfig]

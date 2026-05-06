@@ -7,21 +7,14 @@ import versola.oauth.authorize.{AuthorizeEndpointController, AuthorizeEndpointSe
 import versola.oauth.challenge.password.{PasswordRepository, PasswordService, PostgresPasswordRepository}
 import versola.oauth.client.{OAuthClientSyncClient, OAuthConfigurationService, OAuthScopeSyncClient}
 import versola.oauth.conversation.otp.{EmailOtpProvider, OtpGenerationService, OtpService}
-import versola.oauth.conversation.{
-  ConversationController,
-  ConversationRenderService,
-  ConversationRepository,
-  ConversationRouter,
-  ConversationService,
-  PostgresConversationRepository,
-}
+import versola.oauth.conversation.{ConversationController, ConversationRenderService, ConversationRepository, ConversationRouter, ConversationService, PostgresConversationRepository}
 import versola.oauth.introspect.{IntrospectionController, IntrospectionService}
 import versola.oauth.jwks.JwksController
 import versola.oauth.revoke.{AccessTokenRevocationService, RevocationController, RevocationService}
 import versola.oauth.session.{PostgresRefreshTokenRepository, PostgresSessionRepository, RefreshTokenRepository, SessionRepository}
 import versola.oauth.token.{AuthorizationCodeRepository, OAuthTokenService, TokenEndpointController}
 import versola.oauth.userinfo.{UserInfoController, UserInfoService}
-import versola.user.{PostgresUserRepository, UserRepository}
+import versola.user.{PostgresUserRepository, PostgresUserRolesRepository, UserController, UserRepository, UserRolesRepository}
 import versola.util.*
 import versola.util.JWT.PublicKeys
 import versola.util.http.VersolaApp
@@ -43,15 +36,10 @@ object PostgresOAuthApp extends VersolaApp("auth"):
 
   override given Tag[Dependencies] = Tag[Dependencies]
 
-  override def diagnosticsConfig: Server.Config =
-    Server.Config.default.port(8081)
-
-  override def serverConfig: Server.Config =
-    Server.Config.default.port(8080)
-
   type Dependencies =
     CoreConfig &
       UserRepository &
+      UserRolesRepository &
       OAuthConfigurationService &
       ConversationRepository &
       AuthorizationCodeRepository &
@@ -85,10 +73,12 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       ConversationController.routes,
       UserInfoController.routes,
       JwksController.routes,
+      UserController.routes,
     ).reduce(_ ++ _)
 
   val repositories = PostgresHikariDataSource.transactor(serviceName = Some("auth"), migrate = true) >+> (
     PostgresUserRepository.live >+>
+      PostgresUserRolesRepository.live >+>
       PostgresConversationRepository.live >+>
       PostgresAuthorizationCodeRepository.live >+>
       PostgresSessionRepository.live >+>

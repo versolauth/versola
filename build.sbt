@@ -19,7 +19,8 @@ lazy val util = project
     name := "util",
     commonSettings,
     libraryDependencies ++= Dependencies.core,
-    libraryDependencies ++= Dependencies.http
+    libraryDependencies ++= Dependencies.http,
+    libraryDependencies ++= Dependencies.cel,
   )
 
 lazy val utilImplementations = file("util/implementations")
@@ -81,7 +82,7 @@ lazy val edge = project
     name := "edge",
     commonSettings,
     libraryDependencies ++= Dependencies.core,
-    libraryDependencies ++= Dependencies.http
+    libraryDependencies ++= Dependencies.http,
   )
   .dependsOn(
     util % CompileTest

@@ -2,9 +2,12 @@ package versola.central.configuration.permissions
 
 import io.opentelemetry.api
 import org.scalamock.stubs.{Stub, ZIOStubs}
+import versola.central.{CentralConfig, TestCentralConfig}
 import versola.central.configuration.*
+import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.resources.ResourceEndpointId
 import versola.central.configuration.tenants.TenantId
+import versola.util.Secret
 import versola.util.http.Observability
 import zio.*
 import zio.http.*
@@ -14,9 +17,12 @@ import zio.telemetry.opentelemetry.tracing.Tracing
 import zio.test.*
 
 import java.util.UUID
+import javax.crypto.spec.SecretKeySpec
 
 object PermissionControllerSpec extends ZIOSpecDefault, ZIOStubs:
   private def endpointId(value: String): ResourceEndpointId = ResourceEndpointId(UUID.fromString(value))
+
+  private val config = TestCentralConfig.config
 
   private val tenantId = TenantId("tenant-a")
   private val usersRead = Permission("users:read")
@@ -66,10 +72,13 @@ object PermissionControllerSpec extends ZIOSpecDefault, ZIOStubs:
       for
         client <- ZIO.service[Client]
         service = stub[PermissionService]
+        edgeService = stub[EdgeService]
         tracing <- tracingLayer.build
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
-            PermissionController.routes.provideEnvironment(ZEnvironment(service) ++ tracing)
+            PermissionController.routes.provideEnvironment(
+              ZEnvironment[PermissionService](service) ++ tracing ++ ZEnvironment(config) ++ ZEnvironment[EdgeService](edgeService)
+            )
           )
         )
         _ <- setup(service)
@@ -82,7 +91,7 @@ object PermissionControllerSpec extends ZIOSpecDefault, ZIOStubs:
     controllerTestCase(
       description = "return tenant permissions with pagination params",
       request = Request.get(
-        (URL.empty / "v1" / "configuration" / "permissions")
+        (URL.empty / "configuration" / "permissions")
           .addQueryParams(Map("tenantId" -> tenantId.toString, "offset" -> "2", "limit" -> "5"))
       ),
       expectedStatus = Status.Ok,
@@ -104,7 +113,7 @@ object PermissionControllerSpec extends ZIOSpecDefault, ZIOStubs:
     controllerTestCase(
       description = "use default offset and empty limit when pagination params are absent",
       request = Request.get(
-        (URL.empty / "v1" / "configuration" / "permissions")
+        (URL.empty / "configuration" / "permissions")
           .addQueryParam("tenantId", tenantId.toString)
       ),
       expectedStatus = Status.Ok,
@@ -122,7 +131,7 @@ object PermissionControllerSpec extends ZIOSpecDefault, ZIOStubs:
       description = "create permission",
       request = Request(
         method = Method.POST,
-        url = URL.empty / "v1" / "configuration" / "permissions",
+        url = URL.empty / "configuration" / "permissions",
         body = Body.fromString(createRequest.toJson),
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.Created,
@@ -135,7 +144,7 @@ object PermissionControllerSpec extends ZIOSpecDefault, ZIOStubs:
       description = "update permission",
       request = Request(
         method = Method.PUT,
-        url = URL.empty / "v1" / "configuration" / "permissions",
+        url = URL.empty / "configuration" / "permissions",
         body = Body.fromString(updateRequest.toJson),
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.NoContent,
@@ -148,7 +157,7 @@ object PermissionControllerSpec extends ZIOSpecDefault, ZIOStubs:
       description = "delete global permission when tenantId is absent",
       request = Request(
         method = Method.DELETE,
-        url = (URL.empty / "v1" / "configuration" / "permissions")
+        url = (URL.empty / "configuration" / "permissions")
           .addQueryParam("permission", adminView.toString),
       ),
       expectedStatus = Status.NoContent,

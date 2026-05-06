@@ -1,25 +1,29 @@
 package versola.central.configuration.permissions
 
+import versola.central.{CentralConfig, authorizeInternal}
+import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.tenants.TenantId
-import versola.central.configuration.{CreatePermissionRequest, GetAllPermissionsResponse, PermissionResponse, UpdatePermissionRequest}
+import versola.central.configuration.{CreatePermissionRequest, GetAllPermissionsResponse, GetPermissionsSyncResponse, PermissionResponse, PermissionSyncResponse, UpdatePermissionRequest}
 import versola.util.http.Controller
 import zio.http.{Method, Request, Response, Routes, Status, handler}
 import zio.json.{EncoderOps, JsonCodec}
 import zio.schema.*
+import zio.telemetry.opentelemetry.tracing.Tracing
 import zio.{Cause, ZIO}
 
 object PermissionController extends Controller:
-  type Env = Tracing & PermissionService
+  type Env = Tracing & PermissionService & CentralConfig & EdgeService
 
   def routes: Routes[Env, Throwable] = Routes(
     getAllPermissionsEndpoint,
     createPermissionEndpoint,
     updatePermissionEndpoint,
     deletePermissionEndpoint,
+    syncPermissionsEndpoint,
   )
 
   val getAllPermissionsEndpoint =
-    Method.GET / "v1" / "configuration" / "permissions" -> handler { (request: Request) =>
+    Method.GET / "configuration" / "permissions" -> handler { (request: Request) =>
       for
         service <- ZIO.service[PermissionService]
         tenantId <- request.url.queryZIO[TenantId]("tenantId")
@@ -36,7 +40,7 @@ object PermissionController extends Controller:
     }
 
   val createPermissionEndpoint =
-    Method.POST / "v1" / "configuration" / "permissions" -> handler { (request: Request) =>
+    Method.POST / "configuration" / "permissions" -> handler { (request: Request) =>
       for
         service <- ZIO.service[PermissionService]
         body <- request.body.asJson[CreatePermissionRequest]
@@ -45,7 +49,7 @@ object PermissionController extends Controller:
     }
 
   val updatePermissionEndpoint =
-    Method.PUT / "v1" / "configuration" / "permissions" -> handler { (request: Request) =>
+    Method.PUT / "configuration" / "permissions" -> handler { (request: Request) =>
       for
         service <- ZIO.service[PermissionService]
         body <- request.body.asJson[UpdatePermissionRequest]
@@ -54,11 +58,27 @@ object PermissionController extends Controller:
     }
 
   val deletePermissionEndpoint =
-    Method.DELETE / "v1" / "configuration" / "permissions" -> handler { (request: Request) =>
+    Method.DELETE / "configuration" / "permissions" -> handler { (request: Request) =>
       for
         service <- ZIO.service[PermissionService]
         permission <- request.url.queryZIO[Permission]("permission")
         tenantId <- request.url.queryZIO[Option[TenantId]]("tenantId")
         _ <- service.deletePermission(tenantId, permission)
       yield Response.status(Status.NoContent)
+    }
+
+  val syncPermissionsEndpoint =
+    Method.GET / "configuration" / "permissions" / "sync" -> handler { (request: Request) =>
+      for
+        service <- ZIO.service[PermissionService]
+        edgeId <- authorizeInternal(request)
+        permissions <- service.getPermissionsForSync(edgeId)
+        response = GetPermissionsSyncResponse(permissions.map { p =>
+          PermissionSyncResponse(
+            tenantId = p.tenantId,
+            id = p.id,
+            endpointIds = p.endpointIds,
+          )
+        })
+      yield Response.json(response.toJson)
     }

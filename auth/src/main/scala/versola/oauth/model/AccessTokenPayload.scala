@@ -15,7 +15,6 @@ case class AccessTokenPayload(
     @jsonField("client_id") clientId: ClientId,
     scope: Set[ScopeToken],
     @jsonField("requested_claims") requestedClaims: Option[RequestedClaims],
-    @jsonField("ui_locales") uiLocales: Option[List[String]],
     @jsonField("exp") expiresAt: Instant,
     @jsonField("iat") issuedAt: Instant,
     @jsonField("nbf") notBefore: Option[Instant],

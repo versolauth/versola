@@ -12,6 +12,7 @@ import './resources-list';
 import './roles-list';
 import './tenants-list';
 import './edges-list';
+import './users-list';
 
 @customElement('versola-admin')
 export class VersolaAdmin extends LitElement {
@@ -102,7 +103,7 @@ export class VersolaAdmin extends LitElement {
     const expandClient = params.get('expandClient');
     const expandEdge = params.get('expandEdge');
 
-    if (urlView === 'clients' || urlView === 'scopes' || urlView === 'permissions' || urlView === 'resources' || urlView === 'roles' || urlView === 'tenants' || urlView === 'edges') {
+    if (urlView === 'clients' || urlView === 'scopes' || urlView === 'permissions' || urlView === 'resources' || urlView === 'roles' || urlView === 'tenants' || urlView === 'edges' || urlView === 'users') {
       this.currentView = urlView;
     }
 
@@ -159,6 +160,8 @@ export class VersolaAdmin extends LitElement {
         return html`<versola-tenants-list .selectedTenantId=${this.currentTenantId} @tenant-change=${this.handleTenantChange}></versola-tenants-list>`;
       case 'edges':
         return html`<versola-edges-list .expandEdgeId=${this.edgeToExpandOnLoad} @navigate-to-client=${this.handleNavigateToClient}></versola-edges-list>`;
+      case 'users':
+        return html`<versola-users-list .tenantId=${this.currentTenantId}></versola-users-list>`;
       default:
         return html`<versola-clients-list .tenantId=${this.currentTenantId}></versola-clients-list>`;
     }

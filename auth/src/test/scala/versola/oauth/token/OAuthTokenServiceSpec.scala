@@ -11,7 +11,7 @@ import versola.oauth.session.model.{RefreshAlreadyExchanged, RefreshTokenRecord,
 import versola.oauth.token.model.{ClientCredentialsRequest, CodeExchangeRequest, RefreshTokenRequest, TokenEndpointError}
 import versola.oauth.client.model.Claim
 import versola.oauth.userinfo.model.{ClaimRequest, RequestedClaims}
-import versola.user.UserRepository
+import versola.user.{UserRepository, UserRolesRepository}
 import versola.user.model.UserId
 import versola.util.{AuthPropertyGenerator, CoreConfig, MAC, Secret, SecurityService}
 import zio.*
@@ -59,6 +59,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
     secret = Some(clientSecret1),
     previousSecret = None,
     accessTokenTtl = 10.minutes,
+    refreshTokenTtl = 7776000.seconds,
   )
 
   val publicClientId = ClientId("public-client-1")
@@ -72,6 +73,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
     secret = None, // Public client has no secret
     previousSecret = None,
     accessTokenTtl = 10.minutes,
+    refreshTokenTtl = 7776000.seconds,
   )
 
   class Env:
@@ -82,6 +84,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
     val securityService = stub[SecurityService]
     val propertyGenerator = stub[AuthPropertyGenerator]
     val userRepo = stub[UserRepository]
+    val userRolesRepo = stub[UserRolesRepository]
     val service = OAuthTokenService.Impl(
       authCodeRepo,
       clientService,
@@ -90,6 +93,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
       securityService,
       propertyGenerator,
       userRepo,
+      userRolesRepo,
       TestEnvConfig.coreConfig,
     )
 
@@ -123,6 +127,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.propertyGenerator.nextRefreshToken.succeedsWith(refreshToken1)
           _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
           _ <- env.tokenRepo.create.succeedsWith(())
+          _ <- env.userRolesRepo.findRolesByUser.succeedsWith(List.empty)
 
           request = CodeExchangeRequest(authCode1, redirectUri1, codeVerifier1)
           credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
@@ -161,6 +166,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.authCodeRepo.markAsUsed.succeedsWith(Right(()))
           _ <- env.authCodeRepo.delete.succeedsWith(())
           _ <- env.propertyGenerator.nextAccessToken.succeedsWith(accessToken1)
+          _ <- env.userRolesRepo.findRolesByUser.succeedsWith(List.empty)
 
           request = CodeExchangeRequest(authCode1, redirectUri1, codeVerifier1)
           credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
@@ -262,6 +268,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.propertyGenerator.nextAccessToken.succeedsWith(accessToken1)
           _ <- env.propertyGenerator.nextRefreshToken.succeedsWith(newRefreshToken)
           _ <- env.tokenRepo.create.succeedsWith(())
+          _ <- env.userRolesRepo.findRolesByUser.succeedsWith(List.empty)
 
           request = RefreshTokenRequest(refreshToken1, None)
           credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
@@ -309,6 +316,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.propertyGenerator.nextAccessToken.succeedsWith(accessToken1)
           _ <- env.propertyGenerator.nextRefreshToken.succeedsWith(newRefreshToken)
           _ <- env.tokenRepo.create.succeedsWith(())
+          _ <- env.userRolesRepo.findRolesByUser.succeedsWith(List.empty)
 
           request = RefreshTokenRequest(refreshToken1, Some(reducedScope))
           credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))

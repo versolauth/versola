@@ -1,7 +1,7 @@
 import type {
-  AclRuleGroup,
   AuthorizationPreset,
   Edge,
+  InjectRule,
   OAuthClaim,
   OAuthClient,
   OAuthScope,
@@ -28,34 +28,34 @@ type AuthorizationPresetResponse = {
   clientId: string;
   description: string;
   redirectUri: string;
+  postLoginRedirectUri: string;
   scope: string[];
   responseType: string;
   uiLocales?: string[];
   customParameters?: Record<string, string[]>;
+  cookieDomain?: string;
+  cookiePath?: string;
 };
 type CreateResourceResponse = { id: number };
-type CreateResourceEndpointResponse = { id: ResourceEndpointId };
-type CreateResourceEndpointPayload = Omit<ResourceEndpoint, 'id'>;
+type CreateResourceEndpointPayload = Omit<ResourceEndpoint, 'id' | 'allow'> & { allow: string | null };
 type SaveResourceEndpointPayload = CreateResourceEndpointPayload & { id?: ResourceEndpointId };
 type ResourceEndpointWriteDto = {
   id?: string | number;
   method: string;
   path: string;
   fetchUserInfo: boolean;
-  allowRules: AclRuleGroup;
-  denyRules: AclRuleGroup;
-  injectHeaders: Record<string, string>;
+  allow: string | null;
+  inject: InjectRule[];
 };
 type ResourceEndpointDto = {
   id?: ResourceEndpointId;
   method: string;
   path: string;
   fetchUserInfo: boolean;
-  allowRules: AclRuleGroup;
-  denyRules: AclRuleGroup;
-  injectHeaders: Record<string, string>;
+  allow?: string;
+  inject: InjectRule[];
 };
-type ResourceResponseDto = { id: number; resource: string; endpoints: Array<ResourceEndpointDto & { id: ResourceEndpointId }> };
+type ResourceResponseDto = { id: number; alias: string; resource: string; endpoints: Array<ResourceEndpointDto & { id: ResourceEndpointId }> };
 
 type EdgeResponseDto = { id: string; hasOldKey?: boolean };
 type EdgesResponse = { edges: EdgeResponseDto[] };
@@ -313,9 +313,8 @@ function serializeResourceEndpoint(
     method: endpoint.method,
     path: endpoint.path,
     fetchUserInfo: endpoint.fetchUserInfo,
-    allowRules: clone(endpoint.allowRules),
-    denyRules: clone(endpoint.denyRules),
-    injectHeaders: { ...endpoint.injectHeaders },
+    allow: endpoint.allow,
+    inject: endpoint.inject.map(rule => ({ ...rule })),
   };
 }
 
@@ -330,21 +329,21 @@ function serializePersistedResourceEndpoint(
 function mapResource(resource: ResourceResponseDto): Resource {
   return {
     id: resource.id,
+    alias: resource.alias,
     resource: resource.resource,
     endpoints: resource.endpoints.map(endpoint => ({
       id: endpoint.id,
       method: endpoint.method,
       path: endpoint.path,
       fetchUserInfo: endpoint.fetchUserInfo,
-      allowRules: clone(endpoint.allowRules),
-      denyRules: clone(endpoint.denyRules),
-      injectHeaders: { ...endpoint.injectHeaders },
+      allow: endpoint.allow,
+      inject: endpoint.inject.map(rule => ({ ...rule })),
     })),
   };
 }
 
 export async function fetchTenants(): Promise<Tenant[]> {
-  const response = await request<TenantsResponse>('/v1/configuration/tenants');
+  const response = await request<TenantsResponse>('/configuration/tenants');
   return response.tenants.map(tenant => ({
     id: tenant.id,
     name: tenant.description || tenant.id,
@@ -354,28 +353,28 @@ export async function fetchTenants(): Promise<Tenant[]> {
 }
 
 export async function createTenant(id: string, description: string, edgeId: string | null = null): Promise<void> {
-  await requestVoid('/v1/configuration/tenants', {
+  await requestVoid('/configuration/tenants', {
     method: 'POST',
     body: { id, description, edgeId },
   });
 }
 
 export async function updateTenant(id: string, description: string, edgeId: string | null = null): Promise<void> {
-  await requestVoid('/v1/configuration/tenants', {
+  await requestVoid('/configuration/tenants', {
     method: 'PUT',
     body: { id, description, edgeId },
   });
 }
 
 export async function deleteTenant(tenantId: string): Promise<void> {
-  await requestVoid('/v1/configuration/tenants', {
+  await requestVoid('/configuration/tenants', {
     method: 'DELETE',
     query: { tenantId },
   });
 }
 
 export async function fetchPermissions(tenantId: string, offset = 0, limit = DEFAULT_PAGE_SIZE): Promise<PagedResult<Permission>> {
-  const response = await request<PermissionsResponse>('/v1/configuration/permissions', { query: { tenantId, offset, limit } });
+  const response = await request<PermissionsResponse>('/configuration/permissions', { query: { tenantId, offset, limit } });
   return toPagedResult(
     response.permissions.map(permission => {
       const hydrated = {
@@ -392,7 +391,7 @@ export async function fetchPermissions(tenantId: string, offset = 0, limit = DEF
 }
 
 export async function fetchScopes(tenantId: string, offset = 0, limit = DEFAULT_PAGE_SIZE): Promise<PagedResult<OAuthScope>> {
-  const response = await request<ScopesResponse>('/v1/configuration/scopes', { query: { tenantId, offset, limit } });
+  const response = await request<ScopesResponse>('/configuration/scopes', { query: { tenantId, offset, limit } });
   return toPagedResult(
     response.scopes.map(scope => ({
       id: scope.scope,
@@ -404,7 +403,7 @@ export async function fetchScopes(tenantId: string, offset = 0, limit = DEFAULT_
 }
 
 export async function fetchClients(tenantId: string, offset = 0, limit = DEFAULT_PAGE_SIZE): Promise<PagedResult<OAuthClient>> {
-  const response = await request<ClientsResponse>('/v1/configuration/clients', { query: { tenantId, offset, limit } });
+  const response = await request<ClientsResponse>('/configuration/clients', { query: { tenantId, offset, limit } });
   return toPagedResult(
     response.clients.map(client => {
       const supplement = clientSupplementStore.get(entityKey(tenantId, client.id));
@@ -425,7 +424,7 @@ export async function fetchClients(tenantId: string, offset = 0, limit = DEFAULT
 }
 
 export async function fetchRoles(tenantId: string, offset = 0, limit = DEFAULT_PAGE_SIZE): Promise<PagedResult<Role>> {
-  const response = await request<RolesResponse>('/v1/configuration/roles', { query: { tenantId, offset, limit } });
+  const response = await request<RolesResponse>('/configuration/roles', { query: { tenantId, offset, limit } });
   return toPagedResult(
     response.roles.map(role => {
       const supplement = roleSupplementStore.get(entityKey(tenantId, role.id));
@@ -450,18 +449,21 @@ export async function fetchAllScopes(tenantId: string): Promise<OAuthScope[]> {
   return fetchAllPages((offset, limit) => fetchScopes(tenantId, offset, limit));
 }
 
-export async function fetchClientPresets(tenantId: string, clientId: string): Promise<AuthorizationPreset[]> {
-  const response = await request<AuthorizationPresetResponse[]>('/v1/configuration/auth-request-presets', {
+export async function fetchClientPresets(clientId: string): Promise<AuthorizationPreset[]> {
+  const response = await request<AuthorizationPresetResponse[]>('/configuration/auth-request-presets', {
     query: { clientId },
   });
   return response.map(preset => ({
     id: preset.id,
     description: preset.description,
     redirectUri: preset.redirectUri,
+    postLoginRedirectUri: preset.postLoginRedirectUri,
     scope: [...preset.scope],
     responseType: preset.responseType as 'code' | 'code id_token',
     uiLocales: preset.uiLocales,
     customParameters: preset.customParameters || {},
+    cookieDomain: preset.cookieDomain,
+    cookiePath: preset.cookiePath,
   }));
 }
 
@@ -474,19 +476,20 @@ export async function fetchAllRoles(tenantId: string): Promise<Role[]> {
 }
 
 export async function fetchResources(tenantId: string): Promise<Resource[]> {
-  const response = await request<ResourcesResponse>('/v1/configuration/resources', { query: { tenantId } });
+  const response = await request<ResourcesResponse>('/configuration/resources', { query: { tenantId } });
   return response.resources.map(mapResource);
 }
 
 export async function createResource(
   tenantId: string,
+  alias: string,
   resource: string,
   endpoints: CreateResourceEndpointPayload[] = [],
 ): Promise<{ id: number; endpoints: Array<ResourceEndpointWriteDto & { id: ResourceEndpointId }> }> {
   const serializedEndpoints = endpoints.map(endpoint => serializePersistedResourceEndpoint(endpoint));
-  const response = await request<CreateResourceResponse>('/v1/configuration/resources', {
+  const response = await request<CreateResourceResponse>('/configuration/resources', {
     method: 'POST',
-    body: { tenantId, resource, endpoints: serializedEndpoints },
+    body: { tenantId, alias, resource, endpoints: serializedEndpoints },
   });
   return { id: response.id, endpoints: serializedEndpoints };
 }
@@ -494,6 +497,7 @@ export async function createResource(
 export async function updateResource(
   id: number,
   existingEndpoints: Array<Pick<ResourceEndpoint, 'id'>>,
+  alias: string,
   resource: string,
   endpoints?: SaveResourceEndpointPayload[],
 ): Promise<Array<ResourceEndpointWriteDto & { id: ResourceEndpointId }>> {
@@ -503,66 +507,23 @@ export async function updateResource(
     .map(endpoint => endpoint.id)
     .filter(endpointId => !nextEndpointIds.has(endpointId));
 
-  await requestVoid('/v1/configuration/resources', {
+  await requestVoid('/configuration/resources', {
     method: 'PUT',
-    body: { id, resource, deleteEndpoints, createEndpoints },
+    body: { id, alias, resource, deleteEndpoints, createEndpoints },
   });
 
   return createEndpoints;
 }
 
 export async function deleteResource(id: number): Promise<void> {
-  await requestVoid('/v1/configuration/resources', {
+  await requestVoid('/configuration/resources', {
     method: 'DELETE',
     query: { id },
   });
 }
 
-export async function saveResourceDraft(
-  id: number,
-  resource: string,
-  endpoints: SaveResourceEndpointPayload[],
-): Promise<Resource> {
-  const response = await request<ResourceResponseDto>('/v1/configuration/resources/draft', {
-    method: 'POST',
-    body: { id, resource, endpoints: endpoints.map(endpoint => serializeResourceEndpoint(endpoint)) },
-  });
-  return mapResource(response);
-}
-
-export async function createResourceEndpoint(
-  tenantId: string,
-  resourceId: number,
-  endpoint: CreateResourceEndpointPayload,
-): Promise<ResourceEndpointId> {
-  const response = await request<CreateResourceEndpointResponse>('/v1/configuration/resources/endpoints', {
-    method: 'POST',
-    body: { tenantId, resourceId, ...serializeResourceEndpoint(endpoint, { includeGeneratedId: true }) },
-  });
-
-  return response.id;
-}
-
-export async function updateResourceEndpoint(
-  tenantId: string,
-  endpointId: ResourceEndpointId,
-  endpoint: CreateResourceEndpointPayload,
-): Promise<void> {
-  await requestVoid('/v1/configuration/resources/endpoints', {
-    method: 'PUT',
-    body: { tenantId, id: endpointId, ...serializeResourceEndpoint(endpoint) },
-  });
-}
-
-export async function deleteResourceEndpoint(tenantId: string, endpointId: ResourceEndpointId): Promise<void> {
-  await requestVoid('/v1/configuration/resources/endpoints', {
-    method: 'DELETE',
-    query: { tenantId, id: endpointId },
-  });
-}
-
 export async function createPermission(tenantId: string, permission: Permission): Promise<void> {
-  await requestVoid('/v1/configuration/permissions', {
+  await requestVoid('/configuration/permissions', {
     method: 'POST',
     body: {
       tenantId,
@@ -576,7 +537,7 @@ export async function createPermission(tenantId: string, permission: Permission)
 }
 
 export async function updatePermission(tenantId: string, existing: Permission, permission: Permission): Promise<void> {
-  await requestVoid('/v1/configuration/permissions', {
+  await requestVoid('/configuration/permissions', {
     method: 'PUT',
     body: {
       tenantId,
@@ -592,7 +553,7 @@ export async function updatePermission(tenantId: string, existing: Permission, p
 }
 
 export async function deletePermission(tenantId: string, permissionId: string): Promise<void> {
-  await requestVoid('/v1/configuration/permissions', {
+  await requestVoid('/configuration/permissions', {
     method: 'DELETE',
     query: { tenantId, permission: permissionId },
   });
@@ -601,7 +562,7 @@ export async function deletePermission(tenantId: string, permissionId: string): 
 }
 
 export async function createScope(tenantId: string, scope: OAuthScope): Promise<void> {
-  await requestVoid('/v1/configuration/scopes', {
+  await requestVoid('/configuration/scopes', {
     method: 'POST',
     body: {
       tenantId,
@@ -613,7 +574,7 @@ export async function createScope(tenantId: string, scope: OAuthScope): Promise<
 }
 
 export async function updateScope(tenantId: string, existing: OAuthScope, scope: OAuthScope): Promise<void> {
-  await requestVoid('/v1/configuration/scopes', {
+  await requestVoid('/configuration/scopes', {
     method: 'PUT',
     body: {
       tenantId,
@@ -627,14 +588,14 @@ export async function updateScope(tenantId: string, existing: OAuthScope, scope:
 }
 
 export async function deleteScope(tenantId: string, scopeId: string): Promise<void> {
-  await requestVoid('/v1/configuration/scopes', {
+  await requestVoid('/configuration/scopes', {
     method: 'DELETE',
     query: { tenantId, scopeId },
   });
 }
 
 export async function createRole(tenantId: string, role: Role): Promise<void> {
-  await requestVoid('/v1/configuration/roles', {
+  await requestVoid('/configuration/roles', {
     method: 'POST',
     body: {
       tenantId,
@@ -652,7 +613,7 @@ export async function createRole(tenantId: string, role: Role): Promise<void> {
 }
 
 export async function updateRole(tenantId: string, existing: Role, role: Role): Promise<void> {
-  await requestVoid('/v1/configuration/roles', {
+  await requestVoid('/configuration/roles', {
     method: 'PUT',
     body: {
       tenantId,
@@ -673,7 +634,7 @@ export async function updateRole(tenantId: string, existing: Role, role: Role): 
 }
 
 export async function deleteRole(tenantId: string, roleId: string): Promise<void> {
-  await requestVoid('/v1/configuration/roles', {
+  await requestVoid('/configuration/roles', {
     method: 'DELETE',
     query: { tenantId, roleId },
   });
@@ -682,7 +643,7 @@ export async function deleteRole(tenantId: string, roleId: string): Promise<void
 }
 
 export async function createClient(tenantId: string, client: OAuthClient): Promise<string> {
-  const response = await request<ClientSecretResponse>('/v1/configuration/clients', {
+  const response = await request<ClientSecretResponse>('/configuration/clients', {
     method: 'POST',
     body: {
       tenantId,
@@ -706,7 +667,7 @@ export async function createClient(tenantId: string, client: OAuthClient): Promi
 }
 
 export async function rotateClientSecret(tenantId: string, clientId: string): Promise<string> {
-  const response = await request<ClientSecretResponse>('/v1/configuration/clients/rotate-secret', {
+  const response = await request<ClientSecretResponse>('/configuration/clients/rotate-secret', {
     method: 'POST',
     query: { clientId },
   });
@@ -722,7 +683,7 @@ export async function rotateClientSecret(tenantId: string, clientId: string): Pr
 }
 
 export async function deletePreviousClientSecret(tenantId: string, clientId: string): Promise<void> {
-  await requestVoid('/v1/configuration/clients/previous-secret', {
+  await requestVoid('/configuration/clients/previous-secret', {
     method: 'DELETE',
     query: { clientId },
   });
@@ -736,7 +697,7 @@ export async function deletePreviousClientSecret(tenantId: string, clientId: str
 }
 
 export async function updateClient(tenantId: string, existing: OAuthClient, client: OAuthClient): Promise<void> {
-  await requestVoid('/v1/configuration/clients', {
+  await requestVoid('/configuration/clients', {
     method: 'PUT',
     body: {
       clientId: client.id,
@@ -756,7 +717,7 @@ export async function updateClient(tenantId: string, existing: OAuthClient, clie
 }
 
 export async function deleteClient(tenantId: string, clientId: string): Promise<void> {
-  await requestVoid('/v1/configuration/clients', {
+  await requestVoid('/configuration/clients', {
     method: 'DELETE',
     query: { clientId },
   });
@@ -765,7 +726,7 @@ export async function deleteClient(tenantId: string, clientId: string): Promise<
 }
 
 export async function fetchEdges(): Promise<Edge[]> {
-  const response = await request<EdgesResponse>('/v1/configuration/edges');
+  const response = await request<EdgesResponse>('/configuration/edges');
   return response.edges.map(edge => ({
     id: edge.id,
     hasOldKey: edge.hasOldKey ?? false,
@@ -773,7 +734,7 @@ export async function fetchEdges(): Promise<Edge[]> {
 }
 
 export async function registerEdge(id: string): Promise<ServiceKey> {
-  const response = await request<ServiceKeyResponseDto>('/v1/configuration/edges', {
+  const response = await request<ServiceKeyResponseDto>('/configuration/edges', {
     method: 'POST',
     body: { id },
   });
@@ -781,7 +742,7 @@ export async function registerEdge(id: string): Promise<ServiceKey> {
 }
 
 export async function rotateEdgeKey(edgeId: string): Promise<ServiceKey> {
-  const response = await request<ServiceKeyResponseDto>('/v1/configuration/edges/rotate-key', {
+  const response = await request<ServiceKeyResponseDto>('/configuration/edges/rotate-key', {
     method: 'POST',
     query: { edgeId },
   });
@@ -789,14 +750,14 @@ export async function rotateEdgeKey(edgeId: string): Promise<ServiceKey> {
 }
 
 export async function deleteOldEdgeKey(edgeId: string): Promise<void> {
-  await requestVoid('/v1/configuration/edges/old-key', {
+  await requestVoid('/configuration/edges/old-key', {
     method: 'DELETE',
     query: { edgeId },
   });
 }
 
 export async function deleteEdge(edgeId: string): Promise<void> {
-  await requestVoid('/v1/configuration/edges', {
+  await requestVoid('/configuration/edges', {
     method: 'DELETE',
     query: { edgeId },
   });

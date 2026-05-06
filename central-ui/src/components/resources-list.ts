@@ -1,21 +1,24 @@
-import { LitElement, css, html } from 'lit';
+import { LitElement, css, html, type TemplateResult } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { buttonStyles, cardStyles, formStyles, methodBadgeStyles, tableStyles } from '../styles/components';
+import { celHighlightStyles } from '../styles/cel-highlight';
 import { theme } from '../styles/theme';
-import type { AclRuleGroup, AclRuleNode, AclRuleTree, Resource, ResourceEndpoint, ResourceEndpointId, Rule } from '../types';
+import type { InjectRule, InjectTarget, Resource, ResourceEndpoint, ResourceEndpointId } from '../types';
 import { createResource, deleteResource, fetchResources, updateResource } from '../utils/central-api';
+import { renderHighlightedCel } from '../utils/cel-highlight';
+import { validateCel } from '../utils/cel-validator';
 import { confirmDestructiveAction } from '../utils/confirm-dialog';
 import { formatResourceLabel } from '../utils/helpers';
 import { validateResourceUri } from '../utils/validators';
+import './cel-editor';
 import './content-header';
 
 type ResourceEndpointDraft = {
   method: string;
   path: string;
   fetchUserInfo: boolean;
-  allowRules: ResourceEndpoint['allowRules'];
-  denyRules: ResourceEndpoint['denyRules'];
-  injectHeaders: Record<string, string>;
+  allow: string;
+  inject: InjectRule[];
 };
 
 type EditableResourceEndpoint = ResourceEndpointDraft & {
@@ -23,58 +26,26 @@ type EditableResourceEndpoint = ResourceEndpointDraft & {
   draftId: string;
 };
 
-type SaveResourceEndpointPayload = ResourceEndpointDraft & {
+type SaveResourceEndpointPayload = Omit<ResourceEndpointDraft, 'allow'> & {
   id?: ResourceEndpoint['id'];
+  allow: string | null;
 };
 
 type PersistedResourceEndpointPayload = SaveResourceEndpointPayload & {
   id: ResourceEndpoint['id'];
 };
 
-type AclSectionType = 'allow' | 'deny';
-type ClaimSource = 'access_token' | 'userinfo';
 type ResourceFormMode = 'none' | 'create-resource' | 'edit-resource';
 
 const endpointMethods = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'] as const;
-
-const operatorOptions: Array<{ value: Rule['operator']; label: string }> = [
-  { value: 'eq', label: '=' },
-  { value: 'ne', label: '!=' },
-  { value: 'gt', label: '>' },
-  { value: 'gte', label: '>=' },
-  { value: 'lt', label: '<' },
-  { value: 'lte', label: '<=' },
-  { value: 'in', label: 'in' },
-  { value: 'not_in', label: 'not in' },
-  { value: 'contains', label: 'contains' },
-  { value: 'not_contains', label: 'not contains' },
-  { value: 'starts_with', label: 'starts with' },
-  { value: 'ends_with', label: 'ends with' },
-  { value: 'matches', label: 'matches' },
-];
+const injectTargets: InjectTarget[] = ['header', 'query', 'body'];
 
 function endpointLabel(endpoint: Pick<ResourceEndpointDraft, 'method' | 'path'>) {
   return `${endpoint.method} ${endpoint.path}`;
 }
 
-function createEmptyRule(): Rule {
-  return { subject: 'jwt.sub', operator: 'eq', value: '' };
-}
-
-function createRuleNode(rule: Rule = createEmptyRule()): AclRuleNode {
-  return { kind: 'rule', rule };
-}
-
-function createAndGroup(rules: Rule[] = [createEmptyRule()]): AclRuleGroup {
-  return { kind: 'all', children: rules.map(rule => createRuleNode(rule)) };
-}
-
-function createOrGroupRoot(children: AclRuleGroup[] = []): AclRuleGroup {
-  return { kind: 'any', children };
-}
-
-function cloneAclGroup(group: AclRuleGroup): AclRuleGroup {
-  return JSON.parse(JSON.stringify(group)) as AclRuleGroup;
+function cloneInject(rules: InjectRule[]): InjectRule[] {
+  return rules.map(rule => ({ ...rule }));
 }
 
 @customElement('versola-resources-list')
@@ -92,13 +63,14 @@ export class VersolaResourcesList extends LitElement {
   @state() private expandedEditableEndpoints: Set<string> = new Set();
   @state() private openInfoKey: string | null = null;
   @state() private resourceUri = '';
+  @state() private resourceAlias = '';
   @state() private endpointDrafts: EditableResourceEndpoint[] = [];
   private nextEndpointDraftId = 0;
   private handleDocumentClick = () => {
     this.openInfoKey = null;
   };
 
-  static styles = [theme, buttonStyles, cardStyles, formStyles, methodBadgeStyles, tableStyles, css`
+  static styles = [theme, buttonStyles, cardStyles, formStyles, methodBadgeStyles, tableStyles, celHighlightStyles, css`
     :host {
       display:block;
       --compact-field-max-width: 22.8rem;
@@ -121,8 +93,11 @@ export class VersolaResourcesList extends LitElement {
     .resource-card { display:grid; gap:var(--spacing-lg); }
     .resource-header { display:flex; align-items:center; justify-content:space-between; gap:var(--spacing-md); cursor:pointer; user-select:none; }
     .resource-actions { display:flex; align-items:center; gap:.5rem; margin-left:var(--spacing-md); }
-    .resource-label-card { max-width:min(32rem, 100%); padding:.15rem 0; }
+    .resource-label-card { max-width:min(32rem, 100%); padding:.15rem 0; display:flex; align-items:center; gap:.625rem; flex-wrap:wrap; }
     .resource-label { color:var(--accent); font-size:1rem; font-weight:600; line-height:1.35; word-break:break-all; }
+    .resource-alias-badge { display:inline-flex; align-items:center; min-height:1.5rem; padding:0 .6rem; border-radius:999px; font-size:.75rem; font-weight:600; letter-spacing:.01em; background:rgba(88, 166, 255, .16); color:#7cc4ff; border:1px solid rgba(88, 166, 255, .28); flex:none; }
+    .input-with-info { display:flex; align-items:center; gap:.5rem; }
+    .input-with-info > .form-input { flex:1; min-width:0; }
     .endpoint-list { display:grid; gap:.75rem; }
     .endpoint-row { display:flex; align-items:center; justify-content:space-between; gap:.75rem; flex-wrap:wrap; padding:.875rem 1rem; border:1px solid var(--border-dark); border-radius:var(--radius-md); background:rgba(255,255,255,.02); }
     .endpoint-main { display:flex; align-items:center; gap:.75rem; flex-wrap:wrap; min-width:0; }
@@ -228,12 +203,17 @@ export class VersolaResourcesList extends LitElement {
     .option-tooltip-title {
       margin-bottom:0.5rem;
       color:var(--accent);
-      font-size:0.75rem;
+      font-size:0.8125rem;
       font-weight:600;
-      text-transform:uppercase;
-      letter-spacing:0.05em;
     }
     .option-tooltip-copy { color:var(--text-primary); font-size:0.75rem; line-height:1.45; }
+    .option-tooltip-copy p { margin:0 0 .5rem; }
+    .option-tooltip-copy p:last-child { margin-bottom:0; }
+    .option-tooltip-section-title { margin:.625rem 0 .25rem; color:var(--text-secondary); font-size:.7rem; font-weight:600; text-transform:uppercase; letter-spacing:.04em; }
+    .option-tooltip-section-title:first-child { margin-top:0; }
+    .option-tooltip-list { margin:0; padding-left:1rem; display:grid; gap:.2rem; }
+    .option-tooltip-code { font-family:var(--font-mono, monospace); font-size:.72rem; color:var(--accent); background:rgba(88, 166, 255, .1); padding:.05rem .3rem; border-radius:.25rem; }
+    .option-tooltip-pre { margin:.25rem 0 0; padding:.5rem .625rem; border-radius:var(--radius-sm); background:rgba(0,0,0,.35); border:1px solid rgba(139, 148, 158, .18); font-family:var(--font-mono, monospace); font-size:.72rem; color:var(--text-primary); white-space:pre-wrap; word-break:break-word; }
     .rule-group-editor-list, .rule-editor-list, .header-editor-list { display:grid; gap:.75rem; }
     .rule-group-editor:not(:first-child), .header-editor-list > :not(:first-child) { padding-top:.75rem; border-top:1px solid rgba(139, 148, 158, .16); }
     .rule-editor-item, .header-editor-item { display:grid; gap:.75rem; padding:.75rem 0 0; border:0; border-top:1px solid rgba(139, 148, 158, .16); border-radius:0; background:transparent; }
@@ -271,7 +251,7 @@ export class VersolaResourcesList extends LitElement {
   }
 
   private resetForms() {
-    this.formMode = 'none'; this.activeResourceId = null; this.resourceUri = '';
+    this.formMode = 'none'; this.activeResourceId = null; this.resourceUri = ''; this.resourceAlias = '';
     this.endpointDrafts = [];
     this.expandedEditableEndpoints = new Set();
   }
@@ -281,6 +261,7 @@ export class VersolaResourcesList extends LitElement {
     this.formMode = 'create-resource';
     this.activeResourceId = null;
     this.resourceUri = 'https://';
+    this.resourceAlias = '';
     this.endpointDrafts = [];
     this.expandedEditableEndpoints = new Set();
   }
@@ -290,6 +271,7 @@ export class VersolaResourcesList extends LitElement {
     this.formMode = 'edit-resource';
     this.activeResourceId = resource.id;
     this.resourceUri = resource.resource;
+    this.resourceAlias = resource.alias;
     this.endpointDrafts = resource.endpoints.map(endpoint => this.toEditableEndpoint(endpoint));
     this.expandedEditableEndpoints = new Set(); // Start with all cards collapsed
     this.expandedResources = new Set([...this.expandedResources, resource.id]);
@@ -302,9 +284,8 @@ export class VersolaResourcesList extends LitElement {
       method: 'GET',
       path: '/',
       fetchUserInfo: false,
-      allowRules: createOrGroupRoot(),
-      denyRules: createOrGroupRoot(),
-      injectHeaders: {},
+      allow: '',
+      inject: [],
     };
   }
 
@@ -341,13 +322,17 @@ export class VersolaResourcesList extends LitElement {
   private async saveResource(event: Event) {
     event.preventDefault(); if (!this.tenantId) return;
     const resource = this.resourceUri.trim();
+    const alias = this.resourceAlias.trim();
+    if (alias.length === 0) { this.error = 'Alias is required'; return; }
     const validation = validateResourceUri(resource);
     if (!validation.valid) { this.error = validation.error ?? 'Resource URI is invalid'; return; }
-    const invalidEndpoint = this.endpointDrafts.find(endpoint => !endpoint.path.startsWith('/'));
+    const invalidEndpoint = this.endpointDrafts.find(endpoint => this.isEndpointPathInvalid(endpoint.path));
     if (invalidEndpoint) {
-      this.error = `Endpoint path must start with “/”: ${endpointLabel(invalidEndpoint)}`;
+      this.error = `Endpoint path must start with “/” and contain no “*” or “:”: ${endpointLabel(invalidEndpoint)}`;
       return;
     }
+    const celIssue = this.findCelIssue();
+    if (celIssue) { this.error = celIssue; return; }
 
     const endpointPayloads = this.endpointDrafts.map(endpoint => this.toEndpointPayload(endpoint));
     this.saving = true; this.error = '';
@@ -358,15 +343,15 @@ export class VersolaResourcesList extends LitElement {
         const activeResource = this.resources.find(candidate => candidate.id === this.activeResourceId);
         if (!activeResource) throw new Error('Resource not found in local state');
         savedResourceId = this.activeResourceId;
-        savedEndpoints = await updateResource(savedResourceId, activeResource.endpoints, resource, endpointPayloads);
+        savedEndpoints = await updateResource(savedResourceId, activeResource.endpoints, alias, resource, endpointPayloads);
       } else {
-        const createdResource = await createResource(this.tenantId, resource, endpointPayloads);
+        const createdResource = await createResource(this.tenantId, alias, resource, endpointPayloads);
         savedResourceId = createdResource.id;
         savedEndpoints = createdResource.endpoints;
       }
 
       if (savedResourceId !== null) {
-        this.upsertResource(this.buildSavedResource(savedResourceId, resource, savedEndpoints));
+        this.upsertResource(this.buildSavedResource(savedResourceId, alias, resource, savedEndpoints));
         this.expandedResources = new Set([...this.expandedResources, savedResourceId]);
       }
 
@@ -382,7 +367,31 @@ export class VersolaResourcesList extends LitElement {
   }
 
   private isEndpointPathInvalid(path: string) {
-    return path.trim().length > 0 && !path.startsWith('/');
+    const trimmed = path.trim();
+    if (trimmed.length === 0) return false;
+    if (!trimmed.startsWith('/')) return true;
+    if (trimmed.includes('*') || trimmed.includes(':')) return true;
+    return false;
+  }
+
+  private findCelIssue(): string | null {
+    for (const endpoint of this.endpointDrafts) {
+      const label = endpointLabel(endpoint);
+      if (endpoint.allow.trim().length > 0) {
+        const allowResult = validateCel(endpoint.allow);
+        if (!allowResult.valid) return `Invalid allow expression in ${label}: ${allowResult.error.message}`;
+      }
+      for (const rule of endpoint.inject) {
+        if (rule.expression.trim().length === 0) {
+          return `Inject expression is required in ${label}${rule.name ? ` for ${rule.name}` : ''}`;
+        }
+        const exprResult = validateCel(rule.expression);
+        if (!exprResult.valid) {
+          return `Invalid inject expression in ${label}${rule.name ? ` for ${rule.name}` : ''}: ${exprResult.error.message}`;
+        }
+      }
+    }
+    return null;
   }
 
   private async removeEndpoint(draftId: string, label: string) {
@@ -428,7 +437,8 @@ export class VersolaResourcesList extends LitElement {
     return this.resources.filter(resource => {
       const label = formatResourceLabel(resource.resource).toLowerCase();
       const original = resource.resource.toLowerCase();
-      return label.includes(query) || original.includes(query) || String(resource.id).includes(query);
+      const alias = resource.alias.toLowerCase();
+      return label.includes(query) || original.includes(query) || alias.includes(query) || String(resource.id).includes(query);
     });
   }
 
@@ -444,18 +454,18 @@ export class VersolaResourcesList extends LitElement {
     this.expandedEndpoints = new Set([...this.expandedEndpoints].filter(id => validEndpointIds.has(id)));
   }
 
-  private buildSavedResource(id: number, resource: string, endpoints: PersistedResourceEndpointPayload[]): Resource {
+  private buildSavedResource(id: number, alias: string, resource: string, endpoints: PersistedResourceEndpointPayload[]): Resource {
     return {
       id,
+      alias,
       resource,
       endpoints: endpoints.map(endpoint => ({
         id: endpoint.id,
         method: endpoint.method,
         path: endpoint.path,
         fetchUserInfo: endpoint.fetchUserInfo,
-        allowRules: cloneAclGroup(endpoint.allowRules),
-        denyRules: cloneAclGroup(endpoint.denyRules),
-        injectHeaders: { ...endpoint.injectHeaders },
+        allow: endpoint.allow ?? undefined,
+        inject: cloneInject(endpoint.inject),
       })),
     };
   }
@@ -475,119 +485,21 @@ export class VersolaResourcesList extends LitElement {
       method: endpoint.method,
       path: endpoint.path,
       fetchUserInfo: endpoint.fetchUserInfo,
-      allowRules: cloneAclGroup(endpoint.allowRules),
-      denyRules: cloneAclGroup(endpoint.denyRules),
-      injectHeaders: { ...endpoint.injectHeaders },
+      allow: endpoint.allow ?? '',
+      inject: cloneInject(endpoint.inject),
     };
   }
 
   private toEndpointPayload(endpoint: EditableResourceEndpoint) {
-    const normalized = this.withDerivedFetchUserInfo(endpoint);
-
+    const allow = endpoint.allow.trim();
     return {
-      ...(normalized.id !== null ? { id: normalized.id } : {}),
-      method: normalized.method,
-      path: normalized.path,
-      fetchUserInfo: normalized.fetchUserInfo,
-      allowRules: cloneAclGroup(normalized.allowRules),
-      denyRules: cloneAclGroup(normalized.denyRules),
-      injectHeaders: { ...normalized.injectHeaders },
+      ...(endpoint.id !== null ? { id: endpoint.id } : {}),
+      method: endpoint.method,
+      path: endpoint.path,
+      fetchUserInfo: endpoint.fetchUserInfo,
+      allow: allow.length > 0 ? allow : null,
+      inject: cloneInject(endpoint.inject),
     };
-  }
-
-  private unwrapReference(value: string) {
-    const trimmed = value?.trim() || '';
-    const match = trimmed.match(/^\$\{(.+)\}$/);
-    return match ? match[1] : trimmed;
-  }
-
-  private getReferenceSource(value: string): ClaimSource {
-    return this.unwrapReference(value).startsWith('userinfo.') ? 'userinfo' : 'access_token';
-  }
-
-  private getReferencePath(value: string): string {
-    const normalized = this.unwrapReference(value);
-
-    if (normalized.startsWith('userinfo.')) return normalized.slice('userinfo.'.length);
-    if (normalized.startsWith('jwt.')) return normalized.slice('jwt.'.length);
-
-    return normalized;
-  }
-
-  private serializeReference(source: ClaimSource, path: string): string {
-    const normalized = this.unwrapReference(path)
-      .replace(/^userinfo\./, '')
-      .replace(/^jwt\./, '');
-
-    if (!normalized) return '';
-
-    if (source === 'userinfo') return `userinfo.${normalized}`;
-
-    if (
-      normalized.startsWith('authorization_details.') ||
-      normalized.startsWith('request.') ||
-      normalized.startsWith('resource.')
-    ) {
-      return normalized;
-    }
-
-    return `jwt.${normalized}`;
-  }
-
-  private collectRules(tree: AclRuleTree): Rule[] {
-    if (tree.kind === 'rule') {
-      return [tree.rule];
-    }
-
-    return tree.children.flatMap(child => this.collectRules(child));
-  }
-
-  private getAclKey(type: AclSectionType) {
-    return type === 'allow' ? 'allowRules' : 'denyRules';
-  }
-
-  private getRuleGroups(group: AclRuleGroup): AclRuleGroup[] {
-    return group.children.filter((child): child is AclRuleGroup => child.kind === 'all');
-  }
-
-  private shouldFetchUserInfo(endpoint: Pick<ResourceEndpointDraft, 'allowRules' | 'denyRules' | 'injectHeaders'>) {
-    const hasUserInfoRule = [...this.collectRules(endpoint.allowRules), ...this.collectRules(endpoint.denyRules)]
-      .some(rule => this.getReferenceSource(rule.subject) === 'userinfo');
-
-    const hasUserInfoHeader = Object.values(endpoint.injectHeaders)
-      .some(value => this.getReferenceSource(value) === 'userinfo');
-
-    return hasUserInfoRule || hasUserInfoHeader;
-  }
-
-  private withDerivedFetchUserInfo<T extends ResourceEndpointDraft | EditableResourceEndpoint>(endpoint: T): T {
-    return {
-      ...endpoint,
-      fetchUserInfo: this.shouldFetchUserInfo(endpoint),
-    };
-  }
-
-  private stringifyRuleValue(value: Rule['value']) {
-    return Array.isArray(value) ? JSON.stringify(value) : String(value ?? '');
-  }
-
-  private parseRuleValue(value: string): Rule['value'] {
-    const trimmed = value.trim();
-
-    if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
-      try {
-        const parsed = JSON.parse(trimmed);
-        if (Array.isArray(parsed)) return parsed.map(item => String(item));
-      } catch {
-        return value;
-      }
-    }
-
-    if (/^-?[0-9]+(?:\.[0-9]+)?$/.test(trimmed)) {
-      return Number(trimmed);
-    }
-
-    return value;
   }
 
   private toggleEditableEndpoint(draftId: string) {
@@ -601,7 +513,7 @@ export class VersolaResourcesList extends LitElement {
 
   private updateEndpointDraft(draftId: string, updater: (endpoint: EditableResourceEndpoint) => EditableResourceEndpoint) {
     this.endpointDrafts = this.endpointDrafts.map(endpoint => (
-      endpoint.draftId === draftId ? this.withDerivedFetchUserInfo(updater(endpoint)) : endpoint
+      endpoint.draftId === draftId ? updater(endpoint) : endpoint
     ));
   }
 
@@ -609,116 +521,32 @@ export class VersolaResourcesList extends LitElement {
     this.updateEndpointDraft(draftId, endpoint => ({ ...endpoint, [field]: value }));
   }
 
-  private updateAclGroup(
-    draftId: string,
-    type: AclSectionType,
-    updater: (group: AclRuleGroup) => AclRuleGroup,
-  ) {
-    const key = this.getAclKey(type);
+  private updateEndpointAllow(draftId: string, value: string) {
+    this.updateEndpointDraft(draftId, endpoint => ({ ...endpoint, allow: value }));
+  }
 
+  private updateEndpointFetchUserInfo(draftId: string, value: boolean) {
+    this.updateEndpointDraft(draftId, endpoint => ({ ...endpoint, fetchUserInfo: value }));
+  }
+
+  private addInjectRule(draftId: string) {
     this.updateEndpointDraft(draftId, endpoint => ({
       ...endpoint,
-      [key]: updater(cloneAclGroup(endpoint[key])),
+      inject: [...endpoint.inject, { target: 'header', name: '', expression: '' }],
     }));
   }
 
-  private addRuleGroup(draftId: string, type: AclSectionType) {
-    this.updateAclGroup(draftId, type, group => ({
-      ...group,
-      children: [...group.children, createAndGroup()],
+  private removeInjectRule(draftId: string, index: number) {
+    this.updateEndpointDraft(draftId, endpoint => ({
+      ...endpoint,
+      inject: endpoint.inject.filter((_, i) => i !== index),
     }));
   }
 
-  private removeRuleGroup(draftId: string, type: AclSectionType, groupIndex: number) {
-    this.updateAclGroup(draftId, type, group => ({
-      ...group,
-      children: group.children.filter((_, index) => index !== groupIndex),
-    }));
-  }
-
-  private updateRule(
-    draftId: string,
-    type: AclSectionType,
-    groupIndex: number,
-    ruleIndex: number,
-    updater: (rule: Rule) => Rule,
-  ) {
-    this.updateAclGroup(draftId, type, root => {
-      const nextRoot = cloneAclGroup(root);
-      const group = nextRoot.children[groupIndex];
-
-      if (!group || group.kind !== 'all') {
-        return nextRoot;
-      }
-
-      const node = group.children[ruleIndex];
-      if (!node || node.kind !== 'rule') {
-        return nextRoot;
-      }
-
-      group.children[ruleIndex] = { kind: 'rule', rule: updater(node.rule) };
-      return nextRoot;
-    });
-  }
-
-  private addRule(draftId: string, type: AclSectionType, groupIndex: number) {
-    this.updateAclGroup(draftId, type, root => {
-      const nextRoot = cloneAclGroup(root);
-      const group = nextRoot.children[groupIndex];
-
-      if (!group || group.kind !== 'all') {
-        return nextRoot;
-      }
-
-      group.children = [...group.children, createRuleNode()];
-      return nextRoot;
-    });
-  }
-
-  private removeRule(draftId: string, type: AclSectionType, groupIndex: number, ruleIndex: number) {
-    this.updateAclGroup(draftId, type, root => {
-      const nextRoot = cloneAclGroup(root);
-      const group = nextRoot.children[groupIndex];
-
-      if (!group || group.kind !== 'all') {
-        return nextRoot;
-      }
-
-      group.children = group.children.filter((_, index) => index !== ruleIndex);
-      if (group.children.length === 0) {
-        nextRoot.children = nextRoot.children.filter((_, index) => index !== groupIndex);
-      }
-
-      return nextRoot;
-    });
-  }
-
-  private updateRuleSource(draftId: string, type: AclSectionType, groupIndex: number, ruleIndex: number, source: ClaimSource) {
-    this.updateRule(draftId, type, groupIndex, ruleIndex, rule => ({
-      ...rule,
-      subject: this.serializeReference(source, this.getReferencePath(rule.subject)),
-    }));
-  }
-
-  private updateRulePath(draftId: string, type: AclSectionType, groupIndex: number, ruleIndex: number, path: string) {
-    this.updateRule(draftId, type, groupIndex, ruleIndex, rule => ({
-      ...rule,
-      subject: this.serializeReference(this.getReferenceSource(rule.subject), path),
-    }));
-  }
-
-  private updateRuleOperator(draftId: string, type: AclSectionType, groupIndex: number, ruleIndex: number, operator: Rule['operator']) {
-    this.updateRule(draftId, type, groupIndex, ruleIndex, rule => ({ ...rule, operator }));
-  }
-
-  private updateRuleValue(draftId: string, type: AclSectionType, groupIndex: number, ruleIndex: number, value: string) {
-    this.updateRule(draftId, type, groupIndex, ruleIndex, rule => ({ ...rule, value: this.parseRuleValue(value) }));
-  }
-
-  private updateRulePattern(draftId: string, type: AclSectionType, groupIndex: number, ruleIndex: number, pattern: Rule['pattern'] | '') {
-    this.updateRule(draftId, type, groupIndex, ruleIndex, rule => ({
-      ...rule,
-      pattern: pattern ? pattern : undefined,
+  private updateInjectRule(draftId: string, index: number, patch: Partial<InjectRule>) {
+    this.updateEndpointDraft(draftId, endpoint => ({
+      ...endpoint,
+      inject: endpoint.inject.map((rule, i) => i === index ? { ...rule, ...patch } : rule),
     }));
   }
 
@@ -726,7 +554,46 @@ export class VersolaResourcesList extends LitElement {
     this.openInfoKey = this.openInfoKey === key ? null : key;
   }
 
-  private renderOptionInfo(key: string, title: string, description: string, ariaLabel: string) {
+  private renderAllowInfo(): TemplateResult {
+    return html`
+      <p>CEL expression evaluated per request. Must return <span class="option-tooltip-code">true</span> to authorize the call. Leave empty to skip the check.</p>
+      <div class="option-tooltip-section-title">Root variables</div>
+      <ul class="option-tooltip-list">
+        <li><span class="option-tooltip-code">token</span> — claims of the validated access token (e.g. <span class="option-tooltip-code">token.sub</span>, <span class="option-tooltip-code">token.scope</span>).</li>
+        <li><span class="option-tooltip-code">user</span> — userinfo claims (only when "Fetch userinfo" is enabled).</li>
+        <li><span class="option-tooltip-code">request</span> — incoming request data:
+          <ul class="option-tooltip-list">
+            <li><span class="option-tooltip-code">request.path</span> — map of path parameters from <span class="option-tooltip-code">{name}</span> placeholders.</li>
+            <li><span class="option-tooltip-code">request.query</span> — map of query parameters (first value per key).</li>
+            <li><span class="option-tooltip-code">request.queryAll</span> — map of query parameters (all values per key as a list).</li>
+            <li><span class="option-tooltip-code">request.headers</span> — map of request headers (first value per key).</li>
+            <li><span class="option-tooltip-code">request.headersAll</span> — map of request headers (all values per key as a list).</li>
+            <li><span class="option-tooltip-code">request.body</span> — parsed JSON body (only when content-type is <span class="option-tooltip-code">application/json</span>).</li>
+          </ul>
+        </li>
+      </ul>
+      <div class="option-tooltip-section-title">Operators</div>
+      <ul class="option-tooltip-list">
+        <li>Comparison: <span class="option-tooltip-code">== != &lt; &lt;= &gt; &gt;=</span></li>
+        <li>Logical: <span class="option-tooltip-code">&amp;&amp; || !</span></li>
+        <li>Membership: <span class="option-tooltip-code">in</span></li>
+        <li>Arithmetic: <span class="option-tooltip-code">+ - * / %</span></li>
+        <li>Ternary: <span class="option-tooltip-code">cond ? a : b</span></li>
+        <li>Index / field: <span class="option-tooltip-code">x[i]</span>, <span class="option-tooltip-code">x.y</span></li>
+      </ul>
+      <div class="option-tooltip-section-title">Macros</div>
+      <ul class="option-tooltip-list">
+        <li><span class="option-tooltip-code">has(x.y)</span> — field presence</li>
+        <li><span class="option-tooltip-code">list.all(v, p)</span>, <span class="option-tooltip-code">list.exists(v, p)</span>, <span class="option-tooltip-code">list.exists_one(v, p)</span></li>
+        <li><span class="option-tooltip-code">list.filter(v, p)</span>, <span class="option-tooltip-code">list.map(v, p)</span></li>
+        <li><span class="option-tooltip-code">size(x)</span> — string, list, or map length</li>
+      </ul>
+      <div class="option-tooltip-section-title">Example</div>
+      <pre class="option-tooltip-pre">"read" in token.scope &amp;&amp; user.department == "engineering"</pre>
+    `;
+  }
+
+  private renderOptionInfo(key: string, title: string, description: string | TemplateResult, ariaLabel: string) {
     return html`
       <div class=${`option-info ${this.openInfoKey === key ? 'option-info-open' : ''}`} @click=${(event: Event) => event.stopPropagation()}>
         <button
@@ -742,84 +609,6 @@ export class VersolaResourcesList extends LitElement {
         </div>
       </div>
     `;
-  }
-
-  private addHeader(draftId: string) {
-    this.updateEndpointDraft(draftId, endpoint => {
-      const base = 'X-New-Header';
-      let candidate = base;
-      let index = 1;
-
-      while (candidate in endpoint.injectHeaders) {
-        candidate = `${base}-${index}`;
-        index += 1;
-      }
-
-      return {
-        ...endpoint,
-        injectHeaders: {
-          ...endpoint.injectHeaders,
-          [candidate]: '',
-        },
-      };
-    });
-  }
-
-  private renameHeader(draftId: string, currentName: string, nextName: string) {
-    const normalized = nextName.trim();
-
-    if (!normalized || normalized === currentName) {
-      if (!normalized) this.error = 'Header name cannot be empty';
-      return;
-    }
-
-    this.updateEndpointDraft(draftId, endpoint => {
-      if (normalized in endpoint.injectHeaders) {
-        this.error = `Header ${normalized} already exists on this endpoint`;
-        return endpoint;
-      }
-
-      const renamedEntries = Object.entries(endpoint.injectHeaders).map(([name, value]) => (
-        name === currentName ? [normalized, value] : [name, value]
-      ));
-
-      this.error = '';
-
-      return {
-        ...endpoint,
-        injectHeaders: Object.fromEntries(renamedEntries),
-      };
-    });
-  }
-
-  private removeHeader(draftId: string, name: string) {
-    this.updateEndpointDraft(draftId, endpoint => {
-      const headers = { ...endpoint.injectHeaders };
-      delete headers[name];
-      return { ...endpoint, injectHeaders: headers };
-    });
-  }
-
-  private updateHeader(draftId: string, name: string, value: string) {
-    this.updateEndpointDraft(draftId, endpoint => ({
-      ...endpoint,
-      injectHeaders: {
-        ...endpoint.injectHeaders,
-        [name]: value,
-      },
-    }));
-  }
-
-  private updateHeaderSource(draftId: string, name: string, source: ClaimSource) {
-    const endpoint = this.endpointDrafts.find(candidate => candidate.draftId === draftId);
-    const currentValue = endpoint?.injectHeaders?.[name] || '';
-    this.updateHeader(draftId, name, this.serializeReference(source, this.getReferencePath(currentValue)));
-  }
-
-  private updateHeaderPath(draftId: string, name: string, path: string) {
-    const endpoint = this.endpointDrafts.find(candidate => candidate.draftId === draftId);
-    const currentValue = endpoint?.injectHeaders?.[name] || '';
-    this.updateHeader(draftId, name, this.serializeReference(this.getReferenceSource(currentValue), path));
   }
 
   private toggleExpand(resourceId: number) {
@@ -844,124 +633,35 @@ export class VersolaResourcesList extends LitElement {
     this.requestUpdate();
   }
 
-  private formatRuleValue(value: Rule['value']) {
-    if (Array.isArray(value)) {
-      return `[${value.join(', ')}]`;
-    }
-
-    return String(value);
-  }
-
-  private getRuleSource(subject: string) {
-    if (subject.startsWith('userinfo.')) {
-      return {
-        badge: 'userinfo',
-        field: subject.slice('userinfo.'.length),
-      };
-    }
-
-    if (subject.startsWith('jwt.')) {
-      return {
-        badge: 'access token',
-        field: subject.slice('jwt.'.length),
-      };
-    }
-
-    return {
-      badge: 'access token',
-      field: subject,
-    };
-  }
-
-  private formatRuleOperator(operator: Rule['operator']) {
-    switch (operator) {
-      case 'eq':
-        return '=';
-      case 'ne':
-        return '≠';
-      case 'gt':
-        return '>';
-      case 'gte':
-        return '≥';
-      case 'lt':
-        return '<';
-      case 'lte':
-        return '≤';
-      default:
-        return operator;
-    }
-  }
-
-  private renderLogicSeparator(value: 'and' | 'or') {
-    return html`<div class="rule-logic-separator">${value}</div>`;
-  }
-
-  private renderRuleItem(rule: Rule) {
-    const source = this.getRuleSource(rule.subject);
-
+  private renderAllowSection(allow: string | undefined) {
+    const hasAllow = allow != null && allow.length > 0;
     return html`
-      <div class="rule-item">
-        <div class="rule-expression">
-          <span class="source-badge">${source.badge}</span>
-          <span class="rule-field">${source.field}</span>
-          <span class="rule-operator">${this.formatRuleOperator(rule.operator)}</span>
-          <span class="rule-value">${this.formatRuleValue(rule.value)}</span>
-        </div>
-        ${rule.pattern ? html`<div class="rule-meta">Pattern: ${rule.pattern}</div>` : ''}
+      <div class="endpoint-editor-section">
+        <div class="endpoint-detail-label">Allow (CEL)</div>
+        ${hasAllow
+          ? html`<div class="cel-inline">${renderHighlightedCel(allow)}</div>`
+          : html`<div class="endpoint-empty">— (unrestricted)</div>`}
       </div>
     `;
   }
 
-  private renderRuleSection(title: string, group: AclRuleGroup) {
-    const groups = this.getRuleGroups(group);
-
+  private renderInjectSection(inject: InjectRule[]) {
     return html`
       <div class="endpoint-editor-section">
-        <div class="endpoint-detail-label">${title}</div>
-        ${groups.length === 0 ? html`<div class="endpoint-empty">None</div>` : html`
-          <div class="rule-group-list">
-            ${groups.map((andGroup, groupIndex) => {
-              const rules = andGroup.children.filter((child): child is AclRuleNode => child.kind === 'rule');
-
-              return html`
-                ${groupIndex > 0 ? this.renderLogicSeparator('or') : ''}
-                <div class="rule-group-view">
-                  ${rules.map((ruleNode, ruleIndex) => html`
-                    ${ruleIndex > 0 ? this.renderLogicSeparator('and') : ''}
-                    ${this.renderRuleItem(ruleNode.rule)}
-                  `)}
-                </div>
-              `;
-            })}
-          </div>
-        `}
-      </div>
-    `;
-  }
-
-  private renderHeadersSection(headers: Record<string, string>) {
-    const entries = Object.entries(headers);
-
-    return html`
-      <div class="endpoint-editor-section">
-        <div class="endpoint-detail-label">Inject headers</div>
-        ${entries.length === 0 ? html`<div class="endpoint-empty">None</div>` : html`
+        <div class="endpoint-detail-label">Inject</div>
+        ${inject.length === 0 ? html`<div class="endpoint-empty">None</div>` : html`
           <div class="header-list">
-            ${entries.map(([key, value]) => {
-              const source = this.getRuleSource(value);
-
-              return html`
-                <div class="header-item">
-                  <div class="header-item-part">
-                    <div class="header-item-key">${key}</div>
-                  </div>
-                  <div class="header-item-part header-item-part-expression">
-                    <span class="source-badge">${source.badge}</span>
-                    <div class="header-item-value">${source.field}</div>
-                  </div>
+            ${inject.map(rule => html`
+              <div class="header-item">
+                <div class="header-item-part">
+                  <span class="source-badge">${rule.target}</span>
+                  <div class="header-item-key" style="margin-left:.5rem">${rule.name}</div>
                 </div>
-              `;
-            })}
+                <div class="header-item-part header-item-part-expression">
+                  <div class="header-item-value cel-inline">${renderHighlightedCel(rule.expression)}</div>
+                </div>
+              </div>
+            `)}
           </div>
         `}
       </div>
@@ -978,9 +678,8 @@ export class VersolaResourcesList extends LitElement {
           </span>
         </div>
         <div class="endpoint-detail-grid">
-          ${this.renderRuleSection('Match rules', endpoint.allowRules)}
-          ${this.renderRuleSection('Deny rules', endpoint.denyRules)}
-          ${this.renderHeadersSection(endpoint.injectHeaders)}
+          ${this.renderAllowSection(endpoint.allow)}
+          ${this.renderInjectSection(endpoint.inject)}
         </div>
       </div>
     `;
@@ -1013,221 +712,93 @@ export class VersolaResourcesList extends LitElement {
     `;
   }
 
-  private renderRuleEditorItem(
-    draftId: string,
-    type: AclSectionType,
-    groupIndex: number,
-    ruleIndex: number,
-    rule: Rule,
-  ) {
-    return html`
-      <div class="rule-editor-item">
-        <div class="rule-editor-main">
-          <div class="form-group">
-            <label class="form-label">Source</label>
-            <select
-              class="form-select compact-input"
-              .value=${this.getReferenceSource(rule.subject)}
-              @change=${(event: Event) => this.updateRuleSource(
-                draftId,
-                type,
-                groupIndex,
-                ruleIndex,
-                (event.target as HTMLSelectElement).value as ClaimSource,
-              )}
-            >
-              <option value="access_token">access token</option>
-              <option value="userinfo">userinfo</option>
-            </select>
-          </div>
-          <div class="form-group">
-            <label class="form-label">Path</label>
-            <input
-              class="form-input compact-input"
-              type="text"
-              .value=${this.getReferencePath(rule.subject)}
-              @input=${(event: Event) => this.updateRulePath(draftId, type, groupIndex, ruleIndex, (event.target as HTMLInputElement).value)}
-              placeholder="sub"
-            />
-          </div>
-          <div class="form-group">
-            <label class="form-label">Operator</label>
-            <select
-              class="form-select compact-input"
-              .value=${rule.operator}
-              @change=${(event: Event) => this.updateRuleOperator(
-                draftId,
-                type,
-                groupIndex,
-                ruleIndex,
-                (event.target as HTMLSelectElement).value as Rule['operator'],
-              )}
-            >
-              ${operatorOptions.map(option => html`<option value=${option.value}>${option.label}</option>`)}
-            </select>
-          </div>
-          <div class="form-group">
-            <label class="form-label">Value</label>
-            <input
-              class="form-input compact-input"
-              type="text"
-              .value=${this.stringifyRuleValue(rule.value)}
-              @input=${(event: Event) => this.updateRuleValue(draftId, type, groupIndex, ruleIndex, (event.target as HTMLInputElement).value)}
-              placeholder='read, 2, or ["engineering"]'
-            />
-          </div>
-          <button
-            type="button"
-            class="icon-action danger editor-remove"
-            ?disabled=${this.saving}
-            @click=${() => this.removeRule(draftId, type, groupIndex, ruleIndex)}
-            title="Remove rule"
-            aria-label="Remove rule"
-          >✕</button>
-        </div>
-        ${rule.operator === 'matches' ? html`
-          <div class="rule-editor-pattern">
-            <div class="form-group">
-              <label class="form-label">Pattern</label>
-              <select
-                class="form-select compact-input"
-                .value=${rule.pattern || 'glob'}
-                @change=${(event: Event) => this.updateRulePattern(
-                  draftId,
-                  type,
-                  groupIndex,
-                  ruleIndex,
-                  (event.target as HTMLSelectElement).value as Rule['pattern'] | '',
-                )}
-              >
-                <option value="glob">glob</option>
-                <option value="regex">regex</option>
-              </select>
-            </div>
-          </div>
-        ` : ''}
-      </div>
-    `;
-  }
-
-  private renderRulesEditor(draftId: string, type: AclSectionType, title: string, group: AclRuleGroup) {
-    const description = type === 'allow'
-      ? 'Requests must satisfy these conditions to be authorized.'
-      : 'Use deny rules to block request authorization even if match rules are satisfied.';
-    const groups = this.getRuleGroups(group);
-
+  private renderAllowEditor(draftId: string, allow: string) {
     return html`
       <div class="endpoint-editor-section">
         <div class="editor-section-header">
           <div class="editor-section-title-row">
-            <h3 class="editor-section-title">${title}</h3>
+            <h3 class="editor-section-title">Allow (CEL)</h3>
             ${this.renderOptionInfo(
-              `${draftId}-${type}-info`,
-              title,
-              description,
-              `${title} info`,
+              `${draftId}-allow-info`,
+              'Allow expression',
+              this.renderAllowInfo(),
+              'Allow expression info',
             )}
           </div>
-          <button type="button" class="btn btn-secondary btn-sm" ?disabled=${this.saving} @click=${() => this.addRuleGroup(draftId, type)}>
-            Add OR group
-          </button>
         </div>
-        ${groups.length === 0 ? html`<div class="endpoint-empty">No rules yet.</div>` : html`
-          <div class="rule-group-editor-list">
-            ${groups.map((andGroup, groupIndex) => {
-              const rules = andGroup.children.filter((child): child is AclRuleNode => child.kind === 'rule');
-
-              return html`
-                ${groupIndex > 0 ? this.renderLogicSeparator('or') : ''}
-                <div class="rule-group-editor">
-                  <div class="rule-editor-list">
-                    ${rules.map((ruleNode, ruleIndex) => html`
-                      ${ruleIndex > 0 ? this.renderLogicSeparator('and') : ''}
-                      ${this.renderRuleEditorItem(draftId, type, groupIndex, ruleIndex, ruleNode.rule)}
-                    `)}
-                  </div>
-                  <div class="rule-group-actions">
-                    <button type="button" class="btn btn-secondary btn-sm" ?disabled=${this.saving} @click=${() => this.addRule(draftId, type, groupIndex)}>
-                      Add AND rule
-                    </button>
-                    <button type="button" class="btn btn-secondary btn-sm" ?disabled=${this.saving} @click=${() => this.removeRuleGroup(draftId, type, groupIndex)}>
-                      Remove group
-                    </button>
-                  </div>
-                </div>
-              `;
-            })}
-          </div>
-        `}
+        <versola-cel-editor
+          multiline
+          rows="2"
+          .value=${allow}
+          ?disabled=${this.saving}
+          placeholder="leave empty for no authorization check"
+          aria-label="Allow expression"
+          @cel-input=${(event: CustomEvent<{ value: string }>) => this.updateEndpointAllow(draftId, event.detail.value)}
+        ></versola-cel-editor>
       </div>
     `;
   }
 
-  private renderHeadersEditor(draftId: string, headers: Record<string, string>) {
-    const entries = Object.entries(headers);
-
+  private renderInjectEditor(draftId: string, inject: InjectRule[]) {
     return html`
       <div class="endpoint-editor-section">
         <div class="editor-section-header">
           <div class="editor-section-title-row">
-            <h3 class="editor-section-title">Inject headers</h3>
+            <h3 class="editor-section-title">Inject</h3>
             ${this.renderOptionInfo(
-              `${draftId}-headers-info`,
-              'Inject headers',
-              'Attach claim-derived values as request headers before the upstream call.',
-              'Inject headers info',
+              `${draftId}-inject-info`,
+              'Inject',
+              'Each rule injects a value into the upstream request. Target is header, query, or body (top-level JSON only). Expression is CEL evaluated against token, user, and request. Injected values overwrite client-supplied ones.',
+              'Inject info',
             )}
           </div>
-          <button type="button" class="btn btn-secondary btn-sm" ?disabled=${this.saving} @click=${() => this.addHeader(draftId)}>
-            Add header
+          <button type="button" class="btn btn-secondary btn-sm" ?disabled=${this.saving} @click=${() => this.addInjectRule(draftId)}>
+            Add rule
           </button>
         </div>
-        ${entries.length === 0 ? html`<div class="endpoint-empty">No headers yet.</div>` : html`
+        ${inject.length === 0 ? html`<div class="endpoint-empty">No inject rules yet.</div>` : html`
           <div class="header-editor-list">
-            ${entries.map(([name, value]) => html`
+            ${inject.map((rule, index) => html`
               <div class="header-editor-item">
                 <div class="form-group">
-                  <label class="form-label">Header name</label>
-                  <input
-                    class="form-input compact-input"
-                    type="text"
-                    .value=${name}
-                    @change=${(event: Event) => this.renameHeader(draftId, name, (event.target as HTMLInputElement).value)}
-                    placeholder="X-User-Id"
-                  />
-                </div>
-                <div class="form-group">
-                  <label class="form-label">Source</label>
+                  <label class="form-label">Target</label>
                   <select
                     class="form-select compact-input"
-                    .value=${this.getReferenceSource(value)}
-                    @change=${(event: Event) => this.updateHeaderSource(
-                      draftId,
-                      name,
-                      (event.target as HTMLSelectElement).value as ClaimSource,
-                    )}
+                    .value=${rule.target}
+                    @change=${(event: Event) => this.updateInjectRule(draftId, index, { target: (event.target as HTMLSelectElement).value as InjectTarget })}
                   >
-                    <option value="access_token">access token</option>
-                    <option value="userinfo">userinfo</option>
+                    ${injectTargets.map(target => html`<option value=${target}>${target}</option>`)}
                   </select>
                 </div>
                 <div class="form-group">
-                  <label class="form-label">Value</label>
+                  <label class="form-label">Name</label>
                   <input
                     class="form-input compact-input"
                     type="text"
-                    .value=${this.getReferencePath(value)}
-                    @input=${(event: Event) => this.updateHeaderPath(draftId, name, (event.target as HTMLInputElement).value)}
-                    placeholder="sub"
+                    .value=${rule.name}
+                    @input=${(event: Event) => this.updateInjectRule(draftId, index, { name: (event.target as HTMLInputElement).value })}
+                    placeholder=${rule.target === 'header' ? 'X-User-Id' : rule.target === 'query' ? 'tenant' : 'userId'}
                   />
+                </div>
+                <div class="form-group">
+                  <label class="form-label">Expression (CEL)</label>
+                  <versola-cel-editor
+                    class="compact-input"
+                    required
+                    .value=${rule.expression}
+                    ?disabled=${this.saving}
+                    placeholder="token.sub"
+                    aria-label="Inject expression"
+                    @cel-input=${(event: CustomEvent<{ value: string }>) => this.updateInjectRule(draftId, index, { expression: event.detail.value })}
+                  ></versola-cel-editor>
                 </div>
                 <button
                   type="button"
                   class="icon-action danger editor-remove"
                   ?disabled=${this.saving}
-                  @click=${() => this.removeHeader(draftId, name)}
-                  title="Remove header"
-                  aria-label=${`Remove header ${name}`}
+                  @click=${() => this.removeInjectRule(draftId, index)}
+                  title="Remove rule"
+                  aria-label="Remove inject rule"
                 >✕</button>
               </div>
             `)}
@@ -1288,9 +859,18 @@ export class VersolaResourcesList extends LitElement {
                 />
               </div>
             </div>
-            ${this.renderRulesEditor(endpoint.draftId, 'allow', 'Match rules', endpoint.allowRules)}
-            ${this.renderRulesEditor(endpoint.draftId, 'deny', 'Deny rules', endpoint.denyRules)}
-            ${this.renderHeadersEditor(endpoint.draftId, endpoint.injectHeaders)}
+            <div class="endpoint-editor-section">
+              <label class="fetch-row">
+                <input
+                  type="checkbox"
+                  ?checked=${endpoint.fetchUserInfo}
+                  @change=${(event: Event) => this.updateEndpointFetchUserInfo(endpoint.draftId, (event.target as HTMLInputElement).checked)}
+                />
+                <span class="fetch-row-label">Fetch userinfo</span>
+              </label>
+            </div>
+            ${this.renderAllowEditor(endpoint.draftId, endpoint.allow)}
+            ${this.renderInjectEditor(endpoint.draftId, endpoint.inject)}
           </div>
         ` : ''}
       </div>
@@ -1314,6 +894,18 @@ export class VersolaResourcesList extends LitElement {
       <div class="card">
         <form @submit=${this.saveResource}>
           <div class="form-grid">
+            <div class="form-group">
+              <label class="form-label">Alias</label>
+              <div class="input-with-info">
+                <input class="form-input compact-input" type="text" aria-label="Resource alias" .value=${this.resourceAlias} @input=${(e: Event) => this.resourceAlias = (e.target as HTMLInputElement).value} placeholder="users-api" ?disabled=${this.saving} required />
+                ${this.renderOptionInfo(
+                  'resource-alias-info',
+                  'Alias',
+                  'Used by the edge to route incoming user-agent requests to this resource. Requests to /resources/{alias}/* are forwarded to the configured resource URI.',
+                  'Resource alias info',
+                )}
+              </div>
+            </div>
             <div class="form-group">
               <label class="form-label">Absolute resource URI</label>
                   <input class="form-input compact-input ${this.isResourceUriInvalid ? 'input-error' : ''}" type="url" aria-label="Absolute resource URI" .value=${this.resourceUri} @input=${(e: Event) => this.resourceUri = (e.target as HTMLInputElement).value} placeholder="https://api.example.com" ?disabled=${this.saving} required />
@@ -1378,10 +970,13 @@ export class VersolaResourcesList extends LitElement {
         const isExpanded = this.expandedResources.has(resource.id);
         return html`<div class="card resource-shell" @click=${() => this.handleCardClick(resource.id)}><div class="card-body resource-card">
         <div class="resource-header">
-          <div class="resource-label-card"><div class="resource-label">${formatResourceLabel(resource.resource)}</div></div>
+          <div class="resource-label-card">
+            <div class="resource-label">${formatResourceLabel(resource.resource)}</div>
+            <span class="resource-alias-badge" title="Alias">${resource.alias}</span>
+          </div>
           <div class="resource-actions" @click=${(e: Event) => e.stopPropagation()}>
-            <button class="icon-action" @click=${() => this.openEditResourceForm(resource)} title="Edit resource" aria-label=${`Edit resource ${formatResourceLabel(resource.resource)}`}>✎</button>
-            <button class="icon-action danger" @click=${() => this.removeResource(resource)} title="Delete resource" aria-label=${`Delete resource ${formatResourceLabel(resource.resource)}`}>✕</button>
+            <button class="icon-action" @click=${() => this.openEditResourceForm(resource)} title="Edit resource" aria-label=${`Edit resource ${resource.alias}`}>✎</button>
+            <button class="icon-action danger" @click=${() => this.removeResource(resource)} title="Delete resource" aria-label=${`Delete resource ${resource.alias}`}>✕</button>
           </div>
         </div>
         ${isExpanded ? this.renderResourceEndpoints(resource) : ''}

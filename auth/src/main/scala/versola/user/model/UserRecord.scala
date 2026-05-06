@@ -11,6 +11,7 @@ case class UserRecord(
     phone: Option[Phone],
     login: Option[Login],
     claims: Json.Obj,
+    uiLocales: Option[List[String]],
 ):
   def createdAt: Instant = id.createdAt
 
@@ -22,4 +23,5 @@ object UserRecord:
       phone = None,
       login = None,
       claims = Json.Obj(),
+      uiLocales = None,
     )

@@ -27,7 +27,7 @@ object ConversationController extends Controller:
   )
 
   val getFormRoute =
-    Method.GET / "v1" / "challenge" -> handler { (request: Request) =>
+    Method.GET / "challenge" -> handler { (request: Request) =>
       (
         for
           router <- ZIO.service[ConversationRouter]
@@ -43,19 +43,19 @@ object ConversationController extends Controller:
     }
 
   val submitEmailRoute =
-    submit[EmailSubmission](Method.POST / "v1" / "challenge" / "email")
+    submit[EmailSubmission](Method.POST / "challenge" / "email")
 
   val submitPhoneRoute =
-    submit[PhoneSubmission](Method.POST / "v1" / "challenge" / "phone")
+    submit[PhoneSubmission](Method.POST / "challenge" / "phone")
 
   val submitLoginPasswordRoute =
-    submit[LoginPasswordSubmission](Method.POST / "v1" / "challenge" / "login-password")
+    submit[LoginPasswordSubmission](Method.POST / "challenge" / "login-password")
 
   val submitOtpRoute =
-    submit[OtpSubmission](Method.POST / "v1" / "challenge" / "otp")
+    submit[OtpSubmission](Method.POST / "challenge" / "otp")
 
   val submitResendOtpRoute =
-    submit[OtpResendSubmission](Method.POST / "v1" / "challenge" / "otp" / "resend")
+    submit[OtpResendSubmission](Method.POST / "challenge" / "otp" / "resend")
 
   private def submit[Body <: Submission: FormDecoder](
       pattern: RoutePattern[Unit],

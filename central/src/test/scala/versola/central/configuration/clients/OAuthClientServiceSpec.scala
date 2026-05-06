@@ -1,11 +1,12 @@
 package versola.central.configuration.clients
 
 import org.scalamock.stubs.{Stub, ZIOStubs}
-import versola.central.CentralConfig
+import versola.central.{CentralConfig, TestCentralConfig}
+import versola.central.configuration.edges.EdgeId
 import versola.central.configuration.permissions.Permission
 import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.sync.SyncEvent
-import versola.central.configuration.tenants.TenantId
+import versola.central.configuration.tenants.{TenantId, TenantRecord, TenantRepository}
 import versola.central.configuration.{CreateClientRequest, PatchClientRedirectUris, PatchClientScope, PatchPermissions, UpdateClientRequest}
 import versola.util.{MAC, RedirectUri, ReloadingCache, Secret, SecureRandom, SecurityService}
 import zio.prelude.EqualOps
@@ -37,6 +38,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     secret = Some(Secret(Array.fill(48)(1.toByte))),
     previousSecret = None,
     accessTokenTtl = 5.minutes,
+    refreshTokenTtl = 7776000.seconds,
     permissions = Set(readPermission),
   )
 
@@ -50,6 +52,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     secret = Some(Secret(Array.fill(48)(2.toByte))),
     previousSecret = None,
     accessTokenTtl = 10.minutes,
+    refreshTokenTtl = 7776000.seconds,
     permissions = Set(writePermission),
   )
 
@@ -71,19 +74,17 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     scope = PatchClientScope(add = Set(writeScope), remove = Set(readScope)),
     permissions = PatchPermissions(add = Set(writePermission), remove = Set(readPermission)),
     accessTokenTtl = Some(900L),
+    refreshTokenTtl = None,
   )
 
   class Env(initial: Vector[OAuthClientRecord] = Vector.empty):
     val cache = ReloadingCache(Unsafe.unsafe(unsafe ?=> Ref.unsafe.make(initial)))
     val repository = stub[OAuthClientRepository]
+    val tenantRepository = stub[TenantRepository]
     val secureRandom = stub[SecureRandom]
     val securityService = stub[SecurityService]
-    val config = CentralConfig(
-      initialize = false,
-      clientSecretsPepper = pepper,
-      secretKey = new SecretKeySpec(Array.fill(32)(7.toByte), "AES"),
-    )
-    val service = OAuthClientService.Impl(cache, repository, secureRandom, securityService, config)
+    val config = TestCentralConfig.config
+    val service = OAuthClientService.Impl(cache, repository, tenantRepository, secureRandom, securityService, config)
 
   def spec = suite("OAuthClientService")(
     test("getTenantClients filters cache by tenant") {
@@ -91,6 +92,25 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
 
       for
         result <- env.service.getTenantClients(tenantId)
+      yield assertTrue(result === Vector(cachedClient))
+    },
+    test("getClientsForSync returns all clients when no edge filter") {
+      val env = new Env(Vector(cachedClient, otherTenantClient))
+
+      for
+        result <- env.service.getClientsForSync(None)
+      yield assertTrue(result === Vector(cachedClient, otherTenantClient))
+    },
+    test("getClientsForSync filters by edge id via tenants") {
+      val edgeId = EdgeId("edge-1")
+      val env = new Env(Vector(cachedClient, otherTenantClient))
+
+      for
+        _ <- env.tenantRepository.getAll.succeedsWith(Vector(
+          TenantRecord(tenantId, "Tenant A", Some(edgeId)),
+          TenantRecord(otherTenantId, "Tenant B", Some(EdgeId("other-edge"))),
+        ))
+        result <- env.service.getClientsForSync(Some(edgeId))
       yield assertTrue(result === Vector(cachedClient))
     },
     test("getTenantClients applies pagination after filtering") {
@@ -117,6 +137,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         secret = Some(storedSecret),
         previousSecret = None,
         accessTokenTtl = 300.seconds,
+        refreshTokenTtl = 7776000.seconds,
         permissions = Set(readPermission),
       )
 
@@ -151,6 +172,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
             updateRequest.scope,
             updateRequest.permissions,
             Some(900.seconds),
+            None,
           )
         )
       )

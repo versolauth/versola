@@ -32,6 +32,7 @@ object OAuthClientSyncClientSpec extends ZIOSpecDefault:
       secret: Option[String],
       previousSecret: Option[String],
       accessTokenTtl: Duration,
+      refreshTokenTtl: Duration,
   ) derives JsonCodec
   private case class EncodedClientsWithPepper(clients: Vector[EncodedClient], pepper: String) derives JsonCodec
 
@@ -76,6 +77,7 @@ object OAuthClientSyncClientSpec extends ZIOSpecDefault:
                       Some(Base64Url.encode(currentSecret)),
                       Some(Base64Url.encode(previousSecret)),
                       300.seconds,
+                      7776000.seconds,
                     )
                   ),
                   Base64Url.encode(pepper),
@@ -93,7 +95,7 @@ object OAuthClientSyncClientSpec extends ZIOSpecDefault:
         client = result.clients(ClientId("web-app"))
       yield assertTrue(
         request.method == Method.GET,
-        request.url.encode.contains("v1/configuration/clients/sync"),
+        request.url.encode.contains("configuration/clients/sync"),
         claims.iss == "auth",
         claims.sub == "internal-auth",
         claims.aud == List("central"),

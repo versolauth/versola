@@ -11,10 +11,13 @@ export interface AuthorizationPreset {
   id: string;
   description: string;
   redirectUri: string;
+  postLoginRedirectUri: string;
   scope: string[];
   responseType: 'code' | 'code id_token';
   uiLocales?: string[];
   customParameters?: Record<string, string[]>;
+  cookieDomain?: string;
+  cookiePath?: string;
 }
 
 // OAuth Client
@@ -45,45 +48,13 @@ export interface OAuthClaim {
   description: Record<string, string>;
 }
 
-// ACL Rule types
-export type RuleOperator =
-  | 'eq' | 'ne' | 'gt' | 'gte' | 'lt' | 'lte'
-  | 'in' | 'not_in' | 'contains' | 'not_contains'
-  | 'starts_with' | 'ends_with' | 'matches';
+// CEL-based authorization and request injection
+export type InjectTarget = 'header' | 'query' | 'body';
 
-export interface Rule {
-  subject: string;  // "jwt.clearance_level", "userinfo.department", "authorization_details.actions"
-  operator: RuleOperator;
-  value: string | number | string[];
-  pattern?: 'glob' | 'regex';  // For "matches" operator
-}
-
-export interface AclRuleNode {
-  kind: 'rule';
-  rule: Rule;
-}
-
-export interface AclRuleGroup {
-  kind: 'all' | 'any';
-  children: AclRuleTree[];
-}
-
-export type AclRuleTree = AclRuleNode | AclRuleGroup;
-
-export interface EndpointRule {
-  method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | '*';
-  path: string;  // "/api/users/:id" or "/api/users/*"
-}
-
-export interface EndpointAclRule extends EndpointRule {
-  fetchUserInfo: boolean;
-  allowRules: AclRuleGroup;
-  denyRules: AclRuleGroup;
-  injectHeaders: Record<string, string>;
-}
-
-export interface AclRules {
-  endpoints: EndpointAclRule[];
+export interface InjectRule {
+  target: InjectTarget;
+  name: string;
+  expression: string;
 }
 
 // Permission
@@ -92,7 +63,6 @@ export interface Permission {
   description: Record<string, string>;
   endpointIds?: ResourceEndpointId[];
   resource?: string;
-  aclRules?: AclRules;
   deprecated?: boolean;
 }
 
@@ -120,13 +90,13 @@ export interface ResourceEndpoint {
   method: string;
   path: string;
   fetchUserInfo: boolean;
-  allowRules: AclRuleGroup;
-  denyRules: AclRuleGroup;
-  injectHeaders: Record<string, string>;
+  allow?: string;
+  inject: InjectRule[];
 }
 
 export interface Resource {
   id: number;
+  alias: string;
   resource: string;
   endpoints: ResourceEndpoint[];
 }
@@ -154,6 +124,23 @@ export interface ServiceKey {
   keyId: string;
   privateKey: string;
 }
+
+// User
+export interface User {
+  id: string;
+  email?: string;
+  phone?: string;
+  login?: string;
+  claims: Record<string, unknown>;
+}
+
+// Role assignment for a user in a specific tenant
+export interface UserRoleAssignment {
+  tenantId: string;
+  roleId: string;
+}
+
+export type UserSearchField = 'id' | 'email' | 'phone' | 'login';
 
 // Form state
 export type FormMode = 'create' | 'edit';

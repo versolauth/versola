@@ -48,7 +48,7 @@ object ConversationControllerSpec extends UnitSpecBase:
         router = stub[ConversationRouter]
         formService <- ConversationRenderService.live
           .build
-          .provideSome[zio.Scope](ZLayer.succeed(TestEnvConfig.coreConfig) >+> ZLayer.succeed(versola.util.EnvName.Test("test")))
+          .provideSome[zio.Scope](ZLayer.succeed(TestEnvConfig.coreConfig))
 
         tracing <- NoopTracing.layer.build
 
@@ -74,7 +74,7 @@ object ConversationControllerSpec extends UnitSpecBase:
     successfulSubmitTestCase(
       description = "submit email",
       request = Request.post(
-        url = URL.empty / "v1" / "challenge" / "email",
+        url = URL.empty / "challenge" / "email",
         body = Body.fromURLEncodedForm(
           Form(FormField.Text("email", email, MediaType.text.plain)),
         )
@@ -84,7 +84,7 @@ object ConversationControllerSpec extends UnitSpecBase:
     successfulSubmitTestCase(
       description = "submit phone",
       request = Request.post(
-        url = URL.empty / "v1" / "challenge" / "phone",
+        url = URL.empty / "challenge" / "phone",
         body = Body.fromURLEncodedForm(
           Form.fromStrings("phone" -> phone),
         )
@@ -94,7 +94,7 @@ object ConversationControllerSpec extends UnitSpecBase:
     successfulSubmitTestCase(
       description = "submit otp",
       request = Request.post(
-        url = URL.empty / "v1" / "challenge" / "otp",
+        url = URL.empty / "challenge" / "otp",
         body = Body.fromURLEncodedForm(
           Form.fromStrings("code" -> otpCode.toString),
         )
@@ -104,7 +104,7 @@ object ConversationControllerSpec extends UnitSpecBase:
     successfulSubmitTestCase(
       description = "submit otp resend",
       request = Request.post(
-        url = URL.empty / "v1" / "challenge" / "otp" / "resend",
+        url = URL.empty / "challenge" / "otp" / "resend",
         body = Body.fromURLEncodedForm(
           Form.fromStrings(),
         )

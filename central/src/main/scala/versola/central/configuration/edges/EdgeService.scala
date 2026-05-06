@@ -1,10 +1,12 @@
 package versola.central.configuration.edges
 
-import versola.util.{RsaKeyPair, SecurityService}
-import zio.{Task, ZIO, ZLayer}
+import versola.util.{ReloadingCache, RsaKeyPair, SecurityService}
+import zio.{Schedule, Scope, Task, UIO, ZLayer}
 
 trait EdgeService:
-  def getAllEdges: Task[Vector[EdgeRecord]]
+  def getAllEdges: UIO[Vector[EdgeRecord]]
+
+  def find(id: EdgeId): UIO[Option[EdgeRecord]]
 
   def registerEdge(id: EdgeId): Task[RsaKeyPair]
 
@@ -14,17 +16,26 @@ trait EdgeService:
 
   def deleteEdge(id: EdgeId): Task[Unit]
 
+  def sync(): Task[Unit]
+
 object EdgeService:
-  def live: ZLayer[EdgeRepository & SecurityService, Nothing, EdgeService] =
-    ZLayer.fromFunction(Impl(_, _))
+  def live(
+      schedule: Schedule[Any, Any, Any],
+  ): ZLayer[EdgeRepository & SecurityService & Scope, Throwable, EdgeService] =
+    ZLayer(ReloadingCache.make[Vector[EdgeRecord]](schedule))
+      >>> ZLayer.fromFunction(Impl(_, _, _))
 
   case class Impl(
+      cache: ReloadingCache[Vector[EdgeRecord]],
       edgeRepository: EdgeRepository,
       securityService: SecurityService,
   ) extends EdgeService:
 
-    override def getAllEdges: Task[Vector[EdgeRecord]] =
-      edgeRepository.getAll
+    override def getAllEdges: UIO[Vector[EdgeRecord]] =
+      cache.get.map(_.sortBy(_.id))
+
+    override def find(id: EdgeId): UIO[Option[EdgeRecord]] =
+      cache.get.map(_.find(_.id == id))
 
     override def registerEdge(id: EdgeId): Task[RsaKeyPair] =
       for
@@ -43,3 +54,9 @@ object EdgeService:
 
     override def deleteEdge(id: EdgeId): Task[Unit] =
       edgeRepository.deleteEdge(id)
+
+    override def sync(): Task[Unit] =
+      for
+        edges <- edgeRepository.getAll
+        _ <- cache.set(edges)
+      yield ()

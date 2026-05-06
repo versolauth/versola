@@ -19,10 +19,13 @@ trait AuthorizationPresetRepositorySpec extends DatabaseSpecBase[AuthorizationPr
     clientId = clientId,
     description = "Web Login",
     redirectUri = RedirectUri("https://example.com/callback"),
+    postLoginRedirectUri = RedirectUri("https://example.com/dashboard"),
     scope = Set(ScopeToken("openid"), ScopeToken("profile")),
     responseType = ResponseType.Code,
     uiLocales = Some(List("en", "fr")),
     customParameters = Map.empty,
+    cookieDomain = Some("example.com"),
+    cookiePath = Some("/"),
   )
 
   val preset2 = AuthorizationPreset(
@@ -30,10 +33,13 @@ trait AuthorizationPresetRepositorySpec extends DatabaseSpecBase[AuthorizationPr
     clientId = clientId,
     description = "Mobile Login",
     redirectUri = RedirectUri("https://example.com/mobile"),
+    postLoginRedirectUri = RedirectUri("https://example.com/mobile/home"),
     scope = Set(ScopeToken("openid"), ScopeToken("email")),
     responseType = ResponseType.CodeIdToken,
     uiLocales = None,
     customParameters = Map.empty,
+    cookieDomain = None,
+    cookiePath = None,
   )
 
   val preset3 = AuthorizationPreset(
@@ -41,10 +47,13 @@ trait AuthorizationPresetRepositorySpec extends DatabaseSpecBase[AuthorizationPr
     clientId = clientId2,
     description = "Other Client Preset",
     redirectUri = RedirectUri("https://other.com/callback"),
+    postLoginRedirectUri = RedirectUri("https://other.com/home"),
     scope = Set(ScopeToken("openid")),
     responseType = ResponseType.Code,
     uiLocales = Some(List("de")),
     customParameters = Map.empty,
+    cookieDomain = None,
+    cookiePath = None,
   )
 
   override def testCases(env: AuthorizationPresetRepositorySpec.Env) =

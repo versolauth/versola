@@ -1,24 +1,27 @@
 package versola.central.configuration.resources
 
+import versola.central.{CentralConfig, authorizeInternal}
+import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.tenants.TenantId
-import versola.central.configuration.{CreateResourceEndpointRequest, CreateResourceRequest, CreateResourceResponse, GetAllResourcesResponse, ResourceEndpointResponse, ResourceResponse, UpdateResourceEndpointRequest, UpdateResourceRequest}
+import versola.central.configuration.{CreateResourceRequest, CreateResourceResponse, GetAllResourcesResponse, GetResourcesSyncResponse, ResourceEndpointResponse, ResourceEndpointSyncResponse, ResourceResponse, ResourceSyncResponse, UpdateResourceRequest}
 import versola.util.http.Controller
 import zio.http.{Method, Request, Response, Routes, Status, handler}
 import zio.json.{DecoderOps, EncoderOps, JsonDecoder}
 import zio.ZIO
 
 object ResourceController extends Controller:
-  type Env = Tracing & ResourceService
+  type Env = Tracing & ResourceService & CentralConfig & EdgeService
 
   def routes: Routes[Env, Throwable] = Routes(
     getAllResourcesEndpoint,
     createResourceRoute,
     updateResourceRoute,
     deleteResourceRoute,
+    syncResourcesEndpoint,
   )
 
   val getAllResourcesEndpoint =
-    Method.GET / "v1" / "configuration" / "resources" -> handler { (request: Request) =>
+    Method.GET / "configuration" / "resources" -> handler { (request: Request) =>
       for
         service <- ZIO.service[ResourceService]
         tenantId <- request.url.queryZIO[TenantId]("tenantId")
@@ -29,30 +32,44 @@ object ResourceController extends Controller:
     }
 
   val createResourceRoute =
-    Method.POST / "v1" / "configuration" / "resources" -> handler { (request: Request) =>
+    Method.POST / "configuration" / "resources" -> handler { (request: Request) =>
       for
         service <- ZIO.service[ResourceService]
         body <- decodeJsonBody[CreateResourceRequest](request)
-        id <- service.createResource(body)
-      yield Response.json(CreateResourceResponse(id).toJson).status(Status.Created)
+        result <- service.createResource(body)
+      yield result match
+        case Right(id) => Response.json(CreateResourceResponse(id).toJson).status(Status.Created)
+        case Left(error) => Response.json(error.toJson).status(Status.BadRequest)
     }
 
   val updateResourceRoute =
-    Method.PUT / "v1" / "configuration" / "resources" -> handler { (request: Request) =>
+    Method.PUT / "configuration" / "resources" -> handler { (request: Request) =>
       for
         service <- ZIO.service[ResourceService]
         body <- decodeJsonBody[UpdateResourceRequest](request)
-        _ <- service.updateResource(body)
-      yield Response.status(Status.NoContent)
+        result <- service.updateResource(body)
+      yield result match
+        case Right(_) => Response.status(Status.NoContent)
+        case Left(error) => Response.json(error.toJson).status(Status.BadRequest)
     }
 
   val deleteResourceRoute =
-    Method.DELETE / "v1" / "configuration" / "resources" -> handler { (request: Request) =>
+    Method.DELETE / "configuration" / "resources" -> handler { (request: Request) =>
       for
         service <- ZIO.service[ResourceService]
         id <- request.url.queryZIO[ResourceId]("id")
         _ <- service.deleteResource(id)
       yield Response.status(Status.NoContent)
+    }
+
+  val syncResourcesEndpoint =
+    Method.GET / "configuration" / "resources" / "sync" -> handler { (request: Request) =>
+      for
+        service <- ZIO.service[ResourceService]
+        edgeId <- authorizeInternal(request)
+        resources <- service.getResourcesForSync(edgeId)
+        response = GetResourcesSyncResponse(resources.map(toResourceSyncResponse))
+      yield Response.json(response.toJson)
     }
 
   private def decodeJsonBody[A: JsonDecoder](request: Request) =
@@ -64,6 +81,7 @@ object ResourceController extends Controller:
   private def toResourceResponse(record: ResourceRecord): ResourceResponse =
     ResourceResponse(
       id = record.id,
+      alias = record.alias,
       resource = record.resource,
       endpoints = record.endpoints.map { endpoint =>
         ResourceEndpointResponse(
@@ -71,9 +89,26 @@ object ResourceController extends Controller:
           method = endpoint.method,
           path = endpoint.path,
           fetchUserInfo = endpoint.fetchUserInfo,
-          allowRules = endpoint.allowRules,
-          denyRules = endpoint.denyRules,
-          injectHeaders = endpoint.injectHeaders,
+          allow = endpoint.allowExpression,
+          inject = endpoint.inject,
+        )
+      },
+    )
+
+  private def toResourceSyncResponse(record: ResourceRecord): ResourceSyncResponse =
+    ResourceSyncResponse(
+      id = record.id,
+      tenantId = record.tenantId,
+      alias = record.alias,
+      resource = record.resource,
+      endpoints = record.endpoints.map { endpoint =>
+        ResourceEndpointSyncResponse(
+          id = endpoint.id,
+          method = endpoint.method,
+          path = endpoint.path,
+          fetchUserInfo = endpoint.fetchUserInfo,
+          allow = endpoint.allowExpression,
+          inject = endpoint.inject,
         )
       },
     )

@@ -2,6 +2,7 @@ package versola.central.configuration.clients
 
 import versola.central.{CentralConfig, authorizeInternal}
 import versola.central.configuration.*
+import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.tenants.TenantId
 import versola.util.http.Controller
 import versola.util.{Base64Url, Secret, SecurityService}
@@ -12,7 +13,7 @@ import zio.schema.*
 import zio.prelude.These
 
 object ClientController extends Controller:
-  type Env = Tracing & OAuthClientService & CentralConfig & SecurityService
+  type Env = Tracing & OAuthClientService & CentralConfig & SecurityService & EdgeService
 
   def routes: Routes[Env, Throwable] = Routes(
     getAllClientsEndpoint,
@@ -25,7 +26,7 @@ object ClientController extends Controller:
   )
 
   val getAllClientsEndpoint =
-    Method.GET / "v1" / "configuration" / "clients" -> handler { (request: Request) =>
+    Method.GET / "configuration" / "clients" -> handler { (request: Request) =>
       for
         clientService <- ZIO.service[OAuthClientService]
 
@@ -48,12 +49,12 @@ object ClientController extends Controller:
     }
 
   val getAllClientsSyncEndpoint =
-    Method.GET / "v1" / "configuration" / "clients" / "sync" -> handler { (request: Request) =>
+    Method.GET / "configuration" / "clients" / "sync" -> handler { (request: Request) =>
       for
         clientService <- ZIO.service[OAuthClientService]
         centralConfig <- ZIO.service[CentralConfig]
-        tenantIdOpt <- authorizeInternal(request)
-        clients <- clientService.getAllClients
+        edgeId <- authorizeInternal(request)
+        clients <- clientService.getClientsForSync(edgeId)
         encryptedClients <- ZIO.foreach(clients) { client =>
           for
             secret <- ZIO.foreach(client.secret)(encryptSecret)
@@ -68,6 +69,8 @@ object ClientController extends Controller:
             secret = secret,
             previousSecret = previousSecret,
             accessTokenTtl = client.accessTokenTtl,
+            refreshTokenTtl = client.refreshTokenTtl,
+            permissions = client.permissions,
           )
         }
         encryptedPepper <- encryptSecret(centralConfig.clientSecretsPepper)
@@ -76,7 +79,7 @@ object ClientController extends Controller:
 
 
   val createClientEndpoint =
-    Method.POST / "v1" / "configuration" / "clients" -> handler { (request: Request) =>
+    Method.POST / "configuration" / "clients" -> handler { (request: Request) =>
       (for
         service <- ZIO.service[OAuthClientService]
         body <- request.body.asJson[CreateClientRequest]
@@ -93,7 +96,7 @@ object ClientController extends Controller:
     }
 
   val updateClientEndpoint =
-    Method.PUT / "v1" / "configuration" / "clients" -> handler { (request: Request) =>
+    Method.PUT / "configuration" / "clients" -> handler { (request: Request) =>
       for
         service <- ZIO.service[OAuthClientService]
         body <- request.body.asJson[UpdateClientRequest]
@@ -102,7 +105,7 @@ object ClientController extends Controller:
     }
 
   val rotateSecretEndpoint =
-    Method.POST / "v1" / "configuration" / "clients" / "rotate-secret" -> handler { (request: Request) =>
+    Method.POST / "configuration" / "clients" / "rotate-secret" -> handler { (request: Request) =>
       for
         service <- ZIO.service[OAuthClientService]
         clientId <- request.url.queryZIO[ClientId]("clientId")
@@ -112,7 +115,7 @@ object ClientController extends Controller:
     }
 
   val deletePreviousSecretEndpoint =
-    Method.DELETE / "v1" / "configuration" / "clients" / "previous-secret" -> handler { (request: Request) =>
+    Method.DELETE / "configuration" / "clients" / "previous-secret" -> handler { (request: Request) =>
       for
         service <- ZIO.service[OAuthClientService]
         clientId <- request.url.queryZIO[ClientId]("clientId")
@@ -121,7 +124,7 @@ object ClientController extends Controller:
     }
 
   val deleteClientEndpoint =
-    Method.DELETE / "v1" / "configuration" / "clients" -> handler { (request: Request) =>
+    Method.DELETE / "configuration" / "clients" -> handler { (request: Request) =>
       for
         service <- ZIO.service[OAuthClientService]
         clientId <- request.url.queryZIO[ClientId]("clientId")

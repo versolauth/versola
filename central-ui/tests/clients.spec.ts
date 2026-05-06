@@ -90,7 +90,7 @@ test('creates a client and shows the generated secret banner', async ({ page }) 
   await expect(created).toContainText('alpha-web');
   await expect(created).toContainText('30m');
 
-  expect(findRequest(api.requests, 'POST', '/v1/configuration/clients').body).toEqual({
+  expect(findRequest(api.requests, 'POST', '/configuration/clients').body).toEqual({
     tenantId: 'tenant-alpha',
     id: 'dashboard-client',
     clientName: 'Dashboard Client',
@@ -116,7 +116,7 @@ test('shows client form validation before submitting', async ({ page }) => {
   await expect(clientIdField).toHaveCSS('border-top-color', 'rgb(248, 81, 73)');
   await page.getByRole('button', { name: 'Create Client', exact: true }).click();
 
-  expect(api.requests.some(request => request.method === 'POST' && request.pathname === '/v1/configuration/clients')).toBeFalsy();
+  expect(api.requests.some(request => request.method === 'POST' && request.pathname === '/configuration/clients')).toBeFalsy();
 
   await page.getByLabel('Client ID').fill('good-client');
   await page.getByPlaceholder('https://app.example.com/callback').fill('https://broken.example/callback#fragment');
@@ -158,7 +158,7 @@ test('requires external audience to reference an existing client', async ({ page
 
   await expect(page.getByText('Audience must reference an existing client in this tenant', { exact: true })).toBeVisible();
   await expect(page.getByText('missing-client', { exact: true })).toHaveCount(0);
-  expect(api.requests.some(request => request.method === 'POST' && request.pathname === '/v1/configuration/clients')).toBeFalsy();
+  expect(api.requests.some(request => request.method === 'POST' && request.pathname === '/configuration/clients')).toBeFalsy();
 
   await page.getByLabel('External Audience').fill('alpha-web');
   await page.getByLabel('External Audience').press('Enter');
@@ -168,7 +168,7 @@ test('requires external audience to reference an existing client', async ({ page
   await page.getByPlaceholder('https://app.example.com/callback').press('Enter');
   await page.getByRole('button', { name: 'Create Client', exact: true }).click();
 
-  expect(findRequest(api.requests, 'POST', '/v1/configuration/clients').body.audience).toEqual(['alpha-web']);
+  expect(findRequest(api.requests, 'POST', '/configuration/clients').body.audience).toEqual(['alpha-web']);
 });
 
 test('rejects duplicate external audiences', async ({ page }) => {
@@ -205,7 +205,7 @@ test('rejects self as external audience', async ({ page }) => {
 
   await expect(page.getByText('Audience cannot reference the client itself', { exact: true })).toBeVisible();
   await expect(page.locator('.tag-list .tag').filter({ hasText: 'alpha-web' })).toHaveCount(0);
-  expect(api.requests.some(request => request.method === 'POST' && request.pathname === '/v1/configuration/clients')).toBeFalsy();
+  expect(api.requests.some(request => request.method === 'POST' && request.pathname === '/configuration/clients')).toBeFalsy();
 });
 
 test('updates a client and sends patch-style changes', async ({ page }) => {
@@ -241,7 +241,7 @@ test('updates a client and sends patch-style changes', async ({ page }) => {
   await page.getByRole('button', { name: 'Update Client', exact: true }).click();
 
   // Verify the API request was made correctly
-  expect(findRequest(api.requests, 'PUT', '/v1/configuration/clients').body).toEqual({
+  expect(findRequest(api.requests, 'PUT', '/configuration/clients').body).toEqual({
     clientId: 'alpha-web',
     clientName: 'Alpha Console',
     redirectUris: { add: ['https://alpha.example/admin/callback'], remove: ['https://alpha.example/callback'] },
@@ -264,7 +264,7 @@ test('rotates a client secret and deletes the previous secret', async ({ page })
   await expect(page.getByRole('button', { name: 'Rotate Secret', exact: true })).not.toBeVisible();
 
   // Verify the rotate secret API was called correctly
-  expect(findRequest(api.requests, 'POST', '/v1/configuration/clients/rotate-secret').searchParams).toEqual({
+  expect(findRequest(api.requests, 'POST', '/configuration/clients/rotate-secret').searchParams).toEqual({
     clientId: 'alpha-web',
   });
 
@@ -280,7 +280,7 @@ test('rotates a client secret and deletes the previous secret', async ({ page })
   await page.waitForTimeout(500);
 
   // Verify the delete previous secret API was called correctly
-  expect(findRequest(api.requests, 'DELETE', '/v1/configuration/clients/previous-secret').searchParams).toEqual({
+  expect(findRequest(api.requests, 'DELETE', '/configuration/clients/previous-secret').searchParams).toEqual({
     clientId: 'alpha-web',
   });
 
@@ -297,7 +297,7 @@ test('deletes a client through the confirm dialog and reaches the empty state', 
   await clientCard(page, 'Alpha Web').getByRole('button', { name: 'Delete client alpha-web' }).click();
   await page.getByRole('dialog').getByRole('button', { name: 'Delete', exact: true }).click();
 
-  expect(findRequest(api.requests, 'DELETE', '/v1/configuration/clients').searchParams).toEqual({
+  expect(findRequest(api.requests, 'DELETE', '/configuration/clients').searchParams).toEqual({
     clientId: 'alpha-web',
   });
   await expect(page.locator('.client-card')).toHaveCount(0);
@@ -331,7 +331,7 @@ test('shows error alert when creating a client with duplicate ID', async ({ page
 
   expect(dialogShown).toBe(true);
 
-  expect(findRequest(api.requests, 'POST', '/v1/configuration/clients').body).toEqual({
+  expect(findRequest(api.requests, 'POST', '/configuration/clients').body).toEqual({
     tenantId: 'tenant-alpha',
     id: 'alpha-web',
     clientName: 'Duplicate Client',

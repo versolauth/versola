@@ -132,14 +132,14 @@ test('my test', async ({ page }) => {
   
   // Verify API calls
   expect(api.requests.some(req => 
-    req.pathname === '/v1/configuration/clients'
+    req.pathname === '/configuration/clients'
   )).toBeTruthy();
 });
 ```
 
 ### Using Mock API
 
-The test harness automatically mocks all `/v1/configuration/**` endpoints.
+The test harness automatically mocks all `/configuration/**` endpoints.
 
 **Mock State:**
 ```typescript

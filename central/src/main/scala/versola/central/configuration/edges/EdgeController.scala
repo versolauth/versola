@@ -21,7 +21,7 @@ object EdgeController extends Controller:
   )
 
   val getAllEdgesEndpoint =
-    Method.GET / "v1" / "configuration" / "edges" -> handler { (_: Request) =>
+    Method.GET / "configuration" / "edges" -> handler { (_: Request) =>
       for
         service <- ZIO.service[EdgeService]
         edges <- service.getAllEdges
@@ -37,7 +37,7 @@ object EdgeController extends Controller:
     }
 
   val registerEdgeEndpoint =
-    Method.POST / "v1" / "configuration" / "edges" -> handler { (request: Request) =>
+    Method.POST / "configuration" / "edges" -> handler { (request: Request) =>
       for
         service <- ZIO.service[EdgeService]
         body <- request.body.asJson[RegisterEdgeRequest]
@@ -48,7 +48,7 @@ object EdgeController extends Controller:
     }
 
   val rotateEdgeKeyEndpoint =
-    Method.POST / "v1" / "configuration" / "edges" / "rotate-key" -> handler { (request: Request) =>
+    Method.POST / "configuration" / "edges" / "rotate-key" -> handler { (request: Request) =>
       for
         service <- ZIO.service[EdgeService]
         edgeId <- request.url.queryZIO[EdgeId]("edgeId")
@@ -61,7 +61,7 @@ object EdgeController extends Controller:
     }
 
   val deleteOldEdgeKeyEndpoint =
-    Method.DELETE / "v1" / "configuration" / "edges" / "old-key" -> handler { (request: Request) =>
+    Method.DELETE / "configuration" / "edges" / "old-key" -> handler { (request: Request) =>
       for
         service <- ZIO.service[EdgeService]
         edgeId <- request.url.queryZIO[EdgeId]("edgeId")
@@ -70,7 +70,7 @@ object EdgeController extends Controller:
     }
 
   val deleteEdgeEndpoint =
-    Method.DELETE / "v1" / "configuration" / "edges" -> handler { (request: Request) =>
+    Method.DELETE / "configuration" / "edges" -> handler { (request: Request) =>
       for
         service <- ZIO.service[EdgeService]
         edgeId <- request.url.queryZIO[EdgeId]("edgeId")

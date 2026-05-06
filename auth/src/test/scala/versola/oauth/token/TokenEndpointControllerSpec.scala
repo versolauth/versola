@@ -43,6 +43,7 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
     uiLocales = None,
     nonce = None,
     user = None,
+    roles = Nil,
   )
 
   def authHeader(clientId: ClientId, secret: Option[Secret]): Header.Authorization =
@@ -86,11 +87,11 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
     }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging
 
   val spec = suite("TokenEndpointController")(
-    suite("POST /v1/token - authorization_code grant")(
+    suite("POST /token - authorization_code grant")(
       tokenEndpointTestCase(
         description = "successfully exchange authorization code for tokens",
         request = Request.post(
-          url = URL.empty / "v1" / "token",
+          url = URL.empty / "token",
           body = Body.fromURLEncodedForm(
             Form.fromStrings(
               "grant_type" -> "authorization_code",
@@ -117,7 +118,7 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
       tokenEndpointTestCase(
         description = "fail with InvalidClient when credentials are missing",
         request = Request.post(
-          url = URL.empty / "v1" / "token",
+          url = URL.empty / "token",
           body = Body.fromURLEncodedForm(
             Form.fromStrings(
               "grant_type" -> "authorization_code",
@@ -139,7 +140,7 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
       tokenEndpointTestCase(
         description = "fail with InvalidGrant when code is invalid",
         request = Request.post(
-          url = URL.empty / "v1" / "token",
+          url = URL.empty / "token",
           body = Body.fromURLEncodedForm(
             Form.fromStrings(
               "grant_type" -> "authorization_code",
@@ -160,11 +161,11 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
           ),
       ),
     ),
-    suite("POST /v1/token - refresh_token grant")(
+    suite("POST /token - refresh_token grant")(
       tokenEndpointTestCase(
         description = "successfully refresh access token",
         request = Request.post(
-          url = URL.empty / "v1" / "token",
+          url = URL.empty / "token",
           body = Body.fromURLEncodedForm(
             Form.fromStrings(
               "grant_type" -> "refresh_token",
@@ -187,7 +188,7 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
       tokenEndpointTestCase(
         description = "successfully refresh with reduced scope",
         request = Request.post(
-          url = URL.empty / "v1" / "token",
+          url = URL.empty / "token",
           body = Body.fromURLEncodedForm(
             Form.fromStrings(
               "grant_type" -> "refresh_token",
@@ -210,7 +211,7 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
       tokenEndpointTestCase(
         description = "fail with InvalidGrant when refresh token is invalid",
         request = Request.post(
-          url = URL.empty / "v1" / "token",
+          url = URL.empty / "token",
           body = Body.fromURLEncodedForm(
             Form.fromStrings(
               "grant_type" -> "refresh_token",
@@ -231,7 +232,7 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
       tokenEndpointTestCase(
         description = "fail with InvalidScope when requested scope is invalid",
         request = Request.post(
-          url = URL.empty / "v1" / "token",
+          url = URL.empty / "token",
           body = Body.fromURLEncodedForm(
             Form.fromStrings(
               "grant_type" -> "refresh_token",
@@ -253,7 +254,7 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
       tokenEndpointTestCase(
         description = "fail with InvalidGrant when refresh token already exchanged",
         request = Request.post(
-          url = URL.empty / "v1" / "token",
+          url = URL.empty / "token",
           body = Body.fromURLEncodedForm(
             Form.fromStrings(
               "grant_type" -> "refresh_token",
@@ -272,11 +273,11 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
           ),
       ),
     ),
-    suite("POST /v1/token - client_credentials grant")(
+    suite("POST /token - client_credentials grant")(
       tokenEndpointTestCase(
         description = "successfully issue access token for confidential client",
         request = Request.post(
-          url = URL.empty / "v1" / "token",
+          url = URL.empty / "token",
           body = Body.fromURLEncodedForm(
             Form.fromStrings(
               "grant_type" -> "client_credentials",
@@ -304,7 +305,7 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
       tokenEndpointTestCase(
         description = "successfully issue access token with requested scope",
         request = Request.post(
-          url = URL.empty / "v1" / "token",
+          url = URL.empty / "token",
           body = Body.fromURLEncodedForm(
             Form.fromStrings(
               "grant_type" -> "client_credentials",
@@ -332,7 +333,7 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
       tokenEndpointTestCase(
         description = "fail with InvalidClient when client authentication fails",
         request = Request.post(
-          url = URL.empty / "v1" / "token",
+          url = URL.empty / "token",
           body = Body.fromURLEncodedForm(
             Form.fromStrings(
               "grant_type" -> "client_credentials",
@@ -352,7 +353,7 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
       tokenEndpointTestCase(
         description = "fail with InvalidScope when requested scope exceeds client scope",
         request = Request.post(
-          url = URL.empty / "v1" / "token",
+          url = URL.empty / "token",
           body = Body.fromURLEncodedForm(
             Form.fromStrings(
               "grant_type" -> "client_credentials",
@@ -371,11 +372,11 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
           ),
       ),
     ),
-    suite("POST /v1/token - error cases")(
+    suite("POST /token - error cases")(
       tokenEndpointTestCase(
         description = "fail with UnsupportedGrantType for unknown grant type",
         request = Request.post(
-          url = URL.empty / "v1" / "token",
+          url = URL.empty / "token",
           body = Body.fromURLEncodedForm(
             Form.fromStrings(
               "grant_type" -> "password",
@@ -393,7 +394,7 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
       tokenEndpointTestCase(
         description = "fail with InvalidRequest when grant_type is missing",
         request = Request.post(
-          url = URL.empty / "v1" / "token",
+          url = URL.empty / "token",
           body = Body.fromURLEncodedForm(
             Form.fromStrings(
               "code" -> Base64.urlEncode(authCode1),
@@ -413,7 +414,7 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
       tokenEndpointTestCase(
         description = "issue ID token when openid scope is present in authorization code exchange",
         request = Request.post(
-          url = URL.empty / "v1" / "token",
+          url = URL.empty / "token",
           body = Body.fromURLEncodedForm(
             Form.fromStrings(
               "grant_type" -> "authorization_code",
@@ -461,7 +462,7 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
       tokenEndpointTestCase(
         description = "not issue ID token when openid scope is missing",
         request = Request.post(
-          url = URL.empty / "v1" / "token",
+          url = URL.empty / "token",
           body = Body.fromURLEncodedForm(
             Form.fromStrings(
               "grant_type" -> "authorization_code",
@@ -489,7 +490,7 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
       tokenEndpointTestCase(
         description = "issue ID token with nonce from refresh token flow",
         request = Request.post(
-          url = URL.empty / "v1" / "token",
+          url = URL.empty / "token",
           body = Body.fromURLEncodedForm(
             Form.fromStrings(
               "grant_type" -> "refresh_token",
@@ -535,7 +536,7 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
       tokenEndpointTestCase(
         description = "not issue ID token for client_credentials grant",
         request = Request.post(
-          url = URL.empty / "v1" / "token",
+          url = URL.empty / "token",
           body = Body.fromURLEncodedForm(
             Form.fromStrings(
               "grant_type" -> "client_credentials",

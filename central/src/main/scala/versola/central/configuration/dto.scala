@@ -8,7 +8,6 @@ import versola.central.configuration.scopes.{Claim, ClaimRecord, ScopeToken}
 import versola.central.configuration.tenants.TenantId
 import versola.util.RedirectUri
 import zio.http.{Scheme, URL}
-import zio.json.ast.Json
 import zio.json.{DeriveJsonCodec, JsonCodec, JsonDecoder, JsonEncoder}
 import zio.prelude.Equal
 import zio.schema.*
@@ -36,9 +35,23 @@ case class CreateResourceEndpoint(
     method: String,
     path: String,
     fetchUserInfo: Boolean,
-    allowRules: AclRuleTree,
-    denyRules: AclRuleTree,
-    injectHeaders: Map[String, String],
+    allow: Option[String],
+    inject: Vector[InjectRule],
+) derives JsonCodec, Schema
+
+enum InjectTarget derives JsonCodec:
+  case header, query, body
+
+object InjectTarget:
+  given Schema[InjectTarget] = Schema.primitive[String].transformOrFail(
+    string => Try(InjectTarget.valueOf(string)).toEither.left.map(_ => s"Invalid inject target: $string"),
+    target => Right(target.toString),
+  )
+
+case class InjectRule(
+    target: InjectTarget,
+    name: String,
+    expression: String,
 ) derives JsonCodec, Schema
 
 case class CreateScope(
@@ -96,6 +109,7 @@ case class GetAllPermissionsResponse(
 
 case class ResourceResponse(
     id: ResourceId,
+    alias: String,
     resource: ResourceUri,
     endpoints: Vector[ResourceEndpointResponse],
 ) derives Schema, JsonCodec
@@ -105,66 +119,13 @@ case class ResourceEndpointResponse(
     method: String,
     path: String,
     fetchUserInfo: Boolean,
-    allowRules: AclRuleTree,
-    denyRules: AclRuleTree,
-    injectHeaders: Map[String, String],
+    allow: Option[String],
+    inject: Vector[InjectRule],
 ) derives Schema, JsonCodec
 
 case class GetAllResourcesResponse(
     resources: Vector[ResourceResponse],
 ) derives Schema, JsonCodec
-
-case class PermissionRule(
-    subject: String,
-    operator: String,
-    value: Json,
-    pattern: Option[String] = None,
-) derives Schema, JsonCodec
-
-case class AclRuleTree(
-    kind: AclRuleTree.Kind,
-    rule: Option[PermissionRule],
-    children: Option[Vector[AclRuleTree]],
-) derives CanEqual, Schema, JsonCodec
-
-object AclRuleTree:
-  val emptyAny: AclRuleTree = any()
-
-  enum Kind:
-    case rule, any, all
-
-  object Kind:
-    given JsonCodec[Kind] = JsonCodec.string.transform(Kind.valueOf, _.toString)
-    given Schema[Kind] = Schema.primitive[String].transformOrFail(
-      string => Try(Kind.valueOf(string)).toEither.left.map(_ => s"Invalid ACL rule kind: $string"),
-      kind => Right(kind.toString),
-    )
-
-  def rule(permissionRule: PermissionRule): AclRuleTree =
-    AclRuleTree(kind = Kind.rule, rule = Some(permissionRule), children = None)
-
-  def all(children: Vector[AclRuleTree] = Vector.empty): AclRuleTree =
-    AclRuleTree(kind = Kind.all, children = Some(children), rule = None)
-
-  def any(children: Vector[AclRuleTree] = Vector.empty): AclRuleTree =
-    AclRuleTree(kind = Kind.any, children = Some(children), rule = None)
-
-case class PermissionEndpointAcl(
-    method: String,
-    path: String,
-    fetchUserInfo: Boolean,
-    allowRules: AclRuleTree,
-    denyRules: AclRuleTree,
-    injectHeaders: Map[String, String],
-) derives Schema, JsonCodec
-
-case class PermissionAcl(
-    endpoints: Vector[PermissionEndpointAcl],
-) derives Schema, JsonCodec
-
-object PermissionAcl:
-  val empty: PermissionAcl = PermissionAcl(Vector.empty)
-  given Equal[PermissionAcl] = Equal.make(_ == _)
 
 case class CreatePermissionRequest(
     tenantId: Option[TenantId],
@@ -182,12 +143,14 @@ case class UpdatePermissionRequest(
 
 case class CreateResourceRequest(
     tenantId: TenantId,
+    alias: String,
     resource: ResourceUri,
     endpoints: Vector[CreateResourceEndpointRequest],
 ) derives Schema, JsonCodec
 
 case class UpdateResourceRequest(
     id: ResourceId,
+    alias: Option[String],
     resource: Option[ResourceUri],
     deleteEndpoints: Set[ResourceEndpointId],
     createEndpoints: Vector[CreateResourceEndpointRequest],
@@ -202,20 +165,8 @@ case class CreateResourceEndpointRequest(
     path: String,
     method: String,
     fetchUserInfo: Boolean,
-    allowRules: AclRuleTree,
-    denyRules: AclRuleTree,
-    injectHeaders: Map[String, String],
-) derives Schema, JsonCodec
-
-case class UpdateResourceEndpointRequest(
-    tenantId: TenantId,
-    id: ResourceEndpointId,
-    method: Option[String],
-    path: Option[String],
-    fetchUserInfo: Option[Boolean],
-    allowRules: Option[AclRuleTree],
-    denyRules: Option[AclRuleTree],
-    injectHeaders: Option[Map[String, String]],
+    allow: Option[String],
+    inject: Vector[InjectRule],
 ) derives Schema, JsonCodec
 
 case class CreateRoleRequest(
@@ -318,6 +269,7 @@ case class CreateClientRequest(
     audience: List[ClientId],
     permissions: Set[Permission],
     accessTokenTtl: Int,
+    refreshTokenTtl: Option[Int] = Some(7776000), // 90 days in seconds (3 months)
 ) derives Schema, JsonCodec
 
 case class CreateClientResponse(
@@ -335,16 +287,20 @@ case class UpdateClientRequest(
     scope: PatchClientScope,
     permissions: PatchPermissions,
     accessTokenTtl: Option[Long],
+    refreshTokenTtl: Option[Long],
 ) derives Schema, JsonCodec
 
 case class AuthorizationPresetInput(
     id: PresetId,
     description: String,
     redirectUri: RedirectUri,
+    postLoginRedirectUri: RedirectUri,
     scope: Set[ScopeToken],
     responseType: ResponseType,
     uiLocales: Option[List[String]],
     customParameters: Map[String, List[String]],
+    cookieDomain: Option[String],
+    cookiePath: Option[String],
 ) derives Schema, JsonCodec
 
 case class SaveAuthorizationPresetsRequest(
@@ -357,10 +313,13 @@ case class AuthorizationPresetResponse(
     clientId: ClientId,
     description: String,
     redirectUri: RedirectUri,
+    postLoginRedirectUri: RedirectUri,
     scope: Set[ScopeToken],
     responseType: ResponseType,
     uiLocales: Option[List[String]],
     customParameters: Map[String, List[String]],
+    cookieDomain: Option[String],
+    cookiePath: Option[String],
 ) derives Schema, JsonCodec
 
 case class GetClientPresetsResponse(
@@ -372,14 +331,38 @@ case class AuthorizationPresetSyncResponse(
     clientId: ClientId,
     description: String,
     redirectUri: RedirectUri,
+    postLoginRedirectUri: RedirectUri,
     scope: Set[ScopeToken],
     responseType: ResponseType,
     uiLocales: Option[List[String]],
     customParameters: Map[String, List[String]],
+    cookieDomain: Option[String],
+    cookiePath: Option[String],
 ) derives Schema, JsonCodec
 
 case class GetAuthorizationPresetsSyncResponse(
     presets: Vector[AuthorizationPresetSyncResponse],
+) derives Schema, JsonCodec
+
+case class ResourceEndpointSyncResponse(
+    id: ResourceEndpointId,
+    method: String,
+    path: String,
+    fetchUserInfo: Boolean,
+    allow: Option[String],
+    inject: Vector[InjectRule],
+) derives Schema, JsonCodec
+
+case class ResourceSyncResponse(
+    id: ResourceId,
+    tenantId: TenantId,
+    alias: String,
+    resource: ResourceUri,
+    endpoints: Vector[ResourceEndpointSyncResponse],
+) derives Schema, JsonCodec
+
+case class GetResourcesSyncResponse(
+    resources: Vector[ResourceSyncResponse],
 ) derives Schema, JsonCodec
 
 type ResourceUri = ResourceUri.Type
@@ -422,9 +405,32 @@ case class SyncOAuthClientRecord(
     secret: Option[String],
     previousSecret: Option[String],
     accessTokenTtl: Duration,
+    refreshTokenTtl: Duration,
+    permissions: Set[Permission],
 ) derives JsonCodec, Schema
 
 case class GetOAuthClientsSyncResponse(
     clients: Vector[SyncOAuthClientRecord],
     pepper: String,
+) derives JsonCodec, Schema
+
+case class PermissionSyncResponse(
+    tenantId: Option[TenantId],
+    id: Permission,
+    endpointIds: Set[ResourceEndpointId],
+) derives JsonCodec, Schema
+
+case class GetPermissionsSyncResponse(
+    permissions: Vector[PermissionSyncResponse],
+) derives JsonCodec, Schema
+
+case class RoleSyncResponse(
+    tenantId: TenantId,
+    id: RoleId,
+    permissions: Set[Permission],
+    active: Boolean,
+) derives JsonCodec, Schema
+
+case class GetRolesSyncResponse(
+    roles: Vector[RoleSyncResponse],
 ) derives JsonCodec, Schema

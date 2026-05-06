@@ -22,13 +22,12 @@ class PostgresOAuthClientRepository(
   given DbCodec[ScopeToken] = DbCodec.StringCodec.biMap(ScopeToken(_), identity[String])
   given DbCodec[Permission] = DbCodec.StringCodec.biMap(Permission(_), identity[String])
   given DbCodec[RedirectUri] = DbCodec.StringCodec.biMap(RedirectUri(_), identity[String])
-  given DbCodec[Secret] = DbCodec.ByteArrayCodec.biMap(Secret(_), identity[Array[Byte]])
   given DbCodec[Duration] = DbCodec.LongCodec.biMap(Duration.fromSeconds, _.toSeconds)
   given DbCodec[OAuthClientRecord] = DbCodec.derived
 
   private def findClient(clientId: ClientId) =
     sql"""
-      SELECT id, tenant_id, client_name, redirect_uris, scope, external_audience, secret, previous_secret, access_token_ttl, permissions
+      SELECT id, tenant_id, client_name, redirect_uris, scope, external_audience, secret, previous_secret, access_token_ttl, refresh_token_ttl, permissions
       FROM oauth_clients
       WHERE id = $clientId
     """
@@ -36,7 +35,7 @@ class PostgresOAuthClientRepository(
   override def getAll: Task[Vector[OAuthClientRecord]] =
     xa.connect:
       sql"""
-        SELECT id, tenant_id, client_name, redirect_uris, scope, external_audience, secret, previous_secret, access_token_ttl, permissions
+        SELECT id, tenant_id, client_name, redirect_uris, scope, external_audience, secret, previous_secret, access_token_ttl, refresh_token_ttl, permissions
         FROM oauth_clients
       """
         .query[OAuthClientRecord].run()
@@ -48,9 +47,9 @@ class PostgresOAuthClientRepository(
   override def createClient(client: OAuthClientRecord): IO[ClientAlreadyExists | Throwable, Unit] =
     xa.connect:
       sql"""
-        INSERT INTO oauth_clients (id, tenant_id, client_name, redirect_uris, scope, external_audience, secret, previous_secret, access_token_ttl, permissions)
+        INSERT INTO oauth_clients (id, tenant_id, client_name, redirect_uris, scope, external_audience, secret, previous_secret, access_token_ttl, refresh_token_ttl, permissions)
         VALUES (${client.id}, ${client.tenantId}, ${client.clientName}, ${client.redirectUris}, ${client.scope},
-                ${client.externalAudience}, ${client.secret}, ${client.previousSecret}, ${client.accessTokenTtl}, ${client.permissions})
+                ${client.externalAudience}, ${client.secret}, ${client.previousSecret}, ${client.accessTokenTtl}, ${client.refreshTokenTtl}, ${client.permissions})
       """.update.run()
     .unit
     .mapError {
@@ -65,7 +64,8 @@ class PostgresOAuthClientRepository(
       patchRedirectUris: PatchClientRedirectUris,
       patchScope: PatchClientScope,
       patchPermissions: PatchPermissions,
-      accessTokenTtl: Option[Duration]
+      accessTokenTtl: Option[Duration],
+      refreshTokenTtl: Option[Duration],
   ): Task[Unit] =
     xa.repeatableRead.transact:
       val client = findClient(clientId).query[OAuthClientRecord].run().head
@@ -74,13 +74,15 @@ class PostgresOAuthClientRepository(
       val newScope = client.scope -- patchScope.remove ++ patchScope.add
       val newPermissions = client.permissions -- patchPermissions.remove ++ patchPermissions.add
       val newAccessTokenTtl = accessTokenTtl.getOrElse(client.accessTokenTtl)
+      val newRefreshTokenTtl = refreshTokenTtl.getOrElse(client.refreshTokenTtl)
       sql"""
         UPDATE oauth_clients SET
           client_name = $newClientName,
           redirect_uris = $newRedirectUris,
           scope = $newScope,
           permissions = $newPermissions,
-          access_token_ttl = $newAccessTokenTtl
+          access_token_ttl = $newAccessTokenTtl,
+          refresh_token_ttl = $newRefreshTokenTtl
         WHERE id = $clientId
       """.update.run()
     .unit

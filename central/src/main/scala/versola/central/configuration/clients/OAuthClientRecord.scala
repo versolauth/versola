@@ -18,6 +18,7 @@ case class OAuthClientRecord(
     secret: Option[Secret],
     previousSecret: Option[Secret],
     accessTokenTtl: Duration,
+    refreshTokenTtl: Duration,
     permissions: Set[Permission],
 ) derives Schema, CanEqual, Equal:
 

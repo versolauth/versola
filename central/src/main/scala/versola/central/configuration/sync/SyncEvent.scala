@@ -23,6 +23,7 @@ object SyncEvent:
 
   case object Unknown extends SyncEvent
   case object TenantsUpdated extends SyncEvent
+  case object EdgesUpdated extends SyncEvent
   case class ClientsUpdated(
       id: ClientId,
       op: Op,

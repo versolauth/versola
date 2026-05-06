@@ -3,7 +3,7 @@ package versola.central.configuration.permissions
 import org.scalamock.stubs.{Stub, ZIOStubs}
 import versola.central.configuration.resources.ResourceEndpointId
 import versola.central.configuration.sync.SyncEvent
-import versola.central.configuration.tenants.TenantId
+import versola.central.configuration.tenants.{TenantId, TenantRepository}
 import versola.central.configuration.{CreatePermissionRequest, PatchDescription, UpdatePermissionRequest}
 import versola.util.ReloadingCache
 import zio.prelude.EqualOps
@@ -42,7 +42,8 @@ object PermissionServiceSpec extends ZIOSpecDefault, ZIOStubs:
   class Env(initial: Vector[PermissionRecord] = Vector.empty):
     val cache = ReloadingCache(Unsafe.unsafe(unsafe ?=> Ref.unsafe.make(initial)))
     val repository = stub[PermissionRepository]
-    val service = PermissionService.Impl(cache, repository)
+    val tenantRepository = stub[TenantRepository]
+    val service = PermissionService.Impl(cache, repository, tenantRepository)
 
   def spec = suite("PermissionService")(
     test("getTenantPermissions returns global and tenant-specific permissions") {

@@ -2,7 +2,7 @@ package versola.oauth.conversation
 
 import versola.oauth.conversation.model.{ConversationStep, PrimaryCredential}
 import versola.oauth.model.SessionCookie
-import versola.util.{Base64Url, CoreConfig, Email, EnvName, JWT, Phone}
+import versola.util.{Base64Url, CoreConfig, Email, JWT, Phone}
 import zio.http.datastar.*
 import zio.http.template2.*
 import zio.http.{Header, MediaType, Response, datastar}
@@ -15,9 +15,9 @@ trait ConversationRenderService:
   def renderSubmit(step: ConversationResult.Render): Task[Response]
 
 object ConversationRenderService:
-  val live = ZLayer.fromFunction(Impl(_, _))
+  val live = ZLayer.fromFunction(Impl(_))
 
-  class Impl(config: CoreConfig, envName: EnvName) extends ConversationRenderService:
+  class Impl(config: CoreConfig) extends ConversationRenderService:
     override def renderStep(step: ConversationStep): Dom.Element =
       step match
         case ConversationStep.Empty(primaryCredential, passkey) =>
@@ -65,7 +65,6 @@ object ConversationRenderService:
               SessionCookie(
                 value = sessionId,
                 ttl = config.security.ssoSession.ttl,
-                secure = envName.isProd
               ),
             )
 
@@ -80,7 +79,8 @@ object ConversationRenderService:
         ),
         ttl = 15.minutes,
         signature = JWT.Signature.Asymmetric(
-          publicKeys = config.jwt.publicKeys,
+          algorithm = config.jwt.publicKeys.active.algorithm,
+          keyId = config.jwt.publicKeys.active.id,
           privateKey = config.jwt.privateKey,
         ),
       )
@@ -150,7 +150,7 @@ object ConversationRenderService:
           ),
           button(
             `type`("button"),
-            dataOn.click := Js("@post('/v1/challenge/email', {contentType: 'form'})"),
+            dataOn.click := Js("@post('/challenge/email', {contentType: 'form'})"),
             className := "submit-button",
             "Continue",
           ),
@@ -206,7 +206,7 @@ object ConversationRenderService:
                 if (!pn || !pn.isValid()) { $phoneError = 'Please enter a valid phone number with country code'; return; }
                 input.value = pn.number;
               } catch (e) { $phoneError = 'Please enter a valid phone number with country code'; return; }
-              @post('/v1/challenge/phone', {contentType: 'form'})
+              @post('/challenge/phone', {contentType: 'form'})
               """,
             ),
             "Continue",
@@ -273,7 +273,7 @@ object ConversationRenderService:
           ),
           button(
             `type`("button"),
-            dataOn.click := Js("@post('/v1/challenge/otp', {contentType: 'form'})"),
+            dataOn.click := Js("@post('/challenge/otp', {contentType: 'form'})"),
             className := "submit-button",
             "Verify",
           ),
@@ -283,7 +283,7 @@ object ConversationRenderService:
           ),
           button(
             `type`("button"),
-            dataOn.click := Js("@post('/v1/challenge/otp/resend', {contentType: 'form'})"),
+            dataOn.click := Js("@post('/challenge/otp/resend', {contentType: 'form'})"),
             className := "resend-button",
             "Resend Code",
           ),

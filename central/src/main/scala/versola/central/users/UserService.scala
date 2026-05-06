@@ -1,0 +1,63 @@
+package versola.central.users
+
+import versola.central.configuration.roles.RoleId
+import versola.central.configuration.tenants.TenantId
+import versola.util.{Email, Phone, SecureRandom}
+import zio.json.ast.Json
+import zio.{IO, Task, ZIO, ZLayer}
+
+trait UserService:
+  def findById(id: UserId): Task[Option[UserSearchRecord]]
+  def findByEmail(email: Email): Task[Option[UserSearchRecord]]
+  def findByPhone(phone: Phone): Task[Option[UserSearchRecord]]
+  def findByLogin(login: Login): Task[Option[UserSearchRecord]]
+
+  def getRoles(id: UserId, tenantId: TenantId): Task[List[RoleId]]
+
+  def create(request: CreateUserRequest): IO[UserConflict | Throwable, UserId]
+
+  def patch(request: PatchUserRequest): Task[Unit]
+
+  def assignRole(request: UserRoleRequest): Task[Unit]
+
+  def removeRole(request: UserRoleRequest): Task[Unit]
+
+object UserService:
+  val live: ZLayer[UserRepository & AuthClient & SecureRandom, Nothing, UserService] =
+    ZLayer.fromFunction(Impl(_, _, _))
+
+  class Impl(userRepository: UserRepository, authClient: AuthClient, secureRandom: SecureRandom) extends UserService:
+    override def findById(id: UserId): Task[Option[UserSearchRecord]] =
+      userRepository.findById(id).flatMap(enrich)
+
+    override def findByEmail(email: Email): Task[Option[UserSearchRecord]] =
+      userRepository.findByEmail(email).flatMap(enrich)
+
+    override def findByPhone(phone: Phone): Task[Option[UserSearchRecord]] =
+      userRepository.findByPhone(phone).flatMap(enrich)
+
+    override def findByLogin(login: Login): Task[Option[UserSearchRecord]] =
+      userRepository.findByLogin(login).flatMap(enrich)
+
+    private def enrich(record: Option[UserIndexRecord]): Task[Option[UserSearchRecord]] =
+      ZIO.foreach(record): r =>
+        authClient.getUserClaims(r.id).map: claims =>
+          UserSearchRecord(r.id, r.email, r.phone, r.login, claims.getOrElse(Json.Obj()))
+
+    override def getRoles(id: UserId, tenantId: TenantId): Task[List[RoleId]] =
+      authClient.getUserRoles(id, tenantId)
+
+    override def create(request: CreateUserRequest): IO[UserConflict | Throwable, UserId] =
+      for
+        id <- secureRandom.nextUUIDv7.map(UserId(_))
+        _ <- userRepository.create(id, request.email, request.phone, request.login, request.claims)
+      yield id
+
+    override def patch(request: PatchUserRequest): Task[Unit] =
+      userRepository.patch(request.id, request.email, request.phone, request.login, request.claims)
+
+    override def assignRole(request: UserRoleRequest): Task[Unit] =
+      userRepository.insertRole(request.userId, request.tenantId, request.roleId)
+
+    override def removeRole(request: UserRoleRequest): Task[Unit] =
+      userRepository.deleteRole(request.userId, request.tenantId, request.roleId)

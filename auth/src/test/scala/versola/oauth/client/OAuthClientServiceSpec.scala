@@ -35,6 +35,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
     secret = Some(stored(secret = testSecret, salt = salt1)),
     previousSecret = None,
     accessTokenTtl = 10.minutes,
+    refreshTokenTtl = 7776000.seconds,
   )
   val privateClient2 = OAuthClientRecord(
     id = clientId2,
@@ -46,6 +47,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
     secret = Some(stored(secret = testSecret, salt = salt2)),
     previousSecret = Some(stored(secret = previousClientSecret, salt = salt1)),
     accessTokenTtl = 10.minutes,
+    refreshTokenTtl = 7776000.seconds,
   )
   val publicClient = OAuthClientRecord(
     id = publicClientId,
@@ -57,6 +59,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
     secret = None,
     previousSecret = None,
     accessTokenTtl = 10.minutes,
+    refreshTokenTtl = 7776000.seconds,
   )
   val testClients = Map(clientId1 -> privateClient1, clientId2 -> privateClient2, publicClientId -> publicClient)
   val testScopes = Vector(

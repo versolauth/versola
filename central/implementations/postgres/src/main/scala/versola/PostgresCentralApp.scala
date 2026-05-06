@@ -11,7 +11,9 @@ import versola.central.configuration.roles.{RoleController, RoleRecord, RoleRepo
 import versola.central.configuration.scopes.{OAuthScopeRepository, OAuthScopeService, ScopeController}
 import versola.central.configuration.sync.{CacheSyncRepository, CacheSyncService}
 import versola.central.configuration.tenants.{TenantController, TenantRepository, TenantService}
+import versola.central.users.{AuthClient, UserOutboxProcessor, UserController, UserRepository, UserService}
 import versola.configuration.clients.{PostgresAuthorizationPresetRepository, PostgresOAuthClientRepository}
+import versola.users.PostgresUserRepository
 import versola.configuration.edges.PostgresEdgeRepository
 import versola.configuration.permissions.PostgresPermissionRepository
 import versola.configuration.resources.PostgresResourceRepository
@@ -20,6 +22,7 @@ import versola.configuration.scopes.PostgresOAuthScopeRepository
 import versola.configuration.sync.PostgresCacheSyncRepository
 import versola.configuration.tenants.PostgresTenantRepository
 import versola.util.*
+import versola.util.cel.CelEvaluator
 import versola.util.http.VersolaApp
 import versola.util.postgres.{PostgresConfig, PostgresHikariDataSource}
 import zio.*
@@ -33,12 +36,6 @@ import javax.crypto.spec.SecretKeySpec
 object PostgresCentralApp extends VersolaApp("central"):
   override given Tag[Dependencies] = Tag[Dependencies]
   val environmentTag = Tag[Environment]
-
-  override def diagnosticsConfig: Server.Config =
-    Server.Config.default.port(8083)
-
-  override def serverConfig: Server.Config =
-    Server.Config.default.port(8082)
 
   type Dependencies =
     CentralConfig &
@@ -60,6 +57,8 @@ object PostgresCentralApp extends VersolaApp("central"):
       EdgeService &
       CacheSyncRepository &
       CacheSyncService &
+      UserRepository &
+      UserService &
       SecureRandom &
       SecurityService
 
@@ -73,27 +72,31 @@ object PostgresCentralApp extends VersolaApp("central"):
       ScopeController.routes,
       RoleController.routes,
       EdgeController.routes,
+      UserController.routes,
     ).reduce(_ ++ _)
 
   private val repositories =
-    PostgresHikariDataSource.transactor(serviceName = Some("central"), migrate = true) >+> (
-      PostgresTenantRepository.live >+>
-        PostgresPermissionRepository.live >+>
-        PostgresResourceRepository.live >+>
-        PostgresOAuthClientRepository.live >+>
-        PostgresAuthorizationPresetRepository.live >+>
-        PostgresOAuthScopeRepository.live >+>
-        PostgresRoleRepository.live >+>
-        PostgresEdgeRepository.live >+>
-        PostgresCacheSyncRepository.live
-    )
+    PostgresHikariDataSource.transactor(serviceName = Some("central"), migrate = true) >+>
+      SecureRandom.live >+> (
+        PostgresTenantRepository.live >+>
+          PostgresPermissionRepository.live >+>
+          PostgresResourceRepository.live >+>
+          PostgresOAuthClientRepository.live >+>
+          PostgresAuthorizationPresetRepository.live >+>
+          PostgresOAuthScopeRepository.live >+>
+          PostgresRoleRepository.live >+>
+          PostgresEdgeRepository.live >+>
+          PostgresCacheSyncRepository.live >+>
+          PostgresUserRepository.live
+      )
 
   override val dependencies: ZLayer[Scope & EnvName & ConfigProvider & Tracing, Throwable, Dependencies] = {
     val schedule = Schedule.spaced(1.minute)
     parseConfig[CentralConfig] >+>
       repositories >+>
-      SecureRandom.live >+>
       SecurityService.live >+>
+      CelEvaluator.live >+>
+      Client.default >+>
       TenantService.live(schedule) >+>
       PermissionService.live(schedule) >+>
       ResourceService.live(schedule) >+>
@@ -101,8 +104,12 @@ object PostgresCentralApp extends VersolaApp("central"):
       AuthorizationPresetService.live(schedule) >+>
       OAuthScopeService.live(schedule) >+>
       RoleService.live(schedule) >+>
-      EdgeService.live >+>
-      CacheSyncService.live >+> MockDataService.live
+      EdgeService.live(schedule) >+>
+      CacheSyncService.live >+>
+      AuthClient.live >+>
+      UserService.live >+>
+      UserOutboxProcessor.live >+>
+      MockDataService.live
   }
 
   given DeriveConfig[Secret] = DeriveConfig[String]
@@ -116,6 +123,9 @@ object PostgresCentralApp extends VersolaApp("central"):
   given DeriveConfig[SecretKey] = DeriveConfig[String]
     .mapOrFail(parseBase64UrlSecret(Secret.Bytes32))
     .map(bytes => SecretKeySpec(bytes, "AES"))
+
+  given DeriveConfig[URL] = DeriveConfig[String]
+    .mapOrFail(URL.decode(_).left.map(ex => zio.Config.Error.InvalidData(message = ex.getMessage)))
 
   private def parseBase64UrlSecret(newType: ByteArrayNewType.FixedLength)(str: String) =
     newType.fromBase64Url(str)

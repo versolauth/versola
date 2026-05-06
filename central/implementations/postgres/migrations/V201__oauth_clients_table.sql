@@ -8,5 +8,6 @@ CREATE TABLE oauth_clients (
     secret            BYTEA,
     previous_secret   BYTEA,
     access_token_ttl  BIGINT NOT NULL,
+    refresh_token_ttl BIGINT NOT NULL,
     permissions       TEXT[] NOT NULL
 );

@@ -8,7 +8,7 @@ test('renders the app shell with the default clients view', async ({ page }) => 
   await expect(page.locator('versola-navigation')).toBeVisible();
   await expect(page.locator('tenant-selector').getByRole('button', { name: 'Manage' })).toBeVisible();
   await expect(tenantSelectorButton(page)).toContainText('tenant-alpha');
-  expect(api.requests.some(request => request.method === 'GET' && request.pathname === '/v1/configuration/tenants')).toBeTruthy();
+  expect(api.requests.some(request => request.method === 'GET' && request.pathname === '/configuration/tenants')).toBeTruthy();
 });
 
 test('switches navigation views and keeps the url in sync', async ({ page }) => {

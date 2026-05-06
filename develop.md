@@ -6,7 +6,8 @@
 4. Start server locally
     - `docker-compose -f services.yml up -d postgres` - Database
     - `docker-compose -f services.yml up -d jaeger` - Jaeger (optional)
-    - `sbt -Denv.path=auth/dev/env.conf "project oauth-postgres-impl; run"` - postgres impl
+    - `PORT=9001 DPORT=9002 sbt -Denv.path=central/dev/env.conf "project central-postgres-impl; run"` - Central
+    - `PORT=9003 DPORT=9004 sbt -Denv.path=auth/dev/env.conf "project auth-postgres-impl; run"` - Auth
 
 ## Docker
 
@@ -68,7 +69,11 @@ Configure these in repository Settings → Secrets and variables → Actions:
 
 ## HTTP Server
 
-Metrics are available on port 9345 at path `/metrics`
-Liveness probe is available on port 9345 at path `/liveness`
-Readiness probe is available on port 9345 at path `/readiness`
-The application itself runs on port 8080
+Metrics, liveness, and readiness probes are served on the diagnostics port (`dport`, default 9345):
+- `GET /metrics`
+- `GET /liveness`
+- `GET /readiness`
+
+The application API is served on the main port (`port`, default 8080).
+
+Both ports are configured via `PORT` and `DPORT` environment variables.

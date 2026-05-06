@@ -3,14 +3,12 @@ import type { Page, Request } from '@playwright/test';
 type TenantDto = { id: string; description: string; edgeId?: string | null };
 type ClientDto = { id: string; clientName: string; redirectUris: string[]; scope: string[]; permissions: string[]; secretRotation: boolean; edgeId?: string };
 type ScopeDto = { scope: string; description: Record<string, string>; claims: Array<{ claim: string; description: Record<string, string> }> };
-type PermissionDto = { permission: string; description: Record<string, string>; endpointIds: number[] };
-type RuleDto = { subject: string; operator: string; value: unknown; pattern?: string };
-type AclRuleNodeDto = { kind: 'rule'; rule: RuleDto };
-type AclRuleGroupDto = { kind: 'all' | 'any'; children: AclRuleTreeDto[] };
-type AclRuleTreeDto = AclRuleNodeDto | AclRuleGroupDto;
+type PermissionDto = { permission: string; description: Record<string, string>; endpointIds: ResourceEndpointId[] };
+type InjectTargetDto = 'header' | 'query' | 'body';
+type InjectRuleDto = { target: InjectTargetDto; name: string; expression: string };
 type ResourceEndpointId = string | number;
-type ResourceEndpointDto = { id: ResourceEndpointId; method: string; path: string; fetchUserInfo: boolean; allowRules: AclRuleGroupDto; denyRules: AclRuleGroupDto; injectHeaders: Record<string, string> };
-type ResourceDto = { id: number; resource: string; endpoints: ResourceEndpointDto[] };
+type ResourceEndpointDto = { id: ResourceEndpointId; method: string; path: string; fetchUserInfo: boolean; allow?: string | null; inject: InjectRuleDto[] };
+type ResourceDto = { id: number; alias: string; resource: string; endpoints: ResourceEndpointDto[] };
 type RoleDto = { id: string; description: Record<string, string>; permissions: string[]; active: boolean };
 type EdgeDto = { id: string; hasOldKey?: boolean; tenants?: string[]; clients?: EdgeClientLinkDto[] };
 type EdgeClientLinkDto = { tenantId: string; clientId: string };
@@ -19,6 +17,7 @@ type AuthorizationPresetDto = {
   clientId: string;
   description: string;
   redirectUri: string;
+  postLoginRedirectUri: string;
   scope: string[];
   responseType: string;
   uiLocales?: string[]
@@ -51,14 +50,16 @@ type CreateScopeRequest = {
 };
 type CreateResourceRequest = {
   tenantId: string;
+  alias: string;
   resource: string;
-  endpoints: Array<{ id?: ResourceEndpointId; method: string; path: string; fetchUserInfo: boolean; allowRules: AclRuleGroupDto; denyRules: AclRuleGroupDto; injectHeaders: Record<string, string> }>;
+  endpoints: Array<{ id?: ResourceEndpointId; method: string; path: string; fetchUserInfo: boolean; allow?: string | null; inject: InjectRuleDto[] }>;
 };
 type UpdateResourceRequest = {
   id: number;
-  resource: string;
+  alias?: string;
+  resource?: string;
   deleteEndpoints: ResourceEndpointId[];
-  createEndpoints: Array<{ id: ResourceEndpointId; method: string; path: string; fetchUserInfo: boolean; allowRules: AclRuleGroupDto; denyRules: AclRuleGroupDto; injectHeaders: Record<string, string> }>;
+  createEndpoints: Array<{ id: ResourceEndpointId; method: string; path: string; fetchUserInfo: boolean; allow?: string | null; inject: InjectRuleDto[] }>;
 };
 type CreatePermissionRequest = {
   tenantId: string;
@@ -136,8 +137,8 @@ const defaultState: MockConfigState = {
     'tenant-bravo': [{ permission: 'bravo.read', description: { en: 'Read bravo resources' }, endpointIds: [201] }],
   },
   resources: {
-    'tenant-alpha': [{ id: 1, resource: 'https://alpha.example/api', endpoints: [{ id: 101, method: 'GET', path: '/alpha/items', fetchUserInfo: false, allowRules: emptyAclGroup(), denyRules: emptyAclGroup(), injectHeaders: {} }] }],
-    'tenant-bravo': [{ id: 2, resource: 'https://bravo.example/api', endpoints: [{ id: 201, method: 'GET', path: '/bravo/items', fetchUserInfo: false, allowRules: emptyAclGroup(), denyRules: emptyAclGroup(), injectHeaders: {} }] }],
+    'tenant-alpha': [{ id: 1, alias: 'alpha-api', resource: 'https://alpha.example/api', endpoints: [{ id: 101, method: 'GET', path: '/alpha/items', fetchUserInfo: false, allow: 'true', inject: [] }] }],
+    'tenant-bravo': [{ id: 2, alias: 'bravo-api', resource: 'https://bravo.example/api', endpoints: [{ id: 201, method: 'GET', path: '/bravo/items', fetchUserInfo: false, allow: 'true', inject: [] }] }],
   },
   roles: {
     'tenant-alpha': [{ id: 'alpha-admin', description: { en: 'Alpha admin' }, permissions: ['alpha.read'], active: true }],
@@ -149,10 +150,6 @@ const defaultState: MockConfigState = {
 
 function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
-}
-
-function emptyAclGroup(): AclRuleGroupDto {
-  return { kind: 'any', children: [] };
 }
 
 function mergeState(overrides: Partial<MockConfigState> = {}): MockConfigState {
@@ -226,7 +223,7 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
   const state = mergeState(overrides);
   const requests: RequestLog[] = [];
 
-  await page.route('**/v1/configuration/**', async route => {
+  await page.route('**/configuration/**', async route => {
     const request = route.request();
     const url = new URL(request.url());
     const pathname = url.pathname;
@@ -240,7 +237,7 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
       body,
     });
 
-    if (pathname === '/v1/configuration/tenants') {
+    if (pathname === '/configuration/tenants') {
       if (method === 'GET') {
         await route.fulfill(json({ tenants: state.tenants }));
         return;
@@ -292,7 +289,7 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
     }
 
     const tenantId = url.searchParams.get('tenantId') ?? '';
-    if (pathname === '/v1/configuration/clients') {
+    if (pathname === '/configuration/clients') {
       if (method === 'GET') {
         await route.fulfill(json({ clients: pageSlice(state.clients[tenantId] ?? [], url) }));
         return;
@@ -351,7 +348,7 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
       }
     }
 
-    if (pathname === '/v1/configuration/clients/rotate-secret' && method === 'POST') {
+    if (pathname === '/configuration/clients/rotate-secret' && method === 'POST') {
       const clientId = url.searchParams.get('clientId');
       // Find client across all tenants since tenantId is not in the request
       let client: ClientDto | undefined;
@@ -370,7 +367,7 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
       return;
     }
 
-    if (pathname === '/v1/configuration/clients/previous-secret' && method === 'DELETE') {
+    if (pathname === '/configuration/clients/previous-secret' && method === 'DELETE') {
       const clientId = url.searchParams.get('clientId');
       // Find client across all tenants since tenantId is not in the request
       let client: ClientDto | undefined;
@@ -389,7 +386,7 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
       return;
     }
 
-    if (pathname === '/v1/configuration/auth-request-presets') {
+    if (pathname === '/configuration/auth-request-presets') {
       const clientId = url.searchParams.get('clientId');
 
       if (method === 'GET' && clientId) {
@@ -415,7 +412,7 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
       }
     }
 
-    if (pathname === '/v1/configuration/scopes') {
+    if (pathname === '/configuration/scopes') {
       if (method === 'GET') {
         await route.fulfill(json({ scopes: pageSlice(state.scopes[tenantId] ?? [], url) }));
         return;
@@ -479,7 +476,7 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
       }
     }
 
-    if (pathname === '/v1/configuration/permissions') {
+    if (pathname === '/configuration/permissions') {
       if (method === 'GET') {
         await route.fulfill(json({ permissions: pageSlice(state.permissions[tenantId] ?? [], url) }));
         return;
@@ -529,7 +526,7 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
       }
     }
 
-    if (pathname === '/v1/configuration/resources') {
+    if (pathname === '/configuration/resources') {
       if (method === 'GET') {
         await route.fulfill(json({ resources: state.resources[tenantId] ?? [] }));
         return;
@@ -540,15 +537,15 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
         let endpointId = nextEndpointId(state);
         const createdResource: ResourceDto = {
           id: nextResourceId(state),
+          alias: payload.alias,
           resource: payload.resource,
           endpoints: payload.endpoints.map(endpoint => ({
             id: endpoint.id ?? endpointId++,
             method: endpoint.method,
             path: endpoint.path,
             fetchUserInfo: endpoint.fetchUserInfo,
-            allowRules: clone(endpoint.allowRules),
-            denyRules: clone(endpoint.denyRules),
-            injectHeaders: { ...endpoint.injectHeaders },
+            ...(endpoint.allow != null && endpoint.allow.length > 0 ? { allow: endpoint.allow } : {}),
+            inject: endpoint.inject.map(rule => ({ ...rule })),
           })),
         };
 
@@ -566,7 +563,8 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
           return;
         }
 
-        resource.resource = payload.resource;
+        if (payload.resource !== undefined) resource.resource = payload.resource;
+        if (payload.alias !== undefined) resource.alias = payload.alias;
 
         const replacedEndpointIds = new Set<ResourceEndpointId>(payload.deleteEndpoints);
         for (const endpoint of payload.createEndpoints) replacedEndpointIds.add(endpoint.id);
@@ -578,9 +576,8 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
             method: endpoint.method,
             path: endpoint.path,
             fetchUserInfo: endpoint.fetchUserInfo,
-            allowRules: clone(endpoint.allowRules),
-            denyRules: clone(endpoint.denyRules),
-            injectHeaders: { ...endpoint.injectHeaders },
+            ...(endpoint.allow != null && endpoint.allow.length > 0 ? { allow: endpoint.allow } : {}),
+            inject: endpoint.inject.map(rule => ({ ...rule })),
           })));
 
         await route.fulfill({ status: 204, body: '' });
@@ -601,7 +598,7 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
       }
     }
 
-    if (pathname === '/v1/configuration/roles') {
+    if (pathname === '/configuration/roles') {
       if (method === 'GET') {
         await route.fulfill(json({ roles: pageSlice(state.roles[tenantId] ?? [], url) }));
         return;
@@ -649,7 +646,7 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
       }
     }
 
-    if (pathname === '/v1/configuration/edges') {
+    if (pathname === '/configuration/edges') {
       if (method === 'GET') {
         await route.fulfill(json({ edges: state.edges }));
         return;
@@ -691,7 +688,7 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
       }
     }
 
-    if (pathname === '/v1/configuration/edges/rotate-key' && method === 'POST') {
+    if (pathname === '/configuration/edges/rotate-key' && method === 'POST') {
       const edgeId = url.searchParams.get('edgeId');
       const edge = state.edges.find(e => e.id === edgeId);
       if (!edge) {
@@ -706,7 +703,7 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
       return;
     }
 
-    if (pathname === '/v1/configuration/edges/old-key' && method === 'DELETE') {
+    if (pathname === '/configuration/edges/old-key' && method === 'DELETE') {
       const edgeId = url.searchParams.get('edgeId');
       const edge = state.edges.find(e => e.id === edgeId);
       if (!edge) {

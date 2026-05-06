@@ -18,4 +18,5 @@ case class IssuedTokens(
     uiLocales: Option[List[String]],
     nonce: Option[Nonce],
     user: Option[UserRecord],
+    roles: List[String], // role IDs for user tokens; empty for client_credentials
 )

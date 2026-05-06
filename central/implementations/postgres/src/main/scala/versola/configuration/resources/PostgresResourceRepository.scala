@@ -29,14 +29,14 @@ class PostgresResourceRepository(xa: TransactorZIO) extends ResourceRepository, 
 
   private def findResourceQuery(resourceId: ResourceId) =
     sql"""
-      SELECT tenant_id, id, resource, endpoints FROM resources
+      SELECT tenant_id, id, alias, resource, endpoints FROM resources
       WHERE id = $resourceId
     """.query[ResourceRecord]
 
   override def getAll: Task[Vector[ResourceRecord]] =
     xa.connect:
       sql"""
-        SELECT tenant_id, id, resource, endpoints FROM resources
+        SELECT tenant_id, id, alias, resource, endpoints FROM resources
       """.query[ResourceRecord].run()
 
   override def findResource(
@@ -47,18 +47,20 @@ class PostgresResourceRepository(xa: TransactorZIO) extends ResourceRepository, 
 
   override def createResource(
       tenantId: TenantId,
+      alias: String,
       resource: ResourceUri,
       endpoints: Vector[ResourceEndpointRecord],
   ): Task[ResourceId] =
     xa.connect:
       sql"""
-        INSERT INTO resources (tenant_id, resource, endpoints)
-        VALUES ($tenantId, $resource, $endpoints)
+        INSERT INTO resources (tenant_id, alias, resource, endpoints)
+        VALUES ($tenantId, $alias, $resource, $endpoints)
         RETURNING id
       """.query[ResourceId].run().head
 
   override def updateResource(
       id: ResourceId,
+      aliasPatch: Option[String],
       resourcePatch: Option[ResourceUri],
       addEndpoints: Vector[ResourceEndpointRecord],
       deleteEndpoints: Set[ResourceEndpointId],
@@ -75,6 +77,7 @@ class PostgresResourceRepository(xa: TransactorZIO) extends ResourceRepository, 
           sql"""
             UPDATE resources
             SET
+              alias = ${aliasPatch.getOrElse(resource.alias)},
               resource = ${resourcePatch.getOrElse(resource.resource)},
               endpoints = $newEndpoints::jsonb[]
             WHERE id = $id

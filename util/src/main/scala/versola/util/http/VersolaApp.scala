@@ -48,11 +48,19 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
 
   def routes: Routes[Dependencies & Tracing & EnvName, Throwable]
 
-  def diagnosticsConfig: Server.Config
-
-  def serverConfig: Server.Config
-
   def observabilityConfig: HttpObservabilityConfig = HttpObservabilityConfig.default
+
+  def port: Int =
+    Option(java.lang.System.getenv("PORT")).flatMap(_.toIntOption).getOrElse(8080)
+
+  def diagnosticsPort: Int =
+    Option(java.lang.System.getenv("DPORT")).flatMap(_.toIntOption).getOrElse(8080)
+
+  def serverConfig: Server.Config =
+    Server.Config.default.port(port)
+
+  def diagnosticsConfig: Server.Config =
+    Server.Config.default.port(diagnosticsPort)
 
   override def run: ZIO[Environment & ZIOAppArgs & zio.Scope, Any, Any] = {
     for
@@ -139,7 +147,7 @@ object VersolaApp:
               absolutePath <- ZIO.attempt(java.nio.file.Paths.get(path).toAbsolutePath.toString)
             yield s"""include required(file("$absolutePath"))"""
 
-        cp <- ConfigProvider.fromTypesafeConfigZIO(ConfigFactory.parseString(configString)).map(_.kebabCase)
+        cp <- ConfigProvider.fromTypesafeConfigZIO(ConfigFactory.parseString(configString).resolve()).map(_.kebabCase)
       yield cp
 
   private def jsonLoggerLayer(serviceName: String): ZLayer[LogFormats & ConfigProvider, Config.Error, Unit] =

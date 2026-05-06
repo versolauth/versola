@@ -54,7 +54,7 @@ object JWTSpec extends ZIOSpecDefault:
         token <- JWT.serialize(
           claims = claims,
           ttl = 1.hour,
-          signature = JWT.Signature.Asymmetric(publicKeys, privateKey),
+          signature = JWT.Signature.Asymmetric(JWT.Algorithm.RS256, "test-key-1", privateKey),
         )
         result <- JWT.deserialize[TestClaims](token, publicKeys, JWT.Type.JWT)
       yield assertTrue(
@@ -75,11 +75,11 @@ object JWTSpec extends ZIOSpecDefault:
         token <- JWT.serialize(
           claims = claims,
           ttl = 1.hour,
-          signature = JWT.Signature.Asymmetric(publicKeys, privateKey),
+          signature = JWT.Signature.Asymmetric(JWT.Algorithm.RS256, "test-key-1", privateKey),
         )
         _ <- TestClock.adjust(2.hours)
         result <- JWT.deserialize[TestClaims](token, publicKeys, JWT.Type.JWT).either
-      yield assertTrue(result == Left(JWT.Error.Expired))
+      yield assertTrue(result.left.exists { case _: JWT.Error.Expired => true; case _ => false })
     },
   )
 
@@ -121,6 +121,6 @@ object JWTSpec extends ZIOSpecDefault:
         )
         _ <- TestClock.adjust(2.hours)
         result <- JWT.deserialize[TestClaims](token, symmetricKey).either
-      yield assertTrue(result == Left(JWT.Error.Expired))
+      yield assertTrue(result.left.exists { case _: JWT.Error.Expired => true; case _ => false })
     },
   )

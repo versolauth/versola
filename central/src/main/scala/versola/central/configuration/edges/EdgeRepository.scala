@@ -1,9 +1,10 @@
 package versola.central.configuration.edges
 
+import versola.util.CacheSource
 import zio.Task
 import zio.json.ast.Json
 
-trait EdgeRepository:
+trait EdgeRepository extends CacheSource[Vector[EdgeRecord]]:
   def getAll: Task[Vector[EdgeRecord]]
 
   def find(id: EdgeId): Task[Option[EdgeRecord]]

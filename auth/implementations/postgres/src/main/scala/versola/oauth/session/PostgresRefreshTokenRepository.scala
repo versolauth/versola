@@ -41,51 +41,45 @@ class PostgresRefreshTokenRepository(xa: TransactorZIO) extends RefreshTokenRepo
       _.setTransactionIsolation(Connection.TRANSACTION_REPEATABLE_READ),
     ).transact {
       record.previousRefreshToken
-        .map { oldToken =>
-          sql"""DELETE FROM refresh_tokens WHERE id = $oldToken""".update.run()
-        } match
-        case Some(1) | None =>
-          sql"""
-            INSERT INTO refresh_tokens (
-              id,
-              previous_id,
-              session_id,
-              access_token,
-              user_id,
-              client_id,
-              external_audience,
-              scope,
-              issued_at,
-              expires_at,
-              requested_claims,
-              ui_locales,
-              nonce
-            )
-            VALUES (
-              $refreshToken,
-              ${record.previousRefreshToken},
-              ${record.sessionId},
-              ${record.accessToken},
-              ${record.userId},
-              ${record.clientId},
-              ${record.externalAudience},
-              ${record.scope},
-              ${record.issuedAt},
-              ${record.expiresAt},
-              ${record.requestedClaims},
-              ${record.uiLocales}::text[],
-              ${record.nonce}
-            )
-          """.update.run()
-          ()
-        case _ =>
-          ()
+        .foreach { oldToken => sql"""DELETE FROM refresh_tokens WHERE id = $oldToken""".update.run() }
+
+      sql"""
+        INSERT INTO refresh_tokens (
+          id,
+          previous_id,
+          session_id,
+          access_token,
+          user_id,
+          client_id,
+          external_audience,
+          scope,
+          issued_at,
+          expires_at,
+          requested_claims,
+          ui_locales,
+          nonce
+        )
+        VALUES (
+          $refreshToken,
+          ${record.previousRefreshToken},
+          ${record.sessionId},
+          ${record.accessToken},
+          ${record.userId},
+          ${record.clientId},
+          ${record.externalAudience},
+          ${record.scope},
+          ${record.issuedAt},
+          ${record.expiresAt},
+          ${record.requestedClaims},
+          ${record.uiLocales}::text[],
+          ${record.nonce}
+        )
+        """.update.run()
+      ()
     }.catchSome {
-      case e: java.sql.SQLException if e.getSQLState == "40001" =>
-        // Serialization failure (SQLSTATE 40001) - concurrent rotation detected
-        ZIO.fail(RefreshAlreadyExchanged())
-      case e: java.sql.SQLException if e.getSQLState == "23505" =>
-        // Unique constraint violation (SQLSTATE 23505) - previous_id already used
+      case e: com.augustnagro.magnum.SqlException
+        if e.getMessage.contains("could not serialize access") ||
+           e.getMessage.contains("duplicate key value violates unique constraint") =>
         ZIO.fail(RefreshAlreadyExchanged())
     }
 

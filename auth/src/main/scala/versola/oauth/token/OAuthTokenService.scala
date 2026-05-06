@@ -7,7 +7,7 @@ import versola.oauth.revoke.AccessTokenRevocationService
 import versola.oauth.session.model.{RefreshAlreadyExchanged, RefreshTokenRecord, WithTtl}
 import versola.oauth.session.{RefreshTokenRepository, SessionRepository}
 import versola.oauth.token.model.{ClientCredentialsRequest, CodeExchangeRequest, IssuedTokens, RefreshTokenRequest, TokenEndpointError}
-import versola.user.UserRepository
+import versola.user.{UserRepository, UserRolesRepository}
 import versola.util.{AuthPropertyGenerator, CoreConfig, MAC, Secret, SecurityService}
 import zio.prelude.These
 import zio.{Duration, IO, Task, ZIO, ZLayer}
@@ -30,7 +30,7 @@ trait OAuthTokenService:
   ): IO[Throwable | TokenEndpointError, IssuedTokens]
 
 object OAuthTokenService:
-  def live = ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _))
+  def live = ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _))
 
   class Impl(
               authorizationCodeRepository: AuthorizationCodeRepository,
@@ -40,6 +40,7 @@ object OAuthTokenService:
               securityService: SecurityService,
               authPropertyGenerator: AuthPropertyGenerator,
               userRepository: UserRepository,
+              userRolesRepository: UserRolesRepository,
               config: CoreConfig,
   ) extends OAuthTokenService:
 
@@ -84,7 +85,7 @@ object OAuthTokenService:
             externalAudience = client.externalAudience,
             scope = codeRecord.scope,
             issuedAt = now,
-            expiresAt = now.plusSeconds(client.accessTokenTtl.toSeconds),
+            expiresAt = now.plusSeconds(client.refreshTokenTtl.toSeconds),
             requestedClaims = codeRecord.requestedClaims,
             uiLocales = codeRecord.uiLocales,
             nonce = codeRecord.nonce,
@@ -128,7 +129,7 @@ object OAuthTokenService:
             scope = scope.getOrElse(tokenRecord.scope),
             previousRefreshToken = Some(refreshTokenMac),
             issuedAt = now,
-            expiresAt = now.plusSeconds(config.security.refreshTokens.ttl.toSeconds),
+            expiresAt = now.plusSeconds(client.refreshTokenTtl.toSeconds),
           ),
         )
       yield issuedTokens
@@ -162,6 +163,7 @@ object OAuthTokenService:
         uiLocales = None,
         nonce = None,
         user = None,
+        roles = Nil,
       )
 
     private def issueTokens(
@@ -185,6 +187,8 @@ object OAuthTokenService:
         user <- ZIO.when(record.scope.contains(ScopeToken.OpenId))(
           userRepository.find(record.userId)
         )
+
+        roles <- userRolesRepository.findRolesByUser(record.userId)
       yield IssuedTokens(
         accessToken = accessToken,
         clientId = record.clientId,
@@ -197,4 +201,5 @@ object OAuthTokenService:
         uiLocales = record.uiLocales,
         nonce = record.nonce,
         user = user.flatten,
+        roles = roles,
       )

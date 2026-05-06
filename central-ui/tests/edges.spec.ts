@@ -52,7 +52,7 @@ test('creates a new edge and shows the generated private key banner', async ({ p
   const created = edgeCard(page, 'edge-new');
   await expect(created).toContainText('edge-new');
 
-  expect(findRequest(api.requests, 'POST', '/v1/configuration/edges').body).toEqual({ id: 'edge-new' });
+  expect(findRequest(api.requests, 'POST', '/configuration/edges').body).toEqual({ id: 'edge-new' });
 });
 
 test('shows edge form validation for invalid edge ID', async ({ page }) => {
@@ -71,7 +71,7 @@ test('shows edge form validation for invalid edge ID', async ({ page }) => {
   const submitButton = page.getByRole('button', { name: 'Create Edge', exact: true });
   await expect(submitButton).toBeDisabled();
 
-  expect(api.requests.some(request => request.method === 'POST' && request.pathname === '/v1/configuration/edges')).toBeFalsy();
+  expect(api.requests.some(request => request.method === 'POST' && request.pathname === '/configuration/edges')).toBeFalsy();
 });
 
 test('rejects duplicate edge ID when creating', async ({ page }) => {
@@ -88,7 +88,7 @@ test('rejects duplicate edge ID when creating', async ({ page }) => {
   const submitButton = page.getByRole('button', { name: 'Create Edge', exact: true });
   await expect(submitButton).toBeDisabled();
 
-  expect(api.requests.some(request => request.method === 'POST' && request.pathname === '/v1/configuration/edges')).toBeFalsy();
+  expect(api.requests.some(request => request.method === 'POST' && request.pathname === '/configuration/edges')).toBeFalsy();
 });
 
 test('expands edge card and shows linked tenants section', async ({ page }) => {
@@ -132,7 +132,7 @@ test('rotates edge key and shows the new private key banner', async ({ page }) =
   await expect(page.locator('.secret-banner')).toContainText('Edge Key Rotated');
   await expect(page.locator('.secret-value').first()).toBeVisible();
 
-  expect(findRequest(api.requests, 'POST', '/v1/configuration/edges/rotate-key').searchParams).toEqual({ edgeId: 'edge-alpha' });
+  expect(findRequest(api.requests, 'POST', '/configuration/edges/rotate-key').searchParams).toEqual({ edgeId: 'edge-alpha' });
 });
 
 test('deletes an edge through the confirm dialog', async ({ page }) => {
@@ -144,7 +144,7 @@ test('deletes an edge through the confirm dialog', async ({ page }) => {
   await edgeCard(page, 'edge-bravo').getByRole('button', { name: 'Delete edge edge-bravo' }).click();
   await page.getByRole('dialog').getByRole('button', { name: 'Delete', exact: true }).click();
 
-  expect(findRequest(api.requests, 'DELETE', '/v1/configuration/edges').searchParams).toEqual({ edgeId: 'edge-bravo' });
+  expect(findRequest(api.requests, 'DELETE', '/configuration/edges').searchParams).toEqual({ edgeId: 'edge-bravo' });
   await expect(page.locator('.edge-card').filter({ hasText: 'edge-bravo' })).toHaveCount(0);
   await expect(edgeCard(page, 'edge-alpha')).toBeVisible();
 });

@@ -42,7 +42,7 @@ test('creates a role with selected permissions', async ({ page }) => {
 
   const created = roleCard(page, 'Platform admin');
   await expect(created).toContainText('platform_admin');
-  expect(findRequest(api.requests, 'POST', '/v1/configuration/roles').body).toEqual({ tenantId: 'tenant-alpha', id: 'platform_admin', description: { en: 'Platform admin' }, permissions: ['alpha.read', 'reports.read'] });
+  expect(findRequest(api.requests, 'POST', '/configuration/roles').body).toEqual({ tenantId: 'tenant-alpha', id: 'platform_admin', description: { en: 'Platform admin' }, permissions: ['alpha.read', 'reports.read'] });
 });
 
 test('shows role validation with a red input border before submitting', async ({ page }) => {
@@ -57,7 +57,7 @@ test('shows role validation with a red input border before submitting', async ({
   await expect(roleIdField).toHaveCSS('border-top-color', 'rgb(248, 81, 73)');
   await page.getByRole('button', { name: 'Create Role', exact: true }).click();
 
-  expect(api.requests.some(request => request.method === 'POST' && request.pathname === '/v1/configuration/roles')).toBeFalsy();
+  expect(api.requests.some(request => request.method === 'POST' && request.pathname === '/configuration/roles')).toBeFalsy();
 });
 
 test('edits a role and sends patch-style permission changes', async ({ page }) => {
@@ -73,7 +73,7 @@ test('edits a role and sends patch-style permission changes', async ({ page }) =
   await expect(updated).toContainText('alpha_admin');
   await updated.locator('.role-header').click();
   await expect(updated).toContainText('reports.read');
-  expect(findRequest(api.requests, 'PUT', '/v1/configuration/roles').body).toEqual({ tenantId: 'tenant-alpha', id: 'alpha_admin', description: { add: { en: 'Platform admins' }, delete: [] }, permissions: { add: ['reports.read'], remove: ['alpha.read'] } });
+  expect(findRequest(api.requests, 'PUT', '/configuration/roles').body).toEqual({ tenantId: 'tenant-alpha', id: 'alpha_admin', description: { add: { en: 'Platform admins' }, delete: [] }, permissions: { add: ['reports.read'], remove: ['alpha.read'] } });
 });
 
 test('deletes a role through the shared confirm dialog', async ({ page }) => {
@@ -82,7 +82,7 @@ test('deletes a role through the shared confirm dialog', async ({ page }) => {
   await roleCard(page, 'Alpha admin').getByRole('button', { name: 'Delete role alpha_admin' }).click();
   await page.getByRole('dialog').getByRole('button', { name: 'Delete', exact: true }).click();
 
-  expect(findRequest(api.requests, 'DELETE', '/v1/configuration/roles').searchParams).toEqual({ tenantId: 'tenant-alpha', roleId: 'alpha_admin' });
+  expect(findRequest(api.requests, 'DELETE', '/configuration/roles').searchParams).toEqual({ tenantId: 'tenant-alpha', roleId: 'alpha_admin' });
   await expect(page.locator('.role-card')).toHaveCount(0);
   await expect(page.getByRole('heading', { name: 'No roles yet', exact: true })).toBeVisible();
 });

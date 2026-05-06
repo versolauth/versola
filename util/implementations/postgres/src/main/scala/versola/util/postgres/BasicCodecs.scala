@@ -4,6 +4,7 @@ import com.augustnagro.magnum.DbCodec
 import com.augustnagro.magnum.magzio.TransactorZIO
 import com.augustnagro.magnum.pg.json.JsonBDbCodec
 import com.augustnagro.magnum.pg.{PgCodec, SqlArrayCodec, json}
+import versola.util.Secret
 import zio.NonEmptyChunk
 import zio.json.*
 import zio.json.ast.Json
@@ -15,6 +16,8 @@ import scala.annotation.targetName
 import scala.reflect.ClassTag
 
 trait BasicCodecs:
+  given DbCodec[Secret] = DbCodec.ByteArrayCodec.biMap(Secret(_), identity[Array[Byte]])
+
   def jsonBCodec[A: {JsonDecoder, JsonEncoder}]: json.JsonBDbCodec[A] =
     new json.JsonBDbCodec[A]:
       override def encode(a: A): String =
@@ -23,7 +26,7 @@ trait BasicCodecs:
       override def decode(json: String): A =
         json.fromJson[A].fold(m => throw IllegalStateException(m), identity)
 
-  def jsonCodec[A: {JsonDecoder as enc, JsonEncoder as dec}]: json.JsonDbCodec[A] =
+  def jsonCodec[A: {JsonDecoder, JsonEncoder}]: json.JsonDbCodec[A] =
     new json.JsonDbCodec[A]:
       override def encode(a: A): String =
         a.toJson
@@ -49,7 +52,6 @@ trait BasicCodecs:
       it => Json.Obj(it.map((k, v) => k -> Json.Str(v)).toSeq*),
     )
 
-
   given UUIDSqlArrayCodec: SqlArrayCodec[UUID] = new SqlArrayCodec[UUID]:
     val jdbcTypeName: String = "uuid"
 
@@ -62,7 +64,6 @@ trait BasicCodecs:
   @targetName("uuidSubtypeSqlArrayCodec")
   given [A <: UUID] => SqlArrayCodec[A] = UUIDSqlArrayCodec.asInstanceOf[SqlArrayCodec[A]]
 
-
   def dbCodecFromJsonCodec[A <: Product: JsonCodec]: JsonBDbCodec[A] =
     val codec = jsonBCodec[Json.Obj]
     new JsonBDbCodec[A]:
@@ -73,7 +74,6 @@ trait BasicCodecs:
       override def decode(json: String): A =
         codec.decode(json).as[A].getOrElse(throw IllegalStateException("Invalid claim record"))
   end dbCodecFromJsonCodec
-
 
   given [A <: Product: {JsonBDbCodec as codec, ClassTag}] => SqlArrayCodec[A] =
     new SqlArrayCodec[A]:

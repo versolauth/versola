@@ -1,0 +1,46 @@
+package versola.user
+
+import versola.auth.model.TenantId
+import versola.role.model.RoleId
+import versola.user.model.{Login, UserId}
+import versola.util.{Email, Patch, Phone}
+import zio.json.JsonCodec
+import zio.json.ast.Json
+import zio.schema.{Schema, derived}
+
+given JsonCodec[Email] = JsonCodec.string.transform(Email(_), identity)
+given JsonCodec[Phone] = JsonCodec.string.transform(Phone(_), identity)
+given JsonCodec[Login] = JsonCodec.string.transform(Login(_), identity)
+given JsonCodec[RoleId] = JsonCodec.string.transform(RoleId(_), identity)
+
+case class CreateUserPayload(
+    id: UserId,
+    email: Option[Email],
+    phone: Option[Phone],
+    login: Option[Login],
+    claims: Json.Obj,
+) derives JsonCodec, Schema
+
+case class PatchUserPayload(
+    id: UserId,
+    email: Option[Patch[Email]],
+    phone: Option[Patch[Phone]],
+    login: Option[Patch[Login]],
+    claims: Option[Json.Obj],
+) derives JsonCodec, Schema
+
+case class AssignRolePayload(
+    userId: UserId,
+    tenantId: TenantId,
+    roleId: RoleId,
+) derives JsonCodec, Schema
+
+case class RemoveRolePayload(
+    userId: UserId,
+    tenantId: TenantId,
+    roleId: RoleId,
+) derives JsonCodec, Schema
+
+case class UserClaimsResponse(claims: Json.Obj) derives JsonCodec, Schema
+
+case class UserRolesResponse(roles: List[RoleId]) derives JsonCodec, Schema

@@ -3,7 +3,8 @@ CREATE TABLE users (
     email TEXT,
     phone TEXT,
     login TEXT,
-    claims JSONB NOT NULL
+    claims JSONB NOT NULL,
+    ui_locales TEXT[]
 );
 
 CREATE UNIQUE INDEX users_email_idx

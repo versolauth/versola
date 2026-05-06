@@ -1,8 +1,9 @@
 package versola.central.configuration.roles
 
+import versola.central.configuration.edges.EdgeId
 import versola.central.configuration.permissions.Permission
 import versola.central.configuration.sync.{SyncEvent, SyncOps}
-import versola.central.configuration.tenants.TenantId
+import versola.central.configuration.tenants.{TenantId, TenantRepository}
 import versola.central.configuration.{CreateRoleRequest, RoleResponse, UpdateRoleRequest}
 import versola.util.ReloadingCache
 import zio.json.ast.Json
@@ -14,6 +15,8 @@ trait RoleService:
       offset: Int = 0,
       limit: Option[Int] = None,
   ): Task[Vector[RoleRecord]]
+
+  def getRolesForSync(edgeId: Option[EdgeId]): Task[Vector[RoleRecord]]
 
   def createRole(
       request: CreateRoleRequest,
@@ -31,14 +34,15 @@ trait RoleService:
 
 object RoleService:
   def live(
-      schedule: Schedule[Any, Any, Any] = Schedule.spaced(5.minute),
-  ): ZLayer[RoleRepository & Scope, Throwable, RoleService] =
+      schedule: Schedule[Any, Any, Any],
+  ): ZLayer[RoleRepository & TenantRepository & Scope, Throwable, RoleService] =
     ZLayer(ReloadingCache.make[Vector[RoleRecord]](schedule))
-      >>> ZLayer.fromFunction(Impl(_, _))
+      >>> ZLayer.fromFunction(Impl(_, _, _))
 
   class Impl(
       cache: ReloadingCache[Vector[RoleRecord]],
       roleRepository: RoleRepository,
+      tenantRepository: TenantRepository,
   ) extends RoleService:
 
     export roleRepository.{deleteRole, markRoleInactive}
@@ -53,6 +57,16 @@ object RoleService:
           .filter(_.tenantId == tenantId)
           .slice(offset, limit.fold(records.size)(offset + _))
       }
+
+    override def getRolesForSync(edgeId: Option[EdgeId]): Task[Vector[RoleRecord]] =
+      edgeId match
+        case None => cache.get
+        case Some(id) =>
+          for
+            roles <- cache.get
+            tenants <- tenantRepository.getAll
+            allowedTenantIds = tenants.filter(_.edgeId.contains(id)).map(_.id).toSet
+          yield roles.filter(r => allowedTenantIds.contains(r.tenantId))
 
     override def createRole(
         request: CreateRoleRequest,
