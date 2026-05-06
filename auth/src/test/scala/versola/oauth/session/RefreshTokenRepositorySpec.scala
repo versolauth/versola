@@ -139,14 +139,8 @@ trait RefreshTokenRepositorySpec extends DatabaseSpecBase[RefreshTokenRepository
           )
 
         yield assertTrue(
-          results.count {
-            case Right(_) => true
-            case Left(_) => false
-          } == 1,
-          results.count {
-            case Right(_) => false
-            case Left(_) => true
-          } == 5,
+          results.count(_.isRight) == 1,
+          results.count(_.left.toOption.contains(())) == 5
         )
       },
     )
