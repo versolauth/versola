@@ -60,7 +60,7 @@ object ObservabilitySpec extends ZIOSpecDefault:
     )
 
   private val testLayer =
-    TestClient.layer ++ ZTestLogger.default
+    TestClient.layer ++ ZTestLogger.default ++ tracingLayer
 
   private val routes =
     Observability.middleware(
@@ -120,7 +120,8 @@ object ObservabilitySpec extends ZIOSpecDefault:
         for
           _ <- TestClient.addRoutes(Routes(Method.GET / "ok" -> Handler.ok))
           rawClient <- ZIO.service[Client]
-          client = rawClient @@ Observability.clientMiddleware
+          tracing <- ZIO.service[Tracing]
+          client = rawClient @@ Observability.clientMiddleware(tracing)
           response <- client.batched(Request.get(URL.empty / "ok"))
           logs <- ZTestLogger.logOutput
           sendLogs = logs.filter(_.message() == "send-http")
@@ -139,7 +140,8 @@ object ObservabilitySpec extends ZIOSpecDefault:
         for
           _ <- TestClient.addRoutes(Routes(Method.GET / "bad" -> Handler.badRequest))
           rawClient <- ZIO.service[Client]
-          client = rawClient @@ Observability.clientMiddleware
+          tracing <- ZIO.service[Tracing]
+          client = rawClient @@ Observability.clientMiddleware(tracing)
           _ <- client.batched(Request.get(URL.empty / "bad"))
           logs <- ZTestLogger.logOutput
           sendLogs = logs.filter(_.message() == "send-http")
@@ -156,7 +158,8 @@ object ObservabilitySpec extends ZIOSpecDefault:
         for
           _ <- TestClient.addRoutes(Routes(Method.GET / "server-error" -> Handler.internalServerError))
           rawClient <- ZIO.service[Client]
-          client = rawClient @@ Observability.clientMiddleware
+          tracing <- ZIO.service[Tracing]
+          client = rawClient @@ Observability.clientMiddleware(tracing)
           _ <- client.batched(Request.get(URL.empty / "server-error"))
           logs <- ZTestLogger.logOutput
           sendLogs = logs.filter(_.message() == "send-http")
@@ -173,7 +176,8 @@ object ObservabilitySpec extends ZIOSpecDefault:
         for
           _ <- TestClient.addRoutes(Routes(Method.GET / "secure" -> Handler.ok))
           rawClient <- ZIO.service[Client]
-          client = rawClient @@ Observability.clientMiddleware
+          tracing <- ZIO.service[Tracing]
+          client = rawClient @@ Observability.clientMiddleware(tracing)
           _ <- client.batched(
             Request.get(URL.empty / "secure").addHeader(Header.Authorization.Bearer("secret-token")),
           )
@@ -192,8 +196,9 @@ object ObservabilitySpec extends ZIOSpecDefault:
         for
           _ <- TestClient.addRoutes(Routes(Method.GET / "query" -> Handler.ok))
           rawClient <- ZIO.service[Client]
+          tracing <- ZIO.service[Tracing]
           config = HttpObservabilityConfig.Client.default.copy(logQuery = Set("allowed"))
-          client = rawClient @@ Observability.clientMiddleware @@ mask(config)
+          client = rawClient @@ Observability.clientMiddleware(tracing) @@ mask(config)
           url = (URL.empty / "query").addQueryParam("allowed", "yes").addQueryParam("secret", "no")
           _ <- client.batched(Request.get(url))
           logs <- ZTestLogger.logOutput
@@ -211,8 +216,9 @@ object ObservabilitySpec extends ZIOSpecDefault:
         for
           _ <- TestClient.addRoutes(Routes(Method.GET / "headers" -> Handler.ok))
           rawClient <- ZIO.service[Client]
+          tracing <- ZIO.service[Tracing]
           config = HttpObservabilityConfig.Client.default.copy(logRequestHeaders = Set("x-allowed"))
-          client = rawClient @@ Observability.clientMiddleware @@ mask(config)
+          client = rawClient @@ Observability.clientMiddleware(tracing) @@ mask(config)
           request = Request.get(URL.empty / "headers")
             .addHeader("x-allowed", "yes")
             .addHeader("x-secret", "no")
@@ -232,7 +238,8 @@ object ObservabilitySpec extends ZIOSpecDefault:
         for
           _ <- TestClient.addRoutes(Routes(Method.POST / "data" -> Handler.ok))
           rawClient <- ZIO.service[Client]
-          client = rawClient @@ Observability.clientMiddleware @@ mask(HttpObservabilityConfig.Client.default.copy(logRequestBody = false))
+          tracing <- ZIO.service[Tracing]
+          client = rawClient @@ Observability.clientMiddleware(tracing) @@ mask(HttpObservabilityConfig.Client.default.copy(logRequestBody = false))
           _ <- client.batched(Request.post(URL.empty / "data", Body.fromString("sensitive")))
           logs <- ZTestLogger.logOutput
           sendLogs = logs.filter(_.message() == "send-http")

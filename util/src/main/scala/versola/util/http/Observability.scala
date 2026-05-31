@@ -5,7 +5,11 @@ import zio.*
 import zio.http.*
 import zio.json.*
 import zio.logging.LogAnnotation
+import zio.telemetry.opentelemetry.context.{IncomingContextCarrier, OutgoingContextCarrier}
 import zio.telemetry.opentelemetry.tracing.Tracing
+import zio.telemetry.opentelemetry.tracing.propagation.TraceContextPropagator
+
+import scala.collection.mutable
 
 import java.time.Instant
 
@@ -115,12 +119,20 @@ object Observability:
                         ZIO.logInfo("receive-http") @@ log @@ loggerName
                     _ <- Observability.cause.set(None)
                   yield response
-                ) @@ tracing.aspects.root(s"${request.method.name} ${request.path.encode}", SpanKind.SERVER)
+                ) @@ tracing.aspects.extractSpan(
+                    TraceContextPropagator.default,
+                    IncomingContextCarrier.default(
+                      mutable.Map.from(request.headers.map(h => h.headerName -> h.renderedValue))
+                    ),
+                    s"${request.method.name} ${request.path.encode}",
+                    SpanKind.SERVER,
+                  )
 
-  val client =
-    Client.default.map(env => ZEnvironment(env.get @@ clientMiddleware))
+  val client: ZLayer[Tracing, Throwable, Client] =
+    (Client.default ++ ZLayer.service[Tracing]).map: env =>
+      ZEnvironment(env.get[Client] @@ clientMiddleware(env.get[Tracing]))
 
-  val clientMiddleware: ZClientAspect[Nothing, Any, Nothing, Body, Nothing, Any, Nothing, Response] =
+  def clientMiddleware(tracing: Tracing): ZClientAspect[Nothing, Any, Nothing, Body, Nothing, Any, Nothing, Response] =
     new ZClientAspect[Nothing, Any, Nothing, Body, Nothing, Any, Nothing, Response]:
       def apply[ReqEnv, Env <: Any, In <: Body, Err, Out <: Response](
           client: ZClient[Env, ReqEnv, In, Err, Out],
@@ -138,14 +150,19 @@ object Observability:
                 sslConfig: Option[ClientSSLConfig],
                 proxy: Option[Proxy],
             )(using trace: Trace): ZIO[Env & ReqEnv, Err, Response] =
-              Clock.instant.flatMap: startTime =>
-                client.driver.request(version, method, url, headers, body, sslConfig, proxy)
-                  .sandbox.exit.timed
-                  .tap: (duration, exit) =>
-                    clientMasking.get.flatMap: masking =>
-                      clientLog(method, url, headers, body, startTime, duration, masking, exit)
-                  .flatMap(_._2)
-                  .unsandbox
+              tracing.span(s"${method.name} ${url.path.encode}", SpanKind.CLIENT):
+                for
+                  carrier <- ZIO.succeed(OutgoingContextCarrier.default())
+                  _ <- tracing.injectSpan(TraceContextPropagator.default, carrier)
+                  tracedHeaders = headers ++ Headers.fromIterable(carrier.kernel.map((k, v) => Header.Custom(k, v)))
+                  startTime <- Clock.instant
+                  result <- client.driver.request(version, method, url, tracedHeaders, body, sslConfig, proxy)
+                    .sandbox.exit.timed
+                  (duration, exit) = result
+                  masking <- clientMasking.get
+                  _ <- clientLog(method, url, tracedHeaders, body, startTime, duration, masking, exit)
+                  response <- exit.unsandbox
+                yield response
 
             def socket[Env1 <: Env](version: Version, url: URL, headers: Headers, app: WebSocketApp[Env1])(
                 using
