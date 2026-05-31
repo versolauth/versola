@@ -87,10 +87,9 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       PostgresCleanupManager.live
   )
 
-  val dependencies: ZLayer[Scope & EnvName & ConfigProvider & Tracing, Throwable, Dependencies] =
+  val dependencies: ZLayer[Scope & EnvName & ConfigProvider & Tracing & Client, Throwable, Dependencies] =
     repositories >+>
       parseConfig[CoreConfig] >+>
-      Client.default >+>
       SecureRandom.live >+>
       SecurityService.live >+>
       OAuthConfigurationService.live(Schedule.spaced(1.minute)) >+>

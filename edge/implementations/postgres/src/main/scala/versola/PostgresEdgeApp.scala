@@ -8,7 +8,7 @@ import versola.edge.session.EdgeRefreshTokenRepository
 import versola.edge.{AuthorizationPresetsSyncClient, CentralSyncTokenService, EdgeConfig, EdgeController, EdgeService, JwksService, JwksSyncClient, OAuthClientService, OAuthClientsSyncClient, PermissionService, PermissionsSyncClient, PostgresEdgeRefreshTokenRepository, PostgresLoginRepository, ResourceService, ResourcesSyncClient, RolesSyncClient, SSOClient}
 import versola.util.*
 import versola.util.cel.CelEvaluator
-import versola.util.http.{HttpObservabilityConfig, VersolaApp}
+import versola.util.http.VersolaApp
 import versola.util.postgres.{PostgresConfig, PostgresHikariDataSource}
 import zio.config.magnolia.{DeriveConfig, deriveConfig}
 import zio.config.typesafe.*
@@ -41,22 +41,20 @@ object PostgresEdgeApp extends VersolaApp("edge"):
     EdgeRefreshTokenRepository &
     JwksService &
     SSOClient &
-    EdgeService &
-    Client
+    EdgeService
 
   override def routes: Routes[Dependencies & Tracing, Throwable] =
     List(
       EdgeController.routes,
     ).reduce(_ ++ _)
 
-  val dependencies: ZLayer[Scope & EnvName & ConfigProvider & Tracing, Throwable, Dependencies] =
+  val dependencies: ZLayer[Scope & EnvName & ConfigProvider & Tracing & Client, Throwable, Dependencies] =
     parseConfig[EdgeConfig] >+>
       (PostgresHikariDataSource.transactor(serviceName = Some("edge"), migrate = true) >>>
         (ZLayer.fromFunction(PostgresLoginRepository(_)) ++
           ZLayer.fromFunction(PostgresEdgeRefreshTokenRepository(_)) ++
           PostgresCleanupManager.live)) >+>
       SecureRandom.live >+>
-      Client.default >+>
       SecurityService.live >+>
       CentralSyncTokenService.live >+>
       AuthorizationPresetsSyncClient.live >+>

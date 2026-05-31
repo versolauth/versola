@@ -90,13 +90,12 @@ object PostgresCentralApp extends VersolaApp("central"):
           PostgresUserRepository.live
       )
 
-  override val dependencies: ZLayer[Scope & EnvName & ConfigProvider & Tracing, Throwable, Dependencies] = {
+  override val dependencies: ZLayer[Scope & EnvName & ConfigProvider & Tracing & Client, Throwable, Dependencies] = {
     val schedule = Schedule.spaced(1.minute)
     parseConfig[CentralConfig] >+>
       repositories >+>
       SecurityService.live >+>
       CelEvaluator.live >+>
-      Client.default >+>
       TenantService.live(schedule) >+>
       PermissionService.live(schedule) >+>
       ResourceService.live(schedule) >+>

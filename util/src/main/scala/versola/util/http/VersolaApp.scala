@@ -17,7 +17,7 @@ import versola.util.{EnvName, PostInitializationService}
 import zio.*
 import zio.config.magnolia.{DeriveConfig, deriveConfig}
 import zio.config.typesafe.FromConfigSourceTypesafe
-import zio.http.{Method, Middleware, Request, RequestStore, Response, Routes, Server, Status, handler}
+import zio.http.{Client, Method, Middleware, Request, RequestStore, Response, Routes, Server, Status, handler}
 import zio.logging.LogFormat.{cause, fiberId, label, level, line, logAnnotation, quoted, space, text, timestamp}
 import zio.logging.slf4j.bridge.Slf4jBridge
 import zio.logging.{ConsoleLoggerConfig, LogFilter, LogFormat, LoggerNameExtractor}
@@ -36,19 +36,17 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
   given Tag[Dependencies] = scala.compiletime.deferred
 
   override type Environment =
-    ContextStorage & ConfigProvider & LogFormats & api.OpenTelemetry & Tracing & EnvName
+    ContextStorage & ConfigProvider & LogFormats & api.OpenTelemetry & Tracing & EnvName & Client
 
   override val bootstrap: ZLayer[Any, Any, Environment] =
     OpenTelemetry.contextZIO >+> configProvider >+> envName >+>
       ZioLogging.logFormats >+>
       jsonLoggerLayer(serviceName) >+>
-      openTelemetryLayer(serviceName)
+      openTelemetryLayer(serviceName) >+> Observability.client
 
-  def dependencies: ZLayer[Scope & EnvName & ConfigProvider & Tracing, Throwable, Dependencies]
+  def dependencies: ZLayer[Scope & EnvName & ConfigProvider & Tracing & Client, Throwable, Dependencies]
 
   def routes: Routes[Dependencies & Tracing & EnvName, Throwable]
-
-  def observabilityConfig: HttpObservabilityConfig = HttpObservabilityConfig.default
 
   def port: Int =
     Option(java.lang.System.getenv("PORT")).flatMap(_.toIntOption).getOrElse(8080)
@@ -70,6 +68,7 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
       envName <- ZIO.service[EnvName]
       scope <- ZIO.scope
       readinessService <- ReadinessService.make
+      client <- ZIO.service[Client]
 
       _ <- Server.install[MetricsService](serviceRoutes(readinessService))
         .provide(
@@ -96,12 +95,12 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
         dependencies,
         Server.live,
         ZLayer.succeed(serverConfig),
-        ZLayer.succeed(observabilityConfig),
         ZLayer.succeed(opentelemetry),
         ZLayer.succeed(tracing),
         ZLayer.succeed(envConfig),
         ZLayer.succeed(envName),
         ZLayer.succeed(scope),
+        ZLayer.succeed(client)
       )
     yield ()
   }
@@ -169,6 +168,7 @@ object VersolaApp:
               formats.spanIdLabel,
               formats.traceIdLabel,
               logAnnotation(Observability.receiveHttp),
+              logAnnotation(Observability.sendHttp),
               label("logger", LoggerNameExtractor.loggerNameAnnotationOrTrace.toLogFormat()),
             ).reduce(_ |-| _),
         )

@@ -11,9 +11,18 @@ import java.time.Instant
 
 object Observability:
   val receiveHttp = LogAnnotation[ReceiveHttpLog]("http", (_, r) => r, _.toJson)
+  val sendHttp = LogAnnotation[SendHttpLog]("http", (_, r) => r, _.toJson)
 
   val cause = zio.Unsafe.unsafe { case given zio.Unsafe =>
     FiberRef.unsafe.make(Option.empty[Cause[Any]])
+  }
+
+  val clientMasking: FiberRef[HttpObservabilityConfig.Client] = zio.Unsafe.unsafe { case given zio.Unsafe =>
+    FiberRef.unsafe.make(HttpObservabilityConfig.Client.default)
+  }
+
+  val serverMasking: FiberRef[HttpObservabilityConfig.Server] = zio.Unsafe.unsafe { case given zio.Unsafe =>
+    FiberRef.unsafe.make(HttpObservabilityConfig.Server.default)
   }
 
   def handleErrors[Env](routes: Routes[Env, Throwable]): Routes[Env, Nothing] =
@@ -22,22 +31,21 @@ object Observability:
       case ex: Throwable => Observability.cause.set(Some(Cause.fail(ex))).as(Response.internalServerError)
     }
 
-  private def toLog(request: Request, config: Option[HttpObservabilityConfig.Masking]): UIO[HttpRequestLog] = {
+  private def toLog(request: Request, masking: HttpObservabilityConfig.Server): UIO[HttpRequestLog] = {
     val query = request.url.queryParams.map
-      .collect { case (k, values) => s"$k=${values.mkString(",")}" }
+      .collect { case (k, vs) if masking.logQuery.contains(k) => s"$k=${vs.mkString(",")}" }
       .toSeq
 
     val headers = request.headers
-      .map {
+      .collect {
         case h if h.headerName == Header.Authorization.name => s"${h.headerName}=Bearer ***"
-        case h => s"${h.headerName}=${h.renderedValue}"
+        case h if masking.logRequestHeaders.contains(h.headerName) => s"${h.headerName}=${h.renderedValue}"
       }.toSeq
 
     val cookies = request.cookies.map(cookie => s"${cookie.name}=${cookie.content}").toSeq
     for
-      logRequestBody = config.fold(true)(_.logRequestBody)
       body <-
-        if logRequestBody then
+        if masking.logRequestBody then
           request.body.asString.asSome.orElseSucceed(None)
         else
           ZIO.none
@@ -49,19 +57,18 @@ object Observability:
           case URL.Location.Relative => "http://"
         },
         path = request.url.path.encode,
-        moreQueryParams = query,
+        queryParams = query,
         body = body,
-        moreHeaders = headers,
-        moreCookies = cookies,
+        headers = headers,
+        cookies = cookies,
       )
     yield log
   }
 
-  private def toLog(request: Request, response: Response, config: Option[HttpObservabilityConfig.Masking]): UIO[HttpResponseLog] = {
+  private def toLog(request: Request, response: Response, masking: HttpObservabilityConfig.Server): UIO[HttpResponseLog] = {
     for
-      logResponseBody = config.fold(true)(_.logResponseBody)
       body <-
-        if !logResponseBody then
+        if !masking.logResponseBody then
           ZIO.none
         else if response.header(Header.ContentType).exists(_.mediaType == MediaType.text.html) then
           ZIO.some("<html>")
@@ -70,12 +77,15 @@ object Observability:
     yield HttpResponseLog(
       code = response.status.code,
       body = body,
-      moreHeaders = response.headers.map(h => s"${h.headerName}=${h.renderedValue}").toSeq,
+      headers = response.headers.collect {
+        case h if masking.logResponseHeaders.contains(h.headerName) =>
+          s"${h.headerName}=${h.renderedValue}"
+      }.toSeq,
     )
   }
 
-  val middleware: Middleware[Tracing & HttpObservabilityConfig] = new Middleware[Tracing & HttpObservabilityConfig]:
-    def apply[Env1 <: Tracing & HttpObservabilityConfig, Err](routes: Routes[Env1, Err]): Routes[Env1, Err] =
+  val middleware: Middleware[Tracing] = new Middleware[Tracing]:
+    def apply[Env1 <: Tracing, Err](routes: Routes[Env1, Err]): Routes[Env1, Err] =
       routes
         .transform: handler =>
           Handler.scoped[Env1]:
@@ -85,9 +95,8 @@ object Observability:
                   for
                     now <- Clock.nanoTime
                     response <- handler(request)
-                    config <- ZIO.service[HttpObservabilityConfig]
-                    pathConfig = config.masking.get(request.path)
-                    (requestLog, responseLog) <- toLog(request, pathConfig) <&> toLog(request, response, pathConfig)
+                    masking <- serverMasking.get
+                    (requestLog, responseLog) <- toLog(request, masking) <&> toLog(request, response, masking)
                     after <- Clock.nanoTime
                     log = receiveHttp(
                       ReceiveHttpLog(
@@ -108,29 +117,148 @@ object Observability:
                   yield response
                 ) @@ tracing.aspects.root(s"${request.method.name} ${request.path.encode}", SpanKind.SERVER)
 
+  val client =
+    Client.default.map(env => ZEnvironment(env.get @@ clientMiddleware))
+
+  val clientMiddleware: ZClientAspect[Nothing, Any, Nothing, Body, Nothing, Any, Nothing, Response] =
+    new ZClientAspect[Nothing, Any, Nothing, Body, Nothing, Any, Nothing, Response]:
+      def apply[ReqEnv, Env <: Any, In <: Body, Err, Out <: Response](
+          client: ZClient[Env, ReqEnv, In, Err, Out],
+      ): ZClient[Env, ReqEnv, In, Err, Out] =
+        client.transform(
+          client.bodyEncoder,
+          client.bodyDecoder,
+          new ZClient.Driver[Env, ReqEnv, Err]:
+            def request(
+                version: Version,
+                method: Method,
+                url: URL,
+                headers: Headers,
+                body: Body,
+                sslConfig: Option[ClientSSLConfig],
+                proxy: Option[Proxy],
+            )(using trace: Trace): ZIO[Env & ReqEnv, Err, Response] =
+              Clock.instant.flatMap: startTime =>
+                client.driver.request(version, method, url, headers, body, sslConfig, proxy)
+                  .sandbox.exit.timed
+                  .tap: (duration, exit) =>
+                    clientMasking.get.flatMap: masking =>
+                      clientLog(method, url, headers, body, startTime, duration, masking, exit)
+                  .flatMap(_._2)
+                  .unsandbox
+
+            def socket[Env1 <: Env](version: Version, url: URL, headers: Headers, app: WebSocketApp[Env1])(
+                using
+                trace: Trace,
+                ev: ReqEnv =:= Scope,
+            ): ZIO[Env1 & ReqEnv, Err, Response] =
+              client.driver.socket(version, url, headers, app),
+        )
+
+  private def clientLog(
+      method: Method,
+      url: URL,
+      headers: Headers,
+      body: Body,
+      startTime: Instant,
+      duration: Duration,
+      masking: HttpObservabilityConfig.Client,
+      exit: Exit[Cause[Any], Response],
+  ): UIO[Unit] =
+    val query = url.queryParams.map
+      .collect { case (k, vs) if masking.logQuery.contains(k) => s"$k=${vs.mkString(",")}" }
+      .toSeq
+    val maskedHeaders = headers.collect:
+      case h if h.headerName == Header.Authorization.name => s"${h.headerName}=Bearer ***"
+      case h if masking.logRequestHeaders.contains(h.headerName) => s"${h.headerName}=${h.renderedValue}"
+    .toSeq
+    val baseUri = url.kind match
+      case loc: URL.Location.Absolute => s"${loc.scheme.encode}://${loc.host}:${loc.port}"
+      case URL.Location.Relative => ""
+    val bodyEffect =
+      if masking.logRequestBody && body.isComplete then body.asString.asSome.orElseSucceed(None)
+      else ZIO.none
+
+    val loggerName = logging.loggerName("versola.http.HttpClient")
+
+    bodyEffect.flatMap { body =>
+      val requestLog = HttpClientRequestLog(
+        method = method.name,
+        baseUri = baseUri,
+        path = url.path.encode,
+        queryParams = query,
+        body = body,
+        headers = maskedHeaders,
+      )
+
+      exit match
+        case Exit.Failure(cause) =>
+          val responseLog = HttpClientResponseLog(code = 500, body = None, headers = Seq.empty)
+          val log = SendHttpLog(requestLog, responseLog, startTime, elapsedMillis = duration.toMillis)
+          ZIO.logErrorCause("send-http", cause) @@ sendHttp(log) @@ loggerName
+        case Exit.Success(response) =>
+          val bodyEffect =
+            if !masking.logResponseBody then ZIO.none
+            else if response.header(Header.ContentType).exists(_.mediaType == MediaType.text.html) then ZIO.some("<html>")
+            else if response.body.isComplete then response.body.asString.asSome.orElseSucceed(None)
+            else ZIO.none
+          bodyEffect.flatMap: body =>
+            val responseLog = HttpClientResponseLog(
+              code = response.status.code,
+              body = body,
+              headers = response.headers.collect {
+                case h if masking.logResponseHeaders.contains(h.headerName) =>
+                  s"${h.headerName}=${h.renderedValue}"
+              }.toSeq,
+            )
+            val log = SendHttpLog(requestLog, responseLog, startTime, elapsedMillis = duration.toMillis)
+            if response.status.isServerError then
+              ZIO.logError("send-http") @@ sendHttp(log) @@ loggerName
+            else
+              ZIO.logInfo("send-http") @@ sendHttp(log) @@ loggerName
+    }
+
+  case class HttpClientRequestLog(
+      method: String,
+      baseUri: String,
+      path: String,
+      queryParams: Seq[String],
+      body: Option[String],
+      headers: Seq[String],
+  ) derives JsonEncoder
+
+  case class HttpClientResponseLog(
+      code: Int,
+      body: Option[String],
+      headers: Seq[String],
+  ) derives JsonEncoder
+
   case class HttpRequestLog(
       method: String,
       baseUri: String,
       path: String,
-      // queryParams: Map[String, String], Пока что нет смысла в индексированных параметрах
-      moreQueryParams: Seq[String],
+      queryParams: Seq[String],
       body: Option[String],
-      // headers: Map[String, String],
-      moreHeaders: Seq[String],
-      // cookies: Map[String, String],
-      moreCookies: Seq[String],
+      headers: Seq[String],
+      cookies: Seq[String],
   ) derives JsonEncoder
 
   case class HttpResponseLog(
       code: Int,
       body: Option[String],
-      // headers: Map[String, String],
-      moreHeaders: Seq[String],
+      headers: Seq[String],
   ) derives JsonEncoder
 
   case class ReceiveHttpLog(
       request: HttpRequestLog,
       response: HttpResponseLog,
+      startTime: Instant,
+      elapsedMillis: Long,
+  ) derives JsonEncoder
+
+  case class SendHttpLog(
+      request: HttpClientRequestLog,
+      response: HttpClientResponseLog,
       startTime: Instant,
       elapsedMillis: Long,
   ) derives JsonEncoder

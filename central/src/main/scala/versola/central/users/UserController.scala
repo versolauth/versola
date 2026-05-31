@@ -29,12 +29,15 @@ object UserController extends Controller:
         phone <- request.queryZIO[Option[Phone]]("phone")
         login <- request.queryZIO[Option[Login]]("login")
         result <- (id, email, phone, login) match
-          case (Some(id), _, _, _)    => service.findById(id).map(_.toVector)
-          case (_, Some(email), _, _) => service.findByEmail(email).map(_.toVector)
-          case (_, _, Some(phone), _) => service.findByPhone(phone).map(_.toVector)
-          case (_, _, _, Some(login)) => service.findByLogin(login).map(_.toVector)
-          case _                      => ZIO.fail(new IllegalArgumentException("Missing search parameter"))
-      yield Response.json(UserSearchResponse(result).toJson)
+          case (Some(id), _, _, _)    => service.findById(id).map(_.toVector).asRight
+          case (_, Some(email), _, _) => service.findByEmail(email).map(_.toVector).asRight
+          case (_, _, Some(phone), _) => service.findByPhone(phone).map(_.toVector).asRight
+          case (_, _, _, Some(login)) => service.findByLogin(login).map(_.toVector).asRight
+          case _                      => ZIO.left(Response.badRequest)
+      yield result.fold(
+        identity,
+        result => Response.json(UserSearchResponse(result).toJson)
+      )
     }
 
   val getUserRolesEndpoint =
