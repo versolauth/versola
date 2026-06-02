@@ -25,14 +25,13 @@ object UserControllerSpec extends ZIOSpecDefault:
     override def create(id: UserId) = ZIO.dieMessage("Unused")
     override def find(id: UserId)   = ZIO.dieMessage("Unused")
     override def findByCredential(credential: Either[versola.util.Email, versola.util.Phone]) = ZIO.dieMessage("Unused")
-    override def upsert(id: UserId, email: Option[versola.util.Email], phone: Option[versola.util.Phone], login: Option[Login], claims: Json.Obj) = ZIO.unit
-    override def patch(id: UserId, email: Option[Patch[versola.util.Email]], phone: Option[Patch[versola.util.Phone]], login: Option[Patch[Login]], claims: Option[Json.Obj]) = ZIO.unit
+    override def upsert(id: UserId, version: UUID, email: Option[versola.util.Email], phone: Option[versola.util.Phone], login: Option[Login]) = ZIO.unit
+    override def patchClaims(id: UserId, patch: Json.Obj) = ZIO.unit
 
   private val rolesRepo = new UserRolesRepository:
     override def findRolesByUser(userId: UserId)                                            = ZIO.dieMessage("Unused")
-    override def findRolesByUserAndTenant(userId: UserId, tenantId: TenantId)               = ZIO.succeed(Nil)
-    override def assignRole(userId: UserId, tenantId: TenantId, roleId: RoleId)             = ZIO.unit
-    override def removeRole(userId: UserId, tenantId: TenantId, roleId: RoleId)             = ZIO.unit
+    override def findRolesByUserAndTenant(userId: UserId, tenant_id: TenantId)              = ZIO.succeed(Nil)
+    override def updateRoles(userId: UserId, tenantId: TenantId, add: Set[RoleId], remove: Set[RoleId]) = ZIO.unit
 
   private def validToken(key: javax.crypto.SecretKey): Task[String] =
     JWT.serialize(
@@ -50,60 +49,61 @@ object UserControllerSpec extends ZIOSpecDefault:
     )
 
   def spec = suite("UserController")(
-    test("POST /users without Authorization returns 401") {
+    test("PUT /users without Authorization returns 401") {
       for
         client  <- ZIO.service[Client]
         tracing <- NoopTracing.layer.build
         _       <- TestClient.addRoutes(routes(tracing))
-        resp    <- client.batched(Request.post(URL.empty / "users", Body.fromString("{}")))
+        resp    <- client.batched(Request.put(URL.empty / "users", Body.fromString("{}")))
       yield assertTrue(resp.status == Status.Unauthorized)
     },
-    test("POST /users with token signed by wrong key returns 401") {
+    test("PUT /users with token signed by wrong key returns 401") {
       for
         client  <- ZIO.service[Client]
         tracing <- NoopTracing.layer.build
         token   <- validToken(wrongKey)
         _       <- TestClient.addRoutes(routes(tracing))
         resp    <- client.batched(
-          Request.post(URL.empty / "users", Body.fromString("{}"))
+          Request.put(URL.empty / "users", Body.fromString("{}"))
             .addHeader(Header.Authorization.Bearer(token))
         )
       yield assertTrue(resp.status == Status.Unauthorized)
     },
-    test("POST /users with valid Bearer token returns 204") {
+    test("PUT /users with valid Bearer token returns 204") {
       for
         client  <- ZIO.service[Client]
         tracing <- NoopTracing.layer.build
         token   <- validToken(secretKey)
         _       <- TestClient.addRoutes(routes(tracing))
-        body     = """{"id":"00000000-0000-0000-0000-000000000001","email":null,"phone":null,"login":null,"claims":{}}"""
+        body     = """{"id":"00000000-0000-0000-0000-000000000001","version":"00000000-0000-0000-0000-000000000001","email":null,"phone":null,"login":null}"""
         resp    <- client.batched(
-          Request.post(URL.empty / "users", Body.fromString(body))
+          Request.put(URL.empty / "users", Body.fromString(body))
             .addHeader(Header.Authorization.Bearer(token))
             .addHeader(Header.ContentType(MediaType.application.json))
         )
       yield assertTrue(resp.status == Status.NoContent)
     },
-    test("PATCH /users with valid Bearer token returns 204") {
+    test("PATCH /users/roles without Authorization returns 401") {
+      for
+        client  <- ZIO.service[Client]
+        tracing <- NoopTracing.layer.build
+        _       <- TestClient.addRoutes(routes(tracing))
+        resp    <- client.batched(Request(method = Method.PATCH, url = URL.empty / "users" / "roles", body = Body.fromString("{}")))
+      yield assertTrue(resp.status == Status.Unauthorized)
+    },
+    test("PATCH /users/roles with valid Bearer token returns 204") {
       for
         client  <- ZIO.service[Client]
         tracing <- NoopTracing.layer.build
         token   <- validToken(secretKey)
         _       <- TestClient.addRoutes(routes(tracing))
-        body     = """{"id":"00000000-0000-0000-0000-000000000001"}"""
+        body     = """{"userId":"00000000-0000-0000-0000-000000000001","tenantId":"t1","add":["r1"],"remove":[]}"""
         resp    <- client.batched(
-          Request(method = Method.PATCH, url = URL.empty / "users", body = Body.fromString(body))
+          Request(method = Method.PATCH, url = URL.empty / "users" / "roles", body = Body.fromString(body))
             .addHeader(Header.Authorization.Bearer(token))
             .addHeader(Header.ContentType(MediaType.application.json))
         )
       yield assertTrue(resp.status == Status.NoContent)
-    },
-    test("POST /users/roles without Authorization returns 401") {
-      for
-        client  <- ZIO.service[Client]
-        tracing <- NoopTracing.layer.build
-        _       <- TestClient.addRoutes(routes(tracing))
-        resp    <- client.batched(Request.post(URL.empty / "users" / "roles", Body.fromString("{}")))
-      yield assertTrue(resp.status == Status.Unauthorized)
     },
   ).provideSomeShared[Scope](TestClient.layer) @@ TestAspect.silentLogging
+

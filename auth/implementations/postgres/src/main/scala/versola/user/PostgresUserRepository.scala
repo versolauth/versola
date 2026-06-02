@@ -6,8 +6,7 @@ import com.augustnagro.magnum.pg.PgCodec
 import com.augustnagro.magnum.pg.PgCodec.given
 import versola.util.postgres.BasicCodecs
 import versola.user.model.*
-import versola.util.{Email, Patch, Phone}
-import versola.util.Patch.toUpdate
+import versola.util.{Email, Phone}
 import zio.{Clock, Task, ZIO, ZLayer}
 import zio.json.*
 import zio.json.ast.Json
@@ -70,36 +69,28 @@ class PostgresUserRepository(
         case Left(email) => findByEmailQuery(email).run().headOption
         case Right(phone) => findByPhoneQuery(phone).run().headOption
 
-  override def upsert(id: UserId, email: Option[Email], phone: Option[Phone], login: Option[Login], claims: Json.Obj): Task[Unit] =
+  override def upsert(
+      id: UserId,
+      version: UUID,
+      email: Option[Email],
+      phone: Option[Phone],
+      login: Option[Login],
+  ): Task[Unit] =
     xa.connect:
-      sql"""insert into users (id, email, phone, login, claims)
-            values ($id, $email, $phone, $login, $claims::jsonb)
+      sql"""insert into users (id, email, phone, login, claims, last_version)
+            values ($id, $email, $phone, $login, '{}'::jsonb, $version)
             on conflict (id) do update set
               email = excluded.email,
               phone = excluded.phone,
               login = excluded.login,
-              claims = excluded.claims
+              last_version = excluded.last_version
+            where users.last_version is null or users.last_version < excluded.last_version
          """.update.run()
     .unit
 
-  override def patch(
-      id: UserId,
-      email: Option[Patch[Email]],
-      phone: Option[Patch[Phone]],
-      login: Option[Patch[Login]],
-      claims: Option[Json.Obj],
-  ): Task[Unit] =
-    val (updEmail, valEmail) = email.toUpdate
-    val (updPhone, valPhone) = phone.toUpdate
-    val (updLogin, valLogin) = login.toUpdate
+  override def patchClaims(id: UserId, patch: Json.Obj): Task[Unit] =
     xa.connect:
-      sql"""update users set
-              email  = case when $updEmail then $valEmail else email  end,
-              phone  = case when $updPhone then $valPhone else phone  end,
-              login  = case when $updLogin then $valLogin else login  end,
-              claims = coalesce($claims::jsonb, claims)
-            where id = $id
-         """.update.run()
+      sql"update users set claims = jsonb_strip_nulls(claims || $patch::jsonb) where id = $id".update.run()
     .unit
 
   private def findByPhoneQuery(phone: Phone) =

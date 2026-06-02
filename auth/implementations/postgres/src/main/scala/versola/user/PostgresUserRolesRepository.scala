@@ -5,11 +5,16 @@ import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.auth.model.TenantId
 import versola.role.model.RoleId
 import versola.user.model.UserId
-import zio.{Task, ZLayer}
+import versola.util.postgres.BasicCodecs
+import zio.{Task, ZIO, ZLayer}
 
 import java.util.UUID
 
-class PostgresUserRolesRepository(xa: TransactorZIO) extends UserRolesRepository:
+class PostgresUserRolesRepository(xa: TransactorZIO) extends UserRolesRepository, BasicCodecs:
+
+  given DbCodec[UserId] = DbCodec.UUIDCodec.biMap(UserId(_), identity[UUID])
+  given DbCodec[TenantId] = DbCodec.StringCodec.biMap(TenantId(_), identity[String])
+  given DbCodec[RoleId] = DbCodec.StringCodec.biMap(RoleId(_), identity[String])
 
   override def findRolesByUser(userId: UserId): Task[List[RoleId]] =
     xa.connect:
@@ -27,21 +32,24 @@ class PostgresUserRolesRepository(xa: TransactorZIO) extends UserRolesRepository
         .map(RoleId(_))
         .toList
 
-  override def assignRole(userId: UserId, tenantId: TenantId, roleId: RoleId): Task[Unit] =
-    xa.connect:
-      sql"INSERT INTO user_roles (user_id, tenant_id, role_id) VALUES ($userId, $tenantId, $roleId) ON CONFLICT DO NOTHING"
-        .update.run()
-    .unit
-
-  override def removeRole(userId: UserId, tenantId: TenantId, roleId: RoleId): Task[Unit] =
-    xa.connect:
-      sql"DELETE FROM user_roles WHERE user_id = $userId AND tenant_id = $tenantId AND role_id = $roleId"
-        .update.run()
-    .unit
-
-  given DbCodec[UserId] = DbCodec.UUIDCodec.biMap(UserId(_), identity[UUID])
-  given DbCodec[TenantId] = DbCodec.StringCodec.biMap(TenantId(_), identity[String])
-  given DbCodec[RoleId] = DbCodec.StringCodec.biMap(RoleId(_), identity[String])
+  override def updateRoles(
+      userId: UserId,
+      tenantId: TenantId,
+      add: Set[RoleId],
+      remove: Set[RoleId],
+  ): Task[Unit] =
+    if add.isEmpty && remove.isEmpty then ZIO.unit
+    else
+      xa.transact:
+        if remove.nonEmpty then
+          remove.foreach: roleId =>
+            sql"DELETE FROM user_roles WHERE user_id = $userId AND tenant_id = $tenantId AND role_id = $roleId"
+              .update.run()
+        if add.nonEmpty then
+          add.foreach: roleId =>
+            sql"INSERT INTO user_roles (user_id, tenant_id, role_id) VALUES ($userId, $tenantId, $roleId) ON CONFLICT DO NOTHING"
+              .update.run()
+      .unit
 
 object PostgresUserRolesRepository:
   def live: ZLayer[TransactorZIO, Throwable, UserRolesRepository] =

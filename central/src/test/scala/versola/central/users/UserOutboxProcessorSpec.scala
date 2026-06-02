@@ -24,7 +24,8 @@ object UserOutboxProcessorSpec extends ZIOSpecDefault:
 
   private val record = OutboxRecord(
     id = eventId,
-    event = OutboxEvent.CreateUser(userId, Some(Email("a@b.c")), None, None, Json.Obj()),
+    userId = userId,
+    event = OutboxEvent.UpsertUser(userId, eventId, Some(Email("a@b.c")), None, None),
     attempts = 0,
   )
 
@@ -41,46 +42,31 @@ object UserOutboxProcessorSpec extends ZIOSpecDefault:
     override def findByEmail(email: Email) = ZIO.none
     override def findByPhone(phone: Phone) = ZIO.none
     override def findByLogin(login: Login) = ZIO.none
-    override def create(id: UserId, email: Option[Email], phone: Option[Phone], login: Option[Login], claims: Json.Obj)
+    override def create(id: UserId, email: Option[Email], phone: Option[Phone], login: Option[Login])
         : IO[UserConflict | Throwable, Unit] = ZIO.unit
     override def patch(
         id: UserId,
         email: Option[Patch[Email]],
         phone: Option[Patch[Phone]],
         login: Option[Patch[Login]],
-        claims: Option[Json.Obj],
     ): Task[Unit] = ZIO.unit
-    override def insertRole(userId: UserId, tenantId: TenantId, roleId: RoleId): Task[Unit] = ZIO.unit
-    override def deleteRole(userId: UserId, tenantId: TenantId, roleId: RoleId): Task[Unit] = ZIO.unit
 
   private class FailingAuthClient(error: Throwable) extends AuthClient:
-    override def createUser(id: UserId, email: Option[Email], phone: Option[Phone], login: Option[Login], claims: Json.Obj): Task[Unit] =
+    override def upsertUser(id: UserId, version: UUID, email: Option[Email], phone: Option[Phone], login: Option[Login]): Task[Unit] =
       ZIO.fail(error)
-    override def patchUser(
-        id: UserId,
-        email: Option[Patch[Email]],
-        phone: Option[Patch[Phone]],
-        login: Option[Patch[Login]],
-        claims: Option[Json.Obj],
-    ): Task[Unit] = ZIO.fail(error)
-    override def assignRole(userId: UserId, tenantId: TenantId, roleId: RoleId): Task[Unit] = ZIO.fail(error)
-    override def removeRole(userId: UserId, tenantId: TenantId, roleId: RoleId): Task[Unit] = ZIO.fail(error)
+    override def updateUserRoles(userId: UserId, tenantId: TenantId, add: Set[RoleId], remove: Set[RoleId]): Task[Unit] =
+      ZIO.fail(error)
     override def getUserClaims(id: UserId): Task[Option[Json.Obj]] = ZIO.fail(error)
+    override def patchUserClaims(id: UserId, patch: Json.Obj): Task[Unit] = ZIO.fail(error)
     override def getUserRoles(id: UserId, tenantId: TenantId): Task[List[RoleId]] = ZIO.fail(error)
 
   private class OkAuthClient extends AuthClient:
-    override def createUser(id: UserId, email: Option[Email], phone: Option[Phone], login: Option[Login], claims: Json.Obj): Task[Unit] =
+    override def upsertUser(id: UserId, version: UUID, email: Option[Email], phone: Option[Phone], login: Option[Login]): Task[Unit] =
       ZIO.unit
-    override def patchUser(
-        id: UserId,
-        email: Option[Patch[Email]],
-        phone: Option[Patch[Phone]],
-        login: Option[Patch[Login]],
-        claims: Option[Json.Obj],
-    ): Task[Unit] = ZIO.unit
-    override def assignRole(userId: UserId, tenantId: TenantId, roleId: RoleId): Task[Unit] = ZIO.unit
-    override def removeRole(userId: UserId, tenantId: TenantId, roleId: RoleId): Task[Unit] = ZIO.unit
+    override def updateUserRoles(userId: UserId, tenantId: TenantId, add: Set[RoleId], remove: Set[RoleId]): Task[Unit] =
+      ZIO.unit
     override def getUserClaims(id: UserId): Task[Option[Json.Obj]] = ZIO.none
+    override def patchUserClaims(id: UserId, patch: Json.Obj): Task[Unit] = ZIO.unit
     override def getUserRoles(id: UserId, tenantId: TenantId): Task[List[RoleId]] = ZIO.succeed(Nil)
 
   def spec = suite("UserOutboxProcessor")(

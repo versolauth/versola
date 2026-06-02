@@ -18,9 +18,9 @@ trait UserService:
 
   def patch(request: PatchUserRequest): Task[Unit]
 
-  def assignRole(request: UserRoleRequest): Task[Unit]
+  def patchClaims(id: UserId, patch: Json.Obj): Task[Unit]
 
-  def removeRole(request: UserRoleRequest): Task[Unit]
+  def updateRoles(request: UpdateUserRolesRequest): Task[Unit]
 
 object UserService:
   val live: ZLayer[UserRepository & AuthClient & SecureRandom, Nothing, UserService] =
@@ -50,14 +50,14 @@ object UserService:
     override def create(request: CreateUserRequest): IO[UserConflict | Throwable, UserId] =
       for
         id <- secureRandom.nextUUIDv7.map(UserId(_))
-        _ <- userRepository.create(id, request.email, request.phone, request.login, request.claims)
+        _ <- userRepository.create(id, request.email, request.phone, request.login)
       yield id
 
     override def patch(request: PatchUserRequest): Task[Unit] =
-      userRepository.patch(request.id, request.email, request.phone, request.login, request.claims)
+      userRepository.patch(request.id, request.email, request.phone, request.login)
 
-    override def assignRole(request: UserRoleRequest): Task[Unit] =
-      userRepository.insertRole(request.userId, request.tenantId, request.roleId)
+    override def patchClaims(id: UserId, patch: Json.Obj): Task[Unit] =
+      authClient.patchUserClaims(id, patch)
 
-    override def removeRole(request: UserRoleRequest): Task[Unit] =
-      userRepository.deleteRole(request.userId, request.tenantId, request.roleId)
+    override def updateRoles(request: UpdateUserRolesRequest): Task[Unit] =
+      authClient.updateUserRoles(request.userId, request.tenantId, request.add, request.remove)

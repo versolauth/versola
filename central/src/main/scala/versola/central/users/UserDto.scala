@@ -11,7 +11,6 @@ case class CreateUserRequest(
     email: Option[Email],
     phone: Option[Phone],
     login: Option[Login],
-    claims: Json.Obj,
 ) derives JsonCodec, Schema
 
 case class CreateUserResponse(id: UserId) derives JsonCodec, Schema
@@ -21,13 +20,18 @@ case class PatchUserRequest(
     email: Option[Patch[Email]],
     phone: Option[Patch[Phone]],
     login: Option[Patch[Login]],
-    claims: Option[Json.Obj],
 ) derives JsonCodec, Schema
 
-case class UserRoleRequest(
+case class PatchUserClaimsRequest(
+    id: UserId,
+    claims: Json.Obj,
+) derives JsonCodec, Schema
+
+case class UpdateUserRolesRequest(
     userId: UserId,
     tenantId: TenantId,
-    roleId: RoleId,
+    add: Set[RoleId],
+    remove: Set[RoleId],
 ) derives JsonCodec, Schema
 
 case class UserSearchRecord(

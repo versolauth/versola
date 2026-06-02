@@ -71,10 +71,7 @@ object UserOutboxProcessor:
 
     private def dispatch(event: OutboxEvent): ZIO[Any, Throwable, Unit] =
       event match
-        case e: OutboxEvent.CreateUser => client.createUser(e.id, e.email, e.phone, e.login, e.claims)
-        case e: OutboxEvent.PatchUser => client.patchUser(e.id, e.email, e.phone, e.login, e.claims)
-        case e: OutboxEvent.AssignRole => client.assignRole(e.userId, e.tenantId, e.roleId)
-        case e: OutboxEvent.RemoveRole => client.removeRole(e.userId, e.tenantId, e.roleId)
+        case e: OutboxEvent.UpsertUser => client.upsertUser(e.userId, e.version, e.email, e.phone, e.login)
 
     private def backoff(attempts: Int): Duration =
       val seconds = math.min(math.pow(2.0, attempts).toLong, config.maxBackoff.toSeconds)

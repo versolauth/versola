@@ -15,21 +15,40 @@ object UserController extends Controller:
   type Env = Tracing & UserRepository & UserRolesRepository & CoreConfig
 
   def routes: Routes[Env, Throwable] = Routes(
-    createUserEndpoint,
-    patchUserEndpoint,
+    upsertUserEndpoint,
+    patchClaimsEndpoint,
+    patchRolesEndpoint,
     findClaimsEndpoint,
     findRolesEndpoint,
-    assignRoleEndpoint,
-    removeRoleEndpoint,
   )
 
-  val createUserEndpoint =
-    Method.POST / "users" -> handler { (request: Request) =>
+  val upsertUserEndpoint =
+    Method.PUT / "users" -> handler { (request: Request) =>
       for
         _ <- authorizeInternal(request)
         repo <- ZIO.service[UserRepository]
-        body <- request.body.asJsonFromCodec[CreateUserPayload]
-        _ <- repo.upsert(body.id, body.email, body.phone, body.login, body.claims)
+        body <- request.body.asJsonFromCodec[UpsertUserPayload]
+        _ <- repo.upsert(body.id, body.version, body.email, body.phone, body.login)
+      yield Response.status(Status.NoContent)
+    }
+
+  val patchClaimsEndpoint =
+    Method.PATCH / "users" / "claims" -> handler { (request: Request) =>
+      for
+        _ <- authorizeInternal(request)
+        repo <- ZIO.service[UserRepository]
+        body <- request.body.asJsonFromCodec[PatchUserClaimsPayload]
+        _ <- repo.patchClaims(body.id, body.claims)
+      yield Response.status(Status.NoContent)
+    }
+
+  val patchRolesEndpoint =
+    Method.PATCH / "users" / "roles" -> handler { (request: Request) =>
+      for
+        _ <- authorizeInternal(request)
+        repo <- ZIO.service[UserRolesRepository]
+        body <- request.body.asJsonFromCodec[UpdateUserRolesPayload]
+        _ <- repo.updateRoles(body.userId, body.tenantId, body.add, body.remove)
       yield Response.status(Status.NoContent)
     }
 
@@ -54,34 +73,4 @@ object UserController extends Controller:
         tenantId <- request.url.queryZIO[TenantId]("tenantId")
         roles <- repo.findRolesByUserAndTenant(id, tenantId)
       yield Response.json(UserRolesResponse(roles).toJson)
-    }
-
-  val patchUserEndpoint =
-    Method.PATCH / "users" -> handler { (request: Request) =>
-      for
-        _ <- authorizeInternal(request)
-        repo <- ZIO.service[UserRepository]
-        body <- request.body.asJsonFromCodec[PatchUserPayload]
-        _ <- repo.patch(body.id, body.email, body.phone, body.login, body.claims)
-      yield Response.status(Status.NoContent)
-    }
-
-  val assignRoleEndpoint =
-    Method.POST / "users" / "roles" -> handler { (request: Request) =>
-      for
-        _ <- authorizeInternal(request)
-        repo <- ZIO.service[UserRolesRepository]
-        body <- request.body.asJson[AssignRolePayload]
-        _ <- repo.assignRole(body.userId, body.tenantId, body.roleId)
-      yield Response.status(Status.NoContent)
-    }
-
-  val removeRoleEndpoint =
-    Method.DELETE / "users" / "roles" -> handler { (request: Request) =>
-      for
-        _ <- authorizeInternal(request)
-        repo <- ZIO.service[UserRolesRepository]
-        body <- request.body.asJson[RemoveRolePayload]
-        _ <- repo.removeRole(body.userId, body.tenantId, body.roleId)
-      yield Response.status(Status.NoContent)
     }

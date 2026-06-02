@@ -2,20 +2,20 @@ import { LitElement, html, css } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
 import { buttonStyles, cardStyles, formStyles } from '../styles/components';
-import { OAuthScope, Role, User, UserRoleAssignment, UserSearchField } from '../types';
+import { Role, User, UserRoleAssignment, UserSearchField } from '../types';
 import { fetchAllRoles } from '../utils/central-api';
 import {
-  assignUserRole,
   createUser,
-  fetchAvailableScopes,
   fetchUserRoles,
-  removeUserRole,
+  patchUserClaims,
   searchUsers,
   updateUser,
+  updateUserRoles,
 } from '../utils/users-api';
 import './content-header';
 import './loading-cards';
 import './user-form';
+import './claim-edit';
 
 @customElement('versola-users-list')
 export class VersolaUsersList extends LitElement {
@@ -27,15 +27,17 @@ export class VersolaUsersList extends LitElement {
   @state() private isLoading = false;
   @state() private errorMessage = '';
   @state() private showCreateForm = false;
+  @state() private rolesOnlyForm = false;
+  @state() private isEditingClaims = false;
   @state() private editingUser: User | null = null;
   @state() private editingUserAssignments: UserRoleAssignment[] = [];
   @state() private availableRoles: Role[] = [];
-  @state() private availableScopes: OAuthScope[] = [];
   @state() private isPreparingForm = false;
   @state() private formError = '';
   @state() private hasSearched = false;
   @state() private userRoles: Record<string, UserRoleAssignment[]> = {};
   @state() private loadingRoles = new Set<string>();
+  @state() private expandedClaims = new Set<string>();
   @state() private errorPopup = '';
   private loadRequestId = 0;
   private rolesTenantId: string | null = null;
@@ -109,14 +111,17 @@ export class VersolaUsersList extends LitElement {
       }
 
       .icon-action {
+        display: flex;
+        align-items: center;
+        justify-content: center;
         background: none;
         border: none;
+        margin: 0;
         padding: 0.25rem;
         cursor: pointer;
         color: var(--text-secondary);
         font-size: 1.125rem;
         transition: all var(--transition-fast);
-        line-height: 1;
       }
 
       .icon-action:hover { color: var(--accent); transform: scale(1.15); }
@@ -170,6 +175,12 @@ export class VersolaUsersList extends LitElement {
 
       .expand-section {
         border-top: 1px solid var(--border-dark);
+      }
+
+      .expand-section-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
         padding: var(--spacing-md) var(--spacing-lg);
       }
 
@@ -179,7 +190,14 @@ export class VersolaUsersList extends LitElement {
         text-transform: uppercase;
         letter-spacing: 0.05em;
         color: var(--text-secondary);
-        margin-bottom: var(--spacing-sm);
+        margin: 0;
+      }
+
+      .expand-section-content {
+        padding: 0 var(--spacing-lg) var(--spacing-md);
+        display: flex;
+        flex-direction: column;
+        gap: var(--spacing-sm);
       }
 
       .role-row {
@@ -232,6 +250,7 @@ export class VersolaUsersList extends LitElement {
     if (changedProperties.has('tenantId')) {
       this.availableRoles = [];
       this.rolesTenantId = null;
+      this.userRoles = {};
     }
   }
 
@@ -261,11 +280,6 @@ export class VersolaUsersList extends LitElement {
       this.availableRoles = roles;
       this.rolesTenantId = tenantId;
     }
-  }
-
-  private async ensureScopesLoaded() {
-    if (this.availableScopes.length > 0) return;
-    this.availableScopes = await fetchAvailableScopes();
   }
 
   private async loadUserAssignments(userId: string) {
@@ -312,18 +326,10 @@ export class VersolaUsersList extends LitElement {
     void this.loadUsers();
   }
 
-  private async handleCreateClick() {
-    this.isPreparingForm = true;
-    try {
-      await this.ensureScopesLoaded();
-      this.editingUser = null;
-      this.editingUserAssignments = [];
-      this.showCreateForm = true;
-    } catch (error) {
-      this.errorMessage = error instanceof Error ? error.message : 'Failed to open form';
-    } finally {
-      this.isPreparingForm = false;
-    }
+  private handleCreateClick() {
+    this.editingUser = null;
+    this.editingUserAssignments = [];
+    this.showCreateForm = true;
   }
 
   private async handleEditClick(user: User, e: Event) {
@@ -333,9 +339,9 @@ export class VersolaUsersList extends LitElement {
       await Promise.all([
         this.loadUserAssignments(user.id),
         this.ensureRolesLoaded(),
-        this.ensureScopesLoaded(),
       ]);
       this.editingUser = user;
+      this.rolesOnlyForm = false;
       this.showCreateForm = true;
     } catch (error) {
       this.errorMessage = error instanceof Error ? error.message : 'Failed to open user';
@@ -344,8 +350,60 @@ export class VersolaUsersList extends LitElement {
     }
   }
 
+  private async handleEditRolesClick(user: User, e: Event) {
+    e.stopPropagation();
+    this.isPreparingForm = true;
+    try {
+      await Promise.all([
+        this.loadUserAssignments(user.id),
+        this.ensureRolesLoaded(),
+      ]);
+      this.editingUser = user;
+      this.rolesOnlyForm = true;
+      this.showCreateForm = true;
+    } catch (error) {
+      this.errorMessage = error instanceof Error ? error.message : 'Failed to open roles editor';
+    } finally {
+      this.isPreparingForm = false;
+    }
+  }
+
+  private handleEditClaimsClick(user: User, e: Event) {
+    e.stopPropagation();
+    this.editingUser = user;
+    this.isEditingClaims = true;
+  }
+
+  private handleClaimsClose() {
+    this.isEditingClaims = false;
+    this.editingUser = null;
+  }
+
+  private async handleClaimsSave(e: CustomEvent) {
+    const { userId, patch } = e.detail;
+    try {
+      await patchUserClaims(userId, patch);
+      // Update local state
+      this.users = this.users.map(u => {
+        if (u.id === userId) {
+          const updatedClaims = { ...u.claims };
+          for (const [k, v] of Object.entries(patch)) {
+            if (v === null) delete updatedClaims[k];
+            else updatedClaims[k] = v;
+          }
+          return { ...u, claims: updatedClaims };
+        }
+        return u;
+      });
+      this.handleClaimsClose();
+    } catch (error) {
+      this.errorPopup = error instanceof Error ? error.message : 'Failed to update claims';
+    }
+  }
+
   private handleFormClose() {
     this.showCreateForm = false;
+    this.rolesOnlyForm = false;
     this.editingUser = null;
     this.editingUserAssignments = [];
     this.formError = '';
@@ -370,24 +428,19 @@ export class VersolaUsersList extends LitElement {
     }
   }
 
-  private async handleAssignRole(e: CustomEvent) {
+  private async handleSaveRoles(e: CustomEvent) {
     const user = this.editingUser;
     if (!user) return;
-    const { tenantId, roleId } = e.detail as { tenantId: string; roleId: string };
+    const { tenantId, adds, removes } = e.detail as { tenantId: string; adds: string[]; removes: string[] };
     try {
-      await assignUserRole(user.id, tenantId, roleId);
+      await updateUserRoles(user.id, tenantId, adds, removes);
       await this.loadUserAssignments(user.id);
     } catch (error) {
-      this.errorPopup = error instanceof Error ? error.message : 'Failed to assign role';
+      this.errorPopup = error instanceof Error ? error.message : 'Failed to update roles';
     }
   }
 
   private async toggleUserRoles(userId: string) {
-    if (userId in this.userRoles) {
-      const { [userId]: _, ...rest } = this.userRoles;
-      this.userRoles = rest;
-      return;
-    }
     if (!this.tenantId) {
       this.errorPopup = 'Select a tenant first to view user roles.';
       return;
@@ -404,45 +457,65 @@ export class VersolaUsersList extends LitElement {
     }
   }
 
-  private renderUserRoles(userId: string) {
-    const assignments = this.userRoles[userId] ?? [];
+  private renderUserRoles(user: User) {
+    const assignments = this.userRoles[user.id] ?? [];
     return html`
       <div class="expand-section">
-        <div class="expand-section-title">Roles</div>
-        ${assignments.length === 0 ? html`<div class="no-data">No roles assigned</div>` : assignments.map(a => html`
-          <div class="role-row">
-            <span class="role-tag">${a.roleId}</span>
-            <span class="role-tenant">in ${a.tenantId}</span>
+        <div class="expand-section-header">
+          <div class="expand-section-title">Roles</div>
+          <button class="icon-action" title="Edit Roles"
+            @click=${(e: Event) => this.handleEditRolesClick(user, e)}>✎</button>
+        </div>
+        ${assignments.length > 0 ? html`
+          <div class="expand-section-content">
+            ${assignments.map(a => html`
+              <div class="role-row">
+                <span class="role-tag">${a.roleId}</span>
+              </div>
+            `)}
           </div>
-        `)}
+        ` : ''}
       </div>
     `;
   }
 
-  private renderClaimRows(user: User) {
-    return Object.entries(user.claims).map(([key, value]) => {
-      const isBool = typeof value === 'boolean';
-      const valueClass = isBool ? (value ? 'claim-value bool-true' : 'claim-value bool-false') : 'claim-value';
-      return html`
-        <div class="prop-row">
-          <span class="prop-label">${key}</span>
-          <span class="${valueClass}">${String(value)}</span>
-        </div>
-      `;
-    });
+  private toggleUserClaims(userId: string) {
+    const next = new Set(this.expandedClaims);
+    if (next.has(userId)) next.delete(userId);
+    else next.add(userId);
+    this.expandedClaims = next;
   }
 
-  private async handleRemoveRole(e: CustomEvent) {
-    const user = this.editingUser;
-    if (!user) return;
-    const { tenantId, roleId } = e.detail as { tenantId: string; roleId: string };
-    try {
-      await removeUserRole(user.id, tenantId, roleId);
-      await this.loadUserAssignments(user.id);
-    } catch (error) {
-      this.errorPopup = error instanceof Error ? error.message : 'Failed to remove role';
-    }
+  private renderUserClaims(user: User) {
+    const entries = Object.entries(user.claims);
+    return html`
+      <div class="expand-section">
+        <div class="expand-section-header">
+          <div class="expand-section-title">Claims</div>
+          <button class="icon-action" title="Edit Claims"
+            @click=${(e: Event) => this.handleEditClaimsClick(user, e)}>✎</button>
+        </div>
+        ${entries.length > 0 ? html`
+          <div class="expand-section-content">
+            ${entries.map(([key, value]) => {
+              const isBool = typeof value === 'boolean';
+              const valueClass = isBool
+                ? (value ? 'claim-value bool-true' : 'claim-value bool-false')
+                : 'claim-value';
+              return html`
+                <div class="prop-row">
+                  <span class="prop-label">${key}</span>
+                  <span class="${valueClass}">${String(value)}</span>
+                </div>
+              `;
+            })}
+          </div>
+        ` : ''}
+      </div>
+    `;
   }
+
+
 
   private renderErrorPopup() {
     if (!this.errorPopup) return '';
@@ -492,13 +565,23 @@ export class VersolaUsersList extends LitElement {
           .userData=${this.editingUser}
           .tenantId=${this.tenantId}
           .availableRoles=${this.availableRoles}
-          .availableScopes=${this.availableScopes}
           .roleAssignments=${this.editingUserAssignments}
+          ?rolesOnly=${this.rolesOnlyForm}
           @close=${this.handleFormClose}
           @submit=${this.handleFormSubmit}
-          @assign-role=${this.handleAssignRole}
-          @remove-role=${this.handleRemoveRole}
+          @save-roles=${this.handleSaveRoles}
         ></versola-user-form>
+      `;
+    }
+
+    if (this.isEditingClaims && this.editingUser) {
+      return html`
+        <versola-claim-edit
+          .user=${this.editingUser}
+          .tenantId=${this.tenantId}
+          @close=${this.handleClaimsClose}
+          @save=${this.handleClaimsSave}
+        ></versola-claim-edit>
       `;
     }
 
@@ -583,17 +666,20 @@ export class VersolaUsersList extends LitElement {
                   <span class="prop-label">Login</span>
                   <span class="prop-value ${user.login ? '' : 'muted'}">${user.login ?? '—'}</span>
                 </div>
-                ${this.renderClaimRows(user)}
               </div>
+              ${this.expandedClaims.has(user.id) ? this.renderUserClaims(user) : ''}
+              ${user.id in this.userRoles ? this.renderUserRoles(user) : ''}
+              ${(!this.expandedClaims.has(user.id) || !(user.id in this.userRoles)) ? html`
               <div class="card-action-row">
-                <button class="btn btn-secondary btn-sm"
+                ${!this.expandedClaims.has(user.id) ? html`<button class="btn btn-secondary btn-sm"
+                  @click=${() => this.toggleUserClaims(user.id)}>Get Claims</button>` : ''}
+                ${!(user.id in this.userRoles) ? html`<button class="btn btn-secondary btn-sm"
                   ?disabled=${this.loadingRoles.has(user.id) || !this.tenantId}
                   title=${!this.tenantId ? 'Select a tenant to view roles' : ''}
                   @click=${() => this.toggleUserRoles(user.id)}>
-                  ${this.loadingRoles.has(user.id) ? 'Loading…' : user.id in this.userRoles ? 'Hide Roles' : 'Get Roles'}
-                </button>
-              </div>
-              ${user.id in this.userRoles ? this.renderUserRoles(user.id) : ''}
+                  ${this.loadingRoles.has(user.id) ? 'Loading…' : 'Get Roles'}
+                </button>` : ''}
+              </div>` : ''}
             </div>
           `)}
         `}

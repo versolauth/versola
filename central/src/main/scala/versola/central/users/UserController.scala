@@ -16,8 +16,8 @@ object UserController extends Controller:
     getUserRolesEndpoint,
     createUserEndpoint,
     patchUserEndpoint,
-    assignRoleEndpoint,
-    removeRoleEndpoint,
+    patchUserClaimsEndpoint,
+    patchRolesEndpoint,
   )
 
   val findUsersEndpoint =
@@ -71,20 +71,20 @@ object UserController extends Controller:
       yield Response.status(Status.Accepted)
     }
 
-  val assignRoleEndpoint =
-    Method.POST / "users" / "roles" -> handler { (request: Request) =>
+  val patchUserClaimsEndpoint =
+    Method.PATCH / "users" / "claims" -> handler { (request: Request) =>
       for
         service <- ZIO.service[UserService]
-        body <- request.body.asJson[UserRoleRequest]
-        _ <- service.assignRole(body)
+        body <- request.body.asJsonFromCodec[PatchUserClaimsRequest]
+        _ <- service.patchClaims(body.id, body.claims)
       yield Response.status(Status.Accepted)
     }
 
-  val removeRoleEndpoint =
-    Method.DELETE / "users" / "roles" -> handler { (request: Request) =>
+  val patchRolesEndpoint =
+    Method.PATCH / "users" / "roles" -> handler { (request: Request) =>
       for
         service <- ZIO.service[UserService]
-        body <- request.body.asJson[UserRoleRequest]
-        _ <- service.removeRole(body)
+        body <- request.body.asJson[UpdateUserRolesRequest]
+        _ <- service.updateRoles(body)
       yield Response.status(Status.Accepted)
     }

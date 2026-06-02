@@ -8,7 +8,6 @@ import versola.central.users.{Login, OutboxEvent, OutboxRecord, UserConflict, Us
 import versola.util.Patch.toUpdate
 import versola.util.postgres.BasicCodecs
 import versola.util.{Email, Patch, Phone, SecureRandom}
-import zio.json.ast.Json
 import zio.{Clock, Duration, IO, Task, ZLayer}
 
 import java.sql.SQLException
@@ -22,7 +21,7 @@ class PostgresUserRepository(xa: TransactorZIO, secureRandom: SecureRandom) exte
   given DbCodec[Phone] = DbCodec.StringCodec.biMap(Phone(_), identity[String])
   given DbCodec[Login] = DbCodec.StringCodec.biMap(Login(_), identity[String])
   given DbCodec[UserIndexRecord] = DbCodec.derived
-  given DbCodec[Json.Obj] = jsonBCodec[Json.Obj]
+  given DbCodec[TenantId] = DbCodec.StringCodec.biMap(TenantId(_), identity[String])
   given DbCodec[OutboxEvent] = dbCodecFromJsonCodec[OutboxEvent]
   given DbCodec[OutboxRecord] = DbCodec.derived
   given DbCodec[Instant] = DbCodec.InstantCodec
@@ -72,9 +71,9 @@ class PostgresUserRepository(xa: TransactorZIO, secureRandom: SecureRandom) exte
           WHERE id = $id""".update.run()
     ()
 
-  private def enqueueEventSql(id: UUID, event: OutboxEvent, now: Instant)(using DbCon): Unit =
-    sql"""INSERT INTO user_outbox (id, event_type, payload, attempts, next_attempt_at)
-          VALUES ($id, ${event.eventType}, $event::jsonb, 0, $now)""".update.run()
+  private def enqueueEventSql(userId: UserId, id: UUID, event: OutboxEvent, now: Instant)(using DbCon): Unit =
+    sql"""INSERT INTO user_outbox (id, user_id, event_type, payload, attempts, next_attempt_at)
+          VALUES ($id, $userId, ${event.eventType}, $event::jsonb, 0, $now)""".update.run()
     ()
 
   override def create(
@@ -82,14 +81,13 @@ class PostgresUserRepository(xa: TransactorZIO, secureRandom: SecureRandom) exte
       email: Option[Email],
       phone: Option[Phone],
       login: Option[Login],
-      claims: Json.Obj,
   ): IO[UserConflict | Throwable, Unit] =
     (for
-      eventId <- secureRandom.nextUUIDv7
+      version <- secureRandom.nextUUIDv7
       now <- Clock.instant
       _ <- xa.transact:
              upsertSql(id, email, phone, login)
-             enqueueEventSql(eventId, OutboxEvent.CreateUser(id, email, phone, login, claims), now)
+             enqueueEventSql(id, version, OutboxEvent.UpsertUser(id, version, email, phone, login), now)
     yield ()).mapError:
       case e if PostgresUserRepository.isUniqueViolation(e) => UserConflict
       case e                                                => e
@@ -99,43 +97,32 @@ class PostgresUserRepository(xa: TransactorZIO, secureRandom: SecureRandom) exte
       email: Option[Patch[Email]],
       phone: Option[Patch[Phone]],
       login: Option[Patch[Login]],
-      claims: Option[Json.Obj],
   ): Task[Unit] =
     for
-      eventId <- secureRandom.nextUUIDv7
+      version <- secureRandom.nextUUIDv7
       now <- Clock.instant
       _ <- xa.transact:
+        // Lock the user row to prevent lost updates and serialize events
+        sql"SELECT id FROM user_index WHERE id = $id FOR UPDATE".query[UserId].run()
+
+        // Apply patch to local index
         patchSql(id, email, phone, login)
-        enqueueEventSql(eventId, OutboxEvent.PatchUser(id, email, phone, login, claims), now)
-    yield ()
 
-  override def insertRole(
-      userId: UserId,
-      tenantId: TenantId,
-      roleId: RoleId,
-  ): Task[Unit] =
-    for
-      eventId <- secureRandom.nextUUIDv7
-      now <- Clock.instant
-      _ <- xa.connect:
-        enqueueEventSql(eventId, OutboxEvent.AssignRole(userId, tenantId, roleId), now)
-    yield ()
+        // Fetch full state for the outbox event
+        val user = sql"SELECT id, email, phone, login FROM user_index WHERE id = $id"
+          .query[UserIndexRecord].run().head
 
-  override def deleteRole(
-      userId: UserId,
-      tenantId: TenantId,
-      roleId: RoleId,
-  ): Task[Unit] =
-    for
-      eventId <- secureRandom.nextUUIDv7
-      now <- Clock.instant
-      _ <- xa.connect:
-        enqueueEventSql(eventId, OutboxEvent.RemoveRole(userId, tenantId, roleId), now)
+        enqueueEventSql(id, version, OutboxEvent.UpsertUser(
+          userId = id,
+          version = version,
+          email = user.email,
+          phone = user.phone,
+          login = user.login,
+        ), now)
     yield ()
 
   /** Atomically claims a batch by pushing `next_attempt_at` forward by `leaseSeconds`.
-    * Other instances skip claimed rows thanks to `FOR UPDATE SKIP LOCKED`.
-    * If the processor crashes mid-dispatch the lease expires and the row becomes eligible again.
+    * Processes events in per-user FIFO order.
     */
   override def claimDueEvents(limit: Int, lease: Duration): Task[Vector[OutboxRecord]] =
     val leaseSeconds = lease.toSeconds
@@ -143,13 +130,18 @@ class PostgresUserRepository(xa: TransactorZIO, secureRandom: SecureRandom) exte
       sql"""UPDATE user_outbox SET
               next_attempt_at = NOW() + ($leaseSeconds || ' seconds')::interval
             WHERE id IN (
-              SELECT id FROM user_outbox
+              SELECT id FROM user_outbox u1
               WHERE next_attempt_at <= NOW()
+              AND NOT EXISTS (
+                SELECT 1 FROM user_outbox u2
+                WHERE u2.user_id = u1.user_id
+                AND u2.id < u1.id
+              )
               ORDER BY id
               LIMIT $limit
               FOR UPDATE SKIP LOCKED
             )
-            RETURNING id, payload, attempts"""
+            RETURNING id, user_id, payload, attempts"""
         .returning[OutboxRecord]
         .run()
 

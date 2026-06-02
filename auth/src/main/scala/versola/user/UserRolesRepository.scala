@@ -10,6 +10,9 @@ trait UserRolesRepository:
 
   def findRolesByUserAndTenant(userId: UserId, tenantId: TenantId): Task[List[RoleId]]
 
-  def assignRole(userId: UserId, tenantId: TenantId, roleId: RoleId): Task[Unit]
-
-  def removeRole(userId: UserId, tenantId: TenantId, roleId: RoleId): Task[Unit]
+  def updateRoles(
+      userId: UserId,
+      tenantId: TenantId,
+      add: Set[RoleId],
+      remove: Set[RoleId],
+  ): Task[Unit]

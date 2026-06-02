@@ -128,6 +128,12 @@ lazy val sbtForkSettings = Seq(
 lazy val commonSettings =
   Seq(
     scalaVersion := "3.8.1",
+    // Pin Jackson to a known-good version; transitive deps may request 2.22.0 which doesn't exist
+    dependencyOverrides ++= Seq(
+      "com.fasterxml.jackson.core" % "jackson-core"        % "2.18.4",
+      "com.fasterxml.jackson.core" % "jackson-databind"    % "2.18.4",
+      "com.fasterxml.jackson.core" % "jackson-annotations" % "2.18.4",
+    ),
     scalacOptions ++= Seq(
       "-deprecation",
       "-source:future",

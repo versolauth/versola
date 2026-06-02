@@ -1,135 +1,4 @@
-import type { OAuthScope, User, UserRoleAssignment, UserSearchField } from '../types';
-import { mockScopes } from './mock-data';
-
-const OMITTED_SCOPES = new Set(['offline_access']);
-const OMITTED_CLAIMS = new Set(['sub']);
-
-// User search and creation are wired to the central backend.
-// Role assignments and full claim/role lookup remain mock-backed until the
-// corresponding backend endpoints are exposed through the admin gateway.
-
-const mockUsers: User[] = [
-  {
-    id: '11111111-0000-0000-0000-000000000001',
-    email: 'alice@example.com',
-    phone: '+15551111111',
-    login: 'alice',
-    claims: { given_name: 'Alice', family_name: 'Anderson', locale: 'en-US', zoneinfo: 'America/New_York', email_verified: true },
-  },
-  {
-    id: '11111111-0000-0000-0000-000000000002',
-    email: 'bob@example.com',
-    login: 'bob',
-    claims: { given_name: 'Bob', family_name: 'Brown', locale: 'en-GB', email_verified: false },
-  },
-  {
-    id: '11111111-0000-0000-0000-000000000003',
-    email: 'carol@example.com',
-    phone: '+15552222222',
-    claims: { given_name: 'Carol', locale: 'fr-FR', phone_number_verified: true },
-  },
-  {
-    id: '11111111-0000-0000-0000-000000000004',
-    phone: '+15553333333',
-    login: 'dave',
-    claims: {},
-  },
-  {
-    id: '11111111-0000-0000-0000-000000000005',
-    email: 'eve@example.com',
-    phone: '+15554444444',
-    login: 'eve',
-    claims: { given_name: 'Eve', family_name: 'Evans', locale: 'de-DE', zoneinfo: 'Europe/Berlin', email_verified: true, phone_number_verified: true },
-  },
-  {
-    id: '11111111-0000-0000-0000-000000000006',
-    email: 'frank@example.com',
-    login: 'frank',
-    claims: { given_name: 'Frank', family_name: 'Foster', locale: 'en-US', email_verified: true },
-  },
-  {
-    id: '11111111-0000-0000-0000-000000000007',
-    email: 'grace@example.com',
-    phone: '+15555555555',
-    login: 'grace',
-    claims: { given_name: 'Grace', family_name: 'Green', locale: 'es-ES', zoneinfo: 'Europe/Madrid' },
-  },
-  {
-    id: '11111111-0000-0000-0000-000000000008',
-    email: 'henry@example.com',
-    login: 'henry',
-    claims: { given_name: 'Henry', family_name: 'Hall', locale: 'en-AU', email_verified: true },
-  },
-  {
-    id: '11111111-0000-0000-0000-000000000009',
-    phone: '+15556666666',
-    login: 'iris',
-    claims: { given_name: 'Iris', phone_number_verified: false },
-  },
-  {
-    id: '11111111-0000-0000-0000-000000000010',
-    email: 'jack@example.com',
-    phone: '+15557777777',
-    claims: { given_name: 'Jack', family_name: 'Johnson', locale: 'en-US', email_verified: false, phone_number_verified: true },
-  },
-  {
-    id: '11111111-0000-0000-0000-000000000011',
-    email: 'kate@example.com',
-    login: 'kate',
-    claims: { given_name: 'Kate', family_name: 'King', locale: 'en-CA', zoneinfo: 'America/Toronto', email_verified: true },
-  },
-  {
-    id: '11111111-0000-0000-0000-000000000012',
-    email: 'leo@example.com',
-    phone: '+15558888888',
-    login: 'leo',
-    claims: { given_name: 'Leo', family_name: 'Lane', locale: 'it-IT', zoneinfo: 'Europe/Rome', email_verified: true },
-  },
-];
-
-const mockRoleAssignments: Record<string, UserRoleAssignment[]> = {
-  '11111111-0000-0000-0000-000000000001': [
-    { tenantId: 'acme-corp', roleId: 'admin' },
-    { tenantId: 'globex', roleId: 'user' },
-  ],
-  '11111111-0000-0000-0000-000000000002': [
-    { tenantId: 'acme-corp', roleId: 'support' },
-  ],
-  '11111111-0000-0000-0000-000000000003': [
-    { tenantId: 'globex', roleId: 'readonly' },
-  ],
-  '11111111-0000-0000-0000-000000000004': [],
-  '11111111-0000-0000-0000-000000000005': [
-    { tenantId: 'acme-corp', roleId: 'user' },
-    { tenantId: 'globex', roleId: 'admin' },
-  ],
-  '11111111-0000-0000-0000-000000000006': [
-    { tenantId: 'acme-corp', roleId: 'readonly' },
-  ],
-  '11111111-0000-0000-0000-000000000007': [],
-  '11111111-0000-0000-0000-000000000008': [
-    { tenantId: 'globex', roleId: 'support' },
-  ],
-  '11111111-0000-0000-0000-000000000009': [],
-  '11111111-0000-0000-0000-000000000010': [
-    { tenantId: 'acme-corp', roleId: 'user' },
-  ],
-  '11111111-0000-0000-0000-000000000011': [],
-  '11111111-0000-0000-0000-000000000012': [
-    { tenantId: 'acme-corp', roleId: 'admin' },
-    { tenantId: 'globex', roleId: 'user' },
-  ],
-};
-
-const ARTIFICIAL_DELAY_MS = 120;
-
-function clone<T>(value: T): T {
-  return JSON.parse(JSON.stringify(value)) as T;
-}
-
-function delay<T>(value: T): Promise<T> {
-  return new Promise(resolve => setTimeout(() => resolve(value), ARTIFICIAL_DELAY_MS));
-}
+import type { User, UserRoleAssignment, UserSearchField } from '../types';
 
 type UserSearchRecordDto = {
   id: string;
@@ -178,7 +47,6 @@ export async function createUser(user: Omit<User, 'id'>): Promise<User> {
       email: user.email,
       phone: user.phone,
       login: user.login,
-      claims: user.claims ?? {},
     }),
   });
 
@@ -206,9 +74,6 @@ export async function updateUser(previous: User, next: User): Promise<void> {
   patchField('email');
   patchField('phone');
   patchField('login');
-  if (!claimsEqual(previous.claims ?? {}, next.claims ?? {})) {
-    body.claims = next.claims ?? {};
-  }
 
   const response = await fetch('/users', {
     method: 'PATCH',
@@ -222,12 +87,20 @@ export async function updateUser(previous: User, next: User): Promise<void> {
   }
 }
 
-function claimsEqual(a: Record<string, unknown>, b: Record<string, unknown>): boolean {
-  const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
-  for (const key of keys) {
-    if (JSON.stringify(a[key]) !== JSON.stringify(b[key])) return false;
+export async function patchUserClaims(userId: string, claimsPatch: Record<string, unknown>): Promise<void> {
+  const response = await fetch('/users/claims', {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify({
+      id: userId,
+      claims: claimsPatch,
+    }),
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(text.trim() || `Update claims failed (${response.status})`);
   }
-  return true;
 }
 
 export async function fetchUserRoles(userId: string, tenantId: string): Promise<UserRoleAssignment[]> {
@@ -246,30 +119,22 @@ export async function fetchUserRoles(userId: string, tenantId: string): Promise<
   return (data.roles ?? []).map(roleId => ({ tenantId, roleId }));
 }
 
-export async function fetchAvailableScopes(): Promise<OAuthScope[]> {
-  const filtered = mockScopes
-    .filter(scope => !OMITTED_SCOPES.has(scope.id))
-    .map(scope => ({
-      ...scope,
-      claims: scope.claims.filter(claim => !OMITTED_CLAIMS.has(claim.id)),
-    }))
-    .filter(scope => scope.claims.length > 0);
-  return delay(clone(filtered));
-}
+export async function updateUserRoles(
+  userId: string,
+  tenantId: string,
+  add: string[],
+  remove: string[],
+): Promise<void> {
+  if (add.length === 0 && remove.length === 0) return;
 
-export async function assignUserRole(userId: string, tenantId: string, roleId: string): Promise<void> {
-  const list = mockRoleAssignments[userId] ?? [];
-  if (list.some(assignment => assignment.tenantId === tenantId && assignment.roleId === roleId)) {
-    return;
+  const response = await fetch('/users/roles', {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify({ userId, tenantId, add, remove }),
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(text.trim() || `Update roles failed (${response.status})`);
   }
-  mockRoleAssignments[userId] = [...list, { tenantId, roleId }];
-  await delay(undefined);
-}
-
-export async function removeUserRole(userId: string, tenantId: string, roleId: string): Promise<void> {
-  const list = mockRoleAssignments[userId] ?? [];
-  mockRoleAssignments[userId] = list.filter(
-    assignment => !(assignment.tenantId === tenantId && assignment.roleId === roleId),
-  );
-  await delay(undefined);
 }

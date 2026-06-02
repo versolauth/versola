@@ -3,8 +3,7 @@ package versola.central.users
 import versola.central.{CentralConfig, TestCentralConfig}
 import versola.central.configuration.roles.RoleId
 import versola.central.configuration.tenants.TenantId
-import versola.util.{JWT, Patch}
-import versola.util.Email
+import versola.util.JWT
 import zio.*
 import zio.http.*
 import zio.json.*
@@ -12,7 +11,6 @@ import zio.json.ast.Json
 import zio.test.*
 
 import java.util.UUID
-import javax.crypto.spec.SecretKeySpec
 
 object AuthClientSpec extends ZIOSpecDefault:
 
@@ -20,6 +18,7 @@ object AuthClientSpec extends ZIOSpecDefault:
 
   private val secretKey = TestCentralConfig.config.secretKey
   private val userId    = UserId(UUID.fromString("00000000-0000-0000-0000-000000000001"))
+  private val version   = UUID.fromString("00000000-0000-0000-0000-000000000002")
   private val tenantId  = TenantId("t1")
   private val roleId    = RoleId("r1")
 
@@ -73,12 +72,10 @@ object AuthClientSpec extends ZIOSpecDefault:
     }.provide(TestClient.layer, ZLayer.succeed(TestCentralConfig.config), tokenServiceLayer, authClientLayer)
 
   def spec = suite("AuthClient")(
-    mkTest("createUser sends Authorization: Bearer header with valid JWT",
-      _.createUser(userId, None, None, None, Json.Obj())),
-    mkTest("patchUser sends Authorization: Bearer header with valid JWT",
-      _.patchUser(userId, None, None, None, None)),
-    mkTest("assignRole sends Authorization: Bearer header with valid JWT",
-      _.assignRole(userId, tenantId, roleId)),
-    mkTest("removeRole sends Authorization: Bearer header with valid JWT",
-      _.removeRole(userId, tenantId, roleId)),
+    mkTest("upsertUser sends Authorization: Bearer header with valid JWT",
+      _.upsertUser(userId, version, None, None, None)),
+    mkTest("updateUserRoles sends Authorization: Bearer header with valid JWT",
+      _.updateUserRoles(userId, tenantId, Set(roleId), Set.empty)),
+    mkTest("patchUserClaims sends Authorization: Bearer header with valid JWT",
+      _.patchUserClaims(userId, Json.Obj())),
   ) @@ TestAspect.silentLogging

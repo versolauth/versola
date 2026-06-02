@@ -103,6 +103,15 @@ export type RequestLog = {
   body: unknown;
 };
 
+type UserDto = {
+  id: string;
+  email?: string;
+  phone?: string;
+  login?: string;
+  claims: Record<string, unknown>;
+  rolesByTenant?: Record<string, string[]>;
+};
+
 export type MockConfigState = {
   tenants: TenantDto[];
   clients: Record<string, ClientDto[]>;
@@ -112,6 +121,7 @@ export type MockConfigState = {
   roles: Record<string, RoleDto[]>;
   edges: EdgeDto[];
   authorizationPresets: Record<string, AuthorizationPresetDto[]>; // keyed by clientId
+  users: UserDto[];
 };
 
 export type MockConfigHarness = {
@@ -146,6 +156,7 @@ const defaultState: MockConfigState = {
   },
   edges: [],
   authorizationPresets: {},
+  users: [],
 };
 
 function clone<T>(value: T): T {
@@ -162,6 +173,7 @@ function mergeState(overrides: Partial<MockConfigState> = {}): MockConfigState {
     resources: clone({ ...defaultState.resources, ...overrides.resources }),
     edges: clone(overrides.edges ?? defaultState.edges),
     roles: clone({ ...defaultState.roles, ...overrides.roles }),
+    users: clone(overrides.users ?? defaultState.users),
   };
 }
 
@@ -714,6 +726,140 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
       edge.hasOldKey = false;
       await route.fulfill({ status: 204, body: '' });
       return;
+    }
+
+    await route.fulfill(json({ message: `No mock handler for ${method} ${pathname}` }, 404));
+  });
+
+  await page.route('**/users**', async route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const pathname = url.pathname;
+    const method = request.method();
+    const body = readBody(request);
+
+    if (!pathname.startsWith('/users')) {
+      await route.fallback();
+      return;
+    }
+
+    requests.push({
+      method,
+      pathname,
+      searchParams: Object.fromEntries(url.searchParams.entries()),
+      body,
+    });
+
+    const userToRecord = (user: UserDto) => ({
+      id: user.id,
+      ...(user.email !== undefined ? { email: user.email } : {}),
+      ...(user.phone !== undefined ? { phone: user.phone } : {}),
+      ...(user.login !== undefined ? { login: user.login } : {}),
+      claims: user.claims ?? {},
+    });
+
+    if (pathname === '/users') {
+      if (method === 'GET') {
+        const id = url.searchParams.get('id');
+        const email = url.searchParams.get('email');
+        const phone = url.searchParams.get('phone');
+        const login = url.searchParams.get('login');
+        const matches = state.users.filter(user => {
+          if (id) return user.id === id;
+          if (email) return user.email === email;
+          if (phone) return user.phone === phone;
+          if (login) return user.login === login;
+          return false;
+        });
+        if (matches.length === 0) {
+          await route.fulfill({ status: 404, body: '' });
+          return;
+        }
+        await route.fulfill(json({ users: matches.map(userToRecord) }));
+        return;
+      }
+
+      if (method === 'POST') {
+        const payload = body as { email?: string; phone?: string; login?: string };
+        const conflict = state.users.some(user =>
+          (payload.email && user.email === payload.email) ||
+          (payload.phone && user.phone === payload.phone) ||
+          (payload.login && user.login === payload.login),
+        );
+        if (conflict) {
+          await route.fulfill(json({ message: 'User already exists' }, 409));
+          return;
+        }
+        const generatedId = `00000000-0000-0000-0000-${String(state.users.length + 1).padStart(12, '0')}`;
+        state.users.push({
+          id: generatedId,
+          email: payload.email,
+          phone: payload.phone,
+          login: payload.login,
+          claims: {},
+          rolesByTenant: {},
+        });
+        await route.fulfill(json({ id: generatedId }, 201));
+        return;
+      }
+
+      if (method === 'PATCH') {
+        const payload = body as { id: string; email?: string | null; phone?: string | null; login?: string | null };
+        const user = state.users.find(candidate => candidate.id === payload.id);
+        if (!user) {
+          await route.fulfill(json({ message: `User ${payload.id} not found` }, 404));
+          return;
+        }
+        if (payload.email !== undefined) user.email = payload.email ?? undefined;
+        if (payload.phone !== undefined) user.phone = payload.phone ?? undefined;
+        if (payload.login !== undefined) user.login = payload.login ?? undefined;
+        await route.fulfill({ status: 202, body: '' });
+        return;
+      }
+    }
+
+    if (pathname === '/users/claims' && method === 'PATCH') {
+      const payload = body as { id: string; claims: Record<string, unknown> };
+      const user = state.users.find(candidate => candidate.id === payload.id);
+      if (!user) {
+        await route.fulfill(json({ message: `User ${payload.id} not found` }, 404));
+        return;
+      }
+      const next = { ...user.claims };
+      for (const [key, value] of Object.entries(payload.claims)) {
+        if (value === null) delete next[key];
+        else next[key] = value;
+      }
+      user.claims = next;
+      await route.fulfill({ status: 202, body: '' });
+      return;
+    }
+
+    if (pathname === '/users/roles') {
+      if (method === 'GET') {
+        const id = url.searchParams.get('id') ?? '';
+        const tenantId = url.searchParams.get('tenantId') ?? '';
+        const user = state.users.find(candidate => candidate.id === id);
+        const roles = user?.rolesByTenant?.[tenantId] ?? [];
+        await route.fulfill(json({ roles }));
+        return;
+      }
+
+      if (method === 'PATCH') {
+        const payload = body as { userId: string; tenantId: string; add: string[]; remove: string[] };
+        const user = state.users.find(candidate => candidate.id === payload.userId);
+        if (!user) {
+          await route.fulfill(json({ message: `User ${payload.userId} not found` }, 404));
+          return;
+        }
+        user.rolesByTenant = user.rolesByTenant ?? {};
+        const current = new Set(user.rolesByTenant[payload.tenantId] ?? []);
+        for (const roleId of payload.remove) current.delete(roleId);
+        for (const roleId of payload.add) current.add(roleId);
+        user.rolesByTenant[payload.tenantId] = [...current];
+        await route.fulfill({ status: 202, body: '' });
+        return;
+      }
     }
 
     await route.fulfill(json({ message: `No mock handler for ${method} ${pathname}` }, 404));

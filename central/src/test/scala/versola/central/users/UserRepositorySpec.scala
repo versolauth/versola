@@ -2,7 +2,6 @@ package versola.central.users
 
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.util.{DatabaseSpecBase, Email, Phone, SecureRandom}
-import zio.json.ast.Json
 import zio.test.*
 import zio.{ZIO, ZLayer}
 
@@ -16,13 +15,12 @@ trait UserRepositorySpec extends DatabaseSpecBase[UserRepositorySpec.Env]:
   private val email   = Email("user@example.com")
   private val phone   = Phone("+15551234567")
   private val login   = Login("nickname")
-  private val claims  = Json.Obj("email_verified" -> Json.Bool(true))
 
   override def testCases(env: UserRepositorySpec.Env) =
     List(
       test("create inserts user and is retrievable by email/phone/login") {
         for
-          _ <- env.repository.create(userId1, Some(email), Some(phone), Some(login), claims)
+          _ <- env.repository.create(userId1, Some(email), Some(phone), Some(login))
           byEmail <- env.repository.findByEmail(email)
           byPhone <- env.repository.findByPhone(phone)
           byLogin <- env.repository.findByLogin(login)
@@ -34,26 +32,26 @@ trait UserRepositorySpec extends DatabaseSpecBase[UserRepositorySpec.Env]:
       },
       test("create fails with UserConflict when email already exists for another user") {
         for
-          _ <- env.repository.create(userId1, Some(email), None, None, claims)
-          result <- env.repository.create(userId2, Some(email), None, None, claims).either
+          _ <- env.repository.create(userId1, Some(email), None, None)
+          result <- env.repository.create(userId2, Some(email), None, None).either
         yield assertTrue(result == Left(UserConflict))
       },
       test("create fails with UserConflict when phone already exists for another user") {
         for
-          _ <- env.repository.create(userId1, None, Some(phone), None, claims)
-          result <- env.repository.create(userId2, None, Some(phone), None, claims).either
+          _ <- env.repository.create(userId1, None, Some(phone), None)
+          result <- env.repository.create(userId2, None, Some(phone), None).either
         yield assertTrue(result == Left(UserConflict))
       },
       test("create fails with UserConflict when login already exists for another user") {
         for
-          _ <- env.repository.create(userId1, None, None, Some(login), claims)
-          result <- env.repository.create(userId2, None, None, Some(login), claims).either
+          _ <- env.repository.create(userId1, None, None, Some(login))
+          result <- env.repository.create(userId2, None, None, Some(login)).either
         yield assertTrue(result == Left(UserConflict))
       },
       test("create with the same id is treated as an upsert and does not conflict") {
         for
-          _ <- env.repository.create(userId1, Some(email), None, None, claims)
-          _ <- env.repository.create(userId1, Some(email), Some(phone), None, claims)
+          _ <- env.repository.create(userId1, Some(email), None, None)
+          _ <- env.repository.create(userId1, Some(email), Some(phone), None)
           found <- env.repository.findById(userId1)
         yield assertTrue(found.contains(UserIndexRecord(userId1, Some(email), Some(phone), None)))
       },

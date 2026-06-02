@@ -26,7 +26,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
   private val writeScope = ScopeToken("write")
   private val readPermission = Permission("users:read")
   private val writePermission = Permission("users:write")
-  private val pepper = Secret(Array.fill(16)(9.toByte))
+  private val pepper = TestCentralConfig.config.clientSecretsPepper
 
   private val cachedClient = OAuthClientRecord(
     id = clientId,

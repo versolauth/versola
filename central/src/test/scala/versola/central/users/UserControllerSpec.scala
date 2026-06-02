@@ -7,7 +7,6 @@ import versola.util.http.Observability
 import zio.*
 import zio.http.*
 import zio.json.*
-import zio.json.ast.Json
 import zio.telemetry.opentelemetry.OpenTelemetry
 import zio.telemetry.opentelemetry.tracing.Tracing
 import zio.test.*
@@ -22,15 +21,10 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
     email = Some(email),
     phone = None,
     login = None,
-    claims = Json.Obj(
-      "email_verified"        -> Json.Bool(true),
-      "phone_number_verified" -> Json.Bool(false),
-      "given_name"            -> Json.Str("Alice"),
-    ),
   )
 
   private val createRequestBody =
-    """{"email":"user@example.com","claims":{"email_verified":true,"phone_number_verified":false,"given_name":"Alice"}}"""
+    """{"email":"user@example.com"}"""
 
   private val tracingLayer: ULayer[Tracing] =
     ZLayer.make[Tracing](
@@ -92,4 +86,29 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
         for body <- response.body.asString
         yield assertTrue(body.isEmpty),
     ),
+    controllerTestCase(
+      description = "patch claims returns 202 Accepted",
+      request = Request(
+        method = Method.PATCH,
+        url = URL.empty / "users" / "claims",
+        body = Body.fromString(s"""{"id":"$userId","claims":{"test":true}}"""),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.Accepted,
+      setup = service => service.patchClaims.succeedsWith(()),
+      verify = (response, service) =>
+        ZIO.succeed(assertTrue(service.patchClaims.calls.nonEmpty)),
+    ),
+    controllerTestCase(
+      description = "patch roles returns 202 Accepted",
+      request = Request(
+        method = Method.PATCH,
+        url = URL.empty / "users" / "roles",
+        body = Body.fromString(s"""{"userId":"$userId","tenantId":"t1","add":["r1"],"remove":[]}"""),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.Accepted,
+      setup = service => service.updateRoles.succeedsWith(()),
+      verify = (response, service) =>
+        ZIO.succeed(assertTrue(service.updateRoles.calls.nonEmpty)),
+    ),
+
   )

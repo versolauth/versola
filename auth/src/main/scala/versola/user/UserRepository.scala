@@ -5,6 +5,8 @@ import versola.util.{Email, Patch, Phone}
 import zio.Task
 import zio.json.ast.Json
 
+import java.util.UUID
+
 trait UserRepository:
   def findOrCreate(userId: UserId, credential: Either[Email, Phone]): Task[(UserRecord, WasCreated)]
 
@@ -14,14 +16,14 @@ trait UserRepository:
 
   def findByCredential(credential: Either[Email, Phone]): Task[Option[UserRecord]]
 
-  def upsert(id: UserId, email: Option[Email], phone: Option[Phone], login: Option[Login], claims: Json.Obj): Task[Unit]
-
-  def patch(
+  def upsert(
       id: UserId,
-      email: Option[Patch[Email]],
-      phone: Option[Patch[Phone]],
-      login: Option[Patch[Login]],
-      claims: Option[Json.Obj],
+      version: UUID,
+      email: Option[Email],
+      phone: Option[Phone],
+      login: Option[Login],
   ): Task[Unit]
+
+  def patchClaims(id: UserId, patch: Json.Obj): Task[Unit]
 
 

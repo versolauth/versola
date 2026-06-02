@@ -9,29 +9,27 @@ import zio.json.ast.Json
 import zio.json.{DecoderOps, EncoderOps, JsonCodec}
 import zio.{Scope, Task, ZIO, ZLayer}
 
-/** HTTP client for the auth service. Methods mirror the auth-side user/role endpoints. */
+import java.util.UUID
+
 trait AuthClient:
-  def createUser(
+  def upsertUser(
       id: UserId,
+      version: UUID,
       email: Option[Email],
       phone: Option[Phone],
       login: Option[Login],
-      claims: Json.Obj,
   ): Task[Unit]
 
-  def patchUser(
-      id: UserId,
-      email: Option[Patch[Email]],
-      phone: Option[Patch[Phone]],
-      login: Option[Patch[Login]],
-      claims: Option[Json.Obj],
+  def updateUserRoles(
+      userId: UserId,
+      tenantId: TenantId,
+      add: Set[RoleId],
+      remove: Set[RoleId],
   ): Task[Unit]
-
-  def assignRole(userId: UserId, tenantId: TenantId, roleId: RoleId): Task[Unit]
-
-  def removeRole(userId: UserId, tenantId: TenantId, roleId: RoleId): Task[Unit]
 
   def getUserClaims(id: UserId): Task[Option[Json.Obj]]
+
+  def patchUserClaims(id: UserId, patch: Json.Obj): Task[Unit]
 
   def getUserRoles(id: UserId, tenantId: TenantId): Task[List[RoleId]]
 
@@ -39,25 +37,24 @@ object AuthClient:
   val live: ZLayer[Scope & Client & CentralConfig, Throwable, AuthClient] =
     AuthTokenService.live >>> ZLayer.fromFunction(Impl(_, _, _))
 
-  private case class CreateUserPayload(
+  private case class UpsertUserPayload(
       id: UserId,
+      version: UUID,
       email: Option[Email],
       phone: Option[Phone],
       login: Option[Login],
-      claims: Json.Obj,
   ) derives JsonCodec
 
-  private case class PatchUserPayload(
-      id: UserId,
-      email: Option[Patch[Email]],
-      phone: Option[Patch[Phone]],
-      login: Option[Patch[Login]],
-      claims: Option[Json.Obj],
+  private case class UpdateUserRolesPayload(
+      userId: UserId,
+      tenantId: TenantId,
+      add: Set[RoleId],
+      remove: Set[RoleId],
   ) derives JsonCodec
-
-  private case class RolePayload(userId: UserId, tenantId: TenantId, roleId: RoleId) derives JsonCodec
 
   private case class UserClaimsResponse(claims: Json.Obj) derives JsonCodec
+
+  private case class PatchUserClaimsPayload(id: UserId, claims: Json.Obj) derives JsonCodec
 
   private case class UserRolesResponse(roles: List[RoleId]) derives JsonCodec
 
@@ -70,29 +67,22 @@ object AuthClient:
     private val rolesUrl: URL = usersUrl / "roles"
     private val claimsUrl: URL = usersUrl / "claims"
 
-    override def createUser(
+    override def upsertUser(
         id: UserId,
+        version: UUID,
         email: Option[Email],
         phone: Option[Phone],
         login: Option[Login],
-        claims: Json.Obj,
     ): Task[Unit] =
-      send(Request.post(usersUrl, jsonBody(CreateUserPayload(id, email, phone, login, claims).toJson)))
+      send(mutating(Method.PUT, usersUrl, UpsertUserPayload(id, version, email, phone, login).toJson))
 
-    override def patchUser(
-        id: UserId,
-        email: Option[Patch[Email]],
-        phone: Option[Patch[Phone]],
-        login: Option[Patch[Login]],
-        claims: Option[Json.Obj],
+    override def updateUserRoles(
+        userId: UserId,
+        tenantId: TenantId,
+        add: Set[RoleId],
+        remove: Set[RoleId],
     ): Task[Unit] =
-      send(mutating(Method.PATCH, usersUrl, PatchUserPayload(id, email, phone, login, claims).toJson))
-
-    override def assignRole(userId: UserId, tenantId: TenantId, roleId: RoleId): Task[Unit] =
-      send(Request.post(rolesUrl, jsonBody(RolePayload(userId, tenantId, roleId).toJson)))
-
-    override def removeRole(userId: UserId, tenantId: TenantId, roleId: RoleId): Task[Unit] =
-      send(mutating(Method.DELETE, rolesUrl, RolePayload(userId, tenantId, roleId).toJson))
+      send(mutating(Method.PATCH, rolesUrl, UpdateUserRolesPayload(userId, tenantId, add, remove).toJson))
 
     override def getUserClaims(id: UserId): Task[Option[Json.Obj]] =
       for
@@ -112,6 +102,9 @@ object AuthClient:
                 response.body.asString.flatMap: body =>
                   ZIO.fail(new RuntimeException(s"Auth call failed: ${s.code} $body")))
       yield result
+
+    override def patchUserClaims(id: UserId, patch: Json.Obj): Task[Unit] =
+      send(mutating(Method.PATCH, claimsUrl, PatchUserClaimsPayload(id, patch).toJson))
 
     override def getUserRoles(id: UserId, tenantId: TenantId): Task[List[RoleId]] =
       for
