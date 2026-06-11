@@ -6,16 +6,16 @@ import versola.auth.model.PasswordRecord
 import versola.oauth.challenge.password.model.PasswordReuseError
 import versola.user.model.UserId
 import versola.util.{Salt, Secret}
+import versola.util.postgres.BasicCodecs
 import zio.prelude.EqualOps
 import zio.{Clock, IO, Task, ZLayer}
 
 import java.util.UUID
 
-class PostgresPasswordRepository(xa: TransactorZIO) extends PasswordRepository:
+class PostgresPasswordRepository(xa: TransactorZIO) extends PasswordRepository, BasicCodecs:
 
   given DbCodec[UserId] = DbCodec.UUIDCodec.biMap(UserId(_), identity[UUID])
   given DbCodec[Salt] = DbCodec.ByteArrayCodec.biMap(Salt(_), identity[Array[Byte]])
-  given DbCodec[Secret] = DbCodec.ByteArrayCodec.biMap(Secret(_), identity[Array[Byte]])
   given DbCodec[PasswordRecord] = DbCodec.derived[PasswordRecord]
 
   override def list(userId: UserId): Task[Vector[PasswordRecord]] =

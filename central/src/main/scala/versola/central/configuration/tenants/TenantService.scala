@@ -24,7 +24,7 @@ trait TenantService:
 
 object TenantService:
   def live(
-      schedule: Schedule[Any, Any, Any] = Schedule.spaced(5.minute),
+      schedule: Schedule[Any, Any, Any],
   ): ZLayer[TenantRepository & Scope, Throwable, TenantService] =
     ZLayer(ReloadingCache.make[Vector[TenantRecord]](schedule))
       >>> ZLayer.fromFunction(Impl(_, _))

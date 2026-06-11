@@ -1,12 +1,13 @@
 package versola
 
 import versola.central.configuration.clients.ClientId
+import versola.central.configuration.edges.EdgeId
 import versola.central.configuration.permissions.Permission
 import versola.central.configuration.resources.ResourceEndpointId
 import versola.central.configuration.roles.RoleId
 import versola.central.configuration.scopes.{Claim, ScopeToken}
 import versola.central.configuration.tenants.TenantId
-import versola.central.configuration.{AclRuleTree, CreateClaim, PermissionRule, ResourceUri}
+import versola.central.configuration.{CreateClaim, InjectRule, InjectTarget, ResourceUri}
 import versola.util.RedirectUri
 import zio.json.ast.Json
 
@@ -25,6 +26,7 @@ object CentralMockData:
 
   type ResourceModel = (
       tenantId: TenantId,
+      alias: String,
       resource: ResourceUri,
       endpoints: Vector[ResourceEndpointModel],
   )
@@ -35,9 +37,8 @@ object CentralMockData:
       method: String,
       path: String,
       fetchUserInfo: Boolean,
-      allowRules: AclRuleTree,
-      denyRules: AclRuleTree,
-      injectHeaders: Map[String, String],
+      allow: Option[String],
+      inject: Vector[InjectRule],
   )
 
   type ClientModel = (
@@ -50,6 +51,7 @@ object CentralMockData:
       permissions: Set[Permission],
       accessTokenTtl: Int,
       hasPreviousSecret: Boolean,
+      theme: String,
   )
 
   type ScopeModel = (
@@ -65,6 +67,11 @@ object CentralMockData:
       description: Map[String, String],
       permissions: List[Permission],
       active: Boolean,
+  )
+
+  type EdgeModel = (
+      id: EdgeId,
+      publicKeyJwk: Json.Obj,
   )
 
   private val defaultTenant = TenantId("default")
@@ -95,9 +102,10 @@ object CentralMockData:
   private def permissions(ids: String*): List[Permission] =
     ids.toList.map(Permission(_))
 
-  private def resourceModel(tenantId: TenantId, resource: String, endpoints: ResourceEndpointModel*): ResourceModel =
+  private def resourceModel(tenantId: TenantId, alias: String, resource: String, endpoints: ResourceEndpointModel*): ResourceModel =
     (
       tenantId = tenantId,
+      alias = alias,
       resource = ResourceUri(resource),
       endpoints = endpoints.toVector,
     )
@@ -107,9 +115,8 @@ object CentralMockData:
       method: String,
       path: String,
       fetchUserInfo: Boolean = false,
-      allowRules: Vector[PermissionRule] = Vector.empty,
-      denyRules: Vector[PermissionRule] = Vector.empty,
-      injectHeaders: Map[String, String] = Map.empty,
+      allow: Option[String] = None,
+      inject: Vector[InjectRule] = Vector.empty,
   ): ResourceEndpointModel =
     (
       id = endpointId(key),
@@ -117,30 +124,21 @@ object CentralMockData:
       method = method,
       path = path,
       fetchUserInfo = fetchUserInfo,
-      allowRules = AclRuleTree.any(
-        Option.when(allowRules.nonEmpty)(
-          Vector(AclRuleTree.all(allowRules.map(permissionRule => AclRuleTree.rule(permissionRule))))
-        ).getOrElse(Vector.empty)
-      ),
-      denyRules = AclRuleTree.any(
-        Option.when(denyRules.nonEmpty)(
-          Vector(AclRuleTree.all(denyRules.map(permissionRule => AclRuleTree.rule(permissionRule))))
-        ).getOrElse(Vector.empty)
-      ),
-      injectHeaders = injectHeaders,
+      allow = allow,
+      inject = inject,
     )
 
-  private def rule(subject: String, operator: String, value: Json, pattern: Option[String] = None): PermissionRule =
-    PermissionRule(subject, operator, value, pattern)
+  private def headerInject(name: String, expression: String): InjectRule =
+    InjectRule(InjectTarget.header, name, expression)
 
-  private def actionRule(action: String): PermissionRule =
-    rule("authorization_details.actions", "contains", Json.Str(action))
+  private def actionAllowed(action: String): String =
+    s"'$action' in token.authorization_details.actions"
 
-  private def clearanceRule(level: Int): PermissionRule =
-    rule("jwt.clearance_level", "gte", Json.Num(level.toLong))
+  private def clearanceAtLeast(level: Int): String =
+    s"token.clearance_level >= $level"
 
-  private def stringArray(values: String*): Json =
-    Json.Arr(values.map(Json.Str(_))*)
+  private def allOf(expressions: String*): Option[String] =
+    Some(expressions.mkString(" && "))
 
   val tenants: Vector[TenantModel] = Vector(
     (id = TenantId("default"), description = "Default organization"),
@@ -180,153 +178,60 @@ object CentralMockData:
   val resources: Vector[ResourceModel] = Vector(
     resourceModel(
       defaultTenant,
+      "users-api",
       "https://api.example.com",
       endpointModel(
         key = "users-list",
         method = "GET",
         path = "/api/users",
-        allowRules = Vector(actionRule("read"), clearanceRule(1)),
-        injectHeaders = Map(
-          "X-User-ID" -> "jwt.sub",
-          "X-Clearance-Level" -> "jwt.clearance_level",
+        allow = allOf(actionAllowed("read"), clearanceAtLeast(1)),
+        inject = Vector(
+          headerInject("X-User-ID", "token.sub"),
+          headerInject("X-Clearance-Level", "string(token.clearance_level)"),
         ),
       ),
       endpointModel(
-        key = "users-detail",
+        key = "users-me",
         method = "GET",
-        path = "/api/users/:id",
-        allowRules = Vector(actionRule("read"), clearanceRule(1)),
-        injectHeaders = Map(
-          "X-User-ID" -> "jwt.sub",
-          "X-Clearance-Level" -> "jwt.clearance_level",
-        ),
-      ),
-      endpointModel(
-        key = "users-managed-detail",
-        method = "GET",
-        path = "/api/users/:id/managed",
+        path = "/api/users/me",
         fetchUserInfo = true,
-        allowRules = Vector(
-          actionRule("read"),
-          rule("userinfo.department", "in", stringArray("engineering", "hr")),
-          clearanceRule(2),
+        allow = allOf(
+          actionAllowed("read"),
+          "user.department in ['engineering', 'hr']",
+          clearanceAtLeast(2),
+          "user.status != 'suspended'",
         ),
-        denyRules = Vector(
-          rule("userinfo.status", "eq", Json.Str("suspended")),
-        ),
-        injectHeaders = Map(
-          "X-User-Department" -> "userinfo.department",
-          "X-Allowed-User-IDs" -> "authorization_details.allowed_identifiers",
+        inject = Vector(
+          headerInject("X-User-ID", "token.sub"),
+          headerInject("X-User-Department", "user.department"),
         ),
       ),
       endpointModel(
         key = "users-create",
         method = "POST",
         path = "/api/users",
-        allowRules = Vector(actionRule("update"), clearanceRule(2)),
-        injectHeaders = Map("X-User-ID" -> "jwt.sub"),
-      ),
-      endpointModel(
-      key = "users-update",
-        method = "PATCH",
-        path = "/api/users/:id",
-        allowRules = Vector(actionRule("update"), clearanceRule(2)),
-        injectHeaders = Map("X-User-ID" -> "jwt.sub"),
-      ),
-      endpointModel(
-      key = "users-delete",
-        method = "DELETE",
-        path = "/api/users/:id",
-        allowRules = Vector(actionRule("delete"), clearanceRule(3)),
+        allow = allOf(actionAllowed("update"), clearanceAtLeast(2)),
+        inject = Vector(headerInject("X-User-ID", "token.sub")),
       ),
     ),
     resourceModel(
       defaultTenant,
+      "central-config",
       "https://central.example.com",
-      endpointModel(
-      key = "roles-read",
-        method = "GET",
-        path = "/v1/configuration/roles",
-        allowRules = Vector(actionRule("read"), clearanceRule(1)),
-      ),
-      endpointModel(
-      key = "roles-create",
-        method = "POST",
-        path = "/v1/configuration/roles",
-        allowRules = Vector(actionRule("update"), clearanceRule(2)),
-      ),
-      endpointModel(
-      key = "roles-update",
-        method = "PUT",
-        path = "/v1/configuration/roles",
-        allowRules = Vector(actionRule("update"), clearanceRule(2)),
-      ),
-      endpointModel(
-      key = "roles-delete",
-        method = "DELETE",
-        path = "/v1/configuration/roles",
-        allowRules = Vector(actionRule("delete"), clearanceRule(3)),
-      ),
-      endpointModel(
-      key = "clients-read",
-        method = "GET",
-        path = "/v1/configuration/clients",
-        allowRules = Vector(actionRule("read"), clearanceRule(1)),
-      ),
-      endpointModel(
-      key = "clients-create",
-        method = "POST",
-        path = "/v1/configuration/clients",
-        allowRules = Vector(actionRule("update"), clearanceRule(2)),
-      ),
-      endpointModel(
-      key = "clients-update",
-        method = "PUT",
-        path = "/v1/configuration/clients",
-        allowRules = Vector(actionRule("update"), clearanceRule(2)),
-      ),
-      endpointModel(
-      key = "clients-delete",
-        method = "DELETE",
-        path = "/v1/configuration/clients",
-        allowRules = Vector(actionRule("delete"), clearanceRule(3)),
-      ),
-      endpointModel(
-      key = "clients-rotate-secret",
-        method = "POST",
-        path = "/v1/configuration/clients/rotate-secret",
-        allowRules = Vector(actionRule("update"), clearanceRule(2)),
-      ),
-      endpointModel(
-      key = "clients-delete-previous-secret",
-        method = "DELETE",
-        path = "/v1/configuration/clients/previous-secret",
-        allowRules = Vector(actionRule("delete"), clearanceRule(3)),
-      ),
-      endpointModel(
-      key = "scopes-read",
-        method = "GET",
-        path = "/v1/configuration/scopes",
-        allowRules = Vector(actionRule("read"), clearanceRule(1)),
-      ),
-      endpointModel(
-      key = "scopes-create",
-        method = "POST",
-        path = "/v1/configuration/scopes",
-        allowRules = Vector(actionRule("update"), clearanceRule(2)),
-      ),
-      endpointModel(
-      key = "scopes-update",
-        method = "PUT",
-        path = "/v1/configuration/scopes",
-        allowRules = Vector(actionRule("update"), clearanceRule(2)),
-      ),
-      endpointModel(
-      key = "scopes-delete",
-        method = "DELETE",
-        path = "/v1/configuration/scopes",
-        allowRules = Vector(actionRule("delete"), clearanceRule(3)),
-      ),
+      endpointModel(key = "roles-read", method = "GET", path = "/configuration/roles", allow = allOf(actionAllowed("read"), clearanceAtLeast(1))),
+      endpointModel(key = "roles-create", method = "POST", path = "/configuration/roles", allow = allOf(actionAllowed("update"), clearanceAtLeast(2))),
+      endpointModel(key = "roles-update", method = "PUT", path = "/configuration/roles", allow = allOf(actionAllowed("update"), clearanceAtLeast(2))),
+      endpointModel(key = "roles-delete", method = "DELETE", path = "/configuration/roles", allow = allOf(actionAllowed("delete"), clearanceAtLeast(3))),
+      endpointModel(key = "clients-read", method = "GET", path = "/configuration/clients", allow = allOf(actionAllowed("read"), clearanceAtLeast(1))),
+      endpointModel(key = "clients-create", method = "POST", path = "/configuration/clients", allow = allOf(actionAllowed("update"), clearanceAtLeast(2))),
+      endpointModel(key = "clients-update", method = "PUT", path = "/configuration/clients", allow = allOf(actionAllowed("update"), clearanceAtLeast(2))),
+      endpointModel(key = "clients-delete", method = "DELETE", path = "/configuration/clients", allow = allOf(actionAllowed("delete"), clearanceAtLeast(3))),
+      endpointModel(key = "clients-rotate-secret", method = "POST", path = "/configuration/clients/rotate-secret", allow = allOf(actionAllowed("update"), clearanceAtLeast(2))),
+      endpointModel(key = "clients-delete-previous-secret", method = "DELETE", path = "/configuration/clients/previous-secret", allow = allOf(actionAllowed("delete"), clearanceAtLeast(3))),
+      endpointModel(key = "scopes-read", method = "GET", path = "/configuration/scopes", allow = allOf(actionAllowed("read"), clearanceAtLeast(1))),
+      endpointModel(key = "scopes-create", method = "POST", path = "/configuration/scopes", allow = allOf(actionAllowed("update"), clearanceAtLeast(2))),
+      endpointModel(key = "scopes-update", method = "PUT", path = "/configuration/scopes", allow = allOf(actionAllowed("update"), clearanceAtLeast(2))),
+      endpointModel(key = "scopes-delete", method = "DELETE", path = "/configuration/scopes", allow = allOf(actionAllowed("delete"), clearanceAtLeast(3))),
     ),
   )
 
@@ -488,6 +393,7 @@ object CentralMockData:
       permissions = Set(Permission("clients:read"), Permission("scopes:read")),
       accessTokenTtl = 3600,
       hasPreviousSecret = false,
+      theme = "default",
     ),
     (
       tenantId = defaultTenant,
@@ -499,6 +405,7 @@ object CentralMockData:
       permissions = Set(Permission("users:read")),
       accessTokenTtl = 7200,
       hasPreviousSecret = true,
+      theme = "default",
     ),
     (
       tenantId = defaultTenant,
@@ -518,6 +425,7 @@ object CentralMockData:
       ),
       accessTokenTtl = 1800,
       hasPreviousSecret = false,
+      theme = "default",
     ),
     (
       tenantId = defaultTenant,
@@ -529,6 +437,7 @@ object CentralMockData:
       permissions = Set(Permission("users:read")),
       accessTokenTtl = 900,
       hasPreviousSecret = false,
+      theme = "default",
     ),
     (
       tenantId = defaultTenant,
@@ -540,6 +449,7 @@ object CentralMockData:
       permissions = Set(Permission("users:read")),
       accessTokenTtl = 7200,
       hasPreviousSecret = false,
+      theme = "default",
     ),
     (
       tenantId = defaultTenant,
@@ -551,6 +461,7 @@ object CentralMockData:
       permissions = Set(Permission("users:read")),
       accessTokenTtl = 7200,
       hasPreviousSecret = false,
+      theme = "default",
     ),
     (
       tenantId = defaultTenant,
@@ -562,6 +473,7 @@ object CentralMockData:
       permissions = Set(Permission("clients:read")),
       accessTokenTtl = 300,
       hasPreviousSecret = true,
+      theme = "default",
     ),
     (
       tenantId = defaultTenant,
@@ -573,6 +485,7 @@ object CentralMockData:
       permissions = Set(Permission("users:read"), Permission("clients:read")),
       accessTokenTtl = 600,
       hasPreviousSecret = false,
+      theme = "default",
     ),
     (
       tenantId = defaultTenant,
@@ -584,6 +497,7 @@ object CentralMockData:
       permissions = Set(Permission("users:read"), Permission("clients:read"), Permission("scopes:read")),
       accessTokenTtl = 3600,
       hasPreviousSecret = false,
+      theme = "default",
     ),
     (
       tenantId = defaultTenant,
@@ -595,6 +509,7 @@ object CentralMockData:
       permissions = Set(Permission("users:read"), Permission("clients:read")),
       accessTokenTtl = 1800,
       hasPreviousSecret = true,
+      theme = "default",
     ),
     (
       tenantId = defaultTenant,
@@ -606,6 +521,7 @@ object CentralMockData:
       permissions = Set(Permission("users:read")),
       accessTokenTtl = 3600,
       hasPreviousSecret = false,
+      theme = "default",
     ),
     (
       tenantId = defaultTenant,
@@ -617,5 +533,22 @@ object CentralMockData:
       permissions = Set(Permission("users:read")),
       accessTokenTtl = 600,
       hasPreviousSecret = true,
+      theme = "default",
+    ),
+  )
+
+  val edges: Vector[EdgeModel] = Vector(
+    (
+      id = EdgeId("edge-default"),
+      publicKeyJwk = Json.Obj(
+        "kty" -> Json.Str("RSA"),
+        "e" -> Json.Str("AQAB"),
+        "use" -> Json.Str("sig"),
+        "kid" -> Json.Str("1"),
+        "alg" -> Json.Str("RS256"),
+        "n" -> Json.Str(
+          "pJfiBktGFvqbLp5MrgR3gcYKpDpKAgcwlnWdnhIyxZiCr7Cy17aT4pTlK_3UwZxXCVKFjVJfCG59G2AjU_REN8AxqTpnRbson5oYUvpZEMfoRtifWT4Vpl5ASVmSYT4ixiX6Hj0D4-BvNKkElyUOpqeXtIGFhyIUbgto_rBJ0T9pLt0uEQoZ4erKHUGdGcxMexaYjqosj4FTL1_PHyWk0MF8IkXoipwKXJ4x46Qa7Ypo2msxon9fVQM6JMUDw911QGF-UlQaKE8MBTSnkbh4I4QmqkriypkIiZvabNawNKkPjk_9L6l8EVc7m0TCpDBfQnw4wAPwoq9MWokotp8mdQ",
+        ),
+      ),
     ),
   )

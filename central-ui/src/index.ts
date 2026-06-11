@@ -27,10 +27,8 @@ export type {
   Resource,
   ResourceEndpoint,
   Role,
-  Rule,
-  AclRuleNode,
-  AclRuleGroup,
-  AclRuleTree,
+  InjectRule,
+  InjectTarget,
 } from './types';
 export type { NavItem } from './components/navigation';
 

@@ -18,6 +18,7 @@ const alphaPresets = [
     clientId: 'alpha-web',
     description: 'Web Login',
     redirectUri: 'https://alpha.example.com/callback',
+    postLoginRedirectUri: 'https://alpha.example.com/dashboard',
     scope: ['openid', 'profile'],
     responseType: 'code',
     uiLocales: ['en', 'fr'],
@@ -27,6 +28,7 @@ const alphaPresets = [
     clientId: 'alpha-web',
     description: 'Mobile Login',
     redirectUri: 'https://alpha.example.com/silent',
+    postLoginRedirectUri: 'https://alpha.example.com/mobile/home',
     scope: ['openid', 'email'],
     responseType: 'code id_token',
   },
@@ -46,7 +48,7 @@ test('loads presets when client is expanded', async ({ page }) => {
 
   // Initially no preset request
   expect(api.requests.some(req =>
-    req.pathname === '/v1/configuration/auth-request-presets'
+    req.pathname === '/configuration/auth-request-presets'
   )).toBeFalsy();
 
   // Click to expand
@@ -54,12 +56,12 @@ test('loads presets when client is expanded', async ({ page }) => {
 
   // Wait for presets to load
   await page.waitForResponse(resp =>
-    resp.url().includes('/v1/configuration/auth-request-presets') && resp.status() === 200
+    resp.url().includes('/configuration/auth-request-presets') && resp.status() === 200
   );
 
   // Verify GET request was made with correct params
   const presetsRequest = api.requests.find(req =>
-    req.pathname === '/v1/configuration/auth-request-presets' &&
+    req.pathname === '/configuration/auth-request-presets' &&
     req.method === 'GET'
   );
   expect(presetsRequest).toBeTruthy();
@@ -79,11 +81,11 @@ test('caches presets and does not reload on subsequent expands', async ({ page }
   // Expand first time
   await card.locator('.client-header').click();
   await page.waitForResponse(resp =>
-    resp.url().includes('/v1/configuration/auth-request-presets')
+    resp.url().includes('/configuration/auth-request-presets')
   );
 
   const firstLoadCount = api.requests.filter(req =>
-    req.pathname === '/v1/configuration/auth-request-presets' &&
+    req.pathname === '/configuration/auth-request-presets' &&
     req.method === 'GET'
   ).length;
 
@@ -97,7 +99,7 @@ test('caches presets and does not reload on subsequent expands', async ({ page }
   await page.waitForTimeout(200);
 
   const secondLoadCount = api.requests.filter(req =>
-    req.pathname === '/v1/configuration/auth-request-presets' &&
+    req.pathname === '/configuration/auth-request-presets' &&
     req.method === 'GET'
   ).length;
 
@@ -119,7 +121,7 @@ test('displays loaded presets in the expanded client card', async ({ page }) => 
 
   // Wait for presets to load
   await page.waitForResponse(resp =>
-    resp.url().includes('/v1/configuration/auth-request-presets') && resp.status() === 200
+    resp.url().includes('/configuration/auth-request-presets') && resp.status() === 200
   );
 
   // Expand presets section
@@ -183,7 +185,8 @@ test('adds a new preset with auto-generated UUID', async ({ page }) => {
 
   // The preset form should now be visible - fill it in
   await page.getByLabel('Description').fill('Admin Login');
-  await page.getByLabel('Redirect URI').selectOption('https://alpha.example.com/callback');
+  await page.getByLabel('Redirect URI *', { exact: true }).selectOption('https://alpha.example.com/callback');
+  await page.getByLabel('Post-login redirect URI').fill('https://alpha.example.com/dashboard');
 
   // Select scopes - click the entire card (not just the checkbox)
   await page.locator('.checkbox-item').filter({ hasText: 'openid' }).click();
@@ -204,7 +207,7 @@ test('adds a new preset with auto-generated UUID', async ({ page }) => {
 
   // Verify the API request
   const saveRequest = api.requests.find(req =>
-    req.pathname === '/v1/configuration/auth-request-presets' &&
+    req.pathname === '/configuration/auth-request-presets' &&
     req.method === 'POST'
   );
 
@@ -215,6 +218,7 @@ test('adds a new preset with auto-generated UUID', async ({ page }) => {
       expect.objectContaining({
         description: 'Admin Login',
         redirectUri: 'https://alpha.example.com/callback',
+        postLoginRedirectUri: 'https://alpha.example.com/dashboard',
         scope: ['openid'],
         responseType: 'code',
       }),
@@ -265,7 +269,7 @@ test('edits an existing preset', async ({ page }) => {
 
   // Verify the API request
   const saveRequest = api.requests.find(req =>
-    req.pathname === '/v1/configuration/auth-request-presets' &&
+    req.pathname === '/configuration/auth-request-presets' &&
     req.method === 'POST'
   );
 
@@ -314,7 +318,7 @@ test('deletes a preset', async ({ page }) => {
 
   // Verify the API request
   const saveRequest = api.requests.find(req =>
-    req.pathname === '/v1/configuration/auth-request-presets' &&
+    req.pathname === '/configuration/auth-request-presets' &&
     req.method === 'POST'
   );
 
@@ -346,7 +350,7 @@ test('validates preset form - redirect URI must be in client allowed URIs', asyn
   await page.getByRole('button', { name: '+ Add Preset' }).click();
 
   // The redirect URI dropdown should only show client's allowed URIs
-  const redirectUriSelect = page.getByLabel('Redirect URI');
+  const redirectUriSelect = page.getByLabel('Redirect URI *', { exact: true });
 
   // Count total options (empty option + 2 allowed URIs)
   const optionCount = await redirectUriSelect.locator('option').count();
@@ -376,7 +380,7 @@ test('handles backend validation errors gracefully', async ({ page }) => {
   });
 
   // Intercept and return error
-  await page.route('**/v1/configuration/auth-request-presets', async route => {
+  await page.route('**/configuration/auth-request-presets', async route => {
     if (route.request().method() === 'POST') {
       await route.fulfill({ status: 400, body: 'Invalid redirect URI' });
     } else {
@@ -398,7 +402,8 @@ test('handles backend validation errors gracefully', async ({ page }) => {
 
   // Fill in the form
   await page.getByLabel('Description').fill('Test');
-  await page.getByLabel('Redirect URI').selectOption('https://alpha.example.com/callback');
+  await page.getByLabel('Redirect URI *', { exact: true }).selectOption('https://alpha.example.com/callback');
+  await page.getByLabel('Post-login redirect URI').fill('https://alpha.example.com/dashboard');
 
   // Submit the form
   await page.getByRole('button', { name: 'Create Preset' }).click();

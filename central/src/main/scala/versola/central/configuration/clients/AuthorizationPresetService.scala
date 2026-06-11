@@ -1,10 +1,10 @@
 package versola.central.configuration.clients
 
 import versola.central.configuration.SaveAuthorizationPresetsRequest
+import versola.central.configuration.edges.EdgeId
 import versola.central.configuration.sync.{SyncEvent, SyncOps}
-import versola.central.configuration.tenants.TenantId
 import versola.util.ReloadingCache
-import zio.{Schedule, Scope, Task, UIO, ZIO, ZLayer, durationInt}
+import zio.{Schedule, Scope, Task, ZIO, ZLayer}
 
 trait AuthorizationPresetService:
 
@@ -12,21 +12,21 @@ trait AuthorizationPresetService:
 
   def savePresets(request: SaveAuthorizationPresetsRequest): Task[Either[PresetValidationError, Unit]]
 
-  def getPresetsForSync(tenantIds: Option[Set[TenantId]]): Task[Vector[AuthorizationPreset]]
+  def getPresetsForSync(edgeId: Option[EdgeId]): Task[Vector[AuthorizationPreset]]
 
   def sync(event: SyncEvent.PresetsUpdated): Task[Unit]
 
 object AuthorizationPresetService:
   def live(
-      schedule: Schedule[Any, Any, Any] = Schedule.spaced(5.minute),
-  ): ZLayer[AuthorizationPresetRepository & OAuthClientRepository & Scope, Throwable, AuthorizationPresetService] =
+      schedule: Schedule[Any, Any, Any],
+  ): ZLayer[AuthorizationPresetRepository & OAuthClientService & Scope, Throwable, AuthorizationPresetService] =
     ZLayer(ReloadingCache.make[Vector[AuthorizationPreset]](schedule))
       >>> ZLayer.fromFunction(Impl(_, _, _))
 
   class Impl(
       cache: ReloadingCache[Vector[AuthorizationPreset]],
       repository: AuthorizationPresetRepository,
-      clientRepository: OAuthClientRepository,
+      clientService: OAuthClientService,
   ) extends AuthorizationPresetService:
 
     override def getClientPresets(clientId: ClientId): Task[Vector[AuthorizationPreset]] =
@@ -34,7 +34,8 @@ object AuthorizationPresetService:
 
     override def savePresets(request: SaveAuthorizationPresetsRequest): Task[Either[PresetValidationError, Unit]] =
       (for
-        client <- clientRepository.find(request.clientId)
+        client <- clientService.getAllClients
+          .map(_.find(_.id == request.clientId))
           .someOrFail(PresetValidationError.ClientNotFound)
 
         _ <- ZIO.foreachDiscard(request.presets) {
@@ -55,10 +56,13 @@ object AuthorizationPresetService:
             clientId = request.clientId,
             description = presetRequest.description,
             redirectUri = presetRequest.redirectUri,
+            postLoginRedirectUri = presetRequest.postLoginRedirectUri,
             scope = presetRequest.scope,
             responseType = presetRequest.responseType,
             uiLocales = presetRequest.uiLocales,
             customParameters = presetRequest.customParameters,
+            cookieDomain = presetRequest.cookieDomain,
+            cookiePath = presetRequest.cookiePath,
           )
 
         _ <- repository.replace(request.clientId, presets)
@@ -70,14 +74,14 @@ object AuthorizationPresetService:
           case Right(_) => ZIO.right(())
         }
 
-    override def getPresetsForSync(tenantIds: Option[Set[TenantId]]): Task[Vector[AuthorizationPreset]] =
-      tenantIds match
+    override def getPresetsForSync(edgeId: Option[EdgeId]): Task[Vector[AuthorizationPreset]] =
+      edgeId match
         case None => cache.get
-        case Some(ids) =>
+        case Some(_) =>
           for
             presets <- cache.get
-            clientsCache <- clientRepository.getAll
-            allowedClientIds = clientsCache.filter(c => ids.contains(c.tenantId)).map(_.id).toSet
+            clients <- clientService.getClientsForSync(edgeId)
+            allowedClientIds = clients.map(_.id).toSet
           yield presets.filter(p => allowedClientIds.contains(p.clientId))
 
     override def sync(event: SyncEvent.PresetsUpdated): Task[Unit] =

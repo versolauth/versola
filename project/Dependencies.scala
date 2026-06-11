@@ -25,6 +25,7 @@ object Versions {
   val scalajsJavaTime = "2.6.0"
   val laminar = "17.2.0"
   val javamail = "2.0.1"
+  val cel = "0.12.0"
 }
 
 object Dependencies {
@@ -79,7 +80,9 @@ object Dependencies {
     "dev.zio" %% "zio-metrics-connectors-prometheus" % Versions.zioMetrics,
     "dev.zio" %% "zio-schema-derivation" % Versions.zioSchema,
     "dev.zio" %% "zio-schema-json" % Versions.zioSchema,
-    "com.tethys-json" %% "tethys-core" % Versions.tethys,
-    "com.tethys-json" %% "tethys-jackson213" % Versions.tethys,
+  )
+
+  val cel = Seq(
+    "dev.cel" % "cel" % Versions.cel,
   )
 }

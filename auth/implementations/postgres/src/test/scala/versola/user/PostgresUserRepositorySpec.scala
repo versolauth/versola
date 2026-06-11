@@ -17,7 +17,7 @@ object PostgresUserRepositorySpec extends PostgresSpec, UserRepositorySpec:
   override def beforeEach(env: UserRepositorySpec.Env) =
     for
       xa <- ZIO.service[TransactorZIO]
-      _ <- xa.connect(sql"TRUNCATE TABLE users".update.run())
+      _ <- xa.connect(sql"TRUNCATE TABLE users CASCADE".update.run())
     yield ()
 
 

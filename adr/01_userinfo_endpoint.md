@@ -10,7 +10,7 @@
 
 ### ✅ Core Features (Implemented)
 
-- [x] **UserInfo Endpoint** - GET/POST `/v1/userinfo` with Bearer token authentication
+- [x] **UserInfo Endpoint** - GET/POST `/userinfo` with Bearer token authentication
 - [x] **JWT Access Token Validation** - Signature verification, expiration check, claims extraction
 - [x] **Scope-Based Authorization** - Map scopes to claims (openid, profile, email, address, phone)
 - [x] **Claims Parameter Support** - Fine-grained claim requests via `RequestedClaims`
@@ -35,7 +35,7 @@
 
 ## Executive Summary
 
-This ADR documents the design and implementation of the OpenID Connect UserInfo endpoint (`/v1/userinfo`), which returns claims about the authenticated end-user. The endpoint accepts JWT access tokens, validates them, and returns user claims based on the scopes and claims parameter from the original authorization request.
+This ADR documents the design and implementation of the OpenID Connect UserInfo endpoint (`/userinfo`), which returns claims about the authenticated end-user. The endpoint accepts JWT access tokens, validates them, and returns user claims based on the scopes and claims parameter from the original authorization request.
 
 **Core Design:**
 ```
@@ -149,13 +149,13 @@ CREATE TABLE users (
 
 ### 2.2 Endpoint Specification
 
-**URL:** `POST /v1/userinfo` or `GET /v1/userinfo`  
+**URL:** `POST /userinfo` or `GET /userinfo`
 **Authentication:** Bearer token (access token) in `Authorization` header  
 **Content-Type:** `application/json`
 
 **Request:**
 ```http
-GET /v1/userinfo HTTP/1.1
+GET /userinfo HTTP/1.1
 Host: auth.example.com
 Authorization: Bearer <access_token>
 ```
@@ -383,7 +383,7 @@ CREATE TABLE refresh_tokens(
 - `OAuthClientService` - Provides cached scope-to-claims mapping
 
 **Controllers:**
-- `UserInfoController` - HTTP endpoint handler for GET/POST `/v1/userinfo`
+- `UserInfoController` - HTTP endpoint handler for GET/POST `/userinfo`
 
 ### 3.3 Standard Claims Mapping
 
@@ -443,7 +443,7 @@ Localized claims are stored with language tag suffixes following BCP47 format:
 **Authorization Request with ui_locales:**
 
 ```http
-GET /v1/authorize?
+GET /authorize?
   client_id=client123&
   scope=openid%20profile&
   ui_locales=fr-CA%20fr%20en&
@@ -452,7 +452,8 @@ GET /v1/authorize?
 
 **Locale Resolution Algorithm:**
 
-1. **Extract locale preferences** from JWT `ui_locales` claim (e.g., `["fr-CA", "fr", "en"]`)
+1. **Extract locale preferences** from `users.ui_locales` (e.g., `["fr-CA", "fr", "en"]`).
+   The access token does not carry `ui_locales`; resource servers receive only protocol claims.
 2. **For each requested claim**, try to find localized version:
    - Try exact locale match: `name#fr-CA`
    - Try language-only match: `name#fr` (extract language from `fr-CA`)
@@ -504,7 +505,7 @@ Request with `ui_locales=fr-CA fr en`:
 
 **Example Authorization Request:**
 ```http
-GET /v1/authorize?
+GET /authorize?
   client_id=client123&
   redirect_uri=https://app.example.com/callback&
   scope=openid%20profile%20email&
@@ -710,7 +711,7 @@ Return UserInfo as a signed JWT instead of plain JSON when client requests it.
 
 **Request:**
 ```http
-GET /v1/userinfo HTTP/1.1
+GET /userinfo HTTP/1.1
 Host: auth.example.com
 Authorization: Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...
 Accept: application/jwt
@@ -853,11 +854,11 @@ The UserInfo endpoint implementation follows OpenID Connect Core 1.0 specificati
 - ✅ Scope-to-claims mapping from oauth_scopes table (cached in memory)
 - ✅ Claims parameter support for fine-grained control (`RequestedClaims`)
 - ✅ **Localized claims support with BCP47 language tags** (e.g., `name#fr-CA`)
-- ✅ **ui_locales parameter** stored in authorization codes, refresh tokens, and JWT access tokens
+- ✅ **ui_locales parameter** stored in authorization codes, refresh tokens, and the user record (kept out of the access token to avoid PII in JWTs)
 - ✅ Locale resolution algorithm with fallback (exact match → language match → default)
 - ✅ JWT access tokens only (stateless, no database storage)
 - ✅ Single database query for user claims (optimal performance)
-- ✅ GET and POST methods for `/v1/userinfo` endpoint
+- ✅ GET and POST methods for `/userinfo` endpoint
 - ✅ RFC 6750 compliant error responses with `WWW-Authenticate` header
 
 **Future Enhancements:**

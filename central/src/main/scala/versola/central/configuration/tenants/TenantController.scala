@@ -18,16 +18,16 @@ object TenantController extends Controller:
   )
 
   val getAllTenantsEndpoint =
-    Method.GET / "v1" / "configuration" / "tenants" -> handler { (_: Request) =>
+    Method.GET / "configuration" / "tenants" -> handler { (_: Request) =>
       for
         service <- ZIO.service[TenantService]
         tenants <- service.getAllTenants
-        response = GetAllTenantsResponse(tenants.map(t => TenantResponse(t.id, t.description, t.edgeId.map(_.toString))))
+        response = GetAllTenantsResponse(tenants.map(t => TenantResponse(t.id, t.description, t.edgeId)))
       yield Response.json(response.toJson)
     }
 
   val createTenantEndpoint =
-    Method.POST / "v1" / "configuration" / "tenants" -> handler { (request: Request) =>
+    Method.POST / "configuration" / "tenants" -> handler { (request: Request) =>
       for
         service <- ZIO.service[TenantService]
         body <- request.body.asJson[CreateTenantRequest]
@@ -36,7 +36,7 @@ object TenantController extends Controller:
     }
 
   val updateTenantEndpoint =
-    Method.PUT / "v1" / "configuration" / "tenants" -> handler { (request: Request) =>
+    Method.PUT / "configuration" / "tenants" -> handler { (request: Request) =>
       for
         service <- ZIO.service[TenantService]
         body <- request.body.asJson[UpdateTenantRequest]
@@ -45,7 +45,7 @@ object TenantController extends Controller:
     }
 
   val deleteTenantEndpoint =
-    Method.DELETE / "v1" / "configuration" / "tenants" -> handler { (request: Request) =>
+    Method.DELETE / "configuration" / "tenants" -> handler { (request: Request) =>
       for
         service <- ZIO.service[TenantService]
         tenantId <- request.url.queryZIO[TenantId]("tenantId")

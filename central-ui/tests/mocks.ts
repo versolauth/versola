@@ -3,14 +3,12 @@ import type { Page, Request } from '@playwright/test';
 type TenantDto = { id: string; description: string; edgeId?: string | null };
 type ClientDto = { id: string; clientName: string; redirectUris: string[]; scope: string[]; permissions: string[]; secretRotation: boolean; edgeId?: string };
 type ScopeDto = { scope: string; description: Record<string, string>; claims: Array<{ claim: string; description: Record<string, string> }> };
-type PermissionDto = { permission: string; description: Record<string, string>; endpointIds: number[] };
-type RuleDto = { subject: string; operator: string; value: unknown; pattern?: string };
-type AclRuleNodeDto = { kind: 'rule'; rule: RuleDto };
-type AclRuleGroupDto = { kind: 'all' | 'any'; children: AclRuleTreeDto[] };
-type AclRuleTreeDto = AclRuleNodeDto | AclRuleGroupDto;
+type PermissionDto = { permission: string; description: Record<string, string>; endpointIds: ResourceEndpointId[] };
+type InjectTargetDto = 'header' | 'query' | 'body';
+type InjectRuleDto = { target: InjectTargetDto; name: string; expression: string };
 type ResourceEndpointId = string | number;
-type ResourceEndpointDto = { id: ResourceEndpointId; method: string; path: string; fetchUserInfo: boolean; allowRules: AclRuleGroupDto; denyRules: AclRuleGroupDto; injectHeaders: Record<string, string> };
-type ResourceDto = { id: number; resource: string; endpoints: ResourceEndpointDto[] };
+type ResourceEndpointDto = { id: ResourceEndpointId; method: string; path: string; fetchUserInfo: boolean; allow?: string | null; inject: InjectRuleDto[] };
+type ResourceDto = { id: number; alias: string; resource: string; endpoints: ResourceEndpointDto[] };
 type RoleDto = { id: string; description: Record<string, string>; permissions: string[]; active: boolean };
 type EdgeDto = { id: string; hasOldKey?: boolean; tenants?: string[]; clients?: EdgeClientLinkDto[] };
 type EdgeClientLinkDto = { tenantId: string; clientId: string };
@@ -19,10 +17,26 @@ type AuthorizationPresetDto = {
   clientId: string;
   description: string;
   redirectUri: string;
+  postLoginRedirectUri: string;
   scope: string[];
   responseType: string;
   uiLocales?: string[]
 };
+type FormPropertyDto =
+  | { type: 'BooleanProperty'; name: string }
+  | { type: 'StringArrayProperty'; name: string; allowedValues: string[] };
+type FormDto = {
+  id: string;
+  version: number;
+  active: boolean;
+  style: string;
+  jsSource: string | null;
+  jsCompiled: string | null;
+  localizations: Record<string, Record<string, string>>;
+  properties: FormPropertyDto[];
+};
+type FormLocaleDto = { code: string; name: string };
+type ThemeDto = { id: string; css: string; tenantId: string | null };
 type SetPatch<T> = { add?: T[]; remove?: T[] };
 type DescriptionPatch = { add?: Record<string, string>; delete?: string[] };
 type CreateClientRequest = {
@@ -51,14 +65,16 @@ type CreateScopeRequest = {
 };
 type CreateResourceRequest = {
   tenantId: string;
+  alias: string;
   resource: string;
-  endpoints: Array<{ id?: ResourceEndpointId; method: string; path: string; fetchUserInfo: boolean; allowRules: AclRuleGroupDto; denyRules: AclRuleGroupDto; injectHeaders: Record<string, string> }>;
+  endpoints: Array<{ id?: ResourceEndpointId; method: string; path: string; fetchUserInfo: boolean; allow?: string | null; inject: InjectRuleDto[] }>;
 };
 type UpdateResourceRequest = {
   id: number;
-  resource: string;
+  alias?: string;
+  resource?: string;
   deleteEndpoints: ResourceEndpointId[];
-  createEndpoints: Array<{ id: ResourceEndpointId; method: string; path: string; fetchUserInfo: boolean; allowRules: AclRuleGroupDto; denyRules: AclRuleGroupDto; injectHeaders: Record<string, string> }>;
+  createEndpoints: Array<{ id: ResourceEndpointId; method: string; path: string; fetchUserInfo: boolean; allow?: string | null; inject: InjectRuleDto[] }>;
 };
 type CreatePermissionRequest = {
   tenantId: string;
@@ -102,6 +118,15 @@ export type RequestLog = {
   body: unknown;
 };
 
+type UserDto = {
+  id: string;
+  email?: string;
+  phone?: string;
+  login?: string;
+  claims: Record<string, unknown>;
+  rolesByTenant?: Record<string, string[]>;
+};
+
 export type MockConfigState = {
   tenants: TenantDto[];
   clients: Record<string, ClientDto[]>;
@@ -111,6 +136,10 @@ export type MockConfigState = {
   roles: Record<string, RoleDto[]>;
   edges: EdgeDto[];
   authorizationPresets: Record<string, AuthorizationPresetDto[]>; // keyed by clientId
+  users: UserDto[];
+  forms: FormDto[];
+  formLocales: FormLocaleDto[];
+  themes: ThemeDto[];
 };
 
 export type MockConfigHarness = {
@@ -136,8 +165,8 @@ const defaultState: MockConfigState = {
     'tenant-bravo': [{ permission: 'bravo.read', description: { en: 'Read bravo resources' }, endpointIds: [201] }],
   },
   resources: {
-    'tenant-alpha': [{ id: 1, resource: 'https://alpha.example/api', endpoints: [{ id: 101, method: 'GET', path: '/alpha/items', fetchUserInfo: false, allowRules: emptyAclGroup(), denyRules: emptyAclGroup(), injectHeaders: {} }] }],
-    'tenant-bravo': [{ id: 2, resource: 'https://bravo.example/api', endpoints: [{ id: 201, method: 'GET', path: '/bravo/items', fetchUserInfo: false, allowRules: emptyAclGroup(), denyRules: emptyAclGroup(), injectHeaders: {} }] }],
+    'tenant-alpha': [{ id: 1, alias: 'alpha-api', resource: 'https://alpha.example/api', endpoints: [{ id: 101, method: 'GET', path: '/alpha/items', fetchUserInfo: false, allow: 'true', inject: [] }] }],
+    'tenant-bravo': [{ id: 2, alias: 'bravo-api', resource: 'https://bravo.example/api', endpoints: [{ id: 201, method: 'GET', path: '/bravo/items', fetchUserInfo: false, allow: 'true', inject: [] }] }],
   },
   roles: {
     'tenant-alpha': [{ id: 'alpha-admin', description: { en: 'Alpha admin' }, permissions: ['alpha.read'], active: true }],
@@ -145,14 +174,14 @@ const defaultState: MockConfigState = {
   },
   edges: [],
   authorizationPresets: {},
+  users: [],
+  forms: [],
+  formLocales: [],
+  themes: [],
 };
 
 function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
-}
-
-function emptyAclGroup(): AclRuleGroupDto {
-  return { kind: 'any', children: [] };
 }
 
 function mergeState(overrides: Partial<MockConfigState> = {}): MockConfigState {
@@ -165,6 +194,10 @@ function mergeState(overrides: Partial<MockConfigState> = {}): MockConfigState {
     resources: clone({ ...defaultState.resources, ...overrides.resources }),
     edges: clone(overrides.edges ?? defaultState.edges),
     roles: clone({ ...defaultState.roles, ...overrides.roles }),
+    users: clone(overrides.users ?? defaultState.users),
+    forms: clone(overrides.forms ?? defaultState.forms),
+    formLocales: clone(overrides.formLocales ?? defaultState.formLocales),
+    themes: clone(overrides.themes ?? defaultState.themes),
   };
 }
 
@@ -226,7 +259,7 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
   const state = mergeState(overrides);
   const requests: RequestLog[] = [];
 
-  await page.route('**/v1/configuration/**', async route => {
+  await page.route('**/configuration/**', async route => {
     const request = route.request();
     const url = new URL(request.url());
     const pathname = url.pathname;
@@ -240,7 +273,7 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
       body,
     });
 
-    if (pathname === '/v1/configuration/tenants') {
+    if (pathname === '/configuration/tenants') {
       if (method === 'GET') {
         await route.fulfill(json({ tenants: state.tenants }));
         return;
@@ -292,7 +325,7 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
     }
 
     const tenantId = url.searchParams.get('tenantId') ?? '';
-    if (pathname === '/v1/configuration/clients') {
+    if (pathname === '/configuration/clients') {
       if (method === 'GET') {
         await route.fulfill(json({ clients: pageSlice(state.clients[tenantId] ?? [], url) }));
         return;
@@ -351,7 +384,7 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
       }
     }
 
-    if (pathname === '/v1/configuration/clients/rotate-secret' && method === 'POST') {
+    if (pathname === '/configuration/clients/rotate-secret' && method === 'POST') {
       const clientId = url.searchParams.get('clientId');
       // Find client across all tenants since tenantId is not in the request
       let client: ClientDto | undefined;
@@ -370,7 +403,7 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
       return;
     }
 
-    if (pathname === '/v1/configuration/clients/previous-secret' && method === 'DELETE') {
+    if (pathname === '/configuration/clients/previous-secret' && method === 'DELETE') {
       const clientId = url.searchParams.get('clientId');
       // Find client across all tenants since tenantId is not in the request
       let client: ClientDto | undefined;
@@ -389,7 +422,7 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
       return;
     }
 
-    if (pathname === '/v1/configuration/auth-request-presets') {
+    if (pathname === '/configuration/auth-request-presets') {
       const clientId = url.searchParams.get('clientId');
 
       if (method === 'GET' && clientId) {
@@ -415,7 +448,7 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
       }
     }
 
-    if (pathname === '/v1/configuration/scopes') {
+    if (pathname === '/configuration/scopes') {
       if (method === 'GET') {
         await route.fulfill(json({ scopes: pageSlice(state.scopes[tenantId] ?? [], url) }));
         return;
@@ -479,7 +512,7 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
       }
     }
 
-    if (pathname === '/v1/configuration/permissions') {
+    if (pathname === '/configuration/permissions') {
       if (method === 'GET') {
         await route.fulfill(json({ permissions: pageSlice(state.permissions[tenantId] ?? [], url) }));
         return;
@@ -529,7 +562,7 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
       }
     }
 
-    if (pathname === '/v1/configuration/resources') {
+    if (pathname === '/configuration/resources') {
       if (method === 'GET') {
         await route.fulfill(json({ resources: state.resources[tenantId] ?? [] }));
         return;
@@ -540,15 +573,15 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
         let endpointId = nextEndpointId(state);
         const createdResource: ResourceDto = {
           id: nextResourceId(state),
+          alias: payload.alias,
           resource: payload.resource,
           endpoints: payload.endpoints.map(endpoint => ({
             id: endpoint.id ?? endpointId++,
             method: endpoint.method,
             path: endpoint.path,
             fetchUserInfo: endpoint.fetchUserInfo,
-            allowRules: clone(endpoint.allowRules),
-            denyRules: clone(endpoint.denyRules),
-            injectHeaders: { ...endpoint.injectHeaders },
+            ...(endpoint.allow != null && endpoint.allow.length > 0 ? { allow: endpoint.allow } : {}),
+            inject: endpoint.inject.map(rule => ({ ...rule })),
           })),
         };
 
@@ -566,7 +599,8 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
           return;
         }
 
-        resource.resource = payload.resource;
+        if (payload.resource !== undefined) resource.resource = payload.resource;
+        if (payload.alias !== undefined) resource.alias = payload.alias;
 
         const replacedEndpointIds = new Set<ResourceEndpointId>(payload.deleteEndpoints);
         for (const endpoint of payload.createEndpoints) replacedEndpointIds.add(endpoint.id);
@@ -578,9 +612,8 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
             method: endpoint.method,
             path: endpoint.path,
             fetchUserInfo: endpoint.fetchUserInfo,
-            allowRules: clone(endpoint.allowRules),
-            denyRules: clone(endpoint.denyRules),
-            injectHeaders: { ...endpoint.injectHeaders },
+            ...(endpoint.allow != null && endpoint.allow.length > 0 ? { allow: endpoint.allow } : {}),
+            inject: endpoint.inject.map(rule => ({ ...rule })),
           })));
 
         await route.fulfill({ status: 204, body: '' });
@@ -601,7 +634,7 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
       }
     }
 
-    if (pathname === '/v1/configuration/roles') {
+    if (pathname === '/configuration/roles') {
       if (method === 'GET') {
         await route.fulfill(json({ roles: pageSlice(state.roles[tenantId] ?? [], url) }));
         return;
@@ -649,7 +682,7 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
       }
     }
 
-    if (pathname === '/v1/configuration/edges') {
+    if (pathname === '/configuration/edges') {
       if (method === 'GET') {
         await route.fulfill(json({ edges: state.edges }));
         return;
@@ -691,7 +724,7 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
       }
     }
 
-    if (pathname === '/v1/configuration/edges/rotate-key' && method === 'POST') {
+    if (pathname === '/configuration/edges/rotate-key' && method === 'POST') {
       const edgeId = url.searchParams.get('edgeId');
       const edge = state.edges.find(e => e.id === edgeId);
       if (!edge) {
@@ -706,7 +739,7 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
       return;
     }
 
-    if (pathname === '/v1/configuration/edges/old-key' && method === 'DELETE') {
+    if (pathname === '/configuration/edges/old-key' && method === 'DELETE') {
       const edgeId = url.searchParams.get('edgeId');
       const edge = state.edges.find(e => e.id === edgeId);
       if (!edge) {
@@ -717,6 +750,235 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
       edge.hasOldKey = false;
       await route.fulfill({ status: 204, body: '' });
       return;
+    }
+
+    if (pathname === '/configuration/forms/locales') {
+      if (method === 'GET') {
+        await route.fulfill(json({ locales: state.formLocales }));
+        return;
+      }
+
+      if (method === 'PUT') {
+        const payload = body as { add?: FormLocaleDto[]; delete?: string[] };
+        const removed = new Set(payload.delete ?? []);
+        state.formLocales = state.formLocales.filter(locale => !removed.has(locale.code));
+        for (const locale of payload.add ?? []) {
+          if (!state.formLocales.some(existing => existing.code === locale.code)) {
+            state.formLocales.push({ ...locale });
+          }
+        }
+        await route.fulfill({ status: 204, body: '' });
+        return;
+      }
+    }
+
+    if (pathname === '/configuration/forms/active' && method === 'PUT') {
+      const payload = body as { id: string; version: number };
+      state.forms = state.forms.map(form =>
+        form.id === payload.id ? { ...form, active: form.version === payload.version } : form,
+      );
+      await route.fulfill({ status: 204, body: '' });
+      return;
+    }
+
+    if (pathname === '/configuration/forms') {
+      if (method === 'GET') {
+        await route.fulfill(json({ forms: state.forms }));
+        return;
+      }
+
+      if (method === 'PUT') {
+        const payload = body as Omit<FormDto, 'version' | 'active'>;
+        const versions = state.forms.filter(form => form.id === payload.id);
+        const nextVersion = versions.reduce((max, form) => Math.max(max, form.version), 0) + 1;
+        state.forms.push({
+          id: payload.id,
+          version: nextVersion,
+          active: versions.length === 0,
+          style: payload.style,
+          jsSource: payload.jsSource,
+          jsCompiled: payload.jsCompiled,
+          localizations: payload.localizations,
+          properties: payload.properties,
+        });
+        await route.fulfill({ status: 204, body: '' });
+        return;
+      }
+    }
+
+    if (pathname === '/configuration/themes') {
+      if (method === 'GET') {
+        const visible = state.themes.filter(theme => !theme.tenantId || theme.tenantId === tenantId);
+        await route.fulfill(json({ themes: visible }));
+        return;
+      }
+
+      if (method === 'POST') {
+        const payload = body as ThemeDto;
+        const scopedTenantId = payload.tenantId ?? null;
+        if (state.themes.some(theme => theme.id === payload.id && (theme.tenantId ?? null) === scopedTenantId)) {
+          await route.fulfill(json({ message: `Theme ${payload.id} already exists` }, 409));
+          return;
+        }
+
+        state.themes.push({ id: payload.id, css: payload.css, tenantId: scopedTenantId });
+        await route.fulfill({ status: 201, body: '' });
+        return;
+      }
+
+      if (method === 'PUT') {
+        const payload = body as { id: string; css: string };
+        const theme = state.themes.find(candidate => candidate.id === payload.id);
+        if (!theme) {
+          await route.fulfill(json({ message: `Theme ${payload.id} was not found` }, 404));
+          return;
+        }
+
+        theme.css = payload.css;
+        await route.fulfill({ status: 204, body: '' });
+        return;
+      }
+    }
+
+    if (pathname.startsWith('/configuration/themes/') && method === 'DELETE') {
+      const themeId = decodeURIComponent(pathname.substring('/configuration/themes/'.length));
+      state.themes = state.themes.filter(theme => theme.id !== themeId);
+      await route.fulfill({ status: 204, body: '' });
+      return;
+    }
+
+    await route.fulfill(json({ message: `No mock handler for ${method} ${pathname}` }, 404));
+  });
+
+  await page.route('**/users**', async route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const pathname = url.pathname;
+    const method = request.method();
+    const body = readBody(request);
+
+    if (!pathname.startsWith('/users')) {
+      await route.fallback();
+      return;
+    }
+
+    requests.push({
+      method,
+      pathname,
+      searchParams: Object.fromEntries(url.searchParams.entries()),
+      body,
+    });
+
+    const userToRecord = (user: UserDto) => ({
+      id: user.id,
+      ...(user.email !== undefined ? { email: user.email } : {}),
+      ...(user.phone !== undefined ? { phone: user.phone } : {}),
+      ...(user.login !== undefined ? { login: user.login } : {}),
+      claims: user.claims ?? {},
+    });
+
+    if (pathname === '/users') {
+      if (method === 'GET') {
+        const id = url.searchParams.get('id');
+        const email = url.searchParams.get('email');
+        const phone = url.searchParams.get('phone');
+        const login = url.searchParams.get('login');
+        const matches = state.users.filter(user => {
+          if (id) return user.id === id;
+          if (email) return user.email === email;
+          if (phone) return user.phone === phone;
+          if (login) return user.login === login;
+          return false;
+        });
+        if (matches.length === 0) {
+          await route.fulfill({ status: 404, body: '' });
+          return;
+        }
+        await route.fulfill(json({ users: matches.map(userToRecord) }));
+        return;
+      }
+
+      if (method === 'POST') {
+        const payload = body as { email?: string; phone?: string; login?: string };
+        const conflict = state.users.some(user =>
+          (payload.email && user.email === payload.email) ||
+          (payload.phone && user.phone === payload.phone) ||
+          (payload.login && user.login === payload.login),
+        );
+        if (conflict) {
+          await route.fulfill(json({ message: 'User already exists' }, 409));
+          return;
+        }
+        const generatedId = `00000000-0000-0000-0000-${String(state.users.length + 1).padStart(12, '0')}`;
+        state.users.push({
+          id: generatedId,
+          email: payload.email,
+          phone: payload.phone,
+          login: payload.login,
+          claims: {},
+          rolesByTenant: {},
+        });
+        await route.fulfill(json({ id: generatedId }, 201));
+        return;
+      }
+
+      if (method === 'PATCH') {
+        const payload = body as { id: string; email?: string | null; phone?: string | null; login?: string | null };
+        const user = state.users.find(candidate => candidate.id === payload.id);
+        if (!user) {
+          await route.fulfill(json({ message: `User ${payload.id} not found` }, 404));
+          return;
+        }
+        if (payload.email !== undefined) user.email = payload.email ?? undefined;
+        if (payload.phone !== undefined) user.phone = payload.phone ?? undefined;
+        if (payload.login !== undefined) user.login = payload.login ?? undefined;
+        await route.fulfill({ status: 202, body: '' });
+        return;
+      }
+    }
+
+    if (pathname === '/users/claims' && method === 'PATCH') {
+      const payload = body as { id: string; claims: Record<string, unknown> };
+      const user = state.users.find(candidate => candidate.id === payload.id);
+      if (!user) {
+        await route.fulfill(json({ message: `User ${payload.id} not found` }, 404));
+        return;
+      }
+      const next = { ...user.claims };
+      for (const [key, value] of Object.entries(payload.claims)) {
+        if (value === null) delete next[key];
+        else next[key] = value;
+      }
+      user.claims = next;
+      await route.fulfill({ status: 202, body: '' });
+      return;
+    }
+
+    if (pathname === '/users/roles') {
+      if (method === 'GET') {
+        const id = url.searchParams.get('id') ?? '';
+        const tenantId = url.searchParams.get('tenantId') ?? '';
+        const user = state.users.find(candidate => candidate.id === id);
+        const roles = user?.rolesByTenant?.[tenantId] ?? [];
+        await route.fulfill(json({ roles }));
+        return;
+      }
+
+      if (method === 'PATCH') {
+        const payload = body as { userId: string; tenantId: string; add: string[]; remove: string[] };
+        const user = state.users.find(candidate => candidate.id === payload.userId);
+        if (!user) {
+          await route.fulfill(json({ message: `User ${payload.userId} not found` }, 404));
+          return;
+        }
+        user.rolesByTenant = user.rolesByTenant ?? {};
+        const current = new Set(user.rolesByTenant[payload.tenantId] ?? []);
+        for (const roleId of payload.remove) current.delete(roleId);
+        for (const roleId of payload.add) current.add(roleId);
+        user.rolesByTenant[payload.tenantId] = [...current];
+        await route.fulfill({ status: 202, body: '' });
+        return;
+      }
     }
 
     await route.fulfill(json({ message: `No mock handler for ${method} ${pathname}` }, 404));

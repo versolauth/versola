@@ -12,7 +12,7 @@ Under active development.
 
 #### RFC 6749 - OAuth 2.0 Core
 
-**Authorization Endpoint** (`/v1/authorize`)
+**Authorization Endpoint** (`/authorize`)
 - [x] Authorization Code Flow
 - [x] PKCE (code_challenge, code_challenge_method: S256, plain)
 - [x] `scope` parameter
@@ -29,7 +29,7 @@ Under active development.
 - [ ] `id_token_hint` parameter
 - [ ] `acr_values` parameter
 
-**Token Endpoint** (`/v1/token`)
+**Token Endpoint** (`/token`)
 - [x] **Authorization Code Grant** (`grant_type=authorization_code`)
   - [x] PKCE verification (mandatory)
   - [x] Single-use code enforcement
@@ -53,11 +53,11 @@ Under active development.
 - [ ] JWT Bearer Grant (RFC 7523)
 
 #### RFC 7009 - Token Revocation
-- [x] `/v1/revoke` endpoint
+- [x] `/revoke` endpoint
 - [x] Refresh token revocation
 
 #### RFC 7662 - Token Introspection
-- [x] `/v1/introspect` endpoint
+- [x] `/introspect` endpoint
 - [x] Access token introspection (JWT validation)
 - [x] Refresh token introspection (database lookup)
 - [x] Client authentication required
@@ -76,7 +76,7 @@ Under active development.
 
 #### OpenID Connect Core 1.0
 
-**UserInfo Endpoint** (`/v1/userinfo`)
+**UserInfo Endpoint** (`/userinfo`)
 - [x] Core functionality (GET and POST methods)
 - [x] Bearer token authentication (RFC 6750)
 - [x] Scope-based claims filtering

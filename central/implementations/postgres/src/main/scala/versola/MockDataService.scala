@@ -4,6 +4,7 @@ import com.augustnagro.magnum.*
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.central.configuration.CreateClientRequest
 import versola.central.configuration.clients.{ClientAlreadyExists, OAuthClientService}
+import versola.central.configuration.edges.EdgeRepository
 import versola.central.configuration.permissions.PermissionRepository
 import versola.central.configuration.resources.{ResourceEndpointId, ResourceEndpointRecord, ResourceId, ResourceRepository}
 import versola.central.configuration.roles.RoleRepository
@@ -12,16 +13,18 @@ import versola.central.configuration.tenants.TenantRepository
 import versola.util.SecureRandom
 import zio.{Task, ZIO, ZLayer}
 
+import scala.io.Source
+
 trait MockDataService:
   def insert(): Task[Unit]
 
 object MockDataService:
   val live: ZLayer[
-    TenantRepository & PermissionRepository & ResourceRepository & OAuthScopeRepository & RoleRepository & OAuthClientService & TransactorZIO,
+    TenantRepository & PermissionRepository & ResourceRepository & OAuthScopeRepository & RoleRepository & OAuthClientService & EdgeRepository & TransactorZIO,
     Throwable,
     MockDataService,
   ] =
-    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _))
+    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _))
       >>> ZLayer(ZIO.serviceWithZIO[MockDataService](service => service.insert().as(service)))
 
   final case class Impl(
@@ -31,15 +34,27 @@ object MockDataService:
       resourceRepository: ResourceRepository,
       scopeRepository: OAuthScopeRepository,
       roleRepository: RoleRepository,
-      clientService: OAuthClientService
+      clientService: OAuthClientService,
+      edgeRepository: EdgeRepository,
   ) extends MockDataService:
 
     private def cleanup(): Task[Unit] =
       xa.connect:
-        sql"""TRUNCATE TABLE tenants, permissions, resources, oauth_scopes, roles, oauth_clients, edges RESTART IDENTITY CASCADE""".update.run()
+        // Include themes explicitly so CASCADE from tenants does not silently wipe it.
+        sql"""TRUNCATE TABLE tenants, permissions, resources, oauth_scopes, roles, oauth_clients, edges, themes RESTART IDENTITY CASCADE""".update.run()
+
+    private def insertDefaultTheme(): Task[Unit] =
+      ZIO.blocking:
+        ZIO.attemptBlocking:
+          val src = Source.fromResource("forms/common.css")
+          try src.mkString finally src.close()
+      .flatMap: css =>
+        xa.connect:
+          sql"""INSERT INTO themes (id, css, tenant_id) VALUES ('default', $css, NULL)""".update.run()
+      .unit
 
     override def insert(): Task[Unit] =
-      cleanup() *> insertTenants() *> insertResources() *> insertPermissions() *> insertScopes() *> insertRoles() *> insertClients()
+      cleanup() *> insertDefaultTheme() *> insertTenants() *> insertResources() *> insertPermissions() *> insertScopes() *> insertRoles() *> insertClients() *> insertEdges()
 
     private def insertTenants(): Task[Unit] =
       ZIO.foreachDiscard(CentralMockData.tenants): tenant =>
@@ -58,6 +73,7 @@ object MockDataService:
       ZIO.foreach(CentralMockData.resources): resource =>
         resourceRepository.createResource(
           tenantId = resource.tenantId,
+          alias = resource.alias,
           resource = resource.resource,
           endpoints = resource.endpoints.map { endpoint =>
             ResourceEndpointRecord(
@@ -65,9 +81,8 @@ object MockDataService:
               method = endpoint.method,
               path = endpoint.path,
               fetchUserInfo = endpoint.fetchUserInfo,
-              allowRules = endpoint.allowRules,
-              denyRules = endpoint.denyRules,
-              injectHeaders = endpoint.injectHeaders,
+              allowExpression = endpoint.allow,
+              inject = endpoint.inject,
             )
           },
         )
@@ -103,6 +118,7 @@ object MockDataService:
               audience = client.audience,
               permissions = client.permissions,
               accessTokenTtl = client.accessTokenTtl,
+              theme = client.theme,
             ),
           ).mapError {
             case e: ClientAlreadyExists => new IllegalStateException(s"Client ${e.clientId} already exists")
@@ -110,3 +126,7 @@ object MockDataService:
           }
           _ <- ZIO.when(client.hasPreviousSecret)(clientService.rotateClientSecret(client.id).unit)
         yield ()
+
+    private def insertEdges(): Task[Unit] =
+      ZIO.foreachDiscard(CentralMockData.edges): edge =>
+        edgeRepository.createEdge(edge.id, edge.publicKeyJwk)

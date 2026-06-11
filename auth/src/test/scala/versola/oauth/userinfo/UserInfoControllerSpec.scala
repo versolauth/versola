@@ -91,11 +91,11 @@ object UserInfoControllerSpec extends UnitSpecBase:
     }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging
 
   val spec = suite("UserInfoController")(
-    suite("GET /v1/userinfo")(
+    suite("GET /userinfo")(
       userInfoTestCase(
         description = "successfully return user info as JSON",
         request = Request.get(
-          url = URL.empty / "v1" / "userinfo"
+          url = URL.empty / "userinfo"
         ).addHeader(
           Header.Authorization.Bearer(
             createAccessToken(
@@ -123,7 +123,7 @@ object UserInfoControllerSpec extends UnitSpecBase:
       userInfoTestCase(
         description = "successfully return user info as JWT when Accept: application/jwt",
         request = Request.get(
-          url = URL.empty / "v1" / "userinfo"
+          url = URL.empty / "userinfo"
         ).addHeader(
           Header.Authorization.Bearer(
             createAccessToken(
@@ -151,7 +151,7 @@ object UserInfoControllerSpec extends UnitSpecBase:
       userInfoTestCase(
         description = "fail with Unauthorized when Bearer token is missing",
         request = Request.get(
-          url = URL.empty / "v1" / "userinfo"
+          url = URL.empty / "userinfo"
         ),
         expectedStatus = Status.Unauthorized,
         verify = response =>
@@ -166,7 +166,7 @@ object UserInfoControllerSpec extends UnitSpecBase:
       userInfoTestCase(
         description = "fail with Unauthorized when access token is invalid",
         request = Request.get(
-          url = URL.empty / "v1" / "userinfo"
+          url = URL.empty / "userinfo"
         ).addHeader(Header.Authorization.Bearer("invalid.jwt.token")),
         expectedStatus = Status.Unauthorized,
         verify = response =>
@@ -180,7 +180,7 @@ object UserInfoControllerSpec extends UnitSpecBase:
       userInfoTestCase(
         description = "fail with Unauthorized when token has insufficient scope (missing openid)",
         request = Request.get(
-          url = URL.empty / "v1" / "userinfo"
+          url = URL.empty / "userinfo"
         ).addHeader(
           Header.Authorization.Bearer(
             createAccessToken(
@@ -202,11 +202,11 @@ object UserInfoControllerSpec extends UnitSpecBase:
           ),
       ),
     ),
-    suite("POST /v1/userinfo")(
+    suite("POST /userinfo")(
       userInfoTestCase(
         description = "successfully return user info via POST",
         request = Request.post(
-          url = URL.empty / "v1" / "userinfo",
+          url = URL.empty / "userinfo",
           body = Body.empty,
         ).addHeader(
           Header.Authorization.Bearer(

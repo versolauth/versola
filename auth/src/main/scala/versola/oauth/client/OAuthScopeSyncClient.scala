@@ -19,14 +19,14 @@ object OAuthScopeSyncClient:
       config: CoreConfig,
       centralSyncTokenService: CentralSyncTokenService,
   ) extends OAuthScopeSyncClient:
-    private val ScopesURL = config.central.url / "v1" / "configuration" / "scopes" / "sync"
+    private val ScopesURL = config.central.url / "configuration" / "scopes" / "sync"
 
     override def getAll: Task[Vector[ScopeRecord]] =
       for
         token <- centralSyncTokenService.getToken
         request = Request.get(ScopesURL).addHeader(Header.Authorization.Bearer(token))
-        response <- ZIO.scoped(httpClient.request(request))
-        scopes <- response.bodyAs[ScopeResponse]
+        scopes <- ZIO.scoped:
+          httpClient.request(request).flatMap(_.bodyAs[ScopeResponse])
       yield scopes.scopes
 
   case class ScopeResponse(scopes: Vector[ScopeRecord]) derives JsonCodec

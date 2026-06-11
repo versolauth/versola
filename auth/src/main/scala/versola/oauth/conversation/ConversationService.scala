@@ -213,6 +213,7 @@ object ConversationService:
           phone = conversation.userPhone,
           login = conversation.userLogin,
           claims = conversation.userClaims.getOrElse(Json.Obj()),
+          uiLocales = conversation.uiLocales,
         )
         userInfo <- userInfoService.getUserInfoForIdToken(
           user = user,

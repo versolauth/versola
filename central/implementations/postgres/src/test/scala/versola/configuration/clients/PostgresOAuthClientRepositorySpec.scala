@@ -16,5 +16,6 @@ object PostgresOAuthClientRepositorySpec extends PostgresSpec, OAuthClientReposi
   override def beforeEach(env: OAuthClientRepositorySpec.Env) =
     ZIO.serviceWithZIO[TransactorZIO] { xa =>
       xa.connect(sql"TRUNCATE TABLE tenants RESTART IDENTITY CASCADE".update.run()) *>
+        xa.connect(sql"INSERT INTO themes (id, css) VALUES ('default', '') ON CONFLICT (id) DO NOTHING".update.run()) *>
         xa.connect(sql"INSERT INTO tenants (id, description) VALUES ('tenant-a', 'Tenant A')".update.run())
     }.unit

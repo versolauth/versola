@@ -2,14 +2,14 @@ package versola.central.configuration.clients
 
 import versola.central.{CentralConfig, authorizeInternal}
 import versola.central.configuration.*
-import versola.central.configuration.tenants.TenantId
+import versola.central.configuration.edges.EdgeService
 import versola.util.http.Controller
 import zio.*
 import zio.http.*
 import zio.json.*
 
 object AuthorizationPresetController extends Controller:
-  type Env = Tracing & AuthorizationPresetService & CentralConfig
+  type Env = Tracing & AuthorizationPresetService & CentralConfig & EdgeService
 
   def routes: Routes[Env, Throwable] = Routes(
     getPresetsEndpoint,
@@ -18,7 +18,7 @@ object AuthorizationPresetController extends Controller:
   )
 
   val getPresetsEndpoint =
-    Method.GET / "v1" / "configuration" / "auth-request-presets" -> handler { (req: Request) =>
+    Method.GET / "configuration" / "auth-request-presets" -> handler { (req: Request) =>
       for
         clientId <- req.url.queryZIO[ClientId]("clientId")
         service <- ZIO.service[AuthorizationPresetService]
@@ -28,17 +28,20 @@ object AuthorizationPresetController extends Controller:
             clientId = preset.clientId,
             description = preset.description,
             redirectUri = preset.redirectUri,
+            postLoginRedirectUri = preset.postLoginRedirectUri,
             scope = preset.scope,
             responseType = preset.responseType,
             uiLocales = preset.uiLocales,
             customParameters = preset.customParameters,
+            cookieDomain = preset.cookieDomain,
+            cookiePath = preset.cookiePath,
           )
         })
       yield Response.json(response.toJson)
     }
 
   val savePresetsEndpoint =
-    Method.POST / "v1" / "configuration" / "auth-request-presets" -> handler { (req: Request) =>
+    Method.POST / "configuration" / "auth-request-presets" -> handler { (req: Request) =>
       for
         service <- ZIO.service[AuthorizationPresetService]
         body <- req.body.asJson[SaveAuthorizationPresetsRequest]
@@ -49,21 +52,24 @@ object AuthorizationPresetController extends Controller:
     }
 
   val syncPresetsEndpoint =
-    Method.GET / "v1" / "configuration" / "auth-request-presets" / "sync" -> handler { (req: Request) =>
+    Method.GET / "configuration" / "auth-request-presets" / "sync" -> handler { (req: Request) =>
       for
         service <- ZIO.service[AuthorizationPresetService]
-        tenantIds <- authorizeInternal(req)
-        presets <- service.getPresetsForSync(tenantIds)
+        edgeId <- authorizeInternal(req)
+        presets <- service.getPresetsForSync(edgeId)
         response = GetAuthorizationPresetsSyncResponse(presets.map { preset =>
           AuthorizationPresetSyncResponse(
             id = preset.id,
             clientId = preset.clientId,
             description = preset.description,
             redirectUri = preset.redirectUri,
+            postLoginRedirectUri = preset.postLoginRedirectUri,
             scope = preset.scope,
             responseType = preset.responseType,
             uiLocales = preset.uiLocales,
             customParameters = preset.customParameters,
+            cookieDomain = preset.cookieDomain,
+            cookiePath = preset.cookiePath,
           )
         })
       yield Response.json(response.toJson)

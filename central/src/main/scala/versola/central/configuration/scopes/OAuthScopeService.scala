@@ -35,7 +35,7 @@ trait OAuthScopeService:
 
 object OAuthScopeService:
   def live(
-      schedule: Schedule[Any, Any, Any] = Schedule.spaced(5.minute),
+      schedule: Schedule[Any, Any, Any],
   ): ZLayer[OAuthScopeRepository & Scope, Throwable, OAuthScopeService] =
     ZLayer(ReloadingCache.make[Vector[ScopeRecord]](schedule))
       >>> ZLayer.fromFunction(Impl(_, _))

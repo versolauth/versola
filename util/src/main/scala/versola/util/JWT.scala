@@ -6,8 +6,9 @@ import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm, JWSHeader, JWSSigner}
 import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 import zio.json.*
 import zio.json.ast.Json
-import zio.{Chunk, Clock, Duration, IO, Task, ZIO}
+import zio.{Chunk, Clock, Duration, IO, Task, UIO, ZIO}
 
+import java.nio.charset.StandardCharsets
 import java.security.PrivateKey
 import java.time.Instant
 import java.util.Date
@@ -20,15 +21,18 @@ object JWT:
       ttl: Duration,
       signature: Signature,
       typ: Type = Type.JWT,
+      headers: Map[String, String] = Map.empty,
   ): Task[String] =
     Clock.instant.flatMap { now =>
       ZIO.attemptBlocking {
-        val header = JWSHeader.Builder(signature.algorithm.jwsAlgorithm)
-          .keyID(signature.keyId.orNull)
+        val headerBuilder = JWSHeader.Builder(signature.algorithm.jwsAlgorithm)
+          .keyID(signature.keyIdOpt.orNull)
           .`type`(typ.joseObjectType)
-          .build()
+        headers.foreach((k, v) => headerBuilder.customParam(k, v))
+        val header = headerBuilder.build()
 
         val claimsBuilder = JWTClaimsSet.Builder()
+          .jwtID(java.util.UUID.randomUUID().toString)
           .issuer(claims.issuer)
           .subject(claims.subject)
           .audience(claims.audience.asJava)
@@ -41,9 +45,9 @@ object JWT:
             case Json.Num(n) => claimsBuilder.claim(key, BigDecimal(n).bigDecimal)
             case Json.Bool(b) => claimsBuilder.claim(key, b)
             case Json.Arr(elements) =>
-              claimsBuilder.claim(key, elements.map(jsonToJava).asJava)
+              claimsBuilder.claim(key, elements.map(JsonJava.toJava).asJava)
             case Json.Obj(fields) =>
-              claimsBuilder.claim(key, fields.map((k, v) => k -> jsonToJava(v)).toMap.asJava)
+              claimsBuilder.claim(key, fields.map((k, v) => k -> JsonJava.toJava(v)).toMap.asJava)
             case Json.Null => claimsBuilder.claim(key, null)
         }
 
@@ -51,7 +55,7 @@ object JWT:
 
         val jwt = new com.nimbusds.jwt.SignedJWT(header, claimsSet)
         val signer = signature match {
-          case Signature.Asymmetric(_, privateKey) if signature.algorithm == Algorithm.RS256 =>
+          case Signature.Asymmetric(_, _, privateKey) if signature.algorithm == Algorithm.RS256 =>
             new RSASSASigner(privateKey)
           case Signature.Symmetric(key) =>
             new MACSigner(key)
@@ -63,14 +67,7 @@ object JWT:
       }
     }
 
-  private def jsonToJava(json: Json): Any =
-    json match
-      case Json.Str(s) => s
-      case Json.Num(n) => BigDecimal(n).bigDecimal
-      case Json.Bool(b) => b
-      case Json.Arr(elements) => elements.map(jsonToJava).asJava
-      case Json.Obj(fields) => fields.map((k, v) => k -> jsonToJava(v)).toMap.asJava
-      case Json.Null => null
+
 
   case class Claims(
       issuer: String,
@@ -80,26 +77,25 @@ object JWT:
   )
 
   sealed trait Signature:
-    def keyId: Option[String] = this match
-      case Signature.Asymmetric(publicKeys, _) =>
-        Some(publicKeys.active.id)
-      case _ =>
-        None
-
     def algorithm: Algorithm = this match
-      case Signature.Asymmetric(publicKeys, _) =>
-        publicKeys.active.algorithm
+      case sign: Signature.Asymmetric =>
+        sign.algorithm
       case Signature.Symmetric(_) =>
         Algorithm.HS256
 
+    def keyIdOpt: Option[String] = this match
+      case sign: Signature.Asymmetric => Some(sign.keyId)
+      case _: Signature.Symmetric => None
+
   object Signature:
     case class Asymmetric(
-        publicKeys: PublicKeys,
+        override val algorithm: Algorithm,
+        keyId: String,
         privateKey: PrivateKey,
     ) extends Signature
 
     case class Symmetric(
-        key: SecretKey
+        key: SecretKey,
     ) extends Signature
 
   enum Type(val joseObjectType: JOSEObjectType):
@@ -118,10 +114,46 @@ object JWT:
     def fromJson(json: Json.Obj): PublicKeys =
       PublicKeys(JWKSet.parse(json.toJson))
 
+    given JsonDecoder[PublicKeys] = JsonDecoder[Json.Obj]
+      .map(json => PublicKeys(JWKSet.parse(json.toJson)))
+
   case class PublicKey(key: JWK):
     def id: String = key.getKeyID
     def algorithm: Algorithm = key.getAlgorithm.getName match
       case "RS256" => Algorithm.RS256
+
+  case class Header(header: JWSHeader):
+    def get(name: String): Option[String] =
+      header.getCustomParam(name) match
+        case s: String => Some(s)
+        case _ => None
+
+  /**
+   * Decode and parse only the JWT header segment without verifying the signature
+   * or parsing the payload.
+   *
+   * Useful for extracting routing information (e.g. `kid`, `eid`) needed to
+   * select the verification key before performing full validation via [[deserialize]].
+   */
+  def parseHeader[A: JsonDecoder](token: String): IO[Error, A] =
+    ZIO.attempt {
+      val firstSegment = token.takeWhile(_ != '.')
+      val bytes = java.util.Base64.getUrlDecoder.decode(firstSegment)
+      new String(bytes, java.nio.charset.StandardCharsets.UTF_8)
+    }.orElseFail(Error.InvalidHeader)
+      .flatMap(json => ZIO.fromEither(json.fromJson[A]).orElseFail(Error.InvalidHeader))
+
+  /**
+   * Decode and parse only the JWT claims (payload) segment without verifying
+   * the signature.
+   *
+   * Useful when the token has already been authenticated through another
+   * channel (e.g. an encrypted envelope) and only the claim values are needed.
+   */
+  def parseClaims[A: JsonDecoder](token: String): IO[Error, A] =
+    ZIO.attempt(new String(Base64.urlDecode(token.split('.')(1)), StandardCharsets.UTF_8))
+      .flatMap(json => ZIO.fromEither(json.fromJson[A]))
+      .orElseFail(Error.InvalidClaims)
 
   /**
    * Deserialize and validate a JWT with asymmetric signature.
@@ -141,7 +173,7 @@ object JWT:
   def deserialize[A: JsonDecoder](
       token: String,
       keys: PublicKeys,
-      typ: Type
+      typ: Type,
   ): IO[Error, A] =
     for
       now <- Clock.instant
@@ -175,7 +207,7 @@ object JWT:
   def deserialize[A: JsonDecoder](
       token: String,
       key: SecretKey,
-      typ: Type = Type.JWT
+      typ: Type = Type.JWT,
   ): IO[Error, A] =
     for
       now <- Clock.instant
@@ -228,9 +260,13 @@ object JWT:
     for
       expTime <- ZIO.attempt(Option(jwt.getJWTClaimsSet.getExpirationTime))
         .orElseFail(Error.InvalidClaims)
+      jti <- ZIO.attempt(Option(jwt.getJWTClaimsSet.getJWTID))
+        .orElseFail(Error.InvalidClaims)
+        .someOrFail(Error.InvalidClaims)
+
       _ <- expTime match
         case Some(exp) if exp.toInstant.isBefore(now) =>
-          ZIO.fail(Error.Expired)
+          ZIO.fail(Error.Expired(jti))
         case _ =>
           ZIO.unit
     yield ()
@@ -269,5 +305,6 @@ object JWT:
     case NotJWT
     case InvalidType
     case InvalidSignature
-    case Expired
+    case Expired(jti: String)
     case InvalidClaims
+    case InvalidHeader

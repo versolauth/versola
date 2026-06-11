@@ -2,10 +2,10 @@ package versola.central.configuration.edges
 
 import org.scalamock.stubs.ZIOStubs
 import versola.central.configuration.tenants.TenantId
-import versola.util.RsaKeyPair
+import versola.util.{ReloadingCache, RsaKeyPair}
 import zio.json.ast.Json
 import zio.test.*
-import zio.{UIO, ZIO}
+import zio.{Ref, UIO, Unsafe, ZIO}
 
 import java.security.KeyPairGenerator
 import java.security.interfaces.{RSAPrivateKey, RSAPublicKey}
@@ -30,10 +30,12 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
 
   val testJwk: Json.Obj = testKeyPair.toPublicJwk
 
-  class Env:
+  class Env(initial: Vector[EdgeRecord] = Vector.empty):
     val repository = stub[EdgeRepository]
     val security = stub[versola.util.SecurityService]
-    val service = EdgeService.Impl(repository, security)
+    val cache: ReloadingCache[Vector[EdgeRecord]] =
+      ReloadingCache(Unsafe.unsafe(Ref.unsafe.make(initial)(using _)))
+    val service = EdgeService.Impl(cache, repository, security)
 
   def spec = suite("EdgeService")(
     test("registerEdge creates edge and returns key pair") {
@@ -79,18 +81,38 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
           deleteCalls.head == edgeId,
         )
     },
-    test("getAllEdges returns edges from repository") {
-      val env = Env()
+    test("getAllEdges returns edges from cache") {
       val edges = Vector(
-        EdgeRecord(edgeId, testJwk, None),
         EdgeRecord(edge2Id, testJwk, None),
+        EdgeRecord(edgeId, testJwk, None),
       )
-      for
-        _ <- env.repository.getAll.succeedsWith(edges)
-        all <- env.service.getAllEdges
+      val env = Env(initial = edges)
+      for all <- env.service.getAllEdges
       yield assertTrue(
         all.length == 2,
-        all.map(_.id).toSet == Set(edgeId, edge2Id),
+        all.map(_.id) == Vector(edgeId, edge2Id),
+      )
+    },
+    test("find returns edge from cache") {
+      val edges = Vector(EdgeRecord(edgeId, testJwk, None))
+      val env = Env(initial = edges)
+      for
+        found <- env.service.find(edgeId)
+        notFound <- env.service.find(edge2Id)
+      yield assertTrue(
+        found.exists(_.id == edgeId),
+        notFound.isEmpty,
+      )
+    },
+    test("sync reloads cache from repository") {
+      val edges = Vector(EdgeRecord(edgeId, testJwk, None))
+      val env = Env()
+      for
+        _ <- env.repository.getAll.succeedsWith(edges)
+        _ <- env.service.sync()
+        all <- env.service.getAllEdges
+      yield assertTrue(
+        all == edges,
       )
     },
   )

@@ -22,8 +22,8 @@ import scala.jdk.CollectionConverters.*
  * OpenID Connect Core 1.0 Section 5.3
  *
  * Endpoints:
- *   - GET /v1/userinfo
- *   - POST /v1/userinfo
+ *   - GET /userinfo
+ *   - POST /userinfo
  *
  * Authentication: Bearer token (JWT access token) in Authorization header
  * Response: JSON object with user claims
@@ -41,7 +41,7 @@ object UserInfoController extends Controller:
   val userInfoPostEndpoint = userInfoEndpoint(Method.POST)
 
   private def userInfoEndpoint(method: Method) =
-    method / "v1" / "userinfo" -> handler { (request: Request) =>
+    method / "userinfo" -> handler { (request: Request) =>
       (for
         userInfoService <- ZIO.service[UserInfoService]
         config <- ZIO.service[CoreConfig]
@@ -58,7 +58,6 @@ object UserInfoController extends Controller:
           userId = userId,
           scope = token.scope,
           requestedClaims = token.requestedClaims,
-          uiLocales = token.uiLocales
         )
 
         jwtNeeded = request.header(Header.Accept)
@@ -83,7 +82,8 @@ object UserInfoController extends Controller:
               ),
               ttl = 5.minutes,
               signature = JWT.Signature.Asymmetric(
-                publicKeys = config.jwt.publicKeys,
+                algorithm = config.jwt.publicKeys.active.algorithm,
+                keyId = config.jwt.publicKeys.active.id,
                 privateKey = config.jwt.privateKey,
               ),
             ).map { signedJwt =>

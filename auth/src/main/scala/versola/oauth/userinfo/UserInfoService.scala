@@ -14,7 +14,6 @@ trait UserInfoService:
       userId: UserId,
       scope: Set[ScopeToken],
       requestedClaims: Option[RequestedClaims],
-      uiLocales: Option[List[String]],
   ): IO[Throwable | UserInfoError, UserInfoResponse]
 
   def getUserInfoForIdToken(
@@ -41,11 +40,10 @@ object UserInfoService:
         userId: UserId,
         scope: Set[ScopeToken],
         requestedClaims: Option[RequestedClaims],
-        tokenUiLocales: Option[List[String]],
     ): IO[Throwable | UserInfoError, UserInfoResponse] =
       for
         user <- userRepository.find(userId).someOrFail(UserInfoError.InvalidToken)
-        response <- getUserInfoInternal(user, scope, requestedClaims, tokenUiLocales, forIdToken = false, nonce = None)
+        response <- getUserInfoInternal(user, scope, requestedClaims, user.uiLocales, forIdToken = false, nonce = None)
       yield response
 
     override def getUserInfoForIdToken(
@@ -55,13 +53,13 @@ object UserInfoService:
         uiLocales: Option[List[String]],
         nonce: Option[Nonce],
     ): UIO[UserInfoResponse] =
-      getUserInfoInternal(user, scope, requestedClaims, uiLocales, forIdToken = true, nonce = nonce)
+      getUserInfoInternal(user, scope, requestedClaims, uiLocales.orElse(user.uiLocales), forIdToken = true, nonce = nonce)
 
     private def getUserInfoInternal(
         user: UserRecord,
         scope: Set[ScopeToken],
         requestedClaims: Option[RequestedClaims],
-        tokenUiLocales: Option[List[String]],
+        uiLocalesOpt: Option[List[String]],
         forIdToken: Boolean,
         nonce: Option[Nonce],
     ): UIO[UserInfoResponse] =
@@ -72,7 +70,7 @@ object UserInfoService:
           user.email.map(email => ("email", Json.Str(email))) ++
           user.phone.map(phone => ("phone_number", Json.Str(phone)))
 
-        uiLocales = tokenUiLocales.getOrElse(Nil)
+        uiLocales = uiLocalesOpt.getOrElse(Nil)
         resolvedClaims = authorizedClaims.flatMap { claimName =>
           if uiLocales.nonEmpty then
             resolveLocalizedClaim(claimName, userClaimsMap, uiLocales)

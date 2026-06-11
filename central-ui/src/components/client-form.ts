@@ -2,7 +2,7 @@ import { LitElement, html, css } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
 import { buttonStyles, cardStyles, formStyles, iconActionStyles } from '../styles/components';
-import { OAuthClient, OAuthScope, Permission, Resource } from '../types';
+import { OAuthClient, OAuthScope, Permission, Resource, ThemeRecord } from '../types';
 import { getLocalizedDescription, resolvePermissionEndpointGroups } from '../utils/helpers';
 import {
   validateClientId,
@@ -18,7 +18,8 @@ export class VersolaClientForm extends LitElement {
   @property({ attribute: false }) availablePermissions: Permission[] = [];
   @property({ attribute: false }) availableResources: Resource[] = [];
   @property({ attribute: false }) availableClientIds: string[] = [];
-  
+  @property({ attribute: false }) availableThemes: ThemeRecord[] = [];
+
   @state() private formData: Partial<OAuthClient> = {
     id: '',
     clientName: '',
@@ -27,6 +28,7 @@ export class VersolaClientForm extends LitElement {
     externalAudience: [],
     accessTokenTtl: 3600,
     permissions: [],
+    theme: 'default',
   };
 
   @state() private redirectUriInput = '';
@@ -487,6 +489,7 @@ export class VersolaClientForm extends LitElement {
       hasPreviousSecret: false,
       accessTokenTtl: ttlToSeconds(this.ttlValue, this.ttlUnit),
       permissions: this.formData.permissions || [],
+      theme: this.formData.theme || 'default',
     };
 
     this.dispatchEvent(new CustomEvent('submit', {
@@ -865,6 +868,22 @@ export class VersolaClientForm extends LitElement {
                 required
                 placeholder="e.g., My Web Application"
               />
+            </div>
+
+            <div class="form-group">
+              <label for="client-theme">Theme</label>
+              <select
+                id="client-theme"
+                class="compact-input"
+                .value=${this.formData.theme || 'default'}
+                @change=${(e: Event) => this.formData = { ...this.formData, theme: (e.target as HTMLSelectElement).value }}
+              >
+                ${this.availableThemes.length === 0
+                  ? html`<option value="default">Default</option>`
+                  : this.availableThemes.map(t => html`
+                    <option value=${t.id} ?selected=${(this.formData.theme || 'default') === t.id}>${t.id}</option>
+                  `)}
+              </select>
             </div>
 
             <div class="form-group">

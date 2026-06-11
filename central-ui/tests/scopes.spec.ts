@@ -60,7 +60,7 @@ test('creates a scope with claims and shows it in the list', async ({ page }) =>
   await expect(created.locator('.claim-name')).toContainText('name');
   await expect(created.locator('.claim-description')).toContainText('Display name');
 
-  expect(findRequest(api.requests, 'POST', '/v1/configuration/scopes').body).toEqual({
+  expect(findRequest(api.requests, 'POST', '/configuration/scopes').body).toEqual({
     tenantId: 'tenant-alpha',
     id: 'profile',
     description: { en: 'Profile data' },
@@ -82,11 +82,11 @@ test('pressing Enter in claim fields adds the claim instead of submitting the sc
   await page.getByLabel('Claim ID').press('Enter');
 
   await expect(page.locator('.claim-name')).toContainText('name');
-  expect(api.requests.some(request => request.method === 'POST' && request.pathname === '/v1/configuration/scopes')).toBeFalsy();
+  expect(api.requests.some(request => request.method === 'POST' && request.pathname === '/configuration/scopes')).toBeFalsy();
 
   await page.getByRole('button', { name: 'Create Scope', exact: true }).click();
 
-  expect(findRequest(api.requests, 'POST', '/v1/configuration/scopes').body).toEqual({
+  expect(findRequest(api.requests, 'POST', '/configuration/scopes').body).toEqual({
     tenantId: 'tenant-alpha',
     id: 'profile',
     description: { en: 'Profile data' },
@@ -108,7 +108,7 @@ test('shows scope validation before submitting', async ({ page }) => {
   await expect(scopeIdField).toHaveCSS('border-top-color', 'rgb(248, 81, 73)');
   await page.getByRole('button', { name: 'Create Scope', exact: true }).click();
 
-  expect(api.requests.some(request => request.method === 'POST' && request.pathname === '/v1/configuration/scopes')).toBeFalsy();
+  expect(api.requests.some(request => request.method === 'POST' && request.pathname === '/configuration/scopes')).toBeFalsy();
 });
 
 test('updates a scope and sends patch-style claim changes', async ({ page }) => {
@@ -136,7 +136,7 @@ test('updates a scope and sends patch-style claim changes', async ({ page }) => 
   await expect(updated).toContainText('name');
   await expect(updated).not.toContainText('Email address');
 
-  expect(findRequest(api.requests, 'PUT', '/v1/configuration/scopes').body).toEqual({
+  expect(findRequest(api.requests, 'PUT', '/configuration/scopes').body).toEqual({
     tenantId: 'tenant-alpha',
     id: 'openid',
     patch: {
@@ -157,7 +157,7 @@ test('deletes a scope through the confirm dialog and reaches the empty state', a
   await scopeCard(page, 'openid').getByRole('button', { name: 'Delete scope openid' }).click();
   await page.getByRole('dialog').getByRole('button', { name: 'Delete', exact: true }).click();
 
-  expect(findRequest(api.requests, 'DELETE', '/v1/configuration/scopes').searchParams).toEqual({
+  expect(findRequest(api.requests, 'DELETE', '/configuration/scopes').searchParams).toEqual({
     tenantId: 'tenant-alpha',
     scopeId: 'openid',
   });

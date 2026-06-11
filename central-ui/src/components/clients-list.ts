@@ -2,7 +2,7 @@ import { LitElement, html, css } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
 import { badgeStyles, buttonStyles, cardStyles, formStyles } from '../styles/components';
-import {AuthorizationPreset, OAuthClient, OAuthScope, Permission, Resource} from '../types';
+import {AuthorizationPreset, OAuthClient, OAuthScope, Permission, Resource, ThemeRecord} from '../types';
 import {
   createClient,
   deleteClient,
@@ -12,6 +12,8 @@ import {
   fetchClientPresets,
   fetchResources,
   fetchAllScopes,
+  fetchTenants,
+  fetchThemes,
   rotateClientSecret,
   updateClient,
 } from '../utils/central-api';
@@ -28,6 +30,7 @@ export class VersolaClientsList extends LitElement {
   @property({ type: String }) expandClientId: string | null = null;
 
   @state() private clients: OAuthClient[] = [];
+  @state() private tenantEdgeId: string | null = null;
   @state() private searchQuery = '';
   @state() private isLoading = false;
   @state() private errorMessage = '';
@@ -39,6 +42,7 @@ export class VersolaClientsList extends LitElement {
   @state() private availableScopes: OAuthScope[] = [];
   @state() private availablePermissions: Permission[] = [];
   @state() private availableResources: Resource[] = [];
+  @state() private availableThemes: ThemeRecord[] = [];
   @state() private isPreparingForm = false;
   @state() private createdSecret: { clientName: string; secret: string; action: 'created' | 'rotated' } | null = null;
   @state() private copyFeedback = '';
@@ -74,6 +78,7 @@ export class VersolaClientsList extends LitElement {
   private async loadData() {
     if (!this.tenantId) {
       this.clients = [];
+      this.tenantEdgeId = null;
       this.errorMessage = '';
       return;
     }
@@ -83,9 +88,13 @@ export class VersolaClientsList extends LitElement {
     this.errorMessage = '';
 
     try {
-      const result = await fetchAllClients(this.tenantId);
+      const [result, tenants] = await Promise.all([
+        fetchAllClients(this.tenantId),
+        fetchTenants(),
+      ]);
       if (requestId !== this.loadRequestId) return;
       this.clients = result;
+      this.tenantEdgeId = tenants.find(t => t.id === this.tenantId)?.edgeId ?? null;
     } catch (error) {
       if (requestId !== this.loadRequestId) return;
       this.clients = [];
@@ -423,26 +432,37 @@ export class VersolaClientsList extends LitElement {
 
       .preset-details {
         display: grid;
-        gap: var(--spacing-sm);
+        grid-template-columns: max-content 1fr;
+        gap: var(--spacing-sm) var(--spacing-md);
         padding-top: var(--spacing-md);
+        font-size: 0.8125rem;
+        align-items: baseline;
       }
 
       .preset-row {
-        display: flex;
-        gap: var(--spacing-sm);
-        font-size: 0.8125rem;
+        display: contents;
       }
 
       .preset-label {
         color: var(--text-secondary);
         font-weight: 500;
-        min-width: 7rem;
       }
 
       .preset-value {
         color: var(--text-primary);
         font-family: var(--font-mono);
         word-break: break-all;
+      }
+
+      .preset-value-empty {
+        color: var(--text-secondary);
+        font-style: italic;
+      }
+
+      .preset-divider {
+        grid-column: 1 / -1;
+        border-top: 1px solid var(--border-dark);
+        margin: var(--spacing-xs) 0;
       }
     `,
   ];
@@ -483,7 +503,7 @@ export class VersolaClientsList extends LitElement {
     if (client.authorizationPresets !== undefined) return;
 
     try {
-      const presets = await fetchClientPresets(this.tenantId, clientId);
+      const presets = await fetchClientPresets(clientId);
       // Update the client with loaded presets
       this.clients = this.clients.map(c =>
         c.id === clientId ? { ...c, authorizationPresets: presets } : c
@@ -512,16 +532,18 @@ export class VersolaClientsList extends LitElement {
       return;
     }
 
-    const [scopes, permissions, resources] = await Promise.all([
+    const [scopes, permissions, resources, themes] = await Promise.all([
       fetchAllScopes(tenantId),
       fetchAllPermissions(tenantId),
       fetchResources(tenantId),
+      fetchThemes(tenantId),
     ]);
 
     if (this.tenantId === tenantId) {
       this.availableScopes = scopes;
       this.availablePermissions = permissions;
       this.availableResources = resources;
+      this.availableThemes = themes;
       this.formOptionsTenantId = tenantId;
     }
   }
@@ -813,6 +835,7 @@ export class VersolaClientsList extends LitElement {
           .availablePermissions=${this.availablePermissions}
           .availableResources=${this.availableResources}
           .availableClientIds=${this.clients.map(client => client.id)}
+          .availableThemes=${this.availableThemes}
           @close=${this.handleFormClose}
           @delete-previous-secret=${this.handleDeletePreviousSecret}
           @rotate-secret=${this.handleRotateSecret}
@@ -972,17 +995,17 @@ export class VersolaClientsList extends LitElement {
                         <div class="detail-value">${formatDuration(client.accessTokenTtl)}</div>
                       </div>
 
-                      ${client.edgeId ? html`
+                      ${this.tenantEdgeId ? html`
                         <div class="detail-section">
                           <div class="detail-label">Edge</div>
                           <div class="detail-value">
                             <button
                               type="button"
                               class="client-link"
-                              @click=${() => this.navigateToEdge(client.edgeId!)}
-                              aria-label=${`Open edge ${client.edgeId}`}
+                              @click=${() => this.navigateToEdge(this.tenantEdgeId!)}
+                              aria-label=${`Open edge ${this.tenantEdgeId}`}
                             >
-                              ${client.edgeId}
+                              ${this.tenantEdgeId}
                             </button>
                           </div>
                         </div>
@@ -1046,7 +1069,7 @@ export class VersolaClientsList extends LitElement {
               </div>
             ` : html`
               <div class="presets-list">
-                ${presets.map(preset => this.renderPresetCard(client, preset))}
+                ${presets.map(preset => this.renderPresetCard(preset))}
               </div>
             `}
           </div>
@@ -1153,37 +1176,7 @@ export class VersolaClientsList extends LitElement {
         ${isExpanded ? html`
           <div class="preset-body">
             <div class="preset-details">
-              <div class="preset-row">
-                <span class="preset-label">Redirect URI:</span>
-                <span class="preset-value">${preset.redirectUri}</span>
-              </div>
-              <div class="preset-row">
-                <span class="preset-label">Scope:</span>
-                <span class="preset-value">${preset.scope.join(', ')}</span>
-              </div>
-              <div class="preset-row">
-                <span class="preset-label">Response Type:</span>
-                <span class="preset-value">${preset.responseType}</span>
-              </div>
-              ${preset.uiLocales && preset.uiLocales.length > 0 ? html`
-                <div class="preset-row">
-                  <span class="preset-label">UI Locales:</span>
-                  <span class="preset-value">${preset.uiLocales.join(', ')}</span>
-                </div>
-              ` : ''}
-              ${preset.customParameters && Object.keys(preset.customParameters).length > 0 ? html`
-                <div class="preset-row">
-                  <span class="preset-label">Custom Parameters:</span>
-                  <div class="preset-value">
-                    ${Object.entries(preset.customParameters).map(([key, values]) => html`
-                      <div style="margin-bottom: 0.25rem;">
-                        <span style="color: var(--accent); font-weight: 600;">${key}:</span>
-                        <span>${values.join(', ')}</span>
-                      </div>
-                    `)}
-                  </div>
-                </div>
-              ` : ''}
+              ${this.renderPresetDetailRows(preset)}
             </div>
           </div>
         ` : ''}
@@ -1192,7 +1185,63 @@ export class VersolaClientsList extends LitElement {
   }
 
 
-  private renderPresetCard(client: OAuthClient, preset: AuthorizationPreset) {
+  private renderPresetDetailRows(preset: AuthorizationPreset) {
+    const emptyValue = html`<span class="preset-value preset-value-empty">Not set</span>`;
+    return html`
+      <div class="preset-row">
+        <span class="preset-label">Redirect URI:</span>
+        <span class="preset-value">${preset.redirectUri}</span>
+      </div>
+      <div class="preset-row">
+        <span class="preset-label">Scope:</span>
+        <span class="preset-value">${preset.scope.join(', ')}</span>
+      </div>
+      <div class="preset-row">
+        <span class="preset-label">Response Type:</span>
+        <span class="preset-value">${preset.responseType}</span>
+      </div>
+      ${preset.uiLocales && preset.uiLocales.length > 0 ? html`
+        <div class="preset-row">
+          <span class="preset-label">UI Locales:</span>
+          <span class="preset-value">${preset.uiLocales.join(', ')}</span>
+        </div>
+      ` : ''}
+      ${preset.customParameters && Object.keys(preset.customParameters).length > 0 ? html`
+        <div class="preset-row">
+          <span class="preset-label">Custom Parameters:</span>
+          <div class="preset-value">
+            ${Object.entries(preset.customParameters).map(([key, values]) => html`
+              <div style="margin-bottom: 0.25rem;">
+                <span style="color: var(--accent); font-weight: 600;">${key}:</span>
+                <span>${values.join(', ')}</span>
+              </div>
+            `)}
+          </div>
+        </div>
+      ` : ''}
+
+      <div class="preset-divider"></div>
+
+      <div class="preset-row">
+        <span class="preset-label">Post-login redirect URI:</span>
+        <span class="preset-value">${preset.postLoginRedirectUri}</span>
+      </div>
+      <div class="preset-row">
+        <span class="preset-label">Cookie domain:</span>
+        ${preset.cookieDomain
+          ? html`<span class="preset-value">${preset.cookieDomain}</span>`
+          : emptyValue}
+      </div>
+      <div class="preset-row">
+        <span class="preset-label">Cookie path:</span>
+        ${preset.cookiePath
+          ? html`<span class="preset-value">${preset.cookiePath}</span>`
+          : emptyValue}
+      </div>
+    `;
+  }
+
+  private renderPresetCard(preset: AuthorizationPreset) {
     const isExpanded = this.expandedPresetCards.has(preset.id);
 
     return html`
@@ -1207,37 +1256,7 @@ export class VersolaClientsList extends LitElement {
         ${isExpanded ? html`
           <div class="preset-body">
             <div class="preset-details">
-              <div class="preset-row">
-                <span class="preset-label">Redirect URI:</span>
-                <span class="preset-value">${preset.redirectUri}</span>
-              </div>
-              <div class="preset-row">
-                <span class="preset-label">Scope:</span>
-                <span class="preset-value">${preset.scope.join(', ')}</span>
-              </div>
-              <div class="preset-row">
-                <span class="preset-label">Response Type:</span>
-                <span class="preset-value">${preset.responseType}</span>
-              </div>
-              ${preset.uiLocales && preset.uiLocales.length > 0 ? html`
-                <div class="preset-row">
-                  <span class="preset-label">UI Locales:</span>
-                  <span class="preset-value">${preset.uiLocales.join(', ')}</span>
-                </div>
-              ` : ''}
-              ${preset.customParameters && Object.keys(preset.customParameters).length > 0 ? html`
-                <div class="preset-row">
-                  <span class="preset-label">Custom Parameters:</span>
-                  <div class="preset-value">
-                    ${Object.entries(preset.customParameters).map(([key, values]) => html`
-                      <div style="margin-bottom: 0.25rem;">
-                        <span style="color: var(--accent); font-weight: 600;">${key}:</span>
-                        <span>${values.join(', ')}</span>
-                      </div>
-                    `)}
-                  </div>
-                </div>
-              ` : ''}
+              ${this.renderPresetDetailRows(preset)}
             </div>
           </div>
         ` : ''}
@@ -1309,7 +1328,7 @@ export class VersolaClientsList extends LitElement {
     this.isSavingPresets = true;
 
     try {
-      const response = await fetch('/v1/configuration/auth-request-presets', {
+      const response = await fetch('/configuration/auth-request-presets', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1318,10 +1337,13 @@ export class VersolaClientsList extends LitElement {
             id: p.id,
             description: p.description,
             redirectUri: p.redirectUri,
+            postLoginRedirectUri: p.postLoginRedirectUri,
             scope: p.scope,
             responseType: p.responseType,
             uiLocales: p.uiLocales,
             customParameters: p.customParameters,
+            cookieDomain: p.cookieDomain,
+            cookiePath: p.cookiePath,
           })),
         }),
       });

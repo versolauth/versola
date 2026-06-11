@@ -2,7 +2,7 @@ package versola.central.configuration.scopes
 
 import io.opentelemetry.api
 import org.scalamock.stubs.{Stub, ZIOStubs}
-import versola.central.CentralConfig
+import versola.central.{CentralConfig, TestCentralConfig}
 import versola.central.configuration.*
 import versola.central.configuration.tenants.TenantId
 import versola.util.http.Observability
@@ -26,11 +26,7 @@ object ScopeControllerSpec extends ZIOSpecDefault, ZIOStubs:
   private val localeClaim = Claim("locale")
   private val secretKey = SecretKeySpec(Array.fill(32)(7.toByte), "AES")
 
-  private val config = CentralConfig(
-    initialize = false,
-    clientSecretsPepper = Secret(Array.fill(16)(5.toByte)),
-    secretKey = secretKey,
-  )
+  private val config = TestCentralConfig.config
   private val syncToken = Unsafe.unsafe { unsafe ?=>
     Runtime.default.unsafe
       .run(
@@ -113,11 +109,12 @@ object ScopeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       for
         client <- ZIO.service[Client]
         service = stub[OAuthScopeService]
+        edgeService = stub[versola.central.configuration.edges.EdgeService]
         tracing <- tracingLayer.build
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             ScopeController.routes.provideEnvironment(
-              ZEnvironment(service) ++ ZEnvironment(config) ++ tracing
+              ZEnvironment[OAuthScopeService](service) ++ ZEnvironment(config) ++ tracing ++ ZEnvironment[versola.central.configuration.edges.EdgeService](edgeService)
             )
           )
         )
@@ -131,7 +128,7 @@ object ScopeControllerSpec extends ZIOSpecDefault, ZIOStubs:
     controllerTestCase(
       description = "return tenant scopes with pagination params",
       request = Request.get(
-        (URL.empty / "v1" / "configuration" / "scopes")
+        (URL.empty / "configuration" / "scopes")
           .addQueryParams(Map("tenantId" -> tenantId.toString, "offset" -> "1", "limit" -> "3"))
       ),
       expectedStatus = Status.Ok,
@@ -166,7 +163,7 @@ object ScopeControllerSpec extends ZIOSpecDefault, ZIOStubs:
     controllerTestCase(
       description = "use default offset and empty limit when pagination params are absent",
       request = Request.get(
-        (URL.empty / "v1" / "configuration" / "scopes")
+        (URL.empty / "configuration" / "scopes")
           .addQueryParam("tenantId", tenantId.toString)
       ),
       expectedStatus = Status.Ok,
@@ -183,7 +180,7 @@ object ScopeControllerSpec extends ZIOSpecDefault, ZIOStubs:
     controllerTestCase(
       description = "return synced tenant scopes for authorized service token",
       request = Request.get(
-        (URL.empty / "v1" / "configuration" / "scopes" / "sync")
+        (URL.empty / "configuration" / "scopes" / "sync")
           .addQueryParam("tenantId", tenantId.toString)
       ).addHeader(Header.Authorization.Bearer(syncToken)),
       expectedStatus = Status.Ok,
@@ -219,7 +216,7 @@ object ScopeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       description = "create scope",
       request = Request(
         method = Method.POST,
-        url = URL.empty / "v1" / "configuration" / "scopes",
+        url = URL.empty / "configuration" / "scopes",
         body = Body.fromString(createRequest.toJson),
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.Created,
@@ -232,7 +229,7 @@ object ScopeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       description = "update scope",
       request = Request(
         method = Method.PUT,
-        url = URL.empty / "v1" / "configuration" / "scopes",
+        url = URL.empty / "configuration" / "scopes",
         body = Body.fromString(updateRequest.toJson),
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.NoContent,
@@ -245,7 +242,7 @@ object ScopeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       description = "delete scope",
       request = Request(
         method = Method.DELETE,
-        url = (URL.empty / "v1" / "configuration" / "scopes")
+        url = (URL.empty / "configuration" / "scopes")
           .addQueryParams(Map("tenantId" -> tenantId.toString, "scopeId" -> profileScope.toString)),
       ),
       expectedStatus = Status.NoContent,

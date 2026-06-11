@@ -2,7 +2,7 @@ package versola.central.configuration.clients
 
 import io.opentelemetry.api
 import org.scalamock.stubs.{Stub, ZIOStubs}
-import versola.central.CentralConfig
+import versola.central.{CentralConfig, TestCentralConfig}
 import versola.central.configuration.*
 import versola.central.configuration.permissions.Permission
 import versola.central.configuration.scopes.ScopeToken
@@ -33,16 +33,12 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
   private val rotatedSecret = Secret(Array.fill(32)(3.toByte))
   private val secretKey = SecretKeySpec(Array.fill(32)(7.toByte), "AES")
 
-  private val config = CentralConfig(
-    initialize = false,
-    clientSecretsPepper = Secret(Array.fill(16)(5.toByte)),
-    secretKey = secretKey,
-  )
+  private val config = TestCentralConfig.config
   private val syncToken = Unsafe.unsafe { unsafe ?=>
     Runtime.default.unsafe
       .run(
         JWT.serialize(
-          JWT.Claims("a", "b", List("c"), Json.Obj("tenantId" -> Json.Str(tenantId))),
+          JWT.Claims("a", "b", List("c"), Json.Obj()),
           1.minute,
           JWT.Signature.Symmetric(secretKey),
         ),
@@ -77,6 +73,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       remove = Set(readPermission),
     ),
     accessTokenTtl = Some(900L),
+    refreshTokenTtl = None,
   )
 
   private val clients = Vector(
@@ -90,7 +87,9 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       secret = Some(currentSecret),
       previousSecret = None,
       accessTokenTtl = 5.minutes,
+      refreshTokenTtl = 7776000.seconds,
       permissions = Set(readPermission),
+      theme = "",
     ),
     OAuthClientRecord(
       id = ClientId("mobile-app"),
@@ -102,7 +101,9 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       secret = Some(currentSecret),
       previousSecret = Some(previousSecret),
       accessTokenTtl = 10.minutes,
+      refreshTokenTtl = 7776000.seconds,
       permissions = Set(writePermission),
+      theme = "",
     ),
   )
 
@@ -127,13 +128,14 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       for
         client <- ZIO.service[Client]
         service = stub[OAuthClientService]
+        edgeService = stub[versola.central.configuration.edges.EdgeService]
         tracing <- tracingLayer.build
         security <- securityLayer.build
         securityService = security.get[SecurityService]
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             ClientController.routes.provideEnvironment(
-              ZEnvironment(service) ++ ZEnvironment(config) ++ tracing ++ security,
+              ZEnvironment[OAuthClientService](service) ++ ZEnvironment(config) ++ tracing ++ security ++ ZEnvironment[versola.central.configuration.edges.EdgeService](edgeService),
             ),
           ),
         )
@@ -182,7 +184,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
     controllerTestCase(
       description = "return tenant clients with pagination params",
       request = Request.get(
-        (URL.empty / "v1" / "configuration" / "clients")
+        (URL.empty / "configuration" / "clients")
           .addQueryParams(Map("tenantId" -> tenantId.toString, "offset" -> "5", "limit" -> "10")),
       ),
       expectedStatus = Status.Ok,
@@ -203,6 +205,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
                 scope = Set(readScope),
                 permissions = Set(readPermission),
                 secretRotation = false,
+                theme = "",
               ),
               OAuthClientResponse(
                 id = ClientId("mobile-app"),
@@ -211,6 +214,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
                 scope = Set(writeScope),
                 permissions = Set(writePermission),
                 secretRotation = true,
+                theme = "",
               ),
             ),
           ),
@@ -219,7 +223,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
     controllerTestCase(
       description = "use default offset and empty limit when pagination params are absent",
       request = Request.get(
-        (URL.empty / "v1" / "configuration" / "clients")
+        (URL.empty / "configuration" / "clients")
           .addQueryParam("tenantId", tenantId.toString),
       ),
       expectedStatus = Status.Ok,
@@ -236,19 +240,19 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
     controllerTestCase(
       description = "return synced tenant clients with encrypted secrets for authorized service token",
       request = Request.get(
-        (URL.empty / "v1" / "configuration" / "clients" / "sync")
+        (URL.empty / "configuration" / "clients" / "sync")
           .addQueryParam("tenantId", tenantId.toString),
       ).addHeader(Header.Authorization.Bearer(syncToken)),
       expectedStatus = Status.Ok,
       setup = service =>
-        service.getAllClients.succeedsWith(clients),
+        service.getClientsForSync.succeedsWith(clients),
       verify = (response, service, securityService) =>
         for
           payload <- response.body.asJson[GetOAuthClientsSyncResponse]
           decryptedClients <- ZIO.foreach(payload.clients)(decryptSyncedClient(_, securityService))
           decryptedPepper <- securityService.decryptAes256(Base64.urlDecode(payload.pepper), secretKey)
         yield assertTrue(
-          service.getAllClients.calls.length == 1,
+          service.getClientsForSync.calls == List(None),
           decryptedPepper.sameElements(config.clientSecretsPepper),
           decryptedClients == Vector(
             DecryptedSyncOAuthClientRecord(
@@ -277,18 +281,18 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
     controllerTestCase(
       description = "reject synced tenant clients request without service token",
       request = Request.get(
-        (URL.empty / "v1" / "configuration" / "clients" / "sync")
+        (URL.empty / "configuration" / "clients" / "sync")
           .addQueryParam("tenantId", tenantId),
       ),
       expectedStatus = Status.Unauthorized,
       verify = (_, service, _) =>
-        ZIO.succeed(assertTrue(service.getAllClients.calls.isEmpty)),
+        ZIO.succeed(assertTrue(service.getClientsForSync.calls.isEmpty)),
     ),
     controllerTestCase(
       description = "create client and return encoded secret",
       request = Request(
         method = Method.POST,
-        url = URL.empty / "v1" / "configuration" / "clients",
+        url = URL.empty / "configuration" / "clients",
         body = Body.fromString(createRequest.toJson),
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.Created,
@@ -306,7 +310,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       description = "update client and return no content",
       request = Request(
         method = Method.PUT,
-        url = URL.empty / "v1" / "configuration" / "clients",
+        url = URL.empty / "configuration" / "clients",
         body = Body.fromString(updateRequest.toJson),
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.NoContent,
@@ -321,7 +325,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       description = "rotate client secret and return encoded value",
       request = Request(
         method = Method.POST,
-        url = (URL.empty / "v1" / "configuration" / "clients" / "rotate-secret")
+        url = (URL.empty / "configuration" / "clients" / "rotate-secret")
           .addQueryParams(Map("tenantId" -> tenantId.toString, "clientId" -> clientId.toString)),
       ),
       expectedStatus = Status.Ok,
@@ -339,7 +343,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       description = "delete previous client secret",
       request = Request(
         method = Method.DELETE,
-        url = (URL.empty / "v1" / "configuration" / "clients" / "previous-secret")
+        url = (URL.empty / "configuration" / "clients" / "previous-secret")
           .addQueryParams(Map("tenantId" -> tenantId.toString, "clientId" -> clientId.toString)),
       ),
       expectedStatus = Status.NoContent,
@@ -354,7 +358,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       description = "delete client",
       request = Request(
         method = Method.DELETE,
-        url = (URL.empty / "v1" / "configuration" / "clients")
+        url = (URL.empty / "configuration" / "clients")
           .addQueryParams(Map("tenantId" -> tenantId.toString, "clientId" -> clientId.toString)),
       ),
       expectedStatus = Status.NoContent,

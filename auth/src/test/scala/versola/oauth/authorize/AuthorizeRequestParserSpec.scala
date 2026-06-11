@@ -34,6 +34,8 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
     secret = None,
     previousSecret = None,
     accessTokenTtl = 10.minutes,
+    refreshTokenTtl = 7776000.seconds,
+    theme = "default",
   )
 
   class Env:

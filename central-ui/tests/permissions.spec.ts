@@ -2,9 +2,8 @@ import { expect, test, type Page } from '@playwright/test';
 import { findRequest, loadAdminApp } from './fixtures';
 
 const permissionsPath = '/?view=permissions&tenant=tenant-alpha';
-const emptyAcl = { kind: 'any', children: [] } as const;
-const alphaResource = { id: 1, resource: 'https://alpha.example', endpoints: [{ id: 101, method: 'GET', path: '/alpha/items', fetchUserInfo: false, allowRules: emptyAcl, denyRules: emptyAcl, injectHeaders: {} }, { id: 102, method: 'POST', path: '/alpha/items', fetchUserInfo: false, allowRules: emptyAcl, denyRules: emptyAcl, injectHeaders: {} }] };
-const reportsResource = { id: 2, resource: 'https://reports.example', endpoints: [{ id: 201, method: 'GET', path: '/reports', fetchUserInfo: false, allowRules: emptyAcl, denyRules: emptyAcl, injectHeaders: {} }] };
+const alphaResource = { id: 1, alias: 'alpha', resource: 'https://alpha.example', endpoints: [{ id: 101, method: 'GET', path: '/alpha/items', fetchUserInfo: false, allow: 'true', inject: [] }, { id: 102, method: 'POST', path: '/alpha/items', fetchUserInfo: false, allow: 'true', inject: [] }] };
+const reportsResource = { id: 2, alias: 'reports', resource: 'https://reports.example', endpoints: [{ id: 201, method: 'GET', path: '/reports', fetchUserInfo: false, allow: 'true', inject: [] }] };
 const alphaRead = { permission: 'alpha.read', description: { en: 'Read alpha resources' }, endpointIds: [101] };
 const reportsRead = { permission: 'reports.read', description: { en: 'Read reports' }, endpointIds: [201] };
 
@@ -47,7 +46,7 @@ test('creates a permission bound to a selected resource endpoint', async ({ page
   const created = permissionCard(page, 'Write alpha resources');
   await expect(created).toContainText('alpha.write');
   await expect(created).toContainText('POST');
-  expect(findRequest(api.requests, 'POST', '/v1/configuration/permissions').body).toEqual({ tenantId: 'tenant-alpha', permission: 'alpha.write', description: { en: 'Write alpha resources' }, endpointIds: [102] });
+  expect(findRequest(api.requests, 'POST', '/configuration/permissions').body).toEqual({ tenantId: 'tenant-alpha', permission: 'alpha.write', description: { en: 'Write alpha resources' }, endpointIds: [102] });
 });
 
 test('shows permission id validation with a red input border before submitting', async ({ page }) => {
@@ -62,7 +61,7 @@ test('shows permission id validation with a red input border before submitting',
   await expect(permissionIdField).toHaveCSS('border-top-color', 'rgb(248, 81, 73)');
   await page.getByRole('button', { name: 'Create Permission', exact: true }).click();
 
-  expect(api.requests.some(request => request.method === 'POST' && request.pathname === '/v1/configuration/permissions')).toBeFalsy();
+  expect(api.requests.some(request => request.method === 'POST' && request.pathname === '/configuration/permissions')).toBeFalsy();
 });
 
 test('edits a permission and changes its endpoint binding', async ({ page }) => {
@@ -79,7 +78,7 @@ test('edits a permission and changes its endpoint binding', async ({ page }) => 
   const updated = permissionCard(page, 'Update alpha resources');
   await expect(updated).toContainText('alpha.read');
   await expect(updated).toContainText('POST');
-  expect(findRequest(api.requests, 'PUT', '/v1/configuration/permissions').body).toEqual({ tenantId: 'tenant-alpha', permission: 'alpha.read', description: { add: { en: 'Update alpha resources' }, delete: [] }, endpointIds: [102] });
+  expect(findRequest(api.requests, 'PUT', '/configuration/permissions').body).toEqual({ tenantId: 'tenant-alpha', permission: 'alpha.read', description: { add: { en: 'Update alpha resources' }, delete: [] }, endpointIds: [102] });
 });
 
 test('deletes a permission through the shared confirm dialog', async ({ page }) => {
@@ -88,7 +87,7 @@ test('deletes a permission through the shared confirm dialog', async ({ page }) 
   await permissionCard(page, 'Read alpha resources').getByRole('button', { name: 'Delete permission alpha.read' }).click();
   await page.getByRole('dialog').getByRole('button', { name: 'Delete', exact: true }).click();
 
-  expect(findRequest(api.requests, 'DELETE', '/v1/configuration/permissions').searchParams).toEqual({ tenantId: 'tenant-alpha', permission: 'alpha.read' });
+  expect(findRequest(api.requests, 'DELETE', '/configuration/permissions').searchParams).toEqual({ tenantId: 'tenant-alpha', permission: 'alpha.read' });
   await expect(page.locator('.permission-card')).toHaveCount(0);
   await expect(page.getByRole('heading', { name: 'No permissions yet', exact: true })).toBeVisible();
 });

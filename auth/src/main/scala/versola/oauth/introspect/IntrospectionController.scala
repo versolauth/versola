@@ -21,7 +21,7 @@ object IntrospectionController extends Controller:
   )
 
   val introspectEndpoint =
-    Method.POST / "v1" / "introspect" -> handler { (request: Request) =>
+    Method.POST / "introspect" -> handler { (request: Request) =>
       (for
         introspectionService <- ZIO.service[IntrospectionService]
         config <- ZIO.service[CoreConfig]

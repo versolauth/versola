@@ -17,10 +17,13 @@ case class AuthorizationPreset(
     clientId: ClientId,
     description: String,
     redirectUri: RedirectUri,
+    postLoginRedirectUri: RedirectUri,
     scope: Set[ScopeToken],
     responseType: ResponseType,
     uiLocales: Option[List[String]],
     customParameters: Map[String, List[String]],
+    cookieDomain: Option[String],
+    cookiePath: Option[String],
 ) derives Schema, CanEqual, Equal
 
 enum ResponseType derives CanEqual, Equal:

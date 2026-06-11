@@ -2,9 +2,12 @@ package versola.central.configuration.roles
 
 import io.opentelemetry.api
 import org.scalamock.stubs.{Stub, ZIOStubs}
+import versola.central.{CentralConfig, TestCentralConfig}
 import versola.central.configuration.*
+import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.permissions.Permission
 import versola.central.configuration.tenants.TenantId
+import versola.util.Secret
 import versola.util.http.Observability
 import zio.*
 import zio.http.*
@@ -13,7 +16,11 @@ import zio.telemetry.opentelemetry.OpenTelemetry
 import zio.telemetry.opentelemetry.tracing.Tracing
 import zio.test.*
 
+import javax.crypto.spec.SecretKeySpec
+
 object RoleControllerSpec extends ZIOSpecDefault, ZIOStubs:
+  private val config = TestCentralConfig.config
+
   private val tenantId = TenantId("tenant-a")
   private val adminRole = RoleId("admin")
   private val operatorRole = RoleId("operator")
@@ -76,10 +83,13 @@ object RoleControllerSpec extends ZIOSpecDefault, ZIOStubs:
       for
         client <- ZIO.service[Client]
         service = stub[RoleService]
+        edgeService = stub[EdgeService]
         tracing <- tracingLayer.build
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
-            RoleController.routes.provideEnvironment(ZEnvironment(service) ++ tracing)
+            RoleController.routes.provideEnvironment(
+              ZEnvironment[RoleService](service) ++ tracing ++ ZEnvironment(config) ++ ZEnvironment[EdgeService](edgeService)
+            )
           )
         )
         _ <- setup(service)
@@ -92,7 +102,7 @@ object RoleControllerSpec extends ZIOSpecDefault, ZIOStubs:
     controllerTestCase(
       description = "return tenant roles with pagination params",
       request = Request.get(
-        (URL.empty / "v1" / "configuration" / "roles")
+        (URL.empty / "configuration" / "roles")
           .addQueryParams(Map("tenantId" -> tenantId.toString, "offset" -> "4", "limit" -> "6"))
       ),
       expectedStatus = Status.Ok,
@@ -114,7 +124,7 @@ object RoleControllerSpec extends ZIOSpecDefault, ZIOStubs:
     controllerTestCase(
       description = "use default offset and empty limit when pagination params are absent",
       request = Request.get(
-        (URL.empty / "v1" / "configuration" / "roles")
+        (URL.empty / "configuration" / "roles")
           .addQueryParam("tenantId", tenantId.toString)
       ),
       expectedStatus = Status.Ok,
@@ -132,7 +142,7 @@ object RoleControllerSpec extends ZIOSpecDefault, ZIOStubs:
       description = "create role",
       request = Request(
         method = Method.POST,
-        url = URL.empty / "v1" / "configuration" / "roles",
+        url = URL.empty / "configuration" / "roles",
         body = Body.fromString(createRequest.toJson),
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.Created,
@@ -145,7 +155,7 @@ object RoleControllerSpec extends ZIOSpecDefault, ZIOStubs:
       description = "update role",
       request = Request(
         method = Method.PUT,
-        url = URL.empty / "v1" / "configuration" / "roles",
+        url = URL.empty / "configuration" / "roles",
         body = Body.fromString(updateRequest.toJson),
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.NoContent,
@@ -158,7 +168,7 @@ object RoleControllerSpec extends ZIOSpecDefault, ZIOStubs:
       description = "delete role",
       request = Request(
         method = Method.DELETE,
-        url = (URL.empty / "v1" / "configuration" / "roles")
+        url = (URL.empty / "configuration" / "roles")
           .addQueryParams(Map("tenantId" -> tenantId.toString, "roleId" -> adminRole.toString)),
       ),
       expectedStatus = Status.NoContent,

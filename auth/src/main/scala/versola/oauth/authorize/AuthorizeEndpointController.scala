@@ -4,15 +4,15 @@ import versola.oauth.authorize.model.{AuthorizeRequest, AuthorizeResponse, Error
 import versola.oauth.conversation.ConversationRenderService
 import versola.oauth.conversation.model.{ConversationRecord, ConversationStep}
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, ConversationCookie}
+import versola.util.CoreConfig
 import versola.util.http.Controller
-import versola.util.{CoreConfig, EnvName}
 import zio.*
 import zio.http.*
 import zio.prelude.NonEmptySet
 import zio.telemetry.opentelemetry.tracing.Tracing
 
 object AuthorizeEndpointController extends Controller:
-  type Env = Tracing & AuthorizeRequestParser & AuthorizeEndpointService & CoreConfig & EnvName
+  type Env = Tracing & AuthorizeRequestParser & AuthorizeEndpointService & CoreConfig
 
   def routes: Routes[Env, Throwable] = Routes(
     getAuthorizeRoute,
@@ -23,7 +23,7 @@ object AuthorizeEndpointController extends Controller:
   val postAuthorizeRoute = authorize(Method.POST)
 
   def authorize(method: Method): Route[Env, Throwable] =
-    method / "v1" / "authorize" -> handler { (request: Request) =>
+    method / "authorize" -> handler { (request: Request) =>
       val result =
         for
           parser <- ZIO.service[AuthorizeRequestParser]
@@ -47,7 +47,6 @@ object AuthorizeEndpointController extends Controller:
     for
       authService <- ZIO.service[AuthorizeEndpointService]
       conversationConfig <- ZIO.service[CoreConfig]
-      env <- ZIO.service[EnvName]
       response <- authService.authorize(request).map:
         case AuthorizeResponse.Authorized(code) =>
           Response.seeOther(request.buildResponseUri(code))
@@ -58,7 +57,6 @@ object AuthorizeEndpointController extends Controller:
               ConversationCookie(
                 value = authId,
                 ttl = conversationConfig.security.authConversation.ttl,
-                secure = env.isProd,
               ),
             )
     yield response

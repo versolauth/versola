@@ -18,7 +18,9 @@ case class OAuthClientRecord(
     secret: Option[Secret],
     previousSecret: Option[Secret],
     accessTokenTtl: Duration,
+    refreshTokenTtl: Duration,
     permissions: Set[Permission],
+    theme: String,
 ) derives Schema, CanEqual, Equal:
 
   def audience: List[ClientId] = id :: externalAudience

@@ -1,15 +1,39 @@
 package versola.util.http
 
-import zio.http.Path
-
-case class HttpObservabilityConfig(
-    masking: Map[Path, HttpObservabilityConfig.Masking] = Map.empty,
-)
-
 object HttpObservabilityConfig:
-  val default: HttpObservabilityConfig = HttpObservabilityConfig()
 
-  case class Masking(
-      logRequestBody: Boolean = true,
-      logResponseBody: Boolean = true,
+  case class Server(
+      logRequestBody: Boolean,
+      logResponseBody: Boolean,
+      logQuery: Set[String],
+      logRequestHeaders: Set[String],
+      logResponseHeaders: Set[String],
+  ):
+    def modifyQuery(f: Set[String] => Set[String]): Server =
+      copy(logQuery = f(logQuery))
+
+  object Server:
+    val default = Server(
+      logRequestBody = false,
+      logResponseBody = false,
+      logQuery = Set.empty,
+      logRequestHeaders = Set.empty,
+      logResponseHeaders = Set.empty,
+    )
+
+  case class Client(
+      logRequestBody: Boolean,
+      logResponseBody: Boolean,
+      logQuery: Set[String],
+      logRequestHeaders: Set[String],
+      logResponseHeaders: Set[String],
   )
+
+  object Client:
+    val default = Client(
+      logRequestBody = false,
+      logResponseBody = false,
+      logQuery = Set.empty,
+      logRequestHeaders = Set.empty,
+      logResponseHeaders = Set.empty,
+    )

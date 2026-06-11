@@ -2,7 +2,9 @@ package versola.user
 
 import com.augustnagro.magnum.*
 import com.augustnagro.magnum.magzio.TransactorZIO
+import com.augustnagro.magnum.pg.PgCodec
 import com.augustnagro.magnum.pg.PgCodec.given
+import versola.util.postgres.BasicCodecs
 import versola.user.model.*
 import versola.util.{Email, Phone}
 import zio.{Clock, Task, ZIO, ZLayer}
@@ -14,7 +16,7 @@ import java.util.UUID
 
 class PostgresUserRepository(
     xa: TransactorZIO,
-) extends UserRepository:
+) extends UserRepository, BasicCodecs:
 
   override def findOrCreate(userId: UserId, credential: Either[Email, Phone]): Task[(UserRecord, WasCreated)] =
     for
@@ -33,30 +35,30 @@ class PostgresUserRepository(
     yield user
 
   private def createByEmailQuery(id: UserId, email: Email, now: Instant) =
-    sql"""insert into users (id, email, phone, login, claims)
-          values ($id, $email, null, null, '{}'::jsonb)
+    sql"""insert into users (id, email, phone, login, claims, ui_locales)
+          values ($id, $email, null, null, '{}'::jsonb, null)
           on conflict (email) where email is not null
           do update set email = excluded.email
-          returning id, email, phone, login, claims, (xmax = 0) as created
+          returning id, email, phone, login, claims, ui_locales, (xmax = 0) as created
        """.returning[(UserRecord, Boolean)]
 
   private def createByPhoneQuery(id: UserId, phone: Phone, now: Instant) =
-    sql"""insert into users (id, email, phone, login, claims)
-          values ($id, null, $phone, null, '{}'::jsonb)
+    sql"""insert into users (id, email, phone, login, claims, ui_locales)
+          values ($id, null, $phone, null, '{}'::jsonb, null)
           on conflict (phone) where phone is not null
             do update set phone = excluded.phone
-          returning id, email, phone, login, claims, (xmax = 0) as created
+          returning id, email, phone, login, claims, ui_locales, (xmax = 0) as created
        """.returning[(UserRecord, Boolean)]
 
   private def createQuery(id: UserId, now: Instant) =
-    sql"""insert into users (id, email, phone, login, claims)
-          values ($id, null, null, null, '{}'::jsonb)
-          returning id, email, phone, login, claims
+    sql"""insert into users (id, email, phone, login, claims, ui_locales)
+          values ($id, null, null, null, '{}'::jsonb, null)
+          returning id, email, phone, login, claims, ui_locales
        """.returning[UserRecord]
 
   override def find(id: UserId): Task[Option[UserRecord]] =
     xa.connect:
-      sql"select id, email, phone, login, claims from users where id = $id"
+      sql"select id, email, phone, login, claims, ui_locales from users where id = $id"
         .query[UserRecord]
         .run()
         .headOption
@@ -67,11 +69,35 @@ class PostgresUserRepository(
         case Left(email) => findByEmailQuery(email).run().headOption
         case Right(phone) => findByPhoneQuery(phone).run().headOption
 
+  override def upsert(
+      id: UserId,
+      version: UUID,
+      email: Option[Email],
+      phone: Option[Phone],
+      login: Option[Login],
+  ): Task[Unit] =
+    xa.connect:
+      sql"""insert into users (id, email, phone, login, claims, last_version)
+            values ($id, $email, $phone, $login, '{}'::jsonb, $version)
+            on conflict (id) do update set
+              email = excluded.email,
+              phone = excluded.phone,
+              login = excluded.login,
+              last_version = excluded.last_version
+            where users.last_version is null or users.last_version < excluded.last_version
+         """.update.run()
+    .unit
+
+  override def patchClaims(id: UserId, patch: Json.Obj): Task[Unit] =
+    xa.connect:
+      sql"update users set claims = jsonb_strip_nulls(claims || $patch::jsonb) where id = $id".update.run()
+    .unit
+
   private def findByPhoneQuery(phone: Phone) =
-    sql"select id, email, phone, login, claims from users where phone = $phone".query[UserRecord]
+    sql"select id, email, phone, login, claims, ui_locales from users where phone = $phone".query[UserRecord]
 
   private def findByEmailQuery(email: Email) =
-    sql"select id, email, phone, login, claims from users where email = $email".query[UserRecord]
+    sql"select id, email, phone, login, claims, ui_locales from users where email = $email".query[UserRecord]
 
 
   given DbCodec[UserId] = DbCodec.UUIDCodec.biMap(UserId(_), identity[UUID])
@@ -83,10 +109,9 @@ class PostgresUserRepository(
   given DbCodec[LastName] = DbCodec.StringCodec.biMap(LastName(_), identity[String])
   given DbCodec[BirthDate] = DbCodec.LocalDateCodec.biMap(BirthDate(_), identity[LocalDate])
 
-  given DbCodec[Json.Obj] = DbCodec.StringCodec.biMap(
-    _.fromJson[Json.Obj].getOrElse(Json.Obj()),
-    _.toJson
-  )
+  given DbCodec[Json.Obj] = jsonBCodec[Json.Obj]
+
+  given DbCodec[List[String]] = PgCodec.SeqCodec[String].biMap(_.toList, _.toSeq)
 
   given DbCodec[UserRecord] = DbCodec.derived[UserRecord]
 

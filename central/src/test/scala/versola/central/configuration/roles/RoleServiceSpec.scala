@@ -3,7 +3,7 @@ package versola.central.configuration.roles
 import org.scalamock.stubs.{Stub, ZIOStubs}
 import versola.central.configuration.permissions.Permission
 import versola.central.configuration.sync.SyncEvent
-import versola.central.configuration.tenants.TenantId
+import versola.central.configuration.tenants.{TenantId, TenantRepository}
 import versola.central.configuration.{CreateRoleRequest, PatchDescription, PatchPermissions, UpdateRoleRequest}
 import versola.util.ReloadingCache
 import zio.prelude.EqualOps
@@ -39,7 +39,8 @@ object RoleServiceSpec extends ZIOSpecDefault, ZIOStubs:
   class Env(initial: Vector[RoleRecord] = Vector.empty):
     val cache = ReloadingCache(Unsafe.unsafe(unsafe ?=> Ref.unsafe.make(initial)))
     val repository = stub[RoleRepository]
-    val service = RoleService.Impl(cache, repository)
+    val tenantRepository = stub[TenantRepository]
+    val service = RoleService.Impl(cache, repository, tenantRepository)
 
   def spec = suite("RoleService")(
     test("getTenantRoles filters cache by tenant") {

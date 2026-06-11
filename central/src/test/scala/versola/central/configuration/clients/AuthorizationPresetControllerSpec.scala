@@ -1,8 +1,9 @@
 package versola.central.configuration.clients
 
 import org.scalamock.stubs.{Stub, ZIOStubs}
-import versola.central.CentralConfig
+import versola.central.{CentralConfig, TestCentralConfig}
 import versola.central.configuration.{AuthorizationPresetInput, AuthorizationPresetResponse, SaveAuthorizationPresetsRequest}
+import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.tenants.TenantId
 import versola.util.{RedirectUri, Secret}
@@ -25,10 +26,13 @@ object AuthorizationPresetControllerSpec extends ZIOSpecDefault, ZIOStubs:
     clientId = clientId,
     description = "Web Login",
     redirectUri = RedirectUri("https://example.com/callback"),
+    postLoginRedirectUri = RedirectUri("https://example.com/dashboard"),
     scope = Set(ScopeToken("openid"), ScopeToken("profile")),
     responseType = ResponseType.Code,
     uiLocales = Some(List("en")),
     customParameters = Map.empty,
+    cookieDomain = Some(".example.com"),
+    cookiePath = Some("/"),
   )
 
   private val preset2 = AuthorizationPreset(
@@ -36,10 +40,13 @@ object AuthorizationPresetControllerSpec extends ZIOSpecDefault, ZIOStubs:
     clientId = clientId,
     description = "Mobile Login",
     redirectUri = RedirectUri("https://example.com/mobile"),
+    postLoginRedirectUri = RedirectUri("https://example.com/mobile/home"),
     scope = Set(ScopeToken("openid")),
     responseType = ResponseType.CodeIdToken,
     uiLocales = None,
     customParameters = Map("prompt" -> List("login")),
+    cookieDomain = None,
+    cookiePath = None,
   )
 
   private val saveRequest = SaveAuthorizationPresetsRequest(
@@ -49,19 +56,18 @@ object AuthorizationPresetControllerSpec extends ZIOSpecDefault, ZIOStubs:
         id = PresetId("web-login"),
         description = "Web Login",
         redirectUri = RedirectUri("https://example.com/callback"),
+        postLoginRedirectUri = RedirectUri("https://example.com/dashboard"),
         scope = Set(ScopeToken("openid")),
         responseType = ResponseType.Code,
         uiLocales = Some(List("en")),
         customParameters = Map.empty,
+        cookieDomain = None,
+        cookiePath = None,
       ),
     ),
   )
 
-  private val config = CentralConfig(
-    initialize = false,
-    clientSecretsPepper = Secret(Array.fill(16)(5.toByte)),
-    secretKey = SecretKeySpec(Array.fill(32)(7.toByte), "AES"),
-  )
+  private val config = TestCentralConfig.config
 
   private val tracingLayer: ULayer[Tracing] =
     ZLayer.make[Tracing](
@@ -81,10 +87,11 @@ object AuthorizationPresetControllerSpec extends ZIOSpecDefault, ZIOStubs:
       for
         client <- ZIO.service[Client]
         service = stub[AuthorizationPresetService]
+        edgeService = stub[EdgeService]
         tracing <- tracingLayer.build
         _ <- TestClient.addRoutes(
           AuthorizationPresetController.routes.provideEnvironment(
-            ZEnvironment(service) ++ ZEnvironment(config) ++ tracing
+            ZEnvironment[AuthorizationPresetService](service) ++ ZEnvironment(config) ++ tracing ++ ZEnvironment[EdgeService](edgeService)
           ).sandbox
         )
         _ <- setup(service)
@@ -97,7 +104,7 @@ object AuthorizationPresetControllerSpec extends ZIOSpecDefault, ZIOStubs:
     controllerTestCase(
       description = "return client presets",
       request = Request.get(
-        (URL.empty / "v1" / "configuration" / "auth-request-presets")
+        (URL.empty / "configuration" / "auth-request-presets")
           .addQueryParams(Map("tenantId" -> tenantId, "clientId" -> clientId))
       ),
       expectedStatus = Status.Ok,
@@ -115,20 +122,26 @@ object AuthorizationPresetControllerSpec extends ZIOSpecDefault, ZIOStubs:
               clientId = preset1.clientId,
               description = preset1.description,
               redirectUri = preset1.redirectUri,
+              postLoginRedirectUri = preset1.postLoginRedirectUri,
               scope = preset1.scope,
               responseType = preset1.responseType,
               uiLocales = preset1.uiLocales,
               customParameters = preset1.customParameters,
+              cookieDomain = preset1.cookieDomain,
+              cookiePath = preset1.cookiePath,
             ),
             AuthorizationPresetResponse(
               id = preset2.id,
               clientId = preset2.clientId,
               description = preset2.description,
               redirectUri = preset2.redirectUri,
+              postLoginRedirectUri = preset2.postLoginRedirectUri,
               scope = preset2.scope,
               responseType = preset2.responseType,
               uiLocales = preset2.uiLocales,
               customParameters = preset2.customParameters,
+              cookieDomain = preset2.cookieDomain,
+              cookiePath = preset2.cookiePath,
             ),
           ),
         ),
@@ -136,7 +149,7 @@ object AuthorizationPresetControllerSpec extends ZIOSpecDefault, ZIOStubs:
     controllerTestCase(
       description = "return empty array when no presets",
       request = Request.get(
-        (URL.empty / "v1" / "configuration" / "auth-request-presets")
+        (URL.empty / "configuration" / "auth-request-presets")
           .addQueryParams(Map("tenantId" -> tenantId, "clientId" -> clientId))
       ),
       expectedStatus = Status.Ok,
@@ -152,7 +165,7 @@ object AuthorizationPresetControllerSpec extends ZIOSpecDefault, ZIOStubs:
       description = "save presets successfully",
       request = Request(
         method = Method.POST,
-        url = URL.empty / "v1" / "configuration" / "auth-request-presets",
+        url = URL.empty / "configuration" / "auth-request-presets",
         body = Body.fromString(saveRequest.toJson),
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.NoContent,
@@ -165,7 +178,7 @@ object AuthorizationPresetControllerSpec extends ZIOSpecDefault, ZIOStubs:
       description = "return bad request when client not found",
       request = Request(
         method = Method.POST,
-        url = URL.empty / "v1" / "configuration" / "auth-request-presets",
+        url = URL.empty / "configuration" / "auth-request-presets",
         body = Body.fromString(saveRequest.toJson),
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.BadRequest,
@@ -176,7 +189,7 @@ object AuthorizationPresetControllerSpec extends ZIOSpecDefault, ZIOStubs:
       description = "return bad request when redirect URI invalid",
       request = Request(
         method = Method.POST,
-        url = URL.empty / "v1" / "configuration" / "auth-request-presets",
+        url = URL.empty / "configuration" / "auth-request-presets",
         body = Body.fromString(saveRequest.toJson),
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.BadRequest,
@@ -187,7 +200,7 @@ object AuthorizationPresetControllerSpec extends ZIOSpecDefault, ZIOStubs:
       description = "return bad request when scope invalid",
       request = Request(
         method = Method.POST,
-        url = URL.empty / "v1" / "configuration" / "auth-request-presets",
+        url = URL.empty / "configuration" / "auth-request-presets",
         body = Body.fromString(saveRequest.toJson),
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.BadRequest,

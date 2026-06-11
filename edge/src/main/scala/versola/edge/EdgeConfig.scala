@@ -1,45 +1,41 @@
 package versola.edge
 
-import versola.util.{EnvName, Secret}
+import versola.edge.model.EdgeId
+import versola.util.{EnvName, JWT, RsaKeyPair, Secret}
 import zio.Duration
+import zio.http.URL
 
-/**
- * Configuration for the Edge service.
- *
- * Unlike CoreConfig used by the auth service, EdgeConfig does not include JWT configuration
- * since the edge service doesn't issue JWTs - it only stores and forwards tokens.
- */
+import java.security.PrivateKey
+import javax.crypto.SecretKey
+
 case class EdgeConfig(
+    id: EdgeId,
+    keyId: String,
+    privateKey: PrivateKey,
     security: EdgeConfig.Security,
+    central: EdgeConfig.CentralConfig,
+    versolaUrl: URL,
 )
 
 object EdgeConfig:
 
-  /**
-   * Security configuration for the edge service.
-   * 
-   * Edge only needs encryption keys for storing tokens securely.
-   * Unlike auth service, edge doesn't need peppers for MAC operations
-   * since it doesn't generate or validate tokens - it only stores them.
-   */
   case class Security(
       tokenEncryption: EdgeConfig.Security.TokenEncryption,
       edgeSessions: EdgeConfig.Security.EdgeSessions,
   )
 
   object Security:
-    /**
-     * Configuration for encrypting stored tokens (access tokens, refresh tokens)
-     */
     case class TokenEncryption(
         key: Secret.Bytes32,
     )
 
-    /**
-     * Configuration for edge session management
-     */
     case class EdgeSessions(
         pepper: Secret.Bytes32,
         ttl: Duration,
     )
+
+  case class CentralConfig(
+      url: URL,
+      secretKey: SecretKey,
+  )
 

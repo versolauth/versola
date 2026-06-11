@@ -30,12 +30,11 @@ The following tables have TTL-based expiration and require periodic cleanup:
 | `authorization_codes` | `expires_at`      | 10 minutes | High (every auth flow) |
 | `refresh_tokens` | `expires_at`      | 90 days | Very High (long-lived) |
 | `sso_sessions` | `expires_at`      | 30 days | High (per user session) |
-| `edge_sessions` | `expires_at`      | 24 hours | Medium (edge proxy) |
+| `edge_refresh_tokens` | `expires_at`      | 90 days | Medium (edge proxy) |
 
 **Indexes for cleanup:**
 - All tables have indexes on `expires_at` columns for efficient expired record queries
 - Example: `CREATE INDEX refresh_tokens_expires_at_idx ON refresh_tokens (expires_at)`
-- **Note:** `edge_sessions` table currently missing this index - should be added
 
 ### 1.2 Deployment Architecture
 
@@ -396,9 +395,9 @@ cleanup {
       interval = 1 hour
     },
     {
-      table-name = "edge_sessions"
+      table-name = "edge_refresh_tokens"
       batch-size = 500
-      interval = 30 minutes
+      interval = 1 hour
     }
   ]
 }
@@ -420,7 +419,7 @@ cleanup {
 | `authorization_codes` | `expires_at` | 1000 | 5 minutes | Short TTL (10 min), low volume |
 | `refresh_tokens` | `expires_at` | 500 | 1 hour | Long TTL (90 days), audit likely needed |
 | `sso_sessions` | `expires_at` | 500 | 1 hour | Long TTL (30 days), audit likely needed |
-| `edge_sessions` | `expires_at` | 500 | 30 minutes | Medium TTL (24 hours), medium volume |
+| `edge_refresh_tokens` | `expires_at` | 500 | 1 hour | Long TTL (90 days), edge proxy refresh tokens |
 
 **Why DELETE strategy?**
 
@@ -554,7 +553,7 @@ WHERE id IN (
 **Calculation Example (5 tables, max-threads=2):**
 
 ```
-Tables: auth_conversations, authorization_codes, refresh_tokens, sso_sessions, edge_sessions
+Tables: auth_conversations, authorization_codes, refresh_tokens, sso_sessions, edge_refresh_tokens
 Batch time: ~50ms per table
 
 Sequential (max-threads=1):
@@ -563,7 +562,7 @@ Sequential (max-threads=1):
 Parallel (max-threads=2):
   Batch 1: auth_conversations + authorization_codes (50ms)
   Batch 2: refresh_tokens + sso_sessions (50ms)
-  Batch 3: edge_sessions (50ms)
+  Batch 3: edge_refresh_tokens (50ms)
   Total: 150ms
 
 Parallel (max-threads=5):
@@ -753,7 +752,7 @@ test("multiple instances don't conflict") {
 - [ ] Integration tests with PostgreSQL
 - [ ] Load tests with multiple instances
 - [ ] Performance benchmarks
-- [ ] Add missing index: `CREATE INDEX edge_sessions_expires_at_idx ON edge_sessions (expires_at)`
+
 
 ### Deployment Plan
 - [ ] Deploy to staging environment
@@ -870,7 +869,7 @@ This is not needed for initial implementation and should only be considered if y
 - Audit trail maintained if compliance required
 
 **Known Issues:**
-- Missing index on `edge_sessions.expires_at` - should be added for optimal cleanup performance
+
 
 ## 11. References
 

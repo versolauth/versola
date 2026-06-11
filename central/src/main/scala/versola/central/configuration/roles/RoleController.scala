@@ -1,7 +1,9 @@
 package versola.central.configuration.roles
 
-import versola.central.configuration.{CreateRoleRequest, GetAllRolesResponse, RoleResponse, UpdateRoleRequest}
+import versola.central.{CentralConfig, authorizeInternal}
+import versola.central.configuration.{CreateRoleRequest, GetAllRolesResponse, GetRolesSyncResponse, RoleResponse, RoleSyncResponse, UpdateRoleRequest}
 import versola.central.configuration.clients.OAuthClientService
+import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.permissions.Permission
 import versola.central.configuration.tenants.TenantId
 import versola.util.http.Controller
@@ -12,17 +14,18 @@ import zio.telemetry.opentelemetry.tracing.Tracing
 import zio.{Cause, ZIO}
 
 object RoleController extends Controller:
-  type Env = Tracing & RoleService
+  type Env = Tracing & RoleService & CentralConfig & EdgeService
 
   def routes: Routes[Env, Throwable] = Routes(
     createRoleEndpoint,
     updateRoleEndpoint,
     deleteRoleEndpoint,
     getAllRolesEndpoint,
+    syncRolesEndpoint,
   )
 
   val createRoleEndpoint =
-    Method.POST / "v1" / "configuration" / "roles" -> handler { (request: Request) =>
+    Method.POST / "configuration" / "roles" -> handler { (request: Request) =>
       for
         service <- ZIO.service[RoleService]
         body <- request.body.asJson[CreateRoleRequest]
@@ -31,7 +34,7 @@ object RoleController extends Controller:
     }
 
   val updateRoleEndpoint =
-    Method.PUT / "v1" / "configuration" / "roles" -> handler { (request: Request) =>
+    Method.PUT / "configuration" / "roles" -> handler { (request: Request) =>
       for
         service <- ZIO.service[RoleService]
         body <- request.body.asJson[UpdateRoleRequest]
@@ -40,7 +43,7 @@ object RoleController extends Controller:
     }
 
   val deleteRoleEndpoint =
-    Method.DELETE / "v1" / "configuration" / "roles" -> handler { (request: Request) =>
+    Method.DELETE / "configuration" / "roles" -> handler { (request: Request) =>
       for
         service <- ZIO.service[RoleService]
         tenantId <- request.url.queryZIO[TenantId]("tenantId")
@@ -50,7 +53,7 @@ object RoleController extends Controller:
     }
 
   val getAllRolesEndpoint =
-    Method.GET / "v1" / "configuration" / "roles" -> handler { (request: Request) =>
+    Method.GET / "configuration" / "roles" -> handler { (request: Request) =>
       for
         configurationService <- ZIO.service[RoleService]
 
@@ -67,4 +70,21 @@ object RoleController extends Controller:
           )
         })
       yield Response.json(GetAllRolesResponse(roles).toJson)
+    }
+
+  val syncRolesEndpoint =
+    Method.GET / "configuration" / "roles" / "sync" -> handler { (request: Request) =>
+      for
+        service <- ZIO.service[RoleService]
+        edgeId <- authorizeInternal(request)
+        roles <- service.getRolesForSync(edgeId)
+        response = GetRolesSyncResponse(roles.map { role =>
+          RoleSyncResponse(
+            tenantId = role.tenantId,
+            id = role.id,
+            permissions = role.permissions,
+            active = role.active,
+          )
+        })
+      yield Response.json(response.toJson)
     }

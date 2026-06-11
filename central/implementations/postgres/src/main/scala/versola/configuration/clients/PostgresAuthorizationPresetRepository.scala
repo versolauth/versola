@@ -34,7 +34,7 @@ class PostgresAuthorizationPresetRepository(
   override def find(id: PresetId): Task[Option[AuthorizationPreset]] =
     xa.connect:
       sql"""
-        SELECT id, client_id, description, redirect_uri, scope, response_type, ui_locales, custom_parameters
+        SELECT id, client_id, description, redirect_uri, post_login_redirect_uri, scope, response_type, ui_locales, custom_parameters, cookie_domain, cookie_path
         FROM authorization_presets
         WHERE id = $id
       """
@@ -47,11 +47,12 @@ class PostgresAuthorizationPresetRepository(
         batchUpdate(presets): preset =>
           sql"""
             INSERT INTO authorization_presets (
-              id, client_id, description, redirect_uri, scope, response_type, ui_locales, custom_parameters
+              id, client_id, description, redirect_uri, post_login_redirect_uri, scope, response_type, ui_locales, custom_parameters, cookie_domain, cookie_path
             )
             VALUES (
               ${preset.id}, ${preset.clientId}, ${preset.description},
-              ${preset.redirectUri}, ${preset.scope}, ${preset.responseType}, ${preset.uiLocales}::text[], ${preset.customParameters}::jsonb
+              ${preset.redirectUri}, ${preset.postLoginRedirectUri}, ${preset.scope}, ${preset.responseType}, ${preset.uiLocales}::text[], ${preset.customParameters}::jsonb,
+              ${preset.cookieDomain}, ${preset.cookiePath}
             )
           """.update
     .unit
@@ -59,7 +60,7 @@ class PostgresAuthorizationPresetRepository(
   override def getAll: Task[Vector[AuthorizationPreset]] =
     xa.connect:
       sql"""
-        SELECT id, client_id, description, redirect_uri, scope, response_type, ui_locales, custom_parameters
+        SELECT id, client_id, description, redirect_uri, post_login_redirect_uri, scope, response_type, ui_locales, custom_parameters, cookie_domain, cookie_path
         FROM authorization_presets
         ORDER BY client_id, id
       """

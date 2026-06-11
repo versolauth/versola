@@ -3,10 +3,13 @@ CREATE TABLE authorization_presets (
     client_id                      TEXT NOT NULL,
     description                    TEXT NOT NULL,
     redirect_uri                   TEXT NOT NULL,
+    post_login_redirect_uri        TEXT NOT NULL,
     scope                          TEXT[] NOT NULL,
     response_type                  TEXT NOT NULL,
     ui_locales                     TEXT[],
     custom_parameters              JSONB NOT NULL,
+    cookie_domain                  TEXT,
+    cookie_path                    TEXT,
     FOREIGN KEY (client_id) REFERENCES oauth_clients(id) ON DELETE CASCADE
 );
 

@@ -65,7 +65,7 @@ object TenantControllerSpec extends ZIOSpecDefault, ZIOStubs:
   def spec = suite("TenantController")(
     controllerTestCase(
       description = "return all tenants",
-      request = Request.get(URL.empty / "v1" / "configuration" / "tenants"),
+      request = Request.get(URL.empty / "configuration" / "tenants"),
       expectedStatus = Status.Ok,
       setup = service =>
         service.getAllTenants.succeedsWith(tenants),
@@ -85,7 +85,7 @@ object TenantControllerSpec extends ZIOSpecDefault, ZIOStubs:
       description = "create tenant",
       request = Request(
         method = Method.POST,
-        url = URL.empty / "v1" / "configuration" / "tenants",
+        url = URL.empty / "configuration" / "tenants",
         body = Body.fromString(createRequest.toJson),
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.Created,
@@ -98,7 +98,7 @@ object TenantControllerSpec extends ZIOSpecDefault, ZIOStubs:
       description = "update tenant",
       request = Request(
         method = Method.PUT,
-        url = URL.empty / "v1" / "configuration" / "tenants",
+        url = URL.empty / "configuration" / "tenants",
         body = Body.fromString(updateRequest.toJson),
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.NoContent,
@@ -111,7 +111,7 @@ object TenantControllerSpec extends ZIOSpecDefault, ZIOStubs:
       description = "delete tenant",
       request = Request(
         method = Method.DELETE,
-        url = (URL.empty / "v1" / "configuration" / "tenants")
+        url = (URL.empty / "configuration" / "tenants")
           .addQueryParam("tenantId", tenantId1.toString),
       ),
       expectedStatus = Status.NoContent,

@@ -3,6 +3,7 @@ package versola.util.http
 import versola.util.{Base64Url, FormDecoder, Secret}
 import zio.{IO, ZIO}
 import zio.http.*
+import zio.schema.Schema
 
 trait Controller:
   type Env >: Nothing
@@ -18,3 +19,8 @@ trait Controller:
   extension (s: String)
     def isJWT = s.split("\\.").headOption
       .exists(str => Base64Url.decodeStr(str).startsWith("{"))
+
+  given Schema[URL] = Schema.primitive[String].transformOrFail(
+    string => URL.decode(string).left.map(_.getMessage),
+    url => Right(url.encode)
+  )

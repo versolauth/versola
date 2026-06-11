@@ -13,7 +13,7 @@ import versola.util.postgres.BasicCodecs
 import zio.prelude.These
 import zio.{Clock, IO, Task, ZIO, ZLayer}
 
-import java.sql.Connection
+import java.sql.{Connection, SQLException}
 import java.time.Instant
 import java.util.UUID
 
@@ -77,9 +77,7 @@ class PostgresRefreshTokenRepository(xa: TransactorZIO) extends RefreshTokenRepo
         """.update.run()
       ()
     }.catchSome {
-      case e: com.augustnagro.magnum.SqlException
-        if e.getMessage.contains("could not serialize access") ||
-           e.getMessage.contains("duplicate key value violates unique constraint") =>
+      case e if PostgresRefreshTokenRepository.isSerializationOrUniqueViolationFailure(e) =>
         ZIO.fail(RefreshAlreadyExchanged())
     }
 
@@ -112,3 +110,16 @@ class PostgresRefreshTokenRepository(xa: TransactorZIO) extends RefreshTokenRepo
 object PostgresRefreshTokenRepository:
   def live: ZLayer[TransactorZIO, Throwable, RefreshTokenRepository] =
     ZLayer.fromFunction(PostgresRefreshTokenRepository(_))
+
+  // SQL state codes for error detection
+  private val SerializationFailureSqlState = "40001"
+  private val UniqueViolationSqlState = "23505"
+  private val MaxCauseDepth = 10
+
+  private def isSerializationOrUniqueViolationFailure(t: Throwable, depth: Int = 0): Boolean =
+    depth < MaxCauseDepth && (t match
+      case sql: SQLException =>
+        sql.getSQLState == SerializationFailureSqlState || sql.getSQLState == UniqueViolationSqlState
+      case _ => Option(t.getCause).exists(isSerializationOrUniqueViolationFailure(_, depth + 1))
+    )
+  
