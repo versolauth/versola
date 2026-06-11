@@ -275,25 +275,6 @@ object EdgeService:
           .flatMap(allowed => ZIO.fail(Outcome.Forbidden).unless(allowed))
       .as(context)
 
-    private def authenticate(
-        request: Request,
-    ) =
-      request.cookieWithOrFail(EdgeSessionCookie.name)(Outcome.Unauthorized: Outcome | Throwable) { cookie =>
-        val accessToken = AccessToken(cookie.content)
-        for
-          publicKeys <- jwksService.getPublicKeys
-          now <- Clock.instant
-          session <- JWT.deserialize[Json.Obj](accessToken, publicKeys, JWT.Type.AccessToken)
-            .foldZIO(
-              {
-                case JWT.Error.Expired(jti) => refreshSession(AccessTokenId(jti), now)
-                case _ => ZIO.fail(Outcome.Unauthorized)
-              },
-              claims => ZIO.succeed(ActiveSession(accessToken, claims, None)),
-            )
-        yield session
-      }
-
     private def refreshSession(
         accessTokenId: AccessTokenId,
         now: Instant,
@@ -450,13 +431,6 @@ object EdgeService:
 
     private def isJsonRequest(request: Request): Boolean =
       request.header(Header.ContentType).exists(_.mediaType == MediaType.application.json)
-
-    private def upsertField(obj: Json.Obj, name: String, value: Json): Json.Obj =
-      val fields = obj.fields
-      val replaced = fields.indexWhere(_._1 == name) match
-        case -1 => fields :+ (name -> value)
-        case idx => fields.updated(idx, name -> value)
-      Json.Obj(replaced)
 
     private def findEndpoint(
         endpoints: Vector[ResourceEndpoint],

@@ -22,4 +22,5 @@ object CentralConfig:
       batchSize: Int,
       lease: Duration,
       maxBackoff: Duration,
+      maxAttempts: Int,
   )

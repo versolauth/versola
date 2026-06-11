@@ -62,9 +62,15 @@ object UserOutboxProcessor:
       dispatch(record.event)
         .foldCauseZIO(
           cause =>
-            val delay = backoff(record.attempts + 1)
-            ZIO.logWarningCause(s"Outbox ${record.id} dispatch failed (attempt ${record.attempts + 1}). Event: ${record.event}", cause) *>
-              repo.rescheduleEvent(record.id, delay).catchAllCause(c => ZIO.logErrorCause("reschedule failed", c))
+            val nextAttempt = record.attempts + 1
+            if nextAttempt >= config.maxAttempts then
+              val errorMsg = cause.squash.getMessage
+              ZIO.logErrorCause(s"Outbox ${record.id} exceeded max attempts (${config.maxAttempts}). Moving to dead letter. Event: ${record.event}", cause) *>
+                repo.moveToDeadLetter(record.id, errorMsg).catchAllCause(c => ZIO.logErrorCause("moveToDeadLetter failed", c))
+            else
+              val delay = backoff(nextAttempt)
+              ZIO.logWarningCause(s"Outbox ${record.id} dispatch failed (attempt $nextAttempt). Event: ${record.event}", cause) *>
+                repo.rescheduleEvent(record.id, delay).catchAllCause(c => ZIO.logErrorCause("reschedule failed", c))
           ,
           _ => repo.deleteEvent(record.id).catchAllCause(c => ZIO.logErrorCause("delete failed", c)),
         )

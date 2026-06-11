@@ -1,5 +1,6 @@
 package versola.central.users
 
+import org.scalamock.stubs.ZIOStubs
 import versola.central.CentralConfig.UserOutboxConfig
 import versola.central.configuration.roles.RoleId
 import versola.central.configuration.tenants.TenantId
@@ -10,7 +11,7 @@ import zio.{Cause, Duration, Fiber, IO, Ref, Task, ZIO}
 
 import java.util.UUID
 
-object UserOutboxProcessorSpec extends ZIOSpecDefault:
+object UserOutboxProcessorSpec extends ZIOSpecDefault, ZIOStubs:
 
   private val userId  = UserId(UUID.fromString("00000000-0000-0000-0000-000000000001"))
   private val eventId = UUID.fromString("00000000-0000-0000-0000-000000000099")
@@ -20,6 +21,7 @@ object UserOutboxProcessorSpec extends ZIOSpecDefault:
     batchSize = 16,
     lease = Duration.fromSeconds(60),
     maxBackoff = Duration.fromSeconds(300),
+    maxAttempts = 10,
   )
 
   private val record = OutboxRecord(
@@ -29,85 +31,74 @@ object UserOutboxProcessorSpec extends ZIOSpecDefault:
     attempts = 0,
   )
 
-  private class StubRepo(
-      claim: Ref[Vector[OutboxRecord]],
-      val rescheduled: Ref[Vector[UUID]],
-      val deleted: Ref[Vector[UUID]],
-  ) extends UserRepository:
-    override def claimDueEvents(limit: Int, lease: Duration): Task[Vector[OutboxRecord]] =
-      claim.getAndSet(Vector.empty)
-    override def deleteEvent(id: UUID): Task[Unit] = deleted.update(_ :+ id)
-    override def rescheduleEvent(id: UUID, delay: Duration): Task[Unit] = rescheduled.update(_ :+ id)
-    override def findById(id: UserId) = ZIO.none
-    override def findByEmail(email: Email) = ZIO.none
-    override def findByPhone(phone: Phone) = ZIO.none
-    override def findByLogin(login: Login) = ZIO.none
-    override def create(id: UserId, email: Option[Email], phone: Option[Phone], login: Option[Login])
-        : IO[UserConflict | Throwable, Unit] = ZIO.unit
-    override def patch(
-        id: UserId,
-        email: Option[Patch[Email]],
-        phone: Option[Patch[Phone]],
-        login: Option[Patch[Login]],
-    ): Task[Unit] = ZIO.unit
-
-  private class FailingAuthClient(error: Throwable) extends AuthClient:
-    override def upsertUser(id: UserId, version: UUID, email: Option[Email], phone: Option[Phone], login: Option[Login]): Task[Unit] =
-      ZIO.fail(error)
-    override def updateUserRoles(userId: UserId, tenantId: TenantId, add: Set[RoleId], remove: Set[RoleId]): Task[Unit] =
-      ZIO.fail(error)
-    override def getUserClaims(id: UserId): Task[Option[Json.Obj]] = ZIO.fail(error)
-    override def patchUserClaims(id: UserId, patch: Json.Obj): Task[Unit] = ZIO.fail(error)
-    override def getUserRoles(id: UserId, tenantId: TenantId): Task[List[RoleId]] = ZIO.fail(error)
-
-  private class OkAuthClient extends AuthClient:
-    override def upsertUser(id: UserId, version: UUID, email: Option[Email], phone: Option[Phone], login: Option[Login]): Task[Unit] =
-      ZIO.unit
-    override def updateUserRoles(userId: UserId, tenantId: TenantId, add: Set[RoleId], remove: Set[RoleId]): Task[Unit] =
-      ZIO.unit
-    override def getUserClaims(id: UserId): Task[Option[Json.Obj]] = ZIO.none
-    override def patchUserClaims(id: UserId, patch: Json.Obj): Task[Unit] = ZIO.unit
-    override def getUserRoles(id: UserId, tenantId: TenantId): Task[List[RoleId]] = ZIO.succeed(Nil)
-
   def spec = suite("UserOutboxProcessor")(
     test("logs a warning and reschedules when dispatch fails") {
+      val repo = stub[UserRepository]
+      val client = stub[AuthClient]
+
       for
-        claim       <- Ref.make(Vector(record))
-        rescheduled <- Ref.make(Vector.empty[UUID])
-        deleted     <- Ref.make(Vector.empty[UUID])
-        repo        = StubRepo(claim, rescheduled, deleted)
-        client      = FailingAuthClient(new RuntimeException("Auth call failed: 500 boom"))
-        fiberRef    <- Ref.make(Option.empty[Fiber.Runtime[Nothing, Unit]])
-        processor   = UserOutboxProcessor.Live(config, repo, client, fiberRef)
-        _           <- processor.processOnce
-        logs        <- ZTestLogger.logOutput
-        rescheduledIds <- rescheduled.get
-        deletedIds  <- deleted.get
+        _ <- repo.claimDueEvents.succeedsWith(Vector(record))
+        _ <- client.upsertUser.failsWith(new RuntimeException("Auth call failed: 500 boom"))
+        _ <- repo.rescheduleEvent.succeedsWith(())
+
+        fiberRef <- Ref.make(Option.empty[Fiber.Runtime[Nothing, Unit]])
+        processor = UserOutboxProcessor.Live(config, repo, client, fiberRef)
+        _ <- processor.processOnce
+        logs <- ZTestLogger.logOutput
       yield
         val warning = logs.find(e => e.logLevel == zio.LogLevel.Warning && e.message().contains(eventId.toString))
         assertTrue(
-          rescheduledIds == Vector(eventId),
-          deletedIds.isEmpty,
+          repo.rescheduleEvent.calls.length == 1,
+          repo.rescheduleEvent.calls.head._1 == eventId,
+          repo.deleteEvent.calls.isEmpty,
+          repo.moveToDeadLetter.calls.isEmpty,
           warning.isDefined,
           warning.exists(_.cause.failures.exists { case ex: Throwable => ex.getMessage.contains("500 boom") }),
         )
     },
     test("deletes the event on successful dispatch and emits no warning") {
+      val repo = stub[UserRepository]
+      val client = stub[AuthClient]
+
       for
-        claim       <- Ref.make(Vector(record))
-        rescheduled <- Ref.make(Vector.empty[UUID])
-        deleted     <- Ref.make(Vector.empty[UUID])
-        repo        = StubRepo(claim, rescheduled, deleted)
-        fiberRef    <- Ref.make(Option.empty[Fiber.Runtime[Nothing, Unit]])
-        processor   = UserOutboxProcessor.Live(config, repo, OkAuthClient(), fiberRef)
-        _           <- processor.processOnce
-        logs        <- ZTestLogger.logOutput
-        rescheduledIds <- rescheduled.get
-        deletedIds  <- deleted.get
+        _ <- repo.claimDueEvents.succeedsWith(Vector(record))
+        _ <- client.upsertUser.succeedsWith(())
+        _ <- repo.deleteEvent.succeedsWith(())
+
+        fiberRef <- Ref.make(Option.empty[Fiber.Runtime[Nothing, Unit]])
+        processor = UserOutboxProcessor.Live(config, repo, client, fiberRef)
+        _ <- processor.processOnce
+        logs <- ZTestLogger.logOutput
       yield assertTrue(
-        deletedIds == Vector(eventId),
-        rescheduledIds.isEmpty,
+        repo.deleteEvent.calls == List(eventId),
+        repo.rescheduleEvent.calls.isEmpty,
+        repo.moveToDeadLetter.calls.isEmpty,
         !logs.exists(_.logLevel == zio.LogLevel.Warning),
       )
+    },
+    test("moves event to dead letter when max attempts exceeded") {
+      val failedRecord = record.copy(attempts = config.maxAttempts - 1)
+      val repo = stub[UserRepository]
+      val client = stub[AuthClient]
+
+      for
+        _ <- repo.claimDueEvents.succeedsWith(Vector(failedRecord))
+        _ <- client.upsertUser.failsWith(new RuntimeException("Permanent failure"))
+        _ <- repo.moveToDeadLetter.succeedsWith(())
+
+        fiberRef <- Ref.make(Option.empty[Fiber.Runtime[Nothing, Unit]])
+        processor = UserOutboxProcessor.Live(config, repo, client, fiberRef)
+        _ <- processor.processOnce
+        logs <- ZTestLogger.logOutput
+      yield
+        val error = logs.find(e => e.logLevel == zio.LogLevel.Error && e.message().contains("exceeded max attempts"))
+        assertTrue(
+          repo.moveToDeadLetter.calls.length == 1,
+          repo.moveToDeadLetter.calls.head._1 == eventId,
+          repo.moveToDeadLetter.calls.head._2 == "Permanent failure",
+          repo.rescheduleEvent.calls.isEmpty,
+          repo.deleteEvent.calls.isEmpty,
+          error.isDefined,
+        )
     },
   )

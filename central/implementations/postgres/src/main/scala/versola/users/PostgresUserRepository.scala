@@ -159,6 +159,15 @@ class PostgresUserRepository(xa: TransactorZIO, secureRandom: SecureRandom) exte
             WHERE id = $id""".update.run()
     .unit
 
+  override def moveToDeadLetter(id: UUID, error: String): Task[Unit] =
+    xa.transact:
+      sql"""INSERT INTO user_outbox_dead (id, user_id, event_type, payload, attempts, error)
+            SELECT id, user_id, event_type, payload, attempts, $error
+            FROM user_outbox
+            WHERE id = $id""".update.run()
+      sql"DELETE FROM user_outbox WHERE id = $id".update.run()
+    .unit
+
 object PostgresUserRepository:
   val live: ZLayer[TransactorZIO & SecureRandom, Nothing, UserRepository] =
     ZLayer.fromFunction(PostgresUserRepository(_, _))

@@ -16,6 +16,7 @@ object TestCentralConfig:
     batchSize = 32,
     lease = Duration.fromSeconds(60),
     maxBackoff = Duration.fromSeconds(300),
+    maxAttempts = 10,
   )
 
   val config = CentralConfig(

@@ -44,3 +44,9 @@ trait UserRepository:
 
   /** Increment attempts and reschedule (overrides the lease set by [[claimDueEvents]]). */
   def rescheduleEvent(id: UUID, delay: Duration): Task[Unit]
+
+  /** Move a failed event to the dead letter table and delete it from the outbox.
+    * @param id The event ID
+    * @param error Error message describing why the event failed
+    */
+  def moveToDeadLetter(id: UUID, error: String): Task[Unit]
