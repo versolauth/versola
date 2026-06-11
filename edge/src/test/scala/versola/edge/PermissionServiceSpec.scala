@@ -48,12 +48,12 @@ object PermissionServiceSpec extends ZIOSpecDefault:
     suite("getAllowedEndpointsForRoles")(
       test("returns endpoints composed from a single role's permissions") {
         val service = buildService()
-        for endpoints <- service.getAllowedEndpointsForRoles(List("viewer"))
+        for endpoints <- service.getAllowedEndpointsForRoles(List(viewerRole))
         yield assertTrue(endpoints == Set(listUsersEndpoint))
       },
       test("merges and dedupes endpoints across multiple roles") {
         val service = buildService()
-        for endpoints <- service.getAllowedEndpointsForRoles(List("viewer", "editor"))
+        for endpoints <- service.getAllowedEndpointsForRoles(List(viewerRole, editorRole))
         yield assertTrue(endpoints == Set(listUsersEndpoint, createUserEndpoint))
       },
       test("returns empty set when role list is empty") {
@@ -63,17 +63,17 @@ object PermissionServiceSpec extends ZIOSpecDefault:
       },
       test("ignores unknown roles silently") {
         val service = buildService()
-        for endpoints <- service.getAllowedEndpointsForRoles(List("ghost", "viewer"))
+        for endpoints <- service.getAllowedEndpointsForRoles(List(RoleId("ghost"), viewerRole))
         yield assertTrue(endpoints == Set(listUsersEndpoint))
       },
       test("returns empty set when role grants permissions absent from permissionsCache") {
         val service = buildService(permissions = Map.empty)
-        for endpoints <- service.getAllowedEndpointsForRoles(List("admin"))
+        for endpoints <- service.getAllowedEndpointsForRoles(List(adminRole))
         yield assertTrue(endpoints.isEmpty)
       },
       test("returns full endpoint set for admin role") {
         val service = buildService()
-        for endpoints <- service.getAllowedEndpointsForRoles(List("admin"))
+        for endpoints <- service.getAllowedEndpointsForRoles(List(adminRole))
         yield assertTrue(endpoints == Set(listUsersEndpoint, createUserEndpoint, deleteUserEndpoint))
       },
     ),

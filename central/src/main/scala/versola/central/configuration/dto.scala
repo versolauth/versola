@@ -254,6 +254,7 @@ case class OAuthClientResponse(
     scope: Set[ScopeToken],
     permissions: Set[Permission],
     secretRotation: Boolean,
+    theme: String,
 ) derives Schema, JsonCodec
 
 case class GetAllClientsResponse(
@@ -270,6 +271,7 @@ case class CreateClientRequest(
     permissions: Set[Permission],
     accessTokenTtl: Int,
     refreshTokenTtl: Option[Int] = Some(7776000), // 90 days in seconds (3 months)
+    theme: String = "default",
 ) derives Schema, JsonCodec
 
 case class CreateClientResponse(
@@ -288,6 +290,7 @@ case class UpdateClientRequest(
     permissions: PatchPermissions,
     accessTokenTtl: Option[Long],
     refreshTokenTtl: Option[Long],
+    theme: Option[String] = None,
 ) derives Schema, JsonCodec
 
 case class AuthorizationPresetInput(
@@ -407,6 +410,7 @@ case class SyncOAuthClientRecord(
     accessTokenTtl: Duration,
     refreshTokenTtl: Duration,
     permissions: Set[Permission],
+    theme: String,
 ) derives JsonCodec, Schema
 
 case class GetOAuthClientsSyncResponse(

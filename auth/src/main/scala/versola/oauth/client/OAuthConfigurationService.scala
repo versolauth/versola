@@ -1,6 +1,6 @@
 package versola.oauth.client
 
-import versola.oauth.client.model.{ClientId, ClientSecret, ClientsWithPepper, OAuthClientRecord, ScopeRecord, ScopeToken}
+import versola.oauth.client.model.{ClientId, ClientSecret, ClientsWithPepper, FormRecord, OAuthClientRecord, ScopeRecord, ScopeToken, ThemeRecord}
 import versola.util.{CoreConfig, ReloadingCache, Secret, SecureRandom, SecurityService}
 import zio.*
 import zio.http.Client
@@ -16,6 +16,10 @@ trait OAuthConfigurationService:
 
   def getScopes: UIO[Vector[ScopeRecord]]
 
+  def getForm(id: String): UIO[Option[FormRecord]]
+
+  def getTheme(id: String): UIO[Option[ThemeRecord]]
+
 object OAuthConfigurationService:
   def live(schedule: Schedule[Any, Any, Any]): ZLayer[
     Client & SecurityService & Scope & CoreConfig,
@@ -25,8 +29,10 @@ object OAuthConfigurationService:
     val syncClients =
       CentralSyncTokenService.live >+>
         ((OAuthClientSyncClient.live >+> ZLayer(ReloadingCache.make[ClientsWithPepper](schedule)) >+>
-          (OAuthScopeSyncClient.live >+> ZLayer(ReloadingCache.make[Vector[ScopeRecord]](schedule)))))
-    syncClients >>> ZLayer.fromFunction(Impl(_, _, _, _, _))
+          (OAuthScopeSyncClient.live >+> ZLayer(ReloadingCache.make[Vector[ScopeRecord]](schedule))) >+>
+          (FormSyncClient.live >+> ZLayer(ReloadingCache.make[Vector[FormRecord]](schedule))) >+>
+          (ThemeSyncClient.live >+> ZLayer(ReloadingCache.make[Vector[ThemeRecord]](schedule)))))
+    syncClients >>> ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _))
   }
 
   case class Impl(
@@ -34,6 +40,10 @@ object OAuthConfigurationService:
       clientRepository: OAuthClientSyncClient,
       scopeCache: ReloadingCache[Vector[ScopeRecord]],
       scopeRepository: OAuthScopeSyncClient,
+      formCache: ReloadingCache[Vector[FormRecord]],
+      formRepository: FormSyncClient,
+      themeCache: ReloadingCache[Vector[ThemeRecord]],
+      themeRepository: ThemeSyncClient,
       securityService: SecurityService,
   ) extends OAuthConfigurationService:
 
@@ -77,3 +87,9 @@ object OAuthConfigurationService:
 
     override def getScopes: UIO[Vector[ScopeRecord]] =
       scopeCache.get
+
+    override def getForm(id: String): UIO[Option[FormRecord]] =
+      formCache.get.map(_.find(_.id == id))
+
+    override def getTheme(id: String): UIO[Option[ThemeRecord]] =
+      themeCache.get.map(_.find(_.id == id))

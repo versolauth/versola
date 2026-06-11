@@ -1,7 +1,7 @@
 package versola.oauth.client
 
 import org.apache.commons.codec.digest.Blake3
-import versola.oauth.client.model.{Claim, ClaimRecord, ClientId, ClientsWithPepper, OAuthClientRecord, ScopeRecord, ScopeToken, TenantId}
+import versola.oauth.client.model.{Claim, ClaimRecord, ClientId, ClientsWithPepper, FormRecord, OAuthClientRecord, ScopeRecord, ScopeToken, TenantId, ThemeRecord}
 import versola.util.*
 import zio.*
 import zio.durationInt
@@ -36,6 +36,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
     previousSecret = None,
     accessTokenTtl = 10.minutes,
     refreshTokenTtl = 7776000.seconds,
+    theme = "default",
   )
   val privateClient2 = OAuthClientRecord(
     id = clientId2,
@@ -48,6 +49,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
     previousSecret = Some(stored(secret = previousClientSecret, salt = salt1)),
     accessTokenTtl = 10.minutes,
     refreshTokenTtl = 7776000.seconds,
+    theme = "default",
   )
   val publicClient = OAuthClientRecord(
     id = publicClientId,
@@ -60,6 +62,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
     previousSecret = None,
     accessTokenTtl = 10.minutes,
     refreshTokenTtl = 7776000.seconds,
+    theme = "default",
   )
   val testClients = Map(clientId1 -> privateClient1, clientId2 -> privateClient2, publicClientId -> publicClient)
   val testScopes = Vector(
@@ -73,9 +76,16 @@ object OAuthClientServiceSpec extends UnitSpecBase:
     ),
   )
 
-  final class Env(clientCache: ReloadingCache[ClientsWithPepper], scopeCache: ReloadingCache[Vector[ScopeRecord]]):
+  final class Env(
+      clientCache: ReloadingCache[ClientsWithPepper],
+      scopeCache: ReloadingCache[Vector[ScopeRecord]],
+      formCache: ReloadingCache[Vector[FormRecord]],
+      themeCache: ReloadingCache[Vector[ThemeRecord]],
+  ):
     val clientSync = stub[OAuthClientSyncClient]
     val scopeSync = stub[OAuthScopeSyncClient]
+    val formSync = stub[FormSyncClient]
+    val themeSync = stub[ThemeSyncClient]
     val security = stub[SecurityService]
     security.mac.returns { (secret, key) =>
       ZIO.succeed:
@@ -84,13 +94,35 @@ object OAuthClientServiceSpec extends UnitSpecBase:
         MAC(mac)
     }
     val service: OAuthConfigurationService =
-      OAuthConfigurationService.Impl(clientCache, clientSync, scopeCache, scopeSync, security)
+      OAuthConfigurationService.Impl(
+        clientCache,
+        clientSync,
+        scopeCache,
+        scopeSync,
+        formCache,
+        formSync,
+        themeCache,
+        themeSync,
+        security,
+      )
 
-  private def makeEnv(clients: Map[ClientId, OAuthClientRecord] = testClients, scopes: Vector[ScopeRecord] = testScopes) =
+  private def makeEnv(
+      clients: Map[ClientId, OAuthClientRecord] = testClients,
+      scopes: Vector[ScopeRecord] = testScopes,
+      forms: Vector[FormRecord] = Vector.empty,
+      themes: Vector[ThemeRecord] = Vector.empty,
+  ) =
     for
       clientRef <- Ref.make(ClientsWithPepper(clients = clients, pepper = testPepper))
       scopeRef <- Ref.make(scopes)
-    yield Env(clientCache = ReloadingCache(clientRef), scopeCache = ReloadingCache(scopeRef))
+      formRef <- Ref.make(forms)
+      themeRef <- Ref.make(themes)
+    yield Env(
+      clientCache = ReloadingCache(clientRef),
+      scopeCache = ReloadingCache(scopeRef),
+      formCache = ReloadingCache(formRef),
+      themeCache = ReloadingCache(themeRef),
+    )
 
   val spec = suite("OAuthConfigurationService")(
     test("find returns existing client") {

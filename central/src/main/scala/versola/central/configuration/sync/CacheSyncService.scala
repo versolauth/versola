@@ -2,6 +2,7 @@ package versola.central.configuration.sync
 
 import versola.central.configuration.clients.{AuthorizationPresetService, OAuthClientService}
 import versola.central.configuration.edges.EdgeService
+import versola.central.configuration.forms.FormService
 import versola.central.configuration.permissions.PermissionService
 import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.roles.RoleService
@@ -14,8 +15,8 @@ trait CacheSyncService:
   def sync(): Task[Unit]
 
 object CacheSyncService:
-  def live: ZLayer[CacheSyncRepository & TenantService & PermissionService & ResourceService & OAuthClientService & OAuthScopeService & RoleService & AuthorizationPresetService & EdgeService & Scope, Nothing, CacheSyncService] =
-    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _)) >>>
+  def live: ZLayer[CacheSyncRepository & TenantService & PermissionService & ResourceService & OAuthClientService & OAuthScopeService & RoleService & AuthorizationPresetService & EdgeService & FormService & Scope, Nothing, CacheSyncService] =
+    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _)) >>>
       ZLayer(ZIO.serviceWithZIO[CacheSyncService.Impl](service => service.sync().forkScoped.as(service)))
 
   class Impl(
@@ -28,6 +29,7 @@ object CacheSyncService:
       roleService: RoleService,
       presetService: AuthorizationPresetService,
       edgeService: EdgeService,
+      formService: FormService,
   ) extends CacheSyncService:
 
     override def sync(): Task[Unit] =
@@ -56,6 +58,9 @@ object CacheSyncService:
 
           case event: SyncEvent.PresetsUpdated =>
             presetService.sync(event).either
+
+          case event: SyncEvent.FormsUpdated =>
+            formService.sync(event).either
 
           case SyncEvent.Unknown =>
             ZIO.unit

@@ -9,9 +9,8 @@ import zio.telemetry.opentelemetry.context.{IncomingContextCarrier, OutgoingCont
 import zio.telemetry.opentelemetry.tracing.Tracing
 import zio.telemetry.opentelemetry.tracing.propagation.TraceContextPropagator
 
-import scala.collection.mutable
-
 import java.time.Instant
+import scala.collection.mutable
 
 object Observability:
   val receiveHttp = LogAnnotation[ReceiveHttpLog]("http", (_, r) => r, _.toJson)
@@ -21,13 +20,18 @@ object Observability:
     FiberRef.unsafe.make(Option.empty[Cause[Any]])
   }
 
-  val clientMasking: FiberRef[HttpObservabilityConfig.Client] = zio.Unsafe.unsafe { case given zio.Unsafe =>
+  val clientLogging: FiberRef[HttpObservabilityConfig.Client] = zio.Unsafe.unsafe { case given zio.Unsafe =>
     FiberRef.unsafe.make(HttpObservabilityConfig.Client.default)
   }
 
-  val serverMasking: FiberRef[HttpObservabilityConfig.Server] = zio.Unsafe.unsafe { case given zio.Unsafe =>
+  val serverLogging: FiberRef[HttpObservabilityConfig.Server] = zio.Unsafe.unsafe { case given zio.Unsafe =>
     FiberRef.unsafe.make(HttpObservabilityConfig.Server.default)
   }
+
+  def withServerLogging[R, E, A](
+      f: HttpObservabilityConfig.Server => HttpObservabilityConfig.Server,
+  )(zio: ZIO[R, E, A]): ZIO[R, E, A] =
+    serverLogging.set(f(HttpObservabilityConfig.Server.default)) *> zio
 
   def handleErrors[Env](routes: Routes[Env, Throwable]): Routes[Env, Nothing] =
     routes.handleErrorZIO {
@@ -99,7 +103,7 @@ object Observability:
                   for
                     now <- Clock.nanoTime
                     response <- handler(request)
-                    masking <- serverMasking.get
+                    masking <- serverLogging.get
                     (requestLog, responseLog) <- toLog(request, masking) <&> toLog(request, response, masking)
                     after <- Clock.nanoTime
                     log = receiveHttp(
@@ -120,13 +124,13 @@ object Observability:
                     _ <- Observability.cause.set(None)
                   yield response
                 ) @@ tracing.aspects.extractSpan(
-                    TraceContextPropagator.default,
-                    IncomingContextCarrier.default(
-                      mutable.Map.from(request.headers.map(h => h.headerName -> h.renderedValue))
-                    ),
-                    s"${request.method.name} ${request.path.encode}",
-                    SpanKind.SERVER,
-                  )
+                  TraceContextPropagator.default,
+                  IncomingContextCarrier.default(
+                    mutable.Map.from(request.headers.map(h => h.headerName -> h.renderedValue)),
+                  ),
+                  s"${request.method.name} ${request.path.encode}",
+                  SpanKind.SERVER,
+                )
 
   val client: ZLayer[Tracing, Throwable, Client] =
     (Client.default ++ ZLayer.service[Tracing]).map: env =>
@@ -159,7 +163,7 @@ object Observability:
                   result <- client.driver.request(version, method, url, tracedHeaders, body, sslConfig, proxy)
                     .sandbox.exit.timed
                   (duration, exit) = result
-                  masking <- clientMasking.get
+                  masking <- clientLogging.get
                   _ <- clientLog(method, url, tracedHeaders, body, startTime, duration, masking, exit)
                   response <- exit.unsandbox
                 yield response

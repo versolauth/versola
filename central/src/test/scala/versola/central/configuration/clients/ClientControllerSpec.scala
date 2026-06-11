@@ -89,6 +89,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       accessTokenTtl = 5.minutes,
       refreshTokenTtl = 7776000.seconds,
       permissions = Set(readPermission),
+      theme = "",
     ),
     OAuthClientRecord(
       id = ClientId("mobile-app"),
@@ -102,6 +103,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       accessTokenTtl = 10.minutes,
       refreshTokenTtl = 7776000.seconds,
       permissions = Set(writePermission),
+      theme = "",
     ),
   )
 
@@ -203,6 +205,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
                 scope = Set(readScope),
                 permissions = Set(readPermission),
                 secretRotation = false,
+                theme = "",
               ),
               OAuthClientResponse(
                 id = ClientId("mobile-app"),
@@ -211,6 +214,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
                 scope = Set(writeScope),
                 permissions = Set(writePermission),
                 secretRotation = true,
+                theme = "",
               ),
             ),
           ),

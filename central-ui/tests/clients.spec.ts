@@ -99,6 +99,7 @@ test('creates a client and shows the generated secret banner', async ({ page }) 
     audience: ['alpha-web'],
     permissions: ['alpha.read'],
     accessTokenTtl: 1800,
+    theme: 'default',
   });
 });
 
@@ -340,6 +341,7 @@ test('shows error alert when creating a client with duplicate ID', async ({ page
     audience: [],
     permissions: [],
     accessTokenTtl: 3600,
+    theme: 'default',
   });
 
   // The client should NOT be added to the list

@@ -3,8 +3,10 @@ package versola.oauth.conversation
 import org.scalamock.stubs.Stub
 import versola.auth.TestEnvConfig
 import versola.auth.model.OtpCode
-import versola.oauth.conversation.model.{AuthId, ConversationStep}
-import versola.oauth.model.ConversationCookie
+import versola.oauth.client.OAuthConfigurationService
+import versola.oauth.client.model.{ClientId, ScopeToken}
+import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
+import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, ConversationCookie}
 import versola.util.http.{ControllerSpec, NoopTracing, Observability}
 import versola.util.{Email, Phone, UnitSpecBase}
 import zio.*
@@ -34,6 +36,26 @@ object ConversationControllerSpec extends UnitSpecBase:
     ),
   )
 
+  val record = ConversationRecord(
+    clientId = ClientId("test-client"),
+    redirectUri = URL.decode("https://example.com/callback").toOption.get,
+    scope = Set(ScopeToken("openid")),
+    codeChallenge = CodeChallenge("E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"),
+    codeChallengeMethod = CodeChallengeMethod.S256,
+    state = None,
+    userId = None,
+    credential = None,
+    step = ConversationStep.Otp(real = None, timesRequested = 1, timesSubmitted = 0),
+    requestedClaims = None,
+    uiLocales = None,
+    nonce = None,
+    responseType = zio.prelude.NonEmptySet(versola.oauth.authorize.model.ResponseTypeEntry.Code),
+    userEmail = None,
+    userPhone = None,
+    userLogin = None,
+    userClaims = None,
+  )
+
   def successfulSubmitTestCase[Args, Result, RResult <: Result](
       description: String,
       request: Request,
@@ -48,7 +70,10 @@ object ConversationControllerSpec extends UnitSpecBase:
         router = stub[ConversationRouter]
         formService <- ConversationRenderService.live
           .build
-          .provideSome[zio.Scope](ZLayer.succeed(TestEnvConfig.coreConfig))
+          .provideSome[zio.Scope](
+            ZLayer.succeed(TestEnvConfig.coreConfig),
+            ZLayer.succeed(stub[OAuthConfigurationService]),
+          )
 
         tracing <- NoopTracing.layer.build
 
@@ -58,15 +83,15 @@ object ConversationControllerSpec extends UnitSpecBase:
               .provideEnvironment(ZEnvironment(router) ++ formService ++ tracing)
           )
         )
+        _ <- router.getConversation.succeedsWith(Some(record))
         _ <- router.submit.succeedsWith(conversationResult)
 
         response <- client.batched(request)
 
         submitCalls = router.submit.calls
       yield assertTrue(
-        response.status == Status.Ok,
-        response.headers.get("datastar-selector").contains("body"),
-        response.headers.get("datastar-mode").contains("inner"),
+        response.status == Status.SeeOther,
+        response.header(Header.Location).exists(_.url.encode.contains("challenge")),
       ) && assertTrue(submitCalls == List(submission))
     }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging
 

@@ -97,6 +97,7 @@ object OAuthClientService:
           accessTokenTtl = Duration.fromSeconds(request.accessTokenTtl),
           refreshTokenTtl = Duration.fromSeconds(request.refreshTokenTtl.getOrElse(7776000)),
           permissions = request.permissions,
+          theme = request.theme,
         )
         _ <- clientRepository.createClient(client)
       yield secret
@@ -112,6 +113,7 @@ object OAuthClientService:
         patchPermissions = request.permissions,
         accessTokenTtl = request.accessTokenTtl.map(Duration.fromSeconds),
         refreshTokenTtl = request.refreshTokenTtl.map(Duration.fromSeconds),
+        theme = request.theme,
       )
 
     override def rotateClientSecret(clientId: ClientId): Task[Secret] =

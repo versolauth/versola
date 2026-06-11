@@ -60,6 +60,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
     previousSecret = None,
     accessTokenTtl = 10.minutes,
     refreshTokenTtl = 7776000.seconds,
+    theme = "default",
   )
 
   val publicClientId = ClientId("public-client-1")
@@ -74,6 +75,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
     previousSecret = None,
     accessTokenTtl = 10.minutes,
     refreshTokenTtl = 7776000.seconds,
+    theme = "default",
   )
 
   class Env:

@@ -8,7 +8,9 @@ object HttpObservabilityConfig:
       logQuery: Set[String],
       logRequestHeaders: Set[String],
       logResponseHeaders: Set[String],
-  )
+  ):
+    def modifyQuery(f: Set[String] => Set[String]): Server =
+      copy(logQuery = f(logQuery))
 
   object Server:
     val default = Server(

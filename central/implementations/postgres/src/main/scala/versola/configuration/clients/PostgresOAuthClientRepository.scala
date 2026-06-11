@@ -27,7 +27,7 @@ class PostgresOAuthClientRepository(
 
   private def findClient(clientId: ClientId) =
     sql"""
-      SELECT id, tenant_id, client_name, redirect_uris, scope, external_audience, secret, previous_secret, access_token_ttl, refresh_token_ttl, permissions
+      SELECT id, tenant_id, client_name, redirect_uris, scope, external_audience, secret, previous_secret, access_token_ttl, refresh_token_ttl, permissions, theme
       FROM oauth_clients
       WHERE id = $clientId
     """
@@ -35,7 +35,7 @@ class PostgresOAuthClientRepository(
   override def getAll: Task[Vector[OAuthClientRecord]] =
     xa.connect:
       sql"""
-        SELECT id, tenant_id, client_name, redirect_uris, scope, external_audience, secret, previous_secret, access_token_ttl, refresh_token_ttl, permissions
+        SELECT id, tenant_id, client_name, redirect_uris, scope, external_audience, secret, previous_secret, access_token_ttl, refresh_token_ttl, permissions, theme
         FROM oauth_clients
       """
         .query[OAuthClientRecord].run()
@@ -47,9 +47,9 @@ class PostgresOAuthClientRepository(
   override def createClient(client: OAuthClientRecord): IO[ClientAlreadyExists | Throwable, Unit] =
     xa.connect:
       sql"""
-        INSERT INTO oauth_clients (id, tenant_id, client_name, redirect_uris, scope, external_audience, secret, previous_secret, access_token_ttl, refresh_token_ttl, permissions)
+        INSERT INTO oauth_clients (id, tenant_id, client_name, redirect_uris, scope, external_audience, secret, previous_secret, access_token_ttl, refresh_token_ttl, permissions, theme)
         VALUES (${client.id}, ${client.tenantId}, ${client.clientName}, ${client.redirectUris}, ${client.scope},
-                ${client.externalAudience}, ${client.secret}, ${client.previousSecret}, ${client.accessTokenTtl}, ${client.refreshTokenTtl}, ${client.permissions})
+                ${client.externalAudience}, ${client.secret}, ${client.previousSecret}, ${client.accessTokenTtl}, ${client.refreshTokenTtl}, ${client.permissions}, ${client.theme})
       """.update.run()
     .unit
     .mapError {
@@ -66,6 +66,7 @@ class PostgresOAuthClientRepository(
       patchPermissions: PatchPermissions,
       accessTokenTtl: Option[Duration],
       refreshTokenTtl: Option[Duration],
+      theme: Option[String],
   ): Task[Unit] =
     xa.repeatableRead.transact:
       val client = findClient(clientId).query[OAuthClientRecord].run().head
@@ -75,6 +76,7 @@ class PostgresOAuthClientRepository(
       val newPermissions = client.permissions -- patchPermissions.remove ++ patchPermissions.add
       val newAccessTokenTtl = accessTokenTtl.getOrElse(client.accessTokenTtl)
       val newRefreshTokenTtl = refreshTokenTtl.getOrElse(client.refreshTokenTtl)
+      val newTheme = theme.getOrElse(client.theme)
       sql"""
         UPDATE oauth_clients SET
           client_name = $newClientName,
@@ -82,7 +84,8 @@ class PostgresOAuthClientRepository(
           scope = $newScope,
           permissions = $newPermissions,
           access_token_ttl = $newAccessTokenTtl,
-          refresh_token_ttl = $newRefreshTokenTtl
+          refresh_token_ttl = $newRefreshTokenTtl,
+          theme = $newTheme
         WHERE id = $clientId
       """.update.run()
     .unit

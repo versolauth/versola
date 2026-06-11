@@ -1,6 +1,7 @@
 package versola.central.configuration.sync
 
 import versola.central.configuration.clients.{AuthorizationPreset, ClientId, OAuthClientRecord, PresetId}
+import versola.central.configuration.forms.{FormId, FormRecord}
 import versola.central.configuration.permissions.{Permission, PermissionRecord}
 import versola.central.configuration.resources.{ResourceId, ResourceRecord}
 import versola.central.configuration.roles.{RoleId, RoleRecord}
@@ -108,6 +109,19 @@ object SyncEvent:
 
     def sort(records: Vector[AuthorizationPreset]): Vector[AuthorizationPreset] =
       records.sortBy(x => (x.clientId, x.id))
+
+  case class FormsUpdated(
+      id: FormId,
+      version: Int,
+      op: Op,
+  ) extends ModifyCache:
+    type Record = FormRecord
+
+    def matches(record: FormRecord): Boolean =
+      id == record.id && version == record.version
+
+    def sort(records: Vector[FormRecord]): Vector[FormRecord] =
+      records.sortBy(r => (r.id, -r.version))
 
 
   enum Op:

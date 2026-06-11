@@ -1,0 +1,22 @@
+{
+  "en": {
+    "page_title": "Sign In",
+    "title": "Enter Code",
+    "description": "We sent a verification code to entered credential",
+    "code_placeholder": "Enter verification code",
+    "verify_button": "Verify",
+    "divider": "or",
+    "resend_button": "Resend Code",
+    "resend_in": "Resend available in {seconds}s"
+  },
+  "ru": {
+    "page_title": "Вход",
+    "title": "Введите код",
+    "description": "Мы отправили код подтверждения на указанный контакт",
+    "code_placeholder": "Введите код подтверждения",
+    "verify_button": "Подтвердить",
+    "divider": "или",
+    "resend_button": "Отправить код повторно",
+    "resend_in": "Повторная отправка через {seconds} с"
+  }
+}

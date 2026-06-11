@@ -8,9 +8,6 @@ import versola.util.http.Controller
 import versola.util.{Email, FormDecoder, Phone}
 import zio.*
 import zio.http.*
-import zio.http.codec.HttpContentCodec
-import zio.http.datastar.DatastarEvent
-import zio.http.template2.*
 import zio.json.*
 import zio.schema.*
 import zio.telemetry.opentelemetry.tracing.Tracing
@@ -34,11 +31,12 @@ object ConversationController extends Controller:
           formService <- ZIO.service[ConversationRenderService]
           authId <- extractAuthId(request)
           record <- router.getConversation(authId).someOrFail(Error.BadRequest)
-          html = formService.renderStep(record.step)
-        yield Response.html(html)
-      ).catchAll { ex =>
-        ZIO.logErrorCause("Unknown exception", Cause.fail(ex))
-          .as(Response.internalServerError)
+          ifNoneMatch = request.headers.get(Header.IfNoneMatch)
+          response <- formService.renderStep(record, ifNoneMatch.map(_.renderedValue))
+        yield response
+      ).catchAll {
+        case error: Error => ZIO.succeed(Response.badRequest)
+        case ex: Throwable => ZIO.fail(ex)
       }
     }
 
@@ -65,9 +63,10 @@ object ConversationController extends Controller:
         router <- ZIO.service[ConversationRouter]
         conversationRenderService <- ZIO.service[ConversationRenderService]
         authId <- extractAuthId(request)
+        record <- router.getConversation(authId).someOrFail(Error.BadRequest)
         body <- request.formAs[Body].orElseFail(Error.BadRequest)
         submissionResult <- router.submit(authId, body)
-        response <- conversationRenderService.renderSubmit(submissionResult)
+        response <- conversationRenderService.renderSubmit(submissionResult, record.clientId, record.uiLocales)
       yield response)
         .catchAll {
           case error: Error => ZIO.succeed(Response.badRequest)

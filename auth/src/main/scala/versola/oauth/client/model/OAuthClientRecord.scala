@@ -17,6 +17,7 @@ case class OAuthClientRecord(
     previousSecret: Option[Secret],
     accessTokenTtl: Duration,
     refreshTokenTtl: Duration,
+    theme: String,
 ) derives CanEqual, Equal:
 
   def audience: List[ClientId] = id :: externalAudience

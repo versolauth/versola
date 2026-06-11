@@ -2,7 +2,7 @@ import { LitElement, html, css } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
 import { badgeStyles, buttonStyles, cardStyles, formStyles } from '../styles/components';
-import {AuthorizationPreset, OAuthClient, OAuthScope, Permission, Resource} from '../types';
+import {AuthorizationPreset, OAuthClient, OAuthScope, Permission, Resource, ThemeRecord} from '../types';
 import {
   createClient,
   deleteClient,
@@ -13,6 +13,7 @@ import {
   fetchResources,
   fetchAllScopes,
   fetchTenants,
+  fetchThemes,
   rotateClientSecret,
   updateClient,
 } from '../utils/central-api';
@@ -41,6 +42,7 @@ export class VersolaClientsList extends LitElement {
   @state() private availableScopes: OAuthScope[] = [];
   @state() private availablePermissions: Permission[] = [];
   @state() private availableResources: Resource[] = [];
+  @state() private availableThemes: ThemeRecord[] = [];
   @state() private isPreparingForm = false;
   @state() private createdSecret: { clientName: string; secret: string; action: 'created' | 'rotated' } | null = null;
   @state() private copyFeedback = '';
@@ -530,16 +532,18 @@ export class VersolaClientsList extends LitElement {
       return;
     }
 
-    const [scopes, permissions, resources] = await Promise.all([
+    const [scopes, permissions, resources, themes] = await Promise.all([
       fetchAllScopes(tenantId),
       fetchAllPermissions(tenantId),
       fetchResources(tenantId),
+      fetchThemes(tenantId),
     ]);
 
     if (this.tenantId === tenantId) {
       this.availableScopes = scopes;
       this.availablePermissions = permissions;
       this.availableResources = resources;
+      this.availableThemes = themes;
       this.formOptionsTenantId = tenantId;
     }
   }
@@ -831,6 +835,7 @@ export class VersolaClientsList extends LitElement {
           .availablePermissions=${this.availablePermissions}
           .availableResources=${this.availableResources}
           .availableClientIds=${this.clients.map(client => client.id)}
+          .availableThemes=${this.availableThemes}
           @close=${this.handleFormClose}
           @delete-previous-secret=${this.handleDeletePreviousSecret}
           @rotate-secret=${this.handleRotateSecret}

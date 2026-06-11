@@ -1,6 +1,9 @@
 import type {
   AuthorizationPreset,
+  BackendProperty,
   Edge,
+  FormLocale,
+  FormRecord,
   InjectRule,
   OAuthClaim,
   OAuthClient,
@@ -12,6 +15,7 @@ import type {
   Role,
   ServiceKey,
   Tenant,
+  ThemeRecord,
 } from '../types';
 
 export const DEFAULT_PAGE_SIZE = 30;
@@ -64,7 +68,7 @@ type ServiceKeyResponseDto = { keyId: string; privateKey: string };
 type TenantsResponse = { tenants: Array<{ id: string; description: string; edgeId?: string | null }> };
 type PermissionsResponse = { permissions: Array<{ permission: string; description: LocalizedDescription; endpointIds: ResourceEndpointId[] }> };
 type ScopesResponse = { scopes: Array<{ scope: string; description: LocalizedDescription; claims: Array<{ claim: string; description: LocalizedDescription }> }> };
-type ClientsResponse = { clients: Array<{ id: string; clientName: string; redirectUris: string[]; scope: string[]; permissions: string[]; secretRotation: boolean }> };
+type ClientsResponse = { clients: Array<{ id: string; clientName: string; redirectUris: string[]; scope: string[]; permissions: string[]; secretRotation: boolean; theme: string }> };
 type RolesResponse = { roles: Array<{ id: string; description: LocalizedDescription; permissions: string[]; active: boolean }> };
 type ResourcesResponse = { resources: ResourceResponseDto[] };
 
@@ -416,6 +420,7 @@ export async function fetchClients(tenantId: string, offset = 0, limit = DEFAULT
         hasPreviousSecret: supplement?.hasPreviousSecret ?? client.secretRotation,
         accessTokenTtl: supplement?.accessTokenTtl ?? 3600,
         permissions: [...client.permissions],
+        theme: client.theme ?? 'default',
         tenantId,
       };
     }),
@@ -654,6 +659,7 @@ export async function createClient(tenantId: string, client: OAuthClient): Promi
       audience: unique(client.externalAudience),
       permissions: unique(client.permissions),
       accessTokenTtl: client.accessTokenTtl,
+      theme: client.theme ?? 'default',
     },
   });
 
@@ -706,6 +712,7 @@ export async function updateClient(tenantId: string, existing: OAuthClient, clie
       scope: patchSet(existing.scope, client.scope),
       permissions: patchSet(existing.permissions, client.permissions),
       accessTokenTtl: existing.accessTokenTtl !== client.accessTokenTtl ? client.accessTokenTtl : undefined,
+      theme: existing.theme !== client.theme ? client.theme : undefined,
     },
   });
 
@@ -760,5 +767,70 @@ export async function deleteEdge(edgeId: string): Promise<void> {
   await requestVoid('/configuration/edges', {
     method: 'DELETE',
     query: { edgeId },
+  });
+}
+
+export async function fetchForms(): Promise<FormRecord[]> {
+  const response = await request<{ forms: FormRecord[] }>('/configuration/forms');
+  return response.forms;
+}
+
+export async function fetchFormLocales(): Promise<FormLocale[]> {
+  const response = await request<{ locales: FormLocale[] }>('/configuration/forms/locales');
+  return response.locales;
+}
+
+export async function updateFormLocales(add: FormLocale[], remove: string[]): Promise<void> {
+  await requestVoid('/configuration/forms/locales', {
+    method: 'PUT',
+    body: { add, delete: remove },
+  });
+}
+
+export async function updateForm(
+  id: string,
+  style: string,
+  jsSource: string | null,
+  jsCompiled: string | null,
+  localizations: Record<string, Record<string, string>>,
+  properties: BackendProperty[],
+): Promise<void> {
+  await requestVoid('/configuration/forms', {
+    method: 'PUT',
+    body: { id, style, jsSource, jsCompiled, localizations, properties },
+  });
+}
+
+export async function setActiveFormVersion(id: string, version: number): Promise<void> {
+  await requestVoid('/configuration/forms/active', {
+    method: 'PUT',
+    body: { id, version },
+  });
+}
+
+export async function fetchThemes(tenantId?: string): Promise<ThemeRecord[]> {
+  const response = await request<{ themes: ThemeRecord[] }>('/configuration/themes', {
+    query: { tenantId },
+  });
+  return response.themes;
+}
+
+export async function createTheme(theme: ThemeRecord): Promise<void> {
+  await requestVoid('/configuration/themes', {
+    method: 'POST',
+    body: { id: theme.id, css: theme.css, tenantId: theme.tenantId },
+  });
+}
+
+export async function updateTheme(theme: ThemeRecord): Promise<void> {
+  await requestVoid('/configuration/themes', {
+    method: 'PUT',
+    body: { id: theme.id, css: theme.css },
+  });
+}
+
+export async function deleteTheme(id: string): Promise<void> {
+  await requestVoid(`/configuration/themes/${id}`, {
+    method: 'DELETE',
   });
 }

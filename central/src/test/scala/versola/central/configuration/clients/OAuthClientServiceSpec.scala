@@ -40,6 +40,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     accessTokenTtl = 5.minutes,
     refreshTokenTtl = 7776000.seconds,
     permissions = Set(readPermission),
+    theme = "default",
   )
 
   private val otherTenantClient = OAuthClientRecord(
@@ -54,6 +55,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     accessTokenTtl = 10.minutes,
     refreshTokenTtl = 7776000.seconds,
     permissions = Set(writePermission),
+    theme = "default",
   )
 
   private val createRequest = CreateClientRequest(
@@ -139,6 +141,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         accessTokenTtl = 300.seconds,
         refreshTokenTtl = 7776000.seconds,
         permissions = Set(readPermission),
+        theme = "default",
       )
 
       for
@@ -172,6 +175,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
             updateRequest.scope,
             updateRequest.permissions,
             Some(900.seconds),
+            None,
             None,
           )
         )

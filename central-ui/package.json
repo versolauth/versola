@@ -11,6 +11,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "build:forms": "node scripts/build-forms.mjs",
     "preview": "vite preview",
     "type-check": "tsc --noEmit",
     "test:ui": "npx playwright test",
@@ -27,12 +28,19 @@
   "license": "MIT",
   "dependencies": {
     "@marcbachmann/cel-js": "^7.6.1",
+    "@types/prismjs": "^1.26.6",
     "libphonenumber-js": "^1.13.3",
-    "lit": "^3.2.1"
+    "lit": "^3.2.1",
+    "prismjs": "^1.30.0"
   },
   "devDependencies": {
+    "@babel/core": "^7.29.7",
     "@playwright/test": "^1.48.2",
     "@types/node": "^22.10.2",
+    "babel-preset-solid": "^1.9.12",
+    "esbuild": "^0.28.0",
+    "esbuild-plugin-solid": "^0.6.0",
+    "solid-js": "^1.9.13",
     "typescript": "^5.7.2",
     "vite": "^6.0.5"
   }

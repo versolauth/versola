@@ -22,6 +22,21 @@ type AuthorizationPresetDto = {
   responseType: string;
   uiLocales?: string[]
 };
+type FormPropertyDto =
+  | { type: 'BooleanProperty'; name: string }
+  | { type: 'StringArrayProperty'; name: string; allowedValues: string[] };
+type FormDto = {
+  id: string;
+  version: number;
+  active: boolean;
+  style: string;
+  jsSource: string | null;
+  jsCompiled: string | null;
+  localizations: Record<string, Record<string, string>>;
+  properties: FormPropertyDto[];
+};
+type FormLocaleDto = { code: string; name: string };
+type ThemeDto = { id: string; css: string; tenantId: string | null };
 type SetPatch<T> = { add?: T[]; remove?: T[] };
 type DescriptionPatch = { add?: Record<string, string>; delete?: string[] };
 type CreateClientRequest = {
@@ -122,6 +137,9 @@ export type MockConfigState = {
   edges: EdgeDto[];
   authorizationPresets: Record<string, AuthorizationPresetDto[]>; // keyed by clientId
   users: UserDto[];
+  forms: FormDto[];
+  formLocales: FormLocaleDto[];
+  themes: ThemeDto[];
 };
 
 export type MockConfigHarness = {
@@ -157,6 +175,9 @@ const defaultState: MockConfigState = {
   edges: [],
   authorizationPresets: {},
   users: [],
+  forms: [],
+  formLocales: [],
+  themes: [],
 };
 
 function clone<T>(value: T): T {
@@ -174,6 +195,9 @@ function mergeState(overrides: Partial<MockConfigState> = {}): MockConfigState {
     edges: clone(overrides.edges ?? defaultState.edges),
     roles: clone({ ...defaultState.roles, ...overrides.roles }),
     users: clone(overrides.users ?? defaultState.users),
+    forms: clone(overrides.forms ?? defaultState.forms),
+    formLocales: clone(overrides.formLocales ?? defaultState.formLocales),
+    themes: clone(overrides.themes ?? defaultState.themes),
   };
 }
 
@@ -724,6 +748,101 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
       }
 
       edge.hasOldKey = false;
+      await route.fulfill({ status: 204, body: '' });
+      return;
+    }
+
+    if (pathname === '/configuration/forms/locales') {
+      if (method === 'GET') {
+        await route.fulfill(json({ locales: state.formLocales }));
+        return;
+      }
+
+      if (method === 'PUT') {
+        const payload = body as { add?: FormLocaleDto[]; delete?: string[] };
+        const removed = new Set(payload.delete ?? []);
+        state.formLocales = state.formLocales.filter(locale => !removed.has(locale.code));
+        for (const locale of payload.add ?? []) {
+          if (!state.formLocales.some(existing => existing.code === locale.code)) {
+            state.formLocales.push({ ...locale });
+          }
+        }
+        await route.fulfill({ status: 204, body: '' });
+        return;
+      }
+    }
+
+    if (pathname === '/configuration/forms/active' && method === 'PUT') {
+      const payload = body as { id: string; version: number };
+      state.forms = state.forms.map(form =>
+        form.id === payload.id ? { ...form, active: form.version === payload.version } : form,
+      );
+      await route.fulfill({ status: 204, body: '' });
+      return;
+    }
+
+    if (pathname === '/configuration/forms') {
+      if (method === 'GET') {
+        await route.fulfill(json({ forms: state.forms }));
+        return;
+      }
+
+      if (method === 'PUT') {
+        const payload = body as Omit<FormDto, 'version' | 'active'>;
+        const versions = state.forms.filter(form => form.id === payload.id);
+        const nextVersion = versions.reduce((max, form) => Math.max(max, form.version), 0) + 1;
+        state.forms.push({
+          id: payload.id,
+          version: nextVersion,
+          active: versions.length === 0,
+          style: payload.style,
+          jsSource: payload.jsSource,
+          jsCompiled: payload.jsCompiled,
+          localizations: payload.localizations,
+          properties: payload.properties,
+        });
+        await route.fulfill({ status: 204, body: '' });
+        return;
+      }
+    }
+
+    if (pathname === '/configuration/themes') {
+      if (method === 'GET') {
+        const visible = state.themes.filter(theme => !theme.tenantId || theme.tenantId === tenantId);
+        await route.fulfill(json({ themes: visible }));
+        return;
+      }
+
+      if (method === 'POST') {
+        const payload = body as ThemeDto;
+        const scopedTenantId = payload.tenantId ?? null;
+        if (state.themes.some(theme => theme.id === payload.id && (theme.tenantId ?? null) === scopedTenantId)) {
+          await route.fulfill(json({ message: `Theme ${payload.id} already exists` }, 409));
+          return;
+        }
+
+        state.themes.push({ id: payload.id, css: payload.css, tenantId: scopedTenantId });
+        await route.fulfill({ status: 201, body: '' });
+        return;
+      }
+
+      if (method === 'PUT') {
+        const payload = body as { id: string; css: string };
+        const theme = state.themes.find(candidate => candidate.id === payload.id);
+        if (!theme) {
+          await route.fulfill(json({ message: `Theme ${payload.id} was not found` }, 404));
+          return;
+        }
+
+        theme.css = payload.css;
+        await route.fulfill({ status: 204, body: '' });
+        return;
+      }
+    }
+
+    if (pathname.startsWith('/configuration/themes/') && method === 'DELETE') {
+      const themeId = decodeURIComponent(pathname.substring('/configuration/themes/'.length));
+      state.themes = state.themes.filter(theme => theme.id !== themeId);
       await route.fulfill({ status: 204, body: '' });
       return;
     }

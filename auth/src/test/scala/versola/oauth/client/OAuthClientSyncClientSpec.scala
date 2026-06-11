@@ -33,6 +33,7 @@ object OAuthClientSyncClientSpec extends ZIOSpecDefault:
       previousSecret: Option[String],
       accessTokenTtl: Duration,
       refreshTokenTtl: Duration,
+      theme: String,
   ) derives JsonCodec
   private case class EncodedClientsWithPepper(clients: Vector[EncodedClient], pepper: String) derives JsonCodec
 
@@ -78,6 +79,7 @@ object OAuthClientSyncClientSpec extends ZIOSpecDefault:
                       Some(Base64Url.encode(previousSecret)),
                       300.seconds,
                       7776000.seconds,
+                      "default",
                     )
                   ),
                   Base64Url.encode(pepper),

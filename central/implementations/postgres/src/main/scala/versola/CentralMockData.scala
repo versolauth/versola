@@ -51,6 +51,7 @@ object CentralMockData:
       permissions: Set[Permission],
       accessTokenTtl: Int,
       hasPreviousSecret: Boolean,
+      theme: String,
   )
 
   type ScopeModel = (
@@ -392,6 +393,7 @@ object CentralMockData:
       permissions = Set(Permission("clients:read"), Permission("scopes:read")),
       accessTokenTtl = 3600,
       hasPreviousSecret = false,
+      theme = "default",
     ),
     (
       tenantId = defaultTenant,
@@ -403,6 +405,7 @@ object CentralMockData:
       permissions = Set(Permission("users:read")),
       accessTokenTtl = 7200,
       hasPreviousSecret = true,
+      theme = "default",
     ),
     (
       tenantId = defaultTenant,
@@ -422,6 +425,7 @@ object CentralMockData:
       ),
       accessTokenTtl = 1800,
       hasPreviousSecret = false,
+      theme = "default",
     ),
     (
       tenantId = defaultTenant,
@@ -433,6 +437,7 @@ object CentralMockData:
       permissions = Set(Permission("users:read")),
       accessTokenTtl = 900,
       hasPreviousSecret = false,
+      theme = "default",
     ),
     (
       tenantId = defaultTenant,
@@ -444,6 +449,7 @@ object CentralMockData:
       permissions = Set(Permission("users:read")),
       accessTokenTtl = 7200,
       hasPreviousSecret = false,
+      theme = "default",
     ),
     (
       tenantId = defaultTenant,
@@ -455,6 +461,7 @@ object CentralMockData:
       permissions = Set(Permission("users:read")),
       accessTokenTtl = 7200,
       hasPreviousSecret = false,
+      theme = "default",
     ),
     (
       tenantId = defaultTenant,
@@ -466,6 +473,7 @@ object CentralMockData:
       permissions = Set(Permission("clients:read")),
       accessTokenTtl = 300,
       hasPreviousSecret = true,
+      theme = "default",
     ),
     (
       tenantId = defaultTenant,
@@ -477,6 +485,7 @@ object CentralMockData:
       permissions = Set(Permission("users:read"), Permission("clients:read")),
       accessTokenTtl = 600,
       hasPreviousSecret = false,
+      theme = "default",
     ),
     (
       tenantId = defaultTenant,
@@ -488,6 +497,7 @@ object CentralMockData:
       permissions = Set(Permission("users:read"), Permission("clients:read"), Permission("scopes:read")),
       accessTokenTtl = 3600,
       hasPreviousSecret = false,
+      theme = "default",
     ),
     (
       tenantId = defaultTenant,
@@ -499,6 +509,7 @@ object CentralMockData:
       permissions = Set(Permission("users:read"), Permission("clients:read")),
       accessTokenTtl = 1800,
       hasPreviousSecret = true,
+      theme = "default",
     ),
     (
       tenantId = defaultTenant,
@@ -510,6 +521,7 @@ object CentralMockData:
       permissions = Set(Permission("users:read")),
       accessTokenTtl = 3600,
       hasPreviousSecret = false,
+      theme = "default",
     ),
     (
       tenantId = defaultTenant,
@@ -521,6 +533,7 @@ object CentralMockData:
       permissions = Set(Permission("users:read")),
       accessTokenTtl = 600,
       hasPreviousSecret = true,
+      theme = "default",
     ),
   )
 

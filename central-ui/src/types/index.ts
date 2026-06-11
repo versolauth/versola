@@ -30,6 +30,7 @@ export interface OAuthClient {
   hasPreviousSecret: boolean;
   accessTokenTtl: number;
   permissions: string[];
+  theme: string;
   tenantId?: string;  // Tenant scope (clients inherit edge from their tenant)
   authorizationPresets?: AuthorizationPreset[];
 }
@@ -141,6 +142,44 @@ export interface UserRoleAssignment {
 }
 
 export type UserSearchField = 'id' | 'email' | 'phone' | 'login';
+
+// Theme
+export interface ThemeRecord {
+  id: string;
+  css: string;
+  tenantId: string | null;
+}
+
+// Backend properties
+export interface BooleanProperty {
+  type: 'BooleanProperty';
+  name: string;
+}
+
+export interface StringArrayProperty {
+  type: 'StringArrayProperty';
+  name: string;
+  allowedValues: string[];
+}
+
+export type BackendProperty = BooleanProperty | StringArrayProperty;
+
+// Auth Forms
+export interface FormRecord {
+  id: string;
+  version: number;
+  active: boolean;
+  style: string;
+  jsSource: string | null;
+  jsCompiled: string | null;
+  localizations: Record<string, Record<string, string>>;
+  properties: BackendProperty[];
+}
+
+export interface FormLocale {
+  code: string;
+  name: string;
+}
 
 // Form state
 export type FormMode = 'create' | 'edit';

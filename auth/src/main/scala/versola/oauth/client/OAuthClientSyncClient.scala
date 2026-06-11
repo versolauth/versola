@@ -45,6 +45,7 @@ object OAuthClientSyncClient:
             previousSecret = previousSecret,
             accessTokenTtl = client.accessTokenTtl,
             refreshTokenTtl = client.refreshTokenTtl,
+            theme = client.theme,
           )
         }
       yield ClientsWithPepper(decryptedClients.map(it => it.id -> it).toMap, decryptedPepper)
@@ -69,6 +70,7 @@ object OAuthClientSyncClient:
         previousSecret: Option[String],
         accessTokenTtl: Duration,
         refreshTokenTtl: Duration,
+        theme: String,
     ) derives JsonCodec
 
     private case class OAuthClientsWithPepperEncrypted(

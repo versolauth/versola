@@ -23,6 +23,7 @@ trait OAuthClientRepository extends CacheSource[Vector[OAuthClientRecord]]:
       patchPermissions: PatchPermissions,
       accessTokenTtl: Option[Duration],
       refreshTokenTtl: Option[Duration],
+      theme: Option[String],
   ): Task[Unit]
 
   def rotateClientSecret(clientId: ClientId, newSecret: Array[Byte]): Task[Unit]

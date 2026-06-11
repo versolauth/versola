@@ -20,6 +20,7 @@ case class OAuthClientRecord(
     accessTokenTtl: Duration,
     refreshTokenTtl: Duration,
     permissions: Set[Permission],
+    theme: String,
 ) derives Schema, CanEqual, Equal:
 
   def audience: List[ClientId] = id :: externalAudience

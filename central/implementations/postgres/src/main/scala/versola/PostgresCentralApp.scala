@@ -5,6 +5,8 @@ import com.zaxxer.hikari.HikariDataSource
 import versola.central.CentralConfig
 import versola.central.configuration.clients.{AuthorizationPresetController, AuthorizationPresetRepository, AuthorizationPresetService, ClientController, OAuthClientRepository, OAuthClientService}
 import versola.central.configuration.edges.{EdgeController, EdgeRepository, EdgeService}
+import versola.central.configuration.forms.{FormController, FormRepository, FormService}
+import versola.central.configuration.themes.{ThemeController, ThemeRepository, ThemeService}
 import versola.central.configuration.permissions.{PermissionController, PermissionRepository, PermissionService}
 import versola.central.configuration.resources.{ResourceController, ResourceRepository, ResourceService}
 import versola.central.configuration.roles.{RoleController, RoleRecord, RoleRepository, RoleService}
@@ -13,6 +15,8 @@ import versola.central.configuration.sync.{CacheSyncRepository, CacheSyncService
 import versola.central.configuration.tenants.{TenantController, TenantRepository, TenantService}
 import versola.central.users.{AuthClient, UserOutboxProcessor, UserController, UserRepository, UserService}
 import versola.configuration.clients.{PostgresAuthorizationPresetRepository, PostgresOAuthClientRepository}
+import versola.configuration.forms.PostgresFormRepository
+import versola.configuration.themes.PostgresThemeRepository
 import versola.users.PostgresUserRepository
 import versola.configuration.edges.PostgresEdgeRepository
 import versola.configuration.permissions.PostgresPermissionRepository
@@ -55,6 +59,10 @@ object PostgresCentralApp extends VersolaApp("central"):
       RoleService &
       EdgeRepository &
       EdgeService &
+      FormRepository &
+      FormService &
+      ThemeRepository &
+      ThemeService &
       CacheSyncRepository &
       CacheSyncService &
       UserRepository &
@@ -72,6 +80,8 @@ object PostgresCentralApp extends VersolaApp("central"):
       ScopeController.routes,
       RoleController.routes,
       EdgeController.routes,
+      FormController.routes,
+      ThemeController.routes,
       UserController.routes,
     ).reduce(_ ++ _)
 
@@ -86,6 +96,8 @@ object PostgresCentralApp extends VersolaApp("central"):
           PostgresOAuthScopeRepository.live >+>
           PostgresRoleRepository.live >+>
           PostgresEdgeRepository.live >+>
+          PostgresFormRepository.live >+>
+          PostgresThemeRepository.live >+>
           PostgresCacheSyncRepository.live >+>
           PostgresUserRepository.live
       )
@@ -104,6 +116,8 @@ object PostgresCentralApp extends VersolaApp("central"):
       OAuthScopeService.live(schedule) >+>
       RoleService.live(schedule) >+>
       EdgeService.live(schedule) >+>
+      FormService.live(schedule) >+>
+      ThemeService.live(schedule) >+>
       CacheSyncService.live >+>
       AuthClient.live >+>
       UserService.live >+>

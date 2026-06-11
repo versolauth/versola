@@ -34,6 +34,7 @@ object AuthorizationPresetServiceSpec extends ZIOSpecDefault, ZIOStubs:
     accessTokenTtl = 5.minutes,
     refreshTokenTtl = 7776000.seconds,
     permissions = Set.empty,
+    theme = "",
   )
   
   private val validRequest = SaveAuthorizationPresetsRequest(

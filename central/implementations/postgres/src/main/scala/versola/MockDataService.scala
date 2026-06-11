@@ -13,6 +13,8 @@ import versola.central.configuration.tenants.TenantRepository
 import versola.util.SecureRandom
 import zio.{Task, ZIO, ZLayer}
 
+import scala.io.Source
+
 trait MockDataService:
   def insert(): Task[Unit]
 
@@ -38,10 +40,21 @@ object MockDataService:
 
     private def cleanup(): Task[Unit] =
       xa.connect:
-        sql"""TRUNCATE TABLE tenants, permissions, resources, oauth_scopes, roles, oauth_clients, edges RESTART IDENTITY CASCADE""".update.run()
+        // Include themes explicitly so CASCADE from tenants does not silently wipe it.
+        sql"""TRUNCATE TABLE tenants, permissions, resources, oauth_scopes, roles, oauth_clients, edges, themes RESTART IDENTITY CASCADE""".update.run()
+
+    private def insertDefaultTheme(): Task[Unit] =
+      ZIO.blocking:
+        ZIO.attemptBlocking:
+          val src = Source.fromResource("forms/common.css")
+          try src.mkString finally src.close()
+      .flatMap: css =>
+        xa.connect:
+          sql"""INSERT INTO themes (id, css, tenant_id) VALUES ('default', $css, NULL)""".update.run()
+      .unit
 
     override def insert(): Task[Unit] =
-      cleanup() *> insertTenants() *> insertResources() *> insertPermissions() *> insertScopes() *> insertRoles() *> insertClients() *> insertEdges()
+      cleanup() *> insertDefaultTheme() *> insertTenants() *> insertResources() *> insertPermissions() *> insertScopes() *> insertRoles() *> insertClients() *> insertEdges()
 
     private def insertTenants(): Task[Unit] =
       ZIO.foreachDiscard(CentralMockData.tenants): tenant =>
@@ -105,6 +118,7 @@ object MockDataService:
               audience = client.audience,
               permissions = client.permissions,
               accessTokenTtl = client.accessTokenTtl,
+              theme = client.theme,
             ),
           ).mapError {
             case e: ClientAlreadyExists => new IllegalStateException(s"Client ${e.clientId} already exists")

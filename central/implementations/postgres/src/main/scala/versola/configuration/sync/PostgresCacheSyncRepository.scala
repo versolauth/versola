@@ -3,6 +3,7 @@ package versola.configuration.sync
 import com.zaxxer.hikari.HikariDataSource
 import org.postgresql.PGConnection
 import versola.central.configuration.clients.{ClientId, PresetId}
+import versola.central.configuration.forms.FormId
 import versola.central.configuration.permissions.Permission
 import versola.central.configuration.resources.ResourceId
 import versola.central.configuration.roles.RoleId
@@ -16,7 +17,12 @@ import zio.stream.{Stream, ZStream}
 
 class PostgresCacheSyncRepository(conn: PGConnection) extends CacheSyncRepository:
 
-  private case class ChangePayload(tenantId: Option[String], id: String, op: String) derives JsonDecoder
+  private case class ChangePayload(
+      tenantId: Option[String],
+      id: String,
+      version: Option[Int],
+      op: String,
+  ) derives JsonDecoder
 
   private def parsePayload(parameter: String): Option[ChangePayload] =
     parameter.fromJson[ChangePayload].toOption
@@ -39,7 +45,7 @@ class PostgresCacheSyncRepository(conn: PGConnection) extends CacheSyncRepositor
             parsePayload(notification.getParameter).fold[SyncEvent](SyncEvent.Unknown) { payload =>
               SyncEvent.ClientsUpdated(
                 id = ClientId(payload.id),
-                op = SyncEvent.Op.valueOf(payload.op)
+                op = SyncEvent.Op.valueOf(payload.op),
               )
             }
           case "role_change" =>
@@ -47,7 +53,7 @@ class PostgresCacheSyncRepository(conn: PGConnection) extends CacheSyncRepositor
               SyncEvent.RolesUpdated(
                 tenantId = TenantId(payload.tenantId.getOrElse("")),
                 id = RoleId(payload.id),
-                op = SyncEvent.Op.valueOf(payload.op)
+                op = SyncEvent.Op.valueOf(payload.op),
               )
             }
           case "scope_change" =>
@@ -55,7 +61,7 @@ class PostgresCacheSyncRepository(conn: PGConnection) extends CacheSyncRepositor
               SyncEvent.ScopesUpdated(
                 tenantId = TenantId(payload.tenantId.getOrElse("")),
                 id = ScopeToken(payload.id),
-                op = SyncEvent.Op.valueOf(payload.op)
+                op = SyncEvent.Op.valueOf(payload.op),
               )
             }
           case "permission_change" =>
@@ -63,7 +69,7 @@ class PostgresCacheSyncRepository(conn: PGConnection) extends CacheSyncRepositor
               SyncEvent.PermissionsUpdated(
                 tenantId = payload.tenantId.filter(_.nonEmpty).map(TenantId(_)),
                 id = Permission(payload.id),
-                op = SyncEvent.Op.valueOf(payload.op)
+                op = SyncEvent.Op.valueOf(payload.op),
               )
             }
           case "resource_change" =>
@@ -73,7 +79,7 @@ class PostgresCacheSyncRepository(conn: PGConnection) extends CacheSyncRepositor
                   SyncEvent.ResourcesUpdated(
                     tenantId = TenantId(tenantId),
                     id = ResourceId(resourceId),
-                    op = SyncEvent.Op.valueOf(payload.op)
+                    op = SyncEvent.Op.valueOf(payload.op),
                   )
                 }
               }
@@ -83,7 +89,15 @@ class PostgresCacheSyncRepository(conn: PGConnection) extends CacheSyncRepositor
               SyncEvent.PresetsUpdated(
                 tenantId = TenantId(payload.tenantId.getOrElse("")),
                 id = PresetId(payload.id),
-                op = SyncEvent.Op.valueOf(payload.op)
+                op = SyncEvent.Op.valueOf(payload.op),
+              )
+            }
+          case "form_change" =>
+            parsePayload(notification.getParameter).fold[SyncEvent](SyncEvent.Unknown) { payload =>
+              SyncEvent.FormsUpdated(
+                id = FormId(payload.id),
+                version = payload.version.getOrElse(0),
+                op = SyncEvent.Op.valueOf(payload.op),
               )
             }
           case _ =>
@@ -100,6 +114,7 @@ object PostgresCacheSyncRepository:
     "permission_change",
     "resource_change",
     "preset_change",
+    "form_change",
   )
 
   def live: ZLayer[HikariDataSource & Scope, Throwable, CacheSyncRepository] =
