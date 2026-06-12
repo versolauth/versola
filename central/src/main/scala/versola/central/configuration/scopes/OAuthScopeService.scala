@@ -12,8 +12,8 @@ trait OAuthScopeService:
 
   def getTenantScopes(
       tenantId: TenantId,
-      offset: Int = 0,
-      limit: Option[Int] = None,
+      offset: Int,
+      limit: Option[Int],
   ): Task[Vector[ScopeRecord]]
 
   def createScope(

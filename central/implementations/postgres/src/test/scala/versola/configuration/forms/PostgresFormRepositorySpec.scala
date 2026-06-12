@@ -15,5 +15,5 @@ object PostgresFormRepositorySpec extends PostgresSpec, FormRepositorySpec:
 
   override def beforeEach(env: FormRepositorySpec.Env) =
     ZIO.serviceWithZIO[TransactorZIO] { xa =>
-      xa.connect(sql"TRUNCATE TABLE form_locales, forms RESTART IDENTITY CASCADE".update.run())
+      xa.connect(sql"TRUNCATE TABLE locales, forms RESTART IDENTITY CASCADE".update.run())
     }.unit

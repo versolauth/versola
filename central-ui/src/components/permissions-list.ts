@@ -3,10 +3,12 @@ import { customElement, property, state } from 'lit/decorators.js';
 import { buttonStyles, cardStyles, formStyles, methodBadgeStyles, tableStyles } from '../styles/components';
 import { theme } from '../styles/theme';
 import type { Permission, Resource, ResourceEndpointId } from '../types';
-import { createPermission, deletePermission, fetchAllPermissions, fetchResources, updatePermission } from '../utils/central-api';
+import { createPermission, deletePermission, getPermissions, getResources, updatePermission } from '../utils/central-api';
 import { confirmDestructiveAction } from '../utils/confirm-dialog';
 import { formatResourceLabel, getLocalizedDescription } from '../utils/helpers';
 import './content-header';
+import './error-card';
+import './loading-cards';
 import './permission-form';
 
 type ResolvedPermissionLink = {
@@ -40,6 +42,7 @@ export class VersolaPermissionsList extends LitElement {
     .error { color:var(--danger); }
     .search-bar { margin-bottom:var(--spacing-lg); max-width:28rem; }
     .empty-state { text-align:center; padding:3rem; color:var(--text-secondary); }
+    .empty-state-icon { font-size:3rem; margin-bottom:1rem; }
     .permission-actions { display:flex; align-items:center; gap:.5rem; margin-left:var(--spacing-md); }
     .permission-stack { display:grid; gap:var(--spacing-md); }
     .permission-card { padding:var(--spacing-lg); border:1px solid var(--border-dark); border-radius:var(--radius-lg); background:var(--bg-dark-card); display:grid; gap:var(--spacing-lg); transition:border-color var(--transition-base); }
@@ -75,7 +78,7 @@ export class VersolaPermissionsList extends LitElement {
     if (!this.tenantId) { this.permissions = []; this.resources = []; this.error = ''; return; }
     this.loading = true; this.error = '';
     try {
-      const [permissions, resources] = await Promise.all([fetchAllPermissions(this.tenantId), fetchResources(this.tenantId)]);
+      const [permissions, resources] = await Promise.all([getPermissions(this.tenantId), getResources(this.tenantId)]);
       this.permissions = permissions;
       this.resources = resources;
       const validIds = new Set(permissions.map(permission => permission.id));
@@ -253,10 +256,10 @@ export class VersolaPermissionsList extends LitElement {
           <button slot="actions" class="btn btn-primary" @click=${() => { this.showCreateForm = true; this.editing = null; }}>+ Create Permission</button>
         ` : ''}
       </content-header>
-      ${this.error ? html`<div class="status error">${this.error}</div>` : ''}
-      ${this.loading ? html`<div class="status">Loading permissions…</div>` : ''}
-      ${!this.loading && this.permissions.length > 0 ? html`<div class="search-bar"><input class="form-input" type="search" aria-label="Search permissions" .value=${this.searchQuery} @input=${(e: Event) => this.searchQuery = (e.target as HTMLInputElement).value} placeholder="Search permissions by ID" /></div>` : ''}
-      ${!this.loading && this.permissions.length === 0 && !this.showCreateForm && !this.editing ? html`
+      ${this.loading ? html`<versola-loading-cards .count=${3}></versola-loading-cards>`
+      : this.error ? html`
+        <versola-error-card heading="Could not load permissions" .message=${this.error} @retry=${() => this.loadData()}></versola-error-card>
+      ` : this.permissions.length === 0 ? html`
         <div class="card">
           <div class="empty-state">
             <h3>No permissions yet</h3>
@@ -266,38 +269,40 @@ export class VersolaPermissionsList extends LitElement {
             </button>
           </div>
         </div>
-      ` : ''}
-      ${!this.loading && this.permissions.length > 0 && this.sortedPermissions.length === 0 ? html`
-        <div class="card">
-          <div class="empty-state">
-            <h3>No permissions match your search</h3>
-          </div>
-        </div>
-      ` : ''}
-      ${this.permissions.length > 0 ? html`
-        <div class="permission-stack">
-          ${this.sortedPermissions.map(permission => {
-            const isExpanded = this.expandedPermissions.has(permission.id);
-            return html`
-            <div class="permission-card" @click=${() => this.handleCardClick(permission.id)}>
-              <div class="permission-header">
-                <div class="permission-title">
-                  <div class="permission-name">${getLocalizedDescription(permission.description) || permission.id}</div>
-                  <div class="permission-code">${permission.id}</div>
-                </div>
-                <div class="permission-actions" @click=${(e: Event) => e.stopPropagation()}>
-                  <button class="icon-action" @click=${() => { this.editing = permission; this.showCreateForm = false; }} title="Edit" aria-label=${`Edit permission ${permission.id}`}>
-                    ✎
-                  </button>
-                  <button class="icon-action danger" @click=${() => this.removePermission(permission.id)} title="Delete" aria-label=${`Delete permission ${permission.id}`}>
-                    ✕
-                  </button>
-                </div>
-              </div>
-              ${isExpanded ? this.renderResourceGroups(permission) : ''}
+      ` : html`
+        <div class="search-bar"><input class="form-input" type="search" aria-label="Search permissions" .value=${this.searchQuery} @input=${(e: Event) => this.searchQuery = (e.target as HTMLInputElement).value} placeholder="Search permissions by ID" /></div>
+        ${this.sortedPermissions.length === 0 ? html`
+          <div class="card">
+            <div class="empty-state">
+              <h3>No permissions match your search</h3>
             </div>
-          `;})}
-        </div>` : ''}
+          </div>
+        ` : html`
+          <div class="permission-stack">
+            ${this.sortedPermissions.map(permission => {
+              const isExpanded = this.expandedPermissions.has(permission.id);
+              return html`
+              <div class="permission-card" @click=${() => this.handleCardClick(permission.id)}>
+                <div class="permission-header">
+                  <div class="permission-title">
+                    <div class="permission-name">${getLocalizedDescription(permission.description) || permission.id}</div>
+                    <div class="permission-code">${permission.id}</div>
+                  </div>
+                  <div class="permission-actions" @click=${(e: Event) => e.stopPropagation()}>
+                    <button class="icon-action" @click=${() => { this.editing = permission; this.showCreateForm = false; }} title="Edit" aria-label=${`Edit permission ${permission.id}`}>
+                      ✎
+                    </button>
+                    <button class="icon-action danger" @click=${() => this.removePermission(permission.id)} title="Delete" aria-label=${`Delete permission ${permission.id}`}>
+                      ✕
+                    </button>
+                  </div>
+                </div>
+                ${isExpanded ? this.renderResourceGroups(permission) : ''}
+              </div>
+            `;})}
+          </div>
+        `}
+      `}
     `;
   }
 }

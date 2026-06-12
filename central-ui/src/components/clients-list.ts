@@ -2,18 +2,19 @@ import { LitElement, html, css } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
 import { badgeStyles, buttonStyles, cardStyles, formStyles } from '../styles/components';
-import {AuthorizationPreset, OAuthClient, OAuthScope, Permission, Resource, ThemeRecord} from '../types';
+import {AuthFlow, AuthorizationPreset, OAuthClient, OAuthScope, OtpTemplateRecord, Permission, Resource, ThemeRecord} from '../types';
 import {
   createClient,
   deleteClient,
   deletePreviousClientSecret,
   fetchAllClients,
-  fetchAllPermissions,
   fetchClientPresets,
-  fetchResources,
-  fetchAllScopes,
+  fetchOtpTemplates,
   fetchTenants,
   fetchThemes,
+  getPermissions,
+  getResources,
+  getScopes,
   rotateClientSecret,
   updateClient,
 } from '../utils/central-api';
@@ -21,6 +22,7 @@ import { confirmDestructiveAction } from '../utils/confirm-dialog';
 import { copyToClipboard, formatDuration } from '../utils/helpers';
 import './client-form';
 import './content-header';
+import './error-card';
 import './loading-cards';
 import './preset-form';
 
@@ -38,11 +40,13 @@ export class VersolaClientsList extends LitElement {
   @state() private editingClient: OAuthClient | null = null;
   @state() private expandedClients: Set<string> = new Set();
   @state() private expandedPresets: Set<string> = new Set(); // Track which clients have presets section expanded
+  @state() private expandedFlows: Set<string> = new Set(); // Track which clients have authorization flows section expanded
   @state() private expandedPresetCards: Set<string> = new Set(); // Track which individual preset cards are expanded
   @state() private availableScopes: OAuthScope[] = [];
   @state() private availablePermissions: Permission[] = [];
   @state() private availableResources: Resource[] = [];
   @state() private availableThemes: ThemeRecord[] = [];
+  @state() private availableOtpTemplates: OtpTemplateRecord[] = [];
   @state() private isPreparingForm = false;
   @state() private createdSecret: { clientName: string; secret: string; action: 'created' | 'rotated' } | null = null;
   @state() private copyFeedback = '';
@@ -248,6 +252,62 @@ export class VersolaClientsList extends LitElement {
         border-radius: var(--radius-sm);
         font-size: 0.75rem;
         font-family: var(--font-mono);
+      }
+
+      .flow-section {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+        gap: var(--spacing-lg);
+      }
+
+      .flow-chain {
+        display: flex;
+        flex-direction: column;
+        gap: 0;
+        align-self: start;
+      }
+
+      .flow-step {
+        background: rgba(0, 0, 0, 0.2);
+        border: 1px solid var(--border-dark);
+        border-radius: var(--radius-md);
+        padding: var(--spacing-md);
+      }
+
+      .flow-step-label {
+        font-size: 0.75rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: var(--text-secondary);
+        margin-bottom: 0.5rem;
+      }
+
+      .flow-step-values {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.25rem;
+      }
+
+      .flow-step-value {
+        font-size: 0.875rem;
+        font-family: var(--font-mono);
+        color: var(--text-primary);
+      }
+
+      .flow-step-value.muted {
+        color: var(--text-secondary);
+        font-style: italic;
+      }
+
+      .flow-arrow {
+        display: flex;
+        justify-content: center;
+        padding: 0.25rem 0;
+        width: 50%;
+        margin: 0 auto;
+        color: var(--text-secondary);
+        font-size: 1rem;
       }
 
       .secret-banner {
@@ -532,11 +592,12 @@ export class VersolaClientsList extends LitElement {
       return;
     }
 
-    const [scopes, permissions, resources, themes] = await Promise.all([
-      fetchAllScopes(tenantId),
-      fetchAllPermissions(tenantId),
-      fetchResources(tenantId),
+    const [scopes, permissions, resources, themes, otpTemplates] = await Promise.all([
+      getScopes(tenantId),
+      getPermissions(tenantId),
+      getResources(tenantId),
       fetchThemes(tenantId),
+      fetchOtpTemplates(tenantId),
     ]);
 
     if (this.tenantId === tenantId) {
@@ -544,6 +605,7 @@ export class VersolaClientsList extends LitElement {
       this.availablePermissions = permissions;
       this.availableResources = resources;
       this.availableThemes = themes;
+      this.availableOtpTemplates = otpTemplates;
       this.formOptionsTenantId = tenantId;
     }
   }
@@ -836,6 +898,7 @@ export class VersolaClientsList extends LitElement {
           .availableResources=${this.availableResources}
           .availableClientIds=${this.clients.map(client => client.id)}
           .availableThemes=${this.availableThemes}
+          .availableOtpTemplates=${this.availableOtpTemplates}
           @close=${this.handleFormClose}
           @delete-previous-secret=${this.handleDeletePreviousSecret}
           @rotate-secret=${this.handleRotateSecret}
@@ -877,16 +940,7 @@ export class VersolaClientsList extends LitElement {
       ${this.isLoading ? html`
         <versola-loading-cards .count=${3}></versola-loading-cards>
       ` : this.errorMessage ? html`
-        <div class="card">
-          <div class="empty-state">
-            <div class="empty-state-icon">⚠️</div>
-            <h3>Could not load OAuth clients</h3>
-            <p>${this.errorMessage}</p>
-            <button class="btn btn-primary" @click=${() => this.loadData()} style="margin-top: 1rem;">
-              Retry
-            </button>
-          </div>
-        </div>
+        <versola-error-card heading="Could not load OAuth clients" .message=${this.errorMessage} @retry=${() => this.loadData()}></versola-error-card>
       ` : this.clients.length === 0 ? html`
         <div class="card">
           <div class="empty-state">
@@ -1012,6 +1066,7 @@ export class VersolaClientsList extends LitElement {
                       ` : ''}
                     </div>
 
+                    ${this.renderAuthFlowSection(client)}
                     ${this.renderAuthorizationPresets(client)}
                   </div>
                 ` : ''}
@@ -1128,6 +1183,100 @@ export class VersolaClientsList extends LitElement {
             ${this.isSavingPresets ? 'Saving...' : 'Save Presets'}
           </button>
         </div>
+      </div>
+    `;
+  }
+
+  private toggleFlowsExpand(clientId: string) {
+    const newExpanded = new Set(this.expandedFlows);
+    if (newExpanded.has(clientId)) {
+      newExpanded.delete(clientId);
+    } else {
+      newExpanded.add(clientId);
+    }
+    this.expandedFlows = newExpanded;
+  }
+
+  private renderAuthFlowSection(client: OAuthClient) {
+    const isFlowsExpanded = this.expandedFlows.has(client.id);
+
+    return html`
+      <div class="presets-section">
+        <div class="presets-header" @click=${() => this.toggleFlowsExpand(client.id)}>
+          <div class="presets-title">
+            <span class="expand-icon">${isFlowsExpanded ? '▼' : '▶'}</span>
+            Authorization Flows
+          </div>
+        </div>
+
+        ${isFlowsExpanded ? html`
+          <div class="presets-body">
+            ${client.authFlow ? this.renderAuthFlow(client.authFlow) : html`
+              <div class="empty-presets">
+                No authorization flow configured. This client cannot be used for interactive authentication.
+              </div>
+            `}
+          </div>
+        ` : ''}
+      </div>
+    `;
+  }
+
+  private renderAuthFlow(flow: AuthFlow) {
+    const multiPrimary = flow.primaryCredentials.length > 1;
+    const primaryPart = flow.primaryCredentials.join(' or ');
+    const groupedPrimary = multiPrimary ? `(${primaryPart})` : primaryPart;
+
+    // Build the credential+password expression (without passkey — passkey is a separate flow)
+    let credExpr: string;
+    if (flow.primaryCredentials.length === 0) {
+      credExpr = '';
+    } else if (flow.inlinePassword) {
+      const withPassword = `${groupedPrimary} + password`;
+      // Wrap in parens when there is a second factor (login+password case)
+      credExpr = flow.factors.length > 0 ? `(${withPassword})` : withPassword;
+    } else {
+      credExpr = groupedPrimary;
+    }
+
+    return html`
+      <div class="flow-section">
+        ${credExpr ? this.renderFlowChain(credExpr, flow.factors) : ''}
+        ${flow.passkey ? this.renderFlowChain('passkey', flow.passkeyFactors ?? []) : ''}
+      </div>
+    `;
+  }
+
+  private renderFlowChain(credExpr: string, factors: AuthFlow['factors']) {
+    const firstFactor = factors[0]?.type ?? null;
+    const secondFactor = factors[1]?.type ?? null;
+
+    return html`
+      <div class="flow-chain">
+        <div class="flow-step">
+          <div class="flow-step-label">credential</div>
+          <div class="flow-step-values">
+            <span class="flow-step-value">${credExpr}</span>
+          </div>
+        </div>
+        ${firstFactor ? html`
+          <div class="flow-arrow">↓</div>
+          <div class="flow-step">
+            <div class="flow-step-label">next factor</div>
+            <div class="flow-step-values">
+              <span class="flow-step-value">${firstFactor}</span>
+            </div>
+          </div>
+        ` : ''}
+        ${secondFactor ? html`
+          <div class="flow-arrow">↓</div>
+          <div class="flow-step">
+            <div class="flow-step-label">next factor</div>
+            <div class="flow-step-values">
+              <span class="flow-step-value">${secondFactor}</span>
+            </div>
+          </div>
+        ` : ''}
       </div>
     `;
   }

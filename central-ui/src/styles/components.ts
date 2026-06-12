@@ -92,6 +92,11 @@ export const badgeStyles = css`
     background: rgba(210, 153, 34, 0.15);
     color: var(--warning);
   }
+
+  .badge-success {
+    background: rgba(63, 185, 80, 0.15);
+    color: var(--success);
+  }
 `;
 
 export const cardStyles = css`

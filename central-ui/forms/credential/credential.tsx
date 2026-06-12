@@ -33,11 +33,16 @@ function LocaleDropdown(props: { locales: string[]; current: string; onChange: (
   );
 }
 
-type CredentialStep = { type: 'credential'; primary: 'email' | 'phone'; passkey: boolean };
-type PasswordStep = { type: 'password' };
+type PrimaryCredential = 'email' | 'phone' | 'login';
+type CredentialStep = {
+  type: 'credential';
+  primaryCredentials: PrimaryCredential[];
+  inlinePassword: boolean;
+  passkey: boolean;
+};
 
 interface FormConfig {
-  step: CredentialStep | PasswordStep;
+  step: CredentialStep;
   t: Record<string, string>;
   locale?: string;
   locales?: string[];
@@ -50,8 +55,6 @@ declare global {
     __VERSOLA_FORM__?: FormConfig;
   }
 }
-
-
 
 function CredentialForm(props: { config: FormConfig }) {
   const allT = props.config.allT ?? {};
@@ -68,7 +71,17 @@ function CredentialForm(props: { config: FormConfig }) {
   };
   const locales = props.config.locales ?? [];
   const step = props.config.step;
-  const cred = step.type === 'credential' ? step : null;
+  const primaries = step.primaryCredentials ?? [];
+  const isLoginFlow = primaries.includes('login');
+  const single = primaries.length === 1 ? primaries[0] : null;
+  const challengeKind = single ?? 'credential';
+  const combinedPlaceholder = () => primaries.map((p) => t()[`${p}_placeholder`] ?? p).join(' / ');
+
+  // login always carries a password; email/phone show it only when inlinePassword is set
+  const showPassword = () => isLoginFlow || !!step.inlinePassword;
+
+  const formAction = () =>
+    showPassword() ? `/challenge/${challengeKind}-password` : `/challenge/${challengeKind}`;
 
   return (
     <div class="container">
@@ -78,61 +91,30 @@ function CredentialForm(props: { config: FormConfig }) {
         </div>
       </Show>
       <h1>{t().title}</h1>
+
       <form method="post">
-        <Show when={cred?.primary === 'email'}>
-          <div class="credential-option" data-credential="email">
-            <input
-              type="email"
-              name="email"
-              class="input-field"
-              placeholder={t().email_placeholder}
-              required
-            />
-            <button type="submit" formAction="/challenge/email" class="btn btn-primary">
-              {t().continue}
-            </button>
-          </div>
+        <Show when={single === 'email'}>
+          <input type="email" name="email" class="input-field" placeholder={t().email_placeholder} required />
+        </Show>
+        <Show when={single === 'phone'}>
+          <input type="tel" name="phone" class="input-field" placeholder={t().phone_placeholder} pattern="^\+[1-9]\d{6,14}$" required />
+        </Show>
+        <Show when={single === 'login'}>
+          <input type="text" name="login" class="input-field" placeholder={t().login_placeholder} required />
+        </Show>
+        <Show when={single === null && primaries.length > 0}>
+          <input type="text" name="login" class="input-field" placeholder={combinedPlaceholder()} required />
         </Show>
 
-        <Show when={cred?.primary === 'phone'}>
-          <div class="credential-option" data-credential="phone">
-            <input
-              type="tel"
-              name="phone"
-              class="input-field"
-              placeholder={t().phone_placeholder}
-              pattern="^\+[1-9]\d{6,14}$"
-              required
-            />
-            <button type="submit" formAction="/challenge/phone" class="btn btn-primary">
-              {t().continue}
-            </button>
-          </div>
+        <Show when={showPassword()}>
+          <input type="password" name="password" class="input-field" placeholder={t().password_placeholder} required />
         </Show>
 
-        <Show when={step.type === 'password'}>
-          <div class="credential-option" data-credential="password">
-            <input
-              type="text"
-              name="login"
-              class="input-field"
-              placeholder={t().login_placeholder}
-              required
-            />
-            <input
-              type="password"
-              name="password"
-              class="input-field"
-              placeholder={t().password_placeholder}
-              required
-            />
-            <button type="submit" formAction="/challenge/login-password" class="btn btn-primary">
-              {t().continue}
-            </button>
-          </div>
-        </Show>
+        <button type="submit" formAction={formAction()} class="btn btn-primary">
+          {t().continue}
+        </button>
 
-        <Show when={cred?.passkey}>
+        <Show when={step.passkey}>
           <div class="credential-option" data-credential="passkey">
             <div class="divider"><span>{t().divider}</span></div>
             <button type="button" class="btn btn-secondary">

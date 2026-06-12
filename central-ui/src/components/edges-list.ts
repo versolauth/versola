@@ -15,6 +15,7 @@ import { confirmDestructiveAction } from '../utils/confirm-dialog';
 import { copyToClipboard } from '../utils/helpers';
 import './edge-form';
 import './content-header';
+import './error-card';
 import './loading-cards';
 
 @customElement('versola-edges-list')
@@ -52,7 +53,6 @@ export class VersolaEdgesList extends LitElement {
         border: 1px solid var(--border-dark);
         border-radius: var(--radius-lg);
         margin-bottom: var(--spacing-md);
-        padding: var(--spacing-lg);
         transition: border-color var(--transition-base);
       }
 
@@ -76,7 +76,7 @@ export class VersolaEdgesList extends LitElement {
 
       .edge-id {
         font-family: var(--font-mono);
-        font-size: 1.125rem;
+        font-size: 1rem;
         font-weight: 600;
         color: var(--accent);
         display: flex;
@@ -440,16 +440,7 @@ export class VersolaEdgesList extends LitElement {
       ${this.isLoading ? html`
         <versola-loading-cards count="3"></versola-loading-cards>
       ` : this.errorMessage ? html`
-        <div class="card">
-          <div class="empty-state">
-            <div class="empty-state-icon">⚠️</div>
-            <h3>Could not load edges</h3>
-            <p>${this.errorMessage}</p>
-            <button class="btn btn-primary" @click=${() => this.loadData()} style="margin-top: 1rem;">
-              Retry
-            </button>
-          </div>
-        </div>
+        <versola-error-card heading="Could not load edges" .message=${this.errorMessage} @retry=${() => this.loadData()}></versola-error-card>
       ` : this.sortedEdges.length === 0 ? html`
         <div class="card">
           <div class="empty-state">

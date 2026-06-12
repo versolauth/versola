@@ -66,7 +66,7 @@ object OAuthScopeServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val env = new Env(Vector(scopeRecord, otherTenantScope))
 
       for
-        result <- env.service.getTenantScopes(tenantId)
+        result <- env.service.getTenantScopes(tenantId, offset = 0, limit = None)
       yield assertTrue(result === Vector(scopeRecord))
     },
     test("getTenantScopes applies pagination after filtering") {

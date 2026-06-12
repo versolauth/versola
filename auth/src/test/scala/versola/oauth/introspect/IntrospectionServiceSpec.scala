@@ -44,6 +44,8 @@ object IntrospectionServiceSpec extends UnitSpecBase:
     accessTokenTtl = 10.minutes,
     refreshTokenTtl = 7776000.seconds,
     theme = "default",
+    authFlow = None,
+    otpTemplateId = "default-otp",
   )
 
   def tokenRecord(now: Instant) = RefreshTokenRecord(

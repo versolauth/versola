@@ -34,6 +34,7 @@ object OAuthClientSyncClientSpec extends ZIOSpecDefault:
       accessTokenTtl: Duration,
       refreshTokenTtl: Duration,
       theme: String,
+      otpTemplateId: String,
   ) derives JsonCodec
   private case class EncodedClientsWithPepper(clients: Vector[EncodedClient], pepper: String) derives JsonCodec
 
@@ -44,6 +45,7 @@ object OAuthClientSyncClientSpec extends ZIOSpecDefault:
       JWT.Signature.Symmetric(secretKey),
     ).map(token => new CentralSyncTokenService:
       override def getToken: UIO[String] = ZIO.succeed(token)
+      override def syncRequest(request: Request): ZIO[Scope, Throwable, Response] = ???
     )
   )
 
@@ -80,6 +82,7 @@ object OAuthClientSyncClientSpec extends ZIOSpecDefault:
                       300.seconds,
                       7776000.seconds,
                       "default",
+                      "default-otp",
                     )
                   ),
                   Base64Url.encode(pepper),

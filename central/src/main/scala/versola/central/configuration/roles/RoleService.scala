@@ -12,8 +12,8 @@ import zio.{Schedule, Scope, Task, ZLayer, durationInt}
 trait RoleService:
   def getTenantRoles(
       tenantId: TenantId,
-      offset: Int = 0,
-      limit: Option[Int] = None,
+      offset: Int,
+      limit: Option[Int],
   ): Task[Vector[RoleRecord]]
 
   def getRolesForSync(edgeId: Option[EdgeId]): Task[Vector[RoleRecord]]

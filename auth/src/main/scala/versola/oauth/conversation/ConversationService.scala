@@ -1,6 +1,6 @@
 package versola.oauth.conversation
 
-import versola.auth.model.{OtpCode, Password, StepId}
+import versola.auth.model.{OtpCode, Password}
 import versola.oauth.authorize.model.ResponseTypeEntry
 import versola.oauth.challenge.password.PasswordService
 import versola.oauth.challenge.password.model.CheckPassword
@@ -26,6 +26,14 @@ trait ConversationService:
       authId: AuthId,
       conversation: ConversationRecord,
       credential: Either[Email, Phone],
+      factorIndex: Int,
+  ): Task[ConversationResult.Render]
+
+  def prepareInitialPassword(
+      authId: AuthId,
+      conversation: ConversationRecord,
+      credential: Either[Email, Phone],
+      factorIndex: Int,
   ): Task[ConversationResult.Render]
 
   def checkOtp(
@@ -38,6 +46,7 @@ trait ConversationService:
   def preparePasswordStep(
       authId: AuthId,
       conversation: ConversationRecord,
+      factorIndex: Int,
   ): Task[ConversationResult.Render]
 
   def checkPassword(
@@ -74,6 +83,7 @@ object ConversationService:
         authId: AuthId,
         conversation: ConversationRecord,
         credential: Either[Email, Phone],
+        factorIndex: Int,
     ): Task[ConversationResult.Render] =
       for
         userOpt <- userRepository.findByCredential(credential)
@@ -83,20 +93,46 @@ object ConversationService:
             ZIO.succeed(ConversationResult.LimitsExceeded)
 
           case Some(otp) =>
+            val otpWithFactor = otp.copy(factorIndex = factorIndex)
             val updatedConversation = conversation.copy(
               userId = userOpt.map(_.id),
               credential = Some(credential),
-              step = otp,
+              step = otpWithFactor,
               userEmail = userOpt.flatMap(_.email),
               userPhone = userOpt.flatMap(_.phone),
               userLogin = userOpt.flatMap(_.login),
               userClaims = userOpt.map(_.claims),
             )
             conversationRepository.overwrite(authId, updatedConversation)
-              .zipRight(otpService.sendOtp(otp, credential, authId))
-              .zipRight(conversationRepository.overwrite(authId, updatedConversation.copy(step = otp.copy(timesRequested = 1))))
-              .as(ConversationResult.RenderStep(otp))
+              .zipRight(otpService.sendOtp(otpWithFactor, credential, authId, conversation.clientId, conversation.uiLocales))
+              .zipRight(conversationRepository.overwrite(authId, updatedConversation.copy(step = otpWithFactor.copy(timesRequested = 1))))
+              .as(ConversationResult.RenderStep(otpWithFactor))
       yield result
+
+    override def prepareInitialPassword(
+        authId: AuthId,
+        conversation: ConversationRecord,
+        credential: Either[Email, Phone],
+        factorIndex: Int,
+    ): Task[ConversationResult.Render] =
+      for
+        userOpt <- userRepository.findByCredential(credential)
+        passwordStep = ConversationStep.Password(
+          timesSubmitted = 0,
+          oldPasswordChangedAt = None,
+          factorIndex = factorIndex,
+        )
+        updatedConversation = conversation.copy(
+          userId = userOpt.map(_.id),
+          credential = Some(credential),
+          step = passwordStep,
+          userEmail = userOpt.flatMap(_.email),
+          userPhone = userOpt.flatMap(_.phone),
+          userLogin = userOpt.flatMap(_.login),
+          userClaims = userOpt.map(_.claims),
+        )
+        _ <- conversationRepository.overwrite(authId, updatedConversation)
+      yield ConversationResult.RenderStep(passwordStep)
 
     override def checkOtp(
         record: ConversationRecord,
@@ -121,10 +157,12 @@ object ConversationService:
     override def preparePasswordStep(
         authId: AuthId,
         conversation: ConversationRecord,
+        factorIndex: Int,
     ): Task[ConversationResult.Render] =
       val passwordStep = ConversationStep.Password(
         timesSubmitted = 0,
         oldPasswordChangedAt = None,
+        factorIndex = factorIndex,
       )
       conversationRepository.overwrite(authId, conversation.copy(step = passwordStep))
         .as(ConversationResult.RenderStep(passwordStep))

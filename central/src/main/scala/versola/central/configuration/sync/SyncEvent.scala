@@ -1,5 +1,6 @@
 package versola.central.configuration.sync
 
+import versola.central.configuration.challenges.OtpTemplateRecord
 import versola.central.configuration.clients.{AuthorizationPreset, ClientId, OAuthClientRecord, PresetId}
 import versola.central.configuration.forms.{FormId, FormRecord}
 import versola.central.configuration.permissions.{Permission, PermissionRecord}
@@ -123,6 +124,19 @@ object SyncEvent:
     def sort(records: Vector[FormRecord]): Vector[FormRecord] =
       records.sortBy(r => (r.id, -r.version))
 
+
+  case class OtpTemplatesUpdated(
+      tenantId: TenantId,
+      id: String,
+      op: Op,
+  ) extends ModifyCache:
+    type Record = OtpTemplateRecord
+
+    def matches(record: OtpTemplateRecord): Boolean =
+      tenantId == record.tenantId && id == record.id
+
+    def sort(records: Vector[OtpTemplateRecord]): Vector[OtpTemplateRecord] =
+      records.sortBy(r => (r.tenantId, r.id))
 
   enum Op:
     case INSERT, UPDATE, DELETE

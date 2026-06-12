@@ -8,45 +8,8 @@ import zio.test.*
 trait FormRepositorySpec extends DatabaseSpecBase[FormRepositorySpec.Env]:
   self: ZIOSpec[TransactorZIO] =>
 
-  private val en = FormLocale("en", "English")
-  private val ru = FormLocale("ru", "Russian")
-  private val fr = FormLocale("fr", "French")
-  private val frUpdated = FormLocale("fr", "Français")
-
   override def testCases(env: FormRepositorySpec.Env) =
     List(
-      test("getLocales returns empty list when no locales exist") {
-        for
-          locales <- env.repository.getLocales
-        yield assertTrue(locales.isEmpty)
-      },
-      test("updateLocales adds new locales") {
-        for
-          _ <- env.repository.updateLocales(add = Vector(en, fr), delete = Vector.empty)
-          locales <- env.repository.getLocales
-        yield assertTrue(locales == Vector(en, fr))
-      },
-      test("updateLocales deletes specified locales") {
-        for
-          _ <- env.repository.updateLocales(add = Vector(en, fr), delete = Vector.empty)
-          _ <- env.repository.updateLocales(add = Vector.empty, delete = Vector("fr"))
-          locales <- env.repository.getLocales
-        yield assertTrue(locales == Vector(en))
-      },
-      test("updateLocales upserts locale with updated name on conflict") {
-        for
-          _ <- env.repository.updateLocales(add = Vector(en, fr), delete = Vector.empty)
-          _ <- env.repository.updateLocales(add = Vector(frUpdated), delete = Vector.empty)
-          locales <- env.repository.getLocales
-        yield assertTrue(locales == Vector(en, frUpdated))
-      },
-      test("updateLocales handles add and delete in the same call") {
-        for
-          _ <- env.repository.updateLocales(add = Vector(en, ru), delete = Vector.empty)
-          _ <- env.repository.updateLocales(add = Vector(fr), delete = Vector("ru"))
-          locales <- env.repository.getLocales
-        yield assertTrue(locales == Vector(en, fr))
-      },
       test("upsertForm persists js source, style and localizations and find returns them") {
         val formId = FormId("credential")
         val localizations = Map(
@@ -54,7 +17,6 @@ trait FormRepositorySpec extends DatabaseSpecBase[FormRepositorySpec.Env]:
           "ru" -> Map("title" -> "Вход"),
         )
         for
-          _ <- env.repository.updateLocales(add = Vector(en, ru), delete = Vector.empty)
           _ <- env.repository.upsertForm(formId, ".a{}", Some("src"), Some("compiled"), localizations, Vector.empty, activate = true)
           found <- env.repository.find(formId, 1)
         yield assertTrue(
@@ -98,25 +60,6 @@ trait FormRepositorySpec extends DatabaseSpecBase[FormRepositorySpec.Env]:
         yield assertTrue(
           v1.map(_.active) == Some(false),
           v2.map(_.active) == Some(true),
-        )
-      },
-      test("deleting a locale strips its translations from existing forms") {
-        val formId = FormId("credential")
-        for
-          _ <- env.repository.updateLocales(add = Vector(en, fr), delete = Vector.empty)
-          _ <- env.repository.upsertForm(
-            formId,
-            "",
-            Some("src"),
-            None,
-            Map("en" -> Map("title" -> "Sign in"), "fr" -> Map("title" -> "Connexion")),
-            Vector.empty,
-            activate = true,
-          )
-          _ <- env.repository.updateLocales(add = Vector.empty, delete = Vector("fr"))
-          found <- env.repository.find(formId, 1)
-        yield assertTrue(
-          found.map(_.localizations) == Some(Map("en" -> Map("title" -> "Sign in"))),
         )
       },
     )

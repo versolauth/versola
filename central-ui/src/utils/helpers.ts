@@ -1,4 +1,18 @@
-import { PaginatedResponse, Permission, Resource, SortConfig } from '../types';
+import { AuthFlow, PaginatedResponse, Permission, Resource, SortConfig } from '../types';
+
+/**
+ * Default authentication flow: phone primary credential + required OTP.
+ * Used until other challenges are implemented.
+ */
+export function createDefaultAuthFlow(): AuthFlow {
+  return {
+    primaryCredentials: ['phone'],
+    inlinePassword: false,
+    passkey: false,
+    factors: [{ type: 'otp', required: true }],
+    passkeyFactors: [],
+  };
+}
 
 export type ResolvedPermissionEndpoint = {
   method: string;
@@ -101,6 +115,39 @@ export function getLocalizedDescription(
 
 export function formatResourceLabel(resourceUri: string): string {
   return resourceUri.replace(/^[a-z]+:\/\//i, '');
+}
+
+/**
+ * Compute the next selection for an AnyOf (multi-select) control. Values listed
+ * in `exclusive` cannot be combined with any other value. Returns null when the
+ * toggle would be a no-op (deselecting the last remaining value).
+ */
+export function toggleAnyOf(selected: string[], value: string, exclusive: string[] = []): string[] | null {
+  if (selected.includes(value)) {
+    if (selected.length === 1) return null;
+    return selected.filter(x => x !== value);
+  }
+  if (exclusive.includes(value)) return [value];
+  return [...selected.filter(x => !exclusive.includes(x)), value];
+}
+
+/**
+ * Values that act as a standalone path within an AnyOf property and cannot be
+ * combined with the other allowed values (e.g. credential `login` is its own
+ * path, separate from email/phone).
+ */
+export function exclusiveAnyOfValues(propName: string): string[] {
+  return propName === 'primaryCredentials' ? ['login'] : [];
+}
+
+/**
+ * Humanize a camelCase identifier into spaced words (e.g. "primaryCredentials" -> "Primary Credentials")
+ */
+export function humanizeLabel(name: string): string {
+  return name
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/[_-]+/g, ' ')
+    .replace(/^./, c => c.toUpperCase());
 }
 
 export function resolvePermissionEndpointLabels(permission: Permission, resources: Resource[]): string[] {

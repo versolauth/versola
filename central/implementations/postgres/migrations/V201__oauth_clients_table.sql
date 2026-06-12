@@ -9,5 +9,7 @@ CREATE TABLE oauth_clients (
     previous_secret   BYTEA,
     access_token_ttl  BIGINT NOT NULL,
     refresh_token_ttl BIGINT NOT NULL,
-    permissions       TEXT[] NOT NULL
+    permissions       TEXT[] NOT NULL,
+    auth_flow         JSONB,
+    otp_template_id   TEXT NOT NULL
 );

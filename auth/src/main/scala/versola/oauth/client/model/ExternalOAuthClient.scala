@@ -8,5 +8,5 @@ case class ExternalOAuthClient(
     provider: OauthProviderName,
     clientId: ClientId,
     clientSecret: ClientSecret,
-    oldClientSecret: Option[ClientSecret] = None,
+    oldClientSecret: Option[ClientSecret],
 ) derives Schema

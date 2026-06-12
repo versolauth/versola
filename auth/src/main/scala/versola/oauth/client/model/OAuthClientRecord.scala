@@ -18,6 +18,8 @@ case class OAuthClientRecord(
     accessTokenTtl: Duration,
     refreshTokenTtl: Duration,
     theme: String,
+    authFlow: Option[AuthFlow],
+    otpTemplateId: String,
 ) derives CanEqual, Equal:
 
   def audience: List[ClientId] = id :: externalAudience

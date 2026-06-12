@@ -2,8 +2,8 @@ import { LitElement, html, css } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
 import { buttonStyles, cardStyles, formStyles } from '../styles/components';
-import { Role, User, UserRoleAssignment, UserSearchField } from '../types';
-import { fetchAllRoles } from '../utils/central-api';
+import { Resource, Role, User, UserRoleAssignment, UserSearchField } from '../types';
+import { getPermissions, getResources, getRoles } from '../utils/central-api';
 import {
   createUser,
   fetchUserRoles,
@@ -13,6 +13,7 @@ import {
   updateUserRoles,
 } from '../utils/users-api';
 import './content-header';
+import './error-card';
 import './loading-cards';
 import './user-form';
 import './claim-edit';
@@ -32,6 +33,7 @@ export class VersolaUsersList extends LitElement {
   @state() private editingUser: User | null = null;
   @state() private editingUserAssignments: UserRoleAssignment[] = [];
   @state() private availableRoles: Role[] = [];
+  @state() private availableResources: Resource[] = [];
   @state() private isPreparingForm = false;
   @state() private formError = '';
   @state() private hasSearched = false;
@@ -249,6 +251,7 @@ export class VersolaUsersList extends LitElement {
   updated(changedProperties: Map<string, unknown>) {
     if (changedProperties.has('tenantId')) {
       this.availableRoles = [];
+      this.availableResources = [];
       this.rolesTenantId = null;
       this.userRoles = {};
     }
@@ -275,9 +278,14 @@ export class VersolaUsersList extends LitElement {
   private async ensureRolesLoaded() {
     const tenantId = this.tenantId;
     if (!tenantId || this.rolesTenantId === tenantId) return;
-    const roles = await fetchAllRoles(tenantId);
+    const [, resources, roles] = await Promise.all([
+      getPermissions(tenantId),
+      getResources(tenantId),
+      getRoles(tenantId),
+    ]);
     if (this.tenantId === tenantId) {
       this.availableRoles = roles;
+      this.availableResources = resources;
       this.rolesTenantId = tenantId;
     }
   }
@@ -435,6 +443,7 @@ export class VersolaUsersList extends LitElement {
     try {
       await updateUserRoles(user.id, tenantId, adds, removes);
       await this.loadUserAssignments(user.id);
+      this.handleFormClose();
     } catch (error) {
       this.errorPopup = error instanceof Error ? error.message : 'Failed to update roles';
     }
@@ -565,6 +574,7 @@ export class VersolaUsersList extends LitElement {
           .userData=${this.editingUser}
           .tenantId=${this.tenantId}
           .availableRoles=${this.availableRoles}
+          .availableResources=${this.availableResources}
           .roleAssignments=${this.editingUserAssignments}
           ?rolesOnly=${this.rolesOnlyForm}
           @close=${this.handleFormClose}
@@ -620,14 +630,7 @@ export class VersolaUsersList extends LitElement {
           </div>
         ` : this.isLoading ? html`<versola-loading-cards .count=${3}></versola-loading-cards>`
         : this.errorMessage ? html`
-          <div class="card">
-            <div class="empty-state">
-              <div class="empty-state-icon">⚠️</div>
-              <h3>Could not load users</h3>
-              <p>${this.errorMessage}</p>
-              <button class="btn btn-primary" style="margin-top:1rem" @click=${() => this.loadUsers()}>Retry</button>
-            </div>
-          </div>
+          <versola-error-card heading="Could not load users" .message=${this.errorMessage} @retry=${() => this.loadUsers()}></versola-error-card>
         ` : this.users.length === 0 ? html`
           <div class="card">
             <div class="empty-state">

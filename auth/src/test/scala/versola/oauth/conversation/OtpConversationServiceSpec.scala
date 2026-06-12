@@ -3,8 +3,8 @@ package versola.oauth.conversation
 import versola.auth.model.OtpCode
 import versola.auth.TestEnvConfig
 import versola.oauth.challenge.password.PasswordService
-import versola.oauth.client.model.{ClientId, ScopeToken}
-import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep, PrimaryCredential}
+import versola.oauth.client.model.{AuthFlow, ClientId, PrimaryCredential, ScopeToken}
+import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
 import versola.oauth.conversation.otp.OtpService
 import versola.oauth.conversation.otp.model.SubmitOtpResult
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod}
@@ -34,6 +34,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
     real = Some(ConversationStep.Otp.Real(otpCode)),
     timesRequested = 0,
     timesSubmitted = 0,
+    factorIndex = 0,
   )
 
   val clientId = ClientId("test-client")
@@ -75,7 +76,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
     state = None,
     userId = None,
     credential = None,
-    step = ConversationStep.Empty(PrimaryCredential.Phone, passkey = false),
+    step = ConversationStep.Credential(List(PrimaryCredential.phone), inlinePassword = false, passkey = false),
     requestedClaims = None,
     uiLocales = None,
     nonce = None,
@@ -84,6 +85,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
     userPhone = None,
     userLogin = None,
     userClaims = None,
+    authFlow = AuthFlow.default,
   )
 
   val spec = suite("OtpConversationService")(
@@ -95,7 +97,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           _ <- env.otpService.prepareOtp.succeedsWith(Some(realOtp))
           _ <- env.conversationRepository.overwrite.succeedsWith(())
           _ <- env.otpService.sendOtp.succeedsWith(())
-          result <- env.service.prepareInitialOtp(authId, initialConversation, Left(email))
+          result <- env.service.prepareInitialOtp(authId, initialConversation, Left(email), factorIndex = 0)
         yield assertTrue(
           result == ConversationResult.RenderStep(realOtp),
         )
@@ -105,7 +107,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
         for
           _ <- env.userRepository.findByCredential.succeedsWith(None)
           _ <- env.otpService.prepareOtp.succeedsWith(None)
-          result <- env.service.prepareInitialOtp(authId, initialConversation, Left(email))
+          result <- env.service.prepareInitialOtp(authId, initialConversation, Left(email), factorIndex = 0)
         yield assertTrue(
           result == ConversationResult.LimitsExceeded,
         )
@@ -129,7 +131,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           _ <- env.otpService.prepareOtp.succeedsWith(Some(realOtp))
           _ <- env.conversationRepository.overwrite.succeedsWith(())
           _ <- env.otpService.sendOtp.succeedsWith(())
-          result <- env.service.prepareInitialOtp(authId, initialConversation, Left(email))
+          result <- env.service.prepareInitialOtp(authId, initialConversation, Left(email), factorIndex = 0)
           overwriteCalls = env.conversationRepository.overwrite.calls
         yield assertTrue(
           result == ConversationResult.RenderStep(realOtp),
@@ -147,7 +149,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           _ <- env.otpService.prepareOtp.succeedsWith(Some(realOtp))
           _ <- env.conversationRepository.overwrite.succeedsWith(())
           _ <- env.otpService.sendOtp.succeedsWith(())
-          result <- env.service.prepareInitialOtp(authId, initialConversation, Left(email))
+          result <- env.service.prepareInitialOtp(authId, initialConversation, Left(email), factorIndex = 0)
           overwriteCalls = env.conversationRepository.overwrite.calls
         yield assertTrue(
           result == ConversationResult.RenderStep(realOtp),
@@ -181,6 +183,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           userPhone = None,
           userLogin = None,
           userClaims = Some(zio.json.ast.Json.Obj()),
+          authFlow = AuthFlow.default,
         )
         for
           _ <- env.otpService.checkOtp.succeedsWith(SubmitOtpResult.Success)
@@ -208,6 +211,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           userPhone = None,
           userLogin = None,
           userClaims = Some(zio.json.ast.Json.Obj()),
+          authFlow = AuthFlow.default,
         )
         for
           _ <- env.otpService.checkOtp.succeedsWith(SubmitOtpResult.LimitsExceeded)

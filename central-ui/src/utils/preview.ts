@@ -9,7 +9,7 @@ import type { BackendProperty } from '../types';
 export function buildPreviewStep(
   type: string,
   properties: BackendProperty[],
-  getValue: (prop: BackendProperty) => string | boolean,
+  getValue: (prop: BackendProperty) => string | boolean | number | string[],
 ): Record<string, unknown> {
   const step: Record<string, unknown> = { type };
   for (const prop of properties) step[prop.name] = getValue(prop);
@@ -19,7 +19,7 @@ export function buildPreviewStep(
 export interface PreviewSrcdocParams {
   formId: string;
   properties: BackendProperty[];
-  getValue: (prop: BackendProperty) => string | boolean;
+  getValue: (prop: BackendProperty) => string | boolean | number | string[];
   localizations: Record<string, Record<string, string>>;
   locale: string;
   locales: string[];

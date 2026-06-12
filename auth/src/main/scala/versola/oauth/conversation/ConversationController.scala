@@ -19,6 +19,7 @@ object ConversationController extends Controller:
     getFormRoute,
     submitEmailRoute,
     submitPhoneRoute,
+    submitPasswordRoute,
     submitOtpRoute,
     submitResendOtpRoute,
   )
@@ -45,6 +46,9 @@ object ConversationController extends Controller:
 
   val submitPhoneRoute =
     submit[PhoneSubmission](Method.POST / "challenge" / "phone")
+
+  val submitPasswordRoute =
+    submit[PasswordSubmission](Method.POST / "challenge" / "password")
 
   val submitLoginPasswordRoute =
     submit[LoginPasswordSubmission](Method.POST / "challenge" / "login-password")
@@ -99,6 +103,10 @@ object ConversationController extends Controller:
   given FormDecoder[OtpSubmission] = (form: Form) =>
     FormDecoder.single[OtpCode](form, "code", code => Right(OtpCode(code)))
       .map(OtpSubmission(_))
+
+  given FormDecoder[PasswordSubmission] = (form: Form) =>
+    FormDecoder.single[String](form, "password", Right(_))
+      .map(p => PasswordSubmission(Password(p)))
 
   given FormDecoder[LoginPasswordSubmission] = (form: Form) =>
     for

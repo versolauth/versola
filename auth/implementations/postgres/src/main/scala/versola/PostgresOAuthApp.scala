@@ -6,7 +6,7 @@ import versola.oauth.PostgresAuthorizationCodeRepository
 import versola.oauth.authorize.{AuthorizeEndpointController, AuthorizeEndpointService, AuthorizeRequestParser}
 import versola.oauth.challenge.password.{PasswordRepository, PasswordService, PostgresPasswordRepository}
 import versola.oauth.client.{OAuthClientSyncClient, OAuthConfigurationService, OAuthScopeSyncClient}
-import versola.oauth.conversation.otp.{EmailOtpProvider, OtpGenerationService, OtpService}
+import versola.oauth.conversation.otp.{EmailOtpProvider, SmsOtpProvider, OtpGenerationService, OtpService}
 import versola.oauth.conversation.{ConversationController, ConversationRenderService, ConversationRepository, ConversationRouter, ConversationService, PostgresConversationRepository}
 import versola.oauth.introspect.{IntrospectionController, IntrospectionService}
 import versola.oauth.jwks.JwksController
@@ -61,6 +61,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       ConversationRenderService &
       OtpService &
       OtpGenerationService &
+      SmsOtpProvider &
       EmailOtpProvider &
       UserInfoService
 
@@ -103,6 +104,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       OtpGenerationService.live >+>
       ZLayer.succeed(versola.oauth.conversation.otp.OtpDecisionService.Impl()) >+>
       EmailOtpProvider.live >+>
+      SmsOtpProvider.live >+>
       OtpService.live >+>
       PasswordService.live >+>
       UserInfoService.live >+>
@@ -122,6 +124,11 @@ object PostgresOAuthApp extends VersolaApp("auth"):
 
   given DeriveConfig[URL] = DeriveConfig[String]
     .mapOrFail(URL.decode(_).left.map(ex => zio.Config.Error.InvalidData(message = ex.getMessage)))
+
+  given DeriveConfig[Method] = DeriveConfig[String].map(Method.fromString)
+
+  given DeriveConfig[Email] = DeriveConfig[String]
+    .mapOrFail(Email.from(_).left.map(message => zio.Config.Error.InvalidData(message = message)))
 
   given DeriveConfig[PrivateKey] = DeriveConfig[String]
     .mapOrFail: str =>

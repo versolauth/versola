@@ -17,6 +17,7 @@ CREATE TABLE auth_conversations (
     user_phone TEXT,
     user_login TEXT,
     user_claims JSON,
+    auth_flow JSONB NOT NULL,
     expires_at TIMESTAMP WITH TIME ZONE NOT NULL
 );
 

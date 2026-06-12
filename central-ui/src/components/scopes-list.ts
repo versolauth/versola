@@ -3,11 +3,12 @@ import { customElement, property, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
 import { buttonStyles, cardStyles, formStyles } from '../styles/components';
 import { OAuthScope } from '../types';
-import { createScope, deleteScope, fetchAllScopes, updateScope } from '../utils/central-api';
+import { createScope, deleteScope, getScopes, updateScope } from '../utils/central-api';
 import { confirmDestructiveAction } from '../utils/confirm-dialog';
 import { getLocalizedDescription } from '../utils/helpers';
 import './scope-form';
 import './content-header';
+import './error-card';
 import './loading-cards';
 
 @customElement('versola-scopes-list')
@@ -45,7 +46,7 @@ export class VersolaScopesList extends LitElement {
     this.errorMessage = '';
 
     try {
-      const result = await fetchAllScopes(this.tenantId);
+      const result = await getScopes(this.tenantId);
       if (requestId !== this.loadRequestId) return;
       this.scopes = result;
     } catch (error) {
@@ -334,16 +335,7 @@ export class VersolaScopesList extends LitElement {
       ${this.isLoading ? html`
         <versola-loading-cards .count=${3}></versola-loading-cards>
       ` : this.errorMessage ? html`
-        <div class="card">
-          <div class="empty-state">
-            <div class="empty-state-icon">⚠️</div>
-            <h3>Could not load OAuth scopes</h3>
-            <p>${this.errorMessage}</p>
-            <button class="btn btn-primary" @click=${() => this.loadData()} style="margin-top: 1rem;">
-              Retry
-            </button>
-          </div>
-        </div>
+        <versola-error-card heading="Could not load OAuth scopes" .message=${this.errorMessage} @retry=${() => this.loadData()}></versola-error-card>
       ` : this.scopes.length === 0 ? html`
         <div class="card">
           <div class="empty-state">

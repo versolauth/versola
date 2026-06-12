@@ -7,10 +7,6 @@ case class GetAllFormsResponse(
     forms: Vector[FormRecord],
 ) derives Schema, JsonCodec
 
-case class GetFormLocalesResponse(
-    locales: Vector[FormLocale],
-) derives Schema, JsonCodec
-
 case class UpdateFormRequest(
     id: FormId,
     style: String,
@@ -23,9 +19,4 @@ case class UpdateFormRequest(
 case class SetActiveVersionRequest(
     id: FormId,
     version: Int,
-) derives Schema, JsonCodec
-
-case class UpdateFormLocalesRequest(
-    add: Vector[FormLocale],
-    delete: Vector[String],
 ) derives Schema, JsonCodec

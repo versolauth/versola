@@ -1,6 +1,8 @@
-CREATE TABLE form_locales (
-    code TEXT PRIMARY KEY,
-    name TEXT NOT NULL
+CREATE TABLE locales (
+    code       TEXT PRIMARY KEY,
+    name       TEXT NOT NULL,
+    is_default BOOLEAN NOT NULL,
+    active     BOOLEAN NOT NULL DEFAULT TRUE
 );
 
 CREATE TABLE forms (

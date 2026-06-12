@@ -3,7 +3,7 @@ import { customElement, property, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
 import { buttonStyles, cardStyles, formStyles } from '../styles/components';
 import { Role, Permission, Resource } from '../types';
-import { resolvePermissionEndpointGroups } from '../utils/helpers';
+import './permission-info';
 import { validateRoleId } from '../utils/validators';
 
 @customElement('versola-role-form')
@@ -17,12 +17,6 @@ export class VersolaRoleForm extends LitElement {
     description: { en: '' },
     active: true,
     permissions: [],
-  };
-
-  @state() private openInfoKey: string | null = null;
-
-  private handleDocumentClick = () => {
-    this.openInfoKey = null;
   };
 
   static styles = [
@@ -129,116 +123,6 @@ export class VersolaRoleForm extends LitElement {
         white-space: nowrap;
       }
 
-      .option-info-button {
-        flex: none;
-        border: 1px solid rgba(88, 166, 255, 0.4);
-        border-radius: 999px;
-        background: rgba(88, 166, 255, 0.12);
-        color: var(--accent);
-        font-size: 0.75rem;
-        font-weight: 700;
-        line-height: 1;
-        padding: 0.25rem 0.45rem;
-        cursor: pointer;
-        font-family: var(--font-family);
-      }
-
-      .option-info {
-        position: relative;
-        display: inline-flex;
-        align-items: center;
-        flex: none;
-      }
-
-      .option-info-button:hover {
-        background: rgba(88, 166, 255, 0.18);
-        border-color: rgba(88, 166, 255, 0.55);
-      }
-
-      .option-info-button:focus-visible {
-        outline: none;
-        box-shadow: 0 0 0 2px rgba(88, 166, 255, 0.2);
-      }
-
-      .option-tooltip {
-        position: absolute;
-        right: 0;
-        top: calc(100% + 0.4rem);
-        z-index: 20;
-        min-width: 18rem;
-        max-width: min(28rem, 75vw);
-        max-height: 18rem;
-        overflow: auto;
-        padding: 0.75rem;
-        border: 1px solid rgba(88, 166, 255, 0.28);
-        border-radius: var(--radius-md);
-        background: linear-gradient(180deg, rgba(22, 27, 34, 0.98), rgba(13, 17, 23, 0.98));
-        box-shadow: 0 10px 24px rgba(0, 0, 0, 0.35);
-        display: none;
-      }
-
-      .option-info.option-info-open .option-tooltip {
-        display: block;
-      }
-
-      .option-tooltip-title {
-        margin-bottom: 0.5rem;
-        color: var(--accent);
-        font-size: 0.75rem;
-        font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 0.05em;
-      }
-
-      .option-tooltip-list,
-      .option-tooltip-groups,
-      .option-endpoint-list {
-        display: grid;
-        gap: 0.375rem;
-      }
-
-      .option-tooltip-item,
-      .option-endpoint-path {
-        color: var(--text-primary);
-        font-size: 0.75rem;
-        line-height: 1.4;
-        overflow-wrap: anywhere;
-      }
-
-      .option-tooltip-empty {
-        color: var(--text-secondary);
-        font-size: 0.75rem;
-      }
-
-      .option-tooltip-group {
-        border: 1px solid var(--border-dark);
-        border-radius: var(--radius-sm);
-        background: rgba(255, 255, 255, 0.03);
-        padding: 0.625rem 0.75rem;
-      }
-
-      .option-tooltip-group-title {
-        color: var(--accent);
-        font-size: 0.75rem;
-        font-weight: 600;
-        font-family: var(--font-mono);
-        margin-bottom: 0.25rem;
-        overflow-wrap: anywhere;
-      }
-
-      .option-endpoint-row {
-        color: var(--text-primary);
-        font-size: 0.75rem;
-        line-height: 1.4;
-        font-family: var(--font-mono);
-        overflow-wrap: anywhere;
-      }
-
-      .option-endpoint-method {
-        color: var(--text-primary);
-        font-weight: 600;
-      }
-
       .form-actions {
         display: flex;
         gap: 1rem;
@@ -267,15 +151,9 @@ export class VersolaRoleForm extends LitElement {
 
   connectedCallback() {
     super.connectedCallback();
-    document.addEventListener('click', this.handleDocumentClick);
     if (this.roleData) {
       this.formData = { ...this.roleData };
     }
-  }
-
-  disconnectedCallback() {
-    document.removeEventListener('click', this.handleDocumentClick);
-    super.disconnectedCallback();
   }
 
   private handleSubmit(e: Event) {
@@ -334,61 +212,8 @@ export class VersolaRoleForm extends LitElement {
     };
   }
 
-  private getPermissionInfoGroups(permission: Permission) {
-    return resolvePermissionEndpointGroups(permission, this.availableResources);
-  }
-
   private get sortedPermissions() {
     return [...this.availablePermissions].sort((a, b) => a.id.localeCompare(b.id));
-  }
-
-  private toggleInfo(key: string) {
-    this.openInfoKey = this.openInfoKey === key ? null : key;
-  }
-
-  private renderOptionInfo(key: string, title: string, content: unknown, ariaLabel: string) {
-    return html`
-      <div class=${`option-info ${this.openInfoKey === key ? 'option-info-open' : ''}`} @click=${(e: Event) => e.stopPropagation()}>
-        <button
-          type="button"
-          class="option-info-button"
-          aria-label=${ariaLabel}
-          aria-expanded=${this.openInfoKey === key ? 'true' : 'false'}
-          @click=${() => this.toggleInfo(key)}
-        >i</button>
-        <div class="option-tooltip" role="tooltip">
-          <div class="option-tooltip-title">${title}</div>
-          ${content}
-        </div>
-      </div>
-    `;
-  }
-
-  private renderPermissionInfo(permission: Permission) {
-    const groups = this.getPermissionInfoGroups(permission);
-
-    return this.renderOptionInfo(
-      `permission:${permission.id}`,
-      'Resources & endpoints',
-      groups.length > 0 ? html`
-        <div class="option-tooltip-groups">
-          ${groups.map(group => html`
-            <div class="option-tooltip-group">
-              <div class="option-tooltip-group-title">${group.title}</div>
-              <div class="option-endpoint-list">
-                ${group.endpoints.map(endpoint => html`
-                  <div class="option-endpoint-row">
-                    <span class="option-endpoint-method">${endpoint.method}</span>
-                    <span>${endpoint.path}</span>
-                  </div>
-                `)}
-              </div>
-            </div>
-          `)}
-        </div>
-      ` : html`<div class="option-tooltip-empty">No endpoints</div>`,
-      `Show endpoints for permission ${permission.id}`,
-    );
   }
 
   render() {
@@ -473,7 +298,7 @@ export class VersolaRoleForm extends LitElement {
                           <label class="checkbox-label" for="perm-${perm.id}" title=${perm.id} @click=${(e: Event) => e.preventDefault()}>
                             ${perm.id}
                           </label>
-                          ${this.renderPermissionInfo(perm)}
+                          <versola-permission-info .permission=${perm} .resources=${this.availableResources}></versola-permission-info>
                         </div>
                         <div class="checkbox-description" title=${perm.description.en}>
                           ${perm.description.en}

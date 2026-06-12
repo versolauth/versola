@@ -8,11 +8,12 @@ const here = dirname(fileURLToPath(import.meta.url));
 const formsSrcDir = resolve(here, '../forms');
 const outDir = resolve(here, '../../central/src/main/resources/forms');
 
-const forms = ['credential', 'otp'];
+const forms = ['credential', 'otp', 'password'];
 const sharedAssets = ['common.css'];
 
 for (const id of forms) {
-  const entry = resolve(formsSrcDir, `${id}.tsx`);
+  const formDir = resolve(formsSrcDir, id);
+  const entry = resolve(formDir, `${id}.tsx`);
   const result = await build({
     entryPoints: [entry],
     bundle: true,
@@ -25,8 +26,8 @@ for (const id of forms) {
   const compiled = result.outputFiles[0].text;
   await writeFile(resolve(outDir, `${id}.js`), compiled, 'utf8');
   await copyFile(entry, resolve(outDir, `${id}.tsx`));
-  await copyFile(resolve(formsSrcDir, `${id}.i18n.json`), resolve(outDir, `${id}.i18n.json`));
-  await copyFile(resolve(formsSrcDir, `${id}.css`), resolve(outDir, `${id}.css`));
+  await copyFile(resolve(formDir, `${id}.i18n.json`), resolve(outDir, `${id}.i18n.json`));
+  await copyFile(resolve(formDir, `${id}.css`), resolve(outDir, `${id}.css`));
   console.log(`Built ${id}: ${compiled.length} bytes`);
 }
 

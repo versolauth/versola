@@ -1,10 +1,13 @@
 package versola.oauth.conversation.otp
 
 import versola.auth.model.OtpCode
+import versola.oauth.client.OAuthConfigurationService
+import versola.oauth.client.model.ClientId
 import versola.oauth.conversation.model.{AuthId, ConversationStep}
 import versola.oauth.conversation.otp.model.{OtpTemplate, SendOtpResult, SubmitOtpResult}
 import versola.user.model.UserId
 import versola.util.{Email, Phone, UnitSpecBase}
+import zio.*
 import zio.test.*
 
 import java.util.UUID
@@ -14,22 +17,28 @@ object OtpServiceSpec extends UnitSpecBase:
   val email = Email("test@example.com")
   val phone = Phone("+1234567890")
   val authId = AuthId(UUID.randomUUID())
+  val clientId = ClientId("test-client")
   val userId = UserId(UUID.randomUUID())
   val otpCode = OtpCode("123456")
   val realOtp = ConversationStep.Otp(
     real = Some(ConversationStep.Otp.Real(otpCode)),
     timesRequested = 1,
     timesSubmitted = 0,
+    factorIndex = 0,
   )
 
   class Env:
     val otpGenerationService = stub[OtpGenerationService]
     val otpDecisionService = stub[OtpDecisionService]
     val emailOtpProvider = stub[EmailOtpProvider]
+    val otpClient = stub[SmsOtpProvider]
+    val configService = stub[OAuthConfigurationService]
     val service = OtpService.Impl(
       otpGenerationService,
       otpDecisionService,
       emailOtpProvider,
+      otpClient,
+      configService,
     )
 
   val spec = suite("OtpService")(
@@ -66,8 +75,48 @@ object OtpServiceSpec extends UnitSpecBase:
               real = None,
               timesRequested = 0,
               timesSubmitted = 0,
+              factorIndex = 0,
             ),
           )
+        )
+      },
+    ),
+    suite("sendOtp")(
+      test("returns unit immediately when otp.real is None") {
+        val env = Env()
+        val fakeOtp = ConversationStep.Otp(
+          real = None,
+          timesRequested = 0,
+          timesSubmitted = 0,
+          factorIndex = 0,
+        )
+        for
+          _ <- env.service.sendOtp(fakeOtp, Left(email), authId, clientId, None)
+        yield assertTrue(
+          env.emailOtpProvider.sendOtp.calls.isEmpty,
+          env.otpClient.sendOtp.calls.isEmpty,
+        )
+      },
+      test("calls emailOtpProvider when credential is an email") {
+        val env = Env()
+        val template = OtpTemplate("Your code: {{code}}")
+        for
+          _ <- env.configService.getClientTemplate.succeedsWith(template)
+          _ <- env.emailOtpProvider.sendOtp.succeedsWith(())
+          _ <- env.service.sendOtp(realOtp, Left(email), authId, clientId, None)
+        yield assertTrue(
+          env.emailOtpProvider.sendOtp.calls == List((email, otpCode, template)),
+        )
+      },
+      test("calls smsOtpProvider when credential is a phone") {
+        val env = Env()
+        val template = OtpTemplate("Your code: {{code}}")
+        for
+          _ <- env.configService.getClientTemplate.succeedsWith(template)
+          _ <- env.otpClient.sendOtp.succeedsWith(())
+          _ <- env.service.sendOtp(realOtp, Right(phone), authId, clientId, None)
+        yield assertTrue(
+          env.otpClient.sendOtp.calls == List((phone, otpCode, template)),
         )
       },
     ),

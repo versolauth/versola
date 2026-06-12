@@ -100,6 +100,16 @@ class PostgresCacheSyncRepository(conn: PGConnection) extends CacheSyncRepositor
                 op = SyncEvent.Op.valueOf(payload.op),
               )
             }
+          case "otp_template_change" =>
+            parsePayload(notification.getParameter).fold[SyncEvent](SyncEvent.Unknown) { payload =>
+              payload.tenantId.fold[SyncEvent](SyncEvent.Unknown) { tenantId =>
+                SyncEvent.OtpTemplatesUpdated(
+                  tenantId = TenantId(tenantId),
+                  id = payload.id,
+                  op = SyncEvent.Op.valueOf(payload.op),
+                )
+              }
+            }
           case _ =>
             SyncEvent.Unknown
       }
@@ -115,6 +125,7 @@ object PostgresCacheSyncRepository:
     "resource_change",
     "preset_change",
     "form_change",
+    "otp_template_change",
   )
 
   def live: ZLayer[HikariDataSource & Scope, Throwable, CacheSyncRepository] =

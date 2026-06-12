@@ -3,7 +3,7 @@ import { customElement, property, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
 import { buttonStyles, cardStyles, formStyles } from '../styles/components';
 import { OAuthScope, User } from '../types';
-import { fetchAllScopes } from '../utils/central-api';
+import { getScopes } from '../utils/central-api';
 
 const EXCLUDED_SCOPES = new Set(['openid', 'offline_access']);
 
@@ -105,7 +105,7 @@ export class VersolaClaimEdit extends LitElement {
     if (this.tenantId) {
       this.loading = true;
       try {
-        const all = await fetchAllScopes(this.tenantId);
+        const all = await getScopes(this.tenantId);
         this.scopes = all.filter(s => !EXCLUDED_SCOPES.has(s.id));
       } finally {
         this.loading = false;

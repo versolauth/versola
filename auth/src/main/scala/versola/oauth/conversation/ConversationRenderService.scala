@@ -1,8 +1,8 @@
 package versola.oauth.conversation
 
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.FormRecord
-import versola.oauth.conversation.model.{ConversationRecord, ConversationStep, PrimaryCredential}
+import versola.oauth.client.model.{FormRecord, PrimaryCredential}
+import versola.oauth.conversation.model.{ConversationRecord, ConversationStep}
 import versola.oauth.model.SessionCookie
 import versola.util.{Base64Url, CoreConfig, JWT}
 import zio.http.{Body, Header, Headers, MediaType, Response, Status, URL}
@@ -30,21 +30,12 @@ object ConversationRenderService:
   sealed trait StepView derives JsonCodec
 
   object StepView:
-    private given JsonCodec[PrimaryCredential] =
-      JsonCodec.string.transformOrFail(
-        {
-          case "email" => Right(PrimaryCredential.Email)
-          case "phone" => Right(PrimaryCredential.Phone)
-          case other => Left(s"Unknown primary credential: $other")
-        },
-        {
-          case PrimaryCredential.Email => "email"
-          case PrimaryCredential.Phone => "phone"
-        },
-      )
-
     @jsonHint("credential")
-    case class Credential(primary: PrimaryCredential, passkey: Boolean) extends StepView
+    case class Credential(
+        primaryCredentials: List[PrimaryCredential],
+        inlinePassword: Boolean,
+        passkey: Boolean,
+    ) extends StepView
     @jsonHint("password")
     case object Password extends StepView
     @jsonHint("otp")
@@ -53,9 +44,9 @@ object ConversationRenderService:
   case class FormConfig(
       step: StepView,
       t: Map[String, String],
-      locale: String = "en",
-      locales: List[String] = List.empty,
-      allT: Map[String, Map[String, String]] = Map.empty,
+      locale: String,
+      locales: List[String],
+      allT: Map[String, Map[String, String]],
   ) derives JsonCodec
 
   private val ThemeDefault = "default"
@@ -156,8 +147,8 @@ object ConversationRenderService:
         locale: Option[List[String]],
     ): Task[Option[FormRenderInfo]] =
       val formId = step match
-        case _: ConversationStep.Empty => "credential"
-        case _: ConversationStep.Password => "credential"
+        case _: ConversationStep.Credential => "credential"
+        case _: ConversationStep.Password => "password"
         case _: ConversationStep.Otp => "otp"
       val view = stepView(step)
       configuration.getForm(formId).map(_.map { form =>
@@ -197,7 +188,8 @@ object ConversationRenderService:
 
     private def stepView(step: ConversationStep): StepView =
       step match
-        case ConversationStep.Empty(primary, passkey) => StepView.Credential(primary, passkey)
+        case ConversationStep.Credential(primaryCredentials, inlinePassword, passkey) =>
+          StepView.Credential(primaryCredentials, inlinePassword, passkey)
         case _: ConversationStep.Password => StepView.Password
         case _: ConversationStep.Otp => StepView.Otp(length = 6, resendAfter = 60)
 

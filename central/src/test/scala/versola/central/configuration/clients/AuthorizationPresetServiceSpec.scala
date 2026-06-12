@@ -35,8 +35,10 @@ object AuthorizationPresetServiceSpec extends ZIOSpecDefault, ZIOStubs:
     refreshTokenTtl = 7776000.seconds,
     permissions = Set.empty,
     theme = "",
+    authFlow = Some(AuthFlow.default),
+    otpTemplateId = "default-otp",
   )
-  
+
   private val validRequest = SaveAuthorizationPresetsRequest(
     clientId = clientId,
     presets = List(

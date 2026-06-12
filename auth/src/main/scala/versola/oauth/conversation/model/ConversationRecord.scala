@@ -1,7 +1,7 @@
 package versola.oauth.conversation.model
 
 import versola.oauth.authorize.model.ResponseTypeEntry
-import versola.oauth.client.model.{ClientId, ScopeToken}
+import versola.oauth.client.model.{AuthFlow, ClientId, ScopeToken}
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, Nonce, State}
 import versola.oauth.userinfo.model.RequestedClaims
 import versola.user.model.{Login, UserId}
@@ -28,12 +28,14 @@ case class ConversationRecord(
     userPhone: Option[Phone],
     userLogin: Option[Login],
     userClaims: Option[Json.Obj],
+    authFlow: AuthFlow,
 ):
   def patch(patch: ConversationRecord.Patch): ConversationRecord =
     this.copy(
       userId = patch.userId.getOrElse(userId),
       credential = patch.credential.getOrElse(credential),
       step = patch.step.getOrElse(step),
+      authFlow = patch.authFlow.getOrElse(authFlow),
     )
 
 object ConversationRecord:
@@ -42,6 +44,7 @@ object ConversationRecord:
       userId: Option[Option[UserId]],
       credential: Option[Option[Either[Email, Phone]]],
       step: Option[ConversationStep],
+      authFlow: Option[AuthFlow],
   ):
     def isEmpty: Boolean = this == Patch.empty
 
@@ -50,6 +53,7 @@ object ConversationRecord:
       userId = None,
       credential = None,
       step = None,
+      authFlow = None,
     )
 
   object Otp:

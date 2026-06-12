@@ -161,8 +161,8 @@ class PostgresUserRepository(xa: TransactorZIO, secureRandom: SecureRandom) exte
 
   override def moveToDeadLetter(id: UUID, error: String): Task[Unit] =
     xa.transact:
-      sql"""INSERT INTO user_outbox_dead (id, user_id, event_type, payload, attempts, error)
-            SELECT id, user_id, event_type, payload, attempts, $error
+      sql"""INSERT INTO user_outbox_dead (id, user_id, event_type, payload, attempts, failed_at, error)
+            SELECT id, user_id, event_type, payload, attempts, NOW(), $error
             FROM user_outbox
             WHERE id = $id""".update.run()
       sql"DELETE FROM user_outbox WHERE id = $id".update.run()

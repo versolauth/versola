@@ -9,8 +9,8 @@ import zio.schema.*
  */
 case class TokenErrorResponse(
     error: String,
-    @jsonField("error_description") errorDescription: Option[String] = None,
-    @jsonField("error_uri") errorUri: Option[String] = None,
+    @jsonField("error_description") errorDescription: Option[String],
+    @jsonField("error_uri") errorUri: Option[String],
 ) derives Schema, JsonCodec
 
 object TokenErrorResponse:

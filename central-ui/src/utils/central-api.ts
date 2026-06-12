@@ -1,9 +1,12 @@
+import { createDefaultAuthFlow } from './helpers';
 import type {
+  AuthFlow,
   AuthorizationPreset,
   BackendProperty,
   Edge,
-  FormLocale,
+  Locale,
   FormRecord,
+  OtpTemplateRecord,
   InjectRule,
   OAuthClaim,
   OAuthClient,
@@ -74,10 +77,17 @@ type ResourcesResponse = { resources: ResourceResponseDto[] };
 
 const apiConfig: CentralApiConfig = { baseUrl: null, authToken: null };
 const permissionStore = new Map<string, Permission>();
-const clientSupplementStore = new Map<string, { externalAudience: string[]; accessTokenTtl: number; hasPreviousSecret: boolean }>();
+const clientSupplementStore = new Map<string, { externalAudience: string[]; accessTokenTtl: number; hasPreviousSecret: boolean; authFlow?: AuthFlow | null }>();
 const roleSupplementStore = new Map<string, { active: boolean; createdAt: string; updatedAt: string }>();
 const readCache = new Map<string, { expiresAt: number; value: unknown }>();
 const inFlightReads = new Map<string, Promise<unknown>>();
+
+// Tenant-keyed reference-data caches shared across pages. Each holds the
+// resolved (mapped) list per tenantId and is invalidated on a matching write.
+const scopesStore = new Map<string, Promise<OAuthScope[]>>();
+const permissionsStore = new Map<string, Promise<Permission[]>>();
+const resourcesStore = new Map<string, Promise<Resource[]>>();
+const rolesStore = new Map<string, Promise<Role[]>>();
 
 function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
@@ -109,6 +119,30 @@ function invalidateReadCache() {
   inFlightReads.clear();
 }
 
+function memoizeRef<T>(store: Map<string, Promise<T>>, tenantId: string, factory: () => Promise<T>): Promise<T> {
+  const existing = store.get(tenantId);
+  if (existing) {
+    return existing;
+  }
+  const pending = factory().catch((error: unknown) => {
+    store.delete(tenantId);
+    throw error;
+  });
+  store.set(tenantId, pending);
+  return pending;
+}
+
+function invalidateRefData<T>(store: Map<string, Promise<T>>, tenantId: string) {
+  store.delete(tenantId);
+}
+
+function invalidateAllRefData() {
+  scopesStore.clear();
+  permissionsStore.clear();
+  resourcesStore.clear();
+  rolesStore.clear();
+}
+
 function buildErrorMessage(status: number, bodyText: string): string {
   const trimmed = bodyText.trim();
 
@@ -128,6 +162,7 @@ export function configureCentralApi(config: Partial<CentralApiConfig>): void {
   apiConfig.baseUrl = config.baseUrl?.trim() || null;
   apiConfig.authToken = config.authToken?.trim() || null;
   invalidateReadCache();
+  invalidateAllRefData();
 }
 
 async function request<T>(
@@ -411,6 +446,8 @@ export async function fetchClients(tenantId: string, offset = 0, limit = DEFAULT
   return toPagedResult(
     response.clients.map(client => {
       const supplement = clientSupplementStore.get(entityKey(tenantId, client.id));
+      // A supplement that predates the authFlow field gets the default; an explicit null means "no flow".
+      const baseFlow = supplement?.authFlow !== undefined ? supplement.authFlow : createDefaultAuthFlow();
       return {
         id: client.id,
         clientName: client.clientName,
@@ -421,6 +458,7 @@ export async function fetchClients(tenantId: string, offset = 0, limit = DEFAULT
         accessTokenTtl: supplement?.accessTokenTtl ?? 3600,
         permissions: [...client.permissions],
         theme: client.theme ?? 'default',
+        authFlow: baseFlow ? { ...baseFlow, passkeyFactors: baseFlow.passkeyFactors ?? [] } : null,
         tenantId,
       };
     }),
@@ -485,6 +523,22 @@ export async function fetchResources(tenantId: string): Promise<Resource[]> {
   return response.resources.map(mapResource);
 }
 
+export function getScopes(tenantId: string): Promise<OAuthScope[]> {
+  return memoizeRef(scopesStore, tenantId, () => fetchAllScopes(tenantId));
+}
+
+export function getPermissions(tenantId: string): Promise<Permission[]> {
+  return memoizeRef(permissionsStore, tenantId, () => fetchAllPermissions(tenantId));
+}
+
+export function getResources(tenantId: string): Promise<Resource[]> {
+  return memoizeRef(resourcesStore, tenantId, () => fetchResources(tenantId));
+}
+
+export function getRoles(tenantId: string): Promise<Role[]> {
+  return memoizeRef(rolesStore, tenantId, () => fetchAllRoles(tenantId));
+}
+
 export async function createResource(
   tenantId: string,
   alias: string,
@@ -496,6 +550,7 @@ export async function createResource(
     method: 'POST',
     body: { tenantId, alias, resource, endpoints: serializedEndpoints },
   });
+  resourcesStore.clear();
   return { id: response.id, endpoints: serializedEndpoints };
 }
 
@@ -517,6 +572,7 @@ export async function updateResource(
     body: { id, alias, resource, deleteEndpoints, createEndpoints },
   });
 
+  resourcesStore.clear();
   return createEndpoints;
 }
 
@@ -525,6 +581,8 @@ export async function deleteResource(id: number): Promise<void> {
     method: 'DELETE',
     query: { id },
   });
+
+  resourcesStore.clear();
 }
 
 export async function createPermission(tenantId: string, permission: Permission): Promise<void> {
@@ -539,6 +597,7 @@ export async function createPermission(tenantId: string, permission: Permission)
   });
 
   permissionStore.set(entityKey(tenantId, permission.id), clone(permission));
+  invalidateRefData(permissionsStore, tenantId);
 }
 
 export async function updatePermission(tenantId: string, existing: Permission, permission: Permission): Promise<void> {
@@ -555,6 +614,7 @@ export async function updatePermission(tenantId: string, existing: Permission, p
   });
 
   permissionStore.set(entityKey(tenantId, permission.id), clone(permission));
+  invalidateRefData(permissionsStore, tenantId);
 }
 
 export async function deletePermission(tenantId: string, permissionId: string): Promise<void> {
@@ -564,6 +624,7 @@ export async function deletePermission(tenantId: string, permissionId: string): 
   });
 
   permissionStore.delete(entityKey(tenantId, permissionId));
+  invalidateRefData(permissionsStore, tenantId);
 }
 
 export async function createScope(tenantId: string, scope: OAuthScope): Promise<void> {
@@ -576,6 +637,8 @@ export async function createScope(tenantId: string, scope: OAuthScope): Promise<
       claims: scope.claims.map(toCreateClaim),
     },
   });
+
+  invalidateRefData(scopesStore, tenantId);
 }
 
 export async function updateScope(tenantId: string, existing: OAuthScope, scope: OAuthScope): Promise<void> {
@@ -590,6 +653,8 @@ export async function updateScope(tenantId: string, existing: OAuthScope, scope:
       },
     },
   });
+
+  invalidateRefData(scopesStore, tenantId);
 }
 
 export async function deleteScope(tenantId: string, scopeId: string): Promise<void> {
@@ -597,6 +662,8 @@ export async function deleteScope(tenantId: string, scopeId: string): Promise<vo
     method: 'DELETE',
     query: { tenantId, scopeId },
   });
+
+  invalidateRefData(scopesStore, tenantId);
 }
 
 export async function createRole(tenantId: string, role: Role): Promise<void> {
@@ -615,6 +682,7 @@ export async function createRole(tenantId: string, role: Role): Promise<void> {
     createdAt: role.createdAt,
     updatedAt: role.updatedAt,
   });
+  invalidateRefData(rolesStore, tenantId);
 }
 
 export async function updateRole(tenantId: string, existing: Role, role: Role): Promise<void> {
@@ -636,6 +704,7 @@ export async function updateRole(tenantId: string, existing: Role, role: Role): 
     createdAt: existing.createdAt,
     updatedAt: role.updatedAt,
   });
+  invalidateRefData(rolesStore, tenantId);
 }
 
 export async function deleteRole(tenantId: string, roleId: string): Promise<void> {
@@ -645,6 +714,7 @@ export async function deleteRole(tenantId: string, roleId: string): Promise<void
   });
 
   roleSupplementStore.delete(entityKey(tenantId, roleId));
+  invalidateRefData(rolesStore, tenantId);
 }
 
 export async function createClient(tenantId: string, client: OAuthClient): Promise<string> {
@@ -660,6 +730,7 @@ export async function createClient(tenantId: string, client: OAuthClient): Promi
       permissions: unique(client.permissions),
       accessTokenTtl: client.accessTokenTtl,
       theme: client.theme ?? 'default',
+      otpTemplateId: client.otpTemplateId ?? null,
     },
   });
 
@@ -667,6 +738,7 @@ export async function createClient(tenantId: string, client: OAuthClient): Promi
     externalAudience: [...client.externalAudience],
     accessTokenTtl: client.accessTokenTtl,
     hasPreviousSecret: client.hasPreviousSecret,
+    authFlow: client.authFlow,
   });
 
   return response.secret;
@@ -713,6 +785,7 @@ export async function updateClient(tenantId: string, existing: OAuthClient, clie
       permissions: patchSet(existing.permissions, client.permissions),
       accessTokenTtl: existing.accessTokenTtl !== client.accessTokenTtl ? client.accessTokenTtl : undefined,
       theme: existing.theme !== client.theme ? client.theme : undefined,
+      otpTemplateId: existing.otpTemplateId !== client.otpTemplateId ? (client.otpTemplateId ?? null) : undefined,
     },
   });
 
@@ -720,6 +793,7 @@ export async function updateClient(tenantId: string, existing: OAuthClient, clie
     externalAudience: [...client.externalAudience],
     accessTokenTtl: client.accessTokenTtl,
     hasPreviousSecret: client.hasPreviousSecret,
+    authFlow: client.authFlow,
   });
 }
 
@@ -775,15 +849,22 @@ export async function fetchForms(): Promise<FormRecord[]> {
   return response.forms;
 }
 
-export async function fetchFormLocales(): Promise<FormLocale[]> {
-  const response = await request<{ locales: FormLocale[] }>('/configuration/forms/locales');
+export async function fetchLocales(): Promise<Locale[]> {
+  const response = await request<{ locales: Locale[] }>('/configuration/locales');
   return response.locales;
 }
 
-export async function updateFormLocales(add: FormLocale[], remove: string[]): Promise<void> {
-  await requestVoid('/configuration/forms/locales', {
+export async function updateLocales(add: Locale[], remove: string[]): Promise<void> {
+  await requestVoid('/configuration/locales', {
     method: 'PUT',
     body: { add, delete: remove },
+  });
+}
+
+export async function setDefaultLocale(code: string): Promise<void> {
+  await requestVoid('/configuration/locales/default', {
+    method: 'PUT',
+    body: { code },
   });
 }
 
@@ -834,3 +915,25 @@ export async function deleteTheme(id: string): Promise<void> {
     method: 'DELETE',
   });
 }
+
+export async function fetchOtpTemplates(tenantId: string): Promise<OtpTemplateRecord[]> {
+  const response = await request<{ templates: OtpTemplateRecord[] }>('/configuration/challenges/otp-templates', {
+    query: { tenantId },
+  });
+  return response.templates;
+}
+
+export async function upsertOtpTemplate(id: string, tenantId: string, localizations: Record<string, string>): Promise<void> {
+  await requestVoid('/configuration/challenges/otp-templates', {
+    method: 'PUT',
+    body: { id, tenantId, localizations },
+  });
+}
+
+export async function deleteOtpTemplate(id: string, tenantId: string): Promise<void> {
+  await requestVoid('/configuration/challenges/otp-templates', {
+    method: 'DELETE',
+    body: { id, tenantId },
+  });
+}
+

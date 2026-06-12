@@ -4,7 +4,7 @@ import org.scalamock.stubs.Stub
 import versola.auth.TestEnvConfig
 import versola.auth.model.OtpCode
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{ClientId, ScopeToken}
+import versola.oauth.client.model.{AuthFlow, ClientId, ScopeToken}
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, ConversationCookie}
 import versola.util.http.{ControllerSpec, NoopTracing, Observability}
@@ -33,6 +33,7 @@ object ConversationControllerSpec extends UnitSpecBase:
       real = Some(ConversationStep.Otp.Real(otpCode)),
       timesRequested = 1,
       timesSubmitted = 0,
+      factorIndex = 0,
     ),
   )
 
@@ -45,7 +46,7 @@ object ConversationControllerSpec extends UnitSpecBase:
     state = None,
     userId = None,
     credential = None,
-    step = ConversationStep.Otp(real = None, timesRequested = 1, timesSubmitted = 0),
+    step = ConversationStep.Otp(real = None, timesRequested = 1, timesSubmitted = 0, factorIndex = 0),
     requestedClaims = None,
     uiLocales = None,
     nonce = None,
@@ -54,6 +55,7 @@ object ConversationControllerSpec extends UnitSpecBase:
     userPhone = None,
     userLogin = None,
     userClaims = None,
+    authFlow = AuthFlow.default,
   )
 
   def successfulSubmitTestCase[Args, Result, RResult <: Result](

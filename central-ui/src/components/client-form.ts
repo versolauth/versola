@@ -2,8 +2,8 @@ import { LitElement, html, css } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
 import { buttonStyles, cardStyles, formStyles, iconActionStyles } from '../styles/components';
-import { OAuthClient, OAuthScope, Permission, Resource, ThemeRecord } from '../types';
-import { getLocalizedDescription, resolvePermissionEndpointGroups } from '../utils/helpers';
+import { AuthFactorType, AuthFlow, OAuthClient, OAuthScope, OtpTemplateRecord, Permission, PrimaryCredential, Resource, ThemeRecord } from '../types';
+import { createDefaultAuthFlow, getLocalizedDescription, resolvePermissionEndpointGroups } from '../utils/helpers';
 import {
   validateClientId,
   validateRedirectUri,
@@ -19,6 +19,7 @@ export class VersolaClientForm extends LitElement {
   @property({ attribute: false }) availableResources: Resource[] = [];
   @property({ attribute: false }) availableClientIds: string[] = [];
   @property({ attribute: false }) availableThemes: ThemeRecord[] = [];
+  @property({ attribute: false }) availableOtpTemplates: OtpTemplateRecord[] = [];
 
   @state() private formData: Partial<OAuthClient> = {
     id: '',
@@ -29,6 +30,7 @@ export class VersolaClientForm extends LitElement {
     accessTokenTtl: 3600,
     permissions: [],
     theme: 'default',
+    authFlow: createDefaultAuthFlow(),
   };
 
   @state() private redirectUriInput = '';
@@ -37,6 +39,7 @@ export class VersolaClientForm extends LitElement {
   @state() private ttlUnit: 'minutes' | 'hours' = 'hours';
   @state() private redirectUriError = '';
   @state() private audienceError = '';
+  @state() private authFlowError = '';
   @state() private audienceSuggestionsOpen = false;
   @state() private openInfoKey: string | null = null;
 
@@ -437,6 +440,141 @@ export class VersolaClientForm extends LitElement {
       .secondary-action-button {
         margin-right: auto;
       }
+
+      .flow-subsection {
+        margin-top: 0.875rem;
+        padding-top: 0.875rem;
+        border-top: 1px dashed var(--border-dark);
+      }
+
+      .flow-subsection:first-of-type {
+        margin-top: 1rem;
+        padding-top: 0;
+        border-top: none;
+      }
+
+      .flow-subtitle {
+        font-size: 0.8125rem;
+        font-weight: 600;
+        color: var(--text-secondary);
+        margin-bottom: 0.5rem;
+      }
+
+      .cred-mode-cards {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+        gap: 0.75rem;
+        margin-top: 0.5rem;
+      }
+
+      .cred-mode-card {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        text-align: center;
+        padding: 0.625rem 0.75rem;
+        border: 1px solid var(--border-dark);
+        border-radius: var(--radius-sm);
+        background: transparent;
+        color: var(--text-primary);
+        font-size: 0.875rem;
+        font-family: var(--font-mono);
+        cursor: pointer;
+        transition: all var(--transition-fast);
+      }
+
+      .cred-mode-card:hover {
+        border-color: var(--accent);
+        background: rgba(88, 166, 255, 0.05);
+      }
+
+      .cred-mode-card.selected {
+        border-color: var(--accent);
+        background: rgba(88, 166, 255, 0.12);
+      }
+
+      .cred-options {
+        margin-top: 0.75rem;
+        padding-top: 0.75rem;
+        border-top: 1px solid var(--border-dark);
+      }
+
+      .plain-checkboxes {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+        gap: 0.75rem;
+        margin-top: 1rem;
+      }
+
+      .plain-checkbox-label {
+        display: flex;
+        align-items: center;
+        gap: 0.4rem;
+        font-size: 0.875rem;
+        font-family: var(--font-mono);
+        font-weight: normal;
+        color: var(--text-primary);
+        text-transform: none;
+        letter-spacing: normal;
+        cursor: pointer;
+        user-select: none;
+        -webkit-user-select: none;
+        -moz-user-select: none;
+      }
+
+      .plain-checkbox-label input[type="checkbox"] {
+        cursor: pointer;
+      }
+
+      .flow-toggle-row {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+      }
+
+      .toggle {
+        position: relative;
+        display: inline-block;
+        width: 34px;
+        height: 18px;
+        flex-shrink: 0;
+        cursor: pointer;
+        margin: 0;
+      }
+      .toggle input {
+        opacity: 0;
+        position: absolute;
+        width: 0;
+        height: 0;
+      }
+      .toggle::before {
+        content: '';
+        position: absolute;
+        inset: 0;
+        background: rgba(255,255,255,0.12);
+        border: 1px solid var(--border-dark);
+        border-radius: 9999px;
+        transition: background 0.2s, border-color 0.2s;
+      }
+      .toggle:has(input:checked)::before {
+        background: var(--accent);
+        border-color: var(--accent);
+      }
+      .toggle::after {
+        content: '';
+        position: absolute;
+        top: 2px;
+        left: 2px;
+        width: 14px;
+        height: 14px;
+        background: rgba(255,255,255,0.5);
+        border-radius: 50%;
+        transition: transform 0.18s, background 0.18s;
+      }
+      .toggle:has(input:checked)::after {
+        transform: translateX(16px);
+        background: #fff;
+      }
     `,
   ];
 
@@ -450,9 +588,12 @@ export class VersolaClientForm extends LitElement {
       this.ttlValue = value;
       this.ttlUnit = unit;
     } else {
-      // Defaults: 1 hour
+      // Defaults: 1 hour, pre-select first available OTP template
       this.ttlValue = 1;
       this.ttlUnit = 'hours';
+      if (this.availableOtpTemplates.length > 0) {
+        this.formData = { ...this.formData, otpTemplateId: this.availableOtpTemplates[0].id };
+      }
     }
   }
 
@@ -480,6 +621,17 @@ export class VersolaClientForm extends LitElement {
 
     this.audienceError = '';
 
+    const authFlow = this.formData.authFlow ?? null;
+    if (authFlow) {
+      const authFlowError = this.getAuthFlowValidationError(authFlow);
+      if (authFlowError) {
+        this.authFlowError = authFlowError;
+        return;
+      }
+    }
+
+    this.authFlowError = '';
+
     const client: OAuthClient = {
       id: this.formData.id!,
       clientName: this.formData.clientName!,
@@ -490,6 +642,8 @@ export class VersolaClientForm extends LitElement {
       accessTokenTtl: ttlToSeconds(this.ttlValue, this.ttlUnit),
       permissions: this.formData.permissions || [],
       theme: this.formData.theme || 'default',
+      otpTemplateId: this.formData.otpTemplateId ?? null,
+      authFlow,
     };
 
     this.dispatchEvent(new CustomEvent('submit', {
@@ -824,6 +978,146 @@ export class VersolaClientForm extends LitElement {
     };
   }
 
+  private get hasAuthFlow(): boolean {
+    return this.formData.authFlow != null;
+  }
+
+  private toggleAuthFlowEnabled() {
+    this.formData = { ...this.formData, authFlow: this.hasAuthFlow ? null : createDefaultAuthFlow() };
+    if (this.authFlowError) {
+      this.authFlowError = '';
+    }
+  }
+
+  private get authFlow(): AuthFlow {
+    return this.formData.authFlow ?? createDefaultAuthFlow();
+  }
+
+  private setAuthFlow(patch: Partial<AuthFlow>) {
+    this.formData = { ...this.formData, authFlow: { ...this.authFlow, ...patch } };
+    if (this.authFlowError) {
+      this.authFlowError = '';
+    }
+  }
+
+  private getAuthFlowValidationError(flow: AuthFlow): string {
+    if (flow.primaryCredentials.length === 0 && !flow.passkey) {
+      return 'Select at least one primary credential';
+    }
+
+    if (flow.primaryCredentials.length > 0 && !flow.inlinePassword && flow.factors.length === 0) {
+      return 'A factor is required when inline password is off';
+    }
+
+    return '';
+  }
+
+  private get credentialMode(): 'phone-email' | 'login-password' {
+    if (this.authFlow.primaryCredentials.includes('login')) return 'login-password';
+    return 'phone-email';
+  }
+
+  private selectPhoneEmailMode() {
+    if (this.credentialMode === 'phone-email') return;
+    const preserved = this.authFlow.primaryCredentials.filter(c => c !== 'login');
+    const next = preserved.length > 0 ? preserved : ['email' as PrimaryCredential];
+    const factors = this.authFlow.factors.length > 0
+      ? this.authFlow.factors.map(f => ({ ...f, required: true }))
+      : [{ type: 'otp' as AuthFactorType, required: true }];
+    this.setAuthFlow({ primaryCredentials: next, inlinePassword: false, factors });
+  }
+
+  private selectLoginPasswordMode() {
+    if (this.credentialMode === 'login-password') return;
+    const otp = this.authFlow.factors.find(f => f.type === 'otp');
+    this.setAuthFlow({ primaryCredentials: ['login'], inlinePassword: true, factors: otp ? [otp] : [] });
+  }
+
+  private togglePhoneEmailCredential(credential: 'email' | 'phone') {
+    const current = this.authFlow.primaryCredentials;
+    const next = current.includes(credential)
+      ? current.filter(c => c !== credential)
+      : [...current, credential];
+    if (next.length === 0) return;
+    this.setAuthFlow({ primaryCredentials: next });
+  }
+
+  private toggleInlinePassword() {
+    const inlinePassword = !this.authFlow.inlinePassword;
+    if (inlinePassword) {
+      // Inline password may only be followed by an optional/required OTP.
+      const otp = this.authFlow.factors.find(f => f.type === 'otp');
+      this.setAuthFlow({ inlinePassword, factors: otp ? [otp] : [] });
+    } else {
+      // Without inline password the first factor is required.
+      const factors = this.authFlow.factors.length > 0
+        ? this.authFlow.factors.map(f => ({ ...f, required: true }))
+        : [{ type: 'otp' as AuthFactorType, required: true }];
+      this.setAuthFlow({ inlinePassword, factors });
+    }
+  }
+
+  private togglePasskey() {
+    this.setAuthFlow({ passkey: !this.authFlow.passkey });
+  }
+
+  private get passkeyOtpEnabled(): boolean {
+    return (this.authFlow.passkeyFactors ?? []).some(f => f.type === 'otp');
+  }
+
+  private get passkeyOtpRequired(): boolean {
+    return (this.authFlow.passkeyFactors ?? []).find(f => f.type === 'otp')?.required ?? false;
+  }
+
+  private setPasskeyOtpEnabled(enabled: boolean) {
+    this.setAuthFlow({ passkeyFactors: enabled ? [{ type: 'otp' as AuthFactorType, required: false }] : [] });
+  }
+
+  private togglePasskeyOtpRequired() {
+    if (!this.passkeyOtpEnabled) return;
+    this.setAuthFlow({ passkeyFactors: [{ type: 'otp' as AuthFactorType, required: !this.passkeyOtpRequired }] });
+  }
+
+  private get inlineOtpEnabled(): boolean {
+    return this.authFlow.factors.some(f => f.type === 'otp');
+  }
+
+  private get inlineOtpRequired(): boolean {
+    return this.authFlow.factors.find(f => f.type === 'otp')?.required ?? false;
+  }
+
+  private setInlineOtpEnabled(enabled: boolean) {
+    this.setAuthFlow({ factors: enabled ? [{ type: 'otp' as AuthFactorType, required: false }] : [] });
+  }
+
+  private toggleInlineOtpRequired() {
+    if (!this.inlineOtpEnabled) return;
+    this.setAuthFlow({ factors: [{ type: 'otp' as AuthFactorType, required: !this.inlineOtpRequired }] });
+  }
+
+  private get otherFactorType(): AuthFactorType {
+    return this.authFlow.factors[0]?.type === 'otp' ? 'password' : 'otp';
+  }
+
+  private setFirstFactorType(type: AuthFactorType) {
+    const second = this.authFlow.factors[1];
+    const factors = [{ type, required: true }];
+    if (second && second.type !== type) {
+      factors.push({ type: second.type, required: true });
+    }
+    this.setAuthFlow({ factors });
+  }
+
+  private get secondFactorType(): AuthFactorType | '' {
+    return this.authFlow.factors.length > 1 ? this.authFlow.factors[1].type : '';
+  }
+
+  private setSecondFactor(type: AuthFactorType | '') {
+    const first = this.authFlow.factors[0];
+    if (!first) return;
+    this.setAuthFlow({ factors: type ? [first, { type, required: true }] : [first] });
+  }
+
   render() {
     const filteredAudienceOptions = this.filteredAudienceOptions;
     const showAudienceSuggestions = this.audienceSuggestionsOpen && (!!this.audienceInput.trim() || filteredAudienceOptions.length > 0);
@@ -883,6 +1177,25 @@ export class VersolaClientForm extends LitElement {
                   : this.availableThemes.map(t => html`
                     <option value=${t.id} ?selected=${(this.formData.theme || 'default') === t.id}>${t.id}</option>
                   `)}
+              </select>
+            </div>
+
+            <div class="form-group">
+              <label for="client-otp-template">OTP Template</label>
+              <select
+                id="client-otp-template"
+                class="compact-input"
+                .value=${this.formData.otpTemplateId || ''}
+                @change=${(e: Event) => {
+                  const val = (e.target as HTMLSelectElement).value;
+                  this.formData = { ...this.formData, otpTemplateId: val || null };
+                }}
+              >
+                ${this.availableOtpTemplates.length === 0 ? html`
+                  <option value="" disabled selected>— No templates loaded —</option>
+                ` : this.availableOtpTemplates.map(t => html`
+                  <option value=${t.id} ?selected=${this.formData.otpTemplateId === t.id}>${t.id}</option>
+                `)}
               </select>
             </div>
 
@@ -1043,6 +1356,175 @@ export class VersolaClientForm extends LitElement {
                 `)}
               </div>
               ${this.availablePermissions.length === 0 ? html`<div class="helper-text">No permissions available for this tenant yet.</div>` : ''}
+            </div>
+
+            <div class="form-group">
+              <div class="flow-toggle-row">
+                <label style="margin: 0; line-height: 18px;">Authorization Flow</label>
+                <label class="toggle">
+                  <input
+                    type="checkbox"
+                    .checked=${this.hasAuthFlow}
+                    @change=${() => this.toggleAuthFlowEnabled()}
+                  />
+                </label>
+              </div>
+
+              ${this.hasAuthFlow ? html`
+              <div class="flow-subsection">
+                <div class="flow-subtitle">Primary credentials</div>
+                <div class="cred-mode-cards">
+                  <button
+                    type="button"
+                    class=${`cred-mode-card ${this.credentialMode === 'phone-email' ? 'selected' : ''}`}
+                    @click=${() => this.selectPhoneEmailMode()}
+                  >phone or email</button>
+                  <button
+                    type="button"
+                    class=${`cred-mode-card ${this.credentialMode === 'login-password' ? 'selected' : ''}`}
+                    @click=${() => this.selectLoginPasswordMode()}
+                  >login + password</button>
+                  <div
+                    class=${`cred-mode-card ${this.authFlow.passkey ? 'selected' : ''}`}
+                    style="position: relative;"
+                    @click=${() => this.togglePasskey()}
+                  >
+                    <input
+                      type="checkbox"
+                      style="position: absolute; left: 0.75rem;"
+                      .checked=${this.authFlow.passkey}
+                      @click=${(e: Event) => e.stopPropagation()}
+                      @change=${() => this.togglePasskey()}
+                    />
+                    passkey
+                  </div>
+                </div>
+
+                ${this.credentialMode === 'phone-email' ? html`
+                  <div class="plain-checkboxes">
+                    ${(['email', 'phone'] as const).map(cred => html`
+                      <label class="plain-checkbox-label">
+                        <input
+                          type="checkbox"
+                          .checked=${this.authFlow.primaryCredentials.includes(cred)}
+                          @change=${() => this.togglePhoneEmailCredential(cred)}
+                        />
+                        ${cred}
+                      </label>
+                    `)}
+                  </div>
+                ` : ''}
+
+                ${this.credentialMode === 'phone-email' ? html`
+                  <div class="cred-options">
+                    <div class="plain-checkboxes">
+                      <label class="plain-checkbox-label">
+                        <input
+                          type="checkbox"
+                          .checked=${this.authFlow.inlinePassword}
+                          @change=${() => this.toggleInlinePassword()}
+                        />
+                        inline password
+                      </label>
+                    </div>
+                  </div>
+                ` : ''}
+              </div>
+
+              ${this.authFlow.inlinePassword ? html`
+                <div class="flow-subsection">
+                  <div class="flow-subtitle">Second factor</div>
+                  <select
+                    class="compact-input"
+                    .value=${this.inlineOtpEnabled ? 'otp' : 'none'}
+                    @change=${(e: Event) => this.setInlineOtpEnabled((e.target as HTMLSelectElement).value === 'otp')}
+                  >
+                    <option value="none" ?selected=${!this.inlineOtpEnabled}>none</option>
+                    <option value="otp" ?selected=${this.inlineOtpEnabled}>otp</option>
+                  </select>
+                  ${this.inlineOtpEnabled ? html`
+                    <div class="checkbox-group" style="margin-top: 0.75rem;">
+                      <div class="checkbox-item" @click=${() => this.toggleInlineOtpRequired()}>
+                        <input
+                          type="checkbox"
+                          id="inline-otp-required"
+                          .checked=${this.inlineOtpRequired}
+                          @click=${(e: Event) => e.stopPropagation()}
+                          @change=${() => this.toggleInlineOtpRequired()}
+                        />
+                        <div class="checkbox-content">
+                          <label for="inline-otp-required" @click=${(e: Event) => e.preventDefault()}>Required</label>
+                          ${this.renderOptionInfo(
+                            'inline-otp-required',
+                            'Required OTP',
+                            html`
+                              <div class="option-tooltip-item">When checked, OTP must be completed to sign in — a user with no phone cannot authenticate.</div>
+                              <div class="option-tooltip-item">When unchecked, OTP is requested only when a phone is available — a user with no phone signs in without it.</div>
+                            `,
+                            'OTP requirement info',
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  ` : ''}
+                </div>
+              ` : html`
+                <div class="flow-subsection">
+                  <div class="flow-subtitle">First factor *</div>
+                  <select
+                    class="compact-input"
+                    .value=${this.authFlow.factors[0]?.type ?? 'otp'}
+                    @change=${(e: Event) => this.setFirstFactorType((e.target as HTMLSelectElement).value as AuthFactorType)}
+                  >
+                    <option value="otp" ?selected=${(this.authFlow.factors[0]?.type ?? 'otp') === 'otp'}>otp</option>
+                    <option value="password" ?selected=${this.authFlow.factors[0]?.type === 'password'}>password</option>
+                  </select>
+                </div>
+                <div class="flow-subsection">
+                  <div class="flow-subtitle">Second factor</div>
+                  <select
+                    class="compact-input"
+                    .value=${this.secondFactorType}
+                    @change=${(e: Event) => this.setSecondFactor((e.target as HTMLSelectElement).value as AuthFactorType | '')}
+                  >
+                    <option value="" ?selected=${this.secondFactorType === ''}>none</option>
+                    <option value=${this.otherFactorType} ?selected=${this.secondFactorType === this.otherFactorType}>${this.otherFactorType}</option>
+                  </select>
+                </div>
+              `}
+
+              ${this.authFlow.passkey ? html`
+                <div class="flow-subsection">
+                  <div class="flow-subtitle">Passkey next factor</div>
+                  <select
+                    class="compact-input"
+                    .value=${this.passkeyOtpEnabled ? 'otp' : 'none'}
+                    @change=${(e: Event) => this.setPasskeyOtpEnabled((e.target as HTMLSelectElement).value === 'otp')}
+                  >
+                    <option value="none" ?selected=${!this.passkeyOtpEnabled}>none</option>
+                    <option value="otp" ?selected=${this.passkeyOtpEnabled}>otp</option>
+                  </select>
+                  ${this.passkeyOtpEnabled ? html`
+                    <div class="checkbox-group" style="margin-top: 0.75rem;">
+                      <div class="checkbox-item" @click=${() => this.togglePasskeyOtpRequired()}>
+                        <input
+                          type="checkbox"
+                          id="passkey-otp-required"
+                          .checked=${this.passkeyOtpRequired}
+                          @click=${(e: Event) => e.stopPropagation()}
+                          @change=${() => this.togglePasskeyOtpRequired()}
+                        />
+                        <div class="checkbox-content">
+                          <label for="passkey-otp-required" @click=${(e: Event) => e.preventDefault()}>Required</label>
+                        </div>
+                      </div>
+                    </div>
+                  ` : ''}
+                </div>
+              ` : ''}
+              ` : ''}
+
+              ${this.authFlowError ? html`<div class="error-message" style="margin-top: 0.5rem;">${this.authFlowError}</div>` : ''}
             </div>
           </div>
 

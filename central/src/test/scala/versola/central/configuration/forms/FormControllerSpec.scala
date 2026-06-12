@@ -15,8 +15,7 @@ import zio.test.*
 object FormControllerSpec extends ZIOSpecDefault, ZIOStubs:
   private val config = TestCentralConfig.config
 
-  private val en = FormLocale("en", "English")
-  private val fr = FormLocale("fr", "French")
+  private val form = FormRecord(FormId("credential"), 1, true, "style", Some("src"), Some("compiled"), Map.empty, Vector.empty)
 
   private val tracingLayer: ULayer[Tracing] =
     ZLayer.make[Tracing](
@@ -53,32 +52,17 @@ object FormControllerSpec extends ZIOSpecDefault, ZIOStubs:
 
   def spec = suite("FormController")(
     controllerTestCase(
-      description = "GET /configuration/forms/locales returns locales list",
-      request = Request.get(URL.empty / "configuration" / "forms" / "locales"),
+      description = "GET /configuration/forms returns all forms",
+      request = Request.get(URL.empty / "configuration" / "forms"),
       expectedStatus = Status.Ok,
       setup = service =>
-        service.getLocales.succeedsWith(Vector(en, fr)),
+        service.getAllForms.succeedsWith(Vector(form)),
       verify = (response, service) =>
         for
-          payload <- response.body.asJson[GetFormLocalesResponse]
+          payload <- response.body.asJson[GetAllFormsResponse]
         yield assertTrue(
-          service.getLocales.calls.length == 1,
-          payload == GetFormLocalesResponse(Vector(en, fr)),
-        ),
-    ),
-    controllerTestCase(
-      description = "PUT /configuration/forms/locales updates locales and returns 204",
-      request = Request(
-        method = Method.PUT,
-        url = URL.empty / "configuration" / "forms" / "locales",
-        body = Body.fromString(UpdateFormLocalesRequest(add = Vector(fr), delete = Vector("de")).toJson),
-      ).addHeader(Header.ContentType(MediaType.application.json)),
-      expectedStatus = Status.NoContent,
-      setup = service =>
-        service.updateLocales.succeedsWith(()),
-      verify = (_, service) =>
-        ZIO.succeed(
-          assertTrue(service.updateLocales.calls == List((Vector(fr), Vector("de"))))
+          service.getAllForms.calls.length == 1,
+          payload == GetAllFormsResponse(Vector(form)),
         ),
     ),
   )

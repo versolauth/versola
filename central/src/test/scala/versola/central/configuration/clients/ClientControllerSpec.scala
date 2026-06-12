@@ -55,6 +55,10 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
     audience = List(ClientId("api")),
     permissions = Set(readPermission),
     accessTokenTtl = 300,
+    refreshTokenTtl = Some(7776000),
+    theme = "default",
+    authFlow = Some(AuthFlow.default),
+    otpTemplateId = "default-otp",
   )
 
   private val updateRequest = UpdateClientRequest(
@@ -74,6 +78,9 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
     ),
     accessTokenTtl = Some(900L),
     refreshTokenTtl = None,
+    theme = None,
+    authFlow = None,
+    otpTemplateId = None,
   )
 
   private val clients = Vector(
@@ -90,6 +97,8 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       refreshTokenTtl = 7776000.seconds,
       permissions = Set(readPermission),
       theme = "",
+      authFlow = Some(AuthFlow.default),
+      otpTemplateId = "default-otp",
     ),
     OAuthClientRecord(
       id = ClientId("mobile-app"),
@@ -104,6 +113,8 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       refreshTokenTtl = 7776000.seconds,
       permissions = Set(writePermission),
       theme = "",
+      authFlow = Some(AuthFlow.default),
+      otpTemplateId = "default-otp",
     ),
   )
 
@@ -206,6 +217,8 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
                 permissions = Set(readPermission),
                 secretRotation = false,
                 theme = "",
+                authFlow = Some(AuthFlow.default),
+                otpTemplateId = "default-otp",
               ),
               OAuthClientResponse(
                 id = ClientId("mobile-app"),
@@ -215,6 +228,8 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
                 permissions = Set(writePermission),
                 secretRotation = true,
                 theme = "",
+                authFlow = Some(AuthFlow.default),
+                otpTemplateId = "default-otp",
               ),
             ),
           ),

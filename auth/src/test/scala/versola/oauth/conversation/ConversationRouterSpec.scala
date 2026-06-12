@@ -1,8 +1,8 @@
 package versola.oauth.conversation
 
 import versola.auth.model.OtpCode
-import versola.oauth.client.model.{ClientId, ScopeToken}
-import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep, PrimaryCredential}
+import versola.oauth.client.model.{AuthFactor, AuthFactorType, AuthFlow, ClientId, PrimaryAuthFlow, PrimaryCredential, ScopeToken}
+import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
 import versola.oauth.model.{AuthorizationCode, CodeChallenge, CodeChallengeMethod, State}
 import versola.oauth.session.model.SessionId
 import versola.util.{Email, MAC, Phone, SecureRandom, UnitSpecBase}
@@ -28,9 +28,19 @@ object ConversationRouterSpec extends UnitSpecBase:
     real = Some(ConversationStep.Otp.Real(otpCode)),
     timesRequested = 1,
     timesSubmitted = 0,
+    factorIndex = 0,
   )
 
   val conversationResult = ConversationResult.RenderStep(otp)
+
+  val otpAuthFlow = AuthFlow(
+    primary = PrimaryAuthFlow(
+      credentials = List(PrimaryCredential.phone),
+      inlinePassword = false,
+      factors = List(AuthFactor(`type` = AuthFactorType.otp, required = true)),
+    ),
+    passkey = None,
+  )
 
   val initialRecord = ConversationRecord(
     clientId = clientId,
@@ -41,7 +51,7 @@ object ConversationRouterSpec extends UnitSpecBase:
     state = Some(State("test-state")),
     userId = None,
     credential = None,
-    step = ConversationStep.Empty(PrimaryCredential.Phone, passkey = false),
+    step = ConversationStep.Credential(List(PrimaryCredential.phone), inlinePassword = false, passkey = false),
     requestedClaims = None,
     uiLocales = None,
     nonce = None,
@@ -50,6 +60,7 @@ object ConversationRouterSpec extends UnitSpecBase:
     userPhone = None,
     userLogin = None,
     userClaims = None,
+    authFlow = otpAuthFlow,
   )
 
 
@@ -71,6 +82,7 @@ object ConversationRouterSpec extends UnitSpecBase:
     userPhone = None,
     userLogin = None,
     userClaims = None,
+    authFlow = otpAuthFlow,
   )
 
   class Env:

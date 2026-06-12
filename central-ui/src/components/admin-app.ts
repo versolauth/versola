@@ -14,6 +14,9 @@ import './tenants-list';
 import './edges-list';
 import './users-list';
 import './forms-list';
+import './locales-list';
+import './challenges-list';
+
 
 @customElement('versola-admin')
 export class VersolaAdmin extends LitElement {
@@ -104,7 +107,7 @@ export class VersolaAdmin extends LitElement {
     const expandClient = params.get('expandClient');
     const expandEdge = params.get('expandEdge');
 
-    if (urlView === 'clients' || urlView === 'scopes' || urlView === 'permissions' || urlView === 'resources' || urlView === 'roles' || urlView === 'tenants' || urlView === 'edges' || urlView === 'users' || urlView === 'forms') {
+    if (urlView === 'clients' || urlView === 'scopes' || urlView === 'permissions' || urlView === 'resources' || urlView === 'roles' || urlView === 'tenants' || urlView === 'edges' || urlView === 'users' || urlView === 'forms' || urlView === 'locales' || urlView === 'challenges') {
       this.currentView = urlView;
     }
 
@@ -165,6 +168,10 @@ export class VersolaAdmin extends LitElement {
         return html`<versola-users-list .tenantId=${this.currentTenantId}></versola-users-list>`;
       case 'forms':
         return html`<versola-forms-list .tenantId=${this.currentTenantId}></versola-forms-list>`;
+      case 'locales':
+        return html`<versola-locales-list></versola-locales-list>`;
+      case 'challenges':
+        return html`<versola-challenges-list .tenantId=${this.currentTenantId}></versola-challenges-list>`;
       default:
         return html`<versola-clients-list .tenantId=${this.currentTenantId}></versola-clients-list>`;
     }

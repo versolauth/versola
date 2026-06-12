@@ -25,6 +25,7 @@ object OAuthScopeSyncClientSpec extends ZIOSpecDefault:
       signature = JWT.Signature.Symmetric(secretKey),
     ).map(token => new CentralSyncTokenService:
       override def getToken: UIO[String] = ZIO.succeed(token)
+      override def syncRequest(request: Request): ZIO[Scope, Throwable, Response] = ???
     )
   )
 
