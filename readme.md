@@ -209,17 +209,6 @@ Under active development.
 - [x] Configurable batch sizes and intervals
 - [ ] Database sharding (premium)
 
-#### External OAuth Providers
-- [x] Google OAuth integration
-- [x] GitHub OAuth integration
-- [x] Provider-specific endpoints
-- [x] Token exchange
-- [x] UserInfo fetching
-- [x] Encrypted client secret storage
-- [ ] Provider discovery
-- [ ] Provider token refresh
-- [ ] Account linking
-
 #### Additional Features
 - [x] Admin UI (Laminar/Scala.js)
   - [x] Client management
