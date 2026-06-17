@@ -40,6 +40,7 @@ type CredentialStep = {
   inlinePassword: boolean;
   passkey: boolean;
   allowedPhonePrefixes?: string[];
+  passwordRegex?: string;
 };
 
 interface FormConfig {
@@ -86,14 +87,27 @@ function CredentialForm(props: { config: FormConfig }) {
     showPassword() ? `/challenge/${challengeKind}-password` : `/challenge/${challengeKind}`;
 
   const [phoneNotAllowed, setPhoneNotAllowed] = createSignal(false);
+  const [passwordNotAllowed, setPasswordNotAllowed] = createSignal(false);
+
+  const passwordRegex = step.passwordRegex;
 
   const handleSubmit = (e: SubmitEvent) => {
-    if (single !== 'phone' || allowedPhonePrefixes.length === 0) return;
     const form = e.currentTarget as HTMLFormElement;
-    const phone = (form.elements.namedItem('phone') as HTMLInputElement | null)?.value ?? '';
-    if (!allowedPhonePrefixes.some((prefix) => phone.startsWith(prefix))) {
-      e.preventDefault();
-      setPhoneNotAllowed(true);
+    if (single === 'phone' && allowedPhonePrefixes.length > 0) {
+      const phone = (form.elements.namedItem('phone') as HTMLInputElement | null)?.value ?? '';
+      if (!allowedPhonePrefixes.some((prefix) => phone.startsWith(prefix))) {
+        e.preventDefault();
+        setPhoneNotAllowed(true);
+      }
+    }
+    if (showPassword() && passwordRegex) {
+      const password = (form.elements.namedItem('password') as HTMLInputElement | null)?.value ?? '';
+      try {
+        if (!new RegExp(passwordRegex).test(password)) {
+          e.preventDefault();
+          setPasswordNotAllowed(true);
+        }
+      } catch (_) {}
     }
   };
 
@@ -132,7 +146,17 @@ function CredentialForm(props: { config: FormConfig }) {
         </Show>
 
         <Show when={showPassword()}>
-          <input type="password" name="password" class="input-field" placeholder={t().password_placeholder} required />
+          <input
+            type="password"
+            name="password"
+            class="input-field"
+            placeholder={t().password_placeholder}
+            required
+            onInput={() => passwordNotAllowed() && setPasswordNotAllowed(false)}
+          />
+          <Show when={passwordNotAllowed()}>
+            <div class="phone-error-message">{t().password_not_allowed}</div>
+          </Show>
         </Show>
 
         <button type="submit" formAction={formAction()} class="btn btn-primary">

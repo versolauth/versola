@@ -65,6 +65,7 @@ export interface OtpTemplateRecord {
 export interface PhoneSettingsRecord {
   tenantId: string;
   allowedPrefixes: string[];
+  passwordRegex?: string;
 }
 
 // OAuth Scope

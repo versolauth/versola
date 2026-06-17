@@ -39,6 +39,9 @@ export class VersolaChallengesList extends LitElement {
   @state() private phoneSaving = false;
   @state() private phoneError = '';
 
+  @state() private passwordRegex = '';
+  @state() private editPasswordRegex = '';
+
   static styles = [
     theme,
     cardStyles,
@@ -221,6 +224,7 @@ export class VersolaChallengesList extends LitElement {
       this.templates = templates;
       this.availableLocales = locales;
       this.phonePrefixes = phoneSettings.allowedPrefixes;
+      this.passwordRegex = phoneSettings.passwordRegex ?? '';
     } catch (e) {
       this.errorMessage = e instanceof Error ? e.message : 'Failed to load data';
     } finally {
@@ -330,6 +334,7 @@ export class VersolaChallengesList extends LitElement {
   private startEditPhone() {
     this.editingPhone = true;
     this.editPhonePrefixes = this.phonePrefixes.map(value => ({ value }));
+    this.editPasswordRegex = this.passwordRegex;
     this.phoneError = '';
   }
 
@@ -353,11 +358,21 @@ export class VersolaChallengesList extends LitElement {
       this.phoneError = 'Each prefix must start with + followed by digits (e.g. +77).';
       return;
     }
+    const regex = this.editPasswordRegex.trim();
+    if (regex) {
+      try {
+        new RegExp(regex);
+      } catch {
+        this.phoneError = 'Invalid password regular expression.';
+        return;
+      }
+    }
     this.phoneSaving = true;
     this.phoneError = '';
     try {
-      await upsertPhoneSettings(this.tenantId, prefixes);
+      await upsertPhoneSettings(this.tenantId, prefixes, regex || undefined);
       this.phonePrefixes = prefixes;
+      this.passwordRegex = regex;
       this.editingPhone = false;
     } catch (e) {
       this.phoneError = e instanceof Error ? e.message : 'Failed to save phone settings';
@@ -494,6 +509,11 @@ export class VersolaChallengesList extends LitElement {
                 ${this.phonePrefixes.map(prefix => html`<span class="prefix-tag">${prefix}</span>`)}
               </div>
             `}
+
+          <label style="margin-top: var(--spacing-lg);">Password Regex</label>
+          ${this.passwordRegex
+            ? html`<div class="template-text">${this.passwordRegex}</div>`
+            : html`<div class="hint">No password regex configured. Any password is accepted.</div>`}
         </div>
       </section>
     `;
@@ -523,6 +543,12 @@ export class VersolaChallengesList extends LitElement {
           `)}
 
         <button class="btn btn-secondary" @click=${() => this.addPrefix()}>+ Add Prefix</button>
+
+        <label style="margin-top: var(--spacing-lg);">Password Regex</label>
+        <div class="hint">Regular expression that submitted passwords must match. Leave empty to accept any password.</div>
+        <input type="text" class="form-control compact-input" .value=${this.editPasswordRegex}
+          @input=${(e: Event) => { this.editPasswordRegex = (e.target as HTMLInputElement).value; }}
+          placeholder="^(?=.*[A-Za-z])(?=.*\\d).{8,}$" />
 
         <div class="form-actions">
           <button class="btn btn-secondary" ?disabled=${this.phoneSaving} @click=${() => this.cancelEditPhone()}>Cancel</button>

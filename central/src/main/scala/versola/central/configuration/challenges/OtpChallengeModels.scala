@@ -24,4 +24,5 @@ case class GetAllPhoneSettingsResponse(settings: Vector[PhoneSettingsRecord]) de
 case class UpsertPhoneSettingsRequest(
     tenantId: TenantId,
     allowedPrefixes: List[String],
+    passwordRegex: Option[String],
 ) derives Schema, JsonCodec

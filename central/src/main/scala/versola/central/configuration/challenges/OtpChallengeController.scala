@@ -80,6 +80,6 @@ object OtpChallengeController extends Controller:
       for
         service <- ZIO.service[PhoneChallengeService]
         body    <- request.body.asJson[UpsertPhoneSettingsRequest]
-        _       <- service.upsertSettings(PhoneSettingsRecord(body.tenantId, body.allowedPrefixes))
+        _       <- service.upsertSettings(PhoneSettingsRecord(body.tenantId, body.allowedPrefixes, body.passwordRegex))
       yield Response.status(Status.NoContent)
     }

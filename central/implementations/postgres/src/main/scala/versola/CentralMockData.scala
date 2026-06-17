@@ -1,6 +1,6 @@
 package versola
 
-import versola.central.configuration.challenges.OtpTemplateRecord
+import versola.central.configuration.challenges.{OtpTemplateRecord, PhoneSettingsRecord}
 import versola.central.configuration.clients.ClientId
 import versola.central.configuration.edges.EdgeId
 import versola.central.configuration.permissions.Permission
@@ -397,6 +397,14 @@ object CentralMockData:
         "ru" -> "Ваш код подтверждения: {{code}}",
       ),
 
+    ),
+  )
+
+  val challengeSettings: Vector[PhoneSettingsRecord] = Vector(
+    PhoneSettingsRecord(
+      tenantId = defaultTenant,
+      allowedPrefixes = List("+77"),
+      passwordRegex = Some("^(?=.*[A-Z])(?=.*[a-z])(?=.*\\d).{8,}$"),
     ),
   )
 

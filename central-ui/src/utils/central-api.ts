@@ -945,10 +945,14 @@ export async function fetchPhoneSettings(tenantId: string): Promise<PhoneSetting
   return response.settings;
 }
 
-export async function upsertPhoneSettings(tenantId: string, allowedPrefixes: string[]): Promise<void> {
+export async function upsertPhoneSettings(
+  tenantId: string,
+  allowedPrefixes: string[],
+  passwordRegex?: string,
+): Promise<void> {
   await requestVoid('/configuration/challenges/phone-settings', {
     method: 'PUT',
-    body: { tenantId, allowedPrefixes },
+    body: { tenantId, allowedPrefixes, passwordRegex: passwordRegex ?? null },
   });
 }
 

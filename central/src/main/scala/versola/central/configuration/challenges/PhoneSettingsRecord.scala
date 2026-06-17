@@ -7,4 +7,5 @@ import zio.schema.{Schema, derived}
 case class PhoneSettingsRecord(
     tenantId: TenantId,
     allowedPrefixes: List[String],
+    passwordRegex: Option[String],
 ) derives Schema, JsonCodec

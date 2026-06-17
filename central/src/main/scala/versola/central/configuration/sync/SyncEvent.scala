@@ -1,6 +1,6 @@
 package versola.central.configuration.sync
 
-import versola.central.configuration.challenges.OtpTemplateRecord
+import versola.central.configuration.challenges.{OtpTemplateRecord, PhoneSettingsRecord}
 import versola.central.configuration.clients.{AuthorizationPreset, ClientId, OAuthClientRecord, PresetId}
 import versola.central.configuration.forms.{FormId, FormRecord}
 import versola.central.configuration.permissions.{Permission, PermissionRecord}
@@ -137,6 +137,18 @@ object SyncEvent:
 
     def sort(records: Vector[OtpTemplateRecord]): Vector[OtpTemplateRecord] =
       records.sortBy(r => (r.tenantId, r.id))
+
+  case class PhoneSettingsUpdated(
+      tenantId: TenantId,
+      op: Op,
+  ) extends ModifyCache:
+    type Record = PhoneSettingsRecord
+
+    def matches(record: PhoneSettingsRecord): Boolean =
+      tenantId == record.tenantId
+
+    def sort(records: Vector[PhoneSettingsRecord]): Vector[PhoneSettingsRecord] =
+      records.sortBy(_.tenantId)
 
   enum Op:
     case INSERT, UPDATE, DELETE

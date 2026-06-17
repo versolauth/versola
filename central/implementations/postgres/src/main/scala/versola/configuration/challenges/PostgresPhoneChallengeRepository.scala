@@ -16,22 +16,23 @@ class PostgresPhoneChallengeRepository(xa: TransactorZIO) extends PhoneChallenge
 
   override def getAll: Task[Vector[PhoneSettingsRecord]] =
     xa.connect:
-      sql"""SELECT tenant_id, allowed_prefixes FROM phone_settings ORDER BY tenant_id"""
+      sql"""SELECT tenant_id, allowed_prefixes, password_regex FROM challenge_settings ORDER BY tenant_id"""
         .query[PhoneSettingsRecord].run()
 
   override def findByTenant(tenantId: TenantId): Task[Option[PhoneSettingsRecord]] =
     xa.connect:
-      sql"""SELECT tenant_id, allowed_prefixes FROM phone_settings WHERE tenant_id = $tenantId"""
+      sql"""SELECT tenant_id, allowed_prefixes, password_regex FROM challenge_settings WHERE tenant_id = $tenantId"""
         .query[PhoneSettingsRecord].run()
         .headOption
 
   override def upsert(record: PhoneSettingsRecord): Task[Unit] =
     xa.connect:
       sql"""
-        INSERT INTO phone_settings (tenant_id, allowed_prefixes)
-        VALUES (${record.tenantId}, ${record.allowedPrefixes})
+        INSERT INTO challenge_settings (tenant_id, allowed_prefixes, password_regex)
+        VALUES (${record.tenantId}, ${record.allowedPrefixes}, ${record.passwordRegex})
         ON CONFLICT (tenant_id) DO UPDATE SET
-          allowed_prefixes = EXCLUDED.allowed_prefixes
+          allowed_prefixes = EXCLUDED.allowed_prefixes,
+          password_regex = EXCLUDED.password_regex
       """.update.run()
     .unit
 

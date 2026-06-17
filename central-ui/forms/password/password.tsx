@@ -33,7 +33,7 @@ function LocaleDropdown(props: { locales: string[]; current: string; onChange: (
   );
 }
 
-type PasswordStep = { type: 'password' };
+type PasswordStep = { type: 'password'; passwordRegex?: string };
 
 interface FormConfig {
   step: PasswordStep;
@@ -65,6 +65,21 @@ function PasswordForm(props: { config: FormConfig }) {
   };
   const locales = props.config.locales ?? [];
 
+  const [passwordNotAllowed, setPasswordNotAllowed] = createSignal(false);
+  const passwordRegex = props.config.step.passwordRegex;
+
+  const handleSubmit = (e: SubmitEvent) => {
+    if (!passwordRegex) return;
+    const form = e.currentTarget as HTMLFormElement;
+    const password = (form.elements.namedItem('password') as HTMLInputElement | null)?.value ?? '';
+    try {
+      if (!new RegExp(passwordRegex).test(password)) {
+        e.preventDefault();
+        setPasswordNotAllowed(true);
+      }
+    } catch (_) {}
+  };
+
   return (
     <div class="container">
       <Show when={locales.length > 1}>
@@ -73,7 +88,7 @@ function PasswordForm(props: { config: FormConfig }) {
         </div>
       </Show>
       <h1>{t().title}</h1>
-      <form method="post">
+      <form method="post" onSubmit={handleSubmit}>
         <input
           type="password"
           name="password"
@@ -81,7 +96,11 @@ function PasswordForm(props: { config: FormConfig }) {
           placeholder={t().password_placeholder}
           autocomplete="current-password"
           required
+          onInput={() => passwordNotAllowed() && setPasswordNotAllowed(false)}
         />
+        <Show when={passwordNotAllowed()}>
+          <div class="phone-error-message">{t().password_not_allowed}</div>
+        </Show>
         <button type="submit" formAction="/challenge/password" class="btn btn-primary">
           {t().continue}
         </button>

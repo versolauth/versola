@@ -25,6 +25,8 @@ trait OAuthConfigurationService:
 
   def getAllowedPhonePrefixes(id: ClientId): UIO[List[String]]
 
+  def getPasswordRegex(id: ClientId): UIO[Option[String]]
+
 object OAuthConfigurationService:
   def live(schedule: Schedule[Any, Any, Any]): ZLayer[
     Client & SecurityService & Scope & CoreConfig,
@@ -140,6 +142,15 @@ object OAuthConfigurationService:
           phoneSettingsCache.get.map(
             _.find(_.tenantId == client.tenantId)
               .fold(Nil)(_.allowedPrefixes),
+          )
+
+    override def getPasswordRegex(id: ClientId): UIO[Option[String]] =
+      find(id).flatMap:
+        case None => ZIO.none
+        case Some(client) =>
+          phoneSettingsCache.get.map(
+            _.find(_.tenantId == client.tenantId)
+              .flatMap(_.passwordRegex),
           )
 
     private val IllegalStateTemplate = OtpTemplate("{{code}}")

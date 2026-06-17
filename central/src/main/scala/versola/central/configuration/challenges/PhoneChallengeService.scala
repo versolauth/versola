@@ -1,5 +1,6 @@
 package versola.central.configuration.challenges
 
+import versola.central.configuration.sync.{SyncEvent, SyncOps}
 import versola.central.configuration.tenants.TenantId
 import versola.util.ReloadingCache
 import zio.{Schedule, Scope, Task, ZLayer}
@@ -8,6 +9,7 @@ trait PhoneChallengeService:
   def getSettings(tenantId: TenantId): Task[PhoneSettingsRecord]
   def getAllSettings: Task[Vector[PhoneSettingsRecord]]
   def upsertSettings(record: PhoneSettingsRecord): Task[Unit]
+  def sync(event: SyncEvent.PhoneSettingsUpdated): Task[Unit]
 
 object PhoneChallengeService:
   def live(
@@ -24,7 +26,7 @@ object PhoneChallengeService:
     override def getSettings(tenantId: TenantId): Task[PhoneSettingsRecord] =
       cache.get.map(
         _.find(_.tenantId == tenantId)
-          .getOrElse(PhoneSettingsRecord(tenantId, Nil)),
+          .getOrElse(PhoneSettingsRecord(tenantId, Nil, None)),
       )
 
     override def getAllSettings: Task[Vector[PhoneSettingsRecord]] =
@@ -36,3 +38,9 @@ object PhoneChallengeService:
         all <- repository.getAll
         _ <- cache.set(all)
       yield ()
+
+    override def sync(event: SyncEvent.PhoneSettingsUpdated): Task[Unit] =
+      SyncOps.syncCache(event)(
+        cache,
+        repository.findByTenant(event.tenantId),
+      )

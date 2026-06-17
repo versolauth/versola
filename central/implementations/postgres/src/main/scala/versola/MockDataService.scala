@@ -3,7 +3,7 @@ package versola
 import com.augustnagro.magnum.*
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.central.configuration.CreateClientRequest
-import versola.central.configuration.challenges.OtpChallengeService
+import versola.central.configuration.challenges.{OtpChallengeService, PhoneChallengeService}
 import versola.central.configuration.clients.{AuthFlow, ClientAlreadyExists, OAuthClientService}
 import versola.central.configuration.edges.EdgeRepository
 import versola.central.configuration.permissions.PermissionRepository
@@ -21,11 +21,11 @@ trait MockDataService:
 
 object MockDataService:
   val live: ZLayer[
-    TenantRepository & PermissionRepository & ResourceRepository & OAuthScopeRepository & RoleRepository & OAuthClientService & OtpChallengeService & EdgeRepository & TransactorZIO,
+    TenantRepository & PermissionRepository & ResourceRepository & OAuthScopeRepository & RoleRepository & OAuthClientService & OtpChallengeService & PhoneChallengeService & EdgeRepository & TransactorZIO,
     Throwable,
     MockDataService,
   ] =
-    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _))
+    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _))
       >>> ZLayer(ZIO.serviceWithZIO[MockDataService](service => service.insert().as(service)))
 
   final case class Impl(
@@ -37,6 +37,7 @@ object MockDataService:
       roleRepository: RoleRepository,
       clientService: OAuthClientService,
       otpChallengeService: OtpChallengeService,
+      phoneChallengeService: PhoneChallengeService,
       edgeRepository: EdgeRepository,
   ) extends MockDataService:
 
@@ -58,8 +59,11 @@ object MockDataService:
     private def insertDefaultOtpTemplate(): Task[Unit] =
       ZIO.foreachDiscard(CentralMockData.otpTemplates)(otpChallengeService.upsertTemplate)
 
+    private def insertChallengeSettings(): Task[Unit] =
+      ZIO.foreachDiscard(CentralMockData.challengeSettings)(phoneChallengeService.upsertSettings)
+
     override def insert(): Task[Unit] =
-      cleanup() *> insertDefaultTheme() *> insertTenants() *> insertDefaultOtpTemplate() *> insertResources() *> insertPermissions() *> insertScopes() *> insertRoles() *> insertClients() *> insertEdges()
+      cleanup() *> insertDefaultTheme() *> insertTenants() *> insertDefaultOtpTemplate() *> insertChallengeSettings() *> insertResources() *> insertPermissions() *> insertScopes() *> insertRoles() *> insertClients() *> insertEdges()
 
     private def insertTenants(): Task[Unit] =
       ZIO.foreachDiscard(CentralMockData.tenants): tenant =>

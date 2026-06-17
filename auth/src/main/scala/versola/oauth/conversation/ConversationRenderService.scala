@@ -36,9 +36,10 @@ object ConversationRenderService:
         inlinePassword: Boolean,
         passkey: Boolean,
         allowedPhonePrefixes: Option[List[String]],
+        passwordRegex: Option[String],
     ) extends StepView
     @jsonHint("password")
-    case object Password extends StepView
+    case class Password(passwordRegex: Option[String]) extends StepView
     @jsonHint("otp")
     case class Otp(length: Int, resendAfter: Int) extends StepView
 
@@ -193,12 +194,18 @@ object ConversationRenderService:
     private def stepView(step: ConversationStep, clientId: ClientId): UIO[StepView] =
       step match
         case ConversationStep.Credential(primaryCredentials, inlinePassword, passkey) =>
-          if primaryCredentials.contains(PrimaryCredential.phone) then
-            configuration.getAllowedPhonePrefixes(clientId).map: allowedPhonePrefixes =>
-              StepView.Credential(primaryCredentials, inlinePassword, passkey, Some(allowedPhonePrefixes))
-          else
-            ZIO.succeed(StepView.Credential(primaryCredentials, inlinePassword, passkey, None))
-        case _: ConversationStep.Password => ZIO.succeed(StepView.Password)
+          for
+            allowedPhonePrefixes <-
+              if primaryCredentials.contains(PrimaryCredential.phone) then
+                configuration.getAllowedPhonePrefixes(clientId).map(Some(_))
+              else
+                ZIO.none
+            passwordRegex <-
+              if inlinePassword then configuration.getPasswordRegex(clientId)
+              else ZIO.none
+          yield StepView.Credential(primaryCredentials, inlinePassword, passkey, allowedPhonePrefixes, passwordRegex)
+        case _: ConversationStep.Password =>
+          configuration.getPasswordRegex(clientId).map(StepView.Password(_))
         case _: ConversationStep.Otp => ZIO.succeed(StepView.Otp(length = 6, resendAfter = 60))
 
     private def solidPage(info: FormRenderInfo, themeCss: String): String =

@@ -57,7 +57,15 @@ object ConversationController extends Controller:
     )
 
   val submitPasswordRoute =
-    submit[PasswordSubmission](Method.POST / "challenge" / "password")
+    submit[PasswordSubmission](
+      Method.POST / "challenge" / "password",
+      validate = (record, body) =>
+        ZIO.serviceWithZIO[OAuthConfigurationService]: svc =>
+          svc.getPasswordRegex(record.clientId).flatMap: regex =>
+            ZIO.fail(Error.BadRequest)
+              .unless(regex.forall(r => scala.util.Try(body.password.matches(r)).getOrElse(true)))
+              .unit,
+    )
 
   val submitLoginPasswordRoute =
     submit[LoginPasswordSubmission](Method.POST / "challenge" / "login-password")
