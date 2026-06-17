@@ -1,10 +1,12 @@
 package versola.oauth.conversation.otp
 
 import versola.auth.model.OtpCode
+import versola.oauth.client.OAuthConfigurationService
+import versola.oauth.client.model.ClientId
 import versola.oauth.conversation.model.{AuthId, ConversationStep}
-import versola.oauth.conversation.otp.model.{OtpTemplate, SendOtpResult, SubmitOtpResult}
+import versola.oauth.conversation.otp.model.{SendOtpResult, SubmitOtpResult}
 import versola.user.model.UserId
-import versola.util.{Email, Phone}
+import versola.util.{Email, EnvName, Phone}
 import zio.{Task, UIO, ZIO, ZLayer}
 
 trait OtpService:
@@ -17,17 +19,22 @@ trait OtpService:
       otp: ConversationStep.Otp,
       credential: Either[Email, Phone],
       authId: AuthId,
+      clientId: ClientId,
+      uiLocales: Option[List[String]],
   ): Task[Unit]
 
   def checkOtp(otp: ConversationStep.Otp, code: OtpCode): UIO[SubmitOtpResult]
 
 object OtpService:
-  def live = ZLayer.fromFunction(Impl(_, _, _))
+  def live = ZLayer.fromFunction(Impl(_, _, _, _, _, _))
 
   class Impl(
       otpGenerationService: OtpGenerationService,
       otpDecisionService: OtpDecisionService,
-      emailOtpProvider: EmailOtpProvider
+      emailOtpProvider: EmailOtpProvider,
+      smsOtpProvider: SmsOtpProvider,
+      configService: OAuthConfigurationService,
+      envName: EnvName
   ) extends OtpService:
 
     override def prepareOtp(
@@ -43,6 +50,7 @@ object OtpService:
                 real = codeOpt.map(ConversationStep.Otp.Real(_)),
                 timesRequested = previous.fold(0)(_.timesRequested),
                 timesSubmitted = 0,
+                factorIndex = 0,
               )
             .asSome
         case SendOtpResult.LimitsExceeded =>
@@ -52,15 +60,19 @@ object OtpService:
         otp: ConversationStep.Otp,
         credential: Either[Email, Phone],
         authId: AuthId,
+        clientId: ClientId,
+        uiLocales: Option[List[String]],
     ): Task[Unit] =
       (otp.real, credential) match
-        case (None, _) =>
-          ZIO.unit
+        case (Some(otp), Left(email)) if envName.isProd =>
+          configService.getClientTemplate(clientId, uiLocales).flatMap: template =>
+            emailOtpProvider.sendOtp(email, otp.code, template)
 
-        case (Some(otp), Left(email)) =>
-          emailOtpProvider.sendOtp(email, otp.code, OtpTemplate("{{code}}"))
+        case (Some(otp), Right(phone)) if envName.isProd =>
+          configService.getClientTemplate(clientId, uiLocales).flatMap: template =>
+            smsOtpProvider.sendOtp(phone, otp.code, template)
 
-        case (Some(code), Right(phone)) =>
+        case _ =>
           ZIO.unit
 
     override def checkOtp(otp: ConversationStep.Otp, code: OtpCode): UIO[SubmitOtpResult] =

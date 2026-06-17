@@ -18,6 +18,7 @@ object OtpDecisionServiceSpec extends UnitSpecBase:
     real = Some(ConversationStep.Otp.Real(code)),
     timesRequested = 1,
     timesSubmitted = 0,
+    factorIndex = 0,
   )
 
   val spec = suite("OtpDecisionService")(
@@ -46,6 +47,7 @@ object OtpDecisionServiceSpec extends UnitSpecBase:
           real = None,
           timesRequested = 1,
           timesSubmitted = 0,
+          factorIndex = 0,
         )
         for
           result <- service.checkRequest(Some(fakePrevious), None)

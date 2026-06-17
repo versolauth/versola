@@ -33,7 +33,7 @@ CREATE TABLE user_outbox_dead (
     event_type      TEXT        NOT NULL,
     payload         JSONB       NOT NULL,
     attempts        INT         NOT NULL,
-    failed_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    failed_at       TIMESTAMPTZ NOT NULL,
     error           TEXT
 );
 

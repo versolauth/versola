@@ -8,6 +8,7 @@ sealed trait BackendProperty derives JsonCodec:
 
 case class BooleanProperty(name: String) extends BackendProperty derives JsonCodec
 case class StringArrayProperty(name: String, allowedValues: Vector[String]) extends BackendProperty derives JsonCodec
+case class NumberProperty(name: String, default: Int, min: Option[Int], max: Option[Int]) extends BackendProperty derives JsonCodec
 
 case class FormRecord(
     id: String,

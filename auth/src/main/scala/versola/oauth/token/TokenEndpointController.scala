@@ -73,7 +73,7 @@ object TokenEndpointController extends Controller:
         "jti" -> Json.Str(Base64Url.encode(tokens.accessToken)),
       ) ++
         tokens.requestedClaims.map(rc => "requested_claims" -> rc.toJsonAST.toOption.get) ++
-        Option.when(tokens.roles.nonEmpty)("roles" -> Json.Arr(tokens.roles.map(Json.Str(_))*))
+        Some("roles" -> Json.Arr(tokens.roles.map(Json.Str(_))*))
 
 
       // For client_credentials grant, use client_id as subject; otherwise use user_id

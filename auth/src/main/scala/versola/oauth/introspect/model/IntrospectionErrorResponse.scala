@@ -9,7 +9,7 @@ import zio.schema.*
  */
 case class IntrospectionErrorResponse(
     error: String,
-    @jsonField("error_description") errorDescription: Option[String] = None,
+    @jsonField("error_description") errorDescription: Option[String],
 ) derives Schema, JsonCodec
 
 object IntrospectionErrorResponse:

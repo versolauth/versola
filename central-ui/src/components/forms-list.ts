@@ -2,16 +2,17 @@ import { LitElement, html, css, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
 import { buttonStyles, cardStyles, formStyles, iconActionStyles } from '../styles/components';
-import type { BackendProperty, FormLocale, FormRecord, ThemeRecord } from '../types';
+import type { BackendProperty, Locale, FormRecord, ThemeRecord } from '../types';
 import {
   fetchForms,
-  fetchFormLocales,
-  updateFormLocales,
+  fetchLocales,
   fetchThemes,
   setActiveFormVersion,
 } from '../utils/central-api';
 import { buildPreviewSrcdoc } from '../utils/preview';
+import { humanizeLabel, toggleAnyOf, exclusiveAnyOfValues } from '../utils/helpers';
 import './content-header';
+import './error-card';
 import './loading-cards';
 import './code-editor';
 import './form-edit';
@@ -22,7 +23,7 @@ export class VersolaFormsList extends LitElement {
   @property({ type: String }) tenantId: string | null = null;
 
   @state() private forms: FormRecord[] = [];
-  @state() private locales: FormLocale[] = [];
+  @state() private locales: Locale[] = [];
   @state() private themes: ThemeRecord[] = [];
 
   @state() private isLoading = false;
@@ -33,7 +34,7 @@ export class VersolaFormsList extends LitElement {
   @state() private expandedVersions: Set<string> = new Set();
   @state() private previewOpen: Set<string> = new Set();
   @state() private previewLocale: Record<string, string> = {};
-  @state() private previewProps: Record<string, Record<string, string | boolean>> = {};
+  @state() private previewProps: Record<string, Record<string, string | boolean | number | string[]>> = {};
   @state() private previewWidth: Record<string, number> = {};
   @state() private previewTheme: Record<string, string> = {};
 
@@ -42,15 +43,8 @@ export class VersolaFormsList extends LitElement {
     { label: 'Desktop', width: 1280 },
   ];
 
-  @state() private localesExpanded = false;
   @state() private formsExpanded = true;
   @state() private themesExpanded = false;
-  @state() private editingLocales = false;
-  @state() private draftLocales: FormLocale[] = [];
-  @state() private newLocaleCode = '';
-  @state() private newLocaleName = '';
-  @state() private savingLocales = false;
-  @state() private localeError = '';
 
   @state() private editingTheme: ThemeRecord | null = null;
 
@@ -275,6 +269,9 @@ export class VersolaFormsList extends LitElement {
         background: rgba(255,255,255,0.05);
         color: var(--text-primary);
       }
+      .seg-btn:disabled {
+        cursor: default;
+      }
       .seg-btn.seg-active {
         background: var(--accent);
         border-color: var(--accent);
@@ -411,6 +408,15 @@ export class VersolaFormsList extends LitElement {
         border-radius: var(--radius-sm);
         padding: 0.25rem 0.5rem;
       }
+      .kv-value[type="number"]::-webkit-inner-spin-button,
+      .kv-value[type="number"]::-webkit-outer-spin-button {
+        -webkit-appearance: none;
+        margin: 0;
+      }
+      .kv-value[type="number"] {
+        -moz-appearance: textfield;
+        appearance: textfield;
+      }
 
       .new-theme-card {
         background: var(--bg-dark-card);
@@ -443,24 +449,6 @@ export class VersolaFormsList extends LitElement {
         border-color: var(--accent);
         box-shadow: 0 0 0 2px rgba(88, 166, 255, 0.15);
       }
-      .new-theme-row {
-        display: grid;
-        grid-template-columns: minmax(0, 1fr) auto;
-        gap: var(--spacing-md);
-        align-items: end;
-      }
-      .new-theme-row .form-group { margin: 0; }
-      .new-theme-row .form-label {
-        font-size: 0.75rem;
-        text-transform: uppercase;
-        letter-spacing: 0.05em;
-        color: var(--text-secondary);
-      }
-      .new-theme-row .btn { white-space: nowrap; }
-      @media (max-width: 640px) {
-        .new-theme-row { grid-template-columns: 1fr; }
-      }
-
       .locale-list {
         display: flex;
         flex-direction: column;
@@ -481,11 +469,6 @@ export class VersolaFormsList extends LitElement {
       }
       .locale-name { color: var(--text-primary); }
       .locale-row .icon-action { margin-left: auto; }
-      .add-locale {
-        margin-top: var(--spacing-lg);
-        padding-top: var(--spacing-lg);
-        border-top: 1px solid var(--border-dark);
-      }
 
       .empty-state {
         text-align: center;
@@ -501,7 +484,7 @@ export class VersolaFormsList extends LitElement {
     try {
       const [forms, locales, themes] = await Promise.all([
         fetchForms(),
-        fetchFormLocales(),
+        fetchLocales(),
         fetchThemes(this.tenantId ?? undefined),
       ]);
       // Sort by id and version desc
@@ -560,7 +543,7 @@ export class VersolaFormsList extends LitElement {
     this.previewOpen = next;
   }
 
-  private setPreviewProp(key: string, name: string, value: string | boolean) {
+  private setPreviewProp(key: string, name: string, value: string | boolean | number | string[]) {
     const current = this.previewProps[key] ?? {};
     this.previewProps = { ...this.previewProps, [key]: { ...current, [name]: value } };
   }
@@ -573,10 +556,12 @@ export class VersolaFormsList extends LitElement {
     this.previewTheme = { ...this.previewTheme, [key]: themeId };
   }
 
-  private effectivePropValue(key: string, prop: BackendProperty): string | boolean {
+  private effectivePropValue(key: string, prop: BackendProperty): string | boolean | number | string[] {
     const stored = this.previewProps[key]?.[prop.name];
     if (stored !== undefined) return stored;
-    return prop.type === 'StringArrayProperty' ? (prop.allowedValues[0] ?? '') : false;
+    if (prop.type === 'StringArrayProperty') return prop.allowedValues;
+    if (prop.type === 'NumberProperty') return prop.default;
+    return false;
   }
 
   private buildPreviewSrcdoc(form: FormRecord, key: string): string {
@@ -640,7 +625,7 @@ export class VersolaFormsList extends LitElement {
                 if (prop.type === 'BooleanProperty') {
                   return html`
                     <div class="ctrl-group">
-                      <span class="ctrl-label">${prop.name}</span>
+                      <span class="ctrl-label">${humanizeLabel(prop.name)}</span>
                       <div class="toggle-wrap">
                         <label class="toggle">
                           <input type="checkbox" .checked=${!!val}
@@ -649,15 +634,30 @@ export class VersolaFormsList extends LitElement {
                         <span class="toggle-val">${val ? 'on' : 'off'}</span>
                       </div>
                     </div>`;
-                } else {
+                } else if (prop.type === 'NumberProperty') {
                   return html`
                     <div class="ctrl-group">
-                      <span class="ctrl-label">${prop.name}</span>
+                      <span class="ctrl-label">${humanizeLabel(prop.name)}</span>
+                      <input type="number" class="kv-value" style="width:5rem" .value=${String(val)}
+                        min=${prop.min !== undefined ? prop.min : nothing}
+                        max=${prop.max !== undefined ? prop.max : nothing}
+                        @change=${(e: Event) => this.setPreviewProp(key, prop.name, Number((e.target as HTMLInputElement).value))} />
+                    </div>`;
+                } else {
+                  const selected = Array.isArray(val) ? val : [];
+                  const exclusive = exclusiveAnyOfValues(prop.name);
+                  return html`
+                    <div class="ctrl-group">
+                      <span class="ctrl-label">${humanizeLabel(prop.name)}</span>
                       <div class="seg-control">
-                        ${prop.allowedValues.map(v => html`
-                          <button class="seg-btn ${val === v ? 'seg-active' : ''}"
-                            @click=${() => this.setPreviewProp(key, prop.name, v)}>${v}</button>
-                        `)}
+                        ${prop.allowedValues.map(v => {
+                          const isSelected = selected.includes(v);
+                          const isLast = isSelected && selected.length === 1;
+                          return html`
+                          <button class="seg-btn ${isSelected ? 'seg-active' : ''}" ?disabled=${isLast}
+                            @click=${() => { const next = toggleAnyOf(selected, v, exclusive); if (next) this.setPreviewProp(key, prop.name, next); }}>${v}</button>
+                        `;
+                        })}
                       </div>
                     </div>`;
                 }
@@ -734,144 +734,6 @@ export class VersolaFormsList extends LitElement {
     this.editingTheme = null;
   }
 
-  private startEditLocales() {
-    this.draftLocales = this.locales.map(l => ({ ...l }));
-    this.newLocaleCode = '';
-    this.newLocaleName = '';
-    this.localeError = '';
-    this.editingLocales = true;
-  }
-
-  private cancelEditLocales() {
-    this.editingLocales = false;
-    this.localeError = '';
-  }
-
-  private addDraftLocale() {
-    const code = this.newLocaleCode.trim();
-    const name = this.newLocaleName.trim();
-    if (!code || !name) return;
-    if (this.draftLocales.some(l => l.code === code)) {
-      this.localeError = `Locale "${code}" already exists.`;
-      return;
-    }
-    this.draftLocales = [...this.draftLocales, { code, name }].sort((a, b) => a.code.localeCompare(b.code));
-    this.newLocaleCode = '';
-    this.newLocaleName = '';
-    this.localeError = '';
-  }
-
-  private removeDraftLocale(code: string) {
-    this.draftLocales = this.draftLocales.filter(l => l.code !== code);
-  }
-
-  private async confirmEditLocales() {
-    const originalCodes = new Set(this.locales.map(l => l.code));
-    const draftCodes = new Set(this.draftLocales.map(l => l.code));
-    const add = this.draftLocales.filter(l => !originalCodes.has(l.code));
-    const remove = this.locales.filter(l => !draftCodes.has(l.code)).map(l => l.code);
-    this.savingLocales = true;
-    this.localeError = '';
-    try {
-      await updateFormLocales(add, remove);
-      this.locales = this.draftLocales.map(l => ({ ...l })).sort((a, b) => a.code.localeCompare(b.code));
-      this.editingLocales = false;
-    } catch (error) {
-      this.localeError = error instanceof Error ? error.message : 'Failed to save locales';
-    } finally {
-      this.savingLocales = false;
-    }
-  }
-
-  private toggleLocalesExpand() {
-    this.localesExpanded = !this.localesExpanded;
-  }
-
-  private renderLocalesCard() {
-    return html`
-      <div class="form-card">
-        <div class="form-header" @click=${() => this.toggleLocalesExpand()}>
-          <div class="form-id">Locales</div>
-          <div style="display: flex; align-items: center; gap: var(--spacing-md)">
-            <button class="icon-action" title="Edit locales" aria-label="Edit locales"
-              @click=${(e: Event) => { e.stopPropagation(); this.startEditLocales(); }}>✎</button>
-            <span style="color: var(--text-secondary)">${this.localesExpanded ? '▲' : '▼'}</span>
-          </div>
-        </div>
-        ${this.localesExpanded ? html`
-          <div class="form-body">
-            ${this.locales.length === 0 ? html`
-              <div class="hint">No locales configured yet.</div>
-            ` : html`
-              <div class="locale-list">
-                ${this.locales.map(loc => html`
-                  <div class="locale-row">
-                    <span class="locale-code">${loc.code}</span>
-                    <span class="locale-name">${loc.name}</span>
-                  </div>
-                `)}
-              </div>
-            `}
-          </div>
-        ` : nothing}
-      </div>
-    `;
-  }
-
-  private renderLocalesEdit() {
-    const code = this.newLocaleCode.trim();
-    const name = this.newLocaleName.trim();
-    const canAdd = !!code && !!name;
-    return html`
-      <div class="title-stack" style="margin-bottom: var(--spacing-lg)">
-        <h1 class="form-title">Edit Locales</h1>
-      </div>
-
-      <div class="card">
-        ${this.draftLocales.length === 0 ? html`
-          <div class="hint">No locales yet. Add one below.</div>
-        ` : html`
-          <div class="locale-list">
-            ${this.draftLocales.map(loc => html`
-              <div class="locale-row">
-                <span class="locale-code">${loc.code}</span>
-                <span class="locale-name">${loc.name}</span>
-                <button class="icon-action danger" @click=${() => this.removeDraftLocale(loc.code)}
-                  title="Remove locale" aria-label=${`Remove locale ${loc.code}`}>✕</button>
-              </div>
-            `)}
-          </div>
-        `}
-
-        <div class="add-locale">
-          <div class="new-theme-row">
-            <div class="form-group">
-              <label class="form-label">Code</label>
-              <input class="form-control" placeholder="en" .value=${this.newLocaleCode}
-                @keydown=${(e: KeyboardEvent) => { if (e.key === 'Enter') this.addDraftLocale(); }}
-                @input=${(e: Event) => { this.newLocaleCode = (e.target as HTMLInputElement).value; }} />
-            </div>
-            <div class="form-group">
-              <label class="form-label">Name</label>
-              <input class="form-control" placeholder="English" .value=${this.newLocaleName}
-                @keydown=${(e: KeyboardEvent) => { if (e.key === 'Enter') this.addDraftLocale(); }}
-                @input=${(e: Event) => { this.newLocaleName = (e.target as HTMLInputElement).value; }} />
-            </div>
-            <button class="btn btn-secondary" ?disabled=${!canAdd} @click=${() => this.addDraftLocale()}>Add</button>
-          </div>
-        </div>
-
-        <div class="form-actions">
-          <button class="btn btn-secondary" ?disabled=${this.savingLocales} @click=${() => this.cancelEditLocales()}>Cancel</button>
-          <button class="btn btn-primary" ?disabled=${this.savingLocales} @click=${() => this.confirmEditLocales()}>
-            ${this.savingLocales ? 'Saving…' : 'Save Locales'}
-          </button>
-          ${this.localeError ? html`<span class="save-msg error">${this.localeError}</span>` : nothing}
-        </div>
-      </div>
-    `;
-  }
-
   private renderThemesSection() {
     const globalThemes = this.themes.filter(t => !t.tenantId);
     const tenantThemes = this.themes.filter(t => !!t.tenantId);
@@ -917,10 +779,6 @@ export class VersolaFormsList extends LitElement {
   }
 
   render() {
-    if (this.editingLocales) {
-      return html`${this.renderLocalesEdit()}`;
-    }
-
     if (this.editingForm) {
       return html`
         <versola-form-edit
@@ -951,17 +809,8 @@ export class VersolaFormsList extends LitElement {
       ${this.isLoading ? html`
         <versola-loading-cards count="2"></versola-loading-cards>
       ` : this.errorMessage ? html`
-        <div class="card">
-          <div class="empty-state">
-            <div>⚠️</div>
-            <h3>Could not load forms</h3>
-            <p>${this.errorMessage}</p>
-            <button class="btn btn-primary" @click=${() => this.loadData()} style="margin-top: 1rem;">Retry</button>
-          </div>
-        </div>
+        <versola-error-card heading="Could not load forms" .message=${this.errorMessage} @retry=${() => this.loadData()}></versola-error-card>
       ` : html`
-        ${this.renderLocalesCard()}
-
         <div class="form-card">
           <div class="form-header" @click=${() => this.toggleFormsExpand()}>
             <div class="form-id">Forms</div>

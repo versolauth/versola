@@ -20,6 +20,9 @@ case class OtpResendSubmission()
 case class OtpSubmission(code: OtpCode)
   extends Submission derives Schema
 
+case class PasswordSubmission(password: Password)
+  extends Submission derives Schema
+
 case class LoginPasswordSubmission(login: Login, password: Password)
   extends Submission derives Schema
 

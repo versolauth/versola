@@ -41,6 +41,8 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     refreshTokenTtl = 7776000.seconds,
     permissions = Set(readPermission),
     theme = "default",
+    authFlow = Some(AuthFlow.default),
+    otpTemplateId = "default-otp",
   )
 
   private val otherTenantClient = OAuthClientRecord(
@@ -56,6 +58,8 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     refreshTokenTtl = 7776000.seconds,
     permissions = Set(writePermission),
     theme = "default",
+    authFlow = Some(AuthFlow.default),
+    otpTemplateId = "default-otp",
   )
 
   private val createRequest = CreateClientRequest(
@@ -67,6 +71,10 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     audience = List(ClientId("api")),
     permissions = Set(readPermission),
     accessTokenTtl = 300,
+    refreshTokenTtl = Some(7776000),
+    theme = "default",
+    authFlow = Some(AuthFlow.default),
+    otpTemplateId = "default-otp",
   )
 
   private val updateRequest = UpdateClientRequest(
@@ -77,6 +85,9 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     permissions = PatchPermissions(add = Set(writePermission), remove = Set(readPermission)),
     accessTokenTtl = Some(900L),
     refreshTokenTtl = None,
+    theme = None,
+    authFlow = None,
+    otpTemplateId = None,
   )
 
   class Env(initial: Vector[OAuthClientRecord] = Vector.empty):
@@ -93,7 +104,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val env = new Env(Vector(cachedClient, otherTenantClient))
 
       for
-        result <- env.service.getTenantClients(tenantId)
+        result <- env.service.getTenantClients(tenantId, offset = 0, limit = None)
       yield assertTrue(result === Vector(cachedClient))
     },
     test("getClientsForSync returns all clients when no edge filter") {
@@ -142,6 +153,8 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         refreshTokenTtl = 7776000.seconds,
         permissions = Set(readPermission),
         theme = "default",
+        authFlow = Some(AuthFlow.default),
+        otpTemplateId = "default-otp",
       )
 
       for
@@ -175,6 +188,8 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
             updateRequest.scope,
             updateRequest.permissions,
             Some(900.seconds),
+            None,
+            None,
             None,
             None,
           )

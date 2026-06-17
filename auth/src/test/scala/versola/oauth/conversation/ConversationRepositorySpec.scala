@@ -2,8 +2,8 @@ package versola.oauth.conversation
 
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.auth.model.OtpCode
-import versola.oauth.client.model.{ClientId, ScopeToken}
-import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep, PrimaryCredential}
+import versola.oauth.client.model.{AuthFlow, ClientId, PrimaryCredential, ScopeToken}
+import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, State}
 import versola.user.model.UserId
 import versola.util.{DatabaseSpecBase, Email, Phone}
@@ -38,6 +38,7 @@ trait ConversationRepositorySpec extends DatabaseSpecBase[ConversationRepository
     real = Some(ConversationStep.Otp.Real(otpCode)),
     timesRequested = 1,
     timesSubmitted = 0,
+    factorIndex = 0,
   )
 
   val fakeOtp = realOtp.copy(real = None)
@@ -60,12 +61,14 @@ trait ConversationRepositorySpec extends DatabaseSpecBase[ConversationRepository
     userPhone = None,
     userLogin = None,
     userClaims = Some(zio.json.ast.Json.Obj()),
+    authFlow = AuthFlow.default,
   )
 
   val record2 = record1.copy(
     userId = Some(userId2),
     credential = Some(Right(phone)),
     step = fakeOtp,
+    authFlow = AuthFlow.default,
   )
 
   val initial = ConversationRecord(
@@ -77,7 +80,7 @@ trait ConversationRepositorySpec extends DatabaseSpecBase[ConversationRepository
     state = None,
     userId = None,
     credential = None,
-    step = ConversationStep.Empty(PrimaryCredential.Phone, passkey = false),
+    step = ConversationStep.Credential(List(PrimaryCredential.phone), inlinePassword = false, passkey = false),
     requestedClaims = None,
     uiLocales = None,
     nonce = None,
@@ -86,6 +89,7 @@ trait ConversationRepositorySpec extends DatabaseSpecBase[ConversationRepository
     userPhone = None,
     userLogin = None,
     userClaims = None,
+    authFlow = AuthFlow.default,
   )
 
   def testCases(env: ConversationRepositorySpec.Env): List[Spec[ConversationRepositorySpec.Env & zio.Scope, Any]] =

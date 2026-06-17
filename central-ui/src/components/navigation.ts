@@ -4,7 +4,7 @@ import { theme } from '../styles/theme';
 import './versola-logo';
 import './tenant-selector';
 
-export type NavItem = 'clients' | 'scopes' | 'permissions' | 'resources' | 'roles' | 'tenants' | 'edges' | 'users' | 'forms';
+export type NavItem = 'clients' | 'scopes' | 'permissions' | 'resources' | 'roles' | 'tenants' | 'edges' | 'users' | 'forms' | 'locales' | 'challenges';
 
 @customElement('versola-navigation')
 export class VersolaNavigation extends LitElement {
@@ -99,7 +99,7 @@ export class VersolaNavigation extends LitElement {
         font-size: 1.2rem;
         width: 20px;
         text-align: center;
-      }
+      } 
     `,
   ];
 
@@ -161,6 +161,12 @@ export class VersolaNavigation extends LitElement {
           >
             Roles
           </div>
+          <div
+            class="nav-item ${this.activeItem === 'challenges' ? 'active' : ''}"
+            @click=${() => this.handleNavClick('challenges')}
+          >
+            Challenges
+          </div>
         </div>
 
         <div class="nav-section">
@@ -182,6 +188,12 @@ export class VersolaNavigation extends LitElement {
             @click=${() => this.handleNavClick('forms')}
           >
             Forms
+          </div>
+          <div
+            class="nav-item ${this.activeItem === 'locales' ? 'active' : ''}"
+            @click=${() => this.handleNavClick('locales')}
+          >
+            Locales
           </div>
         </div>
       </nav>

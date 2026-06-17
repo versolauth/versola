@@ -98,10 +98,9 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
             .expirationTime(Date.from(now.plusSeconds(ttlSeconds)))
             .claim("client_id", clientId)
             .claim("role", role)
-          if roles.nonEmpty then
-            val javaRoles = java.util.ArrayList[String]()
-            roles.foreach(javaRoles.add)
-            builder.claim("roles", javaRoles)
+          val javaRoles = java.util.ArrayList[String]()
+          roles.foreach(javaRoles.add)
+          builder.claim("roles", javaRoles)
           val jwt = SignedJWT(header, builder.build())
           jwt.sign(RSASSASigner(edgeConfig.privateKey))
           AccessToken(jwt.serialize())

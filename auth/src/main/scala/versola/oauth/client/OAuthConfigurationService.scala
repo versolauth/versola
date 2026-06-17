@@ -1,6 +1,7 @@
 package versola.oauth.client
 
-import versola.oauth.client.model.{ClientId, ClientSecret, ClientsWithPepper, FormRecord, OAuthClientRecord, ScopeRecord, ScopeToken, ThemeRecord}
+import versola.oauth.client.model.{ClientId, ClientSecret, ClientsWithPepper, FormRecord, Locales, OAuthClientRecord, OtpTemplateRecord, PhoneSettingsRecord, ScopeRecord, ScopeToken, TenantId, ThemeRecord}
+import versola.oauth.conversation.otp.model.OtpTemplate
 import versola.util.{CoreConfig, ReloadingCache, Secret, SecureRandom, SecurityService}
 import zio.*
 import zio.http.Client
@@ -20,6 +21,12 @@ trait OAuthConfigurationService:
 
   def getTheme(id: String): UIO[Option[ThemeRecord]]
 
+  def getClientTemplate(id: ClientId, uiLocales: Option[List[String]]): UIO[OtpTemplate]
+
+  def getAllowedPhonePrefixes(id: ClientId): UIO[List[String]]
+
+  def getPasswordRegex(id: ClientId): UIO[Option[String]]
+
 object OAuthConfigurationService:
   def live(schedule: Schedule[Any, Any, Any]): ZLayer[
     Client & SecurityService & Scope & CoreConfig,
@@ -31,8 +38,11 @@ object OAuthConfigurationService:
         ((OAuthClientSyncClient.live >+> ZLayer(ReloadingCache.make[ClientsWithPepper](schedule)) >+>
           (OAuthScopeSyncClient.live >+> ZLayer(ReloadingCache.make[Vector[ScopeRecord]](schedule))) >+>
           (FormSyncClient.live >+> ZLayer(ReloadingCache.make[Vector[FormRecord]](schedule))) >+>
-          (ThemeSyncClient.live >+> ZLayer(ReloadingCache.make[Vector[ThemeRecord]](schedule)))))
-    syncClients >>> ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _))
+          (ThemeSyncClient.live >+> ZLayer(ReloadingCache.make[Vector[ThemeRecord]](schedule))) >+>
+          (LocaleSyncClient.live >+> ZLayer(ReloadingCache.make[Locales](schedule))) >+>
+          (OtpTemplateSyncClient.live >+> ZLayer(ReloadingCache.make[Vector[OtpTemplateRecord]](schedule))) >+>
+          (PhoneSettingsSyncClient.live >+> ZLayer(ReloadingCache.make[Vector[PhoneSettingsRecord]](schedule)))))
+    syncClients >>> ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _))
   }
 
   case class Impl(
@@ -44,6 +54,12 @@ object OAuthConfigurationService:
       formRepository: FormSyncClient,
       themeCache: ReloadingCache[Vector[ThemeRecord]],
       themeRepository: ThemeSyncClient,
+      localeCache: ReloadingCache[Locales],
+      localeRepository: LocaleSyncClient,
+      otpTemplateCache: ReloadingCache[Vector[OtpTemplateRecord]],
+      otpTemplateRepository: OtpTemplateSyncClient,
+      phoneSettingsCache: ReloadingCache[Vector[PhoneSettingsRecord]],
+      phoneSettingsRepository: PhoneSettingsSyncClient,
       securityService: SecurityService,
   ) extends OAuthConfigurationService:
 
@@ -93,3 +109,48 @@ object OAuthConfigurationService:
 
     override def getTheme(id: String): UIO[Option[ThemeRecord]] =
       themeCache.get.map(_.find(_.id == id))
+
+    private def getLocales: UIO[Locales] =
+      localeCache.get
+
+    private def getOtpTemplates(tenantId: TenantId, otpTemplateId: String): UIO[Option[OtpTemplateRecord]] =
+      otpTemplateCache.get.map(_.find(it => it.tenantId == tenantId && it.id == otpTemplateId))
+
+    override def getClientTemplate(id: ClientId, uiLocales: Option[List[String]]): UIO[OtpTemplate] =
+      val templateOpt = find(id).flatMap:
+        case None => ZIO.none
+        case Some(client) =>
+          getOtpTemplates(client.tenantId, client.otpTemplateId)
+
+      for
+        template <- templateOpt
+        locales  <- getLocales
+      yield template match
+        case None => IllegalStateTemplate
+        case Some(t) =>
+          val preferredLocales = uiLocales.getOrElse(Nil) :+ locales.default
+          val body = preferredLocales
+            .collectFirst { case loc if t.localizations.contains(loc) => t.localizations(loc) }
+            .orElse(t.localizations.values.headOption)
+            .getOrElse(IllegalStateTemplate)
+          OtpTemplate(body)
+
+    override def getAllowedPhonePrefixes(id: ClientId): UIO[List[String]] =
+      find(id).flatMap:
+        case None => ZIO.succeed(Nil)
+        case Some(client) =>
+          phoneSettingsCache.get.map(
+            _.find(_.tenantId == client.tenantId)
+              .fold(Nil)(_.allowedPrefixes),
+          )
+
+    override def getPasswordRegex(id: ClientId): UIO[Option[String]] =
+      find(id).flatMap:
+        case None => ZIO.none
+        case Some(client) =>
+          phoneSettingsCache.get.map(
+            _.find(_.tenantId == client.tenantId)
+              .flatMap(_.passwordRegex),
+          )
+
+    private val IllegalStateTemplate = OtpTemplate("{{code}}")

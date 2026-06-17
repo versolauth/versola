@@ -74,3 +74,9 @@ private[authorize] object Error:
       errorDescription = "Invalid claims parameter - must be valid JSON",
       errorUri = Some("https://openid.net/specs/openid-connect-core-1_0.html#ClaimsParameter"),
     )
+
+  case class AuthFlowMissing(uri: URL, state: Option[State]) extends RedirectError(
+      error = ErrorCode.InvalidRequest,
+      errorDescription = "Client is not configured for sign-in - missing auth flow",
+      errorUri = None,
+    )

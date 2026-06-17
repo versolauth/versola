@@ -1,7 +1,7 @@
 package versola.util
 
 import zio.Duration
-import zio.http.URL
+import zio.http.{Method, URL}
 
 import java.security.PrivateKey
 import javax.crypto.SecretKey
@@ -9,13 +9,32 @@ import javax.crypto.SecretKey
 case class CoreConfig(
     security: CoreConfig.Security,
     jwt: CoreConfig.JwtConfig,
-    central: CoreConfig.CentralSyncConfig
+    central: CoreConfig.CentralSyncConfig,
+    otpProvider: Option[CoreConfig.OtpProvider],
+    smtp: Option[CoreConfig.SmtpConfig],
 )
 
 object CoreConfig:
+  case class SmtpConfig(
+      host: String,
+      port: Int,
+      username: String,
+      password: String,
+      from: Email,
+      subject: String,
+      startTls: Boolean,
+  )
   case class CentralSyncConfig(
       url: URL,
       secretKey: SecretKey,
+  )
+
+  case class OtpProvider(
+      method: Method,
+      url: URL,
+      username: Option[String],
+      password: Option[String],
+      body: Map[String, String],
   )
 
   case class JwtConfig(

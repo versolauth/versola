@@ -8,7 +8,7 @@ import versola.auth.model.DeviceId
 import versola.oauth.conversation.model.AuthId
 import versola.oauth.model.AccessToken
 import versola.user.model.UserId
-import versola.util.{CoreConfig, EnvName, Secret}
+import versola.util.{CoreConfig, Email, EnvName, Secret}
 import zio.json.ast.Json
 
 import java.security.KeyPairGenerator
@@ -17,7 +17,7 @@ import java.time.Instant
 import java.util.{Date, UUID}
 import javax.crypto.spec.SecretKeySpec
 import zio.durationInt
-import zio.http.URL
+import zio.http.{Method, URL}
 
 object TestEnvConfig:
 
@@ -92,5 +92,25 @@ object TestEnvConfig:
     central = CoreConfig.CentralSyncConfig(
       url = URL.empty,
       secretKey = SecretKeySpec(Array.fill(32)(0.toByte), "AES"),
+    ),
+    otpProvider = Some(
+      CoreConfig.OtpProvider(
+        method = Method.POST,
+        url = URL.empty,
+        username = None,
+        password = None,
+        body = Map.empty,
+      )
+    ),
+    smtp = Some(
+      CoreConfig.SmtpConfig(
+        host = "localhost",
+        port = 25,
+        username = "user",
+        password = "password",
+        from = Email("test@versola.com"),
+        subject = "Test OTP",
+        startTls = true,
+      )
     ),
   )

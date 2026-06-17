@@ -34,17 +34,22 @@ object OAuthClientSyncClientSpec extends ZIOSpecDefault:
       accessTokenTtl: Duration,
       refreshTokenTtl: Duration,
       theme: String,
+      otpTemplateId: String,
   ) derives JsonCodec
   private case class EncodedClientsWithPepper(clients: Vector[EncodedClient], pepper: String) derives JsonCodec
 
-  private val tokenLayer = ZLayer.fromZIO(
-    JWT.serialize(
-      JWT.Claims("auth", "internal-auth", List("central"), Json.Obj()),
-      10.minutes,
-      JWT.Signature.Symmetric(secretKey),
-    ).map(token => new CentralSyncTokenService:
+  private val tokenLayer: ZLayer[Client, Throwable, CentralSyncTokenService] = ZLayer.fromZIO(
+    for
+      client <- ZIO.service[Client]
+      token  <- JWT.serialize(
+        JWT.Claims("auth", "internal-auth", List("central"), Json.Obj()),
+        10.minutes,
+        JWT.Signature.Symmetric(secretKey),
+      )
+    yield new CentralSyncTokenService:
       override def getToken: UIO[String] = ZIO.succeed(token)
-    )
+      override def syncRequest(request: Request): ZIO[Scope, Throwable, Response] =
+        client.request(request.addHeader(Header.Authorization.Bearer(token)))
   )
 
   private val securityLayer = ZLayer.succeed(new SecurityService:
@@ -80,6 +85,7 @@ object OAuthClientSyncClientSpec extends ZIOSpecDefault:
                       300.seconds,
                       7776000.seconds,
                       "default",
+                      "default-otp",
                     )
                   ),
                   Base64Url.encode(pepper),

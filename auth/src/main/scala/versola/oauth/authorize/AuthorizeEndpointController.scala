@@ -37,9 +37,6 @@ object AuthorizeEndpointController extends Controller:
 
           case error: Error.RedirectError =>
             ZIO.succeed(Response.seeOther(error.redirectUriWithErrorParams))
-
-          case error: Throwable =>
-            ZIO.fail(error)
         }
     }
 

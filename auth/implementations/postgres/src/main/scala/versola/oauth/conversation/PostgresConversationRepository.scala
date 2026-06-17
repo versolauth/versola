@@ -5,8 +5,8 @@ import com.augustnagro.magnum.magzio.TransactorZIO
 import com.augustnagro.magnum.pg.{PgCodec, SqlArrayCodec}
 import versola.auth.model.OtpCode
 import versola.oauth.authorize.model.ResponseTypeEntry
-import versola.oauth.client.model.{ClientId, ScopeToken}
-import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep, PrimaryCredential}
+import versola.oauth.client.model.{AuthFlow, ClientId, ScopeToken}
+import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, Nonce, State}
 import versola.oauth.userinfo.model.RequestedClaims
 import versola.user.model.{Login, UserId}
@@ -26,7 +26,6 @@ class PostgresConversationRepository(xa: TransactorZIO) extends ConversationRepo
 
   given JsonCodec[OtpCode] = JsonCodec.string.transform(OtpCode(_), identity[String])
   given JsonCodec[ConversationStep.Otp.Real] = DeriveJsonCodec.gen[ConversationStep.Otp.Real]
-  given JsonCodec[PrimaryCredential] = JsonCodec.string.transform(PrimaryCredential.valueOf, _.toString)
   given JsonCodec[ConversationStep] = DeriveJsonCodec.gen[ConversationStep]
 
   given DbCodec[Email] = DbCodec.StringCodec.biMap(Email(_), identity[String])
@@ -50,6 +49,7 @@ class PostgresConversationRepository(xa: TransactorZIO) extends ConversationRepo
   given DbCodec[ConversationStep] = jsonCodec[ConversationStep]
   given DbCodec[RequestedClaims] = jsonCodec[RequestedClaims]
   given DbCodec[zio.json.ast.Json.Obj] = jsonCodec[zio.json.ast.Json.Obj]
+  given DbCodec[AuthFlow] = jsonBCodec[AuthFlow]
   given DbCodec[ResponseTypeEntry] = DbCodec.StringCodec.biMap(ResponseTypeEntry.valueOf, _.toString)
   given DbCodec[NonEmptySet[ResponseTypeEntry]] = DbCodec.StringCodec.biMap(
     str => NonEmptySet.fromIterableOption(str.split(" ").map(ResponseTypeEntry.valueOf)).getOrElse(NonEmptySet(ResponseTypeEntry.Code)),
@@ -60,7 +60,7 @@ class PostgresConversationRepository(xa: TransactorZIO) extends ConversationRepo
   override def find(authId: AuthId): Task[Option[ConversationRecord]] =
     Clock.instant.flatMap: now =>
       xa.connect {
-        sql"""select client_id, redirect_uri, scope, code_challenge, code_challenge_method, state, user_id, credential, step, requested_claims, ui_locales, nonce, response_type, user_email, user_phone, user_login, user_claims, expires_at
+        sql"""select client_id, redirect_uri, scope, code_challenge, code_challenge_method, state, user_id, credential, step, requested_claims, ui_locales, nonce, response_type, user_email, user_phone, user_login, user_claims, auth_flow, expires_at
               from auth_conversations
               where id = $authId"""
           .query[(ConversationRecord, Instant)]
@@ -90,6 +90,7 @@ class PostgresConversationRepository(xa: TransactorZIO) extends ConversationRepo
                 user_phone,
                 user_login,
                 user_claims,
+                auth_flow,
                 expires_at
             ) values (
                 $authId,
@@ -110,6 +111,7 @@ class PostgresConversationRepository(xa: TransactorZIO) extends ConversationRepo
                 ${record.userPhone},
                 ${record.userLogin},
                 ${record.userClaims},
+                ${record.authFlow},
                 ${authId.createdAt.plusSeconds(ttl.toSeconds)})
          """
         .update.run()
@@ -124,7 +126,8 @@ class PostgresConversationRepository(xa: TransactorZIO) extends ConversationRepo
               user_email = ${record.userEmail},
               user_phone = ${record.userPhone},
               user_login = ${record.userLogin},
-              user_claims = ${record.userClaims}
+              user_claims = ${record.userClaims},
+              auth_flow = ${record.authFlow}
             where id = $authId"""
         .update.run()
     }.unit

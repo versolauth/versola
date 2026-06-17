@@ -1,6 +1,6 @@
 package versola.central.configuration
 
-import versola.central.configuration.clients.{ClientId, PresetId, ResponseType}
+import versola.central.configuration.clients.{AuthFlow, ClientId, PresetId, ResponseType}
 import versola.central.configuration.permissions.Permission
 import versola.central.configuration.resources.{ResourceEndpointId, ResourceId}
 import versola.central.configuration.roles.RoleId
@@ -255,6 +255,8 @@ case class OAuthClientResponse(
     permissions: Set[Permission],
     secretRotation: Boolean,
     theme: String,
+    authFlow: Option[AuthFlow],
+    otpTemplateId: String,
 ) derives Schema, JsonCodec
 
 case class GetAllClientsResponse(
@@ -270,8 +272,10 @@ case class CreateClientRequest(
     audience: List[ClientId],
     permissions: Set[Permission],
     accessTokenTtl: Int,
-    refreshTokenTtl: Option[Int] = Some(7776000), // 90 days in seconds (3 months)
-    theme: String = "default",
+    refreshTokenTtl: Option[Int],
+    theme: String,
+    authFlow: Option[AuthFlow],
+    otpTemplateId: String,
 ) derives Schema, JsonCodec
 
 case class CreateClientResponse(
@@ -290,7 +294,9 @@ case class UpdateClientRequest(
     permissions: PatchPermissions,
     accessTokenTtl: Option[Long],
     refreshTokenTtl: Option[Long],
-    theme: Option[String] = None,
+    theme: Option[String],
+    authFlow: Option[AuthFlow],
+    otpTemplateId: Option[String],
 ) derives Schema, JsonCodec
 
 case class AuthorizationPresetInput(
@@ -411,6 +417,8 @@ case class SyncOAuthClientRecord(
     refreshTokenTtl: Duration,
     permissions: Set[Permission],
     theme: String,
+    authFlow: Option[AuthFlow],
+    otpTemplateId: String,
 ) derives JsonCodec, Schema
 
 case class GetOAuthClientsSyncResponse(

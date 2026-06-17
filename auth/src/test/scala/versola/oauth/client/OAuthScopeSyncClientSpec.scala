@@ -18,14 +18,18 @@ object OAuthScopeSyncClientSpec extends ZIOSpecDefault:
   private val configLayer = ZLayer.succeed(
     TestEnvConfig.coreConfig.copy(central = CoreConfig.CentralSyncConfig(URL.empty, secretKey))
   )
-  private val tokenLayer = ZLayer.fromZIO(
-    JWT.serialize(
-      claims = JWT.Claims("auth", "internal-auth", List("central"), Json.Obj()),
-      ttl = 10.minutes,
-      signature = JWT.Signature.Symmetric(secretKey),
-    ).map(token => new CentralSyncTokenService:
+  private val tokenLayer: ZLayer[Client, Throwable, CentralSyncTokenService] = ZLayer.fromZIO(
+    for
+      client <- ZIO.service[Client]
+      token  <- JWT.serialize(
+        claims = JWT.Claims("auth", "internal-auth", List("central"), Json.Obj()),
+        ttl = 10.minutes,
+        signature = JWT.Signature.Symmetric(secretKey),
+      )
+    yield new CentralSyncTokenService:
       override def getToken: UIO[String] = ZIO.succeed(token)
-    )
+      override def syncRequest(request: Request): ZIO[Scope, Throwable, Response] =
+        client.request(request.addHeader(Header.Authorization.Bearer(token)))
   )
 
   def spec = suite("OAuthScopesClient")(

@@ -50,7 +50,7 @@ object PermissionServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val env = new Env(Vector(globalPermission, tenantPermission, otherTenantPermission))
 
       for
-        result <- env.service.getTenantPermissions(tenantId)
+        result <- env.service.getTenantPermissions(tenantId, offset = 0, limit = None)
       yield assertTrue(result === Vector(globalPermission, tenantPermission))
     },
     test("getTenantPermissions applies pagination after filtering") {

@@ -19,7 +19,3 @@ trait FormRepository extends CacheSource[Vector[FormRecord]]:
   ): Task[Unit]
 
   def setActiveVersion(id: FormId, version: Int): Task[Unit]
-
-  def getLocales: Task[Vector[FormLocale]]
-
-  def updateLocales(add: Vector[FormLocale], delete: Vector[String]): Task[Unit]

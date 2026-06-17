@@ -11,8 +11,8 @@ import zio.{Schedule, Scope, Task, ZIO, ZLayer, durationInt}
 trait PermissionService:
   def getTenantPermissions(
       tenantId: TenantId,
-      offset: Int = 0,
-      limit: Option[Int] = None,
+      offset: Int,
+      limit: Option[Int],
   ): Task[Vector[PermissionRecord]]
 
   def getPermissionsForSync(edgeId: Option[EdgeId]): Task[Vector[PermissionRecord]]
@@ -50,8 +50,8 @@ object PermissionService:
 
     override def getTenantPermissions(
         tenantId: TenantId,
-        offset: Int = 0,
-        limit: Option[Int] = None,
+        offset: Int,
+        limit: Option[Int],
     ): Task[Vector[PermissionRecord]] =
       cache.get.map { records =>
         records

@@ -6,15 +6,17 @@ import { Permission, Resource, Role } from '../types';
 import {
   createRole,
   deleteRole,
-  fetchAllPermissions,
-  fetchResources,
-  fetchAllRoles,
+  getPermissions,
+  getResources,
+  getRoles,
   updateRole,
 } from '../utils/central-api';
 import { confirmDestructiveAction } from '../utils/confirm-dialog';
 import { getLocalizedDescription } from '../utils/helpers';
+import './permission-info';
 import './role-form';
 import './content-header';
+import './error-card';
 import './loading-cards';
 
 @customElement('versola-roles-list')
@@ -59,7 +61,7 @@ export class VersolaRolesList extends LitElement {
     this.errorMessage = '';
 
     try {
-      const result = await fetchAllRoles(this.tenantId);
+      const result = await getRoles(this.tenantId);
       if (requestId !== this.loadRequestId) return;
       this.roles = result;
     } catch (error) {
@@ -189,6 +191,11 @@ export class VersolaRolesList extends LitElement {
       }
 
       .permission-item {
+        position: relative;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 0.5rem;
         background: rgba(0, 0, 0, 0.2);
         border: 1px solid var(--border-dark);
         border-radius: var(--radius-md);
@@ -199,8 +206,12 @@ export class VersolaRolesList extends LitElement {
       }
 
       .permission-id {
-        display: block;
+        flex: 1;
+        min-width: 0;
+        word-break: break-all;
       }
+
+
 
       .empty-state {
         text-align: center;
@@ -240,6 +251,7 @@ export class VersolaRolesList extends LitElement {
       this.expandedRoles.delete(roleId);
     } else {
       this.expandedRoles.add(roleId);
+      void this.ensureFormPermissionsLoaded();
     }
     this.requestUpdate();
   }
@@ -261,8 +273,8 @@ export class VersolaRolesList extends LitElement {
     }
 
     const [permissions, resources] = await Promise.all([
-      fetchAllPermissions(tenantId),
-      fetchResources(tenantId),
+      getPermissions(tenantId),
+      getResources(tenantId),
     ]);
 
     if (this.tenantId === tenantId) {
@@ -422,16 +434,7 @@ export class VersolaRolesList extends LitElement {
       ${this.isLoading ? html`
         <versola-loading-cards .count=${3}></versola-loading-cards>
       ` : this.errorMessage ? html`
-        <div class="card">
-          <div class="empty-state">
-            <div class="empty-state-icon">⚠️</div>
-            <h3>Could not load roles</h3>
-            <p>${this.errorMessage}</p>
-            <button class="btn btn-primary" @click=${() => this.loadData()} style="margin-top: 1rem;">
-              Retry
-            </button>
-          </div>
-        </div>
+        <versola-error-card heading="Could not load roles" .message=${this.errorMessage} @retry=${() => this.loadData()}></versola-error-card>
       ` : this.roles.length === 0 ? html`
         <div class="card">
           <div class="empty-state">
@@ -495,11 +498,15 @@ export class VersolaRolesList extends LitElement {
               ${isExpanded && role.permissions.length > 0 ? html`
                 <div class="role-body">
                   <div class="permissions-grid">
-                    ${role.permissions.map(perm => html`
-                      <div class="permission-item" title="${perm.id}">
-                        <span class="permission-id">${perm.id}</span>
-                      </div>
-                    `)}
+                    ${role.permissions.map(perm => {
+                      const fullPerm = this.availablePermissions.find(p => p.id === perm.id) ?? perm;
+                      return html`
+                        <div class="permission-item">
+                          <span class="permission-id">${perm.id}</span>
+                          <versola-permission-info .permission=${fullPerm} .resources=${this.availableResources}></versola-permission-info>
+                        </div>
+                      `;
+                    })}
                   </div>
                 </div>
               ` : ''}

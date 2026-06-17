@@ -1,4 +1,5 @@
 import { OAuthClient, OAuthScope, OAuthClaim, Permission, Role, Tenant, getPermissionCategory } from '../types';
+import { createDefaultAuthFlow } from './helpers';
 
 export const mockTenants: Tenant[] = [
   {
@@ -68,7 +69,7 @@ export const mockTenants: Tenant[] = [
   },
 ];
 
-export const mockClients: OAuthClient[] = [
+const baseClients: Omit<OAuthClient, 'authFlow'>[] = [
   {
     id: 'web-app',
     clientName: 'Web Application',
@@ -202,6 +203,11 @@ export const mockClients: OAuthClient[] = [
     theme: 'default',
   },
 ];
+
+export const mockClients: OAuthClient[] = baseClients.map(client => ({
+  ...client,
+  authFlow: createDefaultAuthFlow(),
+}));
 
 const mockClaims: OAuthClaim[] = [
   { id: 'sub', scopeId: 'openid', description: { en: 'Subject identifier', ru: 'Идентификатор субъекта' } },

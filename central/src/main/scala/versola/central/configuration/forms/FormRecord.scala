@@ -11,6 +11,7 @@ sealed trait BackendProperty derives Schema, JsonCodec:
 
 case class BooleanProperty(name: String) extends BackendProperty derives Schema, JsonCodec
 case class StringArrayProperty(name: String, allowedValues: Vector[String]) extends BackendProperty derives Schema, JsonCodec
+case class NumberProperty(name: String, default: Int, min: Option[Int], max: Option[Int]) extends BackendProperty derives Schema, JsonCodec
 
 case class FormRecord(
     id: FormId,
@@ -21,9 +22,4 @@ case class FormRecord(
     jsCompiled: Option[String],
     localizations: Map[String, Map[String, String]],
     properties: Vector[BackendProperty],
-) derives Schema, JsonCodec
-
-case class FormLocale(
-    code: String,
-    name: String,
 ) derives Schema, JsonCodec

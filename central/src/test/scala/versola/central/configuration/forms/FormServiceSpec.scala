@@ -2,43 +2,20 @@ package versola.central.configuration.forms
 
 import org.scalamock.stubs.ZIOStubs
 import versola.central.TestCentralConfig
+import versola.central.configuration.locales.{LocaleRecord, LocaleService}
 import versola.util.ReloadingCache
 import zio.*
 import zio.test.*
 
 object FormServiceSpec extends ZIOSpecDefault, ZIOStubs:
-  private val en = FormLocale("en", "English")
-  private val fr = FormLocale("fr", "French")
-
   class Env(initialForms: Vector[FormRecord] = Vector.empty):
-    val cache    = ReloadingCache(Unsafe.unsafe(unsafe ?=> Ref.unsafe.make(initialForms)))
-    val repository = stub[FormRepository]
-    val config   = TestCentralConfig.config
-    val service  = FormService.Impl(cache, repository, config)
+    val cache         = ReloadingCache(Unsafe.unsafe(unsafe ?=> Ref.unsafe.make(initialForms)))
+    val repository    = stub[FormRepository]
+    val config        = TestCentralConfig.config
+    val localeService = stub[LocaleService]
+    val service       = FormService.Impl(cache, repository, config, localeService)
 
   def spec = suite("FormService")(
-    test("updateLocales delegates add/delete to repository without triggering cache sync") {
-      val env = new Env()
-
-      for
-        _ <- env.repository.updateLocales.succeedsWith(())
-        _ <- env.service.updateLocales(add = Vector(en, fr), delete = Vector("de"))
-      yield assertTrue(
-        env.repository.updateLocales.calls == List((Vector(en, fr), Vector("de"))),
-        env.repository.getAll.calls.isEmpty,
-      )
-    },
-    test("updateLocales with empty add and delete does not trigger cache sync") {
-      val env = new Env()
-
-      for
-        _ <- env.repository.updateLocales.succeedsWith(())
-        _ <- env.service.updateLocales(add = Vector.empty, delete = Vector.empty)
-      yield assertTrue(
-        env.repository.updateLocales.calls == List((Vector.empty, Vector.empty)),
-        env.repository.getAll.calls.isEmpty,
-      )
-    },
     test("updateForm delegates to repository upsertForm and refreshes cache") {
       val env = new Env()
       val formId = FormId("test")
@@ -53,5 +30,28 @@ object FormServiceSpec extends ZIOSpecDefault, ZIOStubs:
         env.repository.upsertForm.calls == List((formId, "style", Some("src"), Some("compiled"), Map.empty, Vector.empty, false)),
         cached == Vector(record),
       )
+    },
+    test("getSyncForms excludes inactive forms") {
+      val activeForm   = FormRecord(FormId("a"), 1, true,  "style", None, None, Map("en" -> Map("k" -> "v")), Vector.empty)
+      val inactiveForm = FormRecord(FormId("b"), 1, false, "style", None, None, Map("en" -> Map("k" -> "v")), Vector.empty)
+      val env = new Env(Vector(activeForm, inactiveForm))
+
+      for
+        _ <- env.localeService.getActive.succeedsWith(Vector(LocaleRecord("en", "English", isDefault = true, active = true)))
+        result <- env.service.getSyncForms
+      yield assertTrue(result.map(_.id) == Vector(FormId("a")))
+    },
+    test("getSyncForms strips localizations of inactive locales") {
+      val form = FormRecord(
+        FormId("f"), 1, true, "style", None, None,
+        Map("en" -> Map("title" -> "Hello"), "fr" -> Map("title" -> "Bonjour")),
+        Vector.empty,
+      )
+      val env = new Env(Vector(form))
+
+      for
+        _ <- env.localeService.getActive.succeedsWith(Vector(LocaleRecord("en", "English", isDefault = true, active = true)))
+        result <- env.service.getSyncForms
+      yield assertTrue(result.head.localizations == Map("en" -> Map("title" -> "Hello")))
     },
   )

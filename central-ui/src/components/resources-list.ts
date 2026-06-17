@@ -4,7 +4,7 @@ import { buttonStyles, cardStyles, formStyles, methodBadgeStyles, tableStyles } 
 import { celHighlightStyles } from '../styles/cel-highlight';
 import { theme } from '../styles/theme';
 import type { InjectRule, InjectTarget, Resource, ResourceEndpoint, ResourceEndpointId } from '../types';
-import { createResource, deleteResource, fetchResources, updateResource } from '../utils/central-api';
+import { createResource, deleteResource, getResources, updateResource } from '../utils/central-api';
 import { renderHighlightedCel } from '../utils/cel-highlight';
 import { validateCel } from '../utils/cel-validator';
 import { confirmDestructiveAction } from '../utils/confirm-dialog';
@@ -12,6 +12,8 @@ import { formatResourceLabel } from '../utils/helpers';
 import { validateResourceUri } from '../utils/validators';
 import './cel-editor';
 import './content-header';
+import './error-card';
+import './loading-cards';
 
 type ResourceEndpointDraft = {
   method: string;
@@ -81,6 +83,7 @@ export class VersolaResourcesList extends LitElement {
     .status { color:var(--text-secondary); margin-bottom:var(--spacing-lg); }
     .error { color:var(--danger); }
     .empty-state { text-align:center; padding:3rem; color:var(--text-secondary); }
+    .empty-state-icon { font-size:3rem; margin-bottom:1rem; }
     .form-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:var(--spacing-xl); gap:var(--spacing-md); }
     .form-title { font-size:2rem; font-weight:700; color:var(--text-primary); margin:0; }
     .form-grid { display:grid; grid-template-columns:minmax(0, 1fr); gap:var(--spacing-lg); }
@@ -302,7 +305,7 @@ export class VersolaResourcesList extends LitElement {
     if (!this.tenantId) { this.resources = []; this.error = ''; return; }
     this.loading = true; this.error = '';
     try {
-      const resources = await fetchResources(this.tenantId);
+      const resources = await getResources(this.tenantId);
       this.resources = resources;
       const validIds = new Set(resources.map(resource => resource.id));
       const validEndpointIds = new Set(resources.flatMap(resource => resource.endpoints.map(endpoint => endpoint.id)));
@@ -945,10 +948,10 @@ export class VersolaResourcesList extends LitElement {
           <button slot="actions" class="btn btn-primary" @click=${() => this.openCreateResourceForm()}>+ Create Resource</button>
         ` : ''}
       </content-header>
-      ${this.error ? html`<div class="status error">${this.error}</div>` : ''}
-      ${this.loading ? html`<div class="status">Loading resources…</div>` : ''}
-      ${!this.loading && this.resources.length > 0 ? html`<div class="search-bar"><input class="form-input" type="search" aria-label="Search resources" .value=${this.searchQuery} @input=${(e: Event) => this.searchQuery = (e.target as HTMLInputElement).value} placeholder="Search resources" /></div>` : ''}
-      ${!this.loading && this.resources.length === 0 && this.formMode === 'none' ? html`
+      ${this.loading ? html`<versola-loading-cards .count=${3}></versola-loading-cards>`
+      : this.error ? html`
+        <versola-error-card heading="Could not load resources" .message=${this.error} @retry=${() => this.loadData()}></versola-error-card>
+      ` : this.resources.length === 0 ? html`
         <div class="card">
           <div class="empty-state">
             <h3>No resources yet</h3>
@@ -958,30 +961,33 @@ export class VersolaResourcesList extends LitElement {
             </button>
           </div>
         </div>
-      ` : ''}
-      ${!this.loading && this.resources.length > 0 && this.filteredResources.length === 0 ? html`
-        <div class="card">
-          <div class="empty-state">
-            <h3>No resources match your search</h3>
+      ` : html`
+        <div class="search-bar"><input class="form-input" type="search" aria-label="Search resources" .value=${this.searchQuery} @input=${(e: Event) => this.searchQuery = (e.target as HTMLInputElement).value} placeholder="Search resources" /></div>
+        ${this.filteredResources.length === 0 ? html`
+          <div class="card">
+            <div class="empty-state">
+              <h3>No resources match your search</h3>
+            </div>
           </div>
-        </div>
-      ` : ''}
-      <div class="stack">${this.filteredResources.map(resource => {
-        const isExpanded = this.expandedResources.has(resource.id);
-        return html`<div class="card resource-shell" @click=${() => this.handleCardClick(resource.id)}><div class="card-body resource-card">
-        <div class="resource-header">
-          <div class="resource-label-card">
-            <div class="resource-label">${formatResourceLabel(resource.resource)}</div>
-            <span class="resource-alias-badge" title="Alias">${resource.alias}</span>
-          </div>
-          <div class="resource-actions" @click=${(e: Event) => e.stopPropagation()}>
-            <button class="icon-action" @click=${() => this.openEditResourceForm(resource)} title="Edit resource" aria-label=${`Edit resource ${resource.alias}`}>✎</button>
-            <button class="icon-action danger" @click=${() => this.removeResource(resource)} title="Delete resource" aria-label=${`Delete resource ${resource.alias}`}>✕</button>
-          </div>
-        </div>
-        ${isExpanded ? this.renderResourceEndpoints(resource) : ''}
-      </div></div>`;
-      })}</div>
+        ` : html`
+          <div class="stack">${this.filteredResources.map(resource => {
+            const isExpanded = this.expandedResources.has(resource.id);
+            return html`<div class="card resource-shell" @click=${() => this.handleCardClick(resource.id)}><div class="card-body resource-card">
+            <div class="resource-header">
+              <div class="resource-label-card">
+                <div class="resource-label">${formatResourceLabel(resource.resource)}</div>
+                <span class="resource-alias-badge" title="Alias">${resource.alias}</span>
+              </div>
+              <div class="resource-actions" @click=${(e: Event) => e.stopPropagation()}>
+                <button class="icon-action" @click=${() => this.openEditResourceForm(resource)} title="Edit resource" aria-label=${`Edit resource ${resource.alias}`}>✎</button>
+                <button class="icon-action danger" @click=${() => this.removeResource(resource)} title="Delete resource" aria-label=${`Delete resource ${resource.alias}`}>✕</button>
+              </div>
+            </div>
+            ${isExpanded ? this.renderResourceEndpoints(resource) : ''}
+          </div></div>`;
+          })}</div>
+        `}
+      `}
     `;
   }
 }

@@ -1,5 +1,5 @@
 import { render } from 'solid-js/web';
-import { createSignal, onCleanup, Show } from 'solid-js';
+import { createSignal, Show } from 'solid-js';
 
 function LocaleDropdown(props: { locales: string[]; current: string; onChange: (l: string) => void }) {
   const [open, setOpen] = createSignal(false);
@@ -33,10 +33,10 @@ function LocaleDropdown(props: { locales: string[]; current: string; onChange: (
   );
 }
 
-type OtpStep = { type: 'otp'; length?: number; resendAfter?: number };
+type PasswordStep = { type: 'password'; passwordRegex?: string };
 
 interface FormConfig {
-  step: OtpStep;
+  step: PasswordStep;
   t: Record<string, string>;
   locale?: string;
   locales?: string[];
@@ -50,9 +50,7 @@ declare global {
   }
 }
 
-
-
-function OtpForm(props: { config: FormConfig }) {
+function PasswordForm(props: { config: FormConfig }) {
   const allT = props.config.allT ?? {};
   const baseT = props.config.t;
   const [currentLocale, setCurrentLocale] = createSignal(props.config.locale ?? 'en');
@@ -66,15 +64,21 @@ function OtpForm(props: { config: FormConfig }) {
     return { ...baseT, ...locT };
   };
   const locales = props.config.locales ?? [];
-  const otpLength = props.config.step.length ?? 6;
-  const [otp, setOtp] = createSignal('');
-  let inputRef!: HTMLInputElement;
 
-  const [remaining, setRemaining] = createSignal(props.config.step.resendAfter ?? 60);
-  const timer = setInterval(() => {
-    setRemaining((s) => (s > 0 ? s - 1 : 0));
-  }, 1000);
-  onCleanup(() => clearInterval(timer));
+  const [passwordNotAllowed, setPasswordNotAllowed] = createSignal(false);
+  const passwordRegex = props.config.step.passwordRegex;
+
+  const handleSubmit = (e: SubmitEvent) => {
+    if (!passwordRegex) return;
+    const form = e.currentTarget as HTMLFormElement;
+    const password = (form.elements.namedItem('password') as HTMLInputElement | null)?.value ?? '';
+    try {
+      if (!new RegExp(passwordRegex).test(password)) {
+        e.preventDefault();
+        setPasswordNotAllowed(true);
+      }
+    } catch (_) {}
+  };
 
   return (
     <div class="container">
@@ -84,48 +88,22 @@ function OtpForm(props: { config: FormConfig }) {
         </div>
       </Show>
       <h1>{t().title}</h1>
-      <p class="otp-description">{t().description}</p>
-      <form method="post">
-        <div class="otp-wrapper" onClick={() => inputRef.focus()}>
-          <div class="otp-dots">
-            {Array.from({ length: otpLength }, (_, i) => {
-              const digit = otp()[i];
-              return (
-                <div class={`otp-cell${digit !== undefined ? ' otp-cell-filled' : ''}${i === otp().length ? ' otp-cell-active' : ''}`}>
-                  {digit !== undefined ? digit : <span class="otp-cell-dot" />}
-                </div>
-              );
-            })}
-          </div>
-          <input
-            ref={inputRef}
-            type="text"
-            name="code"
-            class="otp-hidden-input"
-            inputmode="numeric"
-            autocomplete="one-time-code"
-            maxlength={otpLength}
-            value={otp()}
-            onInput={(e) => setOtp(e.currentTarget.value.replace(/[^0-9]/g, '').slice(0, otpLength))}
-            required
-          />
-        </div>
-        <button type="submit" formAction="/challenge/otp" class="btn btn-primary">
-          {t().verify_button}
-        </button>
-        <div class="divider"><span>{t().divider}</span></div>
-        <Show
-          when={remaining() <= 0}
-          fallback={
-            <p class="resend-timer">
-              {(t().resend_in ?? 'Resend available in {seconds}s').replace('{seconds}', String(remaining()))}
-            </p>
-          }
-        >
-          <button type="submit" formAction="/challenge/otp/resend" class="btn btn-secondary">
-            {t().resend_button}
-          </button>
+      <form method="post" onSubmit={handleSubmit}>
+        <input
+          type="password"
+          name="password"
+          class="input-field"
+          placeholder={t().password_placeholder}
+          autocomplete="current-password"
+          required
+          onInput={() => passwordNotAllowed() && setPasswordNotAllowed(false)}
+        />
+        <Show when={passwordNotAllowed()}>
+          <div class="phone-error-message">{t().password_not_allowed}</div>
         </Show>
+        <button type="submit" formAction="/challenge/password" class="btn btn-primary">
+          {t().continue}
+        </button>
       </form>
     </div>
   );
@@ -134,5 +112,5 @@ function OtpForm(props: { config: FormConfig }) {
 const config = window.__VERSOLA_FORM__;
 const root = document.getElementById('versola-form-root');
 if (config && root) {
-  render(() => <OtpForm config={config} />, root);
+  render(() => <PasswordForm config={config} />, root);
 }

@@ -17,7 +17,7 @@ enum RevocationError:
 
 case class RevocationErrorResponse(
     error: String,
-    errorDescription: Option[String] = None,
+    errorDescription: Option[String],
 )
 
 object RevocationErrorResponse:

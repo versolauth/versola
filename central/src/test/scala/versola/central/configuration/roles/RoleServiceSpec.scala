@@ -47,7 +47,7 @@ object RoleServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val env = new Env(Vector(adminRole, otherTenantRole))
 
       for
-        result <- env.service.getTenantRoles(tenantId)
+        result <- env.service.getTenantRoles(tenantId, offset = 0, limit = None)
       yield assertTrue(result === Vector(adminRole))
     },
     test("getTenantRoles applies pagination after filtering") {

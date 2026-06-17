@@ -20,6 +20,23 @@ export interface AuthorizationPreset {
   cookiePath?: string;
 }
 
+// Authentication flow (cards: credential -> factor -> factor)
+export type PrimaryCredential = 'email' | 'phone' | 'login';
+export type AuthFactorType = 'otp' | 'password';
+
+export interface AuthFactor {
+  type: AuthFactorType;
+  required: boolean;
+}
+
+export interface AuthFlow {
+  primaryCredentials: PrimaryCredential[];  // first card: one or more options the user can pick
+  inlinePassword: boolean;                  // first card: ask for password inline
+  passkey: boolean;                         // first card: offer passkey
+  factors: AuthFactor[];                    // subsequent challenge cards for the primary flow (0-2)
+  passkeyFactors: AuthFactor[];             // subsequent challenge cards for the passkey flow (0-1)
+}
+
 // OAuth Client
 export interface OAuthClient {
   id: string;
@@ -31,8 +48,24 @@ export interface OAuthClient {
   accessTokenTtl: number;
   permissions: string[];
   theme: string;
+  otpTemplateId?: string | null;
+  authFlow: AuthFlow | null;
   tenantId?: string;  // Tenant scope (clients inherit edge from their tenant)
   authorizationPresets?: AuthorizationPreset[];
+}
+
+// OTP Template
+export interface OtpTemplateRecord {
+  id: string;
+  tenantId: string;
+  localizations: Record<string, string>;
+}
+
+// Phone Settings
+export interface PhoneSettingsRecord {
+  tenantId: string;
+  allowedPrefixes: string[];
+  passwordRegex?: string;
 }
 
 // OAuth Scope
@@ -162,7 +195,15 @@ export interface StringArrayProperty {
   allowedValues: string[];
 }
 
-export type BackendProperty = BooleanProperty | StringArrayProperty;
+export interface NumberProperty {
+  type: 'NumberProperty';
+  name: string;
+  default: number;
+  min?: number;
+  max?: number;
+}
+
+export type BackendProperty = BooleanProperty | StringArrayProperty | NumberProperty;
 
 // Auth Forms
 export interface FormRecord {
@@ -176,9 +217,11 @@ export interface FormRecord {
   properties: BackendProperty[];
 }
 
-export interface FormLocale {
+export interface Locale {
   code: string;
   name: string;
+  isDefault: boolean;
+  active: boolean;
 }
 
 // Form state

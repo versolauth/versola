@@ -3,9 +3,11 @@ package versola
 import com.augustnagro.magnum.magzio.TransactorZIO
 import com.zaxxer.hikari.HikariDataSource
 import versola.central.CentralConfig
+import versola.central.configuration.challenges.{OtpChallengeController, OtpChallengeRepository, OtpChallengeService, PhoneChallengeRepository, PhoneChallengeService}
 import versola.central.configuration.clients.{AuthorizationPresetController, AuthorizationPresetRepository, AuthorizationPresetService, ClientController, OAuthClientRepository, OAuthClientService}
 import versola.central.configuration.edges.{EdgeController, EdgeRepository, EdgeService}
 import versola.central.configuration.forms.{FormController, FormRepository, FormService}
+import versola.central.configuration.locales.{LocaleController, LocaleRepository, LocaleService}
 import versola.central.configuration.themes.{ThemeController, ThemeRepository, ThemeService}
 import versola.central.configuration.permissions.{PermissionController, PermissionRepository, PermissionService}
 import versola.central.configuration.resources.{ResourceController, ResourceRepository, ResourceService}
@@ -15,7 +17,9 @@ import versola.central.configuration.sync.{CacheSyncRepository, CacheSyncService
 import versola.central.configuration.tenants.{TenantController, TenantRepository, TenantService}
 import versola.central.users.{AuthClient, UserOutboxProcessor, UserController, UserRepository, UserService}
 import versola.configuration.clients.{PostgresAuthorizationPresetRepository, PostgresOAuthClientRepository}
+import versola.configuration.challenges.{PostgresOtpChallengeRepository, PostgresPhoneChallengeRepository}
 import versola.configuration.forms.PostgresFormRepository
+import versola.configuration.locales.PostgresLocaleRepository
 import versola.configuration.themes.PostgresThemeRepository
 import versola.users.PostgresUserRepository
 import versola.configuration.edges.PostgresEdgeRepository
@@ -61,8 +65,14 @@ object PostgresCentralApp extends VersolaApp("central"):
       EdgeService &
       FormRepository &
       FormService &
+      LocaleRepository &
+      LocaleService &
       ThemeRepository &
       ThemeService &
+      OtpChallengeRepository &
+      OtpChallengeService &
+      PhoneChallengeRepository &
+      PhoneChallengeService &
       CacheSyncRepository &
       CacheSyncService &
       UserRepository &
@@ -81,7 +91,9 @@ object PostgresCentralApp extends VersolaApp("central"):
       RoleController.routes,
       EdgeController.routes,
       FormController.routes,
+      LocaleController.routes,
       ThemeController.routes,
+      OtpChallengeController.routes,
       UserController.routes,
     ).reduce(_ ++ _)
 
@@ -97,7 +109,10 @@ object PostgresCentralApp extends VersolaApp("central"):
           PostgresRoleRepository.live >+>
           PostgresEdgeRepository.live >+>
           PostgresFormRepository.live >+>
+          PostgresLocaleRepository.live >+>
           PostgresThemeRepository.live >+>
+          PostgresOtpChallengeRepository.live >+>
+          PostgresPhoneChallengeRepository.live >+>
           PostgresCacheSyncRepository.live >+>
           PostgresUserRepository.live
       )
@@ -116,8 +131,11 @@ object PostgresCentralApp extends VersolaApp("central"):
       OAuthScopeService.live(schedule) >+>
       RoleService.live(schedule) >+>
       EdgeService.live(schedule) >+>
+      LocaleService.live >+>
       FormService.live(schedule) >+>
       ThemeService.live(schedule) >+>
+      OtpChallengeService.live(schedule) >+>
+      PhoneChallengeService.live(schedule) >+>
       CacheSyncService.live >+>
       AuthClient.live >+>
       UserService.live >+>

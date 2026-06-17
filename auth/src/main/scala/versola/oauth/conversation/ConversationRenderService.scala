@@ -1,8 +1,8 @@
 package versola.oauth.conversation
 
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.FormRecord
-import versola.oauth.conversation.model.{ConversationRecord, ConversationStep, PrimaryCredential}
+import versola.oauth.client.model.{ClientId, FormRecord, PrimaryCredential}
+import versola.oauth.conversation.model.{ConversationRecord, ConversationStep}
 import versola.oauth.model.SessionCookie
 import versola.util.{Base64Url, CoreConfig, JWT}
 import zio.http.{Body, Header, Headers, MediaType, Response, Status, URL}
@@ -30,32 +30,25 @@ object ConversationRenderService:
   sealed trait StepView derives JsonCodec
 
   object StepView:
-    private given JsonCodec[PrimaryCredential] =
-      JsonCodec.string.transformOrFail(
-        {
-          case "email" => Right(PrimaryCredential.Email)
-          case "phone" => Right(PrimaryCredential.Phone)
-          case other => Left(s"Unknown primary credential: $other")
-        },
-        {
-          case PrimaryCredential.Email => "email"
-          case PrimaryCredential.Phone => "phone"
-        },
-      )
-
     @jsonHint("credential")
-    case class Credential(primary: PrimaryCredential, passkey: Boolean) extends StepView
+    case class Credential(
+        primaryCredentials: List[PrimaryCredential],
+        inlinePassword: Boolean,
+        passkey: Boolean,
+        allowedPhonePrefixes: Option[List[String]],
+        passwordRegex: Option[String],
+    ) extends StepView
     @jsonHint("password")
-    case object Password extends StepView
+    case class Password(passwordRegex: Option[String]) extends StepView
     @jsonHint("otp")
     case class Otp(length: Int, resendAfter: Int) extends StepView
 
   case class FormConfig(
       step: StepView,
       t: Map[String, String],
-      locale: String = "en",
-      locales: List[String] = List.empty,
-      allT: Map[String, Map[String, String]] = Map.empty,
+      locale: String,
+      locales: List[String],
+      allT: Map[String, Map[String, String]],
   ) derives JsonCodec
 
   private val ThemeDefault = "default"
@@ -77,7 +70,7 @@ object ConversationRenderService:
         client <- configuration.find(record.clientId)
         themeId = client.map(_.theme).getOrElse(ThemeDefault)
         css <- themeCss(themeId)
-        maybeInfo <- formFor(record.step, record.uiLocales)
+        maybeInfo <- formFor(record.step, record.clientId, record.uiLocales)
         response <- maybeInfo match
           case None =>
             ZIO.succeed(htmlResponse(notFoundPage(css), Status.NotFound))
@@ -153,14 +146,17 @@ object ConversationRenderService:
 
     private def formFor(
         step: ConversationStep,
+        clientId: ClientId,
         locale: Option[List[String]],
     ): Task[Option[FormRenderInfo]] =
       val formId = step match
-        case _: ConversationStep.Empty => "credential"
-        case _: ConversationStep.Password => "credential"
+        case _: ConversationStep.Credential => "credential"
+        case _: ConversationStep.Password => "password"
         case _: ConversationStep.Otp => "otp"
-      val view = stepView(step)
-      configuration.getForm(formId).map(_.map { form =>
+      for
+        view    <- stepView(step, clientId)
+        formOpt <- configuration.getForm(formId)
+      yield formOpt.map { form =>
         val (chosenLocale, translations) = pickTranslations(form, locale)
         val allLocales = form.localizations.keys.toList.sorted
         FormRenderInfo(
@@ -176,7 +172,7 @@ object ConversationRenderService:
           ),
           version = form.version,
         )
-      })
+      }
 
     private def pageTitle(translations: Map[String, String]): String =
       translations.getOrElse("page_title", "Sign In")
@@ -195,11 +191,22 @@ object ConversationRenderService:
         case _ => configuration.getTheme(ThemeDefault).map(_.map(_.css).getOrElse(""))
       }
 
-    private def stepView(step: ConversationStep): StepView =
+    private def stepView(step: ConversationStep, clientId: ClientId): UIO[StepView] =
       step match
-        case ConversationStep.Empty(primary, passkey) => StepView.Credential(primary, passkey)
-        case _: ConversationStep.Password => StepView.Password
-        case _: ConversationStep.Otp => StepView.Otp(length = 6, resendAfter = 60)
+        case ConversationStep.Credential(primaryCredentials, inlinePassword, passkey) =>
+          for
+            allowedPhonePrefixes <-
+              if primaryCredentials.contains(PrimaryCredential.phone) then
+                configuration.getAllowedPhonePrefixes(clientId).map(Some(_))
+              else
+                ZIO.none
+            passwordRegex <-
+              if inlinePassword then configuration.getPasswordRegex(clientId)
+              else ZIO.none
+          yield StepView.Credential(primaryCredentials, inlinePassword, passkey, allowedPhonePrefixes, passwordRegex)
+        case _: ConversationStep.Password =>
+          configuration.getPasswordRegex(clientId).map(StepView.Password(_))
+        case _: ConversationStep.Otp => ZIO.succeed(StepView.Otp(length = 6, resendAfter = 60))
 
     private def solidPage(info: FormRenderInfo, themeCss: String): String =
       s"""<!DOCTYPE html>

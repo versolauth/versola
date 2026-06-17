@@ -1,7 +1,8 @@
 package versola.oauth.client
 
 import org.apache.commons.codec.digest.Blake3
-import versola.oauth.client.model.{Claim, ClaimRecord, ClientId, ClientsWithPepper, FormRecord, OAuthClientRecord, ScopeRecord, ScopeToken, TenantId, ThemeRecord}
+import versola.oauth.client.model.{Claim, ClaimRecord, ClientId, ClientsWithPepper, FormRecord, Locales, OAuthClientRecord, OtpTemplateRecord, PhoneSettingsRecord, ScopeRecord, ScopeToken, TenantId, ThemeRecord}
+import versola.oauth.conversation.otp.model.OtpTemplate
 import versola.util.*
 import zio.*
 import zio.durationInt
@@ -37,6 +38,8 @@ object OAuthClientServiceSpec extends UnitSpecBase:
     accessTokenTtl = 10.minutes,
     refreshTokenTtl = 7776000.seconds,
     theme = "default",
+    authFlow = None,
+    otpTemplateId = "default-otp",
   )
   val privateClient2 = OAuthClientRecord(
     id = clientId2,
@@ -50,6 +53,8 @@ object OAuthClientServiceSpec extends UnitSpecBase:
     accessTokenTtl = 10.minutes,
     refreshTokenTtl = 7776000.seconds,
     theme = "default",
+    authFlow = None,
+    otpTemplateId = "default-otp",
   )
   val publicClient = OAuthClientRecord(
     id = publicClientId,
@@ -63,6 +68,8 @@ object OAuthClientServiceSpec extends UnitSpecBase:
     accessTokenTtl = 10.minutes,
     refreshTokenTtl = 7776000.seconds,
     theme = "default",
+    authFlow = None,
+    otpTemplateId = "default-otp",
   )
   val testClients = Map(clientId1 -> privateClient1, clientId2 -> privateClient2, publicClientId -> publicClient)
   val testScopes = Vector(
@@ -81,11 +88,17 @@ object OAuthClientServiceSpec extends UnitSpecBase:
       scopeCache: ReloadingCache[Vector[ScopeRecord]],
       formCache: ReloadingCache[Vector[FormRecord]],
       themeCache: ReloadingCache[Vector[ThemeRecord]],
+      localeCache: ReloadingCache[Locales],
+      otpTemplateCache: ReloadingCache[Vector[OtpTemplateRecord]],
+      phoneSettingsCache: ReloadingCache[Vector[PhoneSettingsRecord]],
   ):
     val clientSync = stub[OAuthClientSyncClient]
     val scopeSync = stub[OAuthScopeSyncClient]
     val formSync = stub[FormSyncClient]
     val themeSync = stub[ThemeSyncClient]
+    val localeSync = stub[LocaleSyncClient]
+    val otpTemplateSync = stub[OtpTemplateSyncClient]
+    val phoneSettingsSync = stub[PhoneSettingsSyncClient]
     val security = stub[SecurityService]
     security.mac.returns { (secret, key) =>
       ZIO.succeed:
@@ -103,6 +116,12 @@ object OAuthClientServiceSpec extends UnitSpecBase:
         formSync,
         themeCache,
         themeSync,
+        localeCache,
+        localeSync,
+        otpTemplateCache,
+        otpTemplateSync,
+        phoneSettingsCache,
+        phoneSettingsSync,
         security,
       )
 
@@ -111,17 +130,26 @@ object OAuthClientServiceSpec extends UnitSpecBase:
       scopes: Vector[ScopeRecord] = testScopes,
       forms: Vector[FormRecord] = Vector.empty,
       themes: Vector[ThemeRecord] = Vector.empty,
+      locales: Locales = Locales(Vector.empty, "en"),
+      otpTemplates: Vector[OtpTemplateRecord] = Vector.empty,
+      phoneSettings: Vector[PhoneSettingsRecord] = Vector.empty,
   ) =
     for
       clientRef <- Ref.make(ClientsWithPepper(clients = clients, pepper = testPepper))
       scopeRef <- Ref.make(scopes)
       formRef <- Ref.make(forms)
       themeRef <- Ref.make(themes)
+      localeRef <- Ref.make(locales)
+      otpTemplateRef <- Ref.make(otpTemplates)
+      phoneSettingsRef <- Ref.make(phoneSettings)
     yield Env(
       clientCache = ReloadingCache(clientRef),
       scopeCache = ReloadingCache(scopeRef),
       formCache = ReloadingCache(formRef),
       themeCache = ReloadingCache(themeRef),
+      localeCache = ReloadingCache(localeRef),
+      otpTemplateCache = ReloadingCache(otpTemplateRef),
+      phoneSettingsCache = ReloadingCache(phoneSettingsRef),
     )
 
   val spec = suite("OAuthConfigurationService")(
@@ -164,4 +192,60 @@ object OAuthClientServiceSpec extends UnitSpecBase:
         result <- env.service.getScopes
       yield assertTrue(result == testScopes)
     },
+    suite("getClientTemplate")(
+      test("returns template body for preferred locale") {
+        val template = OtpTemplateRecord(
+          "default-otp",
+          TenantId("default"),
+          Map("en" -> "Your code is {{code}}", "ru" -> "Ваш код {{code}}"),
+        )
+        for
+          env <- makeEnv(
+            otpTemplates = Vector(template),
+            locales = Locales(Vector.empty, "en"),
+          )
+          result <- env.service.getClientTemplate(clientId1, Some(List("ru")))
+        yield assertTrue(result == OtpTemplate("Ваш код {{code}}"))
+      },
+      test("falls back to default locale when preferred locale is not in template") {
+        val template = OtpTemplateRecord(
+          "default-otp",
+          TenantId("default"),
+          Map("en" -> "Your code is {{code}}"),
+        )
+        for
+          env <- makeEnv(
+            otpTemplates = Vector(template),
+            locales = Locales(Vector.empty, "en"),
+          )
+          result <- env.service.getClientTemplate(clientId1, Some(List("ru")))
+        yield assertTrue(result == OtpTemplate("Your code is {{code}}"))
+      },
+      test("falls back to first available locale when no preferred or default matches") {
+        val template = OtpTemplateRecord(
+          "default-otp",
+          TenantId("default"),
+          Map("fr" -> "Votre code {{code}}"),
+        )
+        for
+          env <- makeEnv(
+            otpTemplates = Vector(template),
+            locales = Locales(Vector.empty, "en"),
+          )
+          result <- env.service.getClientTemplate(clientId1, None)
+        yield assertTrue(result == OtpTemplate("Votre code {{code}}"))
+      },
+      test("returns illegal state template when client is not found") {
+        for
+          env <- makeEnv(clients = Map.empty)
+          result <- env.service.getClientTemplate(ClientId("missing"), None)
+        yield assertTrue(result == OtpTemplate("{{code}}"))
+      },
+      test("returns illegal state template when no template found for client") {
+        for
+          env <- makeEnv(otpTemplates = Vector.empty)
+          result <- env.service.getClientTemplate(clientId1, None)
+        yield assertTrue(result == OtpTemplate("{{code}}"))
+      },
+    ),
   )

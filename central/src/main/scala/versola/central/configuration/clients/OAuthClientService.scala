@@ -19,8 +19,8 @@ trait OAuthClientService:
 
   def getTenantClients(
       tenantId: TenantId,
-      offset: Int = 0,
-      limit: Option[Int] = None,
+      offset: Int,
+      limit: Option[Int],
   ): Task[Vector[OAuthClientRecord]]
 
   def registerClient(
@@ -70,8 +70,8 @@ object OAuthClientService:
 
     override def getTenantClients(
         tenantId: TenantId,
-        offset: Int = 0,
-        limit: Option[Int] = None,
+        offset: Int,
+        limit: Option[Int],
     ): Task[Vector[OAuthClientRecord]] =
       cache.get.map { records =>
         records
@@ -98,6 +98,8 @@ object OAuthClientService:
           refreshTokenTtl = Duration.fromSeconds(request.refreshTokenTtl.getOrElse(7776000)),
           permissions = request.permissions,
           theme = request.theme,
+          authFlow = request.authFlow,
+          otpTemplateId = request.otpTemplateId,
         )
         _ <- clientRepository.createClient(client)
       yield secret
@@ -114,6 +116,8 @@ object OAuthClientService:
         accessTokenTtl = request.accessTokenTtl.map(Duration.fromSeconds),
         refreshTokenTtl = request.refreshTokenTtl.map(Duration.fromSeconds),
         theme = request.theme,
+        authFlow = request.authFlow,
+        otpTemplateId = request.otpTemplateId,
       )
 
     override def rotateClientSecret(clientId: ClientId): Task[Secret] =

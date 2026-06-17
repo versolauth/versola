@@ -37,6 +37,8 @@ trait OAuthClientRepositorySpec extends DatabaseSpecBase[OAuthClientRepositorySp
     refreshTokenTtl = 7776000.seconds,
     permissions = Set(readPermission),
     theme = "default",
+    authFlow = Some(AuthFlow.default),
+    otpTemplateId = "default-otp",
   )
 
   override def testCases(env: OAuthClientRepositorySpec.Env) =
@@ -70,6 +72,8 @@ trait OAuthClientRepositorySpec extends DatabaseSpecBase[OAuthClientRepositorySp
             accessTokenTtl = Some(15.minutes),
             refreshTokenTtl = None,
             theme = None,
+            authFlow = None,
+            otpTemplateId = None,
           )
           found <- env.repository.find(clientId)
         yield assertTrue(

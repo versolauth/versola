@@ -1,6 +1,7 @@
 package versola.central.configuration.forms
 
 import versola.central.CentralConfig
+import versola.central.configuration.locales.LocaleService
 import versola.central.configuration.sync.{SyncEvent, SyncOps}
 import versola.util.ReloadingCache
 import zio.json.DecoderOps
@@ -9,8 +10,7 @@ import scala.io.Source
 
 trait FormService:
   def getAllForms: Task[Vector[FormRecord]]
-  def getLocales: Task[Vector[FormLocale]]
-  def updateLocales(add: Vector[FormLocale], delete: Vector[String]): Task[Unit]
+  def getSyncForms: Task[Vector[FormRecord]]
   def updateForm(
       id: FormId,
       style: String,
@@ -26,34 +26,40 @@ trait FormService:
 object FormService:
   private val defaultForms: Vector[(String, Vector[BackendProperty])] = Vector(
     "credential" -> Vector(
-      StringArrayProperty("primary", Vector("email", "phone")),
+      StringArrayProperty("primaryCredentials", Vector("email", "phone", "login")),
+      BooleanProperty("inlinePassword"),
       BooleanProperty("passkey"),
     ),
-    "otp" -> Vector.empty,
+    "otp" -> Vector(
+      NumberProperty("length", 6, Some(4), Some(6)),
+      NumberProperty("resendAfter", 60, None, None),
+    ),
+    "password" -> Vector.empty,
   )
-  private val defaultLocales = Vector(FormLocale("en", "English"), FormLocale("ru", "Russian"))
 
   def live(
       schedule: Schedule[Any, Any, Any],
-  ): ZLayer[FormRepository & CentralConfig & Scope, Throwable, FormService] =
+  ): ZLayer[FormRepository & CentralConfig & Scope & LocaleService, Throwable, FormService] =
     ZLayer(ReloadingCache.make[Vector[FormRecord]](schedule))
-      >>> ZLayer.fromFunction(Impl(_, _, _))
+      >>> ZLayer.fromFunction(Impl(_, _, _, _))
       >>> ZLayer(ZIO.serviceWithZIO[FormService.Impl](service => service.initialize().as(service)))
 
   class Impl(
       cache: ReloadingCache[Vector[FormRecord]],
       repository: FormRepository,
       config: CentralConfig,
+      localeService: LocaleService,
   ) extends FormService:
 
     override def getAllForms: Task[Vector[FormRecord]] =
       cache.get.map(_.sortBy(_.id))
 
-    override def getLocales: Task[Vector[FormLocale]] =
-      repository.getLocales
-
-    override def updateLocales(add: Vector[FormLocale], delete: Vector[String]): Task[Unit] =
-      repository.updateLocales(add, delete)
+    override def getSyncForms: Task[Vector[FormRecord]] =
+      for
+        forms         <- cache.get.map(_.filter(_.active).sortBy(_.id))
+        activeLocales <- localeService.getActive.map(_.map(_.code).toSet)
+        formWithActiveLocales = forms.map(f => f.copy(localizations = f.localizations.filter((code, _) => activeLocales.contains(code))))
+      yield formWithActiveLocales
 
     override def updateForm(
         id: FormId,
@@ -87,7 +93,6 @@ object FormService:
       ZIO.when(config.initialize):
         for
           _ <- ZIO.logInfo("Initializing forms from resources...")
-          _ <- repository.updateLocales(add = defaultLocales, delete = Vector.empty)
           _ <- ZIO.foreachDiscard(defaultForms) { (formId, properties) =>
             (for
               jsSource <- readResource(s"forms/$formId.tsx")

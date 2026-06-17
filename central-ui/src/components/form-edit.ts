@@ -2,23 +2,24 @@ import { LitElement, html, css, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
 import { buttonStyles, cardStyles, formStyles } from '../styles/components';
-import type { BackendProperty, FormLocale, FormRecord, StringArrayProperty, ThemeRecord } from '../types';
+import type { BackendProperty, Locale, FormRecord, StringArrayProperty, ThemeRecord } from '../types';
 import { updateForm } from '../utils/central-api';
 import { buildPreviewSrcdoc } from '../utils/preview';
+import { humanizeLabel, toggleAnyOf, exclusiveAnyOfValues } from '../utils/helpers';
 import './content-header';
 import './code-editor';
 
 @customElement('versola-form-edit')
 export class VersolaFormEdit extends LitElement {
   @property({ type: Object }) form!: FormRecord;
-  @property({ type: Array }) locales: FormLocale[] = [];
+  @property({ type: Array }) locales: Locale[] = [];
   @property({ type: Array }) themes: ThemeRecord[] = [];
 
   @state() private editId = '';
   @state() private activeLocale = '';
   @state() private previewLocale = '';
   @state() private editProperties: BackendProperty[] = [];
-  @state() private previewPropertyValues: Record<string, string | boolean> = {};
+  @state() private previewPropertyValues: Record<string, string | boolean | number | string[]> = {};
   @state() private previewOpen = false;
   @state() private previewWidth = 0;
   @state() private previewTheme = '';
@@ -85,6 +86,8 @@ export class VersolaFormEdit extends LitElement {
       .kv-key { font-family: var(--font-mono); font-size: 0.8125rem; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .kv-value { width: 100%; padding: 0.5rem var(--spacing-md); background: rgba(0,0,0,0.25); border: 1px solid var(--border-dark); border-radius: var(--radius-md); font-size: 0.8125rem; color: var(--text-primary); box-sizing: border-box; }
       .kv-value:focus { outline: none; border-color: var(--accent); }
+      .kv-value[type="number"]::-webkit-inner-spin-button, .kv-value[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+      .kv-value[type="number"] { -moz-appearance: textfield; appearance: textfield; }
       .form-actions { display: flex; align-items: center; gap: 1rem; justify-content: flex-end; margin-top: var(--spacing-xl); padding-top: var(--spacing-xl); border-top: 1px solid var(--border-dark); }
       .save-msg { font-size: 0.875rem; }
       .save-msg.success { color: var(--success, #3fb950); }
@@ -125,6 +128,7 @@ export class VersolaFormEdit extends LitElement {
       .seg-btn:first-child { border-left-width: 1px; border-radius: var(--radius-md) 0 0 var(--radius-md); }
       .seg-btn:last-child { border-radius: 0 var(--radius-md) var(--radius-md) 0; }
       .seg-btn:hover:not(.seg-active) { background: rgba(255,255,255,0.05); color: var(--text-primary); }
+      .seg-btn:disabled { cursor: default; }
       .seg-btn.seg-active { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
       /* Preview size presets */
       .preview-sizes { display: flex; gap: var(--spacing-sm); margin-bottom: var(--spacing-md); }
@@ -150,10 +154,12 @@ export class VersolaFormEdit extends LitElement {
     this.editLocalizations = { ...this.editLocalizations, [locale]: { ...forLocale, [key]: value } };
   }
 
-  private effectivePropValue(prop: BackendProperty): string | boolean {
+  private effectivePropValue(prop: BackendProperty): string | boolean | number | string[] {
     const stored = this.previewPropertyValues[prop.name];
     if (stored !== undefined) return stored;
-    return prop.type === 'StringArrayProperty' ? (prop.allowedValues[0] ?? '') : false;
+    if (prop.type === 'StringArrayProperty') return prop.allowedValues;
+    if (prop.type === 'NumberProperty') return prop.default;
+    return false;
   }
 
   private buildPreviewSrcdoc(): string {
@@ -171,11 +177,13 @@ export class VersolaFormEdit extends LitElement {
     });
   }
 
-  private addProperty(type: 'BooleanProperty' | 'StringArrayProperty') {
+  private addProperty(type: 'BooleanProperty' | 'StringArrayProperty' | 'NumberProperty') {
     const name = `new_property_${this.editProperties.length + 1}`;
     const prop: BackendProperty = type === 'BooleanProperty'
       ? { type, name }
-      : { type, name, allowedValues: [] };
+      : type === 'NumberProperty'
+        ? { type, name, default: 0 }
+        : { type, name, allowedValues: [] };
     this.editProperties = [...this.editProperties, prop];
   }
 
@@ -255,7 +263,8 @@ export class VersolaFormEdit extends LitElement {
 
       <div class="add-prop-actions">
         <button class="btn btn-secondary btn-sm" @click=${() => this.addProperty('BooleanProperty')}>+ Add Boolean</button>
-        <button class="btn btn-secondary btn-sm" @click=${() => this.addProperty('StringArrayProperty')}>+ Add OneOf</button>
+        <button class="btn btn-secondary btn-sm" @click=${() => this.addProperty('StringArrayProperty')}>+ Add AnyOf</button>
+        <button class="btn btn-secondary btn-sm" @click=${() => this.addProperty('NumberProperty')}>+ Add Number</button>
       </div>
 
       <div class="properties-list">
@@ -371,7 +380,7 @@ export class VersolaFormEdit extends LitElement {
             if (prop.type === 'BooleanProperty') {
               return html`
                 <div class="ctrl-group">
-                  <span class="ctrl-label">${prop.name}</span>
+                  <span class="ctrl-label">${humanizeLabel(prop.name)}</span>
                   <div class="toggle-wrap">
                     <label class="toggle">
                       <input type="checkbox" .checked=${!!val}
@@ -382,15 +391,32 @@ export class VersolaFormEdit extends LitElement {
                     <span class="toggle-val">${val ? 'on' : 'off'}</span>
                   </div>
                 </div>`;
-            } else {
+            } else if (prop.type === 'NumberProperty') {
               return html`
                 <div class="ctrl-group">
-                  <span class="ctrl-label">${prop.name}</span>
+                  <span class="ctrl-label">${humanizeLabel(prop.name)}</span>
+                  <input type="number" class="kv-value" style="width:5rem" .value=${String(val)}
+                    min=${prop.min !== undefined ? prop.min : nothing}
+                    max=${prop.max !== undefined ? prop.max : nothing}
+                    @change=${(e: Event) => {
+                      this.previewPropertyValues = { ...this.previewPropertyValues, [prop.name]: Number((e.target as HTMLInputElement).value) };
+                    }} />
+                </div>`;
+            } else {
+              const selected = Array.isArray(val) ? val : [];
+              const exclusive = exclusiveAnyOfValues(prop.name);
+              return html`
+                <div class="ctrl-group">
+                  <span class="ctrl-label">${humanizeLabel(prop.name)}</span>
                   <div class="seg-control">
-                    ${prop.allowedValues.map(v => html`
-                      <button class="seg-btn ${val === v ? 'seg-active' : ''}"
-                        @click=${() => { this.previewPropertyValues = { ...this.previewPropertyValues, [prop.name]: v }; }}>${v}</button>
-                    `)}
+                    ${(prop as StringArrayProperty).allowedValues.map(v => {
+                      const isSelected = selected.includes(v);
+                      const isLast = isSelected && selected.length === 1;
+                      return html`
+                      <button class="seg-btn ${isSelected ? 'seg-active' : ''}" ?disabled=${isLast}
+                        @click=${() => { const next = toggleAnyOf(selected, v, exclusive); if (next) this.previewPropertyValues = { ...this.previewPropertyValues, [prop.name]: next }; }}>${v}</button>
+                    `;
+                    })}
                   </div>
                 </div>`;
             }

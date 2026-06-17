@@ -44,6 +44,8 @@ object ClientController extends Controller:
               permissions = client.permissions,
               secretRotation = client.previousSecret.nonEmpty,
               theme = client.theme,
+              authFlow = client.authFlow,
+              otpTemplateId = client.otpTemplateId,
             )
           })
       yield Response.json(GetAllClientsResponse(clients.toList).toJson)
@@ -73,6 +75,8 @@ object ClientController extends Controller:
             refreshTokenTtl = client.refreshTokenTtl,
             permissions = client.permissions,
             theme = client.theme,
+            authFlow = client.authFlow,
+            otpTemplateId = client.otpTemplateId,
           )
         }
         encryptedPepper <- encryptSecret(centralConfig.clientSecretsPepper)
