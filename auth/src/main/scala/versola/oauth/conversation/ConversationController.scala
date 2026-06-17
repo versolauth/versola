@@ -1,7 +1,8 @@
 package versola.oauth.conversation
 
 import versola.auth.model.{OtpCode, Password}
-import versola.oauth.conversation.model.{AuthId, ConversationStep, Error}
+import versola.oauth.client.OAuthConfigurationService
+import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep, Error}
 import versola.oauth.model.ConversationCookie
 import versola.user.model.Login
 import versola.util.http.Controller
@@ -13,7 +14,7 @@ import zio.schema.*
 import zio.telemetry.opentelemetry.tracing.Tracing
 
 object ConversationController extends Controller:
-  type Env = Tracing & ConversationRouter & ConversationRenderService
+  type Env = Tracing & ConversationRouter & ConversationRenderService & OAuthConfigurationService
 
   def routes: Routes[Env, Throwable] = Routes(
     getFormRoute,
@@ -45,7 +46,15 @@ object ConversationController extends Controller:
     submit[EmailSubmission](Method.POST / "challenge" / "email")
 
   val submitPhoneRoute =
-    submit[PhoneSubmission](Method.POST / "challenge" / "phone")
+    submit[PhoneSubmission](
+      Method.POST / "challenge" / "phone",
+      validate = (record, body) =>
+        ZIO.serviceWithZIO[OAuthConfigurationService]: svc =>
+          svc.getAllowedPhonePrefixes(record.clientId).flatMap: prefixes =>
+            ZIO.fail(Error.BadRequest)
+              .unless(prefixes.isEmpty || prefixes.exists(body.phone.startsWith))
+              .unit,
+    )
 
   val submitPasswordRoute =
     submit[PasswordSubmission](Method.POST / "challenge" / "password")
@@ -61,7 +70,8 @@ object ConversationController extends Controller:
 
   private def submit[Body <: Submission: FormDecoder](
       pattern: RoutePattern[Unit],
-  ): Route[ConversationRouter & ConversationRenderService, Throwable] =
+      validate: (ConversationRecord, Body) => ZIO[OAuthConfigurationService, Error, Unit] = (r: ConversationRecord, b: Body) => ZIO.unit,
+  ): Route[ConversationRouter & ConversationRenderService & OAuthConfigurationService, Throwable] =
     pattern -> handler { (request: Request) =>
       (for
         router <- ZIO.service[ConversationRouter]
@@ -69,6 +79,7 @@ object ConversationController extends Controller:
         authId <- extractAuthId(request)
         record <- router.getConversation(authId).someOrFail(Error.BadRequest)
         body <- request.formAs[Body].orElseFail(Error.BadRequest)
+        _ <- validate(record, body)
         submissionResult <- router.submit(authId, body)
         response <- conversationRenderService.renderSubmit(submissionResult, record.clientId, record.uiLocales)
       yield response)

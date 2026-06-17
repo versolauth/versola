@@ -39,6 +39,7 @@ type CredentialStep = {
   primaryCredentials: PrimaryCredential[];
   inlinePassword: boolean;
   passkey: boolean;
+  allowedPhonePrefixes?: string[];
 };
 
 interface FormConfig {
@@ -76,12 +77,25 @@ function CredentialForm(props: { config: FormConfig }) {
   const single = primaries.length === 1 ? primaries[0] : null;
   const challengeKind = single ?? 'credential';
   const combinedPlaceholder = () => primaries.map((p) => t()[`${p}_placeholder`] ?? p).join(' / ');
+  const allowedPhonePrefixes = step.allowedPhonePrefixes ?? [];
 
   // login always carries a password; email/phone show it only when inlinePassword is set
   const showPassword = () => isLoginFlow || !!step.inlinePassword;
 
   const formAction = () =>
     showPassword() ? `/challenge/${challengeKind}-password` : `/challenge/${challengeKind}`;
+
+  const [phoneNotAllowed, setPhoneNotAllowed] = createSignal(false);
+
+  const handleSubmit = (e: SubmitEvent) => {
+    if (single !== 'phone' || allowedPhonePrefixes.length === 0) return;
+    const form = e.currentTarget as HTMLFormElement;
+    const phone = (form.elements.namedItem('phone') as HTMLInputElement | null)?.value ?? '';
+    if (!allowedPhonePrefixes.some((prefix) => phone.startsWith(prefix))) {
+      e.preventDefault();
+      setPhoneNotAllowed(true);
+    }
+  };
 
   return (
     <div class="container">
@@ -92,12 +106,23 @@ function CredentialForm(props: { config: FormConfig }) {
       </Show>
       <h1>{t().title}</h1>
 
-      <form method="post">
+      <form method="post" onSubmit={handleSubmit}>
         <Show when={single === 'email'}>
           <input type="email" name="email" class="input-field" placeholder={t().email_placeholder} required />
         </Show>
         <Show when={single === 'phone'}>
-          <input type="tel" name="phone" class="input-field" placeholder={t().phone_placeholder} pattern="^\+[1-9]\d{6,14}$" required />
+          <input
+            type="tel"
+            name="phone"
+            class="input-field"
+            placeholder={t().phone_placeholder}
+            pattern="^\+[1-9]\d{6,14}$"
+            required
+            onInput={() => phoneNotAllowed() && setPhoneNotAllowed(false)}
+          />
+          <Show when={phoneNotAllowed()}>
+            <div class="phone-error-message">{t().phone_not_allowed}</div>
+          </Show>
         </Show>
         <Show when={single === 'login'}>
           <input type="text" name="login" class="input-field" placeholder={t().login_placeholder} required />

@@ -1,7 +1,7 @@
 package versola.oauth.client
 
 import org.apache.commons.codec.digest.Blake3
-import versola.oauth.client.model.{Claim, ClaimRecord, ClientId, ClientsWithPepper, FormRecord, Locales, OAuthClientRecord, OtpTemplateRecord, ScopeRecord, ScopeToken, TenantId, ThemeRecord}
+import versola.oauth.client.model.{Claim, ClaimRecord, ClientId, ClientsWithPepper, FormRecord, Locales, OAuthClientRecord, OtpTemplateRecord, PhoneSettingsRecord, ScopeRecord, ScopeToken, TenantId, ThemeRecord}
 import versola.oauth.conversation.otp.model.OtpTemplate
 import versola.util.*
 import zio.*
@@ -90,6 +90,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
       themeCache: ReloadingCache[Vector[ThemeRecord]],
       localeCache: ReloadingCache[Locales],
       otpTemplateCache: ReloadingCache[Vector[OtpTemplateRecord]],
+      phoneSettingsCache: ReloadingCache[Vector[PhoneSettingsRecord]],
   ):
     val clientSync = stub[OAuthClientSyncClient]
     val scopeSync = stub[OAuthScopeSyncClient]
@@ -97,6 +98,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
     val themeSync = stub[ThemeSyncClient]
     val localeSync = stub[LocaleSyncClient]
     val otpTemplateSync = stub[OtpTemplateSyncClient]
+    val phoneSettingsSync = stub[PhoneSettingsSyncClient]
     val security = stub[SecurityService]
     security.mac.returns { (secret, key) =>
       ZIO.succeed:
@@ -118,6 +120,8 @@ object OAuthClientServiceSpec extends UnitSpecBase:
         localeSync,
         otpTemplateCache,
         otpTemplateSync,
+        phoneSettingsCache,
+        phoneSettingsSync,
         security,
       )
 
@@ -128,6 +132,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
       themes: Vector[ThemeRecord] = Vector.empty,
       locales: Locales = Locales(Vector.empty, "en"),
       otpTemplates: Vector[OtpTemplateRecord] = Vector.empty,
+      phoneSettings: Vector[PhoneSettingsRecord] = Vector.empty,
   ) =
     for
       clientRef <- Ref.make(ClientsWithPepper(clients = clients, pepper = testPepper))
@@ -136,6 +141,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
       themeRef <- Ref.make(themes)
       localeRef <- Ref.make(locales)
       otpTemplateRef <- Ref.make(otpTemplates)
+      phoneSettingsRef <- Ref.make(phoneSettings)
     yield Env(
       clientCache = ReloadingCache(clientRef),
       scopeCache = ReloadingCache(scopeRef),
@@ -143,6 +149,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
       themeCache = ReloadingCache(themeRef),
       localeCache = ReloadingCache(localeRef),
       otpTemplateCache = ReloadingCache(otpTemplateRef),
+      phoneSettingsCache = ReloadingCache(phoneSettingsRef),
     )
 
   val spec = suite("OAuthConfigurationService")(

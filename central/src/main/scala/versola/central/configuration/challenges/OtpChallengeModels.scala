@@ -16,3 +16,12 @@ case class DeleteOtpTemplateRequest(
     id: String,
     tenantId: TenantId,
 ) derives Schema, JsonCodec
+
+case class GetPhoneSettingsResponse(settings: PhoneSettingsRecord) derives Schema, JsonCodec
+
+case class GetAllPhoneSettingsResponse(settings: Vector[PhoneSettingsRecord]) derives Schema, JsonCodec
+
+case class UpsertPhoneSettingsRequest(
+    tenantId: TenantId,
+    allowedPrefixes: List[String],
+) derives Schema, JsonCodec

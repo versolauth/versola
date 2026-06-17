@@ -1,7 +1,7 @@
 package versola.oauth.conversation
 
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{FormRecord, PrimaryCredential}
+import versola.oauth.client.model.{ClientId, FormRecord, PrimaryCredential}
 import versola.oauth.conversation.model.{ConversationRecord, ConversationStep}
 import versola.oauth.model.SessionCookie
 import versola.util.{Base64Url, CoreConfig, JWT}
@@ -35,6 +35,7 @@ object ConversationRenderService:
         primaryCredentials: List[PrimaryCredential],
         inlinePassword: Boolean,
         passkey: Boolean,
+        allowedPhonePrefixes: Option[List[String]],
     ) extends StepView
     @jsonHint("password")
     case object Password extends StepView
@@ -68,7 +69,7 @@ object ConversationRenderService:
         client <- configuration.find(record.clientId)
         themeId = client.map(_.theme).getOrElse(ThemeDefault)
         css <- themeCss(themeId)
-        maybeInfo <- formFor(record.step, record.uiLocales)
+        maybeInfo <- formFor(record.step, record.clientId, record.uiLocales)
         response <- maybeInfo match
           case None =>
             ZIO.succeed(htmlResponse(notFoundPage(css), Status.NotFound))
@@ -144,14 +145,17 @@ object ConversationRenderService:
 
     private def formFor(
         step: ConversationStep,
+        clientId: ClientId,
         locale: Option[List[String]],
     ): Task[Option[FormRenderInfo]] =
       val formId = step match
         case _: ConversationStep.Credential => "credential"
         case _: ConversationStep.Password => "password"
         case _: ConversationStep.Otp => "otp"
-      val view = stepView(step)
-      configuration.getForm(formId).map(_.map { form =>
+      for
+        view    <- stepView(step, clientId)
+        formOpt <- configuration.getForm(formId)
+      yield formOpt.map { form =>
         val (chosenLocale, translations) = pickTranslations(form, locale)
         val allLocales = form.localizations.keys.toList.sorted
         FormRenderInfo(
@@ -167,7 +171,7 @@ object ConversationRenderService:
           ),
           version = form.version,
         )
-      })
+      }
 
     private def pageTitle(translations: Map[String, String]): String =
       translations.getOrElse("page_title", "Sign In")
@@ -186,12 +190,16 @@ object ConversationRenderService:
         case _ => configuration.getTheme(ThemeDefault).map(_.map(_.css).getOrElse(""))
       }
 
-    private def stepView(step: ConversationStep): StepView =
+    private def stepView(step: ConversationStep, clientId: ClientId): UIO[StepView] =
       step match
         case ConversationStep.Credential(primaryCredentials, inlinePassword, passkey) =>
-          StepView.Credential(primaryCredentials, inlinePassword, passkey)
-        case _: ConversationStep.Password => StepView.Password
-        case _: ConversationStep.Otp => StepView.Otp(length = 6, resendAfter = 60)
+          if primaryCredentials.contains(PrimaryCredential.phone) then
+            configuration.getAllowedPhonePrefixes(clientId).map: allowedPhonePrefixes =>
+              StepView.Credential(primaryCredentials, inlinePassword, passkey, Some(allowedPhonePrefixes))
+          else
+            ZIO.succeed(StepView.Credential(primaryCredentials, inlinePassword, passkey, None))
+        case _: ConversationStep.Password => ZIO.succeed(StepView.Password)
+        case _: ConversationStep.Otp => ZIO.succeed(StepView.Otp(length = 6, resendAfter = 60))
 
     private def solidPage(info: FormRenderInfo, themeCss: String): String =
       s"""<!DOCTYPE html>

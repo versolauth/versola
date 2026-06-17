@@ -3,7 +3,14 @@ import { customElement, property, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
 import { buttonStyles, cardStyles, formStyles, iconActionStyles } from '../styles/components';
 import type { OtpTemplateRecord, Locale } from '../types';
-import { fetchOtpTemplates, upsertOtpTemplate, deleteOtpTemplate, fetchLocales } from '../utils/central-api';
+import {
+  fetchOtpTemplates,
+  upsertOtpTemplate,
+  deleteOtpTemplate,
+  fetchLocales,
+  fetchPhoneSettings,
+  upsertPhoneSettings,
+} from '../utils/central-api';
 
 @customElement('versola-challenges-list')
 export class VersolaChallengesList extends LitElement {
@@ -25,6 +32,12 @@ export class VersolaChallengesList extends LitElement {
   @state() private editLocalizations: Array<{ locale: string; template: string }> = [];
   @state() private saving = false;
   @state() private editError = '';
+
+  @state() private phonePrefixes: string[] = [];
+  @state() private editingPhone = false;
+  @state() private editPhonePrefixes: Array<{ value: string }> = [];
+  @state() private phoneSaving = false;
+  @state() private phoneError = '';
 
   static styles = [
     theme,
@@ -170,6 +183,22 @@ export class VersolaChallengesList extends LitElement {
       }
       .error-msg { font-size: 0.875rem; color: var(--danger); margin-top: var(--spacing-sm); }
       .hint { font-size: 0.75rem; color: var(--text-secondary); margin-bottom: var(--spacing-md); }
+      .prefix-tags {
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--spacing-sm);
+        margin-top: var(--spacing-sm);
+      }
+      .prefix-tag {
+        font-family: var(--font-mono);
+        font-weight: 600;
+        font-size: 0.9375rem;
+        color: var(--accent);
+        background: var(--bg-dark);
+        border: 1px solid var(--border-dark);
+        border-radius: var(--radius-md);
+        padding: var(--spacing-xs) var(--spacing-md);
+      }
     `,
   ];
 
@@ -184,12 +213,14 @@ export class VersolaChallengesList extends LitElement {
     this.isLoading = true;
     this.errorMessage = '';
     try {
-      const [templates, locales] = await Promise.all([
+      const [templates, locales, phoneSettings] = await Promise.all([
         fetchOtpTemplates(this.tenantId),
         fetchLocales(),
+        fetchPhoneSettings(this.tenantId),
       ]);
       this.templates = templates;
       this.availableLocales = locales;
+      this.phonePrefixes = phoneSettings.allowedPrefixes;
     } catch (e) {
       this.errorMessage = e instanceof Error ? e.message : 'Failed to load data';
     } finally {
@@ -293,6 +324,45 @@ export class VersolaChallengesList extends LitElement {
       await this.loadData();
     } catch (e) {
       this.errorMessage = e instanceof Error ? e.message : 'Failed to delete template';
+    }
+  }
+
+  private startEditPhone() {
+    this.editingPhone = true;
+    this.editPhonePrefixes = this.phonePrefixes.map(value => ({ value }));
+    this.phoneError = '';
+  }
+
+  private cancelEditPhone() {
+    this.editingPhone = false;
+    this.phoneError = '';
+  }
+
+  private addPrefix() {
+    this.editPhonePrefixes = [...this.editPhonePrefixes, { value: '' }];
+  }
+
+  private removePrefix(index: number) {
+    this.editPhonePrefixes = this.editPhonePrefixes.filter((_, i) => i !== index);
+  }
+
+  private async savePhoneSettings() {
+    if (!this.tenantId) return;
+    const prefixes = this.editPhonePrefixes.map(p => p.value.trim()).filter(p => p.length > 0);
+    if (prefixes.some(p => !/^\+\d+$/.test(p))) {
+      this.phoneError = 'Each prefix must start with + followed by digits (e.g. +77).';
+      return;
+    }
+    this.phoneSaving = true;
+    this.phoneError = '';
+    try {
+      await upsertPhoneSettings(this.tenantId, prefixes);
+      this.phonePrefixes = prefixes;
+      this.editingPhone = false;
+    } catch (e) {
+      this.phoneError = e instanceof Error ? e.message : 'Failed to save phone settings';
+    } finally {
+      this.phoneSaving = false;
     }
   }
 
@@ -404,12 +474,74 @@ export class VersolaChallengesList extends LitElement {
     `;
   }
 
+  private renderPhoneSettings() {
+    return html`
+      <section class="settings-section">
+        <div class="section-header">
+          <div>
+            <h2 class="section-title">Phone Settings</h2>
+            <div class="section-desc">Allowed phone prefixes accepted on phone submissions (e.g. +77, +79).</div>
+          </div>
+          <button class="btn btn-secondary" @click=${() => this.startEditPhone()}>Edit</button>
+        </div>
+
+        <div class="card">
+          <label>Allowed Phones</label>
+          ${this.phonePrefixes.length === 0
+            ? html`<div class="hint">No prefixes configured. Any phone number is accepted.</div>`
+            : html`
+              <div class="prefix-tags">
+                ${this.phonePrefixes.map(prefix => html`<span class="prefix-tag">${prefix}</span>`)}
+              </div>
+            `}
+        </div>
+      </section>
+    `;
+  }
+
+  private renderPhoneEdit() {
+    return html`
+      <div class="form-header">
+        <div class="title-stack">
+          <h1 class="form-title">Edit Phone Settings</h1>
+        </div>
+      </div>
+
+      <div class="card">
+        <label>Allowed Phones</label>
+        <div class="hint">Each prefix must start with + followed by digits (e.g. +77). Leave empty to accept any phone number.</div>
+
+        ${this.editPhonePrefixes.length === 0
+          ? html`<div class="hint">No prefixes configured.</div>`
+          : this.editPhonePrefixes.map((entry, i) => html`
+            <div class="locale-bar">
+              <input type="text" class="form-control compact-input locale-select" .value=${entry.value}
+                @input=${(e: Event) => { entry.value = (e.target as HTMLInputElement).value; }}
+                placeholder="+77" />
+              <button class="icon-action danger" @click=${() => this.removePrefix(i)} title="Remove">✕</button>
+            </div>
+          `)}
+
+        <button class="btn btn-secondary" @click=${() => this.addPrefix()}>+ Add Prefix</button>
+
+        <div class="form-actions">
+          <button class="btn btn-secondary" ?disabled=${this.phoneSaving} @click=${() => this.cancelEditPhone()}>Cancel</button>
+          <button class="btn btn-primary" ?disabled=${this.phoneSaving} @click=${() => this.savePhoneSettings()}>
+            ${this.phoneSaving ? 'Saving…' : 'Save'}
+          </button>
+        </div>
+        ${this.phoneError ? html`<div class="error-msg">${this.phoneError}</div>` : nothing}
+      </div>
+    `;
+  }
+
   render() {
     if (!this.tenantId) {
       return html`<div class="hint">Please select a tenant to manage challenges.</div>`;
     }
 
     if (this.editingTemplateId) return this.renderEdit();
+    if (this.editingPhone) return this.renderPhoneEdit();
 
     return html`
       <div class="page-header">
@@ -417,6 +549,7 @@ export class VersolaChallengesList extends LitElement {
       </div>
 
       ${this.renderOtpSettings()}
+      ${this.renderPhoneSettings()}
     `;
   }
 }

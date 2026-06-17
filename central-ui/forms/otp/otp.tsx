@@ -69,6 +69,15 @@ function OtpForm(props: { config: FormConfig }) {
   const otpLength = props.config.step.length ?? 6;
   const [otp, setOtp] = createSignal('');
   let inputRef!: HTMLInputElement;
+  let submitRef!: HTMLButtonElement;
+
+  const handleInput = (value: string) => {
+    const code = value.replace(/[^0-9]/g, '').slice(0, otpLength);
+    setOtp(code);
+    if (code.length === otpLength) {
+      submitRef.form?.requestSubmit(submitRef);
+    }
+  };
 
   const [remaining, setRemaining] = createSignal(props.config.step.resendAfter ?? 60);
   const timer = setInterval(() => {
@@ -106,11 +115,11 @@ function OtpForm(props: { config: FormConfig }) {
             autocomplete="one-time-code"
             maxlength={otpLength}
             value={otp()}
-            onInput={(e) => setOtp(e.currentTarget.value.replace(/[^0-9]/g, '').slice(0, otpLength))}
+            onInput={(e) => handleInput(e.currentTarget.value)}
             required
           />
         </div>
-        <button type="submit" formAction="/challenge/otp" class="btn btn-primary">
+        <button ref={submitRef} type="submit" formAction="/challenge/otp" class="btn btn-primary">
           {t().verify_button}
         </button>
         <div class="divider"><span>{t().divider}</span></div>

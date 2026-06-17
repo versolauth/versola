@@ -61,6 +61,12 @@ export interface OtpTemplateRecord {
   localizations: Record<string, string>;
 }
 
+// Phone Settings
+export interface PhoneSettingsRecord {
+  tenantId: string;
+  allowedPrefixes: string[];
+}
+
 // OAuth Scope
 export interface OAuthScope {
   id: string;

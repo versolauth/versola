@@ -52,14 +52,17 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
   ) =
     test(description) {
       for
-        client      <- ZIO.service[Client]
-        service     = stub[OtpChallengeService]
-        edgeService = stub[EdgeService]
-        tracing     <- tracingLayer.build
+        client        <- ZIO.service[Client]
+        service       = stub[OtpChallengeService]
+        phoneService  = stub[PhoneChallengeService]
+        edgeService   = stub[EdgeService]
+        tracing       <- tracingLayer.build
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             OtpChallengeController.routes.provideEnvironment(
-              ZEnvironment[OtpChallengeService](service) ++ tracing ++ ZEnvironment(config) ++ ZEnvironment[EdgeService](edgeService)
+              ZEnvironment[OtpChallengeService](service) ++
+                ZEnvironment[PhoneChallengeService](phoneService) ++
+                tracing ++ ZEnvironment(config) ++ ZEnvironment[EdgeService](edgeService)
             )
           )
         )
@@ -91,11 +94,11 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         .get(URL.empty / "configuration" / "challenges" / "otp-templates" / "sync")
         .addHeader(Header.Authorization.Bearer(syncToken)),
       expectedStatus = Status.Ok,
-      setup = service => service.getAllTemplates.succeedsWith(Vector(template)),
+      setup = service => service.getSyncTemplates.succeedsWith(Vector(template)),
       verify = (response, service) =>
         for payload <- response.body.asJson[GetOtpTemplatesResponse]
         yield assertTrue(
-          service.getAllTemplates.calls.length == 1,
+          service.getSyncTemplates.calls.length == 1,
           payload == GetOtpTemplatesResponse(Vector(template)),
         ),
     ),
@@ -104,7 +107,7 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       request = Request.get(URL.empty / "configuration" / "challenges" / "otp-templates" / "sync"),
       expectedStatus = Status.Unauthorized,
       verify = (_, service) =>
-        ZIO.succeed(assertTrue(service.getAllTemplates.calls.isEmpty)),
+        ZIO.succeed(assertTrue(service.getSyncTemplates.calls.isEmpty)),
     ),
     controllerTestCase(
       description = "PUT otp-templates upserts template and returns no content",

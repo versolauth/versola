@@ -70,11 +70,12 @@ object ConversationControllerSpec extends UnitSpecBase:
       for
         client <- ZIO.service[Client]
         router = stub[ConversationRouter]
+        configuration = stub[OAuthConfigurationService]
         formService <- ConversationRenderService.live
           .build
           .provideSome[zio.Scope](
             ZLayer.succeed(TestEnvConfig.coreConfig),
-            ZLayer.succeed(stub[OAuthConfigurationService]),
+            ZLayer.succeed(configuration),
           )
 
         tracing <- NoopTracing.layer.build
@@ -82,11 +83,12 @@ object ConversationControllerSpec extends UnitSpecBase:
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             ConversationController.routes
-              .provideEnvironment(ZEnvironment(router) ++ formService ++ tracing)
+              .provideEnvironment(ZEnvironment(router) ++ formService ++ tracing ++ ZEnvironment(configuration))
           )
         )
         _ <- router.getConversation.succeedsWith(Some(record))
         _ <- router.submit.succeedsWith(conversationResult)
+        _ <- configuration.getAllowedPhonePrefixes.succeedsWith(List.empty)
 
         response <- client.batched(request)
 

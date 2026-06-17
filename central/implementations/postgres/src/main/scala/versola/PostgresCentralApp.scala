@@ -3,7 +3,7 @@ package versola
 import com.augustnagro.magnum.magzio.TransactorZIO
 import com.zaxxer.hikari.HikariDataSource
 import versola.central.CentralConfig
-import versola.central.configuration.challenges.{OtpChallengeController, OtpChallengeRepository, OtpChallengeService}
+import versola.central.configuration.challenges.{OtpChallengeController, OtpChallengeRepository, OtpChallengeService, PhoneChallengeRepository, PhoneChallengeService}
 import versola.central.configuration.clients.{AuthorizationPresetController, AuthorizationPresetRepository, AuthorizationPresetService, ClientController, OAuthClientRepository, OAuthClientService}
 import versola.central.configuration.edges.{EdgeController, EdgeRepository, EdgeService}
 import versola.central.configuration.forms.{FormController, FormRepository, FormService}
@@ -17,7 +17,7 @@ import versola.central.configuration.sync.{CacheSyncRepository, CacheSyncService
 import versola.central.configuration.tenants.{TenantController, TenantRepository, TenantService}
 import versola.central.users.{AuthClient, UserOutboxProcessor, UserController, UserRepository, UserService}
 import versola.configuration.clients.{PostgresAuthorizationPresetRepository, PostgresOAuthClientRepository}
-import versola.configuration.challenges.PostgresOtpChallengeRepository
+import versola.configuration.challenges.{PostgresOtpChallengeRepository, PostgresPhoneChallengeRepository}
 import versola.configuration.forms.PostgresFormRepository
 import versola.configuration.locales.PostgresLocaleRepository
 import versola.configuration.themes.PostgresThemeRepository
@@ -71,6 +71,8 @@ object PostgresCentralApp extends VersolaApp("central"):
       ThemeService &
       OtpChallengeRepository &
       OtpChallengeService &
+      PhoneChallengeRepository &
+      PhoneChallengeService &
       CacheSyncRepository &
       CacheSyncService &
       UserRepository &
@@ -110,6 +112,7 @@ object PostgresCentralApp extends VersolaApp("central"):
           PostgresLocaleRepository.live >+>
           PostgresThemeRepository.live >+>
           PostgresOtpChallengeRepository.live >+>
+          PostgresPhoneChallengeRepository.live >+>
           PostgresCacheSyncRepository.live >+>
           PostgresUserRepository.live
       )
@@ -132,6 +135,7 @@ object PostgresCentralApp extends VersolaApp("central"):
       FormService.live(schedule) >+>
       ThemeService.live(schedule) >+>
       OtpChallengeService.live(schedule) >+>
+      PhoneChallengeService.live(schedule) >+>
       CacheSyncService.live >+>
       AuthClient.live >+>
       UserService.live >+>

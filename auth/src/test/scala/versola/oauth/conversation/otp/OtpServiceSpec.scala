@@ -6,7 +6,7 @@ import versola.oauth.client.model.ClientId
 import versola.oauth.conversation.model.{AuthId, ConversationStep}
 import versola.oauth.conversation.otp.model.{OtpTemplate, SendOtpResult, SubmitOtpResult}
 import versola.user.model.UserId
-import versola.util.{Email, Phone, UnitSpecBase}
+import versola.util.{Email, EnvName, Phone, UnitSpecBase}
 import zio.*
 import zio.test.*
 
@@ -39,6 +39,7 @@ object OtpServiceSpec extends UnitSpecBase:
       emailOtpProvider,
       otpClient,
       configService,
+      EnvName.Prod,
     )
 
   val spec = suite("OtpService")(

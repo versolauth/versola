@@ -123,11 +123,11 @@ object LocaleControllerSpec extends ZIOSpecDefault, ZIOStubs:
         .get(URL.empty / "configuration" / "locales" / "sync")
         .addHeader(Header.Authorization.Bearer(syncToken)),
       expectedStatus = Status.Ok,
-      setup = service => service.getAll.succeedsWith(Vector(en, ru)),
+      setup = service => service.getActive.succeedsWith(Vector(en, ru)),
       verify = (response, service) =>
         for payload <- response.body.asJson[GetLocalesSyncResponse]
         yield assertTrue(
-          service.getAll.calls.length == 1,
+          service.getActive.calls.length == 1,
           payload == GetLocalesSyncResponse(
             locales = Vector(SyncLocaleRecord("en", "English"), SyncLocaleRecord("ru", "Russian")),
             default = "en",
@@ -139,6 +139,6 @@ object LocaleControllerSpec extends ZIOSpecDefault, ZIOStubs:
       request = Request.get(URL.empty / "configuration" / "locales" / "sync"),
       expectedStatus = Status.Unauthorized,
       verify = (_, service) =>
-        ZIO.succeed(assertTrue(service.getAll.calls.isEmpty)),
+        ZIO.succeed(assertTrue(service.getActive.calls.isEmpty)),
     ),
   )

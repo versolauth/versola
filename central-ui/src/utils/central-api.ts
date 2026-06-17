@@ -7,6 +7,7 @@ import type {
   Locale,
   FormRecord,
   OtpTemplateRecord,
+  PhoneSettingsRecord,
   InjectRule,
   OAuthClaim,
   OAuthClient,
@@ -934,6 +935,20 @@ export async function deleteOtpTemplate(id: string, tenantId: string): Promise<v
   await requestVoid('/configuration/challenges/otp-templates', {
     method: 'DELETE',
     body: { id, tenantId },
+  });
+}
+
+export async function fetchPhoneSettings(tenantId: string): Promise<PhoneSettingsRecord> {
+  const response = await request<{ settings: PhoneSettingsRecord }>('/configuration/challenges/phone-settings', {
+    query: { tenantId },
+  });
+  return response.settings;
+}
+
+export async function upsertPhoneSettings(tenantId: string, allowedPrefixes: string[]): Promise<void> {
+  await requestVoid('/configuration/challenges/phone-settings', {
+    method: 'PUT',
+    body: { tenantId, allowedPrefixes },
   });
 }
 
