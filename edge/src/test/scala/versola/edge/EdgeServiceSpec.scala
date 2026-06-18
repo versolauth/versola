@@ -19,7 +19,7 @@ import java.security.interfaces.RSAPublicKey
 import java.util.{Collections, Date, UUID}
 import javax.crypto.spec.SecretKeySpec
 
-object  EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
+object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
 
   object Fixtures:
     val presetId = PresetId("preset-default")

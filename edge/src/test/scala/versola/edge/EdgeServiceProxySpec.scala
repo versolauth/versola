@@ -138,12 +138,10 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
     proxySuite,
   ).provideLayer(TestClient.layer ++ securityServiceLayer) @@ TestAspect.silentLogging
 
-  private def usersEndpoint(allow: Option[String] = None,
-                             inject: Vector[InjectRule] = Vector.empty,
-                             fetchUserInfo: Boolean = false) =
+  private def usersEndpoint(allow: Option[String] = None, inject: Vector[InjectRule] = Vector.empty) =
     ResourceEndpoint(
       id = ResourceEndpointId(java.util.UUID.fromString("018f0f2a-1c7b-7000-8000-000000000401")),
-      method = "GET", path = "/users", fetchUserInfo = fetchUserInfo, allow = allow, inject = inject
+      method = "GET", path = "/users", fetchUserInfo = false, allow = allow, inject = inject,
     )
 
   private def userByIdEndpoint(allow: Option[String] = None, inject: Vector[InjectRule] = Vector.empty) =
@@ -677,97 +675,5 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         setCookieHeader.flatMap(_.maxAge).contains(Duration.Zero),
       )
     },
-    test("exposes user info in CEL allow and inject rules") {
-      val env = new Env
-      val endpoint = usersEndpoint(
-        allow = Some("user.email == 'john@example.com'"),
-        inject = Vector(
-          InjectRule(
-            InjectTarget.header, "x-user-email", "user.email")
-        ),
-        fetchUserInfo = true,
-      )
-      for
-        _ <- env.setupDefaults()
-        _ <- env.ssoClient.userInfo.succeedsWith(Json.Obj("email" -> Json.Str("john@example.com")))
-        capture <- captureUpstream()
-        client <- ZIO.service[Client]
-        security <- ZIO.service[SecurityService]
-        _ <- env.withResources(usersResource(endpoint))
-        token <- env.signToken()
-        request = Request.get(URL.empty / "users")
-          .addCookie(sessionCookie(token))
-        service = env.buildService(client, security)
-        response <- service.proxy("users-api", Path.decode("/users"), request)
-        upstream <- capture.get
-
-      yield assertTrue(
-        response.status == Status.Ok,
-        upstream.exists(_.headers.get("x-user-email").contains("john@example.com")),
-        env.ssoClient.userInfo.calls.nonEmpty,
-      )
-    },
-    test("returns 403 when userInfo returns insufficient scope") {
-      val env = new Env
-      val endpoint = usersEndpoint(
-        allow = Some("user.email == 'john@example.com'"),
-        fetchUserInfo = true,
-      )
-
-      for
-        _ <- env.setupDefaults()
-        _ <- env.ssoClient.userInfo.failsWith(SSOClient.InsufficientScope)
-        client <- ZIO.service[Client]
-        security <- ZIO.service[SecurityService]
-        _ <- env.withResources(usersResource(endpoint))
-        token <- env.signToken()
-        request = Request.get(URL.empty / "users")
-          .addCookie(sessionCookie(token))
-        service = env.buildService(client, security)
-
-        response <- service.proxy(
-          "users-api",
-          Path.decode("/users"),
-          request,
-        )
-
-      yield assertTrue(
-        response.status == Status.Forbidden,
-      )
-    },
-    test("returns 500 when userInfo request fails") {
-      val env = new Env
-      val endpoint = usersEndpoint(
-        fetchUserInfo = true,
-      )
-
-      for
-        _ <- env.setupDefaults()
-        _ <- env.ssoClient.userInfo.failsWith(
-          new RuntimeException("userinfo failed")
-        )
-
-        client <- ZIO.service[Client]
-        security <- ZIO.service[SecurityService]
-
-        _ <- env.withResources(usersResource(endpoint))
-
-        token <- env.signToken()
-
-        request = Request.get(URL.empty / "users")
-          .addCookie(sessionCookie(token))
-
-        service = env.buildService(client, security)
-
-        response <- service.proxy(
-          "users-api",
-          Path.decode("/users"),
-          request,
-        )
-
-      yield assertTrue(
-        response.status == Status.InternalServerError,
-      )
-    }
   )
 end EdgeServiceProxySpec

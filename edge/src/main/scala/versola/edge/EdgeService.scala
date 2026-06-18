@@ -196,7 +196,6 @@ object EdgeService:
         case Outcome.Unauthorized => ZIO.succeed(Response.unauthorized)
         case Outcome.Forbidden => ZIO.succeed(Response.forbidden)
         case Outcome.NotFound => ZIO.succeed(Response.notFound)
-        case Outcome.InternalServerError => ZIO.succeed(Response.internalServerError)
         case Outcome.Reauthenticate(uri, clear) => ZIO.succeed(Response.seeOther(uri).addCookie(clear))
         case ex: Throwable => ZIO.fail(ex)
 
@@ -225,17 +224,8 @@ object EdgeService:
         resource <- resourceService.findByAlias(alias).someOrFail(Outcome.NotFound)
         endpoint <- findEndpoint(resource.endpoints, request.method.name, restPath)
         _ <- checkPermissions(session.claims, endpoint)
-        userInfo <- (
-          if endpoint.fetchUserInfo then
-            ssoClient.userInfo(session.accessToken)
-          else
-            ZIO.succeed(Json.Obj())
-          ).mapError {
-            case SSOClient.InsufficientScope => Outcome.Forbidden
-            case _: Throwable                => Outcome.InternalServerError
-        }
         parsedBody <- readJsonBody(request)
-        celContext <- checkRules(session.claims, userInfo, request, endpoint, restPath, parsedBody)
+        celContext <- checkRules(session.claims, request, endpoint, restPath, parsedBody)
         upstream <- buildUpstreamRequest(resource, endpoint, restPath, request, parsedBody, session.accessToken, celContext)
         response <- ZIO.scoped(httpClient.request(upstream))
         stripped = response.removeHeader(Header.SetCookie)
@@ -273,13 +263,12 @@ object EdgeService:
 
     private def checkRules(
         claims: Json.Obj,
-        userInfo: Json.Obj,
         request: Request,
         endpoint: ResourceEndpoint,
         restPath: Path,
         parsedBody: Option[Json],
     ): IO[Outcome, Map[String, AnyRef]] =
-      val context = buildCelContext(claims, userInfo, request, endpoint, restPath, parsedBody)
+      val context = buildCelContext(claims, request, endpoint, restPath, parsedBody)
       ZIO.foreachDiscard(endpoint.allow.filter(_.trim.nonEmpty)): expression =>
         celEvaluator.compile(expression)
           .flatMap(_.evaluateBoolean(context))
@@ -338,7 +327,6 @@ object EdgeService:
 
     private def buildCelContext(
         claims: Json.Obj,
-        userInfo: Json.Obj,
         request: Request,
         endpoint: ResourceEndpoint,
         restPath: Path,
@@ -363,7 +351,8 @@ object EdgeService:
       parsedBody.foreach(body => requestData("body") = JsonJava.toJava(body))
       Map(
         "token" -> JsonJava.toJava(claims),
-        "user" -> JsonJava.toJava(userInfo),
+        //TODO fetch userinfo
+        "user" -> Map.empty[String, AnyRef].asJava,
         "request" -> requestData.asJava,
       )
 
@@ -477,5 +466,4 @@ object EdgeService:
     case Unauthorized
     case Forbidden
     case NotFound
-    case InternalServerError
     case Reauthenticate(authorizeUri: URL, clearCookie: Cookie.Response)
