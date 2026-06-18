@@ -7,7 +7,11 @@
     "verify_button": "Verify",
     "divider": "or",
     "resend_button": "Resend Code",
-    "resend_in": "Resend available in {seconds}s"
+    "resend_in": "Resend available in {seconds}s",
+    "otp_wrong": "Invalid verification code. Please try again.",
+    "rate_limit_exceeded": "Too many attempts. Please wait before trying again.",
+    "locked_for": "Too many attempts. Try again in {seconds}s.",
+    "service_unavailable": "Service temporarily unavailable. Please try again later"
   },
   "ru": {
     "page_title": "Вход",
@@ -17,6 +21,10 @@
     "verify_button": "Подтвердить",
     "divider": "или",
     "resend_button": "Отправить код повторно",
-    "resend_in": "Повторная отправка через {seconds} с"
+    "resend_in": "Повторная отправка через {seconds} с",
+    "otp_wrong": "Неверный код подтверждения. Попробуйте ещё раз.",
+    "rate_limit_exceeded": "Превышено количество попыток. Пожалуйста, подождите перед следующей попыткой.",
+    "locked_for": "Слишком много попыток. Попробуйте через {seconds} с.",
+    "service_unavailable": "Сервис временно недоступен. Попробуйте позже"
   }
 }

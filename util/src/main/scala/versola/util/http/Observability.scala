@@ -101,6 +101,7 @@ object Observability:
               ZIO.serviceWithZIO[Tracing]: tracing =>
                 (
                   for
+                    startTime <- Clock.instant
                     now <- Clock.nanoTime
                     response <- handler(request)
                     masking <- serverLogging.get
@@ -110,7 +111,7 @@ object Observability:
                       ReceiveHttpLog(
                         request = requestLog,
                         response = responseLog,
-                        startTime = Instant.ofEpochMilli(now / 1000000),
+                        startTime = startTime,
                         elapsedMillis = (after - now) / 1000000,
                       ),
                     )

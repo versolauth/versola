@@ -8,6 +8,7 @@ import {
   createUser,
   fetchUserRoles,
   patchUserClaims,
+  resetUserLimits,
   searchUsers,
   updateUser,
   updateUserRoles,
@@ -40,6 +41,8 @@ export class VersolaUsersList extends LitElement {
   @state() private userRoles: Record<string, UserRoleAssignment[]> = {};
   @state() private loadingRoles = new Set<string>();
   @state() private expandedClaims = new Set<string>();
+  @state() private resettingLimits = new Set<string>();
+  @state() private resetLimitsDone = new Set<string>();
   @state() private errorPopup = '';
   private loadRequestId = 0;
   private rolesTenantId: string | null = null;
@@ -466,6 +469,24 @@ export class VersolaUsersList extends LitElement {
     }
   }
 
+  private async handleResetLimits(user: User) {
+    if (!this.tenantId) {
+      this.errorPopup = 'Select a tenant first to reset limits.';
+      return;
+    }
+    const tenantId = this.tenantId;
+    this.resettingLimits = new Set([...this.resettingLimits, user.id]);
+    this.resetLimitsDone = new Set([...this.resetLimitsDone].filter(id => id !== user.id));
+    try {
+      await resetUserLimits(user.id, tenantId, user.email, user.phone);
+      this.resetLimitsDone = new Set([...this.resetLimitsDone, user.id]);
+    } catch (error) {
+      this.errorPopup = error instanceof Error ? error.message : 'Failed to reset limits';
+    } finally {
+      this.resettingLimits = new Set([...this.resettingLimits].filter(id => id !== user.id));
+    }
+  }
+
   private renderUserRoles(user: User) {
     const assignments = this.userRoles[user.id] ?? [];
     return html`
@@ -672,7 +693,6 @@ export class VersolaUsersList extends LitElement {
               </div>
               ${this.expandedClaims.has(user.id) ? this.renderUserClaims(user) : ''}
               ${user.id in this.userRoles ? this.renderUserRoles(user) : ''}
-              ${(!this.expandedClaims.has(user.id) || !(user.id in this.userRoles)) ? html`
               <div class="card-action-row">
                 ${!this.expandedClaims.has(user.id) ? html`<button class="btn btn-secondary btn-sm"
                   @click=${() => this.toggleUserClaims(user.id)}>Get Claims</button>` : ''}
@@ -682,7 +702,17 @@ export class VersolaUsersList extends LitElement {
                   @click=${() => this.toggleUserRoles(user.id)}>
                   ${this.loadingRoles.has(user.id) ? 'Loading…' : 'Get Roles'}
                 </button>` : ''}
-              </div>` : ''}
+                <button class="btn btn-secondary btn-sm"
+                  ?disabled=${this.resettingLimits.has(user.id) || !this.tenantId}
+                  title=${!this.tenantId ? 'Select a tenant to reset limits' : 'Clear rate-limit counters for this user'}
+                  @click=${() => this.handleResetLimits(user)}>
+                  ${this.resettingLimits.has(user.id)
+                    ? 'Resetting…'
+                    : this.resetLimitsDone.has(user.id)
+                      ? 'Limits Reset ✓'
+                      : 'Reset Limits'}
+                </button>
+              </div>
             </div>
           `)}
         `}

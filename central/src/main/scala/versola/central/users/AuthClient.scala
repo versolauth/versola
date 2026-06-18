@@ -33,6 +33,13 @@ trait AuthClient:
 
   def getUserRoles(id: UserId, tenantId: TenantId): Task[List[RoleId]]
 
+  def resetUserLimits(
+      userId: UserId,
+      tenantId: TenantId,
+      email: Option[Email],
+      phone: Option[Phone],
+  ): Task[Unit]
+
 object AuthClient:
   val live: ZLayer[Scope & Client & CentralConfig, Throwable, AuthClient] =
     AuthTokenService.live >>> ZLayer.fromFunction(Impl(_, _, _))
@@ -58,6 +65,13 @@ object AuthClient:
 
   private case class UserRolesResponse(roles: List[RoleId]) derives JsonCodec
 
+  private case class ResetUserLimitsPayload(
+      userId: UserId,
+      tenantId: TenantId,
+      email: Option[Email],
+      phone: Option[Phone],
+  ) derives JsonCodec
+
   class Impl(
       httpClient: Client,
       config: CentralConfig,
@@ -66,6 +80,7 @@ object AuthClient:
     private val usersUrl: URL = config.auth.url / "users"
     private val rolesUrl: URL = usersUrl / "roles"
     private val claimsUrl: URL = usersUrl / "claims"
+    private val limitsResetUrl: URL = usersUrl / "limits" / "reset"
 
     override def upsertUser(
         id: UserId,
@@ -122,6 +137,14 @@ object AuthClient:
               response.body.asString.flatMap: body =>
                 ZIO.fail(new RuntimeException(s"Auth call failed: ${response.status.code} $body")))
       yield result
+
+    override def resetUserLimits(
+        userId: UserId,
+        tenantId: TenantId,
+        email: Option[Email],
+        phone: Option[Phone],
+    ): Task[Unit] =
+      send(mutating(Method.POST, limitsResetUrl, ResetUserLimitsPayload(userId, tenantId, email, phone).toJson))
 
     /** Retries once on transient connection failures (stale pooled channel after auth restart). */
     private def withConnectionRetry[A](effect: Task[A]): Task[A] =

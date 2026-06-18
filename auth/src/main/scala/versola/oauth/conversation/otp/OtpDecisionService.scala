@@ -14,9 +14,6 @@ trait OtpDecisionService:
 
 object OtpDecisionService:
   class Impl() extends OtpDecisionService:
-    private val SentOtpLimit = 2
-    private val SubmitOtpLimit = 3
-
     // TODO rules, bans, etc
     override def checkRequest(
         previous: Option[ConversationStep.Otp],
@@ -24,9 +21,6 @@ object OtpDecisionService:
     ): UIO[SendOtpResult] =
       ZIO.succeed:
         previous match
-          case Some(previous) if previous.timesRequested >= SentOtpLimit =>
-            SendOtpResult.LimitsExceeded
-
           case Some(previous) if previous.isFake =>
             SendOtpResult.Success(fake = true)
 

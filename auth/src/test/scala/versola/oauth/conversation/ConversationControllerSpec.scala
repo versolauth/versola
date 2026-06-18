@@ -34,6 +34,9 @@ object ConversationControllerSpec extends UnitSpecBase:
       timesRequested = 1,
       timesSubmitted = 0,
       factorIndex = 0,
+      rateLimitExceeded = false,
+      lockedSeconds = 0,
+      lastSentAt = None,
     ),
   )
 
@@ -46,7 +49,7 @@ object ConversationControllerSpec extends UnitSpecBase:
     state = None,
     userId = None,
     credential = None,
-    step = ConversationStep.Otp(real = None, timesRequested = 1, timesSubmitted = 0, factorIndex = 0),
+    step = ConversationStep.Otp(real = None, timesRequested = 1, timesSubmitted = 0, factorIndex = 0, rateLimitExceeded = false, lockedSeconds = 0, lastSentAt = None),
     requestedClaims = None,
     uiLocales = None,
     nonce = None,
@@ -61,7 +64,7 @@ object ConversationControllerSpec extends UnitSpecBase:
   def successfulSubmitTestCase[Args, Result, RResult <: Result](
       description: String,
       request: Request,
-      submission: (AuthId, Submission),
+      submission: (AuthId, Submission, Option[String]),
   )(using
       loc: SourceLocation,
       trace: Trace,
@@ -108,7 +111,7 @@ object ConversationControllerSpec extends UnitSpecBase:
           Form(FormField.Text("email", email, MediaType.text.plain)),
         )
       ).addHeader(conversationCookie),
-      submission = (authId, EmailSubmission(email)),
+      submission = (authId, EmailSubmission(email), None),
     ),
     successfulSubmitTestCase(
       description = "submit phone",
@@ -118,7 +121,7 @@ object ConversationControllerSpec extends UnitSpecBase:
           Form.fromStrings("phone" -> phone),
         )
       ).addHeader(conversationCookie),
-      submission = (authId, PhoneSubmission(phone)),
+      submission = (authId, PhoneSubmission(phone), None),
     ),
     successfulSubmitTestCase(
       description = "submit otp",
@@ -128,7 +131,7 @@ object ConversationControllerSpec extends UnitSpecBase:
           Form.fromStrings("code" -> otpCode.toString),
         )
       ).addHeader(conversationCookie),
-      submission = (authId, OtpSubmission(otpCode)),
+      submission = (authId, OtpSubmission(otpCode), None),
     ),
     successfulSubmitTestCase(
       description = "submit otp resend",
@@ -138,6 +141,16 @@ object ConversationControllerSpec extends UnitSpecBase:
           Form.fromStrings(),
         )
       ).addHeader(conversationCookie),
-      submission = (authId, OtpResendSubmission()),
+      submission = (authId, OtpResendSubmission(), None),
+    ),
+    successfulSubmitTestCase(
+      description = "submit forwards ui_locale from query param",
+      request = Request.post(
+        url = (URL.empty / "challenge" / "otp").addQueryParam("ui_locale", "ru"),
+        body = Body.fromURLEncodedForm(
+          Form.fromStrings("code" -> otpCode.toString),
+        )
+      ).addHeader(conversationCookie),
+      submission = (authId, OtpSubmission(otpCode), Some("ru")),
     ),
   )

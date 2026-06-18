@@ -1,6 +1,8 @@
 package versola.user
 
 import versola.auth.model.TenantId
+import versola.oauth.client.model.TenantId as ThrottleTenantId
+import versola.oauth.conversation.limit.ChallengeThrottleRepository
 import versola.role.model.RoleId
 import versola.user.model.*
 import versola.util.CoreConfig
@@ -12,7 +14,7 @@ import zio.json.EncoderOps
 import zio.telemetry.opentelemetry.tracing.Tracing
 
 object UserController extends Controller:
-  type Env = Tracing & UserRepository & UserRolesRepository & CoreConfig
+  type Env = Tracing & UserRepository & UserRolesRepository & CoreConfig & ChallengeThrottleRepository
 
   def routes: Routes[Env, Throwable] = Routes(
     upsertUserEndpoint,
@@ -20,6 +22,7 @@ object UserController extends Controller:
     patchRolesEndpoint,
     findClaimsEndpoint,
     findRolesEndpoint,
+    resetLimitsEndpoint,
   )
 
   val upsertUserEndpoint =
@@ -73,4 +76,16 @@ object UserController extends Controller:
         tenantId <- request.url.queryZIO[TenantId]("tenantId")
         roles <- repo.findRolesByUserAndTenant(id, tenantId)
       yield Response.json(UserRolesResponse(roles).toJson)
+    }
+
+  val resetLimitsEndpoint =
+    Method.POST / "users" / "limits" / "reset" -> handler { (request: Request) =>
+      for
+        _ <- authorizeInternal(request)
+        throttleRepo <- ZIO.service[ChallengeThrottleRepository]
+        body <- request.body.asJsonFromCodec[ResetUserLimitsPayload]
+        tenantId = ThrottleTenantId(body.tenantId)
+        subjects = (List(body.userId.toString) ++ body.email.map(_.toString) ++ body.phone.map(_.toString)).distinct
+        _ <- ZIO.foreachDiscard(subjects)(throttleRepo.deleteAllForSubject(tenantId, _))
+      yield Response.status(Status.NoContent)
     }

@@ -19,6 +19,9 @@ object OtpDecisionServiceSpec extends UnitSpecBase:
     timesRequested = 1,
     timesSubmitted = 0,
     factorIndex = 0,
+    rateLimitExceeded = false,
+    lockedSeconds = 0,
+    lastSentAt = None,
   )
 
   val spec = suite("OtpDecisionService")(
@@ -37,17 +40,15 @@ object OtpDecisionServiceSpec extends UnitSpecBase:
           result == SendOtpResult.Success(fake = false),
         )
       },
-      test("reject OTP request when limit exceeded (3+ requests)") {
-        for
-          result <- service.checkRequest(Some(previousOtp.copy(timesRequested = 2)), None)
-        yield assertTrue(result == SendOtpResult.LimitsExceeded)
-      },
       test("return fake OTP when previous was fake") {
         val fakePrevious = ConversationStep.Otp(
           real = None,
           timesRequested = 1,
           timesSubmitted = 0,
           factorIndex = 0,
+          rateLimitExceeded = false,
+          lockedSeconds = 0,
+          lastSentAt = None,
         )
         for
           result <- service.checkRequest(Some(fakePrevious), None)

@@ -75,6 +75,12 @@ private[authorize] object Error:
       errorUri = Some("https://openid.net/specs/openid-connect-core-1_0.html#ClaimsParameter"),
     )
 
+  case class UnsupportedUiLocales(uri: URL, state: Option[State]) extends RedirectError(
+      error = ErrorCode.InvalidRequest,
+      errorDescription = "None of the requested ui_locales are supported",
+      errorUri = Some("https://openid.net/specs/openid-connect-core-1_0.html#AuthRequest"),
+    )
+
   case class AuthFlowMissing(uri: URL, state: Option[State]) extends RedirectError(
       error = ErrorCode.InvalidRequest,
       errorDescription = "Client is not configured for sign-in - missing auth flow",

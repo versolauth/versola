@@ -41,6 +41,7 @@ object ClientController extends Controller:
               clientName = client.clientName,
               redirectUris = client.redirectUris,
               scope = client.scope,
+              externalAudience = client.externalAudience,
               permissions = client.permissions,
               secretRotation = client.previousSecret.nonEmpty,
               theme = client.theme,

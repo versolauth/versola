@@ -3,7 +3,7 @@ package versola
 import com.augustnagro.magnum.*
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.central.configuration.CreateClientRequest
-import versola.central.configuration.challenges.{OtpChallengeService, PhoneChallengeService}
+import versola.central.configuration.challenges.{ChallengeSettingsService, OtpChallengeService}
 import versola.central.configuration.clients.{AuthFlow, ClientAlreadyExists, OAuthClientService}
 import versola.central.configuration.edges.EdgeRepository
 import versola.central.configuration.permissions.PermissionRepository
@@ -21,7 +21,7 @@ trait MockDataService:
 
 object MockDataService:
   val live: ZLayer[
-    TenantRepository & PermissionRepository & ResourceRepository & OAuthScopeRepository & RoleRepository & OAuthClientService & OtpChallengeService & PhoneChallengeService & EdgeRepository & TransactorZIO,
+    TenantRepository & PermissionRepository & ResourceRepository & OAuthScopeRepository & RoleRepository & OAuthClientService & OtpChallengeService & ChallengeSettingsService & EdgeRepository & TransactorZIO,
     Throwable,
     MockDataService,
   ] =
@@ -37,7 +37,7 @@ object MockDataService:
       roleRepository: RoleRepository,
       clientService: OAuthClientService,
       otpChallengeService: OtpChallengeService,
-      phoneChallengeService: PhoneChallengeService,
+      challengeSettingsService: ChallengeSettingsService,
       edgeRepository: EdgeRepository,
   ) extends MockDataService:
 
@@ -60,7 +60,7 @@ object MockDataService:
       ZIO.foreachDiscard(CentralMockData.otpTemplates)(otpChallengeService.upsertTemplate)
 
     private def insertChallengeSettings(): Task[Unit] =
-      ZIO.foreachDiscard(CentralMockData.challengeSettings)(phoneChallengeService.upsertSettings)
+      ZIO.foreachDiscard(CentralMockData.challengeSettings)(challengeSettingsService.upsertSettings)
 
     override def insert(): Task[Unit] =
       cleanup() *> insertDefaultTheme() *> insertTenants() *> insertDefaultOtpTemplate() *> insertChallengeSettings() *> insertResources() *> insertPermissions() *> insertScopes() *> insertRoles() *> insertClients() *> insertEdges()

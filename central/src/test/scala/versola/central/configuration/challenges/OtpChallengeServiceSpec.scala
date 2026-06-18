@@ -37,6 +37,28 @@ object OtpChallengeServiceSpec extends ZIOSpecDefault, ZIOStubs:
         result <- env.service.getAllTemplates
       yield assertTrue(result == Vector(rec1, rec2))
     },
+    test("upsertTemplate delegates to repository without touching cache") {
+      val env = Env(Vector(rec1))
+      for
+        _ <- env.repository.upsertTemplate.succeedsWith(())
+        _ <- env.service.upsertTemplate(rec2)
+        cached <- env.cache.get
+      yield assertTrue(
+        env.repository.upsertTemplate.calls == List(rec2),
+        cached == Vector(rec1),
+      )
+    },
+    test("deleteTemplate delegates to repository without touching cache") {
+      val env = Env(Vector(rec1, rec2))
+      for
+        _ <- env.repository.deleteTemplate.succeedsWith(())
+        _ <- env.service.deleteTemplate("tmpl-1", tenantA)
+        cached <- env.cache.get
+      yield assertTrue(
+        env.repository.deleteTemplate.calls == List(("tmpl-1", tenantA)),
+        cached == Vector(rec1, rec2),
+      )
+    },
     test("sync INSERT adds new record to cache") {
       val env = Env(Vector(rec1))
       val event = SyncEvent.OtpTemplatesUpdated(tenantB, "tmpl-2", SyncEvent.Op.INSERT)

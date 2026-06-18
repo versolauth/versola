@@ -18,6 +18,7 @@ object UserController extends Controller:
     patchUserEndpoint,
     patchUserClaimsEndpoint,
     patchRolesEndpoint,
+    resetUserLimitsEndpoint,
   )
 
   val findUsersEndpoint =
@@ -86,5 +87,14 @@ object UserController extends Controller:
         service <- ZIO.service[UserService]
         body <- request.body.asJson[UpdateUserRolesRequest]
         _ <- service.updateRoles(body)
+      yield Response.status(Status.Accepted)
+    }
+
+  val resetUserLimitsEndpoint =
+    Method.POST / "users" / "limits" / "reset" -> handler { (request: Request) =>
+      for
+        service <- ZIO.service[UserService]
+        body <- request.body.asJsonFromCodec[ResetUserLimitsRequest]
+        _ <- service.resetLimits(body)
       yield Response.status(Status.Accepted)
     }

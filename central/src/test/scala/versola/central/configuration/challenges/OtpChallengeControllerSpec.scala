@@ -22,7 +22,7 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
   private val tenantId = TenantId("tenant-a")
   private val secretKey = SecretKeySpec(Array.fill(32)(7.toByte), "AES")
 
-  private val template = OtpTemplateRecord("default-otp", tenantId, Map("en" -> "Code: {{code}}"))
+  private val template = OtpTemplateRecord("default", tenantId, Map("en" -> "Code: {{code}}"))
 
   private val syncToken = Unsafe.unsafe { unsafe ?=>
     Runtime.default.unsafe
@@ -54,14 +54,14 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       for
         client        <- ZIO.service[Client]
         service       = stub[OtpChallengeService]
-        phoneService  = stub[PhoneChallengeService]
+        challengeSettingsService = stub[ChallengeSettingsService]
         edgeService   = stub[EdgeService]
         tracing       <- tracingLayer.build
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             OtpChallengeController.routes.provideEnvironment(
               ZEnvironment[OtpChallengeService](service) ++
-                ZEnvironment[PhoneChallengeService](phoneService) ++
+                ZEnvironment[ChallengeSettingsService](challengeSettingsService) ++
                 tracing ++ ZEnvironment(config) ++ ZEnvironment[EdgeService](edgeService)
             )
           )

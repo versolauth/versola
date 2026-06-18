@@ -113,7 +113,7 @@ class PostgresCacheSyncRepository(conn: PGConnection) extends CacheSyncRepositor
           case "challenge_settings_change" =>
             parsePayload(notification.getParameter).fold[SyncEvent](SyncEvent.Unknown) { payload =>
               payload.tenantId.fold[SyncEvent](SyncEvent.Unknown) { tenantId =>
-                SyncEvent.PhoneSettingsUpdated(
+                SyncEvent.ChallengeSettingsUpdated(
                   tenantId = TenantId(tenantId),
                   op = SyncEvent.Op.valueOf(payload.op),
                 )

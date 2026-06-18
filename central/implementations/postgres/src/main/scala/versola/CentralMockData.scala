@@ -1,6 +1,6 @@
 package versola
 
-import versola.central.configuration.challenges.{OtpTemplateRecord, PhoneSettingsRecord}
+import versola.central.configuration.challenges.{ChallengeSettingsRecord, OtpTemplateRecord, RateLimit, SubmissionLimits}
 import versola.central.configuration.clients.ClientId
 import versola.central.configuration.edges.EdgeId
 import versola.central.configuration.permissions.Permission
@@ -386,7 +386,7 @@ object CentralMockData:
     ),
   )
 
-  val defaultOtpTemplateId = "default-otp"
+  val defaultOtpTemplateId = "default"
 
   val otpTemplates: Vector[OtpTemplateRecord] = Vector(
     OtpTemplateRecord(
@@ -400,11 +400,36 @@ object CentralMockData:
     ),
   )
 
-  val challengeSettings: Vector[PhoneSettingsRecord] = Vector(
-    PhoneSettingsRecord(
+  val challengeSettings: Vector[ChallengeSettingsRecord] = Vector(
+    ChallengeSettingsRecord(
       tenantId = defaultTenant,
       allowedPrefixes = List("+77"),
       passwordRegex = Some("^(?=.*[A-Z])(?=.*[a-z])(?=.*\\d).{8,}$"),
+      submissionLimits = SubmissionLimits(
+        // OTP request (resend): 2 per minute prevents SMS bombing;
+        // 5 per hour triggers a 30-min ban — OWASP / NIST SP 800-63B guidance.
+        otpRequest = List(
+          RateLimit(maxAttempts = 2, windowSeconds = 60),
+          RateLimit(maxAttempts = 5, windowSeconds = 3600),
+        ),
+        // OTP submit: 3 per 2 min is enough for a legitimate user to retype a code;
+        // 5 per hour triggers a 30-min ban — prevents brute-force of 6-digit codes.
+        otpSubmit = List(
+          RateLimit(maxAttempts = 3, windowSeconds = 120),
+          RateLimit(maxAttempts = 5, windowSeconds = 3600),
+        ),
+        // Password submit: 5 per 15 min stops credential stuffing;
+        // 10 per hour triggers a 30-min ban — OWASP lockout threshold guidance.
+        passwordSubmit = List(
+          RateLimit(maxAttempts = 5, windowSeconds = 900),
+          RateLimit(maxAttempts = 10, windowSeconds = 3600),
+        ),
+        // 30 minutes — aligns with OWASP recommended minimum lockout of 10 min
+        // and common banking practice of 15–30 min temporary bans.
+        banDurationSeconds = 1800,
+      ),
+      otpLength = 6,
+      otpResendAfter = 60,
     ),
   )
 

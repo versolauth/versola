@@ -38,7 +38,7 @@ trait OAuthClientRepositorySpec extends DatabaseSpecBase[OAuthClientRepositorySp
     permissions = Set(readPermission),
     theme = "default",
     authFlow = Some(AuthFlow.default),
-    otpTemplateId = "default-otp",
+    otpTemplateId = "default",
   )
 
   override def testCases(env: OAuthClientRepositorySpec.Env) =
