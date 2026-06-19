@@ -8,6 +8,16 @@
     - `docker-compose -f services.yml up -d jaeger` - Jaeger (optional)
     - `PORT=9001 DPORT=9002 sbt -Denv.path=central/dev/env.conf "project central-postgres-impl; run"` - Central
     - `PORT=9003 DPORT=9004 sbt -Denv.path=auth/dev/env.conf "project auth-postgres-impl; run"` - Auth
+    - `PORT=9005 DPORT=9006 CENTRAL_URL=http://localhost:9001 VERSOLA_URL=http://localhost:9003 sbt -Denv.path=edge/dev/env.conf "project edge-postgres-impl; run"` - Edge
+
+## Central UI
+
+```bash
+cd central-ui
+npm install
+npm run build:forms   # compile auth forms into central/src/main/resources/forms
+npm run dev           # run admin dashboard on port 3000
+```
 
 ## Docker
 

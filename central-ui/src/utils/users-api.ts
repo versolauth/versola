@@ -138,3 +138,21 @@ export async function updateUserRoles(
     throw new Error(text.trim() || `Update roles failed (${response.status})`);
   }
 }
+
+export async function resetUserLimits(
+  userId: string,
+  tenantId: string,
+  email: string | undefined,
+  phone: string | undefined,
+): Promise<void> {
+  const response = await fetch('/users/limits/reset', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify({ userId, tenantId, email: email ?? null, phone: phone ?? null }),
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(text.trim() || `Reset limits failed (${response.status})`);
+  }
+}

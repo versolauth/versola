@@ -35,6 +35,7 @@ object FormService:
       NumberProperty("resendAfter", 60, None, None),
     ),
     "password" -> Vector.empty,
+    "access-denied" -> Vector.empty,
   )
 
   def live(

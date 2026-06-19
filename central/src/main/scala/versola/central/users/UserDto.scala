@@ -34,6 +34,13 @@ case class UpdateUserRolesRequest(
     remove: Set[RoleId],
 ) derives JsonCodec, Schema
 
+case class ResetUserLimitsRequest(
+    userId: UserId,
+    tenantId: TenantId,
+    email: Option[Email],
+    phone: Option[Phone],
+) derives JsonCodec, Schema
+
 case class UserSearchRecord(
     id: UserId,
     email: Option[Email],

@@ -7,6 +7,7 @@ import versola.oauth.authorize.{AuthorizeEndpointController, AuthorizeEndpointSe
 import versola.oauth.challenge.password.{PasswordRepository, PasswordService, PostgresPasswordRepository}
 import versola.oauth.client.{OAuthClientSyncClient, OAuthConfigurationService, OAuthScopeSyncClient}
 import versola.oauth.conversation.otp.{EmailOtpProvider, SmsOtpProvider, OtpGenerationService, OtpService}
+import versola.oauth.conversation.limit.{ChallengeThrottleRepository, PostgresChallengeThrottleRepository, SubmissionLimiter}
 import versola.oauth.conversation.{ConversationController, ConversationRenderService, ConversationRepository, ConversationRouter, ConversationService, PostgresConversationRepository}
 import versola.oauth.introspect.{IntrospectionController, IntrospectionService}
 import versola.oauth.jwks.JwksController
@@ -63,7 +64,9 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       OtpGenerationService &
       SmsOtpProvider &
       EmailOtpProvider &
-      UserInfoService
+      UserInfoService &
+      SubmissionLimiter &
+      ChallengeThrottleRepository
 
   override def routes: Routes[Dependencies & Tracing & EnvName, Throwable] =
     List(
@@ -85,6 +88,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       PostgresSessionRepository.live >+>
       PostgresRefreshTokenRepository.live >+>
       PostgresPasswordRepository.live >+>
+      PostgresChallengeThrottleRepository.live >+>
       PostgresCleanupManager.live
   )
 
@@ -108,6 +112,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       OtpService.live >+>
       PasswordService.live >+>
       UserInfoService.live >+>
+      SubmissionLimiter.live >+>
       ConversationService.live >+>
       ConversationRouter.live >+>
       ConversationRenderService.live

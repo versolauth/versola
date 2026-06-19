@@ -41,6 +41,7 @@ interface FormConfig {
   locale?: string;
   locales?: string[];
   allT?: Record<string, Record<string, string>>;
+  error?: string;
   previewId?: string;
 }
 
@@ -88,6 +89,9 @@ function PasswordForm(props: { config: FormConfig }) {
         </div>
       </Show>
       <h1>{t().title}</h1>
+      <Show when={props.config.error}>
+        <div class="error-text" style="margin-bottom: 8px;">{t()[props.config.error!] ?? props.config.error}</div>
+      </Show>
       <form method="post" onSubmit={handleSubmit}>
         <input
           type="password"
@@ -101,7 +105,7 @@ function PasswordForm(props: { config: FormConfig }) {
         <Show when={passwordNotAllowed()}>
           <div class="phone-error-message">{t().password_not_allowed}</div>
         </Show>
-        <button type="submit" formAction="/challenge/password" class="btn btn-primary">
+        <button type="submit" formAction={`/challenge/password?ui_locale=${currentLocale()}`} class="btn btn-primary">
           {t().continue}
         </button>
       </form>

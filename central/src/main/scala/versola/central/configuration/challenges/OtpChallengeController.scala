@@ -9,16 +9,16 @@ import zio.http.{Method, Request, Response, Routes, Status, handler}
 import zio.json.EncoderOps
 
 object OtpChallengeController extends Controller:
-  type Env = Tracing & OtpChallengeService & PhoneChallengeService & CentralConfig & EdgeService
+  type Env = Tracing & OtpChallengeService & ChallengeSettingsService & CentralConfig & EdgeService
 
   def routes: Routes[Env, Throwable] = Routes(
     getTemplatesEndpoint,
     syncTemplatesEndpoint,
     upsertTemplateEndpoint,
     deleteTemplateEndpoint,
-    getPhoneSettingsEndpoint,
-    syncPhoneSettingsEndpoint,
-    upsertPhoneSettingsEndpoint,
+    getChallengeSettingsEndpoint,
+    syncChallengeSettingsEndpoint,
+    upsertChallengeSettingsEndpoint,
   )
 
   val getTemplatesEndpoint =
@@ -57,29 +57,39 @@ object OtpChallengeController extends Controller:
       yield Response.status(Status.NoContent)
     }
 
-  val getPhoneSettingsEndpoint =
-    Method.GET / "configuration" / "challenges" / "phone-settings" -> handler { (request: Request) =>
+  val getChallengeSettingsEndpoint =
+    Method.GET / "configuration" / "challenges" / "challenge-settings" -> handler { (request: Request) =>
       for
         tenantId <- request.url.queryZIO[TenantId]("tenantId")
-        service  <- ZIO.service[PhoneChallengeService]
+        service  <- ZIO.service[ChallengeSettingsService]
         settings <- service.getSettings(tenantId)
-      yield Response.json(GetPhoneSettingsResponse(settings).toJson)
+      yield Response.json(GetChallengeSettingsResponse(settings).toJson)
     }
 
-  val syncPhoneSettingsEndpoint =
-    Method.GET / "configuration" / "challenges" / "phone-settings" / "sync" -> handler { (request: Request) =>
+  val syncChallengeSettingsEndpoint =
+    Method.GET / "configuration" / "challenges" / "challenge-settings" / "sync" -> handler { (request: Request) =>
       for
         _        <- authorizeInternal(request)
-        service  <- ZIO.service[PhoneChallengeService]
+        service  <- ZIO.service[ChallengeSettingsService]
         settings <- service.getAllSettings
-      yield Response.json(GetAllPhoneSettingsResponse(settings).toJson)
+      yield Response.json(GetAllChallengeSettingsResponse(settings).toJson)
     }
 
-  val upsertPhoneSettingsEndpoint =
-    Method.PUT / "configuration" / "challenges" / "phone-settings" -> handler { (request: Request) =>
+  val upsertChallengeSettingsEndpoint =
+    Method.PUT / "configuration" / "challenges" / "challenge-settings" -> handler { (request: Request) =>
       for
-        service <- ZIO.service[PhoneChallengeService]
-        body    <- request.body.asJson[UpsertPhoneSettingsRequest]
-        _       <- service.upsertSettings(PhoneSettingsRecord(body.tenantId, body.allowedPrefixes, body.passwordRegex))
+        service  <- ZIO.service[ChallengeSettingsService]
+        body     <- request.body.asJson[UpsertChallengeSettingsRequest]
+        existing <- service.getSettings(body.tenantId)
+        _ <- service.upsertSettings(
+          ChallengeSettingsRecord(
+            body.tenantId,
+            body.allowedPrefixes,
+            body.passwordRegex,
+            body.submissionLimits.getOrElse(existing.submissionLimits),
+            body.otpLength.getOrElse(existing.otpLength),
+            body.otpResendAfter.getOrElse(existing.otpResendAfter),
+          ),
+        )
       yield Response.status(Status.NoContent)
     }

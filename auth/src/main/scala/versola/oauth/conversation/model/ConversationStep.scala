@@ -19,6 +19,9 @@ object ConversationStep:
       timesRequested: Int,
       timesSubmitted: Int,
       factorIndex: Int,
+      rateLimitExceeded: Boolean,
+      lockedSeconds: Int,
+      lastSentAt: Option[Instant],
   ) extends ConversationStep(StepId.Otp):
     def isFake: Boolean = real.isEmpty
 
@@ -29,4 +32,7 @@ object ConversationStep:
       timesSubmitted: Int,
       oldPasswordChangedAt: Option[Instant], // Set when user enters old password
       factorIndex: Int,
+      rateLimitExceeded: Boolean,
   ) extends ConversationStep(StepId.Password)
+
+  case object AccessDenied extends ConversationStep(StepId.AccessDenied)

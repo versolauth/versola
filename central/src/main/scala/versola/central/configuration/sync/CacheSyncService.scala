@@ -1,6 +1,6 @@
 package versola.central.configuration.sync
 
-import versola.central.configuration.challenges.{OtpChallengeService, PhoneChallengeService}
+import versola.central.configuration.challenges.{ChallengeSettingsService, OtpChallengeService}
 import versola.central.configuration.clients.{AuthorizationPresetService, OAuthClientService}
 import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.forms.FormService
@@ -16,7 +16,7 @@ trait CacheSyncService:
   def sync(): Task[Unit]
 
 object CacheSyncService:
-  def live: ZLayer[CacheSyncRepository & TenantService & PermissionService & ResourceService & OAuthClientService & OAuthScopeService & RoleService & AuthorizationPresetService & EdgeService & FormService & OtpChallengeService & PhoneChallengeService & Scope, Nothing, CacheSyncService] =
+  def live: ZLayer[CacheSyncRepository & TenantService & PermissionService & ResourceService & OAuthClientService & OAuthScopeService & RoleService & AuthorizationPresetService & EdgeService & FormService & OtpChallengeService & ChallengeSettingsService & Scope, Nothing, CacheSyncService] =
     ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _)) >>>
       ZLayer(ZIO.serviceWithZIO[CacheSyncService.Impl](service => service.sync().forkScoped.as(service)))
 
@@ -32,7 +32,7 @@ object CacheSyncService:
       edgeService: EdgeService,
       formService: FormService,
       otpChallengeService: OtpChallengeService,
-      phoneChallengeService: PhoneChallengeService,
+      challengeSettingsService: ChallengeSettingsService,
   ) extends CacheSyncService:
 
     override def sync(): Task[Unit] =
@@ -68,8 +68,8 @@ object CacheSyncService:
           case event: SyncEvent.OtpTemplatesUpdated =>
             otpChallengeService.sync(event).either
 
-          case event: SyncEvent.PhoneSettingsUpdated =>
-            phoneChallengeService.sync(event).either
+          case event: SyncEvent.ChallengeSettingsUpdated =>
+            challengeSettingsService.sync(event).either
 
           case SyncEvent.Unknown =>
             ZIO.unit

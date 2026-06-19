@@ -19,7 +19,7 @@ object ConversationResult:
 
   case object NotFound extends Render
 
-  case object LimitsExceeded extends Render
+  case object ServiceUnavailable extends Render
 
   case class RenderStep(step: ConversationStep) extends Render
 

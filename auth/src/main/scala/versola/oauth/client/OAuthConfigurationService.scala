@@ -1,6 +1,6 @@
 package versola.oauth.client
 
-import versola.oauth.client.model.{ClientId, ClientSecret, ClientsWithPepper, FormRecord, Locales, OAuthClientRecord, OtpTemplateRecord, PhoneSettingsRecord, ScopeRecord, ScopeToken, TenantId, ThemeRecord}
+import versola.oauth.client.model.{ChallengeSettingsRecord, ClientId, ClientSecret, ClientsWithPepper, FormRecord, Locales, OAuthClientRecord, OtpSettings, OtpTemplateRecord, ScopeRecord, ScopeToken, SubmissionLimits, TenantId, ThemeRecord}
 import versola.oauth.conversation.otp.model.OtpTemplate
 import versola.util.{CoreConfig, ReloadingCache, Secret, SecureRandom, SecurityService}
 import zio.*
@@ -23,9 +23,15 @@ trait OAuthConfigurationService:
 
   def getClientTemplate(id: ClientId, uiLocales: Option[List[String]]): UIO[OtpTemplate]
 
+  def getLocales: UIO[Locales]
+
   def getAllowedPhonePrefixes(id: ClientId): UIO[List[String]]
 
   def getPasswordRegex(id: ClientId): UIO[Option[String]]
+
+  def getSubmissionLimits(id: ClientId): UIO[SubmissionLimits]
+
+  def getOtpSettings(id: ClientId): UIO[OtpSettings]
 
 object OAuthConfigurationService:
   def live(schedule: Schedule[Any, Any, Any]): ZLayer[
@@ -41,7 +47,7 @@ object OAuthConfigurationService:
           (ThemeSyncClient.live >+> ZLayer(ReloadingCache.make[Vector[ThemeRecord]](schedule))) >+>
           (LocaleSyncClient.live >+> ZLayer(ReloadingCache.make[Locales](schedule))) >+>
           (OtpTemplateSyncClient.live >+> ZLayer(ReloadingCache.make[Vector[OtpTemplateRecord]](schedule))) >+>
-          (PhoneSettingsSyncClient.live >+> ZLayer(ReloadingCache.make[Vector[PhoneSettingsRecord]](schedule)))))
+          (ChallengeSettingsSyncClient.live >+> ZLayer(ReloadingCache.make[Vector[ChallengeSettingsRecord]](schedule)))))
     syncClients >>> ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _))
   }
 
@@ -58,8 +64,8 @@ object OAuthConfigurationService:
       localeRepository: LocaleSyncClient,
       otpTemplateCache: ReloadingCache[Vector[OtpTemplateRecord]],
       otpTemplateRepository: OtpTemplateSyncClient,
-      phoneSettingsCache: ReloadingCache[Vector[PhoneSettingsRecord]],
-      phoneSettingsRepository: PhoneSettingsSyncClient,
+      challengeSettingsCache: ReloadingCache[Vector[ChallengeSettingsRecord]],
+      challengeSettingsRepository: ChallengeSettingsSyncClient,
       securityService: SecurityService,
   ) extends OAuthConfigurationService:
 
@@ -110,7 +116,7 @@ object OAuthConfigurationService:
     override def getTheme(id: String): UIO[Option[ThemeRecord]] =
       themeCache.get.map(_.find(_.id == id))
 
-    private def getLocales: UIO[Locales] =
+    override def getLocales: UIO[Locales] =
       localeCache.get
 
     private def getOtpTemplates(tenantId: TenantId, otpTemplateId: String): UIO[Option[OtpTemplateRecord]] =
@@ -139,7 +145,7 @@ object OAuthConfigurationService:
       find(id).flatMap:
         case None => ZIO.succeed(Nil)
         case Some(client) =>
-          phoneSettingsCache.get.map(
+          challengeSettingsCache.get.map(
             _.find(_.tenantId == client.tenantId)
               .fold(Nil)(_.allowedPrefixes),
           )
@@ -148,9 +154,27 @@ object OAuthConfigurationService:
       find(id).flatMap:
         case None => ZIO.none
         case Some(client) =>
-          phoneSettingsCache.get.map(
+          challengeSettingsCache.get.map(
             _.find(_.tenantId == client.tenantId)
               .flatMap(_.passwordRegex),
+          )
+
+    override def getSubmissionLimits(id: ClientId): UIO[SubmissionLimits] =
+      find(id).flatMap:
+        case None => ZIO.succeed(SubmissionLimits.empty)
+        case Some(client) =>
+          challengeSettingsCache.get.map(
+            _.find(_.tenantId == client.tenantId)
+              .fold(SubmissionLimits.empty)(_.submissionLimits),
+          )
+
+    override def getOtpSettings(id: ClientId): UIO[OtpSettings] =
+      find(id).flatMap:
+        case None => ZIO.succeed(OtpSettings.default)
+        case Some(client) =>
+          challengeSettingsCache.get.map(
+            _.find(_.tenantId == client.tenantId)
+              .fold(OtpSettings.default)(s => OtpSettings(length = s.otpLength, resendAfter = s.otpResendAfter)),
           )
 
     private val IllegalStateTemplate = OtpTemplate("{{code}}")

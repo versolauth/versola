@@ -13,7 +13,8 @@ trait OtpService:
   def prepareOtp(
       previous: Option[ConversationStep.Otp],
       userId: Option[UserId],
-  ): UIO[Option[ConversationStep.Otp]]
+      clientId: ClientId,
+  ): UIO[ConversationStep.Otp]
 
   def sendOtp(
       otp: ConversationStep.Otp,
@@ -40,21 +41,24 @@ object OtpService:
     override def prepareOtp(
         previous: Option[ConversationStep.Otp],
         userId: Option[UserId],
-    ): UIO[Option[ConversationStep.Otp]] =
+        clientId: ClientId,
+    ): UIO[ConversationStep.Otp] =
       otpDecisionService.checkRequest(previous, userId).flatMap:
         case SendOtpResult.Success(fake) =>
-          otpGenerationService.generateOtpCode
-            .unless(fake)
+          ZIO
+            .unless(fake):
+              configService.getOtpSettings(clientId).flatMap: settings =>
+                otpGenerationService.generateOtpCode(settings.length)
             .map: codeOpt =>
               ConversationStep.Otp(
                 real = codeOpt.map(ConversationStep.Otp.Real(_)),
                 timesRequested = previous.fold(0)(_.timesRequested),
                 timesSubmitted = 0,
                 factorIndex = 0,
+                rateLimitExceeded = false,
+                lockedSeconds = 0,
+                lastSentAt = None,
               )
-            .asSome
-        case SendOtpResult.LimitsExceeded =>
-          ZIO.none
 
     override def sendOtp(
         otp: ConversationStep.Otp,
@@ -76,11 +80,8 @@ object OtpService:
           ZIO.unit
 
     override def checkOtp(otp: ConversationStep.Otp, code: OtpCode): UIO[SubmitOtpResult] =
-      if otp.timesSubmitted > 3 then
-        ZIO.succeed(SubmitOtpResult.LimitsExceeded)
-      else
-        otp.real match
-          case Some(otp) if otp.code == code =>
-            ZIO.succeed(SubmitOtpResult.Success)
-          case _ =>
-            ZIO.succeed(SubmitOtpResult.Failure)
+      otp.real match
+        case Some(otp) if otp.code == code =>
+          ZIO.succeed(SubmitOtpResult.Success)
+        case _ =>
+          ZIO.succeed(SubmitOtpResult.Failure)

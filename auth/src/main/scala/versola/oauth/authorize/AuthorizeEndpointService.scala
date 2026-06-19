@@ -9,7 +9,7 @@ import zio.{IO, ZIO, ZLayer}
 
 trait AuthorizeEndpointService:
 
-  def authorize(request: AuthorizeRequest): IO[Error.AuthFlowMissing, AuthorizeResponse]
+  def authorize(request: AuthorizeRequest): IO[Error, AuthorizeResponse]
 
 object AuthorizeEndpointService:
   def live =
@@ -24,7 +24,7 @@ object AuthorizeEndpointService:
 
     override def authorize(
         request: AuthorizeRequest,
-    ): IO[Error.AuthFlowMissing, AuthorizeResponse] =
+    ): IO[Error, AuthorizeResponse] =
       for
         authId <- AuthId.wrapAll(secureRandom.nextUUIDv7)
         client <- configurationService.find(request.clientId)
@@ -32,6 +32,7 @@ object AuthorizeEndpointService:
         flow <- ZIO
           .fromOption(authFlow)
           .orElseFail(Error.AuthFlowMissing(request.redirectUri, request.state))
+        uiLocales <- resolveUiLocales(request)
         conversation = ConversationRecord(
           clientId = request.clientId,
           redirectUri = request.redirectUri,
@@ -47,7 +48,7 @@ object AuthorizeEndpointService:
             passkey = flow.passkey.isDefined,
           ),
           requestedClaims = request.requestedClaims,
-          uiLocales = request.uiLocales,
+          uiLocales = uiLocales,
           nonce = request.nonce,
           responseType = request.responseType,
           userEmail = None,
@@ -58,3 +59,19 @@ object AuthorizeEndpointService:
         )
         _ <- conversationRepository.create(authId, conversation, config.security.authConversation.ttl).orDie
       yield AuthorizeResponse.Initialize(authId)
+
+    /** Narrows the requested ui_locales to those configured in central, preserving the client's
+      * preference order. Rejects the request when none of the requested locales are available.
+      */
+    private def resolveUiLocales(request: AuthorizeRequest): IO[Error.UnsupportedUiLocales, Option[List[String]]] =
+      request.uiLocales match
+        case None => ZIO.none
+        case Some(requested) =>
+          configurationService.getLocales.flatMap: locales =>
+            val available = locales.locales.map(_.code).toSet
+            val intersection = requested.filter(available.contains)
+            ZIO.cond(
+              intersection.nonEmpty,
+              Some(intersection),
+              Error.UnsupportedUiLocales(request.redirectUri, request.state),
+            )

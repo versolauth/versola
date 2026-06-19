@@ -8,7 +8,7 @@ import zio.{Task, ZIO, ZLayer}
 trait ConversationRouter:
   def getConversation(authId: AuthId): Task[Option[ConversationRecord]]
 
-  def submit(authId: AuthId, submission: Submission): Task[ConversationResult.Render]
+  def submit(authId: AuthId, submission: Submission, uiLocale: Option[String]): Task[ConversationResult.Render]
 
 object ConversationRouter:
   def live = ZLayer.fromFunction(Impl(_, _, _))
@@ -25,9 +25,10 @@ object ConversationRouter:
     override def submit(
         authId: AuthId,
         submission: Submission,
+        uiLocale: Option[String],
     ): Task[ConversationResult.Render] =
       conversationService.find(authId)
-        .map(_.map(submission -> _))
+        .map(_.map(record => submission -> withUiLocale(record, uiLocale)))
         .flatMap:
           case None =>
             ZIO.succeed(ConversationResult.NotFound)
@@ -57,6 +58,14 @@ object ConversationRouter:
 
           case _ =>
             ZIO.succeed(ConversationResult.NotFound)
+
+    /** Promote the locale the user picked in the form to the front of the conversation's preferred
+      * locales, so every subsequent render keeps it. Applied in-memory before dispatch — it is
+      * persisted by the same overwrite the submission already performs.
+      */
+    private def withUiLocale(record: ConversationRecord, uiLocale: Option[String]): ConversationRecord =
+      uiLocale.fold(record): locale =>
+        record.copy(uiLocales = Some(locale :: record.uiLocales.getOrElse(Nil).filterNot(_ == locale)))
 
     /** Determine the first factor step after the user submits their credential. */
     private def afterCredential(

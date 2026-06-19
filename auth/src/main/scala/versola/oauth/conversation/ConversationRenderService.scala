@@ -4,23 +4,23 @@ import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{ClientId, FormRecord, PrimaryCredential}
 import versola.oauth.conversation.model.{ConversationRecord, ConversationStep}
 import versola.oauth.model.SessionCookie
+import versola.oauth.model.State
 import versola.util.{Base64Url, CoreConfig, JWT}
 import zio.http.{Body, Header, Headers, MediaType, Response, Status, URL}
 import zio.json.*
 import zio.json.ast.Json
 import zio.json.{jsonDiscriminator, jsonHint}
-import zio.{Chunk, Task, UIO, ZIO, ZLayer, durationInt}
+import zio.{Chunk, Clock, Task, UIO, ZIO, ZLayer, durationInt}
 
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 
 trait ConversationRenderService:
-  def renderStep(record: ConversationRecord, ifNoneMatch: Option[String]): Task[Response]
+  def renderStep(record: ConversationRecord, ifNoneMatch: Option[String], errorKey: Option[String] = None): Task[Response]
 
   def renderSubmit(
       result: ConversationResult.Render,
-      clientId: versola.oauth.client.model.ClientId,
-      locale: Option[List[String]],
+      record: ConversationRecord,
   ): Task[Response]
 
 object ConversationRenderService:
@@ -41,7 +41,9 @@ object ConversationRenderService:
     @jsonHint("password")
     case class Password(passwordRegex: Option[String]) extends StepView
     @jsonHint("otp")
-    case class Otp(length: Int, resendAfter: Int) extends StepView
+    case class Otp(length: Int, resendAfter: Int, lockedSeconds: Option[Int]) extends StepView
+    @jsonHint("access-denied")
+    case class AccessDenied(redirectUri: String) extends StepView
 
   case class FormConfig(
       step: StepView,
@@ -49,6 +51,7 @@ object ConversationRenderService:
       locale: String,
       locales: List[String],
       allT: Map[String, Map[String, String]],
+      error: Option[String],
   ) derives JsonCodec
 
   private val ThemeDefault = "default"
@@ -65,12 +68,12 @@ object ConversationRenderService:
       config: CoreConfig,
       configuration: OAuthConfigurationService,
   ) extends ConversationRenderService:
-    override def renderStep(record: ConversationRecord, ifNoneMatch: Option[String]): Task[Response] =
+    override def renderStep(record: ConversationRecord, ifNoneMatch: Option[String], errorKey: Option[String] = None): Task[Response] =
       for
         client <- configuration.find(record.clientId)
         themeId = client.map(_.theme).getOrElse(ThemeDefault)
         css <- themeCss(themeId)
-        maybeInfo <- formFor(record.step, record.clientId, record.uiLocales)
+        maybeInfo <- formFor(record.step, record.clientId, record.uiLocales, record.redirectUri, record.state, errorOverride = errorKey)
         response <- maybeInfo match
           case None =>
             ZIO.succeed(htmlResponse(notFoundPage(css), Status.NotFound))
@@ -94,18 +97,17 @@ object ConversationRenderService:
 
     override def renderSubmit(
         result: ConversationResult.Render,
-        clientId: versola.oauth.client.model.ClientId,
-        locale: Option[List[String]],
+        record: ConversationRecord,
     ): Task[Response] =
       result match
         case ConversationResult.RenderStep(step) =>
           ZIO.succeed(Response.seeOther(URL.root.copy(path = zio.http.Path.root / "challenge")))
 
+        case ConversationResult.ServiceUnavailable =>
+          renderStep(record, ifNoneMatch = None, errorKey = Some("service_unavailable"))
+
         case ConversationResult.NotFound =>
           ZIO.succeed(Response.notFound)
-
-        case ConversationResult.LimitsExceeded =>
-          ZIO.succeed(Response.forbidden)
 
         case ConversationResult.IllegalState =>
           ZIO.succeed(Response.badRequest)
@@ -148,17 +150,24 @@ object ConversationRenderService:
         step: ConversationStep,
         clientId: ClientId,
         locale: Option[List[String]],
+        redirectUri: URL,
+        state: Option[State],
+        errorOverride: Option[String] = None,
     ): Task[Option[FormRenderInfo]] =
       val formId = step match
         case _: ConversationStep.Credential => "credential"
         case _: ConversationStep.Password => "password"
         case _: ConversationStep.Otp => "otp"
+        case ConversationStep.AccessDenied => "access-denied"
       for
-        view    <- stepView(step, clientId)
+        view <- stepView(step, clientId, redirectUri, state)
         formOpt <- configuration.getForm(formId)
+        locales <- configuration.getLocales
       yield formOpt.map { form =>
-        val (chosenLocale, translations) = pickTranslations(form, locale)
-        val allLocales = form.localizations.keys.toList.sorted
+        val activeCodes = locales.locales.map(_.code).toSet + locales.default
+        val (chosenLocale, translations) = pickTranslations(form, locale, locales.default, activeCodes)
+        val allLocales = (form.localizations.keySet & activeCodes).toList.sorted
+        val errorMessage = errorOverride.orElse(stepErrorKey(step))
         FormRenderInfo(
           title = pageTitle(translations),
           style = form.style,
@@ -169,19 +178,31 @@ object ConversationRenderService:
             locale = chosenLocale,
             locales = allLocales,
             allT = form.localizations,
+            error = errorMessage,
           ),
           version = form.version,
         )
       }
 
+    private def stepErrorKey(step: ConversationStep): Option[String] = step match
+      case s: ConversationStep.Otp if s.timesSubmitted > 0 && !s.rateLimitExceeded => Some("otp_wrong")
+      case s: ConversationStep.Password if s.rateLimitExceeded => Some("rate_limit_exceeded")
+      case s: ConversationStep.Password if s.timesSubmitted > 0 => Some("password_wrong")
+      case _ => None
+
     private def pageTitle(translations: Map[String, String]): String =
       translations.getOrElse("page_title", "Sign In")
 
-    private def pickTranslations(form: FormRecord, locale: Option[List[String]]): (String, Map[String, String]) =
-      val base = form.localizations.getOrElse("en", Map.empty)
+    private def pickTranslations(
+        form: FormRecord,
+        locale: Option[List[String]],
+        default: String,
+        activeCodes: Set[String],
+    ): (String, Map[String, String]) =
+      val base = form.localizations.getOrElse(default, Map.empty)
       val chosenLocale = locale.getOrElse(Nil).iterator
-        .find(form.localizations.contains)
-        .getOrElse("en")
+        .find(code => activeCodes.contains(code) && form.localizations.contains(code))
+        .getOrElse(default)
       val chosen = form.localizations.getOrElse(chosenLocale, Map.empty)
       (chosenLocale, base ++ chosen)
 
@@ -191,7 +212,12 @@ object ConversationRenderService:
         case _ => configuration.getTheme(ThemeDefault).map(_.map(_.css).getOrElse(""))
       }
 
-    private def stepView(step: ConversationStep, clientId: ClientId): UIO[StepView] =
+    private def stepView(
+        step: ConversationStep,
+        clientId: ClientId,
+        redirectUri: URL,
+        state: Option[State],
+    ): UIO[StepView] =
       step match
         case ConversationStep.Credential(primaryCredentials, inlinePassword, passkey) =>
           for
@@ -204,9 +230,25 @@ object ConversationRenderService:
               if inlinePassword then configuration.getPasswordRegex(clientId)
               else ZIO.none
           yield StepView.Credential(primaryCredentials, inlinePassword, passkey, allowedPhonePrefixes, passwordRegex)
+
         case _: ConversationStep.Password =>
           configuration.getPasswordRegex(clientId).map(StepView.Password(_))
-        case _: ConversationStep.Otp => ZIO.succeed(StepView.Otp(length = 6, resendAfter = 60))
+
+        case s: ConversationStep.Otp =>
+          for
+            otp <- configuration.getOtpSettings(clientId)
+            now <- Clock.instant
+            elapsed = s.lastSentAt.fold(0L)(sentAt => now.getEpochSecond - sentAt.getEpochSecond)
+            resendRemaining = math.max(0L, otp.resendAfter.toLong - elapsed).toInt
+          yield StepView.Otp(
+            length = otp.length,
+            resendAfter = resendRemaining,
+            lockedSeconds = Option.when(s.lockedSeconds > 0)(s.lockedSeconds),
+          )
+
+        case ConversationStep.AccessDenied =>
+          val params = List("error" -> "access_denied") ++ state.map("state" -> _)
+          ZIO.succeed(StepView.AccessDenied(redirectUri = redirectUri.addQueryParams(params).encode))
 
     private def solidPage(info: FormRenderInfo, themeCss: String): String =
       s"""<!DOCTYPE html>
