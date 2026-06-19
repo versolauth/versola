@@ -97,13 +97,13 @@ object ResourceService:
         case (Some(err), _) => ZIO.succeed(Some(err))
         case (None, endpoint) => validateEndpoint(endpoint)
 
+    private val validPathRegex = "^/([a-zA-Z0-9-]+(/[a-zA-Z0-9-]+)*)?$".r
+
     private def validateEndpoint(
         endpoint: CreateResourceEndpointRequest,
     ): Task[Option[ResourceValidationError]] =
-      val hasPathParams = endpoint.path.split('/').exists:
-        case s"{$_}" => true
-        case _ => false
-      if hasPathParams then return ZIO.some(ResourceValidationError.PathParametersNotAllowed(endpoint.id))
+      if !validPathRegex.matches(endpoint.path) then
+        return ZIO.some(ResourceValidationError.InvalidEndpointPath(endpoint.id))
       val allowCheck = endpoint.allow.filter(_.trim.nonEmpty) match
         case None => ZIO.none
         case Some(expression) =>

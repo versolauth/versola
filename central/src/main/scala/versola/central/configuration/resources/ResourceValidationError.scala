@@ -6,4 +6,4 @@ import zio.schema.{Schema, derived}
 enum ResourceValidationError derives JsonCodec, Schema:
   case InvalidAllowExpression(endpointId: ResourceEndpointId, expression: String, message: String)
   case InvalidInjectExpression(endpointId: ResourceEndpointId, ruleName: String, expression: String, message: String)
-  case PathParametersNotAllowed(endpointId: ResourceEndpointId)
+  case InvalidEndpointPath(endpointId: ResourceEndpointId)
