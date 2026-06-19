@@ -35,26 +35,17 @@ object Observability:
   )(zio: ZIO[R, E, A]): ZIO[R, E, A] =
     serverLogging.set(f(HttpObservabilityConfig.Server.default)) *> zio
 
-  // Shared, seconds-based histogram boundaries for inbound HTTP latency. Kept identical across
-  // all services so p50/p90/p99 queries are consistent.
   val durationBoundaries: Boundaries =
     Boundaries.fromChunk(Chunk(0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0))
 
-  private val requestsTotal =
-    Metric.counter("http_server_requests_total")
+  private val requestsCount =
+    Metric.counter("server_http_requests_count")
 
   private val requestDuration =
-    Metric.histogram("http_server_request_duration_seconds", durationBoundaries)
+    Metric.histogram("server_http_request_duration_seconds", durationBoundaries)
 
   private val activeRequests =
-    Metric.gauge("http_server_active_requests")
-
-  // Routes are static (query params, not path params), so the raw path is a low-cardinality label.
-  // The only unbounded case is the edge proxy `resources / alias / trailing`, collapsed to a fixed label.
-  private[http] def routeLabel(request: Request): String =
-    request.path.segments match
-      case "resources" +: _ => "/resources/:alias/*"
-      case _ => request.path.encode
+    Metric.gauge("server_http_active_requests")
 
   def handleErrors[Env](routes: Routes[Env, Throwable]): Routes[Env, Nothing] =
     routes.handleErrorZIO {
@@ -126,7 +117,7 @@ object Observability:
                   for
                     startTime <- Clock.instant
                     now <- Clock.nanoTime
-                    route = routeLabel(request)
+                    route = request.path.encode
                     baseTags = Set(
                       MetricLabel("method", request.method.name),
                       MetricLabel("route", route),
@@ -139,7 +130,7 @@ object Observability:
                     after <- Clock.nanoTime
                     status = response.status.code
                     statusClass = s"${status / 100}xx"
-                    _ <- requestsTotal
+                    _ <- requestsCount
                       .tagged(baseTags + MetricLabel("status", status.toString) + MetricLabel("status_class", statusClass))
                       .increment
                     _ <- requestDuration

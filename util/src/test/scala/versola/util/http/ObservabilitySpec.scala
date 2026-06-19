@@ -84,10 +84,10 @@ object ObservabilitySpec extends ZIOSpecDefault:
     )
 
   private def counterCount(tags: Set[MetricLabel]): UIO[Double] =
-    Metric.counter("http_server_requests_total").tagged(tags).value.map(_.count)
+    Metric.counter("server_http_requests_count").tagged(tags).value.map(_.count)
 
   private def histogramCount(tags: Set[MetricLabel]): UIO[Long] =
-    Metric.histogram("http_server_request_duration_seconds", Observability.durationBoundaries).tagged(tags).value.map(_.count)
+    Metric.histogram("server_http_request_duration_seconds", Observability.durationBoundaries).tagged(tags).value.map(_.count)
 
   def spec = suite("Observability")(
     test("logs a single info entry for successful requests") {
@@ -176,14 +176,8 @@ object ObservabilitySpec extends ZIOSpecDefault:
           requests >= 1.0,
         )
       }.provideSomeLayer[Scope](testLayer) @@ TestAspect.silentLogging,
-      test("collapses the edge resources proxy path to a fixed route label") {
-        val collapsedTags = Set(
-          MetricLabel("method", "GET"),
-          MetricLabel("route", "/resources/:alias/*"),
-          MetricLabel("status", "200"),
-          MetricLabel("status_class", "2xx"),
-        )
-        val rawTags = Set(
+      test("uses the raw path as the route label for the resources proxy") {
+        val tags = Set(
           MetricLabel("method", "GET"),
           MetricLabel("route", "resources/myalias/extra"),
           MetricLabel("status", "200"),
@@ -194,12 +188,10 @@ object ObservabilitySpec extends ZIOSpecDefault:
           _ <- TestClient.addRoutes(proxyRoutes.provideEnvironment(env))
           client <- ZIO.service[Client]
           response <- client.batched(Request.get(URL.empty / "resources" / "myalias" / "extra"))
-          collapsed <- counterCount(collapsedTags)
-          raw <- counterCount(rawTags)
+          requests <- counterCount(tags)
         yield assertTrue(
           response.status == Status.Ok,
-          collapsed >= 1.0,
-          raw == 0.0,
+          requests >= 1.0,
         )
       }.provideSomeLayer[Scope](testLayer) @@ TestAspect.silentLogging,
     ),
