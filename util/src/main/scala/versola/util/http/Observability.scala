@@ -36,7 +36,7 @@ object Observability:
     serverLogging.set(f(HttpObservabilityConfig.Server.default)) *> zio
 
   val durationBoundaries: Boundaries =
-    Boundaries.fromChunk(Chunk(0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0))
+    Boundaries.fromChunk(Chunk(0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 7.5, 10.0, 15.0, 20.0, 25.0, 30.0))
 
   private val requestsCount =
     Metric.counter("server_http_requests_count")
