@@ -1,8 +1,9 @@
 package versola.edge
 
-import versola.edge.model.{AuthorizationPreset, ClientId, Code, CodeVerifier, RefreshToken, State, TokenResponse}
+import versola.edge.model.{AccessToken, AuthorizationPreset, ClientId, Code, CodeVerifier, RefreshToken, State, TokenResponse}
 import versola.util.{Base64, RedirectUri, Secret}
 import zio.http.*
+import zio.json.ast.Json
 import zio.json.{JsonCodec, jsonField}
 import zio.schema.codec.JsonCodec.zioJsonBinaryCodec
 import zio.{IO, Task, UIO, URLayer, ZIO, ZLayer}
@@ -28,8 +29,13 @@ trait SSOClient:
       clientSecret: Secret,
   ): IO[Throwable | SSOClient.InvalidGrant.type, TokenResponse]
 
+  def userInfo(
+      accessToken: AccessToken,
+  ): IO[Throwable | SSOClient.UserInfoUnauthorized.type, Json.Obj]
+
 object SSOClient:
   case object InvalidGrant
+  case object UserInfoUnauthorized
 
   private case class ErrorResponse(
       error: String,
@@ -45,6 +51,7 @@ object SSOClient:
   ) extends SSOClient:
     private val authorizeUrl: URL = config.versolaUrl / "authorize"
     private val tokenUrl: URL = config.versolaUrl / "token"
+    private val userInfoUrl = config.versolaUrl / "userinfo"
 
     override def authorizeUri(
         preset: AuthorizationPreset,
@@ -111,4 +118,35 @@ object SSOClient:
             response.bodyAs[ErrorResponse].flatMap: error =>
               if error.error == "invalid_grant" then ZIO.fail(InvalidGrant)
               else ZIO.fail(new RuntimeException(s"Token exchange failed: ${response.status.code} ${error.error}"))
+      yield result
+
+    override def userInfo(
+        accessToken: AccessToken,
+    ): IO[Throwable | SSOClient.UserInfoUnauthorized.type, Json.Obj] =
+      val request = Request
+        .get(userInfoUrl)
+        .addHeader(Header.Authorization.Bearer(accessToken.toString))
+
+      for
+        response <- ZIO.scoped(httpClient.request(request))
+
+        result <-
+          if response.status.isSuccess then
+            response.bodyAs[Json].flatMap {
+              case obj: Json.Obj =>
+                ZIO.succeed(obj)
+
+              case _ =>
+                ZIO.fail(
+                  new RuntimeException("UserInfo endpoint returned non-object JSON"),
+                )
+            }
+          else if response.status == Status.Unauthorized then
+            ZIO.fail(SSOClient.UserInfoUnauthorized)
+          else
+            ZIO.fail(
+              new RuntimeException(
+                s"UserInfo request failed with status ${response.status.code}",
+              ),
+            )
       yield result
