@@ -102,7 +102,8 @@ object ResourceService:
     private def validateEndpoint(
         endpoint: CreateResourceEndpointRequest,
     ): Task[Option[ResourceValidationError]] =
-      if !validPathRegex.matches(endpoint.path) then
+      val trimmedPath = endpoint.path.trim
+      if !validPathRegex.matches(trimmedPath) then
         return ZIO.some(ResourceValidationError.InvalidEndpointPath(endpoint.id))
       val allowCheck = endpoint.allow.filter(_.trim.nonEmpty) match
         case None => ZIO.none
