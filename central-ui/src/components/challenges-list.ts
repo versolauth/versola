@@ -687,7 +687,7 @@ export class VersolaChallengesList extends LitElement {
         <label>OTP Code Length</label>
         <div class="hint">Number of digits in generated one-time passwords.</div>
         <input type="number" class="form-control compact-input limit-input" .value=${this.editOtpLength}
-          @input=${(e: Event) => { this.editOtpLength = parseInt((e.target as HTMLInputElement).value) || 1; this.requestUpdate(); }} />
+          @input=${(e: Event) => { this.editOtpLength = Math.max(1, parseInt((e.target as HTMLInputElement).value) || 1); this.requestUpdate(); }} />
 
         <label style="margin-top: var(--spacing-lg);">OTP Resend After (seconds)</label>
         <div class="hint">How long the user must wait before requesting a new code.</div>
@@ -725,7 +725,7 @@ export class VersolaChallengesList extends LitElement {
           <label>Ban Duration (seconds)</label>
           <div class="limit-row" style="margin-bottom: 0;">
             <input type="number" class="form-control compact-input limit-input" .value=${this.editSubmissionLimits.banDurationSeconds}
-              @input=${(e: Event) => { this.editSubmissionLimits.banDurationSeconds = parseInt((e.target as HTMLInputElement).value) || 0; this.requestUpdate(); }} />
+              @input=${(e: Event) => { this.editSubmissionLimits.banDurationSeconds = Math.max(0, parseInt((e.target as HTMLInputElement).value) || 0); this.requestUpdate(); }} />
             <span class="limit-hint">${this.formatDuration(this.editSubmissionLimits.banDurationSeconds)}</span>
           </div>
           <div class="hint">How long a user is banned after exceeding the longest window.</div>
@@ -756,10 +756,10 @@ export class VersolaChallengesList extends LitElement {
           <div class="limit-row">
             <span class="limit-label">Max Attempts</span>
             <input type="number" class="form-control compact-input limit-input" .value=${l.maxAttempts}
-              @input=${(e: Event) => { l.maxAttempts = parseInt((e.target as HTMLInputElement).value) || 1; this.requestUpdate(); }} />
+              @input=${(e: Event) => { l.maxAttempts = Math.max(1, parseInt((e.target as HTMLInputElement).value) || 1); this.requestUpdate(); }} />
             <span class="limit-label">Window (sec)</span>
             <input type="number" class="form-control compact-input limit-input" .value=${l.windowSeconds}
-              @input=${(e: Event) => { l.windowSeconds = parseInt((e.target as HTMLInputElement).value) || 1; this.requestUpdate(); }} />
+              @input=${(e: Event) => { l.windowSeconds = Math.max(1, parseInt((e.target as HTMLInputElement).value) || 1); this.requestUpdate(); }} />
             <span class="limit-hint">${this.formatDuration(l.windowSeconds)}</span>
             <button class="icon-action danger" @click=${() => this.removeRateLimit(type, i)} title="Remove">✕</button>
           </div>

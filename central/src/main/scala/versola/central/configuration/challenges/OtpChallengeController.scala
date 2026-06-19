@@ -86,7 +86,7 @@ object OtpChallengeController extends Controller:
             body.tenantId,
             body.allowedPrefixes,
             body.passwordRegex,
-            body.submissionLimits.getOrElse(SubmissionLimits.empty),
+            body.submissionLimits.getOrElse(existing.submissionLimits),
             body.otpLength.getOrElse(existing.otpLength),
             body.otpResendAfter.getOrElse(existing.otpResendAfter),
           ),
