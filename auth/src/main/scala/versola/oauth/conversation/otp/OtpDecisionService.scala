@@ -24,5 +24,8 @@ object OtpDecisionService:
           case Some(previous) if previous.isFake =>
             SendOtpResult.Success(fake = true)
 
+          case _ if userId.isEmpty =>
+            SendOtpResult.Success(fake = true)
+
           case Some(_) | None =>
             SendOtpResult.Success(fake = false)

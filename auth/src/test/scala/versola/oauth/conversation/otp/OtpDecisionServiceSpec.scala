@@ -26,18 +26,32 @@ object OtpDecisionServiceSpec extends UnitSpecBase:
 
   val spec = suite("OtpDecisionService")(
     suite("checkRequest")(
-      test("allow first OTP request when no previous request exists") {
+      test("return fake OTP for first request when no user exists") {
         for
           result <- service.checkRequest(None, None)
+        yield assertTrue(
+          result == SendOtpResult.Success(fake = true),
+        )
+      },
+      test("allow first OTP request when user exists") {
+        for
+          result <- service.checkRequest(None, Some(userId))
         yield assertTrue(
           result == SendOtpResult.Success(fake = false),
         )
       },
-      test("allow second OTP request when previous exists") {
+      test("allow second OTP request when previous exists and user exists") {
+        for
+          result <- service.checkRequest(Some(previousOtp), Some(userId))
+        yield assertTrue(
+          result == SendOtpResult.Success(fake = false),
+        )
+      },
+      test("return fake OTP on resend when no user exists") {
         for
           result <- service.checkRequest(Some(previousOtp), None)
         yield assertTrue(
-          result == SendOtpResult.Success(fake = false),
+          result == SendOtpResult.Success(fake = true),
         )
       },
       test("return fake OTP when previous was fake") {
