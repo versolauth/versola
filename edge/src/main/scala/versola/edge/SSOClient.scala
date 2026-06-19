@@ -142,7 +142,20 @@
                   )
               }
             else if response.status == Status.Unauthorized then
-              ZIO.fail(InsufficientScope)
+              val authHeader =
+                response.header(Header.WWWAuthenticate).map(_.renderedValue)
+
+              authHeader match 
+                case Some(value) if value.contains("insufficient_scope") =>
+                  ZIO.fail(InsufficientScope)
+
+                case _ =>
+                  ZIO.fail(
+                    new RuntimeException(
+                      s"UserInfo unauthorized: ${authHeader.getOrElse("missing WWW-Authenticate header")}"
+                    )
+                  )
+
             else
               ZIO.fail(
                 new RuntimeException(
