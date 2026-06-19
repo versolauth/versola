@@ -114,6 +114,19 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
         env.repository.createResource.calls.isEmpty,
       )
     },
+    test("createResource returns error when endpoint path contains path parameters") {
+      val env = new Env
+      val badRequest = createRequest.copy(
+        endpoints = Vector(
+          CreateResourceEndpointRequest(existingEndpointId, "/users/{id}", "GET", false, None, Vector.empty),
+        ),
+      )
+      for result <- env.service.createResource(badRequest)
+      yield assertTrue(
+        result == Left(ResourceValidationError.PathParametersNotAllowed(existingEndpointId)),
+        env.repository.createResource.calls.isEmpty,
+      )
+    },
     test("createResource returns error when inject expression is invalid CEL") {
       val env = new Env
       val badRequest = createRequest.copy(

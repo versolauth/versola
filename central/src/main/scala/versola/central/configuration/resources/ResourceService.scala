@@ -100,6 +100,10 @@ object ResourceService:
     private def validateEndpoint(
         endpoint: CreateResourceEndpointRequest,
     ): Task[Option[ResourceValidationError]] =
+      val hasPathParams = endpoint.path.split('/').exists:
+        case s"{$_}" => true
+        case _ => false
+      if hasPathParams then return ZIO.some(ResourceValidationError.PathParametersNotAllowed(endpoint.id))
       val allowCheck = endpoint.allow.filter(_.trim.nonEmpty) match
         case None => ZIO.none
         case Some(expression) =>
