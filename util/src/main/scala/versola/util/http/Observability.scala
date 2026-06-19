@@ -5,6 +5,8 @@ import zio.*
 import zio.http.*
 import zio.json.*
 import zio.logging.LogAnnotation
+import zio.metrics.MetricKeyType.Histogram.Boundaries
+import zio.metrics.{Metric, MetricLabel}
 import zio.telemetry.opentelemetry.context.{IncomingContextCarrier, OutgoingContextCarrier}
 import zio.telemetry.opentelemetry.tracing.Tracing
 import zio.telemetry.opentelemetry.tracing.propagation.TraceContextPropagator
@@ -32,6 +34,18 @@ object Observability:
       f: HttpObservabilityConfig.Server => HttpObservabilityConfig.Server,
   )(zio: ZIO[R, E, A]): ZIO[R, E, A] =
     serverLogging.set(f(HttpObservabilityConfig.Server.default)) *> zio
+
+  val durationBoundaries: Boundaries =
+    Boundaries.fromChunk(Chunk(0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 7.5, 10.0, 15.0, 20.0, 25.0, 30.0))
+
+  private val requestsCount =
+    Metric.counter("server_http_requests_count")
+
+  private val requestDuration =
+    Metric.histogram("server_http_request_duration_seconds", durationBoundaries)
+
+  private val activeRequests =
+    Metric.gauge("server_http_active_requests")
 
   def handleErrors[Env](routes: Routes[Env, Throwable]): Routes[Env, Nothing] =
     routes.handleErrorZIO {
@@ -103,10 +117,25 @@ object Observability:
                   for
                     startTime <- Clock.instant
                     now <- Clock.nanoTime
-                    response <- handler(request)
+                    route = request.path.encode
+                    baseTags = Set(
+                      MetricLabel("method", request.method.name),
+                      MetricLabel("route", route),
+                    )
+                    response <- activeRequests.tagged(baseTags).increment
+                      .zipRight(handler(request))
+                      .ensuring(activeRequests.tagged(baseTags).decrement)
                     masking <- serverLogging.get
                     (requestLog, responseLog) <- toLog(request, masking) <&> toLog(request, response, masking)
                     after <- Clock.nanoTime
+                    status = response.status.code
+                    statusClass = s"${status / 100}xx"
+                    _ <- requestsCount
+                      .tagged(baseTags + MetricLabel("status", status.toString) + MetricLabel("status_class", statusClass))
+                      .increment
+                    _ <- requestDuration
+                      .tagged(baseTags + MetricLabel("status_class", statusClass))
+                      .update((after - now) / 1e9)
                     log = receiveHttp(
                       ReceiveHttpLog(
                         request = requestLog,

@@ -17,7 +17,7 @@ import versola.util.{EnvName, PostInitializationService}
 import zio.*
 import zio.config.magnolia.{DeriveConfig, deriveConfig}
 import zio.config.typesafe.FromConfigSourceTypesafe
-import zio.http.{Client, Method, Middleware, Request, RequestStore, Response, Routes, Server, Status, handler}
+import zio.http.{Client, Method, Request, RequestStore, Response, Routes, Server, Status, handler}
 import zio.logging.LogFormat.{cause, fiberId, label, level, line, logAnnotation, quoted, space, text, timestamp}
 import zio.logging.slf4j.bridge.Slf4jBridge
 import zio.logging.{ConsoleLoggerConfig, LogFilter, LogFormat, LoggerNameExtractor}
@@ -84,8 +84,7 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
 
           port <- Server.install {
             Observability.handleErrors(routes) @@
-              Observability.middleware @@
-              Middleware.metrics()
+              Observability.middleware
           }
           _ <- ZIO.logInfo(s"Application server is started and ready to use on $port")
           _ <- readinessService.setReady
