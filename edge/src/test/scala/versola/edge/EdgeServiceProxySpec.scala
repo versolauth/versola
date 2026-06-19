@@ -707,7 +707,7 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         env.ssoClient.userInfo.calls.nonEmpty,
       )
     },
-    test("returns 403 when userInfo returns insufficient scope") {
+    test("returns 401 when userInfo is unauthorized") {
       val env = new Env
       val endpoint = usersEndpoint(
         allow = Some("user.email == 'john@example.com'"),
@@ -716,7 +716,7 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
 
       for
         _ <- env.setupDefaults()
-        _ <- env.ssoClient.userInfo.failsWith(SSOClient.InsufficientScope)
+        _ <- env.ssoClient.userInfo.failsWith(SSOClient.UserInfoUnauthorized)
         client <- ZIO.service[Client]
         security <- ZIO.service[SecurityService]
         _ <- env.withResources(usersResource(endpoint))
@@ -732,7 +732,7 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         )
 
       yield assertTrue(
-        response.status == Status.Forbidden,
+        response.status == Status.Unauthorized,
       )
     },
     test("returns 500 when userInfo request fails") {

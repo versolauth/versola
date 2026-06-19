@@ -19,7 +19,7 @@ import java.security.interfaces.RSAPublicKey
 import java.util.{Collections, Date, UUID}
 import javax.crypto.spec.SecretKeySpec
 
-object  EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
+object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
 
   object Fixtures:
     val presetId = PresetId("preset-default")
@@ -137,9 +137,18 @@ object  EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
 
     def buildService(httpClient: Client, security: SecurityService): EdgeService =
       EdgeService.Impl(
-        clientService, resourceService, celEvaluator, secureRandom,
-        loginRepository, ssoClient, security, httpClient, edgeConfig,
-        refreshTokenRepository, jwksService, permissionService,
+        clientService,
+        resourceService,
+        celEvaluator,
+        secureRandom,
+        loginRepository,
+        ssoClient,
+        security,
+        httpClient,
+        edgeConfig,
+        refreshTokenRepository,
+        jwksService,
+        permissionService,
       )
 
   def spec = suite("EdgeService")(
@@ -286,10 +295,13 @@ object  EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
           client <- ZIO.service[Client]
           accessToken <- env.signToken(jti = jti, ttlSeconds = 3600L)
           tokens = TokenResponse(
-            accessToken = accessToken, tokenType = "Bearer", expiresIn = 3600L,
+            accessToken = accessToken,
+            tokenType = "Bearer",
+            expiresIn = 3600L,
             refreshToken = Some(RefreshToken(refreshTokenValue)),
             refreshTokenExpiresIn = Some(7200L),
-            scope = None, idToken = None,
+            scope = None,
+            idToken = None,
           )
           _ <- env.ssoClient.exchangeAuthorizationCode.succeedsWith(tokens)
           service = env.buildService(client, security)

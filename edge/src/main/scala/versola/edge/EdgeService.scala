@@ -221,19 +221,17 @@ object EdgeService:
             },
             claims => ZIO.succeed(ActiveSession(accessToken, claims, None)),
           )
-        
+
         resource <- resourceService.findByAlias(alias).someOrFail(Outcome.NotFound)
         endpoint <- findEndpoint(resource.endpoints, request.method.name, restPath)
         _ <- checkPermissions(session.claims, endpoint)
-        userInfo <- (
-          if endpoint.fetchUserInfo then
-            ssoClient.userInfo(session.accessToken)
-          else
-            ZIO.succeed(Json.Obj())
-          ).mapError {
-            case SSOClient.InsufficientScope => Outcome.Forbidden
-            case _: Throwable                => Outcome.InternalServerError
-        }
+        userInfo <- ssoClient.userInfo(session.accessToken)
+          .when(endpoint.fetchUserInfo)
+          .someOrElse(Json.Obj())
+          .mapError {
+            case SSOClient.UserInfoUnauthorized => Outcome.Unauthorized
+            case _: Throwable => Outcome.InternalServerError
+          }
         parsedBody <- readJsonBody(request)
         celContext <- checkRules(session.claims, userInfo, request, endpoint, restPath, parsedBody)
         upstream <- buildUpstreamRequest(resource, endpoint, restPath, request, parsedBody, session.accessToken, celContext)
