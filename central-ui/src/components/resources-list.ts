@@ -331,7 +331,7 @@ export class VersolaResourcesList extends LitElement {
     if (!validation.valid) { this.error = validation.error ?? 'Resource URI is invalid'; return; }
     const invalidEndpoint = this.endpointDrafts.find(endpoint => this.isEndpointPathInvalid(endpoint.path));
     if (invalidEndpoint) {
-      this.error = `Endpoint path must start with “/” and contain no “*” or “:”: ${endpointLabel(invalidEndpoint)}`;
+      this.error = `Endpoint path must start with “/” and contain no “*”, “:” or “{}”: ${endpointLabel(invalidEndpoint)}`;
       return;
     }
     const celIssue = this.findCelIssue();
@@ -373,7 +373,7 @@ export class VersolaResourcesList extends LitElement {
     const trimmed = path.trim();
     if (trimmed.length === 0) return false;
     if (!trimmed.startsWith('/')) return true;
-    if (trimmed.includes('*') || trimmed.includes(':')) return true;
+    if (trimmed.includes('*') || trimmed.includes(':') || trimmed.includes('{')) return true;
     return false;
   }
 

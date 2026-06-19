@@ -112,7 +112,11 @@ test('shows resource validation errors before saving', async ({ page }) => {
   await expect(relativePathField).toHaveClass(/input-error/);
   await expect(relativePathField).toHaveCSS('border-top-color', 'rgb(248, 81, 73)');
   await page.getByRole('button', { name: 'Create Resource', exact: true }).click();
-  await expect(page.getByText('Endpoint path must start with “/” and contain no “*” or “:”: GET users', { exact: true })).toBeVisible();
+  await expect(page.getByText('Endpoint path must start with “/” and contain no “*”, “:” or “{}”: GET users', { exact: true })).toBeVisible();
+
+  await relativePathField.fill('/users/{id}');
+  await page.getByRole('button', { name: 'Create Resource', exact: true }).click();
+  await expect(page.getByText('Endpoint path must start with “/” and contain no “*”, “:” or “{}”: GET /users/{id}', { exact: true })).toBeVisible();
 
   expect(api.requests.some(request => request.method === 'POST' && request.pathname === '/configuration/resources')).toBeFalsy();
 });
