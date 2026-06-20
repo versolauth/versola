@@ -30,7 +30,7 @@ class PostgresSessionRepository(xa: TransactorZIO) extends SessionRepository, Ba
       ttl: zio.Duration,
   ): Task[Unit] =
     Clock.instant.flatMap: now =>
-      xa.connect:
+      xa.connectMeasured("create-session"):
         sql"""
           INSERT INTO sso_sessions (id, client_id, user_id, user_agent, created_at, amr, expires_at)
           VALUES (
@@ -48,7 +48,7 @@ class PostgresSessionRepository(xa: TransactorZIO) extends SessionRepository, Ba
   override def find(id: MAC.Of[SessionId]): Task[Option[SessionRecord]] =
     for
       now <- Clock.instant
-      result <- xa.connect:
+      result <- xa.connectMeasured("find-session"):
         sql"""
           SELECT user_id, client_id, user_agent, created_at, amr, expires_at
           FROM sso_sessions
