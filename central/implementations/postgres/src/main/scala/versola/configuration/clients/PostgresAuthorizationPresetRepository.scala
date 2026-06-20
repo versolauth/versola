@@ -32,7 +32,7 @@ class PostgresAuthorizationPresetRepository(
   given DbCodec[AuthorizationPreset] = DbCodec.derived
 
   override def find(id: PresetId): Task[Option[AuthorizationPreset]] =
-    xa.connect:
+    xa.connectMeasured("find-preset"):
       sql"""
         SELECT id, client_id, description, redirect_uri, post_login_redirect_uri, scope, response_type, ui_locales, custom_parameters, cookie_domain, cookie_path
         FROM authorization_presets
@@ -41,7 +41,7 @@ class PostgresAuthorizationPresetRepository(
         .query[AuthorizationPreset].run().headOption
 
   override def replace(clientId: ClientId, presets: Seq[AuthorizationPreset]): Task[Unit] =
-    xa.repeatableRead.transact:
+    xa.repeatableRead.transactMeasured("replace-presets"):
       sql"""DELETE FROM authorization_presets WHERE client_id = $clientId""".update.run()
       if presets.nonEmpty then
         batchUpdate(presets): preset =>
@@ -58,7 +58,7 @@ class PostgresAuthorizationPresetRepository(
     .unit
 
   override def getAll: Task[Vector[AuthorizationPreset]] =
-    xa.connect:
+    xa.connectMeasured("get-all-presets"):
       sql"""
         SELECT id, client_id, description, redirect_uri, post_login_redirect_uri, scope, response_type, ui_locales, custom_parameters, cookie_domain, cookie_path
         FROM authorization_presets

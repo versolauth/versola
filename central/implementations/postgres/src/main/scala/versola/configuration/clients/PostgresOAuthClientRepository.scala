@@ -34,7 +34,7 @@ class PostgresOAuthClientRepository(
     """
 
   override def getAll: Task[Vector[OAuthClientRecord]] =
-    xa.connect:
+    xa.connectMeasured("get-all-clients"):
       sql"""
         SELECT id, tenant_id, client_name, redirect_uris, scope, external_audience, secret, previous_secret, access_token_ttl, refresh_token_ttl, permissions, theme, auth_flow, otp_template_id
         FROM oauth_clients
@@ -42,11 +42,11 @@ class PostgresOAuthClientRepository(
         .query[OAuthClientRecord].run()
 
   override def find(clientId: ClientId): Task[Option[OAuthClientRecord]] =
-    xa.connect:
+    xa.connectMeasured("find-client"):
       findClient(clientId).query[OAuthClientRecord].run().headOption
 
   override def createClient(client: OAuthClientRecord): IO[ClientAlreadyExists | Throwable, Unit] =
-    xa.connect:
+    xa.connectMeasured("create-client"):
       sql"""
         INSERT INTO oauth_clients (id, tenant_id, client_name, redirect_uris, scope, external_audience, secret, previous_secret, access_token_ttl, refresh_token_ttl, permissions, theme, auth_flow, otp_template_id)
         VALUES (${client.id}, ${client.tenantId}, ${client.clientName}, ${client.redirectUris}, ${client.scope},
@@ -71,7 +71,7 @@ class PostgresOAuthClientRepository(
       authFlow: Option[AuthFlow],
       otpTemplateId: Option[String],
   ): Task[Unit] =
-    xa.repeatableRead.transact:
+    xa.repeatableRead.transactMeasured("update-client"):
       val client = findClient(clientId).query[OAuthClientRecord].run().head
       val newClientName = clientName.getOrElse(client.clientName)
       val newRedirectUris = client.redirectUris -- patchRedirectUris.remove ++ patchRedirectUris.add
@@ -98,7 +98,7 @@ class PostgresOAuthClientRepository(
     .unit
 
   override def rotateClientSecret(clientId: ClientId, newSecret: Array[Byte]): Task[Unit] =
-    xa.connect:
+    xa.connectMeasured("rotate-client-secret"):
       sql"""
         UPDATE oauth_clients
         SET previous_secret = secret,
@@ -108,7 +108,7 @@ class PostgresOAuthClientRepository(
     .unit
 
   override def deletePreviousClientSecret(clientId: ClientId): Task[Unit] =
-    xa.connect:
+    xa.connectMeasured("delete-previous-client-secret"):
       sql"""
         UPDATE oauth_clients
         SET previous_secret = NULL
@@ -117,7 +117,7 @@ class PostgresOAuthClientRepository(
     .unit
 
   override def deleteClient(clientId: ClientId): Task[Unit] =
-    xa.connect:
+    xa.connectMeasured("delete-client"):
       sql"""DELETE FROM oauth_clients WHERE id = $clientId""".update.run()
     .unit
 

@@ -27,22 +27,22 @@ class PostgresUserRepository(xa: TransactorZIO, secureRandom: SecureRandom) exte
   given DbCodec[Instant] = DbCodec.InstantCodec
 
   override def findById(id: UserId): Task[Option[UserIndexRecord]] =
-    xa.connect:
+    xa.connectMeasured("find-user-by-id"):
       sql"SELECT id, email, phone, login FROM user_index WHERE id = $id"
         .query[UserIndexRecord].run().headOption
 
   override def findByEmail(email: Email): Task[Option[UserIndexRecord]] =
-    xa.connect:
+    xa.connectMeasured("find-user-by-email"):
       sql"SELECT id, email, phone, login FROM user_index WHERE email = $email"
         .query[UserIndexRecord].run().headOption
 
   override def findByPhone(phone: Phone): Task[Option[UserIndexRecord]] =
-    xa.connect:
+    xa.connectMeasured("find-user-by-phone"):
       sql"SELECT id, email, phone, login FROM user_index WHERE phone = $phone"
         .query[UserIndexRecord].run().headOption
 
   override def findByLogin(login: Login): Task[Option[UserIndexRecord]] =
-    xa.connect:
+    xa.connectMeasured("find-user-by-login"):
       sql"SELECT id, email, phone, login FROM user_index WHERE login = $login"
         .query[UserIndexRecord].run().headOption
 
@@ -85,7 +85,7 @@ class PostgresUserRepository(xa: TransactorZIO, secureRandom: SecureRandom) exte
     (for
       version <- secureRandom.nextUUIDv7
       now <- Clock.instant
-      _ <- xa.transact:
+      _ <- xa.transactMeasured("create-user"):
              upsertSql(id, email, phone, login)
              enqueueEventSql(id, version, OutboxEvent.UpsertUser(id, version, email, phone, login), now)
     yield ()).mapError:
@@ -101,7 +101,7 @@ class PostgresUserRepository(xa: TransactorZIO, secureRandom: SecureRandom) exte
     for
       version <- secureRandom.nextUUIDv7
       now <- Clock.instant
-      _ <- xa.transact:
+      _ <- xa.transactMeasured("patch-user"):
         // Lock the user row to prevent lost updates and serialize events
         sql"SELECT id FROM user_index WHERE id = $id FOR UPDATE".query[UserId].run()
 
@@ -126,7 +126,7 @@ class PostgresUserRepository(xa: TransactorZIO, secureRandom: SecureRandom) exte
     */
   override def claimDueEvents(limit: Int, lease: Duration): Task[Vector[OutboxRecord]] =
     val leaseSeconds = lease.toSeconds
-    xa.connect:
+    xa.connectMeasured("claim-due-events"):
       sql"""UPDATE user_outbox SET
               next_attempt_at = NOW() + ($leaseSeconds || ' seconds')::interval
             WHERE id IN (
@@ -146,13 +146,13 @@ class PostgresUserRepository(xa: TransactorZIO, secureRandom: SecureRandom) exte
         .run()
 
   override def deleteEvent(id: UUID): Task[Unit] =
-    xa.connect:
+    xa.connectMeasured("delete-event"):
       sql"DELETE FROM user_outbox WHERE id = $id".update.run()
     .unit
 
   override def rescheduleEvent(id: UUID, delay: Duration): Task[Unit] =
     val seconds = delay.toSeconds
-    xa.connect:
+    xa.connectMeasured("reschedule-event"):
       sql"""UPDATE user_outbox SET
               attempts = attempts + 1,
               next_attempt_at = NOW() + ($seconds || ' seconds')::interval
@@ -160,7 +160,7 @@ class PostgresUserRepository(xa: TransactorZIO, secureRandom: SecureRandom) exte
     .unit
 
   override def moveToDeadLetter(id: UUID, error: String): Task[Unit] =
-    xa.transact:
+    xa.transactMeasured("move-event-to-dead-letter"):
       sql"""INSERT INTO user_outbox_dead (id, user_id, event_type, payload, attempts, failed_at, error)
             SELECT id, user_id, event_type, payload, attempts, NOW(), $error
             FROM user_outbox
