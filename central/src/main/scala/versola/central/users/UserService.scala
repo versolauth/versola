@@ -14,6 +14,10 @@ trait UserService:
 
   def getRoles(id: UserId, tenantId: TenantId): Task[List[RoleId]]
 
+  def getSessions(id: UserId): Task[List[AuthClient.SessionDto]]
+
+  def invalidateSession(sessionId: String, userId: UserId): Task[Unit]
+
   def create(request: CreateUserRequest): IO[UserConflict | Throwable, UserId]
 
   def patch(request: PatchUserRequest): Task[Unit]
@@ -46,6 +50,12 @@ object UserService:
 
     override def getRoles(id: UserId, tenantId: TenantId): Task[List[RoleId]] =
       authClient.getUserRoles(id, tenantId)
+
+    override def getSessions(id: UserId): Task[List[AuthClient.SessionDto]] =
+      authClient.getUserSessions(id)
+
+    override def invalidateSession(sessionId: String, userId: UserId): Task[Unit] =
+      authClient.invalidateSession(sessionId, userId)
 
     override def create(request: CreateUserRequest): IO[UserConflict | Throwable, UserId] =
       for

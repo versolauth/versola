@@ -5,7 +5,7 @@ import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{ClientId, OAuthClientRecord, ScopeToken}
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, Nonce, State}
 import versola.oauth.userinfo.model.RequestedClaims
-import zio.http.{Method, Request, URL}
+import zio.http.{Header, Method, Request, URL}
 import zio.json.*
 import zio.prelude.NonEmptySet
 import zio.{Chunk, IO, Task, ZIO, ZLayer}
@@ -93,6 +93,10 @@ object AuthorizeRequestParser:
           .orElseFail(Error.MultipleValuesProvided(redirectUri, state, "nonce"))
           .map(_.map(Nonce(_)))
 
+        userAgent =
+          request.header(Header.UserAgent)
+            .map(_.renderedValue)
+
         authorizeRequest = AuthorizeRequest(
           clientId = clientId,
           redirectUri = redirectUri,
@@ -104,6 +108,7 @@ object AuthorizeRequestParser:
           requestedClaims = requestedClaims,
           uiLocales = uiLocales,
           nonce = nonce,
+          userAgent = userAgent,
         )
       yield authorizeRequest
 

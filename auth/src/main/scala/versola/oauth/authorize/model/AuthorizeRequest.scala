@@ -19,6 +19,7 @@ case class AuthorizeRequest(
     requestedClaims: Option[RequestedClaims],
     uiLocales: Option[List[String]],
     nonce: Option[Nonce],
+    userAgent: Option[String],
 ):
   def buildResponseUri(code: AuthorizationCode): URL =
     val params = List(

@@ -2,11 +2,13 @@ import { LitElement, html, css } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
 import { buttonStyles, cardStyles, formStyles } from '../styles/components';
-import { Resource, Role, User, UserRoleAssignment, UserSearchField } from '../types';
+import { Resource, Role, User, UserRoleAssignment, UserSearchField, UserSession } from '../types';
 import { getPermissions, getResources, getRoles } from '../utils/central-api';
 import {
   createUser,
   fetchUserRoles,
+  fetchUserSessions,
+  invalidateUserSession,
   patchUserClaims,
   searchUsers,
   updateUser,
@@ -39,6 +41,8 @@ export class VersolaUsersList extends LitElement {
   @state() private hasSearched = false;
   @state() private userRoles: Record<string, UserRoleAssignment[]> = {};
   @state() private loadingRoles = new Set<string>();
+  @state() private userSessions: Record<string, UserSession[]> = {};
+  @state() private loadingSessions = new Set<string>();
   @state() private expandedClaims = new Set<string>();
   @state() private errorPopup = '';
   private loadRequestId = 0;
@@ -208,6 +212,42 @@ export class VersolaUsersList extends LitElement {
         gap: var(--spacing-sm);
         padding: var(--spacing-xs) 0;
         font-size: 0.875rem;
+      }
+      
+      .session-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: var(--spacing-xs) 0;
+        font-size: 0.875rem;
+        gap: var(--spacing-sm);
+      }
+      
+      .session-info {
+        display: flex;
+        flex-direction: column;
+        gap: 0.125rem;
+        min-width: 0;
+      }
+      
+      .session-platform {
+        font-weight: 600;
+        color: var(--text-primary);
+        font-size: 0.8125rem;
+        text-transform: capitalize;
+      }
+      
+      .session-browser {
+        color: var(--text-secondary);
+        font-size: 0.75rem;
+      }
+      
+      .session-meta {
+        color: var(--text-secondary);
+        font-family: var(--font-mono);
+        font-size: 0.75rem;
+        text-align: right;
+        white-space: nowrap;
       }
 
       .role-tag {
@@ -466,6 +506,28 @@ export class VersolaUsersList extends LitElement {
     }
   }
 
+  private async toggleUserSessions(userId: string) {
+    this.loadingSessions = new Set([...this.loadingSessions, userId]);
+    try {
+      const sessions = await fetchUserSessions(userId);
+      this.userSessions = { ...this.userSessions, [userId]: sessions };
+    } catch (error) {
+      this.errorPopup = error instanceof Error ? error.message : 'Failed to load sessions';
+    } finally {
+      this.loadingSessions = new Set([...this.loadingSessions].filter(id => id !== userId));
+    }
+  }
+
+  private async handleInvalidateSession(userId: string, sessionId: string) {
+    try {
+      await invalidateUserSession(sessionId, userId);
+      const sessions = await fetchUserSessions(userId);
+      this.userSessions = { ...this.userSessions, [userId]: sessions };
+    } catch (error) {
+      this.errorPopup = error instanceof Error ? error.message : 'Failed to invalidate session';
+    }
+  }
+
   private renderUserRoles(user: User) {
     const assignments = this.userRoles[user.id] ?? [];
     return html`
@@ -486,6 +548,41 @@ export class VersolaUsersList extends LitElement {
         ` : ''}
       </div>
     `;
+  }
+
+  private renderUserSessions(user: User) {
+    const sessions = this.userSessions[user.id] ?? [];
+    return html`
+    <div class="expand-section">
+      <div class="expand-section-header">
+        <div class="expand-section-title">Sessions</div>
+      </div>
+      ${sessions.length > 0 ? html`
+        <div class="expand-section-content">
+          ${sessions.map(s => html`
+            <div class="session-row">
+              <div class="session-info">
+                <span class="session-platform">${s.platform}</span>
+                <span class="session-browser">
+                  ${s.browser ? `${s.browser}${s.version ? ` ${s.version}` : ''}` : '—'}
+                </span>
+              </div>
+              <div class="session-meta">
+                <div>${s.clientId}</div>
+                ${s.createdAt ? html`<div>${new Date(s.createdAt).toLocaleString()}</div>` : ''}
+              </div>
+              <button class="icon-action danger" title="Invalidate session"
+                @click=${() => this.handleInvalidateSession(user.id, s.id)}>✕</button>
+            </div>
+          `)}
+        </div>
+      ` : html`
+        <div class="expand-section-content">
+          <span class="no-data">No active sessions</span>
+        </div>
+      `}
+    </div>
+  `;
   }
 
   private toggleUserClaims(userId: string) {
@@ -672,7 +769,8 @@ export class VersolaUsersList extends LitElement {
               </div>
               ${this.expandedClaims.has(user.id) ? this.renderUserClaims(user) : ''}
               ${user.id in this.userRoles ? this.renderUserRoles(user) : ''}
-              ${(!this.expandedClaims.has(user.id) || !(user.id in this.userRoles)) ? html`
+              ${user.id in this.userSessions ? this.renderUserSessions(user) : ''}
+              ${(!this.expandedClaims.has(user.id) || !(user.id in this.userRoles) || !(user.id in this.userSessions)) ? html`
               <div class="card-action-row">
                 ${!this.expandedClaims.has(user.id) ? html`<button class="btn btn-secondary btn-sm"
                   @click=${() => this.toggleUserClaims(user.id)}>Get Claims</button>` : ''}
@@ -681,6 +779,11 @@ export class VersolaUsersList extends LitElement {
                   title=${!this.tenantId ? 'Select a tenant to view roles' : ''}
                   @click=${() => this.toggleUserRoles(user.id)}>
                   ${this.loadingRoles.has(user.id) ? 'Loading…' : 'Get Roles'}
+                </button>` : ''}
+                ${!(user.id in this.userSessions) ? html`<button class="btn btn-secondary btn-sm"
+                  ?disabled=${this.loadingSessions.has(user.id)}
+                  @click=${() => this.toggleUserSessions(user.id)}>
+                  ${this.loadingSessions.has(user.id) ? 'Loading…' : 'Get Sessions'}
                 </button>` : ''}
               </div>` : ''}
             </div>

@@ -56,6 +56,7 @@ object ConversationControllerSpec extends UnitSpecBase:
     userLogin = None,
     userClaims = None,
     authFlow = AuthFlow.default,
+    userAgent = None,
   )
 
   def successfulSubmitTestCase[Args, Result, RResult <: Result](

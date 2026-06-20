@@ -30,6 +30,8 @@ case class AuthorizationCodeRecord(
   def session: SessionRecord = SessionRecord(
     userId = userId,
     clientId = clientId,
+    userAgent = None,
+    createdAt = Instant.now(),
   )
 
   def verify(verifier: CodeVerifier): Boolean =

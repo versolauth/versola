@@ -1,7 +1,7 @@
 package versola.oauth.session
 
-import com.augustnagro.magnum.magzio.TransactorZIO
 import com.augustnagro.magnum.*
+import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.oauth.client.model.ClientId
 import versola.oauth.model.{AccessToken, RefreshToken}
 import versola.oauth.session.model.{SessionId, SessionRecord, WithTtl}
@@ -28,11 +28,13 @@ class PostgresSessionRepository(xa: TransactorZIO) extends SessionRepository, Ba
     Clock.instant.flatMap: now =>
       xa.connect:
         sql"""
-          INSERT INTO sso_sessions (id, client_id, user_id, expires_at)
+          INSERT INTO sso_sessions (id, client_id, user_id, user_agent, created_at, expires_at)
           VALUES (
             $id,
             ${session.clientId},
             ${session.userId},
+            ${session.userAgent},
+            ${session.createdAt},
             ${now.plusSeconds(ttl.toSeconds)}
           )
         """.update.run()
@@ -43,12 +45,38 @@ class PostgresSessionRepository(xa: TransactorZIO) extends SessionRepository, Ba
       now <- Clock.instant
       result <- xa.connect:
         sql"""
-          SELECT user_id, client_id, expires_at
+          SELECT user_id, client_id, user_agent, created_at, expires_at
           FROM sso_sessions
           WHERE id = $id
         """.query[(SessionRecord, Instant)].run().headOption
           .collect { case (record, expiresAt) if expiresAt.isAfter(now) => record }
     yield result
+
+  override def findByUser(
+      userId: UserId,
+  ): Task[List[(MAC.Of[SessionId], SessionRecord)]] =
+    for
+      rows <- xa.connect:
+        sql"""
+        SELECT id, user_id, client_id, user_agent, created_at
+        FROM sso_sessions
+        WHERE
+          user_id = $userId
+          AND expires_at > CURRENT_TIMESTAMP
+        ORDER BY created_at DESC
+      """.query[(MAC.Of[SessionId], SessionRecord)].run()
+    yield rows.toList
+
+  override def invalidate(
+      id: MAC.Of[SessionId],
+  ): Task[Unit] =
+    xa.connect:
+      sql"""
+        UPDATE sso_sessions
+        SET expires_at = CURRENT_TIMESTAMP
+        WHERE id = $id
+      """.update.run()
+    .unit
 
 object PostgresSessionRepository:
   def live: ZLayer[TransactorZIO, Throwable, SessionRepository] =

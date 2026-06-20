@@ -1,18 +1,26 @@
 package versola.user
 
 import versola.auth.model.TenantId
+import versola.oauth.session.SessionRepository
+import versola.oauth.session.model.SessionId
+import versola.oauth.session.model.{SessionId, SessionRecord}
 import versola.role.model.RoleId
 import versola.user.model.*
+import versola.util.Base64
 import versola.util.CoreConfig
+import versola.util.MAC
 import versola.util.http.Controller
+import versola.util.{Base64Url, MAC}
 import versola.util.{Email, Phone}
 import zio.ZIO
+import zio.http.string
 import zio.http.{Method, Request, Response, Routes, Status, handler}
 import zio.json.EncoderOps
+import zio.json.JsonCodec
 import zio.telemetry.opentelemetry.tracing.Tracing
 
 object UserController extends Controller:
-  type Env = Tracing & UserRepository & UserRolesRepository & CoreConfig
+  type Env = Tracing & UserRepository & UserRolesRepository & CoreConfig & SessionRepository
 
   def routes: Routes[Env, Throwable] = Routes(
     upsertUserEndpoint,
@@ -20,6 +28,8 @@ object UserController extends Controller:
     patchRolesEndpoint,
     findClaimsEndpoint,
     findRolesEndpoint,
+    findSessionsEndpoint,
+    invalidateSessionEndpoint,
   )
 
   val upsertUserEndpoint =
@@ -61,7 +71,7 @@ object UserController extends Controller:
         user <- repo.find(id)
       yield user match
         case Some(record) => Response.json(UserClaimsResponse(record.claims).toJson)
-        case None         => Response.status(Status.NoContent)
+        case None => Response.status(Status.NoContent)
     }
 
   val findRolesEndpoint =
@@ -73,4 +83,53 @@ object UserController extends Controller:
         tenantId <- request.url.queryZIO[TenantId]("tenantId")
         roles <- repo.findRolesByUserAndTenant(id, tenantId)
       yield Response.json(UserRolesResponse(roles).toJson)
+    }
+
+  private case class SessionResponse(
+      id: String,
+      clientId: String,
+      userAgent: Option[String],
+      createdAt: String,
+  ) derives JsonCodec
+
+  private case class SessionListResponse(sessions: List[SessionResponse]) derives JsonCodec
+
+  val findSessionsEndpoint =
+    Method.GET / "users" / "sessions" -> handler { (request: Request) =>
+      for
+        _ <- authorizeInternal(request)
+        repo <- ZIO.service[SessionRepository]
+        userId <- request.url.queryZIO[UserId]("id")
+        sessions <- repo.findByUser(userId)
+      yield Response.json(
+        SessionListResponse(
+          sessions.map { case (id, record) =>
+            SessionResponse(
+              id = Base64Url.encode(id),
+              clientId = record.clientId,
+              userAgent = record.userAgent,
+              createdAt = record.createdAt.toString,
+            )
+          },
+        ).toJson,
+      )
+    }
+
+  val invalidateSessionEndpoint =
+    Method.DELETE / "users" / "sessions" / string("sessionId") -> handler { (sessionId: String, request: Request) =>
+      for
+        _ <- authorizeInternal(request)
+        repo <- ZIO.service[SessionRepository]
+        userId <- request.url.queryZIO[UserId]("userId")
+        id <- ZIO.fromEither(MAC.fromBase64Url(sessionId))
+          .mapError(msg => new RuntimeException(s"Invalid session id: $msg"))
+        sessionOpt <- repo.find(id)
+        _ <- sessionOpt match
+          case None =>
+            ZIO.fail(new RuntimeException("Session not found"))
+          case Some(record) if record.userId != userId =>
+            ZIO.fail(new RuntimeException("Session does not belong to user"))
+          case Some(_) =>
+            repo.invalidate(id)
+      yield Response.status(Status.NoContent)
     }
