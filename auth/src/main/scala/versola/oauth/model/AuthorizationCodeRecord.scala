@@ -1,7 +1,7 @@
 package versola.oauth.model
 
 import versola.oauth.client.model.{ClientId, ScopeToken}
-import versola.oauth.session.model.{RefreshTokenRecord, SessionId, SessionRecord}
+import versola.oauth.session.model.{RefreshTokenRecord, SessionId}
 import versola.oauth.userinfo.model.RequestedClaims
 import versola.user.model.UserId
 import versola.util.MAC
@@ -26,13 +26,6 @@ case class AuthorizationCodeRecord(
     nonce: Option[Nonce],
     accessToken: AccessToken,
 ) derives CanEqual, Equal:
-
-  def session: SessionRecord = SessionRecord(
-    userId = userId,
-    clientId = clientId,
-    userAgent = None,
-    createdAt = Instant.now(),
-  )
 
   def verify(verifier: CodeVerifier): Boolean =
     codeChallengeMethod match {

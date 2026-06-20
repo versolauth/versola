@@ -158,7 +158,7 @@ object UserControllerSpec extends ZIOSpecDefault:
         body <- resp.body.asString
       yield assertTrue(
         resp.status == Status.Ok,
-        body == "[]",
+        body == """{"sessions":[]}""",
       )
     },
     test("DELETE /users/sessions/{id} with valid token and matching userId returns 204") {

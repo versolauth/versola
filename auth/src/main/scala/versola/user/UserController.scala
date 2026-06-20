@@ -1,16 +1,14 @@
 package versola.user
 
 import versola.auth.model.TenantId
-import versola.oauth.session.SessionRepository
-import versola.oauth.session.model.SessionId
-import versola.oauth.session.model.{SessionId, SessionRecord}
 import versola.oauth.client.model.TenantId as ThrottleTenantId
 import versola.oauth.conversation.limit.ChallengeThrottleRepository
+import versola.oauth.session.SessionRepository
+import versola.oauth.session.model.{SessionId, SessionRecord}
 import versola.role.model.RoleId
 import versola.user.model.*
 import versola.util.Base64
 import versola.util.CoreConfig
-import versola.util.MAC
 import versola.util.http.Controller
 import versola.util.{Base64Url, MAC}
 import versola.util.{Email, Phone}
@@ -127,13 +125,16 @@ object UserController extends Controller:
         id <- ZIO.fromEither(MAC.fromBase64Url(sessionId))
           .mapError(msg => new RuntimeException(s"Invalid session id: $msg"))
         sessionOpt <- repo.find(id)
-        _ <- sessionOpt match
+        response <- sessionOpt match
           case None =>
-            ZIO.fail(new RuntimeException("Session not found"))
+            ZIO.succeed(Response.status(Status.NotFound))
           case Some(record) if record.userId != userId =>
-            ZIO.fail(new RuntimeException("Session does not belong to user"))
+            ZIO.succeed(Response.status(Status.Forbidden))
           case Some(_) =>
-            repo.invalidate(id)
+            repo.invalidate(id).as(Response.status(Status.NoContent))
+      yield response
+    }
+
   val resetLimitsEndpoint =
     Method.POST / "users" / "limits" / "reset" -> handler { (request: Request) =>
       for
