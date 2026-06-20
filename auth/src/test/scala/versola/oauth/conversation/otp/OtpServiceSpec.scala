@@ -134,5 +134,12 @@ object OtpServiceSpec extends UnitSpecBase:
           result <- env.service.checkOtp(otp, otpCode)
         yield assertTrue(result == SubmitOtpResult.Failure)
       },
+      test("return Failure for fake OTP even with predictable non-prod code") {
+        val env = Env()
+        val fakeOtp = realOtp.copy(real = None)
+        for
+          result <- env.service.checkOtp(fakeOtp, otpCode)
+        yield assertTrue(result == SubmitOtpResult.Failure)
+      },
     ),
   )
