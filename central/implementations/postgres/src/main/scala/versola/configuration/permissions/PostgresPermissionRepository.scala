@@ -19,7 +19,7 @@ class PostgresPermissionRepository(xa: TransactorZIO) extends PermissionReposito
   given DbCodec[PermissionRecord] = DbCodec.derived
 
   override def getAll: Task[Vector[PermissionRecord]] =
-    xa.connect:
+    xa.connectMeasured("get-all-permissions"):
       sql"""
         SELECT tenant_id, id, description, endpoint_ids FROM permissions
         ORDER BY tenant_id NULLS FIRST, id
@@ -29,7 +29,7 @@ class PostgresPermissionRepository(xa: TransactorZIO) extends PermissionReposito
     tenantId: Option[TenantId],
     permission: Permission
   ): Task[Option[PermissionRecord]] =
-    xa.connect:
+    xa.connectMeasured("find-permission"):
       sql"""
         SELECT tenant_id, id, description, endpoint_ids FROM permissions
         WHERE tenant_id IS NOT DISTINCT FROM $tenantId AND id = $permission
@@ -41,7 +41,7 @@ class PostgresPermissionRepository(xa: TransactorZIO) extends PermissionReposito
       description: Map[String, String],
       endpointIds: Set[ResourceEndpointId],
   ): Task[Unit] =
-    xa.connect:
+    xa.connectMeasured("create-permission"):
       sql"""INSERT INTO permissions (tenant_id, id, description, endpoint_ids)
             VALUES ($tenantId, $permission, $description, $endpointIds)""".update.run()
     .unit
@@ -52,7 +52,7 @@ class PostgresPermissionRepository(xa: TransactorZIO) extends PermissionReposito
       descriptionPatch: PatchDescription,
       endpointIdsPatch: Option[Set[ResourceEndpointId]],
   ): Task[Unit] =
-    xa.repeatableRead.transact:
+    xa.repeatableRead.transactMeasured("update-permission"):
       val existing = sql"""
         SELECT tenant_id, id, description, endpoint_ids FROM permissions
         WHERE tenant_id IS NOT DISTINCT FROM $tenantId AND id = $permission
@@ -76,7 +76,7 @@ class PostgresPermissionRepository(xa: TransactorZIO) extends PermissionReposito
       tenantId: Option[TenantId],
       permission: Permission,
   ): Task[Unit] =
-    xa.connect:
+    xa.connectMeasured("delete-permission"):
       sql"""DELETE FROM permissions WHERE tenant_id IS NOT DISTINCT FROM $tenantId AND id = $permission""".update.run()
     .unit
 

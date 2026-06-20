@@ -39,7 +39,7 @@ class PostgresRefreshTokenRepository(xa: TransactorZIO) extends RefreshTokenRepo
   ): IO[Throwable | RefreshAlreadyExchanged, Unit] =
     xa.withConnectionConfig(
       _.setTransactionIsolation(Connection.TRANSACTION_REPEATABLE_READ),
-    ).transact {
+    ).transactMeasured("create-refresh-token") {
       record.previousRefreshToken
         .foreach { oldToken => sql"""DELETE FROM refresh_tokens WHERE id = $oldToken""".update.run() }
 
@@ -84,7 +84,7 @@ class PostgresRefreshTokenRepository(xa: TransactorZIO) extends RefreshTokenRepo
   override def find(token: MAC.Of[RefreshToken]): Task[Option[RefreshTokenRecord]] =
     for
       now <- Clock.instant
-      result <- xa.connect:
+      result <- xa.connectMeasured("find-refresh-token"):
         sql"""
           SELECT session_id, access_token, user_id, client_id,
                  external_audience, scope, issued_at,
@@ -98,12 +98,12 @@ class PostgresRefreshTokenRepository(xa: TransactorZIO) extends RefreshTokenRepo
     yield result
 
   override def delete(token: MAC.Of[RefreshToken]): Task[Unit] =
-    xa.connect:
+    xa.connectMeasured("delete-refresh-token"):
       sql"""DELETE FROM refresh_tokens WHERE id = $token""".update.run()
     .unit
 
   override def deleteByAccessToken(token: AccessToken): Task[Unit] =
-    xa.connect:
+    xa.connectMeasured("delete-refresh-token-by-access-token"):
       sql"""DELETE FROM refresh_tokens WHERE access_token = $token""".update.run()
     .unit
 

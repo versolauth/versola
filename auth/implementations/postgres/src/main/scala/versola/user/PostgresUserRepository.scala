@@ -21,7 +21,7 @@ class PostgresUserRepository(
   override def findOrCreate(userId: UserId, credential: Either[Email, Phone]): Task[(UserRecord, WasCreated)] =
     for
       now <- Clock.instant
-      (user, wasCreated) <- xa.connect:
+      (user, wasCreated) <- xa.connectMeasured("find-or-create-user"):
         credential match
           case Left(email) => createByEmailQuery(userId, email, now).run().head
           case Right(phone) => createByPhoneQuery(userId, phone, now).run().head
@@ -30,7 +30,7 @@ class PostgresUserRepository(
   override def create(id: UserId): Task[UserRecord] =
     for
       now <- Clock.instant
-      user <- xa.connect:
+      user <- xa.connectMeasured("create-user"):
         createQuery(id, now).run().head
     yield user
 
@@ -57,14 +57,14 @@ class PostgresUserRepository(
        """.returning[UserRecord]
 
   override def find(id: UserId): Task[Option[UserRecord]] =
-    xa.connect:
+    xa.connectMeasured("find-user"):
       sql"select id, email, phone, login, claims, ui_locales from users where id = $id"
         .query[UserRecord]
         .run()
         .headOption
 
   override def findByCredential(credential: Either[Email, Phone]): Task[Option[UserRecord]] =
-    xa.connect:
+    xa.connectMeasured("find-user-by-credential"):
       credential match
         case Left(email) => findByEmailQuery(email).run().headOption
         case Right(phone) => findByPhoneQuery(phone).run().headOption
@@ -76,7 +76,7 @@ class PostgresUserRepository(
       phone: Option[Phone],
       login: Option[Login],
   ): Task[Unit] =
-    xa.connect:
+    xa.connectMeasured("upsert-user"):
       sql"""insert into users (id, email, phone, login, claims, last_version)
             values ($id, $email, $phone, $login, '{}'::jsonb, $version)
             on conflict (id) do update set
@@ -89,7 +89,7 @@ class PostgresUserRepository(
     .unit
 
   override def patchClaims(id: UserId, patch: Json.Obj): Task[Unit] =
-    xa.connect:
+    xa.connectMeasured("patch-user-claims"):
       sql"update users set claims = jsonb_strip_nulls(claims || $patch::jsonb) where id = $id".update.run()
     .unit
 
