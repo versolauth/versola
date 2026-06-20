@@ -4,9 +4,10 @@ import com.augustnagro.magnum.*
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.edge.login.{LoginRecord, LoginRepository}
 import versola.edge.model.{CodeVerifier, PresetId, State}
+import versola.util.postgres.BasicCodecs
 import zio.{Clock, Duration, Task, ZLayer}
 
-class PostgresLoginRepository(xa: TransactorZIO) extends LoginRepository:
+class PostgresLoginRepository(xa: TransactorZIO) extends LoginRepository, BasicCodecs:
   given DbCodec[CodeVerifier] = DbCodec.StringCodec.biMap(CodeVerifier(_), identity[String])
   given DbCodec[State] = DbCodec.StringCodec.biMap(State(_), identity[String])
   given DbCodec[PresetId] = DbCodec.StringCodec.biMap(PresetId(_), identity[String])
@@ -19,7 +20,7 @@ class PostgresLoginRepository(xa: TransactorZIO) extends LoginRepository:
   ): Task[Unit] =
     Clock.instant.flatMap { now =>
       val expiresAt = now.plusSeconds(ttl.toSeconds)
-      xa.connect {
+      xa.trackedConnect {
         sql"""
           INSERT INTO pending_logins (login_id, state, code_verifier, preset_id, expires_at)
           VALUES ($loginId, ${data.state}, ${data.codeVerifier}, ${data.presetId}, $expiresAt)
@@ -34,7 +35,7 @@ class PostgresLoginRepository(xa: TransactorZIO) extends LoginRepository:
 
   override def find(loginId: String): Task[Option[LoginRecord]] =
     Clock.instant.flatMap { now =>
-      xa.connect {
+      xa.trackedConnect {
         sql"""
           SELECT code_verifier, preset_id, state
           FROM pending_logins
@@ -48,7 +49,7 @@ class PostgresLoginRepository(xa: TransactorZIO) extends LoginRepository:
 
   override def findByState(state: State): Task[Option[LoginRecord]] =
     Clock.instant.flatMap { now =>
-      xa.connect {
+      xa.trackedConnect {
         sql"""
           SELECT code_verifier, preset_id, state
           FROM pending_logins
@@ -61,14 +62,14 @@ class PostgresLoginRepository(xa: TransactorZIO) extends LoginRepository:
     }
 
   override def delete(loginId: String): Task[Unit] =
-    xa.connect {
+    xa.trackedConnect {
       sql"""
         DELETE FROM pending_logins WHERE login_id = $loginId
       """.update.run()
     }.unit
 
   override def deleteByState(state: State): Task[Unit] =
-    xa.connect {
+    xa.trackedConnect {
       sql"""
         DELETE FROM pending_logins WHERE state = $state
       """.update.run()

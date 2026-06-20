@@ -84,7 +84,7 @@ class PostgresRefreshTokenRepository(xa: TransactorZIO) extends RefreshTokenRepo
   override def find(token: MAC.Of[RefreshToken]): Task[Option[RefreshTokenRecord]] =
     for
       now <- Clock.instant
-      result <- xa.connect:
+      result <- xa.trackedConnect:
         sql"""
           SELECT session_id, access_token, user_id, client_id,
                  external_audience, scope, issued_at,
@@ -98,12 +98,12 @@ class PostgresRefreshTokenRepository(xa: TransactorZIO) extends RefreshTokenRepo
     yield result
 
   override def delete(token: MAC.Of[RefreshToken]): Task[Unit] =
-    xa.connect:
+    xa.trackedConnect:
       sql"""DELETE FROM refresh_tokens WHERE id = $token""".update.run()
     .unit
 
   override def deleteByAccessToken(token: AccessToken): Task[Unit] =
-    xa.connect:
+    xa.trackedConnect:
       sql"""DELETE FROM refresh_tokens WHERE access_token = $token""".update.run()
     .unit
 

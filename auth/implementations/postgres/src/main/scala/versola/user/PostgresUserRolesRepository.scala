@@ -17,7 +17,7 @@ class PostgresUserRolesRepository(xa: TransactorZIO) extends UserRolesRepository
   given DbCodec[RoleId] = DbCodec.StringCodec.biMap(RoleId(_), identity[String])
 
   override def findRolesByUser(userId: UserId): Task[List[RoleId]] =
-    xa.connect:
+    xa.trackedConnect:
       sql"SELECT role_id FROM user_roles WHERE user_id = $userId"
         .query[String]
         .run()
@@ -25,7 +25,7 @@ class PostgresUserRolesRepository(xa: TransactorZIO) extends UserRolesRepository
         .toList
 
   override def findRolesByUserAndTenant(userId: UserId, tenantId: TenantId): Task[List[RoleId]] =
-    xa.connect:
+    xa.trackedConnect:
       sql"SELECT role_id FROM user_roles WHERE user_id = $userId AND tenant_id = $tenantId"
         .query[String]
         .run()
@@ -40,7 +40,7 @@ class PostgresUserRolesRepository(xa: TransactorZIO) extends UserRolesRepository
   ): Task[Unit] =
     if add.isEmpty && remove.isEmpty then ZIO.unit
     else
-      xa.transact:
+      xa.trackedTransact:
         if remove.nonEmpty then
           remove.foreach: roleId =>
             sql"DELETE FROM user_roles WHERE user_id = $userId AND tenant_id = $tenantId AND role_id = $roleId"

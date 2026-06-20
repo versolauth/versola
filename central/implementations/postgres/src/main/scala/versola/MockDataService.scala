@@ -12,6 +12,7 @@ import versola.central.configuration.roles.RoleRepository
 import versola.central.configuration.scopes.OAuthScopeRepository
 import versola.central.configuration.tenants.TenantRepository
 import versola.util.SecureRandom
+import versola.util.postgres.BasicCodecs
 import zio.{Task, ZIO, ZLayer}
 
 import scala.io.Source
@@ -39,10 +40,10 @@ object MockDataService:
       otpChallengeService: OtpChallengeService,
       challengeSettingsService: ChallengeSettingsService,
       edgeRepository: EdgeRepository,
-  ) extends MockDataService:
+  ) extends MockDataService, BasicCodecs:
 
     private def cleanup(): Task[Unit] =
-      xa.connect:
+      xa.trackedConnect:
         // Include themes explicitly so CASCADE from tenants does not silently wipe it.
         sql"""TRUNCATE TABLE tenants, permissions, resources, oauth_scopes, roles, oauth_clients, edges, themes RESTART IDENTITY CASCADE""".update.run()
 
@@ -52,7 +53,7 @@ object MockDataService:
           val src = Source.fromResource("forms/common.css")
           try src.mkString finally src.close()
       .flatMap: css =>
-        xa.connect:
+        xa.trackedConnect:
           sql"""INSERT INTO themes (id, css, tenant_id) VALUES ('default', $css, NULL)""".update.run()
       .unit
 

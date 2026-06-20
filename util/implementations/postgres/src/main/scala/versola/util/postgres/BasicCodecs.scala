@@ -1,13 +1,14 @@
 package versola.util.postgres
 
-import com.augustnagro.magnum.DbCodec
+import com.augustnagro.magnum.{DbCodec, DbCon, DbTx}
 import com.augustnagro.magnum.magzio.TransactorZIO
 import com.augustnagro.magnum.pg.json.JsonBDbCodec
 import com.augustnagro.magnum.pg.{PgCodec, SqlArrayCodec, json}
 import versola.util.Secret
-import zio.NonEmptyChunk
+import zio.{NonEmptyChunk, Task, Trace}
 import zio.json.*
 import zio.json.ast.Json
+import zio.metrics.Metric
 import zio.prelude.NonEmptySet
 
 import java.sql.Connection
@@ -97,3 +98,11 @@ trait BasicCodecs:
 
     def serializable: TransactorZIO =
       xa.withConnectionConfig(_.setTransactionIsolation(Connection.TRANSACTION_SERIALIZABLE))
+
+    def trackedConnect[A](f: DbCon ?=> A)(using trace: Trace): Task[A] =
+      val name = trace.toString.takeWhile(_ != '(').replaceAll("\\$", "")
+      xa.connect(f) @@ Metric.counter(name).fromConst(1L)
+
+    def trackedTransact[A](f: DbTx ?=> A)(using trace: Trace): Task[A] =
+      val name = trace.toString.takeWhile(_ != '(').replaceAll("\\$", "")
+      xa.transact(f) @@ Metric.counter(name).fromConst(1L)

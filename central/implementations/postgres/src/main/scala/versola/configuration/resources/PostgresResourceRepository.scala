@@ -34,7 +34,7 @@ class PostgresResourceRepository(xa: TransactorZIO) extends ResourceRepository, 
     """.query[ResourceRecord]
 
   override def getAll: Task[Vector[ResourceRecord]] =
-    xa.connect:
+    xa.trackedConnect:
       sql"""
         SELECT tenant_id, id, alias, resource, endpoints FROM resources
       """.query[ResourceRecord].run()
@@ -42,7 +42,7 @@ class PostgresResourceRepository(xa: TransactorZIO) extends ResourceRepository, 
   override def findResource(
       resourceId: ResourceId,
   ): Task[Option[ResourceRecord]] =
-    xa.connect:
+    xa.trackedConnect:
       findResourceQuery(resourceId).run().headOption
 
   override def createResource(
@@ -51,7 +51,7 @@ class PostgresResourceRepository(xa: TransactorZIO) extends ResourceRepository, 
       resource: ResourceUri,
       endpoints: Vector[ResourceEndpointRecord],
   ): Task[ResourceId] =
-    xa.connect:
+    xa.trackedConnect:
       sql"""
         INSERT INTO resources (tenant_id, alias, resource, endpoints)
         VALUES ($tenantId, $alias, $resource, $endpoints)
@@ -65,7 +65,7 @@ class PostgresResourceRepository(xa: TransactorZIO) extends ResourceRepository, 
       addEndpoints: Vector[ResourceEndpointRecord],
       deleteEndpoints: Set[ResourceEndpointId],
   ): Task[Unit] =
-    xa.repeatableRead.transact:
+    xa.repeatableRead.trackedTransact:
       findResourceQuery(id).run().headOption match
         case None => ()
         case Some(resource) =>
@@ -87,7 +87,7 @@ class PostgresResourceRepository(xa: TransactorZIO) extends ResourceRepository, 
   override def deleteResource(
       id: ResourceId,
   ): Task[Unit] =
-    xa.connect:
+    xa.trackedConnect:
       sql"""DELETE FROM resources WHERE id = $id""".update.run()
     .unit
 

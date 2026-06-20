@@ -16,18 +16,18 @@ class PostgresChallengeSettingsRepository(xa: TransactorZIO) extends ChallengeSe
   given DbCodec[ChallengeSettingsRecord] = DbCodec.derived
 
   override def getAll: Task[Vector[ChallengeSettingsRecord]] =
-    xa.connect:
+    xa.trackedConnect:
       sql"""SELECT tenant_id, allowed_prefixes, password_regex, submission_limits, otp_length, otp_resend_after FROM challenge_settings ORDER BY tenant_id"""
         .query[ChallengeSettingsRecord].run()
 
   override def findByTenant(tenantId: TenantId): Task[Option[ChallengeSettingsRecord]] =
-    xa.connect:
+    xa.trackedConnect:
       sql"""SELECT tenant_id, allowed_prefixes, password_regex, submission_limits, otp_length, otp_resend_after FROM challenge_settings WHERE tenant_id = $tenantId"""
         .query[ChallengeSettingsRecord].run()
         .headOption
 
   override def upsert(record: ChallengeSettingsRecord): Task[Unit] =
-    xa.connect:
+    xa.trackedConnect:
       sql"""
         INSERT INTO challenge_settings (tenant_id, allowed_prefixes, password_regex, submission_limits, otp_length, otp_resend_after)
         VALUES (${record.tenantId}, ${record.allowedPrefixes}, ${record.passwordRegex}, ${record.submissionLimits}, ${record.otpLength}, ${record.otpResendAfter})

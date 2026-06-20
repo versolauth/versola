@@ -48,7 +48,7 @@ class PostgresAuthorizationCodeRepository(
   override def find(code: MAC.Of[AuthorizationCode]): Task[Option[AuthorizationCodeRecord]] =
     for
       now <- Clock.instant
-      result <- xa.connect:
+      result <- xa.trackedConnect:
         sql"""
           SELECT session_id, client_id, user_id, redirect_uri,
                  scope, code_challenge, code_challenge_method,
@@ -66,7 +66,7 @@ class PostgresAuthorizationCodeRepository(
       ttl: Duration,
   ): Task[Unit] =
     Clock.instant.flatMap: now =>
-      xa.connect:
+      xa.trackedConnect:
         sql"""
           INSERT INTO authorization_codes (
             code,
@@ -104,12 +104,12 @@ class PostgresAuthorizationCodeRepository(
     .unit
 
   override def delete(code: MAC.Of[AuthorizationCode]): Task[Unit] =
-    xa.connect:
+    xa.trackedConnect:
       sql"""DELETE FROM authorization_codes WHERE code = $code""".update.run()
     .unit
 
   override def markAsUsed(code: MAC.Of[AuthorizationCode]): Task[Either[AccessToken, Unit]] =
-    xa.connect:
+    xa.trackedConnect:
       val affectedRows = sql"""
         UPDATE authorization_codes
         SET used = TRUE

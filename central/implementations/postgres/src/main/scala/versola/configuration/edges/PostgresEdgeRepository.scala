@@ -14,14 +14,14 @@ class PostgresEdgeRepository(xa: TransactorZIO) extends EdgeRepository, BasicCod
   given DbCodec[EdgeRecord] = DbCodec.derived
 
   override def getAll: Task[Vector[EdgeRecord]] =
-    xa.connect:
+    xa.trackedConnect:
       sql"""
         SELECT id, public_key_jwk, old_public_key_jwk
         FROM edges
       """.query[EdgeRecord].run()
 
   override def find(id: EdgeId): Task[Option[EdgeRecord]] =
-    xa.connect:
+    xa.trackedConnect:
       sql"""
         SELECT id, public_key_jwk, old_public_key_jwk
         FROM edges
@@ -29,7 +29,7 @@ class PostgresEdgeRepository(xa: TransactorZIO) extends EdgeRepository, BasicCod
       """.query[EdgeRecord].run().headOption
 
   override def createEdge(id: EdgeId, publicKeyJwk: Json.Obj): Task[Unit] =
-    xa.connect:
+    xa.trackedConnect:
       sql"""
         INSERT INTO edges (id, public_key_jwk, old_public_key_jwk)
         VALUES ($id, $publicKeyJwk, NULL)
@@ -37,7 +37,7 @@ class PostgresEdgeRepository(xa: TransactorZIO) extends EdgeRepository, BasicCod
     .unit
 
   override def rotateEdgeKey(id: EdgeId, newPublicKeyJwk: Json.Obj): Task[Unit] =
-    xa.connect:
+    xa.trackedConnect:
       sql"""
         UPDATE edges
         SET old_public_key_jwk = public_key_jwk,
@@ -47,7 +47,7 @@ class PostgresEdgeRepository(xa: TransactorZIO) extends EdgeRepository, BasicCod
     .unit
 
   override def deleteOldEdgeKey(id: EdgeId): Task[Unit] =
-    xa.connect:
+    xa.trackedConnect:
       sql"""
         UPDATE edges
         SET old_public_key_jwk = NULL
@@ -56,7 +56,7 @@ class PostgresEdgeRepository(xa: TransactorZIO) extends EdgeRepository, BasicCod
     .unit
 
   override def deleteEdge(id: EdgeId): Task[Unit] =
-    xa.connect:
+    xa.trackedConnect:
       sql"""DELETE FROM edges WHERE id = $id""".update.run()
     .unit
 

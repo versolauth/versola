@@ -21,7 +21,7 @@ class PostgresOAuthScopeRepository(
   given DbCodec[ScopeRecord] = DbCodec.derived
 
   override def getAll: Task[Vector[ScopeRecord]] =
-    xa.connect:
+    xa.trackedConnect:
       sql"""
             SELECT tenant_id, id, description, claims FROM oauth_scopes
          """.query[ScopeRecord].run()
@@ -30,7 +30,7 @@ class PostgresOAuthScopeRepository(
       tenantId: TenantId,
       scopeId: ScopeToken,
   ): Task[Option[ScopeRecord]] =
-    xa.connect:
+    xa.trackedConnect:
       sql"""
         SELECT tenant_id, id, description, claims FROM oauth_scopes
         WHERE tenant_id = $tenantId AND id = $scopeId
@@ -42,7 +42,7 @@ class PostgresOAuthScopeRepository(
       description: Map[String, String],
       claims: List[CreateClaim],
   ): Task[Unit] =
-    xa.connect:
+    xa.trackedConnect:
       sql"""
             INSERT INTO oauth_scopes (id, tenant_id, description, claims)
             VALUES ($id, $tenantId, $description, ${claims.map(_.asRecord)}::jsonb[])
@@ -54,7 +54,7 @@ class PostgresOAuthScopeRepository(
       id: ScopeToken,
       patch: PatchScope,
   ): Task[Unit] =
-    xa.repeatableRead.transact:
+    xa.repeatableRead.trackedTransact:
       val scope =
         sql"""SELECT tenant_id, id, description, claims::jsonb[] FROM oauth_scopes WHERE tenant_id = $tenantId AND id = $id"""
           .query[ScopeRecord].run().head
@@ -84,7 +84,7 @@ class PostgresOAuthScopeRepository(
       tenantId: TenantId,
       id: ScopeToken,
   ): Task[Unit] =
-    xa.connect:
+    xa.trackedConnect:
       sql"""DELETE FROM oauth_scopes WHERE tenant_id = $tenantId AND id = $id""".update.run()
     .unit
 

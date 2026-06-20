@@ -17,13 +17,13 @@ class PostgresFormRepository(xa: TransactorZIO) extends FormRepository, BasicCod
   given DbCodec[FormRecord] = DbCodec.derived
 
   override def getAll: Task[Vector[FormRecord]] =
-    xa.connect:
+    xa.trackedConnect:
       sql"""SELECT id, version, active, style, js_source, js_compiled, localizations, properties FROM forms ORDER BY id, version DESC"""
         .query[FormRecord]
         .run()
 
   override def find(id: FormId, version: Int): Task[Option[FormRecord]] =
-    xa.connect:
+    xa.trackedConnect:
       sql"""SELECT id, version, active, style, js_source, js_compiled, localizations, properties FROM forms WHERE id = $id AND version = $version"""
         .query[FormRecord]
         .run()
@@ -38,7 +38,7 @@ class PostgresFormRepository(xa: TransactorZIO) extends FormRepository, BasicCod
       properties: Vector[BackendProperty],
       activate: Boolean,
   ): Task[Unit] =
-    xa.repeatableRead.transact:
+    xa.repeatableRead.trackedTransact:
       val versions = sql"""SELECT version FROM forms WHERE id = $id ORDER BY version DESC""".query[Int].run()
       val nextVersion = versions.maxOption.getOrElse(0) + 1
       val makeActive = activate || versions.isEmpty
@@ -52,7 +52,7 @@ class PostgresFormRepository(xa: TransactorZIO) extends FormRepository, BasicCod
       ()
 
   override def setActiveVersion(id: FormId, version: Int): Task[Unit] =
-    xa.transact:
+    xa.trackedTransact:
       sql"""UPDATE forms SET active = false WHERE id = $id""".update.run()
       sql"""UPDATE forms SET active = true WHERE id = $id AND version = $version""".update.run()
     .unit

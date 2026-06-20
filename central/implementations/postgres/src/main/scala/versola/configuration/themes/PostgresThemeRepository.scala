@@ -13,26 +13,26 @@ class PostgresThemeRepository(xa: TransactorZIO) extends ThemeRepository, BasicC
   given DbCodec[ThemeRecord] = DbCodec.derived
 
   override def getAll: Task[Vector[ThemeRecord]] =
-    xa.connect:
+    xa.trackedConnect:
       sql"""SELECT id, css, tenant_id FROM themes ORDER BY id"""
         .query[ThemeRecord]
         .run()
 
   override def create(theme: ThemeRecord): Task[Unit] =
-    xa.connect:
+    xa.trackedConnect:
       sql"""INSERT INTO themes (id, css, tenant_id)
             VALUES (${theme.id}, ${theme.css}, ${theme.tenantId})"""
         .update.run()
     .unit
 
   override def update(theme: ThemeRecord): Task[Unit] =
-    xa.connect:
+    xa.trackedConnect:
       sql"""UPDATE themes SET css = ${theme.css} WHERE id = ${theme.id}"""
         .update.run()
     .unit
 
   override def delete(id: String): Task[Unit] =
-    xa.connect:
+    xa.trackedConnect:
       sql"""DELETE FROM themes WHERE id = $id"""
         .update.run()
     .unit

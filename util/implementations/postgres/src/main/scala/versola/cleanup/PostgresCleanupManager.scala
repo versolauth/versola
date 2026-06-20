@@ -2,6 +2,7 @@ package versola.cleanup
 
 import com.augustnagro.magnum.*
 import com.augustnagro.magnum.magzio.TransactorZIO
+import versola.util.postgres.BasicCodecs
 import zio.*
 import zio.config.magnolia.deriveConfig
 
@@ -21,11 +22,11 @@ class PostgresCleanupManager(
     xa: TransactorZIO,
     config: CleanupConfig,
     fibers: Ref[List[Fiber.Runtime[Throwable, Long]]],
-) extends CleanupManager.Base(config, fibers):
+) extends CleanupManager.Base(config, fibers), BasicCodecs:
 
   override protected def cleanupBatch(tableName: String, batchSize: Int): Task[Int] =
     val table = SqlLiteral(tableName)
-    xa.connect {
+    xa.trackedConnect {
       sql"""
         DELETE FROM $table
         WHERE id IN (
