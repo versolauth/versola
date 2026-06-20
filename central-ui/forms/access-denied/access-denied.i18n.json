@@ -1,0 +1,14 @@
+{
+  "en": {
+    "page_title": "Access Denied",
+    "title": "Access Denied",
+    "description": "Your access has been temporarily restricted due to too many attempts.",
+    "return_button": "Return"
+  },
+  "ru": {
+    "page_title": "Доступ запрещён",
+    "title": "Доступ запрещён",
+    "description": "Ваш доступ временно ограничен из-за слишком большого количества попыток.",
+    "return_button": "Вернуться"
+  }
+}

@@ -7,7 +7,8 @@ import type {
   Locale,
   FormRecord,
   OtpTemplateRecord,
-  PhoneSettingsRecord,
+  ChallengeSettingsRecord,
+  SubmissionLimits,
   InjectRule,
   OAuthClaim,
   OAuthClient,
@@ -72,7 +73,7 @@ type ServiceKeyResponseDto = { keyId: string; privateKey: string };
 type TenantsResponse = { tenants: Array<{ id: string; description: string; edgeId?: string | null }> };
 type PermissionsResponse = { permissions: Array<{ permission: string; description: LocalizedDescription; endpointIds: ResourceEndpointId[] }> };
 type ScopesResponse = { scopes: Array<{ scope: string; description: LocalizedDescription; claims: Array<{ claim: string; description: LocalizedDescription }> }> };
-type ClientsResponse = { clients: Array<{ id: string; clientName: string; redirectUris: string[]; scope: string[]; permissions: string[]; secretRotation: boolean; theme: string }> };
+type ClientsResponse = { clients: Array<{ id: string; clientName: string; redirectUris: string[]; scope: string[]; externalAudience: string[]; permissions: string[]; secretRotation: boolean; theme: string; otpTemplateId: string }> };
 type RolesResponse = { roles: Array<{ id: string; description: LocalizedDescription; permissions: string[]; active: boolean }> };
 type ResourcesResponse = { resources: ResourceResponseDto[] };
 
@@ -454,11 +455,12 @@ export async function fetchClients(tenantId: string, offset = 0, limit = DEFAULT
         clientName: client.clientName,
         redirectUris: [...client.redirectUris],
         scope: [...client.scope],
-        externalAudience: supplement?.externalAudience ? [...supplement.externalAudience] : [],
+        externalAudience: client.externalAudience ? [...client.externalAudience] : (supplement?.externalAudience ? [...supplement.externalAudience] : []),
         hasPreviousSecret: supplement?.hasPreviousSecret ?? client.secretRotation,
         accessTokenTtl: supplement?.accessTokenTtl ?? 3600,
         permissions: [...client.permissions],
         theme: client.theme ?? 'default',
+        otpTemplateId: client.otpTemplateId ?? null,
         authFlow: baseFlow ? { ...baseFlow, passkeyFactors: baseFlow.passkeyFactors ?? [] } : null,
         tenantId,
       };
@@ -912,7 +914,7 @@ export async function updateTheme(theme: ThemeRecord): Promise<void> {
 }
 
 export async function deleteTheme(id: string): Promise<void> {
-  await requestVoid(`/configuration/themes/${id}`, {
+  await requestVoid(`/configuration/themes?id=${encodeURIComponent(id)}`, {
     method: 'DELETE',
   });
 }
@@ -938,21 +940,24 @@ export async function deleteOtpTemplate(id: string, tenantId: string): Promise<v
   });
 }
 
-export async function fetchPhoneSettings(tenantId: string): Promise<PhoneSettingsRecord> {
-  const response = await request<{ settings: PhoneSettingsRecord }>('/configuration/challenges/phone-settings', {
+export async function fetchChallengeSettings(tenantId: string): Promise<ChallengeSettingsRecord> {
+  const response = await request<{ settings: ChallengeSettingsRecord }>('/configuration/challenges/challenge-settings', {
     query: { tenantId },
   });
   return response.settings;
 }
 
-export async function upsertPhoneSettings(
+export async function upsertChallengeSettings(
   tenantId: string,
   allowedPrefixes: string[],
+  submissionLimits: SubmissionLimits,
+  otpLength: number,
+  otpResendAfter: number,
   passwordRegex?: string,
 ): Promise<void> {
-  await requestVoid('/configuration/challenges/phone-settings', {
+  await requestVoid('/configuration/challenges/challenge-settings', {
     method: 'PUT',
-    body: { tenantId, allowedPrefixes, passwordRegex: passwordRegex ?? null },
+    body: { tenantId, allowedPrefixes, submissionLimits, otpLength, otpResendAfter, passwordRegex: passwordRegex ?? null },
   });
 }
 

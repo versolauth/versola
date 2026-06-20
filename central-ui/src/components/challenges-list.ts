@@ -2,15 +2,18 @@ import { LitElement, html, css, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
 import { buttonStyles, cardStyles, formStyles, iconActionStyles } from '../styles/components';
-import type { OtpTemplateRecord, Locale } from '../types';
+import type { OtpTemplateRecord, Locale, SubmissionLimits, RateLimit } from '../types';
 import {
   fetchOtpTemplates,
   upsertOtpTemplate,
   deleteOtpTemplate,
   fetchLocales,
-  fetchPhoneSettings,
-  upsertPhoneSettings,
+  fetchChallengeSettings,
+  upsertChallengeSettings,
 } from '../utils/central-api';
+import { confirmDestructiveAction } from '../utils/confirm-dialog';
+
+const CODE_PLACEHOLDER = '{{code}}';
 
 @customElement('versola-challenges-list')
 export class VersolaChallengesList extends LitElement {
@@ -34,13 +37,31 @@ export class VersolaChallengesList extends LitElement {
   @state() private editError = '';
 
   @state() private phonePrefixes: string[] = [];
-  @state() private editingPhone = false;
-  @state() private editPhonePrefixes: Array<{ value: string }> = [];
-  @state() private phoneSaving = false;
-  @state() private phoneError = '';
+  @state() private editingSettings = false;
+  @state() private editPrefixes: Array<{ value: string }> = [];
+  @state() private isSavingSettings = false;
+  @state() private settingsError = '';
 
   @state() private passwordRegex = '';
   @state() private editPasswordRegex = '';
+
+  @state() private otpLength = 6;
+  @state() private otpResendAfter = 60;
+  @state() private editOtpLength = 6;
+  @state() private editOtpResendAfter = 60;
+
+  @state() private submissionLimits: SubmissionLimits = {
+    otpRequest: [],
+    otpSubmit: [],
+    passwordSubmit: [],
+    banDurationSeconds: 0,
+  };
+  @state() private editSubmissionLimits: SubmissionLimits = {
+    otpRequest: [],
+    otpSubmit: [],
+    passwordSubmit: [],
+    banDurationSeconds: 0,
+  };
 
   static styles = [
     theme,
@@ -202,6 +223,62 @@ export class VersolaChallengesList extends LitElement {
         border-radius: var(--radius-md);
         padding: var(--spacing-xs) var(--spacing-md);
       }
+      .limit-row {
+        display: flex;
+        gap: var(--spacing-md);
+        align-items: center;
+        margin-bottom: var(--spacing-sm);
+      }
+      .limit-input {
+        width: 100px;
+      }
+      .limit-label {
+        font-size: 0.8125rem;
+        color: var(--text-secondary);
+        width: 120px;
+      }
+      .limit-hint {
+        font-size: 0.75rem;
+        color: var(--text-secondary);
+        min-width: 50px;
+      }
+      .limits-card-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: var(--spacing-lg);
+      }
+      .limits-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+        gap: var(--spacing-lg);
+      }
+      .limit-group-title {
+        font-size: 0.75rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: var(--text-secondary);
+        margin-bottom: var(--spacing-sm);
+      }
+      .limit-chip {
+        display: block;
+        font-size: 0.875rem;
+        color: var(--text-primary);
+        font-family: var(--font-mono);
+        margin-bottom: var(--spacing-xs);
+      }
+      .ban-badge {
+        display: inline-flex;
+        align-items: center;
+        font-size: 0.8125rem;
+        font-weight: 600;
+        color: var(--accent);
+        background: rgba(88, 166, 255, 0.1);
+        border: 1px solid rgba(88, 166, 255, 0.2);
+        border-radius: var(--radius-md);
+        padding: var(--spacing-xs) var(--spacing-md);
+      }
     `,
   ];
 
@@ -216,15 +293,18 @@ export class VersolaChallengesList extends LitElement {
     this.isLoading = true;
     this.errorMessage = '';
     try {
-      const [templates, locales, phoneSettings] = await Promise.all([
+      const [templates, locales, challengeSettings] = await Promise.all([
         fetchOtpTemplates(this.tenantId),
         fetchLocales(),
-        fetchPhoneSettings(this.tenantId),
+        fetchChallengeSettings(this.tenantId),
       ]);
       this.templates = templates;
       this.availableLocales = locales;
-      this.phonePrefixes = phoneSettings.allowedPrefixes;
-      this.passwordRegex = phoneSettings.passwordRegex ?? '';
+      this.phonePrefixes = challengeSettings.allowedPrefixes;
+      this.passwordRegex = challengeSettings.passwordRegex ?? '';
+      this.submissionLimits = challengeSettings.submissionLimits;
+      this.otpLength = challengeSettings.otpLength;
+      this.otpResendAfter = challengeSettings.otpResendAfter;
     } catch (e) {
       this.errorMessage = e instanceof Error ? e.message : 'Failed to load data';
     } finally {
@@ -235,22 +315,16 @@ export class VersolaChallengesList extends LitElement {
   private startAdd() {
     this.editingTemplateId = 'NEW';
     this.editId = '';
-    const initial = this.availableLocales[0]?.code || 'en';
-    this.editLocalizations = [{ locale: initial, template: '' }];
-    this.expandedLocales = new Set([initial]);
+    this.editLocalizations = this.buildLocalizations({});
+    this.expandedLocales = new Set(this.editLocalizations.map(l => l.locale));
     this.editError = '';
   }
 
   private startEdit(template: OtpTemplateRecord) {
     this.editingTemplateId = template.id;
     this.editId = template.id;
-    this.editLocalizations = Object.entries(template.localizations).map(([locale, tmpl]) => ({ locale, template: tmpl }));
-    this.expandedLocales = new Set();
-    if (this.editLocalizations.length === 0) {
-      const initial = this.availableLocales[0]?.code || 'en';
-      this.editLocalizations = [{ locale: initial, template: '' }];
-      this.expandedLocales = new Set([initial]);
-    }
+    this.editLocalizations = this.buildLocalizations(template.localizations);
+    this.expandedLocales = new Set(this.editLocalizations.filter(l => !l.template).map(l => l.locale));
     this.editError = '';
   }
 
@@ -259,17 +333,14 @@ export class VersolaChallengesList extends LitElement {
     this.editError = '';
   }
 
-  private addLocalization() {
-    const used = new Set(this.editLocalizations.map(l => l.locale));
-    const next = this.availableLocales.find(l => !used.has(l.code))?.code || 'en';
-    this.editLocalizations = [...this.editLocalizations, { locale: next, template: '' }];
-    this.expandedLocales.add(next);
-    this.requestUpdate();
-  }
-
-  private removeLocalization(index: number) {
-    this.expandedLocales.delete(this.editLocalizations[index].locale);
-    this.editLocalizations = this.editLocalizations.filter((_, i) => i !== index);
+  // Every active locale must have a localization. Preserve any localizations
+  // for locales that are no longer active so editing does not silently drop them.
+  private buildLocalizations(existing: Record<string, string>): Array<{ locale: string; template: string }> {
+    const active = this.availableLocales.map(l => ({ locale: l.code, template: existing[l.code] ?? '' }));
+    const extra = Object.entries(existing)
+      .filter(([code]) => !this.availableLocales.some(l => l.code === code))
+      .map(([locale, template]) => ({ locale, template }));
+    return [...active, ...extra];
   }
 
   private toggleLocExpand(code: string) {
@@ -288,6 +359,13 @@ export class VersolaChallengesList extends LitElement {
     return this.availableLocales.find(l => l.code === code)?.name ?? code;
   }
 
+  private formatDuration(seconds: number): string {
+    if (seconds === 0) return '—';
+    if (seconds % 3600 === 0) return `${seconds / 3600} hr`;
+    if (seconds % 60 === 0) return `${seconds / 60} min`;
+    return `${seconds}s`;
+  }
+
   private async saveTemplate() {
     if (!this.tenantId) return;
     const id = this.editId.trim();
@@ -299,7 +377,14 @@ export class VersolaChallengesList extends LitElement {
     const localizations: Record<string, string> = {};
     for (const { locale, template } of this.editLocalizations) {
       const t = template.trim();
-      if (!t) continue;
+      if (!t) {
+        this.editError = `Localization for ${this.localeName(locale)} (${locale}) is required`;
+        return;
+      }
+      if (!t.includes(CODE_PLACEHOLDER)) {
+        this.editError = `Localization for ${this.localeName(locale)} (${locale}) must include the ${CODE_PLACEHOLDER} placeholder`;
+        return;
+      }
       localizations[locale] = t;
     }
 
@@ -312,7 +397,11 @@ export class VersolaChallengesList extends LitElement {
     this.editError = '';
     try {
       await upsertOtpTemplate(id, this.tenantId, localizations);
-      await this.loadData();
+      const updated: OtpTemplateRecord = { id, tenantId: this.tenantId, localizations };
+      const existing = this.templates.some(t => t.id === id);
+      this.templates = existing
+        ? this.templates.map(t => (t.id === id ? updated : t))
+        : [...this.templates, updated];
       this.editingTemplateId = null;
     } catch (e) {
       this.editError = e instanceof Error ? e.message : 'Failed to save template';
@@ -322,40 +411,61 @@ export class VersolaChallengesList extends LitElement {
   }
 
   private async handleDelete(id: string) {
-    if (!this.tenantId || !confirm(`Are you sure you want to delete template "${id}"?`)) return;
+    if (!this.tenantId) return;
+    const confirmed = await confirmDestructiveAction({
+      title: 'Delete template',
+      messagePrefix: 'Delete template ',
+      messageSubject: id,
+      messageSuffix: '?',
+      confirmLabel: 'Delete',
+    });
+    if (!confirmed) return;
     try {
       await deleteOtpTemplate(id, this.tenantId);
-      await this.loadData();
+      this.templates = this.templates.filter(t => t.id !== id);
     } catch (e) {
       this.errorMessage = e instanceof Error ? e.message : 'Failed to delete template';
     }
   }
 
-  private startEditPhone() {
-    this.editingPhone = true;
-    this.editPhonePrefixes = this.phonePrefixes.map(value => ({ value }));
+  private startEditSettings() {
+    this.editingSettings = true;
+    this.editPrefixes = this.phonePrefixes.map(value => ({ value }));
     this.editPasswordRegex = this.passwordRegex;
-    this.phoneError = '';
+    this.editSubmissionLimits = JSON.parse(JSON.stringify(this.submissionLimits));
+    this.editOtpLength = this.otpLength;
+    this.editOtpResendAfter = this.otpResendAfter;
+    this.settingsError = '';
   }
 
-  private cancelEditPhone() {
-    this.editingPhone = false;
-    this.phoneError = '';
+  private cancelEditSettings() {
+    this.editingSettings = false;
+    this.settingsError = '';
   }
 
   private addPrefix() {
-    this.editPhonePrefixes = [...this.editPhonePrefixes, { value: '' }];
+    this.editPrefixes = [...this.editPrefixes, { value: '' }];
   }
 
   private removePrefix(index: number) {
-    this.editPhonePrefixes = this.editPhonePrefixes.filter((_, i) => i !== index);
+    this.editPrefixes = this.editPrefixes.filter((_, i) => i !== index);
   }
 
-  private async savePhoneSettings() {
+  private addRateLimit(type: 'otpRequest' | 'otpSubmit' | 'passwordSubmit') {
+    this.editSubmissionLimits[type] = [...this.editSubmissionLimits[type], { maxAttempts: 5, windowSeconds: 60 }];
+    this.requestUpdate();
+  }
+
+  private removeRateLimit(type: 'otpRequest' | 'otpSubmit' | 'passwordSubmit', index: number) {
+    this.editSubmissionLimits[type] = this.editSubmissionLimits[type].filter((_, i) => i !== index);
+    this.requestUpdate();
+  }
+
+  private async saveSettings() {
     if (!this.tenantId) return;
-    const prefixes = this.editPhonePrefixes.map(p => p.value.trim()).filter(p => p.length > 0);
+    const prefixes = this.editPrefixes.map(p => p.value.trim()).filter(p => p.length > 0);
     if (prefixes.some(p => !/^\+\d+$/.test(p))) {
-      this.phoneError = 'Each prefix must start with + followed by digits (e.g. +77).';
+      this.settingsError = 'Each prefix must start with + followed by digits (e.g. +77).';
       return;
     }
     const regex = this.editPasswordRegex.trim();
@@ -363,21 +473,31 @@ export class VersolaChallengesList extends LitElement {
       try {
         new RegExp(regex);
       } catch {
-        this.phoneError = 'Invalid password regular expression.';
+        this.settingsError = 'Invalid password regular expression.';
         return;
       }
     }
-    this.phoneSaving = true;
-    this.phoneError = '';
+    this.isSavingSettings = true;
+    this.settingsError = '';
     try {
-      await upsertPhoneSettings(this.tenantId, prefixes, regex || undefined);
+      await upsertChallengeSettings(
+        this.tenantId,
+        prefixes,
+        this.editSubmissionLimits,
+        this.editOtpLength,
+        this.editOtpResendAfter,
+        regex || undefined,
+      );
       this.phonePrefixes = prefixes;
       this.passwordRegex = regex;
-      this.editingPhone = false;
+      this.submissionLimits = JSON.parse(JSON.stringify(this.editSubmissionLimits));
+      this.otpLength = this.editOtpLength;
+      this.otpResendAfter = this.editOtpResendAfter;
+      this.editingSettings = false;
     } catch (e) {
-      this.phoneError = e instanceof Error ? e.message : 'Failed to save phone settings';
+      this.settingsError = e instanceof Error ? e.message : 'Failed to save challenge settings';
     } finally {
-      this.phoneSaving = false;
+      this.isSavingSettings = false;
     }
   }
 
@@ -403,17 +523,15 @@ export class VersolaChallengesList extends LitElement {
         ` : nothing}
 
         <label>Localizations</label>
-        <div class="hint">Use {{code}} as a placeholder for the verification code.</div>
+        <div class="hint">All active localizations are required. Use ${CODE_PLACEHOLDER} as a placeholder for the verification code.</div>
 
-        ${this.editLocalizations.map((loc, i) => {
+        ${this.editLocalizations.map((loc) => {
           const expanded = this.expandedLocales.has(loc.locale);
           return html`
             <div class="edit-loc-card">
               <div class="edit-loc-head" @click=${() => this.toggleLocExpand(loc.locale)}>
                 <span class="edit-loc-title">${loc.locale} (${this.localeName(loc.locale)})</span>
                 <div class="edit-loc-head-actions" @click=${(e: Event) => e.stopPropagation()}>
-                  <button class="icon-action danger" ?disabled=${this.editLocalizations.length <= 1}
-                    @click=${() => this.removeLocalization(i)} title="Remove">✕</button>
                   <span class="chevron">${expanded ? '▲' : '▼'}</span>
                 </div>
               </div>
@@ -427,11 +545,6 @@ export class VersolaChallengesList extends LitElement {
             </div>
           `;
         })}
-
-        <button class="btn btn-secondary"
-          ?disabled=${this.editLocalizations.length >= this.availableLocales.length}
-          @click=${() => this.addLocalization()}>+ Add Localization</button>
-
         <div class="form-actions">
           <button class="btn btn-secondary" ?disabled=${this.saving} @click=${() => this.cancelEdit()}>Cancel</button>
           <button class="btn btn-primary" ?disabled=${this.saving} @click=${() => this.saveTemplate()}>
@@ -474,7 +587,7 @@ export class VersolaChallengesList extends LitElement {
       <section class="settings-section">
         <div class="section-header">
           <div>
-            <h2 class="section-title">OTP Settings</h2>
+            <h2 class="section-title">OTP Templates</h2>
             <div class="section-desc">One-time password message templates used by OAuth clients.</div>
           </div>
           <button class="btn btn-primary" @click=${() => this.startAdd()}>Add Template</button>
@@ -489,18 +602,29 @@ export class VersolaChallengesList extends LitElement {
     `;
   }
 
-  private renderPhoneSettings() {
+  private renderChallengeSettings() {
+    const { otpRequest, otpSubmit, passwordSubmit, banDurationSeconds } = this.submissionLimits;
+    const hasLimits = otpRequest.length > 0 || otpSubmit.length > 0 || passwordSubmit.length > 0;
+
     return html`
       <section class="settings-section">
         <div class="section-header">
           <div>
-            <h2 class="section-title">Phone Settings</h2>
-            <div class="section-desc">Allowed phone prefixes accepted on phone submissions (e.g. +77, +79).</div>
+            <h2 class="section-title">Challenge Settings</h2>
+            <div class="section-desc">Global security settings for OTP and password submissions.</div>
           </div>
-          <button class="btn btn-secondary" @click=${() => this.startEditPhone()}>Edit</button>
+          <button class="btn btn-primary" @click=${() => this.startEditSettings()}>Edit</button>
         </div>
 
-        <div class="card">
+        <div class="card" style="margin-bottom: var(--spacing-lg);">
+          <label>OTP Code Length</label>
+          <div class="template-text">${this.otpLength} digits</div>
+
+          <label style="margin-top: var(--spacing-lg);">OTP Resend After</label>
+          <div class="template-text">${this.formatDuration(this.otpResendAfter)}</div>
+        </div>
+
+        <div class="card" style="margin-bottom: var(--spacing-lg);">
           <label>Allowed Phones</label>
           ${this.phonePrefixes.length === 0
             ? html`<div class="hint">No prefixes configured. Any phone number is accepted.</div>`
@@ -515,25 +639,70 @@ export class VersolaChallengesList extends LitElement {
             ? html`<div class="template-text">${this.passwordRegex}</div>`
             : html`<div class="hint">No password regex configured. Any password is accepted.</div>`}
         </div>
+
+        ${hasLimits || banDurationSeconds > 0 ? html`
+          <div class="card">
+            <div class="limits-card-header">
+              <label style="margin-bottom: 0;">Submission Limits</label>
+              ${banDurationSeconds > 0 ? html`
+                <span class="ban-badge">Ban: ${this.formatDuration(banDurationSeconds)}</span>
+              ` : nothing}
+            </div>
+            <div class="limits-grid">
+              ${this.renderLimitGroup('OTP Request', otpRequest)}
+              ${this.renderLimitGroup('OTP Submit', otpSubmit)}
+              ${this.renderLimitGroup('Password Submit', passwordSubmit)}
+            </div>
+          </div>
+        ` : html`
+          <div class="card">
+            <div class="hint">No submission limits configured.</div>
+          </div>
+        `}
       </section>
     `;
   }
 
-  private renderPhoneEdit() {
+  private renderLimitGroup(label: string, limits: RateLimit[]) {
+    if (limits.length === 0) return nothing;
+    return html`
+      <div>
+        <div class="limit-group-title">${label}</div>
+        ${limits.map(l => html`
+          <span class="limit-chip">${l.maxAttempts} per ${this.formatDuration(l.windowSeconds)}</span>
+        `)}
+      </div>
+    `;
+  }
+
+  private renderChallengeEdit() {
     return html`
       <div class="form-header">
         <div class="title-stack">
-          <h1 class="form-title">Edit Phone Settings</h1>
+          <h1 class="form-title">Edit Challenge Settings</h1>
         </div>
       </div>
 
       <div class="card">
-        <label>Allowed Phones</label>
+        <label>OTP Code Length</label>
+        <div class="hint">Number of digits in generated one-time passwords.</div>
+        <input type="number" class="form-control compact-input limit-input" .value=${this.editOtpLength}
+          @input=${(e: Event) => { this.editOtpLength = Math.max(1, parseInt((e.target as HTMLInputElement).value) || 1); this.requestUpdate(); }} />
+
+        <label style="margin-top: var(--spacing-lg);">OTP Resend After (seconds)</label>
+        <div class="hint">How long the user must wait before requesting a new code.</div>
+        <div class="limit-row" style="margin-bottom: 0;">
+          <input type="number" class="form-control compact-input limit-input" .value=${this.editOtpResendAfter}
+            @input=${(e: Event) => { this.editOtpResendAfter = parseInt((e.target as HTMLInputElement).value) || 0; this.requestUpdate(); }} />
+          <span class="limit-hint">${this.formatDuration(this.editOtpResendAfter)}</span>
+        </div>
+
+        <label style="margin-top: var(--spacing-lg);">Allowed Phones</label>
         <div class="hint">Each prefix must start with + followed by digits (e.g. +77). Leave empty to accept any phone number.</div>
 
-        ${this.editPhonePrefixes.length === 0
+        ${this.editPrefixes.length === 0
           ? html`<div class="hint">No prefixes configured.</div>`
-          : this.editPhonePrefixes.map((entry, i) => html`
+          : this.editPrefixes.map((entry, i) => html`
             <div class="locale-bar">
               <input type="text" class="form-control compact-input locale-select" .value=${entry.value}
                 @input=${(e: Event) => { entry.value = (e.target as HTMLInputElement).value; }}
@@ -550,13 +719,52 @@ export class VersolaChallengesList extends LitElement {
           @input=${(e: Event) => { this.editPasswordRegex = (e.target as HTMLInputElement).value; }}
           placeholder="^(?=.*[A-Za-z])(?=.*\\d).{8,}$" />
 
+        <h3 style="margin-top: var(--spacing-xl); margin-bottom: var(--spacing-md);">Submission Limits</h3>
+
+        <div class="form-group">
+          <label>Ban Duration (seconds)</label>
+          <div class="limit-row" style="margin-bottom: 0;">
+            <input type="number" class="form-control compact-input limit-input" .value=${this.editSubmissionLimits.banDurationSeconds}
+              @input=${(e: Event) => { this.editSubmissionLimits.banDurationSeconds = Math.max(0, parseInt((e.target as HTMLInputElement).value) || 0); this.requestUpdate(); }} />
+            <span class="limit-hint">${this.formatDuration(this.editSubmissionLimits.banDurationSeconds)}</span>
+          </div>
+          <div class="hint">How long a user is banned after exceeding the longest window.</div>
+        </div>
+
+        ${this.renderEditLimitList('OTP Request', 'otpRequest')}
+        ${this.renderEditLimitList('OTP Submit', 'otpSubmit')}
+        ${this.renderEditLimitList('Password Submit', 'passwordSubmit')}
+
         <div class="form-actions">
-          <button class="btn btn-secondary" ?disabled=${this.phoneSaving} @click=${() => this.cancelEditPhone()}>Cancel</button>
-          <button class="btn btn-primary" ?disabled=${this.phoneSaving} @click=${() => this.savePhoneSettings()}>
-            ${this.phoneSaving ? 'Saving…' : 'Save'}
+          <button class="btn btn-secondary" ?disabled=${this.isSavingSettings} @click=${() => this.cancelEditSettings()}>Cancel</button>
+          <button class="btn btn-primary" ?disabled=${this.isSavingSettings} @click=${() => this.saveSettings()}>
+            ${this.isSavingSettings ? 'Saving…' : 'Save'}
           </button>
         </div>
-        ${this.phoneError ? html`<div class="error-msg">${this.phoneError}</div>` : nothing}
+        ${this.settingsError ? html`<div class="error-msg">${this.settingsError}</div>` : nothing}
+      </div>
+    `;
+  }
+
+  private renderEditLimitList(label: string, type: 'otpRequest' | 'otpSubmit' | 'passwordSubmit') {
+    const limits = this.editSubmissionLimits[type];
+    return html`
+      <div class="form-group" style="margin-top: var(--spacing-lg);">
+        <label>${label} Rate Limits</label>
+        <div class="hint">Define multiple windows. Only the longest window triggers a ban; others are immediate rate limits.</div>
+        ${limits.map((l, i) => html`
+          <div class="limit-row">
+            <span class="limit-label">Max Attempts</span>
+            <input type="number" class="form-control compact-input limit-input" .value=${l.maxAttempts}
+              @input=${(e: Event) => { l.maxAttempts = Math.max(1, parseInt((e.target as HTMLInputElement).value) || 1); this.requestUpdate(); }} />
+            <span class="limit-label">Window (sec)</span>
+            <input type="number" class="form-control compact-input limit-input" .value=${l.windowSeconds}
+              @input=${(e: Event) => { l.windowSeconds = Math.max(1, parseInt((e.target as HTMLInputElement).value) || 1); this.requestUpdate(); }} />
+            <span class="limit-hint">${this.formatDuration(l.windowSeconds)}</span>
+            <button class="icon-action danger" @click=${() => this.removeRateLimit(type, i)} title="Remove">✕</button>
+          </div>
+        `)}
+        <button class="btn btn-secondary btn-sm" @click=${() => this.addRateLimit(type)}>+ Add Window</button>
       </div>
     `;
   }
@@ -567,7 +775,7 @@ export class VersolaChallengesList extends LitElement {
     }
 
     if (this.editingTemplateId) return this.renderEdit();
-    if (this.editingPhone) return this.renderPhoneEdit();
+    if (this.editingSettings) return this.renderChallengeEdit();
 
     return html`
       <div class="page-header">
@@ -575,7 +783,7 @@ export class VersolaChallengesList extends LitElement {
       </div>
 
       ${this.renderOtpSettings()}
-      ${this.renderPhoneSettings()}
+      ${this.renderChallengeSettings()}
     `;
   }
 }

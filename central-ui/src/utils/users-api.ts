@@ -179,5 +179,20 @@ export async function invalidateUserSession(sessionId: string, userId: string): 
   if (!response.ok) {
     const body = await response.text();
     throw new Error(body.trim() || `Failed to invalidate session (${response.status})`);
+export async function resetUserLimits(
+  userId: string,
+  tenantId: string,
+  email: string | undefined,
+  phone: string | undefined,
+): Promise<void> {
+  const response = await fetch('/users/limits/reset', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify({ userId, tenantId, email: email ?? null, phone: phone ?? null }),
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(text.trim() || `Reset limits failed (${response.status})`);
   }
 }

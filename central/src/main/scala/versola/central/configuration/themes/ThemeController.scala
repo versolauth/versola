@@ -5,7 +5,7 @@ import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.tenants.TenantId
 import versola.util.http.Controller
 import zio.ZIO
-import zio.http.{Method, Request, Response, Routes, Status, handler, string}
+import zio.http.{Method, Request, Response, Routes, Status, handler}
 import zio.json.EncoderOps
 
 object ThemeController extends Controller:
@@ -56,9 +56,10 @@ object ThemeController extends Controller:
     }
 
   val deleteThemeEndpoint =
-    Method.DELETE / "configuration" / "themes" / string("id") -> handler { (id: String, _: Request) =>
+    Method.DELETE / "configuration" / "themes" -> handler { (request: Request) =>
       (for
         service <- ZIO.service[ThemeService]
+        id <- request.url.queryZIO[String]("id")
         _ <- service.deleteTheme(id)
       yield Response.status(Status.NoContent))
         .catchSome:

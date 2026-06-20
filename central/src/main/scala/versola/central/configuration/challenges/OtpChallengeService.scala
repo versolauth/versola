@@ -35,7 +35,7 @@ object OtpChallengeService:
 
     override def getSyncTemplates: Task[Vector[OtpTemplateRecord]] =
       for
-        templates     <- cache.get
+        templates <- cache.get
         activeLocales <- localeService.getActive.map(_.map(_.code).toSet)
       yield templates.map(t => t.copy(localizations = t.localizations.filter((code, _) => activeLocales.contains(code))))
 

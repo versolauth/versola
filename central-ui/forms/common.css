@@ -145,6 +145,9 @@ form {
   line-height: 1.6;
   margin: 20px 0;
 }
+.error-text {
+  color: var(--danger);
+}
 #message {
   font-size: 1rem;
   margin-top: 20px;

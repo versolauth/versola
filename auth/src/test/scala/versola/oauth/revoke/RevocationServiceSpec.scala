@@ -45,7 +45,7 @@ object RevocationServiceSpec extends UnitSpecBase:
     refreshTokenTtl = 7776000.seconds,
     theme = "default",
     authFlow = None,
-    otpTemplateId = "default-otp",
+    otpTemplateId = "default",
   )
 
   def tokenRecord(now: Instant) = RefreshTokenRecord(

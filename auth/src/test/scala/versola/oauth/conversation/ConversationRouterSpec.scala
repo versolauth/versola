@@ -29,6 +29,9 @@ object ConversationRouterSpec extends UnitSpecBase:
     timesRequested = 1,
     timesSubmitted = 0,
     factorIndex = 0,
+    rateLimitExceeded = false,
+    lockedSeconds = 0,
+    lastSentAt = None,
   )
 
   val conversationResult = ConversationResult.RenderStep(otp)
@@ -121,7 +124,7 @@ object ConversationRouterSpec extends UnitSpecBase:
         for
           _ <- env.otpConversationService.find.succeedsWith(Some(initialRecord))
           _ <- env.otpConversationService.prepareInitialOtp.succeedsWith(conversationResult)
-          result <- env.router.submit(authId, submission)
+          result <- env.router.submit(authId, submission, None)
           prepareTimes = env.otpConversationService.prepareInitialOtp.times
         yield assertTrue(
           result == conversationResult,
@@ -134,7 +137,7 @@ object ConversationRouterSpec extends UnitSpecBase:
         for
           _ <- env.otpConversationService.find.succeedsWith(Some(initialRecord))
           _ <- env.otpConversationService.prepareInitialOtp.succeedsWith(conversationResult)
-          result <- env.router.submit(authId, submission)
+          result <- env.router.submit(authId, submission, None)
           prepareTimes = env.otpConversationService.prepareInitialOtp.times
         yield assertTrue(
           result == conversationResult,
@@ -152,7 +155,7 @@ object ConversationRouterSpec extends UnitSpecBase:
           _ <- env.otpConversationService.find.succeedsWith(Some(otpRecord))
           _ <- env.otpConversationService.checkOtp.succeedsWith(successResult)
           _ <- env.otpConversationService.finish.succeedsWith(completeResult)
-          result <- env.router.submit(authId, submission)
+          result <- env.router.submit(authId, submission, None)
           checkOtpTimes = env.otpConversationService.checkOtp.times
           finishTimes = env.otpConversationService.finish.times
         yield assertTrue(
@@ -166,7 +169,7 @@ object ConversationRouterSpec extends UnitSpecBase:
         val submission = EmailSubmission(email)
         for
           _ <- env.otpConversationService.find.succeedsWith(None)
-          result <- env.router.submit(authId, submission)
+          result <- env.router.submit(authId, submission, None)
         yield assertTrue(result == ConversationResult.NotFound)
       },
     ),

@@ -19,28 +19,40 @@ object OtpDecisionServiceSpec extends UnitSpecBase:
     timesRequested = 1,
     timesSubmitted = 0,
     factorIndex = 0,
+    rateLimitExceeded = false,
+    lockedSeconds = 0,
+    lastSentAt = None,
   )
 
   val spec = suite("OtpDecisionService")(
     suite("checkRequest")(
-      test("allow first OTP request when no previous request exists") {
+      test("return fake OTP for first request when no user exists") {
         for
           result <- service.checkRequest(None, None)
         yield assertTrue(
-          result == SendOtpResult.Success(fake = false),
+          result == SendOtpResult.Success(fake = true),
         )
       },
-      test("allow second OTP request when previous exists") {
+      test("allow first OTP request when user exists") {
         for
-          result <- service.checkRequest(Some(previousOtp), None)
+          result <- service.checkRequest(None, Some(userId))
         yield assertTrue(
           result == SendOtpResult.Success(fake = false),
         )
       },
-      test("reject OTP request when limit exceeded (3+ requests)") {
+      test("allow second OTP request when previous exists and user exists") {
         for
-          result <- service.checkRequest(Some(previousOtp.copy(timesRequested = 2)), None)
-        yield assertTrue(result == SendOtpResult.LimitsExceeded)
+          result <- service.checkRequest(Some(previousOtp), Some(userId))
+        yield assertTrue(
+          result == SendOtpResult.Success(fake = false),
+        )
+      },
+      test("return fake OTP on resend when no user exists") {
+        for
+          result <- service.checkRequest(Some(previousOtp), None)
+        yield assertTrue(
+          result == SendOtpResult.Success(fake = true),
+        )
       },
       test("return fake OTP when previous was fake") {
         val fakePrevious = ConversationStep.Otp(
@@ -48,6 +60,9 @@ object OtpDecisionServiceSpec extends UnitSpecBase:
           timesRequested = 1,
           timesSubmitted = 0,
           factorIndex = 0,
+          rateLimitExceeded = false,
+          lockedSeconds = 0,
+          lastSentAt = None,
         )
         for
           result <- service.checkRequest(Some(fakePrevious), None)

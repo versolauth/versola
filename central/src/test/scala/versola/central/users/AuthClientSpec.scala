@@ -78,4 +78,6 @@ object AuthClientSpec extends ZIOSpecDefault:
       _.updateUserRoles(userId, tenantId, Set(roleId), Set.empty)),
     mkTest("patchUserClaims sends Authorization: Bearer header with valid JWT",
       _.patchUserClaims(userId, Json.Obj())),
+    mkTest("resetUserLimits sends Authorization: Bearer header with valid JWT",
+      _.resetUserLimits(userId, tenantId, None, None)),
   ) @@ TestAspect.silentLogging

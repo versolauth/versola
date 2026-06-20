@@ -5,6 +5,7 @@ import versola.oauth.authorize.model.ResponseTypeEntry
 import versola.oauth.challenge.password.PasswordService
 import versola.oauth.challenge.password.model.CheckPassword
 import versola.oauth.client.model.ScopeToken
+import versola.oauth.conversation.limit.{ChallengeType, LimitStatus, SubmissionLimiter}
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
 import versola.oauth.conversation.otp.OtpService
 import versola.oauth.conversation.otp.model.SubmitOtpResult
@@ -63,7 +64,7 @@ trait ConversationService:
 
 object ConversationService:
   def live =
-    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _))
+    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _))
 
   class Impl(
       otpService: OtpService,
@@ -76,8 +77,39 @@ object ConversationService:
       securityService: SecurityService,
       userInfoService: UserInfoService,
       config: CoreConfig,
+      submissionLimiter: SubmissionLimiter,
   ) extends ConversationService:
     export conversationRepository.find
+
+    private def accessDenied(authId: AuthId, record: ConversationRecord): Task[ConversationResult.Render] =
+      conversationRepository.overwrite(authId, record.copy(step = ConversationStep.AccessDenied))
+        .as(ConversationResult.RenderStep(ConversationStep.AccessDenied))
+
+    private def renderStep(authId: AuthId, record: ConversationRecord, step: ConversationStep): Task[ConversationResult.Render] =
+      conversationRepository.overwrite(authId, record.copy(step = step))
+        .as(ConversationResult.RenderStep(step))
+
+    /** Records a failed attempt, then renders the step the failure produced — denying access on a
+      * persistent ban, flagging the rate limit (with the seconds until input reopens) on a
+      * short-window hit, or rendering normally otherwise.
+      */
+    private def worstStatus(a: LimitStatus, b: LimitStatus): LimitStatus =
+      (a, b) match
+        case (LimitStatus.Banned, _) | (_, LimitStatus.Banned) => LimitStatus.Banned
+        case (LimitStatus.RateLimited(s), _) => LimitStatus.RateLimited(s)
+        case (_, LimitStatus.RateLimited(s)) => LimitStatus.RateLimited(s)
+        case _ => LimitStatus.Allowed
+
+    private def recordLimitAndRender(
+        authId: AuthId,
+        record: ConversationRecord,
+        subject: String,
+        challengeType: ChallengeType,
+    )(step: Option[Long] => ConversationStep): Task[ConversationResult.Render] =
+      submissionLimiter.recordLimit(record.clientId, subject, challengeType).flatMap:
+        case LimitStatus.Banned => accessDenied(authId, record)
+        case LimitStatus.RateLimited(retryAfter) => renderStep(authId, record, step(Some(retryAfter)))
+        case LimitStatus.Allowed => renderStep(authId, record, step(None))
 
     override def prepareInitialOtp(
         authId: AuthId,
@@ -85,28 +117,35 @@ object ConversationService:
         credential: Either[Email, Phone],
         factorIndex: Int,
     ): Task[ConversationResult.Render] =
+      val subject = credential.merge
       for
-        userOpt <- userRepository.findByCredential(credential)
-        otpOpt <- otpService.prepareOtp(previous = None, userId = userOpt.map(_.id))
-        result <- otpOpt match
-          case None =>
-            ZIO.succeed(ConversationResult.LimitsExceeded)
-
-          case Some(otp) =>
-            val otpWithFactor = otp.copy(factorIndex = factorIndex)
-            val updatedConversation = conversation.copy(
-              userId = userOpt.map(_.id),
-              credential = Some(credential),
-              step = otpWithFactor,
-              userEmail = userOpt.flatMap(_.email),
-              userPhone = userOpt.flatMap(_.phone),
-              userLogin = userOpt.flatMap(_.login),
-              userClaims = userOpt.map(_.claims),
-            )
-            conversationRepository.overwrite(authId, updatedConversation)
-              .zipRight(otpService.sendOtp(otpWithFactor, credential, authId, conversation.clientId, conversation.uiLocales))
-              .zipRight(conversationRepository.overwrite(authId, updatedConversation.copy(step = otpWithFactor.copy(timesRequested = 1))))
-              .as(ConversationResult.RenderStep(otpWithFactor))
+        status <- submissionLimiter.statusFor(
+          conversation.clientId,
+          subject,
+          List(ChallengeType.OtpRequest, ChallengeType.OtpSubmit),
+        )
+        result <- status match
+          case LimitStatus.Banned | LimitStatus.RateLimited(_) =>
+            accessDenied(authId, conversation)
+          case LimitStatus.Allowed =>
+            for
+              userOpt <- userRepository.findByCredential(credential)
+              otp <- otpService.prepareOtp(previous = None, userId = userOpt.map(_.id), clientId = conversation.clientId)
+              now <- Clock.instant
+              sentStep = otp.copy(factorIndex = factorIndex, timesRequested = 1, lastSentAt = Some(now))
+              updatedConversation = conversation.copy(
+                userId = userOpt.map(_.id),
+                credential = Some(credential),
+                step = sentStep,
+                userEmail = userOpt.flatMap(_.email),
+                userPhone = userOpt.flatMap(_.phone),
+                userLogin = userOpt.flatMap(_.login),
+                userClaims = userOpt.map(_.claims),
+              )
+              _ <- conversationRepository.overwrite(authId, updatedConversation)
+              _ <- otpService.sendOtp(sentStep, credential, authId, conversation.clientId, conversation.uiLocales)
+              _ <- submissionLimiter.recordLimit(conversation.clientId, subject, ChallengeType.OtpRequest)
+            yield ConversationResult.RenderStep(sentStep)
       yield result
 
     override def prepareInitialPassword(
@@ -117,22 +156,34 @@ object ConversationService:
     ): Task[ConversationResult.Render] =
       for
         userOpt <- userRepository.findByCredential(credential)
-        passwordStep = ConversationStep.Password(
-          timesSubmitted = 0,
-          oldPasswordChangedAt = None,
-          factorIndex = factorIndex,
-        )
-        updatedConversation = conversation.copy(
-          userId = userOpt.map(_.id),
-          credential = Some(credential),
-          step = passwordStep,
-          userEmail = userOpt.flatMap(_.email),
-          userPhone = userOpt.flatMap(_.phone),
-          userLogin = userOpt.flatMap(_.login),
-          userClaims = userOpt.map(_.claims),
-        )
-        _ <- conversationRepository.overwrite(authId, updatedConversation)
-      yield ConversationResult.RenderStep(passwordStep)
+        status <- userOpt.fold[Task[LimitStatus]](ZIO.succeed(LimitStatus.Allowed)): user =>
+          for
+            userStatus <- submissionLimiter.isBanned(conversation.clientId, user.id.toString, ChallengeType.PasswordSubmit)
+            credStatus <- submissionLimiter.isBanned(conversation.clientId, credential.merge, ChallengeType.PasswordSubmit)
+          yield worstStatus(userStatus, credStatus)
+
+        result <- status match
+          case LimitStatus.Banned | LimitStatus.RateLimited(_) =>
+            accessDenied(authId, conversation)
+          case LimitStatus.Allowed =>
+            val passwordStep = ConversationStep.Password(
+              timesSubmitted = 0,
+              oldPasswordChangedAt = None,
+              factorIndex = factorIndex,
+              rateLimitExceeded = false,
+            )
+            val updatedConversation = conversation.copy(
+              userId = userOpt.map(_.id),
+              credential = Some(credential),
+              step = passwordStep,
+              userEmail = userOpt.flatMap(_.email),
+              userPhone = userOpt.flatMap(_.phone),
+              userLogin = userOpt.flatMap(_.login),
+              userClaims = userOpt.map(_.claims),
+            )
+            conversationRepository.overwrite(authId, updatedConversation)
+              .as(ConversationResult.RenderStep(passwordStep))
+      yield result
 
     override def checkOtp(
         record: ConversationRecord,
@@ -140,19 +191,24 @@ object ConversationService:
         submittedCode: OtpCode,
         authId: AuthId,
     ): Task[ConversationResult] =
-      otpService.checkOtp(otp, submittedCode)
-        .flatMap:
-          case SubmitOtpResult.LimitsExceeded =>
-            conversationRepository.delete(authId)
-              .as(ConversationResult.LimitsExceeded)
+      val subject = record.credential.map(_.merge).getOrElse("")
+      submissionLimiter.isBanned(record.clientId, subject, ChallengeType.OtpSubmit).flatMap:
+        case LimitStatus.Banned =>
+          accessDenied(authId, record)
+        case LimitStatus.RateLimited(retryAfter) =>
+          renderStep(authId, record, otp.copy(rateLimitExceeded = true, lockedSeconds = retryAfter.toInt))
+        case LimitStatus.Allowed =>
+          otpService.checkOtp(otp, submittedCode).flatMap:
+            case SubmitOtpResult.Failure =>
+              recordLimitAndRender(authId, record, subject, ChallengeType.OtpSubmit): retryAfter =>
+                otp.copy(
+                  timesSubmitted = otp.timesSubmitted + 1,
+                  rateLimitExceeded = retryAfter.isDefined,
+                  lockedSeconds = retryAfter.fold(0)(_.toInt),
+                )
 
-          case SubmitOtpResult.Failure => // TODO add errors
-            val updatedOtp = otp.copy(timesSubmitted = otp.timesSubmitted + 1)
-            conversationRepository.overwrite(authId, record.copy(step = updatedOtp))
-              .as(ConversationResult.RenderStep(updatedOtp))
-
-          case SubmitOtpResult.Success =>
-            ZIO.succeed(ConversationResult.StepPassed(otp))
+            case SubmitOtpResult.Success =>
+              ZIO.succeed(ConversationResult.StepPassed(otp))
 
     override def preparePasswordStep(
         authId: AuthId,
@@ -163,6 +219,7 @@ object ConversationService:
         timesSubmitted = 0,
         oldPasswordChangedAt = None,
         factorIndex = factorIndex,
+        rateLimitExceeded = false,
       )
       conversationRepository.overwrite(authId, conversation.copy(step = passwordStep))
         .as(ConversationResult.RenderStep(passwordStep))
@@ -178,28 +235,44 @@ object ConversationService:
           ZIO.succeed(ConversationResult.IllegalState)
 
         case Some(userId) =>
-          if passwordStep.timesSubmitted >= 3 then
-            conversationRepository.delete(authId)
-              .as(ConversationResult.LimitsExceeded)
-          else
-            passwordService.verifyPassword(userId, submittedPassword).flatMap:
-              case CheckPassword.Success =>
-                ZIO.succeed(ConversationResult.StepPassed(passwordStep))
+          val userSubject = userId.toString
+          val credSubjectOpt = record.credential.map(_.merge)
+          val checkCredBan = credSubjectOpt.fold(ZIO.succeed(LimitStatus.Allowed))(s =>
+            submissionLimiter.isBanned(record.clientId, s, ChallengeType.PasswordSubmit),
+          )
+          val recordCredFailure = credSubjectOpt.fold(ZIO.unit)(s =>
+            submissionLimiter.recordLimit(record.clientId, s, ChallengeType.PasswordSubmit).unit,
+          )
+          for
+            userBan <- submissionLimiter.isBanned(record.clientId, userSubject, ChallengeType.PasswordSubmit)
+            credBan <- checkCredBan
+            result <- worstStatus(userBan, credBan) match
+              case LimitStatus.Banned =>
+                accessDenied(authId, record)
+              case LimitStatus.RateLimited(_) =>
+                renderStep(authId, record, passwordStep.copy(rateLimitExceeded = true))
+              case LimitStatus.Allowed =>
+                passwordService.verifyPassword(userId, submittedPassword).flatMap:
+                  case CheckPassword.Success =>
+                    ZIO.succeed(ConversationResult.StepPassed(passwordStep))
 
-              case CheckPassword.OldPassword(changedAt) =>
-                val updatedStep = passwordStep.copy(
-                  timesSubmitted = passwordStep.timesSubmitted + 1,
-                  oldPasswordChangedAt = Some(changedAt),
-                )
-                conversationRepository.overwrite(authId, record.copy(step = updatedStep))
-                  .as(ConversationResult.RenderStep(updatedStep))
+                  case CheckPassword.OldPassword(changedAt) =>
+                    recordCredFailure *>
+                      recordLimitAndRender(authId, record, userSubject, ChallengeType.PasswordSubmit): retryAfter =>
+                        passwordStep.copy(
+                          timesSubmitted = passwordStep.timesSubmitted + 1,
+                          oldPasswordChangedAt = Some(changedAt),
+                          rateLimitExceeded = retryAfter.isDefined,
+                        )
 
-              case CheckPassword.Failure =>
-                val updatedStep = passwordStep.copy(
-                  timesSubmitted = passwordStep.timesSubmitted + 1,
-                )
-                conversationRepository.overwrite(authId, record.copy(step = updatedStep))
-                  .as(ConversationResult.RenderStep(updatedStep))
+                  case CheckPassword.Failure =>
+                    recordCredFailure *>
+                      recordLimitAndRender(authId, record, userSubject, ChallengeType.PasswordSubmit): retryAfter =>
+                        passwordStep.copy(
+                          timesSubmitted = passwordStep.timesSubmitted + 1,
+                          rateLimitExceeded = retryAfter.isDefined,
+                        )
+          yield result
 
     override def finish(authId: AuthId, conversation: ConversationRecord): Task[ConversationResult.Complete] =
       for

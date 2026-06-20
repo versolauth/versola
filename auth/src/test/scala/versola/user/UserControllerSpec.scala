@@ -5,6 +5,8 @@ import versola.auth.model.TenantId
 import versola.oauth.client.model.ClientId
 import versola.oauth.session.SessionRepository
 import versola.oauth.session.model.{SessionId, SessionRecord}
+import versola.oauth.conversation.limit.{ChallengeThrottleRecord, ChallengeThrottleRepository, ChallengeType}
+import versola.oauth.client.model.TenantId as ThrottleTenantId
 import versola.role.model.RoleId
 import versola.user.model.*
 import versola.util.http.{NoopTracing, Observability}
@@ -44,6 +46,19 @@ object UserControllerSpec extends ZIOSpecDefault:
     override def find(id: MAC.Of[SessionId]): Task[Option[SessionRecord]] = ZIO.dieMessage("Unused")
     override def findByUser(userId: UserId): Task[List[(MAC.Of[SessionId], SessionRecord)]] = ZIO.succeed(Nil)
     override def invalidate(id: MAC.Of[SessionId]): Task[Unit] = ZIO.unit
+  private def throttleRepo(deleted: Ref[List[String]]) = new ChallengeThrottleRepository:
+    override def find(tenantId: ThrottleTenantId, subject: String, challengeType: ChallengeType) = ZIO.dieMessage("Unused")
+    override def findAll(tenantId: ThrottleTenantId, subject: String, challengeTypes: List[ChallengeType]) = ZIO.dieMessage("Unused")
+    override def upsert(record: ChallengeThrottleRecord)                                          = ZIO.unit
+    override def delete(tenantId: ThrottleTenantId, subject: String, challengeType: ChallengeType) = ZIO.unit
+    override def deleteAllForSubject(tenantId: ThrottleTenantId, subject: String)                 = deleted.update(subject :: _)
+
+  private val noopThrottle = new ChallengeThrottleRepository:
+    override def find(tenantId: ThrottleTenantId, subject: String, challengeType: ChallengeType) = ZIO.dieMessage("Unused")
+    override def findAll(tenantId: ThrottleTenantId, subject: String, challengeTypes: List[ChallengeType]) = ZIO.dieMessage("Unused")
+    override def upsert(record: ChallengeThrottleRecord)                                          = ZIO.unit
+    override def delete(tenantId: ThrottleTenantId, subject: String, challengeType: ChallengeType) = ZIO.unit
+    override def deleteAllForSubject(tenantId: ThrottleTenantId, subject: String)                 = ZIO.unit
 
   private def validToken(key: javax.crypto.SecretKey): Task[String] =
     JWT.serialize(
@@ -55,6 +70,7 @@ object UserControllerSpec extends ZIOSpecDefault:
   private def routes(
       tracing: ZEnvironment[zio.telemetry.opentelemetry.tracing.Tracing],
       sessions: SessionRepository = sessionRepo,
+      throttle: ChallengeThrottleRepository = noopThrottle,
   ) =
     Observability.handleErrors(
       UserController.routes
@@ -159,6 +175,34 @@ object UserControllerSpec extends ZIOSpecDefault:
         override def find(id: MAC.Of[SessionId]): Task[Option[SessionRecord]] = ZIO.some(testSession)
         override def findByUser(userId: UserId): Task[List[(MAC.Of[SessionId], SessionRecord)]] = ZIO.dieMessage("Unused")
         override def invalidate(id: MAC.Of[SessionId]): Task[Unit] = ZIO.unit
+    test("POST /users/limits/reset without Authorization returns 401") {
+      for
+        client  <- ZIO.service[Client]
+        tracing <- NoopTracing.layer.build
+        _       <- TestClient.addRoutes(routes(tracing))
+        resp    <- client.batched(Request(method = Method.POST, url = URL.empty / "users" / "limits" / "reset", body = Body.fromString("{}")))
+      yield assertTrue(resp.status == Status.Unauthorized)
+    },
+    test("POST /users/limits/reset clears throttle for userId, email and phone") {
+      for
+        client  <- ZIO.service[Client]
+        tracing <- NoopTracing.layer.build
+        token   <- validToken(secretKey)
+        deleted <- Ref.make(List.empty[String])
+        _       <- TestClient.addRoutes(routes(tracing, throttleRepo(deleted)))
+        body     = """{"userId":"00000000-0000-0000-0000-000000000001","tenantId":"t1","email":"john@doe.com","phone":"+1234567890"}"""
+        resp    <- client.batched(
+          Request(method = Method.POST, url = URL.empty / "users" / "limits" / "reset", body = Body.fromString(body))
+            .addHeader(Header.Authorization.Bearer(token))
+            .addHeader(Header.ContentType(MediaType.application.json))
+        )
+        subjects <- deleted.get
+      yield assertTrue(
+        resp.status == Status.NoContent,
+        subjects.toSet == Set("00000000-0000-0000-0000-000000000001", "john@doe.com", "+1234567890"),
+      )
+    },
+  ).provideSomeShared[Scope](TestClient.layer) @@ TestAspect.silentLogging
 
       for
         client <- ZIO.service[Client]

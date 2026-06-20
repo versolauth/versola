@@ -1,5 +1,5 @@
 import { render } from 'solid-js/web';
-import { createSignal, onCleanup, Show } from 'solid-js';
+import { createSignal, onCleanup, onMount, Show } from 'solid-js';
 
 function LocaleDropdown(props: { locales: string[]; current: string; onChange: (l: string) => void }) {
   const [open, setOpen] = createSignal(false);
@@ -33,7 +33,7 @@ function LocaleDropdown(props: { locales: string[]; current: string; onChange: (
   );
 }
 
-type OtpStep = { type: 'otp'; length?: number; resendAfter?: number };
+type OtpStep = { type: 'otp'; length?: number; resendAfter?: number; lockedSeconds?: number };
 
 interface FormConfig {
   step: OtpStep;
@@ -41,6 +41,7 @@ interface FormConfig {
   locale?: string;
   locales?: string[];
   allT?: Record<string, Record<string, string>>;
+  error?: string;
   previewId?: string;
 }
 
@@ -79,11 +80,17 @@ function OtpForm(props: { config: FormConfig }) {
     }
   };
 
-  const [remaining, setRemaining] = createSignal(props.config.step.resendAfter ?? 60);
+  const [remaining, setRemaining] = createSignal(Math.max(props.config.step.resendAfter ?? 60, props.config.step.lockedSeconds ?? 0));
+  const [lockRemaining, setLockRemaining] = createSignal(props.config.step.lockedSeconds ?? 0);
   const timer = setInterval(() => {
     setRemaining((s) => (s > 0 ? s - 1 : 0));
+    setLockRemaining((s) => (s > 0 ? s - 1 : 0));
   }, 1000);
   onCleanup(() => clearInterval(timer));
+
+  onMount(() => {
+    if (!props.config.previewId && lockRemaining() <= 0) inputRef.focus();
+  });
 
   return (
     <div class="container">
@@ -94,13 +101,21 @@ function OtpForm(props: { config: FormConfig }) {
       </Show>
       <h1>{t().title}</h1>
       <p class="otp-description">{t().description}</p>
+      <Show when={lockRemaining() > 0}>
+        <div class="error-text" style="margin-bottom: 8px;">
+          {(t().locked_for ?? 'Input locked. Try again in {seconds}s.').replace('{seconds}', String(lockRemaining()))}
+        </div>
+      </Show>
+      <Show when={props.config.error && lockRemaining() <= 0}>
+        <div class="error-text" style="margin-bottom: 8px;">{t()[props.config.error!] ?? props.config.error}</div>
+      </Show>
       <form method="post">
-        <div class="otp-wrapper" onClick={() => inputRef.focus()}>
+        <div class="otp-wrapper" onClick={() => lockRemaining() <= 0 && inputRef.focus()}>
           <div class="otp-dots">
             {Array.from({ length: otpLength }, (_, i) => {
               const digit = otp()[i];
               return (
-                <div class={`otp-cell${digit !== undefined ? ' otp-cell-filled' : ''}${i === otp().length ? ' otp-cell-active' : ''}`}>
+                <div class={`otp-cell${digit !== undefined ? ' otp-cell-filled' : ''}${i === otp().length && lockRemaining() <= 0 ? ' otp-cell-active' : ''}`}>
                   {digit !== undefined ? digit : <span class="otp-cell-dot" />}
                 </div>
               );
@@ -116,26 +131,29 @@ function OtpForm(props: { config: FormConfig }) {
             maxlength={otpLength}
             value={otp()}
             onInput={(e) => handleInput(e.currentTarget.value)}
+            disabled={lockRemaining() > 0}
             required
           />
         </div>
-        <button ref={submitRef} type="submit" formAction="/challenge/otp" class="btn btn-primary">
+        <button ref={submitRef} type="submit" formAction={`/challenge/otp?ui_locale=${currentLocale()}`} class="btn btn-primary" disabled={lockRemaining() > 0}>
           {t().verify_button}
         </button>
-        <div class="divider"><span>{t().divider}</span></div>
-        <Show
-          when={remaining() <= 0}
-          fallback={
-            <p class="resend-timer">
-              {(t().resend_in ?? 'Resend available in {seconds}s').replace('{seconds}', String(remaining()))}
-            </p>
-          }
-        >
-          <button type="submit" formAction="/challenge/otp/resend" class="btn btn-secondary">
+      </form>
+      <div class="divider"><span>{t().divider}</span></div>
+      <Show
+        when={remaining() <= 0}
+        fallback={
+          <p class="resend-timer">
+            {(t().resend_in ?? 'Resend available in {seconds}s').replace('{seconds}', String(remaining()))}
+          </p>
+        }
+      >
+        <form method="post" action={`/challenge/otp/resend?ui_locale=${currentLocale()}`}>
+          <button type="submit" class="btn btn-secondary">
             {t().resend_button}
           </button>
-        </Show>
-      </form>
+        </form>
+      </Show>
     </div>
   );
 }

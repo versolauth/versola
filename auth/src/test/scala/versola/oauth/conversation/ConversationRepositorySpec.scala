@@ -39,6 +39,9 @@ trait ConversationRepositorySpec extends DatabaseSpecBase[ConversationRepository
     timesRequested = 1,
     timesSubmitted = 0,
     factorIndex = 0,
+    rateLimitExceeded = false,
+    lockedSeconds = 0,
+    lastSentAt = None,
   )
 
   val fakeOtp = realOtp.copy(real = None)

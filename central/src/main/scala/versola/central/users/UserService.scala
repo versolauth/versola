@@ -26,6 +26,8 @@ trait UserService:
 
   def updateRoles(request: UpdateUserRolesRequest): Task[Unit]
 
+  def resetLimits(request: ResetUserLimitsRequest): Task[Unit]
+
 object UserService:
   val live: ZLayer[UserRepository & AuthClient & SecureRandom, Nothing, UserService] =
     ZLayer.fromFunction(Impl(_, _, _))
@@ -71,3 +73,6 @@ object UserService:
 
     override def updateRoles(request: UpdateUserRolesRequest): Task[Unit] =
       authClient.updateUserRoles(request.userId, request.tenantId, request.add, request.remove)
+
+    override def resetLimits(request: ResetUserLimitsRequest): Task[Unit] =
+      authClient.resetUserLimits(request.userId, request.tenantId, request.email, request.phone)

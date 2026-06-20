@@ -58,7 +58,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
     refreshTokenTtl = Some(7776000),
     theme = "default",
     authFlow = Some(AuthFlow.default),
-    otpTemplateId = "default-otp",
+    otpTemplateId = "default",
   )
 
   private val updateRequest = UpdateClientRequest(
@@ -98,7 +98,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       permissions = Set(readPermission),
       theme = "",
       authFlow = Some(AuthFlow.default),
-      otpTemplateId = "default-otp",
+      otpTemplateId = "default",
     ),
     OAuthClientRecord(
       id = ClientId("mobile-app"),
@@ -114,7 +114,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       permissions = Set(writePermission),
       theme = "",
       authFlow = Some(AuthFlow.default),
-      otpTemplateId = "default-otp",
+      otpTemplateId = "default",
     ),
   )
 
@@ -214,22 +214,24 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
                 clientName = "Web App",
                 redirectUris = Set(redirectUri1),
                 scope = Set(readScope),
+                externalAudience = List(ClientId("api")),
                 permissions = Set(readPermission),
                 secretRotation = false,
                 theme = "",
                 authFlow = Some(AuthFlow.default),
-                otpTemplateId = "default-otp",
+                otpTemplateId = "default",
               ),
               OAuthClientResponse(
                 id = ClientId("mobile-app"),
                 clientName = "Mobile App",
                 redirectUris = Set(redirectUri2),
                 scope = Set(writeScope),
+                externalAudience = List(ClientId("api")),
                 permissions = Set(writePermission),
                 secretRotation = true,
                 theme = "",
                 authFlow = Some(AuthFlow.default),
-                otpTemplateId = "default-otp",
+                otpTemplateId = "default",
               ),
             ),
           ),

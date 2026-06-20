@@ -1049,6 +1049,18 @@ export class VersolaClientsList extends LitElement {
                         <div class="detail-value">${formatDuration(client.accessTokenTtl)}</div>
                       </div>
 
+                      <div class="detail-section">
+                        <div class="detail-label">Theme</div>
+                        <div class="detail-value">${client.theme ?? 'default'}</div>
+                      </div>
+
+                      ${client.otpTemplateId ? html`
+                        <div class="detail-section">
+                          <div class="detail-label">OTP Template</div>
+                          <div class="detail-value">${client.otpTemplateId}</div>
+                        </div>
+                      ` : ''}
+
                       ${this.tenantEdgeId ? html`
                         <div class="detail-section">
                           <div class="detail-label">Edge</div>

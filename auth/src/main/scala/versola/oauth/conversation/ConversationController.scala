@@ -88,8 +88,10 @@ object ConversationController extends Controller:
         record <- router.getConversation(authId).someOrFail(Error.BadRequest)
         body <- request.formAs[Body].orElseFail(Error.BadRequest)
         _ <- validate(record, body)
-        submissionResult <- router.submit(authId, body)
-        response <- conversationRenderService.renderSubmit(submissionResult, record.clientId, record.uiLocales)
+        uiLocale <- request.queryZIO[Option[String]]("ui_locale")
+        result <- router.submit(authId, body, uiLocale)
+          .orElseSucceed(ConversationResult.ServiceUnavailable)
+        response <- conversationRenderService.renderSubmit(result, record)
       yield response)
         .catchAll {
           case error: Error => ZIO.succeed(Response.badRequest)
@@ -114,10 +116,8 @@ object ConversationController extends Controller:
     FormDecoder.single[Email](form, "email", Email.from)
       .map(EmailSubmission(_))
 
-  given FormDecoder[OtpResendSubmission] = (form: Form) =>
+  given FormDecoder[OtpResendSubmission] = (_: Form) =>
     ZIO.succeed(OtpResendSubmission())
-      .when(form.formData.isEmpty)
-      .someOrFail("Form data is not empty")
 
   given FormDecoder[OtpSubmission] = (form: Form) =>
     FormDecoder.single[OtpCode](form, "code", code => Right(OtpCode(code)))

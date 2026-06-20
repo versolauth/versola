@@ -30,6 +30,13 @@ case class UpdateUserRolesPayload(
     remove: Set[RoleId],
 ) derives JsonCodec, Schema
 
+case class ResetUserLimitsPayload(
+    userId: UserId,
+    tenantId: TenantId,
+    email: Option[Email],
+    phone: Option[Phone],
+) derives JsonCodec, Schema
+
 case class UserClaimsResponse(claims: Json.Obj) derives JsonCodec, Schema
 
 case class PatchUserClaimsPayload(id: UserId, claims: Json.Obj) derives JsonCodec, Schema

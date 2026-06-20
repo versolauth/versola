@@ -6,6 +6,7 @@ import zio.http.*
 import zio.json.*
 import zio.logging.LogFilter
 import zio.logging.LogFormat.{cause, label, level, line, logAnnotation, quoted, space}
+import zio.metrics.{Metric, MetricLabel}
 import zio.telemetry.opentelemetry.OpenTelemetry
 import zio.telemetry.opentelemetry.tracing.Tracing
 import zio.test.*
@@ -72,6 +73,22 @@ object ObservabilitySpec extends ZIOSpecDefault:
       ),
     )
 
+  private val proxyRoutes =
+    Observability.middleware(
+      Observability.handleErrors(
+        Routes(
+          Method.GET / "resources" / string("alias") / trailing ->
+            handler((_: String, _: Path, _: Request) => Response.text("proxied")),
+        ),
+      ),
+    )
+
+  private def counterCount(tags: Set[MetricLabel]): UIO[Double] =
+    Metric.counter("server_http_requests_count").tagged(tags).value.map(_.count)
+
+  private def histogramCount(tags: Set[MetricLabel]): UIO[Long] =
+    Metric.histogram("server_http_request_duration_seconds", Observability.durationBoundaries).tagged(tags).value.map(_.count)
+
   def spec = suite("Observability")(
     test("logs a single info entry for successful requests") {
       for
@@ -115,6 +132,69 @@ object ObservabilitySpec extends ZIOSpecDefault:
         rendered.stack_trace.exists(_.contains("RuntimeException: boom")),
       )
     }.provideSomeLayer[Scope](testLayer) @@ TestAspect.silentLogging,
+    suite("server metrics")(
+      test("records counter and histogram for successful requests") {
+        val counterTags = Set(
+          MetricLabel("method", "GET"),
+          MetricLabel("route", "ok"),
+          MetricLabel("status", "200"),
+          MetricLabel("status_class", "2xx"),
+        )
+        val durationTags = Set(
+          MetricLabel("method", "GET"),
+          MetricLabel("route", "ok"),
+          MetricLabel("status_class", "2xx"),
+        )
+        for
+          env <- tracingLayer.build
+          _ <- TestClient.addRoutes(routes.provideEnvironment(env))
+          client <- ZIO.service[Client]
+          response <- client.batched(Request.get(URL.empty / "ok"))
+          requests <- counterCount(counterTags)
+          durations <- histogramCount(durationTags)
+        yield assertTrue(
+          response.status == Status.Ok,
+          requests >= 1.0,
+          durations >= 1L,
+        )
+      }.provideSomeLayer[Scope](testLayer) @@ TestAspect.silentLogging,
+      test("counts 5xx errors via status_class") {
+        val counterTags = Set(
+          MetricLabel("method", "GET"),
+          MetricLabel("route", "boom"),
+          MetricLabel("status", "500"),
+          MetricLabel("status_class", "5xx"),
+        )
+        for
+          env <- tracingLayer.build
+          _ <- TestClient.addRoutes(routes.provideEnvironment(env))
+          client <- ZIO.service[Client]
+          response <- client.batched(Request.get(URL.empty / "boom"))
+          requests <- counterCount(counterTags)
+        yield assertTrue(
+          response.status == Status.InternalServerError,
+          requests >= 1.0,
+        )
+      }.provideSomeLayer[Scope](testLayer) @@ TestAspect.silentLogging,
+      test("uses the raw path as the route label for the resources proxy") {
+        val tags = Set(
+          MetricLabel("method", "GET"),
+          MetricLabel("route", "resources/myalias/extra"),
+          MetricLabel("status", "200"),
+          MetricLabel("status_class", "2xx"),
+        )
+        for
+          env <- tracingLayer.build
+          _ <- TestClient.addRoutes(proxyRoutes.provideEnvironment(env))
+          client <- ZIO.service[Client]
+          response <- client.batched(Request.get(URL.empty / "resources" / "myalias" / "extra"))
+          requests <- counterCount(tags)
+        yield assertTrue(
+          response.status == Status.Ok,
+          requests >= 1.0,
+        )
+      }.provideSomeLayer[Scope](testLayer) @@ TestAspect.silentLogging,
+    ),
     suite("client middleware")(
       test("logs INFO for successful requests") {
         for

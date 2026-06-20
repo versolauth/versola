@@ -10,6 +10,7 @@ import {
   fetchUserSessions,
   invalidateUserSession,
   patchUserClaims,
+  resetUserLimits,
   searchUsers,
   updateUser,
   updateUserRoles,
@@ -44,6 +45,8 @@ export class VersolaUsersList extends LitElement {
   @state() private userSessions: Record<string, UserSession[]> = {};
   @state() private loadingSessions = new Set<string>();
   @state() private expandedClaims = new Set<string>();
+  @state() private resettingLimits = new Set<string>();
+  @state() private resetLimitsDone = new Set<string>();
   @state() private errorPopup = '';
   private loadRequestId = 0;
   private rolesTenantId: string | null = null;
@@ -525,6 +528,21 @@ export class VersolaUsersList extends LitElement {
       this.userSessions = { ...this.userSessions, [userId]: sessions };
     } catch (error) {
       this.errorPopup = error instanceof Error ? error.message : 'Failed to invalidate session';
+  private async handleResetLimits(user: User) {
+    if (!this.tenantId) {
+      this.errorPopup = 'Select a tenant first to reset limits.';
+      return;
+    }
+    const tenantId = this.tenantId;
+    this.resettingLimits = new Set([...this.resettingLimits, user.id]);
+    this.resetLimitsDone = new Set([...this.resetLimitsDone].filter(id => id !== user.id));
+    try {
+      await resetUserLimits(user.id, tenantId, user.email, user.phone);
+      this.resetLimitsDone = new Set([...this.resetLimitsDone, user.id]);
+    } catch (error) {
+      this.errorPopup = error instanceof Error ? error.message : 'Failed to reset limits';
+    } finally {
+      this.resettingLimits = new Set([...this.resettingLimits].filter(id => id !== user.id));
     }
   }
 
@@ -786,6 +804,17 @@ export class VersolaUsersList extends LitElement {
                   ${this.loadingSessions.has(user.id) ? 'Loading…' : 'Get Sessions'}
                 </button>` : ''}
               </div>` : ''}
+                <button class="btn btn-secondary btn-sm"
+                  ?disabled=${this.resettingLimits.has(user.id) || !this.tenantId}
+                  title=${!this.tenantId ? 'Select a tenant to reset limits' : 'Clear rate-limit counters for this user'}
+                  @click=${() => this.handleResetLimits(user)}>
+                  ${this.resettingLimits.has(user.id)
+                    ? 'Resetting…'
+                    : this.resetLimitsDone.has(user.id)
+                      ? 'Limits Reset ✓'
+                      : 'Reset Limits'}
+                </button>
+              </div>
             </div>
           `)}
         `}

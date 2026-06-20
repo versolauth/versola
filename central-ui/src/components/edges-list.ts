@@ -281,7 +281,7 @@ export class VersolaEdgesList extends LitElement {
       const { id } = e.detail;
       const result = await registerEdge(id);
       this.generatedKey = { edgeId: id, keyId: result.keyId, privateKey: result.privateKey, action: 'created' };
-      await this.loadData();
+      this.edges = [...this.edges, { id, hasOldKey: false }];
     } catch (error) {
       this.errorMessage = error instanceof Error ? error.message : 'Failed to register edge';
     }
@@ -302,7 +302,7 @@ export class VersolaEdgesList extends LitElement {
     try {
       const result = await rotateEdgeKey(edgeId);
       this.generatedKey = { edgeId, keyId: result.keyId, privateKey: result.privateKey, action: 'rotated' };
-      await this.loadData();
+      this.edges = this.edges.map(e => e.id === edgeId ? { ...e, hasOldKey: true } : e);
     } catch (error) {
       this.errorMessage = error instanceof Error ? error.message : 'Failed to rotate key';
     }
@@ -322,8 +322,7 @@ export class VersolaEdgesList extends LitElement {
     this.errorMessage = '';
     try {
       await deleteOldEdgeKey(edgeId);
-      await this.loadData();
-      // Update the editing edge state
+      this.edges = this.edges.map(e => e.id === edgeId ? { ...e, hasOldKey: false } : e);
       if (this.editingEdge && this.editingEdge.id === edgeId) {
         this.editingEdge = { ...this.editingEdge, hasOldKey: false };
       }
@@ -345,7 +344,7 @@ export class VersolaEdgesList extends LitElement {
     this.errorMessage = '';
     try {
       await deleteEdge(edge.id);
-      await this.loadData();
+      this.edges = this.edges.filter(e => e.id !== edge.id);
     } catch (error) {
       this.errorMessage = error instanceof Error ? error.message : 'Failed to delete edge';
     }

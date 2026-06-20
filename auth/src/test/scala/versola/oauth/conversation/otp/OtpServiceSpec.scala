@@ -4,6 +4,7 @@ import versola.auth.model.OtpCode
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.ClientId
 import versola.oauth.conversation.model.{AuthId, ConversationStep}
+import versola.oauth.client.model.OtpSettings
 import versola.oauth.conversation.otp.model.{OtpTemplate, SendOtpResult, SubmitOtpResult}
 import versola.user.model.UserId
 import versola.util.{Email, EnvName, Phone, UnitSpecBase}
@@ -25,6 +26,9 @@ object OtpServiceSpec extends UnitSpecBase:
     timesRequested = 1,
     timesSubmitted = 0,
     factorIndex = 0,
+    rateLimitExceeded = false,
+    lockedSeconds = 0,
+    lastSentAt = None,
   )
 
   class Env:
@@ -48,37 +52,28 @@ object OtpServiceSpec extends UnitSpecBase:
         val env = Env()
         for
           _ <- env.otpDecisionService.checkRequest.succeedsWith(SendOtpResult.Success(fake = false))
+          _ <- env.configService.getOtpSettings.succeedsWith(OtpSettings.default)
           _ <- env.otpGenerationService.generateOtpCode.succeedsWith(otpCode)
-          result <- env.service.prepareOtp(None, None)
+          result <- env.service.prepareOtp(None, None, clientId)
         yield assertTrue(
-          result.contains(
-            realOtp.copy(timesRequested = 0),
-          ),
-        )
-      },
-      test("return None when limits exceeded") {
-        val env = Env()
-        for
-          _ <- env.otpDecisionService.checkRequest.succeedsWith(SendOtpResult.LimitsExceeded)
-          result <- env.service.prepareOtp(None, None)
-        yield assertTrue(
-          result.isEmpty,
+          result == realOtp.copy(timesRequested = 0),
         )
       },
       test("generate fake OTP when decision service indicates") {
         val env = Env()
         for
           _ <- env.otpDecisionService.checkRequest.succeedsWith(SendOtpResult.Success(fake = true))
-          result <- env.service.prepareOtp(None, None)
+          result <- env.service.prepareOtp(None, None, clientId)
         yield assertTrue(
-          result.contains(
-            ConversationStep.Otp(
-              real = None,
-              timesRequested = 0,
-              timesSubmitted = 0,
-              factorIndex = 0,
-            ),
-          )
+          result == ConversationStep.Otp(
+            real = None,
+            timesRequested = 0,
+            timesSubmitted = 0,
+            factorIndex = 0,
+            rateLimitExceeded = false,
+            lockedSeconds = 0,
+            lastSentAt = None,
+          ),
         )
       },
     ),
@@ -90,6 +85,9 @@ object OtpServiceSpec extends UnitSpecBase:
           timesRequested = 0,
           timesSubmitted = 0,
           factorIndex = 0,
+          rateLimitExceeded = false,
+          lockedSeconds = 0,
+          lastSentAt = None,
         )
         for
           _ <- env.service.sendOtp(fakeOtp, Left(email), authId, clientId, None)
@@ -136,12 +134,12 @@ object OtpServiceSpec extends UnitSpecBase:
           result <- env.service.checkOtp(otp, otpCode)
         yield assertTrue(result == SubmitOtpResult.Failure)
       },
-      test("return LimitsExceeded when too many attempts") {
+      test("return Failure for fake OTP even with predictable non-prod code") {
         val env = Env()
-        val otp = realOtp.copy(timesSubmitted = 4)
+        val fakeOtp = realOtp.copy(real = None)
         for
-          result <- env.service.checkOtp(otp, otpCode)
-        yield assertTrue(result == SubmitOtpResult.LimitsExceeded)
+          result <- env.service.checkOtp(fakeOtp, otpCode)
+        yield assertTrue(result == SubmitOtpResult.Failure)
       },
     ),
   )

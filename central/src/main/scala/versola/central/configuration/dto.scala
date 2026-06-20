@@ -252,6 +252,7 @@ case class OAuthClientResponse(
     clientName: String,
     redirectUris: Set[RedirectUri],
     scope: Set[ScopeToken],
+    externalAudience: List[ClientId],
     permissions: Set[Permission],
     secretRotation: Boolean,
     theme: String,

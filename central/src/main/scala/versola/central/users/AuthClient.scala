@@ -36,6 +36,12 @@ trait AuthClient:
   def getUserSessions(id: UserId): Task[List[AuthClient.SessionDto]]
 
   def invalidateSession(sessionId: String, userId: UserId): Task[Unit]
+  def resetUserLimits(
+      userId: UserId,
+      tenantId: TenantId,
+      email: Option[Email],
+      phone: Option[Phone],
+  ): Task[Unit]
 
 object AuthClient:
   val live: ZLayer[Scope & Client & CentralConfig, Throwable, AuthClient] =
@@ -71,6 +77,13 @@ object AuthClient:
 
   case class SessionListResponse(sessions: List[SessionDto]) derives JsonCodec
 
+  private case class ResetUserLimitsPayload(
+      userId: UserId,
+      tenantId: TenantId,
+      email: Option[Email],
+      phone: Option[Phone],
+  ) derives JsonCodec
+
   class Impl(
       httpClient: Client,
       config: CentralConfig,
@@ -80,6 +93,7 @@ object AuthClient:
     private val rolesUrl: URL = usersUrl / "roles"
     private val claimsUrl: URL = usersUrl / "claims"
     private val sessionsUrl: URL = usersUrl / "sessions"
+    private val limitsResetUrl: URL = usersUrl / "limits" / "reset"
 
     override def upsertUser(
         id: UserId,
@@ -162,6 +176,13 @@ object AuthClient:
           body = Body.empty,
         ),
       )
+    override def resetUserLimits(
+        userId: UserId,
+        tenantId: TenantId,
+        email: Option[Email],
+        phone: Option[Phone],
+    ): Task[Unit] =
+      send(mutating(Method.POST, limitsResetUrl, ResetUserLimitsPayload(userId, tenantId, email, phone).toJson))
 
     /** Retries once on transient connection failures (stale pooled channel after auth restart). */
     private def withConnectionRetry[A](effect: Task[A]): Task[A] =

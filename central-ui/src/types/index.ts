@@ -61,11 +61,26 @@ export interface OtpTemplateRecord {
   localizations: Record<string, string>;
 }
 
-// Phone Settings
-export interface PhoneSettingsRecord {
+export interface RateLimit {
+  maxAttempts: number;
+  windowSeconds: number;
+}
+
+export interface SubmissionLimits {
+  otpRequest: RateLimit[];
+  otpSubmit: RateLimit[];
+  passwordSubmit: RateLimit[];
+  banDurationSeconds: number;
+}
+
+// Challenge Settings
+export interface ChallengeSettingsRecord {
   tenantId: string;
   allowedPrefixes: string[];
   passwordRegex?: string;
+  submissionLimits: SubmissionLimits;
+  otpLength: number;
+  otpResendAfter: number;
 }
 
 // OAuth Scope

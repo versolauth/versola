@@ -85,7 +85,7 @@ object OAuthClientSyncClientSpec extends ZIOSpecDefault:
                       300.seconds,
                       7776000.seconds,
                       "default",
-                      "default-otp",
+                      "default",
                     )
                   ),
                   Base64Url.encode(pepper),

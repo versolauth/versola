@@ -1,7 +1,10 @@
 CREATE TABLE challenge_settings (
-    tenant_id        TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
-    allowed_prefixes TEXT[] NOT NULL,
-    password_regex   TEXT,
+    tenant_id         TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    allowed_prefixes  TEXT[] NOT NULL,
+    password_regex    TEXT,
+    submission_limits JSONB NOT NULL,
+    otp_length        INT NOT NULL,
+    otp_resend_after  INT NOT NULL,
     PRIMARY KEY (tenant_id)
 );
 

@@ -49,6 +49,7 @@ interface FormConfig {
   locale?: string;
   locales?: string[];
   allT?: Record<string, Record<string, string>>;
+  error?: string;
   previewId?: string;
 }
 
@@ -84,7 +85,7 @@ function CredentialForm(props: { config: FormConfig }) {
   const showPassword = () => isLoginFlow || !!step.inlinePassword;
 
   const formAction = () =>
-    showPassword() ? `/challenge/${challengeKind}-password` : `/challenge/${challengeKind}`;
+    `${showPassword() ? `/challenge/${challengeKind}-password` : `/challenge/${challengeKind}`}?ui_locale=${currentLocale()}`;
 
   const [phoneNotAllowed, setPhoneNotAllowed] = createSignal(false);
   const [passwordNotAllowed, setPasswordNotAllowed] = createSignal(false);
@@ -120,6 +121,10 @@ function CredentialForm(props: { config: FormConfig }) {
       </Show>
       <h1>{t().title}</h1>
 
+      <Show when={props.config.error}>
+        <div class="error-text" style="margin-bottom: 8px;">{t()[props.config.error!] ?? props.config.error}</div>
+      </Show>
+
       <form method="post" onSubmit={handleSubmit}>
         <Show when={single === 'email'}>
           <input type="email" name="email" class="input-field" placeholder={t().email_placeholder} required />
@@ -135,7 +140,7 @@ function CredentialForm(props: { config: FormConfig }) {
             onInput={() => phoneNotAllowed() && setPhoneNotAllowed(false)}
           />
           <Show when={phoneNotAllowed()}>
-            <div class="phone-error-message">{t().phone_not_allowed}</div>
+            <div class="phone-error-message error-text">{t().phone_not_allowed}</div>
           </Show>
         </Show>
         <Show when={single === 'login'}>
@@ -155,7 +160,7 @@ function CredentialForm(props: { config: FormConfig }) {
             onInput={() => passwordNotAllowed() && setPasswordNotAllowed(false)}
           />
           <Show when={passwordNotAllowed()}>
-            <div class="phone-error-message">{t().password_not_allowed}</div>
+            <div class="phone-error-message error-text">{t().password_not_allowed}</div>
           </Show>
         </Show>
 

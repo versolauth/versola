@@ -42,7 +42,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     permissions = Set(readPermission),
     theme = "default",
     authFlow = Some(AuthFlow.default),
-    otpTemplateId = "default-otp",
+    otpTemplateId = "default",
   )
 
   private val otherTenantClient = OAuthClientRecord(
@@ -59,7 +59,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     permissions = Set(writePermission),
     theme = "default",
     authFlow = Some(AuthFlow.default),
-    otpTemplateId = "default-otp",
+    otpTemplateId = "default",
   )
 
   private val createRequest = CreateClientRequest(
@@ -74,7 +74,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     refreshTokenTtl = Some(7776000),
     theme = "default",
     authFlow = Some(AuthFlow.default),
-    otpTemplateId = "default-otp",
+    otpTemplateId = "default",
   )
 
   private val updateRequest = UpdateClientRequest(
@@ -154,7 +154,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         permissions = Set(readPermission),
         theme = "default",
         authFlow = Some(AuthFlow.default),
-        otpTemplateId = "default-otp",
+        otpTemplateId = "default",
       )
 
       for
