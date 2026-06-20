@@ -81,8 +81,6 @@ object OtpService:
 
     override def checkOtp(otp: ConversationStep.Otp, code: OtpCode): UIO[SubmitOtpResult] =
       otp.real match
-        // Fake OTP (e.g. no user for the credential): never accept any code,
-        // including the predictable code generated in non-prod environments.
         case None =>
           ZIO.succeed(SubmitOtpResult.Failure)
         case Some(real) if real.code == code =>
