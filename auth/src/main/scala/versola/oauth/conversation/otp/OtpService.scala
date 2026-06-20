@@ -81,7 +81,9 @@ object OtpService:
 
     override def checkOtp(otp: ConversationStep.Otp, code: OtpCode): UIO[SubmitOtpResult] =
       otp.real match
-        case Some(otp) if otp.code == code =>
+        case None =>
+          ZIO.succeed(SubmitOtpResult.Failure)
+        case Some(real) if real.code == code =>
           ZIO.succeed(SubmitOtpResult.Success)
         case _ =>
           ZIO.succeed(SubmitOtpResult.Failure)
