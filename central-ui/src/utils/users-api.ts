@@ -179,6 +179,7 @@ export async function invalidateUserSession(sessionId: string, userId: string): 
   if (!response.ok) {
     const body = await response.text();
     throw new Error(body.trim() || `Failed to invalidate session (${response.status})`);
+  }}
 export async function resetUserLimits(
   userId: string,
   tenantId: string,

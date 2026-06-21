@@ -75,7 +75,7 @@ object UserControllerSpec extends ZIOSpecDefault:
     Observability.handleErrors(
       UserController.routes
         .provideEnvironment(
-          ZEnvironment(userRepo) ++ ZEnvironment(rolesRepo) ++ ZEnvironment(config) ++ ZEnvironment(sessions) ++ tracing,
+          ZEnvironment(userRepo) ++ ZEnvironment(rolesRepo) ++ ZEnvironment(config) ++ ZEnvironment(sessions) ++ ZEnvironment(throttle) ++ tracing,
         ),
     )
 
@@ -175,6 +175,20 @@ object UserControllerSpec extends ZIOSpecDefault:
         override def find(id: MAC.Of[SessionId]): Task[Option[SessionRecord]] = ZIO.some(testSession)
         override def findByUser(userId: UserId): Task[List[(MAC.Of[SessionId], SessionRecord)]] = ZIO.dieMessage("Unused")
         override def invalidate(id: MAC.Of[SessionId]): Task[Unit] = ZIO.unit
+      for
+        client <- ZIO.service[Client]
+        tracing <- NoopTracing.layer.build
+        token <- validToken(secretKey)
+        encodedId = Base64Url.encode(testSessionId)
+        _ <- TestClient.addRoutes(routes(tracing, localRepo))
+        resp <- client.batched(
+          Request(
+            method = Method.DELETE,
+            url = (URL.empty / "users" / "sessions" / encodedId).addQueryParam("userId", testUserId.toString),
+          ).addHeader(Header.Authorization.Bearer(token)),
+        )
+      yield assertTrue(resp.status == Status.NoContent)
+    },
     test("POST /users/limits/reset without Authorization returns 401") {
       for
         client  <- ZIO.service[Client]
@@ -189,7 +203,7 @@ object UserControllerSpec extends ZIOSpecDefault:
         tracing <- NoopTracing.layer.build
         token   <- validToken(secretKey)
         deleted <- Ref.make(List.empty[String])
-        _       <- TestClient.addRoutes(routes(tracing, throttleRepo(deleted)))
+        _       <- TestClient.addRoutes(routes(tracing, throttle = throttleRepo(deleted)))
         body     = """{"userId":"00000000-0000-0000-0000-000000000001","tenantId":"t1","email":"john@doe.com","phone":"+1234567890"}"""
         resp    <- client.batched(
           Request(method = Method.POST, url = URL.empty / "users" / "limits" / "reset", body = Body.fromString(body))
@@ -201,21 +215,5 @@ object UserControllerSpec extends ZIOSpecDefault:
         resp.status == Status.NoContent,
         subjects.toSet == Set("00000000-0000-0000-0000-000000000001", "john@doe.com", "+1234567890"),
       )
-    },
-  ).provideSomeShared[Scope](TestClient.layer) @@ TestAspect.silentLogging
-
-      for
-        client <- ZIO.service[Client]
-        tracing <- NoopTracing.layer.build
-        token <- validToken(secretKey)
-        encodedId = Base64Url.encode(testSessionId)
-        _ <- TestClient.addRoutes(routes(tracing, localRepo))
-        resp <- client.batched(
-          Request(
-            method = Method.DELETE,
-            url = (URL.empty / "users" / "sessions" / encodedId).addQueryParam("userId", testUserId.toString),
-          ).addHeader(Header.Authorization.Bearer(token)),
-        )
-      yield assertTrue(resp.status == Status.NoContent)
     },
   ).provideSomeShared[Scope](TestClient.layer) @@ TestAspect.silentLogging

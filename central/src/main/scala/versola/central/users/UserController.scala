@@ -109,6 +109,8 @@ object UserController extends Controller:
         userId <- request.queryZIO[UserId]("userId")
         _ <- service.invalidateSession(sessionId, userId)
       yield Response.status(Status.NoContent)
+    }
+
   val resetUserLimitsEndpoint =
     Method.POST / "users" / "limits" / "reset" -> handler { (request: Request) =>
       for

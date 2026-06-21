@@ -525,9 +525,11 @@ export class VersolaUsersList extends LitElement {
     try {
       await invalidateUserSession(sessionId, userId);
       const sessions = await fetchUserSessions(userId);
-      this.userSessions = { ...this.userSessions, [userId]: sessions };
+      this.userSessions = {...this.userSessions, [userId]: sessions};
     } catch (error) {
       this.errorPopup = error instanceof Error ? error.message : 'Failed to invalidate session';
+    }
+  }
   private async handleResetLimits(user: User) {
     if (!this.tenantId) {
       this.errorPopup = 'Select a tenant first to reset limits.';
