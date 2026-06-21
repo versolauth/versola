@@ -249,7 +249,6 @@ export interface SortConfig {
 }
 
 export interface UserSession {
-  id: string;
   clientId: string;
   userAgent?: string;
   createdAt?: string;

@@ -16,7 +16,7 @@ trait UserService:
 
   def getSessions(id: UserId): Task[List[AuthClient.SessionDto]]
 
-  def invalidateSession(sessionId: String, userId: UserId): Task[Unit]
+  def invalidateSession(userId: UserId): Task[Unit]
 
   def create(request: CreateUserRequest): IO[UserConflict | Throwable, UserId]
 
@@ -56,8 +56,8 @@ object UserService:
     override def getSessions(id: UserId): Task[List[AuthClient.SessionDto]] =
       authClient.getUserSessions(id)
 
-    override def invalidateSession(sessionId: String, userId: UserId): Task[Unit] =
-      authClient.invalidateSession(sessionId, userId)
+    override def invalidateSession(userId: UserId): Task[Unit] =
+      authClient.invalidateSession(userId)
 
     override def create(request: CreateUserRequest): IO[UserConflict | Throwable, UserId] =
       for

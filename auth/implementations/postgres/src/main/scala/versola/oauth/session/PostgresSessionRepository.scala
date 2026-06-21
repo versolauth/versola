@@ -52,29 +52,27 @@ class PostgresSessionRepository(xa: TransactorZIO) extends SessionRepository, Ba
           .collect { case (record, expiresAt) if expiresAt.isAfter(now) => record }
     yield result
 
-  override def findByUser(
+  override def findByUserId(
       userId: UserId,
-  ): Task[List[(MAC.Of[SessionId], SessionRecord)]] =
-    for
-      rows <- xa.connect:
-        sql"""
-        SELECT id, user_id, client_id, user_agent, created_at
-        FROM sso_sessions
-        WHERE
-          user_id = $userId
-          AND expires_at > CURRENT_TIMESTAMP
-        ORDER BY created_at DESC
-      """.query[(MAC.Of[SessionId], SessionRecord)].run()
-    yield rows.toList
+  ): Task[List[SessionRecord]] =
+    xa.connect:
+      sql"""
+      SELECT user_id, client_id, user_agent, created_at
+      FROM sso_sessions
+      WHERE
+        user_id = $userId
+        AND expires_at > CURRENT_TIMESTAMP
+      ORDER BY created_at DESC
+    """.query[SessionRecord].run().toList
 
-  override def invalidate(
-      id: MAC.Of[SessionId],
+  override def invalidateByUserId(
+      userId: UserId,
   ): Task[Unit] =
     xa.connect:
       sql"""
         UPDATE sso_sessions
         SET expires_at = CURRENT_TIMESTAMP
-        WHERE id = $id
+        WHERE user_id = $userId
       """.update.run()
     .unit
 

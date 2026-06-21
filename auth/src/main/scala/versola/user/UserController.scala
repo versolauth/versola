@@ -4,16 +4,13 @@ import versola.auth.model.TenantId
 import versola.oauth.client.model.TenantId as ThrottleTenantId
 import versola.oauth.conversation.limit.ChallengeThrottleRepository
 import versola.oauth.session.SessionRepository
-import versola.oauth.session.model.{SessionId, SessionRecord}
+import versola.oauth.session.model.SessionId
 import versola.role.model.RoleId
 import versola.user.model.*
-import versola.util.Base64
 import versola.util.CoreConfig
 import versola.util.http.Controller
-import versola.util.{Base64Url, MAC}
 import versola.util.{Email, Phone}
 import zio.ZIO
-import zio.http.string
 import zio.http.{Method, Request, Response, Routes, Status, handler}
 import zio.json.EncoderOps
 import zio.json.JsonCodec
@@ -87,7 +84,6 @@ object UserController extends Controller:
     }
 
   private case class SessionResponse(
-      id: String,
       clientId: String,
       userAgent: Option[String],
       createdAt: String,
@@ -101,12 +97,11 @@ object UserController extends Controller:
         _ <- authorizeInternal(request)
         repo <- ZIO.service[SessionRepository]
         userId <- request.url.queryZIO[UserId]("id")
-        sessions <- repo.findByUser(userId)
+        sessions <- repo.findByUserId(userId)
       yield Response.json(
         SessionListResponse(
-          sessions.map { case (id, record) =>
+          sessions.map { record =>
             SessionResponse(
-              id = Base64Url.encode(id),
               clientId = record.clientId,
               userAgent = record.userAgent,
               createdAt = record.createdAt.toString,
@@ -115,25 +110,16 @@ object UserController extends Controller:
         ).toJson,
       )
     }
-
+    
   val invalidateSessionEndpoint =
-    Method.DELETE / "users" / "sessions" / string("sessionId") -> handler { (sessionId: String, request: Request) =>
-      for
-        _ <- authorizeInternal(request)
-        repo <- ZIO.service[SessionRepository]
-        userId <- request.url.queryZIO[UserId]("userId")
-        id <- ZIO.fromEither(MAC.fromBase64Url(sessionId))
-          .mapError(msg => new RuntimeException(s"Invalid session id: $msg"))
-        sessionOpt <- repo.find(id)
-        response <- sessionOpt match
-          case None =>
-            ZIO.succeed(Response.status(Status.NotFound))
-          case Some(record) if record.userId != userId =>
-            ZIO.succeed(Response.status(Status.Forbidden))
-          case Some(_) =>
-            repo.invalidate(id).as(Response.status(Status.NoContent))
-      yield response
-    }
+      Method.DELETE / "users" / "sessions" -> handler { (request: Request) =>
+        for
+          _ <- authorizeInternal(request)
+          repo <- ZIO.service[SessionRepository]
+          userId <- request.url.queryZIO[UserId]("userId")
+          _ <- repo.invalidateByUserId(userId)
+        yield Response.status(Status.NoContent)
+      }
 
   val resetLimitsEndpoint =
     Method.POST / "users" / "limits" / "reset" -> handler { (request: Request) =>

@@ -35,7 +35,7 @@ trait AuthClient:
 
   def getUserSessions(id: UserId): Task[List[AuthClient.SessionDto]]
 
-  def invalidateSession(sessionId: String, userId: UserId): Task[Unit]
+  def invalidateSession(userId: UserId): Task[Unit]
   def resetUserLimits(
       userId: UserId,
       tenantId: TenantId,
@@ -69,7 +69,6 @@ object AuthClient:
   private case class UserRolesResponse(roles: List[RoleId]) derives JsonCodec
 
   case class SessionDto(
-      id: String,
       clientId: String,
       userAgent: Option[String],
       createdAt: String,
@@ -168,11 +167,11 @@ object AuthClient:
                 ZIO.fail(new RuntimeException(s"Auth call failed: ${response.status.code} $body")))
       yield result
 
-    override def invalidateSession(sessionId: String, userId: UserId): Task[Unit] =
+    override def invalidateSession(userId: UserId): Task[Unit] =
       send(
         Request(
           method = Method.DELETE,
-          url = (sessionsUrl / sessionId).addQueryParam("userId", userId.toString),
+          url = sessionsUrl.addQueryParam("userId", userId.toString),
           body = Body.empty,
         ),
       )

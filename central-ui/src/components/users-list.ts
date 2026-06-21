@@ -217,40 +217,43 @@ export class VersolaUsersList extends LitElement {
         font-size: 0.875rem;
       }
       
-      .session-row {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
+      .session-card {
         padding: var(--spacing-xs) 0;
+        border-bottom: 1px solid var(--border-subtle, rgba(255,255,255,0.06));
         font-size: 0.875rem;
-        gap: var(--spacing-sm);
       }
-      
-      .session-info {
+
+      .session-card:last-child {
+        border-bottom: none;
+      }
+
+      .session-card-info {
         display: flex;
         flex-direction: column;
         gap: 0.125rem;
-        min-width: 0;
       }
-      
+
       .session-platform {
         font-weight: 600;
         color: var(--text-primary);
         font-size: 0.8125rem;
         text-transform: capitalize;
       }
-      
+
       .session-browser {
         color: var(--text-secondary);
         font-size: 0.75rem;
       }
-      
-      .session-meta {
+
+      .session-client {
         color: var(--text-secondary);
-        font-family: var(--font-mono);
         font-size: 0.75rem;
-        text-align: right;
-        white-space: nowrap;
+        font-family: var(--font-mono);
+      }
+
+      .session-date {
+        color: var(--text-tertiary, var(--text-secondary));
+        font-size: 0.75rem;
       }
 
       .role-tag {
@@ -521,9 +524,9 @@ export class VersolaUsersList extends LitElement {
     }
   }
 
-  private async handleInvalidateSession(userId: string, sessionId: string) {
+  private async handleInvalidateSession(userId: string) {
     try {
-      await invalidateUserSession(sessionId, userId);
+      await invalidateUserSession(userId);
       const sessions = await fetchUserSessions(userId);
       this.userSessions = {...this.userSessions, [userId]: sessions};
     } catch (error) {
@@ -572,37 +575,38 @@ export class VersolaUsersList extends LitElement {
 
   private renderUserSessions(user: User) {
     const sessions = this.userSessions[user.id] ?? [];
+    const formatDate = (iso: string) =>
+        new Date(iso).toLocaleDateString('en-GB');
+
     return html`
-    <div class="expand-section">
-      <div class="expand-section-header">
-        <div class="expand-section-title">Sessions</div>
-      </div>
-      ${sessions.length > 0 ? html`
-        <div class="expand-section-content">
-          ${sessions.map(s => html`
-            <div class="session-row">
-              <div class="session-info">
-                <span class="session-platform">${s.platform}</span>
-                <span class="session-browser">
+      <div class="expand-section">
+        <div class="expand-section-header">
+          <div class="expand-section-title">Sessions</div>
+          <button class="icon-action danger" title="Invalidate all sessions"
+                  @click=${() => this.handleInvalidateSession(user.id)}>Invalidate all</button>
+        </div>
+        ${sessions.length > 0 ? html`
+          <div class="expand-section-content">
+            ${sessions.map(s => html`
+              <div class="session-card">
+                <div class="session-card-info">
+                  <span class="session-platform">${s.platform}</span>
+                  <span class="session-browser">
                   ${s.browser ? `${s.browser}${s.version ? ` ${s.version}` : ''}` : '—'}
                 </span>
+                  <span class="session-client">${s.clientId}</span>
+                  ${s.createdAt ? html`<span class="session-date">${formatDate(s.createdAt)}</span>` : ''}
+                </div>
               </div>
-              <div class="session-meta">
-                <div>${s.clientId}</div>
-                ${s.createdAt ? html`<div>${new Date(s.createdAt).toLocaleString()}</div>` : ''}
-              </div>
-              <button class="icon-action danger" title="Invalidate session"
-                @click=${() => this.handleInvalidateSession(user.id, s.id)}>✕</button>
-            </div>
-          `)}
-        </div>
-      ` : html`
-        <div class="expand-section-content">
-          <span class="no-data">No active sessions</span>
-        </div>
-      `}
-    </div>
-  `;
+            `)}
+          </div>
+        ` : html`
+          <div class="expand-section-content">
+            <span class="no-data">No active sessions</span>
+          </div>
+        `}
+      </div>
+    `;
   }
 
   private toggleUserClaims(userId: string) {
@@ -790,7 +794,6 @@ export class VersolaUsersList extends LitElement {
               ${this.expandedClaims.has(user.id) ? this.renderUserClaims(user) : ''}
               ${user.id in this.userRoles ? this.renderUserRoles(user) : ''}
               ${user.id in this.userSessions ? this.renderUserSessions(user) : ''}
-              ${(!this.expandedClaims.has(user.id) || !(user.id in this.userRoles) || !(user.id in this.userSessions)) ? html`
               <div class="card-action-row">
                 ${!this.expandedClaims.has(user.id) ? html`<button class="btn btn-secondary btn-sm"
                   @click=${() => this.toggleUserClaims(user.id)}>Get Claims</button>` : ''}
@@ -805,7 +808,6 @@ export class VersolaUsersList extends LitElement {
                   @click=${() => this.toggleUserSessions(user.id)}>
                   ${this.loadingSessions.has(user.id) ? 'Loading…' : 'Get Sessions'}
                 </button>` : ''}
-              </div>` : ''}
                 <button class="btn btn-secondary btn-sm"
                   ?disabled=${this.resettingLimits.has(user.id) || !this.tenantId}
                   title=${!this.tenantId ? 'Select a tenant to reset limits' : 'Clear rate-limit counters for this user'}
@@ -817,9 +819,8 @@ export class VersolaUsersList extends LitElement {
                       : 'Reset Limits'}
                 </button>
               </div>
-            </div>
           `)}
-        `}
+          `}
     `;
   }
 }

@@ -141,7 +141,6 @@ export async function updateUserRoles(
 }
 
 type UserSessionDto = {
-  id: string;
   clientId: string;
   userAgent?: string;
   createdAt?: string;
@@ -159,7 +158,6 @@ export async function fetchUserSessions(userId: string): Promise<UserSession[]> 
 
   const data = (await response.json()) as UserSessionDto[];
   return data.map(dto => ({
-    id: dto.id,
     clientId: dto.clientId,
     userAgent: dto.userAgent,
     createdAt: dto.createdAt,
@@ -167,8 +165,8 @@ export async function fetchUserSessions(userId: string): Promise<UserSession[]> 
   }));
 }
 
-export async function invalidateUserSession(sessionId: string, userId: string): Promise<void> {
-  const url = new URL(`/users/sessions/${sessionId}`, window.location.origin);
+export async function invalidateUserSession(userId: string): Promise<void> {
+  const url = new URL('/users/sessions', window.location.origin);
   url.searchParams.set('userId', userId);
 
   const response = await fetch(url.toString(), {
@@ -179,7 +177,8 @@ export async function invalidateUserSession(sessionId: string, userId: string): 
   if (!response.ok) {
     const body = await response.text();
     throw new Error(body.trim() || `Failed to invalidate session (${response.status})`);
-  }}
+  }
+}
 export async function resetUserLimits(
   userId: string,
   tenantId: string,

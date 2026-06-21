@@ -4,7 +4,6 @@ import versola.central.configuration.tenants.TenantId
 import versola.util.http.Controller
 import versola.util.{Email, Phone}
 import zio.ZIO
-import zio.http.string
 import zio.http.{Method, Request, Response, Routes, Status, handler}
 import zio.json.EncoderOps
 import zio.telemetry.opentelemetry.tracing.Tracing
@@ -103,11 +102,11 @@ object UserController extends Controller:
     }
 
   val invalidateSessionEndpoint =
-    Method.DELETE / "users" / "sessions" / string("sessionId") -> handler { (sessionId: String, request: Request) =>
+    Method.DELETE / "users" / "sessions" -> handler { (request: Request) =>
       for
         service <- ZIO.service[UserService]
         userId <- request.queryZIO[UserId]("userId")
-        _ <- service.invalidateSession(sessionId, userId)
+        _ <- service.invalidateSession(userId)
       yield Response.status(Status.NoContent)
     }
 

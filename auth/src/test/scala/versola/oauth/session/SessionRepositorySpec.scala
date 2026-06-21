@@ -82,45 +82,46 @@ trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
           foundAfter.isEmpty,
         )
       },
-      test("findByUser returns active sessions for user") {
+      test("findByUserId returns active sessions for user") {
         for
           _ <- env.repository.create(sessionId1, session1, ttl)
           _ <- env.repository.create(sessionId2, session2, ttl)
           _ <- env.repository.create(sessionId3, session1.copy(clientId = clientId2), ttl)
-          results <- env.repository.findByUser(userId1)
+          results <- env.repository.findByUserId(userId1)
         yield assertTrue(
           results.size == 2,
-          results.map(_._1).toSet == Set(sessionId1, sessionId3),
-          results.forall(_._2.userId == userId1),
+          results.forall(_.userId == userId1),
         )
       },
-      test("findByUser does not return expired sessions") {
+      test("findByUserId does not return expired sessions") {
         for
           _ <- env.repository.create(sessionId1, session1, 0.seconds)
           _ <- TestClock.adjust(1.second)
-          results <- env.repository.findByUser(userId1)
+          results <- env.repository.findByUserId(userId1)
         yield assertTrue(results.isEmpty)
       },
-      test("invalidate removes session from findByUser results") {
+      test("invalidateByUserId removes all user sessions") {
         for
           _ <- env.repository.create(sessionId1, session1, ttl)
-          before <- env.repository.findByUser(userId1)
-          _ <- env.repository.invalidate(sessionId1)
-          after <- env.repository.findByUser(userId1)
+          _ <- env.repository.create(sessionId3, session1.copy(clientId = clientId2), ttl)
+          before <- env.repository.findByUserId(userId1)
+          _ <- env.repository.invalidateByUserId(userId1)
+          after <- env.repository.findByUserId(userId1)
         yield assertTrue(
-          before.size == 1,
+          before.size == 2,
           after.isEmpty,
         )
       },
-      test("invalidate makes session invisible via find") {
+      test("invalidateByUserId does not affect other users") {
         for
           _ <- env.repository.create(sessionId1, session1, ttl)
-          before <- env.repository.find(sessionId1)
-          _ <- env.repository.invalidate(sessionId1)
-          after <- env.repository.find(sessionId1)
+          _ <- env.repository.create(sessionId2, session2, ttl)
+          _ <- env.repository.invalidateByUserId(userId1)
+          session1After <- env.repository.find(sessionId1)
+          session2After <- env.repository.find(sessionId2)
         yield assertTrue(
-          before.isDefined,
-          after.isEmpty,
+          session1After.isEmpty,
+          session2After.isDefined,
         )
       },
     )
