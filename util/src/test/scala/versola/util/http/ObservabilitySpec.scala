@@ -89,6 +89,12 @@ object ObservabilitySpec extends ZIOSpecDefault:
   private def histogramCount(tags: Set[MetricLabel]): UIO[Long] =
     Metric.histogram("server_http_request_duration_seconds", Observability.durationBoundaries).tagged(tags).value.map(_.count)
 
+  private def clientCounterCount(tags: Set[MetricLabel]): UIO[Double] =
+    Metric.counter("http_client_requests_total").tagged(tags).value.map(_.count)
+
+  private def clientHistogramCount(tags: Set[MetricLabel]): UIO[Long] =
+    Metric.histogram("http_client_request_duration_seconds", Observability.clientDurationBoundaries).tagged(tags).value.map(_.count)
+
   def spec = suite("Observability")(
     test("logs a single info entry for successful requests") {
       for
@@ -330,5 +336,54 @@ object ObservabilitySpec extends ZIOSpecDefault:
           entry.http.request.body.isEmpty,
         )
       }.provideSomeLayer[Scope](testLayer) @@ TestAspect.silentLogging,
+      suite("client metrics")(
+        test("records counter and histogram for successful requests") {
+          val counterTags = Set(
+            MetricLabel("method", "GET"),
+            MetricLabel("peer", "unknown"),
+            MetricLabel("route", "ok"),
+            MetricLabel("status", "200"),
+            MetricLabel("status_class", "2xx"),
+          )
+          val durationTags = Set(
+            MetricLabel("method", "GET"),
+            MetricLabel("peer", "unknown"),
+            MetricLabel("route", "ok"),
+            MetricLabel("status_class", "2xx"),
+          )
+          for
+            _ <- TestClient.addRoutes(Routes(Method.GET / "ok" -> Handler.ok))
+            rawClient <- ZIO.service[Client]
+            tracing <- ZIO.service[Tracing]
+            client = rawClient @@ Observability.clientMiddleware(tracing)
+            _ <- client.batched(Request.get(URL.empty / "ok"))
+            requests <- clientCounterCount(counterTags)
+            durations <- clientHistogramCount(durationTags)
+          yield assertTrue(
+            requests >= 1.0,
+            durations >= 1L,
+          )
+        }.provideSomeLayer[Scope](testLayer) @@ TestAspect.silentLogging,
+        test("counts transport failures with status_class=error and records duration") {
+          val url = URL.decode("http://localhost:1/fail").toOption.get
+          val failTags = Set(
+            MetricLabel("method", "GET"),
+            MetricLabel("peer", "localhost:1"),
+            MetricLabel("route", "/fail"),
+            MetricLabel("status_class", "error"),
+          )
+          for
+            rawClient <- ZIO.service[Client]
+            tracing <- ZIO.service[Tracing]
+            client = rawClient @@ Observability.clientMiddleware(tracing)
+            _ <- client.batched(Request.get(url)).exit
+            requests <- clientCounterCount(failTags)
+            durations <- clientHistogramCount(failTags)
+          yield assertTrue(
+            requests >= 1.0,
+            durations >= 1L,
+          )
+        }.provideSomeLayer[Scope](Client.default ++ ZTestLogger.default ++ tracingLayer) @@ TestAspect.silentLogging,
+      ),
     ),
   )
