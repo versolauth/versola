@@ -252,7 +252,7 @@ object Observability:
       else ZIO.none
 
     val loggerName = logging.loggerName("versola.http.HttpClient")
-    val seconds = duration.toMillis / 1000.0
+    val seconds = duration.toNanos / 1e9
 
     bodyEffect.flatMap { body =>
       val requestLog = HttpClientRequestLog(
