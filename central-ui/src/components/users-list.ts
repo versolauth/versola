@@ -819,6 +819,7 @@ export class VersolaUsersList extends LitElement {
                       : 'Reset Limits'}
                 </button>
               </div>
+            </div>
           `)}
           `}
     `;
