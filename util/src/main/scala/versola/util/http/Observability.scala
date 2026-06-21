@@ -26,6 +26,13 @@ object Observability:
     FiberRef.unsafe.make(HttpObservabilityConfig.Client.default)
   }
 
+  val clientRoute: FiberRef[Option[String]] = zio.Unsafe.unsafe { case given zio.Unsafe =>
+    FiberRef.unsafe.make(Option.empty[String])
+  }
+
+  def withClientRoute[R, E, A](route: String)(zio: ZIO[R, E, A]): ZIO[R, E, A] =
+    clientRoute.locally(Some(route))(zio)
+
   val serverLogging: FiberRef[HttpObservabilityConfig.Server] = zio.Unsafe.unsafe { case given zio.Unsafe =>
     FiberRef.unsafe.make(HttpObservabilityConfig.Server.default)
   }
@@ -46,6 +53,15 @@ object Observability:
 
   private val activeRequests =
     Metric.gauge("server_http_active_requests")
+
+  val clientDurationBoundaries: Boundaries =
+    Boundaries.fromChunk(Chunk(0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30))
+
+  private val clientRequestsCount =
+    Metric.counter("http_client_requests_total")
+
+  private val clientRequestDuration =
+    Metric.histogram("http_client_request_duration_seconds", clientDurationBoundaries)
 
   def handleErrors[Env](routes: Routes[Env, Throwable]): Routes[Env, Nothing] =
     routes.handleErrorZIO {
@@ -86,7 +102,7 @@ object Observability:
       )
     yield log
   }
-
+  
   private def toLog(request: Request, response: Response, masking: HttpObservabilityConfig.Server): UIO[HttpResponseLog] = {
     for
       body <-
@@ -194,7 +210,8 @@ object Observability:
                     .sandbox.exit.timed
                   (duration, exit) = result
                   masking <- clientLogging.get
-                  _ <- clientLog(method, url, tracedHeaders, body, startTime, duration, masking, exit)
+                  route <- clientRoute.get.map(_.getOrElse(url.path.encode))
+                  _ <- clientLog(method, url, route, tracedHeaders, body, startTime, duration, masking, exit)
                   response <- exit.unsandbox
                 yield response
 
@@ -209,6 +226,7 @@ object Observability:
   private def clientLog(
       method: Method,
       url: URL,
+      route: String,
       headers: Headers,
       body: Body,
       startTime: Instant,
@@ -226,11 +244,15 @@ object Observability:
     val baseUri = url.kind match
       case loc: URL.Location.Absolute => s"${loc.scheme.encode}://${loc.host}:${loc.port}"
       case URL.Location.Relative => ""
+    val peer = url.kind match
+      case loc: URL.Location.Absolute => s"${loc.host}:${loc.port}"
+      case URL.Location.Relative => "unknown"
     val bodyEffect =
       if masking.logRequestBody && body.isComplete then body.asString.asSome.orElseSucceed(None)
       else ZIO.none
 
     val loggerName = logging.loggerName("versola.http.HttpClient")
+    val seconds = duration.toMillis / 1000.0
 
     bodyEffect.flatMap { body =>
       val requestLog = HttpClientRequestLog(
@@ -244,10 +266,33 @@ object Observability:
 
       exit match
         case Exit.Failure(cause) =>
+          val failTags = Set(
+            MetricLabel("method", method.name),
+            MetricLabel("peer", peer),
+            MetricLabel("route", route),
+            MetricLabel("status_class", "error"),
+          )
           val responseLog = HttpClientResponseLog(code = 500, body = None, headers = Seq.empty)
           val log = SendHttpLog(requestLog, responseLog, startTime, elapsedMillis = duration.toMillis)
-          ZIO.logErrorCause("send-http", cause) @@ sendHttp(log) @@ loggerName
+          clientRequestsCount.tagged(failTags).increment *>
+            clientRequestDuration.tagged(failTags).update(seconds) *>
+            (ZIO.logErrorCause("send-http", cause) @@ sendHttp(log) @@ loggerName)
         case Exit.Success(response) =>
+          val status = response.status.code
+          val statusClass = s"${status / 100}xx"
+          val tags = Set(
+            MetricLabel("method", method.name),
+            MetricLabel("peer", peer),
+            MetricLabel("route", route),
+            MetricLabel("status", status.toString),
+            MetricLabel("status_class", statusClass),
+          )
+          val durationTags = Set(
+            MetricLabel("method", method.name),
+            MetricLabel("peer", peer),
+            MetricLabel("route", route),
+            MetricLabel("status_class", statusClass),
+          )
           val bodyEffect =
             if !masking.logResponseBody then ZIO.none
             else if response.header(Header.ContentType).exists(_.mediaType == MediaType.text.html) then ZIO.some("<html>")
@@ -255,7 +300,7 @@ object Observability:
             else ZIO.none
           bodyEffect.flatMap: body =>
             val responseLog = HttpClientResponseLog(
-              code = response.status.code,
+              code = status,
               body = body,
               headers = response.headers.collect {
                 case h if masking.logResponseHeaders.contains(h.headerName) =>
@@ -263,10 +308,14 @@ object Observability:
               }.toSeq,
             )
             val log = SendHttpLog(requestLog, responseLog, startTime, elapsedMillis = duration.toMillis)
-            if response.status.isServerError then
-              ZIO.logError("send-http") @@ sendHttp(log) @@ loggerName
-            else
-              ZIO.logInfo("send-http") @@ sendHttp(log) @@ loggerName
+            clientRequestsCount.tagged(tags).increment *>
+              clientRequestDuration.tagged(durationTags).update(seconds) *>
+              (
+                if response.status.isServerError then
+                  ZIO.logError("send-http") @@ sendHttp(log) @@ loggerName
+                else
+                  ZIO.logInfo("send-http") @@ sendHttp(log) @@ loggerName
+              )
     }
 
   case class HttpClientRequestLog(
