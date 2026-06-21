@@ -55,26 +55,31 @@ class PostgresSessionRepository(xa: TransactorZIO) extends SessionRepository, Ba
   override def findByUserId(
       userId: UserId,
   ): Task[List[SessionRecord]] =
-    xa.connect:
-      sql"""
-      SELECT user_id, client_id, user_agent, created_at
-      FROM sso_sessions
-      WHERE
-        user_id = $userId
-        AND expires_at > CURRENT_TIMESTAMP
-      ORDER BY created_at DESC
-    """.query[SessionRecord].run().toList
+    for
+      now <- Clock.instant
+      result <- xa.connect:
+        sql"""
+        SELECT user_id, client_id, user_agent, created_at
+        FROM sso_sessions
+        WHERE
+          user_id = $userId
+          AND expires_at > $now
+        ORDER BY created_at DESC
+      """.query[SessionRecord].run().toList
+    yield result
 
   override def invalidateByUserId(
       userId: UserId,
   ): Task[Unit] =
-    xa.connect:
-      sql"""
-        UPDATE sso_sessions
-        SET expires_at = CURRENT_TIMESTAMP
-        WHERE user_id = $userId
-      """.update.run()
-    .unit
+    for
+      now <- Clock.instant
+      _ <- xa.connect:
+        sql"""
+          UPDATE sso_sessions
+          SET expires_at = $now
+          WHERE user_id = $userId
+        """.update.run()
+    yield ()
 
 object PostgresSessionRepository:
   def live: ZLayer[TransactorZIO, Throwable, SessionRepository] =

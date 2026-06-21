@@ -116,7 +116,7 @@ object UserController extends Controller:
         for
           _ <- authorizeInternal(request)
           repo <- ZIO.service[SessionRepository]
-          userId <- request.url.queryZIO[UserId]("userId")
+          userId <- request.queryZIO[UserId]("userId")
           _ <- repo.invalidateByUserId(userId)
         yield Response.status(Status.NoContent)
       }

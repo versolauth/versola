@@ -56,7 +56,7 @@ object AuthorizeEndpointService:
           userLogin = None,
           userClaims = None,
           authFlow = flow,
-          userAgent = request.userAgent,
+          userAgent = request.userAgent.map(_.filter(c => c >= ' ' && c <= '~')),
         )
         _ <- conversationRepository.create(authId, conversation, config.security.authConversation.ttl).orDie
       yield AuthorizeResponse.Initialize(authId)
