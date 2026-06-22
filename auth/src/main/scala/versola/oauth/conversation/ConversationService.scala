@@ -354,7 +354,7 @@ object ConversationService:
         redirectUri = conversation.redirectUri,
         state = conversation.state,
         code = code,
-        sessionId = sessionIdMac,
+        sessionId = sessionId,
         idTokenData = idTokenData,
       )
 
