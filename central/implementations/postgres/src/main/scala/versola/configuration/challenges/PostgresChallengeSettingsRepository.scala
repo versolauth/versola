@@ -3,7 +3,7 @@ package versola.configuration.challenges
 import com.augustnagro.magnum.*
 import com.augustnagro.magnum.magzio.TransactorZIO
 import com.augustnagro.magnum.pg.PgCodec
-import versola.central.configuration.challenges.{ChallengeSettingsRecord, ChallengeSettingsRepository, SubmissionLimits}
+import versola.central.configuration.challenges.{ChallengeSettingsRecord, ChallengeSettingsRepository, PasskeySettings, SubmissionLimits}
 import versola.central.configuration.tenants.TenantId
 import versola.util.postgres.BasicCodecs
 import zio.{Task, ZLayer}
@@ -13,30 +13,32 @@ class PostgresChallengeSettingsRepository(xa: TransactorZIO) extends ChallengeSe
   given DbCodec[TenantId] = DbCodec.StringCodec.biMap(TenantId(_), identity[String])
   given DbCodec[List[String]] = PgCodec.ListCodec[String]
   given DbCodec[SubmissionLimits] = jsonBCodec[SubmissionLimits]
+  given DbCodec[PasskeySettings] = jsonBCodec[PasskeySettings]
   given DbCodec[ChallengeSettingsRecord] = DbCodec.derived
 
   override def getAll: Task[Vector[ChallengeSettingsRecord]] =
     xa.connect:
-      sql"""SELECT tenant_id, allowed_prefixes, password_regex, submission_limits, otp_length, otp_resend_after FROM challenge_settings ORDER BY tenant_id"""
+      sql"""SELECT tenant_id, allowed_prefixes, password_regex, submission_limits, otp_length, otp_resend_after, passkey_settings FROM challenge_settings ORDER BY tenant_id"""
         .query[ChallengeSettingsRecord].run()
 
   override def findByTenant(tenantId: TenantId): Task[Option[ChallengeSettingsRecord]] =
     xa.connect:
-      sql"""SELECT tenant_id, allowed_prefixes, password_regex, submission_limits, otp_length, otp_resend_after FROM challenge_settings WHERE tenant_id = $tenantId"""
+      sql"""SELECT tenant_id, allowed_prefixes, password_regex, submission_limits, otp_length, otp_resend_after, passkey_settings FROM challenge_settings WHERE tenant_id = $tenantId"""
         .query[ChallengeSettingsRecord].run()
         .headOption
 
   override def upsert(record: ChallengeSettingsRecord): Task[Unit] =
     xa.connect:
       sql"""
-        INSERT INTO challenge_settings (tenant_id, allowed_prefixes, password_regex, submission_limits, otp_length, otp_resend_after)
-        VALUES (${record.tenantId}, ${record.allowedPrefixes}, ${record.passwordRegex}, ${record.submissionLimits}, ${record.otpLength}, ${record.otpResendAfter})
+        INSERT INTO challenge_settings (tenant_id, allowed_prefixes, password_regex, submission_limits, otp_length, otp_resend_after, passkey_settings)
+        VALUES (${record.tenantId}, ${record.allowedPrefixes}, ${record.passwordRegex}, ${record.submissionLimits}, ${record.otpLength}, ${record.otpResendAfter}, ${record.passkeySettings})
         ON CONFLICT (tenant_id) DO UPDATE SET
           allowed_prefixes = EXCLUDED.allowed_prefixes,
           password_regex = EXCLUDED.password_regex,
           submission_limits = EXCLUDED.submission_limits,
           otp_length = EXCLUDED.otp_length,
-          otp_resend_after = EXCLUDED.otp_resend_after
+          otp_resend_after = EXCLUDED.otp_resend_after,
+          passkey_settings = EXCLUDED.passkey_settings
       """.update.run()
     .unit
 

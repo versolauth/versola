@@ -4,7 +4,7 @@ import com.augustnagro.magnum.*
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.central.configuration.CreateClientRequest
 import versola.central.configuration.challenges.{ChallengeSettingsService, OtpChallengeService}
-import versola.central.configuration.clients.{AuthFlow, ClientAlreadyExists, OAuthClientService}
+import versola.central.configuration.clients.{ClientAlreadyExists, OAuthClientService}
 import versola.central.configuration.edges.EdgeRepository
 import versola.central.configuration.permissions.PermissionRepository
 import versola.central.configuration.resources.{ResourceEndpointId, ResourceEndpointRecord, ResourceId, ResourceRepository}
@@ -129,7 +129,7 @@ object MockDataService:
               accessTokenTtl = client.accessTokenTtl,
               refreshTokenTtl = Some(7776000),
               theme = client.theme,
-              authFlow = Some(AuthFlow.default),
+              authFlow = client.authFlow,
               otpTemplateId = client.otpTemplateId,
             ),
           ).mapError {

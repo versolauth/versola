@@ -1,8 +1,10 @@
 package versola.oauth.conversation
 
 import versola.auth.TestEnvConfig
+import versola.oauth.challenge.passkey.{PasskeyRepository, WebAuthnService}
 import versola.auth.model.OtpCode
 import versola.oauth.challenge.password.PasswordService
+import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{AuthFlow, ClientId, PrimaryCredential, ScopeToken}
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
 import versola.oauth.conversation.otp.OtpService
@@ -58,6 +60,9 @@ object OtpConversationServiceSpec extends UnitSpecBase:
     val securityService = stub[SecurityService]
     val userInfoService = stub[versola.oauth.userinfo.UserInfoService]
     val submissionLimiter = stub[SubmissionLimiter]
+    val webAuthnService = stub[WebAuthnService]
+    val passkeyRepository = stub[PasskeyRepository]
+    val configService = stub[OAuthConfigurationService]
     val config = TestEnvConfig.coreConfig
     val service = ConversationService.Impl(
       otpService,
@@ -71,6 +76,9 @@ object OtpConversationServiceSpec extends UnitSpecBase:
       userInfoService,
       config,
       submissionLimiter,
+      webAuthnService,
+      passkeyRepository,
+      configService,
     )
 
   val initialConversation = ConversationRecord(
@@ -352,7 +360,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           _ <- env.userInfoService.getUserInfoForIdToken.succeedsWith(
             UserInfoResponse(
               claims = Map("sub" -> ast.Json.Str(userId.toString), "email" -> ast.Json.Str(userEmail)),
-            ),
+            )
           )
           result <- env.service.finish(authId, conversation)
         yield assertTrue(

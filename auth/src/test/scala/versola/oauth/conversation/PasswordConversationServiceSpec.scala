@@ -2,8 +2,10 @@ package versola.oauth.conversation
 
 import versola.auth.model.Password
 import versola.auth.TestEnvConfig
+import versola.oauth.challenge.passkey.{PasskeyRepository, WebAuthnService}
 import versola.oauth.challenge.password.PasswordService
 import versola.oauth.challenge.password.model.CheckPassword
+import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{AuthFlow, ClientId, PrimaryCredential, ScopeToken}
 import versola.oauth.conversation.limit.{ChallengeType, LimitStatus, SubmissionLimiter}
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
@@ -54,6 +56,9 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
     val securityService = stub[SecurityService]
     val userInfoService = stub[UserInfoService]
     val submissionLimiter = stub[SubmissionLimiter]
+    val webAuthnService = stub[WebAuthnService]
+    val passkeyRepository = stub[PasskeyRepository]
+    val configService = stub[OAuthConfigurationService]
     val config = TestEnvConfig.coreConfig
     val service = ConversationService.Impl(
       otpService,
@@ -67,6 +72,9 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
       userInfoService,
       config,
       submissionLimiter,
+      webAuthnService,
+      passkeyRepository,
+      configService,
     )
 
   val baseRecord = ConversationRecord(

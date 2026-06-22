@@ -1,6 +1,7 @@
 package versola.oauth.conversation
 
 import versola.auth.model.OtpCode
+import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{AuthFactor, AuthFactorType, AuthFlow, ClientId, PrimaryAuthFlow, PrimaryCredential, ScopeToken}
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
 import versola.oauth.model.{AuthorizationCode, CodeChallenge, CodeChallengeMethod, State}
@@ -93,10 +94,12 @@ object ConversationRouterSpec extends UnitSpecBase:
   class Env:
     val conversationRepository = stub[ConversationRepository]
     val otpConversationService = stub[ConversationService]
+    val configService = stub[OAuthConfigurationService]
     val secureRandom = stub[SecureRandom]
     val router = ConversationRouter.Impl(
       conversationRepository,
       otpConversationService,
+      configService,
       secureRandom,
     )
 

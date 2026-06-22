@@ -1,6 +1,6 @@
 package versola.oauth.client
 
-import versola.oauth.client.model.{ChallengeSettingsRecord, ClientId, ClientSecret, ClientsWithPepper, FormRecord, Locales, OAuthClientRecord, OtpSettings, OtpTemplateRecord, ScopeRecord, ScopeToken, SubmissionLimits, TenantId, ThemeRecord}
+import versola.oauth.client.model.{ChallengeSettingsRecord, ClientId, ClientSecret, ClientsWithPepper, FormRecord, Locales, OAuthClientRecord, OtpSettings, OtpTemplateRecord, PasskeySettings, ScopeRecord, ScopeToken, SubmissionLimits, TenantId, ThemeRecord}
 import versola.oauth.conversation.otp.model.OtpTemplate
 import versola.util.{CoreConfig, ReloadingCache, Secret, SecureRandom, SecurityService}
 import zio.*
@@ -32,6 +32,8 @@ trait OAuthConfigurationService:
   def getSubmissionLimits(id: ClientId): UIO[SubmissionLimits]
 
   def getOtpSettings(id: ClientId): UIO[OtpSettings]
+
+  def getPasskeySettings(id: ClientId): UIO[Option[PasskeySettings]]
 
 object OAuthConfigurationService:
   def live(schedule: Schedule[Any, Any, Any]): ZLayer[
@@ -175,6 +177,15 @@ object OAuthConfigurationService:
           challengeSettingsCache.get.map(
             _.find(_.tenantId == client.tenantId)
               .fold(OtpSettings.default)(s => OtpSettings(length = s.otpLength, resendAfter = s.otpResendAfter)),
+          )
+
+    override def getPasskeySettings(id: ClientId): UIO[Option[PasskeySettings]] =
+      find(id).flatMap:
+        case None => ZIO.none
+        case Some(client) =>
+          challengeSettingsCache.get.map(
+            _.find(_.tenantId == client.tenantId)
+              .map(_.passkeySettings),
           )
 
     private val IllegalStateTemplate = OtpTemplate("{{code}}")

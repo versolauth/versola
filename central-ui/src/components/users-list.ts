@@ -2,14 +2,18 @@ import { LitElement, html, css } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
 import { buttonStyles, cardStyles, formStyles } from '../styles/components';
-import { Resource, Role, User, UserRoleAssignment, UserSearchField, UserSession } from '../types';
+import { Resource, Role, User, UserRoleAssignment, UserSearchField } from '../types';
 import { getPermissions, getResources, getRoles } from '../utils/central-api';
+import { confirmDestructiveAction } from '../utils/confirm-dialog';
 import {
   createUser,
+  deletePasskey,
   fetchUserRoles,
+  listPasskeys,
   fetchUserSessions,
   invalidateUserSession,
   patchUserClaims,
+  renamePasskey,
   resetUserLimits,
   searchUsers,
   updateUser,
@@ -47,7 +51,10 @@ export class VersolaUsersList extends LitElement {
   @state() private expandedClaims = new Set<string>();
   @state() private resettingLimits = new Set<string>();
   @state() private resetLimitsDone = new Set<string>();
+  @state() private userPasskeys: Record<string, PasskeyInfo[]> = {};
+  @state() private loadingPasskeys = new Set<string>();
   @state() private errorPopup = '';
+  @state() private openInfoKey: string | null = null;
   private loadRequestId = 0;
   private rolesTenantId: string | null = null;
 
@@ -281,6 +288,201 @@ export class VersolaUsersList extends LitElement {
         color: var(--text-secondary);
         font-style: italic;
         font-size: 0.875rem;
+      }
+
+      .passkey-card {
+        background: var(--bg-dark);
+        border: 1px solid var(--border-dark);
+        border-radius: var(--radius-md);
+        overflow: hidden;
+      }
+
+      .passkey-card-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: var(--spacing-md) var(--spacing-md);
+        border-bottom: 1px solid var(--border-dark);
+        gap: var(--spacing-md);
+      }
+
+      .passkey-card-name {
+        font-size: 0.9375rem;
+        font-weight: 600;
+        color: var(--text-primary);
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .passkey-card-name.muted {
+        font-weight: 400;
+        font-style: italic;
+        color: var(--text-secondary);
+      }
+
+      .passkey-card-actions {
+        display: flex;
+        gap: var(--spacing-xs);
+        flex-shrink: 0;
+      }
+
+      .passkey-card-body {
+        padding: var(--spacing-md) var(--spacing-md);
+        display: grid;
+        grid-template-columns: 9rem 1fr;
+        gap: var(--spacing-sm) var(--spacing-md);
+        font-size: 0.8125rem;
+      }
+
+      .passkey-prop-label {
+        color: var(--text-secondary);
+        font-size: 0.75rem;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        font-weight: 600;
+        align-self: center;
+      }
+
+      .passkey-prop-value {
+        color: var(--text-primary);
+        word-break: break-all;
+        overflow-wrap: anywhere;
+        min-width: 0;
+        align-self: center;
+      }
+
+      .passkey-prop-value.muted {
+        color: var(--text-secondary);
+        font-style: italic;
+      }
+
+      .passkey-prop-value.mono {
+        font-family: var(--font-mono);
+        font-size: 0.75rem;
+        color: var(--accent);
+      }
+
+      .passkey-badges {
+        display: flex;
+        gap: var(--spacing-xs);
+        flex-wrap: wrap;
+      }
+
+      .passkey-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.25rem;
+        padding: 0.125rem 0.5rem;
+        border-radius: 999px;
+        font-size: 0.7rem;
+        font-weight: 600;
+        letter-spacing: 0.03em;
+        background: rgba(99,102,241,0.12);
+        color: var(--accent);
+        border: 1px solid rgba(99,102,241,0.25);
+      }
+
+      .passkey-badge.synced {
+        background: rgba(74,222,128,0.1);
+        color: var(--success, #4ade80);
+        border-color: rgba(74,222,128,0.25);
+      }
+
+      .passkey-badge.not-backed-up {
+        background: rgba(148,163,184,0.08);
+        color: var(--text-secondary);
+        border-color: rgba(148,163,184,0.18);
+      }
+
+      .option-info {
+        position: relative;
+        display: inline-flex;
+        align-items: center;
+        flex: none;
+      }
+
+      .option-info-button {
+        flex: none;
+        border: 1px solid rgba(88, 166, 255, 0.4);
+        border-radius: 999px;
+        background: rgba(88, 166, 255, 0.12);
+        color: var(--accent);
+        font-size: 0.75rem;
+        font-weight: 700;
+        line-height: 1;
+        width: 1.25rem;
+        height: 1.25rem;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+        padding: 0;
+      }
+
+      .option-info-button:hover {
+        background: rgba(88, 166, 255, 0.18);
+        border-color: rgba(88, 166, 255, 0.55);
+      }
+
+      .option-info-button:focus-visible {
+        outline: none;
+        box-shadow: 0 0 0 2px rgba(88, 166, 255, 0.2);
+      }
+
+      .option-tooltip {
+        position: absolute;
+        left: 0;
+        top: calc(100% + 0.4rem);
+        z-index: 20;
+        min-width: 20rem;
+        max-width: min(30rem, 75vw);
+        max-height: 22rem;
+        overflow: auto;
+        padding: 0.75rem;
+        border: 1px solid rgba(88, 166, 255, 0.28);
+        border-radius: var(--radius-md);
+        background: linear-gradient(180deg, rgba(22, 27, 34, 0.98), rgba(13, 17, 23, 0.98));
+        box-shadow: 0 10px 24px rgba(0, 0, 0, 0.35);
+        display: none;
+      }
+
+      .option-info.option-info-open .option-tooltip {
+        display: block;
+      }
+
+      .option-tooltip-title {
+        margin-bottom: 0.5rem;
+        color: var(--accent);
+        font-size: 0.75rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+      }
+
+      .option-tooltip-group {
+        border: 1px solid var(--border-dark);
+        border-radius: var(--radius-sm);
+        background: rgba(255, 255, 255, 0.03);
+        padding: 0.5rem 0.625rem;
+        margin-bottom: 0.375rem;
+      }
+
+      .option-tooltip-group-title {
+        font-size: 0.7rem;
+        font-weight: 600;
+        color: var(--accent);
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        margin-bottom: 0.25rem;
+      }
+
+      .option-tooltip-item {
+        color: var(--text-primary);
+        font-size: 0.75rem;
+        line-height: 1.4;
+        overflow-wrap: anywhere;
       }
 
       .empty-state {
@@ -551,6 +753,170 @@ export class VersolaUsersList extends LitElement {
     }
   }
 
+  private async toggleUserPasskeys(userId: string) {
+    if (userId in this.userPasskeys) {
+      const { [userId]: _removed, ...rest } = this.userPasskeys;
+      this.userPasskeys = rest;
+      return;
+    }
+    this.loadingPasskeys = new Set([...this.loadingPasskeys, userId]);
+    try {
+      const passkeys = await listPasskeys(userId);
+      this.userPasskeys = { ...this.userPasskeys, [userId]: passkeys };
+    } catch (error) {
+      this.errorPopup = error instanceof Error ? error.message : 'Failed to load passkeys';
+    } finally {
+      this.loadingPasskeys = new Set([...this.loadingPasskeys].filter(id => id !== userId));
+    }
+  }
+
+  private async handleRenamePasskey(userId: string, passkey: PasskeyInfo) {
+    const next = window.prompt('Passkey name', passkey.name ?? '');
+    if (next === null) return;
+    const trimmed = next.trim();
+    const name = trimmed.length > 0 ? trimmed : null;
+    try {
+      await renamePasskey(userId, passkey.id, name);
+      this.userPasskeys = {
+        ...this.userPasskeys,
+        [userId]: (this.userPasskeys[userId] ?? []).map(p => p.id === passkey.id ? { ...p, name } : p),
+      };
+    } catch (error) {
+      this.errorPopup = error instanceof Error ? error.message : 'Failed to rename passkey';
+    }
+  }
+
+  private async handleDeletePasskey(userId: string, passkey: PasskeyInfo) {
+    const confirmed = await confirmDestructiveAction({
+      title: 'Delete passkey',
+      messagePrefix: 'Delete passkey ',
+      messageSubject: passkey.name ?? passkey.id,
+      messageSuffix: '?',
+      confirmLabel: 'Delete',
+    });
+    if (!confirmed) return;
+    try {
+      await deletePasskey(userId, passkey.id);
+      this.userPasskeys = {
+        ...this.userPasskeys,
+        [userId]: (this.userPasskeys[userId] ?? []).filter(p => p.id !== passkey.id),
+      };
+    } catch (error) {
+      this.errorPopup = error instanceof Error ? error.message : 'Failed to delete passkey';
+    }
+  }
+
+  private toggleInfo(key: string) {
+    this.openInfoKey = this.openInfoKey === key ? null : key;
+  }
+
+  private renderUserPasskeys(user: User) {
+    const passkeys = this.userPasskeys[user.id] ?? [];
+    return html`
+      <div class="expand-section">
+        <div class="expand-section-header">
+          <div style="display:flex;align-items:center;gap:var(--spacing-xs)">
+            <div class="expand-section-title">Passkeys</div>
+            <div class=${`option-info ${this.openInfoKey === 'passkey-info' ? 'option-info-open' : ''}`}
+              @click=${(e: Event) => e.stopPropagation()}>
+              <button
+                type="button"
+                class="option-info-button"
+                aria-label="Passkey properties explained"
+                aria-expanded=${this.openInfoKey === 'passkey-info' ? 'true' : 'false'}
+                @click=${() => this.toggleInfo('passkey-info')}
+              >i</button>
+              <div class="option-tooltip" role="tooltip">
+                <div class="option-tooltip-title">Passkey properties</div>
+                <div class="option-tooltip-group">
+                  <div class="option-tooltip-group-title">Device type</div>
+                  <div class="option-tooltip-item"><strong>Multi-device</strong> — synced via a cloud keychain; works on all the user's devices.</div>
+                  <div class="option-tooltip-item"><strong>Single-device</strong> — bound to one authenticator (e.g. a hardware key); cannot be transferred.</div>
+                </div>
+                <div class="option-tooltip-group">
+                  <div class="option-tooltip-group-title">Synced</div>
+                  <div class="option-tooltip-item">The credential has been backed up to a cloud provider (iCloud Keychain, Google Password Manager, …). If not synced, losing that device loses this credential.</div>
+                </div>
+                <div class="option-tooltip-group">
+                  <div class="option-tooltip-group-title">Backup eligible</div>
+                  <div class="option-tooltip-item">The authenticator can be backed up. Software passkeys (Touch ID, Windows Hello) usually are; hardware keys (YubiKey) usually are not. Eligible does not mean it has already synced.</div>
+                </div>
+                <div class="option-tooltip-group">
+                  <div class="option-tooltip-group-title">Transports</div>
+                  <div class="option-tooltip-item"><strong>internal</strong> — built into the device (Touch ID, Face ID).</div>
+                  <div class="option-tooltip-item"><strong>hybrid</strong> — phone used as a key for another device via QR / Bluetooth.</div>
+                  <div class="option-tooltip-item"><strong>usb</strong> — security key over USB.</div>
+                  <div class="option-tooltip-item"><strong>nfc</strong> — key tapped over NFC.</div>
+                  <div class="option-tooltip-item"><strong>ble</strong> — key over Bluetooth Low Energy.</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="expand-section-content">
+          ${passkeys.length === 0
+            ? html`<div class="no-data">No passkeys registered.</div>`
+            : passkeys.map(passkey => html`
+              <div class="passkey-card">
+                <div class="passkey-card-header">
+                  <div class="passkey-card-name ${passkey.name ? '' : 'muted'}">
+                    ${passkey.name ?? 'Unnamed passkey'}
+                  </div>
+                  <div class="passkey-card-actions">
+                    <button class="icon-action" title="Rename"
+                      @click=${() => this.handleRenamePasskey(user.id, passkey)}>✎</button>
+                    <button class="icon-action danger" title="Delete"
+                      @click=${() => this.handleDeletePasskey(user.id, passkey)}>✕</button>
+                  </div>
+                </div>
+                <div class="passkey-card-body">
+                  <span class="passkey-prop-label">Device type</span>
+                  <span class="passkey-prop-value">${passkey.deviceType}</span>
+
+                  <span class="passkey-prop-label">Status</span>
+                  <span class="passkey-prop-value">
+                    <span class="passkey-badges">
+                      ${passkey.backedUp
+                        ? html`<span class="passkey-badge synced">✓ synced</span>`
+                        : html`<span class="passkey-badge not-backed-up">not synced</span>`}
+                      ${passkey.backupEligible
+                        ? html`<span class="passkey-badge">backup eligible</span>`
+                        : ''}
+                    </span>
+                  </span>
+
+                  ${passkey.transports.length > 0 ? html`
+                    <span class="passkey-prop-label">Transports</span>
+                    <span class="passkey-prop-value">
+                      <span class="passkey-badges">
+                        ${passkey.transports.map(t => html`<span class="passkey-badge">${t}</span>`)}
+                      </span>
+                    </span>
+                  ` : ''}
+
+                  <span class="passkey-prop-label">Last used</span>
+                  <span class="passkey-prop-value ${passkey.lastUsedAt ? '' : 'muted'}">
+                    ${passkey.lastUsedAt ? this.formatDate(passkey.lastUsedAt) : '—'}
+                  </span>
+
+                  <span class="passkey-prop-label">Created</span>
+                  <span class="passkey-prop-value">${this.formatDate(passkey.createdAt)}</span>
+
+                  <span class="passkey-prop-label">ID</span>
+                  <span class="passkey-prop-value mono">${passkey.id}</span>
+                </div>
+              </div>
+            `)}
+        </div>
+      </div>
+    `;
+  }
+
+  private formatDate(value: string): string {
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+  }
+
   private renderUserRoles(user: User) {
     const assignments = this.userRoles[user.id] ?? [];
     return html`
@@ -794,6 +1160,7 @@ export class VersolaUsersList extends LitElement {
               ${this.expandedClaims.has(user.id) ? this.renderUserClaims(user) : ''}
               ${user.id in this.userRoles ? this.renderUserRoles(user) : ''}
               ${user.id in this.userSessions ? this.renderUserSessions(user) : ''}
+              ${user.id in this.userPasskeys ? this.renderUserPasskeys(user) : ''}
               <div class="card-action-row">
                 ${!this.expandedClaims.has(user.id) ? html`<button class="btn btn-secondary btn-sm"
                   @click=${() => this.toggleUserClaims(user.id)}>Get Claims</button>` : ''}
@@ -807,6 +1174,11 @@ export class VersolaUsersList extends LitElement {
                   ?disabled=${this.loadingSessions.has(user.id)}
                   @click=${() => this.toggleUserSessions(user.id)}>
                   ${this.loadingSessions.has(user.id) ? 'Loading…' : 'Get Sessions'}
+                </button>` : ''}
+                ${!(user.id in this.userPasskeys) ? html`<button class="btn btn-secondary btn-sm"
+                  ?disabled=${this.loadingPasskeys.has(user.id)}
+                  @click=${() => this.toggleUserPasskeys(user.id)}>
+                  ${this.loadingPasskeys.has(user.id) ? 'Loading…' : 'Get Passkeys'}
                 </button>` : ''}
                 <button class="btn btn-secondary btn-sm"
                   ?disabled=${this.resettingLimits.has(user.id) || !this.tenantId}

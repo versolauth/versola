@@ -5,6 +5,7 @@ CREATE TABLE challenge_settings (
     submission_limits JSONB NOT NULL,
     otp_length        INT NOT NULL,
     otp_resend_after  INT NOT NULL,
+    passkey_settings  JSONB NOT NULL,
     PRIMARY KEY (tenant_id)
 );
 

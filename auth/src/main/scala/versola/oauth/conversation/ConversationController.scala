@@ -23,6 +23,10 @@ object ConversationController extends Controller:
     submitPasswordRoute,
     submitOtpRoute,
     submitResendOtpRoute,
+    getPasskeyOptionsRoute,
+    submitPasskeyAssertionRoute,
+    submitPasskeyEnrollRoute,
+    submitPasskeySkipRoute,
   )
 
   val getFormRoute =
@@ -75,6 +79,31 @@ object ConversationController extends Controller:
 
   val submitResendOtpRoute =
     submit[OtpResendSubmission](Method.POST / "challenge" / "otp" / "resend")
+
+  /** GET /challenge/passkey/options — starts a discoverable assertion and returns the
+    * PublicKeyCredentialRequestOptions JSON for `navigator.credentials.get()`.
+    */
+  val getPasskeyOptionsRoute =
+    Method.GET / "challenge" / "passkey" / "options" -> handler { (request: Request) =>
+      (for
+        router  <- ZIO.service[ConversationRouter]
+        authId  <- extractAuthId(request)
+        options <- router.startPasskeyOptions(authId).someOrFail(Error.BadRequest)
+      yield Response.json(options),
+      ).catchAll {
+        case error: Error => ZIO.succeed(Response.badRequest)
+        case ex: Throwable => ZIO.fail(ex)
+      }
+    }
+
+  val submitPasskeyAssertionRoute =
+    submit[PasskeyAssertionSubmission](Method.POST / "challenge" / "passkey")
+
+  val submitPasskeyEnrollRoute =
+    submit[PasskeyEnrollSubmission](Method.POST / "challenge" / "passkey" / "enroll")
+
+  val submitPasskeySkipRoute =
+    submit[PasskeySkipSubmission](Method.POST / "challenge" / "passkey" / "skip")
 
   private def submit[Body <: Submission: FormDecoder](
       pattern: RoutePattern[Unit],
@@ -129,8 +158,19 @@ object ConversationController extends Controller:
 
   given FormDecoder[LoginPasswordSubmission] = (form: Form) =>
     for
-      login <- FormDecoder.single[String](form, "login", Right(_))
+      login    <- FormDecoder.single[String](form, "login", Right(_))
       password <- FormDecoder.single[String](form, "password", Right(_))
     yield LoginPasswordSubmission(Login(login), Password(password))
 
-  // TODO login/password validation
+  given FormDecoder[PasskeyAssertionSubmission] = (form: Form) =>
+    FormDecoder.single[String](form, "response", Right(_))
+      .map(PasskeyAssertionSubmission(_))
+
+  given FormDecoder[PasskeyEnrollSubmission] = (form: Form) =>
+    for
+      response <- FormDecoder.single[String](form, "response", Right(_))
+      name     <- FormDecoder.optional[String](form, "name", Right(_))
+    yield PasskeyEnrollSubmission(response, name)
+
+  given FormDecoder[PasskeySkipSubmission] = (_: Form) =>
+    ZIO.succeed(PasskeySkipSubmission())

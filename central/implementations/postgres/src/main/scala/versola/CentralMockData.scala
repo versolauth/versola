@@ -1,7 +1,7 @@
 package versola
 
-import versola.central.configuration.challenges.{ChallengeSettingsRecord, OtpTemplateRecord, RateLimit, SubmissionLimits}
-import versola.central.configuration.clients.ClientId
+import versola.central.configuration.challenges.{ChallengeSettingsRecord, OtpTemplateRecord, PasskeySettings, RateLimit, SubmissionLimits}
+import versola.central.configuration.clients.{AuthFactor, AuthFactorType, AuthFlow, ClientId, PasskeyAuthFlow, PrimaryAuthFlow, PrimaryCredential}
 import versola.central.configuration.edges.EdgeId
 import versola.central.configuration.permissions.Permission
 import versola.central.configuration.resources.ResourceEndpointId
@@ -54,6 +54,7 @@ object CentralMockData:
       hasPreviousSecret: Boolean,
       theme: String,
       otpTemplateId: String,
+      authFlow: Option[AuthFlow],
   )
 
   type ScopeModel = (
@@ -430,6 +431,12 @@ object CentralMockData:
       ),
       otpLength = 6,
       otpResendAfter = 60,
+      passkeySettings = PasskeySettings(
+        rpId = "localhost",
+        rpName = "Versola Dev",
+        origins = List("http://localhost:3000", "http://localhost:9003"),
+        userVerification = "preferred",
+      ),
     ),
   )
 
@@ -440,12 +447,23 @@ object CentralMockData:
       clientName = "Web Application",
       redirectUris = Set(RedirectUri("https://app.example.com/callback"), RedirectUri("https://app.example.com/silent-renew"), RedirectUri("http://localhost:3000")),
       scope = Set(ScopeToken("openid"), ScopeToken("profile"), ScopeToken("email"), ScopeToken("offline_access")),
-      audience = List(ClientId("api.example.com")),
+      audience = List(ClientId("api-gateway")),
       permissions = Set(Permission("clients:read"), Permission("scopes:read")),
       accessTokenTtl = 3600,
       hasPreviousSecret = false,
       theme = "default",
       otpTemplateId = defaultOtpTemplateId,
+      authFlow = Some(AuthFlow(
+        primary = PrimaryAuthFlow(
+          credentials = List(PrimaryCredential.phone),
+          inlinePassword = false,
+          factors = List(
+            AuthFactor(`type` = AuthFactorType.otp, required = true),
+            AuthFactor(`type` = AuthFactorType.passkeyEnroll, required = false),
+          ),
+        ),
+        passkey = Some(PasskeyAuthFlow(factors = List.empty)),
+      )),
     ),
     (
       tenantId = defaultTenant,
@@ -459,6 +477,7 @@ object CentralMockData:
       hasPreviousSecret = true,
       theme = "default",
       otpTemplateId = defaultOtpTemplateId,
+      authFlow = Some(AuthFlow.default),
     ),
     (
       tenantId = defaultTenant,
@@ -466,7 +485,7 @@ object CentralMockData:
       clientName = "Admin Dashboard",
       redirectUris = Set(RedirectUri("https://admin.example.com/auth/callback"), RedirectUri("http://localhost:3000")),
       scope = Set(ScopeToken("openid"), ScopeToken("profile"), ScopeToken("email")),
-      audience = List(ClientId("admin-api.example.com")),
+      audience = List(ClientId("api-gateway")),
       permissions = Set(
         Permission("clients:read"),
         Permission("clients:write"),
@@ -480,6 +499,7 @@ object CentralMockData:
       hasPreviousSecret = false,
       theme = "default",
       otpTemplateId = defaultOtpTemplateId,
+      authFlow = Some(AuthFlow.default),
     ),
     (
       tenantId = defaultTenant,
@@ -493,6 +513,7 @@ object CentralMockData:
       hasPreviousSecret = false,
       theme = "default",
       otpTemplateId = defaultOtpTemplateId,
+      authFlow = Some(AuthFlow.default),
     ),
     (
       tenantId = defaultTenant,
@@ -500,12 +521,13 @@ object CentralMockData:
       clientName = "iOS Application",
       redirectUris = Set(RedirectUri("com.example.ios://callback"), RedirectUri("http://localhost:3000")),
       scope = Set(ScopeToken("openid"), ScopeToken("profile"), ScopeToken("offline_access")),
-      audience = List(ClientId("mobile-api.example.com")),
+      audience = List(ClientId("api-gateway")),
       permissions = Set(Permission("users:read")),
       accessTokenTtl = 7200,
       hasPreviousSecret = false,
       theme = "default",
       otpTemplateId = defaultOtpTemplateId,
+      authFlow = Some(AuthFlow.default),
     ),
     (
       tenantId = defaultTenant,
@@ -513,12 +535,13 @@ object CentralMockData:
       clientName = "Android Application",
       redirectUris = Set(RedirectUri("com.example.android://callback"), RedirectUri("http://localhost:3000")),
       scope = Set(ScopeToken("openid"), ScopeToken("profile"), ScopeToken("offline_access")),
-      audience = List(ClientId("mobile-api.example.com")),
+      audience = List(ClientId("api-gateway")),
       permissions = Set(Permission("users:read")),
       accessTokenTtl = 7200,
       hasPreviousSecret = false,
       theme = "default",
       otpTemplateId = defaultOtpTemplateId,
+      authFlow = Some(AuthFlow.default),
     ),
     (
       tenantId = defaultTenant,
@@ -526,12 +549,13 @@ object CentralMockData:
       clientName = "API Gateway",
       redirectUris = Set(RedirectUri("https://gateway.example.com/callback"), RedirectUri("http://localhost:3000")),
       scope = Set(ScopeToken("openid")),
-      audience = List(ClientId("internal-services")),
+      audience = List(ClientId("monitoring-service"), ClientId("data-pipeline")),
       permissions = Set(Permission("clients:read")),
       accessTokenTtl = 300,
       hasPreviousSecret = true,
       theme = "default",
       otpTemplateId = defaultOtpTemplateId,
+      authFlow = Some(AuthFlow.default),
     ),
     (
       tenantId = defaultTenant,
@@ -545,6 +569,7 @@ object CentralMockData:
       hasPreviousSecret = false,
       theme = "default",
       otpTemplateId = defaultOtpTemplateId,
+      authFlow = Some(AuthFlow.default),
     ),
     (
       tenantId = defaultTenant,
@@ -558,6 +583,7 @@ object CentralMockData:
       hasPreviousSecret = false,
       theme = "default",
       otpTemplateId = defaultOtpTemplateId,
+      authFlow = Some(AuthFlow.default),
     ),
     (
       tenantId = defaultTenant,
@@ -565,12 +591,13 @@ object CentralMockData:
       clientName = "CLI Tool",
       redirectUris = Set(RedirectUri("http://localhost:8080/callback"), RedirectUri("http://localhost:3000")),
       scope = Set(ScopeToken("openid"), ScopeToken("profile")),
-      audience = List(ClientId("api.example.com")),
+      audience = List(ClientId("api-gateway")),
       permissions = Set(Permission("users:read"), Permission("clients:read")),
       accessTokenTtl = 1800,
       hasPreviousSecret = true,
       theme = "default",
       otpTemplateId = defaultOtpTemplateId,
+      authFlow = Some(AuthFlow.default),
     ),
     (
       tenantId = defaultTenant,
@@ -584,6 +611,7 @@ object CentralMockData:
       hasPreviousSecret = false,
       theme = "default",
       otpTemplateId = defaultOtpTemplateId,
+      authFlow = Some(AuthFlow.default),
     ),
     (
       tenantId = defaultTenant,
@@ -591,12 +619,13 @@ object CentralMockData:
       clientName = "Data Pipeline Service",
       redirectUris = Set(RedirectUri("https://pipeline.example.com/callback"), RedirectUri("http://localhost:3000")),
       scope = Set(ScopeToken("openid")),
-      audience = List(ClientId("data-warehouse")),
+      audience = List(ClientId("monitoring-service")),
       permissions = Set(Permission("users:read")),
       accessTokenTtl = 600,
       hasPreviousSecret = true,
       theme = "default",
       otpTemplateId = defaultOtpTemplateId,
+      authFlow = Some(AuthFlow.default),
     ),
   )
 

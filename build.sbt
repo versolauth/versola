@@ -128,11 +128,18 @@ lazy val sbtForkSettings = Seq(
 lazy val commonSettings =
   Seq(
     scalaVersion := "3.8.1",
-    // Pin Jackson to a known-good version; transitive deps may request 2.22.0 which doesn't exist
+    // Keep all Jackson modules on one consistent version. Transitive deps drag the
+    // datatype/dataformat modules (jsr310, jdk8, cbor) to 2.22.0, so core/databind/
+    // annotations must match — otherwise cross-module NoSuchMethod/NoSuchField errors
+    // occur at runtime (e.g. StreamReadConstraints.validateDocumentLength added in 2.16,
+    // CLEAR_CURRENT_TOKEN_ON_CLOSE added in 2.20).
     dependencyOverrides ++= Seq(
-      "com.fasterxml.jackson.core" % "jackson-core"        % "2.18.4",
-      "com.fasterxml.jackson.core" % "jackson-databind"    % "2.18.4",
-      "com.fasterxml.jackson.core" % "jackson-annotations" % "2.18.4",
+      "com.fasterxml.jackson.core"       % "jackson-core"             % "2.22.0",
+      "com.fasterxml.jackson.core"       % "jackson-databind"         % "2.22.0",
+      "com.fasterxml.jackson.core"       % "jackson-annotations"      % "2.22",
+      "com.fasterxml.jackson.datatype"   % "jackson-datatype-jsr310"  % "2.22.0",
+      "com.fasterxml.jackson.datatype"   % "jackson-datatype-jdk8"    % "2.22.0",
+      "com.fasterxml.jackson.dataformat" % "jackson-dataformat-cbor"  % "2.22.0",
     ),
     scalacOptions ++= Seq(
       "-deprecation",

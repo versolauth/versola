@@ -1,5 +1,6 @@
 package versola.oauth.conversation
 
+import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{AuthFactor, AuthFactorType}
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
 import versola.util.{Email, Phone, SecureRandom}
@@ -10,17 +11,39 @@ trait ConversationRouter:
 
   def submit(authId: AuthId, submission: Submission, uiLocale: Option[String]): Task[ConversationResult.Render]
 
+  /** Begin a discoverable-credentials assertion and return the JSON public-key options.
+    * Called by GET /challenge/passkey/options; does NOT go through the submit/render cycle.
+    */
+  def startPasskeyOptions(authId: AuthId): Task[Option[String]]
+
 object ConversationRouter:
-  def live = ZLayer.fromFunction(Impl(_, _, _))
+  def live = ZLayer.fromFunction(Impl(_, _, _, _))
 
   class Impl(
       conversationRepository: ConversationRepository,
       conversationService: ConversationService,
+      configService: OAuthConfigurationService,
       secureRandom: SecureRandom,
   ) extends ConversationRouter:
 
     override def getConversation(authId: AuthId): Task[Option[ConversationRecord]] =
       conversationService.find(authId)
+
+    override def startPasskeyOptions(authId: AuthId): Task[Option[String]] =
+      conversationService.find(authId).flatMap:
+        case None => ZIO.none
+        case Some(record) =>
+          record.step match
+            case cred: ConversationStep.Credential if record.authFlow.passkey.isDefined =>
+              configService.getPasskeySettings(record.clientId).flatMap:
+                case None =>
+                  ZIO.fail(new Exception("Passkeys not configured for this tenant"))
+                case Some(settings) =>
+                  conversationService.startPasskeyAssertion(authId, record, cred, settings).map(Some(_))
+            case _: ConversationStep.Credential =>
+              ZIO.none
+            case _ =>
+              ZIO.fail(new Exception("startPasskeyAssertion called outside Credential step"))
 
     override def submit(
         authId: AuthId,
@@ -56,6 +79,23 @@ object ConversationRouter:
               case other: ConversationResult.Render =>
                 ZIO.succeed(other)
 
+          case Some((submitted: PasskeyAssertionSubmission, conversation)) =>
+            conversationService.finishPasskeyAssertion(authId, conversation, submitted.response)
+
+          case Some((submitted: PasskeyEnrollSubmission, conversation)) =>
+            conversation.step match
+              case enroll: ConversationStep.PasskeyEnroll =>
+                conversationService.finishPasskeyEnroll(authId, conversation, enroll, submitted.response, submitted.name)
+              case _ =>
+                ZIO.succeed(ConversationResult.NotFound)
+
+          case Some((_: PasskeySkipSubmission, conversation)) =>
+            conversation.step match
+              case _: ConversationStep.PasskeyEnroll =>
+                conversationService.skipPasskey(authId, conversation)
+              case _ =>
+                ZIO.succeed(ConversationResult.NotFound)
+
           case _ =>
             ZIO.succeed(ConversationResult.NotFound)
 
@@ -76,8 +116,13 @@ object ConversationRouter:
       conversation.authFlow.primary.factors.headOption match
         case Some(AuthFactor(AuthFactorType.otp, _)) =>
           conversationService.prepareInitialOtp(authId, conversation, credential, factorIndex = 0)
+
         case Some(AuthFactor(AuthFactorType.password, _)) =>
           conversationService.prepareInitialPassword(authId, conversation, credential, factorIndex = 0)
+
+        case Some(AuthFactor(AuthFactorType.passkeyEnroll, _)) =>
+          ZIO.succeed(ConversationResult.IllegalState)
+
         case None =>
           ZIO.succeed(ConversationResult.IllegalState)
 
@@ -92,7 +137,12 @@ object ConversationRouter:
           conversation.credential match
             case Some(cred) => conversationService.prepareInitialOtp(authId, conversation, cred, nextFactorIndex)
             case None       => ZIO.succeed(ConversationResult.IllegalState)
+
         case Some(AuthFactor(AuthFactorType.password, _)) =>
           conversationService.preparePasswordStep(authId, conversation, nextFactorIndex)
+
+        case Some(AuthFactor(AuthFactorType.passkeyEnroll, _)) =>
+          conversationService.offerPasskeyEnroll(authId, conversation)
+
         case None =>
           conversationService.finish(authId, conversation)

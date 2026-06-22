@@ -1,4 +1,4 @@
-import type { User, UserRoleAssignment, UserSearchField, UserSession } from '../types';
+import type { PasskeyInfo, User, UserRoleAssignment, UserSearchField } from '../types';
 import { parseUserAgent } from './ua-parser';
 
 type UserSearchRecordDto = {
@@ -179,6 +179,50 @@ export async function invalidateUserSession(userId: string): Promise<void> {
     throw new Error(body.trim() || `Failed to invalidate session (${response.status})`);
   }
 }
+export async function listPasskeys(userId: string): Promise<PasskeyInfo[]> {
+  const url = new URL('/users/passkeys', window.location.origin);
+  url.searchParams.set('id', userId);
+
+  const response = await fetch(url.toString(), { headers: { Accept: 'application/json' } });
+  if (response.status === 204) return [];
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(body.trim() || `Failed to load passkeys (${response.status})`);
+  }
+
+  const data = (await response.json()) as { passkeys: PasskeyInfo[] };
+  return data.passkeys ?? [];
+}
+
+export async function renamePasskey(userId: string, credentialId: string, name: string | null): Promise<void> {
+  const response = await fetch('/users/passkeys', {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify({ userId, credentialId, name }),
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(text.trim() || `Rename passkey failed (${response.status})`);
+  }
+}
+
+export async function deletePasskey(userId: string, credentialId: string): Promise<void> {
+  const url = new URL('/users/passkeys', window.location.origin);
+  url.searchParams.set('id', userId);
+  url.searchParams.set('credentialId', credentialId);
+
+  const response = await fetch(url.toString(), {
+    method: 'DELETE',
+    headers: { Accept: 'application/json' },
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(text.trim() || `Delete passkey failed (${response.status})`);
+  }
+}
+
 export async function resetUserLimits(
   userId: string,
   tenantId: string,

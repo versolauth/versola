@@ -4,9 +4,10 @@ import versola.central.CentralConfig
 import versola.central.configuration.roles.RoleId
 import versola.central.configuration.tenants.TenantId
 import versola.util.{Email, Patch, Phone}
-import zio.http.{Body, Client, Header, MediaType, Method, Request, Status, URL}
+import zio.http.{Body, Client, Header, MediaType, Method, Request, Response, Status, URL}
 import zio.json.ast.Json
-import zio.json.{DecoderOps, EncoderOps, JsonCodec}
+import zio.json.{DecoderOps, EncoderOps, JsonCodec, JsonDecoder}
+import zio.schema.codec.JsonCodec.zioJsonBinaryCodec
 import zio.{Scope, Task, ZIO, ZLayer}
 
 import java.util.UUID
@@ -42,6 +43,12 @@ trait AuthClient:
       email: Option[Email],
       phone: Option[Phone],
   ): Task[Unit]
+
+  def listPasskeys(userId: UserId): Task[List[PasskeyInfo]]
+
+  def renamePasskey(userId: UserId, credentialId: String, name: Option[String]): Task[Unit]
+
+  def deletePasskey(userId: UserId, credentialId: String): Task[Unit]
 
 object AuthClient:
   val live: ZLayer[Scope & Client & CentralConfig, Throwable, AuthClient] =
@@ -83,6 +90,12 @@ object AuthClient:
       phone: Option[Phone],
   ) derives JsonCodec
 
+  private case class RenamePasskeyPayload(
+      userId: UserId,
+      credentialId: String,
+      name: Option[String],
+  ) derives JsonCodec
+
   class Impl(
       httpClient: Client,
       config: CentralConfig,
@@ -93,6 +106,7 @@ object AuthClient:
     private val claimsUrl: URL = usersUrl / "claims"
     private val sessionsUrl: URL = usersUrl / "sessions"
     private val limitsResetUrl: URL = usersUrl / "limits" / "reset"
+    private val passkeysUrl: URL = usersUrl / "passkeys"
 
     override def upsertUser(
         id: UserId,
@@ -101,7 +115,13 @@ object AuthClient:
         phone: Option[Phone],
         login: Option[Login],
     ): Task[Unit] =
-      send(mutating(Method.PUT, usersUrl, UpsertUserPayload(id, version, email, phone, login).toJson))
+      send(
+        Request(
+          method = Method.PUT,
+          url = usersUrl,
+          body = Body.from(UpsertUserPayload(id, version, email, phone, login)),
+        ),
+      )
 
     override def updateUserRoles(
         userId: UserId,
@@ -109,63 +129,37 @@ object AuthClient:
         add: Set[RoleId],
         remove: Set[RoleId],
     ): Task[Unit] =
-      send(mutating(Method.PATCH, rolesUrl, UpdateUserRolesPayload(userId, tenantId, add, remove).toJson))
+      send(
+        Request(
+          method = Method.PATCH,
+          url = rolesUrl,
+          body = Body.from(UpdateUserRolesPayload(userId, tenantId, add, remove)),
+        ),
+      )
 
     override def getUserClaims(id: UserId): Task[Option[Json.Obj]] =
-      for
-        token <- tokenService.getToken
-        request = Request.get(claimsUrl.addQueryParam("id", id.toString))
-          .addHeader(Header.Authorization.Bearer(token))
-        result <- withConnectionRetry(ZIO.scoped:
-          httpClient.request(request).flatMap: response =>
-            response.status match
-              case Status.NoContent => ZIO.none
-              case s if s.isSuccess =>
-                response.body.asString.flatMap: body =>
-                  ZIO.fromEither(body.fromJson[UserClaimsResponse])
-                    .mapError(msg => new RuntimeException(s"Auth claims decode failed: $msg"))
-                    .map(r => Some(r.claims))
-              case s =>
-                response.body.asString.flatMap: body =>
-                  ZIO.fail(new RuntimeException(s"Auth call failed: ${s.code} $body")))
-      yield result
+      sendReceiveOptional[UserClaimsResponse](
+        Request.get(claimsUrl.addQueryParam("id", id.toString)),
+      ).map(_.map(_.claims))
 
     override def patchUserClaims(id: UserId, patch: Json.Obj): Task[Unit] =
-      send(mutating(Method.PATCH, claimsUrl, PatchUserClaimsPayload(id, patch).toJson))
+      send(
+        Request(
+          method = Method.PATCH,
+          url = claimsUrl,
+          body = Body.from(PatchUserClaimsPayload(id, patch)),
+        ),
+      )
 
     override def getUserRoles(id: UserId, tenantId: TenantId): Task[List[RoleId]] =
-      for
-        token <- tokenService.getToken
-        request = Request.get(rolesUrl.addQueryParam("id", id.toString).addQueryParam("tenantId", tenantId))
-          .addHeader(Header.Authorization.Bearer(token))
-        result <- withConnectionRetry(ZIO.scoped:
-          httpClient.request(request).flatMap: response =>
-            if response.status.isSuccess then
-              response.body.asString.flatMap: body =>
-                ZIO.fromEither(body.fromJson[UserRolesResponse])
-                  .mapError(msg => new RuntimeException(s"Auth roles decode failed: $msg"))
-                  .map(_.roles)
-            else
-              response.body.asString.flatMap: body =>
-                ZIO.fail(new RuntimeException(s"Auth call failed: ${response.status.code} $body")))
-      yield result
+      sendReceive[UserRolesResponse](
+        Request.get(rolesUrl.addQueryParam("id", id.toString).addQueryParam("tenantId", tenantId)),
+      ).map(_.roles)
 
     override def getUserSessions(id: UserId): Task[List[SessionDto]] =
-      for
-        token <- tokenService.getToken
-        request = Request.get(sessionsUrl.addQueryParam("id", id.toString))
-          .addHeader(Header.Authorization.Bearer(token))
-        result <- withConnectionRetry(ZIO.scoped:
-          httpClient.request(request).flatMap: response =>
-            if response.status.isSuccess then
-              response.body.asString.flatMap: body =>
-                ZIO.fromEither(body.fromJson[SessionListResponse])
-                  .mapError(msg => new RuntimeException(s"Auth sessions decode failed: $msg"))
-                  .map(_.sessions)
-            else
-              response.body.asString.flatMap: body =>
-                ZIO.fail(new RuntimeException(s"Auth call failed: ${response.status.code} $body")))
-      yield result
+      sendReceive[SessionListResponse](
+        Request.get(sessionsUrl.addQueryParam("id", id.toString)),
+      ).map(_.sessions)
 
     override def invalidateSession(userId: UserId): Task[Unit] =
       send(
@@ -181,7 +175,79 @@ object AuthClient:
         email: Option[Email],
         phone: Option[Phone],
     ): Task[Unit] =
-      send(mutating(Method.POST, limitsResetUrl, ResetUserLimitsPayload(userId, tenantId, email, phone).toJson))
+      send(
+        Request(
+          method = Method.POST,
+          url = limitsResetUrl,
+          body = Body.from(ResetUserLimitsPayload(userId, tenantId, email, phone)),
+        ),
+      )
+
+    override def listPasskeys(userId: UserId): Task[List[PasskeyInfo]] =
+      sendReceive[ListPasskeysResponse](
+        Request.get(passkeysUrl.addQueryParam("id", userId.toString)),
+      ).map(_.passkeys)
+
+    override def renamePasskey(userId: UserId, credentialId: String, name: Option[String]): Task[Unit] =
+      send(
+        Request(
+          method = Method.PATCH,
+          url = passkeysUrl,
+          body = Body.from(RenamePasskeyPayload(userId, credentialId, name)),
+        ),
+      )
+
+    override def deletePasskey(userId: UserId, credentialId: String): Task[Unit] =
+      send(
+        Request(
+          method = Method.DELETE,
+          url = passkeysUrl
+            .addQueryParam("id", userId.toString)
+            .addQueryParam("credentialId", credentialId),
+        ),
+      )
+
+    private def execute[A](request: Request)(handle: Response => Task[A]): Task[A] =
+      for
+        token <- tokenService.getToken
+        authorized = request
+          .addHeader(Header.ContentType(MediaType.application.json))
+          .addHeader(Header.Authorization.Bearer(token))
+        result <- withConnectionRetry(ZIO.scoped:
+          httpClient.request(authorized).flatMap(handle))
+      yield result
+
+    private def send(request: Request): Task[Unit] =
+      execute(request): response =>
+        if response.status.isSuccess then ZIO.unit
+        else failResponse(response)
+
+    private def sendReceive[A: JsonDecoder](request: Request): Task[A] =
+      execute(request): response =>
+        if response.status.isSuccess then
+          response.body.asString.flatMap: body =>
+            ZIO.fromEither(body.fromJson[A])
+              .mapError(msg => new RuntimeException(s"Auth response decode failed: $msg"))
+        else failResponse(response)
+
+    private def sendReceiveOptional[A: JsonDecoder](request: Request): Task[Option[A]] =
+      execute(request): response =>
+        response.status match
+          case Status.NoContent => ZIO.none
+          case s if s.isSuccess =>
+            response.body.asString.flatMap: body =>
+              ZIO.fromEither(body.fromJson[A])
+                .mapBoth(
+                  msg => new RuntimeException(s"Auth response decode failed: $msg"),
+                  Some(_),
+                )
+          case _ =>
+            failResponse(response)
+
+    private def failResponse(response: Response): Task[Nothing] =
+      response.body.asString.flatMap: body =>
+        ZIO.logError(s"Auth call failed: ${response.status.code} $body") *>
+          ZIO.fail(new RuntimeException(s"Auth call failed: ${response.status.code} $body"))
 
     /** Retries once on transient connection failures (stale pooled channel after auth restart). */
     private def withConnectionRetry[A](effect: Task[A]): Task[A] =
@@ -189,25 +255,3 @@ object AuthClient:
         case _: java.net.ConnectException => effect
         case _: java.io.IOException => effect
       }
-
-    private def jsonBody(json: String): Body =
-      Body.fromString(json)
-
-    private def mutating(method: Method, url: URL, json: String): Request =
-      Request(method = method, url = url, body = jsonBody(json))
-
-    private def send(request: Request): Task[Unit] =
-      for
-        token <- tokenService.getToken
-        authorized = request
-          .addHeader(Header.ContentType(MediaType.application.json))
-          .addHeader(Header.Authorization.Bearer(token))
-        _ <- ZIO.logDebug(s"Sending ${authorized.method} ${authorized.url}")
-        _ <- ZIO.scoped:
-          httpClient.request(authorized).flatMap: response =>
-            if response.status.isSuccess then ZIO.unit
-            else
-              response.body.asString.flatMap: body =>
-                ZIO.logError(s"Auth call failed: ${response.status.code} $body") *>
-                  ZIO.fail(new RuntimeException(s"Auth call failed: ${response.status.code} $body"))
-      yield ()

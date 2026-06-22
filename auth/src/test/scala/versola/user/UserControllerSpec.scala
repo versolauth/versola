@@ -1,6 +1,9 @@
 package versola.user
 
 import versola.auth.TestEnvConfig
+import versola.auth.model.{AuthenticatorTransport, CredentialDeviceType, CredentialId, PasskeyRecord, TenantId}
+import versola.oauth.challenge.passkey.PasskeyRepository
+import versola.oauth.conversation.limit.{ChallengeThrottleRecord, ChallengeThrottleRepository, ChallengeType}
 import versola.auth.model.TenantId
 import versola.oauth.client.model.TenantId as ThrottleTenantId
 import versola.oauth.conversation.limit.{ChallengeThrottleRecord, ChallengeThrottleRepository, ChallengeType}
@@ -11,8 +14,11 @@ import versola.user.model.*
 import versola.util.http.{NoopTracing, Observability}
 import versola.util.MAC
 import versola.util.{JWT, Patch}
+import versola.util.{Base64, JWT, Patch}
+import versola.util.http.{NoopTracing, Observability}
 import zio.*
 import zio.http.*
+import zio.json.*
 import zio.json.ast.Json
 import zio.test.*
 
@@ -66,15 +72,61 @@ object UserControllerSpec extends ZIOSpecDefault:
       signature = JWT.Signature.Symmetric(key),
     )
 
+  private val passkeyUserId = UserId(UUID.fromString("00000000-0000-0000-0000-000000000001"))
+  private val credentialId  = CredentialId(Array.fill(32)(7.toByte))
+
+  private val passkeyRecord = PasskeyRecord(
+    id = credentialId,
+    userId = passkeyUserId,
+    publicKey = Array.fill(16)(1.toByte),
+    signatureCounter = 0L,
+    deviceType = CredentialDeviceType.MultiDevice,
+    backedUp = true,
+    backupEligible = true,
+    transports = List(AuthenticatorTransport.Internal),
+    attestationObject = None,
+    clientDataJson = None,
+    aaguid = None,
+    name = Some("My Phone"),
+    lastUsedAt = None,
+    createdAt = Instant.parse("2024-01-01T00:00:00Z"),
+    updatedAt = Instant.parse("2024-01-01T00:00:00Z"),
+  )
+
+  private def passkeyRepo(
+      listed: Vector[PasskeyRecord] = Vector.empty,
+      renamed: Ref[List[(CredentialId, UserId, Option[String])]],
+      deleted: Ref[List[(CredentialId, UserId)]],
+  ) = new PasskeyRepository:
+    override def insert(record: PasskeyRecord) = ZIO.dieMessage("Unused")
+    override def findByCredentialIdAndUser(id: CredentialId, userId: UserId) = ZIO.dieMessage("Unused")
+    override def findByCredentialId(id: CredentialId) = ZIO.dieMessage("Unused")
+    override def listByUser(userId: UserId) = ZIO.succeed(listed)
+    override def updateUsage(id: CredentialId, signatureCounter: Long, lastUsedAt: Instant) = ZIO.dieMessage("Unused")
+    override def rename(id: CredentialId, userId: UserId, name: Option[String]) = renamed.update((id, userId, name) :: _)
+    override def deleteByUser(id: CredentialId, userId: UserId) = deleted.update((id, userId) :: _)
+    override def delete(id: CredentialId) = ZIO.dieMessage("Unused")
+
+  private val noopPasskeyRepo = new PasskeyRepository:
+    override def insert(record: PasskeyRecord) = ZIO.dieMessage("Unused")
+    override def findByCredentialIdAndUser(id: CredentialId, userId: UserId) = ZIO.dieMessage("Unused")
+    override def findByCredentialId(id: CredentialId) = ZIO.dieMessage("Unused")
+    override def listByUser(userId: UserId) = ZIO.succeed(Vector.empty)
+    override def updateUsage(id: CredentialId, signatureCounter: Long, lastUsedAt: Instant) = ZIO.dieMessage("Unused")
+    override def rename(id: CredentialId, userId: UserId, name: Option[String]) = ZIO.unit
+    override def deleteByUser(id: CredentialId, userId: UserId) = ZIO.unit
+    override def delete(id: CredentialId) = ZIO.dieMessage("Unused")
+
   private def routes(
       tracing: ZEnvironment[zio.telemetry.opentelemetry.tracing.Tracing],
       sessions: SessionRepository = sessionRepo,
       throttle: ChallengeThrottleRepository = noopThrottle,
+      passkey: PasskeyRepository = noopPasskeyRepo,
   ) =
     Observability.handleErrors(
       UserController.routes
         .provideEnvironment(
-          ZEnvironment(userRepo) ++ ZEnvironment(rolesRepo) ++ ZEnvironment(config) ++ ZEnvironment(sessions) ++ ZEnvironment(throttle) ++ tracing,
+          ZEnvironment(userRepo) ++ ZEnvironment(rolesRepo) ++ ZEnvironment(config) ++ ZEnvironment(sessions) ++ ZEnvironment(throttle) ++ ZEnvironment(passkey) ++ tracing,
         ),
     )
 
@@ -202,4 +254,98 @@ object UserControllerSpec extends ZIOSpecDefault:
         subjects.toSet == Set("00000000-0000-0000-0000-000000000001", "john@doe.com", "+1234567890"),
       )
     },
+    test("GET /users/passkeys without Authorization returns 401") {
+      for
+        client  <- ZIO.service[Client]
+        tracing <- NoopTracing.layer.build
+        _       <- TestClient.addRoutes(routes(tracing))
+        resp    <- client.batched(Request.get(URL.empty / "users" / "passkeys"))
+      yield assertTrue(resp.status == Status.Unauthorized)
+    },
+    test("GET /users/passkeys with valid Bearer token returns the user's passkeys") {
+      for
+        client  <- ZIO.service[Client]
+        tracing <- NoopTracing.layer.build
+        token   <- validToken(secretKey)
+        renamed <- Ref.make(List.empty[(CredentialId, UserId, Option[String])])
+        deleted <- Ref.make(List.empty[(CredentialId, UserId)])
+        repo     = passkeyRepo(Vector(passkeyRecord), renamed, deleted)
+        _       <- TestClient.addRoutes(routes(tracing, passkey = repo))
+        resp    <- client.batched(
+          Request.get((URL.empty / "users" / "passkeys").addQueryParam("id", passkeyUserId.toString))
+            .addHeader(Header.Authorization.Bearer(token))
+        )
+        body    <- resp.body.asString
+        decoded <- ZIO.fromEither(body.fromJson[ListPasskeysResponse]).mapError(new RuntimeException(_))
+      yield assertTrue(
+        resp.status == Status.Ok,
+        decoded.passkeys.size == 1,
+        decoded.passkeys.head.name.contains("My Phone"),
+        Base64.urlEncode(decoded.passkeys.head.id) == Base64.urlEncode(credentialId),
+      )
+    },
+    test("PATCH /users/passkeys without Authorization returns 401") {
+      for
+        client  <- ZIO.service[Client]
+        tracing <- NoopTracing.layer.build
+        _       <- TestClient.addRoutes(routes(tracing))
+        resp    <- client.batched(Request(method = Method.PATCH, url = URL.empty / "users" / "passkeys", body = Body.fromString("{}")))
+      yield assertTrue(resp.status == Status.Unauthorized)
+    },
+    test("PATCH /users/passkeys with valid Bearer token renames the passkey") {
+      for
+        client  <- ZIO.service[Client]
+        tracing <- NoopTracing.layer.build
+        token   <- validToken(secretKey)
+        renamed <- Ref.make(List.empty[(CredentialId, UserId, Option[String])])
+        deleted <- Ref.make(List.empty[(CredentialId, UserId)])
+        repo     = passkeyRepo(renamed = renamed, deleted = deleted)
+        _       <- TestClient.addRoutes(routes(tracing, passkey = repo))
+        payload  = RenamePasskeyPayload(passkeyUserId, credentialId, Some("New Name")).toJson
+        resp    <- client.batched(
+          Request(method = Method.PATCH, url = URL.empty / "users" / "passkeys", body = Body.fromString(payload))
+            .addHeader(Header.Authorization.Bearer(token))
+            .addHeader(Header.ContentType(MediaType.application.json))
+        )
+        calls   <- renamed.get
+      yield assertTrue(
+        resp.status == Status.NoContent,
+        calls.size == 1,
+        calls.head._2 == passkeyUserId,
+        calls.head._3.contains("New Name"),
+        Base64.urlEncode(calls.head._1) == Base64.urlEncode(credentialId),
+      )
+    },
+    test("DELETE /users/passkeys without Authorization returns 401") {
+      for
+        client  <- ZIO.service[Client]
+        tracing <- NoopTracing.layer.build
+        _       <- TestClient.addRoutes(routes(tracing))
+        resp    <- client.batched(Request(method = Method.DELETE, url = URL.empty / "users" / "passkeys"))
+      yield assertTrue(resp.status == Status.Unauthorized)
+    },
+    test("DELETE /users/passkeys with valid Bearer token deletes the passkey") {
+      for
+        client  <- ZIO.service[Client]
+        tracing <- NoopTracing.layer.build
+        token   <- validToken(secretKey)
+        renamed <- Ref.make(List.empty[(CredentialId, UserId, Option[String])])
+        deleted <- Ref.make(List.empty[(CredentialId, UserId)])
+        repo     = passkeyRepo(renamed = renamed, deleted = deleted)
+        _       <- TestClient.addRoutes(routes(tracing, passkey = repo))
+        url      = (URL.empty / "users" / "passkeys")
+          .addQueryParam("id", passkeyUserId.toString)
+          .addQueryParam("credentialId", Base64.urlEncode(credentialId))
+        resp    <- client.batched(
+          Request(method = Method.DELETE, url = url).addHeader(Header.Authorization.Bearer(token))
+        )
+        calls   <- deleted.get
+      yield assertTrue(
+        resp.status == Status.NoContent,
+        calls.size == 1,
+        calls.head._2 == passkeyUserId,
+        Base64.urlEncode(calls.head._1) == Base64.urlEncode(credentialId),
+      )
+    },
   ).provideSomeShared[Scope](TestClient.layer) @@ TestAspect.silentLogging
+

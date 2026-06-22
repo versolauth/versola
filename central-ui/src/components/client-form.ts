@@ -1005,7 +1005,8 @@ export class VersolaClientForm extends LitElement {
       return 'Select at least one primary credential';
     }
 
-    if (flow.primaryCredentials.length > 0 && !flow.inlinePassword && flow.factors.length === 0) {
+    const realFactors = flow.factors.filter(f => f.type !== 'passkeyEnroll');
+    if (flow.primaryCredentials.length > 0 && !flow.inlinePassword && realFactors.length === 0) {
       return 'A factor is required when inline password is off';
     }
 
@@ -1021,16 +1022,16 @@ export class VersolaClientForm extends LitElement {
     if (this.credentialMode === 'phone-email') return;
     const preserved = this.authFlow.primaryCredentials.filter(c => c !== 'login');
     const next = preserved.length > 0 ? preserved : ['email' as PrimaryCredential];
-    const factors = this.authFlow.factors.length > 0
-      ? this.authFlow.factors.map(f => ({ ...f, required: true }))
+    const real = this.realFactors.length > 0
+      ? this.realFactors.map(f => ({ ...f, required: true }))
       : [{ type: 'otp' as AuthFactorType, required: true }];
-    this.setAuthFlow({ primaryCredentials: next, inlinePassword: false, factors });
+    this.setAuthFlow({ primaryCredentials: next, inlinePassword: false, factors: this.withPasskeyEnroll(real) });
   }
 
   private selectLoginPasswordMode() {
     if (this.credentialMode === 'login-password') return;
-    const otp = this.authFlow.factors.find(f => f.type === 'otp');
-    this.setAuthFlow({ primaryCredentials: ['login'], inlinePassword: true, factors: otp ? [otp] : [] });
+    const otp = this.realFactors.find(f => f.type === 'otp');
+    this.setAuthFlow({ primaryCredentials: ['login'], inlinePassword: true, factors: this.withPasskeyEnroll(otp ? [otp] : []) });
   }
 
   private togglePhoneEmailCredential(credential: 'email' | 'phone') {
@@ -1046,19 +1047,47 @@ export class VersolaClientForm extends LitElement {
     const inlinePassword = !this.authFlow.inlinePassword;
     if (inlinePassword) {
       // Inline password may only be followed by an optional/required OTP.
-      const otp = this.authFlow.factors.find(f => f.type === 'otp');
-      this.setAuthFlow({ inlinePassword, factors: otp ? [otp] : [] });
+      const otp = this.realFactors.find(f => f.type === 'otp');
+      this.setAuthFlow({ inlinePassword, factors: this.withPasskeyEnroll(otp ? [otp] : []) });
     } else {
       // Without inline password the first factor is required.
-      const factors = this.authFlow.factors.length > 0
-        ? this.authFlow.factors.map(f => ({ ...f, required: true }))
+      const real = this.realFactors.length > 0
+        ? this.realFactors.map(f => ({ ...f, required: true }))
         : [{ type: 'otp' as AuthFactorType, required: true }];
-      this.setAuthFlow({ inlinePassword, factors });
+      this.setAuthFlow({ inlinePassword, factors: this.withPasskeyEnroll(real) });
     }
   }
 
   private togglePasskey() {
-    this.setAuthFlow({ passkey: !this.authFlow.passkey });
+    const passkey = !this.authFlow.passkey;
+    // Remove passkeyEnroll from factors when passkey is disabled
+    const factors = passkey
+      ? this.authFlow.factors
+      : this.authFlow.factors.filter(f => f.type !== 'passkeyEnroll');
+    this.setAuthFlow({ passkey, factors });
+  }
+
+  private get passkeyEnrollEnabled(): boolean {
+    return this.authFlow.factors.some(f => f.type === 'passkeyEnroll');
+  }
+
+  /** Primary factors excluding the trailing passkeyEnroll marker. */
+  private get realFactors(): AuthFlow['factors'] {
+    return this.authFlow.factors.filter(f => f.type !== 'passkeyEnroll');
+  }
+
+  /** Re-append the passkeyEnroll marker after the real factors when enrollment is enabled. */
+  private withPasskeyEnroll(factors: AuthFlow['factors']): AuthFlow['factors'] {
+    return this.passkeyEnrollEnabled
+      ? [...factors, { type: 'passkeyEnroll' as AuthFactorType, required: false }]
+      : factors;
+  }
+
+  private togglePasskeyEnroll() {
+    const factors = this.passkeyEnrollEnabled
+      ? this.realFactors
+      : [...this.realFactors, { type: 'passkeyEnroll' as AuthFactorType, required: false }];
+    this.setAuthFlow({ factors });
   }
 
   private get passkeyOtpEnabled(): boolean {
@@ -1079,43 +1108,43 @@ export class VersolaClientForm extends LitElement {
   }
 
   private get inlineOtpEnabled(): boolean {
-    return this.authFlow.factors.some(f => f.type === 'otp');
+    return this.realFactors.some(f => f.type === 'otp');
   }
 
   private get inlineOtpRequired(): boolean {
-    return this.authFlow.factors.find(f => f.type === 'otp')?.required ?? false;
+    return this.realFactors.find(f => f.type === 'otp')?.required ?? false;
   }
 
   private setInlineOtpEnabled(enabled: boolean) {
-    this.setAuthFlow({ factors: enabled ? [{ type: 'otp' as AuthFactorType, required: false }] : [] });
+    this.setAuthFlow({ factors: this.withPasskeyEnroll(enabled ? [{ type: 'otp' as AuthFactorType, required: false }] : []) });
   }
 
   private toggleInlineOtpRequired() {
     if (!this.inlineOtpEnabled) return;
-    this.setAuthFlow({ factors: [{ type: 'otp' as AuthFactorType, required: !this.inlineOtpRequired }] });
+    this.setAuthFlow({ factors: this.withPasskeyEnroll([{ type: 'otp' as AuthFactorType, required: !this.inlineOtpRequired }]) });
   }
 
   private get otherFactorType(): AuthFactorType {
-    return this.authFlow.factors[0]?.type === 'otp' ? 'password' : 'otp';
+    return this.realFactors[0]?.type === 'otp' ? 'password' : 'otp';
   }
 
   private setFirstFactorType(type: AuthFactorType) {
-    const second = this.authFlow.factors[1];
+    const second = this.realFactors[1];
     const factors = [{ type, required: true }];
     if (second && second.type !== type) {
       factors.push({ type: second.type, required: true });
     }
-    this.setAuthFlow({ factors });
+    this.setAuthFlow({ factors: this.withPasskeyEnroll(factors) });
   }
 
   private get secondFactorType(): AuthFactorType | '' {
-    return this.authFlow.factors.length > 1 ? this.authFlow.factors[1].type : '';
+    return this.realFactors.length > 1 ? this.realFactors[1].type : '';
   }
 
   private setSecondFactor(type: AuthFactorType | '') {
-    const first = this.authFlow.factors[0];
+    const first = this.realFactors[0];
     if (!first) return;
-    this.setAuthFlow({ factors: type ? [first, { type, required: true }] : [first] });
+    this.setAuthFlow({ factors: this.withPasskeyEnroll(type ? [first, { type, required: true }] : [first]) });
   }
 
   render() {
@@ -1473,11 +1502,11 @@ export class VersolaClientForm extends LitElement {
                   <div class="flow-subtitle">First factor *</div>
                   <select
                     class="compact-input"
-                    .value=${this.authFlow.factors[0]?.type ?? 'otp'}
+                    .value=${this.realFactors[0]?.type ?? 'otp'}
                     @change=${(e: Event) => this.setFirstFactorType((e.target as HTMLSelectElement).value as AuthFactorType)}
                   >
-                    <option value="otp" ?selected=${(this.authFlow.factors[0]?.type ?? 'otp') === 'otp'}>otp</option>
-                    <option value="password" ?selected=${this.authFlow.factors[0]?.type === 'password'}>password</option>
+                    <option value="otp" ?selected=${(this.realFactors[0]?.type ?? 'otp') === 'otp'}>otp</option>
+                    <option value="password" ?selected=${this.realFactors[0]?.type === 'password'}>password</option>
                   </select>
                 </div>
                 <div class="flow-subsection">
@@ -1520,6 +1549,17 @@ export class VersolaClientForm extends LitElement {
                       </div>
                     </div>
                   ` : ''}
+                </div>
+                <div class="flow-subsection">
+                  <div class="flow-subtitle">Passkey enrollment</div>
+                  <label class="plain-checkbox-label">
+                    <input
+                      type="checkbox"
+                      .checked=${this.passkeyEnrollEnabled}
+                      @change=${() => this.togglePasskeyEnroll()}
+                    />
+                    Offer passkey enrollment after primary auth
+                  </label>
                 </div>
               ` : ''}
               ` : ''}

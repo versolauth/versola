@@ -17,7 +17,7 @@ case class DeleteOtpTemplateRequest(
     tenantId: TenantId,
 ) derives Schema, JsonCodec
 
-case class GetChallengeSettingsResponse(settings: ChallengeSettingsRecord) derives Schema, JsonCodec
+case class GetChallengeSettingsResponse(settings: Option[ChallengeSettingsRecord]) derives Schema, JsonCodec
 
 case class GetAllChallengeSettingsResponse(settings: Vector[ChallengeSettingsRecord]) derives Schema, JsonCodec
 
@@ -25,7 +25,8 @@ case class UpsertChallengeSettingsRequest(
     tenantId: TenantId,
     allowedPrefixes: List[String],
     passwordRegex: Option[String],
-    submissionLimits: Option[SubmissionLimits],
-    otpLength: Option[Int],
-    otpResendAfter: Option[Int],
+    submissionLimits: SubmissionLimits,
+    otpLength: Int,
+    otpResendAfter: Int,
+    passkeySettings: PasskeySettings,
 ) derives Schema, JsonCodec
