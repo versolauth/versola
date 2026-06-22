@@ -5,7 +5,7 @@ import versola.oauth.conversation.model.{AuthId, ConversationStep}
 import versola.oauth.model.{AuthorizationCode, State}
 import versola.oauth.session.model.SessionId
 import versola.user.model.UserId
-import versola.util.{Base64Url, MAC}
+import versola.util.Base64Url
 import zio.http.URL
 import zio.json.ast.Json
 
@@ -33,7 +33,7 @@ object ConversationResult:
       redirectUri: URL,
       state: Option[State],
       code: AuthorizationCode,
-      sessionId: MAC.Of[SessionId],
+      sessionId: SessionId,
       idTokenData: Option[IdTokenData],
   ) extends Render
 
