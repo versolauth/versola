@@ -1,0 +1,20 @@
+{
+  "en": {
+    "page_title": "Set up a Passkey",
+    "title": "Set up a Passkey",
+    "description": "Sign in faster next time with your face, fingerprint, or device PIN.",
+    "enroll_button": "Create a Passkey",
+    "skip_button": "Not now",
+    "enroll_failed": "Could not create a passkey. Please try again or skip for now",
+    "service_unavailable": "Service temporarily unavailable. Please try again later"
+  },
+  "ru": {
+    "page_title": "Настройка ключа доступа",
+    "title": "Настройка ключа доступа",
+    "description": "Входите быстрее в следующий раз — по лицу, отпечатку или PIN-коду устройства.",
+    "enroll_button": "Создать ключ доступа",
+    "skip_button": "Не сейчас",
+    "enroll_failed": "Не удалось создать ключ доступа. Повторите попытку или пропустите",
+    "service_unavailable": "Сервис временно недоступен. Попробуйте позже"
+  }
+}

@@ -21,6 +21,9 @@ object UserController extends Controller:
     patchRolesEndpoint,
     invalidateSessionEndpoint,
     resetUserLimitsEndpoint,
+    listPasskeysEndpoint,
+    renamePasskeyEndpoint,
+    deletePasskeyEndpoint,
   )
 
   val findUsersEndpoint =
@@ -116,5 +119,33 @@ object UserController extends Controller:
         service <- ZIO.service[UserService]
         body <- request.body.asJsonFromCodec[ResetUserLimitsRequest]
         _ <- service.resetLimits(body)
+      yield Response.status(Status.Accepted)
+    }
+
+  val listPasskeysEndpoint =
+    Method.GET / "users" / "passkeys" -> handler { (request: Request) =>
+      for
+        service <- ZIO.service[UserService]
+        id <- request.queryZIO[UserId]("id")
+        passkeys <- service.listPasskeys(id)
+      yield Response.json(ListPasskeysResponse(passkeys).toJson)
+    }
+
+  val renamePasskeyEndpoint =
+    Method.PATCH / "users" / "passkeys" -> handler { (request: Request) =>
+      for
+        service <- ZIO.service[UserService]
+        body <- request.body.asJsonFromCodec[RenamePasskeyRequest]
+        _ <- service.renamePasskey(body)
+      yield Response.status(Status.Accepted)
+    }
+
+  val deletePasskeyEndpoint =
+    Method.DELETE / "users" / "passkeys" -> handler { (request: Request) =>
+      for
+        service <- ZIO.service[UserService]
+        id <- request.queryZIO[UserId]("id")
+        credentialId <- request.queryZIO[String]("credentialId")
+        _ <- service.deletePasskey(id, credentialId)
       yield Response.status(Status.Accepted)
     }

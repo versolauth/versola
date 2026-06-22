@@ -78,17 +78,17 @@ object OtpChallengeController extends Controller:
   val upsertChallengeSettingsEndpoint =
     Method.PUT / "configuration" / "challenges" / "challenge-settings" -> handler { (request: Request) =>
       for
-        service  <- ZIO.service[ChallengeSettingsService]
-        body     <- request.body.asJson[UpsertChallengeSettingsRequest]
-        existing <- service.getSettings(body.tenantId)
+        service <- ZIO.service[ChallengeSettingsService]
+        body    <- request.body.asJson[UpsertChallengeSettingsRequest]
         _ <- service.upsertSettings(
           ChallengeSettingsRecord(
             body.tenantId,
             body.allowedPrefixes,
             body.passwordRegex,
-            body.submissionLimits.getOrElse(existing.submissionLimits),
-            body.otpLength.getOrElse(existing.otpLength),
-            body.otpResendAfter.getOrElse(existing.otpResendAfter),
+            body.submissionLimits,
+            body.otpLength,
+            body.otpResendAfter,
+            body.passkeySettings,
           ),
         )
       yield Response.status(Status.NoContent)

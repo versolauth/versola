@@ -8,6 +8,7 @@ import type {
   FormRecord,
   OtpTemplateRecord,
   ChallengeSettingsRecord,
+  PasskeySettings,
   SubmissionLimits,
   InjectRule,
   OAuthClaim,
@@ -73,13 +74,18 @@ type ServiceKeyResponseDto = { keyId: string; privateKey: string };
 type TenantsResponse = { tenants: Array<{ id: string; description: string; edgeId?: string | null }> };
 type PermissionsResponse = { permissions: Array<{ permission: string; description: LocalizedDescription; endpointIds: ResourceEndpointId[] }> };
 type ScopesResponse = { scopes: Array<{ scope: string; description: LocalizedDescription; claims: Array<{ claim: string; description: LocalizedDescription }> }> };
-type ClientsResponse = { clients: Array<{ id: string; clientName: string; redirectUris: string[]; scope: string[]; externalAudience: string[]; permissions: string[]; secretRotation: boolean; theme: string; otpTemplateId: string }> };
+type BackendAuthFactor = { type: string; required: boolean };
+type BackendAuthFlow = {
+  primary: { credentials: string[]; inlinePassword: boolean; factors: BackendAuthFactor[] };
+  passkey?: { factors: BackendAuthFactor[] } | null;
+};
+type ClientsResponse = { clients: Array<{ id: string; clientName: string; redirectUris: string[]; scope: string[]; externalAudience: string[]; permissions: string[]; secretRotation: boolean; theme: string; otpTemplateId: string; authFlow?: BackendAuthFlow | null }> };
 type RolesResponse = { roles: Array<{ id: string; description: LocalizedDescription; permissions: string[]; active: boolean }> };
 type ResourcesResponse = { resources: ResourceResponseDto[] };
 
 const apiConfig: CentralApiConfig = { baseUrl: null, authToken: null };
 const permissionStore = new Map<string, Permission>();
-const clientSupplementStore = new Map<string, { externalAudience: string[]; accessTokenTtl: number; hasPreviousSecret: boolean; authFlow?: AuthFlow | null }>();
+const clientSupplementStore = new Map<string, { externalAudience: string[]; accessTokenTtl: number; hasPreviousSecret: boolean }>();
 const roleSupplementStore = new Map<string, { active: boolean; createdAt: string; updatedAt: string }>();
 const readCache = new Map<string, { expiresAt: number; value: unknown }>();
 const inFlightReads = new Map<string, Promise<unknown>>();
@@ -90,6 +96,29 @@ const scopesStore = new Map<string, Promise<OAuthScope[]>>();
 const permissionsStore = new Map<string, Promise<Permission[]>>();
 const resourcesStore = new Map<string, Promise<Resource[]>>();
 const rolesStore = new Map<string, Promise<Role[]>>();
+
+function authFlowToBackend(flow: AuthFlow | null | undefined): BackendAuthFlow | null {
+  if (!flow) return null;
+  return {
+    primary: {
+      credentials: flow.primaryCredentials,
+      inlinePassword: flow.inlinePassword,
+      factors: flow.factors,
+    },
+    passkey: flow.passkey ? { factors: flow.passkeyFactors ?? [] } : null,
+  };
+}
+
+function authFlowFromBackend(flow: BackendAuthFlow | null | undefined): AuthFlow | null {
+  if (!flow) return null;
+  return {
+    primaryCredentials: flow.primary.credentials as AuthFlow['primaryCredentials'],
+    inlinePassword: flow.primary.inlinePassword,
+    factors: flow.primary.factors as AuthFlow['factors'],
+    passkey: flow.passkey != null,
+    passkeyFactors: (flow.passkey?.factors ?? []) as AuthFlow['passkeyFactors'],
+  };
+}
 
 function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
@@ -261,6 +290,10 @@ function unique<T>(values: T[]): T[] {
   return [...new Set(values)];
 }
 
+function sortById<T extends { id: string | number }>(items: T[]): T[] {
+  return [...items].sort((a, b) => String(a.id).localeCompare(String(b.id), undefined, { numeric: true }));
+}
+
 function patchDescription(existing: LocalizedDescription, next: LocalizedDescription) {
   const add: LocalizedDescription = {};
 
@@ -385,12 +418,12 @@ function mapResource(resource: ResourceResponseDto): Resource {
 
 export async function fetchTenants(): Promise<Tenant[]> {
   const response = await request<TenantsResponse>('/configuration/tenants');
-  return response.tenants.map(tenant => ({
+  return sortById(response.tenants.map(tenant => ({
     id: tenant.id,
     name: tenant.description || tenant.id,
     description: tenant.description,
     edgeId: tenant.edgeId ?? null,
-  }));
+  })));
 }
 
 export async function createTenant(id: string, description: string, edgeId: string | null = null): Promise<void> {
@@ -448,8 +481,6 @@ export async function fetchClients(tenantId: string, offset = 0, limit = DEFAULT
   return toPagedResult(
     response.clients.map(client => {
       const supplement = clientSupplementStore.get(entityKey(tenantId, client.id));
-      // A supplement that predates the authFlow field gets the default; an explicit null means "no flow".
-      const baseFlow = supplement?.authFlow !== undefined ? supplement.authFlow : createDefaultAuthFlow();
       return {
         id: client.id,
         clientName: client.clientName,
@@ -461,7 +492,7 @@ export async function fetchClients(tenantId: string, offset = 0, limit = DEFAULT
         permissions: [...client.permissions],
         theme: client.theme ?? 'default',
         otpTemplateId: client.otpTemplateId ?? null,
-        authFlow: baseFlow ? { ...baseFlow, passkeyFactors: baseFlow.passkeyFactors ?? [] } : null,
+        authFlow: authFlowFromBackend(client.authFlow) ?? createDefaultAuthFlow(),
         tenantId,
       };
     }),
@@ -488,11 +519,11 @@ export async function fetchRoles(tenantId: string, offset = 0, limit = DEFAULT_P
 }
 
 export async function fetchAllPermissions(tenantId: string): Promise<Permission[]> {
-  return fetchAllPages((offset, limit) => fetchPermissions(tenantId, offset, limit));
+  return sortById(await fetchAllPages((offset, limit) => fetchPermissions(tenantId, offset, limit)));
 }
 
 export async function fetchAllScopes(tenantId: string): Promise<OAuthScope[]> {
-  return fetchAllPages((offset, limit) => fetchScopes(tenantId, offset, limit));
+  return sortById(await fetchAllPages((offset, limit) => fetchScopes(tenantId, offset, limit)));
 }
 
 export async function fetchClientPresets(clientId: string): Promise<AuthorizationPreset[]> {
@@ -514,16 +545,16 @@ export async function fetchClientPresets(clientId: string): Promise<Authorizatio
 }
 
 export async function fetchAllClients(tenantId: string): Promise<OAuthClient[]> {
-  return fetchAllPages((offset, limit) => fetchClients(tenantId, offset, limit));
+  return sortById(await fetchAllPages((offset, limit) => fetchClients(tenantId, offset, limit)));
 }
 
 export async function fetchAllRoles(tenantId: string): Promise<Role[]> {
-  return fetchAllPages((offset, limit) => fetchRoles(tenantId, offset, limit));
+  return sortById(await fetchAllPages((offset, limit) => fetchRoles(tenantId, offset, limit)));
 }
 
 export async function fetchResources(tenantId: string): Promise<Resource[]> {
   const response = await request<ResourcesResponse>('/configuration/resources', { query: { tenantId } });
-  return response.resources.map(mapResource);
+  return sortById(response.resources.map(mapResource));
 }
 
 export function getScopes(tenantId: string): Promise<OAuthScope[]> {
@@ -734,6 +765,7 @@ export async function createClient(tenantId: string, client: OAuthClient): Promi
       accessTokenTtl: client.accessTokenTtl,
       theme: client.theme ?? 'default',
       otpTemplateId: client.otpTemplateId ?? null,
+      authFlow: authFlowToBackend(client.authFlow),
     },
   });
 
@@ -741,7 +773,6 @@ export async function createClient(tenantId: string, client: OAuthClient): Promi
     externalAudience: [...client.externalAudience],
     accessTokenTtl: client.accessTokenTtl,
     hasPreviousSecret: client.hasPreviousSecret,
-    authFlow: client.authFlow,
   });
 
   return response.secret;
@@ -789,6 +820,7 @@ export async function updateClient(tenantId: string, existing: OAuthClient, clie
       accessTokenTtl: existing.accessTokenTtl !== client.accessTokenTtl ? client.accessTokenTtl : undefined,
       theme: existing.theme !== client.theme ? client.theme : undefined,
       otpTemplateId: existing.otpTemplateId !== client.otpTemplateId ? (client.otpTemplateId ?? null) : undefined,
+      authFlow: authFlowToBackend(client.authFlow),
     },
   });
 
@@ -796,7 +828,6 @@ export async function updateClient(tenantId: string, existing: OAuthClient, clie
     externalAudience: [...client.externalAudience],
     accessTokenTtl: client.accessTokenTtl,
     hasPreviousSecret: client.hasPreviousSecret,
-    authFlow: client.authFlow,
   });
 }
 
@@ -811,10 +842,10 @@ export async function deleteClient(tenantId: string, clientId: string): Promise<
 
 export async function fetchEdges(): Promise<Edge[]> {
   const response = await request<EdgesResponse>('/configuration/edges');
-  return response.edges.map(edge => ({
+  return sortById(response.edges.map(edge => ({
     id: edge.id,
     hasOldKey: edge.hasOldKey ?? false,
-  }));
+  })));
 }
 
 export async function registerEdge(id: string): Promise<ServiceKey> {
@@ -940,11 +971,11 @@ export async function deleteOtpTemplate(id: string, tenantId: string): Promise<v
   });
 }
 
-export async function fetchChallengeSettings(tenantId: string): Promise<ChallengeSettingsRecord> {
-  const response = await request<{ settings: ChallengeSettingsRecord }>('/configuration/challenges/challenge-settings', {
+export async function fetchChallengeSettings(tenantId: string): Promise<ChallengeSettingsRecord | null> {
+  const response = await request<{ settings: ChallengeSettingsRecord | null }>('/configuration/challenges/challenge-settings', {
     query: { tenantId },
   });
-  return response.settings;
+  return response.settings ?? null;
 }
 
 export async function upsertChallengeSettings(
@@ -953,11 +984,20 @@ export async function upsertChallengeSettings(
   submissionLimits: SubmissionLimits,
   otpLength: number,
   otpResendAfter: number,
+  passkeySettings: PasskeySettings,
   passwordRegex?: string,
 ): Promise<void> {
   await requestVoid('/configuration/challenges/challenge-settings', {
     method: 'PUT',
-    body: { tenantId, allowedPrefixes, submissionLimits, otpLength, otpResendAfter, passwordRegex: passwordRegex ?? null },
+    body: {
+      tenantId,
+      allowedPrefixes,
+      submissionLimits,
+      otpLength,
+      otpResendAfter,
+      passwordRegex: passwordRegex ?? null,
+      passkeySettings,
+    },
   });
 }
 

@@ -28,6 +28,12 @@ trait UserService:
 
   def resetLimits(request: ResetUserLimitsRequest): Task[Unit]
 
+  def listPasskeys(userId: UserId): Task[List[PasskeyInfo]]
+
+  def renamePasskey(request: RenamePasskeyRequest): Task[Unit]
+
+  def deletePasskey(userId: UserId, credentialId: String): Task[Unit]
+
 object UserService:
   val live: ZLayer[UserRepository & AuthClient & SecureRandom, Nothing, UserService] =
     ZLayer.fromFunction(Impl(_, _, _))
@@ -76,3 +82,12 @@ object UserService:
 
     override def resetLimits(request: ResetUserLimitsRequest): Task[Unit] =
       authClient.resetUserLimits(request.userId, request.tenantId, request.email, request.phone)
+
+    override def listPasskeys(userId: UserId): Task[List[PasskeyInfo]] =
+      authClient.listPasskeys(userId)
+
+    override def renamePasskey(request: RenamePasskeyRequest): Task[Unit] =
+      authClient.renamePasskey(request.userId, request.credentialId, request.name)
+
+    override def deletePasskey(userId: UserId, credentialId: String): Task[Unit] =
+      authClient.deletePasskey(userId, credentialId)

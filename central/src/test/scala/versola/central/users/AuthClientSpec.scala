@@ -71,6 +71,32 @@ object AuthClientSpec extends ZIOSpecDefault:
       yield result
     }.provide(TestClient.layer, ZLayer.succeed(TestCentralConfig.config), tokenServiceLayer, authClientLayer)
 
+  private val passkeyInfo = PasskeyInfo(
+    id = "aQ",
+    name = Some("Phone"),
+    deviceType = "MultiDevice",
+    transports = List("Internal"),
+    backedUp = true,
+    backupEligible = true,
+    lastUsedAt = None,
+    createdAt = "2024-01-01T00:00:00Z",
+  )
+
+  private val listPasskeysTest =
+    test("listPasskeys sends Authorization: Bearer header and decodes the response") {
+      val response = ListPasskeysResponse(List(passkeyInfo))
+      for
+        seen   <- Ref.make(Option.empty[Request])
+        _      <- TestClient.addRoutes(
+          Handler.fromFunctionZIO[Request](r => seen.set(Some(r)).as(Response.json(response.toJson))).toRoutes
+        )
+        client <- ZIO.service[AuthClient]
+        result <- client.listPasskeys(userId)
+        token  <- captureBearer(seen)
+        claims <- assertBearerClaims(token)
+      yield claims && assertTrue(result == response.passkeys)
+    }.provide(TestClient.layer, ZLayer.succeed(TestCentralConfig.config), tokenServiceLayer, authClientLayer)
+
   def spec = suite("AuthClient")(
     mkTest("upsertUser sends Authorization: Bearer header with valid JWT",
       _.upsertUser(userId, version, None, None, None)),
@@ -80,4 +106,9 @@ object AuthClientSpec extends ZIOSpecDefault:
       _.patchUserClaims(userId, Json.Obj())),
     mkTest("resetUserLimits sends Authorization: Bearer header with valid JWT",
       _.resetUserLimits(userId, tenantId, None, None)),
+    listPasskeysTest,
+    mkTest("renamePasskey sends Authorization: Bearer header with valid JWT",
+      _.renamePasskey(userId, "cred-1", Some("New Name"))),
+    mkTest("deletePasskey sends Authorization: Bearer header with valid JWT",
+      _.deletePasskey(userId, "cred-1")),
   ) @@ TestAspect.silentLogging

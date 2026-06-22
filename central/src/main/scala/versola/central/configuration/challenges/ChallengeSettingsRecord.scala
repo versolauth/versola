@@ -4,6 +4,13 @@ import versola.central.configuration.tenants.TenantId
 import zio.json.JsonCodec
 import zio.schema.{Schema, derived}
 
+case class PasskeySettings(
+    rpId: String,
+    rpName: String,
+    origins: List[String],
+    userVerification: String,
+) derives Schema, JsonCodec
+
 case class ChallengeSettingsRecord(
     tenantId: TenantId,
     allowedPrefixes: List[String],
@@ -11,4 +18,5 @@ case class ChallengeSettingsRecord(
     submissionLimits: SubmissionLimits,
     otpLength: Int,
     otpResendAfter: Int,
+    passkeySettings: PasskeySettings,
 ) derives Schema, JsonCodec

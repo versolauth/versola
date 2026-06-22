@@ -26,4 +26,13 @@ case class PasswordSubmission(password: Password)
 case class LoginPasswordSubmission(login: Login, password: Password)
   extends Submission derives Schema
 
+case class PasskeyAssertionSubmission(response: String)
+  extends Submission derives Schema
+
+case class PasskeyEnrollSubmission(response: String, name: Option[String])
+  extends Submission derives Schema
+
+case class PasskeySkipSubmission()
+  extends Submission derives Schema
+
 

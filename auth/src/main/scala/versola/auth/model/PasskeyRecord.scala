@@ -7,7 +7,6 @@ import java.time.Instant
 case class PasskeyRecord(
     id: CredentialId,
     userId: UserId,
-    webauthnUserId: WebAuthnUserId,
     publicKey: Array[Byte],
     signatureCounter: Long,
     deviceType: CredentialDeviceType,
@@ -16,6 +15,9 @@ case class PasskeyRecord(
     transports: List[AuthenticatorTransport],
     attestationObject: Option[Array[Byte]],
     clientDataJson: Option[Array[Byte]],
+    aaguid: Option[Array[Byte]],
+    name: Option[String],
+    lastUsedAt: Option[Instant],
     createdAt: Instant,
     updatedAt: Instant,
 )

@@ -42,6 +42,8 @@ object ConversationRenderService:
     case class Password(passwordRegex: Option[String]) extends StepView
     @jsonHint("otp")
     case class Otp(length: Int, resendAfter: Int, lockedSeconds: Option[Int]) extends StepView
+    @jsonHint("passkey-enroll")
+    case class PasskeyEnroll(publicKeyOptions: String) extends StepView
     @jsonHint("access-denied")
     case class AccessDenied(redirectUri: String) extends StepView
 
@@ -155,10 +157,11 @@ object ConversationRenderService:
         errorOverride: Option[String] = None,
     ): Task[Option[FormRenderInfo]] =
       val formId = step match
-        case _: ConversationStep.Credential => "credential"
-        case _: ConversationStep.Password => "password"
-        case _: ConversationStep.Otp => "otp"
-        case ConversationStep.AccessDenied => "access-denied"
+        case _: ConversationStep.Credential    => "credential"
+        case _: ConversationStep.Password      => "password"
+        case _: ConversationStep.Otp           => "otp"
+        case _: ConversationStep.PasskeyEnroll => "passkey-enroll"
+        case ConversationStep.AccessDenied     => "access-denied"
       for
         view <- stepView(step, clientId, redirectUri, state)
         formOpt <- configuration.getForm(formId)
@@ -188,6 +191,9 @@ object ConversationRenderService:
       case s: ConversationStep.Otp if s.timesSubmitted > 0 && !s.rateLimitExceeded => Some("otp_wrong")
       case s: ConversationStep.Password if s.rateLimitExceeded => Some("rate_limit_exceeded")
       case s: ConversationStep.Password if s.timesSubmitted > 0 => Some("password_wrong")
+      case s: ConversationStep.Credential if s.passkeyOrphaned => Some("passkey_orphaned")
+      case s: ConversationStep.Credential if s.passkeyFailed => Some("passkey_failed")
+      case s: ConversationStep.PasskeyEnroll if s.enrollFailed => Some("enroll_failed")
       case _ => None
 
     private def pageTitle(translations: Map[String, String]): String =
@@ -219,7 +225,7 @@ object ConversationRenderService:
         state: Option[State],
     ): UIO[StepView] =
       step match
-        case ConversationStep.Credential(primaryCredentials, inlinePassword, passkey) =>
+        case ConversationStep.Credential(primaryCredentials, inlinePassword, passkey, _, _, _) =>
           for
             allowedPhonePrefixes <-
               if primaryCredentials.contains(PrimaryCredential.phone) then
@@ -245,6 +251,9 @@ object ConversationRenderService:
             resendAfter = resendRemaining,
             lockedSeconds = Option.when(s.lockedSeconds > 0)(s.lockedSeconds),
           )
+
+        case s: ConversationStep.PasskeyEnroll =>
+          ZIO.succeed(StepView.PasskeyEnroll(publicKeyOptions = s.publicKeyOptions))
 
         case ConversationStep.AccessDenied =>
           val params = List("error" -> "access_denied") ++ state.map("state" -> _)

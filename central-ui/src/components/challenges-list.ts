@@ -2,7 +2,7 @@ import { LitElement, html, css, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
 import { buttonStyles, cardStyles, formStyles, iconActionStyles } from '../styles/components';
-import type { OtpTemplateRecord, Locale, SubmissionLimits, RateLimit } from '../types';
+import type { OtpTemplateRecord, Locale, SubmissionLimits, RateLimit, PasskeySettings } from '../types';
 import {
   fetchOtpTemplates,
   upsertOtpTemplate,
@@ -37,6 +37,7 @@ export class VersolaChallengesList extends LitElement {
   @state() private editError = '';
 
   @state() private phonePrefixes: string[] = [];
+  @state() private hasChallengeSettings = false;
   @state() private editingSettings = false;
   @state() private editPrefixes: Array<{ value: string }> = [];
   @state() private isSavingSettings = false;
@@ -62,6 +63,12 @@ export class VersolaChallengesList extends LitElement {
     passwordSubmit: [],
     banDurationSeconds: 0,
   };
+
+  @state() private passkeySettings: PasskeySettings | null = null;
+  @state() private editPasskeyRpId = '';
+  @state() private editPasskeyRpName = '';
+  @state() private editPasskeyOrigins: Array<{ value: string }> = [];
+  @state() private editPasskeyUserVerification = 'preferred';
 
   static styles = [
     theme,
@@ -279,6 +286,53 @@ export class VersolaChallengesList extends LitElement {
         border-radius: var(--radius-md);
         padding: var(--spacing-xs) var(--spacing-md);
       }
+      .info-table {
+        border: 1px solid var(--border-dark);
+        border-radius: var(--radius-md);
+        overflow: hidden;
+        margin-top: var(--spacing-md);
+      }
+      .prop-row {
+        display: grid;
+        grid-template-columns: 11rem 1fr;
+        gap: var(--spacing-lg);
+        align-items: start;
+        padding: 0.875rem var(--spacing-lg);
+        border-bottom: 1px solid var(--border-dark);
+        font-size: 0.875rem;
+      }
+      .prop-row:last-child {
+        border-bottom: none;
+      }
+      .prop-label {
+        color: var(--text-secondary);
+        font-size: 0.75rem;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        font-weight: 600;
+        white-space: nowrap;
+        padding-top: 0.125rem;
+      }
+      .prop-value {
+        color: var(--text-primary);
+        word-break: break-word;
+        overflow-wrap: anywhere;
+        min-width: 0;
+        line-height: 1.5;
+      }
+      .prop-value.muted {
+        color: var(--text-secondary);
+        font-style: italic;
+      }
+      .empty-state {
+        text-align: center;
+        padding: 3rem;
+        color: var(--text-secondary);
+      }
+      .empty-state-icon {
+        font-size: 3rem;
+        margin-bottom: 1rem;
+      }
     `,
   ];
 
@@ -300,11 +354,22 @@ export class VersolaChallengesList extends LitElement {
       ]);
       this.templates = templates;
       this.availableLocales = locales;
-      this.phonePrefixes = challengeSettings.allowedPrefixes;
-      this.passwordRegex = challengeSettings.passwordRegex ?? '';
-      this.submissionLimits = challengeSettings.submissionLimits;
-      this.otpLength = challengeSettings.otpLength;
-      this.otpResendAfter = challengeSettings.otpResendAfter;
+      this.hasChallengeSettings = challengeSettings !== null;
+      if (challengeSettings) {
+        this.phonePrefixes = challengeSettings.allowedPrefixes;
+        this.passwordRegex = challengeSettings.passwordRegex ?? '';
+        this.submissionLimits = challengeSettings.submissionLimits;
+        this.otpLength = challengeSettings.otpLength;
+        this.otpResendAfter = challengeSettings.otpResendAfter;
+        this.passkeySettings = challengeSettings.passkeySettings ?? null;
+      } else {
+        this.phonePrefixes = [];
+        this.passwordRegex = '';
+        this.submissionLimits = { otpRequest: [], otpSubmit: [], passwordSubmit: [], banDurationSeconds: 0 };
+        this.otpLength = 6;
+        this.otpResendAfter = 60;
+        this.passkeySettings = null;
+      }
     } catch (e) {
       this.errorMessage = e instanceof Error ? e.message : 'Failed to load data';
     } finally {
@@ -435,6 +500,10 @@ export class VersolaChallengesList extends LitElement {
     this.editSubmissionLimits = JSON.parse(JSON.stringify(this.submissionLimits));
     this.editOtpLength = this.otpLength;
     this.editOtpResendAfter = this.otpResendAfter;
+    this.editPasskeyRpId = this.passkeySettings?.rpId ?? '';
+    this.editPasskeyRpName = this.passkeySettings?.rpName ?? '';
+    this.editPasskeyOrigins = (this.passkeySettings?.origins ?? []).map(value => ({ value }));
+    this.editPasskeyUserVerification = this.passkeySettings?.userVerification ?? 'preferred';
     this.settingsError = '';
   }
 
@@ -449,6 +518,14 @@ export class VersolaChallengesList extends LitElement {
 
   private removePrefix(index: number) {
     this.editPrefixes = this.editPrefixes.filter((_, i) => i !== index);
+  }
+
+  private addPasskeyOrigin() {
+    this.editPasskeyOrigins = [...this.editPasskeyOrigins, { value: '' }];
+  }
+
+  private removePasskeyOrigin(index: number) {
+    this.editPasskeyOrigins = this.editPasskeyOrigins.filter((_, i) => i !== index);
   }
 
   private addRateLimit(type: 'otpRequest' | 'otpSubmit' | 'passwordSubmit') {
@@ -477,6 +554,24 @@ export class VersolaChallengesList extends LitElement {
         return;
       }
     }
+
+    const rpId = this.editPasskeyRpId.trim();
+    const rpName = this.editPasskeyRpName.trim();
+    const origins = this.editPasskeyOrigins.map(o => o.value.trim()).filter(o => o.length > 0);
+    if (!rpId) {
+      this.settingsError = 'Passkey Relying Party ID is required.';
+      return;
+    }
+    if (!rpName) {
+      this.settingsError = 'Passkey Relying Party name is required.';
+      return;
+    }
+    if (origins.length === 0) {
+      this.settingsError = 'At least one passkey origin is required.';
+      return;
+    }
+    const passkeySettings: PasskeySettings = { rpId, rpName, origins, userVerification: this.editPasskeyUserVerification };
+
     this.isSavingSettings = true;
     this.settingsError = '';
     try {
@@ -486,6 +581,7 @@ export class VersolaChallengesList extends LitElement {
         this.editSubmissionLimits,
         this.editOtpLength,
         this.editOtpResendAfter,
+        passkeySettings,
         regex || undefined,
       );
       this.phonePrefixes = prefixes;
@@ -493,6 +589,8 @@ export class VersolaChallengesList extends LitElement {
       this.submissionLimits = JSON.parse(JSON.stringify(this.editSubmissionLimits));
       this.otpLength = this.editOtpLength;
       this.otpResendAfter = this.editOtpResendAfter;
+      this.passkeySettings = { ...passkeySettings, origins: [...passkeySettings.origins] };
+      this.hasChallengeSettings = true;
       this.editingSettings = false;
     } catch (e) {
       this.settingsError = e instanceof Error ? e.message : 'Failed to save challenge settings';
@@ -596,16 +694,20 @@ export class VersolaChallengesList extends LitElement {
         ${this.isLoading ? html`<div class="hint">Loading…</div>`
           : this.errorMessage ? html`<div class="error-msg">${this.errorMessage}</div>`
           : this.templates.length === 0
-            ? html`<div class="card"><div class="hint">No OTP templates configured for this tenant.</div></div>`
+            ? html`
+              <div class="card">
+                <div class="empty-state">
+                  <h3>No OTP templates yet</h3>
+                  <p>Add your first OTP template to get started.</p>
+                  <button class="btn btn-primary" @click=${() => this.startAdd()} style="margin-top: 1rem;">+ Add Template</button>
+                </div>
+              </div>`
             : this.templates.map(template => this.renderTemplateCard(template))}
       </section>
     `;
   }
 
   private renderChallengeSettings() {
-    const { otpRequest, otpSubmit, passwordSubmit, banDurationSeconds } = this.submissionLimits;
-    const hasLimits = otpRequest.length > 0 || otpSubmit.length > 0 || passwordSubmit.length > 0;
-
     return html`
       <section class="settings-section">
         <div class="section-header">
@@ -613,9 +715,33 @@ export class VersolaChallengesList extends LitElement {
             <h2 class="section-title">Challenge Settings</h2>
             <div class="section-desc">Global security settings for OTP and password submissions.</div>
           </div>
-          <button class="btn btn-primary" @click=${() => this.startEditSettings()}>Edit</button>
+          ${this.hasChallengeSettings
+            ? html`<button class="btn btn-primary" @click=${() => this.startEditSettings()}>Edit</button>`
+            : nothing}
         </div>
 
+        ${this.isLoading ? html`<div class="hint">Loading…</div>`
+          : this.errorMessage ? html`<div class="error-msg">${this.errorMessage}</div>`
+          : !this.hasChallengeSettings
+            ? html`
+              <div class="card">
+                <div class="empty-state">
+                  <h3>No challenge settings yet</h3>
+                  <p>Configure OTP, password and passkey security for this tenant.</p>
+                  <button class="btn btn-primary" @click=${() => this.startEditSettings()} style="margin-top: 1rem;">+ Add Challenge Settings</button>
+                </div>
+              </div>`
+            : this.renderChallengeSettingsContent()}
+      </section>
+    `;
+  }
+
+  private renderChallengeSettingsContent() {
+    const { otpRequest, otpSubmit, passwordSubmit, banDurationSeconds } = this.submissionLimits;
+    const hasLimits = otpRequest.length > 0 || otpSubmit.length > 0 || passwordSubmit.length > 0;
+
+    return html`
+      <div>
         <div class="card" style="margin-bottom: var(--spacing-lg);">
           <label>OTP Code Length</label>
           <div class="template-text">${this.otpLength} digits</div>
@@ -640,6 +766,38 @@ export class VersolaChallengesList extends LitElement {
             : html`<div class="hint">No password regex configured. Any password is accepted.</div>`}
         </div>
 
+        <div class="card" style="margin-bottom: var(--spacing-lg);">
+          <label>Passkey (WebAuthn)</label>
+          ${this.passkeySettings
+            ? html`
+              <div class="info-table">
+                <div class="prop-row">
+                  <span class="prop-label">Relying Party ID</span>
+                  <span class="prop-value">${this.passkeySettings.rpId}</span>
+                </div>
+                <div class="prop-row">
+                  <span class="prop-label">Relying Party Name</span>
+                  <span class="prop-value">${this.passkeySettings.rpName}</span>
+                </div>
+                <div class="prop-row">
+                  <span class="prop-label">User Verification</span>
+                  <span class="prop-value">${this.passkeySettings.userVerification}</span>
+                </div>
+                <div class="prop-row">
+                  <span class="prop-label">Allowed Origins</span>
+                  ${this.passkeySettings.origins.length === 0
+                    ? html`<span class="prop-value muted">None</span>`
+                    : html`
+                      <div class="prefix-tags" style="margin-top: 0;">
+                        ${this.passkeySettings.origins.map(origin => html`<span class="prefix-tag">${origin}</span>`)}
+                      </div>
+                    `}
+                </div>
+              </div>
+            `
+            : html`<div class="hint">Passkeys are not configured for this tenant.</div>`}
+        </div>
+
         ${hasLimits || banDurationSeconds > 0 ? html`
           <div class="card">
             <div class="limits-card-header">
@@ -659,7 +817,7 @@ export class VersolaChallengesList extends LitElement {
             <div class="hint">No submission limits configured.</div>
           </div>
         `}
-      </section>
+      </div>
     `;
   }
 
@@ -718,6 +876,43 @@ export class VersolaChallengesList extends LitElement {
         <input type="text" class="form-control compact-input" .value=${this.editPasswordRegex}
           @input=${(e: Event) => { this.editPasswordRegex = (e.target as HTMLInputElement).value; }}
           placeholder="^(?=.*[A-Za-z])(?=.*\\d).{8,}$" />
+
+        <h3 style="margin-top: var(--spacing-xl); margin-bottom: var(--spacing-md);">Passkey (WebAuthn)</h3>
+
+        <label>Relying Party ID</label>
+        <div class="hint">The domain the passkeys are scoped to (e.g. example.com).</div>
+        <input type="text" class="form-control compact-input" .value=${this.editPasskeyRpId}
+          @input=${(e: Event) => { this.editPasskeyRpId = (e.target as HTMLInputElement).value; }}
+          placeholder="example.com" />
+
+        <label style="margin-top: var(--spacing-lg);">Relying Party Name</label>
+        <div class="hint">Human-readable name shown to users during passkey prompts.</div>
+        <input type="text" class="form-control compact-input" .value=${this.editPasskeyRpName}
+          @input=${(e: Event) => { this.editPasskeyRpName = (e.target as HTMLInputElement).value; }}
+          placeholder="Example Inc." />
+
+        <label style="margin-top: var(--spacing-lg);">User Verification</label>
+        <div class="hint">Whether the authenticator must verify the user (PIN, biometrics).</div>
+        <select class="form-control compact-input" .value=${this.editPasskeyUserVerification}
+          @change=${(e: Event) => { this.editPasskeyUserVerification = (e.target as HTMLSelectElement).value; }}>
+          <option value="required">required</option>
+          <option value="preferred">preferred</option>
+          <option value="discouraged">discouraged</option>
+        </select>
+
+        <label style="margin-top: var(--spacing-lg);">Allowed Origins</label>
+        <div class="hint">Full origins permitted to use these passkeys (e.g. https://example.com).</div>
+        ${this.editPasskeyOrigins.length === 0
+          ? html`<div class="hint">No origins configured.</div>`
+          : this.editPasskeyOrigins.map((entry, i) => html`
+            <div class="locale-bar">
+              <input type="text" class="form-control compact-input locale-select" .value=${entry.value}
+                @input=${(e: Event) => { entry.value = (e.target as HTMLInputElement).value; }}
+                placeholder="https://example.com" />
+              <button class="icon-action danger" @click=${() => this.removePasskeyOrigin(i)} title="Remove">✕</button>
+            </div>
+          `)}
+        <button class="btn btn-secondary" @click=${() => this.addPasskeyOrigin()}>+ Add Origin</button>
 
         <h3 style="margin-top: var(--spacing-xl); margin-bottom: var(--spacing-md);">Submission Limits</h3>
 

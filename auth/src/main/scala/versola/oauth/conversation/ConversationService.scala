@@ -2,9 +2,11 @@ package versola.oauth.conversation
 
 import versola.auth.model.{OtpCode, Password}
 import versola.oauth.authorize.model.ResponseTypeEntry
+import versola.oauth.challenge.passkey.{PasskeyRepository, WebAuthnError, WebAuthnService}
 import versola.oauth.challenge.password.PasswordService
 import versola.oauth.challenge.password.model.CheckPassword
-import versola.oauth.client.model.ScopeToken
+import versola.oauth.client.OAuthConfigurationService
+import versola.oauth.client.model.{PasskeySettings, ScopeToken}
 import versola.oauth.conversation.limit.{ChallengeType, LimitStatus, SubmissionLimiter}
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
 import versola.oauth.conversation.otp.OtpService
@@ -62,9 +64,43 @@ trait ConversationService:
       record: ConversationRecord,
   ): Task[ConversationResult.Complete]
 
+  /** Begin a discoverable assertion ceremony; stores the request state on the Credential step.
+    * Returns the JSON public-key options to pass to `navigator.credentials.get()`.
+    */
+  def startPasskeyAssertion(
+      authId: AuthId,
+      record: ConversationRecord,
+      step: ConversationStep.Credential,
+      settings: PasskeySettings,
+  ): Task[String]
+
+  /** Verify the authenticator's assertion response.
+    * On success: updates the conversation with the resolved user and advances to enrollment-offer or finish.
+    * On failure: clears the passkeyRequest and re-renders the Credential step.
+    */
+  def finishPasskeyAssertion(authId: AuthId, record: ConversationRecord, response: String): Task[ConversationResult.Render]
+
+  /** After all primary auth factors pass: if the tenant has passkey settings and the user has no
+    * passkey yet, starts a registration ceremony and renders the PasskeyEnroll step.
+    * Otherwise, finishes immediately.
+    */
+  def offerPasskeyEnroll(authId: AuthId, record: ConversationRecord): Task[ConversationResult.Render]
+
+  /** Finish a passkey enrollment ceremony and complete the conversation. */
+  def finishPasskeyEnroll(
+      authId: AuthId,
+      record: ConversationRecord,
+      enrollStep: ConversationStep.PasskeyEnroll,
+      response: String,
+      name: Option[String],
+  ): Task[ConversationResult.Render]
+
+  /** Skip passkey enrollment and complete the conversation. */
+  def skipPasskey(authId: AuthId, record: ConversationRecord): Task[ConversationResult.Render]
+
 object ConversationService:
   def live =
-    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _))
+    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _))
 
   class Impl(
       otpService: OtpService,
@@ -78,6 +114,9 @@ object ConversationService:
       userInfoService: UserInfoService,
       config: CoreConfig,
       submissionLimiter: SubmissionLimiter,
+      webAuthnService: WebAuthnService,
+      passkeyRepository: PasskeyRepository,
+      configService: OAuthConfigurationService,
   ) extends ConversationService:
     export conversationRepository.find
 
@@ -318,6 +357,111 @@ object ConversationService:
         sessionId = sessionIdMac,
         idTokenData = idTokenData,
       )
+
+    override def startPasskeyAssertion(
+        authId: AuthId,
+        record: ConversationRecord,
+        step: ConversationStep.Credential,
+        settings: PasskeySettings,
+    ): Task[String] =
+      webAuthnService.startAssertion(settings).foldZIO(
+        ZIO.fail(_),
+        ceremony =>
+          val updatedStep = step.copy(
+            passkeyRequest = Some(ceremony.request),
+            passkeyFailed = false,
+            passkeyOrphaned = false,
+          )
+          conversationRepository.overwrite(authId, record.copy(step = updatedStep))
+            .as(ceremony.publicKeyOptions),
+      )
+
+    override def finishPasskeyAssertion(authId: AuthId, record: ConversationRecord, response: String): Task[ConversationResult.Render] =
+      record.step match
+        case cred: ConversationStep.Credential if record.authFlow.passkey.isDefined =>
+          cred.passkeyRequest match
+            case None =>
+              ZIO.succeed(ConversationResult.IllegalState)
+            case Some(request) =>
+              configService.getPasskeySettings(record.clientId).flatMap:
+                case None =>
+                  ZIO.succeed(ConversationResult.IllegalState)
+                case Some(settings) =>
+                  webAuthnService.finishAssertion(settings, request, response).foldZIO(
+                    {
+                      case WebAuthnError.CredentialNotFound =>
+                        renderStep(authId, record, cred.copy(passkeyRequest = None, passkeyOrphaned = true))
+                      case _ =>
+                        renderStep(authId, record, cred.copy(passkeyRequest = None, passkeyFailed = true))
+                    },
+                    outcome =>
+                      userRepository.find(outcome.userId).flatMap:
+                        case None =>
+                          ZIO.succeed(ConversationResult.IllegalState)
+                        case Some(user) =>
+                          val updated = record.copy(
+                            userId = Some(outcome.userId),
+                            userEmail = user.email,
+                            userPhone = user.phone,
+                            userLogin = user.login,
+                            userClaims = Some(user.claims),
+                          )
+                          offerPasskeyEnroll(authId, updated),
+                  )
+        case _ =>
+          ZIO.succeed(ConversationResult.IllegalState)
+
+    override def offerPasskeyEnroll(authId: AuthId, record: ConversationRecord): Task[ConversationResult.Render] =
+      record.userId match
+        case None =>
+          ZIO.succeed(ConversationResult.IllegalState)
+        case Some(userId) =>
+          configService.getPasskeySettings(record.clientId).flatMap:
+            case None =>
+              finish(authId, record)
+            case Some(settings) =>
+              passkeyRepository.listByUser(userId).flatMap: existing =>
+                if existing.nonEmpty then finish(authId, record)
+                else
+                  val displayName: String =
+                    record.userClaims.flatMap(_.fields.toMap.get("name"))
+                      .collect { case zio.json.ast.Json.Str(v) => v }
+                      .orElse(record.userEmail.map(_.toString))
+                      .orElse(record.userPhone.map(_.toString))
+                      .orElse(record.userLogin.map(_.toString))
+                      .getOrElse(userId.toString)
+                  webAuthnService.startRegistration(settings, userId, displayName).foldZIO(
+                    _ => finish(authId, record),
+                    ceremony =>
+                      val enrollStep = ConversationStep.PasskeyEnroll(
+                        request = ceremony.request,
+                        publicKeyOptions = ceremony.publicKeyOptions,
+                      )
+                      renderStep(authId, record, enrollStep),
+                  )
+
+    override def finishPasskeyEnroll(
+        authId: AuthId,
+        record: ConversationRecord,
+        enrollStep: ConversationStep.PasskeyEnroll,
+        response: String,
+        name: Option[String],
+    ): Task[ConversationResult.Render] =
+      record.userId match
+        case None =>
+          ZIO.succeed(ConversationResult.IllegalState)
+        case Some(userId) =>
+          configService.getPasskeySettings(record.clientId).flatMap:
+            case None =>
+              finish(authId, record)
+            case Some(settings) =>
+              webAuthnService.finishRegistration(settings, userId, enrollStep.request, response, name).foldZIO(
+                error => renderStep(authId, record, enrollStep.copy(enrollFailed = true)),
+                _ => finish(authId, record),
+              )
+
+    override def skipPasskey(authId: AuthId, record: ConversationRecord): Task[ConversationResult.Render] =
+      finish(authId, record)
 
     private def generateIdTokenData(userId: UserId, conversation: ConversationRecord): Task[Option[ConversationResult.IdTokenData]] =
       for

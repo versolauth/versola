@@ -1,7 +1,9 @@
 import type { Page, Request } from '@playwright/test';
 
 type TenantDto = { id: string; description: string; edgeId?: string | null };
-type ClientDto = { id: string; clientName: string; redirectUris: string[]; scope: string[]; permissions: string[]; secretRotation: boolean; edgeId?: string };
+type BackendAuthFactor = { type: string; required: boolean };
+type BackendAuthFlow = { primary: { credentials: string[]; inlinePassword: boolean; factors: BackendAuthFactor[] }; passkey?: { factors: BackendAuthFactor[] } | null };
+type ClientDto = { id: string; clientName: string; redirectUris: string[]; scope: string[]; permissions: string[]; secretRotation: boolean; edgeId?: string; authFlow?: BackendAuthFlow | null };
 type ScopeDto = { scope: string; description: Record<string, string>; claims: Array<{ claim: string; description: Record<string, string> }> };
 type PermissionDto = { permission: string; description: Record<string, string>; endpointIds: ResourceEndpointId[] };
 type InjectTargetDto = 'header' | 'query' | 'body';
@@ -48,6 +50,7 @@ type CreateClientRequest = {
   audience: string[];
   permissions: string[];
   accessTokenTtl: number;
+  authFlow?: BackendAuthFlow | null;
 };
 type UpdateClientRequest = {
   clientId: string;
@@ -56,6 +59,7 @@ type UpdateClientRequest = {
   scope?: SetPatch<string>;
   permissions?: SetPatch<string>;
   accessTokenTtl?: number;
+  authFlow?: BackendAuthFlow | null;
 };
 type CreateScopeRequest = {
   tenantId: string;
@@ -118,6 +122,17 @@ export type RequestLog = {
   body: unknown;
 };
 
+type PasskeyInfoDto = {
+  id: string;
+  name?: string | null;
+  deviceType: string;
+  transports: string[];
+  backedUp: boolean;
+  backupEligible: boolean;
+  lastUsedAt?: string | null;
+  createdAt: string;
+};
+
 type UserDto = {
   id: string;
   email?: string;
@@ -125,7 +140,45 @@ type UserDto = {
   login?: string;
   claims: Record<string, unknown>;
   rolesByTenant?: Record<string, string[]>;
+  passkeys?: PasskeyInfoDto[];
 };
+
+type RateLimitDto = { maxAttempts: number; windowSeconds: number };
+type SubmissionLimitsDto = {
+  otpRequest: RateLimitDto[];
+  otpSubmit: RateLimitDto[];
+  passwordSubmit: RateLimitDto[];
+  banDurationSeconds: number;
+};
+type PasskeySettingsDto = { rpId: string; rpName: string; origins: string[]; userVerification: string };
+type OtpTemplateDto = { id: string; tenantId: string; localizations: Record<string, string> };
+type ChallengeSettingsDto = {
+  tenantId: string;
+  allowedPrefixes: string[];
+  passwordRegex?: string | null;
+  submissionLimits: SubmissionLimitsDto;
+  otpLength: number;
+  otpResendAfter: number;
+  passkeySettings?: PasskeySettingsDto | null;
+};
+type LocaleDto = { code: string; name: string; isDefault: boolean; active: boolean };
+
+const emptySubmissionLimits = (): SubmissionLimitsDto => ({
+  otpRequest: [],
+  otpSubmit: [],
+  passwordSubmit: [],
+  banDurationSeconds: 0,
+});
+
+const defaultChallengeSettings = (tenantId: string): ChallengeSettingsDto => ({
+  tenantId,
+  allowedPrefixes: [],
+  passwordRegex: null,
+  submissionLimits: emptySubmissionLimits(),
+  otpLength: 6,
+  otpResendAfter: 60,
+  passkeySettings: null,
+});
 
 export type MockConfigState = {
   tenants: TenantDto[];
@@ -140,6 +193,9 @@ export type MockConfigState = {
   forms: FormDto[];
   formLocales: FormLocaleDto[];
   themes: ThemeDto[];
+  otpTemplates: Record<string, OtpTemplateDto[]>; // keyed by tenantId
+  challengeSettings: Record<string, ChallengeSettingsDto>; // keyed by tenantId
+  locales: LocaleDto[];
 };
 
 export type MockConfigHarness = {
@@ -178,6 +234,9 @@ const defaultState: MockConfigState = {
   forms: [],
   formLocales: [],
   themes: [],
+  otpTemplates: {},
+  challengeSettings: {},
+  locales: [],
 };
 
 function clone<T>(value: T): T {
@@ -198,6 +257,9 @@ function mergeState(overrides: Partial<MockConfigState> = {}): MockConfigState {
     forms: clone(overrides.forms ?? defaultState.forms),
     formLocales: clone(overrides.formLocales ?? defaultState.formLocales),
     themes: clone(overrides.themes ?? defaultState.themes),
+    otpTemplates: clone({ ...defaultState.otpTemplates, ...overrides.otpTemplates }),
+    challengeSettings: clone({ ...defaultState.challengeSettings, ...overrides.challengeSettings }),
+    locales: clone(overrides.locales ?? defaultState.locales),
   };
 }
 
@@ -347,6 +409,7 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
           scope: [...payload.allowedScopes],
           permissions: [...payload.permissions],
           secretRotation: false,
+          authFlow: payload.authFlow ?? null,
         };
 
         state.clients[payload.tenantId] = [createdClient, ...tenantClients];
@@ -371,6 +434,9 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
         client.redirectUris = applyPatchSet(client.redirectUris, payload.redirectUris);
         client.scope = applyPatchSet(client.scope, payload.scope);
         client.permissions = applyPatchSet(client.permissions, payload.permissions);
+        if ('authFlow' in payload) {
+          client.authFlow = payload.authFlow ?? null;
+        }
 
         await route.fulfill({ status: 204, body: '' });
         return;
@@ -847,6 +913,90 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
       return;
     }
 
+    if (pathname === '/configuration/locales') {
+      if (method === 'GET') {
+        await route.fulfill(json({ locales: state.locales }));
+        return;
+      }
+
+      if (method === 'PUT') {
+        const payload = body as { add?: LocaleDto[]; delete?: string[] };
+        const removed = new Set(payload.delete ?? []);
+        state.locales = state.locales.filter(locale => !removed.has(locale.code));
+        for (const locale of payload.add ?? []) {
+          const existing = state.locales.find(candidate => candidate.code === locale.code);
+          if (existing) {
+            existing.name = locale.name;
+            existing.active = locale.active;
+            existing.isDefault = locale.isDefault;
+          } else {
+            state.locales.push({ ...locale });
+          }
+        }
+        await route.fulfill({ status: 204, body: '' });
+        return;
+      }
+    }
+
+    if (pathname === '/configuration/locales/default' && method === 'PUT') {
+      const payload = body as { code: string };
+      state.locales = state.locales.map(locale => ({ ...locale, isDefault: locale.code === payload.code }));
+      await route.fulfill({ status: 204, body: '' });
+      return;
+    }
+
+    if (pathname === '/configuration/challenges/otp-templates') {
+      if (method === 'GET') {
+        await route.fulfill(json({ templates: state.otpTemplates[tenantId] ?? [] }));
+        return;
+      }
+
+      if (method === 'PUT') {
+        const payload = body as OtpTemplateDto;
+        const templates = state.otpTemplates[payload.tenantId] ?? [];
+        const existing = templates.find(template => template.id === payload.id);
+        if (existing) {
+          existing.localizations = { ...payload.localizations };
+        } else {
+          templates.push({ id: payload.id, tenantId: payload.tenantId, localizations: { ...payload.localizations } });
+        }
+        state.otpTemplates[payload.tenantId] = templates;
+        await route.fulfill({ status: 204, body: '' });
+        return;
+      }
+
+      if (method === 'DELETE') {
+        const payload = body as { id: string; tenantId: string };
+        state.otpTemplates[payload.tenantId] = (state.otpTemplates[payload.tenantId] ?? [])
+          .filter(template => template.id !== payload.id);
+        await route.fulfill({ status: 204, body: '' });
+        return;
+      }
+    }
+
+    if (pathname === '/configuration/challenges/challenge-settings') {
+      if (method === 'GET') {
+        const settings = state.challengeSettings[tenantId] ?? defaultChallengeSettings(tenantId);
+        await route.fulfill(json({ settings }));
+        return;
+      }
+
+      if (method === 'PUT') {
+        const payload = body as ChallengeSettingsDto;
+        state.challengeSettings[payload.tenantId] = {
+          tenantId: payload.tenantId,
+          allowedPrefixes: [...payload.allowedPrefixes],
+          passwordRegex: payload.passwordRegex ?? null,
+          submissionLimits: payload.submissionLimits,
+          otpLength: payload.otpLength,
+          otpResendAfter: payload.otpResendAfter,
+          passkeySettings: payload.passkeySettings ?? null,
+        };
+        await route.fulfill({ status: 204, body: '' });
+        return;
+      }
+    }
+
     await route.fulfill(json({ message: `No mock handler for ${method} ${pathname}` }, 404));
   });
 
@@ -979,6 +1129,58 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
         await route.fulfill({ status: 202, body: '' });
         return;
       }
+    }
+
+    if (pathname === '/users/passkeys') {
+      if (method === 'GET') {
+        const id = url.searchParams.get('id') ?? '';
+        const user = state.users.find(candidate => candidate.id === id);
+        if (!user) {
+          await route.fulfill(json({ message: `User ${id} not found` }, 404));
+          return;
+        }
+        await route.fulfill(json({ passkeys: user.passkeys ?? [] }));
+        return;
+      }
+
+      if (method === 'PATCH') {
+        const payload = body as { userId: string; credentialId: string; name: string | null };
+        const user = state.users.find(candidate => candidate.id === payload.userId);
+        if (!user) {
+          await route.fulfill(json({ message: `User ${payload.userId} not found` }, 404));
+          return;
+        }
+        const passkey = (user.passkeys ?? []).find(candidate => candidate.id === payload.credentialId);
+        if (!passkey) {
+          await route.fulfill(json({ message: `Passkey ${payload.credentialId} not found` }, 404));
+          return;
+        }
+        passkey.name = payload.name;
+        await route.fulfill({ status: 202, body: '' });
+        return;
+      }
+
+      if (method === 'DELETE') {
+        const id = url.searchParams.get('id') ?? '';
+        const credentialId = url.searchParams.get('credentialId') ?? '';
+        const user = state.users.find(candidate => candidate.id === id);
+        if (user) {
+          user.passkeys = (user.passkeys ?? []).filter(passkey => passkey.id !== credentialId);
+        }
+        await route.fulfill({ status: 202, body: '' });
+        return;
+      }
+    }
+
+    if (pathname === '/users/limits/reset' && method === 'POST') {
+      const payload = body as { userId: string };
+      const user = state.users.find(candidate => candidate.id === payload.userId);
+      if (!user) {
+        await route.fulfill(json({ message: `User ${payload.userId} not found` }, 404));
+        return;
+      }
+      await route.fulfill({ status: 202, body: '' });
+      return;
     }
 
     await route.fulfill(json({ message: `No mock handler for ${method} ${pathname}` }, 404));

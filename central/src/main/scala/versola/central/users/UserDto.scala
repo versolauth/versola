@@ -52,3 +52,22 @@ case class UserSearchRecord(
 case class UserSearchResponse(users: Vector[UserSearchRecord]) derives JsonCodec, Schema
 
 case class UserRolesResponse(roles: List[RoleId]) derives JsonCodec, Schema
+
+case class PasskeyInfo(
+    id: String,
+    name: Option[String],
+    deviceType: String,
+    transports: List[String],
+    backedUp: Boolean,
+    backupEligible: Boolean,
+    lastUsedAt: Option[String],
+    createdAt: String,
+) derives JsonCodec, Schema
+
+case class ListPasskeysResponse(passkeys: List[PasskeyInfo]) derives JsonCodec, Schema
+
+case class RenamePasskeyRequest(
+    userId: UserId,
+    credentialId: String,
+    name: Option[String],
+) derives JsonCodec, Schema

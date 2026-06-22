@@ -1,5 +1,6 @@
 import { render } from 'solid-js/web';
 import { createSignal, Show } from 'solid-js';
+import { getAssertionResponse, submitViaForm, passkeysSupported } from '../passkey/webauthn';
 
 function LocaleDropdown(props: { locales: string[]; current: string; onChange: (l: string) => void }) {
   const [open, setOpen] = createSignal(false);
@@ -89,8 +90,36 @@ function CredentialForm(props: { config: FormConfig }) {
 
   const [phoneNotAllowed, setPhoneNotAllowed] = createSignal(false);
   const [passwordNotAllowed, setPasswordNotAllowed] = createSignal(false);
+  const [passkeyBusy, setPasskeyBusy] = createSignal(false);
+
+  // All passkey-related errors (client failures and the server's passkey_failed /
+  // passkey_orphaned) are surfaced through a dismissible popup rather than inline text.
+  const passkeyErrorKeys = ['passkey_failed', 'passkey_orphaned'];
+  const isPasskeyError = (e?: string): boolean => !!e && passkeyErrorKeys.includes(e);
+  const [passkeyErrorKey, setPasskeyErrorKey] = createSignal<string | null>(
+    isPasskeyError(props.config.error) ? props.config.error! : null,
+  );
 
   const passwordRegex = step.passwordRegex;
+
+  const showPasskey = () => step.passkey && passkeysSupported();
+
+  const handlePasskey = async () => {
+    if (passkeyBusy()) return;
+    setPasskeyBusy(true);
+    setPasskeyErrorKey(null);
+    try {
+      const optionsJson = await fetch(`/challenge/passkey/options?ui_locale=${currentLocale()}`).then((r) => {
+        if (!r.ok) throw new Error('options request failed');
+        return r.text();
+      });
+      const response = await getAssertionResponse(optionsJson);
+      submitViaForm(`/challenge/passkey?ui_locale=${currentLocale()}`, { response });
+    } catch (_) {
+      setPasskeyErrorKey('passkey_failed');
+      setPasskeyBusy(false);
+    }
+  };
 
   const handleSubmit = (e: SubmitEvent) => {
     const form = e.currentTarget as HTMLFormElement;
@@ -121,7 +150,7 @@ function CredentialForm(props: { config: FormConfig }) {
       </Show>
       <h1>{t().title}</h1>
 
-      <Show when={props.config.error}>
+      <Show when={props.config.error && !isPasskeyError(props.config.error)}>
         <div class="error-text" style="margin-bottom: 8px;">{t()[props.config.error!] ?? props.config.error}</div>
       </Show>
 
@@ -168,16 +197,33 @@ function CredentialForm(props: { config: FormConfig }) {
           {t().continue}
         </button>
 
-        <Show when={step.passkey}>
+        <Show when={showPasskey()}>
           <div class="credential-option" data-credential="passkey">
             <div class="divider"><span>{t().divider}</span></div>
-            <button type="button" class="btn btn-secondary">
+            <button type="button" class="btn btn-secondary" disabled={passkeyBusy()} onClick={handlePasskey}>
               <span class="passkey-icon" aria-hidden="true" />
               <span>{t().passkey_button}</span>
             </button>
           </div>
         </Show>
       </form>
+
+      <Show when={passkeyErrorKey()}>
+        <div class="passkey-dialog-overlay" onClick={() => setPasskeyErrorKey(null)}>
+          <div
+            class="passkey-dialog"
+            role="alertdialog"
+            aria-modal="true"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 class="passkey-dialog-title">{t().passkey_error_title}</h2>
+            <p class="passkey-dialog-message">{t()[passkeyErrorKey()!] ?? passkeyErrorKey()}</p>
+            <button type="button" class="btn btn-primary" onClick={() => setPasskeyErrorKey(null)}>
+              {t().close}
+            </button>
+          </div>
+        </div>
+      </Show>
     </div>
   );
 }

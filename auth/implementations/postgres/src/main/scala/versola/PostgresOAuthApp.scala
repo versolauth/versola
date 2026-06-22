@@ -4,6 +4,7 @@ import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.cleanup.PostgresCleanupManager
 import versola.oauth.PostgresAuthorizationCodeRepository
 import versola.oauth.authorize.{AuthorizeEndpointController, AuthorizeEndpointService, AuthorizeRequestParser}
+import versola.oauth.challenge.passkey.{PasskeyRepository, PostgresPasskeyRepository, WebAuthnService}
 import versola.oauth.challenge.password.{PasswordRepository, PasswordService, PostgresPasswordRepository}
 import versola.oauth.client.{OAuthClientSyncClient, OAuthConfigurationService, OAuthScopeSyncClient}
 import versola.oauth.conversation.otp.{EmailOtpProvider, SmsOtpProvider, OtpGenerationService, OtpService}
@@ -48,6 +49,8 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       RefreshTokenRepository &
       PasswordRepository &
       PasswordService &
+      PasskeyRepository &
+      WebAuthnService &
       SecureRandom &
       SecurityService &
       AuthPropertyGenerator &
@@ -88,6 +91,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       PostgresSessionRepository.live >+>
       PostgresRefreshTokenRepository.live >+>
       PostgresPasswordRepository.live >+>
+      PostgresPasskeyRepository.live >+>
       PostgresChallengeThrottleRepository.live >+>
       PostgresCleanupManager.live
   )
@@ -111,6 +115,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       SmsOtpProvider.live >+>
       OtpService.live >+>
       PasswordService.live >+>
+      WebAuthnService.live >+>
       UserInfoService.live >+>
       SubmissionLimiter.live >+>
       ConversationService.live >+>

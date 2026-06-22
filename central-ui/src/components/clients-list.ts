@@ -1260,9 +1260,6 @@ export class VersolaClientsList extends LitElement {
   }
 
   private renderFlowChain(credExpr: string, factors: AuthFlow['factors']) {
-    const firstFactor = factors[0]?.type ?? null;
-    const secondFactor = factors[1]?.type ?? null;
-
     return html`
       <div class="flow-chain">
         <div class="flow-step">
@@ -1271,24 +1268,15 @@ export class VersolaClientsList extends LitElement {
             <span class="flow-step-value">${credExpr}</span>
           </div>
         </div>
-        ${firstFactor ? html`
+        ${factors.map(factor => html`
           <div class="flow-arrow">↓</div>
           <div class="flow-step">
-            <div class="flow-step-label">next factor</div>
+            <div class="flow-step-label">${factor.type === 'passkeyEnroll' ? 'offer' : 'next factor'}</div>
             <div class="flow-step-values">
-              <span class="flow-step-value">${firstFactor}</span>
+              <span class="flow-step-value">${factor.type === 'passkeyEnroll' ? 'passkey enrollment' : factor.type}</span>
             </div>
           </div>
-        ` : ''}
-        ${secondFactor ? html`
-          <div class="flow-arrow">↓</div>
-          <div class="flow-step">
-            <div class="flow-step-label">next factor</div>
-            <div class="flow-step-values">
-              <span class="flow-step-value">${secondFactor}</span>
-            </div>
-          </div>
-        ` : ''}
+        `)}
       </div>
     `;
   }

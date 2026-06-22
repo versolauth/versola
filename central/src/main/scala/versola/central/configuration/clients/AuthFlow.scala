@@ -8,7 +8,7 @@ enum PrimaryCredential derives JsonCodec, Schema, Equal:
   case email, phone, login
 
 enum AuthFactorType derives JsonCodec, Schema, Equal:
-  case otp, password
+  case otp, password, passkeyEnroll
 
 case class AuthFactor(
     `type`: AuthFactorType,

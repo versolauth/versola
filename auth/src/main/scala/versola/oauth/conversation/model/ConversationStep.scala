@@ -12,6 +12,9 @@ object ConversationStep:
       primaryCredentials: List[PrimaryCredential],
       inlinePassword: Boolean,
       passkey: Boolean,
+      passkeyRequest: Option[String] = None, // serialized assertion ceremony state, set by GET options
+      passkeyFailed: Boolean = false, // set when a submitted assertion fails verification
+      passkeyOrphaned: Boolean = false, // set when the asserted credential has no server-side record
   ) extends ConversationStep(StepId.Credential)
 
   case class Otp(
@@ -34,5 +37,11 @@ object ConversationStep:
       factorIndex: Int,
       rateLimitExceeded: Boolean,
   ) extends ConversationStep(StepId.Password)
+
+  case class PasskeyEnroll(
+      request: String, // serialized registration ceremony state
+      publicKeyOptions: String, // JSON for navigator.credentials.create()
+      enrollFailed: Boolean = false, // set when a submitted registration fails server-side verification
+  ) extends ConversationStep(StepId.PasskeyEnroll)
 
   case object AccessDenied extends ConversationStep(StepId.AccessDenied)

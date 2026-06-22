@@ -36,6 +36,7 @@ object FormService:
     ),
     "password" -> Vector.empty,
     "access-denied" -> Vector.empty,
+    "passkey-enroll" -> Vector.empty,
   )
 
   def live(

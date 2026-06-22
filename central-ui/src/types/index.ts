@@ -22,7 +22,7 @@ export interface AuthorizationPreset {
 
 // Authentication flow (cards: credential -> factor -> factor)
 export type PrimaryCredential = 'email' | 'phone' | 'login';
-export type AuthFactorType = 'otp' | 'password';
+export type AuthFactorType = 'otp' | 'password' | 'passkeyEnroll';
 
 export interface AuthFactor {
   type: AuthFactorType;
@@ -73,6 +73,14 @@ export interface SubmissionLimits {
   banDurationSeconds: number;
 }
 
+// Passkey (WebAuthn) settings
+export interface PasskeySettings {
+  rpId: string;
+  rpName: string;
+  origins: string[];
+  userVerification: string;
+}
+
 // Challenge Settings
 export interface ChallengeSettingsRecord {
   tenantId: string;
@@ -81,6 +89,19 @@ export interface ChallengeSettingsRecord {
   submissionLimits: SubmissionLimits;
   otpLength: number;
   otpResendAfter: number;
+  passkeySettings?: PasskeySettings | null;
+}
+
+// A registered passkey credential for a user
+export interface PasskeyInfo {
+  id: string;
+  name?: string | null;
+  deviceType: string;
+  transports: string[];
+  backedUp: boolean;
+  backupEligible: boolean;
+  lastUsedAt?: string | null;
+  createdAt: string;
 }
 
 // OAuth Scope
