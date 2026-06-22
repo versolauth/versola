@@ -88,6 +88,7 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
     userLogin = None,
     userClaims = None,
     authFlow = AuthFlow.default,
+    userAgent = None,
   )
 
   val passwordRecord = baseRecord.copy(

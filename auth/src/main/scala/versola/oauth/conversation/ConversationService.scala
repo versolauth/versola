@@ -281,6 +281,7 @@ object ConversationService:
         sessionId <- authPropertyGenerator.nextSessionId
         sessionIdMac <- securityService.mac(Secret(sessionId), config.security.sessions.pepper)
         accessToken <- authPropertyGenerator.nextAccessToken
+        now <- Clock.instant
         record = AuthorizationCodeRecord(
           sessionId = sessionIdMac,
           clientId = conversation.clientId,
@@ -297,6 +298,8 @@ object ConversationService:
         session = SessionRecord(
           userId = userId,
           clientId = conversation.clientId,
+          userAgent = conversation.userAgent,
+          createdAt = now,
         )
         codeMac <- securityService.mac(Secret(code), config.security.authCodes.pepper)
 

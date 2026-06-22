@@ -64,6 +64,7 @@ object ConversationRouterSpec extends UnitSpecBase:
     userLogin = None,
     userClaims = None,
     authFlow = otpAuthFlow,
+    userAgent = None,
   )
 
 
@@ -86,6 +87,7 @@ object ConversationRouterSpec extends UnitSpecBase:
     userLogin = None,
     userClaims = None,
     authFlow = otpAuthFlow,
+    userAgent = None,
   )
 
   class Env:

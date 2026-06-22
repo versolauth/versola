@@ -28,3 +28,5 @@ playwright/.cache/
 
 # Generated forms (built from central-ui/forms via npm run build:forms)
 central/src/main/resources/forms/
+
+develop.txt

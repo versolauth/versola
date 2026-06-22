@@ -1,4 +1,5 @@
-import type { User, UserRoleAssignment, UserSearchField } from '../types';
+import type { User, UserRoleAssignment, UserSearchField, UserSession } from '../types';
+import { parseUserAgent } from './ua-parser';
 
 type UserSearchRecordDto = {
   id: string;
@@ -139,6 +140,45 @@ export async function updateUserRoles(
   }
 }
 
+type UserSessionDto = {
+  clientId: string;
+  userAgent?: string;
+  createdAt?: string;
+};
+
+export async function fetchUserSessions(userId: string): Promise<UserSession[]> {
+  const url = new URL('/users/sessions', window.location.origin);
+  url.searchParams.set('id', userId);
+
+  const response = await fetch(url.toString(), { headers: { Accept: 'application/json' } });
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(body.trim() || `Failed to load sessions (${response.status})`);
+  }
+
+  const data = (await response.json()) as UserSessionDto[];
+  return data.map(dto => ({
+    clientId: dto.clientId,
+    userAgent: dto.userAgent,
+    createdAt: dto.createdAt,
+    ...parseUserAgent(dto.userAgent),
+  }));
+}
+
+export async function invalidateUserSession(userId: string): Promise<void> {
+  const url = new URL('/users/sessions', window.location.origin);
+  url.searchParams.set('userId', userId);
+
+  const response = await fetch(url.toString(), {
+    method: 'DELETE',
+    headers: { Accept: 'application/json' },
+  });
+
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(body.trim() || `Failed to invalidate session (${response.status})`);
+  }
+}
 export async function resetUserLimits(
   userId: string,
   tenantId: string,

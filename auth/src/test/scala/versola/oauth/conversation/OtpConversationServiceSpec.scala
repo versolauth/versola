@@ -1,7 +1,7 @@
 package versola.oauth.conversation
 
-import versola.auth.model.OtpCode
 import versola.auth.TestEnvConfig
+import versola.auth.model.OtpCode
 import versola.oauth.challenge.password.PasswordService
 import versola.oauth.client.model.{AuthFlow, ClientId, PrimaryCredential, ScopeToken}
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
@@ -16,10 +16,10 @@ import versola.user.UserRepository
 import versola.user.model.{UserId, UserRecord}
 import versola.oauth.conversation.limit.{ChallengeType, LimitStatus, SubmissionLimiter}
 import versola.util.{AuthPropertyGenerator, CoreConfig, Email, EnvName, Secret, SecureRandom, SecurityService, UnitSpecBase}
+import zio.ZIO
 import zio.http.URL
 import zio.json.ast
 import zio.test.*
-import zio.ZIO
 
 import java.security.KeyFactory
 import java.security.spec.RSAPublicKeySpec
@@ -92,6 +92,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
     userLogin = None,
     userClaims = None,
     authFlow = AuthFlow.default,
+    userAgent = None,
   )
 
   val otpRecord = initialConversation.copy(
@@ -229,6 +230,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           userLogin = None,
           userClaims = Some(zio.json.ast.Json.Obj()),
           authFlow = AuthFlow.default,
+          userAgent = None,
         )
         for
           _ <- env.submissionLimiter.isBanned.succeedsWith(LimitStatus.Allowed)
@@ -258,6 +260,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           userLogin = None,
           userClaims = Some(zio.json.ast.Json.Obj()),
           authFlow = AuthFlow.default,
+          userAgent = None,
         )
         for
           _ <- env.submissionLimiter.isBanned.succeedsWith(LimitStatus.Banned)
@@ -349,7 +352,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           _ <- env.userInfoService.getUserInfoForIdToken.succeedsWith(
             UserInfoResponse(
               claims = Map("sub" -> ast.Json.Str(userId.toString), "email" -> ast.Json.Str(userEmail)),
-            )
+            ),
           )
           result <- env.service.finish(authId, conversation)
         yield assertTrue(

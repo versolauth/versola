@@ -65,6 +65,7 @@ trait ConversationRepositorySpec extends DatabaseSpecBase[ConversationRepository
     userLogin = None,
     userClaims = Some(zio.json.ast.Json.Obj()),
     authFlow = AuthFlow.default,
+    userAgent = None,
   )
 
   val record2 = record1.copy(
@@ -93,6 +94,7 @@ trait ConversationRepositorySpec extends DatabaseSpecBase[ConversationRepository
     userLogin = None,
     userClaims = None,
     authFlow = AuthFlow.default,
+    userAgent = None,
   )
 
   def testCases(env: ConversationRepositorySpec.Env): List[Spec[ConversationRepositorySpec.Env & zio.Scope, Any]] =
@@ -104,11 +106,10 @@ trait ConversationRepositorySpec extends DatabaseSpecBase[ConversationRepository
           found1 <- env.repository.find(authId1)
           found2 <- env.repository.find(authId2)
           notFound <- env.repository.find(authId3)
-
         yield assertTrue(
           found1.contains(record1),
           found2.contains(record2),
-          notFound.isEmpty
+          notFound.isEmpty,
         )
       },
       test("delete conversation by auth ID") {
@@ -131,7 +132,7 @@ trait ConversationRepositorySpec extends DatabaseSpecBase[ConversationRepository
           found2 <- env.repository.find(authId1)
         yield assertTrue(
           found1.contains(initial),
-          found2.contains(updatedRecord)
+          found2.contains(updatedRecord),
         )
       },
     )

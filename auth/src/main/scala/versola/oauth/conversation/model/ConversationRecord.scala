@@ -29,6 +29,7 @@ case class ConversationRecord(
     userLogin: Option[Login],
     userClaims: Option[Json.Obj],
     authFlow: AuthFlow,
+    userAgent: Option[String],
 ):
   def patch(patch: ConversationRecord.Patch): ConversationRecord =
     this.copy(

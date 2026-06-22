@@ -2,11 +2,13 @@ import { LitElement, html, css } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
 import { buttonStyles, cardStyles, formStyles } from '../styles/components';
-import { Resource, Role, User, UserRoleAssignment, UserSearchField } from '../types';
+import { Resource, Role, User, UserRoleAssignment, UserSearchField, UserSession } from '../types';
 import { getPermissions, getResources, getRoles } from '../utils/central-api';
 import {
   createUser,
   fetchUserRoles,
+  fetchUserSessions,
+  invalidateUserSession,
   patchUserClaims,
   resetUserLimits,
   searchUsers,
@@ -40,6 +42,8 @@ export class VersolaUsersList extends LitElement {
   @state() private hasSearched = false;
   @state() private userRoles: Record<string, UserRoleAssignment[]> = {};
   @state() private loadingRoles = new Set<string>();
+  @state() private userSessions: Record<string, UserSession[]> = {};
+  @state() private loadingSessions = new Set<string>();
   @state() private expandedClaims = new Set<string>();
   @state() private resettingLimits = new Set<string>();
   @state() private resetLimitsDone = new Set<string>();
@@ -211,6 +215,45 @@ export class VersolaUsersList extends LitElement {
         gap: var(--spacing-sm);
         padding: var(--spacing-xs) 0;
         font-size: 0.875rem;
+      }
+      
+      .session-card {
+        padding: var(--spacing-xs) 0;
+        border-bottom: 1px solid var(--border-subtle, rgba(255,255,255,0.06));
+        font-size: 0.875rem;
+      }
+
+      .session-card:last-child {
+        border-bottom: none;
+      }
+
+      .session-card-info {
+        display: flex;
+        flex-direction: column;
+        gap: 0.125rem;
+      }
+
+      .session-platform {
+        font-weight: 600;
+        color: var(--text-primary);
+        font-size: 0.8125rem;
+        text-transform: capitalize;
+      }
+
+      .session-browser {
+        color: var(--text-secondary);
+        font-size: 0.75rem;
+      }
+
+      .session-client {
+        color: var(--text-secondary);
+        font-size: 0.75rem;
+        font-family: var(--font-mono);
+      }
+
+      .session-date {
+        color: var(--text-tertiary, var(--text-secondary));
+        font-size: 0.75rem;
       }
 
       .role-tag {
@@ -469,6 +512,27 @@ export class VersolaUsersList extends LitElement {
     }
   }
 
+  private async toggleUserSessions(userId: string) {
+    this.loadingSessions = new Set([...this.loadingSessions, userId]);
+    try {
+      const sessions = await fetchUserSessions(userId);
+      this.userSessions = { ...this.userSessions, [userId]: sessions };
+    } catch (error) {
+      this.errorPopup = error instanceof Error ? error.message : 'Failed to load sessions';
+    } finally {
+      this.loadingSessions = new Set([...this.loadingSessions].filter(id => id !== userId));
+    }
+  }
+
+  private async handleInvalidateSession(userId: string) {
+    try {
+      await invalidateUserSession(userId);
+      const sessions = await fetchUserSessions(userId);
+      this.userSessions = {...this.userSessions, [userId]: sessions};
+    } catch (error) {
+      this.errorPopup = error instanceof Error ? error.message : 'Failed to invalidate session';
+    }
+  }
   private async handleResetLimits(user: User) {
     if (!this.tenantId) {
       this.errorPopup = 'Select a tenant first to reset limits.';
@@ -505,6 +569,42 @@ export class VersolaUsersList extends LitElement {
             `)}
           </div>
         ` : ''}
+      </div>
+    `;
+  }
+
+  private renderUserSessions(user: User) {
+    const sessions = this.userSessions[user.id] ?? [];
+    const formatDate = (iso: string) =>
+        new Date(iso).toLocaleDateString('en-GB');
+
+    return html`
+      <div class="expand-section">
+        <div class="expand-section-header">
+          <div class="expand-section-title">Sessions</div>
+          <button class="icon-action danger" title="Invalidate all sessions"
+                  @click=${() => this.handleInvalidateSession(user.id)}>Invalidate all</button>
+        </div>
+        ${sessions.length > 0 ? html`
+          <div class="expand-section-content">
+            ${sessions.map(s => html`
+              <div class="session-card">
+                <div class="session-card-info">
+                  <span class="session-platform">${s.platform}</span>
+                  <span class="session-browser">
+                  ${s.browser ? `${s.browser}${s.version ? ` ${s.version}` : ''}` : '—'}
+                </span>
+                  <span class="session-client">${s.clientId}</span>
+                  ${s.createdAt ? html`<span class="session-date">${formatDate(s.createdAt)}</span>` : ''}
+                </div>
+              </div>
+            `)}
+          </div>
+        ` : html`
+          <div class="expand-section-content">
+            <span class="no-data">No active sessions</span>
+          </div>
+        `}
       </div>
     `;
   }
@@ -693,6 +793,7 @@ export class VersolaUsersList extends LitElement {
               </div>
               ${this.expandedClaims.has(user.id) ? this.renderUserClaims(user) : ''}
               ${user.id in this.userRoles ? this.renderUserRoles(user) : ''}
+              ${user.id in this.userSessions ? this.renderUserSessions(user) : ''}
               <div class="card-action-row">
                 ${!this.expandedClaims.has(user.id) ? html`<button class="btn btn-secondary btn-sm"
                   @click=${() => this.toggleUserClaims(user.id)}>Get Claims</button>` : ''}
@@ -701,6 +802,11 @@ export class VersolaUsersList extends LitElement {
                   title=${!this.tenantId ? 'Select a tenant to view roles' : ''}
                   @click=${() => this.toggleUserRoles(user.id)}>
                   ${this.loadingRoles.has(user.id) ? 'Loading…' : 'Get Roles'}
+                </button>` : ''}
+                ${!(user.id in this.userSessions) ? html`<button class="btn btn-secondary btn-sm"
+                  ?disabled=${this.loadingSessions.has(user.id)}
+                  @click=${() => this.toggleUserSessions(user.id)}>
+                  ${this.loadingSessions.has(user.id) ? 'Loading…' : 'Get Sessions'}
                 </button>` : ''}
                 <button class="btn btn-secondary btn-sm"
                   ?disabled=${this.resettingLimits.has(user.id) || !this.tenantId}
@@ -715,7 +821,7 @@ export class VersolaUsersList extends LitElement {
               </div>
             </div>
           `)}
-        `}
+          `}
     `;
   }
 }

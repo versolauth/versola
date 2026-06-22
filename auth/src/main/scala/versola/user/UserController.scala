@@ -3,6 +3,8 @@ package versola.user
 import versola.auth.model.TenantId
 import versola.oauth.client.model.TenantId as ThrottleTenantId
 import versola.oauth.conversation.limit.ChallengeThrottleRepository
+import versola.oauth.session.SessionRepository
+import versola.oauth.session.model.SessionId
 import versola.role.model.RoleId
 import versola.user.model.*
 import versola.util.CoreConfig
@@ -11,10 +13,11 @@ import versola.util.{Email, Phone}
 import zio.ZIO
 import zio.http.{Method, Request, Response, Routes, Status, handler}
 import zio.json.EncoderOps
+import zio.json.JsonCodec
 import zio.telemetry.opentelemetry.tracing.Tracing
 
 object UserController extends Controller:
-  type Env = Tracing & UserRepository & UserRolesRepository & CoreConfig & ChallengeThrottleRepository
+  type Env = Tracing & UserRepository & UserRolesRepository & CoreConfig & SessionRepository & ChallengeThrottleRepository
 
   def routes: Routes[Env, Throwable] = Routes(
     upsertUserEndpoint,
@@ -22,6 +25,8 @@ object UserController extends Controller:
     patchRolesEndpoint,
     findClaimsEndpoint,
     findRolesEndpoint,
+    findSessionsEndpoint,
+    invalidateSessionEndpoint,
     resetLimitsEndpoint,
   )
 
@@ -64,7 +69,7 @@ object UserController extends Controller:
         user <- repo.find(id)
       yield user match
         case Some(record) => Response.json(UserClaimsResponse(record.claims).toJson)
-        case None         => Response.status(Status.NoContent)
+        case None => Response.status(Status.NoContent)
     }
 
   val findRolesEndpoint =
@@ -77,6 +82,44 @@ object UserController extends Controller:
         roles <- repo.findRolesByUserAndTenant(id, tenantId)
       yield Response.json(UserRolesResponse(roles).toJson)
     }
+
+  private case class SessionResponse(
+      clientId: String,
+      userAgent: Option[String],
+      createdAt: String,
+  ) derives JsonCodec
+
+  private case class SessionListResponse(sessions: List[SessionResponse]) derives JsonCodec
+
+  val findSessionsEndpoint =
+    Method.GET / "users" / "sessions" -> handler { (request: Request) =>
+      for
+        _ <- authorizeInternal(request)
+        repo <- ZIO.service[SessionRepository]
+        userId <- request.url.queryZIO[UserId]("id")
+        sessions <- repo.findByUserId(userId)
+      yield Response.json(
+        SessionListResponse(
+          sessions.map { record =>
+            SessionResponse(
+              clientId = record.clientId,
+              userAgent = record.userAgent,
+              createdAt = record.createdAt.toString,
+            )
+          },
+        ).toJson,
+      )
+    }
+    
+  val invalidateSessionEndpoint =
+      Method.DELETE / "users" / "sessions" -> handler { (request: Request) =>
+        for
+          _ <- authorizeInternal(request)
+          repo <- ZIO.service[SessionRepository]
+          userId <- request.queryZIO[UserId]("userId")
+          _ <- repo.invalidateByUserId(userId)
+        yield Response.status(Status.NoContent)
+      }
 
   val resetLimitsEndpoint =
     Method.POST / "users" / "limits" / "reset" -> handler { (request: Request) =>

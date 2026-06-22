@@ -142,7 +142,7 @@ object VersolaApp:
             for
               path <- System.property("env.path")
                 .someOrFail(RuntimeException("Neither 'ENV_CONFIG' env var nor 'env.path' property is set"))
-              absolutePath <- ZIO.attempt(java.nio.file.Paths.get(path).toAbsolutePath.toString)
+              absolutePath <- ZIO.attempt(java.nio.file.Paths.get(path).toAbsolutePath.toString.replace('\\', '/'))
             yield s"""include required(file("$absolutePath"))"""
 
         cp <- ConfigProvider.fromTypesafeConfigZIO(ConfigFactory.parseString(configString).resolve()).map(_.kebabCase)

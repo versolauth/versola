@@ -1,10 +1,9 @@
 package versola.oauth.session
 
-import versola.oauth.model.{AccessToken, RefreshToken}
-import versola.oauth.session.model.{SessionId, SessionRecord, WithTtl}
+import versola.oauth.session.model.{SessionId, SessionRecord}
+import versola.user.model.UserId
 import versola.util.MAC
 import zio.*
-import zio.prelude.These
 
 trait SessionRepository:
   def create(
@@ -14,3 +13,11 @@ trait SessionRepository:
   ): Task[Unit]
 
   def find(id: MAC.Of[SessionId]): Task[Option[SessionRecord]]
+
+  def findByUserId(
+      userId: UserId,
+  ): Task[List[SessionRecord]]
+
+  def invalidateByUserId(
+      userId: UserId,
+  ): Task[Unit]

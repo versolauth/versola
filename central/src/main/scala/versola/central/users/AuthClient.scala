@@ -33,6 +33,9 @@ trait AuthClient:
 
   def getUserRoles(id: UserId, tenantId: TenantId): Task[List[RoleId]]
 
+  def getUserSessions(id: UserId): Task[List[AuthClient.SessionDto]]
+
+  def invalidateSession(userId: UserId): Task[Unit]
   def resetUserLimits(
       userId: UserId,
       tenantId: TenantId,
@@ -65,6 +68,14 @@ object AuthClient:
 
   private case class UserRolesResponse(roles: List[RoleId]) derives JsonCodec
 
+  case class SessionDto(
+      clientId: String,
+      userAgent: Option[String],
+      createdAt: String,
+  ) derives JsonCodec
+
+  case class SessionListResponse(sessions: List[SessionDto]) derives JsonCodec
+
   private case class ResetUserLimitsPayload(
       userId: UserId,
       tenantId: TenantId,
@@ -80,6 +91,7 @@ object AuthClient:
     private val usersUrl: URL = config.auth.url / "users"
     private val rolesUrl: URL = usersUrl / "roles"
     private val claimsUrl: URL = usersUrl / "claims"
+    private val sessionsUrl: URL = usersUrl / "sessions"
     private val limitsResetUrl: URL = usersUrl / "limits" / "reset"
 
     override def upsertUser(
@@ -138,6 +150,31 @@ object AuthClient:
                 ZIO.fail(new RuntimeException(s"Auth call failed: ${response.status.code} $body")))
       yield result
 
+    override def getUserSessions(id: UserId): Task[List[SessionDto]] =
+      for
+        token <- tokenService.getToken
+        request = Request.get(sessionsUrl.addQueryParam("id", id.toString))
+          .addHeader(Header.Authorization.Bearer(token))
+        result <- withConnectionRetry(ZIO.scoped:
+          httpClient.request(request).flatMap: response =>
+            if response.status.isSuccess then
+              response.body.asString.flatMap: body =>
+                ZIO.fromEither(body.fromJson[SessionListResponse])
+                  .mapError(msg => new RuntimeException(s"Auth sessions decode failed: $msg"))
+                  .map(_.sessions)
+            else
+              response.body.asString.flatMap: body =>
+                ZIO.fail(new RuntimeException(s"Auth call failed: ${response.status.code} $body")))
+      yield result
+
+    override def invalidateSession(userId: UserId): Task[Unit] =
+      send(
+        Request(
+          method = Method.DELETE,
+          url = sessionsUrl.addQueryParam("userId", userId.toString),
+          body = Body.empty,
+        ),
+      )
     override def resetUserLimits(
         userId: UserId,
         tenantId: TenantId,
@@ -150,7 +187,7 @@ object AuthClient:
     private def withConnectionRetry[A](effect: Task[A]): Task[A] =
       effect.catchSome {
         case _: java.net.ConnectException => effect
-        case _: java.io.IOException       => effect
+        case _: java.io.IOException => effect
       }
 
     private def jsonBody(json: String): Body =

@@ -248,3 +248,12 @@ export interface SortConfig {
   direction: 'asc' | 'desc';
 }
 
+export interface UserSession {
+  clientId: string;
+  userAgent?: string;
+  createdAt?: string;
+  platform: 'ios' | 'android' | 'desktop' | 'unknown';
+  browser?: string;
+  version?: string;
+}
+

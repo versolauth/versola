@@ -8,6 +8,7 @@ import versola.util.{DatabaseSpecBase, MAC}
 import zio.*
 import zio.test.*
 
+import java.time.Instant
 import java.util.UUID
 
 trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
@@ -28,11 +29,15 @@ trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
   val session1 = SessionRecord(
     userId = userId1,
     clientId = clientId1,
+    userAgent = Some("Mozilla/5.0 (Windows NT 10.0) AppleWebKit/537.36 Chrome/125.0"),
+    createdAt = Instant.EPOCH,
   )
 
   val session2 = SessionRecord(
     userId = userId2,
     clientId = clientId2,
+    userAgent = None,
+    createdAt = Instant.EPOCH,
   )
 
   def testCases(env: SessionRepositorySpec.Env): List[Spec[SessionRepositorySpec.Env & Scope, Any]] =
@@ -77,8 +82,49 @@ trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
           foundAfter.isEmpty,
         )
       },
+      test("findByUserId returns active sessions for user") {
+        for
+          _ <- env.repository.create(sessionId1, session1, ttl)
+          _ <- env.repository.create(sessionId2, session2, ttl)
+          _ <- env.repository.create(sessionId3, session1.copy(clientId = clientId2), ttl)
+          results <- env.repository.findByUserId(userId1)
+        yield assertTrue(
+          results.size == 2,
+          results.forall(_.userId == userId1),
+        )
+      },
+      test("findByUserId does not return expired sessions") {
+        for
+          _ <- env.repository.create(sessionId1, session1, 0.seconds)
+          _ <- TestClock.adjust(1.second)
+          results <- env.repository.findByUserId(userId1)
+        yield assertTrue(results.isEmpty)
+      },
+      test("invalidateByUserId removes all user sessions") {
+        for
+          _ <- env.repository.create(sessionId1, session1, ttl)
+          _ <- env.repository.create(sessionId3, session1.copy(clientId = clientId2), ttl)
+          before <- env.repository.findByUserId(userId1)
+          _ <- env.repository.invalidateByUserId(userId1)
+          after <- env.repository.findByUserId(userId1)
+        yield assertTrue(
+          before.size == 2,
+          after.isEmpty,
+        )
+      },
+      test("invalidateByUserId does not affect other users") {
+        for
+          _ <- env.repository.create(sessionId1, session1, ttl)
+          _ <- env.repository.create(sessionId2, session2, ttl)
+          _ <- env.repository.invalidateByUserId(userId1)
+          session1After <- env.repository.find(sessionId1)
+          session2After <- env.repository.find(sessionId2)
+        yield assertTrue(
+          session1After.isEmpty,
+          session2After.isDefined,
+        )
+      },
     )
 
 object SessionRepositorySpec:
   case class Env(repository: SessionRepository)
-

@@ -14,10 +14,12 @@ object UserController extends Controller:
   def routes: Routes[Env, Throwable] = Routes(
     findUsersEndpoint,
     getUserRolesEndpoint,
+    getUserSessionsEndpoint,
     createUserEndpoint,
     patchUserEndpoint,
     patchUserClaimsEndpoint,
     patchRolesEndpoint,
+    invalidateSessionEndpoint,
     resetUserLimitsEndpoint,
   )
 
@@ -30,14 +32,14 @@ object UserController extends Controller:
         phone <- request.queryZIO[Option[Phone]]("phone")
         login <- request.queryZIO[Option[Login]]("login")
         result <- (id, email, phone, login) match
-          case (Some(id), _, _, _)    => service.findById(id).map(_.toVector).asRight
+          case (Some(id), _, _, _) => service.findById(id).map(_.toVector).asRight
           case (_, Some(email), _, _) => service.findByEmail(email).map(_.toVector).asRight
           case (_, _, Some(phone), _) => service.findByPhone(phone).map(_.toVector).asRight
           case (_, _, _, Some(login)) => service.findByLogin(login).map(_.toVector).asRight
-          case _                      => ZIO.left(Response.badRequest)
+          case _ => ZIO.left(Response.badRequest)
       yield result.fold(
         identity,
-        result => Response.json(UserSearchResponse(result).toJson)
+        result => Response.json(UserSearchResponse(result).toJson),
       )
     }
 
@@ -51,6 +53,15 @@ object UserController extends Controller:
       yield Response.json(UserRolesResponse(roles).toJson)
     }
 
+  val getUserSessionsEndpoint =
+    Method.GET / "users" / "sessions" -> handler { (request: Request) =>
+      for
+        service <- ZIO.service[UserService]
+        id <- request.queryZIO[UserId]("id")
+        sessions <- service.getSessions(id)
+      yield Response.json(sessions.toJson)
+    }
+
   val createUserEndpoint =
     Method.POST / "users" -> handler { (request: Request) =>
       (for
@@ -59,7 +70,7 @@ object UserController extends Controller:
         id <- service.create(body)
       yield Response.json(CreateUserResponse(id).toJson).status(Status.Created))
         .catchAll:
-          case UserConflict     => ZIO.succeed(Response.status(Status.Conflict))
+          case UserConflict => ZIO.succeed(Response.status(Status.Conflict))
           case error: Throwable => ZIO.fail(error)
     }
 
@@ -88,6 +99,15 @@ object UserController extends Controller:
         body <- request.body.asJson[UpdateUserRolesRequest]
         _ <- service.updateRoles(body)
       yield Response.status(Status.Accepted)
+    }
+
+  val invalidateSessionEndpoint =
+    Method.DELETE / "users" / "sessions" -> handler { (request: Request) =>
+      for
+        service <- ZIO.service[UserService]
+        userId <- request.queryZIO[UserId]("userId")
+        _ <- service.invalidateSession(userId)
+      yield Response.status(Status.NoContent)
     }
 
   val resetUserLimitsEndpoint =
