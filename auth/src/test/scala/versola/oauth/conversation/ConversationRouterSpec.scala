@@ -152,7 +152,7 @@ object ConversationRouterSpec extends UnitSpecBase:
         val submission = OtpSubmission(otpCode)
         val successResult = ConversationResult.StepPassed(otp)
         val testCode = AuthorizationCode(Array.fill(32)(1.toByte))
-        val testSessionId: MAC.Of[SessionId] = MAC(Array.fill(32)(2.toByte))
+        val testSessionId: SessionId = SessionId(Array.fill(32)(2.toByte))
         val completeResult = ConversationResult.Complete(redirectUri, Some(State("test-state")), testCode, testSessionId, None)
         for
           _ <- env.otpConversationService.find.succeedsWith(Some(otpRecord))

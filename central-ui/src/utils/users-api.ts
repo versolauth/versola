@@ -1,5 +1,4 @@
-import type { PasskeyInfo, User, UserRoleAssignment, UserSearchField } from '../types';
-import { parseUserAgent } from './ua-parser';
+import type { PasskeyInfo, User, UserRoleAssignment, UserSearchField, UserSession } from '../types';
 
 type UserSearchRecordDto = {
   id: string;
@@ -142,7 +141,10 @@ export async function updateUserRoles(
 
 type UserSessionDto = {
   clientId: string;
-  userAgent?: string;
+  platform: 'ios' | 'android' | 'desktop' | 'unknown';
+  os?: string;
+  browser?: string;
+  version?: string;
   createdAt?: string;
 };
 
@@ -159,9 +161,11 @@ export async function fetchUserSessions(userId: string): Promise<UserSession[]> 
   const data = (await response.json()) as UserSessionDto[];
   return data.map(dto => ({
     clientId: dto.clientId,
-    userAgent: dto.userAgent,
+    platform: dto.platform,
+    os: dto.os,
+    browser: dto.browser,
+    version: dto.version,
     createdAt: dto.createdAt,
-    ...parseUserAgent(dto.userAgent),
   }));
 }
 

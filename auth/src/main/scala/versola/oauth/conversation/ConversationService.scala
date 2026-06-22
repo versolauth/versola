@@ -13,7 +13,7 @@ import versola.oauth.conversation.otp.OtpService
 import versola.oauth.conversation.otp.model.SubmitOtpResult
 import versola.oauth.model.{AuthorizationCode, AuthorizationCodeRecord}
 import versola.oauth.session.SessionRepository
-import versola.oauth.session.model.SessionRecord
+import versola.oauth.session.model.{SessionRecord, UserAgentInfo}
 import versola.oauth.token.AuthorizationCodeRepository
 import versola.oauth.userinfo.UserInfoService
 import versola.user.UserRepository
@@ -337,7 +337,7 @@ object ConversationService:
         session = SessionRecord(
           userId = userId,
           clientId = conversation.clientId,
-          userAgent = conversation.userAgent,
+          userAgent = UserAgentInfo.parse(conversation.userAgent),
           createdAt = now,
         )
         codeMac <- securityService.mac(Secret(code), config.security.authCodes.pepper)

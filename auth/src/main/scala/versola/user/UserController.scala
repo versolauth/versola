@@ -89,7 +89,10 @@ object UserController extends Controller:
 
   private case class SessionResponse(
       clientId: String,
-      userAgent: Option[String],
+      platform: String,
+      os: Option[String],
+      browser: Option[String],
+      version: Option[String],
       createdAt: String,
   ) derives JsonCodec
 
@@ -107,7 +110,10 @@ object UserController extends Controller:
           sessions.map { record =>
             SessionResponse(
               clientId = record.clientId,
-              userAgent = record.userAgent,
+              platform = record.userAgent.platform,
+              os = record.userAgent.os,
+              browser = record.userAgent.browser,
+              version = record.userAgent.version,
               createdAt = record.createdAt.toString,
             )
           },

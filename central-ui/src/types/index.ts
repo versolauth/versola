@@ -271,9 +271,9 @@ export interface SortConfig {
 
 export interface UserSession {
   clientId: string;
-  userAgent?: string;
   createdAt?: string;
   platform: 'ios' | 'android' | 'desktop' | 'unknown';
+  os?: string;
   browser?: string;
   version?: string;
 }

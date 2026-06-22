@@ -10,6 +10,6 @@ import java.time.Instant
 case class SessionRecord(
     userId: UserId,
     clientId: ClientId,
-    userAgent: Option[String],
+    userAgent: UserAgentInfo,
     createdAt: Instant,
 )

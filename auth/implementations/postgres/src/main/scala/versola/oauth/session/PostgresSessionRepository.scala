@@ -4,10 +4,11 @@ import com.augustnagro.magnum.*
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.oauth.client.model.ClientId
 import versola.oauth.model.{AccessToken, RefreshToken}
-import versola.oauth.session.model.{SessionId, SessionRecord, WithTtl}
+import versola.oauth.session.model.{SessionId, SessionRecord, UserAgentInfo, WithTtl}
 import versola.user.model.UserId
 import versola.util.MAC
 import versola.util.postgres.BasicCodecs
+import zio.json.*
 import zio.prelude.These
 import zio.{Clock, Duration, Task, ZLayer}
 
@@ -18,6 +19,7 @@ class PostgresSessionRepository(xa: TransactorZIO) extends SessionRepository, Ba
   given DbCodec[MAC] = DbCodec.ByteArrayCodec.biMap(MAC(_), identity[Array[Byte]])
   given DbCodec[UserId] = DbCodec.UUIDCodec.biMap(UserId(_), identity[UUID])
   given DbCodec[ClientId] = DbCodec.StringCodec.biMap(ClientId(_), identity[String])
+  given DbCodec[UserAgentInfo] = jsonBCodec[UserAgentInfo]
   given DbCodec[SessionRecord] = DbCodec.derived[SessionRecord]
 
   override def create(
