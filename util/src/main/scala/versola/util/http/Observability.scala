@@ -210,7 +210,7 @@ object Observability:
                     .sandbox.exit.timed
                   (duration, exit) = result
                   masking <- clientLogging.get
-                  route <- clientRoute.get.map(_.getOrElse(url.path.encode))
+                  route <- clientRoute.get.map(_.getOrElse(url.path.encode.stripPrefix("/")))
                   _ <- clientLog(method, url, route, tracedHeaders, body, startTime, duration, masking, exit)
                   response <- exit.unsandbox
                 yield response
