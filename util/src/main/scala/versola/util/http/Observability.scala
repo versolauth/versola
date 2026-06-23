@@ -46,13 +46,13 @@ object Observability:
     Boundaries.fromChunk(Chunk(0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 7.5, 10.0, 15.0, 20.0, 25.0, 30.0))
 
   private val requestsCount =
-    Metric.counter("server_http_requests_count")
+    Metric.counter("http_server_requests_total")
 
   private val requestDuration =
-    Metric.histogram("server_http_request_duration_seconds", durationBoundaries)
+    Metric.histogram("http_server_request_duration_seconds", durationBoundaries)
 
   private val activeRequests =
-    Metric.gauge("server_http_active_requests")
+    Metric.gauge("http_server_active_requests")
 
   val clientDurationBoundaries: Boundaries =
     Boundaries.fromChunk(Chunk(0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30))
