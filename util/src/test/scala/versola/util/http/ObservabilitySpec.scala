@@ -84,10 +84,10 @@ object ObservabilitySpec extends ZIOSpecDefault:
     )
 
   private def counterCount(tags: Set[MetricLabel]): UIO[Double] =
-    Metric.counter("server_http_requests_count").tagged(tags).value.map(_.count)
+    Metric.counter("http_server_requests_count").tagged(tags).value.map(_.count)
 
   private def histogramCount(tags: Set[MetricLabel]): UIO[Long] =
-    Metric.histogram("server_http_request_duration_seconds", Observability.durationBoundaries).tagged(tags).value.map(_.count)
+    Metric.histogram("http_server_request_duration_seconds", Observability.durationBoundaries).tagged(tags).value.map(_.count)
 
   private def clientCounterCount(tags: Set[MetricLabel]): UIO[Double] =
     Metric.counter("http_client_requests_total").tagged(tags).value.map(_.count)
