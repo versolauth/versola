@@ -356,34 +356,54 @@ object ObservabilitySpec extends ZIOSpecDefault:
             rawClient <- ZIO.service[Client]
             tracing <- ZIO.service[Tracing]
             client = rawClient @@ Observability.clientMiddleware(tracing)
+            requestsBefore <- clientCounterCount(counterTags)
+            durationsBefore <- clientHistogramCount(durationTags)
             _ <- client.batched(Request.get(URL.empty / "ok"))
-            requests <- clientCounterCount(counterTags)
-            durations <- clientHistogramCount(durationTags)
+            requestsAfter <- clientCounterCount(counterTags)
+            durationsAfter <- clientHistogramCount(durationTags)
           yield assertTrue(
-            requests >= 1.0,
-            durations >= 1L,
+            requestsAfter - requestsBefore == 1.0,
+            durationsAfter - durationsBefore == 1L,
           )
         }.provideSomeLayer[Scope](testLayer) @@ TestAspect.silentLogging,
         test("counts transport failures with status_class=error and records duration") {
-          val url = URL.decode("http://localhost:1/fail").toOption.get
           val failTags = Set(
             MetricLabel("method", "GET"),
-            MetricLabel("peer", "localhost:1"),
-            MetricLabel("route", "/fail"),
+            MetricLabel("peer", "unknown"),
+            MetricLabel("route", "fail"),
             MetricLabel("status_class", "error"),
           )
+          val failingClient = ZClient.fromDriver(new ZClient.Driver[Any, Scope, Throwable]:
+            def request(
+                version: Version,
+                method: Method,
+                url: URL,
+                headers: Headers,
+                body: Body,
+                sslConfig: Option[ClientSSLConfig],
+                proxy: Option[Proxy],
+            )(using trace: Trace): ZIO[Any & Scope, Throwable, Response] =
+              ZIO.fail(new java.net.ConnectException("Connection refused"))
+            def socket[Env1 <: Any](
+                version: Version,
+                url: URL,
+                headers: Headers,
+                app: WebSocketApp[Env1],
+            )(using trace: Trace, ev: Scope =:= Scope): ZIO[Env1 & Scope, Throwable, Response] =
+              ZIO.fail(new java.net.ConnectException("Connection refused")))
           for
-            rawClient <- ZIO.service[Client]
             tracing <- ZIO.service[Tracing]
-            client = rawClient @@ Observability.clientMiddleware(tracing)
-            _ <- client.batched(Request.get(url)).exit
-            requests <- clientCounterCount(failTags)
-            durations <- clientHistogramCount(failTags)
+            client = failingClient @@ Observability.clientMiddleware(tracing)
+            requestsBefore <- clientCounterCount(failTags)
+            durationsBefore <- clientHistogramCount(failTags)
+            _ <- client.batched(Request.get(URL.empty / "fail")).exit
+            requestsAfter <- clientCounterCount(failTags)
+            durationsAfter <- clientHistogramCount(failTags)
           yield assertTrue(
-            requests >= 1.0,
-            durations >= 1L,
+            requestsAfter - requestsBefore == 1.0,
+            durationsAfter - durationsBefore == 1L,
           )
-        }.provideSomeLayer[Scope](Client.default ++ ZTestLogger.default ++ tracingLayer) @@ TestAspect.silentLogging,
+        }.provideSomeLayer[Scope](ZTestLogger.default ++ tracingLayer) @@ TestAspect.silentLogging,
       ),
     ),
   )
