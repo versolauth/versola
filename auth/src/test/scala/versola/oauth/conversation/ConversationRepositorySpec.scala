@@ -66,6 +66,7 @@ trait ConversationRepositorySpec extends DatabaseSpecBase[ConversationRepository
     userClaims = Some(zio.json.ast.Json.Obj()),
     authFlow = AuthFlow.default,
     userAgent = None,
+    amr = Map.empty,
   )
 
   val record2 = record1.copy(
@@ -95,6 +96,7 @@ trait ConversationRepositorySpec extends DatabaseSpecBase[ConversationRepository
     userClaims = None,
     authFlow = AuthFlow.default,
     userAgent = None,
+    amr = Map.empty,
   )
 
   def testCases(env: ConversationRepositorySpec.Env): List[Spec[ConversationRepositorySpec.Env & zio.Scope, Any]] =

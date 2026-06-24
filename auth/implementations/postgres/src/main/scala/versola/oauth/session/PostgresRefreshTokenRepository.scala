@@ -3,7 +3,7 @@ package versola.oauth.session
 import com.augustnagro.magnum.*
 import com.augustnagro.magnum.magzio.TransactorZIO
 import com.augustnagro.magnum.pg.{PgCodec, SqlArrayCodec}
-import versola.oauth.client.model.{ClientId, ScopeToken}
+import versola.oauth.client.model.{AuthMethodRef, ClientId, ScopeToken}
 import versola.oauth.model.{AccessToken, Nonce, RefreshToken}
 import versola.oauth.session.model.{RefreshAlreadyExchanged, RefreshTokenRecord, SessionId, WithTtl}
 import versola.oauth.userinfo.model.RequestedClaims
@@ -31,6 +31,7 @@ class PostgresRefreshTokenRepository(xa: TransactorZIO) extends RefreshTokenRepo
   given listClientIdDbCodec: DbCodec[List[ClientId]] = PgCodec.SeqCodec[String].biMap(_.map(ClientId(_)).toList, _.map(identity[String]))
   given DbCodec[Nonce] = DbCodec.StringCodec.biMap(Nonce(_), identity[String])
   given DbCodec[RequestedClaims] = jsonCodec[RequestedClaims]
+  given DbCodec[Set[AuthMethodRef]] = jsonBCodec[Set[AuthMethodRef]]
   given DbCodec[RefreshTokenRecord] = DbCodec.derived[RefreshTokenRecord]
 
   override def create(
@@ -57,7 +58,9 @@ class PostgresRefreshTokenRepository(xa: TransactorZIO) extends RefreshTokenRepo
           expires_at,
           requested_claims,
           ui_locales,
-          nonce
+          nonce,
+          amr,
+          auth_time
         )
         VALUES (
           $refreshToken,
@@ -72,7 +75,9 @@ class PostgresRefreshTokenRepository(xa: TransactorZIO) extends RefreshTokenRepo
           ${record.expiresAt},
           ${record.requestedClaims},
           ${record.uiLocales}::text[],
-          ${record.nonce}
+          ${record.nonce},
+          ${record.amr},
+          ${record.authTime}
         )
         """.update.run()
       ()
@@ -88,7 +93,8 @@ class PostgresRefreshTokenRepository(xa: TransactorZIO) extends RefreshTokenRepo
         sql"""
           SELECT session_id, access_token, user_id, client_id,
                  external_audience, scope, issued_at,
-                 expires_at, requested_claims, ui_locales, nonce, previous_id
+                 expires_at, requested_claims, ui_locales, nonce, previous_id,
+                 amr, auth_time
           FROM refresh_tokens
           WHERE id = $token
         """.query[RefreshTokenRecord]

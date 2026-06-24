@@ -11,4 +11,6 @@ object ErrorCode:
   val UnsupportedResponseType: ErrorCode = "unsupported_response_type"
   val UnauthorizedClient: ErrorCode = "unauthorized_client"
   val InvalidScope: ErrorCode = "invalid_scope"
+  val LoginRequired: ErrorCode = "login_required"
+  val AccessDenied: ErrorCode = "access_denied"
 

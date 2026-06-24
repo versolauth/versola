@@ -1,10 +1,13 @@
 package versola.oauth.authorize
 
-import versola.oauth.authorize.model.{AuthorizeRequest, Error, ResponseTypeEntry}
+import versola.oauth.authorize.model.{AuthorizeRequest, Error, Prompt, ResponseTypeEntry}
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{ClientId, OAuthClientRecord, ScopeToken}
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, Nonce, State}
+import versola.oauth.model.SessionCookie
+import versola.oauth.session.model.SessionId
 import versola.oauth.userinfo.model.RequestedClaims
+import versola.util.Base64
 import zio.http.{Header, Method, Request, URL}
 import zio.json.*
 import zio.prelude.NonEmptySet
@@ -93,9 +96,25 @@ object AuthorizeRequestParser:
           .orElseFail(Error.MultipleValuesProvided(redirectUri, state, "nonce"))
           .map(_.map(Nonce(_)))
 
+        prompt <- getParam(params, "prompt")
+          .orElseFail(Error.MultipleValuesProvided(redirectUri, state, "prompt"))
+          .map(_.flatMap(Prompt.fromString))
+
+        maxAge <- getParam(params, "max_age")
+          .orElseFail(Error.MultipleValuesProvided(redirectUri, state, "max_age"))
+          .map(_.flatMap(_.toLongOption))
+
+        acrValues <- getParam(params, "acr_values")
+          .orElseFail(Error.MultipleValuesProvided(redirectUri, state, "acr_values"))
+          .map(_.map(_.split(' ').toList))
+
         userAgent =
           request.header(Header.UserAgent)
             .map(_.renderedValue)
+
+        sessionId =
+          request.cookie(SessionCookie.name)
+            .flatMap(c => scala.util.Try(SessionId(Base64.urlDecode(c.content))).toOption)
 
         authorizeRequest = AuthorizeRequest(
           clientId = clientId,
@@ -109,6 +128,10 @@ object AuthorizeRequestParser:
           uiLocales = uiLocales,
           nonce = nonce,
           userAgent = userAgent,
+          prompt = prompt,
+          maxAge = maxAge,
+          acrValues = acrValues,
+          sessionId = sessionId,
         )
       yield authorizeRequest
 

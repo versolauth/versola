@@ -31,6 +31,7 @@ trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
     clientId = clientId1,
     userAgent = UserAgentInfo("desktop", Some("Windows 10 / 11"), Some("Chrome"), Some("125")),
     createdAt = Instant.EPOCH,
+    amr = Map.empty,
   )
 
   val session2 = SessionRecord(
@@ -38,6 +39,7 @@ trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
     clientId = clientId2,
     userAgent = UserAgentInfo("unknown", None, None, None),
     createdAt = Instant.EPOCH,
+    amr = Map.empty,
   )
 
   def testCases(env: SessionRepositorySpec.Env): List[Spec[SessionRepositorySpec.Env & Scope, Any]] =

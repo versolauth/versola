@@ -1,6 +1,6 @@
 package versola.oauth.session.model
 
-import versola.oauth.client.model.ClientId
+import versola.oauth.client.model.{ClientId, PassedAuthFactor, PassedFactorRecord}
 import versola.oauth.model.{AccessToken, RefreshToken}
 import versola.user.model.UserId
 import zio.prelude.These
@@ -12,4 +12,5 @@ case class SessionRecord(
     clientId: ClientId,
     userAgent: UserAgentInfo,
     createdAt: Instant,
+    amr: Map[PassedAuthFactor, PassedFactorRecord],
 )

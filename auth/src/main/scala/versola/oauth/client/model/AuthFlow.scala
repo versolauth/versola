@@ -28,6 +28,7 @@ case class PasskeyAuthFlow(
 case class AuthFlow(
     primary: PrimaryAuthFlow,
     passkey: Option[PasskeyAuthFlow],
+    equivalents: Map[PassedAuthFactor, Set[PassedAuthFactor]],
 ) derives JsonCodec, Schema, Equal
 
 object AuthFlow:
@@ -38,4 +39,5 @@ object AuthFlow:
       factors = List(AuthFactor(`type` = AuthFactorType.otp, required = true)),
     ),
     passkey = None,
+    equivalents = Map.empty,
   )

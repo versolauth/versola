@@ -4,7 +4,7 @@ import versola.oauth.authorize.model.{AuthorizeRequest, AuthorizeResponse, Error
 import versola.oauth.conversation.ConversationRenderService
 import versola.oauth.conversation.model.{ConversationRecord, ConversationStep}
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, ConversationCookie}
-import versola.util.CoreConfig
+import versola.util.{Base64Url, CoreConfig}
 import versola.util.http.Controller
 import zio.*
 import zio.http.*
@@ -31,7 +31,7 @@ object AuthorizeEndpointController extends Controller:
           response <- authorizeAndRedirect(parsedRequest)
         yield response
       result
-        .catchAll {
+        .catchSome {
           case Error.BadRequest =>
             ZIO.succeed(Response.badRequest(Error.BadRequest.description))
 
@@ -45,8 +45,10 @@ object AuthorizeEndpointController extends Controller:
       authService <- ZIO.service[AuthorizeEndpointService]
       conversationConfig <- ZIO.service[CoreConfig]
       response <- authService.authorize(request).map:
-        case AuthorizeResponse.Authorized(code) =>
-          Response.seeOther(request.buildResponseUri(code))
+        case AuthorizeResponse.Authorized(code, idToken) =>
+          Response.seeOther(
+            AuthorizeRedirect.responseUrl(request.redirectUri, Base64Url.encode(code), request.state, idToken),
+          )
 
         case AuthorizeResponse.Initialize(authId) =>
           Response.seeOther(URL.empty / "challenge")

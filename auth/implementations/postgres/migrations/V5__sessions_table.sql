@@ -4,6 +4,7 @@ CREATE TABLE sso_sessions (
     user_id UUID NOT NULL,
     user_agent JSONB NOT NULL,
     created_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    amr JSONB NOT NULL,
     expires_at TIMESTAMP WITH TIME ZONE NOT NULL
 );
 

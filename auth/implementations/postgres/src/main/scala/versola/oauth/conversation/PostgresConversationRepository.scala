@@ -5,7 +5,7 @@ import com.augustnagro.magnum.magzio.TransactorZIO
 import com.augustnagro.magnum.pg.{PgCodec, SqlArrayCodec}
 import versola.auth.model.OtpCode
 import versola.oauth.authorize.model.ResponseTypeEntry
-import versola.oauth.client.model.{AuthFlow, ClientId, ScopeToken}
+import versola.oauth.client.model.{AuthFlow, ClientId, PassedAuthFactor, PassedFactorRecord, ScopeToken}
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, Nonce, State}
 import versola.oauth.userinfo.model.RequestedClaims
@@ -23,6 +23,8 @@ import java.util.UUID
 class PostgresConversationRepository(xa: TransactorZIO) extends ConversationRepository, BasicCodecs:
   import PgCodec.{ListCodec, SeqCodec}
   import SqlArrayCodec.ListSqlArrayCodec
+
+  given amrCodec: DbCodec[Map[PassedAuthFactor, PassedFactorRecord]] = jsonBCodec[Map[PassedAuthFactor, PassedFactorRecord]]
 
   given JsonCodec[OtpCode] = JsonCodec.string.transform(OtpCode(_), identity[String])
   given JsonCodec[ConversationStep.Otp.Real] = DeriveJsonCodec.gen[ConversationStep.Otp.Real]
@@ -60,7 +62,7 @@ class PostgresConversationRepository(xa: TransactorZIO) extends ConversationRepo
   override def find(authId: AuthId): Task[Option[ConversationRecord]] =
     Clock.instant.flatMap: now =>
       xa.connect {
-        sql"""select client_id, redirect_uri, scope, code_challenge, code_challenge_method, state, user_id, credential, step, requested_claims, ui_locales, nonce, response_type, user_email, user_phone, user_login, user_claims, auth_flow, user_agent, expires_at
+        sql"""select client_id, redirect_uri, scope, code_challenge, code_challenge_method, state, user_id, credential, step, requested_claims, ui_locales, nonce, response_type, user_email, user_phone, user_login, user_claims, auth_flow, user_agent, amr, expires_at
               from auth_conversations
               where id = $authId"""
           .query[(ConversationRecord, Instant)]
@@ -92,6 +94,7 @@ class PostgresConversationRepository(xa: TransactorZIO) extends ConversationRepo
                 user_claims,
                 auth_flow,
                 user_agent,
+                amr,
                 expires_at
             ) values (
                 $authId,
@@ -114,6 +117,7 @@ class PostgresConversationRepository(xa: TransactorZIO) extends ConversationRepo
                 ${record.userClaims},
                 ${record.authFlow},
                 ${record.userAgent},
+                ${record.amr},
                 ${authId.createdAt.plusSeconds(ttl.toSeconds)})
          """
         .update.run()
@@ -129,7 +133,8 @@ class PostgresConversationRepository(xa: TransactorZIO) extends ConversationRepo
               user_phone = ${record.userPhone},
               user_login = ${record.userLogin},
               user_claims = ${record.userClaims},
-              auth_flow = ${record.authFlow}
+              auth_flow = ${record.authFlow},
+              amr = ${record.amr}
             where id = $authId"""
         .update.run()
     }.unit

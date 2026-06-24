@@ -97,6 +97,7 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
     userClaims = None,
     authFlow = AuthFlow.default,
     userAgent = None,
+    amr = Map.empty,
   )
 
   val passwordRecord = baseRecord.copy(
@@ -207,8 +208,9 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
         for
           _ <- env.submissionLimiter.isBanned.succeedsWith(LimitStatus.Allowed)
           _ <- env.passwordService.verifyPassword.succeedsWith(CheckPassword.Success)
+          _ <- env.conversationRepository.overwrite.succeedsWith(())
           result <- env.service.checkPassword(passwordRecord, passwordStep, password, authId)
-        yield assertTrue(result == ConversationResult.StepPassed(passwordStep))
+        yield assertTrue(result.isInstanceOf[ConversationResult.StepPassed])
       },
       test("re-render incremented step on failure when still allowed") {
         val env = Env()

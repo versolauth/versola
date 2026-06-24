@@ -67,7 +67,16 @@ object JWT:
       }
     }
 
-
+  /** Computes the OIDC `c_hash` / `at_hash` value for a token string (RFC OIDC Core
+    * §3.3.2.11): base64url of the left-most half of the hash produced by the id token's
+    * signing algorithm.
+    */
+  def leftHalfHash(value: String, algorithm: Algorithm): String =
+    val digestName = algorithm match
+      case Algorithm.RS256 | Algorithm.HS256 => "SHA-256"
+    val digest = java.security.MessageDigest.getInstance(digestName)
+      .digest(value.getBytes(StandardCharsets.US_ASCII))
+    Base64.urlEncode(digest.take(digest.length / 2))
 
   case class Claims(
       issuer: String,

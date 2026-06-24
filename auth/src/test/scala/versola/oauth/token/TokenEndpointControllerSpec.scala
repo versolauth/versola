@@ -4,7 +4,7 @@ import org.scalamock.stubs.Stub
 import versola.auth.TestEnvConfig
 import com.nimbusds.jwt.SignedJWT
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{ClientId, ClientIdWithSecret, ScopeToken}
+import versola.oauth.client.model.{AuthMethodRef, ClientId, ClientIdWithSecret, ScopeToken}
 import versola.oauth.model.{AccessToken, AuthorizationCode, CodeVerifier, Nonce, RefreshToken}
 import versola.oauth.token.model.{ClientCredentialsRequest, CodeExchangeRequest, IssuedTokens, RefreshTokenRequest, TokenEndpointError, TokenResponse}
 import versola.oauth.userinfo.UserInfoService
@@ -44,6 +44,8 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
     nonce = None,
     user = None,
     roles = Nil,
+    amr = Set(AuthMethodRef.pwd),
+    authTime = Some(java.time.Instant.ofEpochSecond(1700000000)),
   )
 
   def authHeader(clientId: ClientId, secret: Option[Secret]): Header.Authorization =
@@ -457,6 +459,8 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
             idToken.map(_.getSubject) == Some(userId1.toString),
             idToken.map(_.getClaim("nonce")) == Some("test-nonce-value"),
             idToken.map(_.getClaim("name")) != null,
+            idToken.map(_.getStringListClaim("amr")) == Some(java.util.List.of("pwd")),
+            idToken.map(_.getLongClaim("auth_time")) == Some(1700000000L),
           ),
       ),
       tokenEndpointTestCase(
@@ -531,6 +535,8 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
             idToken.map(_.getSubject) == Some(userId1.toString),
             idToken.map(_.getClaim("nonce")) == Some("refresh-nonce"),
             idToken.map(_.getClaim("email")) != null,
+            idToken.map(_.getStringListClaim("amr")) == Some(java.util.List.of("pwd")),
+            idToken.map(_.getLongClaim("auth_time")) == Some(1700000000L),
           ),
       ),
       tokenEndpointTestCase(

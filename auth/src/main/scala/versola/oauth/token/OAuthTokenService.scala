@@ -90,6 +90,8 @@ object OAuthTokenService:
             uiLocales = codeRecord.uiLocales,
             nonce = codeRecord.nonce,
             previousRefreshToken = None,
+            amr = codeRecord.amr,
+            authTime = codeRecord.authTime,
           ),
         ).mapError {
           case ex: Throwable => ex
@@ -164,6 +166,8 @@ object OAuthTokenService:
         nonce = None,
         user = None,
         roles = Nil,
+        amr = Set.empty,
+        authTime = None,
       )
 
     private def issueTokens(
@@ -202,4 +206,6 @@ object OAuthTokenService:
         nonce = record.nonce,
         user = user.flatten,
         roles = roles,
+        amr = record.amr,
+        authTime = Some(record.authTime),
       )

@@ -9,6 +9,7 @@ sealed trait AuthorizeResponse
 object AuthorizeResponse:
   case class Authorized(
       code: AuthorizationCode,
+      idToken: Option[String],
   ) extends AuthorizeResponse
 
   case class Initialize(
