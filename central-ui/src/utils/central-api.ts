@@ -78,6 +78,7 @@ type BackendAuthFactor = { type: string; required: boolean };
 type BackendAuthFlow = {
   primary: { credentials: string[]; inlinePassword: boolean; factors: BackendAuthFactor[] };
   passkey?: { factors: BackendAuthFactor[] } | null;
+  equivalents?: Record<string, string[]>;
 };
 type ClientsResponse = { clients: Array<{ id: string; clientName: string; redirectUris: string[]; scope: string[]; externalAudience: string[]; permissions: string[]; secretRotation: boolean; theme: string; otpTemplateId: string; authFlow?: BackendAuthFlow | null }> };
 type RolesResponse = { roles: Array<{ id: string; description: LocalizedDescription; permissions: string[]; active: boolean }> };
@@ -106,6 +107,7 @@ function authFlowToBackend(flow: AuthFlow | null | undefined): BackendAuthFlow |
       factors: flow.factors,
     },
     passkey: flow.passkey ? { factors: flow.passkeyFactors ?? [] } : null,
+    equivalents: flow.equivalents,
   };
 }
 
@@ -117,6 +119,7 @@ function authFlowFromBackend(flow: BackendAuthFlow | null | undefined): AuthFlow
     factors: flow.primary.factors as AuthFlow['factors'],
     passkey: flow.passkey != null,
     passkeyFactors: (flow.passkey?.factors ?? []) as AuthFlow['passkeyFactors'],
+    equivalents: flow.equivalents ?? {},
   };
 }
 

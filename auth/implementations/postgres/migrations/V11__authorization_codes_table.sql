@@ -12,7 +12,9 @@ CREATE TABLE authorization_codes (
     ui_locales TEXT[],
     nonce TEXT,
     used BOOLEAN NOT NULL,
-    access_token BYTEA NOT NULL
+    access_token BYTEA NOT NULL,
+    amr JSONB NOT NULL,
+    auth_time TIMESTAMP WITH TIME ZONE NOT NULL
 );
 
 CREATE INDEX authorization_codes_expires_at_idx

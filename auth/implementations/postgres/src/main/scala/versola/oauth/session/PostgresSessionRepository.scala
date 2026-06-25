@@ -4,10 +4,12 @@ import com.augustnagro.magnum.*
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.oauth.client.model.ClientId
 import versola.oauth.model.{AccessToken, RefreshToken}
-import versola.oauth.session.model.{SessionId, SessionRecord, WithTtl}
+import versola.oauth.client.model.{PassedAuthFactor, PassedFactorRecord}
+import versola.oauth.session.model.{SessionId, SessionRecord, UserAgentInfo, WithTtl}
 import versola.user.model.UserId
 import versola.util.MAC
 import versola.util.postgres.BasicCodecs
+import zio.json.*
 import zio.prelude.These
 import zio.{Clock, Duration, Task, ZLayer}
 
@@ -18,6 +20,8 @@ class PostgresSessionRepository(xa: TransactorZIO) extends SessionRepository, Ba
   given DbCodec[MAC] = DbCodec.ByteArrayCodec.biMap(MAC(_), identity[Array[Byte]])
   given DbCodec[UserId] = DbCodec.UUIDCodec.biMap(UserId(_), identity[UUID])
   given DbCodec[ClientId] = DbCodec.StringCodec.biMap(ClientId(_), identity[String])
+  given DbCodec[UserAgentInfo] = jsonBCodec[UserAgentInfo]
+  given amrCodec: DbCodec[Map[PassedAuthFactor, PassedFactorRecord]] = jsonBCodec[Map[PassedAuthFactor, PassedFactorRecord]]
   given DbCodec[SessionRecord] = DbCodec.derived[SessionRecord]
 
   override def create(
@@ -28,13 +32,14 @@ class PostgresSessionRepository(xa: TransactorZIO) extends SessionRepository, Ba
     Clock.instant.flatMap: now =>
       xa.connect:
         sql"""
-          INSERT INTO sso_sessions (id, client_id, user_id, user_agent, created_at, expires_at)
+          INSERT INTO sso_sessions (id, client_id, user_id, user_agent, created_at, amr, expires_at)
           VALUES (
             $id,
             ${session.clientId},
             ${session.userId},
             ${session.userAgent},
             ${session.createdAt},
+            ${session.amr},
             ${now.plusSeconds(ttl.toSeconds)}
           )
         """.update.run()
@@ -45,7 +50,7 @@ class PostgresSessionRepository(xa: TransactorZIO) extends SessionRepository, Ba
       now <- Clock.instant
       result <- xa.connect:
         sql"""
-          SELECT user_id, client_id, user_agent, created_at, expires_at
+          SELECT user_id, client_id, user_agent, created_at, amr, expires_at
           FROM sso_sessions
           WHERE id = $id
         """.query[(SessionRecord, Instant)].run().headOption
@@ -59,7 +64,7 @@ class PostgresSessionRepository(xa: TransactorZIO) extends SessionRepository, Ba
       now <- Clock.instant
       result <- xa.connect:
         sql"""
-        SELECT user_id, client_id, user_agent, created_at
+        SELECT user_id, client_id, user_agent, created_at, amr
         FROM sso_sessions
         WHERE
           user_id = $userId

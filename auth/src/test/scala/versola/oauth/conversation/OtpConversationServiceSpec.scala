@@ -5,7 +5,7 @@ import versola.oauth.challenge.passkey.{PasskeyRepository, WebAuthnService}
 import versola.auth.model.OtpCode
 import versola.oauth.challenge.password.PasswordService
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{AuthFlow, ClientId, PrimaryCredential, ScopeToken}
+import versola.oauth.client.model.{AuthFlow, AuthMethodRef, ClientId, PassedAuthFactor, PassedFactorRecord, PrimaryCredential, ScopeToken}
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
 import versola.oauth.conversation.otp.OtpService
 import versola.oauth.conversation.otp.model.SubmitOtpResult
@@ -101,6 +101,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
     userClaims = None,
     authFlow = AuthFlow.default,
     userAgent = None,
+    amr = Map.empty,
   )
 
   val otpRecord = initialConversation.copy(
@@ -216,7 +217,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
 
     ),
     suite("checkOtp")(
-      test("return Success when OTP is correct") {
+      test("return StepPassed when OTP is correct") {
         val env = Env()
         val otp = realOtp.copy(timesRequested = 1)
         val record = ConversationRecord(
@@ -239,10 +240,12 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           userClaims = Some(zio.json.ast.Json.Obj()),
           authFlow = AuthFlow.default,
           userAgent = None,
+          amr = Map.empty,
         )
         for
           _ <- env.submissionLimiter.isBanned.succeedsWith(LimitStatus.Allowed)
           _ <- env.otpService.checkOtp.succeedsWith(SubmitOtpResult.Success)
+          _ <- env.conversationRepository.overwrite.succeedsWith(())
           result <- env.service.checkOtp(record, otp, otpCode, authId)
         yield assertTrue(result.isInstanceOf[ConversationResult.StepPassed])
       },
@@ -269,6 +272,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           userClaims = Some(zio.json.ast.Json.Obj()),
           authFlow = AuthFlow.default,
           userAgent = None,
+          amr = Map.empty,
         )
         for
           _ <- env.submissionLimiter.isBanned.succeedsWith(LimitStatus.Banned)
@@ -340,6 +344,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           nonce = Some(nonce),
           userEmail = Some(userEmail),
           userClaims = Some(userClaims),
+          amr = Map(PassedAuthFactor.otp -> PassedFactorRecord(java.time.Instant.EPOCH, Set(AuthMethodRef.otp))),
         )
         val testCode = versola.oauth.model.AuthorizationCode(Array.fill(32)(1.toByte))
         val testSessionId = versola.oauth.session.model.SessionId(Array.fill(32)(2.toByte))
@@ -367,6 +372,8 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           result.idTokenData.isDefined,
           result.idTokenData.get.claims.contains("sub"),
           result.idTokenData.get.claims.contains("email"),
+          result.idTokenData.get.claims.contains("amr"),
+          result.idTokenData.get.claims.contains("auth_time"),
           result.idTokenData.get.clientId == clientId,
         )
       },

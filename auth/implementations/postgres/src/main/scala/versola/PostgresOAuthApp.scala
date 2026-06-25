@@ -108,7 +108,6 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       IntrospectionService.live >+>
       RevocationService.live >+>
       AuthorizeRequestParser.live >+>
-      AuthorizeEndpointService.live >+>
       OtpGenerationService.live >+>
       ZLayer.succeed(versola.oauth.conversation.otp.OtpDecisionService.Impl()) >+>
       EmailOtpProvider.live >+>
@@ -117,6 +116,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       PasswordService.live >+>
       WebAuthnService.live >+>
       UserInfoService.live >+>
+      AuthorizeEndpointService.live >+>
       SubmissionLimiter.live >+>
       ConversationService.live >+>
       ConversationRouter.live >+>

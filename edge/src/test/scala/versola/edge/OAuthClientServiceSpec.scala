@@ -11,8 +11,8 @@ object OAuthClientServiceSpec extends ZIOSpecDefault:
   private val presetId = PresetId("preset-default")
   private val otherPresetId = PresetId("preset-mobile")
 
-  private val client = OAuthClient(id = clientId, secret = Secret(Array.fill(48)(1.toByte)))
-  private val otherClient = OAuthClient(id = otherClientId, secret = Secret(Array.fill(48)(2.toByte)))
+  private val client = OAuthClient(id = clientId, secret = Secret(Array.fill(48)(1.toByte)), permissions = Set.empty)
+  private val otherClient = OAuthClient(id = otherClientId, secret = Secret(Array.fill(48)(2.toByte)), permissions = Set.empty)
 
   private val preset = AuthorizationPreset(
     id = presetId,

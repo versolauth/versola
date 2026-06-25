@@ -1,7 +1,7 @@
 package versola.oauth.conversation.model
 
 import versola.oauth.authorize.model.ResponseTypeEntry
-import versola.oauth.client.model.{AuthFlow, ClientId, ScopeToken}
+import versola.oauth.client.model.{AuthFactor, AuthFlow, ClientId, PassedAuthFactor, PassedFactorRecord, ScopeToken}
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, Nonce, State}
 import versola.oauth.userinfo.model.RequestedClaims
 import versola.user.model.{Login, UserId}
@@ -9,6 +9,8 @@ import versola.util.{Email, Phone}
 import zio.http.URL
 import zio.json.ast.Json
 import zio.prelude.NonEmptySet
+
+import java.time.Instant
 
 case class ConversationRecord(
     clientId: ClientId,
@@ -30,6 +32,7 @@ case class ConversationRecord(
     userClaims: Option[Json.Obj],
     authFlow: AuthFlow,
     userAgent: Option[String],
+    amr: Map[PassedAuthFactor, PassedFactorRecord],
 ):
   def patch(patch: ConversationRecord.Patch): ConversationRecord =
     this.copy(

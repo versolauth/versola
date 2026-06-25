@@ -223,44 +223,68 @@ export class VersolaUsersList extends LitElement {
         padding: var(--spacing-xs) 0;
         font-size: 0.875rem;
       }
-      
+
       .session-card {
-        padding: var(--spacing-xs) 0;
-        border-bottom: 1px solid var(--border-subtle, rgba(255,255,255,0.06));
-        font-size: 0.875rem;
+        background: var(--bg-dark);
+        border: 1px solid var(--border-dark);
+        border-radius: var(--radius-md);
+        overflow: hidden;
       }
 
-      .session-card:last-child {
-        border-bottom: none;
-      }
-
-      .session-card-info {
+      .session-card-header {
         display: flex;
-        flex-direction: column;
-        gap: 0.125rem;
+        align-items: center;
+        justify-content: space-between;
+        padding: var(--spacing-md) var(--spacing-md);
+        border-bottom: 1px solid var(--border-dark);
+        gap: var(--spacing-md);
       }
 
-      .session-platform {
+      .session-card-name {
+        font-size: 0.9375rem;
         font-weight: 600;
         color: var(--text-primary);
-        font-size: 0.8125rem;
         text-transform: capitalize;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
       }
 
-      .session-browser {
-        color: var(--text-secondary);
-        font-size: 0.75rem;
+      .session-card-body {
+        padding: var(--spacing-md) var(--spacing-md);
+        display: grid;
+        grid-template-columns: 9rem 1fr;
+        gap: var(--spacing-sm) var(--spacing-md);
+        font-size: 0.8125rem;
       }
 
-      .session-client {
+      .session-prop-label {
         color: var(--text-secondary);
         font-size: 0.75rem;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        font-weight: 600;
+        align-self: center;
+      }
+
+      .session-prop-value {
+        color: var(--text-primary);
+        word-break: break-all;
+        overflow-wrap: anywhere;
+        min-width: 0;
+        align-self: center;
+      }
+
+      .session-prop-value.muted {
+        color: var(--text-secondary);
+        font-style: italic;
+      }
+
+      .session-prop-value.mono {
         font-family: var(--font-mono);
-      }
-
-      .session-date {
-        color: var(--text-tertiary, var(--text-secondary));
         font-size: 0.75rem;
+        color: var(--accent);
       }
 
       .role-tag {
@@ -726,11 +750,19 @@ export class VersolaUsersList extends LitElement {
     }
   }
 
-  private async handleInvalidateSession(userId: string) {
+  private async handleInvalidateSession(user: User) {
+    const confirmed = await confirmDestructiveAction({
+      title: 'Invalidate all sessions',
+      messagePrefix: 'Sign ',
+      messageSubject: this.resolveDisplayName(user) || user.email || user.login || user.id,
+      messageSuffix: ' out of all active sessions? This cannot be undone.',
+      confirmLabel: 'Invalidate all',
+    });
+    if (!confirmed) return;
     try {
-      await invalidateUserSession(userId);
-      const sessions = await fetchUserSessions(userId);
-      this.userSessions = {...this.userSessions, [userId]: sessions};
+      await invalidateUserSession(user.id);
+      const sessions = await fetchUserSessions(user.id);
+      this.userSessions = {...this.userSessions, [user.id]: sessions};
     } catch (error) {
       this.errorPopup = error instanceof Error ? error.message : 'Failed to invalidate session';
     }
@@ -917,6 +949,18 @@ export class VersolaUsersList extends LitElement {
     return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
   }
 
+  private formatDateTime(value: string): string {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return value;
+    return date.toLocaleString(undefined, {
+      year: 'numeric',
+      month: 'short',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  }
+
   private renderUserRoles(user: User) {
     const assignments = this.userRoles[user.id] ?? [];
     return html`
@@ -941,27 +985,37 @@ export class VersolaUsersList extends LitElement {
 
   private renderUserSessions(user: User) {
     const sessions = this.userSessions[user.id] ?? [];
-    const formatDate = (iso: string) =>
-        new Date(iso).toLocaleDateString('en-GB');
 
     return html`
       <div class="expand-section">
         <div class="expand-section-header">
           <div class="expand-section-title">Sessions</div>
           <button class="icon-action danger" title="Invalidate all sessions"
-                  @click=${() => this.handleInvalidateSession(user.id)}>Invalidate all</button>
+                  @click=${() => this.handleInvalidateSession(user)}>✕</button>
         </div>
         ${sessions.length > 0 ? html`
           <div class="expand-section-content">
             ${sessions.map(s => html`
               <div class="session-card">
-                <div class="session-card-info">
-                  <span class="session-platform">${s.platform}</span>
-                  <span class="session-browser">
-                  ${s.browser ? `${s.browser}${s.version ? ` ${s.version}` : ''}` : '—'}
-                </span>
-                  <span class="session-client">${s.clientId}</span>
-                  ${s.createdAt ? html`<span class="session-date">${formatDate(s.createdAt)}</span>` : ''}
+                <div class="session-card-header">
+                  <div class="session-card-name">${s.platform}</div>
+                </div>
+                <div class="session-card-body">
+                  <span class="session-prop-label">OS</span>
+                  <span class="session-prop-value ${s.os ? '' : 'muted'}">${s.os ?? '—'}</span>
+
+                  <span class="session-prop-label">Browser</span>
+                  <span class="session-prop-value ${s.browser ? '' : 'muted'}">
+                    ${s.browser ? `${s.browser}${s.version ? ` ${s.version}` : ''}` : '—'}
+                  </span>
+
+                  <span class="session-prop-label">Client</span>
+                  <span class="session-prop-value mono">${s.clientId}</span>
+
+                  ${s.createdAt ? html`
+                    <span class="session-prop-label">Created</span>
+                    <span class="session-prop-value">${this.formatDateTime(s.createdAt)}</span>
+                  ` : ''}
                 </div>
               </div>
             `)}

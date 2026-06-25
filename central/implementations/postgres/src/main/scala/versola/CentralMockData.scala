@@ -1,7 +1,7 @@
 package versola
 
 import versola.central.configuration.challenges.{ChallengeSettingsRecord, OtpTemplateRecord, PasskeySettings, RateLimit, SubmissionLimits}
-import versola.central.configuration.clients.{AuthFactor, AuthFactorType, AuthFlow, ClientId, PasskeyAuthFlow, PrimaryAuthFlow, PrimaryCredential}
+import versola.central.configuration.clients.{AuthFactor, AuthFactorType, AuthFlow, ClientId, PasskeyAuthFlow, PassedAuthFactor, PrimaryAuthFlow, PrimaryCredential}
 import versola.central.configuration.edges.EdgeId
 import versola.central.configuration.permissions.Permission
 import versola.central.configuration.resources.ResourceEndpointId
@@ -463,6 +463,7 @@ object CentralMockData:
           ),
         ),
         passkey = Some(PasskeyAuthFlow(factors = List.empty)),
+        equivalents = Map(PassedAuthFactor.passkey -> Set(PassedAuthFactor.otp)),
       )),
     ),
     (

@@ -19,6 +19,7 @@ CREATE TABLE auth_conversations (
     user_claims JSON,
     auth_flow JSONB NOT NULL,
     user_agent TEXT,
+    amr JSONB NOT NULL,
     expires_at TIMESTAMP WITH TIME ZONE NOT NULL
 );
 

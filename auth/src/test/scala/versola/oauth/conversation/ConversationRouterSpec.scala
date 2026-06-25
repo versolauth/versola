@@ -2,7 +2,7 @@ package versola.oauth.conversation
 
 import versola.auth.model.OtpCode
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{AuthFactor, AuthFactorType, AuthFlow, ClientId, PrimaryAuthFlow, PrimaryCredential, ScopeToken}
+import versola.oauth.client.model.{AuthFactor, AuthFactorType, AuthFlow, AuthMethodRef, ClientId, PassedAuthFactor, PassedFactorRecord, PrimaryAuthFlow, PrimaryCredential, ScopeToken}
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
 import versola.oauth.model.{AuthorizationCode, CodeChallenge, CodeChallengeMethod, State}
 import versola.oauth.session.model.SessionId
@@ -10,6 +10,7 @@ import versola.util.{Email, MAC, Phone, SecureRandom, UnitSpecBase}
 import zio.http.URL
 import zio.test.*
 
+import java.time.Instant
 import java.util.UUID
 
 object ConversationRouterSpec extends UnitSpecBase:
@@ -44,6 +45,7 @@ object ConversationRouterSpec extends UnitSpecBase:
       factors = List(AuthFactor(`type` = AuthFactorType.otp, required = true)),
     ),
     passkey = None,
+    equivalents = Map.empty,
   )
 
   val initialRecord = ConversationRecord(
@@ -66,6 +68,7 @@ object ConversationRouterSpec extends UnitSpecBase:
     userClaims = None,
     authFlow = otpAuthFlow,
     userAgent = None,
+    amr = Map.empty,
   )
 
 
@@ -89,6 +92,7 @@ object ConversationRouterSpec extends UnitSpecBase:
     userClaims = None,
     authFlow = otpAuthFlow,
     userAgent = None,
+    amr = Map.empty,
   )
 
   class Env:
@@ -150,9 +154,9 @@ object ConversationRouterSpec extends UnitSpecBase:
       test("handle OTP submission and complete conversation on success") {
         val env = Env()
         val submission = OtpSubmission(otpCode)
-        val successResult = ConversationResult.StepPassed(otp)
+        val successResult = ConversationResult.StepPassed(otpRecord)
         val testCode = AuthorizationCode(Array.fill(32)(1.toByte))
-        val testSessionId: MAC.Of[SessionId] = MAC(Array.fill(32)(2.toByte))
+        val testSessionId: SessionId = SessionId(Array.fill(32)(2.toByte))
         val completeResult = ConversationResult.Complete(redirectUri, Some(State("test-state")), testCode, testSessionId, None)
         for
           _ <- env.otpConversationService.find.succeedsWith(Some(otpRecord))
@@ -174,6 +178,37 @@ object ConversationRouterSpec extends UnitSpecBase:
           _ <- env.otpConversationService.find.succeedsWith(None)
           result <- env.router.submit(authId, submission, None)
         yield assertTrue(result == ConversationResult.NotFound)
+      },
+      test("skip OTP factor and finish when passkey satisfies it via equivalents") {
+        val env = Env()
+        val now = Instant.now()
+        val flowWithEquivalents = AuthFlow(
+          primary = PrimaryAuthFlow(
+            credentials = List(PrimaryCredential.phone),
+            inlinePassword = false,
+            factors = List(AuthFactor(`type` = AuthFactorType.otp, required = true)),
+          ),
+          passkey = None,
+          equivalents = Map(PassedAuthFactor.passkey -> Set(PassedAuthFactor.otp)),
+        )
+        val recordWithPasskeyAmr = initialRecord.copy(
+          authFlow = flowWithEquivalents,
+          amr = Map(PassedAuthFactor.passkey -> PassedFactorRecord(now, Set(AuthMethodRef.swk, AuthMethodRef.user, AuthMethodRef.mfa))),
+        )
+        val testCode = AuthorizationCode(Array.fill(32)(1.toByte))
+        val testSessionId = SessionId(Array.fill(32)(2.toByte))
+        val completeResult = ConversationResult.Complete(redirectUri, Some(State("test-state")), testCode, testSessionId, None)
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(recordWithPasskeyAmr))
+          _ <- env.otpConversationService.finish.succeedsWith(completeResult)
+          result <- env.router.submit(authId, EmailSubmission(email), None)
+          finishTimes = env.otpConversationService.finish.times
+          prepareOtpTimes = env.otpConversationService.prepareInitialOtp.times
+        yield assertTrue(
+          result == completeResult,
+          finishTimes == 1,
+          prepareOtpTimes == 0,
+        )
       },
     ),
   )

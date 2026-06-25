@@ -1,7 +1,7 @@
 package versola.oauth.conversation
 
 import versola.oauth.client.model.ClientId
-import versola.oauth.conversation.model.{AuthId, ConversationStep}
+import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
 import versola.oauth.model.{AuthorizationCode, State}
 import versola.oauth.session.model.SessionId
 import versola.user.model.UserId
@@ -37,7 +37,7 @@ object ConversationResult:
       idTokenData: Option[IdTokenData],
   ) extends Render
 
-  case class StepPassed(step: ConversationStep) extends Decision
+  case class StepPassed(record: ConversationRecord) extends Decision
 
 sealed trait Directive
 

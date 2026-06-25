@@ -1,7 +1,7 @@
 package versola.oauth
 
 import com.augustnagro.magnum.magzio.TransactorZIO
-import versola.oauth.client.model.{Claim, ClientId, ScopeToken}
+import versola.oauth.client.model.{AuthMethodRef, Claim, ClientId, ScopeToken}
 import versola.oauth.model.*
 import versola.oauth.token.AuthorizationCodeRepository
 import versola.oauth.userinfo.model.{ClaimRequest, RequestedClaims}
@@ -54,6 +54,9 @@ trait AuthorizationCodeRepositorySpec extends DatabaseSpecBase[AuthorizationCode
   val accessToken1 = AccessToken(Array.fill(32)(5.toByte))
   val accessToken2 = AccessToken(Array.fill(32)(6.toByte))
 
+  val amr1 = Set(AuthMethodRef.pwd)
+  val authTime1 = java.time.Instant.ofEpochSecond(1700000000)
+
   val record = AuthorizationCodeRecord(
     sessionId = sessionId1,
     clientId = clientId1,
@@ -66,6 +69,8 @@ trait AuthorizationCodeRepositorySpec extends DatabaseSpecBase[AuthorizationCode
     uiLocales = None,
     nonce = None,
     accessToken = accessToken1,
+    amr = amr1,
+    authTime = authTime1,
   )
 
   val recordWithClaims = AuthorizationCodeRecord(
@@ -80,6 +85,8 @@ trait AuthorizationCodeRepositorySpec extends DatabaseSpecBase[AuthorizationCode
     uiLocales = Some(uiLocales1),
     nonce = None,
     accessToken = accessToken1,
+    amr = amr1,
+    authTime = authTime1,
   )
 
   def testCases(env: AuthorizationCodeRepositorySpec.Env): List[Spec[AuthorizationCodeRepositorySpec.Env & Scope, Any]] =

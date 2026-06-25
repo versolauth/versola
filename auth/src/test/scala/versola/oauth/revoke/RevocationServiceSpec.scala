@@ -3,7 +3,7 @@ package versola.oauth.revoke
 import org.scalamock.stubs.ZIOStubs
 import versola.auth.TestEnvConfig
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{ClientId, ClientIdWithSecret, OAuthClientRecord, ScopeToken, TenantId}
+import versola.oauth.client.model.{AuthMethodRef, ClientId, ClientIdWithSecret, OAuthClientRecord, ScopeToken, TenantId}
 import versola.oauth.model.{AccessToken, AccessTokenPayload, RefreshToken}
 import versola.oauth.revoke.model.RevocationError
 import versola.oauth.session.RefreshTokenRepository
@@ -61,6 +61,8 @@ object RevocationServiceSpec extends UnitSpecBase:
     uiLocales = None,
     nonce = None,
     previousRefreshToken = None,
+    amr = Set(AuthMethodRef.pwd),
+    authTime = now,
   )
 
   def accessTokenPayload(now: Instant) = AccessTokenPayload(
