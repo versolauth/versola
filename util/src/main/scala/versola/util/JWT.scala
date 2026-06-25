@@ -75,7 +75,7 @@ object JWT:
     val digestName = algorithm match
       case Algorithm.RS256 | Algorithm.HS256 => "SHA-256"
     val digest = java.security.MessageDigest.getInstance(digestName)
-      .digest(value.getBytes(StandardCharsets.US_ASCII))
+      .digest(value.getBytes(StandardCharsets.UTF_8))
     Base64.urlEncode(digest.take(digest.length / 2))
 
   case class Claims(

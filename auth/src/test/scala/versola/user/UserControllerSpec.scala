@@ -347,5 +347,5 @@ object UserControllerSpec extends ZIOSpecDefault:
         Base64.urlEncode(calls.head._1) == Base64.urlEncode(credentialId),
       )
     },
-  ).provideSomeShared[Scope](TestClient.layer) @@ TestAspect.silentLogging
+  ).provideSome[Scope](TestClient.layer) @@ TestAspect.silentLogging
 
