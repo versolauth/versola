@@ -101,7 +101,8 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
     userLogin = None,
     userClaims = None,
     authFlow = passkeyAuthFlow,
-    userAgent = None
+    userAgent = None,
+    amr = Map.empty,
   )
 
   def spec = suite("PasskeyConversationServiceSpec")(
@@ -129,6 +130,7 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
           _ <- env.configService.getPasskeySettings.succeedsWith(Some(passkeySettings))
           _ <- env.webAuthnService.finishAssertion.succeedsWith(outcome)
           _ <- env.userRepository.find.succeedsWith(Some(user))
+          _ <- env.passkeyRepository.findByCredentialIdAndUser.succeedsWith(None)
           _ <- env.passkeyRepository.listByUser.succeedsWith(Vector.empty)
           _ <- env.webAuthnService.startRegistration.succeedsWith(PasskeyCeremony("reg-req", "{}"))
           _ <- env.conversationRepository.overwrite.succeedsWith(())

@@ -2,7 +2,7 @@ CREATE TABLE locales (
     code       TEXT PRIMARY KEY,
     name       TEXT NOT NULL,
     is_default BOOLEAN NOT NULL,
-    active     BOOLEAN NOT NULL DEFAULT TRUE
+    active     BOOLEAN NOT NULL
 );
 
 CREATE TABLE forms (

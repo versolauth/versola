@@ -34,7 +34,7 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
     customParameters = Map.empty, cookieDomain = Some("app.example"), cookiePath = Some("/"),
   )
 
-  private val oauthClient = OAuthClient(id = clientId, secret = Secret(Array.fill(48)(1.toByte)))
+  private val oauthClient = OAuthClient(id = clientId, secret = Secret(Array.fill(48)(1.toByte)), permissions = Set.empty)
 
   class Env:
     val secureRandom = stub[SecureRandom]

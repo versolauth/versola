@@ -11,7 +11,9 @@ CREATE TABLE refresh_tokens(
     expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
     requested_claims JSONB,
     ui_locales TEXT[],
-    nonce TEXT
+    nonce TEXT,
+    amr JSONB NOT NULL,
+    auth_time TIMESTAMP WITH TIME ZONE NOT NULL
 );
 
 CREATE INDEX refresh_tokens_user_id_idx ON refresh_tokens (user_id);

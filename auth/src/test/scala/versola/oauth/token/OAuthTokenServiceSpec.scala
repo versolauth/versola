@@ -3,7 +3,7 @@ package versola.oauth.token
 import org.scalamock.stubs.{Stub, ZIOStubs}
 import versola.auth.TestEnvConfig
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{ClientId, ClientIdWithSecret, OAuthClientRecord, ScopeToken, TenantId}
+import versola.oauth.client.model.{AuthMethodRef, ClientId, ClientIdWithSecret, OAuthClientRecord, ScopeToken, TenantId}
 import versola.oauth.model.{AccessToken, AuthorizationCode, AuthorizationCodeRecord, CodeChallenge, CodeChallengeMethod, CodeVerifier, RefreshToken}
 import versola.oauth.revoke.AccessTokenRevocationService
 import versola.oauth.session.RefreshTokenRepository
@@ -32,7 +32,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
   val scope2 = Set(ScopeToken("read"))
   val codeChallenge1 = CodeChallenge("E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM")
   val codeVerifier1 = CodeVerifier("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk")
-  
+
   val requestedClaims1 = RequestedClaims(
     userinfo = Map(
       Claim("email") -> ClaimRequest(Some(true), None, None),
@@ -48,6 +48,9 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
   val refreshTokenMac1 = MAC(Array.fill(32)(5.toByte))
 
   val clientSecret1 = Secret(Array.fill(32)(6.toByte))
+
+  val amr1 = Set(AuthMethodRef.pwd)
+  val authTime1 = Instant.ofEpochSecond(1700000000)
 
   val testClient = OAuthClientRecord(
     id = clientId1,
@@ -122,6 +125,8 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             uiLocales = Some(uiLocales1),
             nonce = None,
             accessToken = accessToken1,
+            amr = amr1,
+            authTime = authTime1,
           )
 
           _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
@@ -147,6 +152,8 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           result.scope == scope1,
           result.requestedClaims.contains(requestedClaims1),
           result.uiLocales.contains(uiLocales1),
+          result.amr == amr1,
+          result.authTime.contains(authTime1),
         )
       },
       test("successfully exchange code without offline_access (no refresh token)") {
@@ -164,6 +171,8 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             uiLocales = None,
             nonce = None,
             accessToken = accessToken1,
+            amr = amr1,
+            authTime = authTime1,
           )
 
           _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
@@ -228,6 +237,8 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             uiLocales = None,
             nonce = None,
             accessToken = accessToken1,
+            amr = amr1,
+            authTime = authTime1,
           )
 
           _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
@@ -262,6 +273,8 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             uiLocales = Some(uiLocales1),
             nonce = None,
             previousRefreshToken = None,
+            amr = amr1,
+            authTime = authTime1,
           )
 
           newRefreshToken = RefreshToken(Array.fill(32)(7.toByte))
@@ -287,6 +300,8 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           result.refreshToken.contains(newRefreshToken),
           result.requestedClaims.contains(requestedClaims1),
           result.uiLocales.contains(uiLocales1),
+          result.amr == amr1,
+          result.authTime.contains(authTime1),
           createCalls.length == 1,
           createCalls.head._2.previousRefreshToken.exists(mac => java.util.Arrays.equals(mac, refreshTokenMac1)),
         )
@@ -310,6 +325,8 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             uiLocales = None,
             nonce = None,
             previousRefreshToken = None,
+            amr = amr1,
+            authTime = authTime1,
           )
 
           newRefreshToken = RefreshToken(Array.fill(32)(9.toByte))
@@ -382,6 +399,8 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             uiLocales = None,
             nonce = None,
             previousRefreshToken = None,
+            amr = amr1,
+            authTime = authTime1,
           )
 
           _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
@@ -414,6 +433,8 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             uiLocales = Some(uiLocales1),
             nonce = None,
             previousRefreshToken = None,
+            amr = amr1,
+            authTime = authTime1,
           )
 
           newRefreshToken = RefreshToken(Array.fill(32)(7.toByte))

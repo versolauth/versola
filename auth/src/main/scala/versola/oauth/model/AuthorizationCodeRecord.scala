@@ -1,6 +1,6 @@
 package versola.oauth.model
 
-import versola.oauth.client.model.{ClientId, ScopeToken}
+import versola.oauth.client.model.{AuthMethodRef, ClientId, ScopeToken}
 import versola.oauth.session.model.{RefreshTokenRecord, SessionId}
 import versola.oauth.userinfo.model.RequestedClaims
 import versola.user.model.UserId
@@ -25,6 +25,8 @@ case class AuthorizationCodeRecord(
     uiLocales: Option[List[String]],
     nonce: Option[Nonce],
     accessToken: AccessToken,
+    amr: Set[AuthMethodRef],
+    authTime: Instant,
 ) derives CanEqual, Equal:
 
   def verify(verifier: CodeVerifier): Boolean =
@@ -45,3 +47,4 @@ case class AuthorizationCodeRecord(
 
 object AuthorizationCodeRecord:
   given Equal[URL] = (a, b) => a == b
+  given Equal[Instant] = Equal.default

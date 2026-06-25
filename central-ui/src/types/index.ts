@@ -24,6 +24,9 @@ export interface AuthorizationPreset {
 export type PrimaryCredential = 'email' | 'phone' | 'login';
 export type AuthFactorType = 'otp' | 'password' | 'passkeyEnroll';
 
+// A challenge the user can pass; used as the key/value type of the equivalences map.
+export type PassedAuthFactor = 'otp' | 'password' | 'passkey';
+
 export interface AuthFactor {
   type: AuthFactorType;
   required: boolean;
@@ -35,6 +38,7 @@ export interface AuthFlow {
   passkey: boolean;                         // first card: offer passkey
   factors: AuthFactor[];                    // subsequent challenge cards for the primary flow (0-2)
   passkeyFactors: AuthFactor[];             // subsequent challenge cards for the passkey flow (0-1)
+  equivalents: Record<string, string[]>;    // challenge equivalences: a passed key-factor satisfies each listed value-factor
 }
 
 // OAuth Client
@@ -271,9 +275,9 @@ export interface SortConfig {
 
 export interface UserSession {
   clientId: string;
-  userAgent?: string;
   createdAt?: string;
   platform: 'ios' | 'android' | 'desktop' | 'unknown';
+  os?: string;
   browser?: string;
   version?: string;
 }

@@ -1107,6 +1107,26 @@ export class VersolaClientForm extends LitElement {
     this.setAuthFlow({ passkeyFactors: [{ type: 'otp' as AuthFactorType, required: !this.passkeyOtpRequired }] });
   }
 
+  /** What a passed passkey satisfies, derived from the equivalences map. */
+  private get passkeySatisfies(): 'none' | 'otp' | 'password' | 'otp+password' {
+    const list = this.authFlow.equivalents?.['passkey'] ?? [];
+    const hasOtp = list.includes('otp');
+    const hasPassword = list.includes('password');
+    if (hasOtp && hasPassword) return 'otp+password';
+    if (hasOtp) return 'otp';
+    if (hasPassword) return 'password';
+    return 'none';
+  }
+
+  private setPasskeySatisfies(value: 'none' | 'otp' | 'password' | 'otp+password') {
+    const current = { ...(this.authFlow.equivalents ?? {}) };
+    if (value === 'none') delete current['passkey'];
+    else if (value === 'otp') current['passkey'] = ['otp'];
+    else if (value === 'password') current['passkey'] = ['password'];
+    else current['passkey'] = ['otp', 'password'];
+    this.setAuthFlow({ equivalents: current });
+  }
+
   private get inlineOtpEnabled(): boolean {
     return this.realFactors.some(f => f.type === 'otp');
   }
@@ -1562,6 +1582,36 @@ export class VersolaClientForm extends LitElement {
                   </label>
                 </div>
               ` : ''}
+
+              <div class="flow-subsection">
+                <div class="flow-subtitle" style="display: flex; align-items: center; gap: 0.4rem;">
+                  Session Challenge Equivalences
+                  ${this.renderOptionInfo(
+                    'session-challenge-equivalences',
+                    'Session Challenge Equivalences',
+                    html`
+                      <div class="option-tooltip-item">Challenges passed in the session are treated as equivalent to the following required challenges.</div>
+                    `,
+                    'Session challenge equivalences info',
+                  )}
+                </div>
+                <div class="array-input-group" style="align-items: center;">
+                  <select class="compact-input">
+                    <option value="passkey" selected>passkey</option>
+                  </select>
+                  <span>satisfies</span>
+                  <select
+                    class="compact-input"
+                    .value=${this.passkeySatisfies}
+                    @change=${(e: Event) => this.setPasskeySatisfies((e.target as HTMLSelectElement).value as 'none' | 'otp' | 'password' | 'otp+password')}
+                  >
+                    <option value="none" ?selected=${this.passkeySatisfies === 'none'}>none</option>
+                    <option value="otp" ?selected=${this.passkeySatisfies === 'otp'}>otp</option>
+                    <option value="password" ?selected=${this.passkeySatisfies === 'password'}>password</option>
+                    <option value="otp+password" ?selected=${this.passkeySatisfies === 'otp+password'}>otp + password</option>
+                  </select>
+                </div>
+              </div>
               ` : ''}
 
               ${this.authFlowError ? html`<div class="error-message" style="margin-top: 0.5rem;">${this.authFlowError}</div>` : ''}

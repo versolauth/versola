@@ -11,6 +11,7 @@ export function createDefaultAuthFlow(): AuthFlow {
     passkey: false,
     factors: [{ type: 'otp', required: true }],
     passkeyFactors: [],
+    equivalents: {},
   };
 }
 

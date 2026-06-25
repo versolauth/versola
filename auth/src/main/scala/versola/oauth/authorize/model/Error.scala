@@ -3,7 +3,7 @@ package versola.oauth.authorize.model
 import versola.oauth.model.State
 import zio.http.URL
 
-private[authorize] sealed trait Error
+private[authorize] sealed trait Error extends Exception
 
 private[authorize] object Error:
   case object BadRequest extends Error:
@@ -85,4 +85,22 @@ private[authorize] object Error:
       error = ErrorCode.InvalidRequest,
       errorDescription = "Client is not configured for sign-in - missing auth flow",
       errorUri = None,
+    )
+
+  case class LoginRequired(uri: URL, state: Option[State]) extends RedirectError(
+      error = ErrorCode.LoginRequired,
+      errorDescription = "Authentication is required but prompt=none was requested",
+      errorUri = Some("https://openid.net/specs/openid-connect-core-1_0.html#AuthRequest"),
+    )
+
+  case class AccessDenied(uri: URL, state: Option[State]) extends RedirectError(
+      error = ErrorCode.AccessDenied,
+      errorDescription = "The resource owner could not be resolved for the existing session",
+      errorUri = Some("https://datatracker.ietf.org/doc/html/rfc6749#section-4.1.2.1"),
+    )
+
+  case class PromptInvalid(uri: URL, state: Option[State]) extends RedirectError(
+      error = ErrorCode.InvalidRequest,
+      errorDescription = "Invalid prompt parameter - none must not be combined with other values",
+      errorUri = Some("https://openid.net/specs/openid-connect-core-1_0.html#AuthRequest"),
     )

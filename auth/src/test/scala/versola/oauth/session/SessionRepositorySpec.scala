@@ -2,7 +2,7 @@ package versola.oauth.session
 
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.oauth.client.model.ClientId
-import versola.oauth.session.model.{SessionId, SessionRecord}
+import versola.oauth.session.model.{SessionId, SessionRecord, UserAgentInfo}
 import versola.user.model.UserId
 import versola.util.{DatabaseSpecBase, MAC}
 import zio.*
@@ -29,15 +29,17 @@ trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
   val session1 = SessionRecord(
     userId = userId1,
     clientId = clientId1,
-    userAgent = Some("Mozilla/5.0 (Windows NT 10.0) AppleWebKit/537.36 Chrome/125.0"),
+    userAgent = UserAgentInfo("desktop", Some("Windows 10 / 11"), Some("Chrome"), Some("125")),
     createdAt = Instant.EPOCH,
+    amr = Map.empty,
   )
 
   val session2 = SessionRecord(
     userId = userId2,
     clientId = clientId2,
-    userAgent = None,
+    userAgent = UserAgentInfo("unknown", None, None, None),
     createdAt = Instant.EPOCH,
+    amr = Map.empty,
   )
 
   def testCases(env: SessionRepositorySpec.Env): List[Spec[SessionRepositorySpec.Env & Scope, Any]] =

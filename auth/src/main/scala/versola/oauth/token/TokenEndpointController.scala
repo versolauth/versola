@@ -4,7 +4,7 @@ import com.nimbusds.jose.crypto.RSASSASigner
 import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm, JWSHeader}
 import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.ScopeToken
+import versola.oauth.client.model.{AuthMethodRef, ScopeToken}
 import versola.oauth.model.{AccessToken, AuthorizationCode, CodeVerifier, RefreshToken}
 import versola.oauth.token.model.{ClientCredentialsRequest, CodeExchangeRequest, IssuedTokens, RefreshTokenRequest, TokenEndpointError, TokenErrorResponse, TokenRequest, TokenResponse}
 import versola.oauth.userinfo.UserInfoService
@@ -124,7 +124,7 @@ object TokenEndpointController extends Controller:
               issuer = config.jwt.issuer,
               subject = userId.toString,
               audience = List(tokens.clientId),
-              custom = Json.Obj(Chunk.fromIterable(userInfo.claims)),
+              custom = Json.Obj(Chunk.fromIterable(userInfo.claims ++ AuthMethodRef.idTokenClaims(tokens.amr, tokens.authTime))),
             ),
             ttl = tokens.accessTokenTtl,
             signature = JWT.Signature.Asymmetric(

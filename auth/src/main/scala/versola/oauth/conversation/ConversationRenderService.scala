@@ -1,5 +1,6 @@
 package versola.oauth.conversation
 
+import versola.oauth.authorize.AuthorizeRedirect
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{ClientId, FormRecord, PrimaryCredential}
 import versola.oauth.conversation.model.{ConversationRecord, ConversationStep}
@@ -115,14 +116,15 @@ object ConversationRenderService:
           ZIO.succeed(Response.badRequest)
 
         case ConversationResult.Complete(redirectUri, state, code, sessionId, idTokenData) =>
+          val encodedCode = Base64Url.encode(code)
           for
             idToken <- idTokenData match
-              case Some(data) => serializeIdToken(data).map(Some(_))
+              case Some(data) =>
+                val cHash = JWT.leftHalfHash(encodedCode, config.jwt.publicKeys.active.algorithm)
+                val dataWithCHash = data.copy(claims = data.claims + ("c_hash" -> zio.json.ast.Json.Str(cHash)))
+                serializeIdToken(dataWithCHash).map(Some(_))
               case None => ZIO.none
-            params = List("code" -> Base64Url.encode(code)) ++
-              state.map("state" -> _) ++
-              idToken.map("id_token" -> _)
-            redirectUrl = redirectUri.addQueryParams(params)
+            redirectUrl = AuthorizeRedirect.responseUrl(redirectUri, encodedCode, state, idToken)
           yield Response.seeOther(redirectUrl)
             .addCookie(
               SessionCookie(
