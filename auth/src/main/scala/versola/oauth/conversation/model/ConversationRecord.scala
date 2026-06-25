@@ -32,6 +32,7 @@ case class ConversationRecord(
     userClaims: Option[Json.Obj],
     authFlow: AuthFlow,
     userAgent: Option[String],
+    version: Long,
     amr: Map[PassedAuthFactor, PassedFactorRecord],
 ):
   def patch(patch: ConversationRecord.Patch): ConversationRecord =

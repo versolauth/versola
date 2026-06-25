@@ -26,21 +26,21 @@ object AuthorizeEndpointService:
     ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _))
 
   class Impl(
-    conversationRepository: ConversationRepository,
-    configurationService: OAuthConfigurationService,
-    secureRandom: SecureRandom,
-    config: CoreConfig,
-    securityService: SecurityService,
-    sessionRepository: SessionRepository,
-    authPropertyGenerator: AuthPropertyGenerator,
-    authorizationCodeRepository: AuthorizationCodeRepository,
-    userRepository: UserRepository,
-    userInfoService: UserInfoService,
-  ) extends AuthorizeEndpointService:
+              conversationRepository: ConversationRepository,
+              configurationService: OAuthConfigurationService,
+              secureRandom: SecureRandom,
+              config: CoreConfig,
+              securityService: SecurityService,
+              sessionRepository: SessionRepository,
+              authPropertyGenerator: AuthPropertyGenerator,
+              authorizationCodeRepository: AuthorizationCodeRepository,
+              userRepository: UserRepository,
+              userInfoService: UserInfoService,
+            ) extends AuthorizeEndpointService:
 
     override def authorize(
-        request: AuthorizeRequest,
-    ): Task[AuthorizeResponse] =
+                            request: AuthorizeRequest,
+                          ): Task[AuthorizeResponse] =
       for
         client <- configurationService.find(request.clientId)
         authFlow = client.flatMap(_.authFlow)
@@ -76,11 +76,11 @@ object AuthorizeEndpointService:
       yield response
 
     private def createConversation(
-        request: AuthorizeRequest,
-        flow: AuthFlow,
-        uiLocales: Option[List[String]],
-        amr: Map[PassedAuthFactor, PassedFactorRecord],
-    ): Task[AuthorizeResponse] =
+                                    request: AuthorizeRequest,
+                                    flow: AuthFlow,
+                                    uiLocales: Option[List[String]],
+                                    amr: Map[PassedAuthFactor, PassedFactorRecord],
+                                  ): Task[AuthorizeResponse] =
       AuthId.wrapAll(secureRandom.nextUUIDv7).flatMap: authId =>
         val conversation = ConversationRecord(
           clientId = request.clientId,
@@ -105,18 +105,19 @@ object AuthorizeEndpointService:
           userLogin = None,
           userClaims = None,
           authFlow = flow,
-          userAgent = request.userAgent.map(_.filter(c => c >= ' ' && c <= '~')),
+          userAgent = request.userAgent.map(_.filter(c => c >= ' ' && c <= '~')),  // Strip non-printable ASCII (0x20–0x7E); does not escape HTML — always escape at render time
+          version = 0,
           amr = amr,
         )
         conversationRepository.create(authId, conversation, config.security.authConversation.ttl)
           .as(AuthorizeResponse.Initialize(authId))
 
     private def silentAuthorize(
-        request: AuthorizeRequest,
-        uiLocales: Option[List[String]],
-        session: SessionRecord,
-        sessionMac: MAC.Of[SessionId],
-    ): Task[AuthorizeResponse] =
+                                 request: AuthorizeRequest,
+                                 uiLocales: Option[List[String]],
+                                 session: SessionRecord,
+                                 sessionMac: MAC.Of[SessionId],
+                               ): Task[AuthorizeResponse] =
       val amr = AuthMethodRef.amrClaim(session.amr)
       val isHybrid =
         request.responseType.contains(ResponseTypeEntry.IdToken) &&
@@ -142,16 +143,16 @@ object AuthorizeEndpointService:
         codeMac <- securityService.mac(Secret(code), config.security.authCodes.pepper)
         _ <- authorizationCodeRepository.create(codeMac, codeRecord, zio.Duration.fromSeconds(60))
         idToken <- if isHybrid then silentIdToken(request, session, code, amr, uiLocales)
-                   else ZIO.none
+        else ZIO.none
       yield AuthorizeResponse.Authorized(code, idToken)
 
     private def silentIdToken(
-        request: AuthorizeRequest,
-        session: SessionRecord,
-        code: AuthorizationCode,
-        amr: Set[AuthMethodRef],
-        uiLocales: Option[List[String]],
-    ): Task[Option[String]] =
+                               request: AuthorizeRequest,
+                               session: SessionRecord,
+                               code: AuthorizationCode,
+                               amr: Set[AuthMethodRef],
+                               uiLocales: Option[List[String]],
+                             ): Task[Option[String]] =
       for
         userOpt <- userRepository.find(session.userId)
         user <- ZIO
@@ -186,8 +187,8 @@ object AuthorizeEndpointService:
       yield Some(token)
 
     /** Narrows the requested ui_locales to those configured in central, preserving the client's
-      * preference order. Rejects the request when none of the requested locales are available.
-      */
+     * preference order. Rejects the request when none of the requested locales are available.
+     */
     private def resolveUiLocales(request: AuthorizeRequest): ZIO[Any, Error.UnsupportedUiLocales, Option[List[String]]] =
       request.uiLocales match
         case None => ZIO.none

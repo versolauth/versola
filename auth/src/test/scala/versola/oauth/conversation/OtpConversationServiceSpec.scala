@@ -6,6 +6,8 @@ import versola.auth.model.OtpCode
 import versola.oauth.challenge.password.PasswordService
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{AuthFlow, AuthMethodRef, ClientId, PassedAuthFactor, PassedFactorRecord, PrimaryCredential, ScopeToken}
+import versola.oauth.client.model.{AuthFlow, ClientId, PrimaryCredential, ScopeToken}
+import versola.oauth.conversation.limit.{ChallengeType, LimitStatus, SubmissionLimiter}
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
 import versola.oauth.conversation.otp.OtpService
 import versola.oauth.conversation.otp.model.SubmitOtpResult
@@ -16,7 +18,6 @@ import versola.oauth.userinfo.UserInfoService
 import versola.oauth.userinfo.model.UserInfoResponse
 import versola.user.UserRepository
 import versola.user.model.{UserId, UserRecord}
-import versola.oauth.conversation.limit.{ChallengeType, LimitStatus, SubmissionLimiter}
 import versola.util.{AuthPropertyGenerator, CoreConfig, Email, EnvName, Secret, SecureRandom, SecurityService, UnitSpecBase}
 import zio.ZIO
 import zio.http.URL
@@ -101,6 +102,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
     userClaims = None,
     authFlow = AuthFlow.default,
     userAgent = None,
+    version = 0,
     amr = Map.empty,
   )
 
@@ -111,7 +113,6 @@ object OtpConversationServiceSpec extends UnitSpecBase:
   )
   val submittedOtp = realOtp.copy(timesRequested = 1)
 
-
   val spec = suite("OtpConversationService")(
     suite("prepareInitialOtp")(
       test("create conversation record and send OTP") {
@@ -121,15 +122,15 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           _ <- env.submissionLimiter.recordLimit.succeedsWith(LimitStatus.Allowed)
           _ <- env.userRepository.findByCredential.succeedsWith(Some(UserRecord.empty(userId)))
           _ <- env.otpService.prepareOtp.succeedsWith(realOtp)
-          _ <- env.conversationRepository.overwrite.succeedsWith(())
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
           _ <- env.otpService.sendOtp.succeedsWith(())
           result <- env.service.prepareInitialOtp(authId, initialConversation, Left(email), factorIndex = 0)
           resultSentAt = result match
             case ConversationResult.RenderStep(otp: ConversationStep.Otp) => otp.lastSentAt
-            case _                                                        => None
+            case _ => None
           persistedSentAt = env.conversationRepository.overwrite.calls.last._2.step match
             case otp: ConversationStep.Otp => otp.lastSentAt
-            case _                         => None
+            case _ => None
         yield assertTrue(
           resultSentAt.isDefined,
           persistedSentAt.isDefined,
@@ -155,7 +156,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           _ <- env.submissionLimiter.recordLimit.succeedsWith(LimitStatus.Allowed)
           _ <- env.userRepository.findByCredential.succeedsWith(Some(user))
           _ <- env.otpService.prepareOtp.succeedsWith(realOtp)
-          _ <- env.conversationRepository.overwrite.succeedsWith(())
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
           _ <- env.otpService.sendOtp.succeedsWith(())
           result <- env.service.prepareInitialOtp(authId, initialConversation, Left(email), factorIndex = 0)
           overwriteCalls = env.conversationRepository.overwrite.calls
@@ -175,7 +176,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           _ <- env.submissionLimiter.recordLimit.succeedsWith(LimitStatus.Allowed)
           _ <- env.userRepository.findByCredential.succeedsWith(None)
           _ <- env.otpService.prepareOtp.succeedsWith(realOtp)
-          _ <- env.conversationRepository.overwrite.succeedsWith(())
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
           _ <- env.otpService.sendOtp.succeedsWith(())
           result <- env.service.prepareInitialOtp(authId, initialConversation, Left(email), factorIndex = 0)
           overwriteCalls = env.conversationRepository.overwrite.calls
@@ -192,7 +193,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
         val env = Env()
         for
           _ <- env.submissionLimiter.statusFor.succeedsWith(LimitStatus.Banned)
-          _ <- env.conversationRepository.overwrite.succeedsWith(())
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
           result <- env.service.prepareInitialOtp(authId, initialConversation, Left(email), factorIndex = 0)
         yield assertTrue(result == ConversationResult.RenderStep(ConversationStep.AccessDenied))
       },
@@ -200,7 +201,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
         val env = Env()
         for
           _ <- env.submissionLimiter.statusFor.succeedsWith(LimitStatus.RateLimited(30L))
-          _ <- env.conversationRepository.overwrite.succeedsWith(())
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
           result <- env.service.prepareInitialOtp(authId, initialConversation, Left(email), factorIndex = 0)
         yield assertTrue(result == ConversationResult.RenderStep(ConversationStep.AccessDenied))
       },
@@ -210,11 +211,20 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           _ <- env.submissionLimiter.statusFor.returnsZIO:
             case (_, _, types) if types.contains(ChallengeType.OtpSubmit) => ZIO.succeed(LimitStatus.Banned)
             case _ => ZIO.succeed(LimitStatus.Allowed)
-          _ <- env.conversationRepository.overwrite.succeedsWith(())
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
           result <- env.service.prepareInitialOtp(authId, initialConversation, Left(email), factorIndex = 0)
         yield assertTrue(result == ConversationResult.RenderStep(ConversationStep.AccessDenied))
       },
-
+      test("return IllegalState when overwrite fails due to optimistic concurrency conflict") {
+        val env = Env()
+        for
+          _ <- env.submissionLimiter.statusFor.succeedsWith(LimitStatus.Allowed)
+          _ <- env.userRepository.findByCredential.succeedsWith(None)
+          _ <- env.otpService.prepareOtp.succeedsWith(realOtp)
+          _ <- env.conversationRepository.overwrite.succeedsWith(false)
+          result <- env.service.prepareInitialOtp(authId, initialConversation, Left(email), factorIndex = 0)
+        yield assertTrue(result == ConversationResult.IllegalState)
+      },
     ),
     suite("checkOtp")(
       test("return StepPassed when OTP is correct") {
@@ -240,12 +250,13 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           userClaims = Some(zio.json.ast.Json.Obj()),
           authFlow = AuthFlow.default,
           userAgent = None,
+          version = 0,
           amr = Map.empty,
         )
         for
           _ <- env.submissionLimiter.isBanned.succeedsWith(LimitStatus.Allowed)
           _ <- env.otpService.checkOtp.succeedsWith(SubmitOtpResult.Success)
-          _ <- env.conversationRepository.overwrite.succeedsWith(())
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
           result <- env.service.checkOtp(record, otp, otpCode, authId)
         yield assertTrue(result.isInstanceOf[ConversationResult.StepPassed])
       },
@@ -272,11 +283,12 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           userClaims = Some(zio.json.ast.Json.Obj()),
           authFlow = AuthFlow.default,
           userAgent = None,
+          version = 0,
           amr = Map.empty,
         )
         for
           _ <- env.submissionLimiter.isBanned.succeedsWith(LimitStatus.Banned)
-          _ <- env.conversationRepository.overwrite.succeedsWith(())
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
           result <- env.service.checkOtp(record, otp, otpCode, authId)
         yield assertTrue(result == ConversationResult.RenderStep(ConversationStep.AccessDenied))
       },
@@ -284,7 +296,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
         val env = Env()
         for
           _ <- env.submissionLimiter.isBanned.succeedsWith(LimitStatus.RateLimited(30L))
-          _ <- env.conversationRepository.overwrite.succeedsWith(())
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
           result <- env.service.checkOtp(otpRecord, submittedOtp, otpCode, authId)
         yield assertTrue(result == ConversationResult.RenderStep(submittedOtp.copy(rateLimitExceeded = true, lockedSeconds = 30)))
       },
@@ -294,7 +306,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           _ <- env.submissionLimiter.isBanned.succeedsWith(LimitStatus.Allowed)
           _ <- env.otpService.checkOtp.succeedsWith(SubmitOtpResult.Failure)
           _ <- env.submissionLimiter.recordLimit.succeedsWith(LimitStatus.Allowed)
-          _ <- env.conversationRepository.overwrite.succeedsWith(())
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
           result <- env.service.checkOtp(otpRecord, submittedOtp, otpCode, authId)
         yield assertTrue(
           result == ConversationResult.RenderStep(
@@ -308,7 +320,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           _ <- env.submissionLimiter.isBanned.succeedsWith(LimitStatus.Allowed)
           _ <- env.otpService.checkOtp.succeedsWith(SubmitOtpResult.Failure)
           _ <- env.submissionLimiter.recordLimit.succeedsWith(LimitStatus.RateLimited(30L))
-          _ <- env.conversationRepository.overwrite.succeedsWith(())
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
           result <- env.service.checkOtp(otpRecord, submittedOtp, otpCode, authId)
         yield assertTrue(
           result == ConversationResult.RenderStep(
@@ -322,11 +334,10 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           _ <- env.submissionLimiter.isBanned.succeedsWith(LimitStatus.Allowed)
           _ <- env.otpService.checkOtp.succeedsWith(SubmitOtpResult.Failure)
           _ <- env.submissionLimiter.recordLimit.succeedsWith(LimitStatus.Banned)
-          _ <- env.conversationRepository.overwrite.succeedsWith(())
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
           result <- env.service.checkOtp(otpRecord, submittedOtp, otpCode, authId)
         yield assertTrue(result == ConversationResult.RenderStep(ConversationStep.AccessDenied))
       },
-
     ),
     suite("finish")(
       test("generate ID token when openid scope is present and response_type includes id_token") {
@@ -361,21 +372,26 @@ object OtpConversationServiceSpec extends UnitSpecBase:
             case 2 => ZIO.succeed(testCodeMac)
           _ <- env.authorizationCodeRepository.create.succeedsWith(())
           _ <- env.sessionRepository.create.succeedsWith(())
-          _ <- env.conversationRepository.delete.succeedsWith(())
+          _ <- env.conversationRepository.delete.succeedsWith(true)
           _ <- env.userInfoService.getUserInfoForIdToken.succeedsWith(
             UserInfoResponse(
               claims = Map("sub" -> ast.Json.Str(userId.toString), "email" -> ast.Json.Str(userEmail)),
             )
           )
           result <- env.service.finish(authId, conversation)
-        yield assertTrue(
-          result.idTokenData.isDefined,
-          result.idTokenData.get.claims.contains("sub"),
-          result.idTokenData.get.claims.contains("email"),
-          result.idTokenData.get.claims.contains("amr"),
-          result.idTokenData.get.claims.contains("auth_time"),
-          result.idTokenData.get.clientId == clientId,
-        )
+        yield result match
+          case complete: ConversationResult.Complete =>
+            assertTrue(
+              complete.idTokenData.isDefined,
+              complete.idTokenData.get.claims.contains("sub"),
+              complete.idTokenData.get.claims.contains("email"),
+              complete.idTokenData.get.claims.contains("amr"),
+              complete.idTokenData.get.claims.contains("auth_time"),
+              complete.idTokenData.get.clientId == clientId,
+            )
+
+          case _ =>
+            assertTrue(false)
       },
       test("not generate ID token when openid scope is missing") {
         val env = Env()
@@ -402,9 +418,11 @@ object OtpConversationServiceSpec extends UnitSpecBase:
             case 2 => ZIO.succeed(testCodeMac)
           _ <- env.authorizationCodeRepository.create.succeedsWith(())
           _ <- env.sessionRepository.create.succeedsWith(())
-          _ <- env.conversationRepository.delete.succeedsWith(())
+          _ <- env.conversationRepository.delete.succeedsWith(true)
           result <- env.service.finish(authId, conversation)
-        yield assertTrue(result.idTokenData.isEmpty)
+        yield result match
+          case complete: ConversationResult.Complete => assertTrue(complete.idTokenData.isEmpty)
+          case _ => assertTrue(false)
       },
       test("not generate ID token when response_type does not include id_token") {
         val env = Env()
@@ -428,9 +446,11 @@ object OtpConversationServiceSpec extends UnitSpecBase:
             case 2 => ZIO.succeed(testCodeMac)
           _ <- env.authorizationCodeRepository.create.succeedsWith(())
           _ <- env.sessionRepository.create.succeedsWith(())
-          _ <- env.conversationRepository.delete.succeedsWith(())
+          _ <- env.conversationRepository.delete.succeedsWith(true)
           result <- env.service.finish(authId, conversation)
-        yield assertTrue(result.idTokenData.isEmpty)
+        yield result match
+          case complete: ConversationResult.Complete => assertTrue(complete.idTokenData.isEmpty)
+          case _ => assertTrue(false)
       },
     ),
   )

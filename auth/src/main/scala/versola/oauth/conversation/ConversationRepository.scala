@@ -8,6 +8,6 @@ trait ConversationRepository:
 
   def create(authId: AuthId, record: ConversationRecord, ttl: Duration): Task[Unit]
 
-  def overwrite(authId: AuthId, conversation: ConversationRecord): Task[Unit]
+  def overwrite(authId: AuthId, record: ConversationRecord): Task[Boolean]
 
-  def delete(authId: AuthId): Task[Unit]
+  def delete(authId: AuthId, version: Long): Task[Boolean]
