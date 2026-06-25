@@ -6,7 +6,7 @@ import versola.oauth.client.model.{AuthFactor, AuthFactorType, AuthFlow, AuthMet
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
 import versola.oauth.model.{AuthorizationCode, CodeChallenge, CodeChallengeMethod, State}
 import versola.oauth.session.model.SessionId
-import versola.util.{Email, MAC, Phone, SecureRandom, UnitSpecBase}
+import versola.util.{Email, Phone, SecureRandom, UnitSpecBase}
 import zio.http.URL
 import zio.test.*
 
