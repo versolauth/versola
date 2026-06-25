@@ -90,7 +90,7 @@ object PermissionServiceSpec extends ZIOSpecDefault:
         yield assertTrue(endpoints.isEmpty)
       },
       test("returns empty set when client has no permissions") {
-        val client = OAuthClient(id = serviceClient, secret = Secret(Array.fill(8)(1.toByte)))
+        val client = OAuthClient(id = serviceClient, secret = Secret(Array.fill(8)(1.toByte)), permissions = Set.empty)
         val service = buildService(clients = Map(serviceClient -> client))
         for endpoints <- service.getAllowedEndpointsForClient(serviceClient)
         yield assertTrue(endpoints.isEmpty)

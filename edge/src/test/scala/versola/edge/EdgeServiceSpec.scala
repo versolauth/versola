@@ -46,7 +46,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
 
     val orphanPreset = preset.copy(id = otherPresetId, clientId = missingClientId)
 
-    val client = OAuthClient(id = clientId, secret = Secret(Array.fill(48)(1.toByte)))
+    val client = OAuthClient(id = clientId, secret = Secret(Array.fill(48)(1.toByte)), permissions = Set.empty)
 
     val codeVerifierBytes = Array.fill[Byte](32)(7)
     val stateBytes = Array.fill[Byte](16)(9)
