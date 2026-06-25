@@ -98,3 +98,9 @@ private[authorize] object Error:
       errorDescription = "The resource owner could not be resolved for the existing session",
       errorUri = Some("https://datatracker.ietf.org/doc/html/rfc6749#section-4.1.2.1"),
     )
+
+  case class PromptInvalid(uri: URL, state: Option[State]) extends RedirectError(
+      error = ErrorCode.InvalidRequest,
+      errorDescription = "Invalid prompt parameter - none must not be combined with other values",
+      errorUri = Some("https://openid.net/specs/openid-connect-core-1_0.html#AuthRequest"),
+    )

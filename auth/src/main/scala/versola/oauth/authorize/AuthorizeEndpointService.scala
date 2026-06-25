@@ -62,6 +62,8 @@ object AuthorizeEndpointService:
                   ZIO.fail(Error.LoginRequired(request.redirectUri, request.state))
                 case None =>
                   createConversation(request, flow, uiLocales, Map.empty)
+                case Some(session) if request.prompt.contains(Prompt.login) =>
+                  createConversation(request, flow, uiLocales, Map.empty)
                 case Some(session) =>
                   val requiredFactors = flow.primary.factors.flatMap(f => PassedAuthFactor.fromFactorType(f.`type`)).toSet
                   if requiredFactors.forall(required => session.amr.keySet.exists(_.satisfies(required, flow.equivalents))) then

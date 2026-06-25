@@ -1,6 +1,6 @@
 package versola.oauth.authorize
 
-import versola.oauth.authorize.model.{AuthorizeRequest, Error, ResponseTypeEntry}
+import versola.oauth.authorize.model.{AuthorizeRequest, Error, Prompt, ResponseTypeEntry}
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{ClientId, OAuthClientRecord, ScopeToken, TenantId}
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, State}
@@ -52,6 +52,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
       codeChallengeMethod: Option[String] = Some("S256"),
       scope: String = validScope,
       state: Option[String] = Some("random-state"),
+      prompt: Option[String] = None,
   ): Request =
     val queryParams = Map(
       "client_id" -> clientId,
@@ -61,7 +62,8 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
       "scope" -> scope,
     ) ++
       codeChallengeMethod.map(m => "code_challenge_method" -> m).toMap ++
-      state.map(s => "state" -> s).toMap
+      state.map(s => "state" -> s).toMap ++
+      prompt.map(p => "prompt" -> p).toMap
 
     Request.get(URL.root.addQueryParams(queryParams))
 
@@ -73,6 +75,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
     codeChallengeValidationTests,
     scopeValidationTests,
     multipleValuesTests,
+    promptParsingTests,
   )
 
   def successfulParsingTests = suite("successful parsing")(
@@ -537,6 +540,49 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
           uri = validRedirectUri,
           state = None,
           queryParamName = "state",
+        )),
+      )
+    },
+  )
+
+  def promptParsingTests = suite("prompt parsing")(
+    test("defaults to empty set when prompt is absent") {
+      val env = Env()
+      for
+        _ <- env.oauthClientService.find.succeedsWith(Some(testClient))
+        result <- env.parser.parse(validRequest())
+      yield assertTrue(result.prompt == Set.empty[Prompt])
+    },
+    test("parses a single prompt value") {
+      val env = Env()
+      for
+        _ <- env.oauthClientService.find.succeedsWith(Some(testClient))
+        result <- env.parser.parse(validRequest(prompt = Some("none")))
+      yield assertTrue(result.prompt == Set(Prompt.none))
+    },
+    test("parses multiple space-delimited prompt values") {
+      val env = Env()
+      for
+        _ <- env.oauthClientService.find.succeedsWith(Some(testClient))
+        result <- env.parser.parse(validRequest(prompt = Some("login consent")))
+      yield assertTrue(result.prompt == Set(Prompt.login, Prompt.consent))
+    },
+    test("ignores unrecognized prompt values") {
+      val env = Env()
+      for
+        _ <- env.oauthClientService.find.succeedsWith(Some(testClient))
+        result <- env.parser.parse(validRequest(prompt = Some("foo")))
+      yield assertTrue(result.prompt == Set.empty[Prompt])
+    },
+    test("fails when none is combined with other prompt values") {
+      val env = Env()
+      for
+        _ <- env.oauthClientService.find.succeedsWith(Some(testClient))
+        result <- env.parser.parse(validRequest(prompt = Some("none login"))).either
+      yield assertTrue(
+        result == Left(Error.PromptInvalid(
+          uri = validRedirectUri,
+          state = Some(validState),
         )),
       )
     },

@@ -63,7 +63,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
     uiLocales = None,
     nonce = None,
     userAgent = None,
-    prompt = None,
+    prompt = Set.empty,
     maxAge = None,
     acrValues = None,
     sessionId = None,
@@ -120,7 +120,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
       val env = Env()
       for
         _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
-        result <- env.service.authorize(baseRequest.copy(prompt = Some(Prompt.none))).exit
+        result <- env.service.authorize(baseRequest.copy(prompt = Set(Prompt.none))).exit
       yield assertTrue(result.isFailure)
     },
     test("silently authorize when session amr satisfies all required factors") {
@@ -186,6 +186,24 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         result <- env.service.authorize(baseRequest.copy(sessionId = Some(rawSessionId)))
       yield assertTrue(result == AuthorizeResponse.Authorized(code, None))
     },
+    test("force re-authentication when prompt=login even if session amr satisfies all required factors") {
+      val env = Env()
+      val uuid = UUID.randomUUID()
+      val session = sessionWithAmr(Map(PassedAuthFactor.otp -> PassedFactorRecord(now, Set(AuthMethodRef.otp))))
+      for
+        _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
+        _ <- env.securityService.mac.succeedsWith(sessionMac)
+        _ <- env.sessionRepository.find.succeedsWith(Some(session))
+        _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
+        _ <- env.conversationRepository.create.succeedsWith(())
+        result <- env.service.authorize(baseRequest.copy(sessionId = Some(rawSessionId), prompt = Set(Prompt.login)))
+        createCalls = env.conversationRepository.create.calls
+      yield assertTrue(
+        result == AuthorizeResponse.Initialize(versola.oauth.conversation.model.AuthId(uuid)),
+        createCalls.nonEmpty,
+        createCalls.head._2.amr.isEmpty,
+      )
+    },
     test("fail with LoginRequired when session found but not satisfied and prompt=none") {
       val env = Env()
       val session = sessionWithAmr(Map.empty)
@@ -193,7 +211,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
         _ <- env.securityService.mac.succeedsWith(sessionMac)
         _ <- env.sessionRepository.find.succeedsWith(Some(session))
-        result <- env.service.authorize(baseRequest.copy(sessionId = Some(rawSessionId), prompt = Some(Prompt.none))).exit
+        result <- env.service.authorize(baseRequest.copy(sessionId = Some(rawSessionId), prompt = Set(Prompt.none))).exit
       yield assertTrue(result.isFailure)
     },
     test("create conversation seeded with session amr when factors not satisfied") {

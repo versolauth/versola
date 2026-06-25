@@ -20,7 +20,7 @@ case class AuthorizeRequest(
     uiLocales: Option[List[String]],
     nonce: Option[Nonce],
     userAgent: Option[String],
-    prompt: Option[Prompt],
+    prompt: Set[Prompt],
     maxAge: Option[Long],
     acrValues: Option[List[String]],
     sessionId: Option[SessionId],

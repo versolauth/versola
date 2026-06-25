@@ -98,7 +98,16 @@ object AuthorizeRequestParser:
 
         prompt <- getParam(params, "prompt")
           .orElseFail(Error.MultipleValuesProvided(redirectUri, state, "prompt"))
-          .map(_.flatMap(Prompt.fromString))
+          .flatMap {
+            case None => ZIO.succeed(Set.empty[Prompt])
+            case Some(raw) =>
+              val prompts = raw.split(' ').iterator.filter(_.nonEmpty).flatMap(Prompt.fromString).toSet
+              ZIO.cond(
+                !(prompts.contains(Prompt.none) && prompts.size > 1),
+                prompts,
+                Error.PromptInvalid(redirectUri, state),
+              )
+          }
 
         maxAge <- getParam(params, "max_age")
           .orElseFail(Error.MultipleValuesProvided(redirectUri, state, "max_age"))
