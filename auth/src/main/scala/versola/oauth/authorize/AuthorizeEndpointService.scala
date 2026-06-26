@@ -11,11 +11,10 @@ import versola.oauth.session.model.{SessionId, SessionRecord}
 import versola.oauth.token.AuthorizationCodeRepository
 import versola.oauth.userinfo.UserInfoService
 import versola.user.UserRepository
-import versola.util.{AuthPropertyGenerator, Base64Url, CoreConfig, JWT, Secret, SecureRandom, SecurityService}
 import versola.util.MAC
+import versola.util.{AuthPropertyGenerator, Base64Url, CoreConfig, JWT, Secret, SecureRandom, SecurityService}
 import zio.json.ast.Json
 import zio.{Chunk, Task, ZIO, ZLayer, durationInt}
-
 
 trait AuthorizeEndpointService:
 
@@ -26,21 +25,21 @@ object AuthorizeEndpointService:
     ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _))
 
   class Impl(
-              conversationRepository: ConversationRepository,
-              configurationService: OAuthConfigurationService,
-              secureRandom: SecureRandom,
-              config: CoreConfig,
-              securityService: SecurityService,
-              sessionRepository: SessionRepository,
-              authPropertyGenerator: AuthPropertyGenerator,
-              authorizationCodeRepository: AuthorizationCodeRepository,
-              userRepository: UserRepository,
-              userInfoService: UserInfoService,
-            ) extends AuthorizeEndpointService:
+      conversationRepository: ConversationRepository,
+      configurationService: OAuthConfigurationService,
+      secureRandom: SecureRandom,
+      config: CoreConfig,
+      securityService: SecurityService,
+      sessionRepository: SessionRepository,
+      authPropertyGenerator: AuthPropertyGenerator,
+      authorizationCodeRepository: AuthorizationCodeRepository,
+      userRepository: UserRepository,
+      userInfoService: UserInfoService,
+  ) extends AuthorizeEndpointService:
 
     override def authorize(
-                            request: AuthorizeRequest,
-                          ): Task[AuthorizeResponse] =
+        request: AuthorizeRequest,
+    ): Task[AuthorizeResponse] =
       for
         client <- configurationService.find(request.clientId)
         authFlow = client.flatMap(_.authFlow)
@@ -76,11 +75,11 @@ object AuthorizeEndpointService:
       yield response
 
     private def createConversation(
-                                    request: AuthorizeRequest,
-                                    flow: AuthFlow,
-                                    uiLocales: Option[List[String]],
-                                    amr: Map[PassedAuthFactor, PassedFactorRecord],
-                                  ): Task[AuthorizeResponse] =
+        request: AuthorizeRequest,
+        flow: AuthFlow,
+        uiLocales: Option[List[String]],
+        amr: Map[PassedAuthFactor, PassedFactorRecord],
+    ): Task[AuthorizeResponse] =
       AuthId.wrapAll(secureRandom.nextUUIDv7).flatMap: authId =>
         val conversation = ConversationRecord(
           clientId = request.clientId,
@@ -105,7 +104,9 @@ object AuthorizeEndpointService:
           userLogin = None,
           userClaims = None,
           authFlow = flow,
-          userAgent = request.userAgent.map(_.filter(c => c >= ' ' && c <= '~')),  // Strip non-printable ASCII (0x20–0x7E); does not escape HTML — always escape at render time
+          userAgent = request.userAgent.map(_.filter(c =>
+            c >= ' ' && c <= '~',
+          )), // Strip non-printable ASCII (0x20–0x7E); does not escape HTML — always escape at render time
           version = 0,
           amr = amr,
         )
@@ -113,11 +114,11 @@ object AuthorizeEndpointService:
           .as(AuthorizeResponse.Initialize(authId))
 
     private def silentAuthorize(
-                                 request: AuthorizeRequest,
-                                 uiLocales: Option[List[String]],
-                                 session: SessionRecord,
-                                 sessionMac: MAC.Of[SessionId],
-                               ): Task[AuthorizeResponse] =
+        request: AuthorizeRequest,
+        uiLocales: Option[List[String]],
+        session: SessionRecord,
+        sessionMac: MAC.Of[SessionId],
+    ): Task[AuthorizeResponse] =
       val amr = AuthMethodRef.amrClaim(session.amr)
       val isHybrid =
         request.responseType.contains(ResponseTypeEntry.IdToken) &&
@@ -147,12 +148,12 @@ object AuthorizeEndpointService:
       yield AuthorizeResponse.Authorized(code, idToken)
 
     private def silentIdToken(
-                               request: AuthorizeRequest,
-                               session: SessionRecord,
-                               code: AuthorizationCode,
-                               amr: Set[AuthMethodRef],
-                               uiLocales: Option[List[String]],
-                             ): Task[Option[String]] =
+        request: AuthorizeRequest,
+        session: SessionRecord,
+        code: AuthorizationCode,
+        amr: Set[AuthMethodRef],
+        uiLocales: Option[List[String]],
+    ): Task[Option[String]] =
       for
         userOpt <- userRepository.find(session.userId)
         user <- ZIO
