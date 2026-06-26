@@ -2,7 +2,7 @@ package versola.oauth.conversation
 
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{AuthFactor, AuthFactorType, PassedAuthFactor}
-import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep, ConcurrentModificationException}
+import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
 import versola.util.{Email, Phone, SecureRandom}
 import zio.{Task, ZIO, ZLayer}
 
@@ -41,8 +41,6 @@ object ConversationRouter:
                 case Some(settings) =>
                   conversationService.startPasskeyAssertion(authId, conversation, cred, settings)
                     .map(Some(_))
-                    .catchSome:
-                      case _: ConcurrentModificationException => ZIO.none
             case _: ConversationStep.Credential =>
               ZIO.none
             case _ =>

@@ -1,15 +1,15 @@
 package versola.oauth.conversation
 
+import versola.auth.model.CredentialDeviceType
 import versola.auth.model.{OtpCode, Password}
 import versola.oauth.authorize.model.ResponseTypeEntry
 import versola.oauth.challenge.passkey.{PasskeyRepository, WebAuthnError, WebAuthnService}
 import versola.oauth.challenge.password.PasswordService
 import versola.oauth.challenge.password.model.CheckPassword
 import versola.oauth.client.OAuthConfigurationService
-import versola.auth.model.CredentialDeviceType
 import versola.oauth.client.model.{AuthMethodRef, PassedAuthFactor, PassedFactorRecord, PasskeySettings, ScopeToken}
 import versola.oauth.conversation.limit.{ChallengeType, LimitStatus, SubmissionLimiter}
-import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep, ConcurrentModificationException}
+import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
 import versola.oauth.conversation.otp.OtpService
 import versola.oauth.conversation.otp.model.SubmitOtpResult
 import versola.oauth.model.{AuthorizationCode, AuthorizationCodeRecord}
@@ -232,7 +232,7 @@ object ConversationService:
             )
             conversationRepository.overwrite(authId, updatedConversation)
               .map:
-                case true  => ConversationResult.RenderStep(passwordStep)
+                case true => ConversationResult.RenderStep(passwordStep)
                 case false => ConversationResult.IllegalState
       yield result
 
@@ -264,7 +264,7 @@ object ConversationService:
                 val updated = conversation.copy(amr = conversation.amr + (PassedAuthFactor.otp -> PassedFactorRecord(now, otpMethods)))
                 conversationRepository.overwrite(authId, updated)
                   .map:
-                    case true  => ConversationResult.StepPassed(updated.copy(version = updated.version + 1))
+                    case true => ConversationResult.StepPassed(updated.copy(version = updated.version + 1))
                     case false => ConversationResult.IllegalState
 
     override def preparePasswordStep(
@@ -280,7 +280,7 @@ object ConversationService:
       )
       conversationRepository.overwrite(authId, conversation.copy(step = passwordStep))
         .map:
-          case true  => ConversationResult.RenderStep(passwordStep)
+          case true => ConversationResult.RenderStep(passwordStep)
           case false => ConversationResult.IllegalState
 
     override def checkPassword(
@@ -314,10 +314,11 @@ object ConversationService:
                 passwordService.verifyPassword(userId, submittedPassword).flatMap:
                   case CheckPassword.Success =>
                     Clock.instant.flatMap: now =>
-                      val updated = conversation.copy(amr = conversation.amr + (PassedAuthFactor.password -> PassedFactorRecord(now, Set(AuthMethodRef.pwd))))
+                      val updated =
+                        conversation.copy(amr = conversation.amr + (PassedAuthFactor.password -> PassedFactorRecord(now, Set(AuthMethodRef.pwd))))
                       conversationRepository.overwrite(authId, updated)
                         .map:
-                          case true  => ConversationResult.StepPassed(updated.copy(version = updated.version + 1))
+                          case true => ConversationResult.StepPassed(updated.copy(version = updated.version + 1))
                           case false => ConversationResult.IllegalState
 
                   case CheckPassword.OldPassword(changedAt) =>
@@ -405,9 +406,7 @@ object ConversationService:
             passkeyOrphaned = false,
           )
           conversationRepository.overwrite(authId, conversation.copy(step = updatedStep))
-            .flatMap:
-              case true  => ZIO.succeed(ceremony.publicKeyOptions)
-              case false => ZIO.fail(new ConcurrentModificationException),
+            .as(ceremony.publicKeyOptions),
       )
 
     override def finishPasskeyAssertion(authId: AuthId, conversation: ConversationRecord, response: String): Task[ConversationResult.Render] =
@@ -430,7 +429,7 @@ object ConversationService:
                     },
                     outcome =>
                       userRepository.find(outcome.userId).zipPar(
-                        passkeyRepository.findByCredentialIdAndUser(outcome.credentialId, outcome.userId)
+                        passkeyRepository.findByCredentialIdAndUser(outcome.credentialId, outcome.userId),
                       ).flatMap:
                         case (None, _) =>
                           ZIO.succeed(ConversationResult.IllegalState)
@@ -438,7 +437,7 @@ object ConversationService:
                           Clock.instant.flatMap: now =>
                             val keyType = passkeyOpt.fold(AuthMethodRef.swk)(pk =>
                               if pk.deviceType == CredentialDeviceType.SingleDevice then AuthMethodRef.hwk
-                              else AuthMethodRef.swk
+                              else AuthMethodRef.swk,
                             )
                             val passkeyMethods = Set(keyType, AuthMethodRef.user, AuthMethodRef.mfa)
                             val updated = conversation.copy(
@@ -450,7 +449,7 @@ object ConversationService:
                               amr = conversation.amr + (PassedAuthFactor.passkey -> PassedFactorRecord(now, passkeyMethods)),
                             )
                             conversationRepository.overwrite(authId, updated).flatMap:
-                              case true  => offerPasskeyEnroll(authId, updated.copy(version = updated.version + 1))
+                              case true => offerPasskeyEnroll(authId, updated.copy(version = updated.version + 1))
                               case false => ZIO.succeed(ConversationResult.IllegalState),
                   )
         case _ =>
