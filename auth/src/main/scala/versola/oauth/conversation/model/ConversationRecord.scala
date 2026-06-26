@@ -35,11 +35,13 @@ case class ConversationRecord(
     amr: Map[PassedAuthFactor, PassedFactorRecord],
 ):
   def primaryFactorsDone: Boolean =
-    authFlow.primary.factors.forall: factor =>
-      PassedAuthFactor.fromFactorType(factor.`type`) match
-        case None => true
-        case Some(required) => amr.keySet.exists(_.satisfies(required, authFlow.equivalents))
-        
+    authFlow.primary.factors
+      .filter(_.required)
+      .forall: factor =>
+        PassedAuthFactor.fromFactorType(factor.`type`) match
+          case None => true
+          case Some(required) => amr.keySet.exists(_.satisfies(required, authFlow.equivalents))
+
   def patch(patch: ConversationRecord.Patch): ConversationRecord =
     this.copy(
       userId = patch.userId.getOrElse(userId),
