@@ -76,7 +76,7 @@ class PostgresPasskeyRepository(xa: TransactorZIO) extends PasskeyRepository, Ba
       sql"""
       UPDATE passkeys
       SET signature_counter = $signatureCounter, last_used_at = $lastUsedAt, updated_at = $lastUsedAt
-      WHERE id = $id AND signature_counter < $signatureCounter
+      WHERE id = $id AND (signature_counter < $signatureCounter OR ($signatureCounter = 0 AND signature_counter = 0))
     """.update.run() > 0
 
   override def rename(id: CredentialId, userId: UserId, name: Option[String]): Task[Unit] =
