@@ -66,6 +66,7 @@ trait ConversationRepositorySpec extends DatabaseSpecBase[ConversationRepository
     userClaims = Some(zio.json.ast.Json.Obj()),
     authFlow = AuthFlow.default,
     userAgent = None,
+    version = 0,
     amr = Map.empty,
   )
 
@@ -96,6 +97,7 @@ trait ConversationRepositorySpec extends DatabaseSpecBase[ConversationRepository
     userClaims = None,
     authFlow = AuthFlow.default,
     userAgent = None,
+    version = 0,
     amr = Map.empty,
   )
 
@@ -117,9 +119,10 @@ trait ConversationRepositorySpec extends DatabaseSpecBase[ConversationRepository
       test("delete conversation by auth ID") {
         for
           _ <- env.repository.create(authId1, record1, ttl)
-          _ <- env.repository.delete(authId1)
+          record <- env.repository.find(authId1).map(_.get)
+          deleted <- env.repository.delete(authId1, record.version)
           found <- env.repository.find(authId1)
-        yield assertTrue(found.isEmpty)
+        yield assertTrue(deleted, found.isEmpty)
       },
       test("overwrite conversation record") {
         val updatedRecord = initial.copy(
@@ -130,12 +133,29 @@ trait ConversationRepositorySpec extends DatabaseSpecBase[ConversationRepository
         for
           _ <- env.repository.create(authId1, initial, ttl)
           found1 <- env.repository.find(authId1)
-          _ <- env.repository.overwrite(authId1, updatedRecord)
+          overwritten <- env.repository.overwrite(authId1, updatedRecord.copy(version = found1.get.version))
           found2 <- env.repository.find(authId1)
         yield assertTrue(
           found1.contains(initial),
-          found2.contains(updatedRecord),
+          overwritten,
+          found2.contains(updatedRecord.copy(version = found1.get.version + 1)),
         )
+      },
+      test("overwrite with stale version returns false (optimistic conflict)") {
+        for
+          _ <- env.repository.create(authId1, record1, ttl)
+          record <- env.repository.find(authId1).map(_.get)
+          first <- env.repository.overwrite(authId1, record1.copy(step = fakeOtp, version = record.version))
+          second <- env.repository.overwrite(authId1, record1.copy(step = fakeOtp, version = record.version))
+        yield assertTrue(first, !second)
+      },
+      test("delete with stale version returns false (optimistic conflict)") {
+        for
+          _ <- env.repository.create(authId1, record1, ttl)
+          record <- env.repository.find(authId1).map(_.get)
+          first <- env.repository.delete(authId1, record.version)
+          second <- env.repository.delete(authId1, record.version)
+        yield assertTrue(first, !second)
       },
     )
 

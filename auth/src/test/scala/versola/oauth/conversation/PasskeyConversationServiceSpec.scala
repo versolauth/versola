@@ -102,6 +102,7 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
     userClaims = None,
     authFlow = passkeyAuthFlow,
     userAgent = None,
+    version = 0,
     amr = Map.empty,
   )
 
@@ -112,7 +113,7 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
         val ceremony = PasskeyCeremony("req-state", "{}")
         for
           _ <- env.webAuthnService.startAssertion.succeedsWith(ceremony)
-          _ <- env.conversationRepository.overwrite.succeedsWith(())
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
           result <- env.service.startPasskeyAssertion(authId, baseRecord, credentialStep, passkeySettings)
         yield assertTrue(
           result == "{}",
@@ -133,7 +134,7 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
           _ <- env.passkeyRepository.findByCredentialIdAndUser.succeedsWith(None)
           _ <- env.passkeyRepository.listByUser.succeedsWith(Vector.empty)
           _ <- env.webAuthnService.startRegistration.succeedsWith(PasskeyCeremony("reg-req", "{}"))
-          _ <- env.conversationRepository.overwrite.succeedsWith(())
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
           result <- env.service.finishPasskeyAssertion(authId, recordWithRequest, "response-json")
         yield assertTrue(
           result == ConversationResult.RenderStep(ConversationStep.PasskeyEnroll("reg-req", "{}"))
@@ -145,7 +146,7 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
         for
           _ <- env.configService.getPasskeySettings.succeedsWith(Some(passkeySettings))
           _ <- env.webAuthnService.finishAssertion.failsWith(versola.oauth.challenge.passkey.WebAuthnError.CeremonyFailed("fail"))
-          _ <- env.conversationRepository.overwrite.succeedsWith(())
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
           result <- env.service.finishPasskeyAssertion(authId, recordWithRequest, "response-json")
         yield assertTrue(
           result == ConversationResult.RenderStep(credentialStep.copy(passkeyRequest = None, passkeyFailed = true))
@@ -157,7 +158,7 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
         for
           _ <- env.configService.getPasskeySettings.succeedsWith(Some(passkeySettings))
           _ <- env.webAuthnService.finishAssertion.failsWith(versola.oauth.challenge.passkey.WebAuthnError.CredentialNotFound)
-          _ <- env.conversationRepository.overwrite.succeedsWith(())
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
           result <- env.service.finishPasskeyAssertion(authId, recordWithRequest, "response-json")
         yield assertTrue(
           result == ConversationResult.RenderStep(credentialStep.copy(passkeyRequest = None, passkeyOrphaned = true))
@@ -182,7 +183,7 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
           _ <- env.configService.getPasskeySettings.succeedsWith(Some(passkeySettings))
           _ <- env.passkeyRepository.listByUser.succeedsWith(Vector.empty)
           _ <- env.webAuthnService.startRegistration.succeedsWith(PasskeyCeremony("reg-req", "{}"))
-          _ <- env.conversationRepository.overwrite.succeedsWith(())
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
           result <- env.service.offerPasskeyEnroll(authId, recordWithUser)
         yield assertTrue(
           result == ConversationResult.RenderStep(ConversationStep.PasskeyEnroll("reg-req", "{}"))
@@ -221,7 +222,7 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
           _ <- env.authPropertyGenerator.nextAccessToken.succeedsWith(testAccessToken)
           _ <- env.authorizationCodeRepository.create.succeedsWith(())
           _ <- env.sessionRepository.create.succeedsWith(())
-          _ <- env.conversationRepository.delete.succeedsWith(())
+          _ <- env.conversationRepository.delete.succeedsWith(true)
           result <- env.service.offerPasskeyEnroll(authId, recordWithUser)
         yield assertTrue(result.isInstanceOf[ConversationResult.Complete])
       }
@@ -261,7 +262,7 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
           _ <- env.authPropertyGenerator.nextAccessToken.succeedsWith(testAccessToken)
           _ <- env.authorizationCodeRepository.create.succeedsWith(())
           _ <- env.sessionRepository.create.succeedsWith(())
-          _ <- env.conversationRepository.delete.succeedsWith(())
+          _ <- env.conversationRepository.delete.succeedsWith(true)
           result <- env.service.finishPasskeyEnroll(authId, recordWithUser, enrollStep, "resp", None)
         yield assertTrue(result.isInstanceOf[ConversationResult.Complete])
       },
@@ -272,7 +273,7 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
         for
           _ <- env.configService.getPasskeySettings.succeedsWith(Some(passkeySettings))
           _ <- env.webAuthnService.finishRegistration.failsWith(versola.oauth.challenge.passkey.WebAuthnError.CeremonyFailed("fail"))
-          _ <- env.conversationRepository.overwrite.succeedsWith(())
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
           result <- env.service.finishPasskeyEnroll(authId, recordWithUser, enrollStep, "resp", None)
         yield assertTrue(result == ConversationResult.RenderStep(enrollStep.copy(enrollFailed = true)))
       }
@@ -292,7 +293,7 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
           _ <- env.authPropertyGenerator.nextAccessToken.succeedsWith(testAccessToken)
           _ <- env.authorizationCodeRepository.create.succeedsWith(())
           _ <- env.sessionRepository.create.succeedsWith(())
-          _ <- env.conversationRepository.delete.succeedsWith(())
+          _ <- env.conversationRepository.delete.succeedsWith(true)
           result <- env.service.skipPasskey(authId, recordWithUser)
         yield assertTrue(result.isInstanceOf[ConversationResult.Complete])
       }

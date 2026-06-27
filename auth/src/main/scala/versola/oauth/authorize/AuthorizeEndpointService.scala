@@ -11,11 +11,10 @@ import versola.oauth.session.model.{SessionId, SessionRecord}
 import versola.oauth.token.AuthorizationCodeRepository
 import versola.oauth.userinfo.UserInfoService
 import versola.user.UserRepository
-import versola.util.{AuthPropertyGenerator, Base64Url, CoreConfig, JWT, Secret, SecureRandom, SecurityService}
 import versola.util.MAC
+import versola.util.{AuthPropertyGenerator, Base64Url, CoreConfig, JWT, Secret, SecureRandom, SecurityService}
 import zio.json.ast.Json
 import zio.{Chunk, Task, ZIO, ZLayer, durationInt}
-
 
 trait AuthorizeEndpointService:
 
@@ -26,16 +25,16 @@ object AuthorizeEndpointService:
     ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _))
 
   class Impl(
-    conversationRepository: ConversationRepository,
-    configurationService: OAuthConfigurationService,
-    secureRandom: SecureRandom,
-    config: CoreConfig,
-    securityService: SecurityService,
-    sessionRepository: SessionRepository,
-    authPropertyGenerator: AuthPropertyGenerator,
-    authorizationCodeRepository: AuthorizationCodeRepository,
-    userRepository: UserRepository,
-    userInfoService: UserInfoService,
+      conversationRepository: ConversationRepository,
+      configurationService: OAuthConfigurationService,
+      secureRandom: SecureRandom,
+      config: CoreConfig,
+      securityService: SecurityService,
+      sessionRepository: SessionRepository,
+      authPropertyGenerator: AuthPropertyGenerator,
+      authorizationCodeRepository: AuthorizationCodeRepository,
+      userRepository: UserRepository,
+      userInfoService: UserInfoService,
   ) extends AuthorizeEndpointService:
 
     override def authorize(
@@ -105,7 +104,10 @@ object AuthorizeEndpointService:
           userLogin = None,
           userClaims = None,
           authFlow = flow,
-          userAgent = request.userAgent.map(_.filter(c => c >= ' ' && c <= '~')),
+          userAgent = request.userAgent.map(_.filter(c =>
+            c >= ' ' && c <= '~',
+          )), // Strip non-printable ASCII (0x20–0x7E); does not escape HTML — always escape at render time
+          version = 0,
           amr = amr,
         )
         conversationRepository.create(authId, conversation, config.security.authConversation.ttl)
@@ -142,7 +144,7 @@ object AuthorizeEndpointService:
         codeMac <- securityService.mac(Secret(code), config.security.authCodes.pepper)
         _ <- authorizationCodeRepository.create(codeMac, codeRecord, zio.Duration.fromSeconds(60))
         idToken <- if isHybrid then silentIdToken(request, session, code, amr, uiLocales)
-                   else ZIO.none
+        else ZIO.none
       yield AuthorizeResponse.Authorized(code, idToken)
 
     private def silentIdToken(
@@ -186,8 +188,8 @@ object AuthorizeEndpointService:
       yield Some(token)
 
     /** Narrows the requested ui_locales to those configured in central, preserving the client's
-      * preference order. Rejects the request when none of the requested locales are available.
-      */
+     * preference order. Rejects the request when none of the requested locales are available.
+     */
     private def resolveUiLocales(request: AuthorizeRequest): ZIO[Any, Error.UnsupportedUiLocales, Option[List[String]]] =
       request.uiLocales match
         case None => ZIO.none
