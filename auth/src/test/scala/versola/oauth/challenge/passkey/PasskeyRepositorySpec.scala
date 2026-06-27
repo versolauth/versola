@@ -85,12 +85,42 @@ trait PasskeyRepositorySpec extends DatabaseSpecBase[PasskeyRepositorySpec.Env]:
         val usedAt = baseInstant.plusSeconds(120)
         for
           _ <- env.repository.insert(record(credId1, userId1))
-          _ <- env.repository.updateUsage(credId1, signatureCounter = 5L, lastUsedAt = usedAt)
+          result <- env.repository.updateUsage(credId1, signatureCounter = 5L, lastUsedAt = usedAt)
           found <- env.repository.findByCredentialIdAndUser(credId1, userId1)
         yield assertTrue(
+          result,
           found.exists(_.signatureCounter == 5L),
           found.exists(_.lastUsedAt.contains(usedAt)),
         )
+      },
+      test("updateUsage returns false when new counter is not greater than stored") {
+        for
+          _ <- env.repository.insert(record(credId1, userId1))
+          _ <- env.repository.updateUsage(credId1, signatureCounter = 5L, lastUsedAt = baseInstant)
+          result <- env.repository.updateUsage(credId1, signatureCounter = 5L, lastUsedAt = baseInstant)
+        yield assertTrue(!result)
+      },
+      test("updateUsage allows only one concurrent update with the same counter") {
+        for
+          _ <- env.repository.insert(record(credId1, userId1))
+          results <- ZIO.collectAllPar(List(
+            env.repository.updateUsage(credId1, signatureCounter = 6L, lastUsedAt = baseInstant),
+            env.repository.updateUsage(credId1, signatureCounter = 6L, lastUsedAt = baseInstant),
+          ))
+        yield assertTrue(results.count(_ == true) == 1)
+      },
+      test("updateUsage returns true when new counter is zero (counter not supported)") {
+        for
+          _ <- env.repository.insert(record(credId1, userId1))
+          result <- env.repository.updateUsage(credId1, signatureCounter = 0L, lastUsedAt = baseInstant)
+        yield assertTrue(result)
+      },
+      test("updateUsage returns false when new counter is zero but stored counter is non-zero") {
+        for
+          _ <- env.repository.insert(record(credId1, userId1))
+          _ <- env.repository.updateUsage(credId1, signatureCounter = 5L, lastUsedAt = baseInstant)
+          result <- env.repository.updateUsage(credId1, signatureCounter = 0L, lastUsedAt = baseInstant)
+        yield assertTrue(!result)
       },
       test("rename updates the name when the user matches") {
         for
