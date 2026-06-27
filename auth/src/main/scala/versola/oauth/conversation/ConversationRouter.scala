@@ -32,14 +32,15 @@ object ConversationRouter:
     override def startPasskeyOptions(authId: AuthId): Task[Option[String]] =
       conversationService.find(authId).flatMap:
         case None => ZIO.none
-        case Some(record) =>
-          record.step match
-            case cred: ConversationStep.Credential if record.authFlow.passkey.isDefined =>
-              configService.getPasskeySettings(record.clientId).flatMap:
+        case Some(conversation) =>
+          conversation.step match
+            case cred: ConversationStep.Credential if conversation.authFlow.passkey.isDefined =>
+              configService.getPasskeySettings(conversation.clientId).flatMap:
                 case None =>
                   ZIO.fail(new Exception("Passkeys not configured for this tenant"))
                 case Some(settings) =>
-                  conversationService.startPasskeyAssertion(authId, record, cred, settings).map(Some(_))
+                  conversationService.startPasskeyAssertion(authId, conversation, cred, settings)
+                    .map(Some(_))
             case _: ConversationStep.Credential =>
               ZIO.none
             case _ =>
@@ -51,7 +52,7 @@ object ConversationRouter:
         uiLocale: Option[String],
     ): Task[ConversationResult.Render] =
       conversationService.find(authId)
-        .map(_.map(record => submission -> withUiLocale(record, uiLocale)))
+        .map(_.map(conversation => submission -> withUiLocale(conversation, uiLocale)))
         .flatMap:
           case None =>
             ZIO.succeed(ConversationResult.NotFound)
@@ -103,9 +104,9 @@ object ConversationRouter:
       * locales, so every subsequent render keeps it. Applied in-memory before dispatch — it is
       * persisted by the same overwrite the submission already performs.
       */
-    private def withUiLocale(record: ConversationRecord, uiLocale: Option[String]): ConversationRecord =
-      uiLocale.fold(record): locale =>
-        record.copy(uiLocales = Some(locale :: record.uiLocales.getOrElse(Nil).filterNot(_ == locale)))
+    private def withUiLocale(conversation: ConversationRecord, uiLocale: Option[String]): ConversationRecord =
+      uiLocale.fold(conversation): locale =>
+        conversation.copy(uiLocales = Some(locale :: conversation.uiLocales.getOrElse(Nil).filterNot(_ == locale)))
 
     /** A factor is already satisfied when some passed factor in `conversation.amr` matches it
       * directly or counts as an equivalent (e.g. a passed passkey satisfies an otp factor).
@@ -134,7 +135,6 @@ object ConversationRouter:
 
         case Some((AuthFactor(AuthFactorType.passkeyEnroll, _), _)) =>
           ZIO.succeed(ConversationResult.IllegalState)
-
         case None =>
           conversationService.finish(authId, conversation)
 
@@ -162,6 +162,5 @@ object ConversationRouter:
 
         case Some((AuthFactor(AuthFactorType.passkeyEnroll, _), _)) =>
           conversationService.offerPasskeyEnroll(authId, conversation)
-
         case None =>
           conversationService.finish(authId, conversation)

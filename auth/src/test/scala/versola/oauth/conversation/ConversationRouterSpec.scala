@@ -68,9 +68,9 @@ object ConversationRouterSpec extends UnitSpecBase:
     userClaims = None,
     authFlow = otpAuthFlow,
     userAgent = None,
+    version = 0,
     amr = Map.empty,
   )
-
 
   val otpRecord = ConversationRecord(
     clientId = clientId,
@@ -92,6 +92,7 @@ object ConversationRouterSpec extends UnitSpecBase:
     userClaims = None,
     authFlow = otpAuthFlow,
     userAgent = None,
+    version = 0,
     amr = Map.empty,
   )
 
