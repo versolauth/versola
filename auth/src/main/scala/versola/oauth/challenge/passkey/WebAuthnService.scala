@@ -75,7 +75,7 @@ object WebAuthnService:
     ZLayer:
       for
         repository <- ZIO.service[PasskeyRepository]
-        runtime    <- ZIO.runtime[Any]
+        runtime <- ZIO.runtime[Any]
       yield Impl(repository, runtime)
 
   private final class Impl(repository: PasskeyRepository, runtime: Runtime[Any]) extends WebAuthnService:
@@ -97,19 +97,19 @@ object WebAuthnService:
 
     // webauthn-server-core 2.7.0 only has USB, NFC, BLE, HYBRID, INTERNAL
     private def toYubico(t: AuthenticatorTransport): Option[YubicoTransport] = t match
-      case AuthenticatorTransport.Ble      => Some(YubicoTransport.BLE)
-      case AuthenticatorTransport.Hybrid   => Some(YubicoTransport.HYBRID)
+      case AuthenticatorTransport.Ble => Some(YubicoTransport.BLE)
+      case AuthenticatorTransport.Hybrid => Some(YubicoTransport.HYBRID)
       case AuthenticatorTransport.Internal => Some(YubicoTransport.INTERNAL)
-      case AuthenticatorTransport.Nfc      => Some(YubicoTransport.NFC)
-      case AuthenticatorTransport.Usb      => Some(YubicoTransport.USB)
-      case _                               => None // Cable / SmartCard not in 2.7.0
+      case AuthenticatorTransport.Nfc => Some(YubicoTransport.NFC)
+      case AuthenticatorTransport.Usb => Some(YubicoTransport.USB)
+      case _ => None // Cable / SmartCard not in 2.7.0
 
     private def fromYubico(t: YubicoTransport): AuthenticatorTransport = t.getId match
-      case "ble"      => AuthenticatorTransport.Ble
-      case "hybrid"   => AuthenticatorTransport.Hybrid
-      case "nfc"      => AuthenticatorTransport.Nfc
-      case "usb"      => AuthenticatorTransport.Usb
-      case _          => AuthenticatorTransport.Internal
+      case "ble" => AuthenticatorTransport.Ble
+      case "hybrid" => AuthenticatorTransport.Hybrid
+      case "nfc" => AuthenticatorTransport.Nfc
+      case "usb" => AuthenticatorTransport.Usb
+      case _ => AuthenticatorTransport.Internal
 
     private def runSync[A](effect: zio.Task[A]): A =
       Unsafe.unsafe { unsafe ?=>
@@ -163,9 +163,9 @@ object WebAuthnService:
         .build()
 
     private def uvRequirement(uv: String): UserVerificationRequirement = uv.toLowerCase match
-      case "required"    => UserVerificationRequirement.REQUIRED
+      case "required" => UserVerificationRequirement.REQUIRED
       case "discouraged" => UserVerificationRequirement.DISCOURAGED
-      case _             => UserVerificationRequirement.PREFERRED
+      case _ => UserVerificationRequirement.PREFERRED
 
     override def startRegistration(
         settings: PasskeySettings,
@@ -180,15 +180,15 @@ object WebAuthnService:
                 .name(userId.toString)
                 .displayName(displayName)
                 .id(userIdToHandle(userId))
-                .build()
+                .build(),
             )
             .authenticatorSelection(
               AuthenticatorSelectionCriteria.builder()
                 .residentKey(ResidentKeyRequirement.REQUIRED)
                 .userVerification(uvRequirement(settings.userVerification))
-                .build()
+                .build(),
             )
-            .build()
+            .build(),
         )
         PasskeyCeremony(
           request = mapper.writeValueAsString(opts),
@@ -204,12 +204,12 @@ object WebAuthnService:
         name: Option[String],
     ): IO[WebAuthnError, PasskeyRecord] =
       for
-        now    <- zio.Clock.instant
+        now <- zio.Clock.instant
         record <- ZIO.attemptBlocking:
           val creationOptions = mapper.readValue(request, classOf[PublicKeyCredentialCreationOptions])
-          val credential      = PublicKeyCredential.parseRegistrationResponseJson(response)
+          val credential = PublicKeyCredential.parseRegistrationResponseJson(response)
           val result = buildRp(settings).finishRegistration(
-            FinishRegistrationOptions.builder().request(creationOptions).response(credential).build()
+            FinishRegistrationOptions.builder().request(creationOptions).response(credential).build(),
           )
           val transports = result.getKeyId.getTransports.toScala
             .map(_.asScala.toList.map(fromYubico))
@@ -243,7 +243,7 @@ object WebAuthnService:
         val assertionRequest = buildRp(settings).startAssertion(
           StartAssertionOptions.builder()
             .userVerification(UserVerificationRequirement.REQUIRED)
-            .build()
+            .build(),
         )
         PasskeyCeremony(
           request = mapper.writeValueAsString(assertionRequest),
@@ -257,13 +257,13 @@ object WebAuthnService:
         response: String,
     ): IO[WebAuthnError, AssertionOutcome] =
       for
-        now     <- zio.Clock.instant
+        now <- zio.Clock.instant
         outcome <- ZIO.attemptBlocking:
           val assertionRequest = mapper.readValue(request, classOf[AssertionRequest])
-          val credential       = PublicKeyCredential.parseAssertionResponseJson(response)
+          val credential = PublicKeyCredential.parseAssertionResponseJson(response)
           if CredRepo.lookupAll(credential.getId).isEmpty then throw WebAuthnError.CredentialNotFound
           val result = buildRp(settings).finishAssertion(
-            FinishAssertionOptions.builder().request(assertionRequest).response(credential).build()
+            FinishAssertionOptions.builder().request(assertionRequest).response(credential).build(),
           )
           if !result.isSuccess then throw WebAuthnError.AssertionFailed
           val userId = handleToUserId(result.getCredential.getUserHandle)
@@ -275,8 +275,15 @@ object WebAuthnService:
           )
         .mapError:
           case e: WebAuthnError => e
-          case e                => WebAuthnError.CeremonyFailed(e.getMessage)
-        _ <- repository
+          case e => WebAuthnError.CeremonyFailed(e.getMessage)
+        updated <- repository
           .updateUsage(outcome.credentialId, outcome.signatureCount, now)
           .mapError(e => WebAuthnError.CeremonyFailed(e.getMessage))
+        _ <- ZIO.unless(updated):
+          repository
+            .findByCredentialIdAndUser(outcome.credentialId, outcome.userId)
+            .mapError(e => WebAuthnError.CeremonyFailed(e.getMessage))
+            .flatMap:
+              case Some(_) => ZIO.fail(WebAuthnError.AssertionFailed)
+              case None => ZIO.fail(WebAuthnError.CredentialNotFound)
       yield outcome

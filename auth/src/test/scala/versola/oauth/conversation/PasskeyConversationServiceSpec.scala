@@ -152,6 +152,18 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
           result == ConversationResult.RenderStep(credentialStep.copy(passkeyRequest = None, passkeyFailed = true))
         )
       },
+      test("re-render credential step on clone detection") {
+        val env = Env()
+        val recordWithRequest = baseRecord.copy(step = credentialStep.copy(passkeyRequest = Some("req-state")))
+        for
+          _ <- env.configService.getPasskeySettings.succeedsWith(Some(passkeySettings))
+          _ <- env.webAuthnService.finishAssertion.failsWith(versola.oauth.challenge.passkey.WebAuthnError.AssertionFailed)
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          result <- env.service.finishPasskeyAssertion(authId, recordWithRequest, "response-json")
+        yield assertTrue(
+          result == ConversationResult.RenderStep(credentialStep.copy(passkeyRequest = None, passkeyFailed = true))
+        )
+      },
       test("flag credential step as orphaned when the credential is not found") {
         val env = Env()
         val recordWithRequest = baseRecord.copy(step = credentialStep.copy(passkeyRequest = Some("req-state")))

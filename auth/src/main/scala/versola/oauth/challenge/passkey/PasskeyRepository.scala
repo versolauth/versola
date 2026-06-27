@@ -23,7 +23,7 @@ trait PasskeyRepository:
 
   def listByUser(userId: UserId): Task[Vector[PasskeyRecord]]
 
-  def updateUsage(id: CredentialId, signatureCounter: Long, lastUsedAt: Instant): Task[Unit]
+  def updateUsage(id: CredentialId, signatureCounter: Long, lastUsedAt: Instant): Task[Boolean]
 
   def rename(id: CredentialId, userId: UserId, name: Option[String]): Task[Unit]
 
