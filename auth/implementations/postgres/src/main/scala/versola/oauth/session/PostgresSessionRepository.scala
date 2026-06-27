@@ -62,7 +62,7 @@ class PostgresSessionRepository(xa: TransactorZIO) extends SessionRepository, Ba
   ): Task[List[SessionRecord]] =
     for
       now <- Clock.instant
-      result <- xa.connect:
+      result <- xa.connectMeasured("find-sessions-by-user"):
         sql"""
         SELECT user_id, client_id, user_agent, created_at, amr
         FROM sso_sessions
@@ -78,7 +78,7 @@ class PostgresSessionRepository(xa: TransactorZIO) extends SessionRepository, Ba
   ): Task[Unit] =
     for
       now <- Clock.instant
-      _ <- xa.connect:
+      _ <- xa.connectMeasured("invalidate-sessions-by-user"):
         sql"""
           UPDATE sso_sessions
           SET expires_at = $now
