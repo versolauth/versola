@@ -115,6 +115,13 @@ trait PasskeyRepositorySpec extends DatabaseSpecBase[PasskeyRepositorySpec.Env]:
           result <- env.repository.updateUsage(credId1, signatureCounter = 0L, lastUsedAt = baseInstant)
         yield assertTrue(result)
       },
+      test("updateUsage returns false when new counter is zero but stored counter is non-zero") {
+        for
+          _ <- env.repository.insert(record(credId1, userId1))
+          _ <- env.repository.updateUsage(credId1, signatureCounter = 5L, lastUsedAt = baseInstant)
+          result <- env.repository.updateUsage(credId1, signatureCounter = 0L, lastUsedAt = baseInstant)
+        yield assertTrue(!result)
+      },
       test("rename updates the name when the user matches") {
         for
           _ <- env.repository.insert(record(credId1, userId1, name = Some("orig")))
