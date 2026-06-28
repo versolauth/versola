@@ -6,7 +6,7 @@ import versola.oauth.challenge.passkey.{AssertionOutcome, PasskeyCeremony, Passk
 import versola.oauth.challenge.password.PasswordService
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{AuthFlow, ClientId, PasskeyAuthFlow, PasskeySettings, PrimaryCredential, ScopeToken}
-import versola.oauth.conversation.limit.SubmissionLimiter
+import versola.oauth.conversation.limit.{ChallengeType, LimitStatus, SubmissionLimiter}
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
 import versola.oauth.conversation.otp.OtpService
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod}
@@ -321,6 +321,44 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
           result <- env.service.finishPasskeyEnroll(authId, recordWithUser, enrollStep, "resp", Some("<script>"))
         yield assertTrue(result == ConversationResult.IllegalState)
       },
+      test("accept name with allowed punctuation") {
+        val env = Env()
+        val recordWithUser = baseRecord.copy(userId = Some(userId))
+        val enrollStep = ConversationStep.PasskeyEnroll("reg-req", "{}")
+        val dummyPasskey = PasskeyRecord(
+          id = CredentialId(Array.fill(16)(1.toByte)),
+          userId = userId,
+          publicKey = Array.empty,
+          signatureCounter = 0,
+          deviceType = CredentialDeviceType.SingleDevice,
+          backedUp = false,
+          backupEligible = false,
+          transports = Nil,
+          attestationObject = None,
+          clientDataJson = None,
+          aaguid = None,
+          name = None,
+          lastUsedAt = None,
+          createdAt = Instant.now(),
+          updatedAt = Instant.now(),
+        )
+        val testCode = versola.oauth.model.AuthorizationCode(Array.fill(32)(1.toByte))
+        val testSessionId = versola.oauth.session.model.SessionId(Array.fill(32)(2.toByte))
+        val testAccessToken = versola.oauth.model.AccessToken(Array.fill(32)(3.toByte))
+        val testMac = versola.util.MAC(Array.fill(32)(4.toByte))
+        for
+          _ <- env.configService.getPasskeySettings.succeedsWith(Some(passkeySettings))
+          _ <- env.webAuthnService.finishRegistration.succeedsWith(dummyPasskey)
+          _ <- env.authPropertyGenerator.nextAuthorizationCode.succeedsWith(testCode)
+          _ <- env.authPropertyGenerator.nextSessionId.succeedsWith(testSessionId)
+          _ <- env.securityService.mac.succeedsWith(testMac)
+          _ <- env.authPropertyGenerator.nextAccessToken.succeedsWith(testAccessToken)
+          _ <- env.authorizationCodeRepository.create.succeedsWith(())
+          _ <- env.sessionRepository.create.succeedsWith(())
+          _ <- env.conversationRepository.delete.succeedsWith(true)
+          result <- env.service.finishPasskeyEnroll(authId, recordWithUser, enrollStep, "resp", Some("O'Brien-Test"))
+        yield assertTrue(result.isInstanceOf[ConversationResult.Complete])
+      },
       test("succeed with valid name") {
         val env = Env()
         val recordWithUser = baseRecord.copy(userId = Some(userId))
@@ -381,7 +419,6 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
           _ <- env.conversationRepository.delete.succeedsWith(true)
           result <- env.service.skipPasskey(authId, recordWithUser)
         yield assertTrue(result.isInstanceOf[ConversationResult.Complete])
-      }
+      },
+    ),
   )
-)
-  
