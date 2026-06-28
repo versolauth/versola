@@ -381,7 +381,6 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
           _ <- env.conversationRepository.delete.succeedsWith(true)
           result <- env.service.skipPasskey(authId, recordWithUser)
         yield assertTrue(result.isInstanceOf[ConversationResult.Complete])
-      }
+      },
+    ),
   )
-)
-  
