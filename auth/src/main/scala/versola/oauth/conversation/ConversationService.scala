@@ -425,7 +425,7 @@ object ConversationService:
                         ZIO.logWarning(s"Passkey assertion: credential not found (clientId=${conversation.clientId})") *>
                           renderStep(authId, conversation, cred.copy(passkeyRequest = None, passkeyFailed = true))
                       case error =>
-                        ZIO.logWarning(s"Passkey assertion: verification failed (clientId=${conversation.clientId}, error=$error)") *>
+                        ZIO.logWarning(s"Passkey assertion: verification failed (clientId=${conversation.clientId}, error=$${error.getClass.getSimpleName})") *>
                           renderStep(authId, conversation, cred.copy(passkeyRequest = None, passkeyFailed = true))
                     },
                     outcome =>

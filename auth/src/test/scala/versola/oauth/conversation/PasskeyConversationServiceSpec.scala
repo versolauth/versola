@@ -164,7 +164,7 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
           result == ConversationResult.RenderStep(credentialStep.copy(passkeyRequest = None, passkeyFailed = true))
         )
       },
-      test("\"re-render credential step when the credential is not found") {
+      test("re-render credential step when the credential is not found") {
         val env = Env()
         val recordWithRequest = baseRecord.copy(step = credentialStep.copy(passkeyRequest = Some("req-state")))
         for
