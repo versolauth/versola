@@ -289,32 +289,20 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
           result <- env.service.finishPasskeyEnroll(authId, recordWithUser, enrollStep, "resp", None)
         yield assertTrue(result == ConversationResult.RenderStep(enrollStep.copy(enrollFailed = true)))
       },
-    ),
-    suite("skipPasskey")(
-      test("finish conversation") {
-        val env = Env()
-        val recordWithUser = baseRecord.copy(userId = Some(userId))
-        val testCode = versola.oauth.model.AuthorizationCode(Array.fill(32)(1.toByte))
-        val testSessionId = versola.oauth.session.model.SessionId(Array.fill(32)(2.toByte))
-        val testAccessToken = versola.oauth.model.AccessToken(Array.fill(32)(3.toByte))
-        val testMac = versola.util.MAC(Array.fill(32)(4.toByte))
-        for
-          _ <- env.authPropertyGenerator.nextAuthorizationCode.succeedsWith(testCode)
-          _ <- env.authPropertyGenerator.nextSessionId.succeedsWith(testSessionId)
-          _ <- env.securityService.mac.succeedsWith(testMac)
-          _ <- env.authPropertyGenerator.nextAccessToken.succeedsWith(testAccessToken)
-          _ <- env.authorizationCodeRepository.create.succeedsWith(())
-          _ <- env.sessionRepository.create.succeedsWith(())
-          _ <- env.conversationRepository.delete.succeedsWith(true)
-          result <- env.service.skipPasskey(authId, recordWithUser)
-        yield assertTrue(result.isInstanceOf[ConversationResult.Complete])
-      },
       test("return IllegalState for empty name") {
         val env = Env()
         val recordWithUser = baseRecord.copy(userId = Some(userId))
         val enrollStep = ConversationStep.PasskeyEnroll("reg-req", "{}")
         for
           result <- env.service.finishPasskeyEnroll(authId, recordWithUser, enrollStep, "resp", Some(""))
+        yield assertTrue(result == ConversationResult.IllegalState)
+      },
+      test("return IllegalState for whitespace-only name") {
+        val env = Env()
+        val recordWithUser = baseRecord.copy(userId = Some(userId))
+        val enrollStep = ConversationStep.PasskeyEnroll("reg-req", "{}")
+        for
+          result <- env.service.finishPasskeyEnroll(authId, recordWithUser, enrollStep, "resp", Some("   "))
         yield assertTrue(result == ConversationResult.IllegalState)
       },
       test("return IllegalState for name longer than 64 chars") {
@@ -375,4 +363,25 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
         )
       },
     ),
+    suite("skipPasskey")(
+      test("finish conversation") {
+        val env = Env()
+        val recordWithUser = baseRecord.copy(userId = Some(userId))
+        val testCode = versola.oauth.model.AuthorizationCode(Array.fill(32)(1.toByte))
+        val testSessionId = versola.oauth.session.model.SessionId(Array.fill(32)(2.toByte))
+        val testAccessToken = versola.oauth.model.AccessToken(Array.fill(32)(3.toByte))
+        val testMac = versola.util.MAC(Array.fill(32)(4.toByte))
+        for
+          _ <- env.authPropertyGenerator.nextAuthorizationCode.succeedsWith(testCode)
+          _ <- env.authPropertyGenerator.nextSessionId.succeedsWith(testSessionId)
+          _ <- env.securityService.mac.succeedsWith(testMac)
+          _ <- env.authPropertyGenerator.nextAccessToken.succeedsWith(testAccessToken)
+          _ <- env.authorizationCodeRepository.create.succeedsWith(())
+          _ <- env.sessionRepository.create.succeedsWith(())
+          _ <- env.conversationRepository.delete.succeedsWith(true)
+          result <- env.service.skipPasskey(authId, recordWithUser)
+        yield assertTrue(result.isInstanceOf[ConversationResult.Complete])
+      }
   )
+)
+  
