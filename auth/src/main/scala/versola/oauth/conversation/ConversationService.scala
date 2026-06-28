@@ -491,18 +491,24 @@ object ConversationService:
         response: String,
         name: Option[String],
     ): Task[ConversationResult.Render] =
-      conversation.userId match
-        case None =>
+      val validatedName: Option[String] = name.map(_.trim)
+
+      validatedName match
+        case Some(n) if n.isEmpty || n.length > 64 || !n.matches("[\\p{L}\\p{N} _\\-'.]+") =>
           ZIO.succeed(ConversationResult.IllegalState)
-        case Some(userId) =>
-          configService.getPasskeySettings(conversation.clientId).flatMap:
+        case _ =>
+          conversation.userId match
             case None =>
-              finish(authId, conversation)
-            case Some(settings) =>
-              webAuthnService.finishRegistration(settings, userId, enrollStep.request, response, name).foldZIO(
-                error => renderStep(authId, conversation, enrollStep.copy(enrollFailed = true)),
-                _ => finish(authId, conversation),
-              )
+              ZIO.succeed(ConversationResult.IllegalState)
+            case Some(userId) =>
+              configService.getPasskeySettings(conversation.clientId).flatMap:
+                case None =>
+                  finish(authId, conversation)
+                case Some(settings) =>
+                  webAuthnService.finishRegistration(settings, userId, enrollStep.request, response, validatedName).foldZIO(
+                    error => renderStep(authId, conversation, enrollStep.copy(enrollFailed = true)),
+                    _ => finish(authId, conversation),
+                  )
 
     override def skipPasskey(authId: AuthId, conversation: ConversationRecord): Task[ConversationResult.Render] =
       finish(authId, conversation)
