@@ -403,7 +403,6 @@ object ConversationService:
           val updatedStep = step.copy(
             passkeyRequest = Some(ceremony.request),
             passkeyFailed = false,
-            passkeyOrphaned = false,
           )
           conversationRepository.overwrite(authId, conversation.copy(step = updatedStep))
             .as(ceremony.publicKeyOptions),
@@ -423,9 +422,11 @@ object ConversationService:
                   webAuthnService.finishAssertion(settings, request, response).foldZIO(
                     {
                       case WebAuthnError.CredentialNotFound =>
-                        renderStep(authId, conversation, cred.copy(passkeyRequest = None, passkeyOrphaned = true))
-                      case _ =>
-                        renderStep(authId, conversation, cred.copy(passkeyRequest = None, passkeyFailed = true))
+                        ZIO.logWarning(s"Passkey assertion: credential not found (clientId=${conversation.clientId})") *>
+                          renderStep(authId, conversation, cred.copy(passkeyRequest = None, passkeyFailed = true))
+                      case error =>
+                        ZIO.logWarning(s"Passkey assertion: verification failed (clientId=${conversation.clientId}, error=$error)") *>
+                          renderStep(authId, conversation, cred.copy(passkeyRequest = None, passkeyFailed = true))
                     },
                     outcome =>
                       userRepository.find(outcome.userId).zipPar(

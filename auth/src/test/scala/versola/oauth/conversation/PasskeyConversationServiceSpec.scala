@@ -164,7 +164,7 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
           result == ConversationResult.RenderStep(credentialStep.copy(passkeyRequest = None, passkeyFailed = true))
         )
       },
-      test("flag credential step as orphaned when the credential is not found") {
+      test("\"re-render credential step when the credential is not found") {
         val env = Env()
         val recordWithRequest = baseRecord.copy(step = credentialStep.copy(passkeyRequest = Some("req-state")))
         for
@@ -173,7 +173,7 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
           result <- env.service.finishPasskeyAssertion(authId, recordWithRequest, "response-json")
         yield assertTrue(
-          result == ConversationResult.RenderStep(credentialStep.copy(passkeyRequest = None, passkeyOrphaned = true))
+          result == ConversationResult.RenderStep(credentialStep.copy(passkeyRequest = None, passkeyFailed = true))
         )
       },
       test("return IllegalState when passkey login is not enabled for the client") {
