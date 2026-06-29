@@ -2,8 +2,8 @@ package versola.oauth.authorize
 
 import versola.oauth.authorize.model.{AuthorizeRequest, AuthorizeResponse, Error, Prompt, ResponseTypeEntry}
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{AuthFlow, AuthMethodRef, PassedAuthFactor, PassedFactorRecord, ScopeToken}
-import versola.oauth.conversation.ConversationRepository
+import versola.oauth.client.model.{AuthFactorType, AuthFlow, AuthMethodRef, PassedAuthFactor, PassedFactorRecord, ScopeToken}
+import versola.oauth.conversation.{ConversationRepository, ConversationService}
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
 import versola.oauth.model.{AuthorizationCode, AuthorizationCodeRecord}
 import versola.oauth.session.SessionRepository
@@ -22,7 +22,7 @@ trait AuthorizeEndpointService:
 
 object AuthorizeEndpointService:
   def live =
-    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _))
+    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _))
 
   class Impl(
       conversationRepository: ConversationRepository,
@@ -35,6 +35,7 @@ object AuthorizeEndpointService:
       authorizationCodeRepository: AuthorizationCodeRepository,
       userRepository: UserRepository,
       userInfoService: UserInfoService,
+      conversationService: ConversationService,
   ) extends AuthorizeEndpointService:
 
     override def authorize(
@@ -110,8 +111,20 @@ object AuthorizeEndpointService:
           version = 0,
           amr = amr,
         )
-        conversationRepository.create(authId, conversation, config.security.authConversation.ttl)
-          .as(AuthorizeResponse.Initialize(authId))
+        for
+          _ <- conversationRepository.create(authId, conversation, config.security.authConversation.ttl)
+          response <- request.loginHint match
+            case None => ZIO.succeed(AuthorizeResponse.Initialize(authId))
+            case Some(hint) =>
+              flow.primary.factors.headOption match
+                case Some(factor) if factor.`type` == AuthFactorType.otp =>
+                  conversationService.prepareInitialOtp(authId, conversation, hint, factorIndex = 0)
+                    .as(AuthorizeResponse.Initialize(authId))
+                case Some(factor) if factor.`type` == AuthFactorType.password =>
+                  conversationService.prepareInitialPassword(authId, conversation, hint, factorIndex = 0)
+                    .as(AuthorizeResponse.Initialize(authId))
+                case _ => ZIO.succeed(AuthorizeResponse.Initialize(authId))
+        yield response
 
     private def silentAuthorize(
         request: AuthorizeRequest,

@@ -2,12 +2,12 @@ package versola.oauth.authorize
 
 import versola.oauth.authorize.model.{AuthorizeRequest, Error, Prompt, ResponseTypeEntry}
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{ClientId, OAuthClientRecord, ScopeToken}
+import versola.oauth.client.model.{ClientId, OAuthClientRecord, PrimaryCredential, ScopeToken}
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, Nonce, State}
 import versola.oauth.model.SessionCookie
 import versola.oauth.session.model.SessionId
 import versola.oauth.userinfo.model.RequestedClaims
-import versola.util.Base64
+import versola.util.{Base64, Email, Phone}
 import zio.http.{Header, Method, Request, URL}
 import zio.json.*
 import zio.prelude.NonEmptySet
@@ -35,7 +35,7 @@ object AuthorizeRequestParser:
           .someOrFail(Error.BadRequest)
           .map(ClientId(_))
 
-        _ <- oauthClientService.find(clientId)
+        client <- oauthClientService.find(clientId)
           .someOrFail(Error.BadRequest)
           .filterOrFail(_.redirectUris.contains(redirectUriString))(Error.BadRequest)
 
@@ -117,6 +117,32 @@ object AuthorizeRequestParser:
           .orElseFail(Error.MultipleValuesProvided(redirectUri, state, "acr_values"))
           .map(_.map(_.split(' ').toList))
 
+        loginHint <- getParam(params, "login_hint")
+          .orElseFail(Error.MultipleValuesProvided(redirectUri, state, "login_hint"))
+          .flatMap {
+            case None => ZIO.none
+            case Some(raw) =>
+              val hint: Option[Either[Email, Phone]] =
+                Email.from(raw).map(Left(_)).toOption
+                  .orElse(Phone.parse(raw).map(Right(_)).toOption)
+              hint match
+                case None => ZIO.fail(Error.LoginHintInvalid(redirectUri, state))
+                case Some(h) =>
+                  val credentialAllowed = client.authFlow.forall { flow =>
+                    h match
+                      case Left(_)  => flow.primary.credentials.contains(PrimaryCredential.email)
+                      case Right(_) => flow.primary.credentials.contains(PrimaryCredential.phone)
+                  }
+                  if !credentialAllowed then ZIO.fail(Error.LoginHintInvalid(redirectUri, state))
+                  else h match
+                    case Left(_) => ZIO.some(h)
+                    case Right(phone) =>
+                      oauthClientService.getAllowedPhonePrefixes(clientId).flatMap { prefixes =>
+                        if prefixes.isEmpty || prefixes.exists(phone.startsWith) then ZIO.some(h)
+                        else ZIO.fail(Error.LoginHintInvalid(redirectUri, state))
+                      }
+          }
+
         userAgent =
           request.header(Header.UserAgent)
             .map(_.renderedValue)
@@ -141,6 +167,7 @@ object AuthorizeRequestParser:
           maxAge = maxAge,
           acrValues = acrValues,
           sessionId = sessionId,
+          loginHint = loginHint,
         )
       yield authorizeRequest
 
