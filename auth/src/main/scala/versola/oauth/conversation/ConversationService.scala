@@ -420,14 +420,7 @@ object ConversationService:
                   ZIO.succeed(ConversationResult.IllegalState)
                 case Some(settings) =>
                   webAuthnService.finishAssertion(settings, request, response).foldZIO(
-                    {
-                      case WebAuthnError.CredentialNotFound =>
-                        ZIO.logWarning(s"Passkey assertion: credential not found (clientId=${conversation.clientId})") *>
-                          renderStep(authId, conversation, cred.copy(passkeyRequest = None, passkeyFailed = true))
-                      case error =>
-                        ZIO.logWarning(s"Passkey assertion: verification failed (clientId=${conversation.clientId}, error=${error.getClass.getSimpleName})") *>
-                          renderStep(authId, conversation, cred.copy(passkeyRequest = None, passkeyFailed = true))
-                    },
+                    _ => renderStep(authId, conversation, cred.copy(passkeyRequest = None, passkeyFailed = true)),
                     outcome =>
                       userRepository.find(outcome.userId).zipPar(
                         passkeyRepository.findByCredentialIdAndUser(outcome.credentialId, outcome.userId),
