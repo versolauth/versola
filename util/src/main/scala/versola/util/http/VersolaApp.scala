@@ -52,7 +52,7 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
     Option(java.lang.System.getenv("PORT")).flatMap(_.toIntOption).getOrElse(8080)
 
   def diagnosticsPort: Int =
-    Option(java.lang.System.getenv("DPORT")).flatMap(_.toIntOption).getOrElse(8080)
+    Option(java.lang.System.getenv("DPORT")).flatMap(_.toIntOption).getOrElse(9090)
 
   def serverConfig: Server.Config =
     Server.Config.default.port(port)
@@ -70,13 +70,17 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
       readinessService <- ReadinessService.make
       client <- ZIO.service[Client]
 
-      _ <- Server.install[MetricsService](serviceRoutes(readinessService))
-        .provide(
-          Server.live,
-          prometheusMetricsService,
-          ZLayer.succeed(MetricsConfig(1.second)),
-          ZLayer.succeed(diagnosticsConfig),
-        )
+      _ <- {
+        for
+          _ <- Server.install[MetricsService](serviceRoutes(readinessService))
+          _ <- ZIO.never
+        yield ()
+      }.provide(
+        Server.live,
+        prometheusMetricsService,
+        ZLayer.succeed(MetricsConfig(1.second)),
+        ZLayer.succeed(diagnosticsConfig),
+      ).forkScoped
 
       _ <- {
         for
@@ -99,7 +103,7 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
         ZLayer.succeed(envConfig),
         ZLayer.succeed(envName),
         ZLayer.succeed(scope),
-        ZLayer.succeed(client)
+        ZLayer.succeed(client),
       )
     yield ()
   }
