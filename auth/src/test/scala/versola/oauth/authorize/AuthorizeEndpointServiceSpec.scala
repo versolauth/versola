@@ -5,14 +5,14 @@ import versola.oauth.authorize.model.{AuthorizeRequest, AuthorizeResponse, Error
 import versola.oauth.jwks.JwksService
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{AuthFactor, AuthFactorType, AuthFlow, AuthMethodRef, ClientId, OAuthClientRecord, PassedAuthFactor, PassedFactorRecord, PrimaryAuthFlow, PrimaryCredential, ScopeToken, TenantId}
-import versola.oauth.conversation.ConversationRepository
+import versola.oauth.conversation.{ConversationRepository, ConversationResult, ConversationService}
 import versola.oauth.model.{AccessToken, AuthorizationCode, CodeChallenge, CodeChallengeMethod, State}
 import versola.oauth.session.SessionRepository
 import versola.oauth.session.model.{SessionId, SessionRecord, UserAgentInfo}
 import versola.oauth.token.AuthorizationCodeRepository
 import versola.oauth.userinfo.UserInfoService
 import versola.user.UserRepository
-import versola.util.{AuthPropertyGenerator, MAC, Secret, SecureRandom, SecurityService, UnitSpecBase}
+import versola.util.{AuthPropertyGenerator, Email, MAC, Phone, Secret, SecureRandom, SecurityService, UnitSpecBase}
 import zio.http.URL
 import zio.prelude.NonEmptySet
 import zio.test.*
@@ -68,6 +68,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
     maxAge = None,
     acrValues = None,
     sessionId = None,
+    loginHint = None,
   )
 
   val rawSessionId = SessionId(Array.fill(32)(5.toByte))
@@ -94,6 +95,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
     val userRepository = stub[UserRepository]
     val userInfoService = stub[UserInfoService]
     val jwksService = TestEnvConfig.jwksService
+    val conversationService = stub[ConversationService]
     val service = AuthorizeEndpointService.Impl(
       conversationRepository,
       configurationService,
@@ -106,7 +108,23 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
       userRepository,
       userInfoService,
       jwksService,
+      conversationService,
     )
+
+  val phoneHint = Phone("+12025551234")
+  val emailHint = Email("user@example.com")
+
+  val passwordFlow = AuthFlow(
+    primary = PrimaryAuthFlow(
+      credentials = List(PrimaryCredential.email),
+      inlinePassword = false,
+      factors = List(AuthFactor(`type` = AuthFactorType.password, required = true)),
+    ),
+    passkey = None,
+    equivalents = Map.empty,
+  )
+
+  val clientWithPasswordFlow = clientWithOtpFlow.copy(authFlow = Some(passwordFlow))
 
   val spec = suite("AuthorizeEndpointService")(
     test("create new conversation when no session") {
@@ -240,6 +258,40 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         result == AuthorizeResponse.Initialize(versola.oauth.conversation.model.AuthId(uuid)),
         createCalls.nonEmpty,
         createCalls.head._2.amr == passkeySeedAmr,
+      )
+    },
+    test("advance conversation to password step when login_hint email is provided on email+password flow") {
+      val env = Env()
+      val uuid = UUID.randomUUID()
+      for
+        _ <- env.configurationService.find.succeedsWith(Some(clientWithPasswordFlow))
+        _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
+        _ <- env.conversationRepository.create.succeedsWith(())
+        _ <- env.conversationService.prepareInitialPassword.succeedsWith(ConversationResult.IllegalState)
+        result <- env.service.authorize(baseRequest.copy(loginHint = Some(Left(emailHint))))
+        preparePasswordCalls = env.conversationService.prepareInitialPassword.calls
+      yield assertTrue(
+        result == AuthorizeResponse.Initialize(versola.oauth.conversation.model.AuthId(uuid)),
+        preparePasswordCalls.nonEmpty,
+        preparePasswordCalls.head._3 == Left(emailHint),
+        preparePasswordCalls.head._4 == 0,
+      )
+    },
+    test("advance conversation to OTP step when login_hint phone is provided on phone+otp flow") {
+      val env = Env()
+      val uuid = UUID.randomUUID()
+      for
+        _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
+        _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
+        _ <- env.conversationRepository.create.succeedsWith(())
+        _ <- env.conversationService.prepareInitialOtp.succeedsWith(ConversationResult.IllegalState)
+        result <- env.service.authorize(baseRequest.copy(loginHint = Some(Right(phoneHint))))
+        prepareOtpCalls = env.conversationService.prepareInitialOtp.calls
+      yield assertTrue(
+        result == AuthorizeResponse.Initialize(versola.oauth.conversation.model.AuthId(uuid)),
+        prepareOtpCalls.nonEmpty,
+        prepareOtpCalls.head._3 == Right(phoneHint),
+        prepareOtpCalls.head._4 == 0,
       )
     },
   )
