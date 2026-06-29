@@ -456,33 +456,35 @@ object ConversationService:
           ZIO.succeed(ConversationResult.IllegalState)
 
     override def offerPasskeyEnroll(authId: AuthId, conversation: ConversationRecord): Task[ConversationResult.Render] =
-      conversation.userId match
-        case None =>
-          ZIO.succeed(ConversationResult.IllegalState)
-        case Some(userId) =>
-          configService.getPasskeySettings(conversation.clientId).flatMap:
-            case None =>
-              finish(authId, conversation)
-            case Some(settings) =>
-              passkeyRepository.listByUser(userId).flatMap: existing =>
-                if existing.nonEmpty then finish(authId, conversation)
-                else
-                  val displayName: String =
-                    conversation.userClaims.flatMap(_.fields.toMap.get("name"))
-                      .collect { case zio.json.ast.Json.Str(v) => v }
-                      .orElse(conversation.userEmail.map(_.toString))
-                      .orElse(conversation.userPhone.map(_.toString))
-                      .orElse(conversation.userLogin.map(_.toString))
-                      .getOrElse(userId.toString)
-                  webAuthnService.startRegistration(settings, userId, displayName).foldZIO(
-                    _ => finish(authId, conversation),
-                    ceremony =>
-                      val enrollStep = ConversationStep.PasskeyEnroll(
-                        request = ceremony.request,
-                        publicKeyOptions = ceremony.publicKeyOptions,
-                      )
-                      renderStep(authId, conversation, enrollStep),
-                  )
+      if !conversation.primaryFactorsDone then ZIO.succeed(ConversationResult.IllegalState)
+      else
+        conversation.userId match
+          case None =>
+            ZIO.succeed(ConversationResult.IllegalState)
+          case Some(userId) =>
+            configService.getPasskeySettings(conversation.clientId).flatMap:
+              case None =>
+                finish(authId, conversation)
+              case Some(settings) =>
+                passkeyRepository.listByUser(userId).flatMap: existing =>
+                  if existing.nonEmpty then finish(authId, conversation)
+                  else
+                    val displayName: String =
+                      conversation.userClaims.flatMap(_.fields.toMap.get("name"))
+                        .collect { case zio.json.ast.Json.Str(v) => v }
+                        .orElse(conversation.userEmail.map(_.toString))
+                        .orElse(conversation.userPhone.map(_.toString))
+                        .orElse(conversation.userLogin.map(_.toString))
+                        .getOrElse(userId.toString)
+                    webAuthnService.startRegistration(settings, userId, displayName).foldZIO(
+                      _ => finish(authId, conversation),
+                      ceremony =>
+                        val enrollStep = ConversationStep.PasskeyEnroll(
+                          request = ceremony.request,
+                          publicKeyOptions = ceremony.publicKeyOptions,
+                        )
+                        renderStep(authId, conversation, enrollStep),
+                    )
 
     override def finishPasskeyEnroll(
         authId: AuthId,
