@@ -2,8 +2,8 @@ package versola.oauth.authorize
 
 import versola.oauth.authorize.model.{AuthorizeRequest, AuthorizeResponse, Error, Prompt, ResponseTypeEntry}
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{AuthFlow, AuthMethodRef, PassedAuthFactor, PassedFactorRecord, ScopeToken}
-import versola.oauth.conversation.ConversationRepository
+import versola.oauth.client.model.{AuthFactorType, AuthFlow, AuthMethodRef, PassedAuthFactor, PassedFactorRecord, ScopeToken}
+import versola.oauth.conversation.{ConversationRepository, ConversationService}
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
 import versola.oauth.jwks.JwksService
 import versola.oauth.model.{AuthorizationCode, AuthorizationCodeRecord}
@@ -37,6 +37,7 @@ object AuthorizeEndpointService:
       userRepository: UserRepository,
       userInfoService: UserInfoService,
       jwksService: JwksService,
+      conversationService: ConversationService,
   ) extends AuthorizeEndpointService:
 
     override def authorize(
@@ -113,8 +114,15 @@ object AuthorizeEndpointService:
           amr = amr,
         )
         configurationService.getAuthConversationTtl(request.clientId).flatMap: authConversationTtl =>
-          conversationRepository.create(authId, conversation, authConversationTtl)
-            .as(AuthorizeResponse.Initialize(authId))
+          conversationRepository.create(authId, conversation, authConversationTtl).flatMap: _ =>
+            request.loginHint match
+              case None => ZIO.succeed(AuthorizeResponse.Initialize(authId))
+              case Some(hint) =>
+                val submission = hint match
+                  case Left(email) => EmailSubmission(email)
+                  case Right(phone) => PhoneSubmission(phone)
+                conversationRouter.submit(authId, submission, uiLocale = None)
+                  .map((render, conv) => AuthorizeResponse.InitializeWithHint(authId, render, conv))
 
     private def silentAuthorize(
         request: AuthorizeRequest,
