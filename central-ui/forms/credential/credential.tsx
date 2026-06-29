@@ -94,7 +94,7 @@ function CredentialForm(props: { config: FormConfig }) {
 
   // All passkey-related errors (client failures and the server's passkey_failed /
   // passkey_orphaned) are surfaced through a dismissible popup rather than inline text.
-  const passkeyErrorKeys = ['passkey_failed', 'passkey_orphaned'];
+  const passkeyErrorKeys = ['passkey_failed'];
   const isPasskeyError = (e?: string): boolean => !!e && passkeyErrorKeys.includes(e);
   const [passkeyErrorKey, setPasskeyErrorKey] = createSignal<string | null>(
     isPasskeyError(props.config.error) ? props.config.error! : null,
