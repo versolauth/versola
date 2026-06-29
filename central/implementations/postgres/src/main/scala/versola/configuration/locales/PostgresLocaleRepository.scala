@@ -11,11 +11,11 @@ class PostgresLocaleRepository(xa: TransactorZIO) extends LocaleRepository, Basi
   given DbCodec[LocaleRecord] = DbCodec.derived
 
   override def getAll: Task[Vector[LocaleRecord]] =
-    xa.connect:
+    xa.connectMeasured("get-all-locales"):
       sql"""SELECT code, name, is_default, active FROM locales ORDER BY code""".query[LocaleRecord].run()
 
   override def update(add: Vector[LocaleRecord], delete: Vector[String]): Task[Unit] =
-    xa.repeatableRead.transact:
+    xa.repeatableRead.transactMeasured("update-locales"):
       delete.foreach { code =>
         sql"""DELETE FROM locales WHERE code = $code""".update.run()
         sql"""UPDATE forms SET localizations = localizations - $code WHERE jsonb_exists(localizations, $code)""".update.run()
@@ -27,7 +27,7 @@ class PostgresLocaleRepository(xa: TransactorZIO) extends LocaleRepository, Basi
       }
 
   override def setDefault(code: String): Task[Unit] =
-    xa.repeatableRead.transact:
+    xa.repeatableRead.transactMeasured("set-default-locale"):
       sql"""UPDATE locales SET is_default = FALSE WHERE is_default = TRUE""".update.run()
       sql"""UPDATE locales SET is_default = TRUE WHERE code = $code""".update.run()
     .unit

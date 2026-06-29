@@ -18,7 +18,7 @@ class PostgresEdgeRefreshTokenRepository(xa: TransactorZIO) extends EdgeRefreshT
       accessTokenId: AccessTokenId,
       record: EdgeRefreshTokenRecord,
   ): Task[Unit] =
-    xa.connect {
+    xa.connectMeasured("create-edge-refresh-token") {
       sql"""
         INSERT INTO edge_refresh_tokens (id, preset_id, refresh_token, expires_at)
         VALUES ($accessTokenId, ${record.presetId}, ${record.encryptedRefreshToken}, ${record.expiresAt})
@@ -31,7 +31,7 @@ class PostgresEdgeRefreshTokenRepository(xa: TransactorZIO) extends EdgeRefreshT
 
   override def find(accessTokenId: AccessTokenId): Task[Option[EdgeRefreshTokenRecord]] =
     Clock.instant.flatMap { now =>
-      xa.connect {
+      xa.connectMeasured("find-edge-refresh-token") {
         sql"""
           SELECT preset_id, refresh_token, expires_at
           FROM edge_refresh_tokens
@@ -44,14 +44,14 @@ class PostgresEdgeRefreshTokenRepository(xa: TransactorZIO) extends EdgeRefreshT
     }
 
   override def delete(accessTokenId: AccessTokenId): Task[Unit] =
-    xa.connect {
+    xa.connectMeasured("delete-edge-refresh-token") {
       sql"""
         DELETE FROM edge_refresh_tokens WHERE id = $accessTokenId
       """.update.run()
     }.unit
 
   override def deleteByPresetId(presetId: PresetId): Task[Unit] =
-    xa.connect {
+    xa.connectMeasured("delete-edge-refresh-token-by-preset") {
       sql"""
         DELETE FROM edge_refresh_tokens WHERE preset_id = $presetId
       """.update.run()
