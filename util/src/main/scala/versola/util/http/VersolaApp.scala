@@ -52,7 +52,7 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
     Option(java.lang.System.getenv("PORT")).flatMap(_.toIntOption).getOrElse(8080)
 
   def diagnosticsPort: Int =
-    Option(java.lang.System.getenv("DPORT")).flatMap(_.toIntOption).getOrElse(9090)
+    Option(java.lang.System.getenv("DPORT")).flatMap(_.toIntOption).getOrElse(8081)
 
   def serverConfig: Server.Config =
     Server.Config.default.port(port)
@@ -70,18 +70,26 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
       readinessService <- ReadinessService.make
       client <- ZIO.service[Client]
 
-      _ <- {
-        for
-          port <- Server.install[MetricsService](serviceRoutes(readinessService))
-          _ <- ZIO.logInfo(s"Diagnostics server started on port $port")
-          _ <- ZIO.never
-        yield ()
-      }.provide(
-        Server.live,
-        prometheusMetricsService,
-        ZLayer.succeed(MetricsConfig(1.second)),
-        ZLayer.succeed(diagnosticsConfig),
-      ).forkScoped
+      _ <- for
+        ready <- Promise.make[Throwable, Int]
+        _ <- {
+          for
+            port <- Server.install[MetricsService](serviceRoutes(readinessService))
+            _ <- ready.succeed(port)
+            _ <- ZIO.never
+          yield ()
+        }.provide(
+          Server.live,
+          prometheusMetricsService,
+          ZLayer.succeed(MetricsConfig(1.second)),
+          ZLayer.succeed(diagnosticsConfig),
+        ).onExit {
+          case Exit.Failure(cause) => ready.failCause(cause)
+          case _ => ZIO.unit
+        }.forkScoped
+        port <- ready.await
+        _ <- ZIO.logInfo(s"Diagnostics server started on port $port")
+      yield ()
 
       _ <- {
         for
