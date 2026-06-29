@@ -27,11 +27,11 @@ object DbMetricsSpec extends ZIOSpecDefault:
       test("derives the simple class name from a method location") {
         val trace =
           Trace.apply("versola.configuration.themes.PostgresThemeRepository.getAll", "PostgresThemeRepository.scala", 10)
-        assertTrue(DbMetrics.repositoryName(trace) == "PostgresThemeRepository")
+        assertTrue(DbMetrics.repositoryName(trace) == "versola.configuration.themes.PostgresThemeRepository.getAll")
       },
       test("strips a trailing $ from object owners") {
         val trace = Trace.apply("versola.configuration.themes.ThemeQueries$.getAll", "ThemeQueries.scala", 5)
-        assertTrue(DbMetrics.repositoryName(trace) == "ThemeQueries")
+        assertTrue(DbMetrics.repositoryName(trace) == "versola.configuration.themes.ThemeQueries.getAll")
       },
       test("falls back to unknown for the empty trace") {
         assertTrue(DbMetrics.repositoryName(Trace.empty) == "unknown")
@@ -41,7 +41,7 @@ object DbMetricsSpec extends ZIOSpecDefault:
       val trace = Trace.apply("versola.test.SuccessRepo.run", "SuccessRepo.scala", 1)
       for
         _ <- DbMetrics.measured("success-op")(ZIO.succeed(()))(using trace)
-        count <- histogramCount("SuccessRepo", "success-op", "success")
+        count <- histogramCount("versola.test.SuccessRepo.run", "success-op", "success")
       yield assertTrue(count == 1L)
     },
     test("records a failure outcome and re-raises the original error") {
@@ -49,13 +49,13 @@ object DbMetricsSpec extends ZIOSpecDefault:
       val boom = new RuntimeException("boom")
       for
         exit <- DbMetrics.measured("failure-op")(ZIO.fail(boom))(using trace).exit
-        count <- histogramCount("FailureRepo", "failure-op", "failure")
+        count <- histogramCount("versola.test.FailureRepo.run", "failure-op", "failure")
       yield assertTrue(exit == Exit.fail(boom), count == 1L)
     },
     test("auto-derives the repository from the enclosing class") {
       for
         result <- autoDerivedOp
-        count <- histogramCount("DbMetricsSpec", "auto-op", "success")
+        count <- histogramCount("versola.util.postgres.DbMetricsSpec.autoDerivedOp", "auto-op", "success")
       yield assertTrue(result == 1, count == 1L)
     },
   )

@@ -24,9 +24,7 @@ object DbMetrics:
   def repositoryName(trace: Trace): String =
     trace match
       case Trace(location, _, _) =>
-        val lastDot = location.lastIndexOf('.')
-        val owner = if lastDot >= 0 then location.substring(0, lastDot) else location
-        owner.substring(owner.lastIndexOf('.') + 1).stripSuffix("$")
+        location.replace("$.", ".").stripSuffix("$")
       case _ => "unknown"
 
   /** Measures a database effect, recording its latency on both success and
