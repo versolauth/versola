@@ -72,7 +72,8 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
 
       _ <- {
         for
-          _ <- Server.install[MetricsService](serviceRoutes(readinessService))
+          port <- Server.install[MetricsService](serviceRoutes(readinessService))
+          _ <- ZIO.logInfo(s"Diagnostics server started on port $port")
           _ <- ZIO.never
         yield ()
       }.provide(
