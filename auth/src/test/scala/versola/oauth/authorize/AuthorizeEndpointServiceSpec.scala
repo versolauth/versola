@@ -6,6 +6,7 @@ import versola.oauth.jwks.JwksService
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{AuthFactor, AuthFactorType, AuthFlow, AuthMethodRef, ClientId, OAuthClientRecord, PassedAuthFactor, PassedFactorRecord, PrimaryAuthFlow, PrimaryCredential, ScopeToken, TenantId}
 import versola.oauth.conversation.{ConversationRepository, ConversationResult, ConversationRouter, EmailSubmission, PhoneSubmission}
+import versola.oauth.conversation.{ConversationRepository, ConversationResult, ConversationService}
 import versola.oauth.model.{AccessToken, AuthorizationCode, CodeChallenge, CodeChallengeMethod, State}
 import versola.oauth.session.SessionRepository
 import versola.oauth.session.model.{SessionId, SessionRecord, UserAgentInfo}
@@ -96,6 +97,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
     val userInfoService = stub[UserInfoService]
     val jwksService = TestEnvConfig.jwksService
     val conversationRouter = stub[ConversationRouter]
+    val conversationService = stub[ConversationService]
     val service = AuthorizeEndpointService.Impl(
       conversationRepository,
       configurationService,

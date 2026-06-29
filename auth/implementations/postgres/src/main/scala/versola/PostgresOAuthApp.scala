@@ -122,6 +122,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       UserInfoService.live >+>
       SubmissionLimiter.live >+>
       ConversationService.live >+>
+      AuthorizeEndpointService.live >+>
       ConversationRouter.live >+>
       AuthorizeEndpointService.live >+>
       ConversationRenderService.live

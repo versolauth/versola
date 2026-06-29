@@ -122,12 +122,25 @@ object AuthorizeRequestParser:
           .flatMap {
             case None => ZIO.none
             case Some(raw) =>
-              Email.from(raw).toOption match
-                case Some(email) => parseEmailHint(email, client, redirectUri, state)
-                case None =>
-                  Phone.parse(raw).toOption match
-                    case Some(phone) => parsePhoneHint(phone, client, clientId, redirectUri, state)
-                    case None        => ZIO.fail(Error.LoginHintInvalid(redirectUri, state))
+              val hint: Option[Either[Email, Phone]] =
+                Email.from(raw).map(Left(_)).toOption
+                  .orElse(Phone.parse(raw).map(Right(_)).toOption)
+              hint match
+                case None => ZIO.fail(Error.LoginHintInvalid(redirectUri, state))
+                case Some(h) =>
+                  val credentialAllowed = client.authFlow.forall { flow =>
+                    h match
+                      case Left(_)  => flow.primary.credentials.contains(PrimaryCredential.email)
+                      case Right(_) => flow.primary.credentials.contains(PrimaryCredential.phone)
+                  }
+                  if !credentialAllowed then ZIO.fail(Error.LoginHintInvalid(redirectUri, state))
+                  else h match
+                    case Left(_) => ZIO.some(h)
+                    case Right(phone) =>
+                      oauthClientService.getAllowedPhonePrefixes(clientId).flatMap { prefixes =>
+                        if prefixes.isEmpty || prefixes.exists(phone.startsWith) then ZIO.some(h)
+                        else ZIO.fail(Error.LoginHintInvalid(redirectUri, state))
+                      }
           }
 
         userAgent =
