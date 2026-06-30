@@ -198,6 +198,22 @@ object JWT:
         .orElseFail(Error.InvalidClaims)
     yield result
 
+  def deserializeIgnoringExpiry[A: JsonDecoder](
+      token: String,
+      keys: PublicKeys,
+      typ: Type,
+  ): IO[Error, A] =
+    for
+      jwt <- ZIO.attempt(SignedJWT.parse(token))
+        .orElseFail(Error.NotJWT)
+
+      _ <- verifyType(jwt, typ)
+      _ <- verifySignature(jwt, keys)
+
+      result <- ZIO.fromEither(claimsToJson(jwt.getJWTClaimsSet).as[A])
+        .orElseFail(Error.InvalidClaims)
+    yield result
+
   /**
    * Deserialize and validate a JWT with symmetric signature.
    *

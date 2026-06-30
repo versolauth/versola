@@ -76,6 +76,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
     scopeValidationTests,
     multipleValuesTests,
     promptParsingTests,
+    idTokenHintTests,
   )
 
   def successfulParsingTests = suite("successful parsing")(
@@ -540,6 +541,56 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
           uri = validRedirectUri,
           state = None,
           queryParamName = "state",
+        )),
+      )
+    },
+  )
+
+  def idTokenHintTests = suite("id_token_hint parsing")(
+    test("parse id_token_hint as None when absent") {
+      val env = Env()
+      for
+        _ <- env.oauthClientService.find.succeedsWith(Some(testClient))
+        result <- env.parser.parse(validRequest())
+      yield assertTrue(result.idTokenHint.isEmpty)
+    },
+    test("parse id_token_hint as Some when single value provided") {
+      val env = Env()
+      val url = URL.root
+        .addQueryParam("client_id", validClientId.toString)
+        .addQueryParam("redirect_uri", validRedirectUriString)
+        .addQueryParam("response_type", "code")
+        .addQueryParam("code_challenge", validCodeChallenge)
+        .addQueryParam("code_challenge_method", "S256")
+        .addQueryParam("scope", validScope)
+        .addQueryParam("id_token_hint", "some.jwt.token")
+      val request = Request.get(url)
+      for
+        _ <- env.oauthClientService.find.succeedsWith(Some(testClient))
+        result <- env.parser.parse(request)
+      yield assertTrue(result.idTokenHint == Some("some.jwt.token"))
+    },
+    test("fail when id_token_hint has multiple values") {
+      val env = Env()
+      val url = URL.root
+        .addQueryParam("client_id", validClientId.toString)
+        .addQueryParam("redirect_uri", validRedirectUriString)
+        .addQueryParam("response_type", "code")
+        .addQueryParam("code_challenge", validCodeChallenge)
+        .addQueryParam("code_challenge_method", "S256")
+        .addQueryParam("scope", validScope)
+        .addQueryParam("state", "random-state")
+        .addQueryParam("id_token_hint", "token1")
+        .addQueryParam("id_token_hint", "token2")
+      val request = Request.get(url)
+      for
+        _ <- env.oauthClientService.find.succeedsWith(Some(testClient))
+        result <- env.parser.parse(request).either
+      yield assertTrue(
+        result == Left(Error.MultipleValuesProvided(
+          uri = validRedirectUri,
+          state = Some(validState),
+          queryParamName = "id_token_hint",
         )),
       )
     },

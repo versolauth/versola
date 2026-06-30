@@ -117,6 +117,9 @@ object AuthorizeRequestParser:
           .orElseFail(Error.MultipleValuesProvided(redirectUri, state, "acr_values"))
           .map(_.map(_.split(' ').toList))
 
+        idTokenHint <- getParam(params, "id_token_hint")
+          .orElseFail(Error.MultipleValuesProvided(redirectUri, state, "id_token_hint"))
+
         userAgent =
           request.header(Header.UserAgent)
             .map(_.renderedValue)
@@ -136,6 +139,7 @@ object AuthorizeRequestParser:
           requestedClaims = requestedClaims,
           uiLocales = uiLocales,
           nonce = nonce,
+          idTokenHint = idTokenHint,
           userAgent = userAgent,
           prompt = prompt,
           maxAge = maxAge,

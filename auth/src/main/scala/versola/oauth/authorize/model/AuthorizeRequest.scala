@@ -7,8 +7,7 @@ import versola.oauth.userinfo.model.RequestedClaims
 import zio.http.URL
 import zio.prelude.NonEmptySet
 
-private[authorize]
-case class AuthorizeRequest(
+private[authorize] case class AuthorizeRequest(
     clientId: ClientId,
     redirectUri: URL,
     scope: Set[ScopeToken],
@@ -24,4 +23,5 @@ case class AuthorizeRequest(
     maxAge: Option[Long],
     acrValues: Option[List[String]],
     sessionId: Option[SessionId],
+    idTokenHint: Option[String],
 )
