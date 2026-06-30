@@ -193,7 +193,6 @@ object ConversationRenderService:
       case s: ConversationStep.Otp if s.timesSubmitted > 0 && !s.rateLimitExceeded => Some("otp_wrong")
       case s: ConversationStep.Password if s.rateLimitExceeded => Some("rate_limit_exceeded")
       case s: ConversationStep.Password if s.timesSubmitted > 0 => Some("password_wrong")
-      case s: ConversationStep.Credential if s.passkeyOrphaned => Some("passkey_orphaned")
       case s: ConversationStep.Credential if s.passkeyFailed => Some("passkey_failed")
       case s: ConversationStep.PasskeyEnroll if s.enrollFailed => Some("enroll_failed")
       case _ => None
@@ -227,7 +226,7 @@ object ConversationRenderService:
         state: Option[State],
     ): UIO[StepView] =
       step match
-        case ConversationStep.Credential(primaryCredentials, inlinePassword, passkey, _, _, _) =>
+        case ConversationStep.Credential(primaryCredentials, inlinePassword, passkey, _, _) =>
           for
             allowedPhonePrefixes <-
               if primaryCredentials.contains(PrimaryCredential.phone) then
