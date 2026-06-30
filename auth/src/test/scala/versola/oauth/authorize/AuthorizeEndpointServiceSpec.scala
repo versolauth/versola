@@ -4,18 +4,24 @@ import versola.auth.TestEnvConfig
 import versola.oauth.authorize.model.{AuthorizeRequest, AuthorizeResponse, Error, Prompt, ResponseTypeEntry}
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{AuthFactor, AuthFactorType, AuthFlow, AuthMethodRef, ClientId, OAuthClientRecord, PassedAuthFactor, PassedFactorRecord, PrimaryAuthFlow, PrimaryCredential, ScopeToken, TenantId}
-import versola.oauth.conversation.ConversationRepository
+import versola.oauth.conversation.{ConversationRepository, ConversationResult, ConversationRouter}
+import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
 import versola.oauth.model.{AccessToken, AuthorizationCode, CodeChallenge, CodeChallengeMethod, State}
 import versola.oauth.session.SessionRepository
 import versola.oauth.session.model.{SessionId, SessionRecord, UserAgentInfo}
 import versola.oauth.token.AuthorizationCodeRepository
 import versola.oauth.userinfo.UserInfoService
 import versola.user.UserRepository
-import versola.util.{AuthPropertyGenerator, MAC, Secret, SecureRandom, SecurityService, UnitSpecBase}
+import versola.user.model.{UserId, UserRecord}
+import versola.util.{AuthPropertyGenerator, JWT, MAC, Secret, SecureRandom, SecurityService, UnitSpecBase}
 import zio.http.URL
+import zio.json.ast.Json
 import zio.prelude.NonEmptySet
 import zio.test.*
+import zio.*
 
+import java.security.KeyPairGenerator
+import java.security.interfaces.RSAPrivateKey
 import java.time.Instant
 import java.util.UUID
 
@@ -67,6 +73,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
     maxAge = None,
     acrValues = None,
     sessionId = None,
+    idTokenHint = None,
   )
 
   val rawSessionId = SessionId(Array.fill(32)(5.toByte))
@@ -81,6 +88,11 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
     amr = amr,
   )
 
+  // Bad key pair for signature failure tests
+  private val badKeyPairGenerator = KeyPairGenerator.getInstance("RSA")
+  badKeyPairGenerator.initialize(2048)
+  private val badPrivateKey = badKeyPairGenerator.generateKeyPair().getPrivate.asInstanceOf[RSAPrivateKey]
+
   class Env:
     val conversationRepository = stub[ConversationRepository]
     val configurationService = stub[OAuthConfigurationService]
@@ -92,6 +104,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
     val authorizationCodeRepository = stub[AuthorizationCodeRepository]
     val userRepository = stub[UserRepository]
     val userInfoService = stub[UserInfoService]
+    val conversationRouter = stub[ConversationRouter]
     val service = AuthorizeEndpointService.Impl(
       conversationRepository,
       configurationService,
@@ -103,6 +116,36 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
       authorizationCodeRepository,
       userRepository,
       userInfoService,
+      conversationRouter,
+    )
+
+  // Helpers for id_token_hint tests
+  val hintUserId = UserId(UUID.randomUUID())
+  val hintUser = UserRecord(
+    id = hintUserId,
+    email = Some(versola.util.Email("hint@example.com")),
+    phone = None,
+    login = None,
+    claims = Json.Obj(),
+    uiLocales = None,
+  )
+
+  def makeIdToken(
+      subject: UserId,
+      audience: String,
+      privateKey: java.security.PrivateKey,
+      keyId: String = "test-key-id",
+      ttl: zio.Duration = 1.hour,
+  ): zio.Task[String] =
+    JWT.serialize(
+      claims = JWT.Claims(
+        issuer = TestEnvConfig.jwtConfig.issuer,
+        subject = subject.toString,
+        audience = List(audience),
+        custom = Json.Obj(),
+      ),
+      ttl = ttl,
+      signature = JWT.Signature.Asymmetric(JWT.Algorithm.RS256, keyId, privateKey),
     )
 
   val spec = suite("AuthorizeEndpointService")(
@@ -214,6 +257,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         result <- env.service.authorize(baseRequest.copy(sessionId = Some(rawSessionId), prompt = Set(Prompt.none))).exit
       yield assertTrue(result.isFailure)
     },
+    idTokenHintTests,
     test("create conversation seeded with session amr when factors not satisfied") {
       val env = Env()
       val uuid = UUID.randomUUID()
@@ -231,6 +275,93 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         result == AuthorizeResponse.Initialize(versola.oauth.conversation.model.AuthId(uuid)),
         createCalls.nonEmpty,
         createCalls.head._2.amr == passkeySeedAmr,
+      )
+    },
+  )
+
+  def idTokenHintTests = suite("id_token_hint")(
+    test("valid hint with no session skips credential screen and starts OTP") {
+      val env = Env()
+      val uuid = UUID.randomUUID()
+      for
+        hint <- makeIdToken(hintUserId, clientId.toString, TestEnvConfig.privateKey)
+        _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
+        _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
+        _ <- env.conversationRepository.create.succeedsWith(())
+        _ <- env.userRepository.find.succeedsWith(Some(hintUser))
+        _ <- env.conversationRouter.submit.succeedsWith(ConversationResult.RenderStep(ConversationStep.Credential(Nil, false, false)))
+        result <- env.service.authorize(baseRequest.copy(idTokenHint = Some(hint)))
+        createCalls = env.conversationRepository.create.calls
+      yield assertTrue(
+        result == AuthorizeResponse.Initialize(AuthId(uuid)),
+        createCalls.nonEmpty,
+        createCalls.head._2.expectedUserId == Some(hintUserId),
+        env.conversationRouter.submit.times == 1,
+      )
+    },
+    test("hint with bad signature fails with IdTokenHintInvalid") {
+      val env = Env()
+      for
+        hint <- makeIdToken(hintUserId, clientId.toString, badPrivateKey)
+        _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
+        result <- env.service.authorize(baseRequest.copy(idTokenHint = Some(hint))).exit
+      yield assertTrue(
+        result.isFailure,
+        result.causeOption.exists(_.failureOption.exists {
+          case Error.IdTokenHintInvalid(_, _) => true
+          case _ => false
+        }),
+      )
+    },
+    test("expired hint with valid signature is accepted") {
+      val env = Env()
+      val uuid = UUID.randomUUID()
+      for
+        hint <- makeIdToken(hintUserId, clientId.toString, TestEnvConfig.privateKey, ttl = 1.second)
+        _ <- TestClock.adjust(2.seconds)
+        _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
+        _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
+        _ <- env.conversationRepository.create.succeedsWith(())
+        _ <- env.userRepository.find.succeedsWith(Some(hintUser))
+        _ <- env.conversationRouter.submit.succeedsWith(ConversationResult.RenderStep(ConversationStep.Credential(Nil, false, false)))
+        result <- env.service.authorize(baseRequest.copy(idTokenHint = Some(hint)))
+      yield assertTrue(result == AuthorizeResponse.Initialize(AuthId(uuid)))
+    },
+    test("hint with wrong issuer fails with IdTokenHintInvalid") {
+      val env = Env()
+      for
+        hint <- JWT.serialize(
+          claims = JWT.Claims(
+            issuer = "https://wrong-issuer.com",
+            subject = hintUserId.toString,
+            audience = List(clientId.toString),
+            custom = Json.Obj(),
+          ),
+          ttl = 1.hour,
+          signature = JWT.Signature.Asymmetric(JWT.Algorithm.RS256, "test-key-id", TestEnvConfig.privateKey),
+        )
+        _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
+        result <- env.service.authorize(baseRequest.copy(idTokenHint = Some(hint))).exit
+      yield assertTrue(
+        result.isFailure,
+        result.causeOption.exists(_.failureOption.exists {
+          case Error.IdTokenHintInvalid(_, _) => true
+          case _ => false
+        }),
+      )
+    },
+    test("hint with wrong audience fails with IdTokenHintInvalid") {
+      val env = Env()
+      for
+        hint <- makeIdToken(hintUserId, "other-client", TestEnvConfig.privateKey)
+        _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
+        result <- env.service.authorize(baseRequest.copy(idTokenHint = Some(hint))).exit
+      yield assertTrue(
+        result.isFailure,
+        result.causeOption.exists(_.failureOption.exists {
+          case Error.IdTokenHintInvalid(_, _) => true
+          case _ => false
+        }),
       )
     },
   )

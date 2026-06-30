@@ -340,56 +340,60 @@ object ConversationService:
           yield result
 
     override def finish(authId: AuthId, conversation: ConversationRecord): Task[ConversationResult.Render] =
-      for
-        code <- authPropertyGenerator.nextAuthorizationCode
-        userId = conversation.userId.get // TODO handle illegal state
-        sessionId <- authPropertyGenerator.nextSessionId
-        sessionIdMac <- securityService.mac(Secret(sessionId), config.security.sessions.pepper)
-        accessToken <- authPropertyGenerator.nextAccessToken
-        now <- Clock.instant
-        amr = AuthMethodRef.amrClaim(conversation.amr)
-        record = AuthorizationCodeRecord(
-          sessionId = sessionIdMac,
-          clientId = conversation.clientId,
-          userId = userId,
-          redirectUri = conversation.redirectUri,
-          scope = conversation.scope,
-          codeChallenge = conversation.codeChallenge,
-          codeChallengeMethod = conversation.codeChallengeMethod,
-          requestedClaims = conversation.requestedClaims,
-          uiLocales = conversation.uiLocales,
-          nonce = conversation.nonce,
-          accessToken = accessToken,
-          amr = amr,
-          authTime = now,
-        )
-        session = SessionRecord(
-          userId = userId,
-          clientId = conversation.clientId,
-          userAgent = UserAgentInfo.parse(conversation.userAgent),
-          createdAt = now,
-          amr = conversation.amr,
-        )
-        codeMac <- securityService.mac(Secret(code), config.security.authCodes.pepper)
-        claimed <- conversationRepository.delete(authId, conversation.version)
-        result <- if claimed then
+      conversation.expectedUserId match
+        case Some(expected) if !conversation.userId.contains(expected) =>
+          accessDenied(authId, conversation)
+        case _ =>
           for
-            _ <- authorizationCodeRepository.create(codeMac, record, 1.minute)
-            _ <- sessionRepository.create(sessionIdMac, session, 1.day)
-            idTokenData <- if conversation.responseType.contains(ResponseTypeEntry.IdToken) && conversation.scope.contains(ScopeToken.OpenId) then
-              generateIdTokenData(userId, conversation, amr, now)
+            code <- authPropertyGenerator.nextAuthorizationCode
+            userId = conversation.userId.get // TODO handle illegal state
+            sessionId <- authPropertyGenerator.nextSessionId
+            sessionIdMac <- securityService.mac(Secret(sessionId), config.security.sessions.pepper)
+            accessToken <- authPropertyGenerator.nextAccessToken
+            now <- Clock.instant
+            amr = AuthMethodRef.amrClaim(conversation.amr)
+            record = AuthorizationCodeRecord(
+              sessionId = sessionIdMac,
+              clientId = conversation.clientId,
+              userId = userId,
+              redirectUri = conversation.redirectUri,
+              scope = conversation.scope,
+              codeChallenge = conversation.codeChallenge,
+              codeChallengeMethod = conversation.codeChallengeMethod,
+              requestedClaims = conversation.requestedClaims,
+              uiLocales = conversation.uiLocales,
+              nonce = conversation.nonce,
+              accessToken = accessToken,
+              amr = amr,
+              authTime = now,
+            )
+            session = SessionRecord(
+              userId = userId,
+              clientId = conversation.clientId,
+              userAgent = UserAgentInfo.parse(conversation.userAgent),
+              createdAt = now,
+              amr = conversation.amr,
+            )
+            codeMac <- securityService.mac(Secret(code), config.security.authCodes.pepper)
+            claimed <- conversationRepository.delete(authId, conversation.version)
+            result <- if claimed then
+              for
+                _ <- authorizationCodeRepository.create(codeMac, record, 1.minute)
+                _ <- sessionRepository.create(sessionIdMac, session, 1.day)
+                idTokenData <- if conversation.responseType.contains(ResponseTypeEntry.IdToken) && conversation.scope.contains(ScopeToken.OpenId) then
+                  generateIdTokenData(userId, conversation, amr, now)
+                else
+                  ZIO.none
+              yield ConversationResult.Complete(
+                redirectUri = conversation.redirectUri,
+                state = conversation.state,
+                code = code,
+                sessionId = sessionId,
+                idTokenData = idTokenData,
+              )
             else
-              ZIO.none
-          yield ConversationResult.Complete(
-            redirectUri = conversation.redirectUri,
-            state = conversation.state,
-            code = code,
-            sessionId = sessionId,
-            idTokenData = idTokenData,
-          )
-        else
-          ZIO.succeed(ConversationResult.IllegalState)
-      yield result
+              ZIO.succeed(ConversationResult.IllegalState)
+          yield result
 
     override def startPasskeyAssertion(
         authId: AuthId,

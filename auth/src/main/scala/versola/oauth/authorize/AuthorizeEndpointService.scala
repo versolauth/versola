@@ -3,7 +3,7 @@ package versola.oauth.authorize
 import versola.oauth.authorize.model.{AuthorizeRequest, AuthorizeResponse, Error, Prompt, ResponseTypeEntry}
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{AuthFlow, AuthMethodRef, PassedAuthFactor, PassedFactorRecord, ScopeToken}
-import versola.oauth.conversation.ConversationRepository
+import versola.oauth.conversation.{ConversationRepository, ConversationRouter, EmailSubmission, PhoneSubmission}
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
 import versola.oauth.model.{AuthorizationCode, AuthorizationCodeRecord}
 import versola.oauth.session.SessionRepository
@@ -11,6 +11,7 @@ import versola.oauth.session.model.{SessionId, SessionRecord}
 import versola.oauth.token.AuthorizationCodeRepository
 import versola.oauth.userinfo.UserInfoService
 import versola.user.UserRepository
+import versola.user.model.UserId
 import versola.util.MAC
 import versola.util.{AuthPropertyGenerator, Base64Url, CoreConfig, JWT, Secret, SecureRandom, SecurityService}
 import zio.json.ast.Json
@@ -22,7 +23,7 @@ trait AuthorizeEndpointService:
 
 object AuthorizeEndpointService:
   def live =
-    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _))
+    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _))
 
   class Impl(
       conversationRepository: ConversationRepository,
@@ -35,6 +36,7 @@ object AuthorizeEndpointService:
       authorizationCodeRepository: AuthorizationCodeRepository,
       userRepository: UserRepository,
       userInfoService: UserInfoService,
+      conversationRouter: ConversationRouter,
   ) extends AuthorizeEndpointService:
 
     override def authorize(
@@ -47,11 +49,14 @@ object AuthorizeEndpointService:
           .fromOption(authFlow)
           .orElseFail(Error.AuthFlowMissing(request.redirectUri, request.state))
         uiLocales <- resolveUiLocales(request)
+        hintUserId <- request.idTokenHint match
+          case None => ZIO.none
+          case Some(hint) => resolveIdTokenHint(hint, request)
         response <- request.sessionId match
           case None if request.prompt.contains(Prompt.none) =>
             ZIO.fail(Error.LoginRequired(request.redirectUri, request.state))
           case None =>
-            createConversation(request, flow, uiLocales, Map.empty)
+            createConversation(request, flow, uiLocales, Map.empty, hintUserId)
           case Some(rawId) =>
             for
               sessionMac <- securityService.mac(Secret(rawId), config.security.sessions.pepper)
@@ -60,9 +65,9 @@ object AuthorizeEndpointService:
                 case None if request.prompt.contains(Prompt.none) =>
                   ZIO.fail(Error.LoginRequired(request.redirectUri, request.state))
                 case None =>
-                  createConversation(request, flow, uiLocales, Map.empty)
+                  createConversation(request, flow, uiLocales, Map.empty, hintUserId)
                 case Some(session) if request.prompt.contains(Prompt.login) =>
-                  createConversation(request, flow, uiLocales, Map.empty)
+                  createConversation(request, flow, uiLocales, Map.empty, hintUserId)
                 case Some(session) =>
                   val requiredFactors = flow.primary.factors.flatMap(f => PassedAuthFactor.fromFactorType(f.`type`)).toSet
                   if requiredFactors.forall(required => session.amr.keySet.exists(_.satisfies(required, flow.equivalents))) then
@@ -70,7 +75,7 @@ object AuthorizeEndpointService:
                   else if request.prompt.contains(Prompt.none) then
                     ZIO.fail(Error.LoginRequired(request.redirectUri, request.state))
                   else
-                    createConversation(request, flow, uiLocales, session.amr)
+                    createConversation(request, flow, uiLocales, session.amr, hintUserId)
             yield result
       yield response
 
@@ -79,6 +84,7 @@ object AuthorizeEndpointService:
         flow: AuthFlow,
         uiLocales: Option[List[String]],
         amr: Map[PassedAuthFactor, PassedFactorRecord],
+        hintUserId: Option[UserId] = None,
     ): Task[AuthorizeResponse] =
       AuthId.wrapAll(secureRandom.nextUUIDv7).flatMap: authId =>
         val conversation = ConversationRecord(
@@ -109,9 +115,27 @@ object AuthorizeEndpointService:
           )), // Strip non-printable ASCII (0x20–0x7E); does not escape HTML — always escape at render time
           version = 0,
           amr = amr,
+          expectedUserId = hintUserId,
         )
-        conversationRepository.create(authId, conversation, config.security.authConversation.ttl)
-          .as(AuthorizeResponse.Initialize(authId))
+        for
+          _ <- conversationRepository.create(authId, conversation, config.security.authConversation.ttl)
+          response <- hintUserId match
+            case Some(userId) =>
+              userRepository.find(userId).flatMap:
+                case None => ZIO.succeed(AuthorizeResponse.Initialize(authId))
+                case Some(user) =>
+                  val credOpt = user.email.map(Left(_)).orElse(user.phone.map(Right(_)))
+                  credOpt match
+                    case None => ZIO.succeed(AuthorizeResponse.Initialize(authId))
+                    case Some(cred) =>
+                      val submission = cred match
+                        case Left(email) => EmailSubmission(email)
+                        case Right(phone) => PhoneSubmission(phone)
+                      conversationRouter.submit(authId, submission, uiLocale = None)
+                        .as(AuthorizeResponse.Initialize(authId))
+            case None =>
+              ZIO.succeed(AuthorizeResponse.Initialize(authId))
+        yield response
 
     private def silentAuthorize(
         request: AuthorizeRequest,
@@ -186,6 +210,29 @@ object AuthorizeEndpointService:
           ),
         )
       yield Some(token)
+
+    private def resolveIdTokenHint(
+        hint: String,
+        request: AuthorizeRequest,
+    ): Task[Option[UserId]] =
+      JWT.deserializeIgnoringExpiry[Json.Obj](hint, config.jwt.publicKeys, JWT.Type.JWT)
+        .foldZIO(
+          _ => ZIO.fail(Error.IdTokenHintInvalid(request.redirectUri, request.state)),
+          claims =>
+            val map = claims.fields.toMap
+            val issuerOk = map.get("iss").contains(Json.Str(config.jwt.issuer))
+            val audOk = map.get("aud") match
+              case Some(Json.Str(s))   => s == request.clientId.toString
+              case Some(Json.Arr(arr)) => arr.contains(Json.Str(request.clientId.toString))
+              case _                   => false
+            if !issuerOk || !audOk then ZIO.fail(Error.IdTokenHintInvalid(request.redirectUri, request.state))
+            else map.get("sub").collect { case Json.Str(s) => s } match
+              case None => ZIO.fail(Error.IdTokenHintInvalid(request.redirectUri, request.state))
+              case Some(sub) =>
+                ZIO.attempt(UserId(java.util.UUID.fromString(sub)))
+                  .orElseFail(Error.IdTokenHintInvalid(request.redirectUri, request.state))
+                  .map(Some(_)),
+        )
 
     /** Narrows the requested ui_locales to those configured in central, preserving the client's
      * preference order. Rejects the request when none of the requested locales are available.

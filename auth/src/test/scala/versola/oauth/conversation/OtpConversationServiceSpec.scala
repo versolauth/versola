@@ -452,5 +452,17 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           case complete: ConversationResult.Complete => assertTrue(complete.idTokenData.isEmpty)
           case _ => assertTrue(false)
       },
+      test("deny access when expectedUserId does not match authenticated userId") {
+        val env = Env()
+        val differentUserId = UserId(UUID.randomUUID())
+        val conversation = initialConversation.copy(
+          userId = Some(userId),
+          expectedUserId = Some(differentUserId),
+        )
+        for
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          result <- env.service.finish(authId, conversation)
+        yield assertTrue(result == ConversationResult.RenderStep(ConversationStep.AccessDenied))
+      },
     ),
   )

@@ -36,9 +36,16 @@ object JWTSpec extends ZIOSpecDefault:
   // Test claims
   case class TestClaims(sub: String, name: String, admin: Boolean) derives JsonCodec
 
+  // Bad key pair for signature failure tests
+  private val badKeyPairGenerator = KeyPairGenerator.getInstance("RSA")
+  badKeyPairGenerator.initialize(2048)
+  private val badKeyPair = badKeyPairGenerator.generateKeyPair()
+  private val badPrivateKey = badKeyPair.getPrivate.asInstanceOf[RSAPrivateKey]
+
   def spec = suite("JWT")(
     asymmetricTests,
     symmetricTests,
+    deserializeIgnoringExpiryTests,
   )
 
   def asymmetricTests = suite("asymmetric signature")(
@@ -80,6 +87,62 @@ object JWTSpec extends ZIOSpecDefault:
         _ <- TestClock.adjust(2.hours)
         result <- JWT.deserialize[TestClaims](token, publicKeys, JWT.Type.JWT).either
       yield assertTrue(result.left.exists { case _: JWT.Error.Expired => true; case _ => false })
+    },
+  )
+
+  def deserializeIgnoringExpiryTests = suite("deserializeIgnoringExpiry")(
+    test("succeeds for expired token with valid signature") {
+      val claims = JWT.Claims(
+        issuer = "test-issuer",
+        subject = "user123",
+        audience = List("api"),
+        custom = Json.Obj("name" -> Json.Str("Test User"), "admin" -> Json.Bool(false)),
+      )
+      for
+        token <- JWT.serialize(
+          claims = claims,
+          ttl = 1.second,
+          signature = JWT.Signature.Asymmetric(JWT.Algorithm.RS256, "test-key-1", privateKey),
+        )
+        _ <- TestClock.adjust(2.seconds)
+        result <- JWT.deserializeIgnoringExpiry[TestClaims](token, publicKeys, JWT.Type.JWT)
+      yield assertTrue(
+        result.sub == "user123",
+        result.name == "Test User",
+      )
+    },
+    test("regular deserialize rejects the same expired token") {
+      val claims = JWT.Claims(
+        issuer = "test-issuer",
+        subject = "user123",
+        audience = List("api"),
+        custom = Json.Obj("name" -> Json.Str("Test User"), "admin" -> Json.Bool(false)),
+      )
+      for
+        token <- JWT.serialize(
+          claims = claims,
+          ttl = 1.second,
+          signature = JWT.Signature.Asymmetric(JWT.Algorithm.RS256, "test-key-1", privateKey),
+        )
+        _ <- TestClock.adjust(2.seconds)
+        result <- JWT.deserialize[TestClaims](token, publicKeys, JWT.Type.JWT).either
+      yield assertTrue(result.left.exists { case _: JWT.Error.Expired => true; case _ => false })
+    },
+    test("fails with InvalidSignature for token signed with wrong key") {
+      val claims = JWT.Claims(
+        issuer = "test-issuer",
+        subject = "user123",
+        audience = List("api"),
+        custom = Json.Obj(),
+      )
+      for
+        token <- JWT.serialize(
+          claims = claims,
+          ttl = 1.hour,
+          signature = JWT.Signature.Asymmetric(JWT.Algorithm.RS256, "test-key-1", badPrivateKey),
+        )
+        result <- JWT.deserializeIgnoringExpiry[TestClaims](token, publicKeys, JWT.Type.JWT).either
+      yield assertTrue(result == Left(JWT.Error.InvalidSignature))
     },
   )
 

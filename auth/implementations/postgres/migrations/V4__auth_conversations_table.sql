@@ -21,6 +21,7 @@ CREATE TABLE auth_conversations (
     user_agent TEXT,
     version BIGINT NOT NULL,
     amr JSONB NOT NULL,
+    expected_user_id UUID,
     expires_at TIMESTAMP WITH TIME ZONE NOT NULL
 );
 

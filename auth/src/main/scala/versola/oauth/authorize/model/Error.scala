@@ -104,3 +104,9 @@ private[authorize] object Error:
       errorDescription = "Invalid prompt parameter - none must not be combined with other values",
       errorUri = Some("https://openid.net/specs/openid-connect-core-1_0.html#AuthRequest"),
     )
+
+  case class IdTokenHintInvalid(uri: URL, state: Option[State]) extends RedirectError(
+      error = ErrorCode.InvalidRequest,
+      errorDescription = "id_token_hint is invalid, has wrong issuer or wrong audience",
+      errorUri = Some("https://openid.net/specs/openid-connect-core-1_0.html#AuthRequest"),
+    )

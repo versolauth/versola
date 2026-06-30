@@ -62,7 +62,7 @@ class PostgresConversationRepository(xa: TransactorZIO) extends ConversationRepo
   override def find(authId: AuthId): Task[Option[ConversationRecord]] =
     Clock.instant.flatMap: now =>
       xa.connectMeasured("find-conversation") {
-        sql"""select client_id, redirect_uri, scope, code_challenge, code_challenge_method, state, user_id, credential, step, requested_claims, ui_locales, nonce, response_type, user_email, user_phone, user_login, user_claims, auth_flow, user_agent, version, amr, expires_at
+        sql"""select client_id, redirect_uri, scope, code_challenge, code_challenge_method, state, user_id, credential, step, requested_claims, ui_locales, nonce, response_type, user_email, user_phone, user_login, user_claims, auth_flow, user_agent, version, amr, expected_user_id, expires_at
               from auth_conversations
               where id = $authId"""
           .query[(ConversationRecord, Instant)]
@@ -98,6 +98,7 @@ class PostgresConversationRepository(xa: TransactorZIO) extends ConversationRepo
                 user_agent,
                 version,
                 amr,
+                expected_user_id,
                 expires_at
             ) values (
                 $authId,
@@ -122,6 +123,7 @@ class PostgresConversationRepository(xa: TransactorZIO) extends ConversationRepo
                 ${record.userAgent},
                 ${record.version},
                 ${record.amr},
+                ${record.expectedUserId},
                 ${authId.createdAt.plusSeconds(ttl.toSeconds)})
          """
         .update.run()
