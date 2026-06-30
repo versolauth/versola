@@ -138,6 +138,7 @@ object AuthorizeEndpointService:
                         case Left(email) => EmailSubmission(email)
                         case Right(phone) => PhoneSubmission(phone)
                       conversationRouter.submit(authId, submission, uiLocale = None)
+                        .ignore
                         .as(AuthorizeResponse.Initialize(authId))
             case None =>
               ZIO.succeed(AuthorizeResponse.Initialize(authId))
@@ -227,9 +228,14 @@ object AuthorizeEndpointService:
           claims =>
             val map = claims.fields.toMap
             val issuerOk = map.get("iss").contains(Json.Str(config.jwt.issuer))
+            val clientIdJson = Json.Str(request.clientId.toString)
             val audOk = map.get("aud") match
               case Some(Json.Str(s))   => s == request.clientId.toString
-              case Some(Json.Arr(arr)) => arr.contains(Json.Str(request.clientId.toString))
+              case Some(Json.Arr(arr)) =>
+                // When aud is an array, also verify azp (authorized party) per OIDC Core §3.1.3.7:
+                // if azp is present it must equal the client_id
+                arr.contains(clientIdJson) &&
+                  map.get("azp").forall(_ == clientIdJson)
               case _                   => false
             if !issuerOk || !audOk then ZIO.fail(Error.IdTokenHintInvalid(request.redirectUri, request.state))
             else map.get("sub").collect { case Json.Str(s) => s } match

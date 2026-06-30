@@ -366,6 +366,29 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         }),
       )
     },
+    test("multi-audience hint with wrong azp fails with IdTokenHintInvalid") {
+      val env = Env()
+      for
+        hint <- JWT.serialize(
+          claims = JWT.Claims(
+            issuer = TestEnvConfig.jwtConfig.issuer,
+            subject = hintUserId.toString,
+            audience = List(clientId.toString, "other-service"),
+            custom = Json.Obj("azp" -> Json.Str("other-client")),
+          ),
+          ttl = 1.hour,
+          signature = JWT.Signature.Asymmetric(JWT.Algorithm.RS256, "test-key-id", TestEnvConfig.privateKey),
+        )
+        _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
+        result <- env.service.authorize(baseRequest.copy(idTokenHint = Some(hint))).exit
+      yield assertTrue(
+        result.isFailure,
+        result.causeOption.exists(_.failureOption.exists {
+          case Error.IdTokenHintInvalid(_, _) => true
+          case _ => false
+        }),
+      )
+    },
     test("hint for different user than active session forces re-authentication") {
       val env = Env()
       val uuid = UUID.randomUUID()
