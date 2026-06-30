@@ -68,6 +68,12 @@ object AuthorizeEndpointService:
                   createConversation(request, flow, uiLocales, Map.empty, hintUserId)
                 case Some(session) if request.prompt.contains(Prompt.login) =>
                   createConversation(request, flow, uiLocales, Map.empty, hintUserId)
+                case Some(session) if hintUserId.exists(_ != session.userId) =>
+                  // Session belongs to a different user than the hint — ignore the session entirely
+                  if request.prompt.contains(Prompt.none) then
+                    ZIO.fail(Error.LoginRequired(request.redirectUri, request.state))
+                  else
+                    createConversation(request, flow, uiLocales, Map.empty, hintUserId)
                 case Some(session) =>
                   val requiredFactors = flow.primary.factors.flatMap(f => PassedAuthFactor.fromFactorType(f.`type`)).toSet
                   if requiredFactors.forall(required => session.amr.keySet.exists(_.satisfies(required, flow.equivalents))) then

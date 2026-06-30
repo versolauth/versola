@@ -4,7 +4,7 @@ import versola.auth.TestEnvConfig
 import versola.oauth.authorize.model.{AuthorizeRequest, AuthorizeResponse, Error, Prompt, ResponseTypeEntry}
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{AuthFactor, AuthFactorType, AuthFlow, AuthMethodRef, ClientId, OAuthClientRecord, PassedAuthFactor, PassedFactorRecord, PrimaryAuthFlow, PrimaryCredential, ScopeToken, TenantId}
-import versola.oauth.conversation.{ConversationRepository, ConversationResult, ConversationRouter}
+import versola.oauth.conversation.{ConversationRepository, ConversationResult, ConversationRouter, EmailSubmission}
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
 import versola.oauth.model.{AccessToken, AuthorizationCode, CodeChallenge, CodeChallengeMethod, State}
 import versola.oauth.session.SessionRepository
@@ -292,11 +292,13 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         _ <- env.conversationRouter.submit.succeedsWith(ConversationResult.RenderStep(ConversationStep.Credential(Nil, false, false)))
         result <- env.service.authorize(baseRequest.copy(idTokenHint = Some(hint)))
         createCalls = env.conversationRepository.create.calls
+        submitCalls = env.conversationRouter.submit.calls
       yield assertTrue(
         result == AuthorizeResponse.Initialize(AuthId(uuid)),
         createCalls.nonEmpty,
         createCalls.head._2.expectedUserId == Some(hintUserId),
-        env.conversationRouter.submit.times == 1,
+        submitCalls.length == 1,
+        submitCalls.head._2 == EmailSubmission(hintUser.email.get),
       )
     },
     test("hint with bad signature fails with IdTokenHintInvalid") {
@@ -362,6 +364,30 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
           case Error.IdTokenHintInvalid(_, _) => true
           case _ => false
         }),
+      )
+    },
+    test("hint for different user than active session forces re-authentication") {
+      val env = Env()
+      val uuid = UUID.randomUUID()
+      val differentUserId = UserId(UUID.randomUUID())
+      val session = sessionWithAmr(Map(PassedAuthFactor.otp -> PassedFactorRecord(now, Set(AuthMethodRef.otp))))
+        .copy(userId = differentUserId)
+      for
+        hint <- makeIdToken(hintUserId, clientId.toString, TestEnvConfig.privateKey)
+        _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
+        _ <- env.securityService.mac.succeedsWith(sessionMac)
+        _ <- env.sessionRepository.find.succeedsWith(Some(session))
+        _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
+        _ <- env.conversationRepository.create.succeedsWith(())
+        _ <- env.userRepository.find.succeedsWith(Some(hintUser))
+        _ <- env.conversationRouter.submit.succeedsWith(ConversationResult.RenderStep(ConversationStep.Credential(Nil, false, false)))
+        result <- env.service.authorize(baseRequest.copy(sessionId = Some(rawSessionId), idTokenHint = Some(hint)))
+        createCalls = env.conversationRepository.create.calls
+      yield assertTrue(
+        result == AuthorizeResponse.Initialize(AuthId(uuid)),
+        // must NOT seed amr from the mismatched session
+        createCalls.head._2.amr.isEmpty,
+        createCalls.head._2.expectedUserId == Some(hintUserId),
       )
     },
   )
