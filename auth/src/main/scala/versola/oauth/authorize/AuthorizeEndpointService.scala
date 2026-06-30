@@ -2,8 +2,8 @@ package versola.oauth.authorize
 
 import versola.oauth.authorize.model.{AuthorizeRequest, AuthorizeResponse, Error, Prompt, ResponseTypeEntry}
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{AuthFactorType, AuthFlow, AuthMethodRef, PassedAuthFactor, PassedFactorRecord, ScopeToken}
-import versola.oauth.conversation.{ConversationRepository, ConversationService}
+import versola.oauth.client.model.{AuthFlow, AuthMethodRef, PassedAuthFactor, PassedFactorRecord, ScopeToken}
+import versola.oauth.conversation.{ConversationRepository, ConversationRouter, EmailSubmission, PhoneSubmission}
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
 import versola.oauth.model.{AuthorizationCode, AuthorizationCodeRecord}
 import versola.oauth.session.SessionRepository
@@ -35,7 +35,7 @@ object AuthorizeEndpointService:
       authorizationCodeRepository: AuthorizationCodeRepository,
       userRepository: UserRepository,
       userInfoService: UserInfoService,
-      conversationService: ConversationService,
+      conversationRouter: ConversationRouter,
   ) extends AuthorizeEndpointService:
 
     override def authorize(
@@ -116,14 +116,11 @@ object AuthorizeEndpointService:
           response <- request.loginHint match
             case None => ZIO.succeed(AuthorizeResponse.Initialize(authId))
             case Some(hint) =>
-              flow.primary.factors.headOption match
-                case Some(factor) if factor.`type` == AuthFactorType.otp =>
-                  conversationService.prepareInitialOtp(authId, conversation, hint, factorIndex = 0)
-                    .as(AuthorizeResponse.Initialize(authId))
-                case Some(factor) if factor.`type` == AuthFactorType.password =>
-                  conversationService.prepareInitialPassword(authId, conversation, hint, factorIndex = 0)
-                    .as(AuthorizeResponse.Initialize(authId))
-                case _ => ZIO.succeed(AuthorizeResponse.Initialize(authId))
+              val submission = hint match
+                case Left(email) => EmailSubmission(email)
+                case Right(phone) => PhoneSubmission(phone)
+              conversationRouter.submit(authId, submission, uiLocale = None)
+                .as(AuthorizeResponse.Initialize(authId))
         yield response
 
     private def silentAuthorize(
