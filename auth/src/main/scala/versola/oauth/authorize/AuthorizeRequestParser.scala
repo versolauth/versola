@@ -122,25 +122,12 @@ object AuthorizeRequestParser:
           .flatMap {
             case None => ZIO.none
             case Some(raw) =>
-              val hint: Option[Either[Email, Phone]] =
-                Email.from(raw).map(Left(_)).toOption
-                  .orElse(Phone.parse(raw).map(Right(_)).toOption)
-              hint match
-                case None => ZIO.fail(Error.LoginHintInvalid(redirectUri, state))
-                case Some(h) =>
-                  val credentialAllowed = client.authFlow.forall { flow =>
-                    h match
-                      case Left(_)  => flow.primary.credentials.contains(PrimaryCredential.email)
-                      case Right(_) => flow.primary.credentials.contains(PrimaryCredential.phone)
-                  }
-                  if !credentialAllowed then ZIO.fail(Error.LoginHintInvalid(redirectUri, state))
-                  else h match
-                    case Left(_) => ZIO.some(h)
-                    case Right(phone) =>
-                      oauthClientService.getAllowedPhonePrefixes(clientId).flatMap { prefixes =>
-                        if prefixes.isEmpty || prefixes.exists(phone.startsWith) then ZIO.some(h)
-                        else ZIO.fail(Error.LoginHintInvalid(redirectUri, state))
-                      }
+              Email.from(raw).toOption match
+                case Some(email) => parseEmailHint(email, client, redirectUri, state)
+                case None =>
+                  Phone.parse(raw).toOption match
+                    case Some(phone) => parsePhoneHint(phone, client, clientId, redirectUri, state)
+                    case None        => ZIO.fail(Error.LoginHintInvalid(redirectUri, state))
           }
 
         userAgent =
@@ -170,6 +157,31 @@ object AuthorizeRequestParser:
           loginHint = loginHint,
         )
       yield authorizeRequest
+
+    private def parseEmailHint(
+        email: Email,
+        client: OAuthClientRecord,
+        redirectUri: URL,
+        state: Option[State],
+    ): IO[Error.LoginHintInvalid, Option[Either[Email, Phone]]] =
+      val allowed = client.authFlow.forall(_.primary.credentials.contains(PrimaryCredential.email))
+      if allowed then ZIO.some[Either[Email, Phone]](Left(email))
+      else ZIO.fail(Error.LoginHintInvalid(redirectUri, state))
+
+    private def parsePhoneHint(
+        phone: Phone,
+        client: OAuthClientRecord,
+        clientId: ClientId,
+        redirectUri: URL,
+        state: Option[State],
+    ): IO[Error.LoginHintInvalid, Option[Either[Email, Phone]]] =
+      val allowed = client.authFlow.forall(_.primary.credentials.contains(PrimaryCredential.phone))
+      if !allowed then ZIO.fail(Error.LoginHintInvalid(redirectUri, state))
+      else
+        oauthClientService.getAllowedPhonePrefixes(clientId).flatMap { prefixes =>
+          if prefixes.isEmpty || prefixes.exists(phone.startsWith) then ZIO.some[Either[Email, Phone]](Right(phone))
+          else ZIO.fail(Error.LoginHintInvalid(redirectUri, state))
+        }
 
     private def parseRedirectUri(params: Map[String, Chunk[String]]): IO[Error, (URL, String)] =
       getParam(params, "redirect_uri")
