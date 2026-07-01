@@ -13,6 +13,7 @@ The script first asks for the environment **Name** (default `local`):
 - **`local`** — runs non-interactively. All remaining prompts are skipped and defaults are
   used. Files are written to the service dev directories consumed by `sbt` (see below):
     - `auth/dev/env.conf`
+    - `central/dev/env.conf \
     - `central/dev/env.conf`
     - `edge/dev/env.conf`
 - **any other name** — runs interactively, prompting for service URLs and Postgres
@@ -23,7 +24,7 @@ The script first asks for the environment **Name** (default `local`):
 
 1. Compilation - `compile`
 2. Test compilation - `Test / compile`
-3. Run tests - `test`. First, you need to start postgres - `docker-compose -f services.yml up -d postgres`
+3. Run tests - `testFull`. First, you need to start postgres - `docker-compose -f services.yml up -d postgres`. Since sbt 2, the `test` task is incremental, so use `testFull` if you want to run all tests.
 4. ```bash
     cd central-ui
     npm install
