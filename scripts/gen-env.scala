@@ -314,7 +314,7 @@ def writeFile(dir: File, name: String, content: String): Unit =
        |  jwks = \"\"\"$jwks\"\"\"
        |  presets = [
        |    {
-       |      id = "central-admin-login"
+       |      id = "central-admin"
        |      description = "Central Admin Login"
        |      redirect-uri = "$edgeCompleteUrl"
        |      post-login-redirect-uri = "$postLoginRedirectUri"
