@@ -54,13 +54,17 @@ jobs:
           POSTGRES_HOST: localhost:5432
         run: sbt coverage test coverageReport coverageAggregate
 
+      - name: Set up Scala CLI
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: VirtusLab/scala-cli-setup@v1
+
       - name: Publish coverage badge to gist
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:
           GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
           GIST_ID: bd1fd5151f5190b2f8325a56610909ef
           GIST_FILENAME: versola-coverage.json
-        run: python3 .github/scripts/coverage-badge.py
+        run: scala-cli run .github/scripts/coverage-badge.scala
 
   docker:
     needs: build
