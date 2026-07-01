@@ -39,6 +39,8 @@ jobs:
           distribution: 'temurin'
           cache: 'sbt'
       - uses: sbt/setup-sbt@v1
+      - name: Set up Scala CLI
+        uses: VirtusLab/scala-cli-setup@v1
       - name: Compile
         run: sbt compile
 
@@ -53,10 +55,6 @@ jobs:
         env:
           POSTGRES_HOST: localhost:5432
         run: sbt coverage test coverageReport coverageAggregate
-
-      - name: Set up Scala CLI
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: VirtusLab/scala-cli-setup@v1
 
       - name: Publish coverage badge to gist
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
