@@ -7,7 +7,7 @@ import versola.oauth.conversation.model.Error
 import versola.oauth.model.ConversationCookie
 import versola.user.model.Login
 import versola.util.http.Controller
-import versola.util.{Email, FormDecoder, Phone}
+import versola.util.{CoreConfig, Email, FormDecoder, Phone}
 import zio.*
 import zio.http.*
 import zio.json.*
@@ -15,7 +15,7 @@ import zio.schema.*
 import zio.telemetry.opentelemetry.tracing.Tracing
 
 object ConversationController extends Controller:
-  type Env = Tracing & ConversationRouter & ConversationRenderService & OAuthConfigurationService
+  type Env = Tracing & ConversationRouter & ConversationRenderService & CoreConfig & OAuthConfigurationService
 
   def routes: Routes[Env, Throwable] = Routes(
     getFormRoute,
@@ -93,18 +93,16 @@ object ConversationController extends Controller:
 
   private def submit[Body <: Submission: FormDecoder](
       pattern: RoutePattern[Unit],
-  ): Route[ConversationRouter & ConversationRenderService & OAuthConfigurationService, Throwable] =
+  ): Route[ConversationRouter & ConversationRenderService & CoreConfig & OAuthConfigurationService, Throwable] =
     pattern -> handler { (request: Request) =>
       (for
         router <- ZIO.service[ConversationRouter]
         conversationRenderService <- ZIO.service[ConversationRenderService]
         cookie <- extractCookie(request)
-        record <- router.getConversation(cookie.authId).someOrFail(Error.BadRequest)
         body <- request.formAs[Body].orElseFail(Error.BadRequest)
-        _ <- ZIO.fail(Error.BadRequest).unlessZIO(valid(cookie.clientId, body))
+        _ <- ZIO.fail(Error.BadRequest).unlessZIO(validate(cookie.clientId, body))
         uiLocale <- request.queryZIO[Option[String]]("ui_locale")
-        result <- router.submit(cookie.authId, body, uiLocale)
-          .orElseSucceed(ConversationResult.ServiceUnavailable)
+        (result, record) <- router.submit(cookie.authId, body, uiLocale)
         response <- conversationRenderService.renderSubmit(result, record)
       yield response)
         .catchAll {
@@ -113,10 +111,10 @@ object ConversationController extends Controller:
         }
     }
 
-  /** Validate submission payloads that depend on tenant configuration before dispatching.
-    * Returns false when the payload violates the configured constraints (bad request).
-    */
-  private def valid(clientId: ClientId, submission: Submission): URIO[OAuthConfigurationService, Boolean] =
+  /** Validate submission payloads against tenant config using the trusted clientId from the signed
+   *  cookie. Runs against the in-memory cache — no DB call required.
+   */
+  private def validate(clientId: ClientId, submission: Submission): URIO[OAuthConfigurationService, Boolean] =
     submission match
       case submitted: PhoneSubmission =>
         ZIO.serviceWithZIO[OAuthConfigurationService](_.getAllowedPhonePrefixes(clientId))
@@ -126,17 +124,22 @@ object ConversationController extends Controller:
         ZIO.serviceWithZIO[OAuthConfigurationService](_.getPasswordRegex(clientId))
           .map(_.forall(regex => scala.util.Try(submitted.password.matches(regex)).getOrElse(true)))
 
+      case submitted: LoginPasswordSubmission =>
+        ZIO.serviceWithZIO[OAuthConfigurationService](_.getPasswordRegex(clientId))
+          .map(_.forall(regex => scala.util.Try(submitted.password.matches(regex)).getOrElse(true)))
+
       case _ =>
         ZIO.succeed(true)
 
   private def extractCookie(
       request: Request,
-  ): IO[Error, ConversationCookie] =
-    request.cookie(ConversationCookie.name) match
-      case Some(cookie) =>
-        ZIO.fromEither(ConversationCookie.parse(cookie.content).left.map(_ => Error.BadRequest))
-      case None =>
-        ZIO.fail(Error.BadRequest)
+  ): ZIO[CoreConfig, Error, ConversationCookie] =
+    ZIO.serviceWith[CoreConfig](_.security.conversationCookieSecret).flatMap: secret =>
+      request.cookie(ConversationCookie.name) match
+        case Some(cookie) =>
+          ZIO.fromEither(ConversationCookie.parse(cookie.content, secret).left.map(_ => Error.BadRequest))
+        case None =>
+          ZIO.fail(Error.BadRequest)
 
   given FormDecoder[PhoneSubmission] = (form: Form) =>
     FormDecoder.single[Phone](form, "phone", Phone.parse)

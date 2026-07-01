@@ -2,14 +2,14 @@ package versola.oauth.conversation
 
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{AuthFactor, AuthFactorType, PassedAuthFactor}
-import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
+import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep, Error}
 import versola.util.{Email, Phone, SecureRandom}
 import zio.{Task, ZIO, ZLayer}
 
 trait ConversationRouter:
   def getConversation(authId: AuthId): Task[Option[ConversationRecord]]
 
-  def submit(authId: AuthId, submission: Submission, uiLocale: Option[String]): Task[ConversationResult.Render]
+  def submit(authId: AuthId, submission: Submission, uiLocale: Option[String]): Task[(ConversationResult.Render, ConversationRecord)]
 
   /** Begin a discoverable-credentials assertion and return the JSON public-key options.
     * Called by GET /challenge/passkey/options; does NOT go through the submit/render cycle.
@@ -50,62 +50,70 @@ object ConversationRouter:
         authId: AuthId,
         submission: Submission,
         uiLocale: Option[String],
+    ): Task[(ConversationResult.Render, ConversationRecord)] =
+      conversationService.find(authId).flatMap:
+        case None => ZIO.fail(Error.BadRequest)
+        case Some(conversation) =>
+          val updated = withUiLocale(conversation, uiLocale)
+          dispatch(authId, updated, submission)
+            .orElseSucceed(ConversationResult.ServiceUnavailable)
+            .map(_ -> updated)
+
+    private def dispatch(
+        authId: AuthId,
+        conversation: ConversationRecord,
+        submission: Submission,
     ): Task[ConversationResult.Render] =
-      conversationService.find(authId)
-        .map(_.map(conversation => submission -> withUiLocale(conversation, uiLocale)))
-        .flatMap:
-          case None =>
-            ZIO.succeed(ConversationResult.NotFound)
+      (submission, conversation) match
+        case (submitted: EmailSubmission, _) =>
+          afterCredential(authId, conversation, Left(submitted.email))
 
-          case Some((submitted: EmailSubmission, conversation)) =>
-            afterCredential(authId, conversation, Left(submitted.email))
+        case (submitted: PhoneSubmission, _) =>
+          afterCredential(authId, conversation, Right(submitted.phone))
 
-          case Some((submitted: PhoneSubmission, conversation)) =>
-            afterCredential(authId, conversation, Right(submitted.phone))
+        case (submitted: OtpSubmission, ConversationRecord.Otp(otp, _)) =>
+          conversationService.checkOtp(conversation, otp, submitted.code, authId).flatMap:
+            case ConversationResult.StepPassed(updated) =>
+              afterFactor(authId, updated, otp.factorIndex + 1)
+            case other: ConversationResult.Render =>
+              ZIO.succeed(other)
 
-          case Some((submitted: OtpSubmission, conversation @ ConversationRecord.Otp(otp, _))) =>
-            conversationService.checkOtp(conversation, otp, submitted.code, authId).flatMap:
-              case ConversationResult.StepPassed(updated) =>
-                afterFactor(authId, updated, otp.factorIndex + 1)
-              case other: ConversationResult.Render =>
-                ZIO.succeed(other)
+        case (_: OtpResendSubmission, ConversationRecord.Otp(otp, credential)) =>
+          conversationService.prepareInitialOtp(authId, conversation, credential, otp.factorIndex)
 
-          case Some((submitted: OtpResendSubmission, conversation @ ConversationRecord.Otp(otp, credential))) =>
-            conversationService.prepareInitialOtp(authId, conversation, credential, otp.factorIndex)
+        case (submitted: PasswordSubmission, ConversationRecord.Password(password)) =>
+          conversationService.checkPassword(conversation, password, submitted.password, authId).flatMap:
+            case ConversationResult.StepPassed(updated) =>
+              afterFactor(authId, updated, password.factorIndex + 1)
+            case other: ConversationResult.Render =>
+              ZIO.succeed(other)
 
-          case Some((submitted: PasswordSubmission, conversation @ ConversationRecord.Password(password))) =>
-            conversationService.checkPassword(conversation, password, submitted.password, authId).flatMap:
-              case ConversationResult.StepPassed(updated) =>
-                afterFactor(authId, updated, password.factorIndex + 1)
-              case other: ConversationResult.Render =>
-                ZIO.succeed(other)
+        case (submitted: LoginPasswordSubmission, _) =>
+          conversationService.checkLoginPassword(authId, conversation, submitted.login, submitted.password).flatMap:
+            case ConversationResult.StepPassed(updated) =>
+              afterFactor(authId, updated, nextFactorIndex = 0)
+            case other: ConversationResult.Render =>
+              ZIO.succeed(other)
 
-          case Some((submitted: LoginPasswordSubmission, conversation)) =>
-            conversationService.checkLoginPassword(authId, conversation, submitted.login, submitted.password).flatMap:
-              case ConversationResult.StepPassed(updated) =>
-                afterFactor(authId, updated, nextFactorIndex = 0)
-              case other: ConversationResult.Render =>
-                ZIO.succeed(other)
+        case (submitted: PasskeyAssertionSubmission, _) =>
+          conversationService.finishPasskeyAssertion(authId, conversation, submitted.response)
 
-          case Some((submitted: PasskeyAssertionSubmission, conversation)) =>
-            conversationService.finishPasskeyAssertion(authId, conversation, submitted.response)
+        case (submitted: PasskeyEnrollSubmission, _) =>
+          conversation.step match
+            case enroll: ConversationStep.PasskeyEnroll =>
+              conversationService.finishPasskeyEnroll(authId, conversation, enroll, submitted.response, submitted.name)
+            case _ =>
+              ZIO.succeed(ConversationResult.NotFound)
 
-          case Some((submitted: PasskeyEnrollSubmission, conversation)) =>
-            conversation.step match
-              case enroll: ConversationStep.PasskeyEnroll =>
-                conversationService.finishPasskeyEnroll(authId, conversation, enroll, submitted.response, submitted.name)
-              case _ =>
-                ZIO.succeed(ConversationResult.NotFound)
+        case (_: PasskeySkipSubmission, _) =>
+          conversation.step match
+            case _: ConversationStep.PasskeyEnroll =>
+              conversationService.skipPasskey(authId, conversation)
+            case _ =>
+              ZIO.succeed(ConversationResult.NotFound)
 
-          case Some((_: PasskeySkipSubmission, conversation)) =>
-            conversation.step match
-              case _: ConversationStep.PasskeyEnroll =>
-                conversationService.skipPasskey(authId, conversation)
-              case _ =>
-                ZIO.succeed(ConversationResult.NotFound)
-
-          case _ =>
-            ZIO.succeed(ConversationResult.NotFound)
+        case _ =>
+          ZIO.succeed(ConversationResult.NotFound)
 
     /** Promote the locale the user picked in the form to the front of the conversation's preferred
       * locales, so every subsequent render keeps it. Applied in-memory before dispatch — it is

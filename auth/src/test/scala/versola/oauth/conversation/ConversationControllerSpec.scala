@@ -2,11 +2,12 @@ package versola.oauth.conversation
 
 import org.scalamock.stubs.Stub
 import versola.auth.TestEnvConfig
-import versola.auth.model.OtpCode
+import versola.auth.model.{OtpCode, Password}
+import versola.user.model.Login
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.jwks.JwksService
 import versola.oauth.client.model.{AuthFlow, ClientId, ScopeToken}
-import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
+import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep, Error}
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, ConversationCookie}
 import versola.util.http.{ControllerSpec, NoopTracing, Observability}
 import versola.util.{Email, Phone, UnitSpecBase}
@@ -30,7 +31,11 @@ object ConversationControllerSpec extends UnitSpecBase:
     NonEmptyChunk(
       Cookie.Request(
         ConversationCookie.name,
-        ConversationCookie.responseCookie(ConversationCookie(authId, clientId), Duration.Zero).content,
+        ConversationCookie.responseCookie(
+          ConversationCookie(authId, clientId),
+          Duration.Zero,
+          TestEnvConfig.coreConfig.security.conversationCookieSecret,
+        ).content,
       ),
     ),
   )
@@ -97,12 +102,18 @@ object ConversationControllerSpec extends UnitSpecBase:
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             ConversationController.routes
-              .provideEnvironment(ZEnvironment(router) ++ ZEnvironment(configuration) ++ formService ++ tracing)
+              .provideEnvironment(
+                ZEnvironment(router)
+                  ++ ZEnvironment(TestEnvConfig.coreConfig)
+                  ++ ZEnvironment(configuration)
+                  ++ formService
+                  ++ tracing,
+              )
           )
         )
         _ <- configuration.getAllowedPhonePrefixes.succeedsWith(List.empty)
-        _ <- router.getConversation.succeedsWith(Some(record))
-        _ <- router.submit.succeedsWith(conversationResult)
+        _ <- configuration.getPasswordRegex.succeedsWith(None)
+        _ <- router.submit.succeedsWith((conversationResult, record))
 
         response <- client.batched(request)
 
@@ -111,6 +122,51 @@ object ConversationControllerSpec extends UnitSpecBase:
         response.status == Status.SeeOther,
         response.header(Header.Location).exists(_.url.encode.contains("challenge")),
       ) && assertTrue(submitCalls == List(submission))
+    }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging
+
+  def rejectedSubmitTestCase(
+      description: String,
+      request: Request,
+      passwordRegex: String = "^[0-9]+$",
+  )(using
+      loc: SourceLocation,
+      trace: Trace,
+  ) =
+    test(description) {
+      for
+        client <- ZIO.service[Client]
+        router = stub[ConversationRouter]
+        configuration = stub[OAuthConfigurationService]
+        formService <- ConversationRenderService.live
+          .build
+          .provideSome[zio.Scope](
+            ZLayer.succeed(TestEnvConfig.coreConfig),
+            ZLayer.succeed(configuration),
+            ZLayer.succeed(TestEnvConfig.jwksService),
+          )
+
+        tracing <- NoopTracing.layer.build
+
+        _ <- TestClient.addRoutes(
+          Observability.handleErrors(
+            ConversationController.routes
+              .provideEnvironment(
+                ZEnvironment(router)
+                  ++ ZEnvironment(TestEnvConfig.coreConfig)
+                  ++ ZEnvironment(configuration)
+                  ++ formService
+                  ++ tracing,
+              )
+          )
+        )
+        _ <- configuration.getPasswordRegex.succeedsWith(Some(passwordRegex))
+
+        response <- client.batched(request)
+        submitCalls = router.submit.calls
+      yield assertTrue(
+        response.status == Status.BadRequest,
+        submitCalls.isEmpty,
+      )
     }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging
 
   val spec = suite("ConversationController")(
@@ -163,5 +219,33 @@ object ConversationControllerSpec extends UnitSpecBase:
         )
       ).addHeader(conversationCookie),
       submission = (authId, OtpSubmission(otpCode), Some("ru")),
+    ),
+    successfulSubmitTestCase(
+      description = "submit login-password",
+      request = Request.post(
+        url = URL.empty / "challenge" / "login-password",
+        body = Body.fromURLEncodedForm(
+          Form.fromStrings("login" -> "user", "password" -> "s3cret"),
+        )
+      ).addHeader(conversationCookie),
+      submission = (authId, LoginPasswordSubmission(Login("user"), Password("s3cret")), None),
+    ),
+    rejectedSubmitTestCase(
+      description = "reject login-password violating configured password regex",
+      request = Request.post(
+        url = URL.empty / "challenge" / "login-password",
+        body = Body.fromURLEncodedForm(
+          Form.fromStrings("login" -> "user", "password" -> "abc"),
+        )
+      ).addHeader(conversationCookie),
+    ),
+    rejectedSubmitTestCase(
+      description = "reject password violating configured password regex",
+      request = Request.post(
+        url = URL.empty / "challenge" / "password",
+        body = Body.fromURLEncodedForm(
+          Form.fromStrings("password" -> "abc"),
+        )
+      ).addHeader(conversationCookie),
     ),
   )

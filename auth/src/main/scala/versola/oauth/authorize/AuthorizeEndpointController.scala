@@ -5,7 +5,7 @@ import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.conversation.ConversationRenderService
 import versola.oauth.conversation.model.{ConversationRecord, ConversationStep}
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, ConversationCookie}
-import versola.util.Base64Url
+import versola.util.{Base64Url, CoreConfig}
 import versola.util.http.Controller
 import zio.*
 import zio.http.*
@@ -13,7 +13,7 @@ import zio.prelude.NonEmptySet
 import zio.telemetry.opentelemetry.tracing.Tracing
 
 object AuthorizeEndpointController extends Controller:
-  type Env = Tracing & AuthorizeRequestParser & AuthorizeEndpointService & OAuthConfigurationService
+  type Env = Tracing & AuthorizeRequestParser & AuthorizeEndpointService & OAuthConfigurationService & CoreConfig
 
   def routes: Routes[Env, Throwable] = Routes(
     getAuthorizeRoute,
@@ -45,6 +45,7 @@ object AuthorizeEndpointController extends Controller:
     for
       authService <- ZIO.service[AuthorizeEndpointService]
       configService <- ZIO.service[OAuthConfigurationService]
+      config <- ZIO.service[CoreConfig]
       authConversationTtl <- configService.getAuthConversationTtl(request.clientId)
       response <- authService.authorize(request).map:
         case AuthorizeResponse.Authorized(code, idToken) =>
@@ -58,6 +59,7 @@ object AuthorizeEndpointController extends Controller:
               ConversationCookie.responseCookie(
                 ConversationCookie(authId, request.clientId),
                 authConversationTtl,
+                config.security.conversationCookieSecret,
               ),
             )
     yield response

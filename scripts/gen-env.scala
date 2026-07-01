@@ -95,15 +95,16 @@ def writeFile(dir: File, name: String, content: String): Unit =
   val adminUserId = genUUIDv7(rng) // stable across restarts; seeded in both auth and central
 
   // ── Random secrets ────────────────────────────────────────────────────────────
-  val centralSecretKey    = rand(rng, 32) // shared: auth↔central & edge↔central
-  val clientSecretsSecret = rand(rng, 16) // shared: auth + central (client MAC)
-  val accessTokensSecret  = rand(rng, 32)
-  val refreshTokensSecret = rand(rng, 32)
-  val authCodesSecret     = rand(rng, 32)
-  val sessionsSecret      = rand(rng, 32)
-  val passwordsSecret     = rand(rng, 16)
-  val edgeTokenEncKey     = rand(rng, 32)
-  val edgeSessionsSecret  = rand(rng, 32)
+  val centralSecretKey          = rand(rng, 32) // shared: auth↔central & edge↔central
+  val clientSecretsSecret       = rand(rng, 16) // shared: auth + central (client MAC)
+  val accessTokensSecret        = rand(rng, 32)
+  val refreshTokensSecret       = rand(rng, 32)
+  val authCodesSecret           = rand(rng, 32)
+  val sessionsSecret            = rand(rng, 32)
+  val passwordsSecret           = rand(rng, 16)
+  val conversationCookieSecret  = rand(rng, 32) // auth only: signs the SSO_CONVERSATION cookie
+  val edgeTokenEncKey           = rand(rng, 32)
+  val edgeSessionsSecret        = rand(rng, 32)
 
   // ── Environment ───────────────────────────────────────────────────────────────
   println("\n── Environment ───────────────────────────────────────────────────────")
@@ -237,12 +238,13 @@ def writeFile(dir: File, name: String, content: String): Unit =
        |}
        |
        |security {
-       |  access-tokens-secret   = "$accessTokensSecret"
-       |  client-secrets-secret  = "$clientSecretsSecret"
-       |  refresh-tokens-secret  = "$refreshTokensSecret"
-       |  auth-codes-secret      = "$authCodesSecret"
-       |  sessions-secret        = "$sessionsSecret"
-       |  passwords-secret       = "$passwordsSecret"
+       |  access-tokens-secret         = "$accessTokensSecret"
+       |  client-secrets-secret        = "$clientSecretsSecret"
+       |  refresh-tokens-secret        = "$refreshTokensSecret"
+       |  auth-codes-secret            = "$authCodesSecret"
+       |  sessions-secret              = "$sessionsSecret"
+       |  passwords-secret             = "$passwordsSecret"
+       |  conversation-cookie-secret   = "$conversationCookieSecret"
        |}
        |
        |jwt {

@@ -72,6 +72,7 @@ object TestEnvConfig:
       authCodesSecret = Secret.Bytes32(Array.fill(32)(0.toByte)),
       sessionsSecret = Secret.Bytes32(Array.fill(32)(0.toByte)),
       passwordsSecret = Secret.Bytes16(Array.fill(16)(0.toByte)),
+      conversationCookieSecret = Secret.Bytes32(Array.fill(32)(0.toByte)),
     ),
     jwt = jwtConfig,
     central = CoreConfig.CentralSyncConfig(

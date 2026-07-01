@@ -87,7 +87,7 @@ object OAuthConfigurationService:
     ): UIO[Boolean] =
       ZIO.succeed:
         stored match
-          case Some(stored) => java.util.Arrays.equals(secret, stored)
+          case Some(stored) => java.security.MessageDigest.isEqual(secret, stored)
           case None         => false
 
     override def verifySecret(clientId: ClientId, secret: Option[Secret]): UIO[Option[OAuthClientRecord]] =
