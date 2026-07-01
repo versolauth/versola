@@ -1,6 +1,7 @@
 lazy val root = project.in(file("."))
   .settings(
     commonSettings,
+    testFull := (Test / test).value
   )
   .aggregate(
     util,
@@ -134,11 +135,12 @@ lazy val commonSettings =
     // occur at runtime (e.g. StreamReadConstraints.validateDocumentLength added in 2.16,
     // CLEAR_CURRENT_TOKEN_ON_CLOSE added in 2.20).
     dependencyOverrides ++= Seq(
-      "com.fasterxml.jackson.core"       % "jackson-core"             % "2.22.0",
-      "com.fasterxml.jackson.core"       % "jackson-databind"         % "2.22.0",
+      "com.fasterxml.jackson.core"       % "jackson-core"           
+     % "2.22.0",
+      "com.fasterxml.jackson.core"       % "jackson-databind"          % "2.22.0",
       "com.fasterxml.jackson.core"       % "jackson-annotations"      % "2.22",
       "com.fasterxml.jackson.datatype"   % "jackson-datatype-jsr310"  % "2.22.0",
-      "com.fasterxml.jackson.datatype"   % "jackson-datatype-jdk8"    % "2.22.0",
+      "com.fasterxml.jackson-datatype"    % "jackson-datatype-jdk8"    % "2.22.0",
       "com.fasterxml.jackson.dataformat" % "jackson-dataformat-cbor"  % "2.22.0",
     ),
     scalacOptions ++= Seq(
@@ -151,7 +153,11 @@ lazy val commonSettings =
     ),
     libraryDependencies ++= Dependencies.core,
     testFrameworks += new TestFramework("zio.test.sbt.ZTestFramework"),
+    Test / parallelExecution := false,
   )
 
 val CompileTest = "compile->compile;test->test"
+
+val testFull = taskKey[Unit]("Run all tests")
+
 
