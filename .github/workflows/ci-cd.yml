@@ -36,6 +36,7 @@ jobs:
         uses: actions/setup-java@v4
         with:
           java-version: '21'
+        
           distribution: 'temurin'
           cache: 'sbt'
       - uses: sbt/setup-sbt@v1
@@ -48,17 +49,62 @@ jobs:
         if: github.event_name == 'pull_request'
         env:
           POSTGRES_HOST: localhost:5432
-        run: sbt test
+        run: sbt testFull
 
       - name: Run tests with coverage
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:
           POSTGRES_HOST: localhost:5432
-        run: sbt coverage test coverageReport coverageAggregate
+        run: sbt coverage testFull coverageReport coverageAggregate
 
       - name: Publish coverage badge to gist
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      env:
+          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
+          GIST_ID: bd1fd5151f5190b2f8325a56610909ef
+          GIST_FILENAME: versola-coverage.json
+        run: scala-cli run .github/scripts/coverage-badge.scala
+
+  docker:
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      attestations: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+        
+          distribution: 'temurin'
+          cache: 'sbt'
+      - uses: sbt/setup-sbt@v1
+      - name: Set up Scala CLI
+        uses: VirtusLab/scala-cli-setup@v1
+      - name: Compile
+        run: sbt compile
+
+      - name: Run tests
+        if: github.event_name == 'pull_request'
         env:
+          POSTGRES_HOST: localhost:5432
+        run: sbt testFull
+
+      - name: Run tests with coverage
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          POSTGRES_HOST: localhost:5432
+        run: sbt coverage testFull coverageReport coverageAggregate
+
+      - name: Publish coverage badge to gist
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      env:
           GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
           GIST_ID: bd1fd5151f5190b2f8325a56610909ef
           GIST_FILENAME: versola-coverage.json
@@ -81,7 +127,8 @@ jobs:
 
       - name: Log in to Container Registry
         uses: docker/login-action@v3
-        with:
+
+       with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
