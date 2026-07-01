@@ -84,7 +84,7 @@ object OAuthClientService:
     ): IO[ClientAlreadyExists | Throwable, Secret] =
       for
         secret <- generateSecret
-        macWithSalt <- generateMacWithSalt(secret)
+        encryptedSecret <- encryptRawSecret(secret)
         client = OAuthClientRecord(
           id = request.id,
           tenantId = request.tenantId,
@@ -92,7 +92,7 @@ object OAuthClientService:
           redirectUris = request.redirectUris,
           scope = request.allowedScopes,
           externalAudience = request.audience,
-          secret = Some(macWithSalt),
+          secret = Some(encryptedSecret),
           previousSecret = None,
           accessTokenTtl = Duration.fromSeconds(request.accessTokenTtl),
           refreshTokenTtl = Duration.fromSeconds(request.refreshTokenTtl.getOrElse(7776000)),
@@ -123,8 +123,8 @@ object OAuthClientService:
     override def rotateClientSecret(clientId: ClientId): Task[Secret] =
       for
         newSecret <- generateSecret
-        macWithSalt <- generateMacWithSalt(newSecret)
-        _ <- clientRepository.rotateClientSecret(clientId, macWithSalt)
+        encryptedSecret <- encryptRawSecret(newSecret)
+        _ <- clientRepository.rotateClientSecret(clientId, encryptedSecret)
       yield newSecret
 
     override def deletePreviousClientSecret(clientId: ClientId): Task[Unit] =
@@ -139,11 +139,11 @@ object OAuthClientService:
         clientRepository.find(event.id),
       )
 
+    private val clientSecretsKey: javax.crypto.SecretKey =
+      javax.crypto.spec.SecretKeySpec(config.clientSecretsSecret, "AES")
+
     private def generateSecret: Task[Secret] =
       secureRandom.nextBytes(32).map(Secret(_))
 
-    private def generateMacWithSalt(secret: Secret): Task[Secret] =
-      for
-        salt <- secureRandom.nextBytes(16)
-        mac <- securityService.mac(secret, salt ++ config.clientSecretsPepper)
-      yield Secret(mac ++ salt)
+    private def encryptRawSecret(secret: Secret): Task[Secret] =
+      securityService.encryptAes256(secret, clientSecretsKey).map(Secret(_))

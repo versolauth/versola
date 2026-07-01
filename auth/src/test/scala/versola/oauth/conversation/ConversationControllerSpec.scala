@@ -4,6 +4,7 @@ import org.scalamock.stubs.Stub
 import versola.auth.TestEnvConfig
 import versola.auth.model.OtpCode
 import versola.oauth.client.OAuthConfigurationService
+import versola.oauth.jwks.JwksService
 import versola.oauth.client.model.{AuthFlow, ClientId, ScopeToken}
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, ConversationCookie}
@@ -21,11 +22,17 @@ object ConversationControllerSpec extends UnitSpecBase:
   type Service = ConversationRouter
 
   val authId = AuthId(UUID.fromString("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"))
+  val clientId = ClientId("test-client")
   val email = Email("test@example.com")
   val phone = Phone("+12025551234")
   val otpCode = OtpCode("123456")
   val conversationCookie = Header.Cookie(
-    NonEmptyChunk(Cookie.Request(ConversationCookie.name, authId.toString))
+    NonEmptyChunk(
+      Cookie.Request(
+        ConversationCookie.name,
+        ConversationCookie.responseCookie(ConversationCookie(authId, clientId), Duration.Zero).content,
+      ),
+    ),
   )
 
   val conversationResult = ConversationResult.RenderStep(
@@ -64,7 +71,7 @@ object ConversationControllerSpec extends UnitSpecBase:
     amr = Map.empty,
   )
 
-  def successfulSubmitTestCase[Args, Result, RResult <: Result](
+  def successfulSubmitTestCase(
       description: String,
       request: Request,
       submission: (AuthId, Submission, Option[String]),
@@ -82,6 +89,7 @@ object ConversationControllerSpec extends UnitSpecBase:
           .provideSome[zio.Scope](
             ZLayer.succeed(TestEnvConfig.coreConfig),
             ZLayer.succeed(configuration),
+            ZLayer.succeed(TestEnvConfig.jwksService),
           )
 
         tracing <- NoopTracing.layer.build
@@ -89,12 +97,12 @@ object ConversationControllerSpec extends UnitSpecBase:
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             ConversationController.routes
-              .provideEnvironment(ZEnvironment(router) ++ formService ++ tracing ++ ZEnvironment(configuration))
+              .provideEnvironment(ZEnvironment(router) ++ ZEnvironment(configuration) ++ formService ++ tracing)
           )
         )
+        _ <- configuration.getAllowedPhonePrefixes.succeedsWith(List.empty)
         _ <- router.getConversation.succeedsWith(Some(record))
         _ <- router.submit.succeedsWith(conversationResult)
-        _ <- configuration.getAllowedPhonePrefixes.succeedsWith(List.empty)
 
         response <- client.batched(request)
 

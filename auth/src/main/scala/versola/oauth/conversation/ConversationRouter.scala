@@ -80,6 +80,13 @@ object ConversationRouter:
               case other: ConversationResult.Render =>
                 ZIO.succeed(other)
 
+          case Some((submitted: LoginPasswordSubmission, conversation)) =>
+            conversationService.checkLoginPassword(authId, conversation, submitted.login, submitted.password).flatMap:
+              case ConversationResult.StepPassed(updated) =>
+                afterFactor(authId, updated, nextFactorIndex = 0)
+              case other: ConversationResult.Render =>
+                ZIO.succeed(other)
+
           case Some((submitted: PasskeyAssertionSubmission, conversation)) =>
             conversationService.finishPasskeyAssertion(authId, conversation, submitted.response)
 

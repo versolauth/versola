@@ -126,4 +126,32 @@ object RoleServiceSpec extends ZIOSpecDefault, ZIOStubs:
         cached === Vector(otherTenantRole),
       )
     },
+    test("getPermissionsForRoles merges permissions from all matching roles") {
+      val env = new Env(Vector(adminRole, operatorRole, otherTenantRole))
+
+      for
+        result <- env.service.getPermissionsForRoles(tenantId, Set(adminRoleId, operatorRoleId))
+      yield assertTrue(result == Set(readPermission, writePermission))
+    },
+    test("getPermissionsForRoles excludes roles from other tenants") {
+      val env = new Env(Vector(adminRole, otherTenantRole))
+
+      for
+        result <- env.service.getPermissionsForRoles(tenantId, Set(adminRoleId, otherTenantRole.id))
+      yield assertTrue(result == Set(readPermission))
+    },
+    test("getPermissionsForRoles returns empty set when no role IDs match") {
+      val env = new Env(Vector(adminRole, otherTenantRole))
+
+      for
+        result <- env.service.getPermissionsForRoles(tenantId, Set(RoleId("unknown")))
+      yield assertTrue(result.isEmpty)
+    },
+    test("getPermissionsForRoles returns empty set for empty role IDs") {
+      val env = new Env(Vector(adminRole))
+
+      for
+        result <- env.service.getPermissionsForRoles(tenantId, Set.empty)
+      yield assertTrue(result.isEmpty)
+    },
   )

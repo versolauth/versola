@@ -7,6 +7,7 @@ import versola.central.configuration.challenges.{ChallengeSettingsRepository, Ch
 import versola.central.configuration.clients.{AuthorizationPresetController, AuthorizationPresetRepository, AuthorizationPresetService, ClientController, OAuthClientRepository, OAuthClientService}
 import versola.central.configuration.edges.{EdgeController, EdgeRepository, EdgeService}
 import versola.central.configuration.forms.{FormController, FormRepository, FormService}
+import versola.central.configuration.jwks.{JwksController, JwksRepository, JwksService}
 import versola.central.configuration.locales.{LocaleController, LocaleRepository, LocaleService}
 import versola.central.configuration.themes.{ThemeController, ThemeRepository, ThemeService}
 import versola.central.configuration.permissions.{PermissionController, PermissionRepository, PermissionService}
@@ -19,6 +20,7 @@ import versola.central.users.{AuthClient, UserOutboxProcessor, UserController, U
 import versola.configuration.clients.{PostgresAuthorizationPresetRepository, PostgresOAuthClientRepository}
 import versola.configuration.challenges.{PostgresChallengeSettingsRepository, PostgresOtpChallengeRepository}
 import versola.configuration.forms.PostgresFormRepository
+import versola.configuration.jwks.PostgresJwksRepository
 import versola.configuration.locales.PostgresLocaleRepository
 import versola.configuration.themes.PostgresThemeRepository
 import versola.users.PostgresUserRepository
@@ -36,6 +38,8 @@ import versola.util.postgres.{PostgresConfig, PostgresHikariDataSource}
 import zio.*
 import zio.config.magnolia.DeriveConfig
 import zio.http.*
+import zio.json.DecoderOps
+import zio.json.ast.Json
 import zio.telemetry.opentelemetry.tracing.Tracing
 
 import javax.crypto.SecretKey
@@ -77,6 +81,8 @@ object PostgresCentralApp extends VersolaApp("central"):
       CacheSyncService &
       UserRepository &
       UserService &
+      JwksRepository &
+      JwksService &
       SecureRandom &
       SecurityService
 
@@ -95,6 +101,7 @@ object PostgresCentralApp extends VersolaApp("central"):
       ThemeController.routes,
       OtpChallengeController.routes,
       UserController.routes,
+      JwksController.routes,
     ).reduce(_ ++ _)
 
   private val repositories =
@@ -114,6 +121,7 @@ object PostgresCentralApp extends VersolaApp("central"):
           PostgresOtpChallengeRepository.live >+>
           PostgresChallengeSettingsRepository.live >+>
           PostgresCacheSyncRepository.live >+>
+          PostgresJwksRepository.live >+>
           PostgresUserRepository.live
       )
 
@@ -132,6 +140,8 @@ object PostgresCentralApp extends VersolaApp("central"):
       RoleService.live(schedule) >+>
       EdgeService.live(schedule) >+>
       LocaleService.live >+>
+      JwksService.live(schedule) >+>
+      BootstrapService.live >+>
       FormService.live(schedule) >+>
       ThemeService.live(schedule) >+>
       OtpChallengeService.live(schedule) >+>
@@ -139,8 +149,7 @@ object PostgresCentralApp extends VersolaApp("central"):
       CacheSyncService.live >+>
       AuthClient.live >+>
       UserService.live >+>
-      UserOutboxProcessor.live >+>
-      MockDataService.live
+      UserOutboxProcessor.live
   }
 
   given DeriveConfig[Secret] = DeriveConfig[String]
@@ -157,6 +166,12 @@ object PostgresCentralApp extends VersolaApp("central"):
 
   given DeriveConfig[URL] = DeriveConfig[String]
     .mapOrFail(URL.decode(_).left.map(ex => zio.Config.Error.InvalidData(message = ex.getMessage)))
+
+  given DeriveConfig[Json.Obj] = DeriveConfig[String]
+    .mapOrFail(_.fromJson[Json.Obj].left.map(message => zio.Config.Error.InvalidData(message = message)))
+
+  given DeriveConfig[versola.central.configuration.edges.EdgeId] =
+    DeriveConfig[String].map(versola.central.configuration.edges.EdgeId(_))
 
   private def parseBase64UrlSecret(newType: ByteArrayNewType.FixedLength)(str: String) =
     newType.fromBase64Url(str)

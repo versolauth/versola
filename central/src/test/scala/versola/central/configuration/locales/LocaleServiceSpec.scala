@@ -12,7 +12,7 @@ object LocaleServiceSpec extends ZIOSpecDefault, ZIOStubs:
 
   class Env:
     val repository = stub[LocaleRepository]
-    val service    = LocaleService.Impl(repository, versola.central.TestCentralConfig.config)
+    val service    = LocaleService.Impl(repository)
 
   def spec = suite("LocaleService")(
     test("getActive returns only active locales") {

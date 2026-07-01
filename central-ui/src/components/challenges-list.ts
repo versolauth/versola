@@ -12,6 +12,8 @@ import {
   upsertChallengeSettings,
 } from '../utils/central-api';
 import { confirmDestructiveAction } from '../utils/confirm-dialog';
+import './error-card';
+import './loading-cards';
 
 const CODE_PLACEHOLDER = '{{code}}';
 
@@ -50,6 +52,18 @@ export class VersolaChallengesList extends LitElement {
   @state() private otpResendAfter = 60;
   @state() private editOtpLength = 6;
   @state() private editOtpResendAfter = 60;
+
+  @state() private passwordHistorySize = 5;
+  @state() private passwordNumDifferent = 3;
+  @state() private editPasswordHistorySize = 5;
+  @state() private editPasswordNumDifferent = 3;
+
+  @state() private authConversationTtlSeconds = 900;
+  @state() private sessionTtlSeconds = 86400;
+  @state() private sessionIdleTtlSeconds: number | null = null;
+  @state() private editAuthConversationTtlSeconds = 900;
+  @state() private editSessionTtlSeconds = 86400;
+  @state() private editSessionIdleTtlSeconds: number | null = null;
 
   @state() private submissionLimits: SubmissionLimits = {
     otpRequest: [],
@@ -361,14 +375,24 @@ export class VersolaChallengesList extends LitElement {
         this.submissionLimits = challengeSettings.submissionLimits;
         this.otpLength = challengeSettings.otpLength;
         this.otpResendAfter = challengeSettings.otpResendAfter;
+        this.passwordHistorySize = challengeSettings.passwordHistorySize;
+        this.passwordNumDifferent = challengeSettings.passwordNumDifferent;
         this.passkeySettings = challengeSettings.passkeySettings ?? null;
+        this.authConversationTtlSeconds = challengeSettings.authConversationTtlSeconds;
+        this.sessionTtlSeconds = challengeSettings.sessionTtlSeconds;
+        this.sessionIdleTtlSeconds = challengeSettings.sessionIdleTtlSeconds ?? null;
       } else {
         this.phonePrefixes = [];
         this.passwordRegex = '';
         this.submissionLimits = { otpRequest: [], otpSubmit: [], passwordSubmit: [], banDurationSeconds: 0 };
         this.otpLength = 6;
         this.otpResendAfter = 60;
+        this.passwordHistorySize = 5;
+        this.passwordNumDifferent = 3;
         this.passkeySettings = null;
+        this.authConversationTtlSeconds = 900;
+        this.sessionTtlSeconds = 86400;
+        this.sessionIdleTtlSeconds = null;
       }
     } catch (e) {
       this.errorMessage = e instanceof Error ? e.message : 'Failed to load data';
@@ -500,6 +524,11 @@ export class VersolaChallengesList extends LitElement {
     this.editSubmissionLimits = JSON.parse(JSON.stringify(this.submissionLimits));
     this.editOtpLength = this.otpLength;
     this.editOtpResendAfter = this.otpResendAfter;
+    this.editPasswordHistorySize = this.passwordHistorySize;
+    this.editPasswordNumDifferent = this.passwordNumDifferent;
+    this.editAuthConversationTtlSeconds = this.authConversationTtlSeconds;
+    this.editSessionTtlSeconds = this.sessionTtlSeconds;
+    this.editSessionIdleTtlSeconds = this.sessionIdleTtlSeconds;
     this.editPasskeyRpId = this.passkeySettings?.rpId ?? '';
     this.editPasskeyRpName = this.passkeySettings?.rpName ?? '';
     this.editPasskeyOrigins = (this.passkeySettings?.origins ?? []).map(value => ({ value }));
@@ -581,7 +610,12 @@ export class VersolaChallengesList extends LitElement {
         this.editSubmissionLimits,
         this.editOtpLength,
         this.editOtpResendAfter,
+        this.editPasswordHistorySize,
+        this.editPasswordNumDifferent,
         passkeySettings,
+        this.editAuthConversationTtlSeconds,
+        this.editSessionTtlSeconds,
+        this.editSessionIdleTtlSeconds,
         regex || undefined,
       );
       this.phonePrefixes = prefixes;
@@ -589,6 +623,11 @@ export class VersolaChallengesList extends LitElement {
       this.submissionLimits = JSON.parse(JSON.stringify(this.editSubmissionLimits));
       this.otpLength = this.editOtpLength;
       this.otpResendAfter = this.editOtpResendAfter;
+      this.passwordHistorySize = this.editPasswordHistorySize;
+      this.passwordNumDifferent = this.editPasswordNumDifferent;
+      this.authConversationTtlSeconds = this.editAuthConversationTtlSeconds;
+      this.sessionTtlSeconds = this.editSessionTtlSeconds;
+      this.sessionIdleTtlSeconds = this.editSessionIdleTtlSeconds;
       this.passkeySettings = { ...passkeySettings, origins: [...passkeySettings.origins] };
       this.hasChallengeSettings = true;
       this.editingSettings = false;
@@ -691,18 +730,16 @@ export class VersolaChallengesList extends LitElement {
           <button class="btn btn-primary" @click=${() => this.startAdd()}>Add Template</button>
         </div>
 
-        ${this.isLoading ? html`<div class="hint">Loading…</div>`
-          : this.errorMessage ? html`<div class="error-msg">${this.errorMessage}</div>`
-          : this.templates.length === 0
-            ? html`
-              <div class="card">
-                <div class="empty-state">
-                  <h3>No OTP templates yet</h3>
-                  <p>Add your first OTP template to get started.</p>
-                  <button class="btn btn-primary" @click=${() => this.startAdd()} style="margin-top: 1rem;">+ Add Template</button>
-                </div>
-              </div>`
-            : this.templates.map(template => this.renderTemplateCard(template))}
+        ${this.templates.length === 0
+          ? html`
+            <div class="card">
+              <div class="empty-state">
+                <h3>No OTP templates yet</h3>
+                <p>Add your first OTP template to get started.</p>
+                <button class="btn btn-primary" @click=${() => this.startAdd()} style="margin-top: 1rem;">+ Add Template</button>
+              </div>
+            </div>`
+          : this.templates.map(template => this.renderTemplateCard(template))}
       </section>
     `;
   }
@@ -720,18 +757,16 @@ export class VersolaChallengesList extends LitElement {
             : nothing}
         </div>
 
-        ${this.isLoading ? html`<div class="hint">Loading…</div>`
-          : this.errorMessage ? html`<div class="error-msg">${this.errorMessage}</div>`
-          : !this.hasChallengeSettings
-            ? html`
-              <div class="card">
-                <div class="empty-state">
-                  <h3>No challenge settings yet</h3>
-                  <p>Configure OTP, password and passkey security for this tenant.</p>
-                  <button class="btn btn-primary" @click=${() => this.startEditSettings()} style="margin-top: 1rem;">+ Add Challenge Settings</button>
-                </div>
-              </div>`
-            : this.renderChallengeSettingsContent()}
+        ${!this.hasChallengeSettings
+          ? html`
+            <div class="card">
+              <div class="empty-state">
+                <h3>No challenge settings yet</h3>
+                <p>Configure OTP, password and passkey security for this tenant.</p>
+                <button class="btn btn-primary" @click=${() => this.startEditSettings()} style="margin-top: 1rem;">+ Add Challenge Settings</button>
+              </div>
+            </div>`
+          : this.renderChallengeSettingsContent()}
       </section>
     `;
   }
@@ -764,6 +799,23 @@ export class VersolaChallengesList extends LitElement {
           ${this.passwordRegex
             ? html`<div class="template-text">${this.passwordRegex}</div>`
             : html`<div class="hint">No password regex configured. Any password is accepted.</div>`}
+
+          <label style="margin-top: var(--spacing-lg);">Password History Size</label>
+          <div class="template-text">${this.passwordHistorySize}</div>
+
+          <label style="margin-top: var(--spacing-lg);">Different Passwords Required</label>
+          <div class="template-text">${this.passwordNumDifferent}</div>
+        </div>
+
+        <div class="card" style="margin-bottom: var(--spacing-lg);">
+          <label>Auth Conversation TTL</label>
+          <div class="template-text">${this.formatDuration(this.authConversationTtlSeconds)}</div>
+
+          <label style="margin-top: var(--spacing-lg);">SSO Session TTL</label>
+          <div class="template-text">${this.formatDuration(this.sessionTtlSeconds)}</div>
+
+          <label style="margin-top: var(--spacing-lg);">SSO Session Idle Timeout</label>
+          <div class="template-text">${this.sessionIdleTtlSeconds != null ? this.formatDuration(this.sessionIdleTtlSeconds) : 'Disabled'}</div>
         </div>
 
         <div class="card" style="margin-bottom: var(--spacing-lg);">
@@ -877,6 +929,42 @@ export class VersolaChallengesList extends LitElement {
           @input=${(e: Event) => { this.editPasswordRegex = (e.target as HTMLInputElement).value; }}
           placeholder="^(?=.*[A-Za-z])(?=.*\\d).{8,}$" />
 
+        <label style="margin-top: var(--spacing-lg);">Password History Size</label>
+        <div class="hint">Number of previous passwords to keep (including the current one).</div>
+        <input type="number" class="form-control compact-input limit-input" .value=${this.editPasswordHistorySize}
+          @input=${(e: Event) => { this.editPasswordHistorySize = Math.max(0, parseInt((e.target as HTMLInputElement).value) || 0); this.requestUpdate(); }} />
+
+        <label style="margin-top: var(--spacing-lg);">Different Passwords Required</label>
+        <div class="hint">How many distinct passwords are required before an old one can be reused.</div>
+        <input type="number" class="form-control compact-input limit-input" .value=${this.editPasswordNumDifferent}
+          @input=${(e: Event) => { this.editPasswordNumDifferent = Math.max(0, parseInt((e.target as HTMLInputElement).value) || 0); this.requestUpdate(); }} />
+
+        <h3 style="margin-top: var(--spacing-xl); margin-bottom: var(--spacing-md);">Sessions</h3>
+
+        <label>Auth Conversation TTL (seconds)</label>
+        <div class="hint">How long an in-progress authentication conversation stays valid.</div>
+        <div class="limit-row" style="margin-bottom: 0;">
+          <input type="number" class="form-control compact-input limit-input" .value=${this.editAuthConversationTtlSeconds}
+            @input=${(e: Event) => { this.editAuthConversationTtlSeconds = Math.max(1, parseInt((e.target as HTMLInputElement).value) || 1); this.requestUpdate(); }} />
+          <span class="limit-hint">${this.formatDuration(this.editAuthConversationTtlSeconds)}</span>
+        </div>
+
+        <label style="margin-top: var(--spacing-lg);">SSO Session TTL (seconds)</label>
+        <div class="hint">How long the SSO session cookie remains valid after authentication.</div>
+        <div class="limit-row" style="margin-bottom: 0;">
+          <input type="number" class="form-control compact-input limit-input" .value=${this.editSessionTtlSeconds}
+            @input=${(e: Event) => { this.editSessionTtlSeconds = Math.max(1, parseInt((e.target as HTMLInputElement).value) || 1); this.requestUpdate(); }} />
+          <span class="limit-hint">${this.formatDuration(this.editSessionTtlSeconds)}</span>
+        </div>
+
+        <label style="margin-top: var(--spacing-lg);">SSO Session Idle Timeout (seconds)</label>
+        <div class="hint">Online sessions (no offline_access) expire after this period of inactivity, sliding forward on each silent re-authentication. Leave empty to disable.</div>
+        <div class="limit-row" style="margin-bottom: 0;">
+          <input type="number" class="form-control compact-input limit-input" .value=${this.editSessionIdleTtlSeconds ?? ''}
+            @input=${(e: Event) => { const v = parseInt((e.target as HTMLInputElement).value); this.editSessionIdleTtlSeconds = Number.isFinite(v) && v > 0 ? v : null; this.requestUpdate(); }} />
+          <span class="limit-hint">${this.editSessionIdleTtlSeconds != null ? this.formatDuration(this.editSessionIdleTtlSeconds) : 'Disabled'}</span>
+        </div>
+
         <h3 style="margin-top: var(--spacing-xl); margin-bottom: var(--spacing-md);">Passkey (WebAuthn)</h3>
 
         <label>Relying Party ID</label>
@@ -974,11 +1062,17 @@ export class VersolaChallengesList extends LitElement {
 
     return html`
       <div class="page-header">
-        <h1 class="page-title">Challenges</h1>
+        <h1 class="page-title">Challenges & Security</h1>
       </div>
 
-      ${this.renderOtpSettings()}
-      ${this.renderChallengeSettings()}
+      ${this.isLoading ? html`<versola-loading-cards .count=${3}></versola-loading-cards>`
+        : this.errorMessage ? html`
+          <versola-error-card heading="Could not load challenges & security" .message=${this.errorMessage} @retry=${() => this.loadData()}></versola-error-card>
+        `
+        : html`
+          ${this.renderOtpSettings()}
+          ${this.renderChallengeSettings()}
+        `}
     `;
   }
 }

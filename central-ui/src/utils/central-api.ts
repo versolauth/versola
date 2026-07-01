@@ -843,6 +843,22 @@ export async function deleteClient(tenantId: string, clientId: string): Promise<
   clientSupplementStore.delete(entityKey(tenantId, clientId));
 }
 
+export async function fetchJwks(): Promise<{ keys: Record<string, unknown>[] }> {
+  return request<{ keys: Record<string, unknown>[] }>('/configuration/jwks');
+}
+
+export async function createJwk(jwk: Record<string, unknown>): Promise<void> {
+  await requestVoid('/configuration/jwks', { method: 'POST', body: jwk });
+}
+
+export async function updateJwk(jwk: Record<string, unknown>): Promise<void> {
+  await requestVoid('/configuration/jwks', { method: 'PUT', body: jwk });
+}
+
+export async function deleteJwk(kid: string): Promise<void> {
+  await requestVoid('/configuration/jwks', { method: 'DELETE', query: { kid } });
+}
+
 export async function fetchEdges(): Promise<Edge[]> {
   const response = await request<EdgesResponse>('/configuration/edges');
   return sortById(response.edges.map(edge => ({
@@ -987,7 +1003,12 @@ export async function upsertChallengeSettings(
   submissionLimits: SubmissionLimits,
   otpLength: number,
   otpResendAfter: number,
+  passwordHistorySize: number,
+  passwordNumDifferent: number,
   passkeySettings: PasskeySettings,
+  authConversationTtlSeconds: number,
+  sessionTtlSeconds: number,
+  sessionIdleTtlSeconds: number | null,
   passwordRegex?: string,
 ): Promise<void> {
   await requestVoid('/configuration/challenges/challenge-settings', {
@@ -998,8 +1019,13 @@ export async function upsertChallengeSettings(
       submissionLimits,
       otpLength,
       otpResendAfter,
+      passwordHistorySize,
+      passwordNumDifferent,
       passwordRegex: passwordRegex ?? null,
       passkeySettings,
+      authConversationTtlSeconds,
+      sessionTtlSeconds,
+      sessionIdleTtlSeconds: sessionIdleTtlSeconds ?? null,
     },
   });
 }

@@ -235,6 +235,8 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
           _ <- env.authorizationCodeRepository.create.succeedsWith(())
           _ <- env.sessionRepository.create.succeedsWith(())
           _ <- env.conversationRepository.delete.succeedsWith(true)
+          _ <- env.configService.getSessionTtl.succeedsWith(zio.Duration.fromSeconds(86400))
+          _ <- env.configService.getSessionIdleTtl.succeedsWith(Option.empty[zio.Duration])
           result <- env.service.offerPasskeyEnroll(authId, recordWithUser)
         yield assertTrue(result.isInstanceOf[ConversationResult.Complete])
       }
@@ -275,6 +277,8 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
           _ <- env.authorizationCodeRepository.create.succeedsWith(())
           _ <- env.sessionRepository.create.succeedsWith(())
           _ <- env.conversationRepository.delete.succeedsWith(true)
+          _ <- env.configService.getSessionTtl.succeedsWith(zio.Duration.fromSeconds(86400))
+          _ <- env.configService.getSessionIdleTtl.succeedsWith(Option.empty[zio.Duration])
           result <- env.service.finishPasskeyEnroll(authId, recordWithUser, enrollStep, "resp", None)
         yield assertTrue(result.isInstanceOf[ConversationResult.Complete])
       },
@@ -306,6 +310,8 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
           _ <- env.authorizationCodeRepository.create.succeedsWith(())
           _ <- env.sessionRepository.create.succeedsWith(())
           _ <- env.conversationRepository.delete.succeedsWith(true)
+          _ <- env.configService.getSessionTtl.succeedsWith(zio.Duration.fromSeconds(86400))
+          _ <- env.configService.getSessionIdleTtl.succeedsWith(Option.empty[zio.Duration])
           result <- env.service.skipPasskey(authId, recordWithUser)
         yield assertTrue(result.isInstanceOf[ConversationResult.Complete])
       }

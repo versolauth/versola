@@ -51,6 +51,14 @@ trait OAuthClientRepositorySpec extends DatabaseSpecBase[OAuthClientRepositorySp
           found === Some(client)
         )
       },
+      test("create client twice should fail with ClientAlreadyExists") {
+        for
+          _ <- env.repository.createClient(client)
+          error <- env.repository.createClient(client).flip
+        yield assertTrue(
+          error == ClientAlreadyExists(clientId)
+        )
+      },
       test("update client should preserve existing name when new name is absent") {
         for
           _ <- env.repository.createClient(client)

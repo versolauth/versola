@@ -78,8 +78,9 @@ object OtpChallengeController extends Controller:
   val upsertChallengeSettingsEndpoint =
     Method.PUT / "configuration" / "challenges" / "challenge-settings" -> handler { (request: Request) =>
       for
-        service <- ZIO.service[ChallengeSettingsService]
-        body    <- request.body.asJson[UpsertChallengeSettingsRequest]
+        service  <- ZIO.service[ChallengeSettingsService]
+        body     <- request.body.asJson[UpsertChallengeSettingsRequest]
+        existing <- service.getSettings(body.tenantId)
         _ <- service.upsertSettings(
           ChallengeSettingsRecord(
             body.tenantId,
@@ -89,6 +90,11 @@ object OtpChallengeController extends Controller:
             body.otpLength,
             body.otpResendAfter,
             body.passkeySettings,
+            body.passwordHistorySize.orElse(existing.map(_.passwordHistorySize)).getOrElse(5),
+            body.passwordNumDifferent.orElse(existing.map(_.passwordNumDifferent)).getOrElse(3),
+            body.authConversationTtlSeconds.orElse(existing.map(_.authConversationTtlSeconds)).getOrElse(900),
+            body.sessionTtlSeconds.orElse(existing.map(_.sessionTtlSeconds)).getOrElse(86400),
+            body.sessionIdleTtlSeconds.orElse(existing.flatMap(_.sessionIdleTtlSeconds)),
           ),
         )
       yield Response.status(Status.NoContent)

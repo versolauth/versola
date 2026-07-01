@@ -1,6 +1,7 @@
 package versola.user
 
-import versola.auth.model.{AuthenticatorTransport, CredentialDeviceType, CredentialId, TenantId}
+import versola.auth.model.{AuthenticatorTransport, CredentialDeviceType, CredentialId}
+import versola.oauth.client.model.TenantId
 import versola.role.model.RoleId
 import versola.user.model.{Login, UserId}
 import versola.util.{Base64, Email, Patch, Phone}

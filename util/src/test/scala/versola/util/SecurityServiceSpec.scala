@@ -68,4 +68,18 @@ object SecurityServiceSpec extends ZIOSpecDefault:
         wrongVerified == false,
       )
     }.provide(SecurityService.live, SecureRandom.live),
+
+    test("encryptRsa with public key round-trips via decryptRsa with private key") {
+      val secret = "client-secret-payload".getBytes("UTF-8")
+
+      for
+        service   <- ZIO.service[SecurityService]
+        keyPair   <- service.generateRsaKeyPair
+        encrypted <- service.encryptRsa(secret, keyPair.publicKey)
+        decrypted <- service.decryptRsa(encrypted, keyPair.privateKey)
+      yield assertTrue(
+        !encrypted.sameElements(secret),
+        decrypted.sameElements(secret),
+      )
+    }.provide(SecurityService.live, SecureRandom.live),
   )

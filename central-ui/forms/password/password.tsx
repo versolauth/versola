@@ -69,6 +69,16 @@ function PasswordForm(props: { config: FormConfig }) {
   const [passwordNotAllowed, setPasswordNotAllowed] = createSignal(false);
   const passwordRegex = props.config.step.passwordRegex;
 
+  const checkPassword = (value: string) => {
+    if (!passwordRegex || value.length === 0) {
+      setPasswordNotAllowed(false);
+      return;
+    }
+    try {
+      setPasswordNotAllowed(!new RegExp(passwordRegex).test(value));
+    } catch (_) {}
+  };
+
   const handleSubmit = (e: SubmitEvent) => {
     if (!passwordRegex) return;
     const form = e.currentTarget as HTMLFormElement;
@@ -96,14 +106,14 @@ function PasswordForm(props: { config: FormConfig }) {
         <input
           type="password"
           name="password"
-          class="input-field"
+          class={`input-field${passwordNotAllowed() ? ' input-error' : ''}`}
           placeholder={t().password_placeholder}
           autocomplete="current-password"
           required
-          onInput={() => passwordNotAllowed() && setPasswordNotAllowed(false)}
+          onInput={(e) => checkPassword((e.currentTarget as HTMLInputElement).value)}
         />
         <Show when={passwordNotAllowed()}>
-          <div class="phone-error-message">{t().password_not_allowed}</div>
+          <div class="phone-error-message error-text">{t().password_not_allowed}</div>
         </Show>
         <button type="submit" formAction={`/challenge/password?ui_locale=${currentLocale()}`} class="btn btn-primary">
           {t().continue}

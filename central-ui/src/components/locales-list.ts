@@ -4,6 +4,8 @@ import { theme } from '../styles/theme';
 import { badgeStyles, buttonStyles, cardStyles, formStyles, iconActionStyles } from '../styles/components';
 import type { Locale } from '../types';
 import { fetchLocales, updateLocales, setDefaultLocale } from '../utils/central-api';
+import './error-card';
+import './loading-cards';
 
 // ISO 639-1 language codes; display names are resolved at runtime via Intl.DisplayNames.
 const LANGUAGE_CODES = [
@@ -323,8 +325,10 @@ export class VersolaLocalesList extends LitElement {
         <button class="btn btn-secondary" @click=${() => this.startEdit()}>Edit</button>
       </div>
 
-      ${this.isLoading ? html`<div class="hint">Loading…</div>`
-        : this.errorMessage ? html`<div class="save-msg error">${this.errorMessage}</div>`
+      ${this.isLoading ? html`<versola-loading-cards .count=${3}></versola-loading-cards>`
+        : this.errorMessage ? html`
+          <versola-error-card heading="Could not load locales" .message=${this.errorMessage} @retry=${() => this.loadData()}></versola-error-card>
+        `
         : html`
           <div class="card">
             ${this.locales.length === 0 ? html`<div class="hint">No locales configured.</div>` : html`

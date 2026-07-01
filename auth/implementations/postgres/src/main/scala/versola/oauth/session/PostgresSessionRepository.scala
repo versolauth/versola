@@ -13,7 +13,6 @@ import zio.json.*
 import zio.prelude.These
 import zio.{Clock, Duration, Task, ZLayer}
 
-import java.time.Instant
 import java.util.UUID
 
 class PostgresSessionRepository(xa: TransactorZIO) extends SessionRepository, BasicCodecs:
@@ -28,11 +27,13 @@ class PostgresSessionRepository(xa: TransactorZIO) extends SessionRepository, Ba
       id: MAC.Of[SessionId],
       session: SessionRecord,
       ttl: zio.Duration,
+      idleTtl: Option[zio.Duration],
   ): Task[Unit] =
     Clock.instant.flatMap: now =>
+      val idleExpiresAt = idleTtl.map(t => now.plusSeconds(t.toSeconds))
       xa.connectMeasured("create-session"):
         sql"""
-          INSERT INTO sso_sessions (id, client_id, user_id, user_agent, created_at, amr, expires_at)
+          INSERT INTO sso_sessions (id, client_id, user_id, user_agent, created_at, amr, expires_at, idle_expires_at)
           VALUES (
             $id,
             ${session.clientId},
@@ -40,22 +41,32 @@ class PostgresSessionRepository(xa: TransactorZIO) extends SessionRepository, Ba
             ${session.userAgent},
             ${session.createdAt},
             ${session.amr},
-            ${now.plusSeconds(ttl.toSeconds)}
+            ${now.plusSeconds(ttl.toSeconds)},
+            $idleExpiresAt
           )
         """.update.run()
       .unit
 
   override def find(id: MAC.Of[SessionId]): Task[Option[SessionRecord]] =
-    for
-      now <- Clock.instant
-      result <- xa.connectMeasured("find-session"):
+    Clock.instant.flatMap: now =>
+      xa.connectMeasured("find-session"):
         sql"""
-          SELECT user_id, client_id, user_agent, created_at, amr, expires_at
+          SELECT user_id, client_id, user_agent, created_at, amr
           FROM sso_sessions
           WHERE id = $id
-        """.query[(SessionRecord, Instant)].run().headOption
-          .collect { case (record, expiresAt) if expiresAt.isAfter(now) => record }
-    yield result
+            AND expires_at > $now
+            AND (idle_expires_at IS NULL OR idle_expires_at > $now)
+        """.query[SessionRecord].run().headOption
+
+  override def prolongIdle(id: MAC.Of[SessionId], idleTtl: zio.Duration): Task[Unit] =
+    Clock.instant.flatMap: now =>
+      xa.connectMeasured("prolong-idle"):
+        sql"""
+          UPDATE sso_sessions
+          SET idle_expires_at = ${now.plusSeconds(idleTtl.toSeconds)}
+          WHERE id = $id AND idle_expires_at IS NOT NULL
+        """.update.run()
+      .unit
 
   override def findByUserId(
       userId: UserId,
@@ -69,6 +80,7 @@ class PostgresSessionRepository(xa: TransactorZIO) extends SessionRepository, Ba
         WHERE
           user_id = $userId
           AND expires_at > $now
+          AND (idle_expires_at IS NULL OR idle_expires_at > $now)
         ORDER BY created_at DESC
       """.query[SessionRecord].run().toList
     yield result

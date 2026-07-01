@@ -1,8 +1,7 @@
 package versola.user
 
-import versola.auth.model.TenantId
 import versola.oauth.challenge.passkey.PasskeyRepository
-import versola.oauth.client.model.TenantId as ThrottleTenantId
+import versola.oauth.client.model.TenantId
 import versola.oauth.conversation.limit.ChallengeThrottleRepository
 import versola.oauth.session.SessionRepository
 import versola.oauth.session.model.SessionId
@@ -137,7 +136,7 @@ object UserController extends Controller:
         _ <- authorizeInternal(request)
         throttleRepo <- ZIO.service[ChallengeThrottleRepository]
         body <- request.body.asJsonFromCodec[ResetUserLimitsPayload]
-        tenantId = ThrottleTenantId(body.tenantId)
+        tenantId = body.tenantId
         subjects = (List(body.userId.toString) ++ body.email.map(_.toString) ++ body.phone.map(_.toString)).distinct
         _ <- ZIO.foreachDiscard(subjects)(throttleRepo.deleteAllForSubject(tenantId, _))
       yield Response.status(Status.NoContent)

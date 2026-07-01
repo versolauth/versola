@@ -6,10 +6,12 @@ import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm, JWSHeader}
 import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 import versola.auth.model.DeviceId
 import versola.oauth.conversation.model.AuthId
+import versola.oauth.jwks.JwksService
 import versola.oauth.model.AccessToken
 import versola.user.model.UserId
-import versola.util.{CoreConfig, Email, EnvName, Secret}
+import versola.util.{CoreConfig, Email, EnvName, JWT, Secret}
 import zio.json.ast.Json
+import zio.{UIO, ZIO}
 
 import java.security.KeyPairGenerator
 import java.security.interfaces.{RSAPrivateKey, RSAPublicKey}
@@ -53,46 +55,30 @@ object TestEnvConfig:
 
   val jwtConfig = CoreConfig.JwtConfig(
     privateKey = privateKey,
-    publicKeys = versola.util.JWT.PublicKeys.fromJson(jwksJson),
     issuer = "https://versolauth.com",
   )
+
+  val publicKeys: JWT.PublicKeys = JWT.PublicKeys.fromJson(jwksJson)
+
+  val jwksService: JwksService = new JwksService:
+    override def getPublicKeys: UIO[JWT.PublicKeys] = ZIO.succeed(publicKeys)
 
 
   val coreConfig = CoreConfig(
     security = CoreConfig.Security(
-      accessTokens = CoreConfig.Security.AccessTokens(
-        pepper = Secret.Bytes32(Array.fill(32)(0.toByte)),
-      ),
-      clientSecrets = CoreConfig.Security.ClientSecrets(
-        Secret.Bytes16(Array.fill(16)(0.toByte)),
-      ),
-      refreshTokens = CoreConfig.Security.RefreshTokens(
-        pepper = Secret.Bytes32(Array.fill(32)(0.toByte)),
-        ttl = 90.days,
-      ),
-      authConversation = CoreConfig.Security.AuthConversation(
-        ttl = 15.minutes,
-      ),
-      authCodes = CoreConfig.Security.AuthorizationCodes(
-        Secret.Bytes32(Array.fill(32)(0.toByte)),
-      ),
-      sessions = CoreConfig.Security.Sessions(
-        Secret.Bytes32(Array.fill(32)(0.toByte)),
-      ),
-      ssoSession = CoreConfig.Security.SsoSession(
-        ttl = 30.days,
-      ),
-      passwords = CoreConfig.Security.Passwords(
-        pepper = Secret.Bytes16(Array.fill(16)(0.toByte)),
-        historySize = 12,
-        numDifferent = 4
-      ),
+      accessTokensSecret = Secret.Bytes32(Array.fill(32)(0.toByte)),
+      clientSecretsSecret = Secret.Bytes16(Array.fill(16)(0.toByte)),
+      refreshTokensSecret = Secret.Bytes32(Array.fill(32)(0.toByte)),
+      authCodesSecret = Secret.Bytes32(Array.fill(32)(0.toByte)),
+      sessionsSecret = Secret.Bytes32(Array.fill(32)(0.toByte)),
+      passwordsSecret = Secret.Bytes16(Array.fill(16)(0.toByte)),
     ),
     jwt = jwtConfig,
     central = CoreConfig.CentralSyncConfig(
       url = URL.empty,
       secretKey = SecretKeySpec(Array.fill(32)(0.toByte), "AES"),
     ),
+    bootstrap = None,
     otpProvider = Some(
       CoreConfig.OtpProvider(
         method = Method.POST,

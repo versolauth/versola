@@ -41,6 +41,9 @@ class PostgresCacheSyncRepository(conn: PGConnection) extends CacheSyncRepositor
           case "edge_change" =>
             SyncEvent.EdgesUpdated
 
+          case "jwks_change" =>
+            SyncEvent.JwksUpdated
+
           case "client_change" =>
             parsePayload(notification.getParameter).fold[SyncEvent](SyncEvent.Unknown) { payload =>
               SyncEvent.ClientsUpdated(
@@ -127,6 +130,7 @@ object PostgresCacheSyncRepository:
   private val notificationChannels = List(
     "tenant_change",
     "edge_change",
+    "jwks_change",
     "client_change",
     "scope_change",
     "role_change",

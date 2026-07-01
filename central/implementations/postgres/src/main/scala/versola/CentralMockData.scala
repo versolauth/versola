@@ -369,8 +369,8 @@ object CentralMockData:
     ),
     (
       tenantId = defaultTenant,
-      id = RoleId("super-admin"),
-      description = localized("Super administrator with all permissions", "Суперадминистратор со всеми правами"),
+      id = RoleId("oauth-admin"),
+      description = localized("System Administrator (Super Admin)", "Системный администратор"),
       permissions = permissions(
         "users:read",
         "users:read:managed",
@@ -437,6 +437,11 @@ object CentralMockData:
         origins = List("http://localhost:3000", "http://localhost:9003"),
         userVerification = "preferred",
       ),
+      passwordHistorySize = 5,
+      passwordNumDifferent = 3,
+      authConversationTtlSeconds = 900,
+      sessionTtlSeconds = 86400,
+      sessionIdleTtlSeconds = None,
     ),
   )
 

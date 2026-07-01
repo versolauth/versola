@@ -424,7 +424,6 @@ case class SyncOAuthClientRecord(
 
 case class GetOAuthClientsSyncResponse(
     clients: Vector[SyncOAuthClientRecord],
-    pepper: String,
 ) derives JsonCodec, Schema
 
 case class PermissionSyncResponse(

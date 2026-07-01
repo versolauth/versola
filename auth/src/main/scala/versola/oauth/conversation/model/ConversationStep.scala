@@ -14,6 +14,7 @@ object ConversationStep:
       passkey: Boolean,
       passkeyRequest: Option[String] = None, // serialized assertion ceremony state, set by GET options
       passkeyFailed: Boolean = false, // set when a submitted assertion fails verification
+      loginFailed: Boolean = false, // set when login+password submission fails authentication
   ) extends ConversationStep(StepId.Credential)
 
   case class Otp(

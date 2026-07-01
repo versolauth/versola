@@ -67,7 +67,7 @@ object IntrospectionService:
     ): IO[Throwable | IntrospectionError, IntrospectionResponse] =
       for
         client <- authenticateClient(credentials)
-        tokenMac <- securityService.mac(Secret(token), config.security.refreshTokens.pepper)
+        tokenMac <- securityService.mac(Secret(token), config.security.refreshTokensSecret)
         tokenRecord <- tokenRepository.find(tokenMac)
 
         _ <- ZIO.fail(IntrospectionError.Unauthenticated)

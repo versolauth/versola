@@ -93,7 +93,12 @@ export interface ChallengeSettingsRecord {
   submissionLimits: SubmissionLimits;
   otpLength: number;
   otpResendAfter: number;
+  passwordHistorySize: number;
+  passwordNumDifferent: number;
   passkeySettings?: PasskeySettings | null;
+  authConversationTtlSeconds: number;
+  sessionTtlSeconds: number;
+  sessionIdleTtlSeconds?: number | null;
 }
 
 // A registered passkey credential for a user

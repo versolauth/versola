@@ -96,7 +96,6 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
       ),
       central = EdgeConfig.CentralConfig(
         url = URL.decode("https://central.example").toOption.get,
-        secretKey = SecretKeySpec(Array.fill(32)(2.toByte), "AES"),
       ),
       versolaUrl = URL.decode("https://idp.example").toOption.get,
     )

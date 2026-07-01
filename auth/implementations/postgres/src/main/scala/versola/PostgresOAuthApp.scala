@@ -11,22 +11,21 @@ import versola.oauth.conversation.otp.{EmailOtpProvider, SmsOtpProvider, OtpGene
 import versola.oauth.conversation.limit.{ChallengeThrottleRepository, PostgresChallengeThrottleRepository, SubmissionLimiter}
 import versola.oauth.conversation.{ConversationController, ConversationRenderService, ConversationRepository, ConversationRouter, ConversationService, PostgresConversationRepository}
 import versola.oauth.introspect.{IntrospectionController, IntrospectionService}
-import versola.oauth.jwks.JwksController
+import versola.oauth.client.CentralSyncTokenService
+import versola.oauth.jwks.{JwksController, JwksService, JwksSyncClient}
 import versola.oauth.revoke.{AccessTokenRevocationService, RevocationController, RevocationService}
 import versola.oauth.session.{PostgresRefreshTokenRepository, PostgresSessionRepository, RefreshTokenRepository, SessionRepository}
 import versola.oauth.token.{AuthorizationCodeRepository, OAuthTokenService, TokenEndpointController}
 import versola.oauth.userinfo.{UserInfoController, UserInfoService}
 import versola.user.{PostgresUserRepository, PostgresUserRolesRepository, UserController, UserRepository, UserRolesRepository}
 import versola.util.*
-import versola.util.JWT.PublicKeys
 import versola.util.http.VersolaApp
 import versola.util.postgres.{PostgresConfig, PostgresHikariDataSource}
 import zio.*
 import zio.config.magnolia.{DeriveConfig, deriveConfig}
 import zio.http.*
 import zio.http.Server.RequestStreaming
-import zio.json.ast
-import zio.json.ast.Json
+
 import zio.telemetry.opentelemetry.tracing.Tracing
 
 import java.security.PrivateKey
@@ -68,6 +67,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       SmsOtpProvider &
       EmailOtpProvider &
       UserInfoService &
+      JwksService &
       SubmissionLimiter &
       ChallengeThrottleRepository
 
@@ -102,6 +102,9 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       SecureRandom.live >+>
       SecurityService.live >+>
       OAuthConfigurationService.live(Schedule.spaced(1.minute)) >+>
+      CentralSyncTokenService.live >+>
+      JwksSyncClient.live >+>
+      JwksService.live(Schedule.spaced(1.minute)) >+>
       AuthPropertyGenerator.live >+>
       AccessTokenRevocationService.noop >+>
       OAuthTokenService.live >+>
@@ -114,6 +117,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       SmsOtpProvider.live >+>
       OtpService.live >+>
       PasswordService.live >+>
+      AuthBootstrapService.live >+>
       WebAuthnService.live >+>
       UserInfoService.live >+>
       AuthorizeEndpointService.live >+>
@@ -144,16 +148,6 @@ object PostgresOAuthApp extends VersolaApp("auth"):
     .mapOrFail: str =>
       PrivateKeyUtil.parse(str, "RSA")
         .left.map(ex => zio.Config.Error.InvalidData(message = ex.getMessage))
-
-  given DeriveConfig[ast.Json.Obj] = DeriveConfig[String]
-    .mapOrFail: str =>
-      ast.Json.decoder.decodeJson(str)
-        .flatMap:
-          case obj: ast.Json.Obj => Right(obj)
-          case _ => Left("Expected JSON object")
-        .left.map(msg => zio.Config.Error.InvalidData(message = msg))
-
-  given DeriveConfig[PublicKeys] = DeriveConfig[ast.Json.Obj].map(PublicKeys.fromJson)
 
   given DeriveConfig[EnvName] = DeriveConfig[String]
     .map:

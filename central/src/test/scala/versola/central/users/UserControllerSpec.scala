@@ -2,20 +2,63 @@ package versola.central.users
 
 import io.opentelemetry.api
 import org.scalamock.stubs.{Stub, ZIOStubs}
-import versola.util.Email
+import versola.central.configuration.jwks.JwksService
+import versola.central.{AdminClaims, TestCentralConfig}
+import versola.util.{Email, JWT}
 import versola.util.http.Observability
 import zio.*
 import zio.http.*
 import zio.json.*
+import zio.json.ast.Json
 import zio.telemetry.opentelemetry.OpenTelemetry
 import zio.telemetry.opentelemetry.tracing.Tracing
 import zio.test.*
 
+import java.security.KeyPairGenerator
+import java.security.interfaces.{RSAPrivateKey, RSAPublicKey}
 import java.util.UUID
 
 object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
   private val userId = UserId(UUID.fromString("00000000-0000-0000-0000-000000000001"))
   private val email  = Email("user@example.com")
+
+  // RSA key pair for signing admin access tokens in tests
+  private val rsaKeyPair =
+    val gen = KeyPairGenerator.getInstance("RSA")
+    gen.initialize(2048)
+    gen.generateKeyPair()
+  private val rsaPrivateKey = rsaKeyPair.getPrivate.asInstanceOf[RSAPrivateKey]
+  private val rsaPublicKey  = rsaKeyPair.getPublic.asInstanceOf[RSAPublicKey]
+  private val rsaKeyId      = "test-key-1"
+
+  private val testPublicKeys = JWT.PublicKeys(
+    com.nimbusds.jose.jwk.JWKSet(
+      new com.nimbusds.jose.jwk.RSAKey.Builder(rsaPublicKey)
+        .keyID(rsaKeyId)
+        .algorithm(com.nimbusds.jose.JWSAlgorithm.RS256)
+        .keyUse(com.nimbusds.jose.jwk.KeyUse.SIGNATURE)
+        .build()
+    )
+  )
+
+  private def adminToken(
+      clientId: String = "central-admin",
+      adminRoles: Map[String, List[String]] = Map.empty,
+  ): Task[String] =
+    JWT.serialize(
+      claims = JWT.Claims(
+        issuer = "auth",
+        subject = "admin-user",
+        audience = List("central"),
+        custom = Json.Obj(
+          "client_id"   -> Json.Str(clientId),
+          "admin_roles" -> adminRoles.toJsonAST.toOption.get,
+        ),
+      ),
+      ttl = 10.minutes,
+      signature = JWT.Signature.Asymmetric(JWT.Algorithm.RS256, rsaKeyId, rsaPrivateKey),
+      typ = JWT.Type.AccessToken,
+    )
 
   private val passkeyInfo = PasskeyInfo(
     id = "aQ",
@@ -56,9 +99,20 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
         client <- ZIO.service[Client]
         service = stub[UserService]
         tracing <- tracingLayer.build
+        jwksService = new JwksService:
+          override def getPublicKeys: UIO[JWT.PublicKeys] = ZIO.succeed(testPublicKeys)
+          override def getRaw: UIO[Json.Obj] = ZIO.dieMessage("getRaw unused in this test")
+          override def sync(): Task[Unit] = ZIO.unit
+          override def createKey(kid: String, jwk: zio.json.ast.Json.Obj): Task[Unit] = ZIO.dieMessage("createKey unused in this test")
+          override def updateKey(kid: String, jwk: zio.json.ast.Json.Obj): Task[Unit] = ZIO.dieMessage("updateKey unused in this test")
+          override def deleteKey(kid: String): Task[Unit] = ZIO.dieMessage("deleteKey unused in this test")
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
-            UserController.routes.provideEnvironment(ZEnvironment[UserService](service) ++ tracing)
+            UserController.routes.provideEnvironment(
+              ZEnvironment[UserService](service) ++
+                ZEnvironment[JwksService](jwksService) ++
+                tracing
+            )
           )
         )
         _ <- setup(service)
@@ -165,4 +219,98 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
           service.deletePasskey.calls == List((userId, "cred-1")),
         )),
     ),
+    test("getMyPermissions passes AdminClaims with correct clientId and adminRoles to service") {
+      val expectedResponse = MyPermissionsResponse(superAdmin = false, roles = Some(Set("operator")), permissions = Some(Set("users:read")))
+      for
+        client  <- ZIO.service[Client]
+        service =  stub[UserService]
+        tracing <- tracingLayer.build
+        jwks    =  new JwksService:
+          override def getPublicKeys: UIO[JWT.PublicKeys] = ZIO.succeed(testPublicKeys)
+          override def getRaw: UIO[Json.Obj] = ZIO.dieMessage("getRaw unused in this test")
+          override def sync(): Task[Unit] = ZIO.unit
+          override def createKey(kid: String, jwk: zio.json.ast.Json.Obj): Task[Unit] = ZIO.dieMessage("createKey unused in this test")
+          override def updateKey(kid: String, jwk: zio.json.ast.Json.Obj): Task[Unit] = ZIO.dieMessage("updateKey unused in this test")
+          override def deleteKey(kid: String): Task[Unit] = ZIO.dieMessage("deleteKey unused in this test")
+        _ <- TestClient.addRoutes(
+          Observability.handleErrors(
+            UserController.routes.provideEnvironment(
+              ZEnvironment[UserService](service) ++
+                ZEnvironment[JwksService](jwks) ++
+                tracing
+            )
+          )
+        )
+        _ <- service.getMyPermissions.succeedsWith(expectedResponse)
+        token   <- adminToken(clientId = "central-admin", adminRoles = Map("default" -> List("admin")))
+        response <- client.batched(
+          Request(method = Method.GET, url = URL.empty / "users" / "permissions" / "me")
+            .addHeader(Header.Authorization.Bearer(token))
+            .addHeader(Header.Accept(MediaType.application.json))
+        )
+      yield assertTrue(
+        response.status == Status.Ok,
+        service.getMyPermissions.calls.exists(c => c.clientId.contains("central-admin") && c.adminRoles.exists(_.contains("default"))),
+      )
+    }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging,
+    test("getMyPermissions returns 401 when no Authorization header") {
+      for
+        client  <- ZIO.service[Client]
+        service =  stub[UserService]
+        tracing <- tracingLayer.build
+        jwks    =  new JwksService:
+          override def getPublicKeys: UIO[JWT.PublicKeys] = ZIO.succeed(testPublicKeys)
+          override def getRaw: UIO[Json.Obj] = ZIO.dieMessage("getRaw unused in this test")
+          override def sync(): Task[Unit] = ZIO.unit
+          override def createKey(kid: String, jwk: zio.json.ast.Json.Obj): Task[Unit] = ZIO.dieMessage("createKey unused in this test")
+          override def updateKey(kid: String, jwk: zio.json.ast.Json.Obj): Task[Unit] = ZIO.dieMessage("updateKey unused in this test")
+          override def deleteKey(kid: String): Task[Unit] = ZIO.dieMessage("deleteKey unused in this test")
+        _ <- TestClient.addRoutes(
+          Observability.handleErrors(
+            UserController.routes.provideEnvironment(
+              ZEnvironment[UserService](service) ++
+                ZEnvironment[JwksService](jwks) ++
+                tracing
+            )
+          )
+        )
+        response <- client.batched(Request(method = Method.GET, url = URL.empty / "users" / "permissions" / "me"))
+      yield assertTrue(response.status == Status.Unauthorized)
+    }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging,
+    test("getMyPermissions delegates to service and returns JSON result") {
+      val expectedResponse = MyPermissionsResponse(superAdmin = false, roles = Some(Set("operator")), permissions = Some(Set("users:read")))
+      for
+        client  <- ZIO.service[Client]
+        service =  stub[UserService]
+        tracing <- tracingLayer.build
+        jwks    =  new JwksService:
+          override def getPublicKeys: UIO[JWT.PublicKeys] = ZIO.succeed(testPublicKeys)
+          override def getRaw: UIO[Json.Obj] = ZIO.dieMessage("getRaw unused in this test")
+          override def sync(): Task[Unit] = ZIO.unit
+          override def createKey(kid: String, jwk: zio.json.ast.Json.Obj): Task[Unit] = ZIO.dieMessage("createKey unused in this test")
+          override def updateKey(kid: String, jwk: zio.json.ast.Json.Obj): Task[Unit] = ZIO.dieMessage("updateKey unused in this test")
+          override def deleteKey(kid: String): Task[Unit] = ZIO.dieMessage("deleteKey unused in this test")
+        _ <- TestClient.addRoutes(
+          Observability.handleErrors(
+            UserController.routes.provideEnvironment(
+              ZEnvironment[UserService](service) ++
+                ZEnvironment[JwksService](jwks) ++
+                tracing
+            )
+          )
+        )
+        _ <- service.getMyPermissions.succeedsWith(expectedResponse)
+        token   <- adminToken(clientId = "central-admin", adminRoles = Map("default" -> List("operator")))
+        response <- client.batched(
+          Request(method = Method.GET, url = URL.empty / "users" / "permissions" / "me")
+            .addHeader(Header.Authorization.Bearer(token))
+            .addHeader(Header.Accept(MediaType.application.json))
+        )
+        body <- response.body.asJson[MyPermissionsResponse]
+      yield assertTrue(
+        response.status == Status.Ok,
+        service.getMyPermissions.calls.nonEmpty,
+        body == expectedResponse,
+      )
+    }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging,
   )

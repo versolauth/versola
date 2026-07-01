@@ -2,6 +2,7 @@ package versola.oauth.authorize
 
 import versola.auth.TestEnvConfig
 import versola.oauth.authorize.model.{AuthorizeRequest, AuthorizeResponse, Error, Prompt, ResponseTypeEntry}
+import versola.oauth.jwks.JwksService
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{AuthFactor, AuthFactorType, AuthFlow, AuthMethodRef, ClientId, OAuthClientRecord, PassedAuthFactor, PassedFactorRecord, PrimaryAuthFlow, PrimaryCredential, ScopeToken, TenantId}
 import versola.oauth.conversation.ConversationRepository
@@ -92,6 +93,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
     val authorizationCodeRepository = stub[AuthorizationCodeRepository]
     val userRepository = stub[UserRepository]
     val userInfoService = stub[UserInfoService]
+    val jwksService = TestEnvConfig.jwksService
     val service = AuthorizeEndpointService.Impl(
       conversationRepository,
       configurationService,
@@ -103,6 +105,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
       authorizationCodeRepository,
       userRepository,
       userInfoService,
+      jwksService,
     )
 
   val spec = suite("AuthorizeEndpointService")(
@@ -111,6 +114,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
       val uuid = UUID.randomUUID()
       for
         _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
+        _ <- env.configurationService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
         _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
         _ <- env.conversationRepository.create.succeedsWith(())
         result <- env.service.authorize(baseRequest)
@@ -133,6 +137,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
         _ <- env.securityService.mac.succeedsWith(sessionMac)
         _ <- env.sessionRepository.find.succeedsWith(Some(session))
+        _ <- env.configurationService.getSessionIdleTtl.succeedsWith(Option.empty[zio.Duration])
         _ <- env.authPropertyGenerator.nextAuthorizationCode.succeedsWith(code)
         _ <- env.authPropertyGenerator.nextAccessToken.succeedsWith(accessToken)
         _ <- env.securityService.mac.succeedsWith(codeMac)
@@ -159,6 +164,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
         _ <- env.securityService.mac.succeedsWith(sessionMac)
         _ <- env.sessionRepository.find.succeedsWith(Some(session))
+        _ <- env.configurationService.getSessionIdleTtl.succeedsWith(Option.empty[zio.Duration])
         _ <- env.authPropertyGenerator.nextAuthorizationCode.succeedsWith(code)
         _ <- env.authPropertyGenerator.nextAccessToken.succeedsWith(accessToken)
         _ <- env.securityService.mac.succeedsWith(codeMac)
@@ -179,6 +185,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         _ <- env.configurationService.find.succeedsWith(Some(clientWithEquivalents))
         _ <- env.securityService.mac.succeedsWith(sessionMac)
         _ <- env.sessionRepository.find.succeedsWith(Some(session))
+        _ <- env.configurationService.getSessionIdleTtl.succeedsWith(Option.empty[zio.Duration])
         _ <- env.authPropertyGenerator.nextAuthorizationCode.succeedsWith(code)
         _ <- env.authPropertyGenerator.nextAccessToken.succeedsWith(accessToken)
         _ <- env.securityService.mac.succeedsWith(codeMac)
@@ -192,6 +199,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
       val session = sessionWithAmr(Map(PassedAuthFactor.otp -> PassedFactorRecord(now, Set(AuthMethodRef.otp))))
       for
         _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
+        _ <- env.configurationService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
         _ <- env.securityService.mac.succeedsWith(sessionMac)
         _ <- env.sessionRepository.find.succeedsWith(Some(session))
         _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
@@ -221,6 +229,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
       val session = sessionWithAmr(passkeySeedAmr)
       for
         _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
+        _ <- env.configurationService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
         _ <- env.securityService.mac.succeedsWith(sessionMac)
         _ <- env.sessionRepository.find.succeedsWith(Some(session))
         _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)

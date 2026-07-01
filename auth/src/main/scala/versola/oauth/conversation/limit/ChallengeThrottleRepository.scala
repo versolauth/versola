@@ -31,6 +31,13 @@ trait ChallengeThrottleRepository:
       challengeTypes: List[ChallengeType],
   ): Task[List[ChallengeThrottleRecord]]
 
+  /** Loads the throttle records for multiple subjects for a single challenge type in a single query. */
+  def findAllBySubjects(
+      tenantId: TenantId,
+      subjects: List[String],
+      challengeType: ChallengeType,
+  ): Task[List[ChallengeThrottleRecord]]
+
   def upsert(record: ChallengeThrottleRecord): Task[Unit]
 
   def delete(

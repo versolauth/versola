@@ -6,7 +6,6 @@ import zio.Duration
 import zio.http.URL
 
 import java.security.PrivateKey
-import javax.crypto.SecretKey
 
 case class EdgeConfig(
     id: EdgeId,
@@ -30,12 +29,11 @@ object EdgeConfig:
     )
 
     case class EdgeSessions(
-        pepper: Secret.Bytes32,
+        secret: Secret.Bytes32,
         ttl: Duration,
     )
 
   case class CentralConfig(
       url: URL,
-      secretKey: SecretKey,
   )
 

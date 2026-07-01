@@ -2,7 +2,7 @@ import { LitElement, html, css } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
 import { buttonStyles, cardStyles, formStyles } from '../styles/components';
-import { Resource, Role, User, UserRoleAssignment, UserSearchField } from '../types';
+import { PasskeyInfo, Resource, Role, User, UserRoleAssignment, UserSearchField, UserSession } from '../types';
 import { getPermissions, getResources, getRoles } from '../utils/central-api';
 import { confirmDestructiveAction } from '../utils/confirm-dialog';
 import {

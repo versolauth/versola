@@ -16,6 +16,7 @@ import './users-list';
 import './forms-list';
 import './locales-list';
 import './challenges-list';
+import './jwks-list';
 
 
 @customElement('versola-admin')
@@ -107,7 +108,7 @@ export class VersolaAdmin extends LitElement {
     const expandClient = params.get('expandClient');
     const expandEdge = params.get('expandEdge');
 
-    if (urlView === 'clients' || urlView === 'scopes' || urlView === 'permissions' || urlView === 'resources' || urlView === 'roles' || urlView === 'tenants' || urlView === 'edges' || urlView === 'users' || urlView === 'forms' || urlView === 'locales' || urlView === 'challenges') {
+    if (urlView === 'clients' || urlView === 'scopes' || urlView === 'permissions' || urlView === 'resources' || urlView === 'roles' || urlView === 'tenants' || urlView === 'edges' || urlView === 'users' || urlView === 'forms' || urlView === 'locales' || urlView === 'challenges' || urlView === 'jwks') {
       this.currentView = urlView;
     }
 
@@ -172,6 +173,8 @@ export class VersolaAdmin extends LitElement {
         return html`<versola-locales-list></versola-locales-list>`;
       case 'challenges':
         return html`<versola-challenges-list .tenantId=${this.currentTenantId}></versola-challenges-list>`;
+      case 'jwks':
+        return html`<versola-jwks-list></versola-jwks-list>`;
       default:
         return html`<versola-clients-list .tenantId=${this.currentTenantId}></versola-clients-list>`;
     }

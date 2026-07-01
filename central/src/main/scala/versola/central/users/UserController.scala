@@ -1,6 +1,8 @@
 package versola.central.users
 
 import versola.central.configuration.tenants.TenantId
+import versola.central.authorizeAdmin
+import versola.central.configuration.jwks.JwksService
 import versola.util.http.Controller
 import versola.util.{Email, Phone}
 import zio.ZIO
@@ -9,10 +11,11 @@ import zio.json.EncoderOps
 import zio.telemetry.opentelemetry.tracing.Tracing
 
 object UserController extends Controller:
-  type Env = Tracing & UserService
+  type Env = Tracing & UserService & JwksService
 
   def routes: Routes[Env, Throwable] = Routes(
     findUsersEndpoint,
+    getMyPermissionsEndpoint,
     getUserRolesEndpoint,
     getUserSessionsEndpoint,
     createUserEndpoint,
@@ -25,6 +28,15 @@ object UserController extends Controller:
     renamePasskeyEndpoint,
     deletePasskeyEndpoint,
   )
+
+  val getMyPermissionsEndpoint =
+    Method.GET / "users" / "permissions" / "me" -> handler { (request: Request) =>
+      for
+        service <- ZIO.service[UserService]
+        claims  <- authorizeAdmin(request)
+        result  <- service.getMyPermissions(claims)
+      yield Response.json(result.toJson)
+    }
 
   val findUsersEndpoint =
     Method.GET / "users" -> handler { (request: Request) =>

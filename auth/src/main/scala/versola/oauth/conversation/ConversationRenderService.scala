@@ -4,6 +4,7 @@ import versola.oauth.authorize.AuthorizeRedirect
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{ClientId, FormRecord, PrimaryCredential}
 import versola.oauth.conversation.model.{ConversationRecord, ConversationStep}
+import versola.oauth.jwks.JwksService
 import versola.oauth.model.SessionCookie
 import versola.oauth.model.State
 import versola.util.{Base64Url, CoreConfig, JWT}
@@ -25,7 +26,7 @@ trait ConversationRenderService:
   ): Task[Response]
 
 object ConversationRenderService:
-  val live = ZLayer.fromFunction(Impl(_, _))
+  val live = ZLayer.fromFunction(Impl(_, _, _))
 
   @jsonDiscriminator("type")
   sealed trait StepView derives JsonCodec
@@ -70,6 +71,7 @@ object ConversationRenderService:
   class Impl(
       config: CoreConfig,
       configuration: OAuthConfigurationService,
+      jwksService: JwksService,
   ) extends ConversationRenderService:
     override def renderStep(record: ConversationRecord, ifNoneMatch: Option[String], errorKey: Option[String] = None): Task[Response] =
       for
@@ -118,22 +120,26 @@ object ConversationRenderService:
         case ConversationResult.Complete(redirectUri, state, code, sessionId, idTokenData) =>
           val encodedCode = Base64Url.encode(code)
           for
+            sessionTtl <- configuration.getSessionTtl(record.clientId)
             idToken <- idTokenData match
               case Some(data) =>
-                val cHash = JWT.leftHalfHash(encodedCode, config.jwt.publicKeys.active.algorithm)
-                val dataWithCHash = data.copy(claims = data.claims + ("c_hash" -> zio.json.ast.Json.Str(cHash)))
-                serializeIdToken(dataWithCHash).map(Some(_))
+                for
+                  signingKey <- jwksService.getPublicKeys.map(_.active)
+                  cHash = JWT.leftHalfHash(encodedCode, signingKey.algorithm)
+                  dataWithCHash = data.copy(claims = data.claims + ("c_hash" -> zio.json.ast.Json.Str(cHash)))
+                  token <- serializeIdToken(dataWithCHash, signingKey)
+                yield Some(token)
               case None => ZIO.none
             redirectUrl = AuthorizeRedirect.responseUrl(redirectUri, encodedCode, state, idToken)
           yield Response.seeOther(redirectUrl)
             .addCookie(
               SessionCookie(
                 value = sessionId,
-                ttl = config.security.ssoSession.ttl,
+                ttl = sessionTtl,
               ),
             )
 
-    private def serializeIdToken(data: ConversationResult.IdTokenData): Task[String] =
+    private def serializeIdToken(data: ConversationResult.IdTokenData, signingKey: JWT.PublicKey): Task[String] =
       JWT.serialize(
         typ = JWT.Type.JWT,
         claims = JWT.Claims(
@@ -144,8 +150,8 @@ object ConversationRenderService:
         ),
         ttl = 15.minutes,
         signature = JWT.Signature.Asymmetric(
-          algorithm = config.jwt.publicKeys.active.algorithm,
-          keyId = config.jwt.publicKeys.active.id,
+          algorithm = signingKey.algorithm,
+          keyId = signingKey.id,
           privateKey = config.jwt.privateKey,
         ),
       )
@@ -194,6 +200,7 @@ object ConversationRenderService:
       case s: ConversationStep.Password if s.rateLimitExceeded => Some("rate_limit_exceeded")
       case s: ConversationStep.Password if s.timesSubmitted > 0 => Some("password_wrong")
       case s: ConversationStep.Credential if s.passkeyFailed => Some("passkey_failed")
+      case s: ConversationStep.Credential if s.loginFailed => Some("login_failed")
       case s: ConversationStep.PasskeyEnroll if s.enrollFailed => Some("enroll_failed")
       case _ => None
 
@@ -226,7 +233,7 @@ object ConversationRenderService:
         state: Option[State],
     ): UIO[StepView] =
       step match
-        case ConversationStep.Credential(primaryCredentials, inlinePassword, passkey, _, _) =>
+        case ConversationStep.Credential(primaryCredentials, inlinePassword, passkey, _, _, _) =>
           for
             allowedPhonePrefixes <-
               if primaryCredentials.contains(PrimaryCredential.phone) then
