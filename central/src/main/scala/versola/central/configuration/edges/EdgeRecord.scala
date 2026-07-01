@@ -1,7 +1,11 @@
 package versola.central.configuration.edges
 
+import com.nimbusds.jose.jwk.RSAKey
 import versola.util.JWT
+import zio.json.EncoderOps
 import zio.json.ast.Json
+
+import java.security.interfaces.RSAPublicKey
 
 /**
  * Stored edge - infrastructure/deployment unit.
@@ -20,3 +24,6 @@ case class EdgeRecord(
   def asPublicKeys: JWT.PublicKeys =
     val keys = Json.Arr((publicKey +: oldPublicKey.toVector)*)
     JWT.PublicKeys.fromJson(Json.Obj("keys" -> keys))
+
+  def activeRsaPublicKey: RSAPublicKey =
+    RSAKey.parse(publicKey.toJson).toRSAPublicKey

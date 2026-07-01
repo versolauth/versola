@@ -107,6 +107,17 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
     step = passwordStep,
   )
 
+  val login = Login("testuser")
+  val credentialStep = ConversationStep.Credential(List(PrimaryCredential.phone), inlinePassword = false, passkey = false)
+  val loginUser = UserRecord(
+    userId,
+    Some(Email("user@example.com")),
+    None,
+    Some(login),
+    ast.Json.Obj("name" -> ast.Json.Str("Test User")),
+    None,
+  )
+
   val spec = suite("PasswordConversationService")(
     suite("prepareInitialPassword")(
       test("create password step when user exists and allowed") {
@@ -298,6 +309,95 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
           failureTimes == 2,
           failureSubjects == Set(userId.toString, email),
         )
+      },
+    ),
+    suite("checkLoginPassword")(
+      test("return IllegalState when step is not Credential") {
+        val env = Env()
+        for
+          result <- env.service.checkLoginPassword(authId, passwordRecord, login, password)
+        yield assertTrue(result == ConversationResult.IllegalState)
+      },
+      test("record failure against login and re-render loginFailed when user not found") {
+        val env = Env()
+        for
+          _ <- env.userRepository.findByLogin.succeedsWith(None)
+          _ <- env.submissionLimiter.recordLimit.succeedsWith(LimitStatus.Allowed)
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          result <- env.service.checkLoginPassword(authId, baseRecord, login, password)
+          recordedSubjects = env.submissionLimiter.recordLimit.calls.map(_._2).toSet
+        yield assertTrue(
+          result == ConversationResult.RenderStep(credentialStep.copy(loginFailed = true)),
+          recordedSubjects == Set(login),
+        )
+      },
+      test("return StepPassed and set user fields when password is correct") {
+        val env = Env()
+        for
+          _ <- env.userRepository.findByLogin.succeedsWith(Some(loginUser))
+          _ <- env.submissionLimiter.isBannedAny.succeedsWith(LimitStatus.Allowed)
+          _ <- env.passwordService.verifyPassword.succeedsWith(CheckPassword.Success)
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          result <- env.service.checkLoginPassword(authId, baseRecord, login, password)
+          overwriteCalls = env.conversationRepository.overwrite.calls
+        yield assertTrue(
+          result.isInstanceOf[ConversationResult.StepPassed],
+          overwriteCalls.head._2.userId.contains(userId),
+          overwriteCalls.head._2.userLogin.contains(login),
+          overwriteCalls.head._2.userClaims.contains(loginUser.claims),
+        )
+      },
+      test("deny access when either subject is banned, checking both subjects in one query") {
+        val env = Env()
+        for
+          _ <- env.userRepository.findByLogin.succeedsWith(Some(loginUser))
+          _ <- env.submissionLimiter.isBannedAny.succeedsWith(LimitStatus.Banned)
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          result <- env.service.checkLoginPassword(authId, baseRecord, login, password)
+          checkedSubjects = env.submissionLimiter.isBannedAny.calls.map(_._2).flatten.toSet
+          checkedTimes = env.submissionLimiter.isBannedAny.times
+        yield assertTrue(
+          result == ConversationResult.RenderStep(ConversationStep.AccessDenied),
+          checkedSubjects == Set(login, userId.toString),
+          checkedTimes == 1,
+        )
+      },
+      test("re-render loginFailed when rate limited") {
+        val env = Env()
+        for
+          _ <- env.userRepository.findByLogin.succeedsWith(Some(loginUser))
+          _ <- env.submissionLimiter.isBannedAny.succeedsWith(LimitStatus.RateLimited(30L))
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          result <- env.service.checkLoginPassword(authId, baseRecord, login, password)
+        yield assertTrue(result == ConversationResult.RenderStep(credentialStep.copy(loginFailed = true)))
+      },
+      test("record failure for both subjects and re-render loginFailed on wrong password") {
+        val env = Env()
+        for
+          _ <- env.userRepository.findByLogin.succeedsWith(Some(loginUser))
+          _ <- env.submissionLimiter.isBannedAny.succeedsWith(LimitStatus.Allowed)
+          _ <- env.passwordService.verifyPassword.succeedsWith(CheckPassword.Failure)
+          _ <- env.submissionLimiter.recordLimitAll.succeedsWith(LimitStatus.Allowed)
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          result <- env.service.checkLoginPassword(authId, baseRecord, login, password)
+          recordedSubjects = env.submissionLimiter.recordLimitAll.calls.map(_._2).flatten.toSet
+          recordedTimes = env.submissionLimiter.recordLimitAll.times
+        yield assertTrue(
+          result == ConversationResult.RenderStep(credentialStep.copy(loginFailed = true)),
+          recordedSubjects == Set(login, userId.toString),
+          recordedTimes == 1,
+        )
+      },
+      test("deny access when recording the failure applies a ban") {
+        val env = Env()
+        for
+          _ <- env.userRepository.findByLogin.succeedsWith(Some(loginUser))
+          _ <- env.submissionLimiter.isBannedAny.succeedsWith(LimitStatus.Allowed)
+          _ <- env.passwordService.verifyPassword.succeedsWith(CheckPassword.Failure)
+          _ <- env.submissionLimiter.recordLimitAll.succeedsWith(LimitStatus.Banned)
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          result <- env.service.checkLoginPassword(authId, baseRecord, login, password)
+        yield assertTrue(result == ConversationResult.RenderStep(ConversationStep.AccessDenied))
       },
     ),
   )

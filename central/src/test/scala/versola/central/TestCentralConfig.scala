@@ -8,7 +8,7 @@ import javax.crypto.spec.SecretKeySpec
 
 object TestCentralConfig:
   val authConfig = CentralConfig.AuthConfig(
-    url = URL.decode("http://localhost:9001").toOption.get
+    url = URL.decode("http://localhost:9001").toOption.get,
   )
 
   val userOutboxConfig = CentralConfig.UserOutboxConfig(
@@ -20,8 +20,8 @@ object TestCentralConfig:
   )
 
   val config = CentralConfig(
-    initialize = false,
-    clientSecretsPepper = Secret(Array.fill(16)(5.toByte)),
+    bootstrap = None,
+    clientSecretsSecret = Secret(Array.fill(16)(5.toByte)),
     secretKey = SecretKeySpec(Array.fill(32)(7.toByte), "AES"),
     auth = authConfig,
     userOutbox = userOutboxConfig,

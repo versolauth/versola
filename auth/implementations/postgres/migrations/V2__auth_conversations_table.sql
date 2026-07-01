@@ -27,3 +27,6 @@ CREATE TABLE auth_conversations (
 CREATE INDEX auth_conversations_credential_idx
     ON auth_conversations (credential)
     WHERE credential IS NOT NULL;
+
+CREATE INDEX auth_conversations_expires_at_idx
+    ON auth_conversations (expires_at);

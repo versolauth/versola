@@ -5,6 +5,7 @@ import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm, JWSHeader}
 import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{AuthMethodRef, ScopeToken}
+import versola.oauth.jwks.JwksService
 import versola.oauth.model.{AccessToken, AuthorizationCode, CodeVerifier, RefreshToken}
 import versola.oauth.token.model.{ClientCredentialsRequest, CodeExchangeRequest, IssuedTokens, RefreshTokenRequest, TokenEndpointError, TokenErrorResponse, TokenRequest, TokenResponse}
 import versola.oauth.userinfo.UserInfoService
@@ -22,7 +23,7 @@ import java.time.Instant
 import java.util.Date
 
 object TokenEndpointController extends Controller:
-  type Env = Tracing & OAuthTokenService & OAuthConfigurationService & UserInfoService & CoreConfig
+  type Env = Tracing & OAuthTokenService & OAuthConfigurationService & UserInfoService & JwksService & CoreConfig
 
   def routes: Routes[Env, Throwable] = Routes(
     tokenEndpoint,
@@ -33,6 +34,7 @@ object TokenEndpointController extends Controller:
       (for
         oauthTokenService <- ZIO.service[OAuthTokenService]
         config <- ZIO.service[CoreConfig]
+        signingKey <- ZIO.serviceWithZIO[JwksService](_.getPublicKeys).map(_.active)
         tokenRequest <- parseRequest(request)
         credentials <- request.extractCredentials.orElseFail(TokenEndpointError.InvalidClient)
         issuedTokens <- tokenRequest match
@@ -42,7 +44,7 @@ object TokenEndpointController extends Controller:
             oauthTokenService.refreshAccessToken(refreshTokenRequest, credentials)
           case clientCredentialsRequest: ClientCredentialsRequest =>
             oauthTokenService.clientCredentials(clientCredentialsRequest, credentials)
-        response <- toTokenResponse(issuedTokens, config)
+        response <- toTokenResponse(issuedTokens, config, signingKey)
       yield Response.json(response.toJson))
         .catchAll {
           case error: TokenEndpointError =>
@@ -62,10 +64,18 @@ object TokenEndpointController extends Controller:
   private def toTokenResponse(
       tokens: IssuedTokens,
       config: CoreConfig,
+      signingKey: JWT.PublicKey,
   ): ZIO[UserInfoService, Throwable, TokenResponse] =
     import versola.oauth.userinfo.model.RequestedClaims.given
     for
       now <- Clock.instant
+
+      adminRolesClaim = tokens.adminRoles.filter(_.nonEmpty).map: roles =>
+        Json.Obj(
+          roles
+            .map((tenantId, roleIds) => tenantId -> Json.Arr(roleIds.map(Json.Str(_))*))
+            .toSeq*,
+        )
 
       customClaims = Map(
         "client_id" -> Json.Str(tokens.clientId),
@@ -73,7 +83,8 @@ object TokenEndpointController extends Controller:
         "jti" -> Json.Str(Base64Url.encode(tokens.accessToken)),
       ) ++
         tokens.requestedClaims.map(rc => "requested_claims" -> rc.toJsonAST.toOption.get) ++
-        Some("roles" -> Json.Arr(tokens.roles.map(Json.Str(_))*))
+        Some("roles" -> Json.Arr(tokens.roles.map(Json.Str(_))*)) ++
+        adminRolesClaim.map("admin_roles" -> _)
 
 
       // For client_credentials grant, use client_id as subject; otherwise use user_id
@@ -89,12 +100,12 @@ object TokenEndpointController extends Controller:
         ),
         ttl = tokens.accessTokenTtl,
         signature = JWT.Signature.Asymmetric(
-          algorithm = config.jwt.publicKeys.active.algorithm,
-          keyId = config.jwt.publicKeys.active.id,
+          algorithm = signingKey.algorithm,
+          keyId = signingKey.id,
           privateKey = config.jwt.privateKey,
         ),
       )
-      idToken <- generateIdToken(tokens, config)
+      idToken <- generateIdToken(tokens, config, signingKey)
     yield TokenResponse(
       accessToken = serializedAT,
       tokenType = "Bearer",
@@ -104,7 +115,7 @@ object TokenEndpointController extends Controller:
       idToken = idToken,
     )
 
-  private def generateIdToken(tokens: IssuedTokens, config: CoreConfig): ZIO[UserInfoService, Throwable, Option[String]] =
+  private def generateIdToken(tokens: IssuedTokens, config: CoreConfig, signingKey: JWT.PublicKey): ZIO[UserInfoService, Throwable, Option[String]] =
     (tokens.user, tokens.userId) match
       case (Some(user), Some(userId)) if tokens.scope.contains(ScopeToken.OpenId) =>
         for
@@ -128,8 +139,8 @@ object TokenEndpointController extends Controller:
             ),
             ttl = tokens.accessTokenTtl,
             signature = JWT.Signature.Asymmetric(
-              algorithm = config.jwt.publicKeys.active.algorithm,
-              keyId = config.jwt.publicKeys.active.id,
+              algorithm = signingKey.algorithm,
+              keyId = signingKey.id,
               privateKey = config.jwt.privateKey,
             ),
           )

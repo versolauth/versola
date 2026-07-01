@@ -78,6 +78,29 @@ trait ChallengeThrottleRepositorySpec extends DatabaseSpecBase[ChallengeThrottle
           found <- env.repository.findAll(tenantId, "missing@example.com", List(ChallengeType.OtpRequest, ChallengeType.OtpSubmit))
         yield assertTrue(found.isEmpty)
       },
+      test("findAllBySubjects returns records for all requested subjects for a single type") {
+        for
+          _ <- env.repository.upsert(record(ChallengeType.PasswordSubmit))
+          _ <- env.repository.upsert(record(ChallengeType.PasswordSubmit, subj = otherSubject))
+          _ <- env.repository.upsert(record(ChallengeType.OtpSubmit))
+          found <- env.repository.findAllBySubjects(tenantId, List(subject, otherSubject), ChallengeType.PasswordSubmit)
+        yield assertTrue(
+          found.map(_.subject).toSet == Set(subject, otherSubject),
+          found.forall(_.challengeType == ChallengeType.PasswordSubmit),
+        )
+      },
+      test("findAllBySubjects is scoped by tenant") {
+        for
+          _ <- env.repository.upsert(record(ChallengeType.PasswordSubmit))
+          _ <- env.repository.upsert(record(ChallengeType.PasswordSubmit, tenant = otherTenant))
+          found <- env.repository.findAllBySubjects(tenantId, List(subject), ChallengeType.PasswordSubmit)
+        yield assertTrue(found.length == 1, found.forall(_.tenantId == tenantId))
+      },
+      test("findAllBySubjects returns empty when nothing matches") {
+        for
+          found <- env.repository.findAllBySubjects(tenantId, List("missing@example.com"), ChallengeType.PasswordSubmit)
+        yield assertTrue(found.isEmpty)
+      },
       test("delete removes a single challenge type") {
         for
           _ <- env.repository.upsert(record(ChallengeType.OtpRequest))

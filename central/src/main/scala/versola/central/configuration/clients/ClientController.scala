@@ -4,7 +4,7 @@ import versola.central.{CentralConfig, authorizeInternal}
 import versola.central.configuration.*
 import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.tenants.TenantId
-import versola.util.http.Controller
+import versola.util.http.{Controller, Unauthorized}
 import versola.util.{Base64Url, Secret, SecurityService}
 import zio.*
 import zio.http.*
@@ -57,12 +57,26 @@ object ClientController extends Controller:
       for
         clientService <- ZIO.service[OAuthClientService]
         centralConfig <- ZIO.service[CentralConfig]
+        securityService <- ZIO.service[SecurityService]
+        edgeService <- ZIO.service[EdgeService]
         edgeId <- authorizeInternal(request)
+        clientSecretsKey = javax.crypto.spec.SecretKeySpec(centralConfig.clientSecretsSecret, "AES")
+        transportEncrypt <- edgeId match
+          case Some(id) =>
+            edgeService.find(id).someOrFail(Unauthorized).map { edge =>
+              (secret: Secret) =>
+                securityService.encryptRsa(secret, edge.activeRsaPublicKey).map(Base64Url.encode)
+            }
+          case None =>
+            ZIO.succeed: (secret: Secret) =>
+              securityService.encryptAes256(secret, centralConfig.secretKey).map(Base64Url.encode)
+        decryptAndEncrypt = (stored: Secret) =>
+          securityService.decryptAes256(stored, clientSecretsKey).flatMap(raw => transportEncrypt(Secret(raw)))
         clients <- clientService.getClientsForSync(edgeId)
         encryptedClients <- ZIO.foreach(clients) { client =>
           for
-            secret <- ZIO.foreach(client.secret)(encryptSecret)
-            previousSecret <- ZIO.foreach(client.previousSecret)(encryptSecret)
+            secret <- ZIO.foreach(client.secret)(decryptAndEncrypt)
+            previousSecret <- ZIO.foreach(client.previousSecret)(decryptAndEncrypt)
           yield SyncOAuthClientRecord(
             id = client.id,
             tenantId = client.tenantId,
@@ -80,8 +94,7 @@ object ClientController extends Controller:
             otpTemplateId = client.otpTemplateId,
           )
         }
-        encryptedPepper <- encryptSecret(centralConfig.clientSecretsPepper)
-      yield Response.json(GetOAuthClientsSyncResponse(clients = encryptedClients, pepper = encryptedPepper).toJson)
+      yield Response.json(GetOAuthClientsSyncResponse(clients = encryptedClients).toJson)
     }
 
 
@@ -139,9 +152,3 @@ object ClientController extends Controller:
       yield Response.status(Status.NoContent)
     }
 
-  private def encryptSecret(secret: Secret): ZIO[CentralConfig & SecurityService, Throwable, String] =
-    for
-      config <- ZIO.service[CentralConfig]
-      securityService <- ZIO.service[SecurityService]
-      encrypted <- securityService.encryptAes256(secret, config.secretKey)
-    yield Base64Url.encode(encrypted)

@@ -19,7 +19,7 @@ object EdgeController extends Controller:
   )
 
   val loginEndpoint =
-    Method.POST / "login" -> handler { (request: Request) =>
+    Method.GET / "login" -> handler { (request: Request) =>
       for
         edgeService <- ZIO.service[EdgeService]
 

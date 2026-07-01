@@ -30,15 +30,20 @@ class PostgresChallengeSettingsRepository(xa: TransactorZIO) extends ChallengeSe
   override def upsert(record: ChallengeSettingsRecord): Task[Unit] =
     xa.connectMeasured("upsert-challenge-settings"):
       sql"""
-        INSERT INTO challenge_settings (tenant_id, allowed_prefixes, password_regex, submission_limits, otp_length, otp_resend_after, passkey_settings)
-        VALUES (${record.tenantId}, ${record.allowedPrefixes}, ${record.passwordRegex}, ${record.submissionLimits}, ${record.otpLength}, ${record.otpResendAfter}, ${record.passkeySettings})
+        INSERT INTO challenge_settings (tenant_id, allowed_prefixes, password_regex, submission_limits, otp_length, otp_resend_after, passkey_settings, password_history_size, password_num_different, auth_conversation_ttl_seconds, session_ttl_seconds, session_idle_ttl_seconds)
+        VALUES (${record.tenantId}, ${record.allowedPrefixes}, ${record.passwordRegex}, ${record.submissionLimits}, ${record.otpLength}, ${record.otpResendAfter}, ${record.passkeySettings}, ${record.passwordHistorySize}, ${record.passwordNumDifferent}, ${record.authConversationTtlSeconds}, ${record.sessionTtlSeconds}, ${record.sessionIdleTtlSeconds})
         ON CONFLICT (tenant_id) DO UPDATE SET
           allowed_prefixes = EXCLUDED.allowed_prefixes,
           password_regex = EXCLUDED.password_regex,
           submission_limits = EXCLUDED.submission_limits,
           otp_length = EXCLUDED.otp_length,
           otp_resend_after = EXCLUDED.otp_resend_after,
-          passkey_settings = EXCLUDED.passkey_settings
+          passkey_settings = EXCLUDED.passkey_settings,
+          password_history_size = EXCLUDED.password_history_size,
+          password_num_different = EXCLUDED.password_num_different,
+          auth_conversation_ttl_seconds = EXCLUDED.auth_conversation_ttl_seconds,
+          session_ttl_seconds = EXCLUDED.session_ttl_seconds,
+          session_idle_ttl_seconds = EXCLUDED.session_idle_ttl_seconds
       """.update.run()
     .unit
 

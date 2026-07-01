@@ -21,6 +21,7 @@ case class IssuedTokens(
     nonce: Option[Nonce],
     user: Option[UserRecord],
     roles: List[String], // role IDs for user tokens; empty for client_credentials
+    adminRoles: Option[Map[String, List[String]]], // tenant ID -> role IDs for admin console; None unless issued for the admin console
     amr: Set[AuthMethodRef],
     authTime: Option[Instant], // None for client_credentials grant
 )

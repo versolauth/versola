@@ -36,7 +36,7 @@ object OAuthClientSyncClientSpec extends ZIOSpecDefault:
       theme: String,
       otpTemplateId: String,
   ) derives JsonCodec
-  private case class EncodedClientsWithPepper(clients: Vector[EncodedClient], pepper: String) derives JsonCodec
+  private case class EncodedClientsSyncResponse(clients: Vector[EncodedClient]) derives JsonCodec
 
   private val tokenLayer: ZLayer[Client, Throwable, CentralSyncTokenService] = ZLayer.fromZIO(
     for
@@ -55,6 +55,8 @@ object OAuthClientSyncClientSpec extends ZIOSpecDefault:
   private val securityLayer = ZLayer.succeed(new SecurityService:
     override def encryptAes256(data: Array[Byte], key: javax.crypto.SecretKey) = ZIO.succeed(data)
     override def decryptAes256(data: Array[Byte], key: javax.crypto.SecretKey) = ZIO.succeed(data)
+    override def encryptRsa(data: Array[Byte], key: java.security.PublicKey) = ZIO.dieMessage("Unused in test")
+    override def decryptRsa(data: Array[Byte], key: java.security.PrivateKey) = ZIO.dieMessage("Unused in test")
     override def mac(secret: Secret, key: Array[Byte]) = ZIO.dieMessage("Unused in test")
     override def hashPassword(password: Secret, salt: versola.util.Salt, pepper: Secret.Bytes16) = ZIO.dieMessage("Unused in test")
     override def generateRsaKeyPair = ZIO.dieMessage("Unused in test")
@@ -64,14 +66,13 @@ object OAuthClientSyncClientSpec extends ZIOSpecDefault:
     test("fetch synced clients with bearer token and map decrypted secrets") {
       val currentSecret = Secret.fromString("current-secret")
       val previousSecret = Secret.fromString("previous-secret")
-      val pepper = Secret.fromString("pepper-123")
       for
         seen <- Ref.make(Option.empty[Request])
         _ <- TestClient.addRoutes(
           Handler.fromFunctionZIO[Request] { request =>
             seen.set(Some(request)).as(
               Response.json(
-                EncodedClientsWithPepper(
+                EncodedClientsSyncResponse(
                   Vector(
                     EncodedClient(
                       ClientId("web-app"),
@@ -88,7 +89,6 @@ object OAuthClientSyncClientSpec extends ZIOSpecDefault:
                       "default",
                     )
                   ),
-                  Base64Url.encode(pepper),
                 ).toJson
               )
             )
@@ -100,15 +100,14 @@ object OAuthClientSyncClientSpec extends ZIOSpecDefault:
         token <- ZIO.fromOption(request.header(Header.Authorization).collect { case Header.Authorization.Bearer(v) => v.stringValue })
           .orElseFail(new RuntimeException("Missing bearer token"))
         claims <- JWT.deserialize[SignedClaims](token, secretKey).mapError(e => new RuntimeException(e.toString))
-        client = result.clients(ClientId("web-app"))
+        client = result(ClientId("web-app"))
       yield assertTrue(
         request.method == Method.GET,
         request.url.encode.contains("configuration/clients/sync"),
         claims.iss == "auth",
         claims.sub == "internal-auth",
         claims.aud == List("central"),
-        result.pepper.sameElements(pepper),
-        result.clients.size == 1,
+        result.size == 1,
         client.scope == Set(ScopeToken.OpenId, ScopeToken("profile")),
         client.externalAudience == List(ClientId("api")),
         client.secret.exists(_.sameElements(currentSecret)),

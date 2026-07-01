@@ -1,5 +1,6 @@
 package versola.oauth.revoke
 
+import versola.oauth.jwks.JwksService
 import versola.oauth.model.{AccessTokenPayload, RefreshToken}
 import versola.oauth.revoke.model.{RevocationError, RevocationErrorResponse}
 import versola.util.http.{Controller, extractCredentials}
@@ -14,7 +15,7 @@ import zio.telemetry.opentelemetry.tracing.Tracing
  * RFC 7009: https://datatracker.ietf.org/doc/html/rfc7009
  */
 object RevocationController extends Controller:
-  type Env = Tracing & RevocationService & CoreConfig
+  type Env = Tracing & RevocationService & JwksService & CoreConfig
 
   def routes: Routes[Env, Throwable] = Routes(
     revokeEndpoint,
@@ -25,6 +26,7 @@ object RevocationController extends Controller:
       (for
         revocationService <- ZIO.service[RevocationService]
         config <- ZIO.service[CoreConfig]
+        publicKeys <- ZIO.serviceWithZIO[JwksService](_.getPublicKeys)
         credentials <- request.extractCredentials.orElseFail(RevocationError.InvalidClient)
         form <- request.body.asURLEncodedForm.orElseFail(RevocationError.InvalidClient)
 
@@ -33,7 +35,7 @@ object RevocationController extends Controller:
 
         _ <- token match
           case Right(accessToken) =>
-            JWT.deserialize[AccessTokenPayload](accessToken, config.jwt.publicKeys, JWT.Type.AccessToken)
+            JWT.deserialize[AccessTokenPayload](accessToken, publicKeys, JWT.Type.AccessToken)
               .flatMap(revocationService.revokeAccessToken(_, credentials))
               .catchSome {
                 case _: RevocationError => ZIO.unit

@@ -93,7 +93,11 @@ object SSOClient:
 
       for
         response <- ZIO.scoped(httpClient.request(request))
-        tokenResponse <- response.bodyAs[TokenResponse]
+        tokenResponse <-
+          if response.status.isSuccess then response.bodyAs[TokenResponse]
+          else
+            response.bodyAs[ErrorResponse].flatMap: error =>
+              ZIO.fail(new RuntimeException(s"Authorization code exchange failed: ${response.status.code} ${error.error}${error.errorDescription.fold("")(d => s" - $d")}"))
       yield tokenResponse
 
     override def exchangeRefreshToken(

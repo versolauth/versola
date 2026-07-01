@@ -226,6 +226,22 @@ export class VersolaClientsList extends LitElement {
         font-size: 0.875rem;
       }
 
+      .client-link {
+        background: none;
+        border: none;
+        padding: 0;
+        font-family: var(--font-mono);
+        font-size: 0.8125rem;
+        color: var(--accent);
+        cursor: pointer;
+        text-align: left;
+        word-break: break-all;
+      }
+
+      .client-link:hover {
+        text-decoration: underline;
+      }
+
       .uri-list, .scope-list, .permission-list {
         display: flex;
         flex-direction: column;

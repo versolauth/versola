@@ -126,7 +126,15 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
     )
 
   private val securityLayer: ULayer[SecurityService] =
-    SecureRandom.live >>> SecurityService.live
+    ZLayer.succeed(new SecurityService:
+      override def encryptAes256(data: Array[Byte], key: javax.crypto.SecretKey) = ZIO.succeed(data)
+      override def decryptAes256(data: Array[Byte], key: javax.crypto.SecretKey) = ZIO.succeed(data)
+      override def encryptRsa(data: Array[Byte], key: java.security.PublicKey) = ZIO.dieMessage("Unused in test")
+      override def decryptRsa(data: Array[Byte], key: java.security.PrivateKey) = ZIO.dieMessage("Unused in test")
+      override def mac(secret: versola.util.Secret, key: Array[Byte]) = ZIO.dieMessage("Unused in test")
+      override def hashPassword(password: versola.util.Secret, salt: versola.util.Salt, pepper: versola.util.Secret.Bytes16) = ZIO.dieMessage("Unused in test")
+      override def generateRsaKeyPair = ZIO.dieMessage("Unused in test")
+    )
 
   private def controllerTestCase(
       description: String,
@@ -267,10 +275,8 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
         for
           payload <- response.body.asJson[GetOAuthClientsSyncResponse]
           decryptedClients <- ZIO.foreach(payload.clients)(decryptSyncedClient(_, securityService))
-          decryptedPepper <- securityService.decryptAes256(Base64.urlDecode(payload.pepper), secretKey)
         yield assertTrue(
           service.getClientsForSync.calls == List(None),
-          decryptedPepper.sameElements(config.clientSecretsPepper),
           decryptedClients == Vector(
             DecryptedSyncOAuthClientRecord(
               id = clientId.toString,

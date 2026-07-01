@@ -20,11 +20,10 @@ object ReloadingCache:
       values <- source.getAll
         .tapErrorCause(err => ZIO.logErrorCause(s"Couldn't initialize cache ${Tag[A].tag}", err))
       ref <- Ref.make(values)
-      _ <- source.getAll
+      refresh = source.getAll
         .foldZIO(
           error => ZIO.logErrorCause(Cause.fail(error)),
           data => ref.set(data),
         )
-        .repeat(schedule)
-        .forkScoped
+      _ <- (ZIO.sleep(5.minutes) *> refresh.repeat(schedule)).forkScoped
     yield ref

@@ -48,6 +48,18 @@ class PostgresChallengeThrottleRepository(xa: TransactorZIO) extends ChallengeTh
         .query[ChallengeThrottleRecord].run()
         .toList
 
+  override def findAllBySubjects(
+      tenantId: TenantId,
+      subjects: List[String],
+      challengeType: ChallengeType,
+  ): Task[List[ChallengeThrottleRecord]] =
+    xa.connect:
+      sql"""SELECT tenant_id, subject, challenge_type, attempts, banned_until, expires_at
+            FROM challenge_throttle
+            WHERE tenant_id = $tenantId AND subject = ANY($subjects) AND challenge_type = $challengeType"""
+        .query[ChallengeThrottleRecord].run()
+        .toList
+
   override def upsert(record: ChallengeThrottleRecord): Task[Unit] =
     ZIO.succeed(UUID.randomUUID()).flatMap: id =>
       xa.connectMeasured("upsert-challenge-throttle"):

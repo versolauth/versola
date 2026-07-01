@@ -1,7 +1,6 @@
 package versola.central.configuration.forms
 
 import org.scalamock.stubs.ZIOStubs
-import versola.central.TestCentralConfig
 import versola.central.configuration.locales.{LocaleRecord, LocaleService}
 import versola.util.ReloadingCache
 import zio.*
@@ -11,9 +10,8 @@ object FormServiceSpec extends ZIOSpecDefault, ZIOStubs:
   class Env(initialForms: Vector[FormRecord] = Vector.empty):
     val cache         = ReloadingCache(Unsafe.unsafe(unsafe ?=> Ref.unsafe.make(initialForms)))
     val repository    = stub[FormRepository]
-    val config        = TestCentralConfig.config
     val localeService = stub[LocaleService]
-    val service       = FormService.Impl(cache, repository, config, localeService)
+    val service       = FormService.Impl(cache, repository, localeService)
 
   def spec = suite("FormService")(
     test("updateForm delegates to repository upsertForm and refreshes cache") {
