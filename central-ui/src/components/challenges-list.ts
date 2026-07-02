@@ -69,12 +69,14 @@ export class VersolaChallengesList extends LitElement {
     otpRequest: [],
     otpSubmit: [],
     passwordSubmit: [],
+    passkeyAssertion: [],
     banDurationSeconds: 0,
   };
   @state() private editSubmissionLimits: SubmissionLimits = {
     otpRequest: [],
     otpSubmit: [],
     passwordSubmit: [],
+    passkeyAssertion: [],
     banDurationSeconds: 0,
   };
 
@@ -384,7 +386,7 @@ export class VersolaChallengesList extends LitElement {
       } else {
         this.phonePrefixes = [];
         this.passwordRegex = '';
-        this.submissionLimits = { otpRequest: [], otpSubmit: [], passwordSubmit: [], banDurationSeconds: 0 };
+        this.submissionLimits = { otpRequest: [], otpSubmit: [], passwordSubmit: [], passkeyAssertion: [], banDurationSeconds: 0 };
         this.otpLength = 6;
         this.otpResendAfter = 60;
         this.passwordHistorySize = 5;
@@ -557,12 +559,12 @@ export class VersolaChallengesList extends LitElement {
     this.editPasskeyOrigins = this.editPasskeyOrigins.filter((_, i) => i !== index);
   }
 
-  private addRateLimit(type: 'otpRequest' | 'otpSubmit' | 'passwordSubmit') {
+  private addRateLimit(type: 'otpRequest' | 'otpSubmit' | 'passwordSubmit' | 'passkeyAssertion') {
     this.editSubmissionLimits[type] = [...this.editSubmissionLimits[type], { maxAttempts: 5, windowSeconds: 60 }];
     this.requestUpdate();
   }
 
-  private removeRateLimit(type: 'otpRequest' | 'otpSubmit' | 'passwordSubmit', index: number) {
+  private removeRateLimit(type: 'otpRequest' | 'otpSubmit' | 'passwordSubmit' | 'passkeyAssertion', index: number) {
     this.editSubmissionLimits[type] = this.editSubmissionLimits[type].filter((_, i) => i !== index);
     this.requestUpdate();
   }
@@ -772,8 +774,8 @@ export class VersolaChallengesList extends LitElement {
   }
 
   private renderChallengeSettingsContent() {
-    const { otpRequest, otpSubmit, passwordSubmit, banDurationSeconds } = this.submissionLimits;
-    const hasLimits = otpRequest.length > 0 || otpSubmit.length > 0 || passwordSubmit.length > 0;
+    const { otpRequest, otpSubmit, passwordSubmit, passkeyAssertion, banDurationSeconds } = this.submissionLimits;
+    const hasLimits = otpRequest.length > 0 || otpSubmit.length > 0 || passwordSubmit.length > 0 || passkeyAssertion.length > 0;
 
     return html`
       <div>
@@ -862,6 +864,7 @@ export class VersolaChallengesList extends LitElement {
               ${this.renderLimitGroup('OTP Request', otpRequest)}
               ${this.renderLimitGroup('OTP Submit', otpSubmit)}
               ${this.renderLimitGroup('Password Submit', passwordSubmit)}
+              ${this.renderLimitGroup('Passkey Assertion', passkeyAssertion)}
             </div>
           </div>
         ` : html`
@@ -1017,6 +1020,7 @@ export class VersolaChallengesList extends LitElement {
         ${this.renderEditLimitList('OTP Request', 'otpRequest')}
         ${this.renderEditLimitList('OTP Submit', 'otpSubmit')}
         ${this.renderEditLimitList('Password Submit', 'passwordSubmit')}
+        ${this.renderEditLimitList('Passkey Assertion', 'passkeyAssertion')}
 
         <div class="form-actions">
           <button class="btn btn-secondary" ?disabled=${this.isSavingSettings} @click=${() => this.cancelEditSettings()}>Cancel</button>
@@ -1029,7 +1033,7 @@ export class VersolaChallengesList extends LitElement {
     `;
   }
 
-  private renderEditLimitList(label: string, type: 'otpRequest' | 'otpSubmit' | 'passwordSubmit') {
+  private renderEditLimitList(label: string, type: 'otpRequest' | 'otpSubmit' | 'passwordSubmit' | 'passkeyAssertion') {
     const limits = this.editSubmissionLimits[type];
     return html`
       <div class="form-group" style="margin-top: var(--spacing-lg);">

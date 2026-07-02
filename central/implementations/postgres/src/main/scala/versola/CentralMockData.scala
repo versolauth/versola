@@ -425,6 +425,13 @@ object CentralMockData:
           RateLimit(maxAttempts = 5, windowSeconds = 900),
           RateLimit(maxAttempts = 10, windowSeconds = 3600),
         ),
+        // Passkey assertion: cryptographically brute-force resistant, so failures usually mean a
+        // malfunctioning authenticator or abuse. 5 per 5 min absorbs legitimate retries;
+        // 10 per hour triggers a 30-min ban to stop sustained probing.
+        passkeyAssertion = List(
+          RateLimit(maxAttempts = 5, windowSeconds = 300),
+          RateLimit(maxAttempts = 10, windowSeconds = 3600),
+        ),
         // 30 minutes — aligns with OWASP recommended minimum lockout of 10 min
         // and common banking practice of 15–30 min temporary bans.
         banDurationSeconds = 1800,

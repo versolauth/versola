@@ -6,7 +6,7 @@ import versola.oauth.challenge.passkey.{AssertionOutcome, PasskeyCeremony, Passk
 import versola.oauth.challenge.password.PasswordService
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{AuthFlow, ClientId, PasskeyAuthFlow, PasskeySettings, PrimaryCredential, ScopeToken}
-import versola.oauth.conversation.limit.{SubmissionLimiter}
+import versola.oauth.conversation.limit.{ChallengeType, LimitStatus, SubmissionLimiter}
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
 import versola.oauth.conversation.otp.OtpService
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod}
@@ -106,6 +106,9 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
     amr = Map.empty,
   )
 
+  // A minimal assertion response carrying a credential id, used as the throttle subject.
+  val assertionResponse = """{"id":"cred-123"}"""
+
   def spec = suite("PasskeyConversationServiceSpec")(
     suite("startPasskeyAssertion")(
       test("return publicKeyOptions and update step with request") {
@@ -122,12 +125,14 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
       }
     ),
     suite("finishPasskeyAssertion")(
-      test("succeed and move to enrollment check") {
+      test("succeed and move to enrollment check, resetting the throttle counter") {
         val env = Env()
         val recordWithRequest = baseRecord.copy(step = credentialStep.copy(passkeyRequest = Some("req-state")))
         val outcome = AssertionOutcome(userId, CredentialId.fromString("id"), 1L)
         val user = UserRecord.empty(userId)
         for
+          _ <- env.submissionLimiter.isBanned.succeedsWith(LimitStatus.Allowed)
+          _ <- env.submissionLimiter.reset.succeedsWith(())
           _ <- env.configService.getPasskeySettings.succeedsWith(Some(passkeySettings))
           _ <- env.webAuthnService.finishAssertion.succeedsWith(outcome)
           _ <- env.userRepository.find.succeedsWith(Some(user))
@@ -135,31 +140,39 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
           _ <- env.passkeyRepository.listByUser.succeedsWith(Vector.empty)
           _ <- env.webAuthnService.startRegistration.succeedsWith(PasskeyCeremony("reg-req", "{}"))
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
-          result <- env.service.finishPasskeyAssertion(authId, recordWithRequest, "response-json")
+          result <- env.service.finishPasskeyAssertion(authId, recordWithRequest, assertionResponse)
+          resetTimes = env.submissionLimiter.reset.times
         yield assertTrue(
-          result == ConversationResult.RenderStep(ConversationStep.PasskeyEnroll("reg-req", "{}"))
+          result == ConversationResult.RenderStep(ConversationStep.PasskeyEnroll("reg-req", "{}")),
+          resetTimes == 1,
         )
       },
-      test("re-render credential step on assertion failure") {
+      test("re-render credential step on assertion failure and record the attempt") {
         val env = Env()
         val recordWithRequest = baseRecord.copy(step = credentialStep.copy(passkeyRequest = Some("req-state")))
         for
+          _ <- env.submissionLimiter.isBanned.succeedsWith(LimitStatus.Allowed)
+          _ <- env.submissionLimiter.recordLimit.succeedsWith(LimitStatus.Allowed)
           _ <- env.configService.getPasskeySettings.succeedsWith(Some(passkeySettings))
           _ <- env.webAuthnService.finishAssertion.failsWith(versola.oauth.challenge.passkey.WebAuthnError.CeremonyFailed("fail"))
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
-          result <- env.service.finishPasskeyAssertion(authId, recordWithRequest, "response-json")
+          result <- env.service.finishPasskeyAssertion(authId, recordWithRequest, assertionResponse)
+          recordLimitTimes = env.submissionLimiter.recordLimit.times
         yield assertTrue(
-          result == ConversationResult.RenderStep(credentialStep.copy(passkeyRequest = None, passkeyFailed = true))
+          result == ConversationResult.RenderStep(credentialStep.copy(passkeyRequest = None, passkeyFailed = true)),
+          recordLimitTimes == 1,
         )
       },
       test("re-render credential step on clone detection") {
         val env = Env()
         val recordWithRequest = baseRecord.copy(step = credentialStep.copy(passkeyRequest = Some("req-state")))
         for
+          _ <- env.submissionLimiter.isBanned.succeedsWith(LimitStatus.Allowed)
+          _ <- env.submissionLimiter.recordLimit.succeedsWith(LimitStatus.Allowed)
           _ <- env.configService.getPasskeySettings.succeedsWith(Some(passkeySettings))
           _ <- env.webAuthnService.finishAssertion.failsWith(versola.oauth.challenge.passkey.WebAuthnError.AssertionFailed)
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
-          result <- env.service.finishPasskeyAssertion(authId, recordWithRequest, "response-json")
+          result <- env.service.finishPasskeyAssertion(authId, recordWithRequest, assertionResponse)
         yield assertTrue(
           result == ConversationResult.RenderStep(credentialStep.copy(passkeyRequest = None, passkeyFailed = true))
         )
@@ -168,12 +181,60 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
         val env = Env()
         val recordWithRequest = baseRecord.copy(step = credentialStep.copy(passkeyRequest = Some("req-state")))
         for
+          _ <- env.submissionLimiter.isBanned.succeedsWith(LimitStatus.Allowed)
+          _ <- env.submissionLimiter.recordLimit.succeedsWith(LimitStatus.Allowed)
           _ <- env.configService.getPasskeySettings.succeedsWith(Some(passkeySettings))
           _ <- env.webAuthnService.finishAssertion.failsWith(versola.oauth.challenge.passkey.WebAuthnError.CredentialNotFound)
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
-          result <- env.service.finishPasskeyAssertion(authId, recordWithRequest, "response-json")
+          result <- env.service.finishPasskeyAssertion(authId, recordWithRequest, assertionResponse)
         yield assertTrue(
           result == ConversationResult.RenderStep(credentialStep.copy(passkeyRequest = None, passkeyFailed = true))
+        )
+      },
+      test("return AccessDenied immediately when the subject is already banned") {
+        val env = Env()
+        val recordWithRequest = baseRecord.copy(step = credentialStep.copy(passkeyRequest = Some("req-state")))
+        for
+          _ <- env.submissionLimiter.isBanned.succeedsWith(LimitStatus.Banned)
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          result <- env.service.finishPasskeyAssertion(authId, recordWithRequest, assertionResponse)
+        yield assertTrue(
+          result == ConversationResult.RenderStep(ConversationStep.AccessDenied),
+          env.webAuthnService.finishAssertion.calls.isEmpty,
+        )
+      },
+      test("return AccessDenied immediately when the subject is rate-limited") {
+        val env = Env()
+        val recordWithRequest = baseRecord.copy(step = credentialStep.copy(passkeyRequest = Some("req-state")))
+        for
+          _ <- env.submissionLimiter.isBanned.succeedsWith(LimitStatus.RateLimited(30L))
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          result <- env.service.finishPasskeyAssertion(authId, recordWithRequest, assertionResponse)
+        yield assertTrue(
+          result == ConversationResult.RenderStep(ConversationStep.AccessDenied),
+          env.webAuthnService.finishAssertion.calls.isEmpty,
+        )
+      },
+      test("return IllegalState without throttling when the response has no credential id") {
+        val env = Env()
+        val recordWithRequest = baseRecord.copy(step = credentialStep.copy(passkeyRequest = Some("req-state")))
+        for
+          result <- env.service.finishPasskeyAssertion(authId, recordWithRequest, """{"foo":"bar"}""")
+        yield assertTrue(
+          result == ConversationResult.IllegalState,
+          env.submissionLimiter.isBanned.calls.isEmpty,
+          env.webAuthnService.finishAssertion.calls.isEmpty,
+        )
+      },
+      test("return IllegalState without throttling when the credential id is empty") {
+        val env = Env()
+        val recordWithRequest = baseRecord.copy(step = credentialStep.copy(passkeyRequest = Some("req-state")))
+        for
+          result <- env.service.finishPasskeyAssertion(authId, recordWithRequest, """{"id":""}""")
+        yield assertTrue(
+          result == ConversationResult.IllegalState,
+          env.submissionLimiter.isBanned.calls.isEmpty,
+          env.webAuthnService.finishAssertion.calls.isEmpty,
         )
       },
       test("return IllegalState when passkey login is not enabled for the client") {

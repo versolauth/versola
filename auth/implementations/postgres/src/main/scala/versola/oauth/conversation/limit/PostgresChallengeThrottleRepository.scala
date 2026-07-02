@@ -48,7 +48,7 @@ class PostgresChallengeThrottleRepository(xa: TransactorZIO) extends ChallengeTh
         .query[ChallengeThrottleRecord].run()
         .toList
 
-  override def findAllBySubjects(
+  override def findAllForSubjects(
       tenantId: TenantId,
       subjects: List[String],
       challengeType: ChallengeType,

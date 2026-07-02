@@ -7,7 +7,7 @@ import versola.oauth.challenge.password.PasswordService
 import versola.oauth.challenge.password.model.CheckPassword
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{AuthFlow, ClientId, PrimaryCredential, ScopeToken}
-import versola.oauth.conversation.limit.{ChallengeType, LimitStatus, SubmissionLimiter}
+import versola.oauth.conversation.limit.{LimitStatus, SubmissionLimiter}
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
 import versola.oauth.conversation.otp.OtpService
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod}
@@ -17,7 +17,6 @@ import versola.oauth.userinfo.UserInfoService
 import versola.user.UserRepository
 import versola.user.model.{Login, UserId, UserRecord}
 import versola.util.{AuthPropertyGenerator, Email, Phone, SecurityService, UnitSpecBase}
-import zio.ZIO
 import zio.http.URL
 import zio.json.ast
 import zio.test.*
@@ -129,7 +128,7 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
         val user = UserRecord(userId, Some(userEmail), Some(userPhone), Some(userLogin), userClaims, None)
         for
           _ <- env.userRepository.findByCredential.succeedsWith(Some(user))
-          _ <- env.submissionLimiter.isBanned.succeedsWith(LimitStatus.Allowed)
+          _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.Allowed)
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
           result <- env.service.prepareInitialPassword(authId, baseRecord, Left(email), factorIndex = 0)
           overwriteCalls = env.conversationRepository.overwrite.calls
@@ -145,7 +144,7 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
         val env = Env()
         for
           _ <- env.userRepository.findByCredential.succeedsWith(Some(UserRecord.empty(userId)))
-          _ <- env.submissionLimiter.isBanned.succeedsWith(LimitStatus.Banned)
+          _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.Banned)
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
           result <- env.service.prepareInitialPassword(authId, baseRecord, Left(email), factorIndex = 0)
         yield assertTrue(result == ConversationResult.RenderStep(ConversationStep.AccessDenied))
@@ -154,7 +153,7 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
         val env = Env()
         for
           _ <- env.userRepository.findByCredential.succeedsWith(Some(UserRecord.empty(userId)))
-          _ <- env.submissionLimiter.isBanned.succeedsWith(LimitStatus.RateLimited(30L))
+          _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.RateLimited(30L))
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
           result <- env.service.prepareInitialPassword(authId, baseRecord, Left(email), factorIndex = 0)
         yield assertTrue(result == ConversationResult.RenderStep(ConversationStep.AccessDenied))
@@ -171,15 +170,13 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
         val env = Env()
         for
           _ <- env.userRepository.findByCredential.succeedsWith(Some(UserRecord.empty(userId)))
-          _ <- env.submissionLimiter.isBanned.returnsZIO:
-            case (_, subject, _) if subject == email => ZIO.succeed(LimitStatus.Banned)
-            case _ => ZIO.succeed(LimitStatus.Allowed)
+          _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.Banned)
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
           result <- env.service.prepareInitialPassword(authId, baseRecord, Left(email), factorIndex = 0)
-          checkedSubjects = env.submissionLimiter.isBanned.calls.map(_._2).toSet
+          checkedSubjects = env.submissionLimiter.statusForSubjects.calls.head._2.toSet
         yield assertTrue(
           result == ConversationResult.RenderStep(ConversationStep.AccessDenied),
-          checkedSubjects == Set(userId.toString, email),
+          checkedSubjects == Set(userId.toString, email.toString),
         )
       },
     ),
@@ -202,7 +199,7 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
       test("return AccessDenied when banned") {
         val env = Env()
         for
-          _ <- env.submissionLimiter.isBanned.succeedsWith(LimitStatus.Banned)
+          _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.Banned)
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
           result <- env.service.checkPassword(passwordRecord, passwordStep, password, authId)
         yield assertTrue(result == ConversationResult.RenderStep(ConversationStep.AccessDenied))
@@ -210,7 +207,7 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
       test("re-render step with rate limit flag when rate limited") {
         val env = Env()
         for
-          _ <- env.submissionLimiter.isBanned.succeedsWith(LimitStatus.RateLimited(30L))
+          _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.RateLimited(30L))
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
           result <- env.service.checkPassword(passwordRecord, passwordStep, password, authId)
         yield assertTrue(result == ConversationResult.RenderStep(passwordStep.copy(rateLimitExceeded = true)))
@@ -218,7 +215,7 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
       test("return StepPassed when password is correct") {
         val env = Env()
         for
-          _ <- env.submissionLimiter.isBanned.succeedsWith(LimitStatus.Allowed)
+          _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.Allowed)
           _ <- env.passwordService.verifyPassword.succeedsWith(CheckPassword.Success)
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
           result <- env.service.checkPassword(passwordRecord, passwordStep, password, authId)
@@ -227,7 +224,7 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
       test("re-render incremented step on failure when still allowed") {
         val env = Env()
         for
-          _ <- env.submissionLimiter.isBanned.succeedsWith(LimitStatus.Allowed)
+          _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.Allowed)
           _ <- env.passwordService.verifyPassword.succeedsWith(CheckPassword.Failure)
           _ <- env.submissionLimiter.recordLimit.succeedsWith(LimitStatus.Allowed)
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
@@ -241,7 +238,7 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
       test("re-render step with rate limit flag on failure when rate limited") {
         val env = Env()
         for
-          _ <- env.submissionLimiter.isBanned.succeedsWith(LimitStatus.Allowed)
+          _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.Allowed)
           _ <- env.passwordService.verifyPassword.succeedsWith(CheckPassword.Failure)
           _ <- env.submissionLimiter.recordLimit.succeedsWith(LimitStatus.RateLimited(30L))
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
@@ -255,7 +252,7 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
       test("return AccessDenied on failure when ban is applied") {
         val env = Env()
         for
-          _ <- env.submissionLimiter.isBanned.succeedsWith(LimitStatus.Allowed)
+          _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.Allowed)
           _ <- env.passwordService.verifyPassword.succeedsWith(CheckPassword.Failure)
           _ <- env.submissionLimiter.recordLimit.succeedsWith(LimitStatus.Banned)
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
@@ -266,7 +263,7 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
         val env = Env()
         val changedAt = Instant.parse("2024-01-01T00:00:00Z")
         for
-          _ <- env.submissionLimiter.isBanned.succeedsWith(LimitStatus.Allowed)
+          _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.Allowed)
           _ <- env.passwordService.verifyPassword.succeedsWith(CheckPassword.OldPassword(changedAt))
           _ <- env.submissionLimiter.recordLimit.succeedsWith(LimitStatus.Allowed)
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
@@ -284,21 +281,19 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
       test("deny access when only the credential subject is banned") {
         val env = Env()
         for
-          _ <- env.submissionLimiter.isBanned.returnsZIO:
-            case (_, subject, _) if subject == email => ZIO.succeed(LimitStatus.Banned)
-            case _ => ZIO.succeed(LimitStatus.Allowed)
+          _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.Banned)
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
           result <- env.service.checkPassword(passwordRecord, passwordStep, password, authId)
-          checkedSubjects = env.submissionLimiter.isBanned.calls.map(_._2).toSet
+          checkedSubjects = env.submissionLimiter.statusForSubjects.calls.head._2.toSet
         yield assertTrue(
           result == ConversationResult.RenderStep(ConversationStep.AccessDenied),
-          checkedSubjects == Set(userId.toString, email),
+          checkedSubjects == Set(userId.toString, email.toString),
         )
       },
       test("record failure for both user and credential subjects on failure") {
         val env = Env()
         for
-          _ <- env.submissionLimiter.isBanned.succeedsWith(LimitStatus.Allowed)
+          _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.Allowed)
           _ <- env.passwordService.verifyPassword.succeedsWith(CheckPassword.Failure)
           _ <- env.submissionLimiter.recordLimit.succeedsWith(LimitStatus.Allowed)
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
@@ -307,7 +302,7 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
           failureTimes = env.submissionLimiter.recordLimit.times
         yield assertTrue(
           failureTimes == 2,
-          failureSubjects == Set(userId.toString, email),
+          failureSubjects == Set(userId.toString, email.toString),
         )
       },
     ),

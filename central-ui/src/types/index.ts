@@ -74,6 +74,7 @@ export interface SubmissionLimits {
   otpRequest: RateLimit[];
   otpSubmit: RateLimit[];
   passwordSubmit: RateLimit[];
+  passkeyAssertion: RateLimit[];
   banDurationSeconds: number;
 }
 

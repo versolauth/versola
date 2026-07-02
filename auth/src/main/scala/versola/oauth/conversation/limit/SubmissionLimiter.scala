@@ -23,11 +23,19 @@ trait SubmissionLimiter:
     */
   def statusFor(clientId: ClientId, subject: String, challengeTypes: List[ChallengeType]): Task[LimitStatus]
 
+  /** Returns the worst limit status across multiple subjects for a single challenge type, using a
+    * single throttle lookup.
+    */
+  def statusForSubjects(clientId: ClientId, subjects: List[String], challengeType: ChallengeType): Task[LimitStatus]
+
   /** Records an attempt against the configured limits and returns the resulting limit status. */
   def recordLimit(clientId: ClientId, subject: String, challengeType: ChallengeType): Task[LimitStatus]
 
   /** Records an attempt for each subject in a single fetch + parallel upserts, and returns the worst status. */
   def recordLimitAll(clientId: ClientId, subjects: List[String], challengeType: ChallengeType): Task[LimitStatus]
+
+  /** Clears the throttle record for the subject, resetting any accumulated failure count. */
+  def reset(clientId: ClientId, subject: String, challengeType: ChallengeType): Task[Unit]
 
 object SubmissionLimiter:
   def live = ZLayer.fromFunction(Impl(_, _))
@@ -39,9 +47,10 @@ object SubmissionLimiter:
 
     private def windowLimits(limits: SubmissionLimits, ct: ChallengeType): List[RateLimit] =
       ct match
-        case ChallengeType.OtpRequest => limits.otpRequest
-        case ChallengeType.OtpSubmit => limits.otpSubmit
-        case ChallengeType.PasswordSubmit => limits.passwordSubmit
+        case ChallengeType.OtpRequest      => limits.otpRequest
+        case ChallengeType.OtpSubmit       => limits.otpSubmit
+        case ChallengeType.PasswordSubmit  => limits.passwordSubmit
+        case ChallengeType.PasskeyAssertion => limits.passkeyAssertion
 
     private def windowExceeded(attempts: List[Long], nowEpoch: Long, rl: RateLimit): Boolean =
       attempts.count(_ > nowEpoch - rl.windowSeconds) >= rl.maxAttempts
@@ -108,7 +117,7 @@ object SubmissionLimiter:
               case None => ZIO.succeed(LimitStatus.Allowed)
               case Some(client) =>
                 Clock.instant.flatMap: now =>
-                  throttleRepo.findAllBySubjects(client.tenantId, subjects, challengeType).map:
+                  throttleRepo.findAllForSubjects(client.tenantId, subjects, challengeType).map:
                     _.map(evaluate(_, wLimits, now)).foldLeft(LimitStatus.Allowed)(worstStatus)
       yield result
 
@@ -130,6 +139,30 @@ object SubmissionLimiter:
                   .map((ct, wLimits) => byType.get(ct).fold(LimitStatus.Allowed)(evaluate(_, wLimits, now)))
                   .foldLeft(LimitStatus.Allowed)(worstStatus)
       yield result
+
+    override def statusForSubjects(clientId: ClientId, subjects: List[String], challengeType: ChallengeType): Task[LimitStatus] =
+      for
+        limits <- configService.getSubmissionLimits(clientId)
+        wLimits = windowLimits(limits, challengeType)
+        result <-
+          if wLimits.isEmpty || subjects.isEmpty then ZIO.succeed(LimitStatus.Allowed)
+          else
+            configService.find(clientId).flatMap:
+              case None => ZIO.succeed(LimitStatus.Allowed)
+              case Some(client) =>
+                for
+                  records <- throttleRepo.findAllForSubjects(client.tenantId, subjects, challengeType)
+                  now <- Clock.instant
+                  bySubject = records.map(r => r.subject -> r).toMap
+                yield subjects
+                  .map(s => bySubject.get(s).fold(LimitStatus.Allowed)(evaluate(_, wLimits, now)))
+                  .foldLeft(LimitStatus.Allowed)(worstStatus)
+      yield result
+
+    override def reset(clientId: ClientId, subject: String, challengeType: ChallengeType): Task[Unit] =
+      configService.find(clientId).flatMap:
+        case None         => ZIO.unit
+        case Some(client) => throttleRepo.delete(client.tenantId, subject, challengeType)
 
     override def recordLimit(clientId: ClientId, subject: String, challengeType: ChallengeType): Task[LimitStatus] =
       configService.getSubmissionLimits(clientId).flatMap: limits =>
@@ -189,7 +222,7 @@ object SubmissionLimiter:
               Clock.instant.flatMap: now =>
                 val nowEpoch = now.getEpochSecond
                 val longestWindow = wLimits.map(_.windowSeconds).max
-                throttleRepo.findAllBySubjects(client.tenantId, subjects, challengeType).flatMap: existingRecords =>
+                throttleRepo.findAllForSubjects(client.tenantId, subjects, challengeType).flatMap: existingRecords =>
                   val bySubject = existingRecords.map(r => r.subject -> r).toMap
                   ZIO.collectAllPar(subjects.map: subject =>
                     val existing = bySubject.get(subject).fold[List[Long]](Nil)(_.attempts)
