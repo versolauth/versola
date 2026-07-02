@@ -92,16 +92,19 @@ trait ConversationService:
   /** Verify the authenticator's assertion response.
     * On success: updates the conversation with the resolved user and advances to enrollment-offer or finish.
     * On failure: clears the passkeyRequest and re-renders the Credential step.
+    *
+    * `ipAddress` is a server-controlled throttle subject (the client cannot influence it), used
+    * alongside the client-chosen credential id so random-id probing is still rate-limited.
     */
   def finishPasskeyAssertion(
-                              authId: AuthId,
-                              record: ConversationRecord,
-                              response: String,
-                              ipAddress: Option[String],
-                            ): Task[ConversationResult.Render]
+      authId: AuthId,
+      record: ConversationRecord,
+      response: String,
+      ipAddress: Option[String],
+  ): Task[ConversationResult.Render]
 
   /** After all primary auth factors pass: if the tenant has passkey settings and the user has no
-   * passkey yet, starts a registration ceremony and renders the PasskeyEnroll step.
+    * passkey yet, starts a registration ceremony and renders the PasskeyEnroll step.
     * Otherwise, finishes immediately.
     */
   def offerPasskeyEnroll(authId: AuthId, conversation: ConversationRecord): Task[ConversationResult.Render]
@@ -302,7 +305,7 @@ object ConversationService:
           case false => ConversationResult.IllegalState
 
     override def checkPassword(
-                                conversation: ConversationRecord,
+        conversation: ConversationRecord,
         passwordStep: ConversationStep.Password,
         submittedPassword: Password,
         authId: AuthId,
@@ -477,22 +480,30 @@ object ConversationService:
             case None =>
               ZIO.succeed(ConversationResult.IllegalState)
             case Some(request) =>
+              // The credential id is client-chosen and can be rotated to dodge throttling, so we
+              // also throttle a server-controlled IP subject. The credential subject still guards a
+              // specific registered credential against targeted brute force. When the IP is unknown
+              // we throttle a shared "ip:unknown" bucket so probing without an IP is still limited.
+              val ipSubject = "ip:" + ipAddress.getOrElse("unknown")
+              val recordIp =
+                submissionLimiter.recordLimit(conversation.clientId, ipSubject, ChallengeType.PasskeyAssertion).unit
+              val resetIp =
+                submissionLimiter.reset(conversation.clientId, ipSubject, ChallengeType.PasskeyAssertion)
               response.fromJson[Json.Obj].toOption
                 .flatMap(_.get("id").flatMap(_.asString))
                 .filter(_.nonEmpty) match
                 case None =>
-                  ZIO.succeed(ConversationResult.IllegalState)
+                  // Malformed payload (no usable credential id): still a failed attempt. Throttle the
+                  // IP subject and clear the stale request so the client cannot spam unthrottled and
+                  // isn't stuck reusing request state.
+                  submissionLimiter.statusForSubjects(conversation.clientId, List(ipSubject), ChallengeType.PasskeyAssertion).flatMap:
+                    case LimitStatus.Banned | LimitStatus.RateLimited(_) =>
+                      accessDenied(authId, conversation)
+                    case LimitStatus.Allowed =>
+                      recordIp *>
+                        renderStep(authId, conversation, cred.copy(passkeyRequest = None, passkeyFailed = true))
                 case Some(credSubject) =>
-                  // The credential id is client-chosen and can be rotated to dodge throttling, so we
-                  // also throttle a server-controlled IP subject. The credential subject still guards a
-                  // specific registered credential against targeted brute force. When the IP is unknown
-                  // we throttle a shared "ip:unknown" bucket so probing without an IP is still limited.
-                  val ipSubject = "ip:" + ipAddress.getOrElse("unknown")
                   val banSubjects = List(ipSubject, credSubject)
-                  val recordIp =
-                    submissionLimiter.recordLimit(conversation.clientId, ipSubject, ChallengeType.PasskeyAssertion).unit
-                  val resetIp =
-                    submissionLimiter.reset(conversation.clientId, ipSubject, ChallengeType.PasskeyAssertion)
                   submissionLimiter.statusForSubjects(conversation.clientId, banSubjects, ChallengeType.PasskeyAssertion).flatMap:
                     case LimitStatus.Banned | LimitStatus.RateLimited(_) =>
                       accessDenied(authId, conversation)

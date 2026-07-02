@@ -231,25 +231,48 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
           env.webAuthnService.finishAssertion.calls.isEmpty,
         )
       },
-      test("return IllegalState without throttling when the response has no credential id") {
+      test("throttle the IP and clear the request when the response has no credential id") {
         val env = Env()
         val recordWithRequest = baseRecord.copy(step = credentialStep.copy(passkeyRequest = Some("req-state")))
         for
-          result <- env.service.finishPasskeyAssertion(authId, recordWithRequest, """{"foo":"bar"}""", None)
+          _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.Allowed)
+          _ <- env.submissionLimiter.recordLimit.succeedsWith(LimitStatus.Allowed)
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          result <- env.service.finishPasskeyAssertion(authId, recordWithRequest, """{"foo":"bar"}""", Some("1.2.3.4"))
+          banSubjects = env.submissionLimiter.statusForSubjects.calls.head._2
+          recordedSubjects = env.submissionLimiter.recordLimit.calls.map(_._2)
         yield assertTrue(
-          result == ConversationResult.IllegalState,
-          env.submissionLimiter.statusForSubjects.calls.isEmpty,
+          result == ConversationResult.RenderStep(credentialStep.copy(passkeyRequest = None, passkeyFailed = true)),
+          banSubjects == List("ip:1.2.3.4"),
+          recordedSubjects == List("ip:1.2.3.4"),
           env.webAuthnService.finishAssertion.calls.isEmpty,
         )
       },
-      test("return IllegalState without throttling when the credential id is empty") {
+      test("throttle the IP and clear the request when the credential id is empty") {
         val env = Env()
         val recordWithRequest = baseRecord.copy(step = credentialStep.copy(passkeyRequest = Some("req-state")))
         for
+          _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.Allowed)
+          _ <- env.submissionLimiter.recordLimit.succeedsWith(LimitStatus.Allowed)
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
           result <- env.service.finishPasskeyAssertion(authId, recordWithRequest, """{"id":""}""", None)
+          recordedSubjects = env.submissionLimiter.recordLimit.calls.map(_._2)
         yield assertTrue(
-          result == ConversationResult.IllegalState,
-          env.submissionLimiter.statusForSubjects.calls.isEmpty,
+          result == ConversationResult.RenderStep(credentialStep.copy(passkeyRequest = None, passkeyFailed = true)),
+          recordedSubjects == List("ip:unknown"),
+          env.webAuthnService.finishAssertion.calls.isEmpty,
+        )
+      },
+      test("deny access for a malformed payload when the IP subject is already banned") {
+        val env = Env()
+        val recordWithRequest = baseRecord.copy(step = credentialStep.copy(passkeyRequest = Some("req-state")))
+        for
+          _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.Banned)
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          result <- env.service.finishPasskeyAssertion(authId, recordWithRequest, """{"foo":"bar"}""", Some("1.2.3.4"))
+        yield assertTrue(
+          result == ConversationResult.RenderStep(ConversationStep.AccessDenied),
+          env.submissionLimiter.recordLimit.calls.isEmpty,
           env.webAuthnService.finishAssertion.calls.isEmpty,
         )
       },
