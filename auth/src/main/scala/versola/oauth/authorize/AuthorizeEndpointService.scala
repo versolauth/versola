@@ -23,7 +23,7 @@ trait AuthorizeEndpointService:
 
 object AuthorizeEndpointService:
   def live =
-    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _))
+    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _))
 
   class Impl(
       conversationRepository: ConversationRepository,
@@ -122,7 +122,7 @@ object AuthorizeEndpointService:
                   case Left(email) => EmailSubmission(email)
                   case Right(phone) => PhoneSubmission(phone)
                 conversationRouter.submit(authId, submission, uiLocale = None)
-                  .map(render => AuthorizeResponse.InitializeWithHint(authId, render, conversation))
+                  .map((render, conv) => AuthorizeResponse.InitializeWithHint(authId, render, conv))
 
     private def silentAuthorize(
         request: AuthorizeRequest,

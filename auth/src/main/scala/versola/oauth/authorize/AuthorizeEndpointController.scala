@@ -1,15 +1,13 @@
 package versola.oauth.authorize
 
-import versola.oauth.authorize.model.{AuthorizeRequest, AuthorizeResponse, Error, ResponseTypeEntry}
+import versola.oauth.authorize.model.{AuthorizeRequest, AuthorizeResponse, Error}
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.conversation.ConversationRenderService
-import versola.oauth.conversation.model.{ConversationRecord, ConversationStep}
-import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, ConversationCookie}
+import versola.oauth.model.ConversationCookie
 import versola.util.{Base64Url, CoreConfig}
 import versola.util.http.Controller
 import zio.*
 import zio.http.*
-import zio.prelude.NonEmptySet
 import zio.telemetry.opentelemetry.tracing.Tracing
 
 object AuthorizeEndpointController extends Controller:
@@ -66,9 +64,12 @@ object AuthorizeEndpointController extends Controller:
 
         case AuthorizeResponse.InitializeWithHint(authId, render, conversation) =>
           renderService.renderSubmit(render, conversation).map(
-            _.addCookie(ConversationCookie(
-              value = authId,
-              ttl = conversationConfig.security.authConversation.ttl,
-            ))
+            _.addCookie(
+              ConversationCookie.responseCookie(
+                ConversationCookie(authId, request.clientId),
+                authConversationTtl,
+                config.security.conversationCookieSecret,
+              ),
+            )
           )
     yield response
