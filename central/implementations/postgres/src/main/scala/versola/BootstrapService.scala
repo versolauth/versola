@@ -177,6 +177,7 @@ object BootstrapService:
       authConversationTtlSeconds = 900,
       sessionTtlSeconds = 86400,
       sessionIdleTtlSeconds = None,
+      ipHeader = "X-Real-IP",
     )
 
   /** Default theme seeded from the shared CSS resource. */

@@ -43,7 +43,7 @@ object ConversationController extends Controller:
           response <- formService.renderStep(record, ifNoneMatch.map(_.renderedValue))
         yield response
       ).catchAll {
-        case error: Error => ZIO.succeed(Response.badRequest)
+        case _: Error => ZIO.succeed(Response.badRequest)
         case ex: Throwable => ZIO.fail(ex)
       }
     }
@@ -77,7 +77,7 @@ object ConversationController extends Controller:
         options <- router.startPasskeyOptions(cookie.authId).someOrFail(Error.BadRequest)
       yield Response.json(options),
       ).catchAll {
-        case error: Error => ZIO.succeed(Response.badRequest)
+        case _: Error => ZIO.succeed(Response.badRequest)
         case ex: Throwable => ZIO.fail(ex)
       }
     }
@@ -102,7 +102,8 @@ object ConversationController extends Controller:
         body <- request.formAs[Body].orElseFail(Error.BadRequest)
         _ <- ZIO.fail(Error.BadRequest).unlessZIO(validate(cookie.clientId, body))
         uiLocale <- request.queryZIO[Option[String]]("ui_locale")
-        (result, record) <- router.submit(cookie.authId, body, uiLocale)
+        ipHeader <- ZIO.serviceWithZIO[OAuthConfigurationService](_.getIpHeader(cookie.clientId))
+        (result, record) <- router.submit(cookie.authId, body, uiLocale, extractIp(request, ipHeader))
         response <- conversationRenderService.renderSubmit(result, record)
       yield response)
         .catchAll {
@@ -140,6 +141,13 @@ object ConversationController extends Controller:
           ZIO.fromEither(ConversationCookie.parse(cookie.content, secret).left.map(_ => Error.BadRequest))
         case None =>
           ZIO.fail(Error.BadRequest)
+
+  /** Extracts the client IP from the header configured in submission limits. Returns None when no
+    * header is configured, causing IP-based throttling to be skipped entirely. For multi-value
+    * headers such as X-Forwarded-For only the first (leftmost) value is used.
+    */
+  private def extractIp(request: Request, ipHeader: String): Option[String] =
+    request.headers.get(ipHeader).map(_.split(',').head.trim).filter(_.nonEmpty)
 
   given FormDecoder[PhoneSubmission] = (form: Form) =>
     FormDecoder.single[Phone](form, "phone", Phone.parse)

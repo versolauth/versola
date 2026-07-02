@@ -24,4 +24,5 @@ case class ChallengeSettingsRecord(
     authConversationTtlSeconds: Int,
     sessionTtlSeconds: Int,
     sessionIdleTtlSeconds: Option[Int],
+    ipHeader: String,
 ) derives Schema, JsonCodec
