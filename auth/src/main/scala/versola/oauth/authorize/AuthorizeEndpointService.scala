@@ -3,8 +3,8 @@ package versola.oauth.authorize
 import versola.oauth.authorize.model.{AuthorizeRequest, AuthorizeResponse, Error, Prompt, ResponseTypeEntry}
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{AuthFlow, AuthMethodRef, PassedAuthFactor, PassedFactorRecord, ScopeToken}
-import versola.oauth.conversation.{ConversationRepository, ConversationRouter, EmailSubmission, PhoneSubmission}
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
+import versola.oauth.conversation.{ConversationRepository, ConversationRouter, EmailSubmission, PhoneSubmission}
 import versola.oauth.jwks.JwksService
 import versola.oauth.model.{AuthorizationCode, AuthorizationCodeRecord}
 import versola.oauth.session.SessionRepository
@@ -136,7 +136,7 @@ object AuthorizeEndpointService:
           request.scope.contains(ScopeToken.OpenId)
       for
         idleTtl <- ZIO.unless(request.scope.contains(ScopeToken.OfflineAccess))(
-          configurationService.getSessionIdleTtl(request.clientId)
+          configurationService.getSessionIdleTtl(request.clientId),
         )
         _ <- ZIO.foreachDiscard(idleTtl.flatten)(sessionRepository.prolongIdle(sessionMac, _))
         code <- authPropertyGenerator.nextAuthorizationCode

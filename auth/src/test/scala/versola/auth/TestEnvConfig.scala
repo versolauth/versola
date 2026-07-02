@@ -10,6 +10,8 @@ import versola.oauth.jwks.JwksService
 import versola.oauth.model.AccessToken
 import versola.user.model.UserId
 import versola.util.{CoreConfig, Email, EnvName, JWT, Secret}
+import zio.durationInt
+import zio.http.{Method, URL}
 import zio.json.ast.Json
 import zio.{UIO, ZIO}
 
@@ -18,8 +20,6 @@ import java.security.interfaces.{RSAPrivateKey, RSAPublicKey}
 import java.time.Instant
 import java.util.{Date, UUID}
 import javax.crypto.spec.SecretKeySpec
-import zio.durationInt
-import zio.http.{Method, URL}
 
 object TestEnvConfig:
 
@@ -63,7 +63,6 @@ object TestEnvConfig:
   val jwksService: JwksService = new JwksService:
     override def getPublicKeys: UIO[JWT.PublicKeys] = ZIO.succeed(publicKeys)
 
-
   val coreConfig = CoreConfig(
     security = CoreConfig.Security(
       accessTokensSecret = Secret.Bytes32(Array.fill(32)(0.toByte)),
@@ -87,7 +86,7 @@ object TestEnvConfig:
         username = None,
         password = None,
         body = Map.empty,
-      )
+      ),
     ),
     smtp = Some(
       CoreConfig.SmtpConfig(
@@ -98,6 +97,6 @@ object TestEnvConfig:
         from = Email("test@versola.com"),
         subject = "Test OTP",
         startTls = true,
-      )
+      ),
     ),
   )

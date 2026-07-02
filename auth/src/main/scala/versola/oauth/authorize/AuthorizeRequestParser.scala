@@ -3,8 +3,8 @@ package versola.oauth.authorize
 import versola.oauth.authorize.model.{AuthorizeRequest, Error, Prompt, ResponseTypeEntry}
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{ClientId, OAuthClientRecord, PrimaryCredential, ScopeToken}
-import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, Nonce, State}
 import versola.oauth.model.SessionCookie
+import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, Nonce, State}
 import versola.oauth.session.model.SessionId
 import versola.oauth.userinfo.model.RequestedClaims
 import versola.util.{Base64, Email, Phone}
@@ -127,7 +127,7 @@ object AuthorizeRequestParser:
                 case None =>
                   Phone.parse(raw).toOption match
                     case Some(phone) => parsePhoneHint(phone, client, clientId, redirectUri, state)
-                    case None        => ZIO.fail(Error.LoginHintInvalid(redirectUri, state))
+                    case None => ZIO.fail(Error.LoginHintInvalid(redirectUri, state))
           }
 
         userAgent =

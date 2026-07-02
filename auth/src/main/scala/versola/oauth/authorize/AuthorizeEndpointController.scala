@@ -4,8 +4,8 @@ import versola.oauth.authorize.model.{AuthorizeRequest, AuthorizeResponse, Error
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.conversation.ConversationRenderService
 import versola.oauth.model.ConversationCookie
-import versola.util.{Base64Url, CoreConfig}
 import versola.util.http.Controller
+import versola.util.{Base64Url, CoreConfig}
 import zio.*
 import zio.http.*
 import zio.telemetry.opentelemetry.tracing.Tracing
@@ -70,6 +70,6 @@ object AuthorizeEndpointController extends Controller:
                 authConversationTtl,
                 config.security.conversationCookieSecret,
               ),
-            )
+            ),
           )
     yield response
