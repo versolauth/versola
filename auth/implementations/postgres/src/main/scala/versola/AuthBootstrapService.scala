@@ -50,7 +50,7 @@ object AuthBootstrapService:
               yield adminUserId
           _ <- userRolesRepo.updateRoles(
             userId = userId,
-            tenantId = TenantId.global,
+            tenantId = TenantId.default,
             add = Set(RoleId("oauth-admin")),
             remove = Set.empty,
           )

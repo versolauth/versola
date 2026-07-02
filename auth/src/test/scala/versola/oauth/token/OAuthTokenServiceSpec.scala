@@ -289,7 +289,8 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
 
           result <- env.service.exchangeAuthorizationCode(request, credentials)
         yield assertTrue(
-          result.adminRoles.isEmpty,
+          result.tenantId.contains("default"),
+          result.roles.isEmpty,
           env.userRolesRepo.findRolesByUser.calls.isEmpty,
         )
       },
@@ -326,7 +327,8 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           result <- env.service.exchangeAuthorizationCode(request, credentials)
         yield assertTrue(
           env.userRolesRepo.findRolesByUser.calls.nonEmpty,
-          result.adminRoles.contains(Map("default" -> List("admin"))),
+          result.tenantId.contains("default"),
+          result.roles == List("admin"),
         )
       },
     ),

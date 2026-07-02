@@ -1,7 +1,7 @@
 package versola.oauth.token
 
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{ClientCredentials, ClientId, ClientIdWithSecret, OAuthClientRecord, ScopeToken}
+import versola.oauth.client.model.{ClientCredentials, ClientId, ClientIdWithSecret, OAuthClientRecord, ScopeToken, TenantId}
 import versola.oauth.model.{AccessToken, AuthorizationCodeRecord, RefreshToken}
 import versola.oauth.revoke.AccessTokenRevocationService
 import versola.oauth.session.model.{RefreshAlreadyExchanged, RefreshTokenRecord, WithTtl}
@@ -168,8 +168,8 @@ object OAuthTokenService:
         uiLocales = None,
         nonce = None,
         user = None,
+        tenantId = None,
         roles = Nil,
-        adminRoles = None,
         amr = Set.empty,
         authTime = None,
       )
@@ -198,16 +198,18 @@ object OAuthTokenService:
 
         isCentralAdmin = record.clientId == centralAdminClientId
 
-        // Admin roles are only relevant for the admin console; skip the lookup for all other clients.
-        allRoles <- ZIO.when(isCentralAdmin)(userRolesRepository.findRolesByUser(record.userId))
-
-        // For central admin: derive tenant roles from the admin roles map.
-        // For regular clients: fetch only the tenant-scoped roles.
-        roles <- allRoles match
-          case Some(roles) =>
-            ZIO.succeed(roles.getOrElse(client.tenantId, Nil))
-          case None =>
-            userRolesRepository.findRolesByUserAndTenant(record.userId, client.tenantId)
+        // Central admin: pick default-tenant roles.
+        // All other clients: roles for their own tenant only.
+        (tokenTenantId, tokenRoles) <-
+          if isCentralAdmin then
+            userRolesRepository.findRolesByUser(record.userId).map { allRoles =>
+              val defaultRoles = allRoles.getOrElse(TenantId.default, Nil)
+              (TenantId.default: String, defaultRoles.map(r => r: String))
+            }
+          else
+            userRolesRepository
+              .findRolesByUserAndTenant(record.userId, client.tenantId)
+              .map(roleIds => ((client.tenantId: String), roleIds.map(r => r: String)))
       yield IssuedTokens(
         accessToken = accessToken,
         clientId = record.clientId,
@@ -220,8 +222,8 @@ object OAuthTokenService:
         uiLocales = record.uiLocales,
         nonce = record.nonce,
         user = user.flatten,
-        roles = roles.map(r => r: String),
-        adminRoles = allRoles.map(_.map((tenantId, roleIds) => (tenantId: String) -> roleIds.map(roleId => roleId: String))),
+        tenantId = Some(tokenTenantId),
+        roles = tokenRoles,
         amr = record.amr,
         authTime = Some(record.authTime),
       )

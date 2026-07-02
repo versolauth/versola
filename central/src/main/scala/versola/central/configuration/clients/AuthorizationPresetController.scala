@@ -1,6 +1,6 @@
 package versola.central.configuration.clients
 
-import versola.central.{CentralConfig, authorizeInternal}
+import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
 import versola.central.configuration.*
 import versola.central.configuration.edges.EdgeService
 import versola.util.http.Controller
@@ -9,7 +9,7 @@ import zio.http.*
 import zio.json.*
 
 object AuthorizationPresetController extends Controller:
-  type Env = Tracing & AuthorizationPresetService & CentralConfig & EdgeService
+  type Env = Tracing & AuthorizationPresetService & OAuthClientService & CentralConfig & EdgeService
 
   def routes: Routes[Env, Throwable] = Routes(
     getPresetsEndpoint,
@@ -20,6 +20,7 @@ object AuthorizationPresetController extends Controller:
   val getPresetsEndpoint =
     Method.GET / "configuration" / "auth-request-presets" -> handler { (req: Request) =>
       for
+        _ <- authorizeBasic(req)
         clientId <- req.url.queryZIO[ClientId]("clientId")
         service <- ZIO.service[AuthorizationPresetService]
         response <- service.getClientPresets(clientId).map(_.map { preset =>
@@ -43,6 +44,7 @@ object AuthorizationPresetController extends Controller:
   val savePresetsEndpoint =
     Method.POST / "configuration" / "auth-request-presets" -> handler { (req: Request) =>
       for
+        _ <- authorizeBasic(req)
         service <- ZIO.service[AuthorizationPresetService]
         body <- req.body.asJson[SaveAuthorizationPresetsRequest]
         result <- service.savePresets(body)

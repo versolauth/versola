@@ -16,6 +16,7 @@ import {
   getResources,
   getScopes,
   rotateClientSecret,
+  saveClientPresets,
   updateClient,
 } from '../utils/central-api';
 import { confirmDestructiveAction } from '../utils/confirm-dialog';
@@ -30,6 +31,8 @@ import './preset-form';
 export class VersolaClientsList extends LitElement {
   @property({ type: String }) tenantId: string | null = null;
   @property({ type: String }) expandClientId: string | null = null;
+  @property({ type: Boolean }) canManage = false;
+  @property({ type: Boolean }) canManageSecrets = false;
 
   @state() private clients: OAuthClient[] = [];
   @state() private tenantEdgeId: string | null = null;
@@ -915,6 +918,7 @@ export class VersolaClientsList extends LitElement {
           .availableClientIds=${this.clients.map(client => client.id)}
           .availableThemes=${this.availableThemes}
           .availableOtpTemplates=${this.availableOtpTemplates}
+          .canManageSecrets=${this.canManageSecrets}
           @close=${this.handleFormClose}
           @delete-previous-secret=${this.handleDeletePreviousSecret}
           @rotate-secret=${this.handleRotateSecret}
@@ -927,14 +931,14 @@ export class VersolaClientsList extends LitElement {
       <content-header
         title="OAuth Clients"
       >
-        ${this.clients.length > 0 ? html`
+        ${this.clients.length > 0 && this.canManage ? html`
           <button slot="actions" class="btn btn-primary" @click=${this.handleCreateClick} ?disabled=${this.isPreparingForm || !this.tenantId}>
             + Create Client
           </button>
         ` : ''}
       </content-header>
 
-      ${this.createdSecret ? html`
+      ${this.createdSecret && this.canManageSecrets ? html`
         <div class="card secret-banner">
           <div class="secret-banner-header">
             <div>
@@ -962,9 +966,10 @@ export class VersolaClientsList extends LitElement {
           <div class="empty-state">
             <h3>No OAuth clients yet</h3>
             <p>Create your first OAuth client to get started</p>
+            ${this.canManage ? html`
             <button class="btn btn-primary" @click=${this.handleCreateClick} ?disabled=${this.isPreparingForm || !this.tenantId} style="margin-top: 1rem;">
               + Create Client
-            </button>
+            </button>` : ''}
           </div>
         </div>
       ` : this.filteredClients.length === 0 ? html`
@@ -996,6 +1001,7 @@ export class VersolaClientsList extends LitElement {
                     <div class="client-id">${client.id}</div>
                   </div>
 
+                  ${this.canManage ? html`
                   <div class="client-actions" @click=${(e: Event) => e.stopPropagation()}>
                     <button
                       type="button"
@@ -1016,7 +1022,7 @@ export class VersolaClientsList extends LitElement {
                     >
                       ✕
                     </button>
-                  </div>
+                  </div>` : ''}
                 </div>
 
                 ${isExpanded ? html`
@@ -1130,6 +1136,7 @@ export class VersolaClientsList extends LitElement {
             <span class="expand-icon">${isPresetsExpanded ? '▼' : '▶'}</span>
             Authorization Presets
           </div>
+          ${this.canManage ? html`
           <button
             type="button"
             class="icon-action"
@@ -1141,7 +1148,7 @@ export class VersolaClientsList extends LitElement {
             aria-label="Edit presets for ${client.id}"
           >
             ✎
-          </button>
+          </button>` : ''}
         </div>
 
         ${isPresetsExpanded ? html`
@@ -1493,32 +1500,7 @@ export class VersolaClientsList extends LitElement {
     this.isSavingPresets = true;
 
     try {
-      const response = await fetch('/configuration/auth-request-presets', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          clientId: this.editingPresetsForClient.id,
-          presets: this.presetDrafts.map(p => ({
-            id: p.id,
-            description: p.description,
-            redirectUri: p.redirectUri,
-            postLoginRedirectUri: p.postLoginRedirectUri,
-            scope: p.scope,
-            responseType: p.responseType,
-            uiLocales: p.uiLocales,
-            customParameters: p.customParameters,
-            cookieDomain: p.cookieDomain,
-            cookiePath: p.cookiePath,
-          })),
-        }),
-      });
-
-      if (!response.ok) {
-        const text = await response.text();
-        const errorMessage = text ? `Failed to save presets: ${text}` : 'Failed to save presets';
-        throw new Error(errorMessage);
-      }
-
+      await saveClientPresets(this.editingPresetsForClient.id, this.presetDrafts);
       const updatedClient = {
         ...this.editingPresetsForClient,
         authorizationPresets: this.presetDrafts,

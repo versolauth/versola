@@ -15,19 +15,18 @@ trait ResourceRepository extends CacheSource[Vector[ResourceRecord]]:
 
   def createResource(
       tenantId: TenantId,
-      alias: String,
+      resourceId: ResourceId,
       resource: ResourceUri,
       endpoints: Vector[ResourceEndpointRecord],
-  ): Task[ResourceId]
+  ): Task[Unit]
 
   def updateResource(
-      id: ResourceId,
-      aliasPatch: Option[String],
+      resourceId: ResourceId,
       resourcePatch: Option[ResourceUri],
       addEndpoints: Vector[ResourceEndpointRecord],
       deleteEndpoints: Set[ResourceEndpointId],
   ): Task[Unit]
 
   def deleteResource(
-      id: ResourceId,
+      resourceId: ResourceId,
   ): Task[Unit]

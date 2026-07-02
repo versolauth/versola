@@ -1,9 +1,9 @@
 import { LitElement, html, css, nothing } from 'lit';
-import { customElement, state } from 'lit/decorators.js';
+import { customElement, property, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
 import { badgeStyles, buttonStyles, cardStyles, formStyles, iconActionStyles } from '../styles/components';
-import type { Locale } from '../types';
-import { fetchLocales, updateLocales, setDefaultLocale } from '../utils/central-api';
+import type { FormRecord, Locale, OtpTemplateRecord } from '../types';
+import { fetchForms, fetchLocales, fetchOtpTemplates, updateLocales, setDefaultLocale } from '../utils/central-api';
 import './error-card';
 import './loading-cards';
 
@@ -38,7 +38,12 @@ function localeName(code: string): string {
 
 @customElement('versola-locales-list')
 export class VersolaLocalesList extends LitElement {
+  @property({ type: String }) tenantId: string | null = null;
+  @property({ type: Boolean }) canManage = false;
+
   @state() private locales: Locale[] = [];
+  @state() private forms: FormRecord[] = [];
+  @state() private otpTemplates: OtpTemplateRecord[] = [];
   @state() private isLoading = false;
   @state() private errorMessage = '';
   @state() private editing = false;
@@ -164,16 +169,46 @@ export class VersolaLocalesList extends LitElement {
     this.loadData();
   }
 
+  updated(changed: Map<string, unknown>) {
+    if (changed.has('tenantId')) {
+      void this.loadOtpTemplates();
+    }
+  }
+
   private async loadData() {
     this.isLoading = true;
     this.errorMessage = '';
     try {
-      this.locales = await fetchLocales();
+      const [locales, forms] = await Promise.all([fetchLocales(), fetchForms()]);
+      this.locales = locales;
+      this.forms = forms;
+      await this.loadOtpTemplates();
     } catch (e) {
       this.errorMessage = e instanceof Error ? e.message : 'Failed to load locales';
     } finally {
       this.isLoading = false;
     }
+  }
+
+  private async loadOtpTemplates() {
+    if (!this.tenantId) {
+      this.otpTemplates = [];
+      this.errorMessage = '';
+      return;
+    }
+    this.errorMessage = '';
+    try {
+      this.otpTemplates = await fetchOtpTemplates(this.tenantId);
+    } catch (e) {
+      this.errorMessage = e instanceof Error ? e.message : 'Failed to load OTP templates';
+    }
+  }
+
+  /** Returns true when there is at least one form localization and one OTP template localization for the given locale code. */
+  private canActivateLocale(code: string): boolean {
+    const hasFormLocale = this.forms.some(form => code in form.localizations);
+    const hasOtpLocale = this.otpTemplates.some(template => code in template.localizations);
+    return hasFormLocale && hasOtpLocale;
   }
 
 
@@ -281,11 +316,20 @@ export class VersolaLocalesList extends LitElement {
                             Set default
                           </button>`
                         : nothing}
-                    <button class="pill-btn toggle-active ${loc.active ? 'on' : 'off'}"
-                      @click=${() => this.toggleDraftActive(loc.code)}
-                      title=${loc.active ? 'Click to deactivate' : 'Click to activate'}>
-                      ${loc.active ? 'Active' : 'Inactive'}
-                    </button>
+                    ${(() => {
+                      const ready = loc.active || this.canActivateLocale(loc.code);
+                      const title = loc.active
+                        ? 'Click to deactivate'
+                        : ready
+                          ? 'Click to activate'
+                          : 'Add a form localization and an OTP template localization for this locale first';
+                      return html`<button class="pill-btn toggle-active ${loc.active ? 'on' : 'off'}"
+                        @click=${() => ready && this.toggleDraftActive(loc.code)}
+                        ?disabled=${!ready}
+                        title=${title}>
+                        ${loc.active ? 'Active' : 'Inactive'}
+                      </button>`;
+                    })()}
                     <button class="icon-action danger" @click=${() => this.removeDraft(loc.code)}
                       title="Remove" aria-label=${`Remove ${loc.code}`}>✕</button>
                   </div>
@@ -322,7 +366,7 @@ export class VersolaLocalesList extends LitElement {
     return html`
       <div class="page-header">
         <h1 class="page-title">Locales</h1>
-        <button class="btn btn-secondary" @click=${() => this.startEdit()}>Edit</button>
+        ${this.canManage ? html`<button class="btn btn-secondary" @click=${() => this.startEdit()}>Edit</button>` : ''}
       </div>
 
       ${this.isLoading ? html`<versola-loading-cards .count=${3}></versola-loading-cards>`

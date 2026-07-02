@@ -108,8 +108,7 @@ case class GetAllPermissionsResponse(
 ) derives Schema, JsonCodec
 
 case class ResourceResponse(
-    id: ResourceId,
-    alias: String,
+    resourceId: ResourceId,
     resource: ResourceUri,
     endpoints: Vector[ResourceEndpointResponse],
 ) derives Schema, JsonCodec
@@ -128,14 +127,14 @@ case class GetAllResourcesResponse(
 ) derives Schema, JsonCodec
 
 case class CreatePermissionRequest(
-    tenantId: Option[TenantId],
+    tenantId: TenantId,
     permission: Permission,
     description: Map[String, String],
     endpointIds: Set[ResourceEndpointId],
 ) derives Schema, JsonCodec
 
 case class UpdatePermissionRequest(
-    tenantId: Option[TenantId],
+    tenantId: TenantId,
     permission: Permission,
     description: PatchDescription,
     endpointIds: Option[Set[ResourceEndpointId]],
@@ -143,21 +142,20 @@ case class UpdatePermissionRequest(
 
 case class CreateResourceRequest(
     tenantId: TenantId,
-    alias: String,
+    resourceId: ResourceId,
     resource: ResourceUri,
     endpoints: Vector[CreateResourceEndpointRequest],
 ) derives Schema, JsonCodec
 
 case class UpdateResourceRequest(
-    id: ResourceId,
-    alias: Option[String],
+    resourceId: ResourceId,
     resource: Option[ResourceUri],
     deleteEndpoints: Set[ResourceEndpointId],
     createEndpoints: Vector[CreateResourceEndpointRequest],
 ) derives Schema, JsonCodec
 
 case class CreateResourceResponse(
-    id: ResourceId,
+    resourceId: ResourceId,
 ) derives Schema, JsonCodec
 
 case class CreateResourceEndpointRequest(
@@ -364,9 +362,8 @@ case class ResourceEndpointSyncResponse(
 ) derives Schema, JsonCodec
 
 case class ResourceSyncResponse(
-    id: ResourceId,
+    resourceId: ResourceId,
     tenantId: TenantId,
-    alias: String,
     resource: ResourceUri,
     endpoints: Vector[ResourceEndpointSyncResponse],
 ) derives Schema, JsonCodec
@@ -427,7 +424,7 @@ case class GetOAuthClientsSyncResponse(
 ) derives JsonCodec, Schema
 
 case class PermissionSyncResponse(
-    tenantId: Option[TenantId],
+    tenantId: TenantId,
     id: Permission,
     endpointIds: Set[ResourceEndpointId],
 ) derives JsonCodec, Schema

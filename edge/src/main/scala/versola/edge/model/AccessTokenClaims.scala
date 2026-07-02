@@ -10,5 +10,6 @@ case class AccessTokenClaims(
     @jsonField("aud") audience: List[String],
     @jsonField("exp") expiresAt: Long,
     @jsonField("iat") issuedAt: Long,
+    @jsonField("tenant_id") tenantId: Option[TenantId],
     roles: List[RoleId],
 ) derives JsonCodec

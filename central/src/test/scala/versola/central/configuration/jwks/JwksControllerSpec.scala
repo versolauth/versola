@@ -2,8 +2,9 @@ package versola.central.configuration.jwks
 
 import io.opentelemetry.api
 import org.scalamock.stubs.{Stub, ZIOStubs}
+import versola.central.configuration.clients.OAuthClientService
 import versola.central.configuration.edges.EdgeService
-import versola.central.TestCentralConfig
+import versola.central.{TestAdminAuth, TestCentralConfig}
 import versola.util.JWT
 import versola.util.http.Observability
 import zio.*
@@ -49,24 +50,30 @@ object JwksControllerSpec extends ZIOSpecDefault, ZIOStubs:
       description: String,
       request: Request,
       expectedStatus: Status,
+      authHeader: Option[Header.Authorization] = Some(TestAdminAuth.basicAuthHeader),
       setup: Stub[JwksService] => UIO[Unit] = _ => ZIO.unit,
       verify: (Response, Stub[JwksService]) => Task[TestResult] = (_, _) => ZIO.succeed(assertTrue(true)),
   ) =
     test(description) {
       for
-        client      <- ZIO.service[Client]
-        service     = stub[JwksService]
-        edgeService = stub[EdgeService]
-        tracing     <- tracingLayer.build
+        client             <- ZIO.service[Client]
+        service            = stub[JwksService]
+        edgeService        = stub[EdgeService]
+        oauthClientService = stub[OAuthClientService]
+        tracing            <- tracingLayer.build
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             JwksController.routes.provideEnvironment(
-              ZEnvironment[JwksService](service) ++ tracing ++ ZEnvironment(config) ++ ZEnvironment[EdgeService](edgeService)
+              ZEnvironment[JwksService](service) ++ tracing ++ ZEnvironment(config) ++
+                ZEnvironment[EdgeService](edgeService) ++ ZEnvironment[OAuthClientService](oauthClientService)
             )
           )
         )
+        _            <- oauthClientService.verifySecret.succeedsWith(true)
         _            <- setup(service)
-        response     <- client.batched(request.addHeader(Header.Accept(MediaType.application.json)))
+        response     <- client.batched(
+          authHeader.foldLeft(request.addHeader(Header.Accept(MediaType.application.json)))(_.addHeader(_))
+        )
         verifyResult <- verify(response, service)
       yield assertTrue(response.status == expectedStatus) && verifyResult
     }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging
@@ -78,6 +85,14 @@ object JwksControllerSpec extends ZIOSpecDefault, ZIOStubs:
   )
 
   def spec = suite("JwksController")(
+    controllerTestCase(
+      description = "GET /configuration/jwks rejects request without shared secret",
+      request = Request.get(URL.empty / "configuration" / "jwks"),
+      expectedStatus = Status.Unauthorized,
+      authHeader = None,
+      verify = (_, service) =>
+        ZIO.succeed(assertTrue(service.getRaw.calls.isEmpty)),
+    ),
     controllerTestCase(
       description = "GET /configuration/jwks returns stored JWKS",
       request = Request.get(URL.empty / "configuration" / "jwks"),
@@ -160,6 +175,7 @@ object JwksControllerSpec extends ZIOSpecDefault, ZIOStubs:
         .get(URL.empty / "configuration" / "jwks" / "sync")
         .addHeader(Header.Authorization.Bearer(syncToken)),
       expectedStatus = Status.Ok,
+      authHeader = None,
       setup = service => service.getRaw.succeedsWith(testJwks),
       verify = (response, service) =>
         for
@@ -174,6 +190,7 @@ object JwksControllerSpec extends ZIOSpecDefault, ZIOStubs:
       description = "GET /configuration/jwks/sync rejects request without service token",
       request = Request.get(URL.empty / "configuration" / "jwks" / "sync"),
       expectedStatus = Status.Unauthorized,
+      authHeader = None,
       verify = (_, service) =>
         ZIO.succeed(assertTrue(service.getRaw.calls.isEmpty)),
     ),

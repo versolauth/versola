@@ -1,7 +1,8 @@
 package versola.central.configuration.edges
 
-import versola.central.configuration.clients.ClientId
+import versola.central.configuration.clients.{ClientId, OAuthClientService}
 import versola.central.configuration.tenants.TenantId
+import versola.central.authorizeBasic
 import versola.util.Base64Url
 import versola.util.http.Controller
 import zio.ZIO
@@ -10,7 +11,7 @@ import zio.json.{EncoderOps, JsonCodec, JsonEncoder}
 import zio.schema.*
 
 object EdgeController extends Controller:
-  type Env = Tracing & EdgeService
+  type Env = Tracing & EdgeService & OAuthClientService
 
   def routes: Routes[Env, Throwable] = Routes(
     getAllEdgesEndpoint,
@@ -21,8 +22,9 @@ object EdgeController extends Controller:
   )
 
   val getAllEdgesEndpoint =
-    Method.GET / "configuration" / "edges" -> handler { (_: Request) =>
+    Method.GET / "configuration" / "edges" -> handler { (request: Request) =>
       for
+        _ <- authorizeBasic(request)
         service <- ZIO.service[EdgeService]
         edges <- service.getAllEdges
         response = GetAllEdgesResponse(
@@ -39,6 +41,7 @@ object EdgeController extends Controller:
   val registerEdgeEndpoint =
     Method.POST / "configuration" / "edges" -> handler { (request: Request) =>
       for
+        _ <- authorizeBasic(request)
         service <- ZIO.service[EdgeService]
         body <- request.body.asJson[RegisterEdgeRequest]
         keyPair <- service.registerEdge(body.id)
@@ -50,6 +53,7 @@ object EdgeController extends Controller:
   val rotateEdgeKeyEndpoint =
     Method.POST / "configuration" / "edges" / "rotate-key" -> handler { (request: Request) =>
       for
+        _ <- authorizeBasic(request)
         service <- ZIO.service[EdgeService]
         edgeId <- request.url.queryZIO[EdgeId]("edgeId")
         keyPair <- service.rotateEdgeKey(edgeId)
@@ -63,6 +67,7 @@ object EdgeController extends Controller:
   val deleteOldEdgeKeyEndpoint =
     Method.DELETE / "configuration" / "edges" / "old-key" -> handler { (request: Request) =>
       for
+        _ <- authorizeBasic(request)
         service <- ZIO.service[EdgeService]
         edgeId <- request.url.queryZIO[EdgeId]("edgeId")
         _ <- service.deleteOldEdgeKey(edgeId)
@@ -72,6 +77,7 @@ object EdgeController extends Controller:
   val deleteEdgeEndpoint =
     Method.DELETE / "configuration" / "edges" -> handler { (request: Request) =>
       for
+        _ <- authorizeBasic(request)
         service <- ZIO.service[EdgeService]
         edgeId <- request.url.queryZIO[EdgeId]("edgeId")
         _ <- service.deleteEdge(edgeId)

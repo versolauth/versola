@@ -11,8 +11,6 @@ object TenantId:
   inline def apply(value: String): TenantId = value
   inline def from(value: String): Either[String, TenantId] = Right(value)
 
-  /** Sentinel tenant used for system-wide (super-admin) roles. */
-  val global: TenantId = "*"
 
   given Schema[TenantId] = Schema.primitive[String].transformOrFail(from, Right(_))
   given JsonEncoder[TenantId] = JsonEncoder.string

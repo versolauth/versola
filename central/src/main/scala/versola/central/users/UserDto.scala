@@ -71,9 +71,3 @@ case class RenamePasskeyRequest(
     credentialId: String,
     name: Option[String],
 ) derives JsonCodec, Schema
-
-case class MyPermissionsResponse(
-    superAdmin: Boolean,
-    roles: Option[Set[String]],
-    permissions: Option[Set[String]],
-) derives JsonCodec, Schema

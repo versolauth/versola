@@ -9,6 +9,8 @@ export class TenantSelector extends LitElement {
   @state() private tenants: Tenant[] = [];
   @property({ type: String }) selectedTenantId: string | null = null;
   @property({ type: Boolean }) manageActive = false;
+  /** When non-null, only tenants whose id is in this list are shown. null means all. */
+  @property({ attribute: false }) allowedTenantIds: string[] | null = null;
   @state() private isOpen = false;
   @state() private searchQuery = '';
   @state() private isLoading = false;
@@ -231,6 +233,9 @@ export class TenantSelector extends LitElement {
     if (changed.has('selectedTenantId') && this.selectedTenantId) {
       localStorage.setItem('selectedTenantId', this.selectedTenantId);
     }
+    if (changed.has('allowedTenantIds')) {
+      void this.loadTenants();
+    }
   }
 
   private handleOutsideClick = (e: Event) => {
@@ -266,7 +271,10 @@ export class TenantSelector extends LitElement {
     }
   }
 
-  private applyTenants(tenants: Tenant[], preferredTenantId: string | null = this.selectedTenantId || localStorage.getItem('selectedTenantId')) {
+  private applyTenants(allTenants: Tenant[], preferredTenantId: string | null = this.selectedTenantId || localStorage.getItem('selectedTenantId')) {
+    const tenants = this.allowedTenantIds !== null
+      ? allTenants.filter(t => this.allowedTenantIds!.includes(t.id))
+      : allTenants;
     this.tenants = tenants;
 
     if (tenants.length === 0) {

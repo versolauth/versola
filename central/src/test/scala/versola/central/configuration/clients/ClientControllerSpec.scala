@@ -2,13 +2,13 @@ package versola.central.configuration.clients
 
 import io.opentelemetry.api
 import org.scalamock.stubs.{Stub, ZIOStubs}
-import versola.central.{CentralConfig, TestCentralConfig}
+import versola.central.{CentralConfig, TestAdminAuth, TestCentralConfig}
 import versola.central.configuration.*
 import versola.central.configuration.permissions.Permission
 import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.tenants.TenantId
 import versola.util.http.Observability
-import versola.util.{Base64, Base64Url, JWT, RedirectUri, Secret, SecureRandom, SecurityService}
+import versola.util.{Base64, Base64Url, JWT, RedirectUri, Secret, SecurityService}
 import zio.*
 import zio.http.*
 import zio.json.*
@@ -154,12 +154,17 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             ClientController.routes.provideEnvironment(
-              ZEnvironment[OAuthClientService](service) ++ ZEnvironment(config) ++ tracing ++ security ++ ZEnvironment[versola.central.configuration.edges.EdgeService](edgeService),
+              ZEnvironment[OAuthClientService](service) ++ ZEnvironment(config) ++ tracing ++ security ++
+                ZEnvironment[versola.central.configuration.edges.EdgeService](edgeService),
             ),
           ),
         )
+        _ <- service.verifySecret.succeedsWith(true)
         _ <- setup(service)
-        response <- client.batched(request.addHeader(Header.Accept(MediaType.application.json)))
+        requestWithAuth = request.headers.header(Header.Authorization) match
+          case None => request.addHeader(TestAdminAuth.basicAuthHeader)
+          case _    => request
+        response <- client.batched(requestWithAuth.addHeader(Header.Accept(MediaType.application.json)))
         verifyResult <- verify(response, service, securityService)
       yield assertTrue(response.status == expectedStatus) && verifyResult
     }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging

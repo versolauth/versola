@@ -1,4 +1,5 @@
 import type { PasskeyInfo, User, UserRoleAssignment, UserSearchField, UserSession } from '../types';
+import { resolveBaseUrl } from './central-api';
 
 type UserSearchRecordDto = {
   id: string;
@@ -21,14 +22,23 @@ function toUser(record: UserSearchRecordDto): User {
   };
 }
 
+// Route through the edge proxy for the "central" resource.
+// Uses the same base URL as central-api.ts (respects configureCentralApi / api-url attribute).
+function proxyUrl(path: string): URL {
+  const base = resolveBaseUrl();
+  const normalizedBase = base.endsWith('/') ? base : `${base}/`;
+  const normalizedPath = path.replace(/^\//, '');
+  return new URL(`resources/central/${normalizedPath}`, normalizedBase);
+}
+
 export async function searchUsers(field: UserSearchField, query: string): Promise<User[]> {
   const trimmed = query.trim();
   if (!trimmed) return [];
 
-  const url = new URL('/users', window.location.origin);
+  const url = proxyUrl('/users');
   url.searchParams.set(field, trimmed);
 
-  const response = await fetch(url.toString(), { headers: { Accept: 'application/json' } });
+  const response = await fetch(url.toString(), { headers: { Accept: 'application/json' }, credentials: 'include' });
   if (response.status === 404) return [];
   if (!response.ok) {
     const body = await response.text();
@@ -40,9 +50,10 @@ export async function searchUsers(field: UserSearchField, query: string): Promis
 }
 
 export async function createUser(user: Omit<User, 'id'>): Promise<User> {
-  const response = await fetch('/users', {
+  const response = await fetch(proxyUrl('/users').toString(), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    credentials: 'include',
     body: JSON.stringify({
       email: user.email,
       phone: user.phone,
@@ -75,9 +86,10 @@ export async function updateUser(previous: User, next: User): Promise<void> {
   patchField('phone');
   patchField('login');
 
-  const response = await fetch('/users', {
+  const response = await fetch(proxyUrl('/users').toString(), {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    credentials: 'include',
     body: JSON.stringify(body),
   });
 
@@ -88,9 +100,10 @@ export async function updateUser(previous: User, next: User): Promise<void> {
 }
 
 export async function patchUserClaims(userId: string, claimsPatch: Record<string, unknown>): Promise<void> {
-  const response = await fetch('/users/claims', {
+  const response = await fetch(proxyUrl('/users/claims').toString(), {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    credentials: 'include',
     body: JSON.stringify({
       id: userId,
       claims: claimsPatch,
@@ -104,11 +117,11 @@ export async function patchUserClaims(userId: string, claimsPatch: Record<string
 }
 
 export async function fetchUserRoles(userId: string, tenantId: string): Promise<UserRoleAssignment[]> {
-  const url = new URL('/users/roles', window.location.origin);
+  const url = proxyUrl('/users/roles');
   url.searchParams.set('id', userId);
   url.searchParams.set('tenantId', tenantId);
 
-  const response = await fetch(url.toString(), { headers: { Accept: 'application/json' } });
+  const response = await fetch(url.toString(), { headers: { Accept: 'application/json' }, credentials: 'include' });
   if (response.status === 204) return [];
   if (!response.ok) {
     const body = await response.text();
@@ -127,9 +140,10 @@ export async function updateUserRoles(
 ): Promise<void> {
   if (add.length === 0 && remove.length === 0) return;
 
-  const response = await fetch('/users/roles', {
+  const response = await fetch(proxyUrl('/users/roles').toString(), {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    credentials: 'include',
     body: JSON.stringify({ userId, tenantId, add, remove }),
   });
 
@@ -149,10 +163,10 @@ type UserSessionDto = {
 };
 
 export async function fetchUserSessions(userId: string): Promise<UserSession[]> {
-  const url = new URL('/users/sessions', window.location.origin);
+  const url = proxyUrl('/users/sessions');
   url.searchParams.set('id', userId);
 
-  const response = await fetch(url.toString(), { headers: { Accept: 'application/json' } });
+  const response = await fetch(url.toString(), { headers: { Accept: 'application/json' }, credentials: 'include' });
   if (!response.ok) {
     const body = await response.text();
     throw new Error(body.trim() || `Failed to load sessions (${response.status})`);
@@ -170,12 +184,13 @@ export async function fetchUserSessions(userId: string): Promise<UserSession[]> 
 }
 
 export async function invalidateUserSession(userId: string): Promise<void> {
-  const url = new URL('/users/sessions', window.location.origin);
+  const url = proxyUrl('/users/sessions');
   url.searchParams.set('userId', userId);
 
   const response = await fetch(url.toString(), {
     method: 'DELETE',
     headers: { Accept: 'application/json' },
+    credentials: 'include',
   });
 
   if (!response.ok) {
@@ -184,10 +199,13 @@ export async function invalidateUserSession(userId: string): Promise<void> {
   }
 }
 export async function listPasskeys(userId: string): Promise<PasskeyInfo[]> {
-  const url = new URL('/users/passkeys', window.location.origin);
+  const url = proxyUrl('/users/passkeys');
   url.searchParams.set('id', userId);
 
-  const response = await fetch(url.toString(), { headers: { Accept: 'application/json' } });
+  const response = await fetch(url.toString(), {
+    headers: { Accept: 'application/json' },
+    credentials: 'include',
+  });
   if (response.status === 204) return [];
   if (!response.ok) {
     const body = await response.text();
@@ -199,10 +217,11 @@ export async function listPasskeys(userId: string): Promise<PasskeyInfo[]> {
 }
 
 export async function renamePasskey(userId: string, credentialId: string, name: string | null): Promise<void> {
-  const response = await fetch('/users/passkeys', {
+  const response = await fetch(proxyUrl('/users/passkeys').toString(), {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
     body: JSON.stringify({ userId, credentialId, name }),
+    credentials: 'include',
   });
 
   if (!response.ok) {
@@ -212,13 +231,14 @@ export async function renamePasskey(userId: string, credentialId: string, name: 
 }
 
 export async function deletePasskey(userId: string, credentialId: string): Promise<void> {
-  const url = new URL('/users/passkeys', window.location.origin);
+  const url = proxyUrl('/users/passkeys');
   url.searchParams.set('id', userId);
   url.searchParams.set('credentialId', credentialId);
 
   const response = await fetch(url.toString(), {
     method: 'DELETE',
     headers: { Accept: 'application/json' },
+    credentials: 'include',
   });
 
   if (!response.ok) {
@@ -233,10 +253,11 @@ export async function resetUserLimits(
   email: string | undefined,
   phone: string | undefined,
 ): Promise<void> {
-  const response = await fetch('/users/limits/reset', {
+  const response = await fetch(proxyUrl('/users/limits/reset').toString(), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
     body: JSON.stringify({ userId, tenantId, email: email ?? null, phone: phone ?? null }),
+    credentials: 'include',
   });
 
   if (!response.ok) {

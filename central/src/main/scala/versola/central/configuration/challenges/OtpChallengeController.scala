@@ -1,6 +1,7 @@
 package versola.central.configuration.challenges
 
-import versola.central.{CentralConfig, authorizeInternal}
+import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
+import versola.central.configuration.clients.OAuthClientService
 import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.tenants.TenantId
 import versola.util.http.Controller
@@ -9,7 +10,7 @@ import zio.http.{Method, Request, Response, Routes, Status, handler}
 import zio.json.EncoderOps
 
 object OtpChallengeController extends Controller:
-  type Env = Tracing & OtpChallengeService & ChallengeSettingsService & CentralConfig & EdgeService
+  type Env = Tracing & OtpChallengeService & ChallengeSettingsService & OAuthClientService & CentralConfig & EdgeService
 
   def routes: Routes[Env, Throwable] = Routes(
     getTemplatesEndpoint,
@@ -24,6 +25,7 @@ object OtpChallengeController extends Controller:
   val getTemplatesEndpoint =
     Method.GET / "configuration" / "challenges" / "otp-templates" -> handler { (request: Request) =>
       for
+        _         <- authorizeBasic(request)
         tenantId  <- request.url.queryZIO[TenantId]("tenantId")
         service   <- ZIO.service[OtpChallengeService]
         templates <- service.getTemplates(tenantId)
@@ -42,6 +44,7 @@ object OtpChallengeController extends Controller:
   val upsertTemplateEndpoint =
     Method.PUT / "configuration" / "challenges" / "otp-templates" -> handler { (request: Request) =>
       for
+        _       <- authorizeBasic(request)
         service <- ZIO.service[OtpChallengeService]
         body    <- request.body.asJson[UpsertOtpTemplateRequest]
         _       <- service.upsertTemplate(OtpTemplateRecord(body.id, body.tenantId, body.localizations))
@@ -51,6 +54,7 @@ object OtpChallengeController extends Controller:
   val deleteTemplateEndpoint =
     Method.DELETE / "configuration" / "challenges" / "otp-templates" -> handler { (request: Request) =>
       for
+        _        <- authorizeBasic(request)
         service  <- ZIO.service[OtpChallengeService]
         body     <- request.body.asJson[DeleteOtpTemplateRequest]
         _        <- service.deleteTemplate(body.id, body.tenantId)
@@ -60,6 +64,7 @@ object OtpChallengeController extends Controller:
   val getChallengeSettingsEndpoint =
     Method.GET / "configuration" / "challenges" / "challenge-settings" -> handler { (request: Request) =>
       for
+        _        <- authorizeBasic(request)
         tenantId <- request.url.queryZIO[TenantId]("tenantId")
         service  <- ZIO.service[ChallengeSettingsService]
         settings <- service.getSettings(tenantId)
@@ -78,6 +83,7 @@ object OtpChallengeController extends Controller:
   val upsertChallengeSettingsEndpoint =
     Method.PUT / "configuration" / "challenges" / "challenge-settings" -> handler { (request: Request) =>
       for
+        _        <- authorizeBasic(request)
         service  <- ZIO.service[ChallengeSettingsService]
         body     <- request.body.asJson[UpsertChallengeSettingsRequest]
         existing <- service.getSettings(body.tenantId)
