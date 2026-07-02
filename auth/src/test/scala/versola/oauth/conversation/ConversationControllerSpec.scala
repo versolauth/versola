@@ -231,6 +231,26 @@ object ConversationControllerSpec extends UnitSpecBase:
       submission = (authId, OtpSubmission(otpCode), None, Some("9.9.9.9")),
     ),
     successfulSubmitTestCase(
+      description = "submit falls back to X-Forwarded-For when X-Real-IP is absent",
+      request = Request.post(
+        url = URL.empty / "challenge" / "otp",
+        body = Body.fromURLEncodedForm(
+          Form.fromStrings("code" -> otpCode.toString),
+        )
+      ).addHeader(conversationCookie).addHeader("X-Forwarded-For", "7.7.7.7, 10.0.0.1"),
+      submission = (authId, OtpSubmission(otpCode), None, Some("7.7.7.7")),
+    ),
+    successfulSubmitTestCase(
+      description = "submit passes no ip when neither X-Real-IP nor X-Forwarded-For is present",
+      request = Request.post(
+        url = URL.empty / "challenge" / "otp",
+        body = Body.fromURLEncodedForm(
+          Form.fromStrings("code" -> otpCode.toString),
+        )
+      ).addHeader(conversationCookie),
+      submission = (authId, OtpSubmission(otpCode), None, None),
+    ),
+    successfulSubmitTestCase(
       description = "submit login-password",
       request = Request.post(
         url = URL.empty / "challenge" / "login-password",

@@ -335,12 +335,12 @@ object SubmissionLimiterSpec extends UnitSpecBase:
         )
       },
     ),
-    suite("isBannedAny")(
+    suite("statusForSubjects")(
       test("returns Allowed and skips lookups when no windows are configured") {
         val env = Env()
         for
           _ <- env.configService.getSubmissionLimits.succeedsWith(SubmissionLimits.empty)
-          status <- env.limiter.isBannedAny(clientId, List(subject, subject2), ChallengeType.OtpSubmit)
+          status <- env.limiter.statusForSubjects(clientId, List(subject, subject2), ChallengeType.OtpSubmit)
         yield assertTrue(
           status == LimitStatus.Allowed,
           env.configService.find.calls.isEmpty,
@@ -352,7 +352,7 @@ object SubmissionLimiterSpec extends UnitSpecBase:
         for
           _ <- env.configService.getSubmissionLimits.succeedsWith(limits)
           _ <- env.configService.find.succeedsWith(None)
-          result <- env.limiter.isBannedAny(clientId, List(subject, subject2), ChallengeType.OtpSubmit)
+          result <- env.limiter.statusForSubjects(clientId, List(subject, subject2), ChallengeType.OtpSubmit)
         yield assertTrue(result == LimitStatus.Allowed, env.throttleRepo.findAllForSubjects.calls.isEmpty)
       },
       test("returns Allowed when there are no throttle records") {
@@ -361,7 +361,7 @@ object SubmissionLimiterSpec extends UnitSpecBase:
           _ <- env.configService.getSubmissionLimits.succeedsWith(limits)
           _ <- env.configService.find.succeedsWith(Some(client))
           _ <- env.throttleRepo.findAllForSubjects.succeedsWith(Nil)
-          result <- env.limiter.isBannedAny(clientId, List(subject, subject2), ChallengeType.OtpSubmit)
+          result <- env.limiter.statusForSubjects(clientId, List(subject, subject2), ChallengeType.OtpSubmit)
         yield assertTrue(result == LimitStatus.Allowed, env.throttleRepo.findAllForSubjects.calls.length == 1)
       },
       test("returns the worst status across subjects in a single query") {
@@ -375,7 +375,7 @@ object SubmissionLimiterSpec extends UnitSpecBase:
               ChallengeThrottleRecord(tenantId, subject, ChallengeType.OtpSubmit, Nil, Some(now.plusSeconds(300)), now.plusSeconds(300)),
             ),
           )
-          result <- env.limiter.isBannedAny(clientId, List(subject, subject2), ChallengeType.OtpSubmit)
+          result <- env.limiter.statusForSubjects(clientId, List(subject, subject2), ChallengeType.OtpSubmit)
         yield assertTrue(
           result == LimitStatus.Banned,
           env.throttleRepo.findAllForSubjects.calls.length == 1,

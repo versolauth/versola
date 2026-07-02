@@ -226,7 +226,7 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
         for
           _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.Allowed)
           _ <- env.passwordService.verifyPassword.succeedsWith(CheckPassword.Failure)
-          _ <- env.submissionLimiter.recordLimit.succeedsWith(LimitStatus.Allowed)
+          _ <- env.submissionLimiter.recordLimitAll.succeedsWith(LimitStatus.Allowed)
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
           result <- env.service.checkPassword(passwordRecord, passwordStep, password, authId)
         yield assertTrue(
@@ -240,7 +240,7 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
         for
           _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.Allowed)
           _ <- env.passwordService.verifyPassword.succeedsWith(CheckPassword.Failure)
-          _ <- env.submissionLimiter.recordLimit.succeedsWith(LimitStatus.RateLimited(30L))
+          _ <- env.submissionLimiter.recordLimitAll.succeedsWith(LimitStatus.RateLimited(30L))
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
           result <- env.service.checkPassword(passwordRecord, passwordStep, password, authId)
         yield assertTrue(
@@ -254,7 +254,7 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
         for
           _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.Allowed)
           _ <- env.passwordService.verifyPassword.succeedsWith(CheckPassword.Failure)
-          _ <- env.submissionLimiter.recordLimit.succeedsWith(LimitStatus.Banned)
+          _ <- env.submissionLimiter.recordLimitAll.succeedsWith(LimitStatus.Banned)
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
           result <- env.service.checkPassword(passwordRecord, passwordStep, password, authId)
         yield assertTrue(result == ConversationResult.RenderStep(ConversationStep.AccessDenied))
@@ -265,7 +265,7 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
         for
           _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.Allowed)
           _ <- env.passwordService.verifyPassword.succeedsWith(CheckPassword.OldPassword(changedAt))
-          _ <- env.submissionLimiter.recordLimit.succeedsWith(LimitStatus.Allowed)
+          _ <- env.submissionLimiter.recordLimitAll.succeedsWith(LimitStatus.Allowed)
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
           result <- env.service.checkPassword(passwordRecord, passwordStep, password, authId)
         yield assertTrue(
@@ -295,13 +295,13 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
         for
           _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.Allowed)
           _ <- env.passwordService.verifyPassword.succeedsWith(CheckPassword.Failure)
-          _ <- env.submissionLimiter.recordLimit.succeedsWith(LimitStatus.Allowed)
+          _ <- env.submissionLimiter.recordLimitAll.succeedsWith(LimitStatus.Allowed)
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
           _ <- env.service.checkPassword(passwordRecord, passwordStep, password, authId)
-          failureSubjects = env.submissionLimiter.recordLimit.calls.map(_._2).toSet
-          failureTimes = env.submissionLimiter.recordLimit.times
+          failureSubjects = env.submissionLimiter.recordLimitAll.calls.head._2.toSet
+          failureTimes = env.submissionLimiter.recordLimitAll.times
         yield assertTrue(
-          failureTimes == 2,
+          failureTimes == 1,
           failureSubjects == Set(userId.toString, email.toString),
         )
       },
@@ -330,7 +330,7 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
         val env = Env()
         for
           _ <- env.userRepository.findByLogin.succeedsWith(Some(loginUser))
-          _ <- env.submissionLimiter.isBannedAny.succeedsWith(LimitStatus.Allowed)
+          _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.Allowed)
           _ <- env.passwordService.verifyPassword.succeedsWith(CheckPassword.Success)
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
           result <- env.service.checkLoginPassword(authId, baseRecord, login, password)
@@ -346,11 +346,11 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
         val env = Env()
         for
           _ <- env.userRepository.findByLogin.succeedsWith(Some(loginUser))
-          _ <- env.submissionLimiter.isBannedAny.succeedsWith(LimitStatus.Banned)
+          _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.Banned)
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
           result <- env.service.checkLoginPassword(authId, baseRecord, login, password)
-          checkedSubjects = env.submissionLimiter.isBannedAny.calls.map(_._2).flatten.toSet
-          checkedTimes = env.submissionLimiter.isBannedAny.times
+          checkedSubjects = env.submissionLimiter.statusForSubjects.calls.map(_._2).flatten.toSet
+          checkedTimes = env.submissionLimiter.statusForSubjects.times
         yield assertTrue(
           result == ConversationResult.RenderStep(ConversationStep.AccessDenied),
           checkedSubjects == Set(login, userId.toString),
@@ -361,7 +361,7 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
         val env = Env()
         for
           _ <- env.userRepository.findByLogin.succeedsWith(Some(loginUser))
-          _ <- env.submissionLimiter.isBannedAny.succeedsWith(LimitStatus.RateLimited(30L))
+          _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.RateLimited(30L))
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
           result <- env.service.checkLoginPassword(authId, baseRecord, login, password)
         yield assertTrue(result == ConversationResult.RenderStep(credentialStep.copy(loginFailed = true)))
@@ -370,7 +370,7 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
         val env = Env()
         for
           _ <- env.userRepository.findByLogin.succeedsWith(Some(loginUser))
-          _ <- env.submissionLimiter.isBannedAny.succeedsWith(LimitStatus.Allowed)
+          _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.Allowed)
           _ <- env.passwordService.verifyPassword.succeedsWith(CheckPassword.Failure)
           _ <- env.submissionLimiter.recordLimitAll.succeedsWith(LimitStatus.Allowed)
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
@@ -387,7 +387,7 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
         val env = Env()
         for
           _ <- env.userRepository.findByLogin.succeedsWith(Some(loginUser))
-          _ <- env.submissionLimiter.isBannedAny.succeedsWith(LimitStatus.Allowed)
+          _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.Allowed)
           _ <- env.passwordService.verifyPassword.succeedsWith(CheckPassword.Failure)
           _ <- env.submissionLimiter.recordLimitAll.succeedsWith(LimitStatus.Banned)
           _ <- env.conversationRepository.overwrite.succeedsWith(true)

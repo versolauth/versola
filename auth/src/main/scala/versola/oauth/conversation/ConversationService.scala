@@ -21,8 +21,7 @@ import versola.user.UserRepository
 import versola.user.model.{Login, UserId, UserRecord}
 import versola.util.{AuthPropertyGenerator, Base64, CoreConfig, Email, Phone, Secret, SecureRandom, SecurityService}
 import zio.*
-import zio.json.DecoderOps
-import zio.json.ast.{Json, JsonCursor}
+import zio.json.ast.Json
 
 import java.time.Instant
 
@@ -318,9 +317,6 @@ object ConversationService:
           val userSubject = userId.toString
           val credSubjectOpt = conversation.credential.map(_.merge)
           val subjects = credSubjectOpt.fold(List(userSubject))(s => List(userSubject, s))
-          val recordCredFailure = credSubjectOpt.fold(ZIO.unit)(s =>
-            submissionLimiter.recordLimit(conversation.clientId, s, ChallengeType.PasswordSubmit).unit,
-          )
           for
             ban    <- submissionLimiter.statusForSubjects(conversation.clientId, subjects, ChallengeType.PasswordSubmit)
             result <- ban match
@@ -340,21 +336,34 @@ object ConversationService:
                           case false => ConversationResult.IllegalState
 
                   case CheckPassword.OldPassword(changedAt) =>
-                    recordCredFailure *>
-                      recordLimitAndRender(authId, conversation, userSubject, ChallengeType.PasswordSubmit): retryAfter =>
-                        passwordStep.copy(
+                    submissionLimiter.recordLimitAll(conversation.clientId, subjects, ChallengeType.PasswordSubmit).flatMap:
+                      case LimitStatus.Banned => accessDenied(authId, conversation)
+                      case LimitStatus.RateLimited(_) =>
+                        renderStep(authId, conversation, passwordStep.copy(
                           timesSubmitted = passwordStep.timesSubmitted + 1,
                           oldPasswordChangedAt = Some(changedAt),
-                          rateLimitExceeded = retryAfter.isDefined,
-                        )
+                          rateLimitExceeded = true,
+                        ))
+                      case LimitStatus.Allowed =>
+                        renderStep(authId, conversation, passwordStep.copy(
+                          timesSubmitted = passwordStep.timesSubmitted + 1,
+                          oldPasswordChangedAt = Some(changedAt),
+                          rateLimitExceeded = false,
+                        ))
 
                   case CheckPassword.Failure =>
-                    recordCredFailure *>
-                      recordLimitAndRender(authId, conversation, userSubject, ChallengeType.PasswordSubmit): retryAfter =>
-                        passwordStep.copy(
+                    submissionLimiter.recordLimitAll(conversation.clientId, subjects, ChallengeType.PasswordSubmit).flatMap:
+                      case LimitStatus.Banned => accessDenied(authId, conversation)
+                      case LimitStatus.RateLimited(_) =>
+                        renderStep(authId, conversation, passwordStep.copy(
                           timesSubmitted = passwordStep.timesSubmitted + 1,
-                          rateLimitExceeded = retryAfter.isDefined,
-                        )
+                          rateLimitExceeded = true,
+                        ))
+                      case LimitStatus.Allowed =>
+                        renderStep(authId, conversation, passwordStep.copy(
+                          timesSubmitted = passwordStep.timesSubmitted + 1,
+                          rateLimitExceeded = false,
+                        ))
           yield result
 
     override def checkLoginPassword(
@@ -371,7 +380,7 @@ object ConversationService:
                 cred.copy(loginFailed = true)
             case Some(user) =>
               val userSubject = user.id.toString
-              submissionLimiter.isBannedAny(conversation.clientId, List(login, userSubject), ChallengeType.PasswordSubmit).flatMap:
+              submissionLimiter.statusForSubjects(conversation.clientId, List(login, userSubject), ChallengeType.PasswordSubmit).flatMap:
                 case LimitStatus.Banned =>
                   accessDenied(authId, conversation)
                 case LimitStatus.RateLimited(_) =>
@@ -481,29 +490,33 @@ object ConversationService:
               ZIO.succeed(ConversationResult.IllegalState)
             case Some(request) =>
               // The credential id is client-chosen and can be rotated to dodge throttling, so we
-              // also throttle a server-controlled IP subject. The credential subject still guards a
-              // specific registered credential against targeted brute force. When the IP is unknown
-              // we throttle a shared "ip:unknown" bucket so probing without an IP is still limited.
-              val ipSubject = "ip:" + ipAddress.getOrElse("unknown")
-              val recordIp =
-                submissionLimiter.recordLimit(conversation.clientId, ipSubject, ChallengeType.PasskeyAssertion).unit
-              val resetIp =
-                submissionLimiter.reset(conversation.clientId, ipSubject, ChallengeType.PasskeyAssertion)
-              response.fromJson[Json.Obj].toOption
-                .flatMap(_.get("id").flatMap(_.asString))
-                .filter(_.nonEmpty) match
+              // also throttle a server-controlled IP subject when available. The credential subject
+              // still guards a specific registered credential against targeted brute force.
+              // IP throttling is skipped entirely when neither X-Real-IP nor X-Forwarded-For is
+              // present — we do not invent a shared fallback bucket.
+              val ipSubjectOpt = ipAddress.map("ip:" + _)
+              val recordIp = ipSubjectOpt.fold(ZIO.unit)(ip =>
+                submissionLimiter.recordLimit(conversation.clientId, ip, ChallengeType.PasskeyAssertion).unit
+              )
+              val resetIp = ipSubjectOpt.fold(ZIO.unit)(ip =>
+                submissionLimiter.reset(conversation.clientId, ip, ChallengeType.PasskeyAssertion)
+              )
+              webAuthnService.credentialIdFromResponse(response).flatMap:
                 case None =>
-                  // Malformed payload (no usable credential id): still a failed attempt. Throttle the
-                  // IP subject and clear the stale request so the client cannot spam unthrottled and
-                  // isn't stuck reusing request state.
-                  submissionLimiter.statusForSubjects(conversation.clientId, List(ipSubject), ChallengeType.PasskeyAssertion).flatMap:
-                    case LimitStatus.Banned | LimitStatus.RateLimited(_) =>
-                      accessDenied(authId, conversation)
-                    case LimitStatus.Allowed =>
-                      recordIp *>
-                        renderStep(authId, conversation, cred.copy(passkeyRequest = None, passkeyFailed = true))
+                  // Malformed payload (no usable credential id). Throttle the IP if available and
+                  // clear the stale request; if there is no IP we just re-render without recording.
+                  val malformedSubjects = ipSubjectOpt.toList
+                  if malformedSubjects.isEmpty then
+                    renderStep(authId, conversation, cred.copy(passkeyRequest = None, passkeyFailed = true))
+                  else
+                    submissionLimiter.statusForSubjects(conversation.clientId, malformedSubjects, ChallengeType.PasskeyAssertion).flatMap:
+                      case LimitStatus.Banned | LimitStatus.RateLimited(_) =>
+                        accessDenied(authId, conversation)
+                      case LimitStatus.Allowed =>
+                        recordIp *>
+                          renderStep(authId, conversation, cred.copy(passkeyRequest = None, passkeyFailed = true))
                 case Some(credSubject) =>
-                  val banSubjects = List(ipSubject, credSubject)
+                  val banSubjects = ipSubjectOpt.toList :+ credSubject
                   submissionLimiter.statusForSubjects(conversation.clientId, banSubjects, ChallengeType.PasskeyAssertion).flatMap:
                     case LimitStatus.Banned | LimitStatus.RateLimited(_) =>
                       accessDenied(authId, conversation)
@@ -514,11 +527,11 @@ object ConversationService:
                         case Some(settings) =>
                           webAuthnService.finishAssertion(settings, request, response).foldZIO(
                             { _ =>
-                              recordIp *> submissionLimiter.recordLimit(conversation.clientId, credSubject, ChallengeType.PasskeyAssertion) *>
+                              (recordIp zipPar submissionLimiter.recordLimit(conversation.clientId, credSubject, ChallengeType.PasskeyAssertion)) *>
                                 renderStep(authId, conversation, cred.copy(passkeyRequest = None, passkeyFailed = true))
                             },
                             outcome =>
-                              resetIp *> submissionLimiter.reset(conversation.clientId, credSubject, ChallengeType.PasskeyAssertion) *>
+                              (resetIp zipPar submissionLimiter.reset(conversation.clientId, credSubject, ChallengeType.PasskeyAssertion)) *>
                                 userRepository.find(outcome.userId).zipPar(
                                   passkeyRepository.findByCredentialIdAndUser(outcome.credentialId, outcome.userId)
                                 ).flatMap:

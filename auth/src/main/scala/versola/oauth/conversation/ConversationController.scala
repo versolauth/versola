@@ -43,7 +43,7 @@ object ConversationController extends Controller:
           response <- formService.renderStep(record, ifNoneMatch.map(_.renderedValue))
         yield response
       ).catchAll {
-        case error: Error => ZIO.succeed(Response.badRequest)
+        case _: Error => ZIO.succeed(Response.badRequest)
         case ex: Throwable => ZIO.fail(ex)
       }
     }
@@ -77,7 +77,7 @@ object ConversationController extends Controller:
         options <- router.startPasskeyOptions(cookie.authId).someOrFail(Error.BadRequest)
       yield Response.json(options),
       ).catchAll {
-        case error: Error => ZIO.succeed(Response.badRequest)
+        case _: Error => ZIO.succeed(Response.badRequest)
         case ex: Throwable => ZIO.fail(ex)
       }
     }
@@ -106,7 +106,7 @@ object ConversationController extends Controller:
         response <- conversationRenderService.renderSubmit(result, record)
       yield response)
         .catchAll {
-          case error: Error => ZIO.succeed(Response.badRequest)
+          case _: Error => ZIO.succeed(Response.badRequest)
           case ex: Throwable => ZIO.fail(ex)
         }
     }
@@ -141,12 +141,14 @@ object ConversationController extends Controller:
         case None =>
           ZIO.fail(Error.BadRequest)
 
-  /** Server-controlled throttle subject: trust the X-Real-IP set by the edge proxy, falling back to
-    * the socket peer address. The client cannot influence this, so it still throttles random-id probing.
+  /** Server-controlled throttle subject. We expect the edge proxy (nginx/HAProxy) to set X-Real-IP
+    * with the real client address; X-Forwarded-For is accepted as a fallback for other proxies (we
+    * take only the first value — the leftmost untrusted client IP). When neither header is present
+    * we return None and skip IP-based throttling rather than inventing a subject.
     */
   private def extractIp(request: Request): Option[String] =
     request.headers.get("X-Real-IP").map(_.trim).filter(_.nonEmpty)
-      .orElse(request.remoteAddress.map(_.getHostAddress))
+      .orElse(request.headers.get("X-Forwarded-For").map(_.split(',').head.trim).filter(_.nonEmpty))
 
   given FormDecoder[PhoneSubmission] = (form: Form) =>
     FormDecoder.single[Phone](form, "phone", Phone.parse)
