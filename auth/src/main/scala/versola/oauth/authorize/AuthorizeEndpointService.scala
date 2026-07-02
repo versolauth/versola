@@ -120,7 +120,7 @@ object AuthorizeEndpointService:
                 case Left(email) => EmailSubmission(email)
                 case Right(phone) => PhoneSubmission(phone)
               conversationRouter.submit(authId, submission, uiLocale = None)
-                .as(AuthorizeResponse.Initialize(authId))
+                .map(render => AuthorizeResponse.InitializeWithHint(authId, render, conversation))
         yield response
 
     private def silentAuthorize(
