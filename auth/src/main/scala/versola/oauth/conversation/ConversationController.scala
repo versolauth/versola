@@ -102,11 +102,11 @@ object ConversationController extends Controller:
         body <- request.formAs[Body].orElseFail(Error.BadRequest)
         _ <- ZIO.fail(Error.BadRequest).unlessZIO(validate(cookie.clientId, body))
         uiLocale <- request.queryZIO[Option[String]]("ui_locale")
-        (result, record) <- router.submit(cookie.authId, body, uiLocale)
+        (result, record) <- router.submit(cookie.authId, body, uiLocale, extractIp(request))
         response <- conversationRenderService.renderSubmit(result, record)
       yield response)
         .catchAll {
-          case _: Error => ZIO.succeed(Response.badRequest)
+          case error: Error => ZIO.succeed(Response.badRequest)
           case ex: Throwable => ZIO.fail(ex)
         }
     }
@@ -140,6 +140,13 @@ object ConversationController extends Controller:
           ZIO.fromEither(ConversationCookie.parse(cookie.content, secret).left.map(_ => Error.BadRequest))
         case None =>
           ZIO.fail(Error.BadRequest)
+
+  /** Server-controlled throttle subject: trust the X-Real-IP set by the edge proxy, falling back to
+    * the socket peer address. The client cannot influence this, so it still throttles random-id probing.
+    */
+  private def extractIp(request: Request): Option[String] =
+    request.headers.get("X-Real-IP").map(_.trim).filter(_.nonEmpty)
+      .orElse(request.remoteAddress.map(_.getHostAddress))
 
   given FormDecoder[PhoneSubmission] = (form: Form) =>
     FormDecoder.single[Phone](form, "phone", Phone.parse)

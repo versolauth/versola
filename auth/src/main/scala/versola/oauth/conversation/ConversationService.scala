@@ -93,10 +93,15 @@ trait ConversationService:
     * On success: updates the conversation with the resolved user and advances to enrollment-offer or finish.
     * On failure: clears the passkeyRequest and re-renders the Credential step.
     */
-  def finishPasskeyAssertion(authId: AuthId, conversation: ConversationRecord, response: String): Task[ConversationResult.Render]
+  def finishPasskeyAssertion(
+                              authId: AuthId,
+                              record: ConversationRecord,
+                              response: String,
+                              ipAddress: Option[String],
+                            ): Task[ConversationResult.Render]
 
   /** After all primary auth factors pass: if the tenant has passkey settings and the user has no
-    * passkey yet, starts a registration ceremony and renders the PasskeyEnroll step.
+   * passkey yet, starts a registration ceremony and renders the PasskeyEnroll step.
     * Otherwise, finishes immediately.
     */
   def offerPasskeyEnroll(authId: AuthId, conversation: ConversationRecord): Task[ConversationResult.Render]
@@ -460,7 +465,12 @@ object ConversationService:
             .as(ceremony.publicKeyOptions),
       )
 
-    override def finishPasskeyAssertion(authId: AuthId, conversation: ConversationRecord, response: String): Task[ConversationResult.Render] =
+    override def finishPasskeyAssertion(
+      authId: AuthId,
+      conversation: ConversationRecord,
+      response: String,
+      ipAddress: Option[String]
+    ): Task[ConversationResult.Render] =
       conversation.step match
         case cred: ConversationStep.Credential if conversation.authFlow.passkey.isDefined =>
           cred.passkeyRequest match
@@ -473,7 +483,17 @@ object ConversationService:
                 case None =>
                   ZIO.succeed(ConversationResult.IllegalState)
                 case Some(credSubject) =>
-                  submissionLimiter.isBanned(conversation.clientId, credSubject, ChallengeType.PasskeyAssertion).flatMap:
+                  // The credential id is client-chosen and can be rotated to dodge throttling, so we
+                  // also throttle a server-controlled IP subject. The credential subject still guards a
+                  // specific registered credential against targeted brute force. When the IP is unknown
+                  // we throttle a shared "ip:unknown" bucket so probing without an IP is still limited.
+                  val ipSubject = "ip:" + ipAddress.getOrElse("unknown")
+                  val banSubjects = List(ipSubject, credSubject)
+                  val recordIp =
+                    submissionLimiter.recordLimit(conversation.clientId, ipSubject, ChallengeType.PasskeyAssertion).unit
+                  val resetIp =
+                    submissionLimiter.reset(conversation.clientId, ipSubject, ChallengeType.PasskeyAssertion)
+                  submissionLimiter.statusForSubjects(conversation.clientId, banSubjects, ChallengeType.PasskeyAssertion).flatMap:
                     case LimitStatus.Banned | LimitStatus.RateLimited(_) =>
                       accessDenied(authId, conversation)
                     case LimitStatus.Allowed =>
@@ -483,11 +503,11 @@ object ConversationService:
                         case Some(settings) =>
                           webAuthnService.finishAssertion(settings, request, response).foldZIO(
                             { _ =>
-                                submissionLimiter.recordLimit(conversation.clientId, credSubject, ChallengeType.PasskeyAssertion) *>
-                                  renderStep(authId, conversation, cred.copy(passkeyRequest = None, passkeyFailed = true))
+                              recordIp *> submissionLimiter.recordLimit(conversation.clientId, credSubject, ChallengeType.PasskeyAssertion) *>
+                                renderStep(authId, conversation, cred.copy(passkeyRequest = None, passkeyFailed = true))
                             },
                             outcome =>
-                              submissionLimiter.reset(conversation.clientId, credSubject, ChallengeType.PasskeyAssertion) *>
+                              resetIp *> submissionLimiter.reset(conversation.clientId, credSubject, ChallengeType.PasskeyAssertion) *>
                                 userRepository.find(outcome.userId).zipPar(
                                   passkeyRepository.findByCredentialIdAndUser(outcome.credentialId, outcome.userId)
                                 ).flatMap:

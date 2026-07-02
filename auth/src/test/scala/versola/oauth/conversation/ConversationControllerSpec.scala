@@ -79,7 +79,7 @@ object ConversationControllerSpec extends UnitSpecBase:
   def successfulSubmitTestCase(
       description: String,
       request: Request,
-      submission: (AuthId, Submission, Option[String]),
+      submission: (AuthId, Submission, Option[String], Option[String]),
   )(using
       loc: SourceLocation,
       trace: Trace,
@@ -178,7 +178,7 @@ object ConversationControllerSpec extends UnitSpecBase:
           Form(FormField.Text("email", email, MediaType.text.plain)),
         )
       ).addHeader(conversationCookie),
-      submission = (authId, EmailSubmission(email), None),
+      submission = (authId, EmailSubmission(email), None, None),
     ),
     successfulSubmitTestCase(
       description = "submit phone",
@@ -188,7 +188,7 @@ object ConversationControllerSpec extends UnitSpecBase:
           Form.fromStrings("phone" -> phone),
         )
       ).addHeader(conversationCookie),
-      submission = (authId, PhoneSubmission(phone), None),
+      submission = (authId, PhoneSubmission(phone), None, None),
     ),
     successfulSubmitTestCase(
       description = "submit otp",
@@ -198,7 +198,7 @@ object ConversationControllerSpec extends UnitSpecBase:
           Form.fromStrings("code" -> otpCode.toString),
         )
       ).addHeader(conversationCookie),
-      submission = (authId, OtpSubmission(otpCode), None),
+      submission = (authId, OtpSubmission(otpCode), None, None),
     ),
     successfulSubmitTestCase(
       description = "submit otp resend",
@@ -208,7 +208,7 @@ object ConversationControllerSpec extends UnitSpecBase:
           Form.fromStrings(),
         )
       ).addHeader(conversationCookie),
-      submission = (authId, OtpResendSubmission(), None),
+      submission = (authId, OtpResendSubmission(), None, None),
     ),
     successfulSubmitTestCase(
       description = "submit forwards ui_locale from query param",
@@ -218,7 +218,17 @@ object ConversationControllerSpec extends UnitSpecBase:
           Form.fromStrings("code" -> otpCode.toString),
         )
       ).addHeader(conversationCookie),
-      submission = (authId, OtpSubmission(otpCode), Some("ru")),
+      submission = (authId, OtpSubmission(otpCode), Some("ru"), None),
+    ),
+    successfulSubmitTestCase(
+      description = "submit forwards the X-Real-IP header as the throttle ip",
+      request = Request.post(
+        url = URL.empty / "challenge" / "otp",
+        body = Body.fromURLEncodedForm(
+          Form.fromStrings("code" -> otpCode.toString),
+        )
+      ).addHeader(conversationCookie).addHeader("X-Real-IP", "9.9.9.9"),
+      submission = (authId, OtpSubmission(otpCode), None, Some("9.9.9.9")),
     ),
     successfulSubmitTestCase(
       description = "submit login-password",
@@ -228,7 +238,7 @@ object ConversationControllerSpec extends UnitSpecBase:
           Form.fromStrings("login" -> "user", "password" -> "s3cret"),
         )
       ).addHeader(conversationCookie),
-      submission = (authId, LoginPasswordSubmission(Login("user"), Password("s3cret")), None),
+      submission = (authId, LoginPasswordSubmission(Login("user"), Password("s3cret")), None, None),
     ),
     rejectedSubmitTestCase(
       description = "reject login-password violating configured password regex",

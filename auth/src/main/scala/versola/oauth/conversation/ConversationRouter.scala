@@ -9,7 +9,12 @@ import zio.{Task, ZIO, ZLayer}
 trait ConversationRouter:
   def getConversation(authId: AuthId): Task[Option[ConversationRecord]]
 
-  def submit(authId: AuthId, submission: Submission, uiLocale: Option[String]): Task[(ConversationResult.Render, ConversationRecord)]
+  def submit(
+    authId: AuthId,
+    submission: Submission,
+    uiLocale: Option[String],
+    ipAddress: Option[String],
+  ): Task[(ConversationResult.Render, ConversationRecord)]
 
   /** Begin a discoverable-credentials assertion and return the JSON public-key options.
     * Called by GET /challenge/passkey/options; does NOT go through the submit/render cycle.
@@ -32,15 +37,14 @@ object ConversationRouter:
     override def startPasskeyOptions(authId: AuthId): Task[Option[String]] =
       conversationService.find(authId).flatMap:
         case None => ZIO.none
-        case Some(conversation) =>
-          conversation.step match
-            case cred: ConversationStep.Credential if conversation.authFlow.passkey.isDefined =>
-              configService.getPasskeySettings(conversation.clientId).flatMap:
+        case Some(record) =>
+          record.step match
+            case cred: ConversationStep.Credential if record.authFlow.passkey.isDefined =>
+              configService.getPasskeySettings(record.clientId).flatMap:
                 case None =>
                   ZIO.fail(new Exception("Passkeys not configured for this tenant"))
                 case Some(settings) =>
-                  conversationService.startPasskeyAssertion(authId, conversation, cred, settings)
-                    .map(Some(_))
+                  conversationService.startPasskeyAssertion(authId, record, cred, settings).map(Some(_))
             case _: ConversationStep.Credential =>
               ZIO.none
             case _ =>
@@ -50,12 +54,13 @@ object ConversationRouter:
         authId: AuthId,
         submission: Submission,
         uiLocale: Option[String],
+        ipAddress: Option[String],
     ): Task[(ConversationResult.Render, ConversationRecord)] =
       conversationService.find(authId).flatMap:
         case None => ZIO.fail(Error.BadRequest)
         case Some(conversation) =>
           val updated = withUiLocale(conversation, uiLocale)
-          dispatch(authId, updated, submission)
+          dispatch(authId, updated, submission, ipAddress)
             .orElseSucceed(ConversationResult.ServiceUnavailable)
             .map(_ -> updated)
 
@@ -63,6 +68,7 @@ object ConversationRouter:
         authId: AuthId,
         conversation: ConversationRecord,
         submission: Submission,
+        ipAddress: Option[String],
     ): Task[ConversationResult.Render] =
       (submission, conversation) match
         case (submitted: EmailSubmission, _) =>
@@ -96,7 +102,7 @@ object ConversationRouter:
               ZIO.succeed(other)
 
         case (submitted: PasskeyAssertionSubmission, _) =>
-          conversationService.finishPasskeyAssertion(authId, conversation, submitted.response)
+          conversationService.finishPasskeyAssertion(authId, conversation, submitted.response, ipAddress)
 
         case (submitted: PasskeyEnrollSubmission, _) =>
           conversation.step match
@@ -150,6 +156,7 @@ object ConversationRouter:
 
         case Some((AuthFactor(AuthFactorType.passkeyEnroll, _), _)) =>
           ZIO.succeed(ConversationResult.IllegalState)
+
         case None =>
           conversationService.finish(authId, conversation)
 
@@ -177,5 +184,6 @@ object ConversationRouter:
 
         case Some((AuthFactor(AuthFactorType.passkeyEnroll, _), _)) =>
           conversationService.offerPasskeyEnroll(authId, conversation)
+
         case None =>
           conversationService.finish(authId, conversation)
