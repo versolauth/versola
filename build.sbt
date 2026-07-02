@@ -151,7 +151,14 @@ lazy val commonSettings =
     ),
     libraryDependencies ++= Dependencies.core,
     testFrameworks += new TestFramework("zio.test.sbt.ZTestFramework"),
+    // Exclude application entrypoints and bootstrap/seed wiring from coverage: these
+    // are process wiring that is only exercised at runtime, not by unit tests.
+    coverageExcludedFiles := Seq(
+      ".*PostgresOAuthApp.*",
+      ".*PostgresCentralApp.*",
+      ".*PostgresEdgeApp.*",
+      ".*BootstrapService.*",
+    ).mkString(";"),
   )
 
 val CompileTest = "compile->compile;test->test"
-
