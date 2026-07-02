@@ -282,11 +282,15 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
           )
         case _ => assertTrue(false)
         submitCalls = env.conversationRouter.submit.calls
-      yield assertTrue(
-        result == AuthorizeResponse.Initialize(versola.oauth.conversation.model.AuthId(uuid)),
-        submitCalls.nonEmpty,
-        submitCalls.head._2 == EmailSubmission(emailHint),
-      )
+      yield result match
+        case AuthorizeResponse.InitializeWithHint(authId, render, _) =>
+          assertTrue(
+            authId == versola.oauth.conversation.model.AuthId(uuid),
+            render == ConversationResult.IllegalState,
+            submitCalls.nonEmpty,
+            submitCalls.head._2 == EmailSubmission(emailHint),
+          )
+        case _ => assertTrue(false)
     },
     test("advance conversation to OTP step when login_hint phone is provided on phone+otp flow") {
       val env = Env()
