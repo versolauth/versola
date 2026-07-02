@@ -11,6 +11,7 @@ CREATE TABLE challenge_settings (
     auth_conversation_ttl_seconds INT NOT NULL,
     session_ttl_seconds          INT NOT NULL,
     session_idle_ttl_seconds     INT,
+    ip_header                    TEXT NOT NULL,
     PRIMARY KEY (tenant_id)
 );
 

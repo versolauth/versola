@@ -100,6 +100,7 @@ export interface ChallengeSettingsRecord {
   authConversationTtlSeconds: number;
   sessionTtlSeconds: number;
   sessionIdleTtlSeconds?: number | null;
+  ipHeader: string;
 }
 
 // A registered passkey credential for a user

@@ -65,6 +65,9 @@ export class VersolaChallengesList extends LitElement {
   @state() private editSessionTtlSeconds = 86400;
   @state() private editSessionIdleTtlSeconds: number | null = null;
 
+  @state() private ipHeader = 'X-Real-IP';
+  @state() private editIpHeader = 'X-Real-IP';
+
   @state() private submissionLimits: SubmissionLimits = {
     otpRequest: [],
     otpSubmit: [],
@@ -383,6 +386,7 @@ export class VersolaChallengesList extends LitElement {
         this.authConversationTtlSeconds = challengeSettings.authConversationTtlSeconds;
         this.sessionTtlSeconds = challengeSettings.sessionTtlSeconds;
         this.sessionIdleTtlSeconds = challengeSettings.sessionIdleTtlSeconds ?? null;
+        this.ipHeader = challengeSettings.ipHeader || 'X-Real-IP';
       } else {
         this.phonePrefixes = [];
         this.passwordRegex = '';
@@ -395,6 +399,7 @@ export class VersolaChallengesList extends LitElement {
         this.authConversationTtlSeconds = 900;
         this.sessionTtlSeconds = 86400;
         this.sessionIdleTtlSeconds = null;
+        this.ipHeader = 'X-Real-IP';
       }
     } catch (e) {
       this.errorMessage = e instanceof Error ? e.message : 'Failed to load data';
@@ -531,6 +536,7 @@ export class VersolaChallengesList extends LitElement {
     this.editAuthConversationTtlSeconds = this.authConversationTtlSeconds;
     this.editSessionTtlSeconds = this.sessionTtlSeconds;
     this.editSessionIdleTtlSeconds = this.sessionIdleTtlSeconds;
+    this.editIpHeader = this.ipHeader;
     this.editPasskeyRpId = this.passkeySettings?.rpId ?? '';
     this.editPasskeyRpName = this.passkeySettings?.rpName ?? '';
     this.editPasskeyOrigins = (this.passkeySettings?.origins ?? []).map(value => ({ value }));
@@ -603,6 +609,12 @@ export class VersolaChallengesList extends LitElement {
     }
     const passkeySettings: PasskeySettings = { rpId, rpName, origins, userVerification: this.editPasskeyUserVerification };
 
+    const ipHeader = this.editIpHeader.trim();
+    if (!ipHeader) {
+      this.settingsError = 'Client IP header is required.';
+      return;
+    }
+
     this.isSavingSettings = true;
     this.settingsError = '';
     try {
@@ -618,6 +630,7 @@ export class VersolaChallengesList extends LitElement {
         this.editAuthConversationTtlSeconds,
         this.editSessionTtlSeconds,
         this.editSessionIdleTtlSeconds,
+        ipHeader,
         regex || undefined,
       );
       this.phonePrefixes = prefixes;
@@ -630,6 +643,7 @@ export class VersolaChallengesList extends LitElement {
       this.authConversationTtlSeconds = this.editAuthConversationTtlSeconds;
       this.sessionTtlSeconds = this.editSessionTtlSeconds;
       this.sessionIdleTtlSeconds = this.editSessionIdleTtlSeconds;
+      this.ipHeader = ipHeader;
       this.passkeySettings = { ...passkeySettings, origins: [...passkeySettings.origins] };
       this.hasChallengeSettings = true;
       this.editingSettings = false;
@@ -818,6 +832,9 @@ export class VersolaChallengesList extends LitElement {
 
           <label style="margin-top: var(--spacing-lg);">SSO Session Idle Timeout</label>
           <div class="template-text">${this.sessionIdleTtlSeconds != null ? this.formatDuration(this.sessionIdleTtlSeconds) : 'Disabled'}</div>
+
+          <label style="margin-top: var(--spacing-lg);">Client IP Header</label>
+          <div class="template-text">${this.ipHeader}</div>
         </div>
 
         <div class="card" style="margin-bottom: var(--spacing-lg);">
@@ -968,6 +985,8 @@ export class VersolaChallengesList extends LitElement {
           <span class="limit-hint">${this.editSessionIdleTtlSeconds != null ? this.formatDuration(this.editSessionIdleTtlSeconds) : 'Disabled'}</span>
         </div>
 
+        ${this.renderIpHeaderEdit()}
+
         <h3 style="margin-top: var(--spacing-xl); margin-bottom: var(--spacing-md);">Passkey (WebAuthn)</h3>
 
         <label>Relying Party ID</label>
@@ -1005,6 +1024,8 @@ export class VersolaChallengesList extends LitElement {
           `)}
         <button class="btn btn-secondary" @click=${() => this.addPasskeyOrigin()}>+ Add Origin</button>
 
+        ${this.renderIpHeaderEdit()}
+
         <h3 style="margin-top: var(--spacing-xl); margin-bottom: var(--spacing-md);">Submission Limits</h3>
 
         <div class="form-group">
@@ -1030,6 +1051,30 @@ export class VersolaChallengesList extends LitElement {
         </div>
         ${this.settingsError ? html`<div class="error-msg">${this.settingsError}</div>` : nothing}
       </div>
+    `;
+  }
+
+  private renderIpHeaderEdit() {
+    const knownHeaders = ['X-Real-IP', 'X-Forwarded-For'];
+    const isCustom = !knownHeaders.includes(this.editIpHeader);
+    return html`
+      <label style="margin-top: var(--spacing-lg);">Client IP Header</label>
+      <div class="hint">HTTP header your reverse proxy sets with the real client IP, used for IP-based throttling.</div>
+      <select class="form-control compact-input" .value=${isCustom ? 'custom' : this.editIpHeader}
+        @change=${(e: Event) => {
+          const value = (e.target as HTMLSelectElement).value;
+          this.editIpHeader = value === 'custom' ? '' : value;
+        }}>
+        <option value="X-Real-IP" ?selected=${this.editIpHeader === 'X-Real-IP'}>X-Real-IP (nginx)</option>
+        <option value="X-Forwarded-For" ?selected=${this.editIpHeader === 'X-Forwarded-For'}>X-Forwarded-For (other proxies)</option>
+        <option value="custom" ?selected=${isCustom}>Custom…</option>
+      </select>
+      ${isCustom ? html`
+        <input type="text" class="form-control compact-input" style="margin-top: var(--spacing-sm);"
+          .value=${this.editIpHeader}
+          @input=${(e: Event) => { this.editIpHeader = (e.target as HTMLInputElement).value; }}
+          placeholder="X-Client-IP" />
+      ` : nothing}
     `;
   }
 

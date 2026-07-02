@@ -80,6 +80,7 @@ object ConversationControllerSpec extends UnitSpecBase:
       description: String,
       request: Request,
       submission: (AuthId, Submission, Option[String], Option[String]),
+      ipHeader: String = "X-Real-IP",
   )(using
       loc: SourceLocation,
       trace: Trace,
@@ -113,6 +114,7 @@ object ConversationControllerSpec extends UnitSpecBase:
         )
         _ <- configuration.getAllowedPhonePrefixes.succeedsWith(List.empty)
         _ <- configuration.getPasswordRegex.succeedsWith(None)
+        _ <- configuration.getIpHeader.succeedsWith(ipHeader)
         _ <- router.submit.succeedsWith((conversationResult, record))
 
         response <- client.batched(request)
@@ -221,7 +223,7 @@ object ConversationControllerSpec extends UnitSpecBase:
       submission = (authId, OtpSubmission(otpCode), Some("ru"), None),
     ),
     successfulSubmitTestCase(
-      description = "submit forwards the X-Real-IP header as the throttle ip",
+      description = "submit reads the tenant-configured header (X-Real-IP) as the throttle ip",
       request = Request.post(
         url = URL.empty / "challenge" / "otp",
         body = Body.fromURLEncodedForm(
@@ -231,7 +233,7 @@ object ConversationControllerSpec extends UnitSpecBase:
       submission = (authId, OtpSubmission(otpCode), None, Some("9.9.9.9")),
     ),
     successfulSubmitTestCase(
-      description = "submit falls back to X-Forwarded-For when X-Real-IP is absent",
+      description = "submit reads the tenant-configured header (X-Forwarded-For), taking the first value",
       request = Request.post(
         url = URL.empty / "challenge" / "otp",
         body = Body.fromURLEncodedForm(
@@ -239,9 +241,10 @@ object ConversationControllerSpec extends UnitSpecBase:
         )
       ).addHeader(conversationCookie).addHeader("X-Forwarded-For", "7.7.7.7, 10.0.0.1"),
       submission = (authId, OtpSubmission(otpCode), None, Some("7.7.7.7")),
+      ipHeader = "X-Forwarded-For",
     ),
     successfulSubmitTestCase(
-      description = "submit passes no ip when neither X-Real-IP nor X-Forwarded-For is present",
+      description = "submit passes no ip when the configured header is absent from the request",
       request = Request.post(
         url = URL.empty / "challenge" / "otp",
         body = Body.fromURLEncodedForm(
@@ -249,6 +252,17 @@ object ConversationControllerSpec extends UnitSpecBase:
         )
       ).addHeader(conversationCookie),
       submission = (authId, OtpSubmission(otpCode), None, None),
+    ),
+    successfulSubmitTestCase(
+      description = "submit passes no ip when the configured header does not match any request header",
+      request = Request.post(
+        url = URL.empty / "challenge" / "otp",
+        body = Body.fromURLEncodedForm(
+          Form.fromStrings("code" -> otpCode.toString),
+        )
+      ).addHeader(conversationCookie).addHeader("X-Real-IP", "9.9.9.9"),
+      submission = (authId, OtpSubmission(otpCode), None, None),
+      ipHeader = "X-Forwarded-For",
     ),
     successfulSubmitTestCase(
       description = "submit login-password",

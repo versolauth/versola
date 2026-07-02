@@ -34,4 +34,5 @@ case class UpsertChallengeSettingsRequest(
     authConversationTtlSeconds: Option[Int],
     sessionTtlSeconds: Option[Int],
     sessionIdleTtlSeconds: Option[Int],
+    ipHeader: String,
 ) derives Schema, JsonCodec

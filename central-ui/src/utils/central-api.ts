@@ -1009,6 +1009,7 @@ export async function upsertChallengeSettings(
   authConversationTtlSeconds: number,
   sessionTtlSeconds: number,
   sessionIdleTtlSeconds: number | null,
+  ipHeader: string,
   passwordRegex?: string,
 ): Promise<void> {
   await requestVoid('/configuration/challenges/challenge-settings', {
@@ -1026,6 +1027,7 @@ export async function upsertChallengeSettings(
       authConversationTtlSeconds,
       sessionTtlSeconds,
       sessionIdleTtlSeconds: sessionIdleTtlSeconds ?? null,
+      ipHeader,
     },
   });
 }

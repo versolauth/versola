@@ -31,6 +31,8 @@ trait OAuthConfigurationService:
 
   def getSubmissionLimits(id: ClientId): UIO[SubmissionLimits]
 
+  def getIpHeader(id: ClientId): UIO[String]
+
   def getOtpSettings(id: ClientId): UIO[OtpSettings]
 
   def getPasskeySettings(id: ClientId): UIO[Option[PasskeySettings]]
@@ -169,6 +171,15 @@ object OAuthConfigurationService:
           challengeSettingsCache.get.map(
             _.find(_.tenantId == client.tenantId)
               .fold(SubmissionLimits.empty)(_.submissionLimits),
+          )
+
+    override def getIpHeader(id: ClientId): UIO[String] =
+      find(id).flatMap:
+        case None => ZIO.succeed("X-Real-IP")
+        case Some(client) =>
+          challengeSettingsCache.get.map(
+            _.find(_.tenantId == client.tenantId)
+              .fold("X-Real-IP")(_.ipHeader),
           )
 
     override def getOtpSettings(id: ClientId): UIO[OtpSettings] =

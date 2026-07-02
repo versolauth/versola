@@ -102,7 +102,8 @@ object ConversationController extends Controller:
         body <- request.formAs[Body].orElseFail(Error.BadRequest)
         _ <- ZIO.fail(Error.BadRequest).unlessZIO(validate(cookie.clientId, body))
         uiLocale <- request.queryZIO[Option[String]]("ui_locale")
-        (result, record) <- router.submit(cookie.authId, body, uiLocale, extractIp(request))
+        ipHeader <- ZIO.serviceWithZIO[OAuthConfigurationService](_.getIpHeader(cookie.clientId))
+        (result, record) <- router.submit(cookie.authId, body, uiLocale, extractIp(request, ipHeader))
         response <- conversationRenderService.renderSubmit(result, record)
       yield response)
         .catchAll {
@@ -141,14 +142,12 @@ object ConversationController extends Controller:
         case None =>
           ZIO.fail(Error.BadRequest)
 
-  /** Server-controlled throttle subject. We expect the edge proxy (nginx/HAProxy) to set X-Real-IP
-    * with the real client address; X-Forwarded-For is accepted as a fallback for other proxies (we
-    * take only the first value — the leftmost untrusted client IP). When neither header is present
-    * we return None and skip IP-based throttling rather than inventing a subject.
+  /** Extracts the client IP from the header configured in submission limits. Returns None when no
+    * header is configured, causing IP-based throttling to be skipped entirely. For multi-value
+    * headers such as X-Forwarded-For only the first (leftmost) value is used.
     */
-  private def extractIp(request: Request): Option[String] =
-    request.headers.get("X-Real-IP").map(_.trim).filter(_.nonEmpty)
-      .orElse(request.headers.get("X-Forwarded-For").map(_.split(',').head.trim).filter(_.nonEmpty))
+  private def extractIp(request: Request, ipHeader: String): Option[String] =
+    request.headers.get(ipHeader).map(_.split(',').head.trim).filter(_.nonEmpty)
 
   given FormDecoder[PhoneSubmission] = (form: Form) =>
     FormDecoder.single[Phone](form, "phone", Phone.parse)

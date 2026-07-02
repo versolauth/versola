@@ -95,6 +95,7 @@ object OtpChallengeController extends Controller:
             body.authConversationTtlSeconds.orElse(existing.map(_.authConversationTtlSeconds)).getOrElse(900),
             body.sessionTtlSeconds.orElse(existing.map(_.sessionTtlSeconds)).getOrElse(86400),
             body.sessionIdleTtlSeconds.orElse(existing.flatMap(_.sessionIdleTtlSeconds)),
+            body.ipHeader,
           ),
         )
       yield Response.status(Status.NoContent)
