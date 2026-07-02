@@ -4,8 +4,6 @@ import versola.oauth.authorize.model.{AuthorizeRequest, AuthorizeResponse, Error
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{AuthFlow, AuthMethodRef, PassedAuthFactor, PassedFactorRecord, ScopeToken}
 import versola.oauth.conversation.{ConversationRepository, ConversationRouter, EmailSubmission, PhoneSubmission}
-import versola.oauth.client.model.{AuthFactorType, AuthFlow, AuthMethodRef, PassedAuthFactor, PassedFactorRecord, ScopeToken}
-import versola.oauth.conversation.{ConversationRepository, ConversationService}
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
 import versola.oauth.jwks.JwksService
 import versola.oauth.model.{AuthorizationCode, AuthorizationCodeRecord}
@@ -25,7 +23,7 @@ trait AuthorizeEndpointService:
 
 object AuthorizeEndpointService:
   def live =
-    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _))
+    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _))
 
   class Impl(
       conversationRepository: ConversationRepository,
@@ -39,7 +37,7 @@ object AuthorizeEndpointService:
       userRepository: UserRepository,
       userInfoService: UserInfoService,
       jwksService: JwksService,
-      conversationService: ConversationService,
+      conversationRouter: ConversationRouter,
   ) extends AuthorizeEndpointService:
 
     override def authorize(

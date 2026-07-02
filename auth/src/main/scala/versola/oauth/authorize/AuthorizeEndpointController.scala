@@ -66,9 +66,10 @@ object AuthorizeEndpointController extends Controller:
 
         case AuthorizeResponse.InitializeWithHint(authId, render, conversation) =>
           renderService.renderSubmit(render, conversation).map(
-            _.addCookie(ConversationCookie(
-              value = authId,
-              ttl = conversationConfig.security.authConversation.ttl,
+            _.addCookie(ConversationCookie.responseCookie(
+              ConversationCookie(authId, request.clientId),
+              authConversationTtl,
+              config.security.conversationCookieSecret,
             ))
           )
     yield response
