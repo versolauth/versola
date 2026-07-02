@@ -164,7 +164,7 @@ object AuthorizeRequestParser:
         redirectUri: URL,
         state: Option[State],
     ): IO[Error.LoginHintInvalid, Option[Either[Email, Phone]]] =
-      val allowed = client.authFlow.forall(_.primary.credentials.contains(PrimaryCredential.email))
+      val allowed = client.authFlow.exists(_.primary.credentials.contains(PrimaryCredential.email))
       if allowed then ZIO.some[Either[Email, Phone]](Left(email))
       else ZIO.fail(Error.LoginHintInvalid(redirectUri, state))
 
@@ -175,7 +175,7 @@ object AuthorizeRequestParser:
         redirectUri: URL,
         state: Option[State],
     ): IO[Error.LoginHintInvalid, Option[Either[Email, Phone]]] =
-      val allowed = client.authFlow.forall(_.primary.credentials.contains(PrimaryCredential.phone))
+      val allowed = client.authFlow.exists(_.primary.credentials.contains(PrimaryCredential.phone))
       if !allowed then ZIO.fail(Error.LoginHintInvalid(redirectUri, state))
       else
         oauthClientService.getAllowedPhonePrefixes(clientId).flatMap { prefixes =>
