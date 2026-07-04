@@ -88,7 +88,7 @@ DECLARE
 BEGIN
     rec := CASE WHEN TG_OP = 'DELETE' THEN OLD ELSE NEW END;
     resolved_tenant_id := rec.tenant_id;
-    resolved_resource_id := rec.resource_id;
+    resolved_resource_id := rec.alias;
 
     PERFORM pg_notify(
         'resource_change',

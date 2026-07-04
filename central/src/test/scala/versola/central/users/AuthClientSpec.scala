@@ -59,7 +59,7 @@ object AuthClientSpec extends ZIOSpecDefault:
 
   /** Assert the bearer is signed with the shared secret and has the expected claims. */
   private def assertBearerClaims(token: String): Task[TestResult] =
-    JWT.deserialize[TokenClaims](token, secretKey)
+    JWT.deserialize[TokenClaims](token, secretKey, JWT.Type.JWT)
       .mapError(e => new RuntimeException(e.toString))
       .map(claims =>
         assertTrue(

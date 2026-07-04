@@ -117,19 +117,6 @@ object AuthorizeRequestParser:
           .orElseFail(Error.MultipleValuesProvided(redirectUri, state, "acr_values"))
           .map(_.map(_.split(' ').toList))
 
-        loginHint <- getParam(params, "login_hint")
-          .orElseFail(Error.MultipleValuesProvided(redirectUri, state, "login_hint"))
-          .flatMap {
-            case None => ZIO.none
-            case Some(raw) =>
-              Email.from(raw).toOption match
-                case Some(email) => parseEmailHint(email, client, redirectUri, state)
-                case None =>
-                  Phone.parse(raw).toOption match
-                    case Some(phone) => parsePhoneHint(phone, client, clientId, redirectUri, state)
-                    case None        => ZIO.fail(Error.LoginHintInvalid(redirectUri, state))
-          }
-
         userAgent =
           request.header(Header.UserAgent)
             .map(_.renderedValue)
@@ -137,6 +124,17 @@ object AuthorizeRequestParser:
         sessionId =
           request.cookie(SessionCookie.name)
             .flatMap(c => scala.util.Try(SessionId(Base64.urlDecode(c.content))).toOption)
+
+        loginHint <- getParam(params, "login_hint")
+          .orElseFail(Error.MultipleValuesProvided(redirectUri, state, "login_hint"))
+          .flatMap {
+            case None                                  => ZIO.none
+            case Some(value) if value.startsWith("+") && value.drop(1).forall(_.isDigit) => parsePhoneLoginHint(value, client, redirectUri, state)
+            case Some(value)                           => parseEmailLoginHint(value, client, redirectUri, state)
+          }
+
+        idTokenHint <- getParam(params, "id_token_hint")
+          .orElseFail(Error.MultipleValuesProvided(redirectUri, state, "id_token_hint"))
 
         authorizeRequest = AuthorizeRequest(
           clientId = clientId,
@@ -155,33 +153,34 @@ object AuthorizeRequestParser:
           acrValues = acrValues,
           sessionId = sessionId,
           loginHint = loginHint,
+          idTokenHint = idTokenHint,
         )
       yield authorizeRequest
 
-    private def parseEmailHint(
-        email: Email,
+    private def parseEmailLoginHint(
+        value: String,
         client: OAuthClientRecord,
         redirectUri: URL,
         state: Option[State],
     ): IO[Error.LoginHintInvalid, Option[Either[Email, Phone]]] =
       val allowed = client.authFlow.exists(_.primary.credentials.contains(PrimaryCredential.email))
-      if allowed then ZIO.some[Either[Email, Phone]](Left(email))
-      else ZIO.fail(Error.LoginHintInvalid(redirectUri, state))
+      if !allowed then ZIO.fail(Error.LoginHintInvalid(redirectUri, state))
+      else ZIO.fromEither(Email.from(value))
+        .mapBoth(_ => Error.LoginHintInvalid(redirectUri, state), e => Some(Left(e)))
 
-    private def parsePhoneHint(
-        phone: Phone,
+    private def parsePhoneLoginHint(
+        value: String,
         client: OAuthClientRecord,
-        clientId: ClientId,
         redirectUri: URL,
         state: Option[State],
     ): IO[Error.LoginHintInvalid, Option[Either[Email, Phone]]] =
       val allowed = client.authFlow.exists(_.primary.credentials.contains(PrimaryCredential.phone))
       if !allowed then ZIO.fail(Error.LoginHintInvalid(redirectUri, state))
-      else
-        oauthClientService.getAllowedPhonePrefixes(clientId).flatMap { prefixes =>
-          if prefixes.isEmpty || prefixes.exists(phone.startsWith) then ZIO.some[Either[Email, Phone]](Right(phone))
+      else if value.drop(1).forall(_.isDigit) then
+        oauthClientService.getAllowedPhonePrefixes(client.id).flatMap: prefixes =>
+          if prefixes.isEmpty || prefixes.exists(value.startsWith) then ZIO.fromEither(Phone.parse(value)).mapBoth(_ => Error.LoginHintInvalid(redirectUri, state), p => Some(Right(p)))
           else ZIO.fail(Error.LoginHintInvalid(redirectUri, state))
-        }
+      else ZIO.fail(Error.LoginHintInvalid(redirectUri, state))
 
     private def parseRedirectUri(params: Map[String, Chunk[String]]): IO[Error, (URL, String)] =
       getParam(params, "redirect_uri")

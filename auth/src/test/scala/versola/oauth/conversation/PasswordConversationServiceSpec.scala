@@ -99,6 +99,7 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
     version = 0,
     amr = Map.empty,
     needsPasswordChange = false,
+    expectedUserId = None,
   )
 
   val passwordRecord = baseRecord.copy(
@@ -393,6 +394,21 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
           _ <- env.submissionLimiter.recordLimitAll.succeedsWith(LimitStatus.Banned)
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
           result <- env.service.checkLoginPassword(authId, baseRecord, login, password)
+        yield assertTrue(result == ConversationResult.RenderStep(ConversationStep.AccessDenied))
+      },
+    ),
+    suite("finish")(
+      test("deny access when authenticated user does not match expectedUserId") {
+        val env = Env()
+        val expectedUser = UserId(UUID.randomUUID())
+        val differentUser = UserId(UUID.randomUUID())
+        val recordWithMismatch = baseRecord.copy(
+          userId = Some(differentUser),
+          expectedUserId = Some(expectedUser.toString),
+        )
+        for
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          result <- env.service.finish(authId, recordWithMismatch)
         yield assertTrue(result == ConversationResult.RenderStep(ConversationStep.AccessDenied))
       },
     ),

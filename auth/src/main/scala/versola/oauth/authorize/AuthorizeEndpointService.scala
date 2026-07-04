@@ -2,7 +2,7 @@ package versola.oauth.authorize
 
 import versola.oauth.authorize.model.{AuthorizeRequest, AuthorizeResponse, Error, Prompt, ResponseTypeEntry}
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{AuthFlow, AuthMethodRef, PassedAuthFactor, PassedFactorRecord, ScopeToken}
+import versola.oauth.client.model.{Acr, AuthFlow, AuthMethodRef, PassedAuthFactor, PassedFactorRecord, ScopeToken}
 import versola.oauth.conversation.{ConversationRepository, ConversationRouter, EmailSubmission, PhoneSubmission}
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
 import versola.oauth.jwks.JwksService
@@ -14,14 +14,17 @@ import versola.oauth.userinfo.UserInfoService
 import versola.user.UserRepository
 import versola.util.MAC
 import versola.util.{AuthPropertyGenerator, Base64Url, CoreConfig, JWT, Secret, SecureRandom, SecurityService}
+import zio.json.{JsonDecoder, ast}
 import zio.json.ast.Json
-import zio.{Chunk, Task, ZIO, ZLayer, durationInt}
+import zio.{Chunk, Clock, Task, ZIO, ZLayer, durationInt}
 
 trait AuthorizeEndpointService:
 
   def authorize(request: AuthorizeRequest): Task[AuthorizeResponse]
 
 object AuthorizeEndpointService:
+  private case class HintClaims(sub: String, aud: Option[Json], iss: Option[String]) derives JsonDecoder
+
   def live =
     ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _))
 
@@ -49,12 +52,14 @@ object AuthorizeEndpointService:
         flow <- ZIO
           .fromOption(authFlow)
           .orElseFail(Error.AuthFlowMissing(request.redirectUri, request.state))
+        hintSub <- extractHintSub(request)
         uiLocales <- resolveUiLocales(request)
         response <- request.sessionId match
           case None if request.prompt.contains(Prompt.none) =>
             ZIO.fail(Error.LoginRequired(request.redirectUri, request.state))
           case None =>
-            createConversation(request, flow, uiLocales, Map.empty)
+            createConversation(request, flow, uiLocales, Map.empty, hintSub)
+              .flatMap(applyLoginHint(request, uiLocales))
           case Some(rawId) =>
             for
               sessionMac <- securityService.mac(Secret(rawId), config.security.sessionsSecret)
@@ -63,25 +68,74 @@ object AuthorizeEndpointService:
                 case None if request.prompt.contains(Prompt.none) =>
                   ZIO.fail(Error.LoginRequired(request.redirectUri, request.state))
                 case None =>
-                  createConversation(request, flow, uiLocales, Map.empty)
-                case Some(session) if request.prompt.contains(Prompt.login) =>
-                  createConversation(request, flow, uiLocales, Map.empty)
+                  createConversation(request, flow, uiLocales, Map.empty, hintSub)
+                    .flatMap(applyLoginHint(request, uiLocales))
                 case Some(session) =>
-                  val requiredFactors = flow.primary.factors.flatMap(f => PassedAuthFactor.fromFactorType(f.`type`)).toSet
-                  if requiredFactors.forall(required => session.amr.keySet.exists(_.satisfies(required, flow.equivalents))) then
-                    silentAuthorize(request, uiLocales, session, sessionMac)
-                  else if request.prompt.contains(Prompt.none) then
-                    ZIO.fail(Error.LoginRequired(request.redirectUri, request.state))
-                  else
-                    createConversation(request, flow, uiLocales, session.amr)
+                  for
+                    now        <- Clock.instant
+                    vocabulary <- configurationService.getAcrVocabulary(request.clientId)
+                    forceReauth      = shouldForceReauth(request, session, now, vocabulary, hintSub, flow)
+                    requiredFactors  = flow.primary.factors.filter(_.required).flatMap(f => PassedAuthFactor.fromFactorType(f.`type`)).toSet
+                    factorsSatisfied = requiredFactors.forall(required =>
+                      session.amr.keySet.exists(_.satisfies(required, flow.equivalents))
+                    )
+                    result <- if forceReauth then
+                      if request.prompt.contains(Prompt.none) then
+                        ZIO.fail(Error.LoginRequired(request.redirectUri, request.state))
+                      else
+                        // hintSub takes priority (explicit user from id_token_hint);
+                        // fall back to current session user so step-up stays bound to the same identity.
+                        // prompt=login is the only case where we intentionally allow a different user.
+                        val expectedSub = if request.prompt.contains(Prompt.login) then hintSub
+                                          else hintSub.orElse(Some(session.userId.toString))
+                        createConversation(request, flow, uiLocales, Map.empty, expectedSub)
+                          .flatMap(applyLoginHint(request, uiLocales))
+                    else if !factorsSatisfied then
+                      if request.prompt.contains(Prompt.none) then
+                        ZIO.fail(Error.LoginRequired(request.redirectUri, request.state))
+                      else
+                        createConversation(request, flow, uiLocales, session.amr, Some(session.userId.toString))
+                          .flatMap(applyLoginHint(request, uiLocales))
+                    else
+                      silentAuthorize(request, uiLocales, session, sessionMac)
+                  yield result
             yield result
       yield response
+
+    private def shouldForceReauth(
+        request: AuthorizeRequest,
+        session: SessionRecord,
+        now: java.time.Instant,
+        vocabulary: Map[String, String],
+        hintSub: Option[String],
+        flow: AuthFlow,
+    ): Boolean =
+      val hintMismatch  = hintSub.exists(_ != session.userId.toString)
+      val sessionTooOld = request.maxAge.exists(maxAge =>
+        maxAge >= 0 && session.createdAt.isBefore(now.minusSeconds(maxAge))
+      )
+      val acrSatisfied  = request.acrValues.forall(acrs =>
+        acrs.exists(acr =>
+          vocabulary.get(acr).exists(Acr.satisfied(_, session.amr, flow.equivalents))
+        )
+      )
+      request.prompt.contains(Prompt.login) || sessionTooOld || !acrSatisfied || hintMismatch
+
+    private def applyLoginHint(request: AuthorizeRequest, uiLocales: Option[List[String]])(response: AuthorizeResponse): Task[AuthorizeResponse] =
+      response match
+        case AuthorizeResponse.Initialize(authId) =>
+          request.loginHint match
+            case Some(Left(email))  => conversationRouter.submit(authId, EmailSubmission(email), uiLocales.flatMap(_.headOption), None).as(response)
+            case Some(Right(phone)) => conversationRouter.submit(authId, PhoneSubmission(phone), uiLocales.flatMap(_.headOption), None).as(response)
+            case None               => ZIO.succeed(response)
+        case _ => ZIO.succeed(response)
 
     private def createConversation(
         request: AuthorizeRequest,
         flow: AuthFlow,
         uiLocales: Option[List[String]],
         amr: Map[PassedAuthFactor, PassedFactorRecord],
+        expectedSub: Option[String],
     ): Task[AuthorizeResponse] =
       AuthId.wrapAll(secureRandom.nextUUIDv7).flatMap: authId =>
         val conversation = ConversationRecord(
@@ -113,17 +167,11 @@ object AuthorizeEndpointService:
           version = 0,
           amr = amr,
           needsPasswordChange = false,
+          expectedUserId = expectedSub,
         )
         configurationService.getAuthConversationTtl(request.clientId).flatMap: authConversationTtl =>
-          conversationRepository.create(authId, conversation, authConversationTtl).flatMap: _ =>
-            request.loginHint match
-              case None => ZIO.succeed(AuthorizeResponse.Initialize(authId))
-              case Some(hint) =>
-                val submission = hint match
-                  case Left(email) => EmailSubmission(email)
-                  case Right(phone) => PhoneSubmission(phone)
-                conversationRouter.submit(authId, submission, uiLocale = None, ipAddress = None)
-                  .as(AuthorizeResponse.Initialize(authId))
+          conversationRepository.create(authId, conversation, authConversationTtl)
+            .as(AuthorizeResponse.Initialize(authId))
 
     private def silentAuthorize(
         request: AuthorizeRequest,
@@ -185,7 +233,7 @@ object AuthorizeEndpointService:
         signingKey <- jwksService.getPublicKeys.map(_.active)
         cHash = JWT.leftHalfHash(Base64Url.encode(code), signingKey.algorithm)
         claims = userInfo.claims ++
-          AuthMethodRef.idTokenClaims(amr, Some(session.createdAt)) +
+          AuthMethodRef.idTokenClaims(amr, Some(session.createdAt), Acr.acrClaim(session.amr)) +
           ("c_hash" -> Json.Str(cHash))
         token <- JWT.serialize(
           typ = JWT.Type.JWT,
@@ -203,6 +251,24 @@ object AuthorizeEndpointService:
           ),
         )
       yield Some(token)
+
+    private def extractHintSub(request: AuthorizeRequest): Task[Option[String]] =
+      request.idTokenHint match
+        case None => ZIO.none
+        case Some(token) =>
+          jwksService.getPublicKeys.flatMap: keys =>
+            JWT.deserialize[HintClaims](token, keys, JWT.Type.JWT, validateExpiry = false)
+              .mapError(_ => Error.IdTokenHintInvalid(request.redirectUri, request.state))
+              .flatMap: claims =>
+                val audList = claims.aud match
+                  case None               => List.empty
+                  case Some(Json.Str(s))  => List(s)
+                  case Some(Json.Arr(xs)) => xs.collect { case Json.Str(s) => s }.toList
+                  case _                  => List.empty
+                val audValid = audList.contains(request.clientId.toString)
+                val issValid = claims.iss.contains(config.jwt.issuer)
+                if audValid && issValid then ZIO.some(claims.sub)
+                else ZIO.fail(Error.IdTokenHintInvalid(request.redirectUri, request.state))
 
     /** Narrows the requested ui_locales to those configured in central, preserving the client's
      * preference order. Rejects the request when none of the requested locales are available.

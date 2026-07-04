@@ -45,11 +45,14 @@ object AuthMethodRef:
   /** Build the OIDC ID token claims (`amr`, `auth_time`) from the resolved set of
     * method references and the authentication time. Omits `amr` when empty.
     */
-  def idTokenClaims(amr: Set[AuthMethodRef], authTime: Option[Instant]): Map[String, Json] =
-    val amrField = Option.when(amr.nonEmpty):
+  def idTokenClaims(amr: Set[AuthMethodRef], authTime: Option[Instant], acr: Option[String] = None): Map[String, Json] = {
+    val amrField      = Option.when(amr.nonEmpty) {
       "amr" -> Json.Arr(Chunk.fromIterable(amr.toList.sortBy(_.toString).map(m => Json.Str(m.toString))))
+    }
     val authTimeField = authTime.map(t => "auth_time" -> Json.Num(t.getEpochSecond))
-    (amrField ++ authTimeField).toMap
+    val acrField      = acr.map(v => "acr" -> Json.Str(v))
+    (amrField ++ authTimeField ++ acrField).toMap
+  }
 
 /** The record of a single authentication challenge that was passed, storing
   * the timestamp and the typed RFC 8176 method references for that challenge.

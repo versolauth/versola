@@ -18,20 +18,20 @@ class PostgresChallengeSettingsRepository(xa: TransactorZIO) extends ChallengeSe
 
   override def getAll: Task[Vector[ChallengeSettingsRecord]] =
     xa.connectMeasured("get-all-challenge-settings"):
-      sql"""SELECT tenant_id, allowed_prefixes, submission_limits, otp_length, otp_resend_after, passkey_settings, auth_conversation_ttl_seconds, session_ttl_seconds, session_idle_ttl_seconds, ip_header FROM challenge_settings ORDER BY tenant_id"""
+      sql"""SELECT tenant_id, allowed_prefixes, submission_limits, otp_length, otp_resend_after, passkey_settings, auth_conversation_ttl_seconds, session_ttl_seconds, session_idle_ttl_seconds, ip_header, acr_vocabulary FROM challenge_settings ORDER BY tenant_id"""
         .query[ChallengeSettingsRecord].run()
 
   override def findByTenant(tenantId: TenantId): Task[Option[ChallengeSettingsRecord]] =
     xa.connectMeasured("find-challenge-settings-by-tenant"):
-      sql"""SELECT tenant_id, allowed_prefixes, submission_limits, otp_length, otp_resend_after, passkey_settings, auth_conversation_ttl_seconds, session_ttl_seconds, session_idle_ttl_seconds, ip_header FROM challenge_settings WHERE tenant_id = $tenantId"""
+      sql"""SELECT tenant_id, allowed_prefixes, submission_limits, otp_length, otp_resend_after, passkey_settings, auth_conversation_ttl_seconds, session_ttl_seconds, session_idle_ttl_seconds, ip_header, acr_vocabulary FROM challenge_settings WHERE tenant_id = $tenantId"""
         .query[ChallengeSettingsRecord].run()
         .headOption
 
   override def upsert(record: ChallengeSettingsRecord): Task[Unit] =
     xa.connectMeasured("upsert-challenge-settings"):
       sql"""
-        INSERT INTO challenge_settings (tenant_id, allowed_prefixes, submission_limits, otp_length, otp_resend_after, passkey_settings, auth_conversation_ttl_seconds, session_ttl_seconds, session_idle_ttl_seconds, ip_header)
-        VALUES (${record.tenantId}, ${record.allowedPrefixes}, ${record.submissionLimits}, ${record.otpLength}, ${record.otpResendAfter}, ${record.passkeySettings}, ${record.authConversationTtlSeconds}, ${record.sessionTtlSeconds}, ${record.sessionIdleTtlSeconds}, ${record.ipHeader})
+        INSERT INTO challenge_settings (tenant_id, allowed_prefixes, submission_limits, otp_length, otp_resend_after, passkey_settings, auth_conversation_ttl_seconds, session_ttl_seconds, session_idle_ttl_seconds, ip_header, acr_vocabulary)
+        VALUES (${record.tenantId}, ${record.allowedPrefixes}, ${record.submissionLimits}, ${record.otpLength}, ${record.otpResendAfter}, ${record.passkeySettings}, ${record.authConversationTtlSeconds}, ${record.sessionTtlSeconds}, ${record.sessionIdleTtlSeconds}, ${record.ipHeader}, ${record.acrVocabulary})
         ON CONFLICT (tenant_id) DO UPDATE SET
           allowed_prefixes = EXCLUDED.allowed_prefixes,
           submission_limits = EXCLUDED.submission_limits,
@@ -41,7 +41,8 @@ class PostgresChallengeSettingsRepository(xa: TransactorZIO) extends ChallengeSe
           auth_conversation_ttl_seconds = EXCLUDED.auth_conversation_ttl_seconds,
           session_ttl_seconds = EXCLUDED.session_ttl_seconds,
           session_idle_ttl_seconds = EXCLUDED.session_idle_ttl_seconds,
-          ip_header = EXCLUDED.ip_header
+          ip_header = EXCLUDED.ip_header,
+          acr_vocabulary = EXCLUDED.acr_vocabulary
       """.update.run()
     .unit
 

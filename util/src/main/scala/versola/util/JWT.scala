@@ -183,6 +183,7 @@ object JWT:
       token: String,
       keys: PublicKeys,
       typ: Type,
+      validateExpiry: Boolean = true,
   ): IO[Error, A] =
     for
       now <- Clock.instant
@@ -192,7 +193,7 @@ object JWT:
 
       _ <- verifyType(jwt, typ)
       _ <- verifySignature(jwt, keys)
-      _ <- checkExpiration(jwt, now)
+      _ <- if validateExpiry then checkExpiration(jwt, now) else ZIO.unit
 
       result <- ZIO.fromEither(claimsToJson(jwt.getJWTClaimsSet).as[A])
         .orElseFail(Error.InvalidClaims)
@@ -216,7 +217,7 @@ object JWT:
   def deserialize[A: JsonDecoder](
       token: String,
       key: SecretKey,
-      typ: Type = Type.JWT,
+      typ: Type,
   ): IO[Error, A] =
     for
       now <- Clock.instant
@@ -232,12 +233,14 @@ object JWT:
         .orElseFail(Error.InvalidClaims)
     yield result
 
+
   private def verifyType(jwt: SignedJWT, expectedTyp: Type): IO[Error, Unit] =
     ZIO.attempt(Option(jwt.getHeader.getType))
       .orElseFail(Error.InvalidType)
-      .someOrFail(Error.InvalidType)
-      .filterOrFail(_ == expectedTyp.joseObjectType)(Error.InvalidType)
-      .unit
+      .flatMap {
+        case None      => ZIO.unit  // missing typ header is acceptable (common in OIDC ID tokens)
+        case Some(typ) => ZIO.cond(typ == expectedTyp.joseObjectType, (), Error.InvalidType)
+      }
 
   private def verifySymmetricSignature(jwt: SignedJWT, key: SecretKey): IO[Error, Unit] =
     ZIO.attempt(jwt.verify(MACVerifier(key)))

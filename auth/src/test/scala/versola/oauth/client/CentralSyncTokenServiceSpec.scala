@@ -25,7 +25,7 @@ object CentralSyncTokenServiceSpec extends ZIOSpecDefault:
       for
         service <- ZIO.service[CentralSyncTokenService]
         token   <- service.getToken
-        claims  <- JWT.deserialize[SignedClaims](token, secretKey)
+        claims  <- JWT.deserialize[SignedClaims](token, secretKey, JWT.Type.JWT)
       yield assertTrue(
         claims.iss == "auth",
         claims.sub == "auth",

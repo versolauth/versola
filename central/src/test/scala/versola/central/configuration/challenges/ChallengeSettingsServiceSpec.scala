@@ -21,6 +21,7 @@ object ChallengeSettingsServiceSpec extends UnitSpecBase:
     sessionTtlSeconds = 86400,
     sessionIdleTtlSeconds = None,
     ipHeader = "X-Real-IP",
+    acrVocabulary = None,
   )
 
   class Env(initial: Vector[ChallengeSettingsRecord] = Vector.empty):

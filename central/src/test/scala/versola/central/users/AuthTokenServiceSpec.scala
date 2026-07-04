@@ -18,7 +18,7 @@ object AuthTokenServiceSpec extends ZIOSpecDefault:
       for
         service <- ZIO.service[AuthTokenService]
         token   <- service.getToken
-        claims  <- JWT.deserialize[TokenClaims](token, secretKey)
+        claims  <- JWT.deserialize[TokenClaims](token, secretKey, JWT.Type.JWT)
           .mapError(e => new RuntimeException(e.toString))
       yield assertTrue(
         claims.iss == "central",

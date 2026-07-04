@@ -11,7 +11,7 @@ def authorizeInternal(request: Request): ZIO[CoreConfig, Unauthorized.type, Unit
     case Some(Header.Authorization.Bearer(token)) =>
       for
         config <- ZIO.service[CoreConfig]
-        _ <- JWT.deserialize[InternalAuthClaims](token.stringValue, config.central.secretKey)
+        _ <- JWT.deserialize[InternalAuthClaims](token.stringValue, config.central.secretKey, JWT.Type.JWT)
           .tapError(err => ZIO.logError(s"Internal auth failed: $err"))
           .orElseFail(Unauthorized)
       yield ()

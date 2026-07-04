@@ -22,6 +22,7 @@ CREATE TABLE auth_conversations (
     version BIGINT NOT NULL,
     amr JSONB NOT NULL,
     needs_password_change BOOLEAN NOT NULL,
+    expected_user_id TEXT,
     expires_at TIMESTAMP WITH TIME ZONE NOT NULL
 );
 
@@ -31,3 +32,4 @@ CREATE INDEX auth_conversations_credential_idx
 
 CREATE INDEX auth_conversations_expires_at_idx
     ON auth_conversations (expires_at);
+

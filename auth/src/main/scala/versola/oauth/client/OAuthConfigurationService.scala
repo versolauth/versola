@@ -45,6 +45,8 @@ trait OAuthConfigurationService:
 
   def getSessionTtl(id: ClientId): UIO[Duration]
 
+  def getAcrVocabulary(id: ClientId): UIO[Map[String, String]]
+
   def getSessionIdleTtl(id: ClientId): UIO[Option[Duration]]
 
 object OAuthConfigurationService:
@@ -245,6 +247,16 @@ object OAuthConfigurationService:
             _.find(_.tenantId == client.tenantId)
               .flatMap(_.sessionIdleTtlSeconds)
               .map(s => Duration.fromSeconds(s.toLong)),
+          )
+
+    override def getAcrVocabulary(id: ClientId): UIO[Map[String, String]] =
+      find(id).flatMap:
+        case None => ZIO.succeed(Map.empty)
+        case Some(client) =>
+          challengeSettingsCache.get.map(
+            _.find(_.tenantId == client.tenantId)
+              .flatMap(_.acrVocabulary)
+              .getOrElse(Map.empty),
           )
 
     private val IllegalStateTemplate = OtpTemplate("{{code}}")

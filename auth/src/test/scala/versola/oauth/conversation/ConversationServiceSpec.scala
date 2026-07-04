@@ -68,6 +68,7 @@ object ConversationServiceSpec extends UnitSpecBase:
     version = 1,
     amr = Map.empty,
     needsPasswordChange = false,
+    expectedUserId = None,
   )
 
   class Env:
