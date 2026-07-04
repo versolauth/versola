@@ -2,9 +2,7 @@ package versola.oauth.authorize
 
 import versola.oauth.authorize.model.{AuthorizeRequest, AuthorizeResponse, Error, ResponseTypeEntry}
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.conversation.ConversationRenderService
-import versola.oauth.conversation.model.{ConversationRecord, ConversationStep}
-import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, ConversationCookie}
+import versola.oauth.model.ConversationCookie
 import versola.util.{Base64Url, CoreConfig}
 import versola.util.http.Controller
 import zio.*
@@ -13,7 +11,7 @@ import zio.prelude.NonEmptySet
 import zio.telemetry.opentelemetry.tracing.Tracing
 
 object AuthorizeEndpointController extends Controller:
-  type Env = Tracing & AuthorizeRequestParser & AuthorizeEndpointService & OAuthConfigurationService & CoreConfig & ConversationRenderService
+  type Env = Tracing & AuthorizeRequestParser & AuthorizeEndpointService & OAuthConfigurationService & CoreConfig
 
   def routes: Routes[Env, Throwable] = Routes(
     getAuthorizeRoute,
@@ -47,29 +45,19 @@ object AuthorizeEndpointController extends Controller:
       configService <- ZIO.service[OAuthConfigurationService]
       config <- ZIO.service[CoreConfig]
       authConversationTtl <- configService.getAuthConversationTtl(request.clientId)
-      renderService <- ZIO.service[ConversationRenderService]
-      response <- authService.authorize(request).flatMap:
+      response <- authService.authorize(request).map:
         case AuthorizeResponse.Authorized(code, idToken) =>
-          ZIO.succeed(Response.seeOther(
+          Response.seeOther(
             AuthorizeRedirect.responseUrl(request.redirectUri, Base64Url.encode(code), request.state, idToken),
-          ))
+          )
 
         case AuthorizeResponse.Initialize(authId) =>
-          ZIO.succeed(Response.seeOther(URL.empty / "challenge")
+          Response.seeOther(URL.empty / "challenge")
             .addCookie(
               ConversationCookie.responseCookie(
                 ConversationCookie(authId, request.clientId),
                 authConversationTtl,
                 config.security.conversationCookieSecret,
               ),
-            ))
-
-        case AuthorizeResponse.InitializeWithHint(authId, render, conversation) =>
-          renderService.renderSubmit(render, conversation).map(
-            _.addCookie(ConversationCookie.responseCookie(
-              ConversationCookie(authId, request.clientId),
-              authConversationTtl,
-              config.security.conversationCookieSecret,
-            ))
-          )
+            )
     yield response

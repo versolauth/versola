@@ -299,15 +299,11 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         _ <- env.conversationRouter.submit.succeedsWith((ConversationResult.IllegalState, dummyConversation))
         result <- env.service.authorize(baseRequest.copy(loginHint = Some(Left(emailHint))))
         submitCalls = env.conversationRouter.submit.calls
-      yield result match
-        case AuthorizeResponse.InitializeWithHint(authId, render, _) =>
-          assertTrue(
-            authId == versola.oauth.conversation.model.AuthId(uuid),
-            render == ConversationResult.IllegalState,
-            submitCalls.nonEmpty,
-            submitCalls.head._2 == EmailSubmission(emailHint),
-          )
-        case _ => assertTrue(false)
+      yield assertTrue(
+        result == AuthorizeResponse.Initialize(versola.oauth.conversation.model.AuthId(uuid)),
+        submitCalls.nonEmpty,
+        submitCalls.head._2 == EmailSubmission(emailHint),
+      )
     },
     test("advance conversation to OTP step when login_hint phone is provided on phone+otp flow") {
       val env = Env()
@@ -320,14 +316,10 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         _ <- env.conversationRouter.submit.succeedsWith((ConversationResult.IllegalState, dummyConversation))
         result <- env.service.authorize(baseRequest.copy(loginHint = Some(Right(phoneHint))))
         submitCalls = env.conversationRouter.submit.calls
-      yield result match
-        case AuthorizeResponse.InitializeWithHint(authId, render, _) =>
-          assertTrue(
-            authId == versola.oauth.conversation.model.AuthId(uuid),
-            render == ConversationResult.IllegalState,
-            submitCalls.nonEmpty,
-            submitCalls.head._2 == PhoneSubmission(phoneHint),
-          )
-        case _ => assertTrue(false)
+      yield assertTrue(
+        result == AuthorizeResponse.Initialize(versola.oauth.conversation.model.AuthId(uuid)),
+        submitCalls.nonEmpty,
+        submitCalls.head._2 == PhoneSubmission(phoneHint),
+      )
     },
   )
