@@ -2,9 +2,9 @@ package versola.oauth.authorize
 
 import versola.oauth.authorize.model.{AuthorizeRequest, Error, Prompt, ResponseTypeEntry}
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{ClientId, OAuthClientRecord, ScopeToken, TenantId}
+import versola.oauth.client.model.{AuthFactor, AuthFactorType, AuthFlow, ClientId, OAuthClientRecord, PrimaryAuthFlow, PrimaryCredential, ScopeToken, TenantId}
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, State}
-import versola.util.UnitSpecBase
+import versola.util.{Email, Phone, UnitSpecBase}
 import zio.http.{Request, URL}
 import zio.prelude.NonEmptySet
 import zio.test.*
@@ -24,6 +24,26 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
   val validScope = "read,write"
   val validState = State("random-state")
 
+  val emailOtpFlow = AuthFlow(
+    primary = PrimaryAuthFlow(
+      credentials = List(PrimaryCredential.email),
+      inlinePassword = false,
+      factors = List(AuthFactor(`type` = AuthFactorType.otp, required = true)),
+    ),
+    passkey = None,
+    equivalents = Map.empty,
+  )
+
+  val phoneOtpFlow = AuthFlow(
+    primary = PrimaryAuthFlow(
+      credentials = List(PrimaryCredential.phone),
+      inlinePassword = false,
+      factors = List(AuthFactor(`type` = AuthFactorType.otp, required = true)),
+    ),
+    passkey = None,
+    equivalents = Map.empty,
+  )
+
   val testClient = OAuthClientRecord(
     id = validClientId,
     tenantId = TenantId("default"),
@@ -40,6 +60,9 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
     otpTemplateId = "default",
   )
 
+  val testClientWithEmailFlow = testClient.copy(authFlow = Some(emailOtpFlow))
+  val testClientWithPhoneFlow = testClient.copy(authFlow = Some(phoneOtpFlow))
+
   class Env:
     val oauthClientService = stub[OAuthConfigurationService]
     val parser = AuthorizeRequestParser.Impl(oauthClientService)
@@ -53,6 +76,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
       scope: String = validScope,
       state: Option[String] = Some("random-state"),
       prompt: Option[String] = None,
+      loginHint: Option[String] = None,
   ): Request =
     val queryParams = Map(
       "client_id" -> clientId,
@@ -63,7 +87,8 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
     ) ++
       codeChallengeMethod.map(m => "code_challenge_method" -> m).toMap ++
       state.map(s => "state" -> s).toMap ++
-      prompt.map(p => "prompt" -> p).toMap
+      prompt.map(p => "prompt" -> p).toMap ++
+      loginHint.map(h => "login_hint" -> h).toMap
 
     Request.get(URL.root.addQueryParams(queryParams))
 
@@ -76,6 +101,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
     scopeValidationTests,
     multipleValuesTests,
     promptParsingTests,
+    loginHintTests,
   )
 
   def successfulParsingTests = suite("successful parsing")(
@@ -542,6 +568,88 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
           queryParamName = "state",
         )),
       )
+    },
+  )
+
+  def loginHintTests = suite("login_hint parsing")(
+    test("valid email hint on email-allowed flow returns Some(Left(email))") {
+      val env = Env()
+      for
+        _ <- env.oauthClientService.find.succeedsWith(Some(testClientWithEmailFlow))
+        result <- env.parser.parse(validRequest(loginHint = Some("user@example.com")))
+      yield assertTrue(result.loginHint == Some(Left(Email("user@example.com"))))
+    },
+    test("valid phone hint on phone-allowed flow with empty prefix list returns Some(Right(phone))") {
+      val env = Env()
+      for
+        _ <- env.oauthClientService.find.succeedsWith(Some(testClientWithPhoneFlow))
+        _ <- env.oauthClientService.getAllowedPhonePrefixes.succeedsWith(List.empty)
+        result <- env.parser.parse(validRequest(loginHint = Some("+12025551234")))
+      yield assertTrue(result.loginHint == Some(Right(Phone("+12025551234"))))
+    },
+    test("valid phone hint on phone-allowed flow with matching prefix returns Some(Right(phone))") {
+      val env = Env()
+      for
+        _ <- env.oauthClientService.find.succeedsWith(Some(testClientWithPhoneFlow))
+        _ <- env.oauthClientService.getAllowedPhonePrefixes.succeedsWith(List("+1"))
+        result <- env.parser.parse(validRequest(loginHint = Some("+12025551234")))
+      yield assertTrue(result.loginHint == Some(Right(Phone("+12025551234"))))
+    },
+    test("valid email hint on phone-only flow fails with LoginHintInvalid") {
+      val env = Env()
+      for
+        _ <- env.oauthClientService.find.succeedsWith(Some(testClientWithPhoneFlow))
+        result <- env.parser.parse(validRequest(loginHint = Some("user@example.com"))).either
+      yield assertTrue(result == Left(Error.LoginHintInvalid(validRedirectUri, Some(validState))))
+    },
+    test("valid phone hint on email-only flow fails with LoginHintInvalid") {
+      val env = Env()
+      for
+        _ <- env.oauthClientService.find.succeedsWith(Some(testClientWithEmailFlow))
+        result <- env.parser.parse(validRequest(loginHint = Some("+12025551234"))).either
+      yield assertTrue(result == Left(Error.LoginHintInvalid(validRedirectUri, Some(validState))))
+    },
+    test("valid phone with disallowed prefix fails with LoginHintInvalid") {
+      val env = Env()
+      for
+        _ <- env.oauthClientService.find.succeedsWith(Some(testClientWithPhoneFlow))
+        _ <- env.oauthClientService.getAllowedPhonePrefixes.succeedsWith(List("+44"))
+        result <- env.parser.parse(validRequest(loginHint = Some("+12025551234"))).either
+      yield assertTrue(result == Left(Error.LoginHintInvalid(validRedirectUri, Some(validState))))
+    },
+    test("garbage value fails with LoginHintInvalid") {
+      val env = Env()
+      for
+        _ <- env.oauthClientService.find.succeedsWith(Some(testClientWithEmailFlow))
+        result <- env.parser.parse(validRequest(loginHint = Some("not-a-valid-hint"))).either
+      yield assertTrue(result == Left(Error.LoginHintInvalid(validRedirectUri, Some(validState))))
+    },
+    test("multiple login_hint values fails with MultipleValuesProvided") {
+      val env = Env()
+      val url = URL.root
+        .addQueryParam("client_id", validClientId.toString)
+        .addQueryParam("redirect_uri", validRedirectUriString)
+        .addQueryParam("response_type", "code")
+        .addQueryParam("code_challenge", validCodeChallenge)
+        .addQueryParam("code_challenge_method", "S256")
+        .addQueryParam("scope", validScope)
+        .addQueryParam("state", "random-state")
+        .addQueryParam("login_hint", "user@example.com")
+        .addQueryParam("login_hint", "other@example.com")
+      val request = Request.get(url)
+      for
+        _ <- env.oauthClientService.find.succeedsWith(Some(testClientWithEmailFlow))
+        result <- env.parser.parse(request).either
+      yield assertTrue(
+        result == Left(Error.MultipleValuesProvided(validRedirectUri, Some(validState), "login_hint")),
+      )
+    },
+    test("absent login_hint returns None") {
+      val env = Env()
+      for
+        _ <- env.oauthClientService.find.succeedsWith(Some(testClient))
+        result <- env.parser.parse(validRequest())
+      yield assertTrue(result.loginHint.isEmpty)
     },
   )
 

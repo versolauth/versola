@@ -120,10 +120,10 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       AuthBootstrapService.live >+>
       WebAuthnService.live >+>
       UserInfoService.live >+>
-      AuthorizeEndpointService.live >+>
       SubmissionLimiter.live >+>
       ConversationService.live >+>
       ConversationRouter.live >+>
+      AuthorizeEndpointService.live >+>
       ConversationRenderService.live
 
   given DeriveConfig[Secret.Bytes16] = DeriveConfig[String]
