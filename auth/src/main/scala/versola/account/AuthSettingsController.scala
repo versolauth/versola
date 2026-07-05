@@ -96,7 +96,7 @@ object AuthSettingsController extends Controller:
           case Some(settings) =>
             ZIO.serviceWithZIO[WebAuthnService](_.startRegistration(settings, userId, displayName))
               .map(c => Some(c))
-              .catchAll(_ => ZIO.none)
+              .catchAll(e => ZIO.logWarning(s"startRegistration failed: ${e.getMessage}") *> ZIO.none)
           case None => ZIO.none
 
         // Fetch form, theme and locales from Central
@@ -112,9 +112,12 @@ object AuthSettingsController extends Controller:
           case None =>
             ZIO.succeed(Response.notFound)
           case Some(form) =>
-            val activeCodes  = (locales.locales.map(_.code).toSet + locales.default) & form.localizations.keySet
-            val allLocales   = activeCodes.toList.sorted
-            val translations = form.localizations.getOrElse(locales.default, Map.empty)
+            val activeCodes    = (locales.locales.map(_.code).toSet + locales.default) & form.localizations.keySet
+            val allLocales     = activeCodes.toList.sorted
+            val effectiveLocale =
+              if form.localizations.contains(locales.default) then locales.default
+              else allLocales.headOption.getOrElse(locales.default)
+            val translations   = form.localizations.getOrElse(effectiveLocale, Map.empty)
 
             val config = AuthSettingsConfig(
               sessions = sessions.map: (id, rec) =>
@@ -139,7 +142,7 @@ object AuthSettingsController extends Controller:
                 ),
               passkeyRegistration = passkeyResult.map(_.publicKeyOptions),
               t         = translations,
-              locale    = locales.default,
+              locale    = effectiveLocale,
               locales   = allLocales,
               allT      = form.localizations,
               error     = None,
@@ -176,6 +179,8 @@ object AuthSettingsController extends Controller:
           .orElseFail(versola.util.http.Unauthorized)
         idBytes     <- ZIO.attempt(Base64.urlDecode(rawId))
           .mapError(_ => versola.util.http.Unauthorized)
+        _           <- ZIO.fail(versola.util.http.Unauthorized)
+          .unless(idBytes.length == 32)
         sessionId   = MAC(idBytes)
         _           <- ZIO.serviceWithZIO[SessionRepository](_.invalidate(sessionId, userId))
       yield Response.seeOther(URL.root / "auth-settings"))
@@ -229,7 +234,7 @@ object AuthSettingsController extends Controller:
 
         passkeySettings <- ZIO.serviceWithZIO[OAuthConfigurationService](_.getPasskeySettings(clientId))
         settings        <- ZIO.fromOption(passkeySettings)
-          .orElseFail(new RuntimeException("passkey not configured for this client"))
+          .orElseFail(versola.util.http.Unauthorized)
 
         _ <- ZIO.serviceWithZIO[WebAuthnService](
           _.finishRegistration(settings, userId, ceremony.request, response, name)
@@ -285,9 +290,13 @@ object AuthSettingsController extends Controller:
       config: AuthSettingsConfig,
       title: String,
   ): String =
-    // Escape < in the JSON payload to prevent script-breakout XSS.
-    // Unicode-escaping < to < is safe in JSON and avoids regex replacement semantics.
-    val safeJson = config.toJson.replace("<", "\\u003c")
+    // Escape characters that can break an inline <script> block:
+    //   < prevents </script> breakout
+    //   U+2028 / U+2029 are line terminators in JS but valid in JSON strings
+    val safeJson = config.toJson
+      .replace("<", "\\u003c")
+      .replace(" ", "\\u2028")
+      .replace(" ", "\\u2029")
     s"""<!DOCTYPE html>
        |<html lang="${config.locale}">
        |  <head>
@@ -313,6 +322,9 @@ object AuthSettingsController extends Controller:
   private def htmlResponse(content: String): Response =
     Response(
       status  = Status.Ok,
-      headers = Headers(Header.ContentType(MediaType.text.html)),
+      headers = Headers(
+        Header.ContentType(MediaType.text.html),
+        Header.Custom("Cache-Control", "no-store"),
+      ),
       body    = Body.fromString(content),
     )

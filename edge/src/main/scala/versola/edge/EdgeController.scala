@@ -121,7 +121,7 @@ object EdgeController extends Controller:
       client  <- ZIO.service[Client]
       reqBody <- request.body.asChunk
       forwardedCookies = request.cookies
-        .filter(_.name != EdgeSessionCookie.name)
+        .filter(c => c.name == "SSO_ACCOUNT" || c.name == "SSO_PASSKEY_REG")
         .map(_.toRequest)
       baseHeaders = request.headers
         .removeHeader(Header.Cookie)

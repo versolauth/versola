@@ -188,9 +188,11 @@ object AuthSettingsControllerSpec extends UnitSpecBase:
               .addHeader(Header.Authorization.Bearer(validToken)),
           )
           body        <- resp.body.asString
+          accountCookie = resp.header(Header.SetCookie).map(_.value)
         yield assertTrue(
           resp.status == Status.Ok,
           body.contains("versola-form-root"),
+          accountCookie.exists(_.name == AuthSettingsCookie.name),
         )
       },
 
@@ -403,8 +405,11 @@ object AuthSettingsControllerSpec extends UnitSpecBase:
             Request.post(
               URL.empty / "auth-settings" / "passkeys" / "register",
               Body.fromURLEncodedForm(Form.fromStrings("response" -> "{}")),
-            ).addHeader(accountCookieHeader)
-              .addHeader(Header.Cookie(NonEmptyChunk(Cookie.Request(PasskeyRegistrationCookie.name, regCookieContent)))),
+            ).addHeader(Header.Cookie(NonEmptyChunk(
+              Cookie.Request(AuthSettingsCookie.name,
+                AuthSettingsCookie.responseCookie(AuthSettingsCookie(testUserId, testClientId), cookieSecret).content),
+              Cookie.Request(PasskeyRegistrationCookie.name, regCookieContent),
+            ))),
           )
         yield assertTrue(resp.status == Status.SeeOther)
       },
