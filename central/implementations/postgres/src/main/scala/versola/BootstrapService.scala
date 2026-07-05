@@ -137,6 +137,11 @@ object BootstrapService:
       localized("Offline access via refresh tokens", "Офлайн-доступ через refresh-токены"),
       List.empty,
     ),
+    ScopeSeed(
+      ScopeToken("account_settings"),
+      localized("Account settings access", "Доступ к настройкам аккаунта"),
+      List.empty,
+    ),
   )
 
   /** Scopes granted to the central admin client. */
@@ -203,6 +208,7 @@ object BootstrapService:
     "password" -> Vector.empty,
     "access-denied" -> Vector.empty,
     "passkey-enroll" -> Vector.empty,
+    "auth-settings"  -> Vector.empty,
   )
 
   private def readResource(path: String): Task[String] =

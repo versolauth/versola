@@ -17,6 +17,7 @@ import versola.oauth.revoke.{AccessTokenRevocationService, RevocationController,
 import versola.oauth.session.{PostgresRefreshTokenRepository, PostgresSessionRepository, RefreshTokenRepository, SessionRepository}
 import versola.oauth.token.{AuthorizationCodeRepository, OAuthTokenService, TokenEndpointController}
 import versola.oauth.userinfo.{UserInfoController, UserInfoService}
+import versola.account.AuthSettingsController
 import versola.user.{PostgresUserRepository, PostgresUserRolesRepository, UserController, UserRepository, UserRolesRepository}
 import versola.util.*
 import versola.util.http.VersolaApp
@@ -81,6 +82,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       UserInfoController.routes,
       JwksController.routes,
       UserController.routes,
+      AuthSettingsController.routes,
     ).reduce(_ ++ _)
 
   val repositories = PostgresHikariDataSource.transactor(serviceName = Some("auth"), migrate = true) >+> (

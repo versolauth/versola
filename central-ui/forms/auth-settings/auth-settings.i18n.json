@@ -1,0 +1,36 @@
+{
+  "en": {
+    "page_title": "Account Settings",
+    "sessions_title": "Active Sessions",
+    "sessions_empty": "No active sessions.",
+    "session_logout": "Log out",
+    "passkeys_title": "Passkeys",
+    "passkeys_empty": "No passkeys registered.",
+    "passkey_delete": "Delete",
+    "passkey_add": "Add passkey",
+    "passkey_name_placeholder": "Device name (optional)",
+    "passkey_last_used": "Last used",
+    "passkey_error": "Passkey registration failed. Please try again.",
+    "platform_desktop": "Desktop",
+    "platform_ios": "iOS",
+    "platform_android": "Android",
+    "platform_unknown": "Unknown device"
+  },
+  "ru": {
+    "page_title": "Настройки аккаунта",
+    "sessions_title": "Активные сессии",
+    "sessions_empty": "Нет активных сессий.",
+    "session_logout": "Выйти",
+    "passkeys_title": "Passkey",
+    "passkeys_empty": "Нет зарегистрированных passkey.",
+    "passkey_delete": "Удалить",
+    "passkey_add": "Добавить passkey",
+    "passkey_name_placeholder": "Название устройства (необязательно)",
+    "passkey_last_used": "Последнее использование",
+    "passkey_error": "Не удалось зарегистрировать passkey. Попробуйте снова.",
+    "platform_desktop": "Компьютер",
+    "platform_ios": "iOS",
+    "platform_android": "Android",
+    "platform_unknown": "Неизвестное устройство"
+  }
+}

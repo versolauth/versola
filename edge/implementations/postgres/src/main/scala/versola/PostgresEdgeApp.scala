@@ -41,7 +41,8 @@ object PostgresEdgeApp extends VersolaApp("edge"):
     EdgeRefreshTokenRepository &
     JwksService &
     SSOClient &
-    EdgeService
+    EdgeService &
+    Client
 
   override def routes: Routes[Dependencies & Tracing, Throwable] =
     List(
@@ -69,7 +70,8 @@ object PostgresEdgeApp extends VersolaApp("edge"):
       JwksService.live(zio.Schedule.spaced(5.minute)) >+>
       CelEvaluator.live >+>
       SSOClient.live >+>
-      EdgeService.live
+      EdgeService.live >+>
+      ZLayer.service[Client]
 
 
   given DeriveConfig[versola.edge.model.EdgeId] = DeriveConfig[String].map(versola.edge.model.EdgeId(_))

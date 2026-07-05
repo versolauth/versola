@@ -85,6 +85,45 @@ class PostgresSessionRepository(xa: TransactorZIO) extends SessionRepository, Ba
       """.query[SessionRecord].run().toList
     yield result
 
+  private case class SessionWithId(
+      id: MAC,
+      userId: UserId,
+      clientId: ClientId,
+      userAgent: UserAgentInfo,
+      createdAt: java.time.Instant,
+      amr: Map[PassedAuthFactor, PassedFactorRecord],
+  )
+
+  private given DbCodec[SessionWithId] = DbCodec.derived[SessionWithId]
+
+  override def findByUserIdWithId(
+      userId: UserId,
+  ): Task[List[(MAC.Of[SessionId], SessionRecord)]] =
+    for
+      now    <- Clock.instant
+      result <- xa.connectMeasured("find-sessions-by-user-with-id"):
+        sql"""
+          SELECT id, user_id, client_id, user_agent, created_at, amr
+          FROM sso_sessions
+          WHERE
+            user_id = $userId
+            AND expires_at > $now
+            AND (idle_expires_at IS NULL OR idle_expires_at > $now)
+          ORDER BY created_at DESC
+        """.query[SessionWithId].run().toList
+    yield result.map(r => (r.id, SessionRecord(r.userId, r.clientId, r.userAgent, r.createdAt, r.amr)))
+
+  override def invalidate(id: MAC.Of[SessionId], userId: UserId): Task[Unit] =
+    for
+      now <- Clock.instant
+      _   <- xa.connectMeasured("invalidate-session"):
+        sql"""
+          UPDATE sso_sessions
+          SET expires_at = $now
+          WHERE id = $id AND user_id = $userId
+        """.update.run()
+    yield ()
+
   override def invalidateByUserId(
       userId: UserId,
   ): Task[Unit] =

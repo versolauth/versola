@@ -22,6 +22,18 @@ trait SessionRepository:
       userId: UserId,
   ): Task[List[SessionRecord]]
 
+  /** Find active sessions for a user together with their opaque IDs.
+    * The returned MAC is safe to expose as a base64url string to the authenticated user.
+    */
+  def findByUserIdWithId(
+      userId: UserId,
+  ): Task[List[(MAC.Of[SessionId], SessionRecord)]]
+
   def invalidateByUserId(
       userId: UserId,
   ): Task[Unit]
+
+  /** Invalidate a single session belonging to the given user.
+    * The userId constraint prevents users from invalidating each other's sessions.
+    */
+  def invalidate(id: MAC.Of[SessionId], userId: UserId): Task[Unit]

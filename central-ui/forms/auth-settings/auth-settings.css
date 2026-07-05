@@ -1,0 +1,96 @@
+.account-section {
+  margin-bottom: 2rem;
+}
+
+.account-section h2 {
+  font-size: 1.1rem;
+  font-weight: 600;
+  margin-bottom: 1rem;
+  color: var(--color-text, #111);
+}
+
+.account-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.account-list-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.75rem 0;
+  border-bottom: 1px solid var(--color-border, #e5e7eb);
+  gap: 1rem;
+}
+
+.account-list-item:last-child {
+  border-bottom: none;
+}
+
+.account-list-item-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.account-list-item-primary {
+  font-size: 0.95rem;
+  font-weight: 500;
+  color: var(--color-text, #111);
+}
+
+.account-list-item-secondary {
+  font-size: 0.8rem;
+  color: var(--color-text-muted, #6b7280);
+}
+
+.account-empty {
+  color: var(--color-text-muted, #6b7280);
+  font-size: 0.9rem;
+  padding: 0.5rem 0;
+}
+
+.btn-danger {
+  background: transparent;
+  border: 1px solid var(--color-danger, #ef4444);
+  color: var(--color-danger, #ef4444);
+  border-radius: 6px;
+  padding: 0.3rem 0.8rem;
+  font-size: 0.85rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.btn-danger:hover {
+  background: var(--color-danger, #ef4444);
+  color: #fff;
+}
+
+.passkey-add-form {
+  margin-top: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.passkey-add-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.passkey-name-input {
+  flex: 1;
+  min-width: 0;
+  padding: 0.4rem 0.75rem;
+  border: 1px solid var(--color-border, #e5e7eb);
+  border-radius: 6px;
+  font-size: 0.9rem;
+}
+
+.passkey-error-message {
+  color: var(--color-danger, #ef4444);
+  font-size: 0.85rem;
+}
