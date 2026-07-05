@@ -35,7 +35,7 @@ object AuthSettingsCookie:
       isSecure = true,
       isHttpOnly = true,
       maxAge   = Some(ttl),
-      sameSite = None,
+      sameSite = Some(Cookie.SameSite.Lax),
     )
 
   def parse(content: String, secret: Secret.Bytes32): Either[String, AuthSettingsCookie] =
@@ -80,7 +80,19 @@ object PasskeyRegistrationCookie:
       isSecure = true,
       isHttpOnly = true,
       maxAge   = Some(ttl),
-      sameSite = None,
+      sameSite = Some(Cookie.SameSite.Lax),
+    )
+
+  def clear(secret: Secret.Bytes32): Cookie.Response =
+    Cookie.Response(
+      name     = name,
+      content  = "",
+      domain   = None,
+      path     = Some(Path.root / "auth-settings"),
+      isSecure = true,
+      isHttpOnly = true,
+      maxAge   = Some(Duration.Zero),
+      sameSite = Some(Cookie.SameSite.Lax),
     )
 
   def parse(content: String, secret: Secret.Bytes32): Either[String, PasskeyRegistrationCookie] =

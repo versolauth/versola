@@ -234,7 +234,8 @@ object AuthSettingsController extends Controller:
         _ <- ZIO.serviceWithZIO[WebAuthnService](
           _.finishRegistration(settings, userId, ceremony.request, response, name)
         )
-      yield Response.seeOther(URL.root / "auth-settings"))
+        clearRegCookie = PasskeyRegistrationCookie.clear(secret)
+      yield Response.seeOther(URL.root / "auth-settings").addCookie(clearRegCookie))
         .catchAll:
           case versola.util.http.Unauthorized => ZIO.succeed(Response.unauthorized)
           case ex: Throwable                  => ZIO.fail(ex)
@@ -284,10 +285,11 @@ object AuthSettingsController extends Controller:
       config: AuthSettingsConfig,
       title: String,
   ): String =
-    // Escape </script> in the JSON payload to prevent script-breakout XSS.
-    val safeJson = config.toJson.replace("</script>", "<\\/script>")
+    // Escape < in the JSON payload to prevent script-breakout XSS.
+    // Unicode-escaping < to < is safe in JSON and avoids regex replacement semantics.
+    val safeJson = config.toJson.replace("<", "\\u003c")
     s"""<!DOCTYPE html>
-       |<html lang="en">
+       |<html lang="${config.locale}">
        |  <head>
        |    <meta charset="UTF-8">
        |    <meta name="viewport" content="width=device-width, initial-scale=1.0">

@@ -4,9 +4,10 @@ import com.nimbusds.jose.crypto.RSASSASigner
 import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm}
 import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 import versola.auth.TestEnvConfig
+import versola.auth.model.{CredentialDeviceType, CredentialId, PasskeyRecord}
 import versola.oauth.challenge.passkey.{PasskeyRepository, WebAuthnService}
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{ClientId, FormRecord, Locales, LocaleRecord, ScopeToken, ThemeRecord}
+import versola.oauth.client.model.{ClientId, FormRecord, Locales, LocaleRecord, PasskeySettings, ScopeToken, ThemeRecord}
 import versola.oauth.jwks.JwksService
 import versola.oauth.session.SessionRepository
 import versola.user.UserRepository
@@ -300,6 +301,110 @@ object AuthSettingsControllerSpec extends UnitSpecBase:
               URL.empty / "auth-settings" / "passkeys" / "delete",
               Body.fromURLEncodedForm(Form.fromStrings("id" -> credB64)),
             ).addHeader(accountCookieHeader),
+          )
+        yield assertTrue(resp.status == Status.SeeOther)
+      },
+    ),
+
+    // -------------------------------------------------------------------------
+    // POST /auth-settings/passkeys/register
+    // -------------------------------------------------------------------------
+    suite("POST /auth-settings/passkeys/register")(
+
+      test("without SSO_ACCOUNT cookie returns 401") {
+        for
+          client      <- ZIO.service[Client]
+          tracing     <- NoopTracing.layer.build
+          sessionRepo  = stub[SessionRepository]
+          passkeyRepo  = stub[PasskeyRepository]
+          webAuthn     = stub[WebAuthnService]
+          oauthConfig  = stub[OAuthConfigurationService]
+          userRepo     = stub[UserRepository]
+          _           <- TestClient.addRoutes(buildRoutes(sessionRepo, passkeyRepo, webAuthn, oauthConfig, userRepo, tracing))
+          resp        <- client.batched(
+            Request.post(URL.empty / "auth-settings" / "passkeys" / "register", Body.empty),
+          )
+        yield assertTrue(resp.status == Status.Unauthorized)
+      },
+
+      test("with SSO_ACCOUNT but missing SSO_PASSKEY_REG returns 401") {
+        for
+          client      <- ZIO.service[Client]
+          tracing     <- NoopTracing.layer.build
+          sessionRepo  = stub[SessionRepository]
+          passkeyRepo  = stub[PasskeyRepository]
+          webAuthn     = stub[WebAuthnService]
+          oauthConfig  = stub[OAuthConfigurationService]
+          userRepo     = stub[UserRepository]
+          _           <- TestClient.addRoutes(buildRoutes(sessionRepo, passkeyRepo, webAuthn, oauthConfig, userRepo, tracing))
+          resp        <- client.batched(
+            Request.post(URL.empty / "auth-settings" / "passkeys" / "register", Body.empty)
+              .addHeader(accountCookieHeader),
+          )
+        yield assertTrue(resp.status == Status.Unauthorized)
+      },
+
+      test("with invalid SSO_PASSKEY_REG content returns 401") {
+        for
+          client      <- ZIO.service[Client]
+          tracing     <- NoopTracing.layer.build
+          sessionRepo  = stub[SessionRepository]
+          passkeyRepo  = stub[PasskeyRepository]
+          webAuthn     = stub[WebAuthnService]
+          oauthConfig  = stub[OAuthConfigurationService]
+          userRepo     = stub[UserRepository]
+          _           <- TestClient.addRoutes(buildRoutes(sessionRepo, passkeyRepo, webAuthn, oauthConfig, userRepo, tracing))
+          resp        <- client.batched(
+            Request.post(URL.empty / "auth-settings" / "passkeys" / "register", Body.empty)
+              .addHeader(accountCookieHeader)
+              .addHeader(Header.Cookie(NonEmptyChunk(Cookie.Request(PasskeyRegistrationCookie.name, "invalid.content")))),
+          )
+        yield assertTrue(resp.status == Status.Unauthorized)
+      },
+
+      test("with valid ceremony cookie and response redirects to auth-settings") {
+        val ceremony       = PasskeyRegistrationCookie("ceremony-request-json")
+        val regCookieContent = PasskeyRegistrationCookie.responseCookie(ceremony, cookieSecret).content
+        val minimalPasskeySettings = PasskeySettings(
+          rpId             = "localhost",
+          rpName           = "Test",
+          origins          = List("http://localhost:9005"),
+          userVerification = "preferred",
+        )
+        val stubRecord = PasskeyRecord(
+          id               = CredentialId(Array.fill(32)(0.toByte)),
+          userId           = testUserId,
+          publicKey        = Array.emptyByteArray,
+          signatureCounter = 0L,
+          deviceType       = CredentialDeviceType.SingleDevice,
+          backedUp         = false,
+          backupEligible   = false,
+          transports       = Nil,
+          attestationObject = None,
+          clientDataJson   = None,
+          aaguid           = None,
+          name             = None,
+          lastUsedAt       = None,
+          createdAt        = java.time.Instant.EPOCH,
+          updatedAt        = java.time.Instant.EPOCH,
+        )
+        for
+          client      <- ZIO.service[Client]
+          tracing     <- NoopTracing.layer.build
+          sessionRepo  = stub[SessionRepository]
+          passkeyRepo  = stub[PasskeyRepository]
+          webAuthn     = stub[WebAuthnService]
+          oauthConfig  = stub[OAuthConfigurationService]
+          userRepo     = stub[UserRepository]
+          _           <- oauthConfig.getPasskeySettings.succeedsWith(Some(minimalPasskeySettings))
+          _           <- webAuthn.finishRegistration.succeedsWith(stubRecord)
+          _           <- TestClient.addRoutes(buildRoutes(sessionRepo, passkeyRepo, webAuthn, oauthConfig, userRepo, tracing))
+          resp        <- client.batched(
+            Request.post(
+              URL.empty / "auth-settings" / "passkeys" / "register",
+              Body.fromURLEncodedForm(Form.fromStrings("response" -> "{}")),
+            ).addHeader(accountCookieHeader)
+              .addHeader(Header.Cookie(NonEmptyChunk(Cookie.Request(PasskeyRegistrationCookie.name, regCookieContent)))),
           )
         yield assertTrue(resp.status == Status.SeeOther)
       },
