@@ -93,7 +93,16 @@ object EdgeController extends Controller:
                         for
                           r       <- client.request(authReq)
                           resBody <- r.body.asChunk
-                        yield Response(r.status, r.headers, Body.fromChunk(resBody))
+                        yield Response(
+                          r.status,
+                          r.headers
+                            .removeHeader(Header.TransferEncoding)
+                            .removeHeader(Header.ContentEncoding)
+                            .removeHeader(Header.ContentLength)
+                            .removeHeader(Header.Connection)
+                            .removeHeader("Keep-Alive"),
+                          Body.fromChunk(resBody),
+                        )
       yield response
     }
 
@@ -121,7 +130,7 @@ object EdgeController extends Controller:
       client  <- ZIO.service[Client]
       reqBody <- request.body.asChunk
       forwardedCookies = request.cookies
-        .filter(_.name != EdgeSessionCookie.name)
+        .filter(c => c.name == "SSO_ACCOUNT" || c.name == "SSO_PASSKEY_REG")
         .map(_.toRequest)
       baseHeaders = request.headers
         .removeHeader(Header.Cookie)
@@ -140,7 +149,16 @@ object EdgeController extends Controller:
                     for
                       r       <- client.request(authReq)
                       resBody <- r.body.asChunk
-                    yield Response(r.status, r.headers, Body.fromChunk(resBody))
+                    yield Response(
+                      r.status,
+                      r.headers
+                        .removeHeader(Header.TransferEncoding)
+                        .removeHeader(Header.ContentEncoding)
+                        .removeHeader(Header.ContentLength)
+                        .removeHeader(Header.Connection)
+                        .removeHeader("Keep-Alive"),
+                      Body.fromChunk(resBody),
+                    )
     yield response
 
   val proxyGetEndpoint =

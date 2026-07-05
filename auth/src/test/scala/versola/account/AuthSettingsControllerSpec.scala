@@ -5,7 +5,7 @@ import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm}
 import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 import versola.auth.TestEnvConfig
 import versola.auth.model.{CredentialDeviceType, CredentialId, PasskeyRecord}
-import versola.oauth.challenge.passkey.{PasskeyRepository, WebAuthnService}
+import versola.oauth.challenge.passkey.{PasskeyCeremony, PasskeyRepository, WebAuthnService}
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{ClientId, FormRecord, Locales, LocaleRecord, PasskeySettings, ScopeToken, ThemeRecord}
 import versola.oauth.jwks.JwksService
@@ -188,9 +188,47 @@ object AuthSettingsControllerSpec extends UnitSpecBase:
               .addHeader(Header.Authorization.Bearer(validToken)),
           )
           body        <- resp.body.asString
+          accountCookie = resp.header(Header.SetCookie).map(_.value)
         yield assertTrue(
           resp.status == Status.Ok,
           body.contains("versola-form-root"),
+          accountCookie.exists(_.name == AuthSettingsCookie.name),
+        )
+      },
+
+      test("with valid Bearer token and passkey settings sets passkeyRegistration and SSO_PASSKEY_REG cookie") {
+        for
+          client      <- ZIO.service[Client]
+          tracing     <- NoopTracing.layer.build
+          sessionRepo  = stub[SessionRepository]
+          passkeyRepo  = stub[PasskeyRepository]
+          webAuthn     = stub[WebAuthnService]
+          oauthConfig  = stub[OAuthConfigurationService]
+          userRepo     = stub[UserRepository]
+          _           <- sessionRepo.findByUserIdWithId.succeedsWith(Nil)
+          _           <- passkeyRepo.listByUser.succeedsWith(Vector.empty)
+          _           <- userRepo.find.succeedsWith(None)
+          settings     = PasskeySettings("example.com", "Example", List("https://example.com"), "preferred")
+          _           <- oauthConfig.getPasskeySettings.succeedsWith(Some(settings))
+          _           <- webAuthn.startRegistration.succeedsWith(
+                           PasskeyCeremony("reg-req", """{"challenge":"abc"}"""),
+                         )
+          _           <- oauthConfig.getForm.succeedsWith(Some(minimalForm))
+          _           <- oauthConfig.find.succeedsWith(None)
+          _           <- oauthConfig.getTheme.succeedsWith(Some(minimalTheme))
+          _           <- oauthConfig.getLocales.succeedsWith(minimalLocales)
+          _           <- TestClient.addRoutes(buildRoutes(sessionRepo, passkeyRepo, webAuthn, oauthConfig, userRepo, tracing))
+          resp        <- client.batched(
+                           Request.get(URL.empty / "auth-settings")
+                             .addHeader(Header.Authorization.Bearer(validToken)),
+                         )
+          body        <- resp.body.asString
+          cookieNames  = resp.headers.toList.collect { case Header.SetCookie(c) => c.name }.toSet
+        yield assertTrue(
+          resp.status == Status.Ok,
+          body.contains("""{\"challenge\":\"abc\"}"""),
+          cookieNames.contains(AuthSettingsCookie.name),
+          cookieNames.contains(PasskeyRegistrationCookie.name),
         )
       },
 
@@ -403,8 +441,11 @@ object AuthSettingsControllerSpec extends UnitSpecBase:
             Request.post(
               URL.empty / "auth-settings" / "passkeys" / "register",
               Body.fromURLEncodedForm(Form.fromStrings("response" -> "{}")),
-            ).addHeader(accountCookieHeader)
-              .addHeader(Header.Cookie(NonEmptyChunk(Cookie.Request(PasskeyRegistrationCookie.name, regCookieContent)))),
+            ).addHeader(Header.Cookie(NonEmptyChunk(
+              Cookie.Request(AuthSettingsCookie.name,
+                AuthSettingsCookie.responseCookie(AuthSettingsCookie(testUserId, testClientId), cookieSecret).content),
+              Cookie.Request(PasskeyRegistrationCookie.name, regCookieContent),
+            ))),
           )
         yield assertTrue(resp.status == Status.SeeOther)
       },

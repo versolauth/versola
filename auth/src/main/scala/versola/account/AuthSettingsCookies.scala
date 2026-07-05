@@ -10,6 +10,49 @@ import zio.json.*
 
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
+import java.time.Instant
+
+// Signed envelope that wraps any cookie payload together with an issuedAt
+// timestamp.  The HMAC covers the entire envelope JSON, so the timestamp
+// cannot be stripped or tampered with independently of the payload.
+private[account] case class CookieEnvelope(json: String, issuedAt: Long) derives JsonCodec
+
+// Shared signing helpers used by both cookie companion objects.
+private[account] object CookieSigning:
+
+  /** Encode a payload as a signed cookie content string. */
+  def encode(payloadJson: String, key: Secret.Bytes32): String =
+    encodeAt(payloadJson, key, Instant.now().getEpochSecond)
+
+  /** Encode with an explicit issuedAt; used only in tests to simulate stale cookies. */
+  private[account] def encodeAt(payloadJson: String, key: Secret.Bytes32, issuedAt: Long): String =
+    val envelope  = CookieEnvelope(payloadJson, issuedAt)
+    val envBytes  = envelope.toJson.getBytes(StandardCharsets.UTF_8)
+    val envB64    = Base64.urlEncode(envBytes)
+    val sigB64    = Base64.urlEncode(mac(envBytes, key))
+    s"$envB64.$sigB64"
+
+  /** Decode and verify a signed cookie content string.
+   *  Returns Left if the signature is invalid or the cookie is older than maxAgeSecs. */
+  def decode(content: String, key: Secret.Bytes32, maxAgeSecs: Long): Either[String, String] =
+    val dotIdx = content.lastIndexOf('.')
+    if dotIdx < 0 then Left("missing signature")
+    else
+      val envB64 = content.substring(0, dotIdx)
+      val sigB64 = content.substring(dotIdx + 1)
+      for
+        envBytes <- scala.util.Try(Base64.urlDecode(envB64)).toEither.left.map(_.getMessage)
+        sigBytes <- scala.util.Try(Base64.urlDecode(sigB64)).toEither.left.map(_.getMessage)
+        _        <- Either.cond(MessageDigest.isEqual(mac(envBytes, key), sigBytes), (), "invalid signature")
+        envelope <- new String(envBytes, StandardCharsets.UTF_8).fromJson[CookieEnvelope]
+        age       = Instant.now().getEpochSecond - envelope.issuedAt
+        _        <- Either.cond(age <= maxAgeSecs && age >= -5, (), "cookie expired")
+      yield envelope.json
+
+  private def mac(data: Array[Byte], key: Secret.Bytes32): Array[Byte] =
+    val out = Array.ofDim[Byte](32)
+    Blake3.initKeyedHash(key).update(data).doFinalize(out)
+    out
 
 // ---------------------------------------------------------------------------
 // AuthSettingsCookie — identifies the authenticated user on the account page.
@@ -24,37 +67,19 @@ object AuthSettingsCookie:
   val ttl: Duration = Duration.fromSeconds(3600) // 1 hour
 
   def responseCookie(payload: AuthSettingsCookie, secret: Secret.Bytes32): Cookie.Response =
-    val payloadBytes = payload.toJson.getBytes(StandardCharsets.UTF_8)
-    val payloadB64   = Base64.urlEncode(payloadBytes)
-    val sigB64       = Base64.urlEncode(computeMac(payloadBytes, secret))
     Cookie.Response(
-      name     = name,
-      content  = s"$payloadB64.$sigB64",
-      domain   = None,
-      path     = Some(Path.root / "auth-settings"),
-      isSecure = true,
+      name       = name,
+      content    = CookieSigning.encode(payload.toJson, secret),
+      domain     = None,
+      path       = Some(Path.root / "auth-settings"),
+      isSecure   = true,
       isHttpOnly = true,
-      maxAge   = Some(ttl),
-      sameSite = Some(Cookie.SameSite.Lax),
+      maxAge     = Some(ttl),
+      sameSite   = Some(Cookie.SameSite.Lax),
     )
 
   def parse(content: String, secret: Secret.Bytes32): Either[String, AuthSettingsCookie] =
-    val dotIdx = content.lastIndexOf('.')
-    if dotIdx < 0 then Left("missing signature")
-    else
-      val payloadB64 = content.substring(0, dotIdx)
-      val sigB64     = content.substring(dotIdx + 1)
-      for
-        payloadBytes <- scala.util.Try(Base64.urlDecode(payloadB64)).toEither.left.map(_.getMessage)
-        sigBytes     <- scala.util.Try(Base64.urlDecode(sigB64)).toEither.left.map(_.getMessage)
-        _            <- Either.cond(MessageDigest.isEqual(computeMac(payloadBytes, secret), sigBytes), (), "invalid signature")
-        cookie       <- new String(payloadBytes, StandardCharsets.UTF_8).fromJson[AuthSettingsCookie]
-      yield cookie
-
-  private def computeMac(data: Array[Byte], key: Secret.Bytes32): Array[Byte] =
-    val mac = Array.ofDim[Byte](32)
-    Blake3.initKeyedHash(key).update(data).doFinalize(mac)
-    mac
+    CookieSigning.decode(content, secret, ttl.toSeconds).flatMap(_.fromJson[AuthSettingsCookie])
 
 // ---------------------------------------------------------------------------
 // PasskeyRegistrationCookie — holds the in-progress WebAuthn ceremony request.
@@ -69,46 +94,28 @@ object PasskeyRegistrationCookie:
   val ttl: Duration = Duration.fromSeconds(300) // 5 minutes — matches WebAuthn ceremony timeout
 
   def responseCookie(payload: PasskeyRegistrationCookie, secret: Secret.Bytes32): Cookie.Response =
-    val payloadBytes = payload.toJson.getBytes(StandardCharsets.UTF_8)
-    val payloadB64   = Base64.urlEncode(payloadBytes)
-    val sigB64       = Base64.urlEncode(computeMac(payloadBytes, secret))
     Cookie.Response(
-      name     = name,
-      content  = s"$payloadB64.$sigB64",
-      domain   = None,
-      path     = Some(Path.root / "auth-settings"),
-      isSecure = true,
+      name       = name,
+      content    = CookieSigning.encode(payload.toJson, secret),
+      domain     = None,
+      path       = Some(Path.root / "auth-settings"),
+      isSecure   = true,
       isHttpOnly = true,
-      maxAge   = Some(ttl),
-      sameSite = Some(Cookie.SameSite.Lax),
+      maxAge     = Some(ttl),
+      sameSite   = Some(Cookie.SameSite.Lax),
     )
 
   def clear(secret: Secret.Bytes32): Cookie.Response =
     Cookie.Response(
-      name     = name,
-      content  = "",
-      domain   = None,
-      path     = Some(Path.root / "auth-settings"),
-      isSecure = true,
+      name       = name,
+      content    = "",
+      domain     = None,
+      path       = Some(Path.root / "auth-settings"),
+      isSecure   = true,
       isHttpOnly = true,
-      maxAge   = Some(Duration.Zero),
-      sameSite = Some(Cookie.SameSite.Lax),
+      maxAge     = Some(Duration.Zero),
+      sameSite   = Some(Cookie.SameSite.Lax),
     )
 
   def parse(content: String, secret: Secret.Bytes32): Either[String, PasskeyRegistrationCookie] =
-    val dotIdx = content.lastIndexOf('.')
-    if dotIdx < 0 then Left("missing signature")
-    else
-      val payloadB64 = content.substring(0, dotIdx)
-      val sigB64     = content.substring(dotIdx + 1)
-      for
-        payloadBytes <- scala.util.Try(Base64.urlDecode(payloadB64)).toEither.left.map(_.getMessage)
-        sigBytes     <- scala.util.Try(Base64.urlDecode(sigB64)).toEither.left.map(_.getMessage)
-        _            <- Either.cond(MessageDigest.isEqual(computeMac(payloadBytes, secret), sigBytes), (), "invalid signature")
-        cookie       <- new String(payloadBytes, StandardCharsets.UTF_8).fromJson[PasskeyRegistrationCookie]
-      yield cookie
-
-  private def computeMac(data: Array[Byte], key: Secret.Bytes32): Array[Byte] =
-    val mac = Array.ofDim[Byte](32)
-    Blake3.initKeyedHash(key).update(data).doFinalize(mac)
-    mac
+    CookieSigning.decode(content, secret, ttl.toSeconds).flatMap(_.fromJson[PasskeyRegistrationCookie])

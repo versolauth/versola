@@ -87,18 +87,6 @@ object AuthSettingsController extends Controller:
         sessions <- ZIO.serviceWithZIO[SessionRepository](_.findByUserIdWithId(userId))
         passkeys <- ZIO.serviceWithZIO[PasskeyRepository](_.listByUser(userId))
 
-        // Optionally start a passkey registration ceremony
-        passkeySettings <- ZIO.serviceWithZIO[OAuthConfigurationService](_.getPasskeySettings(clientId))
-        displayName     <- ZIO.serviceWithZIO[UserRepository](_.find(userId)).map: userOpt =>
-          userOpt.flatMap(u => u.login.map(_.toString).orElse(u.email.map(_.toString)).orElse(u.phone.map(_.toString)))
-            .getOrElse(userId.toString)
-        passkeyResult <- passkeySettings match
-          case Some(settings) =>
-            ZIO.serviceWithZIO[WebAuthnService](_.startRegistration(settings, userId, displayName))
-              .map(c => Some(c))
-              .catchAll(_ => ZIO.none)
-          case None => ZIO.none
-
         // Fetch form, theme and locales from Central
         formOpt <- ZIO.serviceWithZIO[OAuthConfigurationService](_.getForm("auth-settings"))
         client  <- ZIO.serviceWithZIO[OAuthConfigurationService](_.find(clientId))
@@ -112,50 +100,66 @@ object AuthSettingsController extends Controller:
           case None =>
             ZIO.succeed(Response.notFound)
           case Some(form) =>
-            val activeCodes  = (locales.locales.map(_.code).toSet + locales.default) & form.localizations.keySet
-            val allLocales   = activeCodes.toList.sorted
-            val translations = form.localizations.getOrElse(locales.default, Map.empty)
+            for
+              // Only start a passkey ceremony when we know we can serve the page
+              passkeySettings <- ZIO.serviceWithZIO[OAuthConfigurationService](_.getPasskeySettings(clientId))
+              displayName     <- ZIO.serviceWithZIO[UserRepository](_.find(userId)).map: userOpt =>
+                userOpt.flatMap(u => u.login.map(_.toString).orElse(u.email.map(_.toString)).orElse(u.phone.map(_.toString)))
+                  .getOrElse(userId.toString)
+              passkeyResult <- passkeySettings match
+                case Some(settings) =>
+                  ZIO.serviceWithZIO[WebAuthnService](_.startRegistration(settings, userId, displayName))
+                    .map(c => Some(c))
+                    .catchAll(e => ZIO.logWarning(s"startRegistration failed: ${e.getMessage}") *> ZIO.none)
+                case None => ZIO.none
 
-            val config = AuthSettingsConfig(
-              sessions = sessions.map: (id, rec) =>
-                SessionView(
-                  id        = Base64Url.encode(id),
-                  clientId  = rec.clientId,
-                  platform  = rec.userAgent.platform,
-                  os        = rec.userAgent.os,
-                  browser   = rec.userAgent.browser,
-                  version   = rec.userAgent.version,
-                  createdAt = rec.createdAt.toString,
-                ),
-              passkeys = passkeys.toList.map: r =>
-                PasskeyView(
-                  id             = Base64Url.encode(r.id),
-                  name           = r.name,
-                  deviceType     = r.deviceType.toString,
-                  backedUp       = r.backedUp,
-                  backupEligible = r.backupEligible,
-                  createdAt      = r.createdAt.toString,
-                  lastUsedAt     = r.lastUsedAt.map(_.toString),
-                ),
-              passkeyRegistration = passkeyResult.map(_.publicKeyOptions),
-              t         = translations,
-              locale    = locales.default,
-              locales   = allLocales,
-              allT      = form.localizations,
-              error     = None,
-            )
+              activeCodes    = (locales.locales.map(_.code).toSet + locales.default) & form.localizations.keySet
+              allLocales     = activeCodes.toList.sorted
+              effectiveLocale =
+                if form.localizations.contains(locales.default) then locales.default
+                else allLocales.headOption.getOrElse(locales.default)
+              translations   = form.localizations.getOrElse(effectiveLocale, Map.empty)
 
-            val pageTitle = translations.getOrElse("page_title", "Account Settings")
-            val html = renderPage(form.style, form.jsCompiled, css, config, pageTitle)
-            val authCookie = AuthSettingsCookie.responseCookie(AuthSettingsCookie(userId, clientId), secret)
-            val baseResponse = htmlResponse(html).addCookie(authCookie)
-            val withRegCookie = passkeyResult match
-              case Some(ceremony) =>
-                baseResponse.addCookie(
-                  PasskeyRegistrationCookie.responseCookie(PasskeyRegistrationCookie(ceremony.request), secret)
-                )
-              case None => baseResponse
-            ZIO.succeed(withRegCookie)
+              config = AuthSettingsConfig(
+                sessions = sessions.map: (id, rec) =>
+                  SessionView(
+                    id        = Base64Url.encode(id),
+                    clientId  = rec.clientId,
+                    platform  = rec.userAgent.platform,
+                    os        = rec.userAgent.os,
+                    browser   = rec.userAgent.browser,
+                    version   = rec.userAgent.version,
+                    createdAt = rec.createdAt.toString,
+                  ),
+                passkeys = passkeys.toList.map: r =>
+                  PasskeyView(
+                    id             = Base64Url.encode(r.id),
+                    name           = r.name,
+                    deviceType     = r.deviceType.toString,
+                    backedUp       = r.backedUp,
+                    backupEligible = r.backupEligible,
+                    createdAt      = r.createdAt.toString,
+                    lastUsedAt     = r.lastUsedAt.map(_.toString),
+                  ),
+                passkeyRegistration = passkeyResult.map(_.publicKeyOptions),
+                t         = translations,
+                locale    = effectiveLocale,
+                locales   = allLocales,
+                allT      = form.localizations,
+                error     = None,
+              )
+
+              pageTitle = translations.getOrElse("page_title", "Account Settings")
+              html      = renderPage(form.style, form.jsCompiled, css, config, pageTitle)
+              authCookie = AuthSettingsCookie.responseCookie(AuthSettingsCookie(userId, clientId), secret)
+              baseResponse = htmlResponse(html).addCookie(authCookie)
+              withRegCookie = passkeyResult match
+                case Some(ceremony) =>
+                  baseResponse.addCookie(
+                    PasskeyRegistrationCookie.responseCookie(PasskeyRegistrationCookie(ceremony.request), secret)
+                  )
+                case None => baseResponse
+            yield withRegCookie
       yield response)
         .catchAll:
           case versola.util.http.Unauthorized => ZIO.succeed(Response.unauthorized)
@@ -176,6 +180,8 @@ object AuthSettingsController extends Controller:
           .orElseFail(versola.util.http.Unauthorized)
         idBytes     <- ZIO.attempt(Base64.urlDecode(rawId))
           .mapError(_ => versola.util.http.Unauthorized)
+        _           <- ZIO.fail(versola.util.http.Unauthorized)
+          .unless(idBytes.length == 32)
         sessionId   = MAC(idBytes)
         _           <- ZIO.serviceWithZIO[SessionRepository](_.invalidate(sessionId, userId))
       yield Response.seeOther(URL.root / "auth-settings"))
@@ -229,7 +235,7 @@ object AuthSettingsController extends Controller:
 
         passkeySettings <- ZIO.serviceWithZIO[OAuthConfigurationService](_.getPasskeySettings(clientId))
         settings        <- ZIO.fromOption(passkeySettings)
-          .orElseFail(new RuntimeException("passkey not configured for this client"))
+          .orElseFail(versola.util.http.Unauthorized)
 
         _ <- ZIO.serviceWithZIO[WebAuthnService](
           _.finishRegistration(settings, userId, ceremony.request, response, name)
@@ -285,15 +291,24 @@ object AuthSettingsController extends Controller:
       config: AuthSettingsConfig,
       title: String,
   ): String =
-    // Escape < in the JSON payload to prevent script-breakout XSS.
-    // Unicode-escaping < to < is safe in JSON and avoids regex replacement semantics.
-    val safeJson = config.toJson.replace("<", "\\u003c")
+    // Escape characters that can break an inline <script> block:
+    //   < prevents </script> breakout
+    //   U+2028 / U+2029 are line terminators in JS but valid in JSON strings
+    // HTML-escape the page title to prevent injection via localisation strings
+    val safeTitle = title
+      .replace("&", "&amp;")
+      .replace("<", "&lt;")
+      .replace(">", "&gt;")
+    val safeJson = config.toJson
+      .replace("<", "\\u003c")
+      .replace(" ", "\\u2028")
+      .replace(" ", "\\u2029")
     s"""<!DOCTYPE html>
        |<html lang="${config.locale}">
        |  <head>
        |    <meta charset="UTF-8">
        |    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-       |    <title>$title</title>
+       |    <title>$safeTitle</title>
        |    <style>
        |      $themeCss
        |      $style
@@ -313,6 +328,9 @@ object AuthSettingsController extends Controller:
   private def htmlResponse(content: String): Response =
     Response(
       status  = Status.Ok,
-      headers = Headers(Header.ContentType(MediaType.text.html)),
+      headers = Headers(
+        Header.ContentType(MediaType.text.html),
+        Header.Custom("Cache-Control", "no-store"),
+      ),
       body    = Body.fromString(content),
     )
