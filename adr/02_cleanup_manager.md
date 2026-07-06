@@ -74,12 +74,13 @@ The following tables have TTL-based expiration and require periodic cleanup:
 
 **Design:**
 ```scala
-def cleanupExpired(table: String, batchSize: Int): Task[Int] =
+def cleanupExpired(table: String, batchSize: Int, keyColumn: String = "id"): Task[Int] =
+  val key = SqlLiteral(keyColumn)
   xa.transact {
     sql"""
       DELETE FROM $table
-      WHERE id IN (
-        SELECT id FROM $table
+      WHERE $key IN (
+        SELECT $key FROM $table
         WHERE expires_at < NOW()
         ORDER BY expires_at
         LIMIT $batchSize
@@ -198,6 +199,7 @@ case class TableCleanupConfig(
   tableName: String,
   batchSize: Int,
   interval: Duration,
+  keyColumn: Option[String] = None, // defaults to "id"; use "ctid" for composite-PK tables
 )
 
 case class CleanupResult(
@@ -220,7 +222,7 @@ abstract class CleanupManager.Base(
   fibers: Ref[List[Fiber.Runtime[Throwable, Long]]],
 ) extends CleanupManager:
 
-  protected def cleanupBatch(tableName: String, batchSize: Int): Task[Int]
+  protected def cleanupBatch(tableName: String, batchSize: Int, keyColumn: String): Task[Int]
 
   override def start(): RIO[Scope, Unit] =
     Semaphore.make(config.maxThreads).flatMap { semaphore =>
@@ -243,9 +245,10 @@ abstract class CleanupManager.Base(
     yield ()
 
   private def cleanupTable(config: TableCleanupConfig): Task[CleanupResult] =
+    val keyColumn = config.keyColumn.getOrElse("id")
     for
       start <- Clock.currentTime(TimeUnit.MILLISECONDS)
-      deleted <- cleanupBatch(config.tableName, config.batchSize)
+      deleted <- cleanupBatch(config.tableName, config.batchSize, keyColumn)
       end <- Clock.currentTime(TimeUnit.MILLISECONDS)
       duration = end - start
       _ <- ZIO.logInfo(s"Cleaned ${config.tableName}: $deleted rows in ${duration}ms")
@@ -262,13 +265,14 @@ class PostgresCleanupManager(
   fibers: Ref[List[Fiber.Runtime[Throwable, Long]]],
 ) extends CleanupManager.Base(config, fibers):
 
-  override protected def cleanupBatch(tableName: String, batchSize: Int): Task[Int] =
+  override protected def cleanupBatch(tableName: String, batchSize: Int, keyColumn: String): Task[Int] =
     val table = SqlLiteral(tableName)
+    val key   = SqlLiteral(keyColumn)
     xa.connect {
       sql"""
         DELETE FROM $table
-        WHERE id IN (
-          SELECT id FROM $table
+        WHERE $key IN (
+          SELECT $key FROM $table
           WHERE expires_at < NOW()
           ORDER BY expires_at
           LIMIT $batchSize
@@ -771,9 +775,10 @@ When compliance requirements are defined, add archive table:
 
 ```scala
 // Copy to archive before deleting
-private def cleanupWithArchive(tableName: String, batchSize: Int): Task[Int] =
+private def cleanupWithArchive(tableName: String, batchSize: Int, keyColumn: String = "id"): Task[Int] =
   val table = SqlLiteral(tableName)
   val archiveTable = SqlLiteral(tableName + "_archive")
+  val key = SqlLiteral(keyColumn)
   xa.transact {
     for
       _ <- sql"""
@@ -785,8 +790,8 @@ private def cleanupWithArchive(tableName: String, batchSize: Int): Task[Int] =
 
       deleted <- sql"""
         DELETE FROM $table
-        WHERE id IN (
-          SELECT id FROM $table
+        WHERE $key IN (
+          SELECT $key FROM $table
           WHERE expires_at < NOW()
           LIMIT $batchSize
           FOR UPDATE SKIP LOCKED
