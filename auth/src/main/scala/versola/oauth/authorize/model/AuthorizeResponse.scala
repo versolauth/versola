@@ -1,6 +1,5 @@
 package versola.oauth.authorize.model
 
-import versola.oauth.client.model.PrimaryCredential
 import versola.oauth.conversation.model.AuthId
 import versola.oauth.model.AuthorizationCode
 
