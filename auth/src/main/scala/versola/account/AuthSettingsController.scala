@@ -1,23 +1,18 @@
 package versola.account
 
-import versola.auth.model.{AuthenticatorTransport, CredentialDeviceType, CredentialId}
-import versola.oauth.challenge.passkey.{PasskeyRepository, WebAuthnService}
-import versola.oauth.client.OAuthConfigurationService
+import versola.auth.model.CredentialId
 import versola.oauth.client.model.{ClientId, ScopeToken}
 import versola.oauth.jwks.JwksService
 import versola.oauth.model.AccessTokenPayload
-import versola.oauth.session.SessionRepository
-import versola.oauth.session.model.SessionId
-import versola.user.UserRepository
 import versola.user.model.UserId
-import versola.util.http.Controller
-import versola.util.{Base64, Base64Url, CoreConfig, JWT, MAC}
+import versola.util.http.{Controller, Unauthorized}
+import versola.util.{Base64Url, CoreConfig, JWT}
 import zio.*
 import zio.http.*
 import zio.json.*
 import zio.telemetry.opentelemetry.tracing.Tracing
 
-import java.time.Instant
+import java.util.UUID
 
 object AuthSettingsController extends Controller:
 
@@ -25,11 +20,7 @@ object AuthSettingsController extends Controller:
     Tracing &
       JwksService &
       CoreConfig &
-      SessionRepository &
-      PasskeyRepository &
-      WebAuthnService &
-      OAuthConfigurationService &
-      UserRepository
+      AuthSettingsService
 
   def routes: Routes[Env, Throwable] = Routes(
     getPageRoute,
@@ -82,112 +73,76 @@ object AuthSettingsController extends Controller:
       (for
         (userId, clientId) <- authenticateGet(request)
         secret             <- ZIO.serviceWith[CoreConfig](_.security.conversationCookieSecret)
-
-        // Fetch sessions and passkeys for this user
-        sessions <- ZIO.serviceWithZIO[SessionRepository](_.findByUserIdWithId(userId))
-        passkeys <- ZIO.serviceWithZIO[PasskeyRepository](_.listByUser(userId))
-
-        // Fetch form, theme and locales from Central
-        formOpt <- ZIO.serviceWithZIO[OAuthConfigurationService](_.getForm("auth-settings"))
-        client  <- ZIO.serviceWithZIO[OAuthConfigurationService](_.find(clientId))
-        themeId = client.map(_.theme).getOrElse("default")
-        css     <- ZIO.serviceWithZIO[OAuthConfigurationService](_.getTheme(themeId)).flatMap:
-          case Some(t) if t.css.nonEmpty => ZIO.succeed(t.css)
-          case _ => ZIO.serviceWithZIO[OAuthConfigurationService](_.getTheme("default")).map(_.map(_.css).getOrElse(""))
-        locales <- ZIO.serviceWithZIO[OAuthConfigurationService](_.getLocales)
-
-        response <- formOpt match
-          case None =>
-            ZIO.succeed(Response.notFound)
-          case Some(form) =>
-            for
-              // Only start a passkey ceremony when we know we can serve the page
-              passkeySettings <- ZIO.serviceWithZIO[OAuthConfigurationService](_.getPasskeySettings(clientId))
-              displayName     <- ZIO.serviceWithZIO[UserRepository](_.find(userId)).map: userOpt =>
-                userOpt.flatMap(u => u.login.map(_.toString).orElse(u.email.map(_.toString)).orElse(u.phone.map(_.toString)))
-                  .getOrElse(userId.toString)
-              passkeyResult <- passkeySettings match
-                case Some(settings) =>
-                  ZIO.serviceWithZIO[WebAuthnService](_.startRegistration(settings, userId, displayName))
-                    .map(c => Some(c))
-                    .catchAll(e => ZIO.logWarning(s"startRegistration failed: ${e.getMessage}") *> ZIO.none)
-                case None => ZIO.none
-
-              activeCodes    = (locales.locales.map(_.code).toSet + locales.default) & form.localizations.keySet
-              allLocales     = activeCodes.toList.sorted
-              effectiveLocale =
-                if form.localizations.contains(locales.default) then locales.default
-                else allLocales.headOption.getOrElse(locales.default)
-              translations   = form.localizations.getOrElse(effectiveLocale, Map.empty)
-
-              config = AuthSettingsConfig(
-                sessions = sessions.map: (id, rec) =>
-                  SessionView(
-                    id        = Base64Url.encode(id),
-                    clientId  = rec.clientId,
-                    platform  = rec.userAgent.platform,
-                    os        = rec.userAgent.os,
-                    browser   = rec.userAgent.browser,
-                    version   = rec.userAgent.version,
-                    createdAt = rec.createdAt.toString,
-                  ),
-                passkeys = passkeys.toList.map: r =>
-                  PasskeyView(
-                    id             = Base64Url.encode(r.id),
-                    name           = r.name,
-                    deviceType     = r.deviceType.toString,
-                    backedUp       = r.backedUp,
-                    backupEligible = r.backupEligible,
-                    createdAt      = r.createdAt.toString,
-                    lastUsedAt     = r.lastUsedAt.map(_.toString),
-                  ),
-                passkeyRegistration = passkeyResult.map(_.publicKeyOptions),
-                t         = translations,
-                locale    = effectiveLocale,
-                locales   = allLocales,
-                allT      = form.localizations,
-                error     = None,
-              )
-
-              pageTitle = translations.getOrElse("page_title", "Account Settings")
-              html      = renderPage(form.style, form.jsCompiled, css, config, pageTitle)
-              authCookie = AuthSettingsCookie.responseCookie(AuthSettingsCookie(userId, clientId), secret)
-              baseResponse = htmlResponse(html).addCookie(authCookie)
-              withRegCookie = passkeyResult match
-                case Some(ceremony) =>
-                  baseResponse.addCookie(
-                    PasskeyRegistrationCookie.responseCookie(PasskeyRegistrationCookie(ceremony.request), secret)
-                  )
-                case None => baseResponse
-            yield withRegCookie
+        pageDataOpt        <- ZIO.serviceWithZIO[AuthSettingsService](_.getPageData(userId, clientId))
+        response <- pageDataOpt match
+          case None       => ZIO.succeed(Response.notFound)
+          case Some(data) =>
+            val config = AuthSettingsConfig(
+              sessions = data.sessions.map: (publicId, rec) =>
+                SessionView(
+                  id        = publicId.toString,
+                  clientId  = rec.clientId.toString,
+                  platform  = rec.userAgent.platform,
+                  os        = rec.userAgent.os,
+                  browser   = rec.userAgent.browser,
+                  version   = rec.userAgent.version,
+                  createdAt = rec.createdAt.toString,
+                ),
+              passkeys = data.passkeys.toList.map: r =>
+                PasskeyView(
+                  id             = Base64Url.encode(r.id),
+                  name           = r.name,
+                  deviceType     = r.deviceType.toString,
+                  backedUp       = r.backedUp,
+                  backupEligible = r.backupEligible,
+                  createdAt      = r.createdAt.toString,
+                  lastUsedAt     = r.lastUsedAt.map(_.toString),
+                ),
+              passkeyRegistration = data.passkeyResult.map(_.publicKeyOptions),
+              t                   = data.translations,
+              locale              = data.locale,
+              locales             = data.locales,
+              allT                = data.allTranslations,
+              error               = None,
+            )
+            val safeTitle = data.pageTitle
+              .replace("&", "&amp;")
+              .replace("<", "&lt;")
+              .replace(">", "&gt;")
+            val html        = renderPage(data.style, data.jsCompiled, data.css, config, safeTitle)
+            val authCookie  = AuthSettingsCookie.responseCookie(AuthSettingsCookie(userId, clientId), secret)
+            val baseResp    = htmlResponse(html).addCookie(authCookie)
+            val withRegCookie = data.passkeyResult match
+              case Some(ceremony) =>
+                baseResp.addCookie(
+                  PasskeyRegistrationCookie.responseCookie(PasskeyRegistrationCookie(ceremony.request), secret)
+                )
+              case None => baseResp
+            ZIO.succeed(withRegCookie)
       yield response)
         .catchAll:
-          case versola.util.http.Unauthorized => ZIO.succeed(Response.unauthorized)
-          case ex: Throwable                  => ZIO.fail(ex)
+          case Unauthorized  => ZIO.succeed(Response.unauthorized)
+          case ex: Throwable => ZIO.fail(ex)
     }
 
   // -------------------------------------------------------------------------
   // POST /auth-settings/sessions/logout
-  // Form fields: id=<base64url session MAC>
+  // Form fields: id=<public session UUID>
   // -------------------------------------------------------------------------
 
   val logoutSessionRoute =
     Method.POST / "auth-settings" / "sessions" / "logout" -> handler { (request: Request) =>
       (for
-        (userId, _) <- authenticateCookie(request)
-        form        <- request.body.asURLEncodedForm.mapError(_ => versola.util.http.Unauthorized)
-        rawId       <- ZIO.fromOption(form.get("id").flatMap(_.stringValue))
-          .orElseFail(versola.util.http.Unauthorized)
-        idBytes     <- ZIO.attempt(Base64.urlDecode(rawId))
-          .mapError(_ => versola.util.http.Unauthorized)
-        _           <- ZIO.fail(versola.util.http.Unauthorized)
-          .unless(idBytes.length == 32)
-        sessionId   = MAC(idBytes)
-        _           <- ZIO.serviceWithZIO[SessionRepository](_.invalidate(sessionId, userId))
+        _               <- authenticateCookie(request)
+        form            <- request.body.asURLEncodedForm.mapError(_ => Unauthorized)
+        rawId           <- ZIO.fromOption(form.get("id").flatMap(_.stringValue))
+          .orElseFail(Unauthorized)
+        publicSessionId <- ZIO.attempt(UUID.fromString(rawId)).orElseFail(Unauthorized)
+        _               <- ZIO.serviceWithZIO[AuthSettingsService](_.invalidateSession(publicSessionId))
       yield Response.seeOther(URL.root / "auth-settings"))
         .catchAll:
-          case versola.util.http.Unauthorized => ZIO.succeed(Response.unauthorized)
-          case ex: Throwable                  => ZIO.fail(ex)
+          case Unauthorized  => ZIO.succeed(Response.unauthorized)
+          case ex: Throwable => ZIO.fail(ex)
     }
 
   // -------------------------------------------------------------------------
@@ -198,17 +153,17 @@ object AuthSettingsController extends Controller:
   val deletePasskeyRoute =
     Method.POST / "auth-settings" / "passkeys" / "delete" -> handler { (request: Request) =>
       (for
-        (userId, _) <- authenticateCookie(request)
-        form        <- request.body.asURLEncodedForm.mapError(_ => versola.util.http.Unauthorized)
-        rawId       <- ZIO.fromOption(form.get("id").flatMap(_.stringValue))
-          .orElseFail(versola.util.http.Unauthorized)
+        (userId, _)  <- authenticateCookie(request)
+        form         <- request.body.asURLEncodedForm.mapError(_ => Unauthorized)
+        rawId        <- ZIO.fromOption(form.get("id").flatMap(_.stringValue))
+          .orElseFail(Unauthorized)
         credentialId <- ZIO.fromEither(CredentialId.fromBase64Url(rawId))
-          .mapError(_ => versola.util.http.Unauthorized)
-        _ <- ZIO.serviceWithZIO[PasskeyRepository](_.deleteByUser(credentialId, userId))
+          .mapError(_ => Unauthorized)
+        _            <- ZIO.serviceWithZIO[AuthSettingsService](_.deletePasskey(credentialId, userId))
       yield Response.seeOther(URL.root / "auth-settings"))
         .catchAll:
-          case versola.util.http.Unauthorized => ZIO.succeed(Response.unauthorized)
-          case ex: Throwable                  => ZIO.fail(ex)
+          case Unauthorized  => ZIO.succeed(Response.unauthorized)
+          case ex: Throwable => ZIO.fail(ex)
     }
 
   // -------------------------------------------------------------------------
@@ -221,30 +176,22 @@ object AuthSettingsController extends Controller:
       (for
         (userId, clientId) <- authenticateCookie(request)
         secret             <- ZIO.serviceWith[CoreConfig](_.security.conversationCookieSecret)
-
-        // Retrieve ceremony request from cookie
-        regCookie <- ZIO.fromOption(request.cookie(PasskeyRegistrationCookie.name))
-          .orElseFail(versola.util.http.Unauthorized)
-        ceremony  <- ZIO.fromEither(PasskeyRegistrationCookie.parse(regCookie.content, secret))
-          .orElseFail(versola.util.http.Unauthorized)
-
-        form        <- request.body.asURLEncodedForm.mapError(_ => versola.util.http.Unauthorized)
-        response    <- ZIO.fromOption(form.get("response").flatMap(_.stringValue))
-          .orElseFail(versola.util.http.Unauthorized)
-        name         = form.get("name").flatMap(_.stringValue).filter(_.nonEmpty)
-
-        passkeySettings <- ZIO.serviceWithZIO[OAuthConfigurationService](_.getPasskeySettings(clientId))
-        settings        <- ZIO.fromOption(passkeySettings)
-          .orElseFail(versola.util.http.Unauthorized)
-
-        _ <- ZIO.serviceWithZIO[WebAuthnService](
-          _.finishRegistration(settings, userId, ceremony.request, response, name)
+        regCookie          <- ZIO.fromOption(request.cookie(PasskeyRegistrationCookie.name))
+          .orElseFail(Unauthorized)
+        ceremony           <- ZIO.fromEither(PasskeyRegistrationCookie.parse(regCookie.content, secret))
+          .orElseFail(Unauthorized)
+        form               <- request.body.asURLEncodedForm.mapError(_ => Unauthorized)
+        response           <- ZIO.fromOption(form.get("response").flatMap(_.stringValue))
+          .orElseFail(Unauthorized)
+        name                = form.get("name").flatMap(_.stringValue).filter(_.nonEmpty)
+        _                  <- ZIO.serviceWithZIO[AuthSettingsService](
+          _.finishPasskeyRegistration(userId, clientId, ceremony.request, response, name)
         )
-        clearRegCookie = PasskeyRegistrationCookie.clear(secret)
+        clearRegCookie      = PasskeyRegistrationCookie.clear(secret)
       yield Response.seeOther(URL.root / "auth-settings").addCookie(clearRegCookie))
         .catchAll:
-          case versola.util.http.Unauthorized => ZIO.succeed(Response.unauthorized)
-          case ex: Throwable                  => ZIO.fail(ex)
+          case Unauthorized  => ZIO.succeed(Response.unauthorized)
+          case ex: Throwable => ZIO.fail(ex)
     }
 
   // -------------------------------------------------------------------------
@@ -254,15 +201,15 @@ object AuthSettingsController extends Controller:
   /** Accept Bearer token OR SSO_ACCOUNT cookie. Used for GET. */
   private def authenticateGet(
       request: Request,
-  ): ZIO[JwksService & CoreConfig, versola.util.http.Unauthorized.type, (UserId, ClientId)] =
+  ): ZIO[JwksService & CoreConfig, Unauthorized.type, (UserId, ClientId)] =
     request.header(Header.Authorization) match
       case Some(Header.Authorization.Bearer(token)) =>
         for
           keys    <- ZIO.serviceWithZIO[JwksService](_.getPublicKeys)
           payload <- JWT.deserialize[AccessTokenPayload](token.stringValue, keys, JWT.Type.AccessToken)
-            .orElseFail(versola.util.http.Unauthorized)
-          userId  <- ZIO.fromOption(payload.userId).orElseFail(versola.util.http.Unauthorized)
-          _       <- ZIO.fail(versola.util.http.Unauthorized)
+            .orElseFail(Unauthorized)
+          userId  <- ZIO.fromOption(payload.userId).orElseFail(Unauthorized)
+          _       <- ZIO.fail(Unauthorized)
             .unless(payload.scope.contains(ScopeToken.AccountSettings))
         yield (userId, payload.clientId)
       case _ =>
@@ -271,13 +218,13 @@ object AuthSettingsController extends Controller:
   /** Accept only SSO_ACCOUNT cookie. Used for action endpoints. */
   private def authenticateCookie(
       request: Request,
-  ): ZIO[CoreConfig, versola.util.http.Unauthorized.type, (UserId, ClientId)] =
+  ): ZIO[CoreConfig, Unauthorized.type, (UserId, ClientId)] =
     ZIO.serviceWith[CoreConfig](_.security.conversationCookieSecret).flatMap: secret =>
       ZIO.fromOption(request.cookie(AuthSettingsCookie.name))
-        .orElseFail(versola.util.http.Unauthorized)
+        .orElseFail(Unauthorized)
         .flatMap: cookie =>
           ZIO.fromEither(AuthSettingsCookie.parse(cookie.content, secret))
-            .orElseFail(versola.util.http.Unauthorized)
+            .orElseFail(Unauthorized)
         .map(c => (c.userId, c.clientId))
 
   // -------------------------------------------------------------------------
@@ -289,16 +236,11 @@ object AuthSettingsController extends Controller:
       jsCompiled: Option[String],
       themeCss: String,
       config: AuthSettingsConfig,
-      title: String,
+      safeTitle: String,
   ): String =
     // Escape characters that can break an inline <script> block:
     //   < prevents </script> breakout
     //   U+2028 / U+2029 are line terminators in JS but valid in JSON strings
-    // HTML-escape the page title to prevent injection via localisation strings
-    val safeTitle = title
-      .replace("&", "&amp;")
-      .replace("<", "&lt;")
-      .replace(">", "&gt;")
     val safeJson = config.toJson
       .replace("<", "\\u003c")
       .replace(" ", "\\u2028")

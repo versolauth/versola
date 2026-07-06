@@ -161,6 +161,73 @@ trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
           session2After.isDefined,
         )
       },
+      test("findByUserIdWithId returns (UUID, SessionRecord) pairs for active sessions") {
+        for
+          _ <- env.repository.create(sessionId1, session1, ttl, None)
+          _ <- env.repository.create(sessionId3, session1.copy(clientId = clientId2), ttl, None)
+          results <- env.repository.findByUserIdWithId(userId1)
+        yield assertTrue(
+          results.size == 2,
+          results.forall((_, rec) => rec.userId == userId1),
+          results.map(_._1).distinct.size == 2,
+        )
+      },
+      test("findByUserIdWithId does not return expired sessions") {
+        for
+          _ <- env.repository.create(sessionId1, session1, 0.seconds, None)
+          _ <- TestClock.adjust(1.second)
+          results <- env.repository.findByUserIdWithId(userId1)
+        yield assertTrue(results.isEmpty)
+      },
+      test("findByUserIdWithId returns sessions ordered newest first (UUIDv7 DESC)") {
+        for
+          _ <- env.repository.create(sessionId1, session1, ttl, None)
+          _ <- TestClock.adjust(1.second)
+          _ <- env.repository.create(sessionId3, session1.copy(clientId = clientId2), ttl, None)
+          results <- env.repository.findByUserIdWithId(userId1)
+        yield assertTrue(
+          results.size == 2,
+          results.head._1.compareTo(results.last._1) > 0, // newer UUID is larger for UUIDv7
+        )
+      },
+      test("findByUserIdWithId does not return sessions for other users") {
+        for
+          _ <- env.repository.create(sessionId1, session1, ttl, None)
+          _ <- env.repository.create(sessionId2, session2, ttl, None)
+          results <- env.repository.findByUserIdWithId(userId1)
+        yield assertTrue(
+          results.size == 1,
+          results.head._2.userId == userId1,
+        )
+      },
+      test("invalidate by publicSessionId removes only that session") {
+        for
+          _ <- env.repository.create(sessionId1, session1, ttl, None)
+          _ <- env.repository.create(sessionId3, session1.copy(clientId = clientId2), ttl, None)
+          withIds  <- env.repository.findByUserIdWithId(userId1)
+          publicId  = withIds.last._1
+          _ <- env.repository.invalidate(publicId)
+          after    <- env.repository.findByUserIdWithId(userId1)
+        yield assertTrue(
+          withIds.size == 2,
+          after.size == 1,
+          !after.map(_._1).contains(publicId),
+        )
+      },
+      test("invalidate by publicSessionId does not affect other users' sessions") {
+        for
+          _ <- env.repository.create(sessionId1, session1, ttl, None)
+          _ <- env.repository.create(sessionId2, session2, ttl, None)
+          user1Sessions <- env.repository.findByUserIdWithId(userId1)
+          publicId = user1Sessions.head._1
+          _ <- env.repository.invalidate(publicId)
+          user2After <- env.repository.findByUserIdWithId(userId2)
+        yield assertTrue(
+          user1Sessions.size == 1,
+          user2After.size == 1,
+          user2After.head._2.userId == userId2,
+        )
+      },
     )
 
 object SessionRepositorySpec:

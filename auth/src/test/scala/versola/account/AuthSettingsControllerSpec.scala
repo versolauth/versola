@@ -4,13 +4,9 @@ import com.nimbusds.jose.crypto.RSASSASigner
 import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm}
 import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 import versola.auth.TestEnvConfig
-import versola.auth.model.{CredentialDeviceType, CredentialId, PasskeyRecord}
-import versola.oauth.challenge.passkey.{PasskeyCeremony, PasskeyRepository, WebAuthnService}
-import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{ClientId, FormRecord, Locales, LocaleRecord, PasskeySettings, ScopeToken, ThemeRecord}
+import versola.oauth.challenge.passkey.PasskeyCeremony
+import versola.oauth.client.model.{ClientId, ScopeToken}
 import versola.oauth.jwks.JwksService
-import versola.oauth.session.SessionRepository
-import versola.user.UserRepository
 import versola.user.model.UserId
 import versola.util.{Base64, UnitSpecBase}
 import versola.util.http.{NoopTracing, Observability}
@@ -24,8 +20,8 @@ import java.util.{Date, UUID}
 
 object AuthSettingsControllerSpec extends UnitSpecBase:
 
-  private val config      = TestEnvConfig.coreConfig
-  private val jwksSvc     = TestEnvConfig.jwksService
+  private val config       = TestEnvConfig.coreConfig
+  private val jwksSvc      = TestEnvConfig.jwksService
   private val cookieSecret = config.security.conversationCookieSecret
 
   private val testUserId   = UserId(UUID.fromString("a1000000-0000-0000-0000-000000000001"))
@@ -69,42 +65,29 @@ object AuthSettingsControllerSpec extends UnitSpecBase:
       ),
     )
 
-  private val minimalForm = FormRecord(
-    id            = "auth-settings",
-    version       = 1,
-    active        = true,
-    style         = ".a{}",
-    jsSource      = None,
-    jsCompiled    = Some("/* js */"),
-    localizations = Map("en" -> Map("sessions_title" -> "Active Sessions")),
-    properties    = Vector.empty,
+  private val minimalPageData = AuthSettingsPageData(
+    sessions        = Nil,
+    passkeys        = Vector.empty,
+    passkeyResult   = None,
+    style           = ".a{}",
+    jsCompiled      = Some("/* js */"),
+    css             = "body{}",
+    locale          = "en",
+    locales         = List("en"),
+    translations    = Map("sessions_title" -> "Active Sessions"),
+    allTranslations = Map("en" -> Map("sessions_title" -> "Active Sessions")),
+    pageTitle       = "Account Settings",
   )
-
-  private val minimalLocales = Locales(
-    locales = Vector(LocaleRecord("en", "English")),
-    default = "en",
-  )
-
-  // Non-empty CSS so the controller doesn't issue a second getTheme call.
-  private val minimalTheme = ThemeRecord("default", "body{}", None)
 
   private def buildRoutes(
-      sessionRepo: SessionRepository,
-      passkeyRepo: PasskeyRepository,
-      webAuthn: WebAuthnService,
-      oauthConfig: OAuthConfigurationService,
-      userRepo: UserRepository,
+      service: AuthSettingsService,
       tracing: ZEnvironment[zio.telemetry.opentelemetry.tracing.Tracing],
   ) =
     Observability.handleErrors(
       AuthSettingsController.routes.provideEnvironment(
         ZEnvironment(config) ++
           ZEnvironment(jwksSvc) ++
-          ZEnvironment(sessionRepo) ++
-          ZEnvironment(passkeyRepo) ++
-          ZEnvironment(webAuthn) ++
-          ZEnvironment(oauthConfig) ++
-          ZEnvironment(userRepo) ++
+          ZEnvironment(service) ++
           tracing,
       )
     )
@@ -118,29 +101,21 @@ object AuthSettingsControllerSpec extends UnitSpecBase:
 
       test("without Authorization returns 401") {
         for
-          client      <- ZIO.service[Client]
-          tracing     <- NoopTracing.layer.build
-          sessionRepo  = stub[SessionRepository]
-          passkeyRepo  = stub[PasskeyRepository]
-          webAuthn     = stub[WebAuthnService]
-          oauthConfig  = stub[OAuthConfigurationService]
-          userRepo     = stub[UserRepository]
-          _           <- TestClient.addRoutes(buildRoutes(sessionRepo, passkeyRepo, webAuthn, oauthConfig, userRepo, tracing))
-          resp        <- client.batched(Request.get(URL.empty / "auth-settings"))
+          client  <- ZIO.service[Client]
+          tracing <- NoopTracing.layer.build
+          svc      = stub[AuthSettingsService]
+          _       <- TestClient.addRoutes(buildRoutes(svc, tracing))
+          resp    <- client.batched(Request.get(URL.empty / "auth-settings"))
         yield assertTrue(resp.status == Status.Unauthorized)
       },
 
       test("with an invalid Bearer token returns 401") {
         for
-          client      <- ZIO.service[Client]
-          tracing     <- NoopTracing.layer.build
-          sessionRepo  = stub[SessionRepository]
-          passkeyRepo  = stub[PasskeyRepository]
-          webAuthn     = stub[WebAuthnService]
-          oauthConfig  = stub[OAuthConfigurationService]
-          userRepo     = stub[UserRepository]
-          _           <- TestClient.addRoutes(buildRoutes(sessionRepo, passkeyRepo, webAuthn, oauthConfig, userRepo, tracing))
-          resp        <- client.batched(
+          client  <- ZIO.service[Client]
+          tracing <- NoopTracing.layer.build
+          svc      = stub[AuthSettingsService]
+          _       <- TestClient.addRoutes(buildRoutes(svc, tracing))
+          resp    <- client.batched(
             Request.get(URL.empty / "auth-settings")
               .addHeader(Header.Authorization.Bearer("not.a.jwt")),
           )
@@ -149,16 +124,12 @@ object AuthSettingsControllerSpec extends UnitSpecBase:
 
       test("with Bearer token missing account_settings scope returns 401") {
         for
-          client      <- ZIO.service[Client]
-          tracing     <- NoopTracing.layer.build
-          sessionRepo  = stub[SessionRepository]
-          passkeyRepo  = stub[PasskeyRepository]
-          webAuthn     = stub[WebAuthnService]
-          oauthConfig  = stub[OAuthConfigurationService]
-          userRepo     = stub[UserRepository]
-          token        = createAccessToken(testUserId, testClientId, Set(ScopeToken.OpenId))
-          _           <- TestClient.addRoutes(buildRoutes(sessionRepo, passkeyRepo, webAuthn, oauthConfig, userRepo, tracing))
-          resp        <- client.batched(
+          client  <- ZIO.service[Client]
+          tracing <- NoopTracing.layer.build
+          svc      = stub[AuthSettingsService]
+          token    = createAccessToken(testUserId, testClientId, Set(ScopeToken.OpenId))
+          _       <- TestClient.addRoutes(buildRoutes(svc, tracing))
+          resp    <- client.batched(
             Request.get(URL.empty / "auth-settings")
               .addHeader(Header.Authorization.Bearer(token)),
           )
@@ -167,27 +138,16 @@ object AuthSettingsControllerSpec extends UnitSpecBase:
 
       test("with valid Bearer token returns 200 HTML page") {
         for
-          client      <- ZIO.service[Client]
-          tracing     <- NoopTracing.layer.build
-          sessionRepo  = stub[SessionRepository]
-          passkeyRepo  = stub[PasskeyRepository]
-          webAuthn     = stub[WebAuthnService]
-          oauthConfig  = stub[OAuthConfigurationService]
-          userRepo     = stub[UserRepository]
-          _           <- sessionRepo.findByUserIdWithId.succeedsWith(Nil)
-          _           <- passkeyRepo.listByUser.succeedsWith(Vector.empty)
-          _           <- userRepo.find.succeedsWith(None)
-          _           <- oauthConfig.getPasskeySettings.succeedsWith(None)
-          _           <- oauthConfig.getForm.succeedsWith(Some(minimalForm))
-          _           <- oauthConfig.find.succeedsWith(None)
-          _           <- oauthConfig.getTheme.succeedsWith(Some(minimalTheme))
-          _           <- oauthConfig.getLocales.succeedsWith(minimalLocales)
-          _           <- TestClient.addRoutes(buildRoutes(sessionRepo, passkeyRepo, webAuthn, oauthConfig, userRepo, tracing))
-          resp        <- client.batched(
+          client  <- ZIO.service[Client]
+          tracing <- NoopTracing.layer.build
+          svc      = stub[AuthSettingsService]
+          _       <- svc.getPageData.succeedsWith(Some(minimalPageData))
+          _       <- TestClient.addRoutes(buildRoutes(svc, tracing))
+          resp    <- client.batched(
             Request.get(URL.empty / "auth-settings")
               .addHeader(Header.Authorization.Bearer(validToken)),
           )
-          body        <- resp.body.asString
+          body         <- resp.body.asString
           accountCookie = resp.header(Header.SetCookie).map(_.value)
         yield assertTrue(
           resp.status == Status.Ok,
@@ -197,31 +157,19 @@ object AuthSettingsControllerSpec extends UnitSpecBase:
       },
 
       test("with valid Bearer token and passkey settings sets passkeyRegistration and SSO_PASSKEY_REG cookie") {
+        val pageDataWithPasskey = minimalPageData.copy(
+          passkeyResult = Some(PasskeyCeremony("reg-req", """{"challenge":"abc"}""")),
+        )
         for
-          client      <- ZIO.service[Client]
-          tracing     <- NoopTracing.layer.build
-          sessionRepo  = stub[SessionRepository]
-          passkeyRepo  = stub[PasskeyRepository]
-          webAuthn     = stub[WebAuthnService]
-          oauthConfig  = stub[OAuthConfigurationService]
-          userRepo     = stub[UserRepository]
-          _           <- sessionRepo.findByUserIdWithId.succeedsWith(Nil)
-          _           <- passkeyRepo.listByUser.succeedsWith(Vector.empty)
-          _           <- userRepo.find.succeedsWith(None)
-          settings     = PasskeySettings("example.com", "Example", List("https://example.com"), "preferred")
-          _           <- oauthConfig.getPasskeySettings.succeedsWith(Some(settings))
-          _           <- webAuthn.startRegistration.succeedsWith(
-                           PasskeyCeremony("reg-req", """{"challenge":"abc"}"""),
-                         )
-          _           <- oauthConfig.getForm.succeedsWith(Some(minimalForm))
-          _           <- oauthConfig.find.succeedsWith(None)
-          _           <- oauthConfig.getTheme.succeedsWith(Some(minimalTheme))
-          _           <- oauthConfig.getLocales.succeedsWith(minimalLocales)
-          _           <- TestClient.addRoutes(buildRoutes(sessionRepo, passkeyRepo, webAuthn, oauthConfig, userRepo, tracing))
-          resp        <- client.batched(
-                           Request.get(URL.empty / "auth-settings")
-                             .addHeader(Header.Authorization.Bearer(validToken)),
-                         )
+          client  <- ZIO.service[Client]
+          tracing <- NoopTracing.layer.build
+          svc      = stub[AuthSettingsService]
+          _       <- svc.getPageData.succeedsWith(Some(pageDataWithPasskey))
+          _       <- TestClient.addRoutes(buildRoutes(svc, tracing))
+          resp    <- client.batched(
+            Request.get(URL.empty / "auth-settings")
+              .addHeader(Header.Authorization.Bearer(validToken)),
+          )
           body        <- resp.body.asString
           cookieNames  = resp.headers.toList.collect { case Header.SetCookie(c) => c.name }.toSet
         yield assertTrue(
@@ -232,25 +180,34 @@ object AuthSettingsControllerSpec extends UnitSpecBase:
         )
       },
 
-      test("with valid Bearer token but missing form returns 404") {
+      test("page title with HTML special chars is escaped in the rendered HTML") {
+        val pageDataWithXss = minimalPageData.copy(pageTitle = "<script>alert(1)</script>")
         for
-          client      <- ZIO.service[Client]
-          tracing     <- NoopTracing.layer.build
-          sessionRepo  = stub[SessionRepository]
-          passkeyRepo  = stub[PasskeyRepository]
-          webAuthn     = stub[WebAuthnService]
-          oauthConfig  = stub[OAuthConfigurationService]
-          userRepo     = stub[UserRepository]
-          _           <- sessionRepo.findByUserIdWithId.succeedsWith(Nil)
-          _           <- passkeyRepo.listByUser.succeedsWith(Vector.empty)
-          _           <- userRepo.find.succeedsWith(None)
-          _           <- oauthConfig.getPasskeySettings.succeedsWith(None)
-          _           <- oauthConfig.getForm.succeedsWith(None)
-          _           <- oauthConfig.find.succeedsWith(None)
-          _           <- oauthConfig.getTheme.succeedsWith(Some(minimalTheme))
-          _           <- oauthConfig.getLocales.succeedsWith(minimalLocales)
-          _           <- TestClient.addRoutes(buildRoutes(sessionRepo, passkeyRepo, webAuthn, oauthConfig, userRepo, tracing))
-          resp        <- client.batched(
+          client  <- ZIO.service[Client]
+          tracing <- NoopTracing.layer.build
+          svc      = stub[AuthSettingsService]
+          _       <- svc.getPageData.succeedsWith(Some(pageDataWithXss))
+          _       <- TestClient.addRoutes(buildRoutes(svc, tracing))
+          resp    <- client.batched(
+            Request.get(URL.empty / "auth-settings")
+              .addHeader(Header.Authorization.Bearer(validToken)),
+          )
+          body <- resp.body.asString
+        yield assertTrue(
+          resp.status == Status.Ok,
+          body.contains("&lt;script&gt;"),
+          !body.contains("<script>alert"),
+        )
+      },
+
+      test("with valid Bearer token but service returns None gives 404") {
+        for
+          client  <- ZIO.service[Client]
+          tracing <- NoopTracing.layer.build
+          svc      = stub[AuthSettingsService]
+          _       <- svc.getPageData.succeedsWith(None)
+          _       <- TestClient.addRoutes(buildRoutes(svc, tracing))
+          resp    <- client.batched(
             Request.get(URL.empty / "auth-settings")
               .addHeader(Header.Authorization.Bearer(validToken)),
           )
@@ -265,15 +222,11 @@ object AuthSettingsControllerSpec extends UnitSpecBase:
 
       test("without SSO_ACCOUNT cookie returns 401") {
         for
-          client      <- ZIO.service[Client]
-          tracing     <- NoopTracing.layer.build
-          sessionRepo  = stub[SessionRepository]
-          passkeyRepo  = stub[PasskeyRepository]
-          webAuthn     = stub[WebAuthnService]
-          oauthConfig  = stub[OAuthConfigurationService]
-          userRepo     = stub[UserRepository]
-          _           <- TestClient.addRoutes(buildRoutes(sessionRepo, passkeyRepo, webAuthn, oauthConfig, userRepo, tracing))
-          resp        <- client.batched(
+          client  <- ZIO.service[Client]
+          tracing <- NoopTracing.layer.build
+          svc      = stub[AuthSettingsService]
+          _       <- TestClient.addRoutes(buildRoutes(svc, tracing))
+          resp    <- client.batched(
             Request.post(URL.empty / "auth-settings" / "sessions" / "logout", Body.empty),
           )
         yield assertTrue(resp.status == Status.Unauthorized)
@@ -281,20 +234,16 @@ object AuthSettingsControllerSpec extends UnitSpecBase:
 
       test("with valid SSO_ACCOUNT cookie invalidates session and redirects") {
         for
-          client      <- ZIO.service[Client]
-          tracing     <- NoopTracing.layer.build
-          sessionRepo  = stub[SessionRepository]
-          passkeyRepo  = stub[PasskeyRepository]
-          webAuthn     = stub[WebAuthnService]
-          oauthConfig  = stub[OAuthConfigurationService]
-          userRepo     = stub[UserRepository]
-          _           <- sessionRepo.invalidate.succeedsWith(())
-          _           <- TestClient.addRoutes(buildRoutes(sessionRepo, passkeyRepo, webAuthn, oauthConfig, userRepo, tracing))
-          sessionIdB64 = Base64.urlEncode(Array.fill(32)(0.toByte))
-          resp        <- client.batched(
+          client  <- ZIO.service[Client]
+          tracing <- NoopTracing.layer.build
+          svc      = stub[AuthSettingsService]
+          _       <- svc.invalidateSession.succeedsWith(())
+          _       <- TestClient.addRoutes(buildRoutes(svc, tracing))
+          sessionId = UUID.randomUUID().toString
+          resp    <- client.batched(
             Request.post(
               URL.empty / "auth-settings" / "sessions" / "logout",
-              Body.fromURLEncodedForm(Form.fromStrings("id" -> sessionIdB64)),
+              Body.fromURLEncodedForm(Form.fromStrings("id" -> sessionId)),
             ).addHeader(accountCookieHeader),
           )
         yield assertTrue(resp.status == Status.SeeOther)
@@ -308,15 +257,11 @@ object AuthSettingsControllerSpec extends UnitSpecBase:
 
       test("without SSO_ACCOUNT cookie returns 401") {
         for
-          client      <- ZIO.service[Client]
-          tracing     <- NoopTracing.layer.build
-          sessionRepo  = stub[SessionRepository]
-          passkeyRepo  = stub[PasskeyRepository]
-          webAuthn     = stub[WebAuthnService]
-          oauthConfig  = stub[OAuthConfigurationService]
-          userRepo     = stub[UserRepository]
-          _           <- TestClient.addRoutes(buildRoutes(sessionRepo, passkeyRepo, webAuthn, oauthConfig, userRepo, tracing))
-          resp        <- client.batched(
+          client  <- ZIO.service[Client]
+          tracing <- NoopTracing.layer.build
+          svc      = stub[AuthSettingsService]
+          _       <- TestClient.addRoutes(buildRoutes(svc, tracing))
+          resp    <- client.batched(
             Request.post(URL.empty / "auth-settings" / "passkeys" / "delete", Body.empty),
           )
         yield assertTrue(resp.status == Status.Unauthorized)
@@ -324,17 +269,13 @@ object AuthSettingsControllerSpec extends UnitSpecBase:
 
       test("with valid SSO_ACCOUNT cookie deletes passkey and redirects") {
         for
-          client      <- ZIO.service[Client]
-          tracing     <- NoopTracing.layer.build
-          sessionRepo  = stub[SessionRepository]
-          passkeyRepo  = stub[PasskeyRepository]
-          webAuthn     = stub[WebAuthnService]
-          oauthConfig  = stub[OAuthConfigurationService]
-          userRepo     = stub[UserRepository]
-          _           <- passkeyRepo.deleteByUser.succeedsWith(())
-          _           <- TestClient.addRoutes(buildRoutes(sessionRepo, passkeyRepo, webAuthn, oauthConfig, userRepo, tracing))
-          credB64      = Base64.urlEncode(Array.fill(32)(0.toByte))
-          resp        <- client.batched(
+          client  <- ZIO.service[Client]
+          tracing <- NoopTracing.layer.build
+          svc      = stub[AuthSettingsService]
+          _       <- svc.deletePasskey.succeedsWith(())
+          _       <- TestClient.addRoutes(buildRoutes(svc, tracing))
+          credB64  = Base64.urlEncode(Array.fill(32)(0.toByte))
+          resp    <- client.batched(
             Request.post(
               URL.empty / "auth-settings" / "passkeys" / "delete",
               Body.fromURLEncodedForm(Form.fromStrings("id" -> credB64)),
@@ -351,15 +292,11 @@ object AuthSettingsControllerSpec extends UnitSpecBase:
 
       test("without SSO_ACCOUNT cookie returns 401") {
         for
-          client      <- ZIO.service[Client]
-          tracing     <- NoopTracing.layer.build
-          sessionRepo  = stub[SessionRepository]
-          passkeyRepo  = stub[PasskeyRepository]
-          webAuthn     = stub[WebAuthnService]
-          oauthConfig  = stub[OAuthConfigurationService]
-          userRepo     = stub[UserRepository]
-          _           <- TestClient.addRoutes(buildRoutes(sessionRepo, passkeyRepo, webAuthn, oauthConfig, userRepo, tracing))
-          resp        <- client.batched(
+          client  <- ZIO.service[Client]
+          tracing <- NoopTracing.layer.build
+          svc      = stub[AuthSettingsService]
+          _       <- TestClient.addRoutes(buildRoutes(svc, tracing))
+          resp    <- client.batched(
             Request.post(URL.empty / "auth-settings" / "passkeys" / "register", Body.empty),
           )
         yield assertTrue(resp.status == Status.Unauthorized)
@@ -367,15 +304,11 @@ object AuthSettingsControllerSpec extends UnitSpecBase:
 
       test("with SSO_ACCOUNT but missing SSO_PASSKEY_REG returns 401") {
         for
-          client      <- ZIO.service[Client]
-          tracing     <- NoopTracing.layer.build
-          sessionRepo  = stub[SessionRepository]
-          passkeyRepo  = stub[PasskeyRepository]
-          webAuthn     = stub[WebAuthnService]
-          oauthConfig  = stub[OAuthConfigurationService]
-          userRepo     = stub[UserRepository]
-          _           <- TestClient.addRoutes(buildRoutes(sessionRepo, passkeyRepo, webAuthn, oauthConfig, userRepo, tracing))
-          resp        <- client.batched(
+          client  <- ZIO.service[Client]
+          tracing <- NoopTracing.layer.build
+          svc      = stub[AuthSettingsService]
+          _       <- TestClient.addRoutes(buildRoutes(svc, tracing))
+          resp    <- client.batched(
             Request.post(URL.empty / "auth-settings" / "passkeys" / "register", Body.empty)
               .addHeader(accountCookieHeader),
           )
@@ -384,15 +317,11 @@ object AuthSettingsControllerSpec extends UnitSpecBase:
 
       test("with invalid SSO_PASSKEY_REG content returns 401") {
         for
-          client      <- ZIO.service[Client]
-          tracing     <- NoopTracing.layer.build
-          sessionRepo  = stub[SessionRepository]
-          passkeyRepo  = stub[PasskeyRepository]
-          webAuthn     = stub[WebAuthnService]
-          oauthConfig  = stub[OAuthConfigurationService]
-          userRepo     = stub[UserRepository]
-          _           <- TestClient.addRoutes(buildRoutes(sessionRepo, passkeyRepo, webAuthn, oauthConfig, userRepo, tracing))
-          resp        <- client.batched(
+          client  <- ZIO.service[Client]
+          tracing <- NoopTracing.layer.build
+          svc      = stub[AuthSettingsService]
+          _       <- TestClient.addRoutes(buildRoutes(svc, tracing))
+          resp    <- client.batched(
             Request.post(URL.empty / "auth-settings" / "passkeys" / "register", Body.empty)
               .addHeader(accountCookieHeader)
               .addHeader(Header.Cookie(NonEmptyChunk(Cookie.Request(PasskeyRegistrationCookie.name, "invalid.content")))),
@@ -401,43 +330,15 @@ object AuthSettingsControllerSpec extends UnitSpecBase:
       },
 
       test("with valid ceremony cookie and response redirects to auth-settings") {
-        val ceremony       = PasskeyRegistrationCookie("ceremony-request-json")
+        val ceremony         = PasskeyRegistrationCookie("ceremony-request-json")
         val regCookieContent = PasskeyRegistrationCookie.responseCookie(ceremony, cookieSecret).content
-        val minimalPasskeySettings = PasskeySettings(
-          rpId             = "localhost",
-          rpName           = "Test",
-          origins          = List("http://localhost:9005"),
-          userVerification = "preferred",
-        )
-        val stubRecord = PasskeyRecord(
-          id               = CredentialId(Array.fill(32)(0.toByte)),
-          userId           = testUserId,
-          publicKey        = Array.emptyByteArray,
-          signatureCounter = 0L,
-          deviceType       = CredentialDeviceType.SingleDevice,
-          backedUp         = false,
-          backupEligible   = false,
-          transports       = Nil,
-          attestationObject = None,
-          clientDataJson   = None,
-          aaguid           = None,
-          name             = None,
-          lastUsedAt       = None,
-          createdAt        = java.time.Instant.EPOCH,
-          updatedAt        = java.time.Instant.EPOCH,
-        )
         for
-          client      <- ZIO.service[Client]
-          tracing     <- NoopTracing.layer.build
-          sessionRepo  = stub[SessionRepository]
-          passkeyRepo  = stub[PasskeyRepository]
-          webAuthn     = stub[WebAuthnService]
-          oauthConfig  = stub[OAuthConfigurationService]
-          userRepo     = stub[UserRepository]
-          _           <- oauthConfig.getPasskeySettings.succeedsWith(Some(minimalPasskeySettings))
-          _           <- webAuthn.finishRegistration.succeedsWith(stubRecord)
-          _           <- TestClient.addRoutes(buildRoutes(sessionRepo, passkeyRepo, webAuthn, oauthConfig, userRepo, tracing))
-          resp        <- client.batched(
+          client  <- ZIO.service[Client]
+          tracing <- NoopTracing.layer.build
+          svc      = stub[AuthSettingsService]
+          _       <- svc.finishPasskeyRegistration.succeedsWith(())
+          _       <- TestClient.addRoutes(buildRoutes(svc, tracing))
+          resp    <- client.batched(
             Request.post(
               URL.empty / "auth-settings" / "passkeys" / "register",
               Body.fromURLEncodedForm(Form.fromStrings("response" -> "{}")),
@@ -447,7 +348,13 @@ object AuthSettingsControllerSpec extends UnitSpecBase:
               Cookie.Request(PasskeyRegistrationCookie.name, regCookieContent),
             ))),
           )
-        yield assertTrue(resp.status == Status.SeeOther)
+          setCookies = resp.headers.toList.collect { case Header.SetCookie(c) => c }
+        yield assertTrue(
+          resp.status == Status.SeeOther,
+          setCookies.exists(c =>
+            c.name == PasskeyRegistrationCookie.name && c.maxAge.contains(zio.Duration.Zero)
+          ),
+        )
       },
     ),
 
