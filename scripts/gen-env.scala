@@ -275,6 +275,7 @@ def writeFile(dir: File, name: String, content: String): Unit =
        |      table-name = "authorization_codes"
        |      batch-size = 1000
        |      interval   = "5 minutes"
+       |      key-column = "code"
        |    }
        |    {
        |      table-name = "refresh_tokens"
@@ -290,6 +291,7 @@ def writeFile(dir: File, name: String, content: String): Unit =
        |      table-name = "challenge_throttle"
        |      batch-size = 1000
        |      interval   = "5 minutes"
+       |      key-column = "ctid"
        |    }
        |  ]
        |}
@@ -378,6 +380,7 @@ def writeFile(dir: File, name: String, content: String): Unit =
        |      table-name = "pending_logins"
        |      batch-size = 1000
        |      interval   = "5 minutes"
+       |      key-column = "login_id"
        |    }
        |    {
        |      table-name = "edge_refresh_tokens"
