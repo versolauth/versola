@@ -232,17 +232,20 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         cached <- env.cache.get
       yield assertTrue(cached === Vector(otherTenantClient))
     },
-    test("sync upserts fetched client for non-delete event") {
+    test("sync upserts fetched client with decrypted secret for non-delete event") {
       val env = new Env(Vector(cachedClient, otherTenantClient))
+      val decryptedBytes = Array.fill(32)(9.toByte)
       val updatedClient = cachedClient.copy(clientName = "Updated Web App", permissions = Set(readPermission, writePermission))
+      val decryptedClient = updatedClient.copy(secret = Some(Secret(decryptedBytes)))
 
       for
+        _ <- env.securityService.decryptAes256.succeedsWith(decryptedBytes)
         _ <- env.repository.find.succeedsWith(Some(updatedClient))
         _ <- env.service.sync(SyncEvent.ClientsUpdated(clientId, SyncEvent.Op.UPDATE))
         cached <- env.cache.get
       yield assertTrue(
         env.repository.find.calls === List(clientId),
-        cached === Vector(otherTenantClient, updatedClient),  // sorted by ID: mobile-app, web-app
+        cached === Vector(otherTenantClient, decryptedClient),  // sorted by ID: mobile-app, web-app
       )
     },
     test("sync removes cached client when record is missing on non-delete event") {

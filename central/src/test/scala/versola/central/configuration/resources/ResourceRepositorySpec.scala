@@ -14,7 +14,7 @@ trait ResourceRepositorySpec extends DatabaseSpecBase[ResourceRepositorySpec.Env
   private def endpointId(value: String): ResourceEndpointId = ResourceEndpointId(UUID.fromString(value))
 
   val tenantId = TenantId("tenant-a")
-  val resourceAlias = "users-api"
+  val resourceId = ResourceId("users-api")
   val resourceUri = ResourceUri("https://api.example.com")
   val usersListEndpointId = endpointId("018f0f2a-1c7b-7000-8000-000000000501")
   val usersDeleteEndpointId = endpointId("018f0f2a-1c7b-7000-8000-000000000502")
@@ -40,15 +40,13 @@ trait ResourceRepositorySpec extends DatabaseSpecBase[ResourceRepositorySpec.Env
   )
 
   def resourceRecord(
-      id: ResourceId,
-      alias: String = resourceAlias,
+      id: ResourceId = resourceId,
       resource: ResourceUri = resourceUri,
       endpoints: Vector[ResourceEndpointRecord] = Vector.empty,
   ) =
     ResourceRecord(
       tenantId = tenantId,
-      id = id,
-      alias = alias,
+      resourceId = id,
       resource = resource,
       endpoints = endpoints,
     )
@@ -57,25 +55,24 @@ trait ResourceRepositorySpec extends DatabaseSpecBase[ResourceRepositorySpec.Env
     List(
       test("create and find resource") {
         for
-          createdId <- env.resourceRepository.createResource(tenantId, resourceAlias, resourceUri, Vector(endpointRecord(usersListEndpointId, allow = allow, inject = inject)))
-          found <- env.resourceRepository.findResource(createdId)
+          _ <- env.resourceRepository.createResource(tenantId, resourceId, resourceUri, Vector(endpointRecord(usersListEndpointId, allow = allow, inject = inject)))
+          found <- env.resourceRepository.findResource(resourceId)
           all <- env.resourceRepository.getAll
         yield assertTrue(
-          found == Some(resourceRecord(createdId, endpoints = Vector(endpointRecord(usersListEndpointId, allow = allow, inject = inject)))),
-          all == Vector(resourceRecord(createdId, endpoints = Vector(endpointRecord(usersListEndpointId, allow = allow, inject = inject)))),
+          found == Some(resourceRecord(resourceId, endpoints = Vector(endpointRecord(usersListEndpointId, allow = allow, inject = inject)))),
+          all == Vector(resourceRecord(resourceId, endpoints = Vector(endpointRecord(usersListEndpointId, allow = allow, inject = inject)))),
         )
       },
       test("update resource fields and embedded endpoints") {
         for
-          createdId <- env.resourceRepository.createResource(
+          _ <- env.resourceRepository.createResource(
             tenantId,
-            resourceAlias,
+            resourceId,
             resourceUri,
             Vector(endpointRecord(usersListEndpointId), endpointRecord(usersDeleteEndpointId, method = "DELETE")),
           )
           _ <- env.resourceRepository.updateResource(
-            id = createdId,
-            aliasPatch = Some("users-internal"),
+            resourceId = resourceId,
             resourcePatch = Some(ResourceUri("https://api.internal.example.com")),
             addEndpoints = Vector(
               endpointRecord(usersMeEndpointId, path = "/users/me", fetchUserInfo = true, inject = Vector(InjectRule(InjectTarget.header, "X-Trace", "'enabled'"))),
@@ -83,12 +80,11 @@ trait ResourceRepositorySpec extends DatabaseSpecBase[ResourceRepositorySpec.Env
             ),
             deleteEndpoints = Set(usersListEndpointId, usersDeleteEndpointId),
           )
-          found <- env.resourceRepository.findResource(createdId)
+          found <- env.resourceRepository.findResource(resourceId)
         yield assertTrue(
           found == Some(
             resourceRecord(
-              createdId,
-              alias = "users-internal",
+              resourceId,
               resource = ResourceUri("https://api.internal.example.com"),
               endpoints = Vector(
                 endpointRecord(usersMeEndpointId, path = "/users/me", fetchUserInfo = true, inject = Vector(InjectRule(InjectTarget.header, "X-Trace", "'enabled'"))),
@@ -100,9 +96,9 @@ trait ResourceRepositorySpec extends DatabaseSpecBase[ResourceRepositorySpec.Env
       },
       test("delete resource") {
         for
-          createdId <- env.resourceRepository.createResource(tenantId, resourceAlias, resourceUri, Vector(endpointRecord(usersListEndpointId)))
-          _ <- env.resourceRepository.deleteResource(createdId)
-          found <- env.resourceRepository.findResource(createdId)
+          _ <- env.resourceRepository.createResource(tenantId, resourceId, resourceUri, Vector(endpointRecord(usersListEndpointId)))
+          _ <- env.resourceRepository.deleteResource(resourceId)
+          found <- env.resourceRepository.findResource(resourceId)
         yield assertTrue(found.isEmpty)
       },
     )

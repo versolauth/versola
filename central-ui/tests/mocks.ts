@@ -10,7 +10,7 @@ type InjectTargetDto = 'header' | 'query' | 'body';
 type InjectRuleDto = { target: InjectTargetDto; name: string; expression: string };
 type ResourceEndpointId = string | number;
 type ResourceEndpointDto = { id: ResourceEndpointId; method: string; path: string; fetchUserInfo: boolean; allow?: string | null; inject: InjectRuleDto[] };
-type ResourceDto = { id: number; alias: string; resource: string; endpoints: ResourceEndpointDto[] };
+type ResourceDto = { resourceId: string; resource: string; endpoints: ResourceEndpointDto[] };
 type RoleDto = { id: string; description: Record<string, string>; permissions: string[]; active: boolean };
 type EdgeDto = { id: string; hasOldKey?: boolean; tenants?: string[]; clients?: EdgeClientLinkDto[] };
 type EdgeClientLinkDto = { tenantId: string; clientId: string };
@@ -69,13 +69,12 @@ type CreateScopeRequest = {
 };
 type CreateResourceRequest = {
   tenantId: string;
-  alias: string;
+  resourceId: string;
   resource: string;
   endpoints: Array<{ id?: ResourceEndpointId; method: string; path: string; fetchUserInfo: boolean; allow?: string | null; inject: InjectRuleDto[] }>;
 };
 type UpdateResourceRequest = {
-  id: number;
-  alias?: string;
+  resourceId: string;
   resource?: string;
   deleteEndpoints: ResourceEndpointId[];
   createEndpoints: Array<{ id: ResourceEndpointId; method: string; path: string; fetchUserInfo: boolean; allow?: string | null; inject: InjectRuleDto[] }>;
@@ -180,6 +179,10 @@ const defaultChallengeSettings = (tenantId: string): ChallengeSettingsDto => ({
   passkeySettings: null,
 });
 
+type MyPermissionsDto = {
+  resources: Record<string, { permissions: string[] }>;
+};
+
 export type MockConfigState = {
   tenants: TenantDto[];
   clients: Record<string, ClientDto[]>;
@@ -196,6 +199,7 @@ export type MockConfigState = {
   otpTemplates: Record<string, OtpTemplateDto[]>; // keyed by tenantId
   challengeSettings: Record<string, ChallengeSettingsDto>; // keyed by tenantId
   locales: LocaleDto[];
+  myPermissions: MyPermissionsDto;
 };
 
 export type MockConfigHarness = {
@@ -208,6 +212,24 @@ const defaultState: MockConfigState = {
     { id: 'tenant-alpha', description: 'Alpha Workspace', edgeId: null },
     { id: 'tenant-bravo', description: 'Bravo Workspace', edgeId: null },
   ],
+  myPermissions: {
+    resources: {
+      central: {
+        permissions: [
+          'oauth:read', 'oauth:manage', 'oauth:secrets',
+          'access:read', 'access:manage',
+          'security:read', 'security:manage',
+          'users:read', 'users:manage',
+          'resources:read', 'resources:manage',
+          'forms:read', 'forms:manage',
+          'locales:read', 'locales:manage',
+          'tenants:read', 'tenants:manage',
+          'edges:read', 'edges:manage',
+          'jwks:read', 'jwks:manage'
+        ]
+      }
+    }
+  },
   clients: {
     'tenant-alpha': [{ id: 'alpha-web', clientName: 'Alpha Web', redirectUris: ['https://alpha.example/callback'], scope: ['openid'], permissions: ['alpha.read'], secretRotation: false }],
     'tenant-bravo': [{ id: 'bravo-web', clientName: 'Bravo Web', redirectUris: ['https://bravo.example/callback'], scope: ['email'], permissions: ['bravo.read'], secretRotation: false }],
@@ -221,8 +243,8 @@ const defaultState: MockConfigState = {
     'tenant-bravo': [{ permission: 'bravo.read', description: { en: 'Read bravo resources' }, endpointIds: [201] }],
   },
   resources: {
-    'tenant-alpha': [{ id: 1, alias: 'alpha-api', resource: 'https://alpha.example/api', endpoints: [{ id: 101, method: 'GET', path: '/alpha/items', fetchUserInfo: false, allow: 'true', inject: [] }] }],
-    'tenant-bravo': [{ id: 2, alias: 'bravo-api', resource: 'https://bravo.example/api', endpoints: [{ id: 201, method: 'GET', path: '/bravo/items', fetchUserInfo: false, allow: 'true', inject: [] }] }],
+    'tenant-alpha': [{ resourceId: 'alpha-api', resource: 'https://alpha.example/api', endpoints: [{ id: 101, method: 'GET', path: '/alpha/items', fetchUserInfo: false, allow: 'true', inject: [] }] }],
+    'tenant-bravo': [{ resourceId: 'bravo-api', resource: 'https://bravo.example/api', endpoints: [{ id: 201, method: 'GET', path: '/bravo/items', fetchUserInfo: false, allow: 'true', inject: [] }] }],
   },
   roles: {
     'tenant-alpha': [{ id: 'alpha-admin', description: { en: 'Alpha admin' }, permissions: ['alpha.read'], active: true }],
@@ -260,6 +282,7 @@ function mergeState(overrides: Partial<MockConfigState> = {}): MockConfigState {
     otpTemplates: clone({ ...defaultState.otpTemplates, ...overrides.otpTemplates }),
     challengeSettings: clone({ ...defaultState.challengeSettings, ...overrides.challengeSettings }),
     locales: clone(overrides.locales ?? defaultState.locales),
+    myPermissions: clone(overrides.myPermissions ?? defaultState.myPermissions),
   };
 }
 
@@ -304,10 +327,6 @@ function applyDescriptionPatch(description: Record<string, string>, patch?: Desc
   return next;
 }
 
-function nextResourceId(state: MockConfigState) {
-  return Math.max(0, ...Object.values(state.resources).flat().map(resource => resource.id)) + 1;
-}
-
 function nextEndpointId(state: MockConfigState) {
   return Math.max(
     100,
@@ -324,7 +343,8 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
   await page.route('**/configuration/**', async route => {
     const request = route.request();
     const url = new URL(request.url());
-    const pathname = url.pathname;
+    // Requests are routed through the edge proxy at `resources/central/`; strip it to match config paths.
+    const pathname = url.pathname.replace(/^\/resources\/central/, '');
     const method = request.method();
     const body = readBody(request);
 
@@ -638,8 +658,7 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
         const payload = body as CreateResourceRequest;
         let endpointId = nextEndpointId(state);
         const createdResource: ResourceDto = {
-          id: nextResourceId(state),
-          alias: payload.alias,
+          resourceId: payload.resourceId,
           resource: payload.resource,
           endpoints: payload.endpoints.map(endpoint => ({
             id: endpoint.id ?? endpointId++,
@@ -652,21 +671,20 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
         };
 
         state.resources[payload.tenantId] = [createdResource, ...(state.resources[payload.tenantId] ?? [])];
-        await route.fulfill(json({ id: createdResource.id }, 201));
+        await route.fulfill(json({ resourceId: createdResource.resourceId }, 201));
         return;
       }
 
       if (method === 'PUT') {
         const payload = body as UpdateResourceRequest;
-        const resource = Object.values(state.resources).flat().find(candidate => candidate.id === payload.id);
+        const resource = Object.values(state.resources).flat().find(candidate => candidate.resourceId === payload.resourceId);
 
         if (!resource) {
-          await route.fulfill(json({ message: `Resource ${payload.id} was not found` }, 404));
+          await route.fulfill(json({ message: `Resource ${payload.resourceId} was not found` }, 404));
           return;
         }
 
         if (payload.resource !== undefined) resource.resource = payload.resource;
-        if (payload.alias !== undefined) resource.alias = payload.alias;
 
         const replacedEndpointIds = new Set<ResourceEndpointId>(payload.deleteEndpoints);
         for (const endpoint of payload.createEndpoints) replacedEndpointIds.add(endpoint.id);
@@ -687,9 +705,9 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
       }
 
       if (method === 'DELETE') {
-        const resourceId = Number(url.searchParams.get('id'));
+        const resourceId = url.searchParams.get('resourceId');
         for (const tenantResources of Object.values(state.resources)) {
-          const index = tenantResources.findIndex(resource => resource.id === resourceId);
+          const index = tenantResources.findIndex(resource => resource.resourceId === resourceId);
           if (index >= 0) {
             tenantResources.splice(index, 1);
             break;
@@ -904,6 +922,17 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
         await route.fulfill({ status: 204, body: '' });
         return;
       }
+
+      if (method === 'DELETE') {
+        const id = url.searchParams.get('id');
+        if (!id) {
+          await route.fulfill(json({ message: 'Missing theme ID' }, 400));
+          return;
+        }
+        state.themes = state.themes.filter(theme => theme.id !== id);
+        await route.fulfill({ status: 204, body: '' });
+        return;
+      }
     }
 
     if (pathname.startsWith('/configuration/themes/') && method === 'DELETE') {
@@ -1003,7 +1032,8 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
   await page.route('**/users**', async route => {
     const request = route.request();
     const url = new URL(request.url());
-    const pathname = url.pathname;
+    // Requests are routed through the edge proxy at `resources/central/`; strip it to match user paths.
+    const pathname = url.pathname.replace(/^\/resources\/central/, '');
     const method = request.method();
     const body = readBody(request);
 
@@ -1184,6 +1214,21 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
     }
 
     await route.fulfill(json({ message: `No mock handler for ${method} ${pathname}` }, 404));
+  });
+
+  await page.route('**/permissions/me**', async route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const pathname = url.pathname.replace(/^\/resources\/central/, '');
+    const method = request.method();
+
+    if (pathname === '/permissions/me' && method === 'GET') {
+      requests.push({ method, pathname, searchParams: Object.fromEntries(url.searchParams.entries()), body: undefined });
+      await route.fulfill(json(state.myPermissions));
+      return;
+    }
+
+    await route.fallback();
   });
 
   return { state, requests };

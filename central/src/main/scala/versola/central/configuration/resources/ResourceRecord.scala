@@ -5,8 +5,7 @@ import versola.central.configuration.{InjectRule, ResourceUri}
 
 case class ResourceRecord(
     tenantId: TenantId,
-    id: ResourceId,
-    alias: String,
+    resourceId: ResourceId,
     resource: ResourceUri,
     endpoints: Vector[ResourceEndpointRecord]
 )

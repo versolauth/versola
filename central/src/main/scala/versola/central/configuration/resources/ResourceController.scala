@@ -1,6 +1,7 @@
 package versola.central.configuration.resources
 
-import versola.central.{CentralConfig, authorizeInternal}
+import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
+import versola.central.configuration.clients.OAuthClientService
 import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.tenants.TenantId
 import versola.central.configuration.{CreateResourceRequest, CreateResourceResponse, GetAllResourcesResponse, GetResourcesSyncResponse, ResourceEndpointResponse, ResourceEndpointSyncResponse, ResourceResponse, ResourceSyncResponse, UpdateResourceRequest}
@@ -10,7 +11,7 @@ import zio.json.{DecoderOps, EncoderOps, JsonDecoder}
 import zio.ZIO
 
 object ResourceController extends Controller:
-  type Env = Tracing & ResourceService & CentralConfig & EdgeService
+  type Env = Tracing & ResourceService & OAuthClientService & CentralConfig & EdgeService
 
   def routes: Routes[Env, Throwable] = Routes(
     getAllResourcesEndpoint,
@@ -23,6 +24,7 @@ object ResourceController extends Controller:
   val getAllResourcesEndpoint =
     Method.GET / "configuration" / "resources" -> handler { (request: Request) =>
       for
+        _ <- authorizeBasic(request)
         service <- ZIO.service[ResourceService]
         tenantId <- request.url.queryZIO[TenantId]("tenantId")
         offset <- request.url.queryZIO[Option[Int]]("offset").someOrElse(0)
@@ -34,17 +36,19 @@ object ResourceController extends Controller:
   val createResourceRoute =
     Method.POST / "configuration" / "resources" -> handler { (request: Request) =>
       for
+        _ <- authorizeBasic(request)
         service <- ZIO.service[ResourceService]
         body <- decodeJsonBody[CreateResourceRequest](request)
         result <- service.createResource(body)
       yield result match
-        case Right(id) => Response.json(CreateResourceResponse(id).toJson).status(Status.Created)
+        case Right(resourceId) => Response.json(CreateResourceResponse(resourceId).toJson).status(Status.Created)
         case Left(error) => Response.json(error.toJson).status(Status.BadRequest)
     }
 
   val updateResourceRoute =
     Method.PUT / "configuration" / "resources" -> handler { (request: Request) =>
       for
+        _ <- authorizeBasic(request)
         service <- ZIO.service[ResourceService]
         body <- decodeJsonBody[UpdateResourceRequest](request)
         result <- service.updateResource(body)
@@ -56,9 +60,10 @@ object ResourceController extends Controller:
   val deleteResourceRoute =
     Method.DELETE / "configuration" / "resources" -> handler { (request: Request) =>
       for
+        _ <- authorizeBasic(request)
         service <- ZIO.service[ResourceService]
-        id <- request.url.queryZIO[ResourceId]("id")
-        _ <- service.deleteResource(id)
+        resourceId <- request.url.queryZIO[ResourceId]("resourceId")
+        _ <- service.deleteResource(resourceId)
       yield Response.status(Status.NoContent)
     }
 
@@ -80,8 +85,7 @@ object ResourceController extends Controller:
 
   private def toResourceResponse(record: ResourceRecord): ResourceResponse =
     ResourceResponse(
-      id = record.id,
-      alias = record.alias,
+      resourceId = record.resourceId,
       resource = record.resource,
       endpoints = record.endpoints.map { endpoint =>
         ResourceEndpointResponse(
@@ -97,9 +101,8 @@ object ResourceController extends Controller:
 
   private def toResourceSyncResponse(record: ResourceRecord): ResourceSyncResponse =
     ResourceSyncResponse(
-      id = record.id,
+      resourceId = record.resourceId,
       tenantId = record.tenantId,
-      alias = record.alias,
       resource = record.resource,
       endpoints = record.endpoints.map { endpoint =>
         ResourceEndpointSyncResponse(

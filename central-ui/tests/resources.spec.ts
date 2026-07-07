@@ -4,8 +4,7 @@ import { findRequest, loadAdminApp } from './fixtures';
 const resourcesPath = '/?view=resources&tenant=tenant-alpha';
 
 const alphaApi = {
-  id: 1,
-  alias: 'alpha',
+  resourceId: 'alpha',
   resource: 'https://alpha.example',
   endpoints: [
     { id: 101, method: 'GET', path: '/alpha/items', fetchUserInfo: false, allow: 'true', inject: [] },
@@ -14,8 +13,7 @@ const alphaApi = {
 };
 
 const reportsApi = {
-  id: 2,
-  alias: 'reports',
+  resourceId: 'reports',
   resource: 'https://reports.example',
   endpoints: [{ id: 201, method: 'GET', path: '/reports', fetchUserInfo: false, allow: 'true', inject: [] }],
 };
@@ -57,7 +55,7 @@ test('creates a resource with endpoints', async ({ page }) => {
   const resourceUriField = page.getByLabel('Absolute resource URI');
   await expect(resourceUriField).toHaveValue('https://');
   await resourceUriField.fill('https://service.example');
-  await page.getByRole('textbox', { name: 'Resource alias' }).fill('service');
+  await page.getByRole('textbox', { name: 'Resource ID' }).fill('service');
   await page.getByRole('button', { name: 'Add endpoint', exact: true }).click();
   const newEndpointEditor = page.locator('.endpoint-editor').last();
   await newEndpointEditor.locator('select').first().selectOption('POST');
@@ -70,13 +68,13 @@ test('creates a resource with endpoints', async ({ page }) => {
 
   const createRequest = findRequest(api.requests, 'POST', '/configuration/resources').body as {
     tenantId: string;
-    alias: string;
+    resourceId: string;
     resource: string;
     endpoints: Array<{ id?: string; method: string; path: string; fetchUserInfo: boolean; allow: string | null; inject: unknown[] }>;
   };
 
   expect(createRequest.tenantId).toBe('tenant-alpha');
-  expect(createRequest.alias).toBe('service');
+  expect(createRequest.resourceId).toBe('service');
   expect(createRequest.resource).toBe('https://service.example');
   expect(createRequest.endpoints).toHaveLength(1);
   expect(createRequest.endpoints[0]).toEqual({
@@ -97,7 +95,7 @@ test('shows resource validation errors before saving', async ({ page }) => {
   });
 
   await page.getByRole('button', { name: '+ Create Resource', exact: true }).click();
-  await page.getByRole('textbox', { name: 'Resource alias' }).fill('alpha');
+  await page.getByRole('textbox', { name: 'Resource ID' }).fill('alpha');
   const resourceUriField = page.getByLabel('Absolute resource URI');
   await resourceUriField.fill('https://alpha.example/api');
   await expect(resourceUriField).toHaveClass(/input-error/);
@@ -112,11 +110,11 @@ test('shows resource validation errors before saving', async ({ page }) => {
   await expect(relativePathField).toHaveClass(/input-error/);
   await expect(relativePathField).toHaveCSS('border-top-color', 'rgb(248, 81, 73)');
   await page.getByRole('button', { name: 'Create Resource', exact: true }).click();
-  await expect(page.getByText('Endpoint path must start with “/” and contain only latin letters, digits, and "-" per segment (no consecutive "/"): GET users', { exact: true })).toBeVisible();
+  await expect(page.getByText('Endpoint path must start with "/" and contain only latin letters, digits, and "-" per segment (no consecutive "/"): GET users', { exact: true })).toBeVisible();
 
   await relativePathField.fill('/users/{id}');
   await page.getByRole('button', { name: 'Create Resource', exact: true }).click();
-  await expect(page.getByText('Endpoint path must start with “/” and contain only latin letters, digits, and "-" per segment (no consecutive "/"): GET /users/{id}', { exact: true })).toBeVisible();
+  await expect(page.getByText('Endpoint path must start with "/" and contain only latin letters, digits, and "-" per segment (no consecutive "/"): GET /users/{id}', { exact: true })).toBeVisible();
 
   expect(api.requests.some(request => request.method === 'POST' && request.pathname === '/configuration/resources')).toBeFalsy();
 });
@@ -143,8 +141,7 @@ test('updates a resource and saves batched endpoint changes in one request', asy
   await expect(updated).toContainText('DELETE');
 
   expect(findRequest(api.requests, 'PUT', '/configuration/resources').body).toEqual({
-    id: 1,
-    alias: 'alpha',
+    resourceId: 'alpha',
     resource: 'https://alpha-v2.example',
     deleteEndpoints: [101],
     createEndpoints: [
@@ -253,7 +250,7 @@ test('deletes a resource through the shared confirm dialog', async ({ page }) =>
   await resourceCard(page, 'alpha.example').getByRole('button', { name: 'Delete resource alpha' }).click();
   await page.getByRole('dialog').getByRole('button', { name: 'Delete', exact: true }).click();
 
-  expect(findRequest(api.requests, 'DELETE', '/configuration/resources').searchParams).toEqual({ id: '1' });
+  expect(findRequest(api.requests, 'DELETE', '/configuration/resources').searchParams).toEqual({ resourceId: 'alpha' });
   await expect(page.locator('.resource-shell')).toHaveCount(0);
   await expect(page.getByRole('heading', { name: 'No resources yet', exact: true })).toBeVisible();
 });

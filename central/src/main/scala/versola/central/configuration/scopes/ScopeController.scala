@@ -1,7 +1,8 @@
 package versola.central.configuration.scopes
 
-import versola.central.{CentralConfig, authorizeInternal}
+import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
 import versola.central.configuration.{ClaimResponse, CreateScopeRequest, GetAllScopesResponse, ScopeWithClaimsResponse, UpdateScopeRequest}
+import versola.central.configuration.clients.OAuthClientService
 import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.tenants.TenantId
 import versola.util.http.Controller
@@ -11,7 +12,7 @@ import zio.schema.*
 import zio.ZIO
 
 object ScopeController extends Controller:
-  type Env = Tracing & OAuthScopeService & CentralConfig & EdgeService
+  type Env = Tracing & OAuthScopeService & OAuthClientService & CentralConfig & EdgeService
 
   def routes: Routes[Env, Throwable] = Routes(
     createScopeEndpoint,
@@ -24,6 +25,7 @@ object ScopeController extends Controller:
   val getAllScopesEndpoint =
     Method.GET / "configuration" / "scopes" -> handler { (request: Request) =>
       for
+        _ <- authorizeBasic(request)
         scopeService <- ZIO.service[OAuthScopeService]
 
         tenantId <- request.url.queryZIO[TenantId]("tenantId")
@@ -61,6 +63,7 @@ object ScopeController extends Controller:
   val createScopeEndpoint =
     Method.POST / "configuration" / "scopes" -> handler { (request: Request) =>
       for
+        _ <- authorizeBasic(request)
         service <- ZIO.service[OAuthScopeService]
         body <- request.body.asJson[CreateScopeRequest]
         _ <- service.createScope(body)
@@ -70,6 +73,7 @@ object ScopeController extends Controller:
   val updateScopeEndpoint =
     Method.PUT / "configuration" / "scopes" -> handler { (request: Request) =>
       for
+        _ <- authorizeBasic(request)
         service <- ZIO.service[OAuthScopeService]
         body <- request.body.asJson[UpdateScopeRequest]
         _ <- service.updateScope(body)
@@ -79,6 +83,7 @@ object ScopeController extends Controller:
   val deleteScopeEndpoint =
     Method.DELETE / "configuration" / "scopes" -> handler { (request: Request) =>
       for
+        _ <- authorizeBasic(request)
         service <- ZIO.service[OAuthScopeService]
         tenantId <- request.url.queryZIO[TenantId]("tenantId")
         scopeId <- request.url.queryZIO[ScopeToken]("scopeId")

@@ -22,6 +22,7 @@ import './loading-cards';
 @customElement('versola-roles-list')
 export class VersolaRolesList extends LitElement {
   @property({ type: String }) tenantId: string | null = null;
+  @property({ type: Boolean }) canManage = false;
 
   @state() private roles: Role[] = [];
   @state() private searchQuery = '';
@@ -424,7 +425,7 @@ export class VersolaRolesList extends LitElement {
       <content-header
         title="Roles"
       >
-        ${this.roles.length > 0 ? html`
+        ${this.roles.length > 0 && this.canManage ? html`
           <button slot="actions" class="btn btn-primary" @click=${this.handleCreateClick} ?disabled=${this.isPreparingForm || !this.tenantId}>
             + Create Role
           </button>
@@ -440,9 +441,10 @@ export class VersolaRolesList extends LitElement {
           <div class="empty-state">
             <h3>No roles yet</h3>
             <p>Create your first role to get started</p>
+            ${this.canManage ? html`
             <button class="btn btn-primary" @click=${this.handleCreateClick} ?disabled=${this.isPreparingForm || !this.tenantId} style="margin-top: 1rem;">
               + Create Role
-            </button>
+            </button>` : ''}
           </div>
         </div>
       ` : this.filteredRoles.length === 0 ? html`
@@ -474,6 +476,7 @@ export class VersolaRolesList extends LitElement {
                   <div class="role-id">${role.id}</div>
                 </div>
 
+                ${this.canManage ? html`
                 <div class="role-actions" @click=${(e: Event) => e.stopPropagation()}>
                   <button
                     class="icon-action"
@@ -492,7 +495,7 @@ export class VersolaRolesList extends LitElement {
                   >
                     ✕
                   </button>
-                </div>
+                </div>` : ''}
               </div>
 
               ${isExpanded && role.permissions.length > 0 ? html`

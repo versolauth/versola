@@ -30,7 +30,7 @@ const READ_CACHE_TTL_MS = 60_000;
 type LocalizedDescription = Record<string, string>;
 type PagedResult<T> = { items: T[]; total: number; hasNext: boolean };
 type QueryValue = string | number | undefined | null;
-type CentralApiConfig = { baseUrl: string | null; authToken: string | null };
+type CentralApiConfig = { baseUrl: string | null };
 
 type ClientSecretResponse = { secret: string };
 type AuthorizationPresetResponse = {
@@ -46,7 +46,7 @@ type AuthorizationPresetResponse = {
   cookieDomain?: string;
   cookiePath?: string;
 };
-type CreateResourceResponse = { id: number };
+type CreateResourceResponse = { resourceId: string };
 type CreateResourceEndpointPayload = Omit<ResourceEndpoint, 'id' | 'allow'> & { allow: string | null };
 type SaveResourceEndpointPayload = CreateResourceEndpointPayload & { id?: ResourceEndpointId };
 type ResourceEndpointWriteDto = {
@@ -65,7 +65,7 @@ type ResourceEndpointDto = {
   allow?: string;
   inject: InjectRule[];
 };
-type ResourceResponseDto = { id: number; alias: string; resource: string; endpoints: Array<ResourceEndpointDto & { id: ResourceEndpointId }> };
+type ResourceResponseDto = { resourceId: string; resource: string; endpoints: Array<ResourceEndpointDto & { id: ResourceEndpointId }> };
 
 type EdgeResponseDto = { id: string; hasOldKey?: boolean };
 type EdgesResponse = { edges: EdgeResponseDto[] };
@@ -84,7 +84,7 @@ type ClientsResponse = { clients: Array<{ id: string; clientName: string; redire
 type RolesResponse = { roles: Array<{ id: string; description: LocalizedDescription; permissions: string[]; active: boolean }> };
 type ResourcesResponse = { resources: ResourceResponseDto[] };
 
-const apiConfig: CentralApiConfig = { baseUrl: null, authToken: null };
+const apiConfig: CentralApiConfig = { baseUrl: null };
 const permissionStore = new Map<string, Permission>();
 const clientSupplementStore = new Map<string, { externalAudience: string[]; accessTokenTtl: number; hasPreviousSecret: boolean }>();
 const roleSupplementStore = new Map<string, { active: boolean; createdAt: string; updatedAt: string }>();
@@ -131,7 +131,7 @@ function entityKey(tenantId: string, id: string): string {
   return `${tenantId}::${id}`;
 }
 
-function resolveBaseUrl(): string {
+export function resolveBaseUrl(): string {
   return apiConfig.baseUrl?.trim() || window.location.origin;
 }
 
@@ -139,7 +139,9 @@ function buildUrl(path: string, query?: Record<string, QueryValue>): string {
   const baseUrl = resolveBaseUrl();
   const normalizedBase = baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`;
   const normalizedPath = path.replace(/^\//, '');
-  const url = new URL(normalizedPath, normalizedBase);
+  // Route through the edge proxy for the "central" resource
+  const proxiedPath = `resources/central/${normalizedPath}`;
+  const url = new URL(proxiedPath, normalizedBase);
   Object.entries(query ?? {}).forEach(([key, value]) => {
     if (value !== undefined && value !== null) {
       url.searchParams.set(key, String(value));
@@ -194,7 +196,6 @@ function buildErrorMessage(status: number, bodyText: string): string {
 
 export function configureCentralApi(config: Partial<CentralApiConfig>): void {
   apiConfig.baseUrl = config.baseUrl?.trim() || null;
-  apiConfig.authToken = config.authToken?.trim() || null;
   invalidateReadCache();
   invalidateAllRefData();
 }
@@ -220,16 +221,25 @@ async function request<T>(
   }
 
   const requestPromise = (async () => {
-    const authToken = apiConfig.authToken?.trim();
     const response = await fetch(url, {
       method,
       headers: {
         Accept: 'application/json',
         ...(options.body ? { 'Content-Type': 'application/json' } : {}),
-        ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
       },
       ...(options.body ? { body: JSON.stringify(options.body) } : {}),
+      credentials: 'include',
     });
+
+    // Session fully expired: the edge answers 401 with a same-origin Location to
+    // the app's login. Navigate the top window there instead of surfacing an error.
+    if (response.status === 401) {
+      const location = response.headers.get('Location');
+      if (location) {
+        window.location.assign(location);
+        return await new Promise<T>(() => undefined);
+      }
+    }
 
     if (!response.ok) {
       const error = new Error(buildErrorMessage(response.status, await response.text())) as Error & { status: number };
@@ -405,8 +415,7 @@ function serializePersistedResourceEndpoint(
 
 function mapResource(resource: ResourceResponseDto): Resource {
   return {
-    id: resource.id,
-    alias: resource.alias,
+    resourceId: resource.resourceId,
     resource: resource.resource,
     endpoints: resource.endpoints.map(endpoint => ({
       id: endpoint.id,
@@ -547,6 +556,27 @@ export async function fetchClientPresets(clientId: string): Promise<Authorizatio
   }));
 }
 
+
+export async function saveClientPresets(clientId: string, presets: AuthorizationPreset[]): Promise<void> {
+  await requestVoid('/configuration/auth-request-presets', {
+    method: 'POST',
+    body: {
+      clientId,
+      presets: presets.map(p => ({
+        id: p.id,
+        description: p.description,
+        redirectUri: p.redirectUri,
+        postLoginRedirectUri: p.postLoginRedirectUri,
+        scope: p.scope,
+        responseType: p.responseType,
+        uiLocales: p.uiLocales,
+        customParameters: p.customParameters,
+        cookieDomain: p.cookieDomain,
+        cookiePath: p.cookiePath,
+      })),
+    },
+  });
+}
 export async function fetchAllClients(tenantId: string): Promise<OAuthClient[]> {
   return sortById(await fetchAllPages((offset, limit) => fetchClients(tenantId, offset, limit)));
 }
@@ -557,7 +587,9 @@ export async function fetchAllRoles(tenantId: string): Promise<Role[]> {
 
 export async function fetchResources(tenantId: string): Promise<Resource[]> {
   const response = await request<ResourcesResponse>('/configuration/resources', { query: { tenantId } });
-  return sortById(response.resources.map(mapResource));
+  return response.resources
+    .map(mapResource)
+    .sort((a, b) => a.resourceId.localeCompare(b.resourceId, undefined, { numeric: true }));
 }
 
 export function getScopes(tenantId: string): Promise<OAuthScope[]> {
@@ -578,23 +610,22 @@ export function getRoles(tenantId: string): Promise<Role[]> {
 
 export async function createResource(
   tenantId: string,
-  alias: string,
+  resourceId: string,
   resource: string,
   endpoints: CreateResourceEndpointPayload[] = [],
-): Promise<{ id: number; endpoints: Array<ResourceEndpointWriteDto & { id: ResourceEndpointId }> }> {
+): Promise<{ resourceId: string; endpoints: Array<ResourceEndpointWriteDto & { id: ResourceEndpointId }> }> {
   const serializedEndpoints = endpoints.map(endpoint => serializePersistedResourceEndpoint(endpoint));
   const response = await request<CreateResourceResponse>('/configuration/resources', {
     method: 'POST',
-    body: { tenantId, alias, resource, endpoints: serializedEndpoints },
+    body: { tenantId, resourceId, resource, endpoints: serializedEndpoints },
   });
   resourcesStore.clear();
-  return { id: response.id, endpoints: serializedEndpoints };
+  return { resourceId: response.resourceId, endpoints: serializedEndpoints };
 }
 
 export async function updateResource(
-  id: number,
+  resourceId: string,
   existingEndpoints: Array<Pick<ResourceEndpoint, 'id'>>,
-  alias: string,
   resource: string,
   endpoints?: SaveResourceEndpointPayload[],
 ): Promise<Array<ResourceEndpointWriteDto & { id: ResourceEndpointId }>> {
@@ -606,17 +637,17 @@ export async function updateResource(
 
   await requestVoid('/configuration/resources', {
     method: 'PUT',
-    body: { id, alias, resource, deleteEndpoints, createEndpoints },
+    body: { resourceId, resource, deleteEndpoints, createEndpoints },
   });
 
   resourcesStore.clear();
   return createEndpoints;
 }
 
-export async function deleteResource(id: number): Promise<void> {
+export async function deleteResource(resourceId: string): Promise<void> {
   await requestVoid('/configuration/resources', {
     method: 'DELETE',
-    query: { id },
+    query: { resourceId },
   });
 
   resourcesStore.clear();
@@ -942,7 +973,7 @@ export async function setActiveFormVersion(id: string, version: number): Promise
   });
 }
 
-export async function fetchThemes(tenantId?: string): Promise<ThemeRecord[]> {
+export async function fetchThemes(tenantId: string): Promise<ThemeRecord[]> {
   const response = await request<{ themes: ThemeRecord[] }>('/configuration/themes', {
     query: { tenantId },
   });
@@ -988,6 +1019,31 @@ export async function deleteOtpTemplate(id: string, tenantId: string): Promise<v
     method: 'DELETE',
     body: { id, tenantId },
   });
+}
+
+export type MyPermissionsResponse = {
+  resources: Record<string, { permissions: string[] }>;
+};
+
+export async function fetchMyPermissions(): Promise<MyPermissionsResponse> {
+  const baseUrl = resolveBaseUrl();
+  const normalizedBase = baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`;
+  const url = new URL('permissions/me', normalizedBase);
+  url.searchParams.set('resource', 'central');
+
+  const response = await fetch(url.toString(), {
+    method: 'GET',
+    headers: { Accept: 'application/json' },
+    credentials: 'include',
+  });
+
+  if (!response.ok) {
+    const error = new Error(buildErrorMessage(response.status, await response.text())) as Error & { status: number };
+    error.status = response.status;
+    throw error;
+  }
+
+  return JSON.parse(await response.text()) as MyPermissionsResponse;
 }
 
 export async function fetchChallengeSettings(tenantId: string): Promise<ChallengeSettingsRecord | null> {

@@ -176,8 +176,7 @@ export interface ResourceEndpoint {
 }
 
 export interface Resource {
-  id: number;
-  alias: string;
+  resourceId: string;
   resource: string;
   endpoints: ResourceEndpoint[];
 }

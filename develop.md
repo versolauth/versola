@@ -36,7 +36,7 @@ The script first asks for the environment **Name** (default `local`):
     - `PORT=9001 DPORT=9002 sbt -Denv.path=central/dev/env.conf "project central-postgres-impl; run"` - Central
     - `PORT=9003 DPORT=9004 sbt -Denv.path=auth/dev/env.conf "project auth-postgres-impl; run"` - Auth
     - `PORT=9005 DPORT=9006 sbt -Denv.path=edge/dev/env.conf "project edge-postgres-impl; run"` - Edge
-    - go to https://localhost:9005/login?pid=central-admin, enter admin/Admin1234!
+    - go to http://localhost:9005/login/central-admin, enter admin/Admin1234!
 
 
 ## Docker

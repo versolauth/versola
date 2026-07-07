@@ -2,11 +2,11 @@ package versola.central.configuration.resources
 
 import io.opentelemetry.api
 import org.scalamock.stubs.{Stub, ZIOStubs}
-import versola.central.{CentralConfig, TestCentralConfig}
+import versola.central.{CentralConfig, TestAdminAuth, TestCentralConfig}
+import versola.central.configuration.clients.OAuthClientService
 import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.tenants.TenantId
 import versola.central.configuration.*
-import versola.util.Secret
 import versola.util.http.Observability
 import zio.*
 import zio.http.*
@@ -16,13 +16,12 @@ import zio.telemetry.opentelemetry.tracing.Tracing
 import zio.test.*
 
 import java.util.UUID
-import javax.crypto.spec.SecretKeySpec
 
 object ResourceControllerSpec extends ZIOSpecDefault, ZIOStubs:
   private def endpointId(value: String): ResourceEndpointId = ResourceEndpointId(UUID.fromString(value))
 
   private val tenantId = TenantId("tenant-a")
-  private val resourceId = ResourceId(1)
+  private val resourceId = ResourceId("users-api")
   private val usersListEndpointId = endpointId("018f0f2a-1c7b-7000-8000-000000000301")
   private val usersCreateEndpointId = endpointId("018f0f2a-1c7b-7000-8000-000000000302")
   private val usersMeEndpointId = endpointId("018f0f2a-1c7b-7000-8000-000000000303")
@@ -33,7 +32,7 @@ object ResourceControllerSpec extends ZIOSpecDefault, ZIOStubs:
 
   private val createRequestBody = CreateResourceRequest(
     tenantId = tenantId,
-    alias = "users-api",
+    resourceId = resourceId,
     resource = ResourceUri("https://api.example.com"),
     endpoints = Vector(
       CreateResourceEndpointRequest(usersListEndpointId, "/users", "GET", true, allow, inject),
@@ -43,7 +42,7 @@ object ResourceControllerSpec extends ZIOSpecDefault, ZIOStubs:
 
   private val createRequestBodyWithNumericRule = CreateResourceRequest(
     tenantId = tenantId,
-    alias = "users-api",
+    resourceId = resourceId,
     resource = ResourceUri("https://api.example.com"),
     endpoints = Vector(
       CreateResourceEndpointRequest(usersListEndpointId, "/users", "GET", true, numericAllow, Vector.empty)
@@ -51,8 +50,7 @@ object ResourceControllerSpec extends ZIOSpecDefault, ZIOStubs:
   )
 
   private val updateRequestBody = UpdateResourceRequest(
-    id = resourceId,
-    alias = Some("users-internal"),
+    resourceId = resourceId,
     resource = Some(ResourceUri("https://api.internal.example.com")),
     deleteEndpoints = Set(usersCreateEndpointId),
     createEndpoints = Vector(
@@ -63,8 +61,7 @@ object ResourceControllerSpec extends ZIOSpecDefault, ZIOStubs:
   private val resourceRecords = Vector(
     ResourceRecord(
       tenantId = tenantId,
-      id = resourceId,
-      alias = createRequestBody.alias,
+      resourceId = resourceId,
       resource = createRequestBody.resource,
       endpoints = Vector(
         ResourceEndpointRecord(usersListEndpointId, "/users", "GET", true, allow, inject),
@@ -90,16 +87,22 @@ object ResourceControllerSpec extends ZIOSpecDefault, ZIOStubs:
         client <- ZIO.service[Client]
         service = stub[ResourceService]
         edgeService = stub[EdgeService]
+        oauthClientService = stub[OAuthClientService]
         tracing <- tracingLayer.build
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             ResourceController.routes.provideEnvironment(
-              ZEnvironment[ResourceService](service) ++ ZEnvironment(config) ++ tracing ++ ZEnvironment[EdgeService](edgeService)
+              ZEnvironment[ResourceService](service) ++ ZEnvironment(config) ++ tracing ++
+                ZEnvironment[EdgeService](edgeService) ++ ZEnvironment[OAuthClientService](oauthClientService)
             )
           )
         )
+        _ <- oauthClientService.verifySecret.succeedsWith(true)
         _ <- setup(service)
-        response <- client.batched(request.addHeader(Header.Accept(MediaType.application.json)))
+        requestWithAuth = request.headers.header(Header.Authorization) match
+          case None => request.addHeader(TestAdminAuth.basicAuthHeader)
+          case _    => request
+        response <- client.batched(requestWithAuth.addHeader(Header.Accept(MediaType.application.json)))
         verifyResult <- verify(response, service)
       yield assertTrue(response.status == expectedStatus) && verifyResult
     }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging
@@ -125,8 +128,7 @@ object ResourceControllerSpec extends ZIOSpecDefault, ZIOStubs:
           payload == GetAllResourcesResponse(
             Vector(
               ResourceResponse(
-                id = resourceId,
-                alias = createRequestBody.alias,
+                resourceId = resourceId,
                 resource = createRequestBody.resource,
                 endpoints = Vector(
                   ResourceEndpointResponse(usersListEndpointId, "GET", "/users", true, allow, inject),
@@ -208,7 +210,7 @@ object ResourceControllerSpec extends ZIOSpecDefault, ZIOStubs:
       description = "delete resource",
       request = Request(
         method = Method.DELETE,
-        url = (URL.empty / "configuration" / "resources").addQueryParam("id", resourceId.toString),
+        url = (URL.empty / "configuration" / "resources").addQueryParam("resourceId", resourceId.toString),
       ),
       expectedStatus = Status.NoContent,
       setup = service => service.deleteResource.succeedsWith(()),

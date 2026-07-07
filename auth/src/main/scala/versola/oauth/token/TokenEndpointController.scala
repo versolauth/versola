@@ -70,21 +70,14 @@ object TokenEndpointController extends Controller:
     for
       now <- Clock.instant
 
-      adminRolesClaim = tokens.adminRoles.filter(_.nonEmpty).map: roles =>
-        Json.Obj(
-          roles
-            .map((tenantId, roleIds) => tenantId -> Json.Arr(roleIds.map(Json.Str(_))*))
-            .toSeq*,
-        )
-
       customClaims = Map(
         "client_id" -> Json.Str(tokens.clientId),
         "scope" -> Json.Str(tokens.scope.mkString(" ")),
         "jti" -> Json.Str(Base64Url.encode(tokens.accessToken)),
+        "roles" -> Json.Arr(tokens.roles.map(Json.Str(_))*),
       ) ++
-        tokens.requestedClaims.map(rc => "requested_claims" -> rc.toJsonAST.toOption.get) ++
-        Some("roles" -> Json.Arr(tokens.roles.map(Json.Str(_))*)) ++
-        adminRolesClaim.map("admin_roles" -> _)
+        tokens.tenantId.map("tenant_id" -> Json.Str(_)) ++
+        tokens.requestedClaims.map(rc => "requested_claims" -> rc.toJsonAST.toOption.get)
 
 
       // For client_credentials grant, use client_id as subject; otherwise use user_id

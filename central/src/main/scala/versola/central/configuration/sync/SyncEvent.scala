@@ -71,7 +71,7 @@ object SyncEvent:
 
 
   case class PermissionsUpdated(
-      tenantId: Option[TenantId],
+      tenantId: TenantId,
       id: Permission,
       op: Op,
   ) extends ModifyCache:
@@ -93,10 +93,10 @@ object SyncEvent:
     type Record = ResourceRecord
 
     def matches(record: ResourceRecord): Boolean =
-      tenantId == record.tenantId && id == record.id
+      tenantId == record.tenantId && id == record.resourceId
 
     def sort(records: Vector[ResourceRecord]): Vector[ResourceRecord] =
-      records.sortBy(x => (x.tenantId, x.id))
+      records.sortBy(x => (x.tenantId, x.resourceId))
 
   case class PresetsUpdated(
       tenantId: TenantId,

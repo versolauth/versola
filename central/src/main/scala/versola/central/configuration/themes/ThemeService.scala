@@ -8,7 +8,7 @@ import java.sql.SQLException
 
 trait ThemeService:
   def getAllThemes: Task[Vector[ThemeRecord]]
-  def getThemes(tenantId: Option[TenantId]): Task[Vector[ThemeRecord]]
+  def getThemes(tenantId: TenantId): Task[Vector[ThemeRecord]]
   def createTheme(theme: ThemeRecord): Task[Unit]
   def updateTheme(theme: ThemeRecord): Task[Unit]
   def deleteTheme(id: String): Task[Unit]
@@ -32,10 +32,10 @@ object ThemeService:
     override def getAllThemes: Task[Vector[ThemeRecord]] =
       cache.get.map(_.sortBy(_.id))
 
-    override def getThemes(tenantId: Option[TenantId]): Task[Vector[ThemeRecord]] =
+    override def getThemes(tenantId: TenantId): Task[Vector[ThemeRecord]] =
       cache.get.map { themes =>
-        tenantId
-          .fold(themes)(t => themes.filter(theme => theme.tenantId.isEmpty || theme.tenantId.contains(t)))
+        themes
+          .filter(theme => theme.tenantId.isEmpty || theme.tenantId.contains(tenantId))
           .sortBy(_.id)
       }
 

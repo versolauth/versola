@@ -5,7 +5,7 @@ import versola.central.configuration.tenants.TenantId
 import zio.prelude.Equal
 
 case class PermissionRecord(
-    tenantId: Option[TenantId],
+    tenantId: TenantId,
     id: Permission,
     description: Map[String, String],
     endpointIds: Set[ResourceEndpointId],

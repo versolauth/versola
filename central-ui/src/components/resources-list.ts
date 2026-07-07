@@ -53,19 +53,20 @@ function cloneInject(rules: InjectRule[]): InjectRule[] {
 @customElement('versola-resources-list')
 export class VersolaResourcesList extends LitElement {
   @property({ type: String }) tenantId: string | null = null;
+  @property({ type: Boolean }) canManage = false;
   @state() private resources: Resource[] = [];
-  @state() private expandedResources: Set<number> = new Set();
+  @state() private expandedResources: Set<string> = new Set();
   @state() private expandedEndpoints: Set<ResourceEndpointId> = new Set();
   @state() private searchQuery = '';
   @state() private loading = false;
   @state() private saving = false;
   @state() private error = '';
   @state() private formMode: ResourceFormMode = 'none';
-  @state() private activeResourceId: number | null = null;
+  @state() private activeResourceId: string | null = null;
   @state() private expandedEditableEndpoints: Set<string> = new Set();
   @state() private openInfoKey: string | null = null;
   @state() private resourceUri = '';
-  @state() private resourceAlias = '';
+  @state() private resourceId = '';
   @state() private endpointDrafts: EditableResourceEndpoint[] = [];
   private nextEndpointDraftId = 0;
   private handleDocumentClick = () => {
@@ -98,7 +99,7 @@ export class VersolaResourcesList extends LitElement {
     .resource-actions { display:flex; align-items:center; gap:.5rem; margin-left:var(--spacing-md); }
     .resource-label-card { max-width:min(32rem, 100%); padding:.15rem 0; display:flex; align-items:center; gap:.625rem; flex-wrap:wrap; }
     .resource-label { color:var(--accent); font-size:1rem; font-weight:600; line-height:1.35; word-break:break-all; }
-    .resource-alias-badge { display:inline-flex; align-items:center; min-height:1.5rem; padding:0 .6rem; border-radius:999px; font-size:.75rem; font-weight:600; letter-spacing:.01em; background:rgba(88, 166, 255, .16); color:#7cc4ff; border:1px solid rgba(88, 166, 255, .28); flex:none; }
+    .resource-id-badge { display:inline-flex; align-items:center; min-height:1.5rem; padding:0 .6rem; border-radius:999px; font-size:.75rem; font-weight:600; letter-spacing:.01em; background:rgba(88, 166, 255, .16); color:#7cc4ff; border:1px solid rgba(88, 166, 255, .28); flex:none; }
     .input-with-info { display:flex; align-items:center; gap:.5rem; }
     .input-with-info > .form-input { flex:1; min-width:0; }
     .endpoint-list { display:grid; gap:.75rem; }
@@ -254,7 +255,7 @@ export class VersolaResourcesList extends LitElement {
   }
 
   private resetForms() {
-    this.formMode = 'none'; this.activeResourceId = null; this.resourceUri = ''; this.resourceAlias = '';
+    this.formMode = 'none'; this.activeResourceId = null; this.resourceUri = ''; this.resourceId = '';
     this.endpointDrafts = [];
     this.expandedEditableEndpoints = new Set();
   }
@@ -264,7 +265,7 @@ export class VersolaResourcesList extends LitElement {
     this.formMode = 'create-resource';
     this.activeResourceId = null;
     this.resourceUri = 'https://';
-    this.resourceAlias = '';
+    this.resourceId = '';
     this.endpointDrafts = [];
     this.expandedEditableEndpoints = new Set();
   }
@@ -272,12 +273,12 @@ export class VersolaResourcesList extends LitElement {
   private openEditResourceForm(resource: Resource) {
     this.error = '';
     this.formMode = 'edit-resource';
-    this.activeResourceId = resource.id;
+    this.activeResourceId = resource.resourceId;
     this.resourceUri = resource.resource;
-    this.resourceAlias = resource.alias;
+    this.resourceId = resource.resourceId;
     this.endpointDrafts = resource.endpoints.map(endpoint => this.toEditableEndpoint(endpoint));
     this.expandedEditableEndpoints = new Set(); // Start with all cards collapsed
-    this.expandedResources = new Set([...this.expandedResources, resource.id]);
+    this.expandedResources = new Set([...this.expandedResources, resource.resourceId]);
   }
 
   private createEmptyEndpointDraft(): EditableResourceEndpoint {
@@ -307,12 +308,12 @@ export class VersolaResourcesList extends LitElement {
     try {
       const resources = await getResources(this.tenantId);
       this.resources = resources;
-      const validIds = new Set(resources.map(resource => resource.id));
+      const validIds = new Set(resources.map(resource => resource.resourceId));
       const validEndpointIds = new Set(resources.flatMap(resource => resource.endpoints.map(endpoint => endpoint.id)));
       this.expandedResources = new Set([...this.expandedResources].filter(id => validIds.has(id)));
       this.expandedEndpoints = new Set([...this.expandedEndpoints].filter(id => validEndpointIds.has(id)));
       if (this.formMode === 'edit-resource' && this.activeResourceId !== null) {
-        const activeResource = this.resources.find(resource => resource.id === this.activeResourceId);
+        const activeResource = this.resources.find(resource => resource.resourceId === this.activeResourceId);
         if (!activeResource) {
           this.resetForms();
         }
@@ -325,8 +326,8 @@ export class VersolaResourcesList extends LitElement {
   private async saveResource(event: Event) {
     event.preventDefault(); if (!this.tenantId) return;
     const resource = this.resourceUri.trim();
-    const alias = this.resourceAlias.trim();
-    if (alias.length === 0) { this.error = 'Alias is required'; return; }
+    const resourceId = this.resourceId.trim();
+    if (resourceId.length === 0) { this.error = 'Resource ID is required'; return; }
     const validation = validateResourceUri(resource);
     if (!validation.valid) { this.error = validation.error ?? 'Resource URI is invalid'; return; }
     const invalidEndpoint = this.endpointDrafts.find(endpoint => this.isEndpointPathInvalid(endpoint.path));
@@ -340,21 +341,21 @@ export class VersolaResourcesList extends LitElement {
     const endpointPayloads = this.endpointDrafts.map(endpoint => this.toEndpointPayload(endpoint));
     this.saving = true; this.error = '';
     try {
-      let savedResourceId: number | null = null;
+      let savedResourceId: string | null = null;
       let savedEndpoints: PersistedResourceEndpointPayload[] = [];
       if (this.formMode === 'edit-resource' && this.activeResourceId !== null) {
-        const activeResource = this.resources.find(candidate => candidate.id === this.activeResourceId);
+        const activeResource = this.resources.find(candidate => candidate.resourceId === this.activeResourceId);
         if (!activeResource) throw new Error('Resource not found in local state');
         savedResourceId = this.activeResourceId;
-        savedEndpoints = await updateResource(savedResourceId, activeResource.endpoints, alias, resource, endpointPayloads);
+        savedEndpoints = await updateResource(savedResourceId, activeResource.endpoints, resource, endpointPayloads);
       } else {
-        const createdResource = await createResource(this.tenantId, alias, resource, endpointPayloads);
-        savedResourceId = createdResource.id;
+        const createdResource = await createResource(this.tenantId, resourceId, resource, endpointPayloads);
+        savedResourceId = createdResource.resourceId;
         savedEndpoints = createdResource.endpoints;
       }
 
       if (savedResourceId !== null) {
-        this.upsertResource(this.buildSavedResource(savedResourceId, alias, resource, savedEndpoints));
+        this.upsertResource(this.buildSavedResource(savedResourceId, resource, savedEndpoints));
         this.expandedResources = new Set([...this.expandedResources, savedResourceId]);
       }
 
@@ -421,11 +422,11 @@ export class VersolaResourcesList extends LitElement {
 
     this.error = '';
     try {
-      await deleteResource(resource.id);
-      this.resources = this.resources.filter(candidate => candidate.id !== resource.id);
-      this.expandedResources = new Set([...this.expandedResources].filter(id => id !== resource.id));
+      await deleteResource(resource.resourceId);
+      this.resources = this.resources.filter(candidate => candidate.resourceId !== resource.resourceId);
+      this.expandedResources = new Set([...this.expandedResources].filter(id => id !== resource.resourceId));
       this.expandedEndpoints = new Set([...this.expandedEndpoints].filter(id => !resource.endpoints.some(endpoint => endpoint.id === id)));
-      if (this.activeResourceId === resource.id) this.resetForms();
+      if (this.activeResourceId === resource.resourceId) this.resetForms();
     } catch (error) {
       this.error = error instanceof Error ? error.message : 'Failed to delete resource';
     }
@@ -438,8 +439,8 @@ export class VersolaResourcesList extends LitElement {
     return this.resources.filter(resource => {
       const label = formatResourceLabel(resource.resource).toLowerCase();
       const original = resource.resource.toLowerCase();
-      const alias = resource.alias.toLowerCase();
-      return label.includes(query) || original.includes(query) || alias.includes(query) || String(resource.id).includes(query);
+      const resourceId = resource.resourceId.toLowerCase();
+      return label.includes(query) || original.includes(query) || resourceId.includes(query);
     });
   }
 
@@ -449,16 +450,15 @@ export class VersolaResourcesList extends LitElement {
   }
 
   private syncExpandedEntityState(resources: Resource[] = this.resources) {
-    const validResourceIds = new Set(resources.map(resource => resource.id));
+    const validResourceIds = new Set(resources.map(resource => resource.resourceId));
     const validEndpointIds = new Set(resources.flatMap(resource => resource.endpoints.map(endpoint => endpoint.id)));
     this.expandedResources = new Set([...this.expandedResources].filter(id => validResourceIds.has(id)));
     this.expandedEndpoints = new Set([...this.expandedEndpoints].filter(id => validEndpointIds.has(id)));
   }
 
-  private buildSavedResource(id: number, alias: string, resource: string, endpoints: PersistedResourceEndpointPayload[]): Resource {
+  private buildSavedResource(resourceId: string, resource: string, endpoints: PersistedResourceEndpointPayload[]): Resource {
     return {
-      id,
-      alias,
+      resourceId,
       resource,
       endpoints: endpoints.map(endpoint => ({
         id: endpoint.id,
@@ -472,10 +472,10 @@ export class VersolaResourcesList extends LitElement {
   }
 
   private upsertResource(resource: Resource) {
-    const existingIndex = this.resources.findIndex(candidate => candidate.id === resource.id);
+    const existingIndex = this.resources.findIndex(candidate => candidate.resourceId === resource.resourceId);
     this.resources = existingIndex === -1
       ? [resource, ...this.resources]
-      : this.resources.map(candidate => candidate.id === resource.id ? resource : candidate);
+      : this.resources.map(candidate => candidate.resourceId === resource.resourceId ? resource : candidate);
     this.syncExpandedEntityState();
   }
 
@@ -612,7 +612,7 @@ export class VersolaResourcesList extends LitElement {
     `;
   }
 
-  private toggleExpand(resourceId: number) {
+  private toggleExpand(resourceId: string) {
     if (this.expandedResources.has(resourceId)) {
       this.expandedResources.delete(resourceId);
     } else {
@@ -621,7 +621,7 @@ export class VersolaResourcesList extends LitElement {
     this.requestUpdate();
   }
 
-  private handleCardClick(resourceId: number) {
+  private handleCardClick(resourceId: string) {
     this.toggleExpand(resourceId);
   }
 
@@ -896,14 +896,14 @@ export class VersolaResourcesList extends LitElement {
         <form @submit=${this.saveResource}>
           <div class="form-grid">
             <div class="form-group">
-              <label class="form-label">Alias</label>
+              <label class="form-label">Resource ID</label>
               <div class="input-with-info">
-                <input class="form-input compact-input" type="text" aria-label="Resource alias" .value=${this.resourceAlias} @input=${(e: Event) => this.resourceAlias = (e.target as HTMLInputElement).value} placeholder="users-api" ?disabled=${this.saving} required />
+                <input class="form-input compact-input" type="text" aria-label="Resource ID" .value=${this.resourceId} @input=${(e: Event) => this.resourceId = (e.target as HTMLInputElement).value} placeholder="users-api" ?disabled=${this.saving || isEditResource} required />
                 ${this.renderOptionInfo(
-                  'resource-alias-info',
-                  'Alias',
-                  'Used by the edge to route incoming user-agent requests to this resource. Requests to /resources/{alias}/* are forwarded to the configured resource URI.',
-                  'Resource alias info',
+                  'resource-id-info',
+                  'Resource ID',
+                  'Used by the edge to route incoming user-agent requests to this resource. Requests to /resources/{resourceId}/* are forwarded to the configured resource URI. It is immutable after creation.',
+                  'Resource ID info',
                 )}
               </div>
             </div>
@@ -942,7 +942,7 @@ export class VersolaResourcesList extends LitElement {
 
     return html`
       <content-header title="Resources">
-        ${this.resources.length > 0 ? html`
+        ${this.resources.length > 0 && this.canManage ? html`
           <button slot="actions" class="btn btn-primary" @click=${() => this.openCreateResourceForm()}>+ Create Resource</button>
         ` : ''}
       </content-header>
@@ -954,9 +954,10 @@ export class VersolaResourcesList extends LitElement {
           <div class="empty-state">
             <h3>No resources yet</h3>
             <p>Create your first resource to get started</p>
+            ${this.canManage ? html`
             <button class="btn btn-primary" @click=${() => this.openCreateResourceForm()} style="margin-top: 1rem;">
               + Create Resource
-            </button>
+            </button>` : ''}
           </div>
         </div>
       ` : html`
@@ -969,17 +970,18 @@ export class VersolaResourcesList extends LitElement {
           </div>
         ` : html`
           <div class="stack">${this.filteredResources.map(resource => {
-            const isExpanded = this.expandedResources.has(resource.id);
-            return html`<div class="card resource-shell" @click=${() => this.handleCardClick(resource.id)}><div class="card-body resource-card">
+            const isExpanded = this.expandedResources.has(resource.resourceId);
+            return html`<div class="card resource-shell" @click=${() => this.handleCardClick(resource.resourceId)}><div class="card-body resource-card">
             <div class="resource-header">
               <div class="resource-label-card">
                 <div class="resource-label">${formatResourceLabel(resource.resource)}</div>
-                <span class="resource-alias-badge" title="Alias">${resource.alias}</span>
+                <span class="resource-id-badge" title="Resource ID">${resource.resourceId}</span>
               </div>
+              ${this.canManage ? html`
               <div class="resource-actions" @click=${(e: Event) => e.stopPropagation()}>
-                <button class="icon-action" @click=${() => this.openEditResourceForm(resource)} title="Edit resource" aria-label=${`Edit resource ${resource.alias}`}>✎</button>
-                <button class="icon-action danger" @click=${() => this.removeResource(resource)} title="Delete resource" aria-label=${`Delete resource ${resource.alias}`}>✕</button>
-              </div>
+                <button class="icon-action" @click=${() => this.openEditResourceForm(resource)} title="Edit resource" aria-label=${`Edit resource ${resource.resourceId}`}>✎</button>
+                <button class="icon-action danger" @click=${() => this.removeResource(resource)} title="Delete resource" aria-label=${`Delete resource ${resource.resourceId}`}>✕</button>
+              </div>` : ''}
             </div>
             ${isExpanded ? this.renderResourceEndpoints(resource) : ''}
           </div></div>`;

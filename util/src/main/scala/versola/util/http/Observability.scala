@@ -66,6 +66,7 @@ object Observability:
   def handleErrors[Env](routes: Routes[Env, Throwable]): Routes[Env, Nothing] =
     routes.handleErrorZIO {
       case Unauthorized => ZIO.succeed(Response.unauthorized)
+      case Forbidden => ZIO.succeed(Response.forbidden)
       case ex: Throwable => Observability.cause.set(Some(Cause.fail(ex))).as(Response.internalServerError)
     }
 

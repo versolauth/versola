@@ -1,7 +1,8 @@
 package versola.central.configuration.jwks
 
+import versola.central.configuration.clients.OAuthClientService
 import versola.central.configuration.edges.EdgeService
-import versola.central.{CentralConfig, authorizeInternal}
+import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
 import versola.util.http.Controller
 import zio.http.{Method, Request, Response, Routes, Status, handler}
 import zio.json.EncoderOps
@@ -17,7 +18,7 @@ import zio.{Task, ZIO}
   *   - `GET /configuration/jwks/sync` — internal endpoint used by auth/edge.
   */
 object JwksController extends Controller:
-  type Env = Tracing & JwksService & CentralConfig & EdgeService
+  type Env = Tracing & JwksService & CentralConfig & EdgeService & OAuthClientService
 
   def routes: Routes[Env, Throwable] = Routes(
     getJwksEndpoint,
@@ -28,8 +29,9 @@ object JwksController extends Controller:
   )
 
   val getJwksEndpoint =
-    Method.GET / "configuration" / "jwks" -> handler { (_: Request) =>
+    Method.GET / "configuration" / "jwks" -> handler { (request: Request) =>
       for
+        _ <- authorizeBasic(request)
         service <- ZIO.service[JwksService]
         jwks <- service.getRaw
       yield Response.json(jwks.toJson)
@@ -38,6 +40,7 @@ object JwksController extends Controller:
   val createJwkEndpoint =
     Method.POST / "configuration" / "jwks" -> handler { (request: Request) =>
       for
+        _ <- authorizeBasic(request)
         service <- ZIO.service[JwksService]
         response <- withValidJwk(request)((kid, jwk) =>
           service.createKey(kid, jwk).as(Response.status(Status.Created)),
@@ -48,6 +51,7 @@ object JwksController extends Controller:
   val updateJwkEndpoint =
     Method.PUT / "configuration" / "jwks" -> handler { (request: Request) =>
       for
+        _ <- authorizeBasic(request)
         service <- ZIO.service[JwksService]
         response <- withValidJwk(request)((kid, jwk) =>
           service.updateKey(kid, jwk).as(Response.status(Status.NoContent)),
@@ -58,6 +62,7 @@ object JwksController extends Controller:
   val deleteJwkEndpoint =
     Method.DELETE / "configuration" / "jwks" -> handler { (request: Request) =>
       for
+        _ <- authorizeBasic(request)
         service <- ZIO.service[JwksService]
         kid <- request.url.queryZIO[String]("kid")
         _ <- service.deleteKey(kid)

@@ -1,6 +1,6 @@
 package versola.central.configuration.roles
 
-import versola.central.{CentralConfig, authorizeInternal}
+import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
 import versola.central.configuration.{CreateRoleRequest, GetAllRolesResponse, GetRolesSyncResponse, RoleResponse, RoleSyncResponse, UpdateRoleRequest}
 import versola.central.configuration.clients.OAuthClientService
 import versola.central.configuration.edges.EdgeService
@@ -14,7 +14,7 @@ import zio.telemetry.opentelemetry.tracing.Tracing
 import zio.{Cause, ZIO}
 
 object RoleController extends Controller:
-  type Env = Tracing & RoleService & CentralConfig & EdgeService
+  type Env = Tracing & RoleService & OAuthClientService & CentralConfig & EdgeService
 
   def routes: Routes[Env, Throwable] = Routes(
     createRoleEndpoint,
@@ -27,6 +27,7 @@ object RoleController extends Controller:
   val createRoleEndpoint =
     Method.POST / "configuration" / "roles" -> handler { (request: Request) =>
       for
+        _ <- authorizeBasic(request)
         service <- ZIO.service[RoleService]
         body <- request.body.asJson[CreateRoleRequest]
         role <- service.createRole(body)
@@ -36,6 +37,7 @@ object RoleController extends Controller:
   val updateRoleEndpoint =
     Method.PUT / "configuration" / "roles" -> handler { (request: Request) =>
       for
+        _ <- authorizeBasic(request)
         service <- ZIO.service[RoleService]
         body <- request.body.asJson[UpdateRoleRequest]
         _ <- service.updateRole(body)
@@ -45,6 +47,7 @@ object RoleController extends Controller:
   val deleteRoleEndpoint =
     Method.DELETE / "configuration" / "roles" -> handler { (request: Request) =>
       for
+        _ <- authorizeBasic(request)
         service <- ZIO.service[RoleService]
         tenantId <- request.url.queryZIO[TenantId]("tenantId")
         roleId <- request.url.queryZIO[RoleId]("roleId")
@@ -55,6 +58,7 @@ object RoleController extends Controller:
   val getAllRolesEndpoint =
     Method.GET / "configuration" / "roles" -> handler { (request: Request) =>
       for
+        _ <- authorizeBasic(request)
         configurationService <- ZIO.service[RoleService]
 
         tenantId <- request.url.queryZIO[TenantId]("tenantId")

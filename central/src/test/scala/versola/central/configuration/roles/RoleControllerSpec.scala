@@ -2,12 +2,12 @@ package versola.central.configuration.roles
 
 import io.opentelemetry.api
 import org.scalamock.stubs.{Stub, ZIOStubs}
-import versola.central.{CentralConfig, TestCentralConfig}
+import versola.central.{CentralConfig, TestAdminAuth, TestCentralConfig}
 import versola.central.configuration.*
+import versola.central.configuration.clients.OAuthClientService
 import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.permissions.Permission
 import versola.central.configuration.tenants.TenantId
-import versola.util.Secret
 import versola.util.http.Observability
 import zio.*
 import zio.http.*
@@ -16,7 +16,6 @@ import zio.telemetry.opentelemetry.OpenTelemetry
 import zio.telemetry.opentelemetry.tracing.Tracing
 import zio.test.*
 
-import javax.crypto.spec.SecretKeySpec
 
 object RoleControllerSpec extends ZIOSpecDefault, ZIOStubs:
   private val config = TestCentralConfig.config
@@ -81,19 +80,26 @@ object RoleControllerSpec extends ZIOSpecDefault, ZIOStubs:
   ) =
     test(description) {
       for
-        client <- ZIO.service[Client]
-        service = stub[RoleService]
-        edgeService = stub[EdgeService]
-        tracing <- tracingLayer.build
+        client      <- ZIO.service[Client]
+        service     =  stub[RoleService]
+        edgeService =  stub[EdgeService]
+        oauthClientService = stub[OAuthClientService]
+        tracing     <- tracingLayer.build
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             RoleController.routes.provideEnvironment(
-              ZEnvironment[RoleService](service) ++ tracing ++ ZEnvironment(config) ++ ZEnvironment[EdgeService](edgeService)
+              ZEnvironment[RoleService](service) ++ tracing ++ ZEnvironment(config) ++
+                ZEnvironment[EdgeService](edgeService) ++ ZEnvironment[OAuthClientService](oauthClientService)
             )
           )
         )
+        _ <- oauthClientService.verifySecret.succeedsWith(true)
         _ <- setup(service)
-        response <- client.batched(request.addHeader(Header.Accept(MediaType.application.json)))
+        response <- client.batched(
+          request
+            .addHeader(Header.Accept(MediaType.application.json))
+            .addHeader(TestAdminAuth.basicAuthHeader)
+        )
         verifyResult <- verify(response, service)
       yield assertTrue(response.status == expectedStatus) && verifyResult
     }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging

@@ -44,8 +44,8 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
     uiLocales = None,
     nonce = None,
     user = None,
-    roles = Nil,
-    adminRoles = None,
+    tenantId = None,
+    roles = List.empty,
     amr = Set(AuthMethodRef.pwd),
     authTime = Some(java.time.Instant.ofEpochSecond(1700000000)),
   )
