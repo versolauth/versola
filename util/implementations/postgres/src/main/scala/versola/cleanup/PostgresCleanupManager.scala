@@ -23,13 +23,14 @@ class PostgresCleanupManager(
     fibers: Ref[List[Fiber.Runtime[Throwable, Long]]],
 ) extends CleanupManager.Base(config, fibers):
 
-  override protected def cleanupBatch(tableName: String, batchSize: Int): Task[Int] =
+  override protected def cleanupBatch(tableName: String, batchSize: Int, keyColumn: String): Task[Int] =
     val table = SqlLiteral(tableName)
+    val key   = SqlLiteral(keyColumn)
     xa.connect {
       sql"""
         DELETE FROM $table
-        WHERE id IN (
-          SELECT id FROM $table
+        WHERE $key IN (
+          SELECT $key FROM $table
           WHERE expires_at < NOW()
           ORDER BY expires_at
           LIMIT $batchSize
