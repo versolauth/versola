@@ -4,6 +4,8 @@
 
 Versola is a platform that centralizes authentication, authorization, and account management, enabling teams to quickly build secure systems without developing their own identity infrastructure.
 
+The name is inspired by the Italian word "verso", meaning the reverse (back) side. The suffix "la" was intentionally added to evoke flexibility and evolution. Secure authentication requires looking beyond the obvious.
+
 **We do what matters, you do what business needs.**
 
 Under active development.
