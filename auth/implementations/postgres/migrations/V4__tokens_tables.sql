@@ -17,4 +17,5 @@ CREATE TABLE refresh_tokens(
 );
 
 CREATE INDEX refresh_tokens_user_id_idx ON refresh_tokens (user_id);
+CREATE INDEX refresh_tokens_session_id_idx ON refresh_tokens (session_id);
 CREATE INDEX refresh_tokens_expires_at_idx ON refresh_tokens (expires_at) where expires_at is not null;

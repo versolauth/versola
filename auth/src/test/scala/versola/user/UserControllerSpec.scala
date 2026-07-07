@@ -6,7 +6,7 @@ import versola.oauth.challenge.passkey.PasskeyRepository
 import versola.oauth.client.model.TenantId
 import versola.oauth.conversation.limit.ChallengeThrottleRepository
 import org.scalamock.stubs.ZIOStubs
-import versola.oauth.session.SessionRepository
+import versola.oauth.session.{RefreshTokenRepository, SessionRepository}
 import versola.role.model.RoleId
 import versola.user.model.*
 import versola.util.http.{NoopTracing, Observability}
@@ -29,11 +29,12 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
   private val secretKey = config.central.secretKey
   private val wrongKey = SecretKeySpec(Array.fill(32)(99.toByte), "AES")
 
-  private val userRepo    = stub[UserRepository]
-  private val rolesRepo   = stub[UserRolesRepository]
-  private val sessionRepo = stub[SessionRepository]
-  private val noopThrottle    = stub[ChallengeThrottleRepository]
-  private val noopPasskeyRepo = stub[PasskeyRepository]
+  private val userRepo             = stub[UserRepository]
+  private val rolesRepo            = stub[UserRolesRepository]
+  private val sessionRepo          = stub[SessionRepository]
+  private val refreshTokenRepo     = stub[RefreshTokenRepository]
+  private val noopThrottle         = stub[ChallengeThrottleRepository]
+  private val noopPasskeyRepo      = stub[PasskeyRepository]
 
   private def validToken(key: javax.crypto.SecretKey): Task[String] =
     JWT.serialize(
@@ -68,13 +69,14 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
   private def routes(
       tracing: ZEnvironment[zio.telemetry.opentelemetry.tracing.Tracing],
       sessions: SessionRepository = sessionRepo,
+      refreshTokens: RefreshTokenRepository = refreshTokenRepo,
       throttle: ChallengeThrottleRepository = noopThrottle,
       passkey: PasskeyRepository = noopPasskeyRepo,
   ) =
     Observability.handleErrors(
       UserController.routes
         .provideEnvironment(
-          ZEnvironment(userRepo) ++ ZEnvironment(rolesRepo) ++ ZEnvironment(config) ++ ZEnvironment(sessions) ++ ZEnvironment(throttle) ++ ZEnvironment(passkey) ++ tracing,
+          ZEnvironment(userRepo) ++ ZEnvironment(rolesRepo) ++ ZEnvironment(config) ++ ZEnvironment(sessions) ++ ZEnvironment(refreshTokens) ++ ZEnvironment(throttle) ++ ZEnvironment(passkey) ++ tracing,
         ),
     )
 
@@ -163,13 +165,14 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
         body == """{"sessions":[]}""",
       )
     },
-    test("DELETE /users/sessions with valid token returns 204") {
+    test("DELETE /users/sessions with valid token returns 204 and invalidates both sessions and refresh tokens") {
       for
         client <- ZIO.service[Client]
         tracing <- NoopTracing.layer.build
         token <- validToken(secretKey)
         testUserId = UserId(UUID.fromString("f077fb08-9935-4a6d-8643-bf97c073bf0f"))
         _ <- sessionRepo.invalidateByUserId.succeedsWith(())
+        _ <- refreshTokenRepo.deleteByUserId.succeedsWith(())
         _ <- TestClient.addRoutes(routes(tracing))
         resp <- client.batched(
           Request(
@@ -177,7 +180,13 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
             url = (URL.empty / "users" / "sessions").addQueryParam("userId", testUserId.toString),
           ).addHeader(Header.Authorization.Bearer(token)),
         )
-      yield assertTrue(resp.status == Status.NoContent)
+        invalidatedSessions = sessionRepo.invalidateByUserId.calls.toSet
+        deletedTokensFor    = refreshTokenRepo.deleteByUserId.calls.toSet
+      yield assertTrue(
+        resp.status == Status.NoContent,
+        invalidatedSessions == Set(testUserId),
+        deletedTokensFor == Set(testUserId),
+      )
     },
     test("POST /users/limits/reset without Authorization returns 401") {
       for
