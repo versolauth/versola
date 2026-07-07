@@ -113,11 +113,6 @@ class PostgresRefreshTokenRepository(xa: TransactorZIO) extends RefreshTokenRepo
       sql"""DELETE FROM refresh_tokens WHERE access_token = $token""".update.run()
     .unit
 
-  override def deleteByUserId(userId: UserId): Task[Unit] =
-    xa.connectMeasured("delete-refresh-tokens-by-user"):
-      sql"""DELETE FROM refresh_tokens WHERE user_id = $userId""".update.run()
-    .unit
-
 object PostgresRefreshTokenRepository:
   def live: ZLayer[TransactorZIO, Throwable, RefreshTokenRepository] =
     ZLayer.fromFunction(PostgresRefreshTokenRepository(_))
@@ -133,4 +128,3 @@ object PostgresRefreshTokenRepository:
         sql.getSQLState == SerializationFailureSqlState || sql.getSQLState == UniqueViolationSqlState
       case _ => Option(t.getCause).exists(isSerializationOrUniqueViolationFailure(_, depth + 1))
     )
-  

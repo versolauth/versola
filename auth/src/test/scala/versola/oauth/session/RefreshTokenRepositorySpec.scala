@@ -35,7 +35,6 @@ trait RefreshTokenRepositorySpec extends DatabaseSpecBase[RefreshTokenRepository
 
   val accessToken1 = AccessToken(Array.fill(16)(10.toByte))
   val accessToken2 = AccessToken(Array.fill(16)(11.toByte))
-  val accessToken3 = AccessToken(Array.fill(16)(12.toByte))
 
   val scope1 = Set(ScopeToken("read"), ScopeToken("write"))
   val scope2 = Set(ScopeToken("admin"))
@@ -147,31 +146,6 @@ trait RefreshTokenRepositorySpec extends DatabaseSpecBase[RefreshTokenRepository
           results.count(_.isRight) == 1,
           results.count(_.left.toOption.contains(())) == 5
         )
-      },
-      test("deleteByUserId removes all tokens for user across multiple sessions") {
-        for
-          now <- Clock.instant
-          record1 = tokenRecord1(now, refreshTtl)
-          // second token for userId1 but on a different session
-          record1b = tokenRecord1(now, refreshTtl).copy(sessionId = sessionId2, accessToken = accessToken3)
-          record2 = tokenRecord2(now, refreshTtl)
-          _ <- env.repository.create(refreshToken1, record1)
-          _ <- env.repository.create(refreshToken3, record1b)
-          _ <- env.repository.create(refreshToken2, record2)
-          _ <- env.repository.deleteByUserId(userId1)
-          found1  <- env.repository.find(refreshToken1)
-          found1b <- env.repository.find(refreshToken3)
-          found2  <- env.repository.find(refreshToken2)
-        yield assertTrue(
-          found1.isEmpty,
-          found1b.isEmpty,
-          found2.isDefined,
-        )
-      },
-      test("deleteByUserId is a no-op when user has no tokens") {
-        for
-          _ <- env.repository.deleteByUserId(userId1)
-        yield assertTrue(true)
       },
     )
 

@@ -17,5 +17,6 @@ object PostgresSessionRepositorySpec extends PostgresSpec, SessionRepositorySpec
     for
       xa <- ZIO.service[TransactorZIO]
       _ <- xa.connect(sql"TRUNCATE TABLE sso_sessions".update.run())
+      _ <- xa.connect(sql"TRUNCATE TABLE refresh_tokens".update.run())
     yield ()
 

@@ -3,7 +3,7 @@ package versola.user
 import versola.oauth.challenge.passkey.PasskeyRepository
 import versola.oauth.client.model.TenantId
 import versola.oauth.conversation.limit.ChallengeThrottleRepository
-import versola.oauth.session.{RefreshTokenRepository, SessionRepository}
+import versola.oauth.session.SessionRepository
 import versola.oauth.session.model.SessionId
 import versola.role.model.RoleId
 import versola.user.model.*
@@ -17,7 +17,7 @@ import zio.json.JsonCodec
 import zio.telemetry.opentelemetry.tracing.Tracing
 
 object UserController extends Controller:
-  type Env = Tracing & UserRepository & UserRolesRepository & CoreConfig & SessionRepository & RefreshTokenRepository & ChallengeThrottleRepository & PasskeyRepository
+  type Env = Tracing & UserRepository & UserRolesRepository & CoreConfig & SessionRepository & ChallengeThrottleRepository & PasskeyRepository
 
   def routes: Routes[Env, Throwable] = Routes(
     upsertUserEndpoint,
@@ -125,10 +125,8 @@ object UserController extends Controller:
         for
           _ <- authorizeInternal(request)
           sessionRepo <- ZIO.service[SessionRepository]
-          refreshTokenRepo <- ZIO.service[RefreshTokenRepository]
           userId <- request.queryZIO[UserId]("userId")
           _ <- sessionRepo.invalidateByUserId(userId)
-          _ <- refreshTokenRepo.deleteByUserId(userId)
         yield Response.status(Status.NoContent)
       }
 
