@@ -121,7 +121,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         accessToken <- token(clientId = "web-app", tenantId = Some("default"), roles = Some(List("member")))
         request = Request
           .get(URL.decode("/permissions/me").toOption.get)
-          .addCookie(Cookie.Request(EdgeSessionCookie.name, accessToken))
+          .addCookie(Cookie.Request(EdgeSessionCookie.name, s"web-app:$accessToken"))
         emptyResponse = EdgeService.PermissionsResponse(resources = Map.empty)
         (response, service, _) <- run(request, (s, _) => s.getMyPermissions.succeedsWith(emptyResponse))
       yield assertTrue(
@@ -149,7 +149,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         )
         request = Request
           .get(URL.decode("/permissions/me?resource=central&resource=orders").toOption.get)
-          .addCookie(Cookie.Request(EdgeSessionCookie.name, accessToken))
+          .addCookie(Cookie.Request(EdgeSessionCookie.name, s"central-admin:$accessToken"))
         (response, service, _) <- run(request, (s, _) => s.getMyPermissions.succeedsWith(sampleResponse))
         payload <- response.body.asString.map(_.fromJson[EdgeService.PermissionsResponse])
       yield assertTrue(

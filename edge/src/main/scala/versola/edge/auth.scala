@@ -14,7 +14,7 @@ import zio.json.{JsonCodec, jsonField}
 def authorize(request: Request): ZIO[JwksService, Unauthorized.type, PermissionsClaims] =
   val token = request.header(Header.Authorization)
     .collect { case Header.Authorization.Bearer(bearer) => bearer.stringValue }
-    .orElse(request.cookie(EdgeSessionCookie.name).map(_.content))
+    .orElse(request.cookie(EdgeSessionCookie.name).map(c => EdgeSessionCookie.parse(c.content)._2))
 
   token match
     case Some(raw) =>
