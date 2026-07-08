@@ -13,3 +13,5 @@ CREATE TABLE oauth_clients (
     auth_flow         JSONB,
     otp_template_id   TEXT NOT NULL
 );
+
+CREATE INDEX idx_oauth_clients_tenant_id ON oauth_clients (tenant_id);

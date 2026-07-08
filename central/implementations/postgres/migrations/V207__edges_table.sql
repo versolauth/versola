@@ -7,6 +7,8 @@ CREATE TABLE edges (
 ALTER TABLE tenants
     ADD COLUMN edge_id TEXT REFERENCES edges(id) ON DELETE SET NULL;
 
+CREATE INDEX idx_tenants_edge_id ON tenants (edge_id);
+
 -- edge_change — empty payload, reload all
 CREATE OR REPLACE FUNCTION notify_edge_change()
 RETURNS trigger AS $$
