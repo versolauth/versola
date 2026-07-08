@@ -42,13 +42,13 @@ class PostgresUserRolesRepository(xa: TransactorZIO) extends UserRolesRepository
     else
       xa.transactMeasured("update-roles"):
         if remove.nonEmpty then
-          remove.foreach: roleId =>
-            sql"DELETE FROM user_roles WHERE user_id = $userId AND tenant_id = $tenantId AND role_id = $roleId"
-              .update.run()
+          sql"DELETE FROM user_roles WHERE user_id = $userId AND tenant_id = $tenantId AND role_id = ANY($remove)"
+            .update.run()
         if add.nonEmpty then
-          add.foreach: roleId =>
-            sql"INSERT INTO user_roles (user_id, tenant_id, role_id) VALUES ($userId, $tenantId, $roleId) ON CONFLICT DO NOTHING"
-              .update.run()
+          sql"""INSERT INTO user_roles (user_id, tenant_id, role_id)
+                SELECT $userId, $tenantId, unnest($add)
+                ON CONFLICT DO NOTHING"""
+            .update.run()
       .unit
 
 object PostgresUserRolesRepository:
