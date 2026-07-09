@@ -21,6 +21,7 @@ import './theme-edit';
 @customElement('versola-forms-list')
 export class VersolaFormsList extends LitElement {
   @property({ type: String }) tenantId: string | null = null;
+  @property({ type: Boolean }) canManage = false;
 
   @state() private forms: FormRecord[] = [];
   @state() private locales: Locale[] = [];
@@ -76,8 +77,12 @@ export class VersolaFormsList extends LitElement {
   }
 
   private async loadThemes() {
+    if (!this.tenantId) {
+      this.themes = [];
+      return;
+    }
     try {
-      this.themes = await fetchThemes(this.tenantId ?? undefined);
+      this.themes = await fetchThemes(this.tenantId);
     } catch (error) {
       this.errorMessage = error instanceof Error ? error.message : 'Failed to load themes';
     }
@@ -485,7 +490,7 @@ export class VersolaFormsList extends LitElement {
       const [forms, locales, themes] = await Promise.all([
         fetchForms(),
         fetchLocales(),
-        fetchThemes(this.tenantId ?? undefined),
+        this.tenantId ? fetchThemes(this.tenantId) : Promise.resolve([]),
       ]);
       // Sort by id and version desc
       this.forms = forms.sort((a, b) => a.id.localeCompare(b.id) || b.version - a.version);
@@ -751,7 +756,7 @@ export class VersolaFormsList extends LitElement {
         <div class="form-header" @click=${() => this.toggleThemesExpand()}>
           <div class="form-id">Themes</div>
           <div style="display:flex;align-items:center;gap:var(--spacing-sm)" @click=${(e: Event) => e.stopPropagation()}>
-            ${this.themesExpanded ? html`
+            ${this.themesExpanded && this.canManage ? html`
               <button class="icon-action" title="New Theme" aria-label="New Theme"
                 @click=${() => this.handleCreateTheme()}>＋</button>
             ` : nothing}
@@ -815,7 +820,7 @@ export class VersolaFormsList extends LitElement {
           <div class="form-header" @click=${() => this.toggleFormsExpand()}>
             <div class="form-id">Forms</div>
             <div style="display:flex;align-items:center;gap:var(--spacing-sm)" @click=${(e: Event) => e.stopPropagation()}>
-              ${this.formsExpanded ? html`
+              ${this.formsExpanded && this.canManage ? html`
                 <button class="icon-action" title="New Form" aria-label="New Form"
                   @click=${() => this.handleCreateForm()}>＋</button>
               ` : nothing}
@@ -832,7 +837,7 @@ export class VersolaFormsList extends LitElement {
                     <div class="form-header" @click=${() => this.toggleExpand(id)}>
                       <div class="form-id">${id}</div>
                       <div style="display:flex;align-items:center;gap:var(--spacing-sm)" @click=${(e: Event) => e.stopPropagation()}>
-                        ${isExpanded ? html`
+                        ${isExpanded && this.canManage ? html`
                           <button class="icon-action" title="New Version" aria-label="New Version"
                             @click=${() => this.handleNewVersion(versions[0])}>＋</button>
                         ` : nothing}

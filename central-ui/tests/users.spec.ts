@@ -203,10 +203,10 @@ test('Get Passkeys fetches and lists passkeys for the user', async ({ page }) =>
   const req = findRequest(api.requests, 'GET', '/users/passkeys');
   expect(req.searchParams['id']).toBe(alice.id);
 
-  await expect(card.locator('.passkey-name', { hasText: 'Alice MacBook' })).toBeVisible();
-  await expect(card.locator('.passkey-id', { hasText: 'cred-abc' })).toBeVisible();
-  await expect(card.locator('.passkey-meta', { hasText: 'multiDevice' })).toBeVisible();
-  await expect(card.locator('.passkey-meta', { hasText: 'synced' })).toBeVisible();
+  await expect(card.locator('.passkey-card-name', { hasText: 'Alice MacBook' })).toBeVisible();
+  await expect(card.locator('.passkey-prop-value', { hasText: 'cred-abc' })).toBeVisible();
+  await expect(card.locator('.passkey-prop-value', { hasText: 'multiDevice' })).toBeVisible();
+  await expect(card.locator('.passkey-badge.synced', { hasText: 'synced' })).toBeVisible();
 });
 
 test('renames a passkey via the prompt and sends PATCH', async ({ page }) => {
@@ -220,7 +220,7 @@ test('renames a passkey via the prompt and sends PATCH', async ({ page }) => {
   page.on('dialog', async dialog => {
     await dialog.accept('My Renamed Key');
   });
-  await card.locator('.passkey-actions button[title="Rename"]').click();
+  await card.locator('.passkey-card-actions button[title="Rename"]').click();
   await page.waitForTimeout(300);
 
   expect(findRequest(api.requests, 'PATCH', '/users/passkeys').body).toMatchObject({
@@ -228,7 +228,7 @@ test('renames a passkey via the prompt and sends PATCH', async ({ page }) => {
     credentialId: alicePasskey.id,
     name: 'My Renamed Key',
   });
-  await expect(card.locator('.passkey-name', { hasText: 'My Renamed Key' })).toBeVisible();
+  await expect(card.locator('.passkey-card-name', { hasText: 'My Renamed Key' })).toBeVisible();
 });
 
 test('deletes a passkey via the confirm dialog and removes it from the list', async ({ page }) => {
@@ -239,13 +239,13 @@ test('deletes a passkey via the confirm dialog and removes it from the list', as
   await card.getByRole('button', { name: 'Get Passkeys', exact: true }).click();
   await page.waitForTimeout(300);
 
-  await card.locator('.passkey-actions button[title="Delete"]').click();
+  await card.locator('.passkey-card-actions button[title="Delete"]').click();
   await page.getByRole('dialog').getByRole('button', { name: 'Delete', exact: true }).click();
   await page.waitForTimeout(300);
 
   const req = findRequest(api.requests, 'DELETE', '/users/passkeys');
   expect(req.searchParams['id']).toBe(alice.id);
   expect(req.searchParams['credentialId']).toBe(alicePasskey.id);
-  await expect(card.locator('.passkey-name', { hasText: 'Alice MacBook' })).toHaveCount(0);
+  await expect(card.locator('.passkey-card-name', { hasText: 'Alice MacBook' })).toHaveCount(0);
   await expect(card.locator('.no-data', { hasText: 'No passkeys registered.' })).toBeVisible();
 });

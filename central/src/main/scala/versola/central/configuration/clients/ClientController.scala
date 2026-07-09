@@ -1,10 +1,10 @@
 package versola.central.configuration.clients
 
-import versola.central.{CentralConfig, authorizeInternal}
+import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
 import versola.central.configuration.*
 import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.tenants.TenantId
-import versola.util.http.Controller
+import versola.util.http.{Controller, Unauthorized}
 import versola.util.{Base64Url, Secret, SecurityService}
 import zio.*
 import zio.http.*
@@ -28,6 +28,7 @@ object ClientController extends Controller:
   val getAllClientsEndpoint =
     Method.GET / "configuration" / "clients" -> handler { (request: Request) =>
       for
+        _ <- authorizeBasic(request)
         clientService <- ZIO.service[OAuthClientService]
 
         tenantId <- request.url.queryZIO[TenantId]("tenantId")
@@ -57,12 +58,23 @@ object ClientController extends Controller:
       for
         clientService <- ZIO.service[OAuthClientService]
         centralConfig <- ZIO.service[CentralConfig]
+        securityService <- ZIO.service[SecurityService]
+        edgeService <- ZIO.service[EdgeService]
         edgeId <- authorizeInternal(request)
+        transportEncrypt <- edgeId match
+          case Some(id) =>
+            edgeService.find(id).someOrFail(Unauthorized).map { edge =>
+              (secret: Secret) =>
+                securityService.encryptRsa(secret, edge.activeRsaPublicKey).map(Base64Url.encode)
+            }
+          case None =>
+            ZIO.succeed: (secret: Secret) =>
+              securityService.encryptAes256(secret, centralConfig.secretKey).map(Base64Url.encode)
         clients <- clientService.getClientsForSync(edgeId)
         encryptedClients <- ZIO.foreach(clients) { client =>
           for
-            secret <- ZIO.foreach(client.secret)(encryptSecret)
-            previousSecret <- ZIO.foreach(client.previousSecret)(encryptSecret)
+            secret <- ZIO.foreach(client.secret)(transportEncrypt)
+            previousSecret <- ZIO.foreach(client.previousSecret)(transportEncrypt)
           yield SyncOAuthClientRecord(
             id = client.id,
             tenantId = client.tenantId,
@@ -80,14 +92,14 @@ object ClientController extends Controller:
             otpTemplateId = client.otpTemplateId,
           )
         }
-        encryptedPepper <- encryptSecret(centralConfig.clientSecretsPepper)
-      yield Response.json(GetOAuthClientsSyncResponse(clients = encryptedClients, pepper = encryptedPepper).toJson)
+      yield Response.json(GetOAuthClientsSyncResponse(clients = encryptedClients).toJson)
     }
 
 
   val createClientEndpoint =
     Method.POST / "configuration" / "clients" -> handler { (request: Request) =>
       (for
+        _ <- authorizeBasic(request)
         service <- ZIO.service[OAuthClientService]
         body <- request.body.asJson[CreateClientRequest]
         secret <- service.registerClient(body)
@@ -105,6 +117,7 @@ object ClientController extends Controller:
   val updateClientEndpoint =
     Method.PUT / "configuration" / "clients" -> handler { (request: Request) =>
       for
+        _ <- authorizeBasic(request)
         service <- ZIO.service[OAuthClientService]
         body <- request.body.asJson[UpdateClientRequest]
         _ <- service.updateClient(body)
@@ -114,6 +127,7 @@ object ClientController extends Controller:
   val rotateSecretEndpoint =
     Method.POST / "configuration" / "clients" / "rotate-secret" -> handler { (request: Request) =>
       for
+        _ <- authorizeBasic(request)
         service <- ZIO.service[OAuthClientService]
         clientId <- request.url.queryZIO[ClientId]("clientId")
         newSecret <- service.rotateClientSecret(clientId)
@@ -124,6 +138,7 @@ object ClientController extends Controller:
   val deletePreviousSecretEndpoint =
     Method.DELETE / "configuration" / "clients" / "previous-secret" -> handler { (request: Request) =>
       for
+        _ <- authorizeBasic(request)
         service <- ZIO.service[OAuthClientService]
         clientId <- request.url.queryZIO[ClientId]("clientId")
         _ <- service.deletePreviousClientSecret(clientId)
@@ -133,15 +148,10 @@ object ClientController extends Controller:
   val deleteClientEndpoint =
     Method.DELETE / "configuration" / "clients" -> handler { (request: Request) =>
       for
+        _ <- authorizeBasic(request)
         service <- ZIO.service[OAuthClientService]
         clientId <- request.url.queryZIO[ClientId]("clientId")
         _ <- service.deleteClient(clientId)
       yield Response.status(Status.NoContent)
     }
 
-  private def encryptSecret(secret: Secret): ZIO[CentralConfig & SecurityService, Throwable, String] =
-    for
-      config <- ZIO.service[CentralConfig]
-      securityService <- ZIO.service[SecurityService]
-      encrypted <- securityService.encryptAes256(secret, config.secretKey)
-    yield Base64Url.encode(encrypted)

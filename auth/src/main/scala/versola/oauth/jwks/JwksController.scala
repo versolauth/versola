@@ -1,6 +1,5 @@
 package versola.oauth.jwks
 
-import versola.util.CoreConfig
 import versola.util.http.Controller
 import zio.*
 import zio.http.*
@@ -15,7 +14,7 @@ import zio.telemetry.opentelemetry.tracing.Tracing
  * Endpoint: /.well-known/jwks.json
  */
 object JwksController extends Controller:
-  type Env = Tracing & CoreConfig
+  type Env = Tracing & JwksService
 
   def routes: Routes[Env, Nothing] = Routes(
     jwksEndpoint,
@@ -43,10 +42,11 @@ object JwksController extends Controller:
   val jwksEndpoint =
     Method.GET / ".well-known" / "jwks.json" -> handler { (_: Request) =>
       for
-        config <- ZIO.service[CoreConfig]
+        jwksService <- ZIO.service[JwksService]
+        keys <- jwksService.getPublicKeys
       yield Response(
         status = Status.Ok,
-        body = Body.fromString(config.jwt.publicKeys.toString),
+        body = Body.fromString(keys.toString),
       )
         .addHeader(Header.ContentType(MediaType.application.json))
         .addHeader(

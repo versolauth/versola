@@ -2,6 +2,7 @@ package versola.oauth.session
 
 import versola.oauth.model.{AccessToken, RefreshToken}
 import versola.oauth.session.model.{RefreshAlreadyExchanged, SessionId, RefreshTokenRecord, WithTtl}
+import versola.user.model.UserId
 import versola.util.MAC
 import zio.{IO, Task}
 import zio.prelude.These
@@ -17,3 +18,5 @@ trait RefreshTokenRepository:
   def delete(token: MAC.Of[RefreshToken]): Task[Unit]
 
   def deleteByAccessToken(token: AccessToken): Task[Unit]
+
+  def deleteByUserId(userId: UserId): Task[Unit]

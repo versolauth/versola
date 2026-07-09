@@ -15,7 +15,7 @@ export class VersolaPermissionForm extends LitElement {
 
   @state() private permissionId = '';
   @state() private descriptionEn = '';
-  @state() private selectedResourceIds: number[] = [];
+  @state() private selectedResourceIds: string[] = [];
   @state() private selectedEndpointIds: ResourceEndpointId[] = [];
   @state() private resourceToAddId = '';
   @state() private endpointToAddByResource: Record<string, string> = {};
@@ -24,7 +24,7 @@ export class VersolaPermissionForm extends LitElement {
     const permissionId = this.permissionId.trim();
     return this.mode !== 'edit' && permissionId.length > 0 && !validatePermission(permissionId);
   }
-  @state() private expandedResourceId: number | null = null;
+  @state() private expandedResourceId: string | null = null;
 
   static styles = [theme, buttonStyles, cardStyles, formStyles, methodBadgeStyles, tableStyles, css`
     :host {
@@ -72,7 +72,7 @@ export class VersolaPermissionForm extends LitElement {
     const endpointIds = [...(this.permission?.endpointIds ?? [])];
     const selectedResourceIds = this.resources
       .filter(resource => resource.endpoints.some(endpoint => endpointIds.includes(endpoint.id)))
-      .map(resource => resource.id);
+      .map(resource => resource.resourceId);
 
     this.permissionId = this.permission?.id ?? '';
     this.descriptionEn = getLocalizedDescription(this.permission?.description ?? {}, 'en');
@@ -85,12 +85,12 @@ export class VersolaPermissionForm extends LitElement {
 
   private get selectedResources(): Resource[] {
     return this.selectedResourceIds
-      .map(id => this.resources.find(resource => resource.id === id))
+      .map(id => this.resources.find(resource => resource.resourceId === id))
       .filter((resource): resource is Resource => Boolean(resource));
   }
 
   private get availableResources(): Resource[] {
-    return this.resources.filter(resource => !this.selectedResourceIds.includes(resource.id));
+    return this.resources.filter(resource => !this.selectedResourceIds.includes(resource.resourceId));
   }
 
   private get detachedEndpointIds(): ResourceEndpointId[] {
@@ -98,15 +98,15 @@ export class VersolaPermissionForm extends LitElement {
   }
 
   private addResource() {
-    const resourceId = Number(this.resourceToAddId);
+    const resourceId = this.resourceToAddId;
     if (!resourceId || this.selectedResourceIds.includes(resourceId)) return;
     this.selectedResourceIds = [resourceId, ...this.selectedResourceIds];
     this.resourceToAddId = '';
     this.expandedResourceId = resourceId;
   }
 
-  private removeResource(resourceId: number) {
-    const resource = this.resources.find(item => item.id === resourceId);
+  private removeResource(resourceId: string) {
+    const resource = this.resources.find(item => item.resourceId === resourceId);
     const resourceEndpointIds = new Set(resource?.endpoints.map(endpoint => endpoint.id) ?? []);
     const nextSelectedResourceIds = this.selectedResourceIds.filter(id => id !== resourceId);
     this.selectedResourceIds = nextSelectedResourceIds;
@@ -118,7 +118,7 @@ export class VersolaPermissionForm extends LitElement {
     this.endpointToAddByResource = nextEndpointToAdd;
   }
 
-  private toggleResource(resourceId: number) {
+  private toggleResource(resourceId: string) {
     this.expandedResourceId = this.expandedResourceId === resourceId ? null : resourceId;
   }
 
@@ -132,17 +132,17 @@ export class VersolaPermissionForm extends LitElement {
     return resource.endpoints.filter(endpoint => !selectedEndpointIds.has(endpoint.id));
   }
 
-  private updateEndpointToAdd(resourceId: number, value: string) {
-    this.endpointToAddByResource = { ...this.endpointToAddByResource, [String(resourceId)]: value };
+  private updateEndpointToAdd(resourceId: string, value: string) {
+    this.endpointToAddByResource = { ...this.endpointToAddByResource, [resourceId]: value };
   }
 
   private addEndpoint(resource: Resource) {
-    const optionValue = this.endpointToAddByResource[String(resource.id)] ?? '';
+    const optionValue = this.endpointToAddByResource[resource.resourceId] ?? '';
     if (!optionValue) return;
     const endpoint = resource.endpoints.find(candidate => String(candidate.id) === optionValue);
     if (!endpoint || this.selectedEndpointIds.includes(endpoint.id)) return;
     this.selectedEndpointIds = [...this.selectedEndpointIds, endpoint.id];
-    this.endpointToAddByResource = { ...this.endpointToAddByResource, [String(resource.id)]: '' };
+    this.endpointToAddByResource = { ...this.endpointToAddByResource, [resource.resourceId]: '' };
   }
 
   private removeEndpoint(endpointId: ResourceEndpointId) {
@@ -228,7 +228,7 @@ export class VersolaPermissionForm extends LitElement {
               <label class="form-label" for="permission-resource-picker">Add resource</label>
               <select id="permission-resource-picker" class="form-select" .value=${this.resourceToAddId} @change=${(e: Event) => this.resourceToAddId = (e.target as HTMLSelectElement).value}>
                 <option value="">Select resource</option>
-                ${this.availableResources.map(resource => html`<option value=${String(resource.id)}>${formatResourceLabel(resource.resource)}</option>`)}
+                ${this.availableResources.map(resource => html`<option value=${resource.resourceId}>${formatResourceLabel(resource.resource)}</option>`)}
               </select>
             </div>
             <button type="button" class="btn btn-secondary inline-action-button" ?disabled=${!this.resourceToAddId} @click=${() => this.addResource()}>Add resource</button>
@@ -239,23 +239,23 @@ export class VersolaPermissionForm extends LitElement {
               ${this.selectedResources.map(resource => html`
                 <div class="resource-card">
                   <div class="resource-card-header">
-                    <button type="button" class="resource-card-trigger" @click=${() => this.toggleResource(resource.id)} aria-expanded=${this.expandedResourceId === resource.id ? 'true' : 'false'}>
-                      <span class="resource-chevron">${this.expandedResourceId === resource.id ? '▾' : '▸'}</span>
+                    <button type="button" class="resource-card-trigger" @click=${() => this.toggleResource(resource.resourceId)} aria-expanded=${this.expandedResourceId === resource.resourceId ? 'true' : 'false'}>
+                      <span class="resource-chevron">${this.expandedResourceId === resource.resourceId ? '▾' : '▸'}</span>
                       <div class="resource-label-card"><div class="resource-label">${formatResourceLabel(resource.resource)}</div></div>
                     </button>
-                    <button type="button" class="icon-action danger" @click=${() => this.removeResource(resource.id)} title="Remove resource" aria-label="Remove resource">✕</button>
+                    <button type="button" class="icon-action danger" @click=${() => this.removeResource(resource.resourceId)} title="Remove resource" aria-label="Remove resource">✕</button>
                   </div>
 
-                  ${this.expandedResourceId === resource.id ? html`
+                  ${this.expandedResourceId === resource.resourceId ? html`
                     <div class="endpoint-picker">
                       <div class="form-group">
-                        <label class="form-label" for=${`permission-endpoint-picker-${resource.id}`}>Add endpoint</label>
+                        <label class="form-label" for=${`permission-endpoint-picker-${resource.resourceId}`}>Add endpoint</label>
                         <select
-                          id=${`permission-endpoint-picker-${resource.id}`}
+                          id=${`permission-endpoint-picker-${resource.resourceId}`}
                           class="form-select"
                           aria-label=${`Add endpoint for ${formatResourceLabel(resource.resource)}`}
-                          .value=${this.endpointToAddByResource[String(resource.id)] ?? ''}
-                          @change=${(e: Event) => this.updateEndpointToAdd(resource.id, (e.target as HTMLSelectElement).value)}
+                          .value=${this.endpointToAddByResource[resource.resourceId] ?? ''}
+                          @change=${(e: Event) => this.updateEndpointToAdd(resource.resourceId, (e.target as HTMLSelectElement).value)}
                         >
                           <option value="">Select endpoint</option>
                           ${this.getAvailableEndpoints(resource).map(endpoint => html`
@@ -266,7 +266,7 @@ export class VersolaPermissionForm extends LitElement {
                       <button
                         type="button"
                         class="btn btn-secondary inline-action-button"
-                        ?disabled=${!(this.endpointToAddByResource[String(resource.id)] ?? '')}
+                        ?disabled=${!(this.endpointToAddByResource[resource.resourceId] ?? '')}
                         @click=${() => this.addEndpoint(resource)}
                       >Add endpoint</button>
                     </div>

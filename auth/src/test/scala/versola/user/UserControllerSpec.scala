@@ -1,18 +1,15 @@
 package versola.user
 
 import versola.auth.TestEnvConfig
-import versola.auth.model.{AuthenticatorTransport, CredentialDeviceType, CredentialId, PasskeyRecord, TenantId}
+import versola.auth.model.{AuthenticatorTransport, CredentialDeviceType, CredentialId, PasskeyRecord}
 import versola.oauth.challenge.passkey.PasskeyRepository
-import versola.oauth.conversation.limit.{ChallengeThrottleRecord, ChallengeThrottleRepository, ChallengeType}
-import versola.auth.model.TenantId
-import versola.oauth.client.model.TenantId as ThrottleTenantId
-import versola.oauth.conversation.limit.{ChallengeThrottleRecord, ChallengeThrottleRepository, ChallengeType}
-import versola.oauth.session.SessionRepository
-import versola.oauth.session.model.{SessionId, SessionRecord}
+import versola.oauth.client.model.TenantId
+import versola.oauth.conversation.limit.ChallengeThrottleRepository
+import org.scalamock.stubs.ZIOStubs
+import versola.oauth.session.{RefreshTokenRepository, SessionRepository}
 import versola.role.model.RoleId
 import versola.user.model.*
 import versola.util.http.{NoopTracing, Observability}
-import versola.util.MAC
 import versola.util.{JWT, Patch}
 import versola.util.{Base64, JWT, Patch}
 import versola.util.http.{NoopTracing, Observability}
@@ -26,44 +23,18 @@ import java.time.Instant
 import java.util.UUID
 import javax.crypto.spec.SecretKeySpec
 
-object UserControllerSpec extends ZIOSpecDefault:
+object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
 
   private val config = TestEnvConfig.coreConfig
   private val secretKey = config.central.secretKey
   private val wrongKey = SecretKeySpec(Array.fill(32)(99.toByte), "AES")
 
-  private val userRepo = new UserRepository:
-    override def findOrCreate(userId: UserId, credential: Either[versola.util.Email, versola.util.Phone]) = ZIO.dieMessage("Unused")
-    override def create(id: UserId) = ZIO.dieMessage("Unused")
-    override def find(id: UserId) = ZIO.dieMessage("Unused")
-    override def findByCredential(credential: Either[versola.util.Email, versola.util.Phone]) = ZIO.dieMessage("Unused")
-    override def upsert(id: UserId, version: UUID, email: Option[versola.util.Email], phone: Option[versola.util.Phone], login: Option[Login]) =
-      ZIO.unit
-    override def patchClaims(id: UserId, patch: Json.Obj) = ZIO.unit
-
-  private val rolesRepo = new UserRolesRepository:
-    override def findRolesByUser(userId: UserId) = ZIO.dieMessage("Unused")
-    override def findRolesByUserAndTenant(userId: UserId, tenant_id: TenantId) = ZIO.succeed(Nil)
-    override def updateRoles(userId: UserId, tenantId: TenantId, add: Set[RoleId], remove: Set[RoleId]) = ZIO.unit
-
-  private val sessionRepo = new SessionRepository:
-    override def create(id: MAC.Of[SessionId], session: SessionRecord, ttl: Duration): Task[Unit] = ZIO.dieMessage("Unused")
-    override def find(id: MAC.Of[SessionId]): Task[Option[SessionRecord]] = ZIO.dieMessage("Unused")
-    override def findByUserId(userId: UserId): Task[List[SessionRecord]] = ZIO.succeed(Nil)
-    override def invalidateByUserId(userId: UserId): Task[Unit] = ZIO.unit
-  private def throttleRepo(deleted: Ref[List[String]]) = new ChallengeThrottleRepository:
-    override def find(tenantId: ThrottleTenantId, subject: String, challengeType: ChallengeType) = ZIO.dieMessage("Unused")
-    override def findAll(tenantId: ThrottleTenantId, subject: String, challengeTypes: List[ChallengeType]) = ZIO.dieMessage("Unused")
-    override def upsert(record: ChallengeThrottleRecord) = ZIO.unit
-    override def delete(tenantId: ThrottleTenantId, subject: String, challengeType: ChallengeType) = ZIO.unit
-    override def deleteAllForSubject(tenantId: ThrottleTenantId, subject: String) = deleted.update(subject :: _)
-
-  private val noopThrottle = new ChallengeThrottleRepository:
-    override def find(tenantId: ThrottleTenantId, subject: String, challengeType: ChallengeType) = ZIO.dieMessage("Unused")
-    override def findAll(tenantId: ThrottleTenantId, subject: String, challengeTypes: List[ChallengeType]) = ZIO.dieMessage("Unused")
-    override def upsert(record: ChallengeThrottleRecord) = ZIO.unit
-    override def delete(tenantId: ThrottleTenantId, subject: String, challengeType: ChallengeType) = ZIO.unit
-    override def deleteAllForSubject(tenantId: ThrottleTenantId, subject: String) = ZIO.unit
+  private val userRepo             = stub[UserRepository]
+  private val rolesRepo            = stub[UserRolesRepository]
+  private val sessionRepo          = stub[SessionRepository]
+  private val refreshTokenRepo     = stub[RefreshTokenRepository]
+  private val noopThrottle         = stub[ChallengeThrottleRepository]
+  private val noopPasskeyRepo      = stub[PasskeyRepository]
 
   private def validToken(key: javax.crypto.SecretKey): Task[String] =
     JWT.serialize(
@@ -93,40 +64,19 @@ object UserControllerSpec extends ZIOSpecDefault:
     updatedAt = Instant.parse("2024-01-01T00:00:00Z"),
   )
 
-  private def passkeyRepo(
-      listed: Vector[PasskeyRecord] = Vector.empty,
-      renamed: Ref[List[(CredentialId, UserId, Option[String])]],
-      deleted: Ref[List[(CredentialId, UserId)]],
-  ) = new PasskeyRepository:
-    override def insert(record: PasskeyRecord) = ZIO.dieMessage("Unused")
-    override def findByCredentialIdAndUser(id: CredentialId, userId: UserId) = ZIO.dieMessage("Unused")
-    override def findByCredentialId(id: CredentialId) = ZIO.dieMessage("Unused")
-    override def listByUser(userId: UserId) = ZIO.succeed(listed)
-    override def updateUsage(id: CredentialId, signatureCounter: Long, lastUsedAt: Instant) = ZIO.dieMessage("Unused")
-    override def rename(id: CredentialId, userId: UserId, name: Option[String]) = renamed.update((id, userId, name) :: _)
-    override def deleteByUser(id: CredentialId, userId: UserId) = deleted.update((id, userId) :: _)
-    override def delete(id: CredentialId) = ZIO.dieMessage("Unused")
 
-  private val noopPasskeyRepo = new PasskeyRepository:
-    override def insert(record: PasskeyRecord) = ZIO.dieMessage("Unused")
-    override def findByCredentialIdAndUser(id: CredentialId, userId: UserId) = ZIO.dieMessage("Unused")
-    override def findByCredentialId(id: CredentialId) = ZIO.dieMessage("Unused")
-    override def listByUser(userId: UserId) = ZIO.succeed(Vector.empty)
-    override def updateUsage(id: CredentialId, signatureCounter: Long, lastUsedAt: Instant) = ZIO.dieMessage("Unused")
-    override def rename(id: CredentialId, userId: UserId, name: Option[String]) = ZIO.unit
-    override def deleteByUser(id: CredentialId, userId: UserId) = ZIO.unit
-    override def delete(id: CredentialId) = ZIO.dieMessage("Unused")
 
   private def routes(
       tracing: ZEnvironment[zio.telemetry.opentelemetry.tracing.Tracing],
       sessions: SessionRepository = sessionRepo,
+      refreshTokens: RefreshTokenRepository = refreshTokenRepo,
       throttle: ChallengeThrottleRepository = noopThrottle,
       passkey: PasskeyRepository = noopPasskeyRepo,
   ) =
     Observability.handleErrors(
       UserController.routes
         .provideEnvironment(
-          ZEnvironment(userRepo) ++ ZEnvironment(rolesRepo) ++ ZEnvironment(config) ++ ZEnvironment(sessions) ++ ZEnvironment(throttle) ++ ZEnvironment(passkey) ++ tracing,
+          ZEnvironment(userRepo) ++ ZEnvironment(rolesRepo) ++ ZEnvironment(config) ++ ZEnvironment(sessions) ++ ZEnvironment(refreshTokens) ++ ZEnvironment(throttle) ++ ZEnvironment(passkey) ++ tracing,
         ),
     )
 
@@ -156,6 +106,7 @@ object UserControllerSpec extends ZIOSpecDefault:
         client <- ZIO.service[Client]
         tracing <- NoopTracing.layer.build
         token <- validToken(secretKey)
+        _ <- userRepo.upsert.succeedsWith(())
         _ <- TestClient.addRoutes(routes(tracing))
         body =
           """{"id":"00000000-0000-0000-0000-000000000001","version":"00000000-0000-0000-0000-000000000001","email":null,"phone":null,"login":null}"""
@@ -179,6 +130,7 @@ object UserControllerSpec extends ZIOSpecDefault:
         client <- ZIO.service[Client]
         tracing <- NoopTracing.layer.build
         token <- validToken(secretKey)
+        _ <- rolesRepo.updateRoles.succeedsWith(())
         _ <- TestClient.addRoutes(routes(tracing))
         body = """{"userId":"00000000-0000-0000-0000-000000000001","tenantId":"t1","add":["r1"],"remove":[]}"""
         resp <- client.batched(
@@ -201,6 +153,7 @@ object UserControllerSpec extends ZIOSpecDefault:
         client <- ZIO.service[Client]
         tracing <- NoopTracing.layer.build
         token <- validToken(secretKey)
+        _ <- sessionRepo.findByUserId.succeedsWith(Nil)
         _ <- TestClient.addRoutes(routes(tracing))
         resp <- client.batched(
           Request.get((URL.empty / "users" / "sessions").addQueryParam("id", "f077fb08-9935-4a6d-8643-bf97c073bf0f"))
@@ -212,12 +165,14 @@ object UserControllerSpec extends ZIOSpecDefault:
         body == """{"sessions":[]}""",
       )
     },
-    test("DELETE /users/sessions with valid token returns 204") {
+    test("DELETE /users/sessions with valid token returns 204 and invalidates both sessions and refresh tokens") {
       for
         client <- ZIO.service[Client]
         tracing <- NoopTracing.layer.build
         token <- validToken(secretKey)
         testUserId = UserId(UUID.fromString("f077fb08-9935-4a6d-8643-bf97c073bf0f"))
+        _ <- sessionRepo.invalidateByUserId.succeedsWith(())
+        _ <- refreshTokenRepo.deleteByUserId.succeedsWith(())
         _ <- TestClient.addRoutes(routes(tracing))
         resp <- client.batched(
           Request(
@@ -225,7 +180,13 @@ object UserControllerSpec extends ZIOSpecDefault:
             url = (URL.empty / "users" / "sessions").addQueryParam("userId", testUserId.toString),
           ).addHeader(Header.Authorization.Bearer(token)),
         )
-      yield assertTrue(resp.status == Status.NoContent)
+        invalidatedSessions = sessionRepo.invalidateByUserId.calls.toSet
+        deletedTokensFor    = refreshTokenRepo.deleteByUserId.calls.toSet
+      yield assertTrue(
+        resp.status == Status.NoContent,
+        invalidatedSessions == Set(testUserId),
+        deletedTokensFor == Set(testUserId),
+      )
     },
     test("POST /users/limits/reset without Authorization returns 401") {
       for
@@ -236,22 +197,23 @@ object UserControllerSpec extends ZIOSpecDefault:
       yield assertTrue(resp.status == Status.Unauthorized)
     },
     test("POST /users/limits/reset clears throttle for userId, email and phone") {
+      val throttle = stub[ChallengeThrottleRepository]
       for
         client <- ZIO.service[Client]
         tracing <- NoopTracing.layer.build
         token <- validToken(secretKey)
-        deleted <- Ref.make(List.empty[String])
-        _ <- TestClient.addRoutes(routes(tracing, throttle = throttleRepo(deleted)))
+        _ <- throttle.deleteAllForSubject.succeedsWith(())
+        _ <- TestClient.addRoutes(routes(tracing, throttle = throttle))
         body = """{"userId":"00000000-0000-0000-0000-000000000001","tenantId":"t1","email":"john@doe.com","phone":"+1234567890"}"""
         resp <- client.batched(
           Request(method = Method.POST, url = URL.empty / "users" / "limits" / "reset", body = Body.fromString(body))
             .addHeader(Header.Authorization.Bearer(token))
             .addHeader(Header.ContentType(MediaType.application.json)),
         )
-        subjects <- deleted.get
+        subjects = throttle.deleteAllForSubject.calls.map(_._2).toSet
       yield assertTrue(
         resp.status == Status.NoContent,
-        subjects.toSet == Set("00000000-0000-0000-0000-000000000001", "john@doe.com", "+1234567890"),
+        subjects == Set("00000000-0000-0000-0000-000000000001", "john@doe.com", "+1234567890"),
       )
     },
     test("GET /users/passkeys without Authorization returns 401") {
@@ -263,13 +225,12 @@ object UserControllerSpec extends ZIOSpecDefault:
       yield assertTrue(resp.status == Status.Unauthorized)
     },
     test("GET /users/passkeys with valid Bearer token returns the user's passkeys") {
+      val repo = stub[PasskeyRepository]
       for
         client  <- ZIO.service[Client]
         tracing <- NoopTracing.layer.build
         token   <- validToken(secretKey)
-        renamed <- Ref.make(List.empty[(CredentialId, UserId, Option[String])])
-        deleted <- Ref.make(List.empty[(CredentialId, UserId)])
-        repo     = passkeyRepo(Vector(passkeyRecord), renamed, deleted)
+        _       <- repo.listByUser.succeedsWith(Vector(passkeyRecord))
         _       <- TestClient.addRoutes(routes(tracing, passkey = repo))
         resp    <- client.batched(
           Request.get((URL.empty / "users" / "passkeys").addQueryParam("id", passkeyUserId.toString))
@@ -293,13 +254,12 @@ object UserControllerSpec extends ZIOSpecDefault:
       yield assertTrue(resp.status == Status.Unauthorized)
     },
     test("PATCH /users/passkeys with valid Bearer token renames the passkey") {
+      val repo = stub[PasskeyRepository]
       for
         client  <- ZIO.service[Client]
         tracing <- NoopTracing.layer.build
         token   <- validToken(secretKey)
-        renamed <- Ref.make(List.empty[(CredentialId, UserId, Option[String])])
-        deleted <- Ref.make(List.empty[(CredentialId, UserId)])
-        repo     = passkeyRepo(renamed = renamed, deleted = deleted)
+        _       <- repo.rename.succeedsWith(())
         _       <- TestClient.addRoutes(routes(tracing, passkey = repo))
         payload  = RenamePasskeyPayload(passkeyUserId, credentialId, Some("New Name")).toJson
         resp    <- client.batched(
@@ -307,7 +267,7 @@ object UserControllerSpec extends ZIOSpecDefault:
             .addHeader(Header.Authorization.Bearer(token))
             .addHeader(Header.ContentType(MediaType.application.json))
         )
-        calls   <- renamed.get
+        calls    = repo.rename.calls
       yield assertTrue(
         resp.status == Status.NoContent,
         calls.size == 1,
@@ -325,13 +285,12 @@ object UserControllerSpec extends ZIOSpecDefault:
       yield assertTrue(resp.status == Status.Unauthorized)
     },
     test("DELETE /users/passkeys with valid Bearer token deletes the passkey") {
+      val repo = stub[PasskeyRepository]
       for
         client  <- ZIO.service[Client]
         tracing <- NoopTracing.layer.build
         token   <- validToken(secretKey)
-        renamed <- Ref.make(List.empty[(CredentialId, UserId, Option[String])])
-        deleted <- Ref.make(List.empty[(CredentialId, UserId)])
-        repo     = passkeyRepo(renamed = renamed, deleted = deleted)
+        _       <- repo.deleteByUser.succeedsWith(())
         _       <- TestClient.addRoutes(routes(tracing, passkey = repo))
         url      = (URL.empty / "users" / "passkeys")
           .addQueryParam("id", passkeyUserId.toString)
@@ -339,7 +298,7 @@ object UserControllerSpec extends ZIOSpecDefault:
         resp    <- client.batched(
           Request(method = Method.DELETE, url = url).addHeader(Header.Authorization.Bearer(token))
         )
-        calls   <- deleted.get
+        calls    = repo.deleteByUser.calls
       yield assertTrue(
         resp.status == Status.NoContent,
         calls.size == 1,

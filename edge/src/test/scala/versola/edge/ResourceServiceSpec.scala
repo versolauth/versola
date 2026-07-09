@@ -1,6 +1,6 @@
 package versola.edge
 
-import versola.edge.model.{Resource, ResourceEndpoint, ResourceEndpointId}
+import versola.edge.model.{Resource, ResourceEndpoint, ResourceEndpointId, ResourceId}
 import versola.util.ReloadingCache
 import zio.*
 import zio.http.URL
@@ -19,38 +19,36 @@ object ResourceServiceSpec extends ZIOSpecDefault:
   )
 
   private val alpha = Resource(
-    id = versola.edge.model.ResourceId(1),
-    alias = "alpha",
+    resourceId = ResourceId("alpha"),
     resource = URL.decode("https://alpha.example").toOption.get,
     endpoints = Vector(alphaEndpoint),
   )
 
   private val beta = alpha.copy(
-    id = versola.edge.model.ResourceId(2),
-    alias = "beta",
+    resourceId = ResourceId("beta"),
     resource = URL.decode("https://beta.example").toOption.get,
   )
 
-  private def env(initial: Map[String, Resource] = Map.empty): UIO[ResourceService] =
+  private def env(initial: Map[ResourceId, Resource] = Map.empty): UIO[ResourceService] =
     Ref.make(initial).map(ref => ResourceService.Impl(ReloadingCache(ref)))
 
   def spec = suite("edge.ResourceService")(
-    test("findByAlias returns cached resource when alias is known") {
+    test("findByResourceId returns cached resource when resourceId is known") {
       for
-        service <- env(Map("alpha" -> alpha, "beta" -> beta))
-        result  <- service.findByAlias("alpha")
+        service <- env(Map(ResourceId("alpha") -> alpha, ResourceId("beta") -> beta))
+        result  <- service.findByResourceId(ResourceId("alpha"))
       yield assertTrue(result.contains(alpha))
     },
-    test("findByAlias returns None when alias is unknown") {
+    test("findByResourceId returns None when resourceId is unknown") {
       for
-        service <- env(Map("alpha" -> alpha))
-        result  <- service.findByAlias("missing")
+        service <- env(Map(ResourceId("alpha") -> alpha))
+        result  <- service.findByResourceId(ResourceId("missing"))
       yield assertTrue(result.isEmpty)
     },
-    test("findByAlias returns None when cache is empty") {
+    test("findByResourceId returns None when cache is empty") {
       for
         service <- env()
-        result  <- service.findByAlias("alpha")
+        result  <- service.findByResourceId(ResourceId("alpha"))
       yield assertTrue(result.isEmpty)
     },
   )

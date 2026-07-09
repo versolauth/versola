@@ -20,7 +20,7 @@ trait PermissionRepositorySpec extends DatabaseSpecBase[PermissionRepositorySpec
   val listEndpointId = endpointId("018f0f2a-1c7b-7000-8000-000000000101")
   val detailEndpointId = endpointId("018f0f2a-1c7b-7000-8000-000000000102")
   val permissionRecord = PermissionRecord(
-    tenantId = Some(tenantId),
+    tenantId = tenantId,
     id = permissionId,
     description = Map("en" -> "Read users"),
     endpointIds = Set(listEndpointId),
@@ -30,8 +30,8 @@ trait PermissionRepositorySpec extends DatabaseSpecBase[PermissionRepositorySpec
     List(
       test("create and find tenant permission") {
         for
-          _ <- env.repository.createPermission(Some(tenantId), permissionId, Map("en" -> "Read users"), permissionRecord.endpointIds)
-          found <- env.repository.findPermission(Some(tenantId), permissionId)
+          _ <- env.repository.createPermission(tenantId, permissionId, Map("en" -> "Read users"), permissionRecord.endpointIds)
+          found <- env.repository.findPermission(tenantId, permissionId)
           all <- env.repository.getAll
         yield assertTrue(
           found === Some(permissionRecord),
@@ -41,13 +41,13 @@ trait PermissionRepositorySpec extends DatabaseSpecBase[PermissionRepositorySpec
       test("update permission description with patch") {
         for
           _ <- env.repository.createPermission(
-            Some(tenantId),
+            tenantId,
             permissionId,
             Map("en" -> "Read users", "de" -> "Benutzer lesen"),
             permissionRecord.endpointIds,
           )
           _ <- env.repository.updatePermission(
-            Some(tenantId),
+            tenantId,
             permissionId,
             PatchDescription(
               add = Map("ru" -> "Чтение пользователей"),
@@ -55,11 +55,11 @@ trait PermissionRepositorySpec extends DatabaseSpecBase[PermissionRepositorySpec
             ),
             Some(Set(listEndpointId, detailEndpointId)),
           )
-          found <- env.repository.findPermission(Some(tenantId), permissionId)
+          found <- env.repository.findPermission(tenantId, permissionId)
         yield assertTrue(
           found === Some(
             PermissionRecord(
-              tenantId = Some(tenantId),
+              tenantId = tenantId,
               id = permissionId,
               description = Map("en" -> "Read users", "ru" -> "Чтение пользователей"),
               endpointIds = Set(listEndpointId, detailEndpointId),
@@ -69,9 +69,9 @@ trait PermissionRepositorySpec extends DatabaseSpecBase[PermissionRepositorySpec
       },
       test("delete permission") {
         for
-          _ <- env.repository.createPermission(Some(tenantId), permissionId, Map("en" -> "Read users"), permissionRecord.endpointIds)
-          _ <- env.repository.deletePermission(Some(tenantId), permissionId)
-          found <- env.repository.findPermission(Some(tenantId), permissionId)
+          _ <- env.repository.createPermission(tenantId, permissionId, Map("en" -> "Read users"), permissionRecord.endpointIds)
+          _ <- env.repository.deletePermission(tenantId, permissionId)
+          found <- env.repository.findPermission(tenantId, permissionId)
         yield assertTrue(found.isEmpty)
       },
     )

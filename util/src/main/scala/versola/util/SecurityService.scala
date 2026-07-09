@@ -5,7 +5,7 @@ import org.bouncycastle.crypto.generators.Argon2BytesGenerator
 import org.bouncycastle.crypto.params.Argon2Parameters
 import zio.{Clock, Task, UIO, URLayer, ZIO, ZLayer}
 
-import java.security.KeyPairGenerator
+import java.security.{KeyPairGenerator, PrivateKey, PublicKey}
 import java.security.interfaces.{RSAPrivateKey, RSAPublicKey}
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
@@ -15,6 +15,9 @@ import javax.crypto.{Cipher, SecretKey}
 trait SecurityService:
   def encryptAes256(data: Array[Byte], key: SecretKey): Task[Array[Byte]]
   def decryptAes256(data: Array[Byte], key: SecretKey): Task[Array[Byte]]
+
+  def encryptRsa(data: Array[Byte], key: PublicKey): Task[Array[Byte]]
+  def decryptRsa(data: Array[Byte], key: PrivateKey): Task[Array[Byte]]
 
   def mac(secret: Secret, key: Array[Byte]): Task[MAC]
 
@@ -30,6 +33,7 @@ object SecurityService:
 
     private val Algorithm = "AES"
     private val Transformation = "AES/GCM/NoPadding"
+    private val RsaTransformation = "RSA/ECB/OAEPWithSHA-256AndMGF1Padding"
     private val GcmIvLength = 12
     private val GcmTagLength = 16
 
@@ -67,6 +71,18 @@ object SecurityService:
 
         cipher.doFinal(encrypted)
       }
+
+    override def encryptRsa(data: Array[Byte], key: PublicKey): Task[Array[Byte]] =
+      ZIO.attemptBlocking:
+        val cipher = Cipher.getInstance(RsaTransformation)
+        cipher.init(Cipher.ENCRYPT_MODE, key)
+        cipher.doFinal(data)
+
+    override def decryptRsa(data: Array[Byte], key: PrivateKey): Task[Array[Byte]] =
+      ZIO.attemptBlocking:
+        val cipher = Cipher.getInstance(RsaTransformation)
+        cipher.init(Cipher.DECRYPT_MODE, key)
+        cipher.doFinal(data)
 
     override def mac(data: Secret, key: Array[Byte]): Task[MAC] =
       ZIO.succeed:

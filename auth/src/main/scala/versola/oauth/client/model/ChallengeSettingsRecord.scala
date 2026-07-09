@@ -17,4 +17,10 @@ case class ChallengeSettingsRecord(
     otpLength: Int,
     otpResendAfter: Int,
     passkeySettings: PasskeySettings,
+    passwordHistorySize: Int,
+    passwordNumDifferent: Int,
+    authConversationTtlSeconds: Int,
+    sessionTtlSeconds: Int,
+    sessionIdleTtlSeconds: Option[Int],
+    ipHeader: String,
 ) derives JsonCodec

@@ -2,9 +2,10 @@ package versola.oauth.authorize
 
 import versola.auth.TestEnvConfig
 import versola.oauth.authorize.model.{AuthorizeRequest, AuthorizeResponse, Error, Prompt, ResponseTypeEntry}
+import versola.oauth.jwks.JwksService
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{AuthFactor, AuthFactorType, AuthFlow, AuthMethodRef, ClientId, OAuthClientRecord, PassedAuthFactor, PassedFactorRecord, PrimaryAuthFlow, PrimaryCredential, ScopeToken, TenantId}
-import versola.oauth.conversation.{ConversationRepository, ConversationResult, ConversationRouter, EmailSubmission}
+import versola.oauth.conversation.{ConversationRepository, ConversationResult, ConversationRouter, EmailSubmission, PhoneSubmission}
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
 import versola.oauth.model.{AccessToken, AuthorizationCode, CodeChallenge, CodeChallengeMethod, State}
 import versola.oauth.session.SessionRepository
@@ -13,7 +14,7 @@ import versola.oauth.token.AuthorizationCodeRepository
 import versola.oauth.userinfo.UserInfoService
 import versola.user.UserRepository
 import versola.user.model.{UserId, UserRecord}
-import versola.util.{AuthPropertyGenerator, JWT, MAC, Secret, SecureRandom, SecurityService, UnitSpecBase}
+import versola.util.{AuthPropertyGenerator, Email, JWT, MAC, Phone, Secret, SecureRandom, SecurityService, UnitSpecBase}
 import zio.http.URL
 import zio.json.ast.Json
 import zio.prelude.NonEmptySet
@@ -74,6 +75,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
     acrValues = None,
     sessionId = None,
     idTokenHint = None,
+    loginHint = None,
   )
 
   val rawSessionId = SessionId(Array.fill(32)(5.toByte))
@@ -104,6 +106,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
     val authorizationCodeRepository = stub[AuthorizationCodeRepository]
     val userRepository = stub[UserRepository]
     val userInfoService = stub[UserInfoService]
+    val jwksService = TestEnvConfig.jwksService
     val conversationRouter = stub[ConversationRouter]
     val service = AuthorizeEndpointService.Impl(
       conversationRepository,
@@ -116,37 +119,81 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
       authorizationCodeRepository,
       userRepository,
       userInfoService,
+      jwksService,
       conversationRouter,
     )
 
-  // Helpers for id_token_hint tests
-  val hintUserId = UserId(UUID.randomUUID())
-  val hintUser = UserRecord(
-    id = hintUserId,
-    email = Some(versola.util.Email("hint@example.com")),
-    phone = None,
-    login = None,
-    claims = Json.Obj(),
-    uiLocales = None,
+    // Helpers for id_token_hint tests
+    val hintUserId = UserId(UUID.randomUUID())
+    val hintUser = UserRecord(
+      id = hintUserId,
+      email = Some(versola.util.Email("hint@example.com")),
+      phone = None,
+      login = None,
+      claims = Json.Obj(),
+      uiLocales = None,
+    )
+
+    def makeIdToken(
+                     subject: UserId,
+                     audience: String,
+                     privateKey: java.security.PrivateKey,
+                     keyId: String = "test-key-id",
+                     ttl: zio.Duration = 1.hour,
+                   ): zio.Task[String] =
+      JWT.serialize(
+        claims = JWT.Claims(
+          issuer = TestEnvConfig.jwtConfig.issuer,
+          subject = subject.toString,
+          audience = List(audience),
+          custom = Json.Obj(),
+        ),
+        ttl = ttl,
+        signature = JWT.Signature.Asymmetric(JWT.Algorithm.RS256, keyId, privateKey),
+      )
+
+  val phoneHint = Phone("+12025551234")
+  val emailHint = Email("user@example.com")
+
+  val passwordFlow = AuthFlow(
+    primary = PrimaryAuthFlow(
+      credentials = List(PrimaryCredential.email),
+      inlinePassword = false,
+      factors = List(AuthFactor(`type` = AuthFactorType.password, required = true)),
+    ),
+    passkey = None,
+    equivalents = Map.empty,
   )
 
-  def makeIdToken(
-      subject: UserId,
-      audience: String,
-      privateKey: java.security.PrivateKey,
-      keyId: String = "test-key-id",
-      ttl: zio.Duration = 1.hour,
-  ): zio.Task[String] =
-    JWT.serialize(
-      claims = JWT.Claims(
-        issuer = TestEnvConfig.jwtConfig.issuer,
-        subject = subject.toString,
-        audience = List(audience),
-        custom = Json.Obj(),
-      ),
-      ttl = ttl,
-      signature = JWT.Signature.Asymmetric(JWT.Algorithm.RS256, keyId, privateKey),
-    )
+  val clientWithPasswordFlow = clientWithOtpFlow.copy(authFlow = Some(passwordFlow))
+
+  val dummyConversation = versola.oauth.conversation.model.ConversationRecord(
+    clientId = clientId,
+    redirectUri = redirectUri,
+    scope = Set(ScopeToken("openid")),
+    codeChallenge = codeChallenge,
+    codeChallengeMethod = CodeChallengeMethod.S256,
+    state = Some(State("state")),
+    userId = None,
+    credential = None,
+    step = versola.oauth.conversation.model.ConversationStep.Credential(
+      primaryCredentials = List(versola.oauth.client.model.PrimaryCredential.email),
+      inlinePassword = false,
+      passkey = false,
+    ),
+    requestedClaims = None,
+    uiLocales = None,
+    nonce = None,
+    responseType = NonEmptySet(ResponseTypeEntry.Code),
+    userEmail = None,
+    userPhone = None,
+    userLogin = None,
+    userClaims = None,
+    authFlow = otpFlow,
+    userAgent = None,
+    version = 0,
+    amr = Map.empty,
+  )
 
   val spec = suite("AuthorizeEndpointService")(
     test("create new conversation when no session") {
@@ -154,6 +201,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
       val uuid = UUID.randomUUID()
       for
         _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
+        _ <- env.configurationService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
         _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
         _ <- env.conversationRepository.create.succeedsWith(())
         result <- env.service.authorize(baseRequest)
@@ -176,6 +224,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
         _ <- env.securityService.mac.succeedsWith(sessionMac)
         _ <- env.sessionRepository.find.succeedsWith(Some(session))
+        _ <- env.configurationService.getSessionIdleTtl.succeedsWith(Option.empty[zio.Duration])
         _ <- env.authPropertyGenerator.nextAuthorizationCode.succeedsWith(code)
         _ <- env.authPropertyGenerator.nextAccessToken.succeedsWith(accessToken)
         _ <- env.securityService.mac.succeedsWith(codeMac)
@@ -202,6 +251,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
         _ <- env.securityService.mac.succeedsWith(sessionMac)
         _ <- env.sessionRepository.find.succeedsWith(Some(session))
+        _ <- env.configurationService.getSessionIdleTtl.succeedsWith(Option.empty[zio.Duration])
         _ <- env.authPropertyGenerator.nextAuthorizationCode.succeedsWith(code)
         _ <- env.authPropertyGenerator.nextAccessToken.succeedsWith(accessToken)
         _ <- env.securityService.mac.succeedsWith(codeMac)
@@ -222,6 +272,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         _ <- env.configurationService.find.succeedsWith(Some(clientWithEquivalents))
         _ <- env.securityService.mac.succeedsWith(sessionMac)
         _ <- env.sessionRepository.find.succeedsWith(Some(session))
+        _ <- env.configurationService.getSessionIdleTtl.succeedsWith(Option.empty[zio.Duration])
         _ <- env.authPropertyGenerator.nextAuthorizationCode.succeedsWith(code)
         _ <- env.authPropertyGenerator.nextAccessToken.succeedsWith(accessToken)
         _ <- env.securityService.mac.succeedsWith(codeMac)
@@ -235,6 +286,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
       val session = sessionWithAmr(Map(PassedAuthFactor.otp -> PassedFactorRecord(now, Set(AuthMethodRef.otp))))
       for
         _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
+        _ <- env.configurationService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
         _ <- env.securityService.mac.succeedsWith(sessionMac)
         _ <- env.sessionRepository.find.succeedsWith(Some(session))
         _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
@@ -265,6 +317,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
       val session = sessionWithAmr(passkeySeedAmr)
       for
         _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
+        _ <- env.configurationService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
         _ <- env.securityService.mac.succeedsWith(sessionMac)
         _ <- env.sessionRepository.find.succeedsWith(Some(session))
         _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
@@ -275,6 +328,40 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         result == AuthorizeResponse.Initialize(versola.oauth.conversation.model.AuthId(uuid)),
         createCalls.nonEmpty,
         createCalls.head._2.amr == passkeySeedAmr,
+      )
+    },
+    test("advance conversation to password step when login_hint email is provided on email+password flow") {
+      val env = Env()
+      val uuid = UUID.randomUUID()
+      for
+        _ <- env.configurationService.find.succeedsWith(Some(clientWithPasswordFlow))
+        _ <- env.configurationService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
+        _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
+        _ <- env.conversationRepository.create.succeedsWith(())
+        _ <- env.conversationRouter.submit.succeedsWith((ConversationResult.IllegalState, dummyConversation))
+        result <- env.service.authorize(baseRequest.copy(loginHint = Some(Left(emailHint))))
+        submitCalls = env.conversationRouter.submit.calls
+      yield assertTrue(
+        result == AuthorizeResponse.Initialize(versola.oauth.conversation.model.AuthId(uuid)),
+        submitCalls.nonEmpty,
+        submitCalls.head._2 == EmailSubmission(emailHint),
+      )
+    },
+    test("advance conversation to OTP step when login_hint phone is provided on phone+otp flow") {
+      val env = Env()
+      val uuid = UUID.randomUUID()
+      for
+        _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
+        _ <- env.configurationService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
+        _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
+        _ <- env.conversationRepository.create.succeedsWith(())
+        _ <- env.conversationRouter.submit.succeedsWith((ConversationResult.IllegalState, dummyConversation))
+        result <- env.service.authorize(baseRequest.copy(loginHint = Some(Right(phoneHint))))
+        submitCalls = env.conversationRouter.submit.calls
+      yield assertTrue(
+        result == AuthorizeResponse.Initialize(versola.oauth.conversation.model.AuthId(uuid)),
+        submitCalls.nonEmpty,
+        submitCalls.head._2 == PhoneSubmission(phoneHint),
       )
     },
   )

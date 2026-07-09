@@ -26,7 +26,7 @@ trait PermissionService:
   ): Task[Unit]
 
   def deletePermission(
-      tenantId: Option[TenantId],
+      tenantId: TenantId,
       permission: Permission,
   ): Task[Unit]
 
@@ -55,7 +55,7 @@ object PermissionService:
     ): Task[Vector[PermissionRecord]] =
       cache.get.map { records =>
         records
-          .filter(record => record.tenantId.isEmpty || record.tenantId.contains(tenantId))
+          .filter(_.tenantId == tenantId)
           .slice(offset, limit.fold(records.size)(offset + _))
       }
 
@@ -67,7 +67,7 @@ object PermissionService:
             permissions <- cache.get
             tenants <- tenantRepository.getAll
             allowedTenantIds = tenants.filter(_.edgeId.contains(id)).map(_.id).toSet
-          yield permissions.filter(p => p.tenantId.isEmpty || p.tenantId.exists(allowedTenantIds.contains))
+          yield permissions.filter(p => allowedTenantIds.contains(p.tenantId))
 
     override def createPermission(
         request: CreatePermissionRequest,

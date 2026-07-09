@@ -373,6 +373,8 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           _ <- env.authorizationCodeRepository.create.succeedsWith(())
           _ <- env.sessionRepository.create.succeedsWith(())
           _ <- env.conversationRepository.delete.succeedsWith(true)
+          _ <- env.configService.getSessionTtl.succeedsWith(zio.Duration.fromSeconds(86400))
+          _ <- env.configService.getSessionIdleTtl.succeedsWith(Option.empty[zio.Duration])
           _ <- env.userInfoService.getUserInfoForIdToken.succeedsWith(
             UserInfoResponse(
               claims = Map("sub" -> ast.Json.Str(userId.toString), "email" -> ast.Json.Str(userEmail)),
@@ -419,6 +421,8 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           _ <- env.authorizationCodeRepository.create.succeedsWith(())
           _ <- env.sessionRepository.create.succeedsWith(())
           _ <- env.conversationRepository.delete.succeedsWith(true)
+          _ <- env.configService.getSessionTtl.succeedsWith(zio.Duration.fromSeconds(86400))
+          _ <- env.configService.getSessionIdleTtl.succeedsWith(Option.empty[zio.Duration])
           result <- env.service.finish(authId, conversation)
         yield result match
           case complete: ConversationResult.Complete => assertTrue(complete.idTokenData.isEmpty)
@@ -447,6 +451,8 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           _ <- env.authorizationCodeRepository.create.succeedsWith(())
           _ <- env.sessionRepository.create.succeedsWith(())
           _ <- env.conversationRepository.delete.succeedsWith(true)
+          _ <- env.configService.getSessionTtl.succeedsWith(zio.Duration.fromSeconds(86400))
+          _ <- env.configService.getSessionIdleTtl.succeedsWith(Option.empty[zio.Duration])
           result <- env.service.finish(authId, conversation)
         yield result match
           case complete: ConversationResult.Complete => assertTrue(complete.idTokenData.isEmpty)

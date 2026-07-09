@@ -4,6 +4,8 @@ import type { MockConfigState } from './mocks';
 
 const formsPath = '/?view=forms&tenant=tenant-alpha';
 
+const localesPath = '/?view=locales&tenant=tenant-alpha';
+
 const credentialV1 = {
   id: 'credential',
   version: 1,
@@ -32,6 +34,7 @@ const themes = [
 const fullState: Partial<MockConfigState> = {
   forms: [credentialV1, credentialV2],
   formLocales: locales,
+  locales: locales.map(l => ({ ...l, active: true, isDefault: l.code === 'en' })),
   themes,
 };
 
@@ -47,10 +50,9 @@ async function expandThemes(page: Page) {
   await formHeader(page, 'Themes').click();
 }
 
-test('renders locales, forms and themes sections', async ({ page }) => {
+test('renders forms and themes sections', async ({ page }) => {
   await loadAdminApp(page, { path: formsPath, state: fullState });
 
-  await expect(page.locator('.form-id').filter({ hasText: 'Locales' })).toBeVisible();
   await expect(page.locator('.form-id').filter({ hasText: 'credential' })).toBeVisible();
   await expect(page.locator('.form-id').filter({ hasText: 'Themes' })).toBeVisible();
 });
@@ -103,33 +105,33 @@ test('creates a new version of an existing form', async ({ page }) => {
 });
 
 test('edits locales: adds a new locale', async ({ page }) => {
-  const api = await loadAdminApp(page, { path: formsPath, state: fullState });
+  const api = await loadAdminApp(page, { path: localesPath, state: fullState });
 
-  await page.getByRole('button', { name: 'Edit locales', exact: true }).click();
+  await page.getByRole('button', { name: 'Edit', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Edit Locales', exact: true })).toBeVisible();
-  await page.getByPlaceholder('en', { exact: true }).fill('de');
-  await page.getByPlaceholder('English', { exact: true }).fill('German');
+
+  await page.locator('select').selectOption('de');
   await page.getByRole('button', { name: 'Add', exact: true }).click();
-  await page.getByRole('button', { name: 'Save Locales', exact: true }).click();
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
   await page.waitForTimeout(300);
 
-  const body = findRequest(api.requests, 'PUT', '/configuration/forms/locales').body as {
+  const body = findRequest(api.requests, 'PUT', '/configuration/locales').body as {
     add: Array<{ code: string; name: string }>;
     delete: string[];
   };
-  expect(body.add).toEqual([{ code: 'de', name: 'German' }]);
+  expect(body.add.find(l => l.code === 'de')).toMatchObject({ code: 'de', name: 'Deutsch' });
   expect(body.delete).toEqual([]);
 });
 
 test('edits locales: removes an existing locale', async ({ page }) => {
-  const api = await loadAdminApp(page, { path: formsPath, state: fullState });
+  const api = await loadAdminApp(page, { path: localesPath, state: fullState });
 
-  await page.getByRole('button', { name: 'Edit locales', exact: true }).click();
-  await page.getByRole('button', { name: 'Remove locale ru', exact: true }).click();
-  await page.getByRole('button', { name: 'Save Locales', exact: true }).click();
+  await page.getByRole('button', { name: 'Edit', exact: true }).click();
+  await page.getByRole('button', { name: 'Remove ru', exact: true }).click();
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
   await page.waitForTimeout(300);
 
-  const body = findRequest(api.requests, 'PUT', '/configuration/forms/locales').body as { delete: string[] };
+  const body = findRequest(api.requests, 'PUT', '/configuration/locales').body as { delete: string[] };
   expect(body.delete).toEqual(['ru']);
 });
 
@@ -169,7 +171,8 @@ test('deletes a non-default theme', async ({ page }) => {
   await page.getByRole('button', { name: 'Delete', exact: true }).click();
   await page.waitForTimeout(300);
 
-  findRequest(api.requests, 'DELETE', '/configuration/themes/dark');
+  const req = findRequest(api.requests, 'DELETE', '/configuration/themes');
+  expect(req.searchParams['id']).toBe('dark');
 });
 
 test('renders a live preview iframe', async ({ page }) => {

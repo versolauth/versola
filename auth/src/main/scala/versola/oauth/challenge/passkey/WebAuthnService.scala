@@ -26,7 +26,7 @@ import com.yubico.webauthn.{
 import versola.auth.model.{AuthenticatorTransport, CredentialDeviceType, CredentialId, PasskeyRecord}
 import versola.oauth.client.model.PasskeySettings
 import versola.user.model.UserId
-import zio.{IO, Runtime, Unsafe, ZIO, ZLayer}
+import zio.{IO, Runtime, Task, Unsafe, ZIO, ZLayer}
 
 import java.nio.ByteBuffer
 import java.util.UUID
@@ -66,6 +66,12 @@ trait WebAuthnService:
 
   /** Begin a passwordless (discoverable) assertion ceremony. */
   def startAssertion(settings: PasskeySettings): IO[WebAuthnError, PasskeyCeremony]
+
+  /** Extract the credential id from a raw assertion-response JSON string.
+    * Returns `None` if the response cannot be parsed or contains an empty id.
+    * Used for pre-flight throttle checks before the full ceremony verification.
+    */
+  def credentialIdFromResponse(response: String): Task[Option[String]]
 
   /** Verify an assertion response, update usage, and resolve the authenticated user. */
   def finishAssertion(settings: PasskeySettings, request: String, response: String): IO[WebAuthnError, AssertionOutcome]
@@ -250,6 +256,11 @@ object WebAuthnService:
           publicKeyOptions = assertionRequest.toCredentialsGetJson,
         )
       .mapError(e => WebAuthnError.CeremonyFailed(e.getMessage))
+
+    override def credentialIdFromResponse(response: String): Task[Option[String]] =
+      ZIO.attempt(PublicKeyCredential.parseAssertionResponseJson(response))
+        .map(c => Some(c.getId.getBase64Url()).filter(_.nonEmpty))
+        .orElse(ZIO.succeed(None))
 
     override def finishAssertion(
         settings: PasskeySettings,

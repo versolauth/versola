@@ -2,7 +2,8 @@ package versola.central.configuration.forms
 
 import io.opentelemetry.api
 import org.scalamock.stubs.{Stub, ZIOStubs}
-import versola.central.{CentralConfig, TestCentralConfig}
+import versola.central.{CentralConfig, TestAdminAuth, TestCentralConfig}
+import versola.central.configuration.clients.OAuthClientService
 import versola.central.configuration.edges.EdgeService
 import versola.util.http.Observability
 import zio.*
@@ -36,16 +37,22 @@ object FormControllerSpec extends ZIOSpecDefault, ZIOStubs:
         client     <- ZIO.service[Client]
         service    = stub[FormService]
         edgeService = stub[EdgeService]
+        oauthClientService = stub[OAuthClientService]
         tracing    <- tracingLayer.build
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             FormController.routes.provideEnvironment(
-              ZEnvironment[FormService](service) ++ tracing ++ ZEnvironment(config) ++ ZEnvironment[EdgeService](edgeService)
+              ZEnvironment[FormService](service) ++ tracing ++ ZEnvironment(config) ++
+                ZEnvironment[EdgeService](edgeService) ++ ZEnvironment[OAuthClientService](oauthClientService)
             )
           )
         )
+        _ <- oauthClientService.verifySecret.succeedsWith(true)
         _ <- setup(service)
-        response      <- client.batched(request.addHeader(Header.Accept(MediaType.application.json)))
+        requestWithAuth = request.headers.header(Header.Authorization) match
+          case None => request.addHeader(TestAdminAuth.basicAuthHeader)
+          case _    => request
+        response      <- client.batched(requestWithAuth.addHeader(Header.Accept(MediaType.application.json)))
         verifyResult  <- verify(response, service)
       yield assertTrue(response.status == expectedStatus) && verifyResult
     }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging

@@ -11,9 +11,9 @@ object PostgresLocaleRepositorySpec extends PostgresSpec, LocaleRepositorySpec:
   override lazy val environment =
     ZLayer:
       for xa <- ZIO.service[TransactorZIO]
-      yield LocaleRepositorySpec.Env(PostgresLocaleRepository(xa))
+      yield LocaleRepositorySpec.Env(PostgresLocaleRepository(xa), xa)
 
   override def beforeEach(env: LocaleRepositorySpec.Env) =
     ZIO.serviceWithZIO[TransactorZIO] { xa =>
-      xa.connect(sql"TRUNCATE TABLE locales RESTART IDENTITY CASCADE".update.run())
+      xa.connect(sql"TRUNCATE TABLE tenants, locales, forms RESTART IDENTITY CASCADE".update.run())
     }.unit

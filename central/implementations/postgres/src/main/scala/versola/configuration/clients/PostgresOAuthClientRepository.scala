@@ -54,9 +54,8 @@ class PostgresOAuthClientRepository(
       """.update.run()
     .unit
     .mapError {
-      case e: SQLException if e.getSQLState == "23505" => // Unique constraint violation
-        ClientAlreadyExists(client.id)
-      case e: Throwable => e
+      case e if PostgresOAuthClientRepository.isUniqueViolation(e) => ClientAlreadyExists(client.id)
+      case e: Throwable                                            => e
     }
 
   override def updateClient(
@@ -124,3 +123,9 @@ class PostgresOAuthClientRepository(
 object PostgresOAuthClientRepository:
   def live: ZLayer[TransactorZIO, Throwable, OAuthClientRepository] =
     ZLayer.fromFunction(PostgresOAuthClientRepository(_))
+
+  private val UniqueViolationSqlState = "23505"
+
+  private def isUniqueViolation(t: Throwable): Boolean = t match
+    case sql: SQLException => sql.getSQLState == UniqueViolationSqlState
+    case _                 => Option(t.getCause).exists(isUniqueViolation)

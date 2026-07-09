@@ -39,12 +39,12 @@ export default defineConfig({
     port: 3000,
     open: !isPlaywright,
     proxy: {
-      '/configuration': {
-        target: 'http://localhost:9001',
+      '/resources': {
+        target: 'http://localhost:9005',
         changeOrigin: true,
       },
-      '/users': {
-        target: 'http://localhost:9001',
+      '/permissions': {
+        target: 'http://localhost:9005',
         changeOrigin: true,
       },
     },

@@ -14,6 +14,7 @@ object SubmissionLimiterSpec extends UnitSpecBase:
   private val clientId = ClientId("test-client")
   private val tenantId = TenantId("default")
   private val subject = "user@example.com"
+  private val subject2 = "user-id-2"
 
   private val client = OAuthClientRecord(
     id = clientId,
@@ -158,6 +159,85 @@ object SubmissionLimiterSpec extends UnitSpecBase:
         )
       },
     ),
+    suite("statusForSubjects")(
+      test("queries all subjects in a single lookup and returns the worst status") {
+        val env = Env()
+        for
+          now <- Clock.instant
+          _ <- env.configService.getSubmissionLimits.succeedsWith(limits)
+          _ <- env.configService.find.succeedsWith(Some(client))
+          _ <- env.throttleRepo.findAllForSubjects.succeedsWith(
+            List(
+              ChallengeThrottleRecord(tenantId, subject, ChallengeType.OtpSubmit, Nil, Some(now.plusSeconds(300)), now.plusSeconds(300)),
+            ),
+          )
+          result <- env.limiter.statusForSubjects(clientId, List(subject, "other@example.com"), ChallengeType.OtpSubmit)
+        yield assertTrue(
+          result == LimitStatus.Banned,
+          env.throttleRepo.findAllForSubjects.calls.length == 1,
+          env.throttleRepo.find.calls.isEmpty,
+        )
+      },
+      test("returns Allowed when there are no throttle records") {
+        val env = Env()
+        for
+          _ <- env.configService.getSubmissionLimits.succeedsWith(limits)
+          _ <- env.configService.find.succeedsWith(Some(client))
+          _ <- env.throttleRepo.findAllForSubjects.succeedsWith(Nil)
+          result <- env.limiter.statusForSubjects(clientId, List(subject), ChallengeType.OtpSubmit)
+        yield assertTrue(result == LimitStatus.Allowed)
+      },
+      test("returns Allowed when the client is unknown") {
+        val env = Env()
+        for
+          _ <- env.configService.getSubmissionLimits.succeedsWith(limits)
+          _ <- env.configService.find.succeedsWith(None)
+          result <- env.limiter.statusForSubjects(clientId, List(subject, subject2), ChallengeType.OtpSubmit)
+        yield assertTrue(result == LimitStatus.Allowed, env.throttleRepo.findAllForSubjects.calls.isEmpty)
+      },
+      test("skips the lookup when no windows are configured") {
+        val env = Env()
+        for
+          _ <- env.configService.getSubmissionLimits.succeedsWith(SubmissionLimits.empty)
+          result <- env.limiter.statusForSubjects(clientId, List(subject), ChallengeType.OtpSubmit)
+        yield assertTrue(
+          result == LimitStatus.Allowed,
+          env.throttleRepo.findAllForSubjects.calls.isEmpty,
+        )
+      },
+      test("skips the lookup when subjects list is empty") {
+        val env = Env()
+        for
+          _ <- env.configService.getSubmissionLimits.succeedsWith(limits)
+          result <- env.limiter.statusForSubjects(clientId, Nil, ChallengeType.OtpSubmit)
+        yield assertTrue(
+          result == LimitStatus.Allowed,
+          env.throttleRepo.findAllForSubjects.calls.isEmpty,
+        )
+      },
+    ),
+    suite("reset")(
+      test("deletes the throttle record for the subject") {
+        val env = Env()
+        for
+          _ <- env.configService.find.succeedsWith(Some(client))
+          _ <- env.throttleRepo.delete.succeedsWith(())
+          _ <- env.limiter.reset(clientId, subject, ChallengeType.OtpSubmit)
+          deleteTimes = env.throttleRepo.delete.times
+          deleteCall = env.throttleRepo.delete.calls.head
+        yield assertTrue(
+          deleteTimes == 1,
+          deleteCall == (tenantId, subject, ChallengeType.OtpSubmit),
+        )
+      },
+      test("is a no-op when the client is unknown") {
+        val env = Env()
+        for
+          _ <- env.configService.find.succeedsWith(None)
+          _ <- env.limiter.reset(clientId, subject, ChallengeType.OtpSubmit)
+        yield assertTrue(env.throttleRepo.delete.calls.isEmpty)
+      },
+    ),
     suite("recordLimit")(
       test("returns Allowed and skips lookups when no windows are configured") {
         val env = Env()
@@ -260,6 +340,68 @@ object SubmissionLimiterSpec extends UnitSpecBase:
         yield assertTrue(
           upserted.attempts.size == 9,
           upserted.bannedUntil.isEmpty,
+        )
+      },
+    ),
+    suite("recordLimitAll")(
+      test("returns Allowed and skips lookups when no windows are configured") {
+        val env = Env()
+        for
+          _ <- env.configService.getSubmissionLimits.succeedsWith(SubmissionLimits.empty)
+          result <- env.limiter.recordLimitAll(clientId, List(subject, subject2), ChallengeType.OtpSubmit)
+        yield assertTrue(
+          result == LimitStatus.Allowed,
+          env.configService.find.calls.isEmpty,
+          env.throttleRepo.upsert.calls.isEmpty,
+        )
+      },
+      test("returns Allowed and skips upsert when the client is unknown") {
+        val env = Env()
+        for
+          _ <- env.configService.getSubmissionLimits.succeedsWith(limits)
+          _ <- env.configService.find.succeedsWith(None)
+          result <- env.limiter.recordLimitAll(clientId, List(subject, subject2), ChallengeType.OtpSubmit)
+        yield assertTrue(
+          result == LimitStatus.Allowed,
+          env.throttleRepo.findAllForSubjects.calls.isEmpty,
+          env.throttleRepo.upsert.calls.isEmpty,
+        )
+      },
+      test("records an attempt for every subject in a single fetch and returns Allowed") {
+        val env = Env()
+        for
+          now <- Clock.instant
+          nowEpoch = now.getEpochSecond
+          _ <- env.configService.getSubmissionLimits.succeedsWith(limits)
+          _ <- env.configService.find.succeedsWith(Some(client))
+          _ <- env.throttleRepo.findAllForSubjects.succeedsWith(Nil)
+          _ <- env.throttleRepo.upsert.succeedsWith(())
+          result <- env.limiter.recordLimitAll(clientId, List(subject, subject2), ChallengeType.OtpSubmit)
+          upsertedSubjects = env.throttleRepo.upsert.calls.map(_.subject).toSet
+        yield assertTrue(
+          result == LimitStatus.Allowed,
+          env.throttleRepo.findAllForSubjects.calls.length == 1,
+          env.throttleRepo.upsert.calls.length == 2,
+          upsertedSubjects == Set(subject, subject2),
+          env.throttleRepo.upsert.calls.forall(_.attempts == List(nowEpoch)),
+        )
+      },
+      test("returns the worst status when one subject exceeds the broadest window") {
+        val env = Env()
+        for
+          now <- Clock.instant
+          nowEpoch = now.getEpochSecond
+          existing = List.fill(8)(nowEpoch - 1)
+          _ <- env.configService.getSubmissionLimits.succeedsWith(limits)
+          _ <- env.configService.find.succeedsWith(Some(client))
+          _ <- env.throttleRepo.findAllForSubjects.succeedsWith(
+            List(ChallengeThrottleRecord(tenantId, subject, ChallengeType.OtpSubmit, existing, None, now.plusSeconds(3600))),
+          )
+          _ <- env.throttleRepo.upsert.succeedsWith(())
+          result <- env.limiter.recordLimitAll(clientId, List(subject, subject2), ChallengeType.OtpSubmit)
+        yield assertTrue(
+          result == LimitStatus.Banned,
+          env.throttleRepo.upsert.calls.length == 2,
         )
       },
     ),

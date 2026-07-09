@@ -418,5 +418,5 @@ test('handles backend validation errors gracefully', async ({ page }) => {
   await page.waitForTimeout(500);
 
   // Should have shown error via alert
-  expect(alertMessage).toContain('Failed to save presets');
+  expect(alertMessage).toContain('Invalid redirect URI (400)');
 });

@@ -1,16 +1,14 @@
 package versola.central.configuration.themes
 
-import versola.central.CentralConfig
 import versola.central.configuration.tenants.TenantId
 import versola.util.ReloadingCache
 import zio.{Schedule, Scope, Task, ZIO, ZLayer}
 
 import java.sql.SQLException
-import scala.io.Source
 
 trait ThemeService:
   def getAllThemes: Task[Vector[ThemeRecord]]
-  def getThemes(tenantId: Option[TenantId]): Task[Vector[ThemeRecord]]
+  def getThemes(tenantId: TenantId): Task[Vector[ThemeRecord]]
   def createTheme(theme: ThemeRecord): Task[Unit]
   def updateTheme(theme: ThemeRecord): Task[Unit]
   def deleteTheme(id: String): Task[Unit]
@@ -22,24 +20,22 @@ object ThemeService:
   final class ThemeInUseError
       extends RuntimeException("Theme is in use by one or more clients and cannot be deleted")
 
-  def live(schedule: Schedule[Any, Any, Any]): ZLayer[ThemeRepository & CentralConfig & Scope, Throwable, ThemeService] =
+  def live(schedule: Schedule[Any, Any, Any]): ZLayer[ThemeRepository & Scope, Throwable, ThemeService] =
     ZLayer(ReloadingCache.make[Vector[ThemeRecord]](schedule))
-      >>> ZLayer.fromFunction(Impl(_, _, _))
-      >>> ZLayer(ZIO.serviceWithZIO[ThemeService.Impl](s => s.initialize().as(s)))
+      >>> ZLayer.fromFunction(Impl(_, _))
 
   class Impl(
       cache: ReloadingCache[Vector[ThemeRecord]],
       repository: ThemeRepository,
-      config: CentralConfig,
   ) extends ThemeService:
 
     override def getAllThemes: Task[Vector[ThemeRecord]] =
       cache.get.map(_.sortBy(_.id))
 
-    override def getThemes(tenantId: Option[TenantId]): Task[Vector[ThemeRecord]] =
+    override def getThemes(tenantId: TenantId): Task[Vector[ThemeRecord]] =
       cache.get.map { themes =>
-        tenantId
-          .fold(themes)(t => themes.filter(theme => theme.tenantId.isEmpty || theme.tenantId.contains(t)))
+        themes
+          .filter(theme => theme.tenantId.isEmpty || theme.tenantId.contains(tenantId))
           .sortBy(_.id)
       }
 
@@ -58,23 +54,6 @@ object ThemeService:
 
     override def sync(): Task[Unit] =
       repository.getAll.flatMap(themes => cache.set(themes))
-
-    def initialize(): Task[Unit] =
-      ZIO.when(config.initialize):
-        for
-          _ <- ZIO.logInfo("Initializing themes from resources...")
-          css <- readResource("forms/common.css")
-          default = ThemeRecord(DefaultThemeId, css, None)
-          _ <- repository.create(default).catchAll(_ => repository.update(default))
-          _ <- sync()
-        yield ()
-      .unit
-
-    private def readResource(path: String): Task[String] =
-      ZIO.blocking:
-        ZIO.attemptBlocking:
-          val source = Source.fromResource(path)
-          try source.mkString finally source.close()
 
     private def isForeignKeyViolation(error: Throwable): Boolean =
       error match

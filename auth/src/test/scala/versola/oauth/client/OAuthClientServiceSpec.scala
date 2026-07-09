@@ -1,7 +1,6 @@
 package versola.oauth.client
 
-import org.apache.commons.codec.digest.Blake3
-import versola.oauth.client.model.{ChallengeSettingsRecord, Claim, ClaimRecord, ClientId, ClientsWithPepper, FormRecord, Locales, OAuthClientRecord, OtpTemplateRecord, ScopeRecord, ScopeToken, TenantId, ThemeRecord}
+import versola.oauth.client.model.{ChallengeSettingsRecord, Claim, ClaimRecord, ClientId, FormRecord, Locales, OAuthClientRecord, OtpTemplateRecord, ScopeRecord, ScopeToken, TenantId, ThemeRecord}
 import versola.oauth.conversation.otp.model.OtpTemplate
 import versola.util.*
 import zio.*
@@ -13,18 +12,9 @@ object OAuthClientServiceSpec extends UnitSpecBase:
   val clientId1 = ClientId("test-client-1")
   val clientId2 = ClientId("test-client-2")
   val publicClientId = ClientId("public-client-1")
-  val pepperBytes = Array.fill(16)(10.toByte)
-  val testPepper = Secret(pepperBytes)
   val testSecret = Secret(Array.fill(32)(5.toByte))
   val previousClientSecret = Secret(Array.fill(32)(6.toByte))
   val wrongClientSecret = Secret(Array.fill(32)(99.toByte))
-  val salt1 = Array.fill(16)(1.toByte)
-  val salt2 = Array.fill(16)(2.toByte)
-
-  private def stored(secret: Secret, salt: Array[Byte]) =
-    val mac = Array.ofDim[Byte](32)
-    Blake3.initKeyedHash(salt ++ pepperBytes).update(secret).doFinalize(mac)
-    Secret(MAC(mac) ++ salt)
 
   val privateClient1 = OAuthClientRecord(
     id = clientId1,
@@ -33,7 +23,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
     redirectUris = NonEmptySet("https://example.com/callback"),
     scope = Set(ScopeToken("read"), ScopeToken("write")),
     externalAudience = Nil,
-    secret = Some(stored(secret = testSecret, salt = salt1)),
+    secret = Some(testSecret),
     previousSecret = None,
     accessTokenTtl = 10.minutes,
     refreshTokenTtl = 7776000.seconds,
@@ -48,8 +38,8 @@ object OAuthClientServiceSpec extends UnitSpecBase:
     redirectUris = NonEmptySet("https://example2.com/callback"),
     scope = Set(ScopeToken("read")),
     externalAudience = Nil,
-    secret = Some(stored(secret = testSecret, salt = salt2)),
-    previousSecret = Some(stored(secret = previousClientSecret, salt = salt1)),
+    secret = Some(testSecret),
+    previousSecret = Some(previousClientSecret),
     accessTokenTtl = 10.minutes,
     refreshTokenTtl = 7776000.seconds,
     theme = "default",
@@ -84,7 +74,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
   )
 
   final class Env(
-      clientCache: ReloadingCache[ClientsWithPepper],
+      clientCache: ReloadingCache[Map[ClientId, OAuthClientRecord]],
       scopeCache: ReloadingCache[Vector[ScopeRecord]],
       formCache: ReloadingCache[Vector[FormRecord]],
       themeCache: ReloadingCache[Vector[ThemeRecord]],
@@ -99,13 +89,6 @@ object OAuthClientServiceSpec extends UnitSpecBase:
     val localeSync = stub[LocaleSyncClient]
     val otpTemplateSync = stub[OtpTemplateSyncClient]
     val challengeSettingsSync = stub[ChallengeSettingsSyncClient]
-    val security = stub[SecurityService]
-    security.mac.returns { (secret, key) =>
-      ZIO.succeed:
-        val mac = Array.ofDim[Byte](32)
-        Blake3.initKeyedHash(key).update(secret).doFinalize(mac)
-        MAC(mac)
-    }
     val service: OAuthConfigurationService =
       OAuthConfigurationService.Impl(
         clientCache,
@@ -122,7 +105,6 @@ object OAuthClientServiceSpec extends UnitSpecBase:
         otpTemplateSync,
         challengeSettingsCache,
         challengeSettingsSync,
-        security,
       )
 
   private def makeEnv(
@@ -135,7 +117,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
       challengeSettings: Vector[ChallengeSettingsRecord] = Vector.empty,
   ) =
     for
-      clientRef <- Ref.make(ClientsWithPepper(clients = clients, pepper = testPepper))
+      clientRef <- Ref.make(clients)
       scopeRef <- Ref.make(scopes)
       formRef <- Ref.make(forms)
       themeRef <- Ref.make(themes)

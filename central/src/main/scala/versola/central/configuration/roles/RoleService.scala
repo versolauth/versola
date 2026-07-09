@@ -16,6 +16,8 @@ trait RoleService:
       limit: Option[Int],
   ): Task[Vector[RoleRecord]]
 
+  def getPermissionsForRoles(tenantId: TenantId, roleIds: Set[RoleId]): Task[Set[Permission]]
+
   def getRolesForSync(edgeId: Option[EdgeId]): Task[Vector[RoleRecord]]
 
   def createRole(
@@ -57,6 +59,13 @@ object RoleService:
           .filter(_.tenantId == tenantId)
           .slice(offset, limit.fold(records.size)(offset + _))
       }
+
+    override def getPermissionsForRoles(tenantId: TenantId, roleIds: Set[RoleId]): Task[Set[Permission]] =
+      cache.get.map(
+        _.filter(r => r.tenantId == tenantId && roleIds.contains(r.id))
+          .flatMap(_.permissions)
+          .toSet
+      )
 
     override def getRolesForSync(edgeId: Option[EdgeId]): Task[Vector[RoleRecord]] =
       edgeId match

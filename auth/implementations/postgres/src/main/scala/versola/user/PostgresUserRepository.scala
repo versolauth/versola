@@ -63,6 +63,13 @@ class PostgresUserRepository(
         .run()
         .headOption
 
+  override def findByLogin(login: Login): Task[Option[UserRecord]] =
+    xa.connect:
+      sql"select id, email, phone, login, claims, ui_locales from users where login = $login"
+        .query[UserRecord]
+        .run()
+        .headOption
+
   override def findByCredential(credential: Either[Email, Phone]): Task[Option[UserRecord]] =
     xa.connectMeasured("find-user-by-credential"):
       credential match

@@ -4,6 +4,7 @@ import versola.oauth.client.model.{ClientId, ScopeToken}
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, Nonce, State}
 import versola.oauth.session.model.SessionId
 import versola.oauth.userinfo.model.RequestedClaims
+import versola.util.{Email, Phone}
 import zio.http.URL
 import zio.prelude.NonEmptySet
 
@@ -24,4 +25,5 @@ private[authorize] case class AuthorizeRequest(
     acrValues: Option[List[String]],
     sessionId: Option[SessionId],
     idTokenHint: Option[String],
+    loginHint: Option[Either[Email, Phone]],
 )

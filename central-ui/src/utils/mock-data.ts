@@ -362,8 +362,8 @@ export const mockRoles: Role[] = [
     updatedAt: '2024-03-20T00:00:00Z',
   },
   {
-    id: 'super-admin',
-    description: { en: 'Super administrator with all permissions', ru: 'Суперадминистратор со всеми правами' },
+    id: 'oauth-admin',
+    description: { en: 'System Administrator (Super Admin)', ru: 'Системный администратор' },
     active: true,
     permissions: mockPermissions,
     createdAt: '2024-01-01T00:00:00Z',

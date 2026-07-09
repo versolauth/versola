@@ -1,6 +1,8 @@
 package versola.central.users
 
+import versola.central.configuration.clients.OAuthClientService
 import versola.central.configuration.tenants.TenantId
+import versola.central.authorizeBasic
 import versola.util.http.Controller
 import versola.util.{Email, Phone}
 import zio.ZIO
@@ -9,7 +11,7 @@ import zio.json.EncoderOps
 import zio.telemetry.opentelemetry.tracing.Tracing
 
 object UserController extends Controller:
-  type Env = Tracing & UserService
+  type Env = Tracing & UserService & OAuthClientService
 
   def routes: Routes[Env, Throwable] = Routes(
     findUsersEndpoint,
@@ -29,6 +31,7 @@ object UserController extends Controller:
   val findUsersEndpoint =
     Method.GET / "users" -> handler { (request: Request) =>
       for
+        _ <- authorizeBasic(request)
         service <- ZIO.service[UserService]
         id <- request.queryZIO[Option[UserId]]("id")
         email <- request.queryZIO[Option[Email]]("email")
@@ -49,6 +52,7 @@ object UserController extends Controller:
   val getUserRolesEndpoint =
     Method.GET / "users" / "roles" -> handler { (request: Request) =>
       for
+        _ <- authorizeBasic(request)
         service <- ZIO.service[UserService]
         id <- request.queryZIO[UserId]("id")
         tenantId <- request.queryZIO[TenantId]("tenantId")
@@ -59,6 +63,7 @@ object UserController extends Controller:
   val getUserSessionsEndpoint =
     Method.GET / "users" / "sessions" -> handler { (request: Request) =>
       for
+        _ <- authorizeBasic(request)
         service <- ZIO.service[UserService]
         id <- request.queryZIO[UserId]("id")
         sessions <- service.getSessions(id)
@@ -68,6 +73,7 @@ object UserController extends Controller:
   val createUserEndpoint =
     Method.POST / "users" -> handler { (request: Request) =>
       (for
+        _ <- authorizeBasic(request)
         service <- ZIO.service[UserService]
         body <- request.body.asJsonFromCodec[CreateUserRequest]
         id <- service.create(body)
@@ -80,6 +86,7 @@ object UserController extends Controller:
   val patchUserEndpoint =
     Method.PATCH / "users" -> handler { (request: Request) =>
       for
+        _ <- authorizeBasic(request)
         service <- ZIO.service[UserService]
         body <- request.body.asJsonFromCodec[PatchUserRequest]
         _ <- service.patch(body)
@@ -89,6 +96,7 @@ object UserController extends Controller:
   val patchUserClaimsEndpoint =
     Method.PATCH / "users" / "claims" -> handler { (request: Request) =>
       for
+        _ <- authorizeBasic(request)
         service <- ZIO.service[UserService]
         body <- request.body.asJsonFromCodec[PatchUserClaimsRequest]
         _ <- service.patchClaims(body.id, body.claims)
@@ -98,6 +106,7 @@ object UserController extends Controller:
   val patchRolesEndpoint =
     Method.PATCH / "users" / "roles" -> handler { (request: Request) =>
       for
+        _ <- authorizeBasic(request)
         service <- ZIO.service[UserService]
         body <- request.body.asJson[UpdateUserRolesRequest]
         _ <- service.updateRoles(body)
@@ -107,6 +116,7 @@ object UserController extends Controller:
   val invalidateSessionEndpoint =
     Method.DELETE / "users" / "sessions" -> handler { (request: Request) =>
       for
+        _ <- authorizeBasic(request)
         service <- ZIO.service[UserService]
         userId <- request.queryZIO[UserId]("userId")
         _ <- service.invalidateSession(userId)
@@ -116,6 +126,7 @@ object UserController extends Controller:
   val resetUserLimitsEndpoint =
     Method.POST / "users" / "limits" / "reset" -> handler { (request: Request) =>
       for
+        _ <- authorizeBasic(request)
         service <- ZIO.service[UserService]
         body <- request.body.asJsonFromCodec[ResetUserLimitsRequest]
         _ <- service.resetLimits(body)
@@ -125,6 +136,7 @@ object UserController extends Controller:
   val listPasskeysEndpoint =
     Method.GET / "users" / "passkeys" -> handler { (request: Request) =>
       for
+        _ <- authorizeBasic(request)
         service <- ZIO.service[UserService]
         id <- request.queryZIO[UserId]("id")
         passkeys <- service.listPasskeys(id)
@@ -134,6 +146,7 @@ object UserController extends Controller:
   val renamePasskeyEndpoint =
     Method.PATCH / "users" / "passkeys" -> handler { (request: Request) =>
       for
+        _ <- authorizeBasic(request)
         service <- ZIO.service[UserService]
         body <- request.body.asJsonFromCodec[RenamePasskeyRequest]
         _ <- service.renamePasskey(body)
@@ -143,6 +156,7 @@ object UserController extends Controller:
   val deletePasskeyEndpoint =
     Method.DELETE / "users" / "passkeys" -> handler { (request: Request) =>
       for
+        _ <- authorizeBasic(request)
         service <- ZIO.service[UserService]
         id <- request.queryZIO[UserId]("id")
         credentialId <- request.queryZIO[String]("credentialId")

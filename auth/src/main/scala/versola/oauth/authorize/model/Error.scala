@@ -110,3 +110,9 @@ private[authorize] object Error:
       errorDescription = "id_token_hint is invalid, has wrong issuer or wrong audience",
       errorUri = Some("https://openid.net/specs/openid-connect-core-1_0.html#AuthRequest"),
     )
+
+  case class LoginHintInvalid(uri: URL, state: Option[State]) extends RedirectError(
+      error = ErrorCode.InvalidRequest,
+      errorDescription = "login_hint is invalid or not supported by the client auth flow",
+      errorUri = Some("https://openid.net/specs/openid-connect-core-1_0.html#AuthRequest"),
+    )

@@ -11,5 +11,4 @@ case class PasswordRecord(
     password: Secret,
     salt: Salt,
     createdAt: Instant,
-    isCurrent: Boolean,
 )

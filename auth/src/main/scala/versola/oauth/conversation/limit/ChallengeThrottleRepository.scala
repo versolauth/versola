@@ -6,7 +6,7 @@ import zio.Task
 import java.time.Instant
 
 enum ChallengeType:
-  case OtpRequest, OtpSubmit, PasswordSubmit
+  case OtpRequest, OtpSubmit, PasswordSubmit, PasskeyAssertion
 
 case class ChallengeThrottleRecord(
     tenantId: TenantId,
@@ -29,6 +29,13 @@ trait ChallengeThrottleRepository:
       tenantId: TenantId,
       subject: String,
       challengeTypes: List[ChallengeType],
+  ): Task[List[ChallengeThrottleRecord]]
+
+  /** Loads the throttle records for multiple subjects for a single challenge type in a single query. */
+  def findAllForSubjects(
+      tenantId: TenantId,
+      subjects: List[String],
+      challengeType: ChallengeType,
   ): Task[List[ChallengeThrottleRecord]]
 
   def upsert(record: ChallengeThrottleRecord): Task[Unit]

@@ -4,6 +4,7 @@ import org.scalamock.stubs.Stub
 import versola.auth.TestEnvConfig
 import com.nimbusds.jwt.SignedJWT
 import versola.oauth.client.OAuthConfigurationService
+import versola.oauth.jwks.JwksService
 import versola.oauth.client.model.{AuthMethodRef, ClientId, ClientIdWithSecret, ScopeToken}
 import versola.oauth.model.{AccessToken, AuthorizationCode, CodeVerifier, Nonce, RefreshToken}
 import versola.oauth.token.model.{ClientCredentialsRequest, CodeExchangeRequest, IssuedTokens, RefreshTokenRequest, TokenEndpointError, TokenResponse}
@@ -43,7 +44,8 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
     uiLocales = None,
     nonce = None,
     user = None,
-    roles = Nil,
+    tenantId = None,
+    roles = List.empty,
     amr = Set(AuthMethodRef.pwd),
     authTime = Some(java.time.Instant.ofEpochSecond(1700000000)),
   )
@@ -71,6 +73,7 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
         clientService = stub[OAuthConfigurationService]
         userInfoService = stub[UserInfoService]
         config = TestEnvConfig.coreConfig
+        jwksService = TestEnvConfig.jwksService
         tracing <- NoopTracing.layer.build
 
         services = Services(tokenService, userInfoService)
@@ -78,7 +81,7 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             TokenEndpointController.routes
-              .provideEnvironment(ZEnvironment(tokenService) ++ ZEnvironment(clientService) ++ ZEnvironment(userInfoService) ++ ZEnvironment(config) ++ tracing)
+              .provideEnvironment(ZEnvironment(tokenService) ++ ZEnvironment(clientService) ++ ZEnvironment(userInfoService) ++ ZEnvironment(jwksService) ++ ZEnvironment(config) ++ tracing)
           )
         )
         _ <- setup(services)

@@ -8,8 +8,12 @@ import versola.central.configuration.scopes.{OAuthScopeRepository, ScopeToken}
 import versola.central.configuration.sync.{SyncEvent, SyncOps}
 import versola.central.configuration.tenants.{TenantId, TenantRepository}
 import versola.central.configuration.{CreateClientRequest, UpdateClientRequest}
-import versola.util.{ReloadingCache, Secret, SecureRandom, SecurityService}
+import versola.util.{CacheSource, ReloadingCache, Secret, SecureRandom, SecurityService}
 import zio.*
+
+import java.security.MessageDigest
+import javax.crypto.SecretKey
+import javax.crypto.spec.SecretKeySpec
 
 trait OAuthClientService:
 
@@ -39,12 +43,44 @@ trait OAuthClientService:
 
   def sync(event: SyncEvent.ClientsUpdated): Task[Unit]
 
+  /** Verifies that `provided` matches the current or previous secret of the
+    * `central-admin` OAuth client (for secret rotation support). Both comparisons
+    * are constant-time to prevent timing attacks.
+    */
+  def verifySecret(provided: Secret): Task[Boolean]
+
 object OAuthClientService:
   def live(
       schedule: Schedule[Any, Any, Any],
   ): ZLayer[Scope & OAuthClientRepository & TenantRepository & SecureRandom & SecurityService & CentralConfig, Throwable, OAuthClientService] =
-    ZLayer(ReloadingCache.make[Vector[OAuthClientRecord]](schedule))
-      >>> ZLayer.fromFunction(Impl(_, _, _, _, _, _))
+    decryptingCacheSource >>>
+      ZLayer(ReloadingCache.make[Vector[OAuthClientRecord]](schedule)) >>>
+      ZLayer.fromFunction(Impl(_, _, _, _, _, _))
+
+  /** A [[CacheSource]] that reads the client records from the
+    * repository and decrypts their secrets, so the in-memory cache holds plaintext
+    * secrets and no decryption is needed on cache reads.
+    */
+  private val decryptingCacheSource
+      : URLayer[OAuthClientRepository & SecurityService & CentralConfig, CacheSource[Vector[OAuthClientRecord]]] =
+    ZLayer.fromFunction: (repository: OAuthClientRepository, securityService: SecurityService, config: CentralConfig) =>
+      new CacheSource[Vector[OAuthClientRecord]]:
+        override def getAll: Task[Vector[OAuthClientRecord]] =
+          repository.getAll.flatMap(ZIO.foreach(_)(decryptSecrets(_, securityService, clientSecretsKey(config))))
+
+  private def clientSecretsKey(config: CentralConfig): SecretKey =
+    SecretKeySpec(config.clientSecretsSecret, "AES")
+
+  /** Decrypts the at-rest encrypted `secret` and `previousSecret` of a client record. */
+  private def decryptSecrets(
+      record: OAuthClientRecord,
+      securityService: SecurityService,
+      key: SecretKey,
+  ): Task[OAuthClientRecord] =
+    for
+      secret         <- ZIO.foreach(record.secret)(s => securityService.decryptAes256(s, key).map(Secret(_)))
+      previousSecret <- ZIO.foreach(record.previousSecret)(s => securityService.decryptAes256(s, key).map(Secret(_)))
+    yield record.copy(secret = secret, previousSecret = previousSecret)
 
   case class Impl(
       cache: ReloadingCache[Vector[OAuthClientRecord]],
@@ -84,7 +120,7 @@ object OAuthClientService:
     ): IO[ClientAlreadyExists | Throwable, Secret] =
       for
         secret <- generateSecret
-        macWithSalt <- generateMacWithSalt(secret)
+        encryptedSecret <- encryptRawSecret(secret)
         client = OAuthClientRecord(
           id = request.id,
           tenantId = request.tenantId,
@@ -92,7 +128,7 @@ object OAuthClientService:
           redirectUris = request.redirectUris,
           scope = request.allowedScopes,
           externalAudience = request.audience,
-          secret = Some(macWithSalt),
+          secret = Some(encryptedSecret),
           previousSecret = None,
           accessTokenTtl = Duration.fromSeconds(request.accessTokenTtl),
           refreshTokenTtl = Duration.fromSeconds(request.refreshTokenTtl.getOrElse(7776000)),
@@ -123,8 +159,8 @@ object OAuthClientService:
     override def rotateClientSecret(clientId: ClientId): Task[Secret] =
       for
         newSecret <- generateSecret
-        macWithSalt <- generateMacWithSalt(newSecret)
-        _ <- clientRepository.rotateClientSecret(clientId, macWithSalt)
+        encryptedSecret <- encryptRawSecret(newSecret)
+        _ <- clientRepository.rotateClientSecret(clientId, encryptedSecret)
       yield newSecret
 
     override def deletePreviousClientSecret(clientId: ClientId): Task[Unit] =
@@ -136,14 +172,19 @@ object OAuthClientService:
     override def sync(event: SyncEvent.ClientsUpdated): Task[Unit] =
       SyncOps.syncCache(event)(
         cache,
-        clientRepository.find(event.id),
+        clientRepository.find(event.id).flatMap(ZIO.foreach(_)(decryptSecrets(_, securityService, clientSecretsKey))),
       )
+
+    override def verifySecret(provided: Secret): Task[Boolean] =
+      cache.get.map: clients =>
+        clients.find(_.id == CentralConfig.centralClientId).exists: client =>
+          client.secret.exists(MessageDigest.isEqual(provided, _)) ||
+            client.previousSecret.exists(MessageDigest.isEqual(provided, _))
+
+    private val clientSecretsKey: SecretKey = OAuthClientService.clientSecretsKey(config)
 
     private def generateSecret: Task[Secret] =
       secureRandom.nextBytes(32).map(Secret(_))
 
-    private def generateMacWithSalt(secret: Secret): Task[Secret] =
-      for
-        salt <- secureRandom.nextBytes(16)
-        mac <- securityService.mac(secret, salt ++ config.clientSecretsPepper)
-      yield Secret(mac ++ salt)
+    private def encryptRawSecret(secret: Secret): Task[Secret] =
+      securityService.encryptAes256(secret, clientSecretsKey).map(Secret(_))

@@ -334,7 +334,7 @@ CREATE TABLE users (
 );
 ```
 
-**Authorization Codes Table** (`V11__authorization_codes_table.sql`):
+**Authorization Codes Table** (`V6__authorization_codes_table.sql`):
 ```sql
 CREATE TABLE authorization_codes (
     code BYTEA PRIMARY KEY,
@@ -351,7 +351,7 @@ CREATE TABLE authorization_codes (
 );
 ```
 
-**Refresh Tokens Table** (`V6__tokens_tables.sql`):
+**Refresh Tokens Table** (`V4__tokens_tables.sql`):
 ```sql
 CREATE TABLE refresh_tokens(
     id BYTEA PRIMARY KEY,

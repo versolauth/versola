@@ -1,6 +1,7 @@
 package versola.central.configuration.themes
 
-import versola.central.{CentralConfig, authorizeInternal}
+import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
+import versola.central.configuration.clients.OAuthClientService
 import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.tenants.TenantId
 import versola.util.http.Controller
@@ -9,7 +10,7 @@ import zio.http.{Method, Request, Response, Routes, Status, handler}
 import zio.json.EncoderOps
 
 object ThemeController extends Controller:
-  type Env = Tracing & ThemeService & CentralConfig & EdgeService
+  type Env = Tracing & ThemeService & OAuthClientService & CentralConfig & EdgeService
 
   def routes: Routes[Env, Throwable] = Routes(
     getAllThemesEndpoint,
@@ -22,8 +23,9 @@ object ThemeController extends Controller:
   val getAllThemesEndpoint =
     Method.GET / "configuration" / "themes" -> handler { (request: Request) =>
       for
+        _ <- authorizeBasic(request)
         service <- ZIO.service[ThemeService]
-        tenantId <- request.url.queryZIO[Option[TenantId]]("tenantId")
+        tenantId <- request.url.queryZIO[TenantId]("tenantId")
         themes <- service.getThemes(tenantId)
       yield Response.json(GetAllThemesResponse(themes).toJson)
     }
@@ -40,6 +42,7 @@ object ThemeController extends Controller:
   val createThemeEndpoint =
     Method.POST / "configuration" / "themes" -> handler { (request: Request) =>
       for
+        _ <- authorizeBasic(request)
         service <- ZIO.service[ThemeService]
         body <- request.body.asJson[CreateThemeRequest]
         _ <- service.createTheme(ThemeRecord(body.id, body.css, body.tenantId))
@@ -49,6 +52,7 @@ object ThemeController extends Controller:
   val updateThemeEndpoint =
     Method.PUT / "configuration" / "themes" -> handler { (request: Request) =>
       for
+        _ <- authorizeBasic(request)
         service <- ZIO.service[ThemeService]
         body <- request.body.asJson[UpdateThemeRequest]
         _ <- service.updateTheme(ThemeRecord(body.id, body.css, None))
@@ -58,6 +62,7 @@ object ThemeController extends Controller:
   val deleteThemeEndpoint =
     Method.DELETE / "configuration" / "themes" -> handler { (request: Request) =>
       (for
+        _ <- authorizeBasic(request)
         service <- ZIO.service[ThemeService]
         id <- request.url.queryZIO[String]("id")
         _ <- service.deleteTheme(id)

@@ -16,9 +16,13 @@ const settingsWithoutPasskey = {
   tenantId: 'tenant-alpha',
   allowedPrefixes: ['+77'],
   passwordRegex: null,
-  submissionLimits: { otpRequest: [], otpSubmit: [], passwordSubmit: [], banDurationSeconds: 0 },
+  submissionLimits: { otpRequest: [], otpSubmit: [], passwordSubmit: [], passkeyAssertion: [], banDurationSeconds: 0 },
   otpLength: 6,
   otpResendAfter: 60,
+  passwordHistorySize: 0,
+  passwordNumDifferent: 0,
+  authConversationTtlSeconds: 900,
+  sessionTtlSeconds: 86400,
   passkeySettings: null,
 };
 
