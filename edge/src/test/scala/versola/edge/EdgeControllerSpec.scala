@@ -91,6 +91,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
             ZEnvironment[EdgeService](service) ++
               ZEnvironment[JwksService](jwks) ++
               ZEnvironment(edgeConfig) ++
+              ZEnvironment(client) ++
               tracing,
           ),
         ),
@@ -299,6 +300,15 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
     },
   )
 
+  private val authSettingsSuite = suite("auth-settings proxy")(
+
+    test("GET /auth-settings returns 401 when no EDGE_SESSION cookie") {
+      for
+        (response, _, _) <- run(Request.get(URL.decode("/auth-settings").toOption.get))
+      yield assertTrue(response.status == Status.Unauthorized)
+    },
+  )
+
   private val sessionCookieSuite = suite("EdgeSessionCookie")(
     test("apply embeds the preset id and sets isSecure, isHttpOnly, and sameSite=Strict") {
       val now = Instant.now()
@@ -369,5 +379,6 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
     loginSuite,
     completeSuite,
     proxySuite,
+    authSettingsSuite,
     sessionCookieSuite,
   ).provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging
