@@ -2,10 +2,12 @@ package versola.oauth.conversation
 
 import org.scalamock.stubs.Stub
 import versola.auth.TestEnvConfig
-import versola.auth.model.OtpCode
+import versola.auth.model.{OtpCode, Password}
+import versola.user.model.Login
 import versola.oauth.client.OAuthConfigurationService
+import versola.oauth.jwks.JwksService
 import versola.oauth.client.model.{AuthFlow, ClientId, ScopeToken}
-import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
+import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep, Error}
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, ConversationCookie}
 import versola.util.http.{ControllerSpec, NoopTracing, Observability}
 import versola.util.{Email, Phone, UnitSpecBase}
@@ -21,11 +23,21 @@ object ConversationControllerSpec extends UnitSpecBase:
   type Service = ConversationRouter
 
   val authId = AuthId(UUID.fromString("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"))
+  val clientId = ClientId("test-client")
   val email = Email("test@example.com")
   val phone = Phone("+12025551234")
   val otpCode = OtpCode("123456")
   val conversationCookie = Header.Cookie(
-    NonEmptyChunk(Cookie.Request(ConversationCookie.name, authId.toString))
+    NonEmptyChunk(
+      Cookie.Request(
+        ConversationCookie.name,
+        ConversationCookie.responseCookie(
+          ConversationCookie(authId, clientId),
+          Duration.Zero,
+          TestEnvConfig.coreConfig.security.conversationCookieSecret,
+        ).content,
+      ),
+    ),
   )
 
   val conversationResult = ConversationResult.RenderStep(
@@ -64,10 +76,11 @@ object ConversationControllerSpec extends UnitSpecBase:
     amr = Map.empty,
   )
 
-  def successfulSubmitTestCase[Args, Result, RResult <: Result](
+  def successfulSubmitTestCase(
       description: String,
       request: Request,
-      submission: (AuthId, Submission, Option[String]),
+      submission: (AuthId, Submission, Option[String], Option[String]),
+      ipHeader: String = "X-Real-IP",
   )(using
       loc: SourceLocation,
       trace: Trace,
@@ -82,6 +95,7 @@ object ConversationControllerSpec extends UnitSpecBase:
           .provideSome[zio.Scope](
             ZLayer.succeed(TestEnvConfig.coreConfig),
             ZLayer.succeed(configuration),
+            ZLayer.succeed(TestEnvConfig.jwksService),
           )
 
         tracing <- NoopTracing.layer.build
@@ -89,12 +103,19 @@ object ConversationControllerSpec extends UnitSpecBase:
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             ConversationController.routes
-              .provideEnvironment(ZEnvironment(router) ++ formService ++ tracing ++ ZEnvironment(configuration))
+              .provideEnvironment(
+                ZEnvironment(router)
+                  ++ ZEnvironment(TestEnvConfig.coreConfig)
+                  ++ ZEnvironment(configuration)
+                  ++ formService
+                  ++ tracing,
+              )
           )
         )
-        _ <- router.getConversation.succeedsWith(Some(record))
-        _ <- router.submit.succeedsWith(conversationResult)
         _ <- configuration.getAllowedPhonePrefixes.succeedsWith(List.empty)
+        _ <- configuration.getPasswordRegex.succeedsWith(None)
+        _ <- configuration.getIpHeader.succeedsWith(ipHeader)
+        _ <- router.submit.succeedsWith((conversationResult, record))
 
         response <- client.batched(request)
 
@@ -103,6 +124,51 @@ object ConversationControllerSpec extends UnitSpecBase:
         response.status == Status.SeeOther,
         response.header(Header.Location).exists(_.url.encode.contains("challenge")),
       ) && assertTrue(submitCalls == List(submission))
+    }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging
+
+  def rejectedSubmitTestCase(
+      description: String,
+      request: Request,
+      passwordRegex: String = "^[0-9]+$",
+  )(using
+      loc: SourceLocation,
+      trace: Trace,
+  ) =
+    test(description) {
+      for
+        client <- ZIO.service[Client]
+        router = stub[ConversationRouter]
+        configuration = stub[OAuthConfigurationService]
+        formService <- ConversationRenderService.live
+          .build
+          .provideSome[zio.Scope](
+            ZLayer.succeed(TestEnvConfig.coreConfig),
+            ZLayer.succeed(configuration),
+            ZLayer.succeed(TestEnvConfig.jwksService),
+          )
+
+        tracing <- NoopTracing.layer.build
+
+        _ <- TestClient.addRoutes(
+          Observability.handleErrors(
+            ConversationController.routes
+              .provideEnvironment(
+                ZEnvironment(router)
+                  ++ ZEnvironment(TestEnvConfig.coreConfig)
+                  ++ ZEnvironment(configuration)
+                  ++ formService
+                  ++ tracing,
+              )
+          )
+        )
+        _ <- configuration.getPasswordRegex.succeedsWith(Some(passwordRegex))
+
+        response <- client.batched(request)
+        submitCalls = router.submit.calls
+      yield assertTrue(
+        response.status == Status.BadRequest,
+        submitCalls.isEmpty,
+      )
     }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging
 
   val spec = suite("ConversationController")(
@@ -114,7 +180,7 @@ object ConversationControllerSpec extends UnitSpecBase:
           Form(FormField.Text("email", email, MediaType.text.plain)),
         )
       ).addHeader(conversationCookie),
-      submission = (authId, EmailSubmission(email), None),
+      submission = (authId, EmailSubmission(email), None, None),
     ),
     successfulSubmitTestCase(
       description = "submit phone",
@@ -124,7 +190,7 @@ object ConversationControllerSpec extends UnitSpecBase:
           Form.fromStrings("phone" -> phone),
         )
       ).addHeader(conversationCookie),
-      submission = (authId, PhoneSubmission(phone), None),
+      submission = (authId, PhoneSubmission(phone), None, None),
     ),
     successfulSubmitTestCase(
       description = "submit otp",
@@ -134,7 +200,7 @@ object ConversationControllerSpec extends UnitSpecBase:
           Form.fromStrings("code" -> otpCode.toString),
         )
       ).addHeader(conversationCookie),
-      submission = (authId, OtpSubmission(otpCode), None),
+      submission = (authId, OtpSubmission(otpCode), None, None),
     ),
     successfulSubmitTestCase(
       description = "submit otp resend",
@@ -144,7 +210,7 @@ object ConversationControllerSpec extends UnitSpecBase:
           Form.fromStrings(),
         )
       ).addHeader(conversationCookie),
-      submission = (authId, OtpResendSubmission(), None),
+      submission = (authId, OtpResendSubmission(), None, None),
     ),
     successfulSubmitTestCase(
       description = "submit forwards ui_locale from query param",
@@ -154,6 +220,76 @@ object ConversationControllerSpec extends UnitSpecBase:
           Form.fromStrings("code" -> otpCode.toString),
         )
       ).addHeader(conversationCookie),
-      submission = (authId, OtpSubmission(otpCode), Some("ru")),
+      submission = (authId, OtpSubmission(otpCode), Some("ru"), None),
+    ),
+    successfulSubmitTestCase(
+      description = "submit reads the tenant-configured header (X-Real-IP) as the throttle ip",
+      request = Request.post(
+        url = URL.empty / "challenge" / "otp",
+        body = Body.fromURLEncodedForm(
+          Form.fromStrings("code" -> otpCode.toString),
+        )
+      ).addHeader(conversationCookie).addHeader("X-Real-IP", "9.9.9.9"),
+      submission = (authId, OtpSubmission(otpCode), None, Some("9.9.9.9")),
+    ),
+    successfulSubmitTestCase(
+      description = "submit reads the tenant-configured header (X-Forwarded-For), taking the first value",
+      request = Request.post(
+        url = URL.empty / "challenge" / "otp",
+        body = Body.fromURLEncodedForm(
+          Form.fromStrings("code" -> otpCode.toString),
+        )
+      ).addHeader(conversationCookie).addHeader("X-Forwarded-For", "7.7.7.7, 10.0.0.1"),
+      submission = (authId, OtpSubmission(otpCode), None, Some("7.7.7.7")),
+      ipHeader = "X-Forwarded-For",
+    ),
+    successfulSubmitTestCase(
+      description = "submit passes no ip when the configured header is absent from the request",
+      request = Request.post(
+        url = URL.empty / "challenge" / "otp",
+        body = Body.fromURLEncodedForm(
+          Form.fromStrings("code" -> otpCode.toString),
+        )
+      ).addHeader(conversationCookie),
+      submission = (authId, OtpSubmission(otpCode), None, None),
+    ),
+    successfulSubmitTestCase(
+      description = "submit passes no ip when the configured header does not match any request header",
+      request = Request.post(
+        url = URL.empty / "challenge" / "otp",
+        body = Body.fromURLEncodedForm(
+          Form.fromStrings("code" -> otpCode.toString),
+        )
+      ).addHeader(conversationCookie).addHeader("X-Real-IP", "9.9.9.9"),
+      submission = (authId, OtpSubmission(otpCode), None, None),
+      ipHeader = "X-Forwarded-For",
+    ),
+    successfulSubmitTestCase(
+      description = "submit login-password",
+      request = Request.post(
+        url = URL.empty / "challenge" / "login-password",
+        body = Body.fromURLEncodedForm(
+          Form.fromStrings("login" -> "user", "password" -> "s3cret"),
+        )
+      ).addHeader(conversationCookie),
+      submission = (authId, LoginPasswordSubmission(Login("user"), Password("s3cret")), None, None),
+    ),
+    rejectedSubmitTestCase(
+      description = "reject login-password violating configured password regex",
+      request = Request.post(
+        url = URL.empty / "challenge" / "login-password",
+        body = Body.fromURLEncodedForm(
+          Form.fromStrings("login" -> "user", "password" -> "abc"),
+        )
+      ).addHeader(conversationCookie),
+    ),
+    rejectedSubmitTestCase(
+      description = "reject password violating configured password regex",
+      request = Request.post(
+        url = URL.empty / "challenge" / "password",
+        body = Body.fromURLEncodedForm(
+          Form.fromStrings("password" -> "abc"),
+        )
+      ).addHeader(conversationCookie),
     ),
   )

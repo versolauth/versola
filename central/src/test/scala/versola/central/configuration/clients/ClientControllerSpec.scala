@@ -2,13 +2,13 @@ package versola.central.configuration.clients
 
 import io.opentelemetry.api
 import org.scalamock.stubs.{Stub, ZIOStubs}
-import versola.central.{CentralConfig, TestCentralConfig}
+import versola.central.{CentralConfig, TestAdminAuth, TestCentralConfig}
 import versola.central.configuration.*
 import versola.central.configuration.permissions.Permission
 import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.tenants.TenantId
 import versola.util.http.Observability
-import versola.util.{Base64, Base64Url, JWT, RedirectUri, Secret, SecureRandom, SecurityService}
+import versola.util.{Base64, Base64Url, JWT, RedirectUri, Secret, SecurityService}
 import zio.*
 import zio.http.*
 import zio.json.*
@@ -126,7 +126,15 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
     )
 
   private val securityLayer: ULayer[SecurityService] =
-    SecureRandom.live >>> SecurityService.live
+    ZLayer.succeed(new SecurityService:
+      override def encryptAes256(data: Array[Byte], key: javax.crypto.SecretKey) = ZIO.succeed(data)
+      override def decryptAes256(data: Array[Byte], key: javax.crypto.SecretKey) = ZIO.succeed(data)
+      override def encryptRsa(data: Array[Byte], key: java.security.PublicKey) = ZIO.dieMessage("Unused in test")
+      override def decryptRsa(data: Array[Byte], key: java.security.PrivateKey) = ZIO.dieMessage("Unused in test")
+      override def mac(secret: versola.util.Secret, key: Array[Byte]) = ZIO.dieMessage("Unused in test")
+      override def hashPassword(password: versola.util.Secret, salt: versola.util.Salt, pepper: versola.util.Secret.Bytes16) = ZIO.dieMessage("Unused in test")
+      override def generateRsaKeyPair = ZIO.dieMessage("Unused in test")
+    )
 
   private def controllerTestCase(
       description: String,
@@ -146,12 +154,17 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             ClientController.routes.provideEnvironment(
-              ZEnvironment[OAuthClientService](service) ++ ZEnvironment(config) ++ tracing ++ security ++ ZEnvironment[versola.central.configuration.edges.EdgeService](edgeService),
+              ZEnvironment[OAuthClientService](service) ++ ZEnvironment(config) ++ tracing ++ security ++
+                ZEnvironment[versola.central.configuration.edges.EdgeService](edgeService),
             ),
           ),
         )
+        _ <- service.verifySecret.succeedsWith(true)
         _ <- setup(service)
-        response <- client.batched(request.addHeader(Header.Accept(MediaType.application.json)))
+        requestWithAuth = request.headers.header(Header.Authorization) match
+          case None => request.addHeader(TestAdminAuth.basicAuthHeader)
+          case _    => request
+        response <- client.batched(requestWithAuth.addHeader(Header.Accept(MediaType.application.json)))
         verifyResult <- verify(response, service, securityService)
       yield assertTrue(response.status == expectedStatus) && verifyResult
     }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging
@@ -267,10 +280,8 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
         for
           payload <- response.body.asJson[GetOAuthClientsSyncResponse]
           decryptedClients <- ZIO.foreach(payload.clients)(decryptSyncedClient(_, securityService))
-          decryptedPepper <- securityService.decryptAes256(Base64.urlDecode(payload.pepper), secretKey)
         yield assertTrue(
           service.getClientsForSync.calls == List(None),
-          decryptedPepper.sameElements(config.clientSecretsPepper),
           decryptedClients == Vector(
             DecryptedSyncOAuthClientRecord(
               id = clientId.toString,

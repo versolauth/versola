@@ -2,11 +2,12 @@ package versola.central.configuration.scopes
 
 import io.opentelemetry.api
 import org.scalamock.stubs.{Stub, ZIOStubs}
-import versola.central.{CentralConfig, TestCentralConfig}
+import versola.central.{CentralConfig, TestAdminAuth, TestCentralConfig}
 import versola.central.configuration.*
+import versola.central.configuration.clients.OAuthClientService
 import versola.central.configuration.tenants.TenantId
 import versola.util.http.Observability
-import versola.util.{JWT, Secret}
+import versola.util.JWT
 import zio.*
 import zio.http.*
 import zio.json.*
@@ -107,19 +108,28 @@ object ScopeControllerSpec extends ZIOSpecDefault, ZIOStubs:
   ) =
     test(description) {
       for
-        client <- ZIO.service[Client]
-        service = stub[OAuthScopeService]
-        edgeService = stub[versola.central.configuration.edges.EdgeService]
-        tracing <- tracingLayer.build
+        client      <- ZIO.service[Client]
+        service     =  stub[OAuthScopeService]
+        edgeService =  stub[versola.central.configuration.edges.EdgeService]
+        oauthClientService = stub[OAuthClientService]
+        tracing     <- tracingLayer.build
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             ScopeController.routes.provideEnvironment(
-              ZEnvironment[OAuthScopeService](service) ++ ZEnvironment(config) ++ tracing ++ ZEnvironment[versola.central.configuration.edges.EdgeService](edgeService)
+              ZEnvironment[OAuthScopeService](service) ++ ZEnvironment(config) ++ tracing ++
+                ZEnvironment[versola.central.configuration.edges.EdgeService](edgeService) ++
+                ZEnvironment[OAuthClientService](oauthClientService)
             )
           )
         )
+        _ <- oauthClientService.verifySecret.succeedsWith(true)
         _ <- setup(service)
-        response <- client.batched(request.addHeader(Header.Accept(MediaType.application.json)))
+        // Only add the admin Basic auth header when the request does not already carry auth
+        // (the sync-endpoint test sends an internal sync token instead).
+        requestWithAuth = request.headers.header(Header.Authorization) match
+          case None => request.addHeader(TestAdminAuth.basicAuthHeader)
+          case _    => request
+        response <- client.batched(requestWithAuth.addHeader(Header.Accept(MediaType.application.json)))
         verifyResult <- verify(response, service)
       yield assertTrue(response.status == expectedStatus) && verifyResult
     }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging

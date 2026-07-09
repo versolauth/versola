@@ -29,4 +29,10 @@ case class UpsertChallengeSettingsRequest(
     otpLength: Int,
     otpResendAfter: Int,
     passkeySettings: PasskeySettings,
+    passwordHistorySize: Option[Int],
+    passwordNumDifferent: Option[Int],
+    authConversationTtlSeconds: Option[Int],
+    sessionTtlSeconds: Option[Int],
+    sessionIdleTtlSeconds: Option[Int],
+    ipHeader: String,
 ) derives Schema, JsonCodec

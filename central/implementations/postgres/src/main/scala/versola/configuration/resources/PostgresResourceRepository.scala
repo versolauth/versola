@@ -17,7 +17,7 @@ import zio.json.JsonCodec
 import zio.{Task, ZLayer}
 
 class PostgresResourceRepository(xa: TransactorZIO) extends ResourceRepository, BasicCodecs:
-  given DbCodec[ResourceId] = DbCodec.LongCodec.biMap(ResourceId(_), identity[Long])
+  given DbCodec[ResourceId] = DbCodec.StringCodec.biMap(ResourceId(_), identity[String])
   given DbCodec[ResourceUri] = DbCodec.StringCodec.biMap(ResourceUri(_), identity[String])
   given DbCodec[TenantId] = DbCodec.StringCodec.biMap(TenantId(_), identity[String])
 
@@ -29,44 +29,43 @@ class PostgresResourceRepository(xa: TransactorZIO) extends ResourceRepository, 
 
   private def findResourceQuery(resourceId: ResourceId) =
     sql"""
-      SELECT tenant_id, id, alias, resource, endpoints FROM resources
-      WHERE id = $resourceId
+      SELECT tenant_id, resource_id, resource, endpoints FROM resources
+      WHERE resource_id = $resourceId
     """.query[ResourceRecord]
 
   override def getAll: Task[Vector[ResourceRecord]] =
-    xa.connect:
+    xa.connectMeasured("get-all-resources"):
       sql"""
-        SELECT tenant_id, id, alias, resource, endpoints FROM resources
+        SELECT tenant_id, resource_id, resource, endpoints FROM resources
       """.query[ResourceRecord].run()
 
   override def findResource(
       resourceId: ResourceId,
   ): Task[Option[ResourceRecord]] =
-    xa.connect:
+    xa.connectMeasured("find-resource"):
       findResourceQuery(resourceId).run().headOption
 
   override def createResource(
       tenantId: TenantId,
-      alias: String,
+      resourceId: ResourceId,
       resource: ResourceUri,
       endpoints: Vector[ResourceEndpointRecord],
-  ): Task[ResourceId] =
-    xa.connect:
+  ): Task[Unit] =
+    xa.connectMeasured("create-resource"):
       sql"""
-        INSERT INTO resources (tenant_id, alias, resource, endpoints)
-        VALUES ($tenantId, $alias, $resource, $endpoints)
-        RETURNING id
-      """.query[ResourceId].run().head
+        INSERT INTO resources (resource_id, tenant_id, resource, endpoints)
+        VALUES ($resourceId, $tenantId, $resource, $endpoints)
+      """.update.run()
+    .unit
 
   override def updateResource(
-      id: ResourceId,
-      aliasPatch: Option[String],
+      resourceId: ResourceId,
       resourcePatch: Option[ResourceUri],
       addEndpoints: Vector[ResourceEndpointRecord],
       deleteEndpoints: Set[ResourceEndpointId],
   ): Task[Unit] =
-    xa.repeatableRead.transact:
-      findResourceQuery(id).run().headOption match
+    xa.repeatableRead.transactMeasured("update-resource"):
+      findResourceQuery(resourceId).run().headOption match
         case None => ()
         case Some(resource) =>
           val endpointsToRemove = deleteEndpoints ++ addEndpoints.map(_.id)
@@ -77,18 +76,17 @@ class PostgresResourceRepository(xa: TransactorZIO) extends ResourceRepository, 
           sql"""
             UPDATE resources
             SET
-              alias = ${aliasPatch.getOrElse(resource.alias)},
               resource = ${resourcePatch.getOrElse(resource.resource)},
               endpoints = $newEndpoints::jsonb[]
-            WHERE id = $id
+            WHERE resource_id = $resourceId
           """.update.run()
     .unit
 
   override def deleteResource(
-      id: ResourceId,
+      resourceId: ResourceId,
   ): Task[Unit] =
-    xa.connect:
-      sql"""DELETE FROM resources WHERE id = $id""".update.run()
+    xa.connectMeasured("delete-resource"):
+      sql"""DELETE FROM resources WHERE resource_id = $resourceId""".update.run()
     .unit
 
 object PostgresResourceRepository:

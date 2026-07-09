@@ -61,7 +61,7 @@ class PostgresConversationRepository(xa: TransactorZIO) extends ConversationRepo
 
   override def find(authId: AuthId): Task[Option[ConversationRecord]] =
     Clock.instant.flatMap: now =>
-      xa.connect {
+      xa.connectMeasured("find-conversation") {
         sql"""select client_id, redirect_uri, scope, code_challenge, code_challenge_method, state, user_id, credential, step, requested_claims, ui_locales, nonce, response_type, user_email, user_phone, user_login, user_claims, auth_flow, user_agent, version, amr, expires_at
               from auth_conversations
               where id = $authId"""
@@ -74,7 +74,7 @@ class PostgresConversationRepository(xa: TransactorZIO) extends ConversationRepo
       }
 
   override def create(authId: AuthId, record: ConversationRecord, ttl: Duration): Task[Unit] =
-    xa.connect {
+    xa.connectMeasured("create-conversation") {
       sql"""insert into auth_conversations (
                 id,
                 client_id,
@@ -128,7 +128,7 @@ class PostgresConversationRepository(xa: TransactorZIO) extends ConversationRepo
     }.unit
 
   override def overwrite(authId: AuthId, record: ConversationRecord): Task[Boolean] =
-    xa.connect {
+    xa.connectMeasured("overwrite-conversation") {
       sql"""update auth_conversations set
               user_id = ${record.userId},
               credential = ${record.credential},
@@ -145,7 +145,7 @@ class PostgresConversationRepository(xa: TransactorZIO) extends ConversationRepo
     }.map(_ > 0)
 
   override def delete(authId: AuthId, version: Long): Task[Boolean] =
-    xa.connect {
+    xa.connectMeasured("delete-conversation") {
       sql"""delete from auth_conversations where id = $authId and version = $version"""
         .update.run()
     }.map(_ > 0)

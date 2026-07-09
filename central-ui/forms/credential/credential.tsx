@@ -94,13 +94,23 @@ function CredentialForm(props: { config: FormConfig }) {
 
   // All passkey-related errors (client failures and the server's passkey_failed /
   // passkey_orphaned) are surfaced through a dismissible popup rather than inline text.
-  const passkeyErrorKeys = ['passkey_failed', 'passkey_orphaned'];
+  const passkeyErrorKeys = ['passkey_failed'];
   const isPasskeyError = (e?: string): boolean => !!e && passkeyErrorKeys.includes(e);
   const [passkeyErrorKey, setPasskeyErrorKey] = createSignal<string | null>(
     isPasskeyError(props.config.error) ? props.config.error! : null,
   );
 
   const passwordRegex = step.passwordRegex;
+
+  const checkPassword = (value: string) => {
+    if (!passwordRegex || value.length === 0) {
+      setPasswordNotAllowed(false);
+      return;
+    }
+    try {
+      setPasswordNotAllowed(!new RegExp(passwordRegex).test(value));
+    } catch (_) {}
+  };
 
   const showPasskey = () => step.passkey && passkeysSupported();
 
@@ -183,10 +193,10 @@ function CredentialForm(props: { config: FormConfig }) {
           <input
             type="password"
             name="password"
-            class="input-field"
+            class={`input-field${passwordNotAllowed() ? ' input-error' : ''}`}
             placeholder={t().password_placeholder}
             required
-            onInput={() => passwordNotAllowed() && setPasswordNotAllowed(false)}
+            onInput={(e) => checkPassword((e.currentTarget as HTMLInputElement).value)}
           />
           <Show when={passwordNotAllowed()}>
             <div class="phone-error-message error-text">{t().password_not_allowed}</div>

@@ -4,6 +4,7 @@ import com.nimbusds.jose.crypto.RSASSASigner
 import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm, JWSHeader}
 import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 import versola.oauth.client.model.ScopeToken
+import versola.oauth.jwks.JwksService
 import versola.oauth.model.AccessTokenPayload
 import versola.oauth.userinfo.model.{UserInfoError, UserInfoResponse}
 import versola.util.http.Controller
@@ -29,7 +30,7 @@ import scala.jdk.CollectionConverters.*
  * Response: JSON object with user claims
  */
 object UserInfoController extends Controller:
-  type Env = Tracing & UserInfoService & CoreConfig
+  type Env = Tracing & UserInfoService & JwksService & CoreConfig
 
   def routes: Routes[Env, Throwable] = Routes(
     userInfoGetEndpoint,
@@ -45,8 +46,9 @@ object UserInfoController extends Controller:
       (for
         userInfoService <- ZIO.service[UserInfoService]
         config <- ZIO.service[CoreConfig]
+        publicKeys <- ZIO.serviceWithZIO[JwksService](_.getPublicKeys)
         tokenString <- extractBearerToken(request)
-        token <- JWT.deserialize[AccessTokenPayload](tokenString, config.jwt.publicKeys, JWT.Type.AccessToken)
+        token <- JWT.deserialize[AccessTokenPayload](tokenString, publicKeys, JWT.Type.AccessToken)
           .orElseFail(UserInfoError.InvalidToken)
 
         userId <- ZIO.fromOption(token.userId).orElseFail(UserInfoError.InvalidToken)
@@ -82,8 +84,8 @@ object UserInfoController extends Controller:
               ),
               ttl = 5.minutes,
               signature = JWT.Signature.Asymmetric(
-                algorithm = config.jwt.publicKeys.active.algorithm,
-                keyId = config.jwt.publicKeys.active.id,
+                algorithm = publicKeys.active.algorithm,
+                keyId = publicKeys.active.id,
                 privateKey = config.jwt.privateKey,
               ),
             ).map { signedJwt =>

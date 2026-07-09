@@ -14,6 +14,8 @@ trait UserRepository:
 
   def find(id: UserId): Task[Option[UserRecord]]
 
+  def findByLogin(login: Login): Task[Option[UserRecord]]
+
   def findByCredential(credential: Either[Email, Phone]): Task[Option[UserRecord]]
 
   def upsert(

@@ -28,7 +28,7 @@ class PostgresPasskeyRepository(xa: TransactorZIO) extends PasskeyRepository, Ba
   given DbCodec[PasskeyRecord] = DbCodec.derived[PasskeyRecord]
 
   override def insert(record: PasskeyRecord): Task[Unit] =
-    xa.connect:
+    xa.connectMeasured("insert-passkey"):
       sql"""
         INSERT INTO passkeys (
           id, user_id, public_key, signature_counter, device_type,
@@ -44,7 +44,7 @@ class PostgresPasskeyRepository(xa: TransactorZIO) extends PasskeyRepository, Ba
     .unit
 
   override def findByCredentialIdAndUser(id: CredentialId, userId: UserId): Task[Option[PasskeyRecord]] =
-    xa.connect:
+    xa.connectMeasured("find-passkey-by-credential-and-user"):
       sql"""SELECT id, user_id, public_key, signature_counter, device_type,
               backed_up, backup_eligible, transports, attestation_object, client_data_json,
               aaguid, name, last_used_at, created_at, updated_at
@@ -54,7 +54,7 @@ class PostgresPasskeyRepository(xa: TransactorZIO) extends PasskeyRepository, Ba
         .headOption
 
   override def findByCredentialId(id: CredentialId): Task[Vector[PasskeyRecord]] =
-    xa.connect:
+    xa.connectMeasured("find-passkey-by-credential"):
       sql"""SELECT id, user_id, public_key, signature_counter, device_type,
               backed_up, backup_eligible, transports, attestation_object, client_data_json,
               aaguid, name, last_used_at, created_at, updated_at
@@ -63,7 +63,7 @@ class PostgresPasskeyRepository(xa: TransactorZIO) extends PasskeyRepository, Ba
         .run()
 
   override def listByUser(userId: UserId): Task[Vector[PasskeyRecord]] =
-    xa.connect:
+    xa.connectMeasured("list-passkeys-by-user"):
       sql"""SELECT id, user_id, public_key, signature_counter, device_type,
               backed_up, backup_eligible, transports, attestation_object, client_data_json,
               aaguid, name, last_used_at, created_at, updated_at
@@ -72,7 +72,7 @@ class PostgresPasskeyRepository(xa: TransactorZIO) extends PasskeyRepository, Ba
         .run()
 
   override def updateUsage(id: CredentialId, signatureCounter: Long, lastUsedAt: Instant): Task[Boolean] =
-    xa.connect:
+    xa.connectMeasured("update-passkey-usage"):
       sql"""
       UPDATE passkeys
       SET signature_counter = $signatureCounter, last_used_at = $lastUsedAt, updated_at = $lastUsedAt
@@ -80,7 +80,7 @@ class PostgresPasskeyRepository(xa: TransactorZIO) extends PasskeyRepository, Ba
     """.update.run() > 0
 
   override def rename(id: CredentialId, userId: UserId, name: Option[String]): Task[Unit] =
-    xa.connect:
+    xa.connectMeasured("rename-passkey"):
       sql"""
         UPDATE passkeys
         SET name = $name
@@ -89,12 +89,12 @@ class PostgresPasskeyRepository(xa: TransactorZIO) extends PasskeyRepository, Ba
     .unit
 
   override def deleteByUser(id: CredentialId, userId: UserId): Task[Unit] =
-    xa.connect:
+    xa.connectMeasured("delete-passkey-by-user"):
       sql"DELETE FROM passkeys WHERE id = $id AND user_id = $userId".update.run()
     .unit
 
   override def delete(id: CredentialId): Task[Unit] =
-    xa.connect:
+    xa.connectMeasured("delete-passkey"):
       sql"DELETE FROM passkeys WHERE id = $id".update.run()
     .unit
 

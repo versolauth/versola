@@ -19,7 +19,7 @@ class PostgresRoleRepository(
   given DbCodec[RoleRecord] = DbCodec.derived[RoleRecord]
 
   override def getAll: Task[Vector[RoleRecord]] =
-    xa.connect:
+    xa.connectMeasured("get-all-roles"):
       sql"""SELECT id, tenant_id, description, permissions, active FROM roles"""
         .query[RoleRecord].run()
 
@@ -27,7 +27,7 @@ class PostgresRoleRepository(
       tenantId: TenantId,
       id: RoleId,
   ): Task[Option[RoleRecord]] =
-    xa.connect:
+    xa.connectMeasured("find-role"):
       getRole(id, tenantId).run().headOption
 
 
@@ -37,7 +37,7 @@ class PostgresRoleRepository(
       description: Map[String, String],
       permissions: List[Permission],
   ): Task[Unit] =
-    xa.connect:
+    xa.connectMeasured("create-role"):
       sql"""
           INSERT INTO roles (id, tenant_id, description, permissions, active)
           VALUES ($id, $tenantId, $description, $permissions, TRUE)
@@ -54,7 +54,7 @@ class PostgresRoleRepository(
       descriptionPatch: PatchDescription,
       permissionsPatch: PatchPermissions,
   ): Task[Unit] =
-    xa.repeatableRead.transact:
+    xa.repeatableRead.transactMeasured("update-role"):
       getRole(id, tenantId).run().headOption match
         case None => ()
         case Some(role) =>
@@ -71,13 +71,13 @@ class PostgresRoleRepository(
 
   override def markRoleInactive(tenantId: TenantId, id: RoleId): Task[Unit] =
     Clock.instant.flatMap { now =>
-      xa.connect:
+      xa.connectMeasured("mark-role-inactive"):
         sql"""UPDATE roles SET active = FALSE WHERE tenant_id = $tenantId AND id = $id""".update.run()
       .unit
     }
 
   override def deleteRole(tenantId: TenantId, id: RoleId): Task[Unit] =
-    xa.connect:
+    xa.connectMeasured("delete-role"):
       sql"""DELETE FROM roles WHERE tenant_id = $tenantId AND id = $id""".update.run()
     .unit
 

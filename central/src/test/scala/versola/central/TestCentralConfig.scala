@@ -1,14 +1,14 @@
 package versola.central
 
-import versola.util.Secret
+import versola.util.{Base64Url, Secret}
 import zio.Duration
-import zio.http.URL
+import zio.http.{Header, URL}
 
 import javax.crypto.spec.SecretKeySpec
 
 object TestCentralConfig:
   val authConfig = CentralConfig.AuthConfig(
-    url = URL.decode("http://localhost:9001").toOption.get
+    url = URL.decode("http://localhost:9001").toOption.get,
   )
 
   val userOutboxConfig = CentralConfig.UserOutboxConfig(
@@ -19,9 +19,14 @@ object TestCentralConfig:
     maxAttempts = 10,
   )
 
+  val edgeSecret: Secret = Secret(Array.fill(32)(1.toByte))
+
+  val basicAuthHeader: Header.Authorization =
+    Header.Authorization.Basic("edge", Base64Url.encode(edgeSecret))
+
   val config = CentralConfig(
-    initialize = false,
-    clientSecretsPepper = Secret(Array.fill(16)(5.toByte)),
+    bootstrap = None,
+    clientSecretsSecret = Secret(Array.fill(16)(5.toByte)),
     secretKey = SecretKeySpec(Array.fill(32)(7.toByte), "AES"),
     auth = authConfig,
     userOutbox = userOutboxConfig,

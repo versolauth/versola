@@ -21,7 +21,7 @@ trait ResourceService:
 
   def updateResource(request: UpdateResourceRequest): Task[Either[ResourceValidationError, Unit]]
 
-  def deleteResource(id: ResourceId): Task[Unit]
+  def deleteResource(resourceId: ResourceId): Task[Unit]
 
   def sync(event: SyncEvent.ResourcesUpdated): Task[Unit]
 
@@ -67,18 +67,17 @@ object ResourceService:
         case None =>
           resourceRepository.createResource(
             tenantId = request.tenantId,
-            alias = request.alias,
+            resourceId = request.resourceId,
             resource = request.resource,
             endpoints = request.endpoints.map(asRecord),
-          ).map(Right(_))
+          ).as(Right(request.resourceId))
 
     override def updateResource(request: UpdateResourceRequest): Task[Either[ResourceValidationError, Unit]] =
       validateEndpoints(request.createEndpoints).flatMap:
         case Some(error) => ZIO.left(error)
         case None =>
           resourceRepository.updateResource(
-            id = request.id,
-            aliasPatch = request.alias,
+            resourceId = request.resourceId,
             resourcePatch = request.resource,
             deleteEndpoints = request.deleteEndpoints,
             addEndpoints = request.createEndpoints.map(asRecord),

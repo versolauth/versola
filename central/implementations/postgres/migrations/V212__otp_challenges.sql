@@ -23,3 +23,5 @@ $$ LANGUAGE plpgsql;
 CREATE TRIGGER otp_templates_notify
 AFTER INSERT OR UPDATE OR DELETE ON otp_templates
 FOR EACH ROW EXECUTE FUNCTION notify_otp_template_change();
+
+CREATE INDEX otp_templates_localizations_gin ON otp_templates USING GIN (localizations);

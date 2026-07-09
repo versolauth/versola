@@ -4,6 +4,7 @@ import versola.central.configuration.challenges.{ChallengeSettingsService, OtpCh
 import versola.central.configuration.clients.{AuthorizationPresetService, OAuthClientService}
 import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.forms.FormService
+import versola.central.configuration.jwks.JwksService
 import versola.central.configuration.permissions.PermissionService
 import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.roles.RoleService
@@ -16,8 +17,8 @@ trait CacheSyncService:
   def sync(): Task[Unit]
 
 object CacheSyncService:
-  def live: ZLayer[CacheSyncRepository & TenantService & PermissionService & ResourceService & OAuthClientService & OAuthScopeService & RoleService & AuthorizationPresetService & EdgeService & FormService & OtpChallengeService & ChallengeSettingsService & Scope, Nothing, CacheSyncService] =
-    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _)) >>>
+  def live: ZLayer[CacheSyncRepository & TenantService & PermissionService & ResourceService & OAuthClientService & OAuthScopeService & RoleService & AuthorizationPresetService & EdgeService & FormService & OtpChallengeService & ChallengeSettingsService & JwksService & Scope, Nothing, CacheSyncService] =
+    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _)) >>>
       ZLayer(ZIO.serviceWithZIO[CacheSyncService.Impl](service => service.sync().forkScoped.as(service)))
 
   class Impl(
@@ -33,6 +34,7 @@ object CacheSyncService:
       formService: FormService,
       otpChallengeService: OtpChallengeService,
       challengeSettingsService: ChallengeSettingsService,
+      jwksService: JwksService,
   ) extends CacheSyncService:
 
     override def sync(): Task[Unit] =
@@ -43,6 +45,9 @@ object CacheSyncService:
 
           case SyncEvent.EdgesUpdated =>
             edgeService.sync().either
+
+          case SyncEvent.JwksUpdated =>
+            jwksService.sync().either
 
           case event: SyncEvent.RolesUpdated =>
             roleService.sync(event).either

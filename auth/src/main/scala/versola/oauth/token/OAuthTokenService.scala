@@ -1,7 +1,7 @@
 package versola.oauth.token
 
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{ClientCredentials, ClientIdWithSecret, OAuthClientRecord, ScopeToken}
+import versola.oauth.client.model.{ClientCredentials, ClientId, ClientIdWithSecret, OAuthClientRecord, ScopeToken, TenantId}
 import versola.oauth.model.{AccessToken, AuthorizationCodeRecord, RefreshToken}
 import versola.oauth.revoke.AccessTokenRevocationService
 import versola.oauth.session.model.{RefreshAlreadyExchanged, RefreshTokenRecord, WithTtl}
@@ -30,18 +30,21 @@ trait OAuthTokenService:
   ): IO[Throwable | TokenEndpointError, IssuedTokens]
 
 object OAuthTokenService:
+  /** Admin-console client; admin roles are only embedded in tokens issued for it. */
+  val centralAdminClientId: ClientId = ClientId("central-admin")
+
   def live = ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _))
 
   class Impl(
-              authorizationCodeRepository: AuthorizationCodeRepository,
-              oauthClientService: OAuthConfigurationService,
-              tokenRepository: RefreshTokenRepository,
-              accessTokenRevocationService: AccessTokenRevocationService,
-              securityService: SecurityService,
-              authPropertyGenerator: AuthPropertyGenerator,
-              userRepository: UserRepository,
-              userRolesRepository: UserRolesRepository,
-              config: CoreConfig,
+      authorizationCodeRepository: AuthorizationCodeRepository,
+      oauthClientService: OAuthConfigurationService,
+      tokenRepository: RefreshTokenRepository,
+      accessTokenRevocationService: AccessTokenRevocationService,
+      securityService: SecurityService,
+      authPropertyGenerator: AuthPropertyGenerator,
+      userRepository: UserRepository,
+      userRolesRepository: UserRolesRepository,
+      config: CoreConfig,
   ) extends OAuthTokenService:
 
     override def exchangeAuthorizationCode(
@@ -55,7 +58,7 @@ object OAuthTokenService:
             oauthClientService.verifySecret(clientId, clientSecret)
               .someOrFail(TokenEndpointError.InvalidClient)
 
-        codeMac <- securityService.mac(Secret(code), config.security.authCodes.pepper)
+        codeMac <- securityService.mac(Secret(code), config.security.authCodesSecret)
 
         codeRecord <- authorizationCodeRepository.find(codeMac)
           .someOrFail(TokenEndpointError.InvalidGrant)
@@ -110,7 +113,7 @@ object OAuthTokenService:
             oauthClientService.verifySecret(clientId, clientSecret)
               .someOrFail(TokenEndpointError.InvalidClient)
 
-        refreshTokenMac <- securityService.mac(Secret(refreshToken), config.security.refreshTokens.pepper)
+        refreshTokenMac <- securityService.mac(Secret(refreshToken), config.security.refreshTokensSecret)
 
         tokenRecord <- tokenRepository.find(refreshTokenMac)
           .someOrFail(TokenEndpointError.InvalidGrant)
@@ -165,6 +168,7 @@ object OAuthTokenService:
         uiLocales = None,
         nonce = None,
         user = None,
+        tenantId = None,
         roles = Nil,
         amr = Set.empty,
         authTime = None,
@@ -179,7 +183,7 @@ object OAuthTokenService:
         refreshToken <- ZIO.when(record.scope.contains(ScopeToken.OfflineAccess))(
           for
             token <- authPropertyGenerator.nextRefreshToken
-            mac <- securityService.mac(Secret(token), config.security.refreshTokens.pepper)
+            mac <- securityService.mac(Secret(token), config.security.refreshTokensSecret)
             _ <- tokenRepository.create(mac, record)
               .mapError:
                 case ex: Throwable => ex
@@ -189,10 +193,23 @@ object OAuthTokenService:
 
         // Fetch user if openid scope is present (needed for ID token generation)
         user <- ZIO.when(record.scope.contains(ScopeToken.OpenId))(
-          userRepository.find(record.userId)
+          userRepository.find(record.userId),
         )
 
-        roles <- userRolesRepository.findRolesByUser(record.userId)
+        isCentralAdmin = record.clientId == centralAdminClientId
+
+        // Central admin: pick default-tenant roles.
+        // All other clients: roles for their own tenant only.
+        (tokenTenantId, tokenRoles) <-
+          if isCentralAdmin then
+            userRolesRepository.findRolesByUser(record.userId).map { allRoles =>
+              val defaultRoles = allRoles.getOrElse(TenantId.default, Nil)
+              (TenantId.default: String, defaultRoles.map(r => r: String))
+            }
+          else
+            userRolesRepository
+              .findRolesByUserAndTenant(record.userId, client.tenantId)
+              .map(roleIds => ((client.tenantId: String), roleIds.map(r => r: String)))
       yield IssuedTokens(
         accessToken = accessToken,
         clientId = record.clientId,
@@ -205,7 +222,8 @@ object OAuthTokenService:
         uiLocales = record.uiLocales,
         nonce = record.nonce,
         user = user.flatten,
-        roles = roles,
+        tenantId = Some(tokenTenantId),
+        roles = tokenRoles,
         amr = record.amr,
         authTime = Some(record.authTime),
       )

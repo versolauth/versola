@@ -84,11 +84,11 @@ RETURNS trigger AS $$
 DECLARE
     rec RECORD;
     resolved_tenant_id TEXT;
-    resolved_resource_id BIGINT;
+    resolved_resource_id TEXT;
 BEGIN
     rec := CASE WHEN TG_OP = 'DELETE' THEN OLD ELSE NEW END;
     resolved_tenant_id := rec.tenant_id;
-    resolved_resource_id := rec.id;
+    resolved_resource_id := rec.resource_id;
 
     PERFORM pg_notify(
         'resource_change',

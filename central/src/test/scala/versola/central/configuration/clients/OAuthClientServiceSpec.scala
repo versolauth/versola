@@ -8,7 +8,7 @@ import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.sync.SyncEvent
 import versola.central.configuration.tenants.{TenantId, TenantRecord, TenantRepository}
 import versola.central.configuration.{CreateClientRequest, PatchClientRedirectUris, PatchClientScope, PatchPermissions, UpdateClientRequest}
-import versola.util.{MAC, RedirectUri, ReloadingCache, Secret, SecureRandom, SecurityService}
+import versola.util.{RedirectUri, ReloadingCache, Secret, SecureRandom, SecurityService}
 import zio.prelude.EqualOps
 import zio.*
 import zio.test.*
@@ -26,7 +26,6 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
   private val writeScope = ScopeToken("write")
   private val readPermission = Permission("users:read")
   private val writePermission = Permission("users:write")
-  private val pepper = TestCentralConfig.config.clientSecretsPepper
 
   private val cachedClient = OAuthClientRecord(
     id = clientId,
@@ -134,12 +133,11 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         result <- env.service.getTenantClients(tenantId, offset = 1, limit = Some(1))
       yield assertTrue(result === Vector(secondClient))
     },
-    test("registerClient returns generated secret and persists MAC with salt") {
+    test("registerClient returns generated secret and persists encrypted secret") {
       val env = new Env()
       val secretBytes = Array.fill(32)(11.toByte)
-      val saltBytes = Array.fill(16)(13.toByte)
-      val macBytes = Array.fill(32)(17.toByte)
-      val storedSecret = Secret(macBytes ++ saltBytes)
+      val encryptedBytes = Array.fill(48)(17.toByte)
+      val storedSecret = Secret(encryptedBytes)
       val expectedClient = OAuthClientRecord(
         id = clientId,
         tenantId = tenantId,
@@ -158,18 +156,15 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
       )
 
       for
-        _ <- env.secureRandom.nextBytes.returnsZIOOnCall:
-          case 1 => ZIO.succeed(secretBytes)
-          case _ => ZIO.succeed(saltBytes)
-        _ <- env.securityService.mac.succeedsWith(MAC(macBytes))
+        _ <- env.secureRandom.nextBytes.succeedsWith(secretBytes)
+        _ <- env.securityService.encryptAes256.succeedsWith(encryptedBytes)
         _ <- env.repository.createClient.succeedsWith(())
         result <- env.service.registerClient(createRequest)
         created = env.repository.createClient.calls.head
-        macCall = env.securityService.mac.calls.head
+        encryptCall = env.securityService.encryptAes256.calls.head
       yield assertTrue(
         result.sameElements(secretBytes),
-        macCall._1 === Secret(secretBytes),
-        macCall._2.sameElements(saltBytes ++ pepper),
+        encryptCall._1.sameElements(secretBytes),
         created === expectedClient,
       )
     },
@@ -196,26 +191,22 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         )
       )
     },
-    test("rotateClientSecret returns new secret and stores MAC with salt") {
+    test("rotateClientSecret returns new secret and stores encrypted secret") {
       val env = new Env()
       val secretBytes = Array.fill(32)(21.toByte)
-      val saltBytes = Array.fill(16)(23.toByte)
-      val macBytes = Array.fill(32)(27.toByte)
-      val storedSecret = Secret(macBytes ++ saltBytes)
+      val encryptedBytes = Array.fill(48)(27.toByte)
+      val storedSecret = Secret(encryptedBytes)
 
       for
-        _ <- env.secureRandom.nextBytes.returnsZIOOnCall:
-          case 1 => ZIO.succeed(secretBytes)
-          case _ => ZIO.succeed(saltBytes)
-        _ <- env.securityService.mac.succeedsWith(MAC(macBytes))
+        _ <- env.secureRandom.nextBytes.succeedsWith(secretBytes)
+        _ <- env.securityService.encryptAes256.succeedsWith(encryptedBytes)
         _ <- env.repository.rotateClientSecret.succeedsWith(())
         result <- env.service.rotateClientSecret(clientId)
         rotateCall = env.repository.rotateClientSecret.calls.head
-        macCall = env.securityService.mac.calls.head
+        encryptCall = env.securityService.encryptAes256.calls.head
       yield assertTrue(
         result.sameElements(secretBytes),
-        macCall._1 === Secret(secretBytes),
-        macCall._2.sameElements(saltBytes ++ pepper),
+        encryptCall._1.sameElements(secretBytes),
         rotateCall._1 == clientId,
         rotateCall._2.sameElements(storedSecret),
       )
@@ -241,17 +232,20 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         cached <- env.cache.get
       yield assertTrue(cached === Vector(otherTenantClient))
     },
-    test("sync upserts fetched client for non-delete event") {
+    test("sync upserts fetched client with decrypted secret for non-delete event") {
       val env = new Env(Vector(cachedClient, otherTenantClient))
+      val decryptedBytes = Array.fill(32)(9.toByte)
       val updatedClient = cachedClient.copy(clientName = "Updated Web App", permissions = Set(readPermission, writePermission))
+      val decryptedClient = updatedClient.copy(secret = Some(Secret(decryptedBytes)))
 
       for
+        _ <- env.securityService.decryptAes256.succeedsWith(decryptedBytes)
         _ <- env.repository.find.succeedsWith(Some(updatedClient))
         _ <- env.service.sync(SyncEvent.ClientsUpdated(clientId, SyncEvent.Op.UPDATE))
         cached <- env.cache.get
       yield assertTrue(
         env.repository.find.calls === List(clientId),
-        cached === Vector(otherTenantClient, updatedClient),  // sorted by ID: mobile-app, web-app
+        cached === Vector(otherTenantClient, decryptedClient),  // sorted by ID: mobile-app, web-app
       )
     },
     test("sync removes cached client when record is missing on non-delete event") {

@@ -17,6 +17,7 @@ import versola.util.{EnvName, PostInitializationService}
 import zio.*
 import zio.config.magnolia.{DeriveConfig, deriveConfig}
 import zio.config.typesafe.FromConfigSourceTypesafe
+import zio.http.netty.{ChannelType, NettyConfig}
 import zio.http.{Client, Method, Request, RequestStore, Response, Routes, Server, Status, handler}
 import zio.logging.LogFormat.{cause, fiberId, label, level, line, logAnnotation, quoted, space, text, timestamp}
 import zio.logging.slf4j.bridge.Slf4jBridge
@@ -52,7 +53,7 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
     Option(java.lang.System.getenv("PORT")).flatMap(_.toIntOption).getOrElse(8080)
 
   def diagnosticsPort: Int =
-    Option(java.lang.System.getenv("DPORT")).flatMap(_.toIntOption).getOrElse(8080)
+    Option(java.lang.System.getenv("DPORT")).flatMap(_.toIntOption).getOrElse(8081)
 
   def serverConfig: Server.Config =
     Server.Config.default.port(port)
@@ -70,13 +71,28 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
       readinessService <- ReadinessService.make
       client <- ZIO.service[Client]
 
-      _ <- Server.install[MetricsService](serviceRoutes(readinessService))
-        .provide(
+      fibers <- for
+        ready <- Promise.make[Throwable, Int]
+        fibers <- {
+          for
+            port <- Server.install[MetricsService](serviceRoutes(readinessService))
+            _ <- ready.succeed(port)
+            _ <- ZIO.never
+          yield ()
+        }.provide(
           Server.live,
           prometheusMetricsService,
           ZLayer.succeed(MetricsConfig(1.second)),
           ZLayer.succeed(diagnosticsConfig),
-        )
+        ).onExit {
+          case Exit.Failure(cause) => ready.failCause(cause)
+          case _ => ZIO.unit
+        }.fork
+        port <- ready.await
+        _ <- ZIO.logInfo(s"Diagnostics server started on port $port")
+      yield fibers
+
+      _ <- scope.addFinalizer(fibers.interrupt *> fibers.join.ignore)
 
       _ <- {
         for
@@ -94,12 +110,11 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
         dependencies,
         Server.live,
         ZLayer.succeed(serverConfig),
-        ZLayer.succeed(opentelemetry),
         ZLayer.succeed(tracing),
         ZLayer.succeed(envConfig),
         ZLayer.succeed(envName),
         ZLayer.succeed(scope),
-        ZLayer.succeed(client)
+        ZLayer.succeed(client),
       )
     yield ()
   }

@@ -19,43 +19,43 @@ class PostgresPermissionRepository(xa: TransactorZIO) extends PermissionReposito
   given DbCodec[PermissionRecord] = DbCodec.derived
 
   override def getAll: Task[Vector[PermissionRecord]] =
-    xa.connect:
+    xa.connectMeasured("get-all-permissions"):
       sql"""
         SELECT tenant_id, id, description, endpoint_ids FROM permissions
-        ORDER BY tenant_id NULLS FIRST, id
+        ORDER BY tenant_id, id
       """.query[PermissionRecord].run()
 
   override def findPermission(
-    tenantId: Option[TenantId],
+    tenantId: TenantId,
     permission: Permission
   ): Task[Option[PermissionRecord]] =
-    xa.connect:
+    xa.connectMeasured("find-permission"):
       sql"""
         SELECT tenant_id, id, description, endpoint_ids FROM permissions
-        WHERE tenant_id IS NOT DISTINCT FROM $tenantId AND id = $permission
+        WHERE tenant_id = $tenantId AND id = $permission
       """.query[PermissionRecord].run().headOption
 
   override def createPermission(
-      tenantId: Option[TenantId],
+      tenantId: TenantId,
       permission: Permission,
       description: Map[String, String],
       endpointIds: Set[ResourceEndpointId],
   ): Task[Unit] =
-    xa.connect:
+    xa.connectMeasured("create-permission"):
       sql"""INSERT INTO permissions (tenant_id, id, description, endpoint_ids)
             VALUES ($tenantId, $permission, $description, $endpointIds)""".update.run()
     .unit
 
   override def updatePermission(
-      tenantId: Option[TenantId],
+      tenantId: TenantId,
       permission: Permission,
       descriptionPatch: PatchDescription,
       endpointIdsPatch: Option[Set[ResourceEndpointId]],
   ): Task[Unit] =
-    xa.repeatableRead.transact:
+    xa.repeatableRead.transactMeasured("update-permission"):
       val existing = sql"""
         SELECT tenant_id, id, description, endpoint_ids FROM permissions
-        WHERE tenant_id IS NOT DISTINCT FROM $tenantId AND id = $permission
+        WHERE tenant_id = $tenantId AND id = $permission
       """.query[PermissionRecord].run().headOption
 
       existing match
@@ -67,17 +67,17 @@ class PostgresPermissionRepository(xa: TransactorZIO) extends PermissionReposito
             UPDATE permissions
             SET description = $newDescription,
                 endpoint_ids = $newEndpointIds
-            WHERE tenant_id IS NOT DISTINCT FROM $tenantId AND id = $permission
+            WHERE tenant_id = $tenantId AND id = $permission
           """.update.run()
           ()
     .unit
 
   override def deletePermission(
-      tenantId: Option[TenantId],
+      tenantId: TenantId,
       permission: Permission,
   ): Task[Unit] =
-    xa.connect:
-      sql"""DELETE FROM permissions WHERE tenant_id IS NOT DISTINCT FROM $tenantId AND id = $permission""".update.run()
+    xa.connectMeasured("delete-permission"):
+      sql"""DELETE FROM permissions WHERE tenant_id = $tenantId AND id = $permission""".update.run()
     .unit
 
 object PostgresPermissionRepository:

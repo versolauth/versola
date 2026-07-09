@@ -32,3 +32,5 @@ $$ LANGUAGE plpgsql;
 CREATE TRIGGER forms_notify
 AFTER INSERT OR UPDATE OR DELETE ON forms
 FOR EACH ROW EXECUTE FUNCTION notify_form_change();
+
+CREATE INDEX forms_localizations_gin ON forms USING GIN (localizations);

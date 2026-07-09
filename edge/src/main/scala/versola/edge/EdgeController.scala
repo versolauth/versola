@@ -1,16 +1,18 @@
 package versola.edge
 
-import versola.edge.model.{AuthConversationNotFound, Code, PresetId, PresetNotFound, State}
+import versola.edge.model.{AuthConversationNotFound, Code, PresetId, PresetNotFound, ResourceId, State}
 import versola.util.http.Controller
 import zio.*
 import zio.http.*
+import zio.json.EncoderOps
 
 object EdgeController extends Controller:
-  type Env = Tracing & EdgeService & EdgeConfig
+  type Env = Tracing & EdgeService & EdgeConfig & JwksService
 
   def routes: Routes[Env, Throwable] = Routes(
     loginEndpoint,
     completeEndpoint,
+    permissionsEndpoint,
     proxyGetEndpoint,
     proxyPostEndpoint,
     proxyPutEndpoint,
@@ -19,16 +21,14 @@ object EdgeController extends Controller:
   )
 
   val loginEndpoint =
-    Method.POST / "login" -> handler { (request: Request) =>
+    Method.GET / "login" / string("presetId") -> handler { (presetId: String, request: Request) =>
       for
         edgeService <- ZIO.service[EdgeService]
 
-        presetId <- request.queryZIO[PresetId]("pid")
-
-        response <- edgeService.authorize(presetId)
+        response <- edgeService.authorize(PresetId(presetId))
           .either.flatMap:
             case Left(error: PresetNotFound) =>
-              ZIO.succeed(Response.badRequest)
+              ZIO.succeed(Response.notFound)
 
             case Left(ex: Throwable) =>
               ZIO.fail(ex)
@@ -64,6 +64,7 @@ object EdgeController extends Controller:
                   .seeOther(redirectUrl)
                   .addCookie(
                     EdgeSessionCookie(
+                      presetId = completion.presetId,
                       accessToken = completion.accessToken,
                       ttl = completion.cookieTtl,
                       domain = completion.cookieDomain,
@@ -74,24 +75,24 @@ object EdgeController extends Controller:
       yield response
     }
 
-  val proxyGetEndpoint =
-    Method.GET / "resources" / string("alias") / trailing -> handler(proxy(_, _, _))
+  val permissionsEndpoint =
+    Method.GET / "permissions" / "me" -> handler { (request: Request) =>
+      for
+        claims      <- authorize(request)
+        service     <- ZIO.service[EdgeService]
+        resourceIds <- request.queryZIO[List[String]]("resource")
+        response    <- service.getMyPermissions(claims, resourceIds.map(ResourceId(_)))
+      yield Response.json(response.toJson)
+    }
 
-  val proxyPostEndpoint =
-    Method.POST / "resources" / string("alias") / trailing -> handler(proxy(_, _, _))
+  val proxyGetEndpoint = proxy(Method.GET)
+  val proxyPostEndpoint = proxy(Method.POST)
+  val proxyPutEndpoint = proxy(Method.PUT)
+  val proxyPatchEndpoint = proxy(Method.PATCH)
+  val proxyDeleteEndpoint = proxy(Method.DELETE)
 
-  val proxyPutEndpoint =
-    Method.PUT / "resources" / string("alias") / trailing -> handler(proxy(_, _, _))
-
-  val proxyPatchEndpoint =
-    Method.PATCH / "resources" / string("alias") / trailing -> handler(proxy(_, _, _))
-
-  val proxyDeleteEndpoint =
-    Method.DELETE / "resources" / string("alias") / trailing -> handler(proxy(_, _, _))
-
-  private def proxy(
-      alias: String,
-      rest: Path,
-      request: Request,
-  ): ZIO[EdgeService, Throwable, Response] =
-    ZIO.serviceWithZIO[EdgeService](_.proxy(alias, rest, request))
+  private def proxy(method: Method): Route[EdgeService, Throwable] =
+    method / "resources" / string("resourceId") / trailing -> handler {
+      (resourceId: String, rest: Path, request: Request) =>
+        ZIO.serviceWithZIO[EdgeService](_.proxy(ResourceId(resourceId), rest, request))
+    }

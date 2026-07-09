@@ -6,6 +6,7 @@ import com.nimbusds.jose.jwk.RSAKey
 import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 import org.scalamock.stubs.Stub
 import versola.auth.TestEnvConfig
+import versola.oauth.jwks.JwksService
 import versola.oauth.client.model.{ClientId, ScopeToken}
 import versola.oauth.userinfo.model.{UserInfoError, UserInfoResponse}
 import versola.user.model.UserId
@@ -75,12 +76,13 @@ object UserInfoControllerSpec extends UnitSpecBase:
         client <- ZIO.service[Client]
         userInfoService = stub[UserInfoService]
         config = TestEnvConfig.coreConfig
+        jwksService = TestEnvConfig.jwksService
         tracing <- NoopTracing.layer.build
 
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             UserInfoController.routes
-              .provideEnvironment(ZEnvironment(userInfoService) ++ ZEnvironment(config) ++ tracing)
+              .provideEnvironment(ZEnvironment(userInfoService) ++ ZEnvironment(config) ++ ZEnvironment(jwksService) ++ tracing)
           )
         )
         _ <- setup(userInfoService)

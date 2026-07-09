@@ -1,6 +1,7 @@
 package versola.oauth.introspect
 
 import versola.oauth.introspect.model.{IntrospectionError, IntrospectionErrorResponse, IntrospectionResponse}
+import versola.oauth.jwks.JwksService
 import versola.oauth.model.{AccessTokenPayload, RefreshToken}
 import versola.util.{Base64, Base64Url, CoreConfig, FormDecoder, JWT}
 import versola.util.http.{Controller, extractCredentials}
@@ -14,7 +15,7 @@ import zio.telemetry.opentelemetry.tracing.Tracing
  * RFC 7662: https://datatracker.ietf.org/doc/html/rfc7662
  */
 object IntrospectionController extends Controller:
-  type Env = Tracing & IntrospectionService & CoreConfig
+  type Env = Tracing & IntrospectionService & JwksService & CoreConfig
 
   def routes: Routes[Env, Throwable] = Routes(
     introspectEndpoint,
@@ -25,11 +26,12 @@ object IntrospectionController extends Controller:
       (for
         introspectionService <- ZIO.service[IntrospectionService]
         config <- ZIO.service[CoreConfig]
+        publicKeys <- ZIO.serviceWithZIO[JwksService](_.getPublicKeys)
         credentials <- request.extractCredentials.orElseFail(IntrospectionError.InvalidClient)
         tokenEither <- request.formAs[Either[RefreshToken, String]].orElseFail(IntrospectionError.InvalidRequest)
         response <- tokenEither match
           case Right(token) =>
-            JWT.deserialize[AccessTokenPayload](token, config.jwt.publicKeys, JWT.Type.AccessToken)
+            JWT.deserialize[AccessTokenPayload](token, publicKeys, JWT.Type.AccessToken)
               .flatMap(introspectionService.introspectAccessToken(_, credentials))
               .catchSome { case _: IntrospectionError => ZIO.succeed(IntrospectionResponse.Inactive) }
 

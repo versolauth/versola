@@ -74,6 +74,11 @@ object PostgresEdgeApp extends VersolaApp("edge"):
 
   given DeriveConfig[versola.edge.model.EdgeId] = DeriveConfig[String].map(versola.edge.model.EdgeId(_))
 
+  given DeriveConfig[Secret] = DeriveConfig[String]
+    .mapOrFail: str =>
+      Secret.fromBase64Url(str)
+        .left.map(message => zio.Config.Error.InvalidData(message = message))
+
   given DeriveConfig[Secret.Bytes16] = DeriveConfig[String]
     .mapOrFail(parseBase64UrlSecret(Secret.Bytes16))
 
@@ -82,13 +87,6 @@ object PostgresEdgeApp extends VersolaApp("edge"):
 
   given DeriveConfig[URL] = DeriveConfig[String]
     .mapOrFail(URL.decode(_).left.map(ex => zio.Config.Error.InvalidData(message = ex.getMessage)))
-
-  given DeriveConfig[javax.crypto.SecretKey] = DeriveConfig[String]
-    .mapOrFail { str =>
-      Secret.fromBase64Url(str)
-        .map(secret => javax.crypto.spec.SecretKeySpec(secret, "AES"))
-        .left.map(message => zio.Config.Error.InvalidData(message = message))
-    }
 
   given DeriveConfig[java.security.PrivateKey] = DeriveConfig[String]
     .mapOrFail: str =>

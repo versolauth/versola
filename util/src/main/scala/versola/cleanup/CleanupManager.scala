@@ -53,10 +53,12 @@ object CleanupManager:
       *   The name of the table to clean up
       * @param batchSize
       *   Maximum number of rows to delete in this batch
+      * @param keyColumn
+      *   The column used to identify rows for deletion
       * @return
       *   Number of rows deleted
       */
-    protected def cleanupBatch(tableName: String, batchSize: Int): Task[Int]
+    protected def cleanupBatch(tableName: String, batchSize: Int, keyColumn: String): Task[Int]
 
     override def start(): RIO[Scope, Unit] =
       Semaphore.make(config.maxThreads).flatMap { semaphore =>
@@ -79,9 +81,10 @@ object CleanupManager:
       yield ()
 
     private def cleanupTable(config: TableCleanupConfig): Task[CleanupResult] =
+      val keyColumn = config.keyColumn.getOrElse("id")
       for
         start <- Clock.currentTime(TimeUnit.MILLISECONDS)
-        deleted <- cleanupBatch(config.tableName, config.batchSize)
+        deleted <- cleanupBatch(config.tableName, config.batchSize, keyColumn)
         end <- Clock.currentTime(TimeUnit.MILLISECONDS)
         duration = end - start
         _ <- ZIO.logInfo(s"Cleaned ${config.tableName}: $deleted rows in ${duration}ms")

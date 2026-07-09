@@ -151,6 +151,8 @@ lazy val commonSettings =
     ),
     libraryDependencies ++= Dependencies.core,
     testFrameworks += new TestFramework("zio.test.sbt.ZTestFramework"),
+    // Entry points and bootstrap wiring are not unit-testable in isolation, exclude from coverage.
+    coverageExcludedFiles := ".*App.*|.*BootstrapService.*",
   )
 
 val CompileTest = "compile->compile;test->test"

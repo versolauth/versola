@@ -20,12 +20,12 @@ object JwksControllerSpec extends UnitSpecBase:
     test(description) {
       for
         client <- ZIO.service[Client]
-        config = TestEnvConfig.coreConfig
+        jwksService = TestEnvConfig.jwksService
         tracing <- NoopTracing.layer.build
 
         _ <- TestClient.addRoutes(
           JwksController.routes
-            .provideEnvironment(ZEnvironment(config) ++ tracing)
+            .provideEnvironment(ZEnvironment(jwksService) ++ tracing)
         )
 
         response <- client.batched(request)

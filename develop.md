@@ -1,23 +1,43 @@
+## Environment Config Generation
+
+The `scripts/gen-env.scala` script generates HOCON config files for all three services
+(`auth`, `central`, `edge`) with freshly generated RSA-2048 key pairs and random secrets.
+It requires [scala-cli](https://scala-cli.virtuslab.org/install).
+
+```bash
+scala-cli run scripts/gen-env.scala
+```
+
+The script first asks for the environment **Name** (default `local`):
+
+- **`local`** — runs non-interactively. All remaining prompts are skipped and defaults are
+  used. Files are written to the service dev directories consumed by `sbt` (see below):
+    - `auth/dev/env.conf`
+    - `central/dev/env.conf`
+    - `edge/dev/env.conf`
+- **any other name** — runs interactively, prompting for service URLs and Postgres
+  credentials. Files are written to `.local/env/<name>/` (`auth.conf`, `central.conf`,
+  `edge.conf`).
+
 ## Local Development
 
 1. Compilation - `compile`
 2. Test compilation - `Test / compile`
 3. Run tests - `test`. First, you need to start postgres - `docker-compose -f services.yml up -d postgres`
-4. Start server locally
+4. ```bash
+    cd central-ui
+    npm install
+    npm run build:forms   # compile auth forms into central/src/main/resources/forms
+    npm run dev           # run admin dashboard on port 3000
+    ```
+5. Start server locally
     - `docker-compose -f services.yml up -d postgres` - Database
     - `docker-compose -f services.yml up -d jaeger` - Jaeger (optional)
     - `PORT=9001 DPORT=9002 sbt -Denv.path=central/dev/env.conf "project central-postgres-impl; run"` - Central
     - `PORT=9003 DPORT=9004 sbt -Denv.path=auth/dev/env.conf "project auth-postgres-impl; run"` - Auth
-    - `PORT=9005 DPORT=9006 CENTRAL_URL=http://localhost:9001 VERSOLA_URL=http://localhost:9003 sbt -Denv.path=edge/dev/env.conf "project edge-postgres-impl; run"` - Edge
+    - `PORT=9005 DPORT=9006 sbt -Denv.path=edge/dev/env.conf "project edge-postgres-impl; run"` - Edge
+    - go to http://localhost:9005/login/central-admin, enter admin/Admin1234!
 
-## Central UI
-
-```bash
-cd central-ui
-npm install
-npm run build:forms   # compile auth forms into central/src/main/resources/forms
-npm run dev           # run admin dashboard on port 3000
-```
 
 ## Docker
 

@@ -20,6 +20,7 @@ export class VersolaClientForm extends LitElement {
   @property({ attribute: false }) availableClientIds: string[] = [];
   @property({ attribute: false }) availableThemes: ThemeRecord[] = [];
   @property({ attribute: false }) availableOtpTemplates: OtpTemplateRecord[] = [];
+  @property({ type: Boolean }) canManageSecrets = false;
 
   @state() private formData: Partial<OAuthClient> = {
     id: '',
@@ -1619,7 +1620,7 @@ export class VersolaClientForm extends LitElement {
           </div>
 
           <div class="form-actions">
-            ${this.client ? html`
+            ${this.client && this.canManageSecrets ? html`
               ${this.client.hasPreviousSecret ? html`
                 <button
                   type="button"

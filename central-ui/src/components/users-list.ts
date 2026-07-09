@@ -2,7 +2,7 @@ import { LitElement, html, css } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
 import { buttonStyles, cardStyles, formStyles } from '../styles/components';
-import { Resource, Role, User, UserRoleAssignment, UserSearchField } from '../types';
+import { PasskeyInfo, Resource, Role, User, UserRoleAssignment, UserSearchField, UserSession } from '../types';
 import { getPermissions, getResources, getRoles } from '../utils/central-api';
 import { confirmDestructiveAction } from '../utils/confirm-dialog';
 import {
@@ -28,6 +28,7 @@ import './claim-edit';
 @customElement('versola-users-list')
 export class VersolaUsersList extends LitElement {
   @property({ type: String }) tenantId: string | null = null;
+  @property({ type: Boolean }) canManage = false;
 
   @state() private users: User[] = [];
   @state() private searchField: UserSearchField = 'login';
@@ -701,6 +702,7 @@ export class VersolaUsersList extends LitElement {
       } else {
         const created = await createUser(user);
         this.users = [created, ...this.users];
+        this.hasSearched = true;
         this.handleFormClose();
       }
     } catch (error) {
@@ -714,7 +716,15 @@ export class VersolaUsersList extends LitElement {
     const { tenantId, adds, removes } = e.detail as { tenantId: string; adds: string[]; removes: string[] };
     try {
       await updateUserRoles(user.id, tenantId, adds, removes);
-      await this.loadUserAssignments(user.id);
+      const removeSet = new Set(removes);
+      const kept = this.editingUserAssignments.filter(a => a.tenantId !== tenantId || !removeSet.has(a.roleId));
+      const existing = new Set(kept.filter(a => a.tenantId === tenantId).map(a => a.roleId));
+      const added = adds.filter(roleId => !existing.has(roleId)).map(roleId => ({ tenantId, roleId }));
+      const updated = [...kept, ...added];
+      this.editingUserAssignments = updated;
+      if (user.id in this.userRoles) {
+        this.userRoles = { ...this.userRoles, [user.id]: updated };
+      }
       this.handleFormClose();
     } catch (error) {
       this.errorPopup = error instanceof Error ? error.message : 'Failed to update roles';
@@ -1139,8 +1149,8 @@ export class VersolaUsersList extends LitElement {
     return html`
       ${this.renderErrorPopup()}
       <content-header title="Users" description="Search, create, and assign roles to users">
-        <button slot="actions" class="btn btn-primary" ?disabled=${this.isPreparingForm}
-          @click=${this.handleCreateClick}>+ Create User</button>
+        ${this.canManage ? html`<button slot="actions" class="btn btn-primary" ?disabled=${this.isPreparingForm}
+          @click=${this.handleCreateClick}>+ Create User</button>` : ''}
       </content-header>
 
       <form class="search-bar" @submit=${this.handleSearchSubmit}>
@@ -1192,10 +1202,11 @@ export class VersolaUsersList extends LitElement {
                   })()}
                   <div class="user-id">${user.id}</div>
                 </div>
+                ${this.canManage ? html`
                 <div class="user-actions">
                   <button class="icon-action" title="Edit" ?disabled=${this.isPreparingForm}
                     @click=${(e: Event) => this.handleEditClick(user, e)}>✎</button>
-                </div>
+                </div>` : ''}
               </div>
               <div class="user-body">
                 <div class="prop-row">

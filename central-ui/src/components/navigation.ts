@@ -4,12 +4,14 @@ import { theme } from '../styles/theme';
 import './versola-logo';
 import './tenant-selector';
 
-export type NavItem = 'clients' | 'scopes' | 'permissions' | 'resources' | 'roles' | 'tenants' | 'edges' | 'users' | 'forms' | 'locales' | 'challenges';
+export type NavItem = 'clients' | 'scopes' | 'permissions' | 'resources' | 'roles' | 'tenants' | 'edges' | 'users' | 'forms' | 'locales' | 'challenges' | 'jwks';
 
 @customElement('versola-navigation')
 export class VersolaNavigation extends LitElement {
   @property({ type: String }) activeItem: NavItem = 'clients';
   @property({ type: String }) tenantId: string | null = null;
+  @property({ attribute: false }) permissions: Set<string> = new Set();
+  @property({ attribute: false }) allowedTenantIds: string[] | null = null;
 
   static styles = [
     theme,
@@ -111,6 +113,46 @@ export class VersolaNavigation extends LitElement {
     }));
   }
 
+  private can(view: NavItem): boolean {
+    const p = this.permissions;
+    switch (view) {
+      case 'tenants':
+        return p.has('tenants:read');
+      case 'edges':
+        return p.has('edges:read');
+      case 'jwks':
+        return p.has('jwks:read');
+      case 'clients':
+      case 'scopes':
+        return p.has('oauth:read');
+      case 'permissions':
+      case 'roles':
+        return p.has('access:read');
+      case 'resources':
+        return p.has('resources:read');
+      case 'challenges':
+        return p.has('security:read');
+      case 'users':
+        return p.has('users:read');
+      case 'forms':
+        return p.has('forms:read');
+      case 'locales':
+        return p.has('locales:read');
+      default:
+        return false;
+    }
+  }
+
+  private navItem(item: NavItem, label: string) {
+    if (!this.can(item)) return html``;
+    return html`
+      <div
+        class="nav-item ${this.activeItem === item ? 'active' : ''}"
+        @click=${() => this.handleNavClick(item)}
+      >${label}</div>
+    `;
+  }
+
   render() {
     return html`
       <div class="brand">
@@ -123,7 +165,8 @@ export class VersolaNavigation extends LitElement {
       <div class="tenant-section">
         <tenant-selector
           .selectedTenantId=${this.tenantId}
-          .manageActive=${this.activeItem === 'tenants'}
+          .allowedTenantIds=${this.allowedTenantIds}
+          .manageActive=${this.activeItem === 'tenants' && this.can('tenants')}
           @manage-tenants=${() => this.handleNavClick('tenants')}
         ></tenant-selector>
       </div>
@@ -131,70 +174,22 @@ export class VersolaNavigation extends LitElement {
       <nav class="nav">
         <div class="nav-section">
           <div class="nav-section-title">General</div>
-          <div
-            class="nav-item ${this.activeItem === 'clients' ? 'active' : ''}"
-            @click=${() => this.handleNavClick('clients')}
-          >
-            Clients
-          </div>
-          <div
-            class="nav-item ${this.activeItem === 'scopes' ? 'active' : ''}"
-            @click=${() => this.handleNavClick('scopes')}
-          >
-            Scopes
-          </div>
-          <div
-            class="nav-item ${this.activeItem === 'permissions' ? 'active' : ''}"
-            @click=${() => this.handleNavClick('permissions')}
-          >
-            Permissions
-          </div>
-          <div
-            class="nav-item ${this.activeItem === 'resources' ? 'active' : ''}"
-            @click=${() => this.handleNavClick('resources')}
-          >
-            Resources
-          </div>
-          <div
-            class="nav-item ${this.activeItem === 'roles' ? 'active' : ''}"
-            @click=${() => this.handleNavClick('roles')}
-          >
-            Roles
-          </div>
-          <div
-            class="nav-item ${this.activeItem === 'challenges' ? 'active' : ''}"
-            @click=${() => this.handleNavClick('challenges')}
-          >
-            Challenges
-          </div>
+          ${this.navItem('clients', 'Clients')}
+          ${this.navItem('scopes', 'Scopes')}
+          ${this.navItem('permissions', 'Permissions')}
+          ${this.navItem('resources', 'Resources')}
+          ${this.navItem('roles', 'Roles')}
+          ${this.navItem('challenges', 'Challenges & Security')}
         </div>
 
         <div class="nav-section">
           <div class="nav-section-title">Global</div>
-          <div
-            class="nav-item ${this.activeItem === 'users' ? 'active' : ''}"
-            @click=${() => this.handleNavClick('users')}
-          >
-            Users
-          </div>
-          <div
-            class="nav-item ${this.activeItem === 'edges' ? 'active' : ''}"
-            @click=${() => this.handleNavClick('edges')}
-          >
-            Edges
-          </div>
-          <div
-            class="nav-item ${this.activeItem === 'forms' ? 'active' : ''}"
-            @click=${() => this.handleNavClick('forms')}
-          >
-            Forms
-          </div>
-          <div
-            class="nav-item ${this.activeItem === 'locales' ? 'active' : ''}"
-            @click=${() => this.handleNavClick('locales')}
-          >
-            Locales
-          </div>
+          ${this.navItem('users', 'Users')}
+          ${this.navItem('edges', 'Edges')}
+          ${this.navItem('forms', 'Forms')}
+          ${this.navItem('locales', 'Locales')}
+          ${this.navItem('jwks', 'JWKS')}
+          ${this.navItem('tenants', 'Tenants')}
         </div>
       </nav>
     `;

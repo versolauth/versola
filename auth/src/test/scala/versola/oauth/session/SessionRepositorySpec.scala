@@ -46,7 +46,7 @@ trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
     List(
       test("create and find session") {
         for
-          _ <- env.repository.create(sessionId1, session1, ttl)
+          _ <- env.repository.create(sessionId1, session1, ttl, None)
           found <- env.repository.find(sessionId1)
         yield assertTrue(found.contains(session1))
       },
@@ -57,15 +57,15 @@ trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
       },
       test("find returns None for expired session") {
         for
-          _ <- env.repository.create(sessionId1, session1, 0.seconds)
+          _ <- env.repository.create(sessionId1, session1, 0.seconds, None)
           _ <- TestClock.adjust(1.second)
           found <- env.repository.find(sessionId1)
         yield assertTrue(found.isEmpty)
       },
       test("create multiple sessions with different IDs") {
         for
-          _ <- env.repository.create(sessionId1, session1, ttl)
-          _ <- env.repository.create(sessionId2, session2, ttl)
+          _ <- env.repository.create(sessionId1, session1, ttl, None)
+          _ <- env.repository.create(sessionId2, session2, ttl, None)
           found1 <- env.repository.find(sessionId1)
           found2 <- env.repository.find(sessionId2)
         yield assertTrue(
@@ -75,7 +75,7 @@ trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
       },
       test("session expires after TTL") {
         for
-          _ <- env.repository.create(sessionId1, session1, 2.minutes)
+          _ <- env.repository.create(sessionId1, session1, 2.minutes, None)
           foundBefore <- env.repository.find(sessionId1)
           _ <- TestClock.adjust(3.minutes)
           foundAfter <- env.repository.find(sessionId1)
@@ -84,11 +84,46 @@ trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
           foundAfter.isEmpty,
         )
       },
+      test("idle session expires after idle TTL even though absolute TTL remains") {
+        for
+          _ <- env.repository.create(sessionId1, session1, 1.hour, Some(2.minutes))
+          foundBefore <- env.repository.find(sessionId1)
+          _ <- TestClock.adjust(3.minutes)
+          foundAfter <- env.repository.find(sessionId1)
+        yield assertTrue(
+          foundBefore.contains(session1),
+          foundAfter.isEmpty,
+        )
+      },
+      test("idle session still dies at absolute TTL despite a longer idle window") {
+        for
+          _ <- env.repository.create(sessionId1, session1, 2.minutes, Some(1.hour))
+          _ <- TestClock.adjust(3.minutes)
+          found <- env.repository.find(sessionId1)
+        yield assertTrue(found.isEmpty)
+      },
+      test("prolongIdle slides idle expiry forward") {
+        for
+          _ <- env.repository.create(sessionId1, session1, 1.hour, Some(5.minutes))
+          _ <- TestClock.adjust(4.minutes)
+          _ <- env.repository.prolongIdle(sessionId1, 5.minutes)
+          _ <- TestClock.adjust(4.minutes)
+          found <- env.repository.find(sessionId1)
+        yield assertTrue(found.contains(session1))
+      },
+      test("prolongIdle does not promote a session created without an idle window") {
+        for
+          _ <- env.repository.create(sessionId1, session1, 1.hour, None)
+          _ <- env.repository.prolongIdle(sessionId1, 1.minute)
+          _ <- TestClock.adjust(2.minutes)
+          found <- env.repository.find(sessionId1)
+        yield assertTrue(found.contains(session1))
+      },
       test("findByUserId returns active sessions for user") {
         for
-          _ <- env.repository.create(sessionId1, session1, ttl)
-          _ <- env.repository.create(sessionId2, session2, ttl)
-          _ <- env.repository.create(sessionId3, session1.copy(clientId = clientId2), ttl)
+          _ <- env.repository.create(sessionId1, session1, ttl, None)
+          _ <- env.repository.create(sessionId2, session2, ttl, None)
+          _ <- env.repository.create(sessionId3, session1.copy(clientId = clientId2), ttl, None)
           results <- env.repository.findByUserId(userId1)
         yield assertTrue(
           results.size == 2,
@@ -97,15 +132,15 @@ trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
       },
       test("findByUserId does not return expired sessions") {
         for
-          _ <- env.repository.create(sessionId1, session1, 0.seconds)
+          _ <- env.repository.create(sessionId1, session1, 0.seconds, None)
           _ <- TestClock.adjust(1.second)
           results <- env.repository.findByUserId(userId1)
         yield assertTrue(results.isEmpty)
       },
       test("invalidateByUserId removes all user sessions") {
         for
-          _ <- env.repository.create(sessionId1, session1, ttl)
-          _ <- env.repository.create(sessionId3, session1.copy(clientId = clientId2), ttl)
+          _ <- env.repository.create(sessionId1, session1, ttl, None)
+          _ <- env.repository.create(sessionId3, session1.copy(clientId = clientId2), ttl, None)
           before <- env.repository.findByUserId(userId1)
           _ <- env.repository.invalidateByUserId(userId1)
           after <- env.repository.findByUserId(userId1)
@@ -116,8 +151,8 @@ trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
       },
       test("invalidateByUserId does not affect other users") {
         for
-          _ <- env.repository.create(sessionId1, session1, ttl)
-          _ <- env.repository.create(sessionId2, session2, ttl)
+          _ <- env.repository.create(sessionId1, session1, ttl, None)
+          _ <- env.repository.create(sessionId2, session2, ttl, None)
           _ <- env.repository.invalidateByUserId(userId1)
           session1After <- env.repository.find(sessionId1)
           session2After <- env.repository.find(sessionId2)

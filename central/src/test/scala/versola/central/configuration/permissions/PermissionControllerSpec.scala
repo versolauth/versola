@@ -2,12 +2,12 @@ package versola.central.configuration.permissions
 
 import io.opentelemetry.api
 import org.scalamock.stubs.{Stub, ZIOStubs}
-import versola.central.{CentralConfig, TestCentralConfig}
+import versola.central.{CentralConfig, TestAdminAuth, TestCentralConfig}
 import versola.central.configuration.*
+import versola.central.configuration.clients.OAuthClientService
 import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.resources.ResourceEndpointId
 import versola.central.configuration.tenants.TenantId
-import versola.util.Secret
 import versola.util.http.Observability
 import zio.*
 import zio.http.*
@@ -17,7 +17,6 @@ import zio.telemetry.opentelemetry.tracing.Tracing
 import zio.test.*
 
 import java.util.UUID
-import javax.crypto.spec.SecretKeySpec
 
 object PermissionControllerSpec extends ZIOSpecDefault, ZIOStubs:
   private def endpointId(value: String): ResourceEndpointId = ResourceEndpointId(UUID.fromString(value))
@@ -33,19 +32,19 @@ object PermissionControllerSpec extends ZIOSpecDefault, ZIOStubs:
   private val usersReadEndpointIds = Set(usersReadListEndpointId, usersReadDetailEndpointId)
 
   private val permissions = Vector(
-    PermissionRecord(Some(tenantId), usersRead, Map("en" -> "Read users"), usersReadEndpointIds),
-    PermissionRecord(None, adminView, Map("en" -> "View admin panel"), Set.empty),
+    PermissionRecord(tenantId, usersRead, Map("en" -> "Read users"), usersReadEndpointIds),
+    PermissionRecord(tenantId, adminView, Map("en" -> "View admin panel"), Set.empty),
   )
 
   private val createRequest = CreatePermissionRequest(
-    tenantId = Some(tenantId),
+    tenantId = tenantId,
     permission = usersRead,
     description = Map("en" -> "Read users"),
     endpointIds = usersReadEndpointIds,
   )
 
   private val updateRequest = UpdatePermissionRequest(
-    tenantId = Some(tenantId),
+    tenantId = tenantId,
     permission = usersRead,
     description = PatchDescription(
       add = Map("ru" -> "Чтение пользователей"),
@@ -73,16 +72,22 @@ object PermissionControllerSpec extends ZIOSpecDefault, ZIOStubs:
         client <- ZIO.service[Client]
         service = stub[PermissionService]
         edgeService = stub[EdgeService]
+        oauthClientService = stub[OAuthClientService]
         tracing <- tracingLayer.build
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             PermissionController.routes.provideEnvironment(
-              ZEnvironment[PermissionService](service) ++ tracing ++ ZEnvironment(config) ++ ZEnvironment[EdgeService](edgeService)
+              ZEnvironment[PermissionService](service) ++ tracing ++ ZEnvironment(config) ++
+                ZEnvironment[EdgeService](edgeService) ++ ZEnvironment[OAuthClientService](oauthClientService)
             )
           )
         )
+        _ <- oauthClientService.verifySecret.succeedsWith(true)
         _ <- setup(service)
-        response <- client.batched(request.addHeader(Header.Accept(MediaType.application.json)))
+        requestWithAuth = request.headers.header(Header.Authorization) match
+          case None => request.addHeader(TestAdminAuth.basicAuthHeader)
+          case _    => request
+        response <- client.batched(requestWithAuth.addHeader(Header.Accept(MediaType.application.json)))
         verifyResult <- verify(response, service)
       yield assertTrue(response.status == expectedStatus) && verifyResult
     }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging
@@ -154,16 +159,16 @@ object PermissionControllerSpec extends ZIOSpecDefault, ZIOStubs:
         ZIO.succeed(assertTrue(service.updatePermission.calls == List(updateRequest))),
     ),
     controllerTestCase(
-      description = "delete global permission when tenantId is absent",
+      description = "delete permission",
       request = Request(
         method = Method.DELETE,
         url = (URL.empty / "configuration" / "permissions")
-          .addQueryParam("permission", adminView.toString),
+          .addQueryParams(Map("tenantId" -> tenantId.toString, "permission" -> adminView.toString)),
       ),
       expectedStatus = Status.NoContent,
       setup = service =>
         service.deletePermission.succeedsWith(()),
       verify = (_, service) =>
-        ZIO.succeed(assertTrue(service.deletePermission.calls == List((None, adminView)))),
+        ZIO.succeed(assertTrue(service.deletePermission.calls == List((tenantId, adminView)))),
     ),
   )

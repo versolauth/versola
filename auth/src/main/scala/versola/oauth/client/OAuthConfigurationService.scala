@@ -1,6 +1,6 @@
 package versola.oauth.client
 
-import versola.oauth.client.model.{ChallengeSettingsRecord, ClientId, ClientSecret, ClientsWithPepper, FormRecord, Locales, OAuthClientRecord, OtpSettings, OtpTemplateRecord, PasskeySettings, ScopeRecord, ScopeToken, SubmissionLimits, TenantId, ThemeRecord}
+import versola.oauth.client.model.{ChallengeSettingsRecord, ClientId, ClientSecret, FormRecord, Locales, OAuthClientRecord, OtpSettings, OtpTemplateRecord, PasskeySettings, PasswordHistorySettings, ScopeRecord, ScopeToken, SubmissionLimits, TenantId, ThemeRecord}
 import versola.oauth.conversation.otp.model.OtpTemplate
 import versola.util.{CoreConfig, ReloadingCache, Secret, SecureRandom, SecurityService}
 import zio.*
@@ -31,9 +31,19 @@ trait OAuthConfigurationService:
 
   def getSubmissionLimits(id: ClientId): UIO[SubmissionLimits]
 
+  def getIpHeader(id: ClientId): UIO[String]
+
   def getOtpSettings(id: ClientId): UIO[OtpSettings]
 
   def getPasskeySettings(id: ClientId): UIO[Option[PasskeySettings]]
+
+  def getPasswordHistorySettings(id: ClientId): UIO[PasswordHistorySettings]
+
+  def getAuthConversationTtl(id: ClientId): UIO[Duration]
+
+  def getSessionTtl(id: ClientId): UIO[Duration]
+
+  def getSessionIdleTtl(id: ClientId): UIO[Option[Duration]]
 
 object OAuthConfigurationService:
   def live(schedule: Schedule[Any, Any, Any]): ZLayer[
@@ -43,18 +53,18 @@ object OAuthConfigurationService:
   ] = {
     val syncClients =
       CentralSyncTokenService.live >+>
-        ((OAuthClientSyncClient.live >+> ZLayer(ReloadingCache.make[ClientsWithPepper](schedule)) >+>
+        ((OAuthClientSyncClient.live >+> ZLayer(ReloadingCache.make[Map[ClientId, OAuthClientRecord]](schedule)) >+>
           (OAuthScopeSyncClient.live >+> ZLayer(ReloadingCache.make[Vector[ScopeRecord]](schedule))) >+>
           (FormSyncClient.live >+> ZLayer(ReloadingCache.make[Vector[FormRecord]](schedule))) >+>
           (ThemeSyncClient.live >+> ZLayer(ReloadingCache.make[Vector[ThemeRecord]](schedule))) >+>
           (LocaleSyncClient.live >+> ZLayer(ReloadingCache.make[Locales](schedule))) >+>
           (OtpTemplateSyncClient.live >+> ZLayer(ReloadingCache.make[Vector[OtpTemplateRecord]](schedule))) >+>
           (ChallengeSettingsSyncClient.live >+> ZLayer(ReloadingCache.make[Vector[ChallengeSettingsRecord]](schedule)))))
-    syncClients >>> ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _))
+    syncClients >>> ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _))
   }
 
   case class Impl(
-      clientCache: ReloadingCache[ClientsWithPepper],
+      clientCache: ReloadingCache[Map[ClientId, OAuthClientRecord]],
       clientRepository: OAuthClientSyncClient,
       scopeCache: ReloadingCache[Vector[ScopeRecord]],
       scopeRepository: OAuthScopeSyncClient,
@@ -68,25 +78,19 @@ object OAuthConfigurationService:
       otpTemplateRepository: OtpTemplateSyncClient,
       challengeSettingsCache: ReloadingCache[Vector[ChallengeSettingsRecord]],
       challengeSettingsRepository: ChallengeSettingsSyncClient,
-      securityService: SecurityService,
   ) extends OAuthConfigurationService:
 
     def find(id: ClientId): UIO[Option[OAuthClientRecord]] =
-      clientCache.get.map(_.clients.get(id))
+      clientCache.get.map(_.get(id))
 
     private def verifyOneSecret(
         secret: Secret,
         stored: Option[Secret],
-    ): Task[Boolean] =
-      clientCache.get.map(_.pepper).flatMap: pepper =>
+    ): UIO[Boolean] =
+      ZIO.succeed:
         stored match
-          case Some(stored) =>
-            val (mac, salt) = stored.splitAt(32)
-            securityService.mac(secret = secret, key = salt ++ pepper)
-              .map(_.sameElements(mac))
-
-          case None =>
-            ZIO.succeed(false)
+          case Some(stored) => java.security.MessageDigest.isEqual(secret, stored)
+          case None         => false
 
     override def verifySecret(clientId: ClientId, secret: Option[Secret]): UIO[Option[OAuthClientRecord]] =
       find(clientId).some.foldZIO(
@@ -97,10 +101,9 @@ object OAuthConfigurationService:
               verifyOneSecret(secret, client.secret)
                 .flatMap {
                   case false => verifyOneSecret(secret, client.previousSecret)
-                  case true => ZIO.succeed(true)
+                  case true  => ZIO.succeed(true)
                 }
                 .map(Option.when(_)(client))
-                .orElseSucceed(None)
 
             case None if client.isPublic =>
               ZIO.some(client)
@@ -170,6 +173,15 @@ object OAuthConfigurationService:
               .fold(SubmissionLimits.empty)(_.submissionLimits),
           )
 
+    override def getIpHeader(id: ClientId): UIO[String] =
+      find(id).flatMap:
+        case None => ZIO.succeed("X-Real-IP")
+        case Some(client) =>
+          challengeSettingsCache.get.map(
+            _.find(_.tenantId == client.tenantId)
+              .fold("X-Real-IP")(_.ipHeader),
+          )
+
     override def getOtpSettings(id: ClientId): UIO[OtpSettings] =
       find(id).flatMap:
         case None => ZIO.succeed(OtpSettings.default)
@@ -186,6 +198,43 @@ object OAuthConfigurationService:
           challengeSettingsCache.get.map(
             _.find(_.tenantId == client.tenantId)
               .map(_.passkeySettings),
+          )
+
+    override def getPasswordHistorySettings(id: ClientId): UIO[PasswordHistorySettings] =
+      find(id).flatMap:
+        case None => ZIO.succeed(PasswordHistorySettings.default)
+        case Some(client) =>
+          challengeSettingsCache.get.map(
+            _.find(_.tenantId == client.tenantId)
+              .fold(PasswordHistorySettings.default)(s => PasswordHistorySettings(s.passwordHistorySize, s.passwordNumDifferent)),
+          )
+
+    override def getAuthConversationTtl(id: ClientId): UIO[Duration] =
+      find(id).flatMap:
+        case None => ZIO.succeed(Duration.fromSeconds(900))
+        case Some(client) =>
+          challengeSettingsCache.get.map(
+            _.find(_.tenantId == client.tenantId)
+              .fold(Duration.fromSeconds(900))(s => Duration.fromSeconds(s.authConversationTtlSeconds.toLong)),
+          )
+
+    override def getSessionTtl(id: ClientId): UIO[Duration] =
+      find(id).flatMap:
+        case None => ZIO.succeed(Duration.fromSeconds(86400))
+        case Some(client) =>
+          challengeSettingsCache.get.map(
+            _.find(_.tenantId == client.tenantId)
+              .fold(Duration.fromSeconds(86400))(s => Duration.fromSeconds(s.sessionTtlSeconds.toLong)),
+          )
+
+    override def getSessionIdleTtl(id: ClientId): UIO[Option[Duration]] =
+      find(id).flatMap:
+        case None => ZIO.none
+        case Some(client) =>
+          challengeSettingsCache.get.map(
+            _.find(_.tenantId == client.tenantId)
+              .flatMap(_.sessionIdleTtlSeconds)
+              .map(s => Duration.fromSeconds(s.toLong)),
           )
 
     private val IllegalStateTemplate = OtpTemplate("{{code}}")

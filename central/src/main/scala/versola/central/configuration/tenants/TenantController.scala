@@ -1,6 +1,8 @@
 package versola.central.configuration.tenants
 
 import versola.central.configuration.{CreateTenantRequest, GetAllTenantsResponse, TenantResponse, UpdateTenantRequest}
+import versola.central.configuration.clients.OAuthClientService
+import versola.central.authorizeBasic
 import versola.util.http.Controller
 import zio.http.{Method, Request, Response, Routes, Status, handler}
 import zio.json.{EncoderOps, JsonCodec}
@@ -8,7 +10,7 @@ import zio.schema.*
 import zio.{Cause, ZIO}
 
 object TenantController extends Controller:
-  type Env = Tracing & TenantService
+  type Env = Tracing & TenantService & OAuthClientService
 
   def routes: Routes[Env, Throwable] = Routes(
     getAllTenantsEndpoint,
@@ -18,8 +20,9 @@ object TenantController extends Controller:
   )
 
   val getAllTenantsEndpoint =
-    Method.GET / "configuration" / "tenants" -> handler { (_: Request) =>
+    Method.GET / "configuration" / "tenants" -> handler { (request: Request) =>
       for
+        _ <- authorizeBasic(request)
         service <- ZIO.service[TenantService]
         tenants <- service.getAllTenants
         response = GetAllTenantsResponse(tenants.map(t => TenantResponse(t.id, t.description, t.edgeId)))
@@ -29,6 +32,7 @@ object TenantController extends Controller:
   val createTenantEndpoint =
     Method.POST / "configuration" / "tenants" -> handler { (request: Request) =>
       for
+        _ <- authorizeBasic(request)
         service <- ZIO.service[TenantService]
         body <- request.body.asJson[CreateTenantRequest]
         _ <- service.createTenant(body)
@@ -38,6 +42,7 @@ object TenantController extends Controller:
   val updateTenantEndpoint =
     Method.PUT / "configuration" / "tenants" -> handler { (request: Request) =>
       for
+        _ <- authorizeBasic(request)
         service <- ZIO.service[TenantService]
         body <- request.body.asJson[UpdateTenantRequest]
         _ <- service.updateTenant(body)
@@ -47,6 +52,7 @@ object TenantController extends Controller:
   val deleteTenantEndpoint =
     Method.DELETE / "configuration" / "tenants" -> handler { (request: Request) =>
       for
+        _ <- authorizeBasic(request)
         service <- ZIO.service[TenantService]
         tenantId <- request.url.queryZIO[TenantId]("tenantId")
         _ <- service.deleteTenant(tenantId)

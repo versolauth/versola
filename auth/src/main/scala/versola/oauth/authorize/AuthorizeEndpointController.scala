@@ -1,9 +1,8 @@
 package versola.oauth.authorize
 
 import versola.oauth.authorize.model.{AuthorizeRequest, AuthorizeResponse, Error, ResponseTypeEntry}
-import versola.oauth.conversation.ConversationRenderService
-import versola.oauth.conversation.model.{ConversationRecord, ConversationStep}
-import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, ConversationCookie}
+import versola.oauth.client.OAuthConfigurationService
+import versola.oauth.model.ConversationCookie
 import versola.util.{Base64Url, CoreConfig}
 import versola.util.http.Controller
 import zio.*
@@ -12,7 +11,7 @@ import zio.prelude.NonEmptySet
 import zio.telemetry.opentelemetry.tracing.Tracing
 
 object AuthorizeEndpointController extends Controller:
-  type Env = Tracing & AuthorizeRequestParser & AuthorizeEndpointService & CoreConfig
+  type Env = Tracing & AuthorizeRequestParser & AuthorizeEndpointService & OAuthConfigurationService & CoreConfig
 
   def routes: Routes[Env, Throwable] = Routes(
     getAuthorizeRoute,
@@ -43,7 +42,9 @@ object AuthorizeEndpointController extends Controller:
   private def authorizeAndRedirect(request: AuthorizeRequest) =
     for
       authService <- ZIO.service[AuthorizeEndpointService]
-      conversationConfig <- ZIO.service[CoreConfig]
+      configService <- ZIO.service[OAuthConfigurationService]
+      config <- ZIO.service[CoreConfig]
+      authConversationTtl <- configService.getAuthConversationTtl(request.clientId)
       response <- authService.authorize(request).map:
         case AuthorizeResponse.Authorized(code, idToken) =>
           Response.seeOther(
@@ -53,9 +54,10 @@ object AuthorizeEndpointController extends Controller:
         case AuthorizeResponse.Initialize(authId) =>
           Response.seeOther(URL.empty / "challenge")
             .addCookie(
-              ConversationCookie(
-                value = authId,
-                ttl = conversationConfig.security.authConversation.ttl,
+              ConversationCookie.responseCookie(
+                ConversationCookie(authId, request.clientId),
+                authConversationTtl,
+                config.security.conversationCookieSecret,
               ),
             )
     yield response

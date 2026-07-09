@@ -3,8 +3,9 @@ package versola.oauth.authorize
 import versola.oauth.authorize.model.{AuthorizeRequest, AuthorizeResponse, Error, Prompt, ResponseTypeEntry}
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{AuthFlow, AuthMethodRef, PassedAuthFactor, PassedFactorRecord, ScopeToken}
-import versola.oauth.conversation.ConversationRepository
+import versola.oauth.conversation.{ConversationRepository, ConversationRouter, EmailSubmission, PhoneSubmission}
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
+import versola.oauth.jwks.JwksService
 import versola.oauth.model.{AuthorizationCode, AuthorizationCodeRecord}
 import versola.oauth.session.SessionRepository
 import versola.oauth.session.model.{SessionId, SessionRecord}
@@ -22,7 +23,7 @@ trait AuthorizeEndpointService:
 
 object AuthorizeEndpointService:
   def live =
-    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _))
+    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _))
 
   class Impl(
       conversationRepository: ConversationRepository,
@@ -35,6 +36,8 @@ object AuthorizeEndpointService:
       authorizationCodeRepository: AuthorizationCodeRepository,
       userRepository: UserRepository,
       userInfoService: UserInfoService,
+      jwksService: JwksService,
+      conversationRouter: ConversationRouter,
   ) extends AuthorizeEndpointService:
 
     override def authorize(
@@ -54,7 +57,7 @@ object AuthorizeEndpointService:
             createConversation(request, flow, uiLocales, Map.empty)
           case Some(rawId) =>
             for
-              sessionMac <- securityService.mac(Secret(rawId), config.security.sessions.pepper)
+              sessionMac <- securityService.mac(Secret(rawId), config.security.sessionsSecret)
               sessionOpt <- sessionRepository.find(sessionMac)
               result <- sessionOpt match
                 case None if request.prompt.contains(Prompt.none) =>
@@ -110,8 +113,16 @@ object AuthorizeEndpointService:
           version = 0,
           amr = amr,
         )
-        conversationRepository.create(authId, conversation, config.security.authConversation.ttl)
-          .as(AuthorizeResponse.Initialize(authId))
+        configurationService.getAuthConversationTtl(request.clientId).flatMap: authConversationTtl =>
+          conversationRepository.create(authId, conversation, authConversationTtl).flatMap: _ =>
+            request.loginHint match
+              case None => ZIO.succeed(AuthorizeResponse.Initialize(authId))
+              case Some(hint) =>
+                val submission = hint match
+                  case Left(email) => EmailSubmission(email)
+                  case Right(phone) => PhoneSubmission(phone)
+                conversationRouter.submit(authId, submission, uiLocale = None, ipAddress = None)
+                  .as(AuthorizeResponse.Initialize(authId))
 
     private def silentAuthorize(
         request: AuthorizeRequest,
@@ -124,6 +135,10 @@ object AuthorizeEndpointService:
         request.responseType.contains(ResponseTypeEntry.IdToken) &&
           request.scope.contains(ScopeToken.OpenId)
       for
+        idleTtl <- ZIO.unless(request.scope.contains(ScopeToken.OfflineAccess))(
+          configurationService.getSessionIdleTtl(request.clientId)
+        )
+        _ <- ZIO.foreachDiscard(idleTtl.flatten)(sessionRepository.prolongIdle(sessionMac, _))
         code <- authPropertyGenerator.nextAuthorizationCode
         accessToken <- authPropertyGenerator.nextAccessToken
         codeRecord = AuthorizationCodeRecord(
@@ -141,7 +156,7 @@ object AuthorizeEndpointService:
           amr = amr,
           authTime = session.createdAt,
         )
-        codeMac <- securityService.mac(Secret(code), config.security.authCodes.pepper)
+        codeMac <- securityService.mac(Secret(code), config.security.authCodesSecret)
         _ <- authorizationCodeRepository.create(codeMac, codeRecord, zio.Duration.fromSeconds(60))
         idToken <- if isHybrid then silentIdToken(request, session, code, amr, uiLocales)
         else ZIO.none
@@ -166,7 +181,8 @@ object AuthorizeEndpointService:
           uiLocales = uiLocales,
           nonce = request.nonce,
         )
-        cHash = JWT.leftHalfHash(Base64Url.encode(code), config.jwt.publicKeys.active.algorithm)
+        signingKey <- jwksService.getPublicKeys.map(_.active)
+        cHash = JWT.leftHalfHash(Base64Url.encode(code), signingKey.algorithm)
         claims = userInfo.claims ++
           AuthMethodRef.idTokenClaims(amr, Some(session.createdAt)) +
           ("c_hash" -> Json.Str(cHash))
@@ -180,8 +196,8 @@ object AuthorizeEndpointService:
           ),
           ttl = 15.minutes,
           signature = JWT.Signature.Asymmetric(
-            algorithm = config.jwt.publicKeys.active.algorithm,
-            keyId = config.jwt.publicKeys.active.id,
+            algorithm = signingKey.algorithm,
+            keyId = signingKey.id,
             privateKey = config.jwt.privateKey,
           ),
         )

@@ -1,6 +1,6 @@
 package versola.oauth.client
 
-import versola.oauth.client.model.{AuthFlow, ClientId, ClientsWithPepper, OAuthClientRecord, ScopeToken, TenantId}
+import versola.oauth.client.model.{AuthFlow, ClientId, OAuthClientRecord, ScopeToken, TenantId}
 import versola.util.{Base64, CacheSource, CoreConfig, Secret, SecurityService}
 import zio.http.Request
 import zio.json.JsonCodec
@@ -8,8 +8,8 @@ import zio.prelude.NonEmptySet
 import zio.schema.codec.JsonCodec.zioJsonBinaryCodec
 import zio.{Duration, Task, URLayer, ZIO, ZLayer, durationInt}
 
-trait OAuthClientSyncClient extends CacheSource[ClientsWithPepper]:
-  def getAll: Task[ClientsWithPepper]
+trait OAuthClientSyncClient extends CacheSource[Map[ClientId, OAuthClientRecord]]:
+  def getAll: Task[Map[ClientId, OAuthClientRecord]]
 
 object OAuthClientSyncClient:
   val live: URLayer[CoreConfig & SecurityService & CentralSyncTokenService, OAuthClientSyncClient] =
@@ -22,12 +22,11 @@ object OAuthClientSyncClient:
   ) extends OAuthClientSyncClient:
     private val ClientsURL = config.central.url / "configuration" / "clients" / "sync"
 
-    override def getAll: Task[ClientsWithPepper] =
+    override def getAll: Task[Map[ClientId, OAuthClientRecord]] =
       for
-        clients <- ZIO.scoped:
-          centralSyncTokenService.syncRequest(Request.get(ClientsURL)).flatMap(_.bodyAs[OAuthClientsWithPepperEncrypted])
-        decryptedPepper <- decryptSecret(clients.pepper)
-        decryptedClients <- ZIO.foreach(clients.clients) { client =>
+        response <- ZIO.scoped:
+          centralSyncTokenService.syncRequest(Request.get(ClientsURL)).flatMap(_.bodyAs[OAuthClientsSyncResponse])
+        decryptedClients <- ZIO.foreach(response.clients) { client =>
           for
             secret <- ZIO.foreach(client.secret)(decryptSecret)
             previousSecret <- ZIO.foreach(client.previousSecret)(decryptSecret)
@@ -47,7 +46,7 @@ object OAuthClientSyncClient:
             otpTemplateId = client.otpTemplateId,
           )
         }
-      yield ClientsWithPepper(decryptedClients.map(it => it.id -> it).toMap, decryptedPepper)
+      yield decryptedClients.map(it => it.id -> it).toMap
 
     private def decryptSecret(value: String): Task[Secret] =
       for
@@ -74,7 +73,6 @@ object OAuthClientSyncClient:
         otpTemplateId: String,
     ) derives JsonCodec
 
-    private case class OAuthClientsWithPepperEncrypted(
+    private case class OAuthClientsSyncResponse(
         clients: Vector[OAuthClientRecordWithEncryptedSecrets],
-        pepper: String,
     ) derives JsonCodec

@@ -11,6 +11,7 @@ object TenantId:
   inline def apply(value: String): TenantId = value
   inline def from(value: String): Either[String, TenantId] = Right(value)
 
+
   given Schema[TenantId] = Schema.primitive[String].transformOrFail(from, Right(_))
   given JsonEncoder[TenantId] = JsonEncoder.string
   given JsonDecoder[TenantId] = JsonDecoder.string

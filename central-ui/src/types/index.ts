@@ -74,6 +74,7 @@ export interface SubmissionLimits {
   otpRequest: RateLimit[];
   otpSubmit: RateLimit[];
   passwordSubmit: RateLimit[];
+  passkeyAssertion: RateLimit[];
   banDurationSeconds: number;
 }
 
@@ -93,7 +94,13 @@ export interface ChallengeSettingsRecord {
   submissionLimits: SubmissionLimits;
   otpLength: number;
   otpResendAfter: number;
+  passwordHistorySize: number;
+  passwordNumDifferent: number;
   passkeySettings?: PasskeySettings | null;
+  authConversationTtlSeconds: number;
+  sessionTtlSeconds: number;
+  sessionIdleTtlSeconds?: number | null;
+  ipHeader: string;
 }
 
 // A registered passkey credential for a user
@@ -169,8 +176,7 @@ export interface ResourceEndpoint {
 }
 
 export interface Resource {
-  id: number;
-  alias: string;
+  resourceId: string;
   resource: string;
   endpoints: ResourceEndpoint[];
 }

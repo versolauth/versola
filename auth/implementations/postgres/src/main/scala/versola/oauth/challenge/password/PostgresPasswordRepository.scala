@@ -19,9 +19,9 @@ class PostgresPasswordRepository(xa: TransactorZIO) extends PasswordRepository, 
   given DbCodec[PasswordRecord] = DbCodec.derived[PasswordRecord]
 
   override def list(userId: UserId): Task[Vector[PasswordRecord]] =
-    xa.connect:
+    xa.connectMeasured("list-passwords"):
       sql"""
-        SELECT id, user_id, password, salt, created_at, is_current
+        SELECT id, user_id, password, salt, created_at
         FROM user_passwords
         WHERE user_id = $userId
         ORDER BY created_at DESC
@@ -37,11 +37,11 @@ class PostgresPasswordRepository(xa: TransactorZIO) extends PasswordRepository, 
   ): IO[Throwable | PasswordReuseError, Unit] =
     for
       now <- Clock.instant
-      result <- xa.transact {
+      result <- xa.transactMeasured("create-password") {
         val oldPasswords = sql"""
-          SELECT id, user_id, password, salt, created_at, is_current
+          SELECT id, user_id, password, salt, created_at
           FROM user_passwords
-          WHERE user_id = $userId ORDER BY DESC
+          WHERE user_id = $userId ORDER BY created_at DESC
         """.query[PasswordRecord].run()
 
         if oldPasswords.take(numDifferent).exists(_.password === password) then
