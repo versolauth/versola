@@ -101,7 +101,7 @@ object RevocationServiceSpec extends UnitSpecBase:
 
           _ <- env.oauthClientService.verifySecret.succeedsWith(Some(testClient))
           _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
-          _ <- env.tokenRepository.find.succeedsWith(Some(tokenRecord(now)))
+          _ <- env.tokenRepository.findToken.succeedsWith(Some(tokenRecord(now)))
           _ <- env.tokenRepository.delete.succeedsWith(())
           _ <- env.accessTokenRevocationService.revoke.succeedsWith(())
 
@@ -129,7 +129,7 @@ object RevocationServiceSpec extends UnitSpecBase:
 
           _ <- env.oauthClientService.verifySecret.succeedsWith(Some(otherClient))
           _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
-          _ <- env.tokenRepository.find.succeedsWith(Some(tokenRecord(now)))
+          _ <- env.tokenRepository.findToken.succeedsWith(Some(tokenRecord(now)))
 
           service <- ZIO.service[RevocationService]
           result <- service.revokeRefreshToken(refreshToken1, credentials).either
@@ -142,7 +142,7 @@ object RevocationServiceSpec extends UnitSpecBase:
 
           _ <- env.oauthClientService.verifySecret.succeedsWith(Some(testClient))
           _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
-          _ <- env.tokenRepository.find.succeedsWith(None)
+          _ <- env.tokenRepository.findToken.succeedsWith(None)
           _ <- env.tokenRepository.delete.succeedsWith(())
 
           service <- ZIO.service[RevocationService]

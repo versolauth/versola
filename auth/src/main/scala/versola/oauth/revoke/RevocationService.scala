@@ -41,7 +41,7 @@ object RevocationService:
       for
         client <- authenticateClient(credentials)
         tokenMac <- securityService.mac(Secret(token), config.security.refreshTokensSecret)
-        tokenRecord <- tokenRepository.find(tokenMac)
+        tokenRecord <- tokenRepository.findToken(tokenMac)
 
         _ <- ZIO.fail(RevocationError.InvalidClient)
           .when(tokenRecord.exists(_.clientId != client.id))

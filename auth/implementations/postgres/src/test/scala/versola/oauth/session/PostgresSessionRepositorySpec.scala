@@ -43,7 +43,7 @@ object PostgresSessionRepositorySpec extends PostgresSpec, SessionRepositorySpec
           for
             xa      <- ZIO.service[TransactorZIO]
             sessions = PostgresSessionRepository(xa)
-            tokens   = PostgresRefreshTokenRepository(xa)
+            tokens   = PostgresSessionRepository(xa)
             now     <- Clock.instant
             record   = RefreshTokenRecord(
               sessionId            = atomicSessionId,
@@ -64,8 +64,8 @@ object PostgresSessionRepositorySpec extends PostgresSpec, SessionRepositorySpec
             _            <- sessions.create(atomicSessionId, session1, 5.minutes, None)
             _            <- tokens.create(atomicTokenId, record)
             _            <- sessions.invalidateByUserId(userId1)
-            sessionAfter <- sessions.find(atomicSessionId)
-            tokenAfter   <- tokens.find(atomicTokenId)
+            sessionAfter <- sessions.findSession(atomicSessionId)
+            tokenAfter   <- tokens.findToken(atomicTokenId)
           yield assertTrue(sessionAfter.isEmpty, tokenAfter.isEmpty)
         }
       ) @@ TestAspect.before(cleanup) @@ TestAspect.sequential @@ TestAspect.timed

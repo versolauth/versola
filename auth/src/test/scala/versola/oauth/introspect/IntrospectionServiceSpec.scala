@@ -153,7 +153,7 @@ object IntrospectionServiceSpec extends UnitSpecBase:
 
           _ <- env.oauthClientService.verifySecret.succeedsWith(Some(testClient))
           _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
-          _ <- env.tokenRepository.find.succeedsWith(Some(record))
+          _ <- env.tokenRepository.findToken.succeedsWith(Some(record))
 
           service <- ZIO.service[IntrospectionService]
           result <- service.introspectRefreshToken(refreshToken1, credentials)
@@ -176,7 +176,7 @@ object IntrospectionServiceSpec extends UnitSpecBase:
 
           _ <- env.oauthClientService.verifySecret.succeedsWith(Some(testClient))
           _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
-          _ <- env.tokenRepository.find.succeedsWith(None)
+          _ <- env.tokenRepository.findToken.succeedsWith(None)
 
           service <- ZIO.service[IntrospectionService]
           result <- service.introspectRefreshToken(refreshToken1, credentials)
@@ -206,7 +206,7 @@ object IntrospectionServiceSpec extends UnitSpecBase:
 
           _ <- env.oauthClientService.verifySecret.succeedsWith(Some(otherClient))
           _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
-          _ <- env.tokenRepository.find.succeedsWith(Some(record))
+          _ <- env.tokenRepository.findToken.succeedsWith(Some(record))
 
           service <- ZIO.service[IntrospectionService]
           result <- service.introspectRefreshToken(refreshToken1, credentials).either

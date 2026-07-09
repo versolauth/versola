@@ -12,7 +12,7 @@ trait RefreshTokenRepository:
       record: RefreshTokenRecord,
   ): IO[Throwable | RefreshAlreadyExchanged, Unit]
 
-  def find(token: MAC.Of[RefreshToken]): Task[Option[RefreshTokenRecord]]
+  def findToken(token: MAC.Of[RefreshToken]): Task[Option[RefreshTokenRecord]]
 
   def delete(token: MAC.Of[RefreshToken]): Task[Unit]
 

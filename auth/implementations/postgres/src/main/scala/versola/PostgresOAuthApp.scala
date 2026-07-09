@@ -14,7 +14,7 @@ import versola.oauth.introspect.{IntrospectionController, IntrospectionService}
 import versola.oauth.client.CentralSyncTokenService
 import versola.oauth.jwks.{JwksController, JwksService, JwksSyncClient}
 import versola.oauth.revoke.{AccessTokenRevocationService, RevocationController, RevocationService}
-import versola.oauth.session.{PostgresRefreshTokenRepository, PostgresSessionRepository, RefreshTokenRepository, SessionRepository}
+import versola.oauth.session.{PostgresSessionRepository, RefreshTokenRepository, SessionRepository}
 import versola.oauth.token.{AuthorizationCodeRepository, OAuthTokenService, TokenEndpointController}
 import versola.oauth.userinfo.{UserInfoController, UserInfoService}
 import versola.user.{PostgresUserRepository, PostgresUserRolesRepository, UserController, UserRepository, UserRolesRepository}
@@ -89,7 +89,6 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       PostgresConversationRepository.live >+>
       PostgresAuthorizationCodeRepository.live >+>
       PostgresSessionRepository.live >+>
-      PostgresRefreshTokenRepository.live >+>
       PostgresPasswordRepository.live >+>
       PostgresPasskeyRepository.live >+>
       PostgresChallengeThrottleRepository.live >+>

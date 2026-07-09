@@ -84,8 +84,8 @@ trait RefreshTokenRepositorySpec extends DatabaseSpecBase[RefreshTokenRepository
           record2 = tokenRecord2(now, refreshTtl)
           _ <- env.repository.create(refreshToken1, record1)
           _ <- env.repository.create(refreshToken2, record2)
-          found1 <- env.repository.find(refreshToken1)
-          found2 <- env.repository.find(refreshToken2)
+          found1 <- env.repository.findToken(refreshToken1)
+          found2 <- env.repository.findToken(refreshToken2)
         yield assertTrue(
           found1.isDefined,
           found2.isDefined,
@@ -93,7 +93,7 @@ trait RefreshTokenRepositorySpec extends DatabaseSpecBase[RefreshTokenRepository
       },
       test("find returns None for non-existent refresh token") {
         for
-          found <- env.repository.find(refreshToken1)
+          found <- env.repository.findToken(refreshToken1)
         yield assertTrue(found.isEmpty)
       },
       test("refresh token expires after TTL") {
@@ -102,9 +102,9 @@ trait RefreshTokenRepositorySpec extends DatabaseSpecBase[RefreshTokenRepository
           now <- Clock.instant
           record = tokenRecord1(now, shortTtl)
           _ <- env.repository.create(refreshToken1, record)
-          foundBefore <- env.repository.find(refreshToken1)
+          foundBefore <- env.repository.findToken(refreshToken1)
           _ <- TestClock.adjust(3.minutes)
-          foundAfter <- env.repository.find(refreshToken1)
+          foundAfter <- env.repository.findToken(refreshToken1)
         yield assertTrue(
           foundBefore.exists(_ === record),
           foundAfter.isEmpty,
@@ -117,8 +117,8 @@ trait RefreshTokenRepositorySpec extends DatabaseSpecBase[RefreshTokenRepository
           record2 = record1.copy(previousRefreshToken = Some(refreshToken1))
           _ <- env.repository.create(refreshToken1, record1)
           _ <- env.repository.create(refreshToken2, record2)
-          oldTokenFound <- env.repository.find(refreshToken1)
-          newTokenFound <- env.repository.find(refreshToken2)
+          oldTokenFound <- env.repository.findToken(refreshToken1)
+          newTokenFound <- env.repository.findToken(refreshToken2)
         yield assertTrue(
           oldTokenFound.isEmpty,
           newTokenFound.isDefined,

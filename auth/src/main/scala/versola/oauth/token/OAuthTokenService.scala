@@ -115,7 +115,7 @@ object OAuthTokenService:
 
         refreshTokenMac <- securityService.mac(Secret(refreshToken), config.security.refreshTokensSecret)
 
-        tokenRecord <- tokenRepository.find(refreshTokenMac)
+        tokenRecord <- tokenRepository.findToken(refreshTokenMac)
           .someOrFail(TokenEndpointError.InvalidGrant)
           .filterOrFail(_.clientId == client.id)(TokenEndpointError.InvalidGrant)
 

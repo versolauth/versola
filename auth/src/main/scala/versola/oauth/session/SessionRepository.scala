@@ -13,7 +13,7 @@ trait SessionRepository:
       idleTtl: Option[Duration],
   ): Task[Unit]
 
-  def find(id: MAC.Of[SessionId]): Task[Option[SessionRecord]]
+  def findSession(id: MAC.Of[SessionId]): Task[Option[SessionRecord]]
 
   /** Slide the idle expiry of an online session forward. No-op for sessions created without an idle window. */
   def prolongIdle(id: MAC.Of[SessionId], idleTtl: Duration): Task[Unit]

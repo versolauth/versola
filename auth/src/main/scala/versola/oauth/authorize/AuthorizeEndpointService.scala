@@ -58,7 +58,7 @@ object AuthorizeEndpointService:
           case Some(rawId) =>
             for
               sessionMac <- securityService.mac(Secret(rawId), config.security.sessionsSecret)
-              sessionOpt <- sessionRepository.find(sessionMac)
+                sessionOpt <- sessionRepository.findSession(sessionMac)
               result <- sessionOpt match
                 case None if request.prompt.contains(Prompt.none) =>
                   ZIO.fail(Error.LoginRequired(request.redirectUri, request.state))
