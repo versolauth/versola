@@ -120,6 +120,13 @@ object PostgresPasswordRepositorySpec extends PostgresSpec, DatabaseSpecBase[Pas
         yield assertTrue(result == Left(PasswordReuseError(3)))
       },
 
+      test("historySize = 0 does not delete the newly inserted password") {
+        for
+          _    <- env.repository.create(userId1, pass(1), salt(1), historySize = 0, numDifferent = 1)
+          rows <- env.repository.list(userId1)
+        yield assertTrue(rows.size == 1)
+      },
+
       test("histories are isolated between users") {
         for
           _     <- env.repository.create(userId1, pass(1), salt(1), historySize = 1, numDifferent = 1)

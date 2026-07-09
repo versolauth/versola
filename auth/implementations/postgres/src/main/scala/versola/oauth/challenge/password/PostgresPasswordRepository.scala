@@ -51,15 +51,16 @@ class PostgresPasswordRepository(xa: TransactorZIO) extends PasswordRepository, 
                 VALUES ($userId, $password, $salt, $now)
              """.update.run()
 
-          sql"""DELETE FROM user_passwords
-                WHERE user_id = $userId
-                  AND id NOT IN (
-                    SELECT id FROM user_passwords
-                    WHERE user_id = $userId
-                    ORDER BY created_at DESC, id DESC
-                    LIMIT $historySize
-                  )
-             """.update.run()
+          if historySize >= 1 then
+            sql"""DELETE FROM user_passwords
+                  WHERE user_id = $userId
+                    AND id NOT IN (
+                      SELECT id FROM user_passwords
+                      WHERE user_id = $userId
+                      ORDER BY created_at DESC, id DESC
+                      LIMIT $historySize
+                    )
+               """.update.run()
           Right(())
         }
       }.absolve
