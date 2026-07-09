@@ -123,34 +123,34 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
       conversationRouter,
     )
 
-    // Helpers for id_token_hint tests
-    val hintUserId = UserId(UUID.randomUUID())
-    val hintUser = UserRecord(
-      id = hintUserId,
-      email = Some(versola.util.Email("hint@example.com")),
-      phone = None,
-      login = None,
-      claims = Json.Obj(),
-      uiLocales = None,
-    )
+  // Helpers for id_token_hint tests
+  val hintUserId = UserId(UUID.randomUUID())
+  val hintUser = UserRecord(
+    id = hintUserId,
+    email = Some(versola.util.Email("hint@example.com")),
+    phone = None,
+    login = None,
+    claims = Json.Obj(),
+    uiLocales = None,
+  )
 
-    def makeIdToken(
-                     subject: UserId,
-                     audience: String,
-                     privateKey: java.security.PrivateKey,
-                     keyId: String = "test-key-id",
-                     ttl: zio.Duration = 1.hour,
-                   ): zio.Task[String] =
-      JWT.serialize(
-        claims = JWT.Claims(
-          issuer = TestEnvConfig.jwtConfig.issuer,
-          subject = subject.toString,
-          audience = List(audience),
-          custom = Json.Obj(),
-        ),
-        ttl = ttl,
-        signature = JWT.Signature.Asymmetric(JWT.Algorithm.RS256, keyId, privateKey),
-      )
+  def makeIdToken(
+      subject: UserId,
+      audience: String,
+      privateKey: java.security.PrivateKey,
+      keyId: String = "test-key-id",
+      ttl: zio.Duration = 1.hour,
+  ): zio.Task[String] =
+    JWT.serialize(
+      claims = JWT.Claims(
+        issuer = TestEnvConfig.jwtConfig.issuer,
+        subject = subject.toString,
+        audience = List(audience),
+        custom = Json.Obj(),
+      ),
+      ttl = ttl,
+      signature = JWT.Signature.Asymmetric(JWT.Algorithm.RS256, keyId, privateKey),
+    )
 
   val phoneHint = Phone("+12025551234")
   val emailHint = Email("user@example.com")
@@ -373,10 +373,11 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
       for
         hint <- makeIdToken(hintUserId, clientId.toString, TestEnvConfig.privateKey)
         _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
+        _ <- env.configurationService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
         _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
         _ <- env.conversationRepository.create.succeedsWith(())
         _ <- env.userRepository.find.succeedsWith(Some(hintUser))
-        _ <- env.conversationRouter.submit.succeedsWith(ConversationResult.RenderStep(ConversationStep.Credential(Nil, false, false)))
+        _ <- env.conversationRouter.submit.succeedsWith((ConversationResult.IllegalState, dummyConversation))
         result <- env.service.authorize(baseRequest.copy(idTokenHint = Some(hint)))
         createCalls = env.conversationRepository.create.calls
         submitCalls = env.conversationRouter.submit.calls
@@ -409,10 +410,11 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         hint <- makeIdToken(hintUserId, clientId.toString, TestEnvConfig.privateKey, ttl = 1.second)
         _ <- TestClock.adjust(2.seconds)
         _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
+        _ <- env.configurationService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
         _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
         _ <- env.conversationRepository.create.succeedsWith(())
         _ <- env.userRepository.find.succeedsWith(Some(hintUser))
-        _ <- env.conversationRouter.submit.succeedsWith(ConversationResult.RenderStep(ConversationStep.Credential(Nil, false, false)))
+        _ <- env.conversationRouter.submit.succeedsWith((ConversationResult.IllegalState, dummyConversation))
         result <- env.service.authorize(baseRequest.copy(idTokenHint = Some(hint)))
       yield assertTrue(result == AuthorizeResponse.Initialize(AuthId(uuid)))
     },
@@ -476,6 +478,50 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         }),
       )
     },
+    test("multi-audience hint with correct azp is accepted") {
+      val env = Env()
+      val uuid = UUID.randomUUID()
+      for
+        hint <- JWT.serialize(
+          claims = JWT.Claims(
+            issuer = TestEnvConfig.jwtConfig.issuer,
+            subject = hintUserId.toString,
+            audience = List(clientId.toString, "other-service"),
+            custom = Json.Obj("azp" -> Json.Str(clientId.toString)),
+          ),
+          ttl = 1.hour,
+          signature = JWT.Signature.Asymmetric(JWT.Algorithm.RS256, "test-key-id", TestEnvConfig.privateKey),
+        )
+        _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
+        _ <- env.configurationService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
+        _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
+        _ <- env.conversationRepository.create.succeedsWith(())
+        _ <- env.userRepository.find.succeedsWith(Some(hintUser))
+        _ <- env.conversationRouter.submit.succeedsWith((ConversationResult.IllegalState, dummyConversation))
+        result <- env.service.authorize(baseRequest.copy(idTokenHint = Some(hint)))
+        createCalls = env.conversationRepository.create.calls
+      yield assertTrue(
+        result == AuthorizeResponse.Initialize(AuthId(uuid)),
+        createCalls.head._2.expectedUserId == Some(hintUserId),
+      )
+    },
+    test("hint for user not found in DB returns Initialize without calling submit") {
+      val env = Env()
+      val uuid = UUID.randomUUID()
+      for
+        hint <- makeIdToken(hintUserId, clientId.toString, TestEnvConfig.privateKey)
+        _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
+        _ <- env.configurationService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
+        _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
+        _ <- env.conversationRepository.create.succeedsWith(())
+        _ <- env.userRepository.find.succeedsWith(None)
+        result <- env.service.authorize(baseRequest.copy(idTokenHint = Some(hint)))
+        submitCalls = env.conversationRouter.submit.calls
+      yield assertTrue(
+        result == AuthorizeResponse.Initialize(AuthId(uuid)),
+        submitCalls.isEmpty,
+      )
+    },
     test("hint for different user than active session forces re-authentication") {
       val env = Env()
       val uuid = UUID.randomUUID()
@@ -488,9 +534,10 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         _ <- env.securityService.mac.succeedsWith(sessionMac)
         _ <- env.sessionRepository.find.succeedsWith(Some(session))
         _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
+        _ <- env.configurationService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
         _ <- env.conversationRepository.create.succeedsWith(())
         _ <- env.userRepository.find.succeedsWith(Some(hintUser))
-        _ <- env.conversationRouter.submit.succeedsWith(ConversationResult.RenderStep(ConversationStep.Credential(Nil, false, false)))
+        _ <- env.conversationRouter.submit.succeedsWith((ConversationResult.IllegalState, dummyConversation))
         result <- env.service.authorize(baseRequest.copy(sessionId = Some(rawSessionId), idTokenHint = Some(hint)))
         createCalls = env.conversationRepository.create.calls
       yield assertTrue(

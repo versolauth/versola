@@ -237,7 +237,8 @@ object AuthorizeEndpointService:
         hint: String,
         request: AuthorizeRequest,
     ): Task[Option[UserId]] =
-      JWT.deserializeIgnoringExpiry[Json.Obj](hint, config.jwt.publicKeys, JWT.Type.JWT)
+      jwksService.getPublicKeys.flatMap: keys =>
+        JWT.deserializeIgnoringExpiry[Json.Obj](hint, keys, JWT.Type.JWT)
         .foldZIO(
           _ => ZIO.fail(Error.IdTokenHintInvalid(request.redirectUri, request.state)),
           claims =>

@@ -441,9 +441,9 @@ object ConversationService:
               amr = conversation.amr,
             )
             codeMac <- securityService.mac(Secret(code), config.security.authCodesSecret)
-        sessionTtl <- configService.getSessionTtl(conversation.clientId)
-        sessionIdleTtl <- if conversation.scope.contains(ScopeToken.OfflineAccess) then ZIO.none
-        else configService.getSessionIdleTtl(conversation.clientId)
+            sessionTtl <- configService.getSessionTtl(conversation.clientId)
+            sessionIdleTtl <- if conversation.scope.contains(ScopeToken.OfflineAccess) then ZIO.none
+              else configService.getSessionIdleTtl(conversation.clientId)
             claimed <- conversationRepository.delete(authId, conversation.version)
             result <- if claimed then
               for
