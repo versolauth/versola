@@ -11,25 +11,25 @@ trait PermissionRepository
   def getAll: Task[Vector[PermissionRecord]]
 
   def findPermission(
-      tenantId: Option[TenantId],
+      tenantId: TenantId,
       permission: Permission,
   ): Task[Option[PermissionRecord]]
 
   def createPermission(
-      tenantId: Option[TenantId],
+      tenantId: TenantId,
       permission: Permission,
       description: Map[String, String],
       endpointIds: Set[ResourceEndpointId],
   ): Task[Unit]
 
   def updatePermission(
-      tenantId: Option[TenantId],
+      tenantId: TenantId,
       permission: Permission,
       descriptionPatch: PatchDescription,
       endpointIds: Option[Set[ResourceEndpointId]],
   ): Task[Unit]
 
   def deletePermission(
-      tenantId: Option[TenantId],
+      tenantId: TenantId,
       permission: Permission,
   ): Task[Unit]

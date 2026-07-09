@@ -114,10 +114,15 @@ def writeFile(dir: File, name: String, content: String): Unit =
   interactive = !isLocal
   if isLocal then println("  local env — using defaults, skipping prompts")
 
-  // ── URLs / database ───────────────────────────────────────────────────────────
+  // ── Service URLs ──────────────────────────────────────────────────────────────
+  // Each service's public base URL, prompted once and reused wherever another
+  // service needs to reach it (auth is also the JWT issuer and edge's upstream).
+  section("\n── Service URLs ──────────────────────────────────────────────────────")
+  val authUrl    = prompt("  Auth URL [http://localhost:9003]: ",    "http://localhost:9003")
+  val centralUrl = prompt("  Central URL [http://localhost:9001]: ", "http://localhost:9001")
+  val edgeUrl    = prompt("  Edge URL [http://localhost:9005]: ",    "http://localhost:9005")
+
   section("\n── Auth service ──────────────────────────────────────────────────────")
-  val authJwtIssuer   = prompt("  JWT issuer URL [http://localhost:9003]: ",          "http://localhost:9003")
-  val authCentralUrl  = prompt("  Central URL [http://localhost:9001]: ",             "http://localhost:9001")
   val authPgUrl       = prompt("  Postgres URL [jdbc:postgresql://localhost:5432/auth]: ", "jdbc:postgresql://localhost:5432/auth")
   val authPgUser      = prompt("  Postgres user [dev]: ",                             "dev")
   val authPgPass      = prompt("  Postgres password [1234]: ",                        "1234")
@@ -127,16 +132,12 @@ def writeFile(dir: File, name: String, content: String): Unit =
   val bootstrapPassword = prompt("  Admin bootstrap password [Admin1234!]: ", "Admin1234!")
 
   section("\n── Central service ───────────────────────────────────────────────────")
-  val centralAuthUrl      = prompt("  Auth URL [http://localhost:9003]: ",            "http://localhost:9003")
   val centralRedirectUris = prompt("  Admin panel bootstrap redirect URIs (comma-separated) [http://localhost:3000]: ", "http://localhost:3000")
   val centralPgUrl        = prompt("  Postgres URL [jdbc:postgresql://localhost:5432/auth]: ", "jdbc:postgresql://localhost:5432/auth")
   val centralPgUser       = prompt("  Postgres user [dev]: ",                         "dev")
   val centralPgPass       = prompt("  Postgres password [1234]: ",                    "1234")
 
   section("\n── Edge service ──────────────────────────────────────────────────────")
-  val edgeUrl         = prompt("  Edge URL [http://localhost:9005]: ",                "http://localhost:9005")
-  val edgeCentralUrl  = prompt("  Central URL [http://localhost:9001]: ",             "http://localhost:9001")
-  val edgeVersolaUrl  = prompt("  Versola URL [http://localhost:9003]: ",             "http://localhost:9003")
   val edgePgUrl       = prompt("  Postgres URL [jdbc:postgresql://localhost:5432/auth]: ", "jdbc:postgresql://localhost:5432/auth")
   val edgePgUser      = prompt("  Postgres user [dev]: ",                             "dev")
   val edgePgPass      = prompt("  Postgres password [1234]: ",                        "1234")
@@ -248,12 +249,12 @@ def writeFile(dir: File, name: String, content: String): Unit =
        |}
        |
        |jwt {
-       |  issuer = "$authJwtIssuer"
+       |  issuer = "$authUrl"
        |  private-key = \"\"\"${jwtKey.privateB64}\"\"\"
        |}
        |
        |central {
-       |  url = "$authCentralUrl"
+       |  url = "$centralUrl"
        |  secret-key = "$centralSecretKey"
        |}
        |$otpBlock$smtpBlock
@@ -275,6 +276,7 @@ def writeFile(dir: File, name: String, content: String): Unit =
        |      table-name = "authorization_codes"
        |      batch-size = 1000
        |      interval   = "5 minutes"
+       |      key-column = "code"
        |    }
        |    {
        |      table-name = "refresh_tokens"
@@ -290,6 +292,7 @@ def writeFile(dir: File, name: String, content: String): Unit =
        |      table-name = "challenge_throttle"
        |      batch-size = 1000
        |      interval   = "5 minutes"
+       |      key-column = "ctid"
        |    }
        |  ]
        |}
@@ -320,13 +323,14 @@ def writeFile(dir: File, name: String, content: String): Unit =
        |      post-login-redirect-uri = "$postLoginRedirectUri"
        |    }
        |  ]
+       |  central-url = "$centralUrl"
        |}
        |
        |secret-key = "$centralSecretKey"
        |client-secrets-secret = "$clientSecretsSecret"
        |
        |auth {
-       |  url = "$centralAuthUrl"
+       |  url = "$authUrl"
        |}
        |
        |user-outbox {
@@ -378,6 +382,7 @@ def writeFile(dir: File, name: String, content: String): Unit =
        |      table-name = "pending_logins"
        |      batch-size = 1000
        |      interval   = "5 minutes"
+       |      key-column = "login_id"
        |    }
        |    {
        |      table-name = "edge_refresh_tokens"
@@ -388,10 +393,10 @@ def writeFile(dir: File, name: String, content: String): Unit =
        |}
        |
        |central {
-       |  url = "$edgeCentralUrl"
+       |  url = "$centralUrl"
        |}
        |
-       |versola-url = "$edgeVersolaUrl"
+       |versola-url = "$authUrl"
        |""".stripMargin
 
   // ── Write files ───────────────────────────────────────────────────────────────

@@ -6,7 +6,7 @@ import zio.json.JsonCodec
 type TenantId = TenantId.Type
 
 object TenantId extends StringNewType:
-  /** Sentinel tenant used for system-wide (super-admin) roles. */
-  val global: TenantId = apply("*")
+  /** Default tenant carrying central admin roles. */
+  val default: TenantId = apply("default")
 
   given JsonCodec[TenantId] = JsonCodec.string.transform(TenantId(_), identity[String])

@@ -69,22 +69,22 @@ class PostgresCacheSyncRepository(conn: PGConnection) extends CacheSyncRepositor
             }
           case "permission_change" =>
             parsePayload(notification.getParameter).fold[SyncEvent](SyncEvent.Unknown) { payload =>
-              SyncEvent.PermissionsUpdated(
-                tenantId = payload.tenantId.filter(_.nonEmpty).map(TenantId(_)),
-                id = Permission(payload.id),
-                op = SyncEvent.Op.valueOf(payload.op),
-              )
+              payload.tenantId.filter(_.nonEmpty).fold[SyncEvent](SyncEvent.Unknown) { tenantId =>
+                SyncEvent.PermissionsUpdated(
+                  tenantId = TenantId(tenantId),
+                  id = Permission(payload.id),
+                  op = SyncEvent.Op.valueOf(payload.op),
+                )
+              }
             }
           case "resource_change" =>
             parsePayload(notification.getParameter).fold[SyncEvent](SyncEvent.Unknown) { payload =>
               payload.tenantId.fold[SyncEvent](SyncEvent.Unknown) { tenantId =>
-                payload.id.toLongOption.fold[SyncEvent](SyncEvent.Unknown) { resourceId =>
-                  SyncEvent.ResourcesUpdated(
-                    tenantId = TenantId(tenantId),
-                    id = ResourceId(resourceId),
-                    op = SyncEvent.Op.valueOf(payload.op),
-                  )
-                }
+                SyncEvent.ResourcesUpdated(
+                  tenantId = TenantId(tenantId),
+                  id = ResourceId(payload.id),
+                  op = SyncEvent.Op.valueOf(payload.op),
+                )
               }
             }
           case "preset_change" =>

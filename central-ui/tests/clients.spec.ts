@@ -99,6 +99,16 @@ test('creates a client and shows the generated secret banner', async ({ page }) 
     audience: ['alpha-web'],
     permissions: ['alpha.read'],
     accessTokenTtl: 1800,
+    authFlow: {
+      primary: {
+        credentials: ['phone'],
+        inlinePassword: false,
+        factors: [{ type: 'otp', required: true }],
+      },
+      passkey: null,
+      equivalents: {},
+    },
+    otpTemplateId: null,
     theme: 'default',
   });
 });
@@ -233,10 +243,10 @@ test('updates a client and sends patch-style changes', async ({ page }) => {
   await expect(page.getByRole('button', { name: 'Select audience service-client', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Select audience alpha-web', exact: true })).toHaveCount(0);
   await page.getByRole('button', { name: 'Select audience service-client', exact: true }).click();
-  await page.getByRole('checkbox', { name: 'openid', exact: true }).uncheck();
-  await page.getByRole('checkbox', { name: 'email', exact: true }).check();
-  await page.getByRole('checkbox', { name: 'alpha.read', exact: true }).uncheck();
-  await page.getByRole('checkbox', { name: 'alpha.write', exact: true }).check();
+  await page.locator('.checkbox-item', { hasText: 'openid' }).getByRole('checkbox').uncheck();
+  await page.locator('.checkbox-item', { hasText: 'email' }).getByRole('checkbox').check();
+  await page.locator('.checkbox-item', { hasText: 'alpha.read' }).getByRole('checkbox').uncheck();
+  await page.locator('.checkbox-item', { hasText: 'alpha.write' }).getByRole('checkbox').check();
   await page.getByLabel('Access Token TTL').fill('2');
 
   await page.getByRole('button', { name: 'Update Client', exact: true }).click();
@@ -249,6 +259,15 @@ test('updates a client and sends patch-style changes', async ({ page }) => {
     scope: { add: ['email'], remove: ['openid'] },
     permissions: { add: ['alpha.write'], remove: ['alpha.read'] },
     accessTokenTtl: 7200,
+    authFlow: {
+      primary: {
+        credentials: ['phone'],
+        inlinePassword: false,
+        factors: [{ type: 'otp', required: true }],
+      },
+      passkey: null,
+      equivalents: {},
+    },
   });
 });
 
@@ -341,6 +360,16 @@ test('shows error alert when creating a client with duplicate ID', async ({ page
     audience: [],
     permissions: [],
     accessTokenTtl: 3600,
+    authFlow: {
+      primary: {
+        credentials: ['phone'],
+        inlinePassword: false,
+        factors: [{ type: 'otp', required: true }],
+      },
+      passkey: null,
+      equivalents: {},
+    },
+    otpTemplateId: null,
     theme: 'default',
   });
 

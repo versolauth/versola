@@ -1,6 +1,7 @@
 package versola.central.configuration.locales
 
-import versola.central.{CentralConfig, authorizeInternal}
+import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
+import versola.central.configuration.clients.OAuthClientService
 import versola.central.configuration.edges.EdgeService
 import versola.util.http.Controller
 import zio.ZIO
@@ -8,7 +9,7 @@ import zio.http.{Method, Request, Response, Routes, Status, handler}
 import zio.json.EncoderOps
 
 object LocaleController extends Controller:
-  type Env = Tracing & LocaleService & CentralConfig & EdgeService
+  type Env = Tracing & LocaleService & OAuthClientService & CentralConfig & EdgeService
 
   def routes: Routes[Env, Throwable] = Routes(
     getLocalesEndpoint,
@@ -18,8 +19,9 @@ object LocaleController extends Controller:
   )
 
   val getLocalesEndpoint =
-    Method.GET / "configuration" / "locales" -> handler { (_: Request) =>
+    Method.GET / "configuration" / "locales" -> handler { (request: Request) =>
       for
+        _ <- authorizeBasic(request)
         service <- ZIO.service[LocaleService]
         locales <- service.getAll
       yield Response.json(GetLocalesResponse(locales).toJson)
@@ -28,6 +30,7 @@ object LocaleController extends Controller:
   val updateLocalesEndpoint =
     Method.PUT / "configuration" / "locales" -> handler { (request: Request) =>
       for
+        _       <- authorizeBasic(request)
         service <- ZIO.service[LocaleService]
         body    <- request.body.asJson[UpdateLocalesRequest]
         _       <- service.update(body.add, body.delete)
@@ -37,6 +40,7 @@ object LocaleController extends Controller:
   val setDefaultLocaleEndpoint =
     Method.PUT / "configuration" / "locales" / "default" -> handler { (request: Request) =>
       for
+        _       <- authorizeBasic(request)
         service <- ZIO.service[LocaleService]
         body    <- request.body.asJson[SetDefaultLocaleRequest]
         result  <- service.setDefault(body.code)

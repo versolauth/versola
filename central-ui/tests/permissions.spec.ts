@@ -2,8 +2,8 @@ import { expect, test, type Page } from '@playwright/test';
 import { findRequest, loadAdminApp } from './fixtures';
 
 const permissionsPath = '/?view=permissions&tenant=tenant-alpha';
-const alphaResource = { id: 1, alias: 'alpha', resource: 'https://alpha.example', endpoints: [{ id: 101, method: 'GET', path: '/alpha/items', fetchUserInfo: false, allow: 'true', inject: [] }, { id: 102, method: 'POST', path: '/alpha/items', fetchUserInfo: false, allow: 'true', inject: [] }] };
-const reportsResource = { id: 2, alias: 'reports', resource: 'https://reports.example', endpoints: [{ id: 201, method: 'GET', path: '/reports', fetchUserInfo: false, allow: 'true', inject: [] }] };
+const alphaResource = { resourceId: 'alpha', resource: 'https://alpha.example', endpoints: [{ id: 101, method: 'GET', path: '/alpha/items', fetchUserInfo: false, allow: 'true', inject: [] }, { id: 102, method: 'POST', path: '/alpha/items', fetchUserInfo: false, allow: 'true', inject: [] }] };
+const reportsResource = { resourceId: 'reports', resource: 'https://reports.example', endpoints: [{ id: 201, method: 'GET', path: '/reports', fetchUserInfo: false, allow: 'true', inject: [] }] };
 const alphaRead = { permission: 'alpha.read', description: { en: 'Read alpha resources' }, endpointIds: [101] };
 const reportsRead = { permission: 'reports.read', description: { en: 'Read reports' }, endpointIds: [201] };
 
@@ -35,7 +35,7 @@ test('creates a permission bound to a selected resource endpoint', async ({ page
   await page.getByRole('button', { name: '+ Create Permission', exact: true }).click();
   await page.getByLabel('Permission ID').fill('alpha.write');
   await page.getByLabel('English description').fill('Write alpha resources');
-  await page.getByLabel('Add resource').selectOption('1');
+  await page.getByLabel('Add resource').selectOption('alpha');
   await page.getByRole('button', { name: 'Add resource', exact: true }).click();
   const resourceCard = page.locator('.resource-card').filter({ hasText: 'alpha.example' }).first();
   await expect(resourceCard).toContainText('No endpoints added yet.');

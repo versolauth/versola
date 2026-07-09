@@ -20,6 +20,7 @@ const CODE_PLACEHOLDER = '{{code}}';
 @customElement('versola-challenges-list')
 export class VersolaChallengesList extends LitElement {
   @property({ type: String }) tenantId: string | null = null;
+  @property({ type: Boolean }) canManage = false;
 
   @state() private templates: OtpTemplateRecord[] = [];
   @state() private availableLocales: Locale[] = [];
@@ -716,10 +717,11 @@ export class VersolaChallengesList extends LitElement {
       <div class="card template-card">
         <div class="template-header">
           <span class="template-id">${template.id}</span>
+          ${this.canManage ? html`
           <div class="template-actions">
             <button class="icon-action" @click=${() => this.startEdit(template)} title="Edit">✎</button>
             <button class="icon-action danger" @click=${() => this.handleDelete(template.id)} title="Delete">✕</button>
-          </div>
+          </div>` : ''}
         </div>
         <div class="locale-bar">
           <span class="locale-bar-label">Language</span>
@@ -743,7 +745,7 @@ export class VersolaChallengesList extends LitElement {
             <h2 class="section-title">OTP Templates</h2>
             <div class="section-desc">One-time password message templates used by OAuth clients.</div>
           </div>
-          <button class="btn btn-primary" @click=${() => this.startAdd()}>Add Template</button>
+          ${this.canManage ? html`<button class="btn btn-primary" @click=${() => this.startAdd()}>Add Template</button>` : ''}
         </div>
 
         ${this.templates.length === 0
@@ -752,7 +754,7 @@ export class VersolaChallengesList extends LitElement {
               <div class="empty-state">
                 <h3>No OTP templates yet</h3>
                 <p>Add your first OTP template to get started.</p>
-                <button class="btn btn-primary" @click=${() => this.startAdd()} style="margin-top: 1rem;">+ Add Template</button>
+                ${this.canManage ? html`<button class="btn btn-primary" @click=${() => this.startAdd()} style="margin-top: 1rem;">+ Add Template</button>` : ''}
               </div>
             </div>`
           : this.templates.map(template => this.renderTemplateCard(template))}
@@ -768,7 +770,7 @@ export class VersolaChallengesList extends LitElement {
             <h2 class="section-title">Challenge Settings</h2>
             <div class="section-desc">Global security settings for OTP and password submissions.</div>
           </div>
-          ${this.hasChallengeSettings
+          ${this.hasChallengeSettings && this.canManage
             ? html`<button class="btn btn-primary" @click=${() => this.startEditSettings()}>Edit</button>`
             : nothing}
         </div>
@@ -779,7 +781,7 @@ export class VersolaChallengesList extends LitElement {
               <div class="empty-state">
                 <h3>No challenge settings yet</h3>
                 <p>Configure OTP, password and passkey security for this tenant.</p>
-                <button class="btn btn-primary" @click=${() => this.startEditSettings()} style="margin-top: 1rem;">+ Add Challenge Settings</button>
+                ${this.canManage ? html`<button class="btn btn-primary" @click=${() => this.startEditSettings()} style="margin-top: 1rem;">+ Add Challenge Settings</button>` : ''}
               </div>
             </div>`
           : this.renderChallengeSettingsContent()}

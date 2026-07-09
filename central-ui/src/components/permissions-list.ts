@@ -26,6 +26,7 @@ type PermissionResourceGroup = {
 @customElement('versola-permissions-list')
 export class VersolaPermissionsList extends LitElement {
   @property({ type: String }) tenantId: string | null = null;
+  @property({ type: Boolean }) canManage = false;
   @state() private permissions: Permission[] = [];
   @state() private resources: Resource[] = [];
   @state() private expandedPermissions: Set<string> = new Set();
@@ -252,7 +253,7 @@ export class VersolaPermissionsList extends LitElement {
 
     return html`
       <content-header title="Permissions">
-        ${this.permissions.length > 0 ? html`
+        ${this.permissions.length > 0 && this.canManage ? html`
           <button slot="actions" class="btn btn-primary" @click=${() => { this.showCreateForm = true; this.editing = null; }}>+ Create Permission</button>
         ` : ''}
       </content-header>
@@ -264,9 +265,10 @@ export class VersolaPermissionsList extends LitElement {
           <div class="empty-state">
             <h3>No permissions yet</h3>
             <p>Create your first permission to get started</p>
+            ${this.canManage ? html`
             <button class="btn btn-primary" @click=${() => { this.showCreateForm = true; this.editing = null; }} style="margin-top: 1rem;">
               + Create Permission
-            </button>
+            </button>` : ''}
           </div>
         </div>
       ` : html`
@@ -288,6 +290,7 @@ export class VersolaPermissionsList extends LitElement {
                     <div class="permission-name">${getLocalizedDescription(permission.description) || permission.id}</div>
                     <div class="permission-code">${permission.id}</div>
                   </div>
+                  ${this.canManage ? html`
                   <div class="permission-actions" @click=${(e: Event) => e.stopPropagation()}>
                     <button class="icon-action" @click=${() => { this.editing = permission; this.showCreateForm = false; }} title="Edit" aria-label=${`Edit permission ${permission.id}`}>
                       ✎
@@ -295,7 +298,7 @@ export class VersolaPermissionsList extends LitElement {
                     <button class="icon-action danger" @click=${() => this.removePermission(permission.id)} title="Delete" aria-label=${`Delete permission ${permission.id}`}>
                       ✕
                     </button>
-                  </div>
+                  </div>` : ''}
                 </div>
                 ${isExpanded ? this.renderResourceGroups(permission) : ''}
               </div>

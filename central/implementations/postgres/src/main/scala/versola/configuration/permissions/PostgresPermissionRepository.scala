@@ -22,21 +22,21 @@ class PostgresPermissionRepository(xa: TransactorZIO) extends PermissionReposito
     xa.connectMeasured("get-all-permissions"):
       sql"""
         SELECT tenant_id, id, description, endpoint_ids FROM permissions
-        ORDER BY tenant_id NULLS FIRST, id
+        ORDER BY tenant_id, id
       """.query[PermissionRecord].run()
 
   override def findPermission(
-    tenantId: Option[TenantId],
+    tenantId: TenantId,
     permission: Permission
   ): Task[Option[PermissionRecord]] =
     xa.connectMeasured("find-permission"):
       sql"""
         SELECT tenant_id, id, description, endpoint_ids FROM permissions
-        WHERE tenant_id IS NOT DISTINCT FROM $tenantId AND id = $permission
+        WHERE tenant_id = $tenantId AND id = $permission
       """.query[PermissionRecord].run().headOption
 
   override def createPermission(
-      tenantId: Option[TenantId],
+      tenantId: TenantId,
       permission: Permission,
       description: Map[String, String],
       endpointIds: Set[ResourceEndpointId],
@@ -47,7 +47,7 @@ class PostgresPermissionRepository(xa: TransactorZIO) extends PermissionReposito
     .unit
 
   override def updatePermission(
-      tenantId: Option[TenantId],
+      tenantId: TenantId,
       permission: Permission,
       descriptionPatch: PatchDescription,
       endpointIdsPatch: Option[Set[ResourceEndpointId]],
@@ -55,7 +55,7 @@ class PostgresPermissionRepository(xa: TransactorZIO) extends PermissionReposito
     xa.repeatableRead.transactMeasured("update-permission"):
       val existing = sql"""
         SELECT tenant_id, id, description, endpoint_ids FROM permissions
-        WHERE tenant_id IS NOT DISTINCT FROM $tenantId AND id = $permission
+        WHERE tenant_id = $tenantId AND id = $permission
       """.query[PermissionRecord].run().headOption
 
       existing match
@@ -67,17 +67,17 @@ class PostgresPermissionRepository(xa: TransactorZIO) extends PermissionReposito
             UPDATE permissions
             SET description = $newDescription,
                 endpoint_ids = $newEndpointIds
-            WHERE tenant_id IS NOT DISTINCT FROM $tenantId AND id = $permission
+            WHERE tenant_id = $tenantId AND id = $permission
           """.update.run()
           ()
     .unit
 
   override def deletePermission(
-      tenantId: Option[TenantId],
+      tenantId: TenantId,
       permission: Permission,
   ): Task[Unit] =
     xa.connectMeasured("delete-permission"):
-      sql"""DELETE FROM permissions WHERE tenant_id IS NOT DISTINCT FROM $tenantId AND id = $permission""".update.run()
+      sql"""DELETE FROM permissions WHERE tenant_id = $tenantId AND id = $permission""".update.run()
     .unit
 
 object PostgresPermissionRepository:

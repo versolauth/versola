@@ -16,8 +16,8 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
 
   private val tenantId = TenantId("tenant-a")
   private val otherTenantId = TenantId("tenant-b")
-  private val resourceId = ResourceId(1)
-  private val otherResourceId = ResourceId(2)
+  private val resourceId = ResourceId("users-api")
+  private val otherResourceId = ResourceId("other-api")
   private val existingEndpointId = endpointId("018f0f2a-1c7b-7000-8000-000000000401")
   private val removedEndpointId = endpointId("018f0f2a-1c7b-7000-8000-000000000402")
   private val createdEndpointId = endpointId("018f0f2a-1c7b-7000-8000-000000000403")
@@ -31,14 +31,12 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
   private val removedEndpoint = ResourceEndpointRecord(removedEndpointId, "/users", "DELETE", false, None, Vector.empty)
   private val updatedEndpoint = ResourceEndpointRecord(existingEndpointId, "/users/me", "GET", true, allow, inject)
   private val createdEndpoint = ResourceEndpointRecord(createdEndpointId, "/users", "POST", false, denyAware, Vector.empty)
-  private val originalAlias = "users-api"
-  private val updatedAlias = "users-internal"
-  private val resource = ResourceRecord(tenantId, resourceId, originalAlias, originalUri, Vector(existingEndpoint, removedEndpoint))
-  private val otherTenantResource = ResourceRecord(otherTenantId, otherResourceId, "other-api", ResourceUri("https://other.example.com"), Vector.empty)
+  private val resource = ResourceRecord(tenantId, resourceId, originalUri, Vector(existingEndpoint, removedEndpoint))
+  private val otherTenantResource = ResourceRecord(otherTenantId, otherResourceId, ResourceUri("https://other.example.com"), Vector.empty)
 
   private val createRequest = CreateResourceRequest(
     tenantId = tenantId,
-    alias = originalAlias,
+    resourceId = resourceId,
     resource = originalUri,
     endpoints = Vector(
       CreateResourceEndpointRequest(existingEndpointId, "/users", "GET", false, allow, inject),
@@ -47,8 +45,7 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
   )
 
   private val updateRequest = UpdateResourceRequest(
-    id = resourceId,
-    alias = Some(updatedAlias),
+    resourceId = resourceId,
     resource = Some(updatedUri),
     deleteEndpoints = Set(removedEndpointId),
     createEndpoints = Vector(
@@ -72,7 +69,7 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
       yield assertTrue(result == Vector(resource))
     },
     test("getTenantResources applies pagination after filtering") {
-      val pagedResource = ResourceRecord(tenantId, ResourceId(3), "paged", updatedUri, Vector.empty)
+      val pagedResource = ResourceRecord(tenantId, ResourceId("paged"), updatedUri, Vector.empty)
       val env = new Env(Vector(resource, pagedResource, otherTenantResource))
 
       for result <- env.service.getTenantResources(tenantId, offset = 1, limit = Some(1))
@@ -82,13 +79,13 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val env = new Env
 
       for
-        _ <- env.repository.createResource.succeedsWith(resourceId)
+        _ <- env.repository.createResource.succeedsWith(())
         result <- env.service.createResource(createRequest)
       yield assertTrue(
         result == Right(resourceId),
         env.repository.createResource.calls == List((
           tenantId,
-          originalAlias,
+          resourceId,
           originalUri,
           Vector(
             ResourceEndpointRecord(existingEndpointId, "/users", "GET", false, allow, inject),
@@ -106,7 +103,7 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
       )
 
       for
-        _ <- env.repository.createResource.succeedsWith(resourceId)
+        _ <- env.repository.createResource.succeedsWith(())
         result <- env.service.createResource(badRequest)
       yield assertTrue(
         result.isLeft,
@@ -165,7 +162,7 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
       )
 
       for
-        _ <- env.repository.createResource.succeedsWith(resourceId)
+        _ <- env.repository.createResource.succeedsWith(())
         result <- env.service.createResource(badRequest)
       yield assertTrue(
         result.isLeft,
@@ -183,7 +180,6 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
         result == Right(()),
         env.repository.updateResource.calls == List((
           resourceId,
-          Some(updatedAlias),
           Some(updatedUri),
           Vector(updatedEndpoint, createdEndpoint),
           Set(removedEndpointId),
@@ -208,7 +204,7 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
     },
     test("sync upserts fetched resource for non-delete event") {
       val env = new Env(Vector(resource, otherTenantResource))
-      val updatedResource = ResourceRecord(tenantId, resourceId, updatedAlias, updatedUri, Vector(updatedEndpoint, createdEndpoint))
+      val updatedResource = ResourceRecord(tenantId, resourceId, updatedUri, Vector(updatedEndpoint, createdEndpoint))
 
       for
         _ <- env.repository.findResource.succeedsWith(Some(updatedResource))

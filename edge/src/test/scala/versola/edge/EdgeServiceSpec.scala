@@ -75,7 +75,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
 
     val presetCache = ReloadingCache(Unsafe.unsafe(unsafe ?=> Ref.unsafe.make(Map.empty[PresetId, AuthorizationPreset])))
     val clientCache = ReloadingCache(Unsafe.unsafe(unsafe ?=> Ref.unsafe.make(Map.empty[ClientId, OAuthClient])))
-    val resourceCache = ReloadingCache(Unsafe.unsafe(unsafe ?=> Ref.unsafe.make(Map.empty[String, Resource])))
+    val resourceCache = ReloadingCache(Unsafe.unsafe(unsafe ?=> Ref.unsafe.make(Map.empty[ResourceId, Resource])))
 
     val clientService = OAuthClientService.Impl(presetCache, clientCache)
     val resourceService = ResourceService.Impl(resourceCache)
@@ -132,7 +132,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
       clientCache.set(values.map(c => c.id -> c).toMap)
 
     def withResources(values: Resource*): UIO[Unit] =
-      resourceCache.set(values.map(r => r.alias -> r).toMap)
+      resourceCache.set(values.map(r => r.resourceId -> r).toMap)
 
     def buildService(httpClient: Client, security: SecurityService): EdgeService =
       EdgeService.Impl(
@@ -153,6 +153,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
   def spec = suite("EdgeService")(
     authorizeSuite,
     completeSuite,
+    getMyPermissionsSuite,
   ).provideSomeLayer[Client](
     SecureRandom.live >>> SecurityService.live,
   ).provideLayer(TestClient.layer) @@ TestAspect.silentLogging
@@ -321,4 +322,222 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
       },
     )
   }
+
+  private def simpleResource(resourceId: String, endpointId: ResourceEndpointId): Resource =
+    Resource(
+      resourceId = ResourceId(resourceId),
+      resource = URL.decode(s"https://$resourceId.example").toOption.get,
+      endpoints = Vector(ResourceEndpoint(
+        id = endpointId,
+        method = "GET",
+        path = s"/$resourceId",
+        fetchUserInfo = false,
+        allow = Some("true"),
+        inject = Vector.empty,
+      )),
+    )
+
+  private val centralEndpointId = ResourceEndpointId(java.util.UUID.fromString("018f0f2a-1c7b-7000-9000-000000000000"))
+  private val ordersEndpointId  = ResourceEndpointId(java.util.UUID.fromString("018f0f2a-1c7b-7000-9000-000000000001"))
+  private val billingEndpointId = ResourceEndpointId(java.util.UUID.fromString("018f0f2a-1c7b-7000-9000-000000000002"))
+  private val centralResource   = simpleResource("central", centralEndpointId)
+  private val ordersResource    = simpleResource("orders", ordersEndpointId)
+  private val billingResource   = simpleResource("billing", billingEndpointId)
+
+  private val getMyPermissionsSuite = suite("getMyPermissions")(
+    test("central oauth-admin derives permissions from permission service") {
+      val env = new Env
+      val perm = PermissionId("users:read")
+      for
+        _ <- env.withResources(centralResource)
+        _ <- env.permissionService.getPermissionsForRoles.succeedsWith(Set(perm))
+        security <- ZIO.service[SecurityService]
+        client <- ZIO.service[Client]
+        service = env.buildService(client, security)
+        claims = PermissionsClaims(
+          clientId = Some(ClientId("central-admin")),
+          tenantId = Some(TenantId.default),
+          roles = Some(List(RoleId("oauth-admin"))),
+        )
+        response <- service.getMyPermissions(claims, List(ResourceId("central")))
+      yield assertTrue(
+        response.resources == Map("central" -> EdgeService.ResourcePermissions(Set(perm))),
+        env.permissionService.getPermissionsForRoles.calls ==
+          List((Map(TenantId.default -> List(RoleId("oauth-admin"))), Set(centralEndpointId))),
+      )
+    },
+    test("central admin derives permissions from default-tenant roles") {
+      val env = new Env
+      val perm = PermissionId("users:read")
+      for
+        _ <- env.withResources(centralResource)
+        _ <- env.permissionService.getPermissionsForRoles.succeedsWith(Set(perm))
+        security <- ZIO.service[SecurityService]
+        client <- ZIO.service[Client]
+        service = env.buildService(client, security)
+        claims = PermissionsClaims(
+          clientId = Some(ClientId("central-admin")),
+          tenantId = Some(TenantId.default),
+          roles = Some(List(RoleId("operator"))),
+        )
+        response <- service.getMyPermissions(claims, List(ResourceId("central")))
+      yield assertTrue(
+        response.resources == Map("central" -> EdgeService.ResourcePermissions(Set(perm))),
+        env.permissionService.getPermissionsForRoles.calls ==
+          List((Map(TenantId.default -> List(RoleId("operator"))), Set(centralEndpointId))),
+      )
+    },
+    test("central is NOT omitted when requested by a non-central client") {
+      val env = new Env
+      val perm = PermissionId("users:read")
+      for
+        _ <- env.withResources(centralResource)
+        _ <- env.permissionService.getPermissionsForRoles.succeedsWith(Set(perm))
+        security <- ZIO.service[SecurityService]
+        client <- ZIO.service[Client]
+        service = env.buildService(client, security)
+        claims = PermissionsClaims(
+          clientId = Some(ClientId("web-app")),
+          tenantId = Some(TenantId.default),
+          roles = Some(List(RoleId("oauth-admin"))),
+        )
+        response <- service.getMyPermissions(claims, List(ResourceId("central")))
+      yield assertTrue(
+        response.resources == Map("central" -> EdgeService.ResourcePermissions(Set(perm))),
+        env.permissionService.getPermissionsForRoles.calls ==
+          List((Map(TenantId.default -> List(RoleId("oauth-admin"))), Set(centralEndpointId))),
+      )
+    },
+    test("resource aliases map only to permissions whose endpoints belong to that resource") {
+      val env = new Env
+      val ordersPerm  = PermissionId("orders:read")
+      val billingPerm = PermissionId("billing:read")
+      for
+        _ <- env.withResources(ordersResource, billingResource)
+        _ <- env.permissionService.getPermissionsForRoles.returnsZIOOnCall:
+          case 1 => ZIO.succeed(Set(ordersPerm))   // first call: orders
+          case _ => ZIO.succeed(Set(billingPerm))  // second call: billing
+        security <- ZIO.service[SecurityService]
+        client <- ZIO.service[Client]
+        service = env.buildService(client, security)
+        claims = PermissionsClaims(
+          clientId = Some(ClientId("web-app")),
+          tenantId = Some(TenantId.default),
+          roles = Some(List(RoleId("member"))),
+        )
+        response <- service.getMyPermissions(claims, List(ResourceId("orders"), ResourceId("billing")))
+      yield assertTrue(
+        response.resources == Map(
+          "orders"  -> EdgeService.ResourcePermissions(Set(ordersPerm)),
+          "billing" -> EdgeService.ResourcePermissions(Set(billingPerm)),
+        ),
+        env.permissionService.getPermissionsForRoles.calls.size == 2,
+      )
+    },
+    test("combines central and resource aliases using their respective roles") {
+      val env = new Env
+      val centralPerm  = PermissionId("users:read")
+      val resourcePerm = PermissionId("orders:read")
+      for
+        _ <- env.withResources(centralResource, ordersResource)
+        _ <- env.permissionService.getPermissionsForRoles.returnsZIOOnCall:
+          case 1 => ZIO.succeed(Set(centralPerm))
+          case _ => ZIO.succeed(Set(resourcePerm))
+        security <- ZIO.service[SecurityService]
+        client <- ZIO.service[Client]
+        service = env.buildService(client, security)
+        claims = PermissionsClaims(
+          clientId = Some(ClientId("central-admin")),
+          tenantId = Some(TenantId.default),
+          roles = Some(List(RoleId("operator"))),
+        )
+        response <- service.getMyPermissions(claims, List(ResourceId("central"), ResourceId("orders")))
+      yield assertTrue(
+        response.resources == Map(
+          "central" -> EdgeService.ResourcePermissions(Set(centralPerm)),
+          "orders"  -> EdgeService.ResourcePermissions(Set(resourcePerm)),
+        ),
+        env.permissionService.getPermissionsForRoles.calls.size == 2,
+      )
+    },
+    test("empty alias list yields neither central nor resources") {
+      val env = new Env
+      for
+        security <- ZIO.service[SecurityService]
+        client <- ZIO.service[Client]
+        service = env.buildService(client, security)
+        claims = PermissionsClaims(
+          clientId = Some(ClientId("central-admin")),
+          tenantId = Some(TenantId.default),
+          roles = Some(List(RoleId("oauth-admin"))),
+        )
+        response <- service.getMyPermissions(claims, Nil)
+      yield assertTrue(
+        response.resources.isEmpty,
+        env.permissionService.getPermissionsForRoles.calls.isEmpty,
+      )
+    },
+    test("clientId=None means non-central client, central alias is NOT omitted") {
+      val env = new Env
+      for
+        _ <- env.withResources(centralResource, ordersResource)
+        _ <- env.permissionService.getPermissionsForRoles.succeedsWith(Set.empty)
+        security <- ZIO.service[SecurityService]
+        client <- ZIO.service[Client]
+        service = env.buildService(client, security)
+        claims = PermissionsClaims(
+          clientId = None,
+          tenantId = Some(TenantId.default),
+          roles = Some(List(RoleId("member"))),
+        )
+        response <- service.getMyPermissions(claims, List(ResourceId("central"), ResourceId("orders")))
+      yield assertTrue(
+        response.resources.contains(ResourceId("central")),
+        response.resources.contains(ResourceId("orders")),
+        env.permissionService.getPermissionsForRoles.calls.size == 2,
+      )
+    },
+    test("any client role is resolved via permission service for central") {
+      val env = new Env
+      val perm = PermissionId("users:read")
+      for
+        _ <- env.withResources(centralResource)
+        _ <- env.permissionService.getPermissionsForRoles.succeedsWith(Set(perm))
+        security <- ZIO.service[SecurityService]
+        client <- ZIO.service[Client]
+        service = env.buildService(client, security)
+        claims = PermissionsClaims(
+          clientId = Some(ClientId("central-admin")),
+          tenantId = Some(TenantId.default),
+          roles = Some(List(RoleId("editor"))),
+        )
+        response <- service.getMyPermissions(claims, List(ResourceId("central")))
+      yield assertTrue(
+        env.permissionService.getPermissionsForRoles.calls ==
+          List((Map(TenantId.default -> List(RoleId("editor"))), Set(centralEndpointId))),
+        response.resources == Map("central" -> EdgeService.ResourcePermissions(Set(perm))),
+      )
+    },
+    test("tenantId=None yields empty roles map, resource aliases return empty permissions") {
+      val env = new Env
+      for
+        _ <- env.withResources(ordersResource)
+        _ <- env.permissionService.getPermissionsForRoles.succeedsWith(Set.empty)
+        security <- ZIO.service[SecurityService]
+        client <- ZIO.service[Client]
+        service = env.buildService(client, security)
+        claims = PermissionsClaims(
+          clientId = Some(ClientId("web-app")),
+          tenantId = None,
+          roles = None,
+        )
+        response <- service.getMyPermissions(claims, List(ResourceId("orders")))
+      yield assertTrue(
+        response.resources == Map("orders" -> EdgeService.ResourcePermissions(Set.empty)),
+        env.permissionService.getPermissionsForRoles.calls.map(_._1) == List(Map.empty),
+        env.permissionService.getPermissionsForRoles.calls.map(_._2) ==
+          List(Set(ordersEndpointId)),
+      )
+    },
+  )
 end EdgeServiceSpec

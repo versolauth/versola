@@ -14,6 +14,7 @@ import './loading-cards';
 @customElement('versola-scopes-list')
 export class VersolaScopesList extends LitElement {
   @property({ type: String }) tenantId: string | null = null;
+  @property({ type: Boolean }) canManage = false;
 
   @state() private scopes: OAuthScope[] = [];
   @state() private searchQuery = '';
@@ -325,7 +326,7 @@ export class VersolaScopesList extends LitElement {
       <content-header
         title="OAuth Scopes"
       >
-        ${this.scopes.length > 0 ? html`
+        ${this.scopes.length > 0 && this.canManage ? html`
           <button slot="actions" class="btn btn-primary" @click=${this.handleCreateClick}>
             + Create Scope
           </button>
@@ -341,9 +342,10 @@ export class VersolaScopesList extends LitElement {
           <div class="empty-state">
             <h3>No OAuth scopes yet</h3>
             <p>Create your first OAuth scope to get started</p>
+            ${this.canManage ? html`
             <button class="btn btn-primary" @click=${this.handleCreateClick} style="margin-top: 1rem;">
               + Create Scope
-            </button>
+            </button>` : ''}
           </div>
         </div>
       ` : this.filteredScopes.length === 0 ? html`
@@ -369,6 +371,7 @@ export class VersolaScopesList extends LitElement {
                   <div class="scope-id">${scope.id}</div>
                 </div>
 
+                ${this.canManage ? html`
                 <div class="scope-actions" @click=${(e: Event) => e.stopPropagation()}>
                   <button
                     type="button"
@@ -388,7 +391,7 @@ export class VersolaScopesList extends LitElement {
                   >
                     ✕
                   </button>
-                </div>
+                </div>` : ''}
               </div>
 
               ${isExpanded && scope.claims.length > 0 ? html`

@@ -12,21 +12,26 @@ import versola.edge.model.{
   CodeVerifier,
   InjectRule,
   InjectTarget,
+  PermissionId,
   PresetId,
   PresetNotFound,
   RefreshToken,
   Resource,
   ResourceEndpoint,
+  ResourceEndpointId,
+  ResourceId,
+  RoleId,
   State,
+  TenantId,
   TokenResponse,
 }
 import versola.edge.session.EdgeRefreshTokenRepository
 import versola.util.cel.CelEvaluator
 import versola.util.{Base64, Base64Url, JWT, JsonJava, RedirectUri, Secret, SecureRandom, SecurityService}
-import zio.http.{Body, Client, Cookie, Header, MediaType, Path, Request, Response, URL}
+import zio.http.{Body, Client, Cookie, Header, MediaType, Path, Request, Response, Status, URL}
 import zio.json.ast.Json
-import zio.json.{DecoderOps, EncoderOps}
-import zio.{Chunk, Clock, Duration, IO, NonEmptyChunk, Task, ZIO, ZLayer, durationInt}
+import zio.json.{DecoderOps, EncoderOps, JsonCodec}
+import zio.{Chunk, Clock, Duration, IO, NonEmptyChunk, Task, UIO, ZIO, ZLayer, durationInt}
 
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
@@ -45,13 +50,19 @@ trait EdgeService:
   ): IO[Throwable | AuthConversationNotFound, EdgeService.LoginCompletion]
 
   def proxy(
-      alias: String,
+      resourceId: ResourceId,
       restPath: Path,
       request: Request,
   ): Task[Response]
 
+  def getMyPermissions(
+      claims: PermissionsClaims,
+      resourceIds: List[ResourceId],
+  ): UIO[EdgeService.PermissionsResponse]
+
 object EdgeService:
   case class LoginCompletion(
+      presetId: PresetId,
       accessToken: AccessToken,
       cookieTtl: Duration,
       postLoginRedirectUri: RedirectUri,
@@ -61,6 +72,14 @@ object EdgeService:
 
   case class ClientNotFound(clientId: ClientId)
     extends RuntimeException(s"OAuth client not found in cache: $clientId")
+
+  case class ResourcePermissions(
+      permissions: Set[PermissionId],
+  ) derives JsonCodec
+
+  case class PermissionsResponse(
+      resources: Map[ResourceId, ResourcePermissions],
+  ) derives JsonCodec
 
   def live: ZLayer[
     OAuthClientService & ResourceService & CelEvaluator & SecureRandom & LoginRepository & SSOClient & SecurityService & Client & EdgeConfig & session.EdgeRefreshTokenRepository & JwksService & PermissionService,
@@ -135,6 +154,7 @@ object EdgeService:
         _ <- storeRefreshToken(tokens, preset.id, cookieTtl)
         _ <- loginRepository.deleteByState(state)
       yield LoginCompletion(
+        presetId = preset.id,
         accessToken = tokens.accessToken,
         cookieTtl = cookieTtl,
         postLoginRedirectUri = preset.postLoginRedirectUri,
@@ -188,20 +208,43 @@ object EdgeService:
         .mapError(e => new RuntimeException(s"Failed to validate JWT: $e"))
 
     override def proxy(
-        alias: String,
+        resourceId: ResourceId,
         restPath: Path,
         request: Request,
     ): Task[Response] =
-      proxyInternal(alias, restPath, request).catchAll:
+      proxyInternal(resourceId, restPath, request).catchAll:
         case Outcome.Unauthorized => ZIO.succeed(Response.unauthorized)
         case Outcome.Forbidden => ZIO.succeed(Response.forbidden)
         case Outcome.NotFound => ZIO.succeed(Response.notFound)
         case Outcome.InternalServerError => ZIO.succeed(Response.internalServerError)
-        case Outcome.Reauthenticate(uri, clear) => ZIO.succeed(Response.seeOther(uri).addCookie(clear))
+        case Outcome.Reauthenticate(uri, clear) =>
+          ZIO.succeed(
+            Response.status(Status.Unauthorized)
+              .addHeader(Header.Location(uri))
+              .addCookie(clear),
+          )
         case ex: Throwable => ZIO.fail(ex)
 
+    private val centralResourceId = ResourceId("central")
+
+    override def getMyPermissions(
+        claims: PermissionsClaims,
+        resourceIds: List[ResourceId],
+    ): UIO[PermissionsResponse] =
+      val tenantId = claims.tenantId
+      val roles = claims.roles.getOrElse(List.empty)
+      val rolesMap = tenantId.fold(Map.empty[TenantId, List[RoleId]])(tid => Map(tid -> roles))
+
+      ZIO.foreach(resourceIds): resourceId =>
+        for
+          resource <- resourceService.findByResourceId(resourceId)
+          endpointIds = resource.fold(Set.empty[ResourceEndpointId])(_.endpoints.map(_.id).toSet)
+          perms <- permissionService.getPermissionsForRoles(rolesMap, endpointIds)
+        yield Some(resourceId -> ResourcePermissions(perms))
+      .map(entries => PermissionsResponse(entries.flatten.toMap))
+
     private def proxyInternal(
-        alias: String,
+        resourceId: ResourceId,
         restPath: Path,
         request: Request,
     ): IO[Throwable | Outcome, Response] =
@@ -212,19 +255,20 @@ object EdgeService:
         session <- JWT.deserialize[Json.Obj](accessToken, publicKeys, JWT.Type.AccessToken)
           .foldZIO(
             {
-              case JWT.Error.Expired(jti) if authSource == AuthSource.Cookie =>
-                refreshSession(AccessTokenId(jti), now)
-              case JWT.Error.Expired(_) =>
-                ZIO.fail(Outcome.Unauthorized)
+              case JWT.Error.Expired(jti) =>
+                authSource match
+                  case AuthSource.Cookie(presetId) => refreshSession(AccessTokenId(jti), presetId, now)
+                  case AuthSource.Header => ZIO.fail(Outcome.Unauthorized)
               case _ =>
                 ZIO.fail(Outcome.Unauthorized)
             },
             claims => ZIO.succeed(ActiveSession(accessToken, claims, None)),
           )
 
-        resource <- resourceService.findByAlias(alias).someOrFail(Outcome.NotFound)
+        resource <- resourceService.findByResourceId(resourceId).someOrFail(Outcome.NotFound)
         endpoint <- findEndpoint(resource.endpoints, request.method.name, restPath)
-        _ <- checkPermissions(session.claims, endpoint)
+        parsedBody <- readJsonBody(request)
+        typedClaims <- checkPermissions(resourceId, session.claims, endpoint, request, parsedBody)
         userInfo <- ssoClient.userInfo(session.accessToken)
           .when(endpoint.fetchUserInfo)
           .someOrElse(Json.Obj())
@@ -232,15 +276,14 @@ object EdgeService:
             case SSOClient.UserInfoUnauthorized => Outcome.Unauthorized
             case _: Throwable => Outcome.InternalServerError
           }
-        parsedBody <- readJsonBody(request)
         celContext <- checkRules(session.claims, userInfo, request, endpoint, restPath, parsedBody)
-        upstream <- buildUpstreamRequest(resource, endpoint, restPath, request, parsedBody, session.accessToken, celContext)
+        upstream <- buildUpstreamRequest(resource, endpoint, restPath, request, parsedBody, typedClaims.clientId, celContext)
         response <- ZIO.scoped(httpClient.request(upstream))
         stripped = response.removeHeader(Header.SetCookie)
       yield session.rotatedCookie.fold(stripped)(stripped.addCookie)
 
     private enum AuthSource:
-      case Cookie
+      case Cookie(presetId: PresetId)
       case Header
 
     private def extractAccessToken(request: Request): IO[Outcome, (AccessToken, AuthSource)] =
@@ -250,24 +293,37 @@ object EdgeService:
             (AccessToken(token.stringValue), AuthSource.Header)
           }
           .orElse(
-            request.cookie(EdgeSessionCookie.name).map(cookie =>
-              (AccessToken(cookie.content), AuthSource.Cookie),
-            ),
+            request.cookie(EdgeSessionCookie.name).map { cookie =>
+              val (presetId, token) = EdgeSessionCookie.parse(cookie.content)
+              (token, AuthSource.Cookie(presetId))
+            },
           ),
       ).orElseFail(Outcome.Unauthorized)
 
     private def checkPermissions(
+        resourceId: ResourceId,
         claims: Json.Obj,
         endpoint: ResourceEndpoint,
-    ): IO[Outcome, Unit] =
+        request: Request,
+        parsedBody: Option[Json],
+    ): IO[Outcome, AccessTokenClaims] =
       for
         typed <- ZIO.fromEither(claims.as[AccessTokenClaims]).orElseFail(Outcome.Unauthorized)
+        isCentral = resourceId == centralResourceId
         isServiceToken = typed.subject == typed.clientId
+
         allowed <-
-          if isServiceToken then permissionService.getAllowedEndpointsForClient(typed.clientId)
-          else permissionService.getAllowedEndpointsForRoles(typed.roles)
-        _ <- ZIO.fail(Outcome.Forbidden).when(allowed.nonEmpty && !allowed.contains(endpoint.id))
-      yield ()
+          if isServiceToken then
+            permissionService.getAllowedEndpointsForClient(typed.clientId)
+          else if isCentral then
+            permissionService.getAllowedEndpointsForRoles(Map(TenantId.default -> typed.roles))
+          else
+            val rolesMap = typed.tenantId.fold(Map.empty[TenantId, List[RoleId]])(tid => Map(tid -> typed.roles))
+            permissionService.getAllowedEndpointsForRoles(rolesMap)
+
+        _ <- ZIO.fail(Outcome.Forbidden)
+          .unless(allowed.contains(endpoint.id))
+      yield typed
 
     private def checkRules(
         claims: Json.Obj,
@@ -286,11 +342,17 @@ object EdgeService:
 
     private def refreshSession(
         accessTokenId: AccessTokenId,
+        cookiePresetId: PresetId,
         now: Instant,
     ): IO[Throwable | Outcome, ActiveSession] =
+      // When the refresh record or its preset is gone the session is fully
+      // expired; fall back to the preset carried by the cookie so the caller is
+      // sent to the right app's login, whichever app this edge is fronting.
       for
-        record <- refreshTokenRepository.find(accessTokenId).someOrFail(Outcome.Unauthorized)
-        preset <- clientService.findPreset(record.presetId).someOrFail(Outcome.Unauthorized)
+        record <- refreshTokenRepository.find(accessTokenId)
+          .someOrElseZIO(failWithReauthenticate(cookiePresetId, None, None))
+        preset <- clientService.findPreset(record.presetId)
+          .someOrElseZIO(failWithReauthenticate(cookiePresetId, None, None))
         decryptedRefreshToken <- decryptRefreshToken(record.encryptedRefreshToken)
         session <- rotate(decryptedRefreshToken, preset, record.presetId)
       yield session
@@ -311,6 +373,7 @@ object EdgeService:
             .orElseFail(Outcome.Unauthorized)
           now <- Clock.instant
           cookie = EdgeSessionCookie(
+            presetId = presetId,
             accessToken = tokens.accessToken,
             ttl = cookieTtl,
             domain = preset.cookieDomain,
@@ -320,19 +383,28 @@ object EdgeService:
         yield ActiveSession(tokens.accessToken, claims, Some(cookie))
 
       refreshed.catchAll:
-        case SSOClient.InvalidGrant => failWithReauthenticate(preset)
+        case SSOClient.InvalidGrant =>
+          failWithReauthenticate(preset.id, preset.cookieDomain, preset.cookiePath)
         case outcome: Outcome => ZIO.fail(outcome)
         case ex: Throwable => ZIO.fail(ex)
 
-    private def failWithReauthenticate(preset: AuthorizationPreset): IO[Throwable | Outcome, Nothing] =
-      prepareAuthorizeUrl(preset).zipWith(Clock.instant) { (authorizeUri, now) =>
+    // Signals the UI to re-authenticate: a 401 carrying a relative Location to
+    // the app's own /login/<presetId> (a top-level navigation the SPA performs).
+    // The login record is created only when the browser actually hits /login,
+    // not on every failed background refresh.
+    private def failWithReauthenticate(
+        presetId: PresetId,
+        cookieDomain: Option[String],
+        cookiePath: Option[String],
+    ): IO[Throwable | Outcome, Nothing] =
+      Clock.instant.flatMap { now =>
         ZIO.fail(
           Outcome.Reauthenticate(
-            authorizeUri = authorizeUri,
-            clearCookie = EdgeSessionCookie.clear(preset.cookieDomain, preset.cookiePath, now),
+            loginUri = URL(Path.root / "login" / presetId),
+            clearCookie = EdgeSessionCookie.clear(cookieDomain, cookiePath, now),
           ),
         )
-      }.flatten
+      }
 
     private def buildCelContext(
         claims: Json.Obj,
@@ -371,7 +443,7 @@ object EdgeService:
         restPath: Path,
         request: Request,
         parsedBody: Option[Json],
-        accessToken: AccessToken,
+        clientId: ClientId,
         celContext: Map[String, AnyRef],
     ): IO[Throwable | Outcome, Request] =
       val grouped = endpoint.inject.groupBy(_.target)
@@ -391,17 +463,24 @@ object EdgeService:
         .removeHeader(Header.Cookie)
         .removeHeader(Header.Host)
         .removeHeader(Header.Authorization)
+        // The body may be reconstructed/transformed (tenant-check parsing, inject rules),
+        // so the incoming Content-Length no longer matches. Drop it and let the client
+        // recompute it from the outgoing Body.
+        .removeHeader(Header.ContentLength)
 
       val headersWithCookies = NonEmptyChunk.fromChunk(forwardedCookies) match
         case Some(cookies) => baseHeaders.addHeader(Header.Cookie(cookies))
         case None => baseHeaders
 
       for
+        authHeader <- clientService.findClient(clientId)
+          .someOrFail(Outcome.InternalServerError: Throwable | Outcome)
+          .map(client => Header.Authorization.Basic(client.id, Base64.urlEncode(client.secret)))
         injectedHeaders <- evaluateAll(headerInjects, celContext)
         injectedQuery <- evaluateAll(queryInjects, celContext)
         finalHeaders = injectedHeaders.foldLeft(headersWithCookies):
           case (acc, (name, value)) => acc.removeHeader(name).addHeader(name, value)
-        .addHeader(Header.Authorization.Bearer(accessToken))
+        .addHeader(authHeader)
         finalUrl = injectedQuery.foldLeft(baseUrl):
           case (acc, (name, value)) => acc.removeQueryParam(name).addQueryParam(name, value)
         body <- applyBodyInjects(request, parsedBody, bodyInjects, celContext)
@@ -428,7 +507,11 @@ object EdgeService:
           evaluateAll(rules, context)
             .map(values => Json.Obj(Chunk.from(values.map((k, v) => (k, Json.Str(v))))))
             .map(json => Body.fromString(obj.merge(json).toJson, StandardCharsets.UTF_8))
-        case _ =>
+        case Some(json) =>
+          // Body was already read before permission check; reconstruct from the parsed JSON
+          // so we don't double-consume the body stream when forwarding to upstream.
+          ZIO.succeed(Body.fromString(json.toJson, StandardCharsets.UTF_8))
+        case None =>
           ZIO.succeed(request.body)
 
     private def readJsonBody(request: Request): zio.Task[Option[Json]] =
@@ -476,4 +559,4 @@ object EdgeService:
     case Forbidden
     case NotFound
     case InternalServerError
-    case Reauthenticate(authorizeUri: URL, clearCookie: Cookie.Response)
+    case Reauthenticate(loginUri: URL, clearCookie: Cookie.Response)

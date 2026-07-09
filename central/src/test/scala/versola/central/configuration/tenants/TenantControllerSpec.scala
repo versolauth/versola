@@ -2,7 +2,9 @@ package versola.central.configuration.tenants
 
 import io.opentelemetry.api
 import org.scalamock.stubs.{Stub, ZIOStubs}
+import versola.central.{TestAdminAuth, TestCentralConfig}
 import versola.central.configuration.*
+import versola.central.configuration.clients.OAuthClientService
 import versola.util.http.Observability
 import zio.*
 import zio.http.*
@@ -12,6 +14,7 @@ import zio.telemetry.opentelemetry.tracing.Tracing
 import zio.test.*
 
 object TenantControllerSpec extends ZIOSpecDefault, ZIOStubs:
+  private val config = TestCentralConfig.config
   private val tenantId1 = TenantId("tenant-a")
   private val tenantId2 = TenantId("tenant-b")
 
@@ -48,16 +51,25 @@ object TenantControllerSpec extends ZIOSpecDefault, ZIOStubs:
   ) =
     test(description) {
       for
-        client <- ZIO.service[Client]
-        service = stub[TenantService]
-        tracing <- tracingLayer.build
+        client      <- ZIO.service[Client]
+        service     =  stub[TenantService]
+        oauthClientService = stub[OAuthClientService]
+        tracing     <- tracingLayer.build
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
-            TenantController.routes.provideEnvironment(ZEnvironment(service) ++ tracing)
+            TenantController.routes.provideEnvironment(
+              ZEnvironment(service) ++ tracing ++ ZEnvironment(config) ++
+                ZEnvironment[OAuthClientService](oauthClientService)
+            )
           )
         )
+        _ <- oauthClientService.verifySecret.succeedsWith(true)
         _ <- setup(service)
-        response <- client.batched(request.addHeader(Header.Accept(MediaType.application.json)))
+        response <- client.batched(
+          request
+            .addHeader(Header.Accept(MediaType.application.json))
+            .addHeader(TestAdminAuth.basicAuthHeader)
+        )
         verifyResult <- verify(response, service)
       yield assertTrue(response.status == expectedStatus) && verifyResult
     }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging

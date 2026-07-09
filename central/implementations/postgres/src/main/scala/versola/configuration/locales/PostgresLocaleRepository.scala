@@ -16,11 +16,14 @@ class PostgresLocaleRepository(xa: TransactorZIO) extends LocaleRepository, Basi
 
   override def update(add: Vector[LocaleRecord], delete: Vector[String]): Task[Unit] =
     xa.repeatableRead.transactMeasured("update-locales"):
-      delete.foreach { code =>
-        sql"""DELETE FROM locales WHERE code = $code""".update.run()
-        sql"""UPDATE forms SET localizations = localizations - $code WHERE jsonb_exists(localizations, $code)""".update.run()
-        sql"""UPDATE otp_templates SET localizations = localizations - $code WHERE jsonb_exists(localizations, $code)""".update.run()
-      }
+      if delete.nonEmpty then
+        sql"""DELETE FROM locales WHERE code = ANY($delete)""".update.run()
+        sql"""UPDATE forms
+              SET localizations = localizations - $delete
+              WHERE jsonb_exists_any(localizations, $delete)""".update.run()
+        sql"""UPDATE otp_templates
+              SET localizations = localizations - $delete
+              WHERE jsonb_exists_any(localizations, $delete)""".update.run()
       add.foreach { locale =>
         sql"""INSERT INTO locales (code, name, is_default, active) VALUES (${locale.code}, ${locale.name}, ${locale.isDefault}, ${locale.active})
               ON CONFLICT (code) DO UPDATE SET name = EXCLUDED.name, active = EXCLUDED.active""".update.run()

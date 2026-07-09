@@ -13,8 +13,7 @@ case class ResourceEndpoint(
 ) derives JsonCodec
 
 case class Resource(
-    id: ResourceId,
-    alias: String,
+    resourceId: ResourceId,
     resource: URL,
     endpoints: Vector[ResourceEndpoint],
 ) derives JsonCodec

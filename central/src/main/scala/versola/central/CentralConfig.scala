@@ -31,6 +31,7 @@ object CentralConfig:
       edges: Option[List[CentralConfig.BootstrapConfig.EdgeSeed]],
       jwks: Option[Json.Obj],
       presets: Option[List[CentralConfig.BootstrapConfig.PresetSeed]],
+      centralUrl: Option[String],
   )
 
   object BootstrapConfig:

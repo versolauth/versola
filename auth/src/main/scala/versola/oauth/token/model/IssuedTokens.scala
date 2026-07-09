@@ -20,8 +20,8 @@ case class IssuedTokens(
     uiLocales: Option[List[String]],
     nonce: Option[Nonce],
     user: Option[UserRecord],
-    roles: List[String], // role IDs for user tokens; empty for client_credentials
-    adminRoles: Option[Map[String, List[String]]], // tenant ID -> role IDs for admin console; None unless issued for the admin console
+    tenantId: Option[String],    // None for client_credentials service tokens
+    roles: List[String],         // role IDs within tenantId; empty for client_credentials
     amr: Set[AuthMethodRef],
     authTime: Option[Instant], // None for client_credentials grant
 )

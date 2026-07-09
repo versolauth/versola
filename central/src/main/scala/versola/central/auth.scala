@@ -1,34 +1,30 @@
 package versola.central
 
+import versola.central.configuration.clients.OAuthClientService
 import versola.central.configuration.edges.{EdgeId, EdgeService}
-import versola.central.configuration.jwks.JwksService
-import versola.util.JWT
+import versola.util.{JWT, Secret}
 import versola.util.http.Unauthorized
 import zio.ZIO
 import zio.http.{Header, Request}
 import zio.json.{JsonCodec, jsonField}
 
-/** Verifies an admin-console access token issued by `auth` (RS256, `at+jwt`)
-  * against auth's JWKS and returns its admin claims.
+/** Verifies that a request carries the central secret via HTTP Basic.
+  *
+  * The secret is loaded from the `central-admin` OAuth client record (current or
+  * previous, for rotation support). This means it never needs to be stored in env.
   */
-def authorizeAdmin(request: Request): ZIO[JwksService, Unauthorized.type, AdminClaims] =
+def authorizeBasic(request: Request): ZIO[OAuthClientService, Unauthorized.type, Unit] =
   request.header(Header.Authorization) match
-    case Some(Header.Authorization.Bearer(token)) =>
+    case Some(Header.Authorization.Basic(_, password)) =>
       for
-        jwksService <- ZIO.service[JwksService]
-        keys <- jwksService.getPublicKeys
-        claims <- JWT.deserialize[AdminClaims](token.stringValue, keys, JWT.Type.AccessToken)
-          .orElseFail(Unauthorized)
-      yield claims
+        provided <- ZIO.fromEither(Secret.fromBase64Url(password.stringValue)).orElseFail(Unauthorized)
+        service  <- ZIO.service[OAuthClientService]
+        valid    <- service.verifySecret(provided).orElseFail(Unauthorized)
+        _        <- ZIO.unless(valid)(ZIO.fail(Unauthorized))
+      yield ()
 
     case _ =>
       ZIO.fail(Unauthorized)
-
-case class AdminClaims(
-    @jsonField("sub") subject: String,
-    @jsonField("client_id") clientId: Option[String],
-    @jsonField("admin_roles") adminRoles: Option[Map[String, List[String]]],
-) derives JsonCodec
 
 def authorizeInternal(request: Request): ZIO[CentralConfig & EdgeService, Unauthorized.type, Option[EdgeId]] =
   request.header(Header.Authorization) match

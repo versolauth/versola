@@ -8,17 +8,20 @@ import versola.central.configuration.forms.{BackendProperty, BooleanProperty, Fo
 import versola.central.configuration.jwks.{JwksRepository, JwksService}
 import versola.central.configuration.locales.{LocaleRecord, LocaleRepository}
 import versola.central.configuration.permissions.{Permission, PermissionRepository}
+import versola.central.configuration.resources.{ResourceEndpointId, ResourceEndpointRecord, ResourceId, ResourceRepository}
 import versola.central.configuration.roles.{RoleId, RoleRepository}
 import versola.central.configuration.scopes.{Claim, OAuthScopeRepository, ScopeToken}
 import versola.central.configuration.tenants.{TenantId, TenantRepository}
 import versola.central.configuration.themes.{ThemeRecord, ThemeRepository}
-import versola.central.configuration.{CreateClaim, CreateClientRequest}
+import versola.central.configuration.{CreateClaim, CreateClientRequest, ResourceUri}
 import versola.central.users.{Login, UserConflict, UserId, UserRepository}
 import versola.util.RedirectUri
 import zio.json.DecoderOps
 import zio.json.ast.Json
 import zio.{Task, ZIO, ZLayer}
 
+import java.nio.charset.StandardCharsets
+import java.util.UUID
 import scala.io.Source
 
 trait BootstrapService:
@@ -38,18 +41,121 @@ object BootstrapService:
       claims: List[CreateClaim],
   )
 
-  private val permissionCatalog: List[(Permission, Map[String, String])] = List(
-    Permission("oauth:read")       -> localized("View OAuth clients and scopes", "Просмотр OAuth клиентов и скоупов"),
-    Permission("oauth:manage")     -> localized("Manage OAuth clients and scopes", "Управление OAuth клиентами и скоупами"),
-    Permission("oauth:secrets")    -> localized("View OAuth client secrets", "Просмотр секретов OAuth клиентов"),
-    Permission("access:read")      -> localized("View roles and permissions", "Просмотр ролей и прав"),
-    Permission("access:manage")    -> localized("Manage roles and permissions", "Управление ролями и правами"),
-    Permission("security:read")    -> localized("View security policies and challenges", "Просмотр политик безопасности"),
-    Permission("security:manage")  -> localized("Manage security policies and challenges", "Управление политиками безопасности"),
-    Permission("users:read")       -> localized("View users", "Просмотр пользователей"),
-    Permission("users:manage")     -> localized("Manage users", "Управление пользователями"),
-    Permission("resources:read")   -> localized("View protected resources", "Просмотр защищенных ресурсов"),
-    Permission("resources:manage") -> localized("Manage protected resources", "Управление защищенными ресурсами"),
+  private def endpointId(method: String, path: String): ResourceEndpointId =
+    ResourceEndpointId(UUID.nameUUIDFromBytes(s"$method $path".getBytes(StandardCharsets.UTF_8)))
+
+  private val permissionCatalog: List[(Permission, Map[String, String], Set[ResourceEndpointId])] = List(
+    (Permission("oauth:read"), localized("View OAuth clients and scopes", "Просмотр OAuth клиентов и скоупов"), Set(
+      endpointId("GET", "/configuration/clients"),
+      endpointId("GET", "/configuration/scopes"),
+      endpointId("GET", "/configuration/auth-request-presets"),
+    )),
+    (Permission("oauth:manage"), localized("Manage OAuth clients and scopes", "Управление OAuth клиентами и скоупами"), Set(
+      endpointId("POST", "/configuration/clients"),
+      endpointId("PUT", "/configuration/clients"),
+      endpointId("DELETE", "/configuration/clients"),
+      endpointId("POST", "/configuration/scopes"),
+      endpointId("PUT", "/configuration/scopes"),
+      endpointId("DELETE", "/configuration/scopes"),
+      endpointId("POST", "/configuration/auth-request-presets"),
+      endpointId("DELETE", "/configuration/auth-request-presets"),
+    )),
+    (Permission("oauth:secrets"), localized("View OAuth client secrets", "Просмотр секретов OAuth клиентов"), Set(
+      endpointId("POST", "/configuration/clients/rotate-secret"),
+      endpointId("DELETE", "/configuration/clients/previous-secret"),
+    )),
+    (Permission("access:read"), localized("View roles and permissions", "Просмотр ролей и прав"), Set(
+      endpointId("GET", "/configuration/permissions"),
+      endpointId("GET", "/configuration/roles"),
+    )),
+    (Permission("access:manage"), localized("Manage roles and permissions", "Управление ролями и правами"), Set(
+      endpointId("POST", "/configuration/permissions"),
+      endpointId("PUT", "/configuration/permissions"),
+      endpointId("DELETE", "/configuration/permissions"),
+      endpointId("POST", "/configuration/roles"),
+      endpointId("PUT", "/configuration/roles"),
+      endpointId("DELETE", "/configuration/roles"),
+    )),
+    (Permission("security:read"), localized("View security policies and challenges", "Просмотр политик безопасности"), Set(
+      endpointId("GET", "/configuration/challenges/challenge-settings"),
+      endpointId("GET", "/configuration/challenges/otp-templates"),
+      endpointId("GET", "/configuration/jwks"),
+    )),
+    (Permission("security:manage"), localized("Manage security policies and challenges", "Управление политиками безопасности"), Set(
+      endpointId("PUT", "/configuration/challenges/challenge-settings"),
+      endpointId("PUT", "/configuration/challenges/otp-templates"),
+      endpointId("DELETE", "/configuration/challenges/otp-templates"),
+      endpointId("POST", "/configuration/jwks"),
+      endpointId("PUT", "/configuration/jwks"),
+      endpointId("DELETE", "/configuration/jwks"),
+    )),
+    (Permission("users:read"), localized("View users", "Просмотр пользователей"), Set(
+      endpointId("GET", "/users"),
+      endpointId("GET", "/users/passkeys"),
+      endpointId("GET", "/users/roles"),
+      endpointId("GET", "/users/sessions"),
+    )),
+    (Permission("users:manage"), localized("Manage users", "Управление пользователями"), Set(
+      endpointId("POST", "/users"),
+      endpointId("PATCH", "/users"),
+      endpointId("PATCH", "/users/claims"),
+      endpointId("PATCH", "/users/passkeys"),
+      endpointId("DELETE", "/users/passkeys"),
+      endpointId("PATCH", "/users/roles"),
+      endpointId("DELETE", "/users/sessions"),
+      endpointId("POST", "/users/limits/reset"),
+    )),
+    (Permission("resources:read"), localized("View protected resources", "Просмотр защищенных ресурсов"), Set(
+      endpointId("GET", "/configuration/resources"),
+    )),
+    (Permission("resources:manage"), localized("Manage protected resources", "Управление защищенными ресурсами"), Set(
+      endpointId("POST", "/configuration/resources"),
+      endpointId("PUT", "/configuration/resources"),
+      endpointId("DELETE", "/configuration/resources"),
+    )),
+    (Permission("forms:read"), localized("View forms", "Просмотр форм"), Set(
+      endpointId("GET", "/configuration/forms"),
+    )),
+    (Permission("forms:manage"), localized("Manage forms", "Управление формами"), Set(
+      endpointId("PUT", "/configuration/forms"),
+      endpointId("PUT", "/configuration/forms/active"),
+    )),
+    (Permission("locales:read"), localized("View locales", "Просмотр локалей"), Set(
+      endpointId("GET", "/configuration/locales"),
+    )),
+    (Permission("locales:manage"), localized("Manage locales", "Управление локалями"), Set(
+      endpointId("PUT", "/configuration/locales"),
+      endpointId("PUT", "/configuration/locales/default"),
+    )),
+    (Permission("tenants:read"), localized("View tenants", "Просмотр тенантов"), Set(
+      endpointId("GET", "/configuration/tenants"),
+      endpointId("GET", "/configuration/themes"),
+    )),
+    (Permission("tenants:manage"), localized("Manage tenants", "Управление тенантами"), Set(
+      endpointId("POST", "/configuration/tenants"),
+      endpointId("PUT", "/configuration/tenants"),
+      endpointId("DELETE", "/configuration/tenants"),
+      endpointId("POST", "/configuration/themes"),
+      endpointId("PUT", "/configuration/themes"),
+      endpointId("DELETE", "/configuration/themes"),
+    )),
+    (Permission("edges:read"), localized("View edges", "Просмотр эджей"), Set(
+      endpointId("GET", "/configuration/edges"),
+    )),
+    (Permission("edges:manage"), localized("Manage edges", "Управление эджами"), Set(
+      endpointId("POST", "/configuration/edges"),
+      endpointId("DELETE", "/configuration/edges"),
+      endpointId("POST", "/configuration/edges/rotate-key"),
+      endpointId("DELETE", "/configuration/edges/old-key"),
+    )),
+    (Permission("jwks:read"), localized("View JWKS", "Просмотр JWKS"), Set(
+      endpointId("GET", "/configuration/jwks"),
+    )),
+    (Permission("jwks:manage"), localized("Manage JWKS", "Управление JWKS"), Set(
+      endpointId("POST", "/configuration/jwks"),
+      endpointId("PUT", "/configuration/jwks"),
+      endpointId("DELETE", "/configuration/jwks"),
+    )),
   )
 
   private val allPermissions: List[Permission] = permissionCatalog.map(_._1)
@@ -58,19 +164,24 @@ object BootstrapService:
     val readOnly = allPermissions.filter(_.endsWith(":read"))
     List(
       (
-        RoleId("tenant-admin"),
-        localized("Tenant Administrator", "Администратор тенанта"),
+        RoleId("oauth-admin"),
+        localized("OAuth Administrator", "Администратор OAuth"),
         allPermissions,
       ),
       (
         RoleId("security"),
-        localized("Security Officer", "Офицер безопасности (ИБ)"),
-        List("oauth:read", "oauth:manage", "oauth:secrets", "users:read", "users:manage", "access:read", "security:read", "resources:read").map(Permission(_)),
+        localized("Security Officer", "Сотрудник безопасности (ИБ)"),
+        List("oauth:read", "oauth:manage", "users:read", "users:manage", "access:read", "security:read", "resources:read").map(Permission(_)),
       ),
       (
         RoleId("support"),
         localized("Support Engineer", "Инженер поддержки"),
         List("users:read", "users:manage", "oauth:read", "access:read", "security:read", "resources:read").map(Permission(_)),
+      ),
+      (
+        RoleId("frontend-developer"),
+        localized("Frontend Developer", "Фронтенд-разработчик"),
+        readOnly ++ List(Permission("forms:manage")),
       ),
       (
         RoleId("auditor"),
@@ -166,7 +277,7 @@ object BootstrapService:
         otpRequest = List(RateLimit(2, 60), RateLimit(5, 3600)),
         otpSubmit = List(RateLimit(3, 120), RateLimit(5, 3600)),
         passwordSubmit = List(RateLimit(5, 900), RateLimit(10, 3600)),
-        //passkeyAssertion = List(RateLimit(5, 300), RateLimit(10, 3600)),
+        passkeyAssertion = List(RateLimit(5, 300), RateLimit(10, 3600)),
         banDurationSeconds = 1800,
       ),
       otpLength = 6,
@@ -211,6 +322,84 @@ object BootstrapService:
     "auth-settings"  -> Vector.empty,
   )
 
+  /** Hard-coded resourceId for the edge-facing resource that proxies central's admin API. */
+  private val centralResourceId = ResourceId("central")
+
+  /** Admin API surface exposed to the console through the edge proxy. Each
+    * (method, path) is registered as a resource endpoint; the edge validates the
+    * caller's session token and performs the real per-user authorization
+    * (deny-by-default, against synced role/permission mappings), then forwards the
+    * request to central using HTTP Basic auth with the shared central-admin client
+    * secret. The user's access token is never forwarded; central only verifies the
+    * shared secret (see authorizeBasic).
+    */
+  private val centralEndpointCatalog: List[(String, String)] = List(
+    "GET"    -> "/configuration/auth-request-presets",
+    "POST"   -> "/configuration/auth-request-presets",
+    "GET"    -> "/configuration/challenges/challenge-settings",
+    "PUT"    -> "/configuration/challenges/challenge-settings",
+    "GET"    -> "/configuration/challenges/otp-templates",
+    "PUT"    -> "/configuration/challenges/otp-templates",
+    "DELETE" -> "/configuration/challenges/otp-templates",
+    "GET"    -> "/configuration/clients",
+    "POST"   -> "/configuration/clients",
+    "PUT"    -> "/configuration/clients",
+    "DELETE" -> "/configuration/clients",
+    "POST"   -> "/configuration/clients/rotate-secret",
+    "DELETE" -> "/configuration/clients/previous-secret",
+    "GET"    -> "/configuration/edges",
+    "POST"   -> "/configuration/edges",
+    "DELETE" -> "/configuration/edges",
+    "POST"   -> "/configuration/edges/rotate-key",
+    "DELETE" -> "/configuration/edges/old-key",
+    "GET"    -> "/configuration/forms",
+    "PUT"    -> "/configuration/forms",
+    "PUT"    -> "/configuration/forms/active",
+    "GET"    -> "/configuration/jwks",
+    "POST"   -> "/configuration/jwks",
+    "PUT"    -> "/configuration/jwks",
+    "DELETE" -> "/configuration/jwks",
+    "GET"    -> "/configuration/locales",
+    "PUT"    -> "/configuration/locales",
+    "PUT"    -> "/configuration/locales/default",
+    "GET"    -> "/configuration/permissions",
+    "POST"   -> "/configuration/permissions",
+    "PUT"    -> "/configuration/permissions",
+    "DELETE" -> "/configuration/permissions",
+    "GET"    -> "/configuration/resources",
+    "POST"   -> "/configuration/resources",
+    "PUT"    -> "/configuration/resources",
+    "DELETE" -> "/configuration/resources",
+    "GET"    -> "/configuration/roles",
+    "POST"   -> "/configuration/roles",
+    "PUT"    -> "/configuration/roles",
+    "DELETE" -> "/configuration/roles",
+    "GET"    -> "/configuration/scopes",
+    "POST"   -> "/configuration/scopes",
+    "PUT"    -> "/configuration/scopes",
+    "DELETE" -> "/configuration/scopes",
+    "GET"    -> "/configuration/tenants",
+    "POST"   -> "/configuration/tenants",
+    "PUT"    -> "/configuration/tenants",
+    "DELETE" -> "/configuration/tenants",
+    "GET"    -> "/configuration/themes",
+    "POST"   -> "/configuration/themes",
+    "PUT"    -> "/configuration/themes",
+    "DELETE" -> "/configuration/themes",
+    "GET"    -> "/users",
+    "POST"   -> "/users",
+    "PATCH"  -> "/users",
+    "PATCH"  -> "/users/claims",
+    "GET"    -> "/users/passkeys",
+    "PATCH"  -> "/users/passkeys",
+    "DELETE" -> "/users/passkeys",
+    "GET"    -> "/users/roles",
+    "PATCH"  -> "/users/roles",
+    "GET"    -> "/users/sessions",
+    "DELETE" -> "/users/sessions",
+    "POST"   -> "/users/limits/reset",
+  )
+
   private def readResource(path: String): Task[String] =
     ZIO.blocking:
       ZIO.attemptBlocking:
@@ -218,11 +407,11 @@ object BootstrapService:
         try source.mkString finally source.close()
 
   val live: ZLayer[
-    TenantRepository & PermissionRepository & OAuthScopeRepository & RoleRepository & OtpChallengeRepository & ChallengeSettingsRepository & ThemeRepository & LocaleRepository & FormRepository & OAuthClientService & AuthorizationPresetRepository & EdgeRepository & JwksRepository & JwksService & UserRepository & CentralConfig,
+    TenantRepository & PermissionRepository & OAuthScopeRepository & RoleRepository & OtpChallengeRepository & ChallengeSettingsRepository & ThemeRepository & LocaleRepository & FormRepository & OAuthClientService & AuthorizationPresetRepository & EdgeRepository & ResourceRepository & JwksRepository & JwksService & UserRepository & CentralConfig,
     Throwable,
     BootstrapService,
   ] =
-    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _)) >+>
+    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _)) >+>
       ZLayer(ZIO.serviceWithZIO[BootstrapService](_.bootstrap))
 
   private final class Impl(
@@ -238,6 +427,7 @@ object BootstrapService:
       clientService: OAuthClientService,
       presetRepo: AuthorizationPresetRepository,
       edgeRepo: EdgeRepository,
+      resourceRepo: ResourceRepository,
       jwksRepo: JwksRepository,
       jwksService: JwksService,
       userRepo: UserRepository,
@@ -264,16 +454,17 @@ object BootstrapService:
           _ <- seedPresets(config)
           _ <- seedEdges(config)
           _ <- linkTenantEdge(tenantId, config)
+          _ <- seedCentralResource(config)
           _ <- seedJwks(config)
           _ <- jwksService.sync()
         yield ()
       }.unit
 
     private def seedPermissions(tenantId: TenantId): Task[Unit] =
-      ZIO.foreachDiscard(permissionCatalog): (perm, desc) =>
-        permissionRepo.findPermission(Some(tenantId), perm).flatMap:
+      ZIO.foreachDiscard(permissionCatalog): (perm, desc, endpoints) =>
+        permissionRepo.findPermission(tenantId, perm).flatMap:
           case Some(_) => ZIO.unit
-          case None    => permissionRepo.createPermission(Some(tenantId), perm, desc, Set.empty)
+          case None    => permissionRepo.createPermission(tenantId, perm, desc, endpoints)
 
     private def seedScopes(tenantId: TenantId): Task[Unit] =
       ZIO.foreachDiscard(scopeCatalog): scope =>
@@ -416,6 +607,28 @@ object BootstrapService:
             case Some(tenant) if tenant.edgeId.isEmpty =>
               tenantRepo.updateTenant(tenant.id, tenant.description, Some(edge.id))
             case _ => ZIO.unit
+
+    /** Seeds the edge-facing resource that proxies the admin API back to central.
+      * Created for the default tenant (linked to the bootstrap edge) so it syncs
+      * to the edge. Skipped if a resource with the same resourceId already exists.
+      */
+    private def seedCentralResource(config: CentralConfig.BootstrapConfig): Task[Unit] =
+      ZIO.foreachDiscard(config.centralUrl): url =>
+        val tenantId = CentralConfig.defaultTenantId
+        resourceRepo.getAll.flatMap: resources =>
+          if resources.exists(r => r.tenantId == tenantId && r.resourceId == centralResourceId) then
+            ZIO.logInfo(s"Central resource '$centralResourceId' already exists, skipping")
+          else
+            val endpoints = centralEndpointCatalog.map: (method, path) =>
+              ResourceEndpointRecord(
+                id = endpointId(method, path),
+                path = path,
+                method = method,
+                fetchUserInfo = false,
+                allowExpression = None,
+                inject = Vector.empty,
+              )
+            resourceRepo.createResource(tenantId, centralResourceId, ResourceUri(url), endpoints.toVector).unit
 
     private def seedJwks(config: CentralConfig.BootstrapConfig): Task[Unit] =
       val keys: Vector[Json.Obj] = config.jwks match
