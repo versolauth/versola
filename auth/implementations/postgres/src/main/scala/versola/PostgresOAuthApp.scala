@@ -17,6 +17,7 @@ import versola.oauth.revoke.{AccessTokenRevocationService, RevocationController,
 import versola.oauth.session.{PostgresRefreshTokenRepository, PostgresSessionRepository, RefreshTokenRepository, SessionRepository}
 import versola.oauth.token.{AuthorizationCodeRepository, OAuthTokenService, TokenEndpointController}
 import versola.oauth.userinfo.{UserInfoController, UserInfoService}
+import versola.account.{AuthSettingsController, AuthSettingsService}
 import versola.user.{PostgresUserRepository, PostgresUserRolesRepository, UserController, UserRepository, UserRolesRepository}
 import versola.util.*
 import versola.util.http.VersolaApp
@@ -69,7 +70,8 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       UserInfoService &
       JwksService &
       SubmissionLimiter &
-      ChallengeThrottleRepository
+      ChallengeThrottleRepository &
+      AuthSettingsService
 
   override def routes: Routes[Dependencies & Tracing & EnvName, Throwable] =
     List(
@@ -81,6 +83,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       UserInfoController.routes,
       JwksController.routes,
       UserController.routes,
+      AuthSettingsController.routes,
     ).reduce(_ ++ _)
 
   val repositories = PostgresHikariDataSource.transactor(serviceName = Some("auth"), migrate = true) >+> (
@@ -124,7 +127,8 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       ConversationService.live >+>
       ConversationRouter.live >+>
       AuthorizeEndpointService.live >+>
-      ConversationRenderService.live
+      ConversationRenderService.live >+>
+      AuthSettingsService.live
 
   given DeriveConfig[Secret.Bytes16] = DeriveConfig[String]
     .mapOrFail(parseBase64UrlSecret(Secret.Bytes16))

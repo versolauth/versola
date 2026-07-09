@@ -7,11 +7,15 @@ import zio.http.*
 import zio.json.EncoderOps
 
 object EdgeController extends Controller:
-  type Env = Tracing & EdgeService & EdgeConfig & JwksService
+  type Env = Tracing & EdgeService & EdgeConfig & JwksService & Client
 
   def routes: Routes[Env, Throwable] = Routes(
     loginEndpoint,
     completeEndpoint,
+    authSettingsGetRoute,
+    authSettingsLogoutRoute,
+    authSettingsDeletePasskeyRoute,
+    authSettingsRegisterPasskeyRoute,
     permissionsEndpoint,
     proxyGetEndpoint,
     proxyPostEndpoint,
@@ -74,6 +78,90 @@ object EdgeController extends Controller:
                   )
       yield response
     }
+
+  val authSettingsGetRoute =
+    Method.GET / "auth-settings" -> handler { (request: Request) =>
+      for
+        config   <- ZIO.service[EdgeConfig]
+        client   <- ZIO.service[Client]
+        response <- request.cookie(EdgeSessionCookie.name).fold(
+                      ZIO.succeed(Response.unauthorized)
+                    ): cookie =>
+                      val (_, accessToken) = EdgeSessionCookie.parse(cookie.content)
+                      val authReq = Request
+                        .get(config.versolaUrl / "auth-settings")
+                        .addHeader(Header.Authorization.Bearer(accessToken.toString))
+                      ZIO.scoped:
+                        for
+                          r       <- client.request(authReq)
+                          resBody <- r.body.asChunk
+                        yield Response(
+                          r.status,
+                          r.headers
+                            .removeHeader(Header.TransferEncoding)
+                            .removeHeader(Header.ContentEncoding)
+                            .removeHeader(Header.ContentLength)
+                            .removeHeader(Header.Connection)
+                            .removeHeader("Keep-Alive"),
+                          Body.fromChunk(resBody),
+                        )
+      yield response
+    }
+
+  val authSettingsLogoutRoute =
+    Method.POST / "auth-settings" / "sessions" / "logout" -> handler { (request: Request) =>
+      proxyPostToAuth(_ / "auth-settings" / "sessions" / "logout", request)
+    }
+
+  val authSettingsDeletePasskeyRoute =
+    Method.POST / "auth-settings" / "passkeys" / "delete" -> handler { (request: Request) =>
+      proxyPostToAuth(_ / "auth-settings" / "passkeys" / "delete", request)
+    }
+
+  val authSettingsRegisterPasskeyRoute =
+    Method.POST / "auth-settings" / "passkeys" / "register" -> handler { (request: Request) =>
+      proxyPostToAuth(_ / "auth-settings" / "passkeys" / "register", request)
+    }
+
+  private def proxyPostToAuth(
+      path: URL => URL,
+      request: Request,
+  ): ZIO[EdgeConfig & Client, Throwable, Response] =
+    for
+      config  <- ZIO.service[EdgeConfig]
+      client  <- ZIO.service[Client]
+      reqBody <- request.body.asChunk
+      forwardedCookies = request.cookies
+        .filter(c => c.name == "SSO_ACCOUNT" || c.name == "SSO_PASSKEY_REG")
+        .map(_.toRequest)
+      baseHeaders = request.headers
+        .removeHeader(Header.Cookie)
+        .removeHeader(Header.Host)
+        .removeHeader(Header.Authorization)
+      headersWithCookies = NonEmptyChunk.fromChunk(forwardedCookies) match
+        case Some(cookies) => baseHeaders.addHeader(Header.Cookie(cookies))
+        case None          => baseHeaders
+      authReq  = Request(
+                   method  = Method.POST,
+                   url     = path(config.versolaUrl),
+                   headers = headersWithCookies,
+                   body    = Body.fromChunk(reqBody),
+                 )
+      response <- ZIO.scoped:
+                    for
+                      r       <- client.request(authReq)
+                      resBody <- r.body.asChunk
+                    yield Response(
+                      r.status,
+                      r.headers
+                        .removeHeader(Header.TransferEncoding)
+                        .removeHeader(Header.ContentEncoding)
+                        .removeHeader(Header.ContentLength)
+                        .removeHeader(Header.Connection)
+                        .removeHeader("Keep-Alive"),
+                      Body.fromChunk(resBody),
+                    )
+    yield response
 
   val permissionsEndpoint =
     Method.GET / "permissions" / "me" -> handler { (request: Request) =>

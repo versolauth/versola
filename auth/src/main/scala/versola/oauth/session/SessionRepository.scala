@@ -5,6 +5,8 @@ import versola.user.model.UserId
 import versola.util.MAC
 import zio.*
 
+import java.util.UUID
+
 trait SessionRepository:
   def create(
       id: MAC.Of[SessionId],
@@ -22,6 +24,18 @@ trait SessionRepository:
       userId: UserId,
   ): Task[List[SessionRecord]]
 
+  /** Find active sessions for a user together with their public UUIDs (UUIDv7).
+    * The returned UUID is safe to expose to the authenticated user.
+    */
+  def findByUserIdWithId(
+      userId: UserId,
+  ): Task[List[(UUID, SessionRecord)]]
+
   def invalidateByUserId(
       userId: UserId,
   ): Task[Unit]
+
+  /** Invalidate a single session by its public UUID.
+    * The UUID is unguessable; the caller must only obtain it via findByUserIdWithId.
+    */
+  def invalidate(publicSessionId: UUID): Task[Unit]

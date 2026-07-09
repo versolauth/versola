@@ -2,21 +2,21 @@ package versola.oauth.session
 
 import com.augustnagro.magnum.*
 import com.augustnagro.magnum.magzio.TransactorZIO
-import versola.oauth.client.model.ClientId
-import versola.oauth.model.{AccessToken, RefreshToken}
-import versola.oauth.client.model.{PassedAuthFactor, PassedFactorRecord}
-import versola.oauth.session.model.{SessionId, SessionRecord, UserAgentInfo, WithTtl}
+import com.fasterxml.uuid.Generators
+import versola.oauth.client.model.{ClientId, PassedAuthFactor, PassedFactorRecord}
+import versola.oauth.session.model.{SessionId, SessionRecord, UserAgentInfo}
 import versola.user.model.UserId
 import versola.util.MAC
 import versola.util.postgres.BasicCodecs
 import zio.json.*
-import zio.prelude.These
 import zio.{Clock, Duration, Task, ZLayer}
 
+import java.time.Instant
 import java.util.UUID
 
 class PostgresSessionRepository(xa: TransactorZIO) extends SessionRepository, BasicCodecs:
   given DbCodec[MAC] = DbCodec.ByteArrayCodec.biMap(MAC(_), identity[Array[Byte]])
+  given DbCodec[UUID] = DbCodec.UUIDCodec
   given DbCodec[UserId] = DbCodec.UUIDCodec.biMap(UserId(_), identity[UUID])
   given DbCodec[ClientId] = DbCodec.StringCodec.biMap(ClientId(_), identity[String])
   given DbCodec[UserAgentInfo] = jsonBCodec[UserAgentInfo]
@@ -30,10 +30,11 @@ class PostgresSessionRepository(xa: TransactorZIO) extends SessionRepository, Ba
       idleTtl: Option[zio.Duration],
   ): Task[Unit] =
     Clock.instant.flatMap: now =>
-      val idleExpiresAt = idleTtl.map(t => now.plusSeconds(t.toSeconds))
+      val publicSessionId = Generators.timeBasedEpochGenerator().construct(now.toEpochMilli)
+      val idleExpiresAt   = idleTtl.map(t => now.plusSeconds(t.toSeconds))
       xa.connectMeasured("create-session"):
         sql"""
-          INSERT INTO sso_sessions (id, client_id, user_id, user_agent, created_at, amr, expires_at, idle_expires_at)
+          INSERT INTO sso_sessions (id, client_id, user_id, user_agent, created_at, amr, expires_at, idle_expires_at, public_session_id)
           VALUES (
             $id,
             ${session.clientId},
@@ -42,7 +43,8 @@ class PostgresSessionRepository(xa: TransactorZIO) extends SessionRepository, Ba
             ${session.createdAt},
             ${session.amr},
             ${now.plusSeconds(ttl.toSeconds)},
-            $idleExpiresAt
+            $idleExpiresAt,
+            $publicSessionId
           )
         """.update.run()
       .unit
@@ -84,6 +86,46 @@ class PostgresSessionRepository(xa: TransactorZIO) extends SessionRepository, Ba
         ORDER BY created_at DESC
       """.query[SessionRecord].run().toList
     yield result
+
+  private case class SessionWithId(
+      publicSessionId: UUID,
+      userId: UserId,
+      clientId: ClientId,
+      userAgent: UserAgentInfo,
+      createdAt: Instant,
+      amr: Map[PassedAuthFactor, PassedFactorRecord],
+  )
+
+  private given DbCodec[SessionWithId] = DbCodec.derived[SessionWithId]
+
+  override def findByUserIdWithId(
+      userId: UserId,
+  ): Task[List[(UUID, SessionRecord)]] =
+    for
+      now    <- Clock.instant
+      result <- xa.connectMeasured("find-sessions-by-user-with-id"):
+        sql"""
+          SELECT public_session_id, user_id, client_id, user_agent, created_at, amr
+          FROM sso_sessions
+          WHERE
+            user_id = $userId
+            AND expires_at > $now
+            AND (idle_expires_at IS NULL OR idle_expires_at > $now)
+          ORDER BY public_session_id DESC
+        """.query[SessionWithId].run().toList
+    yield result.map: r =>
+      (r.publicSessionId, SessionRecord(r.userId, r.clientId, r.userAgent, r.createdAt, r.amr))
+
+  override def invalidate(publicSessionId: UUID): Task[Unit] =
+    for
+      now <- Clock.instant
+      _   <- xa.connectMeasured("invalidate-session"):
+        sql"""
+          UPDATE sso_sessions
+          SET expires_at = $now
+          WHERE public_session_id = $publicSessionId
+        """.update.run()
+    yield ()
 
   override def invalidateByUserId(
       userId: UserId,

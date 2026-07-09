@@ -10,5 +10,6 @@ object ScopeToken extends StringNewType:
   given JsonEncoder[ScopeToken] = JsonEncoder.string.contramap(identity[String])
   val OfflineAccess = ScopeToken("offline_access")
   val OpenId = ScopeToken("openid")
+  val AccountSettings = ScopeToken("account_settings")
   def parseTokens(s: String): Set[ScopeToken] =
     s.split(" ").map(ScopeToken(_)).toSet
