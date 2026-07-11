@@ -9,7 +9,9 @@ import versola.central.configuration.permissions.PermissionService
 import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.roles.RoleService
 import versola.central.configuration.scopes.OAuthScopeService
+import versola.central.configuration.system.SystemSettingsService
 import versola.central.configuration.tenants.TenantService
+import versola.central.configuration.themes.ThemeService
 import zio.stream.ZSink
 import zio.{Schedule, Scope, Task, UIO, ZIO, ZLayer, durationInt}
 
@@ -17,8 +19,8 @@ trait CacheSyncService:
   def sync(): Task[Unit]
 
 object CacheSyncService:
-  def live: ZLayer[CacheSyncRepository & TenantService & PermissionService & ResourceService & OAuthClientService & OAuthScopeService & RoleService & AuthorizationPresetService & EdgeService & FormService & OtpChallengeService & ChallengeSettingsService & JwksService & Scope, Nothing, CacheSyncService] =
-    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _)) >>>
+  def live: ZLayer[CacheSyncRepository & TenantService & PermissionService & ResourceService & OAuthClientService & OAuthScopeService & RoleService & AuthorizationPresetService & EdgeService & FormService & OtpChallengeService & ChallengeSettingsService & SystemSettingsService & JwksService & ThemeService & Scope, Nothing, CacheSyncService] =
+    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _)) >>>
       ZLayer(ZIO.serviceWithZIO[CacheSyncService.Impl](service => service.sync().forkScoped.as(service)))
 
   class Impl(
@@ -34,7 +36,9 @@ object CacheSyncService:
       formService: FormService,
       otpChallengeService: OtpChallengeService,
       challengeSettingsService: ChallengeSettingsService,
+      systemSettingsService: SystemSettingsService,
       jwksService: JwksService,
+      themeService: ThemeService,
   ) extends CacheSyncService:
 
     override def sync(): Task[Unit] =
@@ -75,6 +79,12 @@ object CacheSyncService:
 
           case event: SyncEvent.ChallengeSettingsUpdated =>
             challengeSettingsService.sync(event).either
+
+          case SyncEvent.ThemesUpdated =>
+            themeService.sync().either
+
+          case SyncEvent.SystemSettingsUpdated =>
+            systemSettingsService.sync().either
 
           case SyncEvent.Unknown =>
             ZIO.unit

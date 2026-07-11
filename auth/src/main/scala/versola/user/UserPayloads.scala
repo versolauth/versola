@@ -1,10 +1,11 @@
 package versola.user
 
 import versola.auth.model.{AuthenticatorTransport, CredentialDeviceType, CredentialId}
+import versola.oauth.challenge.password.model.DeliveryChannel
 import versola.oauth.client.model.TenantId
 import versola.role.model.RoleId
 import versola.user.model.{Login, UserId}
-import versola.util.{Base64, Email, Patch, Phone}
+import versola.util.{Email, Patch, Phone}
 import zio.json.JsonCodec
 import zio.json.ast.Json
 import zio.schema.{Schema, derived}
@@ -45,8 +46,6 @@ case class PatchUserClaimsPayload(id: UserId, claims: Json.Obj) derives JsonCode
 
 case class UserRolesResponse(roles: List[RoleId]) derives JsonCodec, Schema
 
-given JsonCodec[CredentialId] =
-  JsonCodec.string.transformOrFail(s => CredentialId.fromBase64Url(s), id => Base64.urlEncode(id))
 given JsonCodec[CredentialDeviceType] =
   JsonCodec.string.transform(CredentialDeviceType.valueOf, _.toString)
 given JsonCodec[AuthenticatorTransport] =
@@ -70,3 +69,20 @@ case class RenamePasskeyPayload(
     credentialId: CredentialId,
     name: Option[String],
 ) derives JsonCodec
+
+case class ResetPasswordPayload(
+    userId: UserId,
+    expiresInSeconds: Option[Long],
+    channel: Option[DeliveryChannel],
+) derives JsonCodec
+
+case class SessionResponse(
+    clientId: String,
+    platform: String,
+    os: Option[String],
+    browser: Option[String],
+    version: Option[String],
+    createdAt: String,
+) derives JsonCodec
+
+case class SessionListResponse(sessions: List[SessionResponse]) derives JsonCodec

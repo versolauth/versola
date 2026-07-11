@@ -122,6 +122,10 @@ class PostgresCacheSyncRepository(conn: PGConnection) extends CacheSyncRepositor
                 )
               }
             }
+          case "theme_change" =>
+            SyncEvent.ThemesUpdated
+          case "system_settings_change" =>
+            SyncEvent.SystemSettingsUpdated
           case _ =>
             SyncEvent.Unknown
       }
@@ -140,6 +144,8 @@ object PostgresCacheSyncRepository:
     "form_change",
     "otp_template_change",
     "challenge_settings_change",
+    "theme_change",
+    "system_settings_change",
   )
 
   def live: ZLayer[HikariDataSource & Scope, Throwable, CacheSyncRepository] =

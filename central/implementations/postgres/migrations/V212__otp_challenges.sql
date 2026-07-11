@@ -2,6 +2,7 @@ CREATE TABLE otp_templates (
     id            TEXT NOT NULL,
     tenant_id     TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
     localizations JSONB NOT NULL,
+    purpose       TEXT NOT NULL,
     PRIMARY KEY (id, tenant_id)
 );
 

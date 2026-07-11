@@ -22,6 +22,14 @@ trait PermissionRepository
       endpointIds: Set[ResourceEndpointId],
   ): Task[Unit]
 
+  /** Upserts a permission: inserts if absent, otherwise updates description and endpoint IDs. */
+  def upsertPermission(
+      tenantId: TenantId,
+      permission: Permission,
+      description: Map[String, String],
+      endpointIds: Set[ResourceEndpointId],
+  ): Task[Unit]
+
   def updatePermission(
       tenantId: TenantId,
       permission: Permission,

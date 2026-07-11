@@ -22,6 +22,16 @@ trait RoleRepository extends CacheSource[Vector[RoleRecord]]:
       permissions: List[Permission],
   ): Task[Unit]
 
+  /** Upserts a role: inserts it if absent, otherwise updates description and permissions.
+    * Does not modify the `active` flag of an existing role.
+    */
+  def upsertRole(
+      tenantId: TenantId,
+      id: RoleId,
+      description: Map[String, String],
+      permissions: List[Permission],
+  ): Task[Unit]
+
   def updateRole(
       tenantId: TenantId,
       id: RoleId,

@@ -8,7 +8,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const formsSrcDir = resolve(here, '../forms');
 const outDir = resolve(here, '../../central/src/main/resources/forms');
 
-const forms = ['credential', 'otp', 'password', 'access-denied', 'passkey-enroll'];
+const forms = ['credential', 'otp', 'password', 'access-denied', 'passkey-enroll', 'set-password'];
 const sharedAssets = ['common.css'];
 
 for (const id of forms) {

@@ -46,6 +46,20 @@ class PostgresPermissionRepository(xa: TransactorZIO) extends PermissionReposito
             VALUES ($tenantId, $permission, $description, $endpointIds)""".update.run()
     .unit
 
+  override def upsertPermission(
+      tenantId: TenantId,
+      permission: Permission,
+      description: Map[String, String],
+      endpointIds: Set[ResourceEndpointId],
+  ): Task[Unit] =
+    xa.connectMeasured("upsert-permission"):
+      sql"""INSERT INTO permissions (tenant_id, id, description, endpoint_ids)
+            VALUES ($tenantId, $permission, $description, $endpointIds)
+            ON CONFLICT (tenant_id, id) DO UPDATE SET
+              description = EXCLUDED.description,
+              endpoint_ids = EXCLUDED.endpoint_ids""".update.run()
+    .unit
+
   override def updatePermission(
       tenantId: TenantId,
       permission: Permission,

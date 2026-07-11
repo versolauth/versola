@@ -36,7 +36,18 @@ object ConversationStep:
       oldPasswordChangedAt: Option[Instant], // Set when user enters old password
       factorIndex: Int,
       rateLimitExceeded: Boolean,
+      temporaryExpired: Boolean = false,   // Set when the temporary password has expired
   ) extends ConversationStep(StepId.Password)
+
+  /** Rendered after a user successfully authenticates with a temporary password.
+    * The user must choose a new permanent password before proceeding.
+    */
+  case class SetPassword(
+      factorIndex: Int,
+      timesSubmitted: Int,
+      rateLimitExceeded: Boolean,
+      passwordReused: Boolean,
+  ) extends ConversationStep(StepId.SetPassword)
 
   case class PasskeyEnroll(
       request: String, // serialized registration ceremony state
