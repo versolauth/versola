@@ -186,10 +186,15 @@ object ConversationController extends Controller:
     FormDecoder.single[String](form, "response", Right(_))
       .map(PasskeyAssertionSubmission(_))
 
+  private val PasskeyNameRegex = "^[\\p{L}\\p{N} ()-]+$"
+
   given FormDecoder[PasskeyEnrollSubmission] = (form: Form) =>
     for
       response <- FormDecoder.single[String](form, "response", Right(_))
-      name     <- FormDecoder.optional[String](form, "name", Right(_))
+      name     <- FormDecoder.single[String](form, "name", n =>
+        if n == n.trim && n.nonEmpty && n.matches(PasskeyNameRegex) then Right(n)
+        else Left("Invalid passkey name: only letters, digits, spaces, hyphens, and parentheses are allowed, with no leading or trailing spaces"),
+      )
     yield PasskeyEnrollSubmission(response, name)
 
   given FormDecoder[PasskeySkipSubmission] = (_: Form) =>

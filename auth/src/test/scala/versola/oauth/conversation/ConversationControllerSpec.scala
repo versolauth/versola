@@ -293,4 +293,59 @@ object ConversationControllerSpec extends UnitSpecBase:
         )
       ).addHeader(conversationCookie),
     ),
+    successfulSubmitTestCase(
+      description = "submit passkey enroll with valid name",
+      request = Request.post(
+        url = URL.empty / "challenge" / "passkey" / "enroll",
+        body = Body.fromURLEncodedForm(
+          Form.fromStrings("response" -> "{}", "name" -> "My PC (Chrome)"),
+        )
+      ).addHeader(conversationCookie),
+      submission = (authId, PasskeyEnrollSubmission("{}", "My PC (Chrome)"), None, None),
+    ),
+    rejectedSubmitTestCase(
+      description = "reject passkey enroll with invalid characters in name",
+      request = Request.post(
+        url = URL.empty / "challenge" / "passkey" / "enroll",
+        body = Body.fromURLEncodedForm(
+          Form.fromStrings("response" -> "{}", "name" -> "bad!name"),
+        )
+      ).addHeader(conversationCookie),
+    ),
+    rejectedSubmitTestCase(
+      description = "reject passkey enroll with leading space in name",
+      request = Request.post(
+        url = URL.empty / "challenge" / "passkey" / "enroll",
+        body = Body.fromURLEncodedForm(
+          Form.fromStrings("response" -> "{}", "name" -> " MyPC"),
+        )
+      ).addHeader(conversationCookie),
+    ),
+    rejectedSubmitTestCase(
+      description = "reject passkey enroll with trailing space in name",
+      request = Request.post(
+        url = URL.empty / "challenge" / "passkey" / "enroll",
+        body = Body.fromURLEncodedForm(
+          Form.fromStrings("response" -> "{}", "name" -> "MyPC "),
+        )
+      ).addHeader(conversationCookie),
+    ),
+    rejectedSubmitTestCase(
+      description = "reject passkey enroll with whitespace-only name",
+      request = Request.post(
+        url = URL.empty / "challenge" / "passkey" / "enroll",
+        body = Body.fromURLEncodedForm(
+          Form.fromStrings("response" -> "{}", "name" -> "   "),
+        )
+      ).addHeader(conversationCookie),
+    ),
+    rejectedSubmitTestCase(
+      description = "reject passkey enroll with missing name field",
+      request = Request.post(
+        url = URL.empty / "challenge" / "passkey" / "enroll",
+        body = Body.fromURLEncodedForm(
+          Form.fromStrings("response" -> "{}"),
+        )
+      ).addHeader(conversationCookie),
+    ),
   )

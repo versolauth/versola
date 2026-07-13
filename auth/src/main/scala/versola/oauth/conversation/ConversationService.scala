@@ -130,7 +130,7 @@ trait ConversationService:
       conversation: ConversationRecord,
       enrollStep: ConversationStep.PasskeyEnroll,
       response: String,
-      name: Option[String],
+      name: String,
   ): Task[ConversationResult.Render]
 
   /** Skip passkey enrollment and complete the conversation. */
@@ -662,7 +662,7 @@ object ConversationService:
         conversation: ConversationRecord,
         enrollStep: ConversationStep.PasskeyEnroll,
         response: String,
-        name: Option[String],
+        name: String,
     ): Task[ConversationResult.Render] =
       conversation.userId match
         case None =>
@@ -672,8 +672,9 @@ object ConversationService:
             case None =>
               finish(authId, conversation)
             case Some(settings) =>
-              webAuthnService.finishRegistration(settings, userId, enrollStep.request, response, name).foldZIO(
-                error => renderStep(authId, conversation, enrollStep.copy(enrollFailed = true)),
+              webAuthnService.finishRegistration(settings, userId, enrollStep.request, response, Some(name)).foldZIO(
+                error => ZIO.logWarning(s"Passkey enrollment failed for user $userId: ${error.getMessage}") *>
+                  renderStep(authId, conversation, enrollStep.copy(enrollFailed = true)),
                 _ => finish(authId, conversation),
               )
 
