@@ -121,6 +121,19 @@ class PostgresUserRepository(xa: TransactorZIO, secureRandom: SecureRandom) exte
         ), now)
     yield ()
 
+  override def enqueueRoleUpdate(
+      userId: UserId,
+      tenantId: TenantId,
+      add: Set[RoleId],
+      remove: Set[RoleId],
+  ): Task[Unit] =
+    for
+      eventId <- secureRandom.nextUUIDv7
+      now <- Clock.instant
+      _ <- xa.transactMeasured("enqueue-role-update"):
+             enqueueEventSql(userId, eventId, OutboxEvent.UpdateUserRoles(userId, tenantId, add, remove), now)
+    yield ()
+
   /** Atomically claims a batch by pushing `next_attempt_at` forward by `leaseSeconds`.
     * Processes events in per-user FIFO order.
     */

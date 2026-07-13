@@ -40,6 +40,16 @@
   text-align: center;
 }
 
+.name-field {
+  margin-bottom: 20px;
+  text-align: left;
+}
+
+.field-error {
+  margin-top: 6px;
+  font-size: 0.85rem;
+}
+
 .container > .btn + .btn {
   margin-top: 12px;
 }

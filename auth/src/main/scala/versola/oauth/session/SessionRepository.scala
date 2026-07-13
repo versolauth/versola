@@ -1,6 +1,7 @@
 package versola.oauth.session
 
-import versola.oauth.session.model.{SessionId, SessionRecord}
+import versola.oauth.model.{AccessToken, RefreshToken}
+import versola.oauth.session.model.{RefreshAlreadyExchanged, RefreshTokenRecord, SessionId, SessionRecord}
 import versola.user.model.UserId
 import versola.util.MAC
 import zio.*
@@ -27,3 +28,14 @@ trait SessionRepository:
   def invalidateByUserId(
       userId: UserId,
   ): Task[Unit]
+
+  def create(
+      refreshToken: MAC.Of[RefreshToken],
+      record: RefreshTokenRecord,
+  ): IO[Throwable | RefreshAlreadyExchanged, Unit]
+
+  def findToken(token: MAC.Of[RefreshToken]): Task[Option[RefreshTokenRecord]]
+
+  def delete(token: MAC.Of[RefreshToken]): Task[Unit]
+
+  def deleteByAccessToken(token: AccessToken): Task[Unit]

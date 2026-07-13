@@ -16,6 +16,7 @@ import './error-card';
 import './loading-cards';
 
 const CODE_PLACEHOLDER = '{{code}}';
+const PASSWORD_PLACEHOLDER = '{{password}}';
 
 @customElement('versola-challenges-list')
 export class VersolaChallengesList extends LitElement {
@@ -34,6 +35,7 @@ export class VersolaChallengesList extends LitElement {
   @state() private expandedLocales = new Set<string>();
 
   @state() private editingTemplateId: string | null = null; // null means not editing/adding
+  @state() private editingPurpose: 'otp' | 'password' = 'otp';
   @state() private editId = '';
   @state() private editLocalizations: Array<{ locale: string; template: string }> = [];
   @state() private saving = false;
@@ -46,18 +48,10 @@ export class VersolaChallengesList extends LitElement {
   @state() private isSavingSettings = false;
   @state() private settingsError = '';
 
-  @state() private passwordRegex = '';
-  @state() private editPasswordRegex = '';
-
   @state() private otpLength = 6;
   @state() private otpResendAfter = 60;
   @state() private editOtpLength = 6;
   @state() private editOtpResendAfter = 60;
-
-  @state() private passwordHistorySize = 5;
-  @state() private passwordNumDifferent = 3;
-  @state() private editPasswordHistorySize = 5;
-  @state() private editPasswordNumDifferent = 3;
 
   @state() private authConversationTtlSeconds = 900;
   @state() private sessionTtlSeconds = 86400;
@@ -377,12 +371,9 @@ export class VersolaChallengesList extends LitElement {
       this.hasChallengeSettings = challengeSettings !== null;
       if (challengeSettings) {
         this.phonePrefixes = challengeSettings.allowedPrefixes;
-        this.passwordRegex = challengeSettings.passwordRegex ?? '';
         this.submissionLimits = challengeSettings.submissionLimits;
         this.otpLength = challengeSettings.otpLength;
         this.otpResendAfter = challengeSettings.otpResendAfter;
-        this.passwordHistorySize = challengeSettings.passwordHistorySize;
-        this.passwordNumDifferent = challengeSettings.passwordNumDifferent;
         this.passkeySettings = challengeSettings.passkeySettings ?? null;
         this.authConversationTtlSeconds = challengeSettings.authConversationTtlSeconds;
         this.sessionTtlSeconds = challengeSettings.sessionTtlSeconds;
@@ -390,12 +381,9 @@ export class VersolaChallengesList extends LitElement {
         this.ipHeader = challengeSettings.ipHeader || 'X-Real-IP';
       } else {
         this.phonePrefixes = [];
-        this.passwordRegex = '';
         this.submissionLimits = { otpRequest: [], otpSubmit: [], passwordSubmit: [], passkeyAssertion: [], banDurationSeconds: 0 };
         this.otpLength = 6;
         this.otpResendAfter = 60;
-        this.passwordHistorySize = 5;
-        this.passwordNumDifferent = 3;
         this.passkeySettings = null;
         this.authConversationTtlSeconds = 900;
         this.sessionTtlSeconds = 86400;
@@ -411,6 +399,7 @@ export class VersolaChallengesList extends LitElement {
 
   private startAdd() {
     this.editingTemplateId = 'NEW';
+    this.editingPurpose = 'otp';
     this.editId = '';
     this.editLocalizations = this.buildLocalizations({});
     this.expandedLocales = new Set(this.editLocalizations.map(l => l.locale));
@@ -419,6 +408,7 @@ export class VersolaChallengesList extends LitElement {
 
   private startEdit(template: OtpTemplateRecord) {
     this.editingTemplateId = template.id;
+    this.editingPurpose = template.purpose === 'password' ? 'password' : 'otp';
     this.editId = template.id;
     this.editLocalizations = this.buildLocalizations(template.localizations);
     this.expandedLocales = new Set(this.editLocalizations.filter(l => !l.template).map(l => l.locale));
@@ -471,6 +461,7 @@ export class VersolaChallengesList extends LitElement {
       return;
     }
 
+    const placeholder = this.editingPurpose === 'password' ? PASSWORD_PLACEHOLDER : CODE_PLACEHOLDER;
     const localizations: Record<string, string> = {};
     for (const { locale, template } of this.editLocalizations) {
       const t = template.trim();
@@ -478,8 +469,8 @@ export class VersolaChallengesList extends LitElement {
         this.editError = `Localization for ${this.localeName(locale)} (${locale}) is required`;
         return;
       }
-      if (!t.includes(CODE_PLACEHOLDER)) {
-        this.editError = `Localization for ${this.localeName(locale)} (${locale}) must include the ${CODE_PLACEHOLDER} placeholder`;
+      if (!t.includes(placeholder)) {
+        this.editError = `Localization for ${this.localeName(locale)} (${locale}) must include the ${placeholder} placeholder`;
         return;
       }
       localizations[locale] = t;
@@ -493,8 +484,8 @@ export class VersolaChallengesList extends LitElement {
     this.saving = true;
     this.editError = '';
     try {
-      await upsertOtpTemplate(id, this.tenantId, localizations);
-      const updated: OtpTemplateRecord = { id, tenantId: this.tenantId, localizations };
+      await upsertOtpTemplate(id, this.tenantId, localizations, this.editingPurpose);
+      const updated: OtpTemplateRecord = { id, tenantId: this.tenantId, localizations, purpose: this.editingPurpose };
       const existing = this.templates.some(t => t.id === id);
       this.templates = existing
         ? this.templates.map(t => (t.id === id ? updated : t))
@@ -528,12 +519,9 @@ export class VersolaChallengesList extends LitElement {
   private startEditSettings() {
     this.editingSettings = true;
     this.editPrefixes = this.phonePrefixes.map(value => ({ value }));
-    this.editPasswordRegex = this.passwordRegex;
     this.editSubmissionLimits = JSON.parse(JSON.stringify(this.submissionLimits));
     this.editOtpLength = this.otpLength;
     this.editOtpResendAfter = this.otpResendAfter;
-    this.editPasswordHistorySize = this.passwordHistorySize;
-    this.editPasswordNumDifferent = this.passwordNumDifferent;
     this.editAuthConversationTtlSeconds = this.authConversationTtlSeconds;
     this.editSessionTtlSeconds = this.sessionTtlSeconds;
     this.editSessionIdleTtlSeconds = this.sessionIdleTtlSeconds;
@@ -583,16 +571,6 @@ export class VersolaChallengesList extends LitElement {
       this.settingsError = 'Each prefix must start with + followed by digits (e.g. +77).';
       return;
     }
-    const regex = this.editPasswordRegex.trim();
-    if (regex) {
-      try {
-        new RegExp(regex);
-      } catch {
-        this.settingsError = 'Invalid password regular expression.';
-        return;
-      }
-    }
-
     const rpId = this.editPasskeyRpId.trim();
     const rpName = this.editPasskeyRpName.trim();
     const origins = this.editPasskeyOrigins.map(o => o.value.trim()).filter(o => o.length > 0);
@@ -625,22 +603,16 @@ export class VersolaChallengesList extends LitElement {
         this.editSubmissionLimits,
         this.editOtpLength,
         this.editOtpResendAfter,
-        this.editPasswordHistorySize,
-        this.editPasswordNumDifferent,
         passkeySettings,
         this.editAuthConversationTtlSeconds,
         this.editSessionTtlSeconds,
         this.editSessionIdleTtlSeconds,
         ipHeader,
-        regex || undefined,
       );
       this.phonePrefixes = prefixes;
-      this.passwordRegex = regex;
       this.submissionLimits = JSON.parse(JSON.stringify(this.editSubmissionLimits));
       this.otpLength = this.editOtpLength;
       this.otpResendAfter = this.editOtpResendAfter;
-      this.passwordHistorySize = this.editPasswordHistorySize;
-      this.passwordNumDifferent = this.editPasswordNumDifferent;
       this.authConversationTtlSeconds = this.editAuthConversationTtlSeconds;
       this.sessionTtlSeconds = this.editSessionTtlSeconds;
       this.sessionIdleTtlSeconds = this.editSessionIdleTtlSeconds;
@@ -657,16 +629,25 @@ export class VersolaChallengesList extends LitElement {
 
   private renderEdit() {
     const isNew = this.editingTemplateId === 'NEW';
+    const isPassword = this.editingPurpose === 'password';
+    // password template always uses the fixed 'password' id — treat as edit even on first creation
+    const isNewOtp = isNew && !isPassword;
+    const placeholder = isPassword ? PASSWORD_PLACEHOLDER : CODE_PLACEHOLDER;
+    const typeLabel = isPassword ? 'Password Template' : 'OTP Template';
+    const textareaPlaceholder = isPassword
+      ? 'Your temporary password is {{password}}. It expires in {{expiresHours}} hours.'
+      : 'Your verification code is: {{code}}';
+
     return html`
       <div class="form-header">
         <div class="title-stack">
-          <h1 class="form-title">${isNew ? 'Add OTP Template' : 'Edit OTP Template'}</h1>
-          ${isNew ? nothing : html`<div class="entity-id-meta">${this.editId}</div>`}
+          <h1 class="form-title">${isNewOtp ? `Add ${typeLabel}` : `Edit ${typeLabel}`}</h1>
+          ${isNewOtp ? nothing : html`<div class="entity-id-meta">${this.editId}</div>`}
         </div>
       </div>
 
       <div class="card">
-        ${isNew ? html`
+        ${isNew && !isPassword ? html`
           <div class="form-group">
             <label for="template-id">Template ID *</label>
             <input id="template-id" type="text" class="compact-input" .value=${this.editId}
@@ -677,7 +658,7 @@ export class VersolaChallengesList extends LitElement {
         ` : nothing}
 
         <label>Localizations</label>
-        <div class="hint">All active localizations are required. Use ${CODE_PLACEHOLDER} as a placeholder for the verification code.</div>
+        <div class="hint">All active localizations are required. Use <code>${placeholder}</code> as a placeholder for the ${isPassword ? 'temporary password' : 'verification code'}.</div>
 
         ${this.editLocalizations.map((loc) => {
           const expanded = this.expandedLocales.has(loc.locale);
@@ -693,7 +674,7 @@ export class VersolaChallengesList extends LitElement {
                 <div class="edit-loc-body">
                   <textarea class="edit-loc-textarea" .value=${loc.template}
                     @input=${(e: Event) => { loc.template = (e.target as HTMLTextAreaElement).value; }}
-                    placeholder="Your verification code is: {{code}}"></textarea>
+                    placeholder=${textareaPlaceholder}></textarea>
                 </div>
               ` : nothing}
             </div>
@@ -738,17 +719,18 @@ export class VersolaChallengesList extends LitElement {
   }
 
   private renderOtpSettings() {
+    const otpTemplates = this.templates.filter(t => t.purpose !== 'password');
     return html`
       <section class="settings-section">
         <div class="section-header">
           <div>
             <h2 class="section-title">OTP Templates</h2>
-            <div class="section-desc">One-time password message templates used by OAuth clients.</div>
+            <div class="section-desc">One-time verification code templates used by OAuth clients. Must include the <code>${CODE_PLACEHOLDER}</code> placeholder.</div>
           </div>
           ${this.canManage ? html`<button class="btn btn-primary" @click=${() => this.startAdd()}>Add Template</button>` : ''}
         </div>
 
-        ${this.templates.length === 0
+        ${otpTemplates.length === 0
           ? html`
             <div class="card">
               <div class="empty-state">
@@ -757,8 +739,66 @@ export class VersolaChallengesList extends LitElement {
                 ${this.canManage ? html`<button class="btn btn-primary" @click=${() => this.startAdd()} style="margin-top: 1rem;">+ Add Template</button>` : ''}
               </div>
             </div>`
-          : this.templates.map(template => this.renderTemplateCard(template))}
+          : otpTemplates.map(template => this.renderTemplateCard(template))}
       </section>
+    `;
+  }
+
+  private startEditPasswordTemplate(template?: OtpTemplateRecord) {
+    this.editingTemplateId = 'password';
+    this.editingPurpose = 'password';
+    this.editId = 'password';
+    this.editLocalizations = this.buildLocalizations(template?.localizations ?? {});
+    this.expandedLocales = new Set(this.editLocalizations.map(l => l.locale));
+    this.editError = '';
+  }
+
+  private renderPasswordTemplates() {
+    const passwordTemplate = this.templates.find(t => t.purpose === 'password');
+    return html`
+      <section class="settings-section">
+        <div class="section-header">
+          <div>
+            <h2 class="section-title">Password Templates</h2>
+            <div class="section-desc">Message sent when a temporary password is issued. Must include the <code>${PASSWORD_PLACEHOLDER}</code> placeholder.</div>
+          </div>
+          ${this.canManage ? html`
+            <button class="btn btn-primary" @click=${() => this.startEditPasswordTemplate(passwordTemplate)}>
+              ${passwordTemplate ? 'Edit' : 'Create'}
+            </button>
+          ` : nothing}
+        </div>
+
+        ${!passwordTemplate
+          ? html`
+            <div class="card">
+              <div class="empty-state">
+                <h3>No password template</h3>
+                <p>Create a template or restart the server to seed the default one.</p>
+                ${this.canManage ? html`<button class="btn btn-primary" @click=${() => this.startEditPasswordTemplate()} style="margin-top: 1rem;">+ Create Template</button>` : ''}
+              </div>
+            </div>`
+          : this.renderPasswordTemplateCard(passwordTemplate)}
+      </section>
+    `;
+  }
+
+  private renderPasswordTemplateCard(template: OtpTemplateRecord) {
+    const codes = Object.keys(template.localizations);
+    const selected = this.selectedViewLocale(template);
+    return html`
+      <div class="card template-card">
+        <div class="locale-bar">
+          <span class="locale-bar-label">Language</span>
+          <select class="form-control locale-select" .value=${selected}
+            @change=${(e: Event) => { this.viewLocale = { ...this.viewLocale, [template.id]: (e.target as HTMLSelectElement).value }; }}>
+            ${codes.map(code => html`
+              <option value=${code} ?selected=${code === selected}>${code} (${this.localeName(code)})</option>
+            `)}
+          </select>
+        </div>
+        <div class="template-text">${template.localizations[selected] ?? ''}</div>
+      </div>
     `;
   }
 
@@ -813,16 +853,6 @@ export class VersolaChallengesList extends LitElement {
               </div>
             `}
 
-          <label style="margin-top: var(--spacing-lg);">Password Regex</label>
-          ${this.passwordRegex
-            ? html`<div class="template-text">${this.passwordRegex}</div>`
-            : html`<div class="hint">No password regex configured. Any password is accepted.</div>`}
-
-          <label style="margin-top: var(--spacing-lg);">Password History Size</label>
-          <div class="template-text">${this.passwordHistorySize}</div>
-
-          <label style="margin-top: var(--spacing-lg);">Different Passwords Required</label>
-          <div class="template-text">${this.passwordNumDifferent}</div>
         </div>
 
         <div class="card" style="margin-bottom: var(--spacing-lg);">
@@ -944,22 +974,6 @@ export class VersolaChallengesList extends LitElement {
           `)}
 
         <button class="btn btn-secondary" @click=${() => this.addPrefix()}>+ Add Prefix</button>
-
-        <label style="margin-top: var(--spacing-lg);">Password Regex</label>
-        <div class="hint">Regular expression that submitted passwords must match. Leave empty to accept any password.</div>
-        <input type="text" class="form-control compact-input" .value=${this.editPasswordRegex}
-          @input=${(e: Event) => { this.editPasswordRegex = (e.target as HTMLInputElement).value; }}
-          placeholder="^(?=.*[A-Za-z])(?=.*\\d).{8,}$" />
-
-        <label style="margin-top: var(--spacing-lg);">Password History Size</label>
-        <div class="hint">Number of previous passwords to keep (including the current one).</div>
-        <input type="number" class="form-control compact-input limit-input" .value=${this.editPasswordHistorySize}
-          @input=${(e: Event) => { this.editPasswordHistorySize = Math.max(0, parseInt((e.target as HTMLInputElement).value) || 0); this.requestUpdate(); }} />
-
-        <label style="margin-top: var(--spacing-lg);">Different Passwords Required</label>
-        <div class="hint">How many distinct passwords are required before an old one can be reused.</div>
-        <input type="number" class="form-control compact-input limit-input" .value=${this.editPasswordNumDifferent}
-          @input=${(e: Event) => { this.editPasswordNumDifferent = Math.max(0, parseInt((e.target as HTMLInputElement).value) || 0); this.requestUpdate(); }} />
 
         <h3 style="margin-top: var(--spacing-xl); margin-bottom: var(--spacing-md);">Sessions</h3>
 
@@ -1122,6 +1136,7 @@ export class VersolaChallengesList extends LitElement {
         `
         : html`
           ${this.renderOtpSettings()}
+          ${this.renderPasswordTemplates()}
           ${this.renderChallengeSettings()}
         `}
     `;

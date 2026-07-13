@@ -41,7 +41,9 @@ object ConversationRenderService:
         passwordRegex: Option[String],
     ) extends StepView
     @jsonHint("password")
-    case class Password(passwordRegex: Option[String]) extends StepView
+    case class Password(passwordRegex: String) extends StepView
+    @jsonHint("set-password")
+    case class SetPassword(passwordRegex: String) extends StepView
     @jsonHint("otp")
     case class Otp(length: Int, resendAfter: Int, lockedSeconds: Option[Int]) extends StepView
     @jsonHint("passkey-enroll")
@@ -167,6 +169,7 @@ object ConversationRenderService:
       val formId = step match
         case _: ConversationStep.Credential    => "credential"
         case _: ConversationStep.Password      => "password"
+        case _: ConversationStep.SetPassword   => "set-password"
         case _: ConversationStep.Otp           => "otp"
         case _: ConversationStep.PasskeyEnroll => "passkey-enroll"
         case ConversationStep.AccessDenied     => "access-denied"
@@ -198,10 +201,13 @@ object ConversationRenderService:
     private def stepErrorKey(step: ConversationStep): Option[String] = step match
       case s: ConversationStep.Otp if s.timesSubmitted > 0 && !s.rateLimitExceeded => Some("otp_wrong")
       case s: ConversationStep.Password if s.rateLimitExceeded => Some("rate_limit_exceeded")
+      case s: ConversationStep.Password if s.temporaryExpired && s.timesSubmitted > 0 => Some("temporary_expired")
       case s: ConversationStep.Password if s.timesSubmitted > 0 => Some("password_wrong")
       case s: ConversationStep.Credential if s.passkeyFailed => Some("passkey_failed")
       case s: ConversationStep.Credential if s.loginFailed => Some("login_failed")
       case s: ConversationStep.PasskeyEnroll if s.enrollFailed => Some("enroll_failed")
+      case s: ConversationStep.SetPassword if s.rateLimitExceeded => Some("rate_limit_exceeded")
+      case s: ConversationStep.SetPassword if s.passwordReused => Some("password_reused")
       case _ => None
 
     private def pageTitle(translations: Map[String, String]): String =
@@ -241,12 +247,15 @@ object ConversationRenderService:
               else
                 ZIO.none
             passwordRegex <-
-              if inlinePassword then configuration.getPasswordRegex(clientId)
+              if inlinePassword then configuration.getPasswordRegex.map(Some(_))
               else ZIO.none
           yield StepView.Credential(primaryCredentials, inlinePassword, passkey, allowedPhonePrefixes, passwordRegex)
 
         case _: ConversationStep.Password =>
-          configuration.getPasswordRegex(clientId).map(StepView.Password(_))
+          configuration.getPasswordRegex.map(StepView.Password(_))
+
+        case _: ConversationStep.SetPassword =>
+          configuration.getPasswordRegex.map(StepView.SetPassword(_))
 
         case s: ConversationStep.Otp =>
           for

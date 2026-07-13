@@ -74,6 +74,7 @@ object ConversationControllerSpec extends UnitSpecBase:
     userAgent = None,
     version = 0,
     amr = Map.empty,
+    needsPasswordChange = false,
   )
 
   def successfulSubmitTestCase(
@@ -113,7 +114,7 @@ object ConversationControllerSpec extends UnitSpecBase:
           )
         )
         _ <- configuration.getAllowedPhonePrefixes.succeedsWith(List.empty)
-        _ <- configuration.getPasswordRegex.succeedsWith(None)
+        _ <- configuration.getPasswordRegex.succeedsWith(".*")
         _ <- configuration.getIpHeader.succeedsWith(ipHeader)
         _ <- router.submit.succeedsWith((conversationResult, record))
 
@@ -161,7 +162,7 @@ object ConversationControllerSpec extends UnitSpecBase:
               )
           )
         )
-        _ <- configuration.getPasswordRegex.succeedsWith(Some(passwordRegex))
+        _ <- configuration.getPasswordRegex.succeedsWith(passwordRegex)
 
         response <- client.batched(request)
         submitCalls = router.submit.calls
@@ -289,6 +290,61 @@ object ConversationControllerSpec extends UnitSpecBase:
         url = URL.empty / "challenge" / "password",
         body = Body.fromURLEncodedForm(
           Form.fromStrings("password" -> "abc"),
+        )
+      ).addHeader(conversationCookie),
+    ),
+    successfulSubmitTestCase(
+      description = "submit passkey enroll with valid name",
+      request = Request.post(
+        url = URL.empty / "challenge" / "passkey" / "enroll",
+        body = Body.fromURLEncodedForm(
+          Form.fromStrings("response" -> "{}", "name" -> "My PC (Chrome)"),
+        )
+      ).addHeader(conversationCookie),
+      submission = (authId, PasskeyEnrollSubmission("{}", "My PC (Chrome)"), None, None),
+    ),
+    rejectedSubmitTestCase(
+      description = "reject passkey enroll with invalid characters in name",
+      request = Request.post(
+        url = URL.empty / "challenge" / "passkey" / "enroll",
+        body = Body.fromURLEncodedForm(
+          Form.fromStrings("response" -> "{}", "name" -> "bad!name"),
+        )
+      ).addHeader(conversationCookie),
+    ),
+    rejectedSubmitTestCase(
+      description = "reject passkey enroll with leading space in name",
+      request = Request.post(
+        url = URL.empty / "challenge" / "passkey" / "enroll",
+        body = Body.fromURLEncodedForm(
+          Form.fromStrings("response" -> "{}", "name" -> " MyPC"),
+        )
+      ).addHeader(conversationCookie),
+    ),
+    rejectedSubmitTestCase(
+      description = "reject passkey enroll with trailing space in name",
+      request = Request.post(
+        url = URL.empty / "challenge" / "passkey" / "enroll",
+        body = Body.fromURLEncodedForm(
+          Form.fromStrings("response" -> "{}", "name" -> "MyPC "),
+        )
+      ).addHeader(conversationCookie),
+    ),
+    rejectedSubmitTestCase(
+      description = "reject passkey enroll with whitespace-only name",
+      request = Request.post(
+        url = URL.empty / "challenge" / "passkey" / "enroll",
+        body = Body.fromURLEncodedForm(
+          Form.fromStrings("response" -> "{}", "name" -> "   "),
+        )
+      ).addHeader(conversationCookie),
+    ),
+    rejectedSubmitTestCase(
+      description = "reject passkey enroll with missing name field",
+      request = Request.post(
+        url = URL.empty / "challenge" / "passkey" / "enroll",
+        body = Body.fromURLEncodedForm(
+          Form.fromStrings("response" -> "{}"),
         )
       ).addHeader(conversationCookie),
     ),

@@ -63,6 +63,7 @@ export interface OtpTemplateRecord {
   id: string;
   tenantId: string;
   localizations: Record<string, string>;
+  purpose: string;
 }
 
 export interface RateLimit {
@@ -90,17 +91,21 @@ export interface PasskeySettings {
 export interface ChallengeSettingsRecord {
   tenantId: string;
   allowedPrefixes: string[];
-  passwordRegex?: string;
   submissionLimits: SubmissionLimits;
   otpLength: number;
   otpResendAfter: number;
-  passwordHistorySize: number;
-  passwordNumDifferent: number;
   passkeySettings?: PasskeySettings | null;
   authConversationTtlSeconds: number;
   sessionTtlSeconds: number;
   sessionIdleTtlSeconds?: number | null;
   ipHeader: string;
+}
+
+// Global (non-tenant-scoped) password policy
+export interface SystemSettingsRecord {
+  passwordRegex: string;
+  passwordHistorySize: number;
+  passwordNumDifferent: number;
 }
 
 // A registered passkey credential for a user

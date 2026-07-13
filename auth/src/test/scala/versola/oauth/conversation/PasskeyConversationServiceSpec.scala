@@ -104,6 +104,7 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
     userAgent = None,
     version = 0,
     amr = Map.empty,
+    needsPasswordChange = false,
   )
 
   // A minimal assertion response carrying a credential id, used as the throttle subject.
@@ -389,7 +390,7 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
           _ <- env.conversationRepository.delete.succeedsWith(true)
           _ <- env.configService.getSessionTtl.succeedsWith(zio.Duration.fromSeconds(86400))
           _ <- env.configService.getSessionIdleTtl.succeedsWith(Option.empty[zio.Duration])
-          result <- env.service.finishPasskeyEnroll(authId, recordWithUser, enrollStep, "resp", None)
+          result <- env.service.finishPasskeyEnroll(authId, recordWithUser, enrollStep, "resp", "my-passkey")
         yield assertTrue(result.isInstanceOf[ConversationResult.Complete])
       },
       test("re-render enroll step with enrollFailed flag when registration fails") {
@@ -400,7 +401,7 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
           _ <- env.configService.getPasskeySettings.succeedsWith(Some(passkeySettings))
           _ <- env.webAuthnService.finishRegistration.failsWith(versola.oauth.challenge.passkey.WebAuthnError.CeremonyFailed("fail"))
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
-          result <- env.service.finishPasskeyEnroll(authId, recordWithUser, enrollStep, "resp", None)
+          result <- env.service.finishPasskeyEnroll(authId, recordWithUser, enrollStep, "resp", "my-passkey")
         yield assertTrue(result == ConversationResult.RenderStep(enrollStep.copy(enrollFailed = true)))
       }
     ),

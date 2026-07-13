@@ -112,6 +112,7 @@ object AuthorizeEndpointService:
           )), // Strip non-printable ASCII (0x20–0x7E); does not escape HTML — always escape at render time
           version = 0,
           amr = amr,
+          needsPasswordChange = false,
         )
         configurationService.getAuthConversationTtl(request.clientId).flatMap: authConversationTtl =>
           conversationRepository.create(authId, conversation, authConversationTtl).flatMap: _ =>

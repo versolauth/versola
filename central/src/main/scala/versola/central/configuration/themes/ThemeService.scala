@@ -40,16 +40,16 @@ object ThemeService:
       }
 
     override def createTheme(theme: ThemeRecord): Task[Unit] =
-      repository.create(theme) *> sync()
+      repository.create(theme)
 
     override def updateTheme(theme: ThemeRecord): Task[Unit] =
-      repository.update(theme) *> sync()
+      repository.update(theme)
 
     override def deleteTheme(id: String): Task[Unit] =
       if id == DefaultThemeId then
         ZIO.fail(new IllegalArgumentException("Cannot delete the default theme"))
       else
-        (repository.delete(id) *> sync()).catchSome:
+        repository.delete(id).catchSome:
           case e if isForeignKeyViolation(e) => ZIO.fail(new ThemeInUseError)
 
     override def sync(): Task[Unit] =

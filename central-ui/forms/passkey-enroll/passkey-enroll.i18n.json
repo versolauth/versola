@@ -5,6 +5,8 @@
     "description": "Sign in faster next time with your face, fingerprint, or device PIN.",
     "enroll_button": "Create a Passkey",
     "skip_button": "Not now",
+    "name_placeholder": "My PC (Chrome)",
+    "name_invalid": "Name may only contain letters, numbers, spaces, hyphens, and parentheses, and must not start or end with a space",
     "enroll_failed": "Could not create a passkey. Please try again or skip for now",
     "service_unavailable": "Service temporarily unavailable. Please try again later"
   },
@@ -12,6 +14,8 @@
     "page_title": "Настройка ключа доступа",
     "title": "Настройка ключа доступа",
     "description": "Входите быстрее в следующий раз — по лицу, отпечатку или PIN-коду устройства.",
+    "name_placeholder": "Мой ПК (Chrome)",
+    "name_invalid": "Название может содержать только буквы, цифры, пробелы, дефисы и скобки, и не должно начинаться или заканчиваться пробелом",
     "enroll_button": "Создать ключ доступа",
     "skip_button": "Не сейчас",
     "enroll_failed": "Не удалось создать ключ доступа. Повторите попытку или пропустите",

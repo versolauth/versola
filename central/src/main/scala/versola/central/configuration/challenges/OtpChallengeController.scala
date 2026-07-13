@@ -47,7 +47,7 @@ object OtpChallengeController extends Controller:
         _       <- authorizeBasic(request)
         service <- ZIO.service[OtpChallengeService]
         body    <- request.body.asJson[UpsertOtpTemplateRequest]
-        _       <- service.upsertTemplate(OtpTemplateRecord(body.id, body.tenantId, body.localizations))
+        _       <- service.upsertTemplate(OtpTemplateRecord(body.id, body.tenantId, body.localizations, body.purpose))
       yield Response.status(Status.NoContent)
     }
 
@@ -91,13 +91,10 @@ object OtpChallengeController extends Controller:
           ChallengeSettingsRecord(
             body.tenantId,
             body.allowedPrefixes,
-            body.passwordRegex,
             body.submissionLimits,
             body.otpLength,
             body.otpResendAfter,
             body.passkeySettings,
-            body.passwordHistorySize.orElse(existing.map(_.passwordHistorySize)).getOrElse(5),
-            body.passwordNumDifferent.orElse(existing.map(_.passwordNumDifferent)).getOrElse(3),
             body.authConversationTtlSeconds.orElse(existing.map(_.authConversationTtlSeconds)).getOrElse(900),
             body.sessionTtlSeconds.orElse(existing.map(_.sessionTtlSeconds)).getOrElse(86400),
             body.sessionIdleTtlSeconds.orElse(existing.flatMap(_.sessionIdleTtlSeconds)),

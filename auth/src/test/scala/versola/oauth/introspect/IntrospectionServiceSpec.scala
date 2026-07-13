@@ -6,7 +6,7 @@ import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{AuthMethodRef, ClientId, ClientIdWithSecret, OAuthClientRecord, ScopeToken, TenantId}
 import versola.oauth.introspect.model.{IntrospectionError, IntrospectionResponse}
 import versola.oauth.model.{AccessToken, AccessTokenPayload, RefreshToken}
-import versola.oauth.session.RefreshTokenRepository
+import versola.oauth.session.SessionRepository
 import versola.oauth.session.model.{RefreshTokenRecord, SessionId}
 import versola.user.model.UserId
 import versola.util.{CoreConfig, MAC, Secret, SecurityService, UnitSpecBase}
@@ -80,7 +80,7 @@ object IntrospectionServiceSpec extends UnitSpecBase:
 
   class Env:
     val oauthClientService = stub[OAuthConfigurationService]
-    val tokenRepository = stub[RefreshTokenRepository]
+    val tokenRepository = stub[SessionRepository]
     val securityService = stub[SecurityService]
     val config = TestEnvConfig.coreConfig
 
@@ -215,3 +215,4 @@ object IntrospectionServiceSpec extends UnitSpecBase:
     ),
   )
 
+          

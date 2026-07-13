@@ -17,7 +17,7 @@ import java.sql.{Connection, SQLException}
 import java.util.UUID
 
 class PostgresSessionRepository(xa: TransactorZIO)
-    extends SessionRepository, RefreshTokenRepository, BasicCodecs:
+    extends SessionRepository, BasicCodecs:
 
   import PgCodec.ListCodec
   import SqlArrayCodec.ListSqlArrayCodec
@@ -122,7 +122,7 @@ class PostgresSessionRepository(xa: TransactorZIO)
         """.update.run()
         ()
 
-  // ── RefreshTokenRepository ────────────────────────────────────────────────
+  // ── refresh token methods ─────────────────────────────────────────────────
 
   override def create(
       refreshToken: MAC.Of[RefreshToken],
@@ -204,7 +204,7 @@ class PostgresSessionRepository(xa: TransactorZIO)
     .unit
 
 object PostgresSessionRepository:
-  def live: ZLayer[TransactorZIO, Throwable, SessionRepository & RefreshTokenRepository] =
+  def live: ZLayer[TransactorZIO, Throwable, SessionRepository] =
     ZLayer.fromFunction(PostgresSessionRepository(_))
 
   private val SerializationFailureSqlState = "40001"
@@ -217,3 +217,4 @@ object PostgresSessionRepository:
         sql.getSQLState == SerializationFailureSqlState || sql.getSQLState == UniqueViolationSqlState
       case _ => Option(t.getCause).exists(isSerializationOrUniqueViolationFailure(_, depth + 1))
     )
+                                               

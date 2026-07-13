@@ -21,6 +21,7 @@ import './loading-cards';
 @customElement('versola-edges-list')
 export class VersolaEdgesList extends LitElement {
   @property({ type: String }) expandEdgeId: string | null = null;
+  @property({ type: Boolean }) canManage = false;
 
   @state() private edges: Edge[] = [];
   @state() private tenants: Tenant[] = [];
@@ -429,7 +430,7 @@ export class VersolaEdgesList extends LitElement {
       <content-header
         title="Edges"
       >
-        ${this.edges.length > 0 ? html`
+        ${this.canManage && this.edges.length > 0 ? html`
           <button slot="actions" class="btn btn-primary" @click=${this.handleCreateClick}>
             + Create Edge
           </button>
@@ -444,10 +445,11 @@ export class VersolaEdgesList extends LitElement {
         <div class="card">
           <div class="empty-state">
             <h3>No edges yet</h3>
+            ${this.canManage ? html`
             <p>Create your first edge to get started</p>
             <button class="btn btn-primary" @click=${this.handleCreateClick} style="margin-top: 1rem;">
               + Create Edge
-            </button>
+            </button>` : html`<p>No edges available.</p>`}
           </div>
         </div>
       ` : html`
@@ -466,6 +468,7 @@ export class VersolaEdgesList extends LitElement {
                     ` : ''}
                   </div>
                 </div>
+                ${this.canManage ? html`
                 <div class="edge-actions" @click=${(e: Event) => e.stopPropagation()}>
                   <button
                     class="icon-action"
@@ -483,7 +486,7 @@ export class VersolaEdgesList extends LitElement {
                   >
                     ✕
                   </button>
-                </div>
+                </div>` : ''}
               </div>
 
               ${isExpanded ? html`

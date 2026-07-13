@@ -2,6 +2,7 @@ package versola
 
 import versola.central.CentralConfig
 import versola.central.configuration.challenges.{ChallengeSettingsRecord, ChallengeSettingsRepository, OtpChallengeRepository, OtpTemplateRecord, PasskeySettings, RateLimit, SubmissionLimits}
+import versola.central.configuration.system.{SystemSettingsRecord, SystemSettingsRepository}
 import versola.central.configuration.clients.{AuthFlow, AuthorizationPreset, AuthorizationPresetRepository, ClientAlreadyExists, OAuthClientService, PresetId, PrimaryAuthFlow, PrimaryCredential, ResponseType}
 import versola.central.configuration.edges.{EdgeId, EdgeRepository}
 import versola.central.configuration.forms.{BackendProperty, BooleanProperty, FormId, FormRepository, NumberProperty, StringArrayProperty}
@@ -80,6 +81,7 @@ object BootstrapService:
       endpointId("GET", "/configuration/challenges/challenge-settings"),
       endpointId("GET", "/configuration/challenges/otp-templates"),
       endpointId("GET", "/configuration/jwks"),
+      endpointId("GET", "/configuration/system-settings"),
     )),
     (Permission("security:manage"), localized("Manage security policies and challenges", "Управление политиками безопасности"), Set(
       endpointId("PUT", "/configuration/challenges/challenge-settings"),
@@ -88,6 +90,7 @@ object BootstrapService:
       endpointId("POST", "/configuration/jwks"),
       endpointId("PUT", "/configuration/jwks"),
       endpointId("DELETE", "/configuration/jwks"),
+      endpointId("PUT", "/configuration/system-settings"),
     )),
     (Permission("users:read"), localized("View users", "Просмотр пользователей"), Set(
       endpointId("GET", "/users"),
@@ -104,6 +107,7 @@ object BootstrapService:
       endpointId("PATCH", "/users/roles"),
       endpointId("DELETE", "/users/sessions"),
       endpointId("POST", "/users/limits/reset"),
+      endpointId("POST", "/users/password/reset"),
     )),
     (Permission("resources:read"), localized("View protected resources", "Просмотр защищенных ресурсов"), Set(
       endpointId("GET", "/configuration/resources"),
@@ -262,12 +266,19 @@ object BootstrapService:
       "Вы входите в Versola. Ваш код подтверждения: {{code}}",
     )
 
+  /** Required per-tenant template used to deliver an admin-issued temporary password. */
+  private val passwordTemplateId = "password"
+  private val defaultPasswordTemplate: Map[String, String] =
+    localized(
+      "Your temporary password is {{password}}. It expires in {{expiresHours}} hours.",
+      "Ваш временный пароль: {{password}}. Он истекает через {{expiresHours}} часов.",
+    )
+
   /** Default authentication challenge settings seeded for the default tenant. */
   private def defaultChallengeSettings(tenantId: TenantId): ChallengeSettingsRecord =
     ChallengeSettingsRecord(
       tenantId = tenantId,
       allowedPrefixes = List.empty,
-      passwordRegex = Some("^(?=.*[A-Z])(?=.*[a-z])(?=.*\\d).{8,}$"),
       submissionLimits = SubmissionLimits(
         otpRequest = List(RateLimit(2, 60), RateLimit(5, 3600)),
         otpSubmit = List(RateLimit(3, 120), RateLimit(5, 3600)),
@@ -280,11 +291,9 @@ object BootstrapService:
       passkeySettings = PasskeySettings(
         rpId = "localhost",
         rpName = "Versola",
-        origins = List("http://localhost:3000"),
+        origins = List("http://localhost:9003"),
         userVerification = "preferred",
       ),
-      passwordHistorySize = 5,
-      passwordNumDifferent = 3,
       authConversationTtlSeconds = 900,
       sessionTtlSeconds = 86400,
       sessionIdleTtlSeconds = None,
@@ -312,6 +321,7 @@ object BootstrapService:
       NumberProperty("resendAfter", 60, None, None),
     ),
     "password" -> Vector.empty,
+    "set-password" -> Vector.empty,
     "access-denied" -> Vector.empty,
     "passkey-enroll" -> Vector.empty,
   )
@@ -332,6 +342,8 @@ object BootstrapService:
     "POST"   -> "/configuration/auth-request-presets",
     "GET"    -> "/configuration/challenges/challenge-settings",
     "PUT"    -> "/configuration/challenges/challenge-settings",
+    "GET"    -> "/configuration/system-settings",
+    "PUT"    -> "/configuration/system-settings",
     "GET"    -> "/configuration/challenges/otp-templates",
     "PUT"    -> "/configuration/challenges/otp-templates",
     "DELETE" -> "/configuration/challenges/otp-templates",
@@ -392,6 +404,7 @@ object BootstrapService:
     "GET"    -> "/users/sessions",
     "DELETE" -> "/users/sessions",
     "POST"   -> "/users/limits/reset",
+    "POST"   -> "/users/password/reset",
   )
 
   private def readResource(path: String): Task[String] =
@@ -401,11 +414,11 @@ object BootstrapService:
         try source.mkString finally source.close()
 
   val live: ZLayer[
-    TenantRepository & PermissionRepository & OAuthScopeRepository & RoleRepository & OtpChallengeRepository & ChallengeSettingsRepository & ThemeRepository & LocaleRepository & FormRepository & OAuthClientService & AuthorizationPresetRepository & EdgeRepository & ResourceRepository & JwksRepository & JwksService & UserRepository & CentralConfig,
+    TenantRepository & PermissionRepository & OAuthScopeRepository & RoleRepository & OtpChallengeRepository & ChallengeSettingsRepository & SystemSettingsRepository & ThemeRepository & LocaleRepository & FormRepository & OAuthClientService & AuthorizationPresetRepository & EdgeRepository & ResourceRepository & JwksRepository & JwksService & UserRepository & CentralConfig,
     Throwable,
     BootstrapService,
   ] =
-    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _)) >+>
+    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _)) >+>
       ZLayer(ZIO.serviceWithZIO[BootstrapService](_.bootstrap))
 
   private final class Impl(
@@ -415,6 +428,7 @@ object BootstrapService:
       roleRepo: RoleRepository,
       otpTemplateRepo: OtpChallengeRepository,
       challengeSettingsRepo: ChallengeSettingsRepository,
+      systemSettingsRepo: SystemSettingsRepository,
       themeRepo: ThemeRepository,
       localeRepo: LocaleRepository,
       formRepo: FormRepository,
@@ -439,7 +453,9 @@ object BootstrapService:
           _ <- seedScopes(tenantId)
           _ <- seedRoles(tenantId)
           _ <- seedOtpTemplate(tenantId)
+          _ <- seedPasswordTemplate(tenantId)
           _ <- seedChallengeSettings(tenantId)
+          _ <- seedSystemSettings()
           _ <- seedTheme()
           _ <- seedLocales()
           _ <- seedForms()
@@ -456,9 +472,7 @@ object BootstrapService:
 
     private def seedPermissions(tenantId: TenantId): Task[Unit] =
       ZIO.foreachDiscard(permissionCatalog): (perm, desc, endpoints) =>
-        permissionRepo.findPermission(tenantId, perm).flatMap:
-          case Some(_) => ZIO.unit
-          case None    => permissionRepo.createPermission(tenantId, perm, desc, endpoints)
+        permissionRepo.upsertPermission(tenantId, perm, desc, endpoints)
 
     private def seedScopes(tenantId: TenantId): Task[Unit] =
       ZIO.foreachDiscard(scopeCatalog): scope =>
@@ -468,19 +482,29 @@ object BootstrapService:
 
     private def seedRoles(tenantId: TenantId): Task[Unit] =
       ZIO.foreachDiscard(roleCatalog): (roleId, desc, perms) =>
-        roleRepo.findRole(tenantId, roleId).flatMap:
-          case Some(_) => ZIO.unit
-          case None    => roleRepo.createRole(tenantId, roleId, desc, perms)
+        roleRepo.upsertRole(tenantId, roleId, desc, perms)
 
     private def seedOtpTemplate(tenantId: TenantId): Task[Unit] =
       otpTemplateRepo.find(defaultOtpTemplateId, tenantId).flatMap:
         case Some(_) => ZIO.unit
-        case None    => otpTemplateRepo.upsertTemplate(OtpTemplateRecord(defaultOtpTemplateId, tenantId, defaultOtpTemplate))
+        case None    => otpTemplateRepo.upsertTemplate(OtpTemplateRecord(defaultOtpTemplateId, tenantId, defaultOtpTemplate, purpose = "otp"))
+
+    private def seedPasswordTemplate(tenantId: TenantId): Task[Unit] =
+      otpTemplateRepo.find(passwordTemplateId, tenantId).flatMap:
+        case Some(_) => ZIO.unit
+        case None =>
+          otpTemplateRepo.upsertTemplate(
+            OtpTemplateRecord(passwordTemplateId, tenantId, defaultPasswordTemplate, purpose = "password"),
+          )
 
     private def seedChallengeSettings(tenantId: TenantId): Task[Unit] =
       challengeSettingsRepo.findByTenant(tenantId).flatMap:
         case Some(_) => ZIO.unit
         case None    => challengeSettingsRepo.upsert(defaultChallengeSettings(tenantId))
+
+    private def seedSystemSettings(): Task[Unit] =
+      systemSettingsRepo.getAll.unit.catchAll: _ =>
+        systemSettingsRepo.upsert(SystemSettingsRecord.default)
 
     private def seedTheme(): Task[Unit] =
       for
@@ -609,20 +633,27 @@ object BootstrapService:
     private def seedCentralResource(config: CentralConfig.BootstrapConfig): Task[Unit] =
       ZIO.foreachDiscard(config.centralUrl): url =>
         val tenantId = CentralConfig.defaultTenantId
+        val allEndpoints = centralEndpointCatalog.map: (method, path) =>
+          ResourceEndpointRecord(
+            id = endpointId(method, path),
+            path = path,
+            method = method,
+            fetchUserInfo = false,
+            allowExpression = None,
+            inject = Vector.empty,
+          )
         resourceRepo.getAll.flatMap: resources =>
-          if resources.exists(r => r.tenantId == tenantId && r.resourceId == centralResourceId) then
-            ZIO.logInfo(s"Central resource '$centralResourceId' already exists, skipping")
-          else
-            val endpoints = centralEndpointCatalog.map: (method, path) =>
-              ResourceEndpointRecord(
-                id = endpointId(method, path),
-                path = path,
-                method = method,
-                fetchUserInfo = false,
-                allowExpression = None,
-                inject = Vector.empty,
-              )
-            resourceRepo.createResource(tenantId, centralResourceId, ResourceUri(url), endpoints.toVector).unit
+          resources.find(r => r.tenantId == tenantId && r.resourceId == centralResourceId) match
+            case None =>
+              resourceRepo.createResource(tenantId, centralResourceId, ResourceUri(url), allEndpoints.toVector)
+            case Some(existing) =>
+              val existingIds = existing.endpoints.map(_.id).toSet
+              val missing = allEndpoints.filterNot(e => existingIds.contains(e.id))
+              if missing.isEmpty then
+                ZIO.logInfo(s"Central resource '$centralResourceId' is up to date, skipping")
+              else
+                ZIO.logInfo(s"Adding ${missing.size} missing endpoint(s) to central resource '$centralResourceId'") *>
+                  resourceRepo.updateResource(centralResourceId, None, missing.toVector, Set.empty)
 
     private def seedJwks(config: CentralConfig.BootstrapConfig): Task[Unit] =
       val keys: Vector[Json.Obj] = config.jwks match

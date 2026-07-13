@@ -68,6 +68,7 @@ trait ConversationRepositorySpec extends DatabaseSpecBase[ConversationRepository
     userAgent = None,
     version = 0,
     amr = Map.empty,
+    needsPasswordChange = false,
   )
 
   val record2 = record1.copy(
@@ -99,6 +100,7 @@ trait ConversationRepositorySpec extends DatabaseSpecBase[ConversationRepository
     userAgent = None,
     version = 0,
     amr = Map.empty,
+    needsPasswordChange = false,
   )
 
   def testCases(env: ConversationRepositorySpec.Env): List[Spec[ConversationRepositorySpec.Env & zio.Scope, Any]] =

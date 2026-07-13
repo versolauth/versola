@@ -44,10 +44,10 @@ object JwksService:
       repository.getAll.flatMap(cache.set)
 
     override def createKey(kid: String, jwk: Json.Obj): Task[Unit] =
-      repository.create(kid, jwk) *> sync()
+      repository.create(kid, jwk)
 
     override def updateKey(kid: String, jwk: Json.Obj): Task[Unit] =
-      repository.update(kid, jwk) *> sync()
+      repository.update(kid, jwk)
 
     override def deleteKey(kid: String): Task[Unit] =
-      repository.delete(kid) *> sync()
+      repository.delete(kid)

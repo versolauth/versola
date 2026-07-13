@@ -16,3 +16,10 @@ enum OutboxEvent(val eventType: String) derives JsonCodec:
       login: Option[Login],
   ) extends OutboxEvent("UpsertUser")
 
+  case UpdateUserRoles(
+      userId: UserId,
+      tenantId: TenantId,
+      add: Set[RoleId],
+      remove: Set[RoleId],
+  ) extends OutboxEvent("UpdateUserRoles")
+

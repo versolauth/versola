@@ -23,7 +23,7 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
   private val tenantId = TenantId("tenant-a")
   private val secretKey = SecretKeySpec(Array.fill(32)(7.toByte), "AES")
 
-  private val template = OtpTemplateRecord("default", tenantId, Map("en" -> "Code: {{code}}"))
+  private val template = OtpTemplateRecord("default", tenantId, Map("en" -> "Code: {{code}}"), purpose = "otp")
 
   private val syncToken = Unsafe.unsafe { unsafe ?=>
     Runtime.default.unsafe
@@ -121,7 +121,7 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       request = Request(
         method = Method.PUT,
         url = URL.empty / "configuration" / "challenges" / "otp-templates",
-        body = Body.fromString(UpsertOtpTemplateRequest(template.id, template.tenantId, template.localizations).toJson),
+        body = Body.fromString(UpsertOtpTemplateRequest(template.id, template.tenantId, template.localizations, template.purpose).toJson),
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.NoContent,
       setup = service => service.upsertTemplate.succeedsWith(()),

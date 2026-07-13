@@ -6,7 +6,7 @@ import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{AuthMethodRef, ClientId, ClientIdWithSecret, OAuthClientRecord, ScopeToken, TenantId}
 import versola.oauth.model.{AccessToken, AuthorizationCode, AuthorizationCodeRecord, CodeChallenge, CodeChallengeMethod, CodeVerifier, RefreshToken}
 import versola.oauth.revoke.AccessTokenRevocationService
-import versola.oauth.session.RefreshTokenRepository
+import versola.oauth.session.SessionRepository
 import versola.oauth.session.model.{RefreshAlreadyExchanged, RefreshTokenRecord, SessionId}
 import versola.oauth.token.model.{ClientCredentialsRequest, CodeExchangeRequest, RefreshTokenRequest, TokenEndpointError}
 import versola.oauth.client.model.Claim
@@ -92,7 +92,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
   class Env:
     val authCodeRepo = stub[AuthorizationCodeRepository]
     val clientService = stub[OAuthConfigurationService]
-    val tokenRepo = stub[RefreshTokenRepository]
+    val tokenRepo = stub[SessionRepository]
     val accessTokenRevocationService = stub[AccessTokenRevocationService]
     val securityService = stub[SecurityService]
     val propertyGenerator = stub[AuthPropertyGenerator]
@@ -614,3 +614,4 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
     ),
   )
 
+          
