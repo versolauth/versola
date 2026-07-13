@@ -43,6 +43,22 @@ class PostgresRoleRepository(
           VALUES ($id, $tenantId, $description, $permissions, TRUE)
         """.update.run()
 
+  override def upsertRole(
+      tenantId: TenantId,
+      id: RoleId,
+      description: Map[String, String],
+      permissions: List[Permission],
+  ): Task[Unit] =
+    xa.connectMeasured("upsert-role"):
+      sql"""
+          INSERT INTO roles (id, tenant_id, description, permissions, active)
+          VALUES ($id, $tenantId, $description, $permissions, TRUE)
+          ON CONFLICT (tenant_id, id) DO UPDATE SET
+            description = EXCLUDED.description,
+            permissions = EXCLUDED.permissions
+        """.update.run()
+    .unit
+
   private def getRole(roleId: RoleId, tenantId: TenantId): Query[RoleRecord] =
     sql"""SELECT id, tenant_id, description, permissions, active FROM roles
           WHERE tenant_id = $tenantId AND id = $roleId"""

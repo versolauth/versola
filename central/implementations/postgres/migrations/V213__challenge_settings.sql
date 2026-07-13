@@ -1,13 +1,10 @@
 CREATE TABLE challenge_settings (
     tenant_id                    TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
     allowed_prefixes             TEXT[] NOT NULL,
-    password_regex               TEXT,
     submission_limits            JSONB NOT NULL,
     otp_length                   INT NOT NULL,
     otp_resend_after             INT NOT NULL,
     passkey_settings             JSONB NOT NULL,
-    password_history_size        INT NOT NULL,
-    password_num_different       INT NOT NULL,
     auth_conversation_ttl_seconds INT NOT NULL,
     session_ttl_seconds          INT NOT NULL,
     session_idle_ttl_seconds     INT,

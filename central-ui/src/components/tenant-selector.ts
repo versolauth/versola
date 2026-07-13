@@ -8,7 +8,7 @@ import { fetchTenants } from '../utils/central-api';
 export class TenantSelector extends LitElement {
   @state() private tenants: Tenant[] = [];
   @property({ type: String }) selectedTenantId: string | null = null;
-  @property({ type: Boolean }) manageActive = false;
+
   /** When non-null, only tenants whose id is in this list are shown. null means all. */
   @property({ attribute: false }) allowedTenantIds: string[] | null = null;
   @state() private isOpen = false;
@@ -61,31 +61,9 @@ export class TenantSelector extends LitElement {
         color: var(--text-secondary);
         text-transform: uppercase;
         letter-spacing: 0.05em;
-      }
-
-      .selector-header {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 0.75rem;
         margin-bottom: 0.5rem;
       }
 
-      .manage-button {
-        border: none;
-        background: none;
-        padding: 0;
-        color: var(--text-secondary);
-        font-size: 0.75rem;
-        font-weight: 600;
-        cursor: pointer;
-        transition: color var(--transition-fast);
-      }
-
-      .manage-button:hover,
-      .manage-button.active {
-        color: var(--accent);
-      }
 
       .tenant-name {
         flex: 1;
@@ -312,16 +290,7 @@ export class TenantSelector extends LitElement {
     this.dispatchTenantChange(tenantId);
   }
 
-  private handleManageClick(e: Event) {
-    e.preventDefault();
-    e.stopPropagation();
-    this.isOpen = false;
-    this.searchQuery = '';
-    this.dispatchEvent(new CustomEvent('manage-tenants', {
-      bubbles: true,
-      composed: true,
-    }));
-  }
+
 
   private toggleDropdown(e: Event) {
     e.stopPropagation();
@@ -360,10 +329,7 @@ export class TenantSelector extends LitElement {
     const filteredTenants = this.filteredTenants;
 
     return html`
-      <div class="selector-header">
-        <div class="selector-label">Tenant</div>
-        <button class="manage-button ${this.manageActive ? 'active' : ''}" type="button" @click=${this.handleManageClick}>Manage</button>
-      </div>
+      <div class="selector-label">Tenant</div>
       <button class="selector-button" type="button" aria-label="Select tenant" @click=${(e: Event) => this.toggleDropdown(e)} ?disabled=${this.isLoading}>
         <span class="tenant-name">
           ${this.isLoading ? 'Loading tenants...' : selectedTenant?.id || 'Select Tenant'}

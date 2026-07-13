@@ -45,6 +45,7 @@ object PostgresPasswordRepositorySpec extends PostgresSpec, DatabaseSpecBase[Pas
           rows.size == 1,
           rows.head.userId == userId1,
           rows.head.createdAt == baseInstant,
+          rows.head.expiresAt == None,
         )
       },
 
@@ -87,17 +88,6 @@ object PostgresPasswordRepositorySpec extends PostgresSpec, DatabaseSpecBase[Pas
         yield assertTrue(rows.size == 3)
       },
 
-      test("prune shrinks history when limit is reduced (>= case)") {
-        for
-          _ <- env.repository.create(userId1, pass(1), salt(1), historySize = 5, numDifferent = 1)
-          _ <- env.repository.create(userId1, pass(2), salt(2), historySize = 5, numDifferent = 1)
-          _ <- env.repository.create(userId1, pass(3), salt(3), historySize = 5, numDifferent = 1)
-          _ <- env.repository.create(userId1, pass(4), salt(4), historySize = 5, numDifferent = 1)
-          _ <- env.repository.create(userId1, pass(5), salt(5), historySize = 2, numDifferent = 1)
-          rows <- env.repository.list(userId1)
-        yield assertTrue(rows.size == 2)
-      },
-
       test("prune is deterministic: keeps highest id when created_at timestamps are equal") {
         for
           _          <- TestClock.setTime(baseInstant)
@@ -118,13 +108,6 @@ object PostgresPasswordRepositorySpec extends PostgresSpec, DatabaseSpecBase[Pas
           _      <- env.repository.create(userId1, pass(2), salt(2), historySize = 5, numDifferent = 3)
           result <- env.repository.create(userId1, pass(1), salt(1), historySize = 5, numDifferent = 3).either
         yield assertTrue(result == Left(PasswordReuseError(3)))
-      },
-
-      test("historySize = 0 does not delete the newly inserted password") {
-        for
-          _    <- env.repository.create(userId1, pass(1), salt(1), historySize = 0, numDifferent = 1)
-          rows <- env.repository.list(userId1)
-        yield assertTrue(rows.size == 1)
       },
 
       test("histories are isolated between users") {

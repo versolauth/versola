@@ -139,6 +139,9 @@ object SyncEvent:
     def sort(records: Vector[OtpTemplateRecord]): Vector[OtpTemplateRecord] =
       records.sortBy(r => (r.tenantId, r.id))
 
+  case object ThemesUpdated extends SyncEvent
+  case object SystemSettingsUpdated extends SyncEvent
+
   case class ChallengeSettingsUpdated(
       tenantId: TenantId,
       op: Op,

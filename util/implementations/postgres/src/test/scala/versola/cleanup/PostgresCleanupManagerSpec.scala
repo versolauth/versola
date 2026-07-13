@@ -32,18 +32,19 @@ object PostgresCleanupManagerSpec extends PostgresSpec:
             sql"""
               INSERT INTO auth_conversations
                 (id, client_id, redirect_uri, scope, code_challenge, code_challenge_method,
-                 step, response_type, auth_flow, version, amr, expires_at)
+                 step, response_type, auth_flow, version, amr, needs_password_change, expires_at)
               VALUES
                 ($id1, 'c1', 'https://x.com', ARRAY['openid'], 'ch', 'S256',
                  '{"type":"start"}'::json, 'code', '{"type":"pwd"}'::jsonb, 1, '[]'::jsonb,
-                 NOW() - INTERVAL '2 minutes'),
+                 false, NOW() - INTERVAL '2 minutes'),
                 ($id2, 'c1', 'https://x.com', ARRAY['openid'], 'ch', 'S256',
                  '{"type":"start"}'::json, 'code', '{"type":"pwd"}'::jsonb, 1, '[]'::jsonb,
-                 NOW() + INTERVAL '5 minutes')
+                 false, NOW() + INTERVAL '5 minutes')
             """.update.run()
-          deleted   <- manager.runBatch("auth_conversations", 1000, "id")
-          remaining <- xa.connect(sql"SELECT COUNT(*) FROM auth_conversations".query[Long].run().head)
-        yield assertTrue(deleted == 1, remaining == 1L)
+          _             <- manager.runBatch("auth_conversations", 1000, "id")
+          expiredExists <- xa.connect(sql"SELECT COUNT(*) FROM auth_conversations WHERE id = $id1".query[Long].run().head)
+          activeExists  <- xa.connect(sql"SELECT COUNT(*) FROM auth_conversations WHERE id = $id2".query[Long].run().head)
+        yield assertTrue(expiredExists == 0L, activeExists == 1L)
       },
       test("deletes expired authorization_codes (keyColumn=code)") {
         for
@@ -66,9 +67,10 @@ object PostgresCleanupManagerSpec extends PostgresSpec:
                  'ch', 'S256', NOW() + INTERVAL '5 minutes',
                  false, decode('04', 'hex'), '[]'::jsonb, NOW())
             """.update.run()
-          deleted   <- manager.runBatch("authorization_codes", 1000, "code")
-          remaining <- xa.connect(sql"SELECT COUNT(*) FROM authorization_codes".query[Long].run().head)
-        yield assertTrue(deleted == 1, remaining == 1L)
+          _             <- manager.runBatch("authorization_codes", 1000, "code")
+          expiredExists <- xa.connect(sql"SELECT COUNT(*) FROM authorization_codes WHERE code = decode('0101', 'hex')".query[Long].run().head)
+          activeExists  <- xa.connect(sql"SELECT COUNT(*) FROM authorization_codes WHERE code = decode('0202', 'hex')".query[Long].run().head)
+        yield assertTrue(expiredExists == 0L, activeExists == 1L)
       },
       test("deletes expired challenge_throttle rows (keyColumn=ctid, composite PK)") {
         for

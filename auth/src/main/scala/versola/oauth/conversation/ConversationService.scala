@@ -5,7 +5,7 @@ import versola.auth.model.{OtpCode, Password}
 import versola.oauth.authorize.model.ResponseTypeEntry
 import versola.oauth.challenge.passkey.{PasskeyRepository, WebAuthnError, WebAuthnService}
 import versola.oauth.challenge.password.PasswordService
-import versola.oauth.challenge.password.model.CheckPassword
+import versola.oauth.challenge.password.model.{CheckPassword, PasswordReuseError}
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{AuthMethodRef, PassedAuthFactor, PassedFactorRecord, PasskeySettings, ScopeToken}
 import versola.oauth.conversation.limit.{ChallengeType, LimitStatus, SubmissionLimiter}
@@ -73,6 +73,22 @@ trait ConversationService:
       password: Password,
   ): Task[ConversationResult]
 
+  /** Sets a new permanent password after the user authenticated with a temporary one.
+    * Deletes the temporary password, records the password AMR factor, and returns StepPassed.
+    * On reuse error re-renders the SetPassword step with `passwordReused = true`.
+    */
+  def setNewPassword(
+      conversation: ConversationRecord,
+      setPasswordStep: ConversationStep.SetPassword,
+      newPassword: Password,
+      authId: AuthId,
+  ): Task[ConversationResult]
+
+  /** Renders the SetPassword step after all primary auth factors have been satisfied.
+    * Called by the router when `conversation.needsPasswordChange` is true and no more factors remain.
+    */
+  def offerSetPassword(authId: AuthId, conversation: ConversationRecord): Task[ConversationResult.Render]
+
   def finish(
       authId: AuthId,
       conversation: ConversationRecord,
@@ -114,7 +130,7 @@ trait ConversationService:
       conversation: ConversationRecord,
       enrollStep: ConversationStep.PasskeyEnroll,
       response: String,
-      name: Option[String],
+      name: String,
   ): Task[ConversationResult.Render]
 
   /** Skip passkey enrollment and complete the conversation. */
@@ -335,6 +351,34 @@ object ConversationService:
                           case true => ConversationResult.StepPassed(updated.copy(version = updated.version + 1))
                           case false => ConversationResult.IllegalState
 
+                  case CheckPassword.Temporary =>
+                    // Temporary password accepted – mark password factor as passed and flag that the user
+                    // must set a new password after completing all remaining factors (e.g. OTP).
+                    Clock.instant.flatMap: now =>
+                      val updated = conversation.copy(
+                        amr = conversation.amr + (PassedAuthFactor.password -> PassedFactorRecord(now, Set(AuthMethodRef.pwd))),
+                        needsPasswordChange = true,
+                      )
+                      conversationRepository.overwrite(authId, updated)
+                        .map:
+                          case true => ConversationResult.StepPassed(updated.copy(version = updated.version + 1))
+                          case false => ConversationResult.IllegalState
+
+                  case CheckPassword.TemporaryExpired =>
+                    submissionLimiter.recordLimitAll(conversation.clientId, subjects, ChallengeType.PasswordSubmit).flatMap:
+                      case LimitStatus.Banned => accessDenied(authId, conversation)
+                      case LimitStatus.RateLimited(_) =>
+                        renderStep(authId, conversation, passwordStep.copy(
+                          timesSubmitted = passwordStep.timesSubmitted + 1,
+                          temporaryExpired = true,
+                          rateLimitExceeded = true,
+                        ))
+                      case LimitStatus.Allowed =>
+                        renderStep(authId, conversation, passwordStep.copy(
+                          timesSubmitted = passwordStep.timesSubmitted + 1,
+                          temporaryExpired = true,
+                        ))
+
                   case CheckPassword.OldPassword(changedAt) =>
                     submissionLimiter.recordLimitAll(conversation.clientId, subjects, ChallengeType.PasswordSubmit).flatMap:
                       case LimitStatus.Banned => accessDenied(authId, conversation)
@@ -398,12 +442,37 @@ object ConversationService:
                         conversationRepository.overwrite(authId, updated).map:
                           case true => ConversationResult.StepPassed(updated.copy(version = updated.version + 1))
                           case false => ConversationResult.IllegalState
+
+                    case CheckPassword.Temporary =>
+                      // Temporary password accepted – set user context, mark password as passed,
+                      // and flag that the user must set a new password after all remaining factors.
+                      Clock.instant.flatMap: now =>
+                        val updated = conversation.copy(
+                          userId = Some(user.id),
+                          userLogin = user.login,
+                          userClaims = Some(user.claims),
+                          amr = conversation.amr + (PassedAuthFactor.password -> PassedFactorRecord(now, Set(AuthMethodRef.pwd))),
+                          needsPasswordChange = true,
+                        )
+                        conversationRepository.overwrite(authId, updated).map:
+                          case true => ConversationResult.StepPassed(updated.copy(version = updated.version + 1))
+                          case false => ConversationResult.IllegalState
+
                     case _ =>
                       submissionLimiter.recordLimitAll(conversation.clientId, List(login, userSubject), ChallengeType.PasswordSubmit).flatMap:
                         case LimitStatus.Banned => accessDenied(authId, conversation)
                         case _ => renderStep(authId, conversation, cred.copy(loginFailed = true))
         case _ =>
           ZIO.succeed(ConversationResult.IllegalState)
+
+    override def offerSetPassword(authId: AuthId, conversation: ConversationRecord): Task[ConversationResult.Render] =
+      val setPasswordStep = ConversationStep.SetPassword(
+        factorIndex = conversation.authFlow.primary.factors.length,
+        timesSubmitted = 0,
+        rateLimitExceeded = false,
+        passwordReused = false,
+      )
+      renderStep(authId, conversation, setPasswordStep)
 
     override def finish(authId: AuthId, conversation: ConversationRecord): Task[ConversationResult.Render] =
       for
@@ -593,7 +662,7 @@ object ConversationService:
         conversation: ConversationRecord,
         enrollStep: ConversationStep.PasskeyEnroll,
         response: String,
-        name: Option[String],
+        name: String,
     ): Task[ConversationResult.Render] =
       conversation.userId match
         case None =>
@@ -603,13 +672,61 @@ object ConversationService:
             case None =>
               finish(authId, conversation)
             case Some(settings) =>
-              webAuthnService.finishRegistration(settings, userId, enrollStep.request, response, name).foldZIO(
-                error => renderStep(authId, conversation, enrollStep.copy(enrollFailed = true)),
+              webAuthnService.finishRegistration(settings, userId, enrollStep.request, response, Some(name)).foldZIO(
+                error => ZIO.logWarning(s"Passkey enrollment failed for user $userId: ${error.getMessage}") *>
+                  renderStep(authId, conversation, enrollStep.copy(enrollFailed = true)),
                 _ => finish(authId, conversation),
               )
 
     override def skipPasskey(authId: AuthId, conversation: ConversationRecord): Task[ConversationResult.Render] =
       finish(authId, conversation)
+
+    override def setNewPassword(
+        conversation: ConversationRecord,
+        setPasswordStep: ConversationStep.SetPassword,
+        newPassword: Password,
+        authId: AuthId,
+    ): Task[ConversationResult] =
+      conversation.userId match
+        case None =>
+          ZIO.succeed(ConversationResult.IllegalState)
+
+        case Some(userId) =>
+          val subjects = List(userId.toString) ++ conversation.credential.map(_.merge)
+          submissionLimiter.statusForSubjects(conversation.clientId, subjects, ChallengeType.PasswordSubmit).flatMap:
+            case LimitStatus.Banned =>
+              accessDenied(authId, conversation)
+            case LimitStatus.RateLimited(_) =>
+              renderStep(authId, conversation, setPasswordStep.copy(rateLimitExceeded = true))
+            case LimitStatus.Allowed =>
+              passwordService.setPassword(conversation.clientId, userId, newPassword).foldZIO(
+                {
+                  case _: versola.oauth.challenge.password.model.PasswordReuseError =>
+                    submissionLimiter.recordLimitAll(conversation.clientId, subjects, ChallengeType.PasswordSubmit).flatMap:
+                      case LimitStatus.Banned => accessDenied(authId, conversation)
+                      case LimitStatus.RateLimited(_) =>
+                        renderStep(authId, conversation, setPasswordStep.copy(
+                          timesSubmitted = setPasswordStep.timesSubmitted + 1,
+                          passwordReused = true,
+                          rateLimitExceeded = true,
+                        ))
+                      case LimitStatus.Allowed =>
+                        renderStep(authId, conversation, setPasswordStep.copy(
+                          timesSubmitted = setPasswordStep.timesSubmitted + 1,
+                          passwordReused = true,
+                        ))
+                  case ex: Throwable => ZIO.fail(ex)
+                },
+                _ =>
+                  Clock.instant.flatMap: now =>
+                    val updated = conversation.copy(
+                      amr = conversation.amr + (PassedAuthFactor.password -> PassedFactorRecord(now, Set(AuthMethodRef.pwd))),
+                      needsPasswordChange = false,
+                    )
+                    conversationRepository.overwrite(authId, updated).map:
+                      case true => ConversationResult.StepPassed(updated.copy(version = updated.version + 1))
+                      case false => ConversationResult.IllegalState
+              )
 
     private def generateIdTokenData(
         userId: UserId,

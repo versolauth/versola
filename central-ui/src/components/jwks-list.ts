@@ -1,5 +1,5 @@
 import { LitElement, html, css } from 'lit';
-import { customElement, state } from 'lit/decorators.js';
+import { customElement, property, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
 import { buttonStyles, cardStyles, formStyles } from '../styles/components';
 import { createJwk, deleteJwk, fetchJwks, updateJwk } from '../utils/central-api';
@@ -10,6 +10,8 @@ import './loading-cards';
 
 @customElement('versola-jwks-list')
 export class VersolaJwksList extends LitElement {
+  @property({ type: Boolean }) canManage = false;
+
   @state() private keys: Record<string, unknown>[] = [];
   @state() private isLoading = false;
   @state() private errorMessage = '';
@@ -286,6 +288,7 @@ export class VersolaJwksList extends LitElement {
             <span class="key-id">${kid}</span>
             <span class="key-meta">${kty}${alg ? ` · ${alg}` : ''}</span>
           </div>
+          ${this.canManage ? html`
           <div class="key-actions">
             <button
               class="icon-action"
@@ -299,7 +302,7 @@ export class VersolaJwksList extends LitElement {
               aria-label="Delete key ${kid}"
               @click=${() => this.handleDeleteKey(kid)}
             >✕</button>
-          </div>
+          </div>` : ''}
         </div>
         <pre class="key-json">${JSON.stringify(key, null, 2)}</pre>
       </div>
@@ -312,9 +315,10 @@ export class VersolaJwksList extends LitElement {
         title="JWKS"
         description="JSON Web Key Set served by this central instance"
       >
+        ${this.canManage ? html`
         <button slot="actions" class="btn btn-primary" @click=${this.handleAddClick}>
           + Add Key
-        </button>
+        </button>` : ''}
       </content-header>
 
       ${this.formMode !== null ? this.renderForm() : ''}
@@ -335,9 +339,10 @@ export class VersolaJwksList extends LitElement {
                 <div class="empty-state">
                   <div class="empty-state-icon">🔑</div>
                   <p>No keys found.</p>
+                  ${this.canManage ? html`
                   <button class="btn btn-primary" @click=${this.handleAddClick} style="margin-top: 1rem;">
                     + Add Key
-                  </button>
+                  </button>` : ''}
                 </div>
               </div>
             `

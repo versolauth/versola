@@ -4,7 +4,7 @@ import { theme } from '../styles/theme';
 import './versola-logo';
 import './tenant-selector';
 
-export type NavItem = 'clients' | 'scopes' | 'permissions' | 'resources' | 'roles' | 'tenants' | 'edges' | 'users' | 'forms' | 'locales' | 'challenges' | 'jwks';
+export type NavItem = 'clients' | 'scopes' | 'permissions' | 'resources' | 'roles' | 'tenants' | 'edges' | 'users' | 'forms' | 'locales' | 'challenges' | 'jwks' | 'system-settings';
 
 @customElement('versola-navigation')
 export class VersolaNavigation extends LitElement {
@@ -131,6 +131,7 @@ export class VersolaNavigation extends LitElement {
       case 'resources':
         return p.has('resources:read');
       case 'challenges':
+      case 'system-settings':
         return p.has('security:read');
       case 'users':
         return p.has('users:read');
@@ -166,8 +167,6 @@ export class VersolaNavigation extends LitElement {
         <tenant-selector
           .selectedTenantId=${this.tenantId}
           .allowedTenantIds=${this.allowedTenantIds}
-          .manageActive=${this.activeItem === 'tenants' && this.can('tenants')}
-          @manage-tenants=${() => this.handleNavClick('tenants')}
         ></tenant-selector>
       </div>
 
@@ -184,12 +183,13 @@ export class VersolaNavigation extends LitElement {
 
         <div class="nav-section">
           <div class="nav-section-title">Global</div>
-          ${this.navItem('users', 'Users')}
           ${this.navItem('edges', 'Edges')}
           ${this.navItem('forms', 'Forms')}
-          ${this.navItem('locales', 'Locales')}
           ${this.navItem('jwks', 'JWKS')}
+          ${this.navItem('locales', 'Locales')}
+          ${this.navItem('system-settings', 'System Settings')}
           ${this.navItem('tenants', 'Tenants')}
+          ${this.navItem('users', 'Users')}
         </div>
       </nav>
     `;

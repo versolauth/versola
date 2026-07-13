@@ -4,6 +4,7 @@ import com.augustnagro.magnum.magzio.TransactorZIO
 import com.zaxxer.hikari.HikariDataSource
 import versola.central.CentralConfig
 import versola.central.configuration.challenges.{ChallengeSettingsRepository, ChallengeSettingsService, OtpChallengeController, OtpChallengeRepository, OtpChallengeService}
+import versola.central.configuration.system.{SystemSettingsController, SystemSettingsRepository, SystemSettingsService}
 import versola.central.configuration.clients.{AuthorizationPresetController, AuthorizationPresetRepository, AuthorizationPresetService, ClientController, OAuthClientRepository, OAuthClientService}
 import versola.central.configuration.edges.{EdgeController, EdgeRepository, EdgeService}
 import versola.central.configuration.forms.{FormController, FormRepository, FormService}
@@ -19,6 +20,7 @@ import versola.central.configuration.tenants.{TenantController, TenantRepository
 import versola.central.users.{AuthClient, UserOutboxProcessor, UserController, UserRepository, UserService}
 import versola.configuration.clients.{PostgresAuthorizationPresetRepository, PostgresOAuthClientRepository}
 import versola.configuration.challenges.{PostgresChallengeSettingsRepository, PostgresOtpChallengeRepository}
+import versola.configuration.system.PostgresSystemSettingsRepository
 import versola.configuration.forms.PostgresFormRepository
 import versola.configuration.jwks.PostgresJwksRepository
 import versola.configuration.locales.PostgresLocaleRepository
@@ -77,6 +79,8 @@ object PostgresCentralApp extends VersolaApp("central"):
       OtpChallengeService &
       ChallengeSettingsRepository &
       ChallengeSettingsService &
+      SystemSettingsRepository &
+      SystemSettingsService &
       CacheSyncRepository &
       CacheSyncService &
       UserRepository &
@@ -100,6 +104,7 @@ object PostgresCentralApp extends VersolaApp("central"):
       LocaleController.routes,
       ThemeController.routes,
       OtpChallengeController.routes,
+      SystemSettingsController.routes,
       UserController.routes,
       JwksController.routes,
     ).reduce(_ ++ _)
@@ -120,6 +125,7 @@ object PostgresCentralApp extends VersolaApp("central"):
           PostgresThemeRepository.live >+>
           PostgresOtpChallengeRepository.live >+>
           PostgresChallengeSettingsRepository.live >+>
+          PostgresSystemSettingsRepository.live >+>
           PostgresCacheSyncRepository.live >+>
           PostgresJwksRepository.live >+>
           PostgresUserRepository.live
@@ -146,6 +152,7 @@ object PostgresCentralApp extends VersolaApp("central"):
       ThemeService.live(schedule) >+>
       OtpChallengeService.live(schedule) >+>
       ChallengeSettingsService.live(schedule) >+>
+      SystemSettingsService.live(schedule) >+>
       CacheSyncService.live >+>
       AuthClient.live >+>
       UserService.live >+>

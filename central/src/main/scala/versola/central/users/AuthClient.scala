@@ -8,7 +8,7 @@ import zio.http.{Body, Client, Header, MediaType, Method, Request, Response, Sta
 import zio.json.ast.Json
 import zio.json.{DecoderOps, EncoderOps, JsonCodec, JsonDecoder}
 import zio.schema.codec.JsonCodec.zioJsonBinaryCodec
-import zio.{Scope, Task, ZIO, ZLayer}
+import zio.{Schedule, Scope, Task, ZIO, ZLayer, durationInt}
 
 import java.util.UUID
 
@@ -49,6 +49,8 @@ trait AuthClient:
   def renamePasskey(userId: UserId, credentialId: String, name: Option[String]): Task[Unit]
 
   def deletePasskey(userId: UserId, credentialId: String): Task[Unit]
+
+  def resetPassword(request: ResetPasswordRequest): Task[Unit]
 
 object AuthClient:
   val live: ZLayer[Scope & Client & CentralConfig, Throwable, AuthClient] =
@@ -107,6 +109,7 @@ object AuthClient:
     private val sessionsUrl: URL = usersUrl / "sessions"
     private val limitsResetUrl: URL = usersUrl / "limits" / "reset"
     private val passkeysUrl: URL = usersUrl / "passkeys"
+    private val passwordResetUrl: URL = usersUrl / "password" / "reset"
 
     override def upsertUser(
         id: UserId,
@@ -207,6 +210,15 @@ object AuthClient:
         ),
       )
 
+    override def resetPassword(request: ResetPasswordRequest): Task[Unit] =
+      send(
+        Request(
+          method = Method.POST,
+          url = passwordResetUrl,
+          body = Body.from(request),
+        ),
+      )
+
     private def execute[A](request: Request)(handle: Response => Task[A]): Task[A] =
       for
         token <- tokenService.getToken
@@ -249,9 +261,12 @@ object AuthClient:
         ZIO.logError(s"Auth call failed: ${response.status.code} $body") *>
           ZIO.fail(new RuntimeException(s"Auth call failed: ${response.status.code} $body"))
 
-    /** Retries once on transient connection failures (stale pooled channel after auth restart). */
+    /** Retries on transient connection failures (stale pooled channel after auth restart). */
     private def withConnectionRetry[A](effect: Task[A]): Task[A] =
-      effect.catchSome {
-        case _: java.net.ConnectException => effect
-        case _: java.io.IOException => effect
-      }
+      effect.retry(
+        Schedule.recurWhile[Throwable] {
+          case _: java.net.ConnectException => true
+          case _: java.io.IOException => true
+          case _ => false
+        } && Schedule.spaced(200.millis) && Schedule.recurs(3),
+      )

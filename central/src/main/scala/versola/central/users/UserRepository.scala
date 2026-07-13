@@ -34,6 +34,16 @@ trait UserRepository:
       login: Option[Patch[Login]],
   ): Task[Unit]
 
+  /** Enqueues an UpdateUserRoles outbox event, dispatched to auth in per-user FIFO order.
+    * Ordering behind [[create]]/[[patch]] events guarantees the user exists in auth before roles are applied.
+    */
+  def enqueueRoleUpdate(
+      userId: UserId,
+      tenantId: TenantId,
+      add: Set[RoleId],
+      remove: Set[RoleId],
+  ): Task[Unit]
+
   /** Atomically claim up to `limit` due outbox rows by leasing them for `lease` (other instances skip them).
     * The lease is reset to a backoff value by [[rescheduleEvent]] on failure, or the row is removed on success.
     */

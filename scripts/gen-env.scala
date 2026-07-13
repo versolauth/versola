@@ -294,6 +294,11 @@ def writeFile(dir: File, name: String, content: String): Unit =
        |      interval   = "5 minutes"
        |      key-column = "ctid"
        |    }
+       |    {
+       |      table-name = "user_passwords"
+       |      batch-size = 1000
+       |      interval   = "12 hours"
+       |    }
        |  ]
        |}
        |""".stripMargin

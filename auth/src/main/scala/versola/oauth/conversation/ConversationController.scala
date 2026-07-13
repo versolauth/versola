@@ -29,6 +29,7 @@ object ConversationController extends Controller:
     submitPasskeyAssertionRoute,
     submitPasskeyEnrollRoute,
     submitPasskeySkipRoute,
+    submitSetPasswordRoute,
   )
 
   val getFormRoute =
@@ -91,6 +92,9 @@ object ConversationController extends Controller:
   val submitPasskeySkipRoute =
     submit[PasskeySkipSubmission](Method.POST / "challenge" / "passkey" / "skip")
 
+  val submitSetPasswordRoute =
+    submit[SetPasswordSubmission](Method.POST / "challenge" / "set-password")
+
   private def submit[Body <: Submission: FormDecoder](
       pattern: RoutePattern[Unit],
   ): Route[ConversationRouter & ConversationRenderService & CoreConfig & OAuthConfigurationService, Throwable] =
@@ -122,12 +126,16 @@ object ConversationController extends Controller:
           .map(prefixes => prefixes.isEmpty || prefixes.exists(submitted.phone.startsWith))
 
       case submitted: PasswordSubmission =>
-        ZIO.serviceWithZIO[OAuthConfigurationService](_.getPasswordRegex(clientId))
-          .map(_.forall(regex => scala.util.Try(submitted.password.matches(regex)).getOrElse(true)))
+        ZIO.serviceWithZIO[OAuthConfigurationService](_.getPasswordRegex)
+          .map(regex => scala.util.Try(submitted.password.matches(regex)).getOrElse(true))
 
       case submitted: LoginPasswordSubmission =>
-        ZIO.serviceWithZIO[OAuthConfigurationService](_.getPasswordRegex(clientId))
-          .map(_.forall(regex => scala.util.Try(submitted.password.matches(regex)).getOrElse(true)))
+        ZIO.serviceWithZIO[OAuthConfigurationService](_.getPasswordRegex)
+          .map(regex => scala.util.Try(submitted.password.matches(regex)).getOrElse(true))
+
+      case submitted: SetPasswordSubmission =>
+        ZIO.serviceWithZIO[OAuthConfigurationService](_.getPasswordRegex)
+          .map(regex => scala.util.Try(submitted.password.matches(regex)).getOrElse(true))
 
       case _ =>
         ZIO.succeed(true)
@@ -178,11 +186,20 @@ object ConversationController extends Controller:
     FormDecoder.single[String](form, "response", Right(_))
       .map(PasskeyAssertionSubmission(_))
 
+  private val PasskeyNameRegex = "^[\\p{L}\\p{N} ()-]+$"
+
   given FormDecoder[PasskeyEnrollSubmission] = (form: Form) =>
     for
       response <- FormDecoder.single[String](form, "response", Right(_))
-      name     <- FormDecoder.optional[String](form, "name", Right(_))
+      name     <- FormDecoder.single[String](form, "name", n =>
+        if n == n.trim && n.nonEmpty && n.matches(PasskeyNameRegex) then Right(n)
+        else Left("Invalid passkey name: only letters, digits, spaces, hyphens, and parentheses are allowed, with no leading or trailing spaces"),
+      )
     yield PasskeyEnrollSubmission(response, name)
 
   given FormDecoder[PasskeySkipSubmission] = (_: Form) =>
     ZIO.succeed(PasskeySkipSubmission())
+
+  given FormDecoder[SetPasswordSubmission] = (form: Form) =>
+    FormDecoder.single[String](form, "password", Right(_))
+      .map(p => SetPasswordSubmission(Password(p)))

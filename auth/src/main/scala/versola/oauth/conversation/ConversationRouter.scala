@@ -118,6 +118,13 @@ object ConversationRouter:
             case _ =>
               ZIO.succeed(ConversationResult.NotFound)
 
+        case (submitted: SetPasswordSubmission, ConversationRecord.SetPassword(setPasswordStep)) =>
+          conversationService.setNewPassword(conversation, setPasswordStep, submitted.password, authId).flatMap:
+            case ConversationResult.StepPassed(updated) =>
+              afterFactor(authId, updated, setPasswordStep.factorIndex + 1)
+            case other: ConversationResult.Render =>
+              ZIO.succeed(other)
+
         case _ =>
           ZIO.succeed(ConversationResult.NotFound)
 
@@ -186,4 +193,7 @@ object ConversationRouter:
           conversationService.offerPasskeyEnroll(authId, conversation)
 
         case None =>
-          conversationService.finish(authId, conversation)
+          if conversation.needsPasswordChange then
+            conversationService.offerSetPassword(authId, conversation)
+          else
+            conversationService.finish(authId, conversation)

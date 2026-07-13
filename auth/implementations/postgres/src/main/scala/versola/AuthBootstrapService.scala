@@ -1,13 +1,12 @@
 package versola
 
 import versola.oauth.challenge.password.PasswordRepository
-import versola.oauth.challenge.password.model.PasswordReuseError
 import versola.oauth.client.model.TenantId
 import versola.role.model.RoleId
 import versola.user.model.{Login, UserId}
 import versola.user.{UserRepository, UserRolesRepository}
 import versola.util.{CoreConfig, Salt, Secret, SecureRandom, SecurityService}
-import zio.{Task, ZIO, ZLayer}
+import zio.{Clock, Task, ZIO, ZLayer}
 
 import java.util.UUID
 
@@ -15,6 +14,12 @@ trait AuthBootstrapService:
   def bootstrap: Task[Unit]
 
 object AuthBootstrapService:
+  /** TTL for the temporary bootstrap password. The admin must exchange it for a
+    * permanent one on first login (via the set-password step). If it expires before
+    * first login, a subsequent bootstrap run re-creates it.
+    */
+  private val BootstrapPasswordTtlSeconds = 24L * 60 * 60
+
   val live: ZLayer[
     UserRepository & UserRolesRepository & PasswordRepository & SecurityService & SecureRandom & CoreConfig,
     Throwable,
@@ -54,15 +59,19 @@ object AuthBootstrapService:
             add = Set(RoleId("oauth-admin")),
             remove = Set.empty,
           )
+          now <- Clock.instant
           passwords <- passwordRepo.list(userId)
-          _ <- ZIO.when(passwords.isEmpty):
+          // A usable credential is any permanent password or a still-valid temporary one.
+          // An expired temporary password must not block recreation, otherwise the admin
+          // stays locked out until cleanup removes the stale row.
+          hasUsableCredential = passwords.exists: record =>
+            record.expiresAt.forall(_.isAfter(now))
+          _ <- ZIO.unless(hasUsableCredential):
             for
               salt <- secureRandom.nextBytes(16).map(Salt(_))
               hash <- securityService.hashPassword(Secret.fromString(cfg.password), salt, config.security.passwordsSecret)
-              _ <- passwordRepo.create(userId, Secret(hash), salt, historySize = 1, numDifferent = 1)
-                .mapError:
-                  case e: PasswordReuseError => new IllegalStateException(s"Unexpected password reuse during bootstrap: $e")
-                  case t: Throwable => t
-              _ <- ZIO.logInfo(s"Set bootstrap password for admin user '${cfg.login}'")
+              expiresAt = now.plusSeconds(BootstrapPasswordTtlSeconds)
+              _ <- passwordRepo.createTemporary(userId, Secret(hash), salt, expiresAt)
+              _ <- ZIO.logInfo(s"Set temporary bootstrap password for admin user '${cfg.login}'")
             yield ()
         yield ()

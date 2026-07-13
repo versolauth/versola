@@ -13,9 +13,9 @@ object OtpChallengeServiceSpec extends ZIOSpecDefault, ZIOStubs:
   private val tenantA = TenantId("tenant-a")
   private val tenantB = TenantId("tenant-b")
 
-  private val rec1 = OtpTemplateRecord("tmpl-1", tenantA, Map("en" -> "Code: {{code}}"))
-  private val rec2 = OtpTemplateRecord("tmpl-2", tenantB, Map("en" -> "Your code: {{code}}"))
-  private val rec3 = OtpTemplateRecord("tmpl-3", tenantA, Map("en" -> "Another: {{code}}"))
+  private val rec1 = OtpTemplateRecord("tmpl-1", tenantA, Map("en" -> "Code: {{code}}"), purpose = "otp")
+  private val rec2 = OtpTemplateRecord("tmpl-2", tenantB, Map("en" -> "Your code: {{code}}"), purpose = "otp")
+  private val rec3 = OtpTemplateRecord("tmpl-3", tenantA, Map("en" -> "Another: {{code}}"), purpose = "otp")
   private val rec1Updated = rec1.copy(localizations = Map("en" -> "Updated: {{code}}"))
 
   class Env(initial: Vector[OtpTemplateRecord] = Vector.empty):
@@ -99,7 +99,7 @@ object OtpChallengeServiceSpec extends ZIOSpecDefault, ZIOStubs:
     },
     test("getSyncTemplates strips localizations of inactive locales") {
       import versola.central.configuration.locales.LocaleRecord
-      val template = OtpTemplateRecord("tmpl-1", tenantA, Map("en" -> "Code: {{code}}", "fr" -> "Code: {{code}}"))
+      val template = OtpTemplateRecord("tmpl-1", tenantA, Map("en" -> "Code: {{code}}", "fr" -> "Code: {{code}}"), purpose = "otp")
       val env = Env(Vector(template))
       for
         _ <- env.localeService.getActive.succeedsWith(Vector(LocaleRecord("en", "English", isDefault = true, active = true)))

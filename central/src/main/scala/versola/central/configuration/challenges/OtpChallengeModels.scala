@@ -10,6 +10,7 @@ case class UpsertOtpTemplateRequest(
     id: String,
     tenantId: TenantId,
     localizations: Map[String, String],
+    purpose: String,
 ) derives Schema, JsonCodec
 
 case class DeleteOtpTemplateRequest(
@@ -24,13 +25,10 @@ case class GetAllChallengeSettingsResponse(settings: Vector[ChallengeSettingsRec
 case class UpsertChallengeSettingsRequest(
     tenantId: TenantId,
     allowedPrefixes: List[String],
-    passwordRegex: Option[String],
     submissionLimits: SubmissionLimits,
     otpLength: Int,
     otpResendAfter: Int,
     passkeySettings: PasskeySettings,
-    passwordHistorySize: Option[Int],
-    passwordNumDifferent: Option[Int],
     authConversationTtlSeconds: Option[Int],
     sessionTtlSeconds: Option[Int],
     sessionIdleTtlSeconds: Option[Int],

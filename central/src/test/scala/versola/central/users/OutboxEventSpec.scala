@@ -39,4 +39,14 @@ object OutboxEventSpec extends ZIOSpecDefault:
       val decoded = event.toJson.fromJson[OutboxEvent]
       assertTrue(decoded == Right(event))
     },
+    test("UpdateUserRoles round-trip") {
+      val event = OutboxEvent.UpdateUserRoles(
+        userId = userId,
+        tenantId = tenantId,
+        add = Set(roleId, RoleId("role-2")),
+        remove = Set(RoleId("role-3")),
+      )
+      val decoded = event.toJson.fromJson[OutboxEvent]
+      assertTrue(decoded == Right(event))
+    },
   )
