@@ -291,7 +291,7 @@ object BootstrapService:
       passkeySettings = PasskeySettings(
         rpId = "localhost",
         rpName = "Versola",
-        origins = List("http://localhost:3000"),
+        origins = List("http://localhost:9003"),
         userVerification = "preferred",
       ),
       authConversationTtlSeconds = 900,

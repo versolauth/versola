@@ -70,14 +70,24 @@ function PasskeyEnrollForm(props: { config: FormConfig }) {
 
   const [busy, setBusy] = createSignal(false);
   const [enrollError, setEnrollError] = createSignal(!!props.config.error);
+  const [name, setName] = createSignal('');
+  const [nameError, setNameError] = createSignal(false);
+
+  const NAME_REGEX = /^[\p{L}\p{N} ()-]+$/u;
 
   const handleEnroll = async () => {
     if (busy()) return;
+    const currentName = name();
+    if (!NAME_REGEX.test(currentName) || currentName !== currentName.trim()) {
+      setNameError(true);
+      return;
+    }
+    setNameError(false);
     setBusy(true);
     setEnrollError(false);
     try {
       const response = await getRegistrationResponse(step.publicKeyOptions);
-      submitViaForm(`/challenge/passkey/enroll?ui_locale=${currentLocale()}`, { response });
+      submitViaForm(`/challenge/passkey/enroll?ui_locale=${currentLocale()}`, { response, name: currentName });
     } catch (_) {
       setEnrollError(true);
       setBusy(false);
@@ -102,6 +112,21 @@ function PasskeyEnrollForm(props: { config: FormConfig }) {
       </div>
       <h1>{t().title}</h1>
       <p class="passkey-enroll-description">{t().description}</p>
+
+      <div class="name-field">
+        <input
+          class={`input-field${nameError() ? ' input-error' : ''}`}
+          type="text"
+          value={name()}
+          placeholder={t().name_placeholder}
+          onInput={(e) => { setName(e.currentTarget.value); setNameError(false); }}
+          disabled={busy()}
+          autocomplete="off"
+        />
+        <Show when={nameError()}>
+          <div class="field-error error-text">{t().name_invalid}</div>
+        </Show>
+      </div>
 
       <Show when={enrollError()}>
         <div class="phone-error-message error-text">{t().enroll_failed}</div>
