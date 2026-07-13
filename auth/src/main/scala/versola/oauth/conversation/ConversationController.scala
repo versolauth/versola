@@ -192,8 +192,7 @@ object ConversationController extends Controller:
     for
       response <- FormDecoder.single[String](form, "response", Right(_))
       name     <- FormDecoder.single[String](form, "name", n =>
-        val trimmed = n.trim
-        if trimmed.nonEmpty && trimmed.matches(PasskeyNameRegex) then Right(trimmed)
+        if n == n.trim && n.nonEmpty && n.matches(PasskeyNameRegex) then Right(n)
         else Left("Invalid passkey name: only letters, digits, spaces, hyphens, and parentheses are allowed, with no leading or trailing spaces"),
       )
     yield PasskeyEnrollSubmission(response, name)
