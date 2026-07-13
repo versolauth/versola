@@ -80,6 +80,7 @@ function PasskeyEnrollForm(props: { config: FormConfig }) {
     const currentName = name();
     if (!NAME_REGEX.test(currentName) || currentName !== currentName.trim()) {
       setNameError(true);
+      setEnrollError(false);
       return;
     }
     setNameError(false);
