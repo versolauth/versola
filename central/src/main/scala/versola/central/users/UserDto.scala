@@ -71,3 +71,13 @@ case class RenamePasskeyRequest(
     credentialId: String,
     name: Option[String],
 ) derives JsonCodec, Schema
+
+/** Channel used to deliver an admin-issued temporary password to the user. */
+enum DeliveryChannel derives JsonCodec, Schema:
+  case email, sms
+
+case class ResetPasswordRequest(
+    userId: UserId,
+    expiresInSeconds: Option[Long],
+    channel: Option[DeliveryChannel],
+) derives JsonCodec, Schema

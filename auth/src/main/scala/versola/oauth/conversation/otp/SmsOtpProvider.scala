@@ -11,6 +11,8 @@ import zio.{Task, URLayer, ZIO, ZLayer}
 trait SmsOtpProvider:
   def sendOtp(phone: Phone, code: OtpCode, template: OtpTemplate): Task[Unit]
 
+  def send(phone: Phone, message: String): Task[Unit]
+
 object SmsOtpProvider:
   val live: URLayer[Client & CoreConfig, SmsOtpProvider] =
     ZLayer.fromFunction: (client: Client, config: CoreConfig) =>
@@ -22,13 +24,18 @@ object NoOpSmsOtpProvider extends SmsOtpProvider:
   override def sendOtp(phone: Phone, code: OtpCode, template: OtpTemplate): Task[Unit] =
     ZIO.logWarning("OTP provider is not configured; skipping SMS OTP delivery")
 
+  override def send(phone: Phone, message: String): Task[Unit] =
+    ZIO.logWarning("OTP provider is not configured; skipping SMS delivery")
+
 class GenericHttpSmsOtpProvider(
     httpClient: Client,
     otpConfig: CoreConfig.OtpProvider,
 ) extends SmsOtpProvider:
 
   override def sendOtp(phone: Phone, code: OtpCode, template: OtpTemplate): Task[Unit] =
-    val message = template.replace("{{code}}", code)
+    send(phone, template.replace("{{code}}", code))
+
+  override def send(phone: Phone, message: String): Task[Unit] =
     val fields = otpConfig.body.map((key, value) => key -> render(value, phone, message))
     val body = Json.Obj(fields.map((key, value) => key -> Json.Str(value)).toSeq*)
     val baseRequest = Request(

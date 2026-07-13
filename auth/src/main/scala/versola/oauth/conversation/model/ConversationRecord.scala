@@ -34,6 +34,7 @@ case class ConversationRecord(
     userAgent: Option[String],
     version: Long,
     amr: Map[PassedAuthFactor, PassedFactorRecord],
+    needsPasswordChange: Boolean,
 ):
   def patch(patch: ConversationRecord.Patch): ConversationRecord =
     this.copy(
@@ -71,4 +72,10 @@ object ConversationRecord:
     def unapply(record: ConversationRecord): Option[ConversationStep.Password] =
       record.step match
         case password: ConversationStep.Password => Some(password)
+        case _ => None
+
+  object SetPassword:
+    def unapply(record: ConversationRecord): Option[ConversationStep.SetPassword] =
+      record.step match
+        case step: ConversationStep.SetPassword => Some(step)
         case _ => None

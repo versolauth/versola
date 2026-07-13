@@ -14,6 +14,7 @@ import {
   invalidateUserSession,
   patchUserClaims,
   renamePasskey,
+  resetPassword,
   resetUserLimits,
   searchUsers,
   updateUser,
@@ -52,6 +53,10 @@ export class VersolaUsersList extends LitElement {
   @state() private expandedClaims = new Set<string>();
   @state() private resettingLimits = new Set<string>();
   @state() private resetLimitsDone = new Set<string>();
+  @state() private resettingPassword = new Set<string>();
+  @state() private passwordResetDone = new Set<string>();
+  @state() private pendingResetUser: User | null = null;
+  @state() private pendingResetChannel: 'email' | 'sms' | null = null;
   @state() private userPasskeys: Record<string, PasskeyInfo[]> = {};
   @state() private loadingPasskeys = new Set<string>();
   @state() private errorPopup = '';
@@ -795,6 +800,31 @@ export class VersolaUsersList extends LitElement {
     }
   }
 
+  private handleResetPassword(user: User) {
+    if (!this.tenantId) {
+      this.errorPopup = 'Select a tenant first to reset password.';
+      return;
+    }
+    this.pendingResetUser = user;
+    this.pendingResetChannel = user.email ? 'email' : user.phone ? 'sms' : null;
+  }
+
+  private async confirmResetPassword() {
+    const user = this.pendingResetUser;
+    if (!user || !this.tenantId) return;
+    this.pendingResetUser = null;
+    this.resettingPassword = new Set([...this.resettingPassword, user.id]);
+    try {
+      const channel = this.pendingResetChannel ?? undefined;
+      await resetPassword(user.id, channel);
+      this.passwordResetDone = new Set([...this.passwordResetDone, user.id]);
+    } catch (error) {
+      this.errorPopup = error instanceof Error ? error.message : 'Failed to reset password';
+    } finally {
+      this.resettingPassword = new Set([...this.resettingPassword].filter(id => id !== user.id));
+    }
+  }
+
   private async toggleUserPasskeys(userId: string) {
     if (userId in this.userPasskeys) {
       const { [userId]: _removed, ...rest } = this.userPasskeys;
@@ -1099,10 +1129,60 @@ export class VersolaUsersList extends LitElement {
     `;
   }
 
+  private renderResetPasswordConfirmDialog() {
+    const user = this.pendingResetUser;
+    if (!user) return '';
+    return html`
+      <dialog open style="
+        position:fixed;inset:0;margin:auto;
+        border:1px solid var(--border-dark);
+        border-radius:var(--radius-lg);
+        background:var(--bg-dark-card);
+        color:var(--text-primary);
+        padding:var(--spacing-xl);
+        max-width:26rem;width:90%;
+        box-shadow:0 8px 32px rgba(0,0,0,0.5);
+        z-index:1000;
+      ">
+        <p style="margin:0 0 var(--spacing-md);font-weight:600">Reset password</p>
+        <p style="margin:0 0 var(--spacing-lg);font-size:0.875rem;color:var(--text-secondary)">
+          A temporary password (12h) will be generated for
+          <strong>${user.email ?? user.phone ?? user.login ?? user.id}</strong>.
+        </p>
+        ${user.email || user.phone ? html`
+        <fieldset style="border:none;padding:0;margin:0 0 var(--spacing-lg)">
+          <legend style="font-size:0.875rem;margin-bottom:var(--spacing-sm)">Deliver via</legend>
+          ${user.email ? html`
+            <label style="display:flex;align-items:center;gap:var(--spacing-sm);margin-bottom:var(--spacing-xs)">
+              <input type="radio" name="channel" value="email"
+                ?checked=${this.pendingResetChannel === 'email'}
+                @change=${() => { this.pendingResetChannel = 'email'; }}>
+              Email — ${user.email}
+            </label>` : ''}
+          ${user.phone ? html`
+            <label style="display:flex;align-items:center;gap:var(--spacing-sm)">
+              <input type="radio" name="channel" value="sms"
+                ?checked=${this.pendingResetChannel === 'sms'}
+                @change=${() => { this.pendingResetChannel = 'sms'; }}>
+              SMS — ${user.phone}
+            </label>` : ''}
+        </fieldset>` : html`
+        <p style="margin:0 0 var(--spacing-lg);font-size:0.875rem;color:var(--text-secondary)">
+          No phone or email configured for this user.
+        </p>`}
+        <div style="display:flex;justify-content:flex-end;gap:var(--spacing-sm)">
+          <button class="btn btn-secondary" @click=${() => { this.pendingResetUser = null; }}>Cancel</button>
+          <button class="btn btn-primary" ?disabled=${!user.email && !user.phone} @click=${this.confirmResetPassword}>Confirm</button>
+        </div>
+      </dialog>
+    `;
+  }
+
   render() {
     if (this.showCreateForm) {
       return html`
         ${this.renderErrorPopup()}
+        ${this.renderResetPasswordConfirmDialog()}
         ${this.formError ? html`
           <dialog open style="
             position:fixed;inset:0;margin:auto;
@@ -1148,6 +1228,7 @@ export class VersolaUsersList extends LitElement {
 
     return html`
       ${this.renderErrorPopup()}
+      ${this.renderResetPasswordConfirmDialog()}
       <content-header title="Users" description="Search, create, and assign roles to users">
         ${this.canManage ? html`<button slot="actions" class="btn btn-primary" ?disabled=${this.isPreparingForm}
           @click=${this.handleCreateClick}>+ Create User</button>` : ''}
@@ -1255,6 +1336,16 @@ export class VersolaUsersList extends LitElement {
                       ? 'Limits Reset ✓'
                       : 'Reset Limits'}
                 </button>
+                ${this.canManage ? html`<button class="btn btn-secondary btn-sm"
+                  ?disabled=${this.resettingPassword.has(user.id) || !this.tenantId}
+                  title=${!this.tenantId ? 'Select a tenant to reset password' : 'Generate a temporary password for this user'}
+                  @click=${() => this.handleResetPassword(user)}>
+                  ${this.resettingPassword.has(user.id)
+                    ? 'Resetting…'
+                    : this.passwordResetDone.has(user.id)
+                      ? 'Password Reset ✓'
+                      : 'Reset Password'}
+                </button>` : ''}
               </div>
             </div>
           `)}

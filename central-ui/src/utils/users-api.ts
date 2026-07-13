@@ -247,6 +247,28 @@ export async function deletePasskey(userId: string, credentialId: string): Promi
   }
 }
 
+export async function resetPassword(
+  userId: string,
+  channel?: string,
+  expiresInSeconds?: number,
+): Promise<void> {
+  const response = await fetch(proxyUrl('/users/password/reset').toString(), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
+    body: JSON.stringify({
+      userId,
+      channel: channel ?? null,
+      expiresInSeconds: expiresInSeconds ?? null,
+    }),
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(text.trim() || `Reset password failed (${response.status})`);
+  }
+}
+
 export async function resetUserLimits(
   userId: string,
   tenantId: string,

@@ -74,6 +74,7 @@ object ConversationControllerSpec extends UnitSpecBase:
     userAgent = None,
     version = 0,
     amr = Map.empty,
+    needsPasswordChange = false,
   )
 
   def successfulSubmitTestCase(
@@ -113,7 +114,7 @@ object ConversationControllerSpec extends UnitSpecBase:
           )
         )
         _ <- configuration.getAllowedPhonePrefixes.succeedsWith(List.empty)
-        _ <- configuration.getPasswordRegex.succeedsWith(None)
+        _ <- configuration.getPasswordRegex.succeedsWith(".*")
         _ <- configuration.getIpHeader.succeedsWith(ipHeader)
         _ <- router.submit.succeedsWith((conversationResult, record))
 
@@ -161,7 +162,7 @@ object ConversationControllerSpec extends UnitSpecBase:
               )
           )
         )
-        _ <- configuration.getPasswordRegex.succeedsWith(Some(passwordRegex))
+        _ <- configuration.getPasswordRegex.succeedsWith(passwordRegex)
 
         response <- client.batched(request)
         submitCalls = router.submit.calls

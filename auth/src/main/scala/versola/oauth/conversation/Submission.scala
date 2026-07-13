@@ -35,4 +35,7 @@ case class PasskeyEnrollSubmission(response: String, name: Option[String])
 case class PasskeySkipSubmission()
   extends Submission derives Schema
 
+case class SetPasswordSubmission(password: Password)
+  extends Submission derives Schema
+
 

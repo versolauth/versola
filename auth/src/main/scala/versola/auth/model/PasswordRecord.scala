@@ -11,4 +11,6 @@ case class PasswordRecord(
     password: Secret,
     salt: Salt,
     createdAt: Instant,
-)
+    expiresAt: Option[Instant],
+):
+  def isTemporary: Boolean = expiresAt.isDefined

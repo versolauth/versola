@@ -1,6 +1,6 @@
 package versola.oauth.client
 
-import versola.oauth.client.model.{ChallengeSettingsRecord, ClientId, ClientSecret, FormRecord, Locales, OAuthClientRecord, OtpSettings, OtpTemplateRecord, PasskeySettings, PasswordHistorySettings, ScopeRecord, ScopeToken, SubmissionLimits, TenantId, ThemeRecord}
+import versola.oauth.client.model.{ChallengeSettingsRecord, ClientId, ClientSecret, FormRecord, Locales, OAuthClientRecord, OtpSettings, OtpTemplateRecord, PasskeySettings, PasswordHistorySettings, ScopeRecord, ScopeToken, SubmissionLimits, SystemSettingsRecord, TenantId, ThemeRecord}
 import versola.oauth.conversation.otp.model.OtpTemplate
 import versola.util.{CoreConfig, ReloadingCache, Secret, SecureRandom, SecurityService}
 import zio.*
@@ -23,11 +23,13 @@ trait OAuthConfigurationService:
 
   def getClientTemplate(id: ClientId, uiLocales: Option[List[String]]): UIO[OtpTemplate]
 
+  def getPasswordTemplate(uiLocales: Option[List[String]]): Task[OtpTemplate]
+
   def getLocales: UIO[Locales]
 
   def getAllowedPhonePrefixes(id: ClientId): UIO[List[String]]
 
-  def getPasswordRegex(id: ClientId): UIO[Option[String]]
+  def getPasswordRegex: UIO[String]
 
   def getSubmissionLimits(id: ClientId): UIO[SubmissionLimits]
 
@@ -37,7 +39,7 @@ trait OAuthConfigurationService:
 
   def getPasskeySettings(id: ClientId): UIO[Option[PasskeySettings]]
 
-  def getPasswordHistorySettings(id: ClientId): UIO[PasswordHistorySettings]
+  def getPasswordHistorySettings: UIO[PasswordHistorySettings]
 
   def getAuthConversationTtl(id: ClientId): UIO[Duration]
 
@@ -59,8 +61,9 @@ object OAuthConfigurationService:
           (ThemeSyncClient.live >+> ZLayer(ReloadingCache.make[Vector[ThemeRecord]](schedule))) >+>
           (LocaleSyncClient.live >+> ZLayer(ReloadingCache.make[Locales](schedule))) >+>
           (OtpTemplateSyncClient.live >+> ZLayer(ReloadingCache.make[Vector[OtpTemplateRecord]](schedule))) >+>
-          (ChallengeSettingsSyncClient.live >+> ZLayer(ReloadingCache.make[Vector[ChallengeSettingsRecord]](schedule)))))
-    syncClients >>> ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _))
+          (ChallengeSettingsSyncClient.live >+> ZLayer(ReloadingCache.make[Vector[ChallengeSettingsRecord]](schedule))) >+>
+          (SystemSettingsSyncClient.live >+> ZLayer(ReloadingCache.make[SystemSettingsRecord](schedule)))))
+    syncClients >>> ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _))
   }
 
   case class Impl(
@@ -78,6 +81,8 @@ object OAuthConfigurationService:
       otpTemplateRepository: OtpTemplateSyncClient,
       challengeSettingsCache: ReloadingCache[Vector[ChallengeSettingsRecord]],
       challengeSettingsRepository: ChallengeSettingsSyncClient,
+      systemSettingsCache: ReloadingCache[SystemSettingsRecord],
+      systemSettingsRepository: SystemSettingsSyncClient,
   ) extends OAuthConfigurationService:
 
     def find(id: ClientId): UIO[Option[OAuthClientRecord]] =
@@ -146,6 +151,23 @@ object OAuthConfigurationService:
             .getOrElse(IllegalStateTemplate)
           OtpTemplate(body)
 
+    override def getPasswordTemplate(uiLocales: Option[List[String]]): Task[OtpTemplate] =
+      for
+        templates <- otpTemplateCache.get
+        locales <- getLocales
+        template <- ZIO
+          .fromOption(templates.find(_.purpose == "password"))
+          .orElseFail(RuntimeException("No global password template configured"))
+        preferredLocales = uiLocales.getOrElse(Nil) :+ locales.default
+        body <- ZIO
+          .fromOption(
+            preferredLocales
+              .collectFirst { case loc if template.localizations.contains(loc) => template.localizations(loc) }
+              .orElse(template.localizations.values.headOption),
+          )
+          .orElseFail(RuntimeException("Password template has no localizations"))
+      yield OtpTemplate(body)
+
     override def getAllowedPhonePrefixes(id: ClientId): UIO[List[String]] =
       find(id).flatMap:
         case None => ZIO.succeed(Nil)
@@ -155,14 +177,8 @@ object OAuthConfigurationService:
               .fold(Nil)(_.allowedPrefixes),
           )
 
-    override def getPasswordRegex(id: ClientId): UIO[Option[String]] =
-      find(id).flatMap:
-        case None => ZIO.none
-        case Some(client) =>
-          challengeSettingsCache.get.map(
-            _.find(_.tenantId == client.tenantId)
-              .flatMap(_.passwordRegex),
-          )
+    override def getPasswordRegex: UIO[String] =
+      systemSettingsCache.get.map(_.passwordRegex)
 
     override def getSubmissionLimits(id: ClientId): UIO[SubmissionLimits] =
       find(id).flatMap:
@@ -200,14 +216,8 @@ object OAuthConfigurationService:
               .map(_.passkeySettings),
           )
 
-    override def getPasswordHistorySettings(id: ClientId): UIO[PasswordHistorySettings] =
-      find(id).flatMap:
-        case None => ZIO.succeed(PasswordHistorySettings.default)
-        case Some(client) =>
-          challengeSettingsCache.get.map(
-            _.find(_.tenantId == client.tenantId)
-              .fold(PasswordHistorySettings.default)(s => PasswordHistorySettings(s.passwordHistorySize, s.passwordNumDifferent)),
-          )
+    override def getPasswordHistorySettings: UIO[PasswordHistorySettings] =
+      systemSettingsCache.get.map(s => PasswordHistorySettings(s.passwordHistorySize, s.passwordNumDifferent))
 
     override def getAuthConversationTtl(id: ClientId): UIO[Duration] =
       find(id).flatMap:

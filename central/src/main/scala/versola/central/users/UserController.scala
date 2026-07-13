@@ -26,6 +26,7 @@ object UserController extends Controller:
     listPasskeysEndpoint,
     renamePasskeyEndpoint,
     deletePasskeyEndpoint,
+    resetPasswordEndpoint,
   )
 
   val findUsersEndpoint =
@@ -162,4 +163,14 @@ object UserController extends Controller:
         credentialId <- request.queryZIO[String]("credentialId")
         _ <- service.deletePasskey(id, credentialId)
       yield Response.status(Status.Accepted)
+    }
+
+  val resetPasswordEndpoint =
+    Method.POST / "users" / "password" / "reset" -> handler { (request: Request) =>
+      for
+        _ <- authorizeBasic(request)
+        service <- ZIO.service[UserService]
+        body <- request.body.asJsonFromCodec[ResetPasswordRequest]
+        _ <- service.resetPassword(body)
+      yield Response.status(Status.NoContent)
     }

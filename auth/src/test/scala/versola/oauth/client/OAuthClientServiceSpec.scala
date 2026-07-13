@@ -1,6 +1,6 @@
 package versola.oauth.client
 
-import versola.oauth.client.model.{ChallengeSettingsRecord, Claim, ClaimRecord, ClientId, FormRecord, Locales, OAuthClientRecord, OtpTemplateRecord, ScopeRecord, ScopeToken, TenantId, ThemeRecord}
+import versola.oauth.client.model.{ChallengeSettingsRecord, Claim, ClaimRecord, ClientId, FormRecord, Locales, OAuthClientRecord, OtpTemplateRecord, ScopeRecord, ScopeToken, SystemSettingsRecord, TenantId, ThemeRecord}
 import versola.oauth.conversation.otp.model.OtpTemplate
 import versola.util.*
 import zio.*
@@ -81,6 +81,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
       localeCache: ReloadingCache[Locales],
       otpTemplateCache: ReloadingCache[Vector[OtpTemplateRecord]],
       challengeSettingsCache: ReloadingCache[Vector[ChallengeSettingsRecord]],
+      systemSettingsCache: ReloadingCache[SystemSettingsRecord],
   ):
     val clientSync = stub[OAuthClientSyncClient]
     val scopeSync = stub[OAuthScopeSyncClient]
@@ -89,6 +90,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
     val localeSync = stub[LocaleSyncClient]
     val otpTemplateSync = stub[OtpTemplateSyncClient]
     val challengeSettingsSync = stub[ChallengeSettingsSyncClient]
+    val systemSettingsSync = stub[SystemSettingsSyncClient]
     val service: OAuthConfigurationService =
       OAuthConfigurationService.Impl(
         clientCache,
@@ -105,6 +107,8 @@ object OAuthClientServiceSpec extends UnitSpecBase:
         otpTemplateSync,
         challengeSettingsCache,
         challengeSettingsSync,
+        systemSettingsCache,
+        systemSettingsSync,
       )
 
   private def makeEnv(
@@ -115,6 +119,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
       locales: Locales = Locales(Vector.empty, "en"),
       otpTemplates: Vector[OtpTemplateRecord] = Vector.empty,
       challengeSettings: Vector[ChallengeSettingsRecord] = Vector.empty,
+      systemSettings: SystemSettingsRecord = SystemSettingsRecord.default,
   ) =
     for
       clientRef <- Ref.make(clients)
@@ -124,6 +129,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
       localeRef <- Ref.make(locales)
       otpTemplateRef <- Ref.make(otpTemplates)
       challengeSettingsRef <- Ref.make(challengeSettings)
+      systemSettingsRef <- Ref.make(systemSettings)
     yield Env(
       clientCache = ReloadingCache(clientRef),
       scopeCache = ReloadingCache(scopeRef),
@@ -132,6 +138,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
       localeCache = ReloadingCache(localeRef),
       otpTemplateCache = ReloadingCache(otpTemplateRef),
       challengeSettingsCache = ReloadingCache(challengeSettingsRef),
+      systemSettingsCache = ReloadingCache(systemSettingsRef),
     )
 
   val spec = suite("OAuthConfigurationService")(
@@ -180,6 +187,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
           "default",
           TenantId("default"),
           Map("en" -> "Your code is {{code}}", "ru" -> "Ваш код {{code}}"),
+          purpose = "otp",
         )
         for
           env <- makeEnv(
@@ -194,6 +202,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
           "default",
           TenantId("default"),
           Map("en" -> "Your code is {{code}}"),
+          purpose = "otp",
         )
         for
           env <- makeEnv(
@@ -208,6 +217,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
           "default",
           TenantId("default"),
           Map("fr" -> "Votre code {{code}}"),
+          purpose = "otp",
         )
         for
           env <- makeEnv(

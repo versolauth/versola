@@ -46,8 +46,8 @@ trait LocaleRepositorySpec extends DatabaseSpecBase[LocaleRepositorySpec.Env]:
           _ <- env.xa.connect:
             sql"""INSERT INTO tenants (id, description) VALUES ('t1', 'Test Tenant')""".update.run()
           _ <- env.xa.connect:
-            sql"""INSERT INTO otp_templates (id, tenant_id, localizations)
-                  VALUES ('email', 't1', '{"en":{"subject":"Code"},"ru":{"subject":"Код"}}')""".update.run()
+            sql"""INSERT INTO otp_templates (id, tenant_id, localizations, purpose)
+                  VALUES ('email', 't1', '{"en":{"subject":"Code"},"ru":{"subject":"Код"}}', 'otp')""".update.run()
           _ <- env.repository.update(add = Vector.empty, delete = Vector("ru"))
           locs <- env.xa.connect:
             sql"""SELECT localizations::text FROM otp_templates WHERE id = 'email' AND tenant_id = 't1'""".query[String].run()

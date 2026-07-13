@@ -12,6 +12,7 @@ import './loading-cards';
 @customElement('versola-tenants-list')
 export class VersolaTenantsList extends LitElement {
   @property({ type: String }) selectedTenantId: string | null = null;
+  @property({ type: Boolean }) canManage = false;
 
   @state() private tenants: Tenant[] = [];
   @state() private edges: Edge[] = [];
@@ -300,7 +301,7 @@ export class VersolaTenantsList extends LitElement {
   render() {
     return html`
       <content-header title="Tenants">
-        <button slot="actions" class="btn btn-primary" @click=${this.openCreateForm}>+ Create Tenant</button>
+        ${this.canManage ? html`<button slot="actions" class="btn btn-primary" @click=${this.openCreateForm}>+ Create Tenant</button>` : ''}
       </content-header>
 
       <div class="stack">
@@ -357,7 +358,7 @@ export class VersolaTenantsList extends LitElement {
           <div class="card">
             <div class="empty-state">
               <h3>No tenants yet</h3>
-              <p>Create your first tenant to get started.</p>
+              ${this.canManage ? html`<p>Create your first tenant to get started.</p>` : html`<p>No tenants available.</p>`}
             </div>
           </div>
         ` : this.tenants.map(tenant => html`
@@ -372,10 +373,11 @@ export class VersolaTenantsList extends LitElement {
               </div>
               ${tenant.description ? html`<div class="tenant-id">${tenant.id}</div>` : ''}
             </div>
+            ${this.canManage ? html`
             <div class="tenant-actions">
               <button class="icon-action" type="button" @click=${() => this.openEditForm(tenant)} title="Edit tenant" aria-label="Edit tenant">✎</button>
               <button class="icon-action danger" type="button" @click=${() => this.handleDelete(tenant)} title="Delete tenant" aria-label="Delete tenant">✕</button>
-            </div>
+            </div>` : ''}
           </div>
         `)}
       </div>

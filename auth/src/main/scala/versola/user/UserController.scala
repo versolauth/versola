@@ -1,6 +1,7 @@
 package versola.user
 
 import versola.oauth.challenge.passkey.PasskeyRepository
+import versola.oauth.challenge.password.PasswordService
 import versola.oauth.client.model.TenantId
 import versola.oauth.conversation.limit.ChallengeThrottleRepository
 import versola.oauth.session.{RefreshTokenRepository, SessionRepository}
@@ -9,15 +10,17 @@ import versola.role.model.RoleId
 import versola.user.model.*
 import versola.util.CoreConfig
 import versola.util.http.Controller
-import versola.util.{Base64, Email, Phone}
-import zio.ZIO
+import versola.auth.model.CredentialId
+import versola.util.{Email, Phone}
+import zio.*
 import zio.http.{Method, Request, Response, Routes, Status, handler}
 import zio.json.EncoderOps
 import zio.json.JsonCodec
 import zio.telemetry.opentelemetry.tracing.Tracing
 
 object UserController extends Controller:
-  type Env = Tracing & UserRepository & UserRolesRepository & CoreConfig & SessionRepository & RefreshTokenRepository & ChallengeThrottleRepository & PasskeyRepository
+  type Env = Tracing & UserRepository & UserRolesRepository & CoreConfig & SessionRepository &
+    RefreshTokenRepository & ChallengeThrottleRepository & PasskeyRepository & PasswordService
 
   def routes: Routes[Env, Throwable] = Routes(
     upsertUserEndpoint,
@@ -31,6 +34,7 @@ object UserController extends Controller:
     listPasskeysEndpoint,
     renamePasskeyEndpoint,
     deletePasskeyEndpoint,
+    resetPasswordEndpoint,
   )
 
   val upsertUserEndpoint =
@@ -85,17 +89,6 @@ object UserController extends Controller:
         roles <- repo.findRolesByUserAndTenant(id, tenantId)
       yield Response.json(UserRolesResponse(roles).toJson)
     }
-
-  private case class SessionResponse(
-      clientId: String,
-      platform: String,
-      os: Option[String],
-      browser: Option[String],
-      version: Option[String],
-      createdAt: String,
-  ) derives JsonCodec
-
-  private case class SessionListResponse(sessions: List[SessionResponse]) derives JsonCodec
 
   val findSessionsEndpoint =
     Method.GET / "users" / "sessions" -> handler { (request: Request) =>
@@ -171,10 +164,18 @@ object UserController extends Controller:
       for
         _ <- authorizeInternal(request)
         repo <- ZIO.service[PasskeyRepository]
-        userId <- request.url.queryZIO[UserId]("id")
-        rawCredentialId <- request.url.queryZIO[String]("credentialId")
-        credentialId <- ZIO.fromEither(versola.auth.model.CredentialId.fromBase64Url(rawCredentialId))
-          .mapError(msg => new RuntimeException(s"Invalid credentialId: $msg"))
+        userId       <- request.queryZIO[UserId]("id")
+        credentialId <- request.queryZIO[CredentialId]("credentialId")
         _ <- repo.deleteByUser(credentialId, userId)
+      yield Response.status(Status.NoContent)
+    }
+
+  val resetPasswordEndpoint =
+    Method.POST / "users" / "password" / "reset" -> handler { (request: Request) =>
+      for
+        _ <- authorizeInternal(request)
+        body <- request.body.asJsonFromCodec[ResetPasswordPayload]
+        passwordService <- ZIO.service[PasswordService]
+        _ <- passwordService.resetPassword(body.userId, body.expiresInSeconds, body.channel)
       yield Response.status(Status.NoContent)
     }

@@ -8,6 +8,7 @@ import type {
   FormRecord,
   OtpTemplateRecord,
   ChallengeSettingsRecord,
+  SystemSettingsRecord,
   PasskeySettings,
   SubmissionLimits,
   InjectRule,
@@ -1007,10 +1008,10 @@ export async function fetchOtpTemplates(tenantId: string): Promise<OtpTemplateRe
   return response.templates;
 }
 
-export async function upsertOtpTemplate(id: string, tenantId: string, localizations: Record<string, string>): Promise<void> {
+export async function upsertOtpTemplate(id: string, tenantId: string, localizations: Record<string, string>, purpose: string): Promise<void> {
   await requestVoid('/configuration/challenges/otp-templates', {
     method: 'PUT',
-    body: { id, tenantId, localizations },
+    body: { id, tenantId, localizations, purpose },
   });
 }
 
@@ -1059,14 +1060,11 @@ export async function upsertChallengeSettings(
   submissionLimits: SubmissionLimits,
   otpLength: number,
   otpResendAfter: number,
-  passwordHistorySize: number,
-  passwordNumDifferent: number,
   passkeySettings: PasskeySettings,
   authConversationTtlSeconds: number,
   sessionTtlSeconds: number,
   sessionIdleTtlSeconds: number | null,
   ipHeader: string,
-  passwordRegex?: string,
 ): Promise<void> {
   await requestVoid('/configuration/challenges/challenge-settings', {
     method: 'PUT',
@@ -1076,15 +1074,23 @@ export async function upsertChallengeSettings(
       submissionLimits,
       otpLength,
       otpResendAfter,
-      passwordHistorySize,
-      passwordNumDifferent,
-      passwordRegex: passwordRegex ?? null,
       passkeySettings,
       authConversationTtlSeconds,
       sessionTtlSeconds,
       sessionIdleTtlSeconds: sessionIdleTtlSeconds ?? null,
       ipHeader,
     },
+  });
+}
+
+export async function fetchSystemSettings(): Promise<SystemSettingsRecord> {
+  return request<SystemSettingsRecord>('/configuration/system-settings');
+}
+
+export async function upsertSystemSettings(settings: SystemSettingsRecord): Promise<void> {
+  await requestVoid('/configuration/system-settings', {
+    method: 'PUT',
+    body: settings,
   });
 }
 

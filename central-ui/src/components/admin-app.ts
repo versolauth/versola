@@ -17,6 +17,7 @@ import './forms-list';
 import './locales-list';
 import './challenges-list';
 import './jwks-list';
+import './system-settings';
 
 
 @customElement('versola-admin')
@@ -122,6 +123,7 @@ export class VersolaAdmin extends LitElement {
       case 'resources':
         return p.has('resources:read');
       case 'challenges':
+      case 'system-settings':
         return p.has('security:read');
       case 'users':
         return p.has('users:read');
@@ -153,6 +155,7 @@ export class VersolaAdmin extends LitElement {
       case 'resources':
         return p.has('resources:manage');
       case 'challenges':
+      case 'system-settings':
         return p.has('security:manage');
       case 'users':
         return p.has('users:manage');
@@ -191,7 +194,7 @@ export class VersolaAdmin extends LitElement {
     const expandClient = params.get('expandClient');
     const expandEdge = params.get('expandEdge');
 
-    if (urlView === 'clients' || urlView === 'scopes' || urlView === 'permissions' || urlView === 'resources' || urlView === 'roles' || urlView === 'tenants' || urlView === 'edges' || urlView === 'users' || urlView === 'forms' || urlView === 'locales' || urlView === 'challenges' || urlView === 'jwks') {
+    if (urlView === 'clients' || urlView === 'scopes' || urlView === 'permissions' || urlView === 'resources' || urlView === 'roles' || urlView === 'tenants' || urlView === 'edges' || urlView === 'users' || urlView === 'forms' || urlView === 'locales' || urlView === 'challenges' || urlView === 'jwks' || urlView === 'system-settings') {
       this.currentView = urlView;
     }
 
@@ -275,7 +278,9 @@ export class VersolaAdmin extends LitElement {
       case 'challenges':
         return html`<versola-challenges-list .tenantId=${this.currentTenantId} .canManage=${this.canManage('challenges')}></versola-challenges-list>`;
       case 'jwks':
-        return html`<versola-jwks-list></versola-jwks-list>`;
+        return html`<versola-jwks-list .canManage=${this.canManage('jwks')}></versola-jwks-list>`;
+      case 'system-settings':
+        return html`<versola-system-settings .canManage=${this.canManage('system-settings')}></versola-system-settings>`;
       default:
         return html`<versola-clients-list .tenantId=${this.currentTenantId}></versola-clients-list>`;
     }

@@ -16,6 +16,8 @@ trait EmailOtpProvider:
       template: OtpTemplate,
   ): Task[Unit]
 
+  def send(email: Email, message: String): Task[Unit]
+
 object EmailOtpProvider:
   val live: URLayer[CoreConfig, EmailOtpProvider] =
     ZLayer.fromFunction: (config: CoreConfig) =>
@@ -26,6 +28,9 @@ object EmailOtpProvider:
 object NoOpEmailOtpProvider extends EmailOtpProvider:
   override def sendOtp(email: Email, code: OtpCode, template: OtpTemplate): Task[Unit] =
     ZIO.logWarning("SMTP is not configured; skipping email OTP delivery")
+
+  override def send(email: Email, message: String): Task[Unit] =
+    ZIO.logWarning("SMTP is not configured; skipping email delivery")
 
 class SMTPOtpProvider(config: CoreConfig.SmtpConfig) extends EmailOtpProvider:
 
@@ -43,13 +48,16 @@ class SMTPOtpProvider(config: CoreConfig.SmtpConfig) extends EmailOtpProvider:
     )
 
   override def sendOtp(email: Email, code: OtpCode, template: OtpTemplate): Task[Unit] =
+    send(email, render(template, code))
+
+  override def send(email: Email, message: String): Task[Unit] =
     ZIO.attemptBlocking:
-      val message = MimeMessage(session)
-      message.setFrom(InternetAddress(config.from))
-      message.setRecipient(Message.RecipientType.TO, InternetAddress(email))
-      message.setSubject(config.subject)
-      message.setContent(render(template, code), "text/html; charset=utf-8")
-      Transport.send(message)
+      val mail = MimeMessage(session)
+      mail.setFrom(InternetAddress(config.from))
+      mail.setRecipient(Message.RecipientType.TO, InternetAddress(email))
+      mail.setSubject(config.subject)
+      mail.setContent(message, "text/html; charset=utf-8")
+      Transport.send(mail)
 
   private def render(template: String, code: OtpCode): String =
     template.replace("{{code}}", code)
