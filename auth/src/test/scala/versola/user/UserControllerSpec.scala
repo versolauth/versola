@@ -79,7 +79,7 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
         .provideEnvironment(
           ZEnvironment(users) ++ ZEnvironment(roles) ++ ZEnvironment(config) ++
             ZEnvironment(sessions) ++ ZEnvironment(throttle) ++ ZEnvironment(passkey) ++
-            ZEnvironment(noopPasswordSvc) ++ ZEnvironment(refreshTokens) ++ tracing,
+            ZEnvironment(noopPasswordSvc) ++ tracing,
         ),
     )
 
@@ -448,7 +448,7 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
             UserController.routes
               .provideEnvironment(
                 ZEnvironment(userRepo) ++ ZEnvironment(rolesRepo) ++ ZEnvironment(config) ++
-                  ZEnvironment(sessionRepo) ++ ZEnvironment(refreshTokenRepo) ++
+                  ZEnvironment(sessionRepo) ++
                   ZEnvironment(noopThrottle) ++ ZEnvironment(noopPasskeyRepo) ++
                   ZEnvironment(passwordSvc) ++ tracing,
               ),
@@ -482,7 +482,7 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
             UserController.routes
               .provideEnvironment(
                 ZEnvironment(userRepo) ++ ZEnvironment(rolesRepo) ++ ZEnvironment(config) ++
-                  ZEnvironment(sessionRepo) ++ ZEnvironment(refreshTokenRepo) ++
+                  ZEnvironment(sessionRepo) ++
                   ZEnvironment(noopThrottle) ++ ZEnvironment(noopPasskeyRepo) ++
                   ZEnvironment(passwordSvc) ++ tracing,
               ),

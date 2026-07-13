@@ -29,7 +29,7 @@ trait SessionRepository:
       userId: UserId,
   ): Task[Unit]
 
-  def create(
+  def createRefreshToken(
       refreshToken: MAC.Of[RefreshToken],
       record: RefreshTokenRecord,
   ): IO[Throwable | RefreshAlreadyExchanged, Unit]

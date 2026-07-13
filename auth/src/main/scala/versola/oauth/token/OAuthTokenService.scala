@@ -184,7 +184,7 @@ object OAuthTokenService:
           for
             token <- authPropertyGenerator.nextRefreshToken
             mac <- securityService.mac(Secret(token), config.security.refreshTokensSecret)
-            _ <- sessionRepository.create(mac, record)
+            _ <- sessionRepository.createRefreshToken(mac, record)
               .mapError:
                 case ex: Throwable => ex
                 case _ => TokenEndpointError.InvalidGrant
@@ -227,4 +227,3 @@ object OAuthTokenService:
         amr = record.amr,
         authTime = Some(record.authTime),
       )
-                       

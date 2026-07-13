@@ -124,7 +124,7 @@ class PostgresSessionRepository(xa: TransactorZIO)
 
   // ── refresh token methods ─────────────────────────────────────────────────
 
-  override def create(
+  override def createRefreshToken(
       refreshToken: MAC.Of[RefreshToken],
       record: RefreshTokenRecord,
   ): IO[Throwable | RefreshAlreadyExchanged, Unit] =
@@ -217,4 +217,4 @@ object PostgresSessionRepository:
         sql.getSQLState == SerializationFailureSqlState || sql.getSQLState == UniqueViolationSqlState
       case _ => Option(t.getCause).exists(isSerializationOrUniqueViolationFailure(_, depth + 1))
     )
-                                               
+

@@ -1,8 +1,9 @@
 package versola.oauth.session
 
 import com.augustnagro.magnum.magzio.TransactorZIO
-import versola.oauth.client.model.ClientId
-import versola.oauth.session.model.{SessionId, SessionRecord, UserAgentInfo}
+import versola.oauth.client.model.{AuthMethodRef, ClientId, ScopeToken}
+import versola.oauth.model.AccessToken
+import versola.oauth.session.model.{RefreshTokenRecord, SessionId, SessionRecord, UserAgentInfo}
 import versola.user.model.UserId
 import versola.util.{DatabaseSpecBase, MAC}
 import zio.*
@@ -17,6 +18,8 @@ trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
   val sessionId1 = MAC(Array.fill(32)(1.toByte))
   val sessionId2 = MAC(Array.fill(32)(2.toByte))
   val sessionId3 = MAC(Array.fill(32)(3.toByte))
+  val atomicSessionId = MAC(Array.fill(32)(77.toByte))
+  val atomicTokenId   = MAC(Array.fill(32)(78.toByte))
 
   val clientId1 = ClientId("client-1")
   val clientId2 = ClientId("client-2")
@@ -160,6 +163,32 @@ trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
           session1After.isEmpty,
           session2After.isDefined,
         )
+      },
+      test("invalidateByUserId removes sessions and refresh tokens together") {
+        for
+          now    <- Clock.instant
+          record  = RefreshTokenRecord(
+            sessionId            = atomicSessionId,
+            accessToken          = AccessToken(Array.fill(16)(1.toByte)),
+            userId               = userId1,
+            clientId             = clientId1,
+            externalAudience     = List.empty,
+            scope                = Set(ScopeToken("read")),
+            issuedAt             = now,
+            expiresAt            = now.plusSeconds(30.days.toSeconds),
+            requestedClaims      = None,
+            uiLocales            = None,
+            nonce                = None,
+            previousRefreshToken = None,
+            amr                  = Set(AuthMethodRef.pwd),
+            authTime             = now,
+          )
+          _            <- env.repository.create(atomicSessionId, session1, 5.minutes, None)
+          _            <- env.repository.createRefreshToken(atomicTokenId, record)
+          _            <- env.repository.invalidateByUserId(userId1)
+          sessionAfter <- env.repository.findSession(atomicSessionId)
+          tokenAfter   <- env.repository.findToken(atomicTokenId)
+        yield assertTrue(sessionAfter.isEmpty, tokenAfter.isEmpty)
       },
     )
 

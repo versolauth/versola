@@ -214,5 +214,3 @@ object IntrospectionServiceSpec extends UnitSpecBase:
       },
     ),
   )
-
-          

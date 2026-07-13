@@ -141,7 +141,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.propertyGenerator.nextAccessToken.succeedsWith(accessToken1)
           _ <- env.propertyGenerator.nextRefreshToken.succeedsWith(refreshToken1)
           _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
-          _ <- env.tokenRepo.create.succeedsWith(())
+          _ <- env.tokenRepo.createRefreshToken.succeedsWith(())
           _ <- env.userRolesRepo.findRolesByUserAndTenant.succeedsWith(List.empty)
 
           request = CodeExchangeRequest(authCode1, redirectUri1, codeVerifier1)
@@ -364,7 +364,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.tokenRepo.findToken.succeedsWith(Some(tokenRecord))
           _ <- env.propertyGenerator.nextAccessToken.succeedsWith(accessToken1)
           _ <- env.propertyGenerator.nextRefreshToken.succeedsWith(newRefreshToken)
-          _ <- env.tokenRepo.create.succeedsWith(())
+          _ <- env.tokenRepo.createRefreshToken.succeedsWith(())
           _ <- env.userRolesRepo.findRolesByUserAndTenant.succeedsWith(List.empty)
 
           request = RefreshTokenRequest(refreshToken1, None)
@@ -372,7 +372,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
 
           result <- env.service.refreshAccessToken(request, credentials)
 
-          createCalls = env.tokenRepo.create.calls
+          createCalls = env.tokenRepo.createRefreshToken.calls
         yield assertTrue(
           result.accessToken == accessToken1,
           result.refreshToken.contains(newRefreshToken),
@@ -416,7 +416,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.tokenRepo.findToken.succeedsWith(Some(tokenRecord))
           _ <- env.propertyGenerator.nextAccessToken.succeedsWith(accessToken1)
           _ <- env.propertyGenerator.nextRefreshToken.succeedsWith(newRefreshToken)
-          _ <- env.tokenRepo.create.succeedsWith(())
+          _ <- env.tokenRepo.createRefreshToken.succeedsWith(())
           _ <- env.userRolesRepo.findRolesByUserAndTenant.succeedsWith(List.empty)
 
           request = RefreshTokenRequest(refreshToken1, Some(reducedScope))
@@ -424,7 +424,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
 
           result <- env.service.refreshAccessToken(request, credentials)
 
-          createCalls = env.tokenRepo.create.calls
+          createCalls = env.tokenRepo.createRefreshToken.calls
         yield assertTrue(
           result.scope == reducedScope,
           createCalls.head._2.scope == reducedScope,
@@ -524,7 +524,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.tokenRepo.findToken.succeedsWith(Some(tokenRecord))
           _ <- env.propertyGenerator.nextAccessToken.succeedsWith(accessToken1)
           _ <- env.propertyGenerator.nextRefreshToken.succeedsWith(newRefreshToken)
-          _ <- env.tokenRepo.create.failsWith(RefreshAlreadyExchanged())
+          _ <- env.tokenRepo.createRefreshToken.failsWith(RefreshAlreadyExchanged())
 
           request = RefreshTokenRequest(refreshToken1, None)
           credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
@@ -613,5 +613,3 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
       },
     ),
   )
-
-          
