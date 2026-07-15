@@ -1,10 +1,10 @@
 name: CI/CD
 
 on:
-  push:
-    branches: [main]
   pull_request:
     branches: [main]
+  release:
+    types: [created]
 
 env:
   REGISTRY: ghcr.io
@@ -39,34 +39,17 @@ jobs:
           distribution: 'temurin'
           cache: 'sbt'
       - uses: sbt/setup-sbt@v1
-      - name: Set up Scala CLI
-        uses: VirtusLab/scala-cli-setup@v1
       - name: Compile
         run: sbt compile
 
       - name: Run tests
-        if: github.event_name == 'pull_request'
         env:
           POSTGRES_HOST: localhost:5432
         run: sbt test
 
-      - name: Run tests with coverage
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        env:
-          POSTGRES_HOST: localhost:5432
-        run: sbt coverage test coverageReport coverageAggregate
-
-      - name: Publish coverage badge to gist
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        env:
-          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
-          GIST_ID: bd1fd5151f5190b2f8325a56610909ef
-          GIST_FILENAME: versola-coverage.json
-        run: scala-cli run .github/scripts/coverage-badge.scala
-
-  docker:
+  docker-auth:
     needs: build
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'release'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -86,28 +69,101 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=sha,prefix=
-            type=raw,value=latest
+      - name: Extract version from tag
+        id: version
+        run: echo "version=${{ github.event.release.tag_name }}" >> $GITHUB_OUTPUT
 
-      - name: Build and push Docker image
+      - name: Build and push auth image
         uses: docker/build-push-action@v6
         with:
           context: .
+          file: docker/Dockerfile.auth
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          tags: |
+            ${{ env.REGISTRY }}/${{ github.repository_owner }}/versola-auth:${{ steps.version.outputs.version }}
+            ${{ env.REGISTRY }}/${{ github.repository_owner }}/versola-auth:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  docker-central:
+    needs: build
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      attestations: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract version from tag
+        id: version
+        run: echo "version=${{ github.event.release.tag_name }}" >> $GITHUB_OUTPUT
+
+      - name: Build and push central image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.central
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ github.repository_owner }}/versola-central:${{ steps.version.outputs.version }}
+            ${{ env.REGISTRY }}/${{ github.repository_owner }}/versola-central:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  docker-edge:
+    needs: build
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      attestations: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract version from tag
+        id: version
+        run: echo "version=${{ github.event.release.tag_name }}" >> $GITHUB_OUTPUT
+
+      - name: Build and push edge image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.edge
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ github.repository_owner }}/versola-edge:${{ steps.version.outputs.version }}
+            ${{ env.REGISTRY }}/${{ github.repository_owner }}/versola-edge:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
   deploy:
-    needs: docker
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [docker-auth, docker-central, docker-edge]
+    if: github.event_name == 'release'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
