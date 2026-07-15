@@ -77,7 +77,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
     redirectUris = NonEmptySet("https://example.com/callback"),
     scope = scope2,
     externalAudience = List.empty,
-    secret = None, // Public client has no secret
+    secret = None,
     previousSecret = None,
     accessTokenTtl = 10.minutes,
     refreshTokenTtl = 7776000.seconds,
@@ -168,7 +168,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             clientId = clientId1,
             userId = userId1,
             redirectUri = redirectUri1,
-            scope = scope2, // No offline_access
+            scope = scope2,
             codeChallenge = codeChallenge1,
             codeChallengeMethod = CodeChallengeMethod.S256,
             requestedClaims = None,
@@ -265,7 +265,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             clientId = clientId1,
             userId = userId1,
             redirectUri = redirectUri1,
-            scope = scope2, // No offline_access
+            scope = scope2,
             codeChallenge = codeChallenge1,
             codeChallengeMethod = CodeChallengeMethod.S256,
             requestedClaims = None,
@@ -302,7 +302,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             clientId = OAuthTokenService.centralAdminClientId,
             userId = userId1,
             redirectUri = redirectUri1,
-            scope = scope2, // No offline_access
+            scope = scope2,
             codeChallenge = codeChallenge1,
             codeChallengeMethod = CodeChallengeMethod.S256,
             requestedClaims = None,
@@ -549,16 +549,16 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
         yield assertTrue(
           result.accessToken == accessToken1,
           result.clientId == clientId1,
-          result.userId.isEmpty, // No user context for client_credentials
-          result.refreshToken.isEmpty, // No refresh token for client_credentials
-          result.scope == scope1, // Uses client's default scope
+          result.userId.isEmpty,
+          result.refreshToken.isEmpty,
+          result.scope == scope1,
           result.requestedClaims.isEmpty,
           result.uiLocales.isEmpty,
         )
       },
       test("successfully issue access token with requested scope") {
         val env = new Env
-        val requestedScope = Some(scope2) // Subset of client's scope
+        val requestedScope = Some(scope2)
         for
           _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
           _ <- env.propertyGenerator.nextAccessToken.succeedsWith(accessToken1)
@@ -612,4 +612,4 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
         )
       },
     ),
-  )
+  ) 

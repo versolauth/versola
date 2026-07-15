@@ -9,6 +9,7 @@ import versola.util.http.Observability
 import zio.*
 import zio.http.*
 import zio.json.*
+import zio.json.ast.Json
 import zio.telemetry.opentelemetry.OpenTelemetry
 import zio.telemetry.opentelemetry.tracing.Tracing
 import zio.test.*
@@ -176,5 +177,29 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
         ZIO.succeed(assertTrue(
           service.deletePasskey.calls == List((userId, "cred-1")),
         )),
+    ),
+    controllerTestCase(
+      description = "find users by id returns search result",
+      request = Request(
+        method = Method.GET,
+        url = (URL.empty / "users").addQueryParam("id", userId.toString),
+      ),
+      expectedStatus = Status.Ok,
+      setup = service => service.findById.succeedsWith(Some(UserSearchRecord(userId, Some(email), None, None, Json.Obj()))),
+      verify = (response, _) =>
+        for body <- response.body.asJson[UserSearchResponse]
+        yield assertTrue(body.users.head.id == userId)
+    ),
+    controllerTestCase(
+      description = "reset password returns 204 No Content",
+      request = Request(
+        method = Method.POST,
+        url = URL.empty / "users" / "password" / "reset",
+        body = Body.fromString(s"""{"userId":"$userId","expiresInSeconds":3600,"channel":"email"}"""),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.NoContent,
+      setup = service => service.resetPassword.succeedsWith(()),
+      verify = (response, service) =>
+        ZIO.succeed(assertTrue(service.resetPassword.calls.nonEmpty))
     ),
   )
