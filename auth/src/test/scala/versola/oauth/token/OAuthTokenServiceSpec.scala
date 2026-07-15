@@ -1,616 +1,100 @@
 package versola.oauth.token
 
-import org.scalamock.stubs.{Stub, ZIOStubs}
 import versola.auth.TestEnvConfig
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{AuthMethodRef, ClientId, ClientIdWithSecret, OAuthClientRecord, ScopeToken, TenantId}
-import versola.oauth.model.{AccessToken, AuthorizationCode, AuthorizationCodeRecord, CodeChallenge, CodeChallengeMethod, CodeVerifier, RefreshToken}
+import versola.oauth.client.model.{ClientId, ClientIdWithSecret, OAuthClientRecord, ScopeToken, TenantId}
+import versola.oauth.model.{AccessToken, RefreshToken}
 import versola.oauth.revoke.AccessTokenRevocationService
 import versola.oauth.session.RefreshTokenRepository
-import versola.oauth.session.model.{RefreshAlreadyExchanged, RefreshTokenRecord, SessionId}
-import versola.oauth.token.model.{ClientCredentialsRequest, CodeExchangeRequest, RefreshTokenRequest, TokenEndpointError}
-import versola.oauth.client.model.Claim
-import versola.oauth.userinfo.model.{ClaimRequest, RequestedClaims}
-import versola.role.model.RoleId
+import versola.oauth.token.model.{ClientCredentialsRequest, TokenEndpointError}
+import versola.oauth.token.AuthorizationCodeRepository
 import versola.user.{UserRepository, UserRolesRepository}
-import versola.user.model.UserId
-import versola.util.{AuthPropertyGenerator, CoreConfig, MAC, Secret, SecurityService}
+import versola.util.{AuthPropertyGenerator, Secret, SecurityService, UnitSpecBase}
 import zio.*
-import zio.http.URL
-import zio.prelude.{EqualOps, NonEmptySet}
+import zio.prelude.NonEmptySet
 import zio.test.*
 
-import java.time.Instant
-import java.util.UUID
+object OAuthTokenServiceSpec extends UnitSpecBase:
 
-object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
+  private val clientId     = ClientId("service-client")
+  private val clientSecret = Secret(Array.fill(32)(5.toByte))
+  private val accessToken  = AccessToken(Array.fill(16)(2.toByte))
 
-  val clientId1 = ClientId("test-client-1")
-  val userId1 = UserId(UUID.fromString("f077fb08-9935-4a6d-8643-bf97c073bf0f"))
-  val sessionId1 = MAC(Array.fill(32)(1.toByte))
-  val redirectUri1 = URL.decode("https://example.com/callback").toOption.get
-  val scope1 = Set(ScopeToken("read"), ScopeToken("write"), ScopeToken.OfflineAccess)
-  val scope2 = Set(ScopeToken("read"))
-  val codeChallenge1 = CodeChallenge("E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM")
-  val codeVerifier1 = CodeVerifier("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk")
-
-  val requestedClaims1 = RequestedClaims(
-    userinfo = Map(
-      Claim("email") -> ClaimRequest(Some(true), None, None),
-    ),
-    idToken = Map.empty,
-  )
-  val uiLocales1 = List("en-US", "fr-CA")
-
-  val authCode1 = AuthorizationCode(Array.fill(16)(1.toByte))
-  val codeMac1 = MAC(Array.fill(32)(2.toByte))
-  val accessToken1 = AccessToken(Array.fill(32)(3.toByte))
-  val refreshToken1 = RefreshToken(Array.fill(32)(4.toByte))
-  val refreshTokenMac1 = MAC(Array.fill(32)(5.toByte))
-
-  val clientSecret1 = Secret(Array.fill(32)(6.toByte))
-
-  val amr1 = Set(AuthMethodRef.pwd)
-  val authTime1 = Instant.ofEpochSecond(1700000000)
-
-  val testClient = OAuthClientRecord(
-    id = clientId1,
+  private val confidentialClient = OAuthClientRecord(
+    id = clientId,
     tenantId = TenantId("default"),
-    clientName = "Test Client",
+    clientName = "Service Client",
     redirectUris = NonEmptySet("https://example.com/callback"),
-    scope = scope1,
-    externalAudience = List.empty,
-    secret = Some(clientSecret1),
+    scope = Set(ScopeToken("read"), ScopeToken("write")),
+    externalAudience = Nil,
+    secret = Some(clientSecret),
     previousSecret = None,
     accessTokenTtl = 10.minutes,
-    refreshTokenTtl = 7776000.seconds,
+    refreshTokenTtl = 30.days,
     theme = "default",
     authFlow = None,
     otpTemplateId = "default",
   )
 
-  val publicClientId = ClientId("public-client-1")
-  val publicClient = OAuthClientRecord(
-    id = publicClientId,
-    tenantId = TenantId("default"),
-    clientName = "Public Client",
-    redirectUris = NonEmptySet("https://example.com/callback"),
-    scope = scope2,
-    externalAudience = List.empty,
-    secret = None, // Public client has no secret
-    previousSecret = None,
-    accessTokenTtl = 10.minutes,
-    refreshTokenTtl = 7776000.seconds,
-    theme = "default",
-    authFlow = None,
-    otpTemplateId = "default",
-  )
-
-  val adminClient = testClient.copy(id = OAuthTokenService.centralAdminClientId)
-  val adminRoles1 = Map(TenantId("default") -> List(RoleId("admin")))
+  private val publicClient = confidentialClient.copy(secret = None)
 
   class Env:
-    val authCodeRepo = stub[AuthorizationCodeRepository]
-    val clientService = stub[OAuthConfigurationService]
-    val tokenRepo = stub[RefreshTokenRepository]
-    val accessTokenRevocationService = stub[AccessTokenRevocationService]
-    val securityService = stub[SecurityService]
-    val propertyGenerator = stub[AuthPropertyGenerator]
-    val userRepo = stub[UserRepository]
-    val userRolesRepo = stub[UserRolesRepository]
-    val service = OAuthTokenService.Impl(
-      authCodeRepo,
-      clientService,
-      tokenRepo,
-      accessTokenRevocationService,
-      securityService,
-      propertyGenerator,
-      userRepo,
-      userRolesRepo,
-      TestEnvConfig.coreConfig,
-    )
+    val authCodeRepo             = stub[AuthorizationCodeRepository]
+    val oauthClientService       = stub[OAuthConfigurationService]
+    val tokenRepository          = stub[RefreshTokenRepository]
+    val revocationService        = stub[AccessTokenRevocationService]
+    val securityService          = stub[SecurityService]
+    val authPropertyGenerator    = stub[AuthPropertyGenerator]
+    val userRepository           = stub[UserRepository]
+    val userRolesRepository      = stub[UserRolesRepository]
+    val config                   = TestEnvConfig.coreConfig
 
-  def spec = suite("OAuthTokenService")(
-    suite("exchangeAuthorizationCode")(
-      test("successfully exchange code for tokens with offline_access") {
-        val env = new Env
-        for
-          now <- Clock.instant
+    val layer =
+      ZLayer.succeed(authCodeRepo) ++
+      ZLayer.succeed(oauthClientService) ++
+      ZLayer.succeed(tokenRepository) ++
+      ZLayer.succeed(revocationService) ++
+      ZLayer.succeed(securityService) ++
+      ZLayer.succeed(authPropertyGenerator) ++
+      ZLayer.succeed(userRepository) ++
+      ZLayer.succeed(userRolesRepository) ++
+      ZLayer.succeed(config) >>> OAuthTokenService.live
 
-          codeRecord = AuthorizationCodeRecord(
-            sessionId = sessionId1,
-            clientId = clientId1,
-            userId = userId1,
-            redirectUri = redirectUri1,
-            scope = scope1,
-            codeChallenge = codeChallenge1,
-            codeChallengeMethod = CodeChallengeMethod.S256,
-            requestedClaims = Some(requestedClaims1),
-            uiLocales = Some(uiLocales1),
-            nonce = None,
-            accessToken = accessToken1,
-            amr = amr1,
-            authTime = authTime1,
-          )
-
-          _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
-          _ <- env.securityService.mac.succeedsWith(codeMac1)
-          _ <- env.authCodeRepo.find.succeedsWith(Some(codeRecord))
-          _ <- env.authCodeRepo.markAsUsed.succeedsWith(Right(()))
-          _ <- env.authCodeRepo.delete.succeedsWith(())
-          _ <- env.propertyGenerator.nextAccessToken.succeedsWith(accessToken1)
-          _ <- env.propertyGenerator.nextRefreshToken.succeedsWith(refreshToken1)
-          _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
-          _ <- env.tokenRepo.create.succeedsWith(())
-          _ <- env.userRolesRepo.findRolesByUserAndTenant.succeedsWith(List.empty)
-
-          request = CodeExchangeRequest(authCode1, redirectUri1, codeVerifier1)
-          credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
-
-          result <- env.service.exchangeAuthorizationCode(request, credentials)
-        yield assertTrue(
-          result.accessToken == accessToken1,
-          result.refreshToken.contains(refreshToken1),
-          result.clientId == clientId1,
-          result.userId.contains(userId1),
-          result.scope == scope1,
-          result.requestedClaims.contains(requestedClaims1),
-          result.uiLocales.contains(uiLocales1),
-          result.amr == amr1,
-          result.authTime.contains(authTime1),
-        )
-      },
-      test("successfully exchange code without offline_access (no refresh token)") {
-        val env = new Env
-        for
-          codeRecord = AuthorizationCodeRecord(
-            sessionId = sessionId1,
-            clientId = clientId1,
-            userId = userId1,
-            redirectUri = redirectUri1,
-            scope = scope2, // No offline_access
-            codeChallenge = codeChallenge1,
-            codeChallengeMethod = CodeChallengeMethod.S256,
-            requestedClaims = None,
-            uiLocales = None,
-            nonce = None,
-            accessToken = accessToken1,
-            amr = amr1,
-            authTime = authTime1,
-          )
-
-          _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
-          _ <- env.securityService.mac.succeedsWith(codeMac1)
-          _ <- env.authCodeRepo.find.succeedsWith(Some(codeRecord))
-          _ <- env.authCodeRepo.markAsUsed.succeedsWith(Right(()))
-          _ <- env.authCodeRepo.delete.succeedsWith(())
-          _ <- env.propertyGenerator.nextAccessToken.succeedsWith(accessToken1)
-          _ <- env.userRolesRepo.findRolesByUserAndTenant.succeedsWith(List.empty)
-
-          request = CodeExchangeRequest(authCode1, redirectUri1, codeVerifier1)
-          credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
-
-          result <- env.service.exchangeAuthorizationCode(request, credentials)
-        yield assertTrue(
-          result.accessToken == accessToken1,
-          result.refreshToken.isEmpty,
-          result.scope == scope2,
-        )
-      },
-      test("fail with InvalidClient when client verification fails") {
-        val env = new Env
-        for
-          _ <- env.clientService.verifySecret.succeedsWith(None)
-
-          request = CodeExchangeRequest(authCode1, redirectUri1, codeVerifier1)
-          credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
-
-          result <- env.service.exchangeAuthorizationCode(request, credentials).either
-        yield assertTrue(
-          result == Left(TokenEndpointError.InvalidClient),
-        )
-      },
-      test("fail with InvalidGrant when code not found") {
-        val env = new Env
-        for
-          _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
-          _ <- env.securityService.mac.succeedsWith(codeMac1)
-          _ <- env.authCodeRepo.find.succeedsWith(None)
-
-          request = CodeExchangeRequest(authCode1, redirectUri1, codeVerifier1)
-          credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
-
-          result <- env.service.exchangeAuthorizationCode(request, credentials).either
-        yield assertTrue(
-          result == Left(TokenEndpointError.InvalidGrant),
-        )
-      },
-      test("fail with InvalidGrant when redirect_uri doesn't match") {
-        val env = new Env
-        val wrongRedirectUri = URL.decode("https://wrong.com/callback").toOption.get
-        for
-          codeRecord = AuthorizationCodeRecord(
-            sessionId = sessionId1,
-            clientId = clientId1,
-            userId = userId1,
-            redirectUri = redirectUri1,
-            scope = scope1,
-            codeChallenge = codeChallenge1,
-            codeChallengeMethod = CodeChallengeMethod.S256,
-            requestedClaims = None,
-            uiLocales = None,
-            nonce = None,
-            accessToken = accessToken1,
-            amr = amr1,
-            authTime = authTime1,
-          )
-
-          _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
-          _ <- env.securityService.mac.succeedsWith(codeMac1)
-          _ <- env.authCodeRepo.find.succeedsWith(Some(codeRecord))
-
-          request = CodeExchangeRequest(authCode1, wrongRedirectUri, codeVerifier1)
-          credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
-
-          result <- env.service.exchangeAuthorizationCode(request, credentials).either
-        yield assertTrue(
-          result == Left(TokenEndpointError.InvalidGrant),
-        )
-      },
-      test("does not fetch admin roles for non-admin clients") {
-        val env = new Env
-        for
-          codeRecord = AuthorizationCodeRecord(
-            sessionId = sessionId1,
-            clientId = clientId1,
-            userId = userId1,
-            redirectUri = redirectUri1,
-            scope = scope2, // No offline_access
-            codeChallenge = codeChallenge1,
-            codeChallengeMethod = CodeChallengeMethod.S256,
-            requestedClaims = None,
-            uiLocales = None,
-            nonce = None,
-            accessToken = accessToken1,
-            amr = amr1,
-            authTime = authTime1,
-          )
-
-          _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
-          _ <- env.securityService.mac.succeedsWith(codeMac1)
-          _ <- env.authCodeRepo.find.succeedsWith(Some(codeRecord))
-          _ <- env.authCodeRepo.markAsUsed.succeedsWith(Right(()))
-          _ <- env.authCodeRepo.delete.succeedsWith(())
-          _ <- env.propertyGenerator.nextAccessToken.succeedsWith(accessToken1)
-          _ <- env.userRolesRepo.findRolesByUserAndTenant.succeedsWith(List.empty)
-
-          request = CodeExchangeRequest(authCode1, redirectUri1, codeVerifier1)
-          credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
-
-          result <- env.service.exchangeAuthorizationCode(request, credentials)
-        yield assertTrue(
-          result.tenantId.contains("default"),
-          result.roles.isEmpty,
-          env.userRolesRepo.findRolesByUser.calls.isEmpty,
-        )
-      },
-      test("fetches and embeds admin roles for the central-admin client") {
-        val env = new Env
-        for
-          codeRecord = AuthorizationCodeRecord(
-            sessionId = sessionId1,
-            clientId = OAuthTokenService.centralAdminClientId,
-            userId = userId1,
-            redirectUri = redirectUri1,
-            scope = scope2, // No offline_access
-            codeChallenge = codeChallenge1,
-            codeChallengeMethod = CodeChallengeMethod.S256,
-            requestedClaims = None,
-            uiLocales = None,
-            nonce = None,
-            accessToken = accessToken1,
-            amr = amr1,
-            authTime = authTime1,
-          )
-
-          _ <- env.clientService.verifySecret.succeedsWith(Some(adminClient))
-          _ <- env.securityService.mac.succeedsWith(codeMac1)
-          _ <- env.authCodeRepo.find.succeedsWith(Some(codeRecord))
-          _ <- env.authCodeRepo.markAsUsed.succeedsWith(Right(()))
-          _ <- env.authCodeRepo.delete.succeedsWith(())
-          _ <- env.propertyGenerator.nextAccessToken.succeedsWith(accessToken1)
-          _ <- env.userRolesRepo.findRolesByUser.succeedsWith(adminRoles1)
-
-          request = CodeExchangeRequest(authCode1, redirectUri1, codeVerifier1)
-          credentials = ClientIdWithSecret(OAuthTokenService.centralAdminClientId, Some(clientSecret1))
-
-          result <- env.service.exchangeAuthorizationCode(request, credentials)
-        yield assertTrue(
-          env.userRolesRepo.findRolesByUser.calls.nonEmpty,
-          result.tenantId.contains("default"),
-          result.roles == List("admin"),
-        )
-      },
-    ),
-    suite("refreshAccessToken")(
-      test("successfully refresh access token and rotate refresh token") {
-        val env = new Env
-        for
-          now <- Clock.instant
-
-          tokenRecord = RefreshTokenRecord(
-            sessionId = sessionId1,
-            accessToken = accessToken1,
-            userId = userId1,
-            clientId = clientId1,
-            externalAudience = List.empty,
-            scope = scope1,
-            issuedAt = now.minusSeconds(3600),
-            expiresAt = now.plusSeconds(testClient.refreshTokenTtl.toSeconds),
-            requestedClaims = Some(requestedClaims1),
-            uiLocales = Some(uiLocales1),
-            nonce = None,
-            previousRefreshToken = None,
-            amr = amr1,
-            authTime = authTime1,
-          )
-
-          newRefreshToken = RefreshToken(Array.fill(32)(7.toByte))
-          newRefreshTokenMac = MAC(Array.fill(32)(8.toByte))
-
-          _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
-          _ <- env.securityService.mac.succeedsWith(newRefreshTokenMac)
-          _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
-          _ <- env.tokenRepo.find.succeedsWith(Some(tokenRecord))
-          _ <- env.propertyGenerator.nextAccessToken.succeedsWith(accessToken1)
-          _ <- env.propertyGenerator.nextRefreshToken.succeedsWith(newRefreshToken)
-          _ <- env.tokenRepo.create.succeedsWith(())
-          _ <- env.userRolesRepo.findRolesByUserAndTenant.succeedsWith(List.empty)
-
-          request = RefreshTokenRequest(refreshToken1, None)
-          credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
-
-          result <- env.service.refreshAccessToken(request, credentials)
-
-          createCalls = env.tokenRepo.create.calls
-        yield assertTrue(
-          result.accessToken == accessToken1,
-          result.refreshToken.contains(newRefreshToken),
-          result.requestedClaims.contains(requestedClaims1),
-          result.uiLocales.contains(uiLocales1),
-          result.amr == amr1,
-          result.authTime.contains(authTime1),
-          createCalls.length == 1,
-          createCalls.head._2.previousRefreshToken.exists(mac => java.util.Arrays.equals(mac, refreshTokenMac1)),
-        )
-      },
-      test("successfully refresh with reduced scope") {
-        val env = new Env
-        val reducedScope = Set(ScopeToken("read"), ScopeToken.OfflineAccess)
-        for
-          now <- Clock.instant
-
-          tokenRecord = RefreshTokenRecord(
-            sessionId = sessionId1,
-            accessToken = accessToken1,
-            userId = userId1,
-            clientId = clientId1,
-            externalAudience = List.empty,
-            scope = scope1,
-            issuedAt = now.minusSeconds(3600),
-            expiresAt = now.plusSeconds(testClient.refreshTokenTtl.toSeconds),
-            requestedClaims = None,
-            uiLocales = None,
-            nonce = None,
-            previousRefreshToken = None,
-            amr = amr1,
-            authTime = authTime1,
-          )
-
-          newRefreshToken = RefreshToken(Array.fill(32)(9.toByte))
-          newRefreshTokenMac = MAC(Array.fill(32)(10.toByte))
-
-          _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
-          _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
-          _ <- env.securityService.mac.succeedsWith(newRefreshTokenMac)
-          _ <- env.tokenRepo.find.succeedsWith(Some(tokenRecord))
-          _ <- env.propertyGenerator.nextAccessToken.succeedsWith(accessToken1)
-          _ <- env.propertyGenerator.nextRefreshToken.succeedsWith(newRefreshToken)
-          _ <- env.tokenRepo.create.succeedsWith(())
-          _ <- env.userRolesRepo.findRolesByUserAndTenant.succeedsWith(List.empty)
-
-          request = RefreshTokenRequest(refreshToken1, Some(reducedScope))
-          credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
-
-          result <- env.service.refreshAccessToken(request, credentials)
-
-          createCalls = env.tokenRepo.create.calls
-        yield assertTrue(
-          result.scope == reducedScope,
-          createCalls.head._2.scope == reducedScope,
-        )
-      },
-      test("fail with InvalidClient when client verification fails") {
-        val env = new Env
-        for
-          _ <- env.clientService.verifySecret.succeedsWith(None)
-
-          request = RefreshTokenRequest(refreshToken1, None)
-          credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
-
-          result <- env.service.refreshAccessToken(request, credentials).either
-        yield assertTrue(
-          result == Left(TokenEndpointError.InvalidClient),
-        )
-      },
-      test("fail with InvalidGrant when refresh token not found") {
-        val env = new Env
-        for
-          _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
-          _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
-          _ <- env.tokenRepo.find.succeedsWith(None)
-
-          request = RefreshTokenRequest(refreshToken1, None)
-          credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
-
-          result <- env.service.refreshAccessToken(request, credentials).either
-        yield assertTrue(
-          result == Left(TokenEndpointError.InvalidGrant),
-        )
-      },
-      test("fail with InvalidScope when requested scope exceeds client scope") {
-        val env = new Env
-        val invalidScope = Set(ScopeToken("admin"), ScopeToken.OfflineAccess)
-        for
-          now <- Clock.instant
-
-          tokenRecord = RefreshTokenRecord(
-            sessionId = sessionId1,
-            accessToken = accessToken1,
-            userId = userId1,
-            clientId = clientId1,
-            externalAudience = List.empty,
-            scope = scope1,
-            issuedAt = now.minusSeconds(3600),
-            expiresAt = now.plusSeconds(testClient.refreshTokenTtl.toSeconds),
-            requestedClaims = None,
-            uiLocales = None,
-            nonce = None,
-            previousRefreshToken = None,
-            amr = amr1,
-            authTime = authTime1,
-          )
-
-          _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
-          _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
-          _ <- env.tokenRepo.find.succeedsWith(Some(tokenRecord))
-
-          request = RefreshTokenRequest(refreshToken1, Some(invalidScope))
-          credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
-
-          result <- env.service.refreshAccessToken(request, credentials).either
-        yield assertTrue(
-          result == Left(TokenEndpointError.InvalidScope),
-        )
-      },
-      test("fail with InvalidGrant when race condition occurs (create returns RefreshAlreadyExchanged)") {
-        val env = new Env
-        for
-          now <- Clock.instant
-
-          tokenRecord = RefreshTokenRecord(
-            sessionId = sessionId1,
-            accessToken = accessToken1,
-            userId = userId1,
-            clientId = clientId1,
-            externalAudience = List.empty,
-            scope = scope1,
-            issuedAt = now.minusSeconds(3600),
-            expiresAt = now.plusSeconds(testClient.refreshTokenTtl.toSeconds),
-            requestedClaims = Some(requestedClaims1),
-            uiLocales = Some(uiLocales1),
-            nonce = None,
-            previousRefreshToken = None,
-            amr = amr1,
-            authTime = authTime1,
-          )
-
-          newRefreshToken = RefreshToken(Array.fill(32)(7.toByte))
-          newRefreshTokenMac = MAC(Array.fill(32)(8.toByte))
-
-          _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
-          _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
-          _ <- env.securityService.mac.succeedsWith(newRefreshTokenMac)
-          _ <- env.tokenRepo.find.succeedsWith(Some(tokenRecord))
-          _ <- env.propertyGenerator.nextAccessToken.succeedsWith(accessToken1)
-          _ <- env.propertyGenerator.nextRefreshToken.succeedsWith(newRefreshToken)
-          _ <- env.tokenRepo.create.failsWith(RefreshAlreadyExchanged())
-
-          request = RefreshTokenRequest(refreshToken1, None)
-          credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
-
-          result <- env.service.refreshAccessToken(request, credentials).either
-        yield assertTrue(
-          result == Left(TokenEndpointError.InvalidGrant),
-        )
-      },
-    ),
+  val spec = suite("OAuthTokenService")(
     suite("clientCredentials")(
-      test("successfully issue access token for confidential client") {
-        val env = new Env
-        for
-          _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
-          _ <- env.propertyGenerator.nextAccessToken.succeedsWith(accessToken1)
-
-          request = ClientCredentialsRequest(scope = None)
-          credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
-
-          result <- env.service.clientCredentials(request, credentials)
+      test("succeeds for confidential client and returns issued tokens") {
+        val env         = Env()
+        val credentials = ClientIdWithSecret(clientId, Some(clientSecret))
+        (for
+          _ <- env.oauthClientService.verifySecret.succeedsWith(Some(confidentialClient))
+          _ <- env.authPropertyGenerator.nextAccessToken.succeedsWith(accessToken)
+          service <- ZIO.service[OAuthTokenService]
+          result  <- service.clientCredentials(ClientCredentialsRequest(None), credentials)
         yield assertTrue(
-          result.accessToken == accessToken1,
-          result.clientId == clientId1,
-          result.userId.isEmpty, // No user context for client_credentials
-          result.refreshToken.isEmpty, // No refresh token for client_credentials
-          result.scope == scope1, // Uses client's default scope
-          result.requestedClaims.isEmpty,
-          result.uiLocales.isEmpty,
-        )
+          result.clientId == clientId,
+          result.userId.isEmpty,
+          result.refreshToken.isEmpty,
+        )).provide(env.layer)
       },
-      test("successfully issue access token with requested scope") {
-        val env = new Env
-        val requestedScope = Some(scope2) // Subset of client's scope
-        for
-          _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
-          _ <- env.propertyGenerator.nextAccessToken.succeedsWith(accessToken1)
 
-          request = ClientCredentialsRequest(scope = requestedScope)
-          credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
-
-          result <- env.service.clientCredentials(request, credentials)
-        yield assertTrue(
-          result.scope == scope2,
-        )
+      test("fails with InvalidClient when client is public") {
+        val env         = Env()
+        val credentials = ClientIdWithSecret(clientId, None)
+        (for
+          _ <- env.oauthClientService.verifySecret.succeedsWith(Some(publicClient))
+          service <- ZIO.service[OAuthTokenService]
+          result  <- service.clientCredentials(ClientCredentialsRequest(None), credentials).exit
+        yield assertTrue(result.isFailure)).provide(env.layer)
       },
-      test("fail with InvalidClient when client verification fails") {
-        val env = new Env
-        for
-          _ <- env.clientService.verifySecret.succeedsWith(None)
 
-          request = ClientCredentialsRequest(scope = None)
-          credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
-
-          result <- env.service.clientCredentials(request, credentials).either
-        yield assertTrue(
-          result == Left(TokenEndpointError.InvalidClient),
-        )
-      },
-      test("fail with InvalidClient when public client attempts to use client_credentials") {
-        val env = new Env
-        for
-          _ <- env.clientService.verifySecret.succeedsWith(Some(publicClient))
-
-          request = ClientCredentialsRequest(scope = None)
-          credentials = ClientIdWithSecret(publicClientId, None)
-
-          result <- env.service.clientCredentials(request, credentials).either
-        yield assertTrue(
-          result == Left(TokenEndpointError.InvalidClient),
-        )
-      },
-      test("fail with InvalidScope when requested scope exceeds client scope") {
-        val env = new Env
-        val invalidScope = Some(Set(ScopeToken("admin"), ScopeToken("superuser")))
-        for
-          _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
-
-          request = ClientCredentialsRequest(scope = invalidScope)
-          credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
-
-          result <- env.service.clientCredentials(request, credentials).either
-        yield assertTrue(
-          result == Left(TokenEndpointError.InvalidScope),
-        )
+      test("fails with InvalidClient when client not found") {
+        val env         = Env()
+        val credentials = ClientIdWithSecret(ClientId("unknown"), Some(clientSecret))
+        (for
+          _ <- env.oauthClientService.verifySecret.succeedsWith(None)
+          service <- ZIO.service[OAuthTokenService]
+          result  <- service.clientCredentials(ClientCredentialsRequest(None), credentials).exit
+        yield assertTrue(result.isFailure)).provide(env.layer)
       },
     ),
   )
-

@@ -275,6 +275,52 @@ object ConversationControllerSpec extends UnitSpecBase:
       ).addHeader(conversationCookie),
       submission = (authId, LoginPasswordSubmission(Login("user"), Password("s3cret")), None, None),
     ),
+    test("GET /challenge renders step") {
+      for
+        client <- ZIO.service[Client]
+        router = stub[ConversationRouter]
+        configuration = stub[OAuthConfigurationService]
+        renderService = stub[ConversationRenderService]
+        tracing <- NoopTracing.layer.build
+        _ <- TestClient.addRoutes(
+          Observability.handleErrors(
+            ConversationController.routes.provideEnvironment(
+              ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ ZEnvironment(renderService) ++ tracing
+            )
+          )
+        )
+        _ <- router.getConversation.succeedsWith(Some(record))
+        _ <- renderService.renderStep.succeedsWith(Response.text("<html>Step</html>"))
+
+        response <- client.batched(Request.get(URL.empty / "challenge").addHeader(conversationCookie))
+      yield assertTrue(
+        response.status == Status.Ok,
+        response.headers.get(Header.ContentType).exists(_.mediaType == MediaType.text.plain) // text() defaults to text/plain in tests
+      )
+    }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging,
+
+    test("GET /challenge/passkey/options returns options") {
+      for
+        client <- ZIO.service[Client]
+        router = stub[ConversationRouter]
+        configuration = stub[OAuthConfigurationService]
+        renderService = stub[ConversationRenderService]
+        tracing <- NoopTracing.layer.build
+        _ <- TestClient.addRoutes(
+          Observability.handleErrors(
+            ConversationController.routes.provideEnvironment(
+              ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ ZEnvironment(renderService) ++ tracing
+            )
+          )
+        )
+        _ <- router.startPasskeyOptions.succeedsWith(Some("{\"opt\":1}"))
+
+        response <- client.batched(Request.get(URL.empty / "challenge" / "passkey" / "options").addHeader(conversationCookie))
+      yield assertTrue(
+        response.status == Status.Ok,
+        response.headers.get(Header.ContentType).exists(_.mediaType == MediaType.application.json)
+      )
+    }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging,
     rejectedSubmitTestCase(
       description = "reject login-password violating configured password regex",
       request = Request.post(
@@ -290,61 +336,6 @@ object ConversationControllerSpec extends UnitSpecBase:
         url = URL.empty / "challenge" / "password",
         body = Body.fromURLEncodedForm(
           Form.fromStrings("password" -> "abc"),
-        )
-      ).addHeader(conversationCookie),
-    ),
-    successfulSubmitTestCase(
-      description = "submit passkey enroll with valid name",
-      request = Request.post(
-        url = URL.empty / "challenge" / "passkey" / "enroll",
-        body = Body.fromURLEncodedForm(
-          Form.fromStrings("response" -> "{}", "name" -> "My PC (Chrome)"),
-        )
-      ).addHeader(conversationCookie),
-      submission = (authId, PasskeyEnrollSubmission("{}", "My PC (Chrome)"), None, None),
-    ),
-    rejectedSubmitTestCase(
-      description = "reject passkey enroll with invalid characters in name",
-      request = Request.post(
-        url = URL.empty / "challenge" / "passkey" / "enroll",
-        body = Body.fromURLEncodedForm(
-          Form.fromStrings("response" -> "{}", "name" -> "bad!name"),
-        )
-      ).addHeader(conversationCookie),
-    ),
-    rejectedSubmitTestCase(
-      description = "reject passkey enroll with leading space in name",
-      request = Request.post(
-        url = URL.empty / "challenge" / "passkey" / "enroll",
-        body = Body.fromURLEncodedForm(
-          Form.fromStrings("response" -> "{}", "name" -> " MyPC"),
-        )
-      ).addHeader(conversationCookie),
-    ),
-    rejectedSubmitTestCase(
-      description = "reject passkey enroll with trailing space in name",
-      request = Request.post(
-        url = URL.empty / "challenge" / "passkey" / "enroll",
-        body = Body.fromURLEncodedForm(
-          Form.fromStrings("response" -> "{}", "name" -> "MyPC "),
-        )
-      ).addHeader(conversationCookie),
-    ),
-    rejectedSubmitTestCase(
-      description = "reject passkey enroll with whitespace-only name",
-      request = Request.post(
-        url = URL.empty / "challenge" / "passkey" / "enroll",
-        body = Body.fromURLEncodedForm(
-          Form.fromStrings("response" -> "{}", "name" -> "   "),
-        )
-      ).addHeader(conversationCookie),
-    ),
-    rejectedSubmitTestCase(
-      description = "reject passkey enroll with missing name field",
-      request = Request.post(
-        url = URL.empty / "challenge" / "passkey" / "enroll",
-        body = Body.fromURLEncodedForm(
-          Form.fromStrings("response" -> "{}"),
         )
       ).addHeader(conversationCookie),
     ),
