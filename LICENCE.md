@@ -1,12 +1,10 @@
 # Versola Community License v1.0
 
-Copyright © 2025-2026 Georgii Kovalev, operating as Individual Entrepreneur "Versola" (Republic of Kazakhstan).
-
-All rights reserved.
+Copyright © 2025–2026 Georgii Kovalev. All rights reserved.
 
 ## 1. Definitions
 
-**Licensor** means Georgii Kovalev, operating as Individual Entrepreneur "Versola", or any successor entity that acquires ownership of the Software.
+**Licensor** means Georgii Kovalev, the owner of the Software and the party granting this License, who may conduct business as Individual Entrepreneur "Versola", under the trade name "Versola", or through any successor legal entity.
 
 **Software** means the Versola software, including its source code, binaries, documentation, configuration files, examples, and any accompanying materials distributed under this License.
 
