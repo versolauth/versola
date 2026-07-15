@@ -45,7 +45,7 @@ The script first asks for the environment **Name** (default `local`):
 
 Build the Docker image locally:
 ```bash
-docker build -t versola-auth .
+docker build -t versola-auth -f docker/Dockerfile.auth .
 ```
 
 Run the Docker image (mount config file):
@@ -53,6 +53,12 @@ Run the Docker image (mount config file):
 docker run -p 8080:8080 -p 9345:9345 \
   -v $(pwd)/auth/dev/env.conf:/app/config/env.conf:ro \
   versola-auth
+```
+
+To build central or edge locally:
+```bash
+docker build -t versola-central -f docker/Dockerfile.central .
+docker build -t versola-edge -f docker/Dockerfile.edge .
 ```
 
 You can override the config path via `CONFIG_PATH` environment variable:
