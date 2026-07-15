@@ -1,697 +1,123 @@
 package versola.oauth.authorize
 
-import versola.oauth.authorize.model.{AuthorizeRequest, Error, Prompt, ResponseTypeEntry}
+import versola.auth.TestEnvConfig
+import versola.oauth.authorize.model.*
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{AuthFactor, AuthFactorType, AuthFlow, ClientId, OAuthClientRecord, PrimaryAuthFlow, PrimaryCredential, ScopeToken, TenantId}
+import versola.oauth.client.model.*
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, State}
-import versola.util.{Email, Phone, UnitSpecBase}
-import zio.http.{Request, URL}
+import versola.util.*
+import zio.*
+import zio.http.*
 import zio.prelude.NonEmptySet
 import zio.test.*
-import zio.*
 
 object AuthorizeRequestParserSpec extends UnitSpecBase:
 
-  val validClientId = ClientId("test-client")
-  val unknownClientId = ClientId("unknown-client")
-  val validRedirectUriString = "https://example.com/callback"
-  val validRedirectUri = URL.decode(validRedirectUriString).toOption.get
-  val invalidRedirectUri = "https://example.com/callback#fragment"
-  val relativeRedirectUri = "/callback"
-  val unregisteredRedirectUri = "https://other.com/callback"
-  val validCodeChallenge = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
-  val invalidCodeChallenge = "too-short"
-  val validScope = "read,write"
-  val validState = State("random-state")
+  private val clientId = ClientId("test-client")
+  private val redirectUri = URL.decode("https://example.com/callback").toOption.get
+  private val tenantId = TenantId("default")
 
-  val emailOtpFlow = AuthFlow(
-    primary = PrimaryAuthFlow(
-      credentials = List(PrimaryCredential.email),
-      inlinePassword = false,
-      factors = List(AuthFactor(`type` = AuthFactorType.otp, required = true)),
-    ),
-    passkey = None,
-    equivalents = Map.empty,
-  )
-
-  val phoneOtpFlow = AuthFlow(
-    primary = PrimaryAuthFlow(
-      credentials = List(PrimaryCredential.phone),
-      inlinePassword = false,
-      factors = List(AuthFactor(`type` = AuthFactorType.otp, required = true)),
-    ),
-    passkey = None,
-    equivalents = Map.empty,
-  )
-
-  val testClient = OAuthClientRecord(
-    id = validClientId,
-    tenantId = TenantId("default"),
+  private val clientRecord = OAuthClientRecord(
+    id = clientId,
+    tenantId = tenantId,
     clientName = "Test Client",
-    redirectUris = NonEmptySet(validRedirectUriString, "https://example.com/callback2"),
-    scope = Set(ScopeToken("read"), ScopeToken("write"), ScopeToken("admin")),
-    externalAudience = List.empty,
+    redirectUris = NonEmptySet("https://example.com/callback"),
+    scope = Set(ScopeToken("openid"), ScopeToken("profile"), ScopeToken("email")),
+    externalAudience = Nil,
     secret = None,
     previousSecret = None,
-    accessTokenTtl = 10.minutes,
-    refreshTokenTtl = 7776000.seconds,
+    accessTokenTtl = 1.hour,
+    refreshTokenTtl = 30.days,
     theme = "default",
-    authFlow = None,
+    authFlow = Some(AuthFlow.default.copy(primary = AuthFlow.default.primary.copy(credentials = List(PrimaryCredential.email, PrimaryCredential.phone)))),
     otpTemplateId = "default",
   )
 
-  val testClientWithEmailFlow = testClient.copy(authFlow = Some(emailOtpFlow))
-  val testClientWithPhoneFlow = testClient.copy(authFlow = Some(phoneOtpFlow))
-
   class Env:
-    val oauthClientService = stub[OAuthConfigurationService]
-    val parser = AuthorizeRequestParser.Impl(oauthClientService)
+    val configuration = stub[OAuthConfigurationService]
+    val parser = AuthorizeRequestParser.Impl(configuration)
 
-  def validRequest(
-      clientId: String = validClientId,
-      redirectUri: String = validRedirectUriString,
-      responseType: String = "code",
-      codeChallenge: String = validCodeChallenge,
-      codeChallengeMethod: Option[String] = Some("S256"),
-      scope: String = validScope,
-      state: Option[String] = Some("random-state"),
-      prompt: Option[String] = None,
-      loginHint: Option[String] = None,
-  ): Request =
-    val queryParams = Map(
-      "client_id" -> clientId,
-      "redirect_uri" -> redirectUri,
-      "response_type" -> responseType,
-      "code_challenge" -> codeChallenge,
-      "scope" -> scope,
-    ) ++
-      codeChallengeMethod.map(m => "code_challenge_method" -> m).toMap ++
-      state.map(s => "state" -> s).toMap ++
-      prompt.map(p => "prompt" -> p).toMap ++
-      loginHint.map(h => "login_hint" -> h).toMap
-
-    Request.get(URL.root.addQueryParams(queryParams))
-
-  val spec = suite("AuthorizeRequestParser")(
-    successfulParsingTests,
-    redirectUriValidationTests,
-    clientValidationTests,
-    responseTypeValidationTests,
-    codeChallengeValidationTests,
-    scopeValidationTests,
-    multipleValuesTests,
-    promptParsingTests,
-    loginHintTests,
+  def validParams = Map(
+    "client_id" -> clientId.toString,
+    "redirect_uri" -> redirectUri.encode,
+    "response_type" -> "code",
+    "scope" -> "openid profile",
+    "state" -> "test-state",
+    "code_challenge" -> "a" * 43,
+    "code_challenge_method" -> "S256"
   )
 
-  def successfulParsingTests = suite("successful parsing")(
-    test("parse valid request with all parameters") {
-      val env = Env()
-      val request = validRequest()
-
-      for
-        _ <- env.oauthClientService.find.succeedsWith(Some(testClient))
-        result <- env.parser.parse(request)
-      yield assertTrue(
-        result.clientId == validClientId,
-        result.redirectUri == validRedirectUri,
-        result.responseType == NonEmptySet(ResponseTypeEntry.Code),
-        result.codeChallenge == CodeChallenge(validCodeChallenge),
-        result.codeChallengeMethod == CodeChallengeMethod.S256,
-        result.scope == Set(ScopeToken("read"), ScopeToken("write")),
-        result.state == Some(State("random-state")),
-      )
-    },
-    test("parse request with plain code challenge method") {
-      val env = Env()
-      val request = validRequest(codeChallengeMethod = Some("plain"))
-
-      for
-        _ <- env.oauthClientService.find.succeedsWith(Some(testClient))
-        result <- env.parser.parse(request)
-      yield assertTrue(
-        result.codeChallengeMethod == CodeChallengeMethod.Plain,
-      )
-    },
-    test("parse request without code_challenge_method (defaults to plain)") {
-      val env = Env()
-      val request = validRequest(codeChallengeMethod = None)
-
-      for
-        _ <- env.oauthClientService.find.succeedsWith(Some(testClient))
-        result <- env.parser.parse(request)
-      yield assertTrue(
-        result.codeChallengeMethod == CodeChallengeMethod.Plain,
-      )
-    },
-    test("parse request without state parameter") {
-      val env = Env()
-      val request = validRequest(state = None)
-
-      for
-        _ <- env.oauthClientService.find.succeedsWith(Some(testClient))
-        result <- env.parser.parse(request)
-      yield assertTrue(
-        result.state.isEmpty,
-      )
-    },
-    test("parse request with 'code id_token' response type") {
-      val env = Env()
-      val request = validRequest(responseType = "code id_token")
-
-      for
-        _ <- env.oauthClientService.find.succeedsWith(Some(testClient))
-        result <- env.parser.parse(request)
-      yield assertTrue(
-        result.responseType == NonEmptySet(ResponseTypeEntry.Code, ResponseTypeEntry.IdToken),
-      )
-    },
-  )
-
-  def redirectUriValidationTests = suite("redirect_uri validation")(
-    test("fail when redirect_uri is missing") {
-      val env = Env()
-      val queryParams = Map(
-        "client_id" -> validClientId.toString,
-        "response_type" -> "code",
-        "code_challenge" -> validCodeChallenge,
-        "code_challenge_method" -> "S256",
-        "scope" -> validScope,
-        "state" -> "random-state",
-      )
-      val request = Request.get(URL.root.addQueryParams(queryParams))
-
-      for
-        result <- env.parser.parse(request).either
-      yield assertTrue(
-        result == Left(Error.BadRequest),
-      )
-    },
-    test("fail when redirect_uri is relative") {
-      val env = Env()
-      val request = validRequest(redirectUri = relativeRedirectUri)
-
-      for
-        result <- env.parser.parse(request).either
-      yield assertTrue(
-        result == Left(Error.BadRequest),
-      )
-    },
-    test("fail when redirect_uri contains fragment") {
-      val env = Env()
-      val request = validRequest(redirectUri = invalidRedirectUri)
-
-      for
-        result <- env.parser.parse(request).either
-      yield assertTrue(
-        result == Left(Error.BadRequest),
-      )
-    },
-    test("fail when redirect_uri is not registered for client") {
-      val env = Env()
-      val request = validRequest(redirectUri = unregisteredRedirectUri)
-
-      for
-        _ <- env.oauthClientService.find.succeedsWith(Some(testClient))
-        result <- env.parser.parse(request).either
-      yield assertTrue(
-        result == Left(Error.BadRequest),
-      )
-    },
-  )
-
-  def clientValidationTests = suite("client_id validation")(
-    test("fail when client_id is missing") {
-      val env = Env()
-      val queryParams = Map(
-        "redirect_uri" -> validRedirectUriString,
-        "response_type" -> "code",
-        "code_challenge" -> validCodeChallenge,
-        "code_challenge_method" -> "S256",
-        "scope" -> validScope,
-        "state" -> "random-state",
-      )
-      val request = Request.get(URL.root.addQueryParams(queryParams))
-
-      for
-        result <- env.parser.parse(request).either
-      yield assertTrue(
-        result == Left(Error.BadRequest),
-      )
-    },
-    test("fail when client_id is unknown") {
-      val env = Env()
-      val request = validRequest(clientId = unknownClientId)
-
-      for
-        _ <- env.oauthClientService.find.succeedsWith(None)
-        result <- env.parser.parse(request).either
-      yield assertTrue(
-        result == Left(Error.BadRequest),
-      )
-    },
-  )
-
-  def responseTypeValidationTests = suite("response_type validation")(
-    test("fail when response_type is missing") {
-      val env = Env()
-      val queryParams = Map(
-        "client_id" -> validClientId.toString,
-        "redirect_uri" -> validRedirectUriString,
-        "code_challenge" -> validCodeChallenge,
-        "code_challenge_method" -> "S256",
-        "scope" -> validScope,
-        "state" -> "random-state",
-      )
-      val request = Request.get(URL.root.addQueryParams(queryParams))
-
-      for
-        _ <- env.oauthClientService.find.succeedsWith(Some(testClient))
-        result <- env.parser.parse(request).either
-      yield assertTrue(
-        result == Left(
-          Error.ResponseTypeMissing(
-            uri = validRedirectUri,
-            state = Some(validState),
-          ),
-        ),
-      )
-    },
-    test("fail when response_type is unsupported") {
-      val env = Env()
-      val request = validRequest(responseType = "token")
-
-      for
-        _ <- env.oauthClientService.find.succeedsWith(Some(testClient))
-        result <- env.parser.parse(request).either
-      yield assertTrue(
-        result == Left(
-          Error.UnsupportedResponseType(
-            uri = validRedirectUri,
-            state = Some(validState),
-            responseType = "token",
-          ),
-        ),
-      )
-    },
-  )
-
-  def codeChallengeValidationTests = suite("code_challenge validation")(
-    test("fail when code_challenge is missing") {
-      val env = Env()
-      val queryParams = Map(
-        "client_id" -> validClientId.toString,
-        "redirect_uri" -> validRedirectUriString,
-        "response_type" -> "code",
-        "code_challenge_method" -> "S256",
-        "scope" -> validScope,
-        "state" -> "random-state",
-      )
-      val request = Request.get(URL.root.addQueryParams(queryParams))
-
-      for
-        _ <- env.oauthClientService.find.succeedsWith(Some(testClient))
-        result <- env.parser.parse(request).either
-      yield assertTrue(
-        result == Left(
-          Error.CodeChallengeMissing(
-            uri = validRedirectUri,
-            state = Some(validState),
-          ),
-        ),
-      )
-    },
-    test("fail when code_challenge is invalid (too short)") {
-      val env = Env()
-      val request = validRequest(codeChallenge = invalidCodeChallenge)
-
-      for
-        _ <- env.oauthClientService.find.succeedsWith(Some(testClient))
-        result <- env.parser.parse(request).either
-      yield assertTrue(
-        result == Left(
-          Error.CodeChallengeInvalid(
-            uri = validRedirectUri,
-            state = Some(validState),
-            value = invalidCodeChallenge,
-          ),
-        ),
-      )
-    },
-    test("fail when code_challenge_method is invalid") {
-      val env = Env()
-      val request = validRequest(codeChallengeMethod = Some("invalid"))
-
-      for
-        _ <- env.oauthClientService.find.succeedsWith(Some(testClient))
-        result <- env.parser.parse(request).either
-      yield assertTrue(
-        result == Left(
-          Error.CodeChallengeMethodInvalid(
-            uri = validRedirectUri,
-            state = Some(validState),
-            value = "invalid",
-          ),
-        ),
-      )
-    },
-  )
-
-  def scopeValidationTests = suite("scope validation")(
-    test("fail when scope is missing") {
-      val env = Env()
-      val queryParams = Map(
-        "client_id" -> validClientId.toString,
-        "redirect_uri" -> validRedirectUriString,
-        "response_type" -> "code",
-        "code_challenge" -> validCodeChallenge,
-        "code_challenge_method" -> "S256",
-        "state" -> "random-state",
-      )
-      val request = Request.get(URL.root.addQueryParams(queryParams))
-
-      for
-        _ <- env.oauthClientService.find.succeedsWith(Some(testClient))
-        result <- env.parser.parse(request).either
-      yield assertTrue(
-        result == Left(
-          Error.ScopeMissing(
-            uri = validRedirectUri,
-            state = Some(validState),
-          ),
-        ),
-      )
-    },
-    test("parse single scope") {
-      val env = Env()
-      val request = validRequest(scope = "read")
-
-      for
-        _ <- env.oauthClientService.find.succeedsWith(Some(testClient))
-        result <- env.parser.parse(request)
-      yield assertTrue(
-        result.scope == Set(ScopeToken("read")),
-      )
-    },
-    test("parse multiple scopes") {
-      val env = Env()
-      val request = validRequest(scope = "read,write,admin")
-
-      for
-        _ <- env.oauthClientService.find.succeedsWith(Some(testClient))
-        result <- env.parser.parse(request)
-      yield assertTrue(
-        result.scope == Set(ScopeToken("read"), ScopeToken("write"), ScopeToken("admin")),
-      )
-    },
-  )
-
-  def multipleValuesTests = suite("multiple values rejection")(
-    test("fail when client_id has multiple values") {
-      val env = Env()
-      val url = URL.root
-        .addQueryParam("client_id", "client1")
-        .addQueryParam("client_id", "client2")
-        .addQueryParam("redirect_uri", validRedirectUriString)
-        .addQueryParam("response_type", "code")
-        .addQueryParam("code_challenge", validCodeChallenge)
-        .addQueryParam("code_challenge_method", "S256")
-        .addQueryParam("scope", validScope)
-        .addQueryParam("state", "random-state")
-      val request = Request.get(url)
-
-      for
-        result <- env.parser.parse(request).either
-      yield assertTrue(
-        result == Left(Error.BadRequest),
-      )
-    },
-    test("fail when redirect_uri has multiple values") {
-      val env = Env()
-      val url = URL.root
-        .addQueryParam("client_id", validClientId.toString)
-        .addQueryParam("redirect_uri", "uri1")
-        .addQueryParam("redirect_uri", "uri2")
-        .addQueryParam("response_type", "code")
-        .addQueryParam("code_challenge", validCodeChallenge)
-        .addQueryParam("code_challenge_method", "S256")
-        .addQueryParam("scope", validScope)
-        .addQueryParam("state", "random-state")
-      val request = Request.get(url)
-
-      for
-        result <- env.parser.parse(request).either
-      yield assertTrue(
-        result == Left(Error.BadRequest),
-      )
-    },
-    test("fail when response_type has multiple values") {
-      val env = Env()
-      val url = URL.root
-        .addQueryParam("client_id", validClientId.toString)
-        .addQueryParam("redirect_uri", validRedirectUriString)
-        .addQueryParam("response_type", "code")
-        .addQueryParam("response_type", "token")
-        .addQueryParam("code_challenge", validCodeChallenge)
-        .addQueryParam("code_challenge_method", "S256")
-        .addQueryParam("scope", validScope)
-        .addQueryParam("state", "random-state")
-      val request = Request.get(url)
-
-      for
-        _ <- env.oauthClientService.find.succeedsWith(Some(testClient))
-        result <- env.parser.parse(request).either
-      yield assertTrue(
-        result == Left(
-          Error.MultipleValuesProvided(
-            uri = validRedirectUri,
-            state = Some(State("random-state")),
-            queryParamName = "response_type",
-          ),
-        ),
-      )
-    },
-    test("fail when code_challenge has multiple values") {
-      val env = Env()
-      val url = URL.root
-        .addQueryParam("client_id", validClientId.toString)
-        .addQueryParam("redirect_uri", validRedirectUriString)
-        .addQueryParam("response_type", "code")
-        .addQueryParam("code_challenge", "challenge1")
-        .addQueryParam("code_challenge", "challenge2")
-        .addQueryParam("code_challenge_method", "S256")
-        .addQueryParam("scope", validScope)
-        .addQueryParam("state", "random-state")
-      val request = Request.get(url)
-
-      for
-        _ <- env.oauthClientService.find.succeedsWith(Some(testClient))
-        result <- env.parser.parse(request).either
-      yield assertTrue(
-        result == Left(
-          Error.MultipleValuesProvided(
-            uri = validRedirectUri,
-            state = Some(State("random-state")),
-            queryParamName = "code_challenge",
-          ),
-        ),
-      )
-    },
-    test("fail when code_challenge_method has multiple values") {
-      val env = Env()
-      val url = URL.root
-        .addQueryParam("client_id", validClientId.toString)
-        .addQueryParam("redirect_uri", validRedirectUriString)
-        .addQueryParam("response_type", "code")
-        .addQueryParam("code_challenge", validCodeChallenge)
-        .addQueryParam("code_challenge_method", "S256")
-        .addQueryParam("code_challenge_method", "plain")
-        .addQueryParam("scope", validScope)
-        .addQueryParam("state", "random-state")
-      val request = Request.get(url)
-
-      for
-        _ <- env.oauthClientService.find.succeedsWith(Some(testClient))
-        result <- env.parser.parse(request).either
-      yield assertTrue(
-        result == Left(Error.MultipleValuesProvided(
-          uri = validRedirectUri,
-          state = Some(State("random-state")),
-          queryParamName = "code_challenge_method",
-        )),
-      )
-    },
-    test("fail when scope has multiple values") {
-      val env = Env()
-      val url = URL.root
-        .addQueryParam("client_id", validClientId.toString)
-        .addQueryParam("redirect_uri", validRedirectUriString)
-        .addQueryParam("response_type", "code")
-        .addQueryParam("code_challenge", validCodeChallenge)
-        .addQueryParam("code_challenge_method", "S256")
-        .addQueryParam("scope", "read")
-        .addQueryParam("scope", "write")
-        .addQueryParam("state", "random-state")
-      val request = Request.get(url)
-
-      for
-        _ <- env.oauthClientService.find.succeedsWith(Some(testClient))
-        result <- env.parser.parse(request).either
-      yield assertTrue(
-        result == Left(Error.MultipleValuesProvided(
-          uri = validRedirectUri,
-          state = Some(State("random-state")),
-          queryParamName = "scope",
-        )),
-      )
-    },
-    test("fail when state has multiple values") {
-      val env = Env()
-      val url = URL.root
-        .addQueryParam("client_id", validClientId.toString)
-        .addQueryParam("redirect_uri", validRedirectUriString)
-        .addQueryParam("response_type", "code")
-        .addQueryParam("code_challenge", validCodeChallenge)
-        .addQueryParam("code_challenge_method", "S256")
-        .addQueryParam("scope", validScope)
-        .addQueryParam("state", "state1")
-        .addQueryParam("state", "state2")
-      val request = Request.get(url)
-
-      for
-        _ <- env.oauthClientService.find.succeedsWith(Some(testClient))
-        result <- env.parser.parse(request).either
-      yield assertTrue(
-        result == Left(Error.MultipleValuesProvided(
-          uri = validRedirectUri,
-          state = None,
-          queryParamName = "state",
-        )),
-      )
-    },
-  )
-
-  def loginHintTests = suite("login_hint parsing")(
-    test("valid email hint on email-allowed flow returns Some(Left(email))") {
-      val env = Env()
-      for
-        _ <- env.oauthClientService.find.succeedsWith(Some(testClientWithEmailFlow))
-        result <- env.parser.parse(validRequest(loginHint = Some("user@example.com")))
-      yield assertTrue(result.loginHint == Some(Left(Email("user@example.com"))))
-    },
-    test("valid phone hint on phone-allowed flow with empty prefix list returns Some(Right(phone))") {
-      val env = Env()
-      for
-        _ <- env.oauthClientService.find.succeedsWith(Some(testClientWithPhoneFlow))
-        _ <- env.oauthClientService.getAllowedPhonePrefixes.succeedsWith(List.empty)
-        result <- env.parser.parse(validRequest(loginHint = Some("+12025551234")))
-      yield assertTrue(result.loginHint == Some(Right(Phone("+12025551234"))))
-    },
-    test("valid phone hint on phone-allowed flow with matching prefix returns Some(Right(phone))") {
-      val env = Env()
-      for
-        _ <- env.oauthClientService.find.succeedsWith(Some(testClientWithPhoneFlow))
-        _ <- env.oauthClientService.getAllowedPhonePrefixes.succeedsWith(List("+1"))
-        result <- env.parser.parse(validRequest(loginHint = Some("+12025551234")))
-      yield assertTrue(result.loginHint == Some(Right(Phone("+12025551234"))))
-    },
-    test("valid email hint on phone-only flow fails with LoginHintInvalid") {
-      val env = Env()
-      for
-        _ <- env.oauthClientService.find.succeedsWith(Some(testClientWithPhoneFlow))
-        result <- env.parser.parse(validRequest(loginHint = Some("user@example.com"))).either
-      yield assertTrue(result == Left(Error.LoginHintInvalid(validRedirectUri, Some(validState))))
-    },
-    test("valid phone hint on email-only flow fails with LoginHintInvalid") {
-      val env = Env()
-      for
-        _ <- env.oauthClientService.find.succeedsWith(Some(testClientWithEmailFlow))
-        result <- env.parser.parse(validRequest(loginHint = Some("+12025551234"))).either
-      yield assertTrue(result == Left(Error.LoginHintInvalid(validRedirectUri, Some(validState))))
-    },
-    test("valid phone with disallowed prefix fails with LoginHintInvalid") {
-      val env = Env()
-      for
-        _ <- env.oauthClientService.find.succeedsWith(Some(testClientWithPhoneFlow))
-        _ <- env.oauthClientService.getAllowedPhonePrefixes.succeedsWith(List("+44"))
-        result <- env.parser.parse(validRequest(loginHint = Some("+12025551234"))).either
-      yield assertTrue(result == Left(Error.LoginHintInvalid(validRedirectUri, Some(validState))))
-    },
-    test("garbage value fails with LoginHintInvalid") {
-      val env = Env()
-      for
-        _ <- env.oauthClientService.find.succeedsWith(Some(testClientWithEmailFlow))
-        result <- env.parser.parse(validRequest(loginHint = Some("not-a-valid-hint"))).either
-      yield assertTrue(result == Left(Error.LoginHintInvalid(validRedirectUri, Some(validState))))
-    },
-    test("multiple login_hint values fails with MultipleValuesProvided") {
-      val env = Env()
-      val url = URL.root
-        .addQueryParam("client_id", validClientId.toString)
-        .addQueryParam("redirect_uri", validRedirectUriString)
-        .addQueryParam("response_type", "code")
-        .addQueryParam("code_challenge", validCodeChallenge)
-        .addQueryParam("code_challenge_method", "S256")
-        .addQueryParam("scope", validScope)
-        .addQueryParam("state", "random-state")
-        .addQueryParam("login_hint", "user@example.com")
-        .addQueryParam("login_hint", "other@example.com")
-      val request = Request.get(url)
-      for
-        _ <- env.oauthClientService.find.succeedsWith(Some(testClientWithEmailFlow))
-        result <- env.parser.parse(request).either
-      yield assertTrue(
-        result == Left(Error.MultipleValuesProvided(validRedirectUri, Some(validState), "login_hint")),
-      )
-    },
-    test("absent login_hint returns None") {
-      val env = Env()
-      for
-        _ <- env.oauthClientService.find.succeedsWith(Some(testClient))
-        result <- env.parser.parse(validRequest())
-      yield assertTrue(result.loginHint.isEmpty)
-    },
-  )
-
-  def promptParsingTests = suite("prompt parsing")(
-    test("defaults to empty set when prompt is absent") {
-      val env = Env()
-      for
-        _ <- env.oauthClientService.find.succeedsWith(Some(testClient))
-        result <- env.parser.parse(validRequest())
-      yield assertTrue(result.prompt == Set.empty[Prompt])
-    },
-    test("parses a single prompt value") {
-      val env = Env()
-      for
-        _ <- env.oauthClientService.find.succeedsWith(Some(testClient))
-        result <- env.parser.parse(validRequest(prompt = Some("none")))
-      yield assertTrue(result.prompt == Set(Prompt.none))
-    },
-    test("parses multiple space-delimited prompt values") {
-      val env = Env()
-      for
-        _ <- env.oauthClientService.find.succeedsWith(Some(testClient))
-        result <- env.parser.parse(validRequest(prompt = Some("login consent")))
-      yield assertTrue(result.prompt == Set(Prompt.login, Prompt.consent))
-    },
-    test("ignores unrecognized prompt values") {
-      val env = Env()
-      for
-        _ <- env.oauthClientService.find.succeedsWith(Some(testClient))
-        result <- env.parser.parse(validRequest(prompt = Some("foo")))
-      yield assertTrue(result.prompt == Set.empty[Prompt])
-    },
-    test("fails when none is combined with other prompt values") {
-      val env = Env()
-      for
-        _ <- env.oauthClientService.find.succeedsWith(Some(testClient))
-        result <- env.parser.parse(validRequest(prompt = Some("none login"))).either
-      yield assertTrue(
-        result == Left(Error.PromptInvalid(
-          uri = validRedirectUri,
-          state = Some(validState),
-        )),
-      )
-    },
+  def spec = suite("AuthorizeRequestParser")(
+    suite("parse GET")(
+      test("successfully parses valid request") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(validParams))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request)
+        yield
+          assertTrue(result.clientId == clientId) &&
+          assertTrue(result.redirectUri == redirectUri) &&
+          assertTrue(result.scope == Set(ScopeToken("openid"), ScopeToken("profile"))) &&
+          assertTrue(result.state.contains(State("test-state")))
+      },
+      test("fails when client_id is missing") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(validParams - "client_id"))
+        for
+          result <- env.parser.parse(request).either
+        yield
+          assertTrue(result == Left(Error.BadRequest))
+      },
+      test("fails when redirect_uri is not whitelisted") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(validParams ++ Map("redirect_uri" -> "https://attacker.com")))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request).either
+        yield
+          assertTrue(result == Left(Error.BadRequest))
+      },
+      test("successfully parses prompt parameter") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(validParams ++ Map("prompt" -> "login consent")))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request)
+        yield
+          assertTrue(result.prompt == Set(Prompt.login, Prompt.consent))
+      }
+    ),
+    suite("parse POST")(
+      test("successfully parses valid form-urlencoded request") {
+        val env = Env()
+        val request = Request.post(URL.root, Body.fromURLEncodedForm(Form.fromStrings(validParams.toSeq*)))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request)
+        yield
+          assertTrue(result.clientId == clientId)
+      }
+    ),
+    suite("login_hint")(
+      test("parses email login_hint") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(validParams ++ Map("login_hint" -> "user@example.com")))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request)
+        yield
+          assertTrue(result.loginHint == Some(Left(Email("user@example.com"))))
+      },
+      test("parses phone login_hint") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(validParams ++ Map("login_hint" -> "+12025551234")))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          _ <- env.configuration.getAllowedPhonePrefixes.succeedsWith(List("+1"))
+          result <- env.parser.parse(request)
+        yield
+          assertTrue(result.loginHint == Some(Right(Phone("+12025551234"))))
+      }
+    )
   )
