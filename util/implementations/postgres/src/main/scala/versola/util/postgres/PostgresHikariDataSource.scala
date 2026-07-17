@@ -98,6 +98,16 @@ object PostgresHikariDataSource:
         s"max-lifetime must be 0 (disabled) or >= 30 seconds, got ${postgres.maxLifetime}",
       Option.when(postgres.leakDetectionThreshold.toMillis < 0):
         s"leak-detection-threshold must be >= 0, got ${postgres.leakDetectionThreshold}",
+      Option.when(postgres.leakDetectionThreshold.toMillis > 0 && postgres.leakDetectionThreshold.toMillis < 2000):
+        s"leak-detection-threshold must be 0 (disabled) or >= 2 seconds, got ${postgres.leakDetectionThreshold} " +
+          "(HikariCP silently disables values in between instead of failing)",
+      Option.when(
+        postgres.leakDetectionThreshold.toMillis > 0 &&
+          postgres.maxLifetime.toMillis > 0 &&
+          postgres.leakDetectionThreshold.toMillis > postgres.maxLifetime.toMillis
+      ):
+        s"leak-detection-threshold (${postgres.leakDetectionThreshold}) must not exceed max-lifetime " +
+          s"(${postgres.maxLifetime}) when max-lifetime > 0 (HikariCP silently disables it otherwise)",
     ).flatten
 
     if errors.isEmpty then Right(())
