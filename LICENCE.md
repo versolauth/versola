@@ -8,15 +8,21 @@ Copyright © 2025–2026 Georgii Kovalev. All rights reserved.
 
 **Software** means the Versola software, including its source code, binaries, documentation, configuration files, examples, and any accompanying materials distributed under this License.
 
+**You** means the individual or Organization exercising rights under this License.
+
 **Organization** means any legal entity, including a corporation, partnership, government agency, educational institution, non-profit organization, or other business entity.
 
 **Employee** means any full-time employee, part-time employee, temporary employee, or contractor engaged by an Organization for more than ninety (90) consecutive days.
 
 **Employee Count** means the total number of Employees working for an Organization together with its parent companies, subsidiaries, and affiliated entities worldwide.
 
-**Internal Authentication** means authentication and authorization services used solely by an Organization for its own workforce, contractors, and internal systems. It does not include authentication services provided to third parties as a commercial offering.
+**Internal Authentication** means authentication and authorization services used exclusively by an Organization for the purpose of identifying and authorizing its own Employees and contractors to access the Organization's internal systems, applications, infrastructure, and resources.
+
+Internal Authentication expressly excludes authentication or authorization of customers, consumers, end users, members of the public, business partners, suppliers, or any other third parties accessing products or services provided by the Organization.
 
 **Production Use** means use of the Software as part of an operational authentication system supporting the day-to-day activities of an Organization.
+
+**Contribution** means any source code, documentation, tests, configuration, or other material intentionally submitted to the Licensor for inclusion in the Software.
 
 ---
 
@@ -24,19 +30,19 @@ Copyright © 2025–2026 Georgii Kovalev. All rights reserved.
 
 Subject to the terms of this License, the Licensor grants You a non-exclusive, non-transferable, revocable license to:
 
-* use the Software;
+* use, execute, compile, build, and modify the Software;
 * copy the Software;
-* modify the Software;
-* compile and build the Software;
-* deploy the Software within Your own Organization for Internal Authentication purposes.
+* deploy the Software within Your own Organization solely for Internal Authentication.
 
 No ownership of the Software is transferred under this License.
+
+No rights are granted by implication, estoppel, or otherwise beyond those expressly stated in this License.
 
 ---
 
 ## 3. Free Community Use
 
-Organizations with an Employee Count of fewer than **50 Employees** may use the Software free of charge for Production Use and Internal Authentication.
+Organizations with an Employee Count of fewer than **fifty (50) Employees** may use the Software free of charge solely for Internal Authentication.
 
 No registration or prior approval is required.
 
@@ -48,13 +54,13 @@ Any Organization, regardless of its Employee Count, may use the Software solely 
 
 Evaluation Use must not exceed **ninety (90) consecutive days**, unless otherwise agreed in writing by the Licensor.
 
-Production Use after the evaluation period requires compliance with Section 5.
+Any Production Use after the evaluation period requires compliance with Section 5.
 
 ---
 
 ## 5. Commercial License Requirement
 
-Organizations with an Employee Count of **50 or more Employees** must obtain a commercial license from the Licensor before using the Software in Production, unless the Licensor has expressly granted a written exception.
+Organizations with an Employee Count of **fifty (50) or more Employees** must obtain a commercial license from the Licensor before any Production Use of the Software, unless the Licensor has expressly granted a written exception.
 
 The Licensor may, at their sole discretion, grant free or discounted commercial licenses to educational institutions, non-profit organizations, open-source projects, strategic partners, or other organizations.
 
@@ -66,6 +72,8 @@ Commercial licensing terms, pricing, support, and additional rights are availabl
 
 Unless expressly permitted by this License or by a separate written agreement with the Licensor, You may not:
 
+* use the Software to authenticate or authorize customers, consumers, end users, members of the public, business partners, suppliers, or any other third parties;
+* provide authentication or identity management services to third parties;
 * provide the Software as a hosted, managed, or Software-as-a-Service authentication platform;
 * sublicense, sell, lease, rent, or commercially distribute the Software;
 * redistribute modified versions of the Software under another name or another license;
@@ -75,9 +83,9 @@ Unless expressly permitted by this License or by a separate written agreement wi
 
 ## 7. Contributions
 
-Unless explicitly agreed otherwise in writing, any contribution intentionally submitted for inclusion in the Software grants the Licensor a perpetual, worldwide, non-exclusive, royalty-free, irrevocable license to use, modify, distribute, sublicense, and commercially license that contribution as part of the Software.
+Unless explicitly agreed otherwise in writing, any Contribution intentionally submitted to the Licensor for inclusion in the Software grants the Licensor a perpetual, worldwide, non-exclusive, royalty-free, irrevocable license to use, modify, distribute, sublicense, and commercially license that Contribution as part of the Software.
 
-You represent that You have the legal right to submit such contributions.
+You represent and warrant that You have the legal right to submit such Contributions.
 
 ---
 
@@ -93,9 +101,9 @@ Nothing in this License grants any right to use the name "Versola" or any associ
 
 ## 9. Termination
 
-This License automatically terminates if You fail to comply with any provision of this License.
+This License automatically terminates without notice if You fail to comply with any provision of this License.
 
-Upon termination, You must immediately cease using the Software and destroy all copies in Your possession or control.
+Upon termination, You must immediately cease using the Software and destroy all copies of the Software in Your possession or control.
 
 Sections 7 through 12 shall survive termination.
 
@@ -113,7 +121,7 @@ YOU ASSUME ALL RISKS ARISING FROM THE USE OF THE SOFTWARE.
 
 TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, THE LICENSOR SHALL NOT BE LIABLE FOR ANY INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL, EXEMPLARY, OR PUNITIVE DAMAGES, OR FOR ANY LOSS OF PROFITS, REVENUE, DATA, GOODWILL, OR BUSINESS INTERRUPTION ARISING OUT OF OR RELATING TO THE SOFTWARE OR THIS LICENSE.
 
-THE LICENSOR'S TOTAL LIABILITY UNDER THIS LICENSE SHALL NOT EXCEED ONE HUNDRED (100) UNITED STATES DOLLARS.
+TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, THE LICENSOR'S TOTAL LIABILITY UNDER THIS LICENSE SHALL NOT EXCEED ONE HUNDRED (100) UNITED STATES DOLLARS.
 
 ---
 
@@ -136,3 +144,4 @@ Republic of Kazakhstan
 Email: [georgii.kovalev@versola.kz](mailto:georgii.kovalev@versola.kz)
 
 Website: https://versola.kz
+
