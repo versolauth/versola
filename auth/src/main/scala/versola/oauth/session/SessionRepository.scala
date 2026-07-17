@@ -23,7 +23,7 @@ trait SessionRepository:
       userId: UserId,
   ): Task[List[SessionRecord]]
 
-  /** Atomically expires all sessions and deletes all refresh tokens for the given user.
+  /** Atomically expires all sessions and refresh tokens for the given user.
    *  Intended for admin-panel use (e.g. force-logout). */
   def invalidateByUserId(
       userId: UserId,

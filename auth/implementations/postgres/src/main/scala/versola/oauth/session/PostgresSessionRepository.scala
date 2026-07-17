@@ -107,7 +107,7 @@ class PostgresSessionRepository(xa: TransactorZIO)
         """.query[SessionRecord].run().toList
     yield result
 
-  /** Atomically expires all sessions and deletes all refresh tokens for the given user. */
+  /** Atomically expires all sessions and refresh tokens for the given user. */
   override def invalidateByUserId(userId: UserId): Task[Unit] =
     Clock.instant.flatMap: now =>
       xa.transactMeasured("invalidate-sessions-by-user"):
@@ -117,7 +117,8 @@ class PostgresSessionRepository(xa: TransactorZIO)
           WHERE user_id = $userId
         """.update.run()
         sql"""
-          DELETE FROM refresh_tokens
+          UPDATE refresh_tokens
+          SET expires_at = $now
           WHERE user_id = $userId
         """.update.run()
         ()
