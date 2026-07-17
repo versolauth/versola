@@ -99,6 +99,7 @@ export interface ChallengeSettingsRecord {
   sessionTtlSeconds: number;
   sessionIdleTtlSeconds?: number | null;
   ipHeader: string;
+  acrVocabulary?: Record<string, string[]> | null;
 }
 
 // Global (non-tenant-scoped) password policy

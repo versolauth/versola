@@ -29,14 +29,14 @@ class PostgresResourceRepository(xa: TransactorZIO) extends ResourceRepository, 
 
   private def findResourceQuery(resourceId: ResourceId) =
     sql"""
-      SELECT tenant_id, alias AS resource_id, resource, endpoints FROM resources
-      WHERE alias = $resourceId
+      SELECT tenant_id, resource_id, resource, endpoints FROM resources
+      WHERE resource_id = $resourceId
     """.query[ResourceRecord]
 
   override def getAll: Task[Vector[ResourceRecord]] =
     xa.connectMeasured("get-all-resources"):
       sql"""
-        SELECT tenant_id, alias AS resource_id, resource, endpoints FROM resources
+        SELECT tenant_id, resource_id, resource, endpoints FROM resources
       """.query[ResourceRecord].run()
 
   override def findResource(
@@ -53,8 +53,8 @@ class PostgresResourceRepository(xa: TransactorZIO) extends ResourceRepository, 
   ): Task[Unit] =
     xa.connectMeasured("create-resource"):
       sql"""
-        INSERT INTO resources (tenant_id, alias, resource, endpoints)
-        VALUES ($tenantId, $resourceId, $resource, $endpoints)
+        INSERT INTO resources (resource_id, tenant_id, resource, endpoints)
+        VALUES ($resourceId, $tenantId, $resource, $endpoints)
       """.update.run()
     .unit
 
@@ -78,7 +78,7 @@ class PostgresResourceRepository(xa: TransactorZIO) extends ResourceRepository, 
             SET
               resource = ${resourcePatch.getOrElse(resource.resource)},
               endpoints = $newEndpoints::jsonb[]
-            WHERE alias = $resourceId
+            WHERE resource_id = $resourceId
           """.update.run()
     .unit
 
@@ -86,7 +86,7 @@ class PostgresResourceRepository(xa: TransactorZIO) extends ResourceRepository, 
       resourceId: ResourceId,
   ): Task[Unit] =
     xa.connectMeasured("delete-resource"):
-      sql"""DELETE FROM resources WHERE alias = $resourceId""".update.run()
+      sql"""DELETE FROM resources WHERE resource_id = $resourceId""".update.run()
     .unit
 
 object PostgresResourceRepository:

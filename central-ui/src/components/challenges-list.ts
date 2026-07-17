@@ -83,6 +83,8 @@ export class VersolaChallengesList extends LitElement {
   @state() private editPasskeyRpName = '';
   @state() private editPasskeyOrigins: Array<{ value: string }> = [];
   @state() private editPasskeyUserVerification = 'preferred';
+  @state() private acrVocabulary: Record<string, string[]> = {};
+  @state() private editAcrVocabulary: Array<{ acr: string; factors: string[] }> = [];
 
   static styles = [
     theme,
@@ -378,6 +380,7 @@ export class VersolaChallengesList extends LitElement {
         this.authConversationTtlSeconds = challengeSettings.authConversationTtlSeconds;
         this.sessionTtlSeconds = challengeSettings.sessionTtlSeconds;
         this.sessionIdleTtlSeconds = challengeSettings.sessionIdleTtlSeconds ?? null;
+        this.acrVocabulary = challengeSettings.acrVocabulary ?? {};
         this.ipHeader = challengeSettings.ipHeader || 'X-Real-IP';
       } else {
         this.phonePrefixes = [];
@@ -388,6 +391,7 @@ export class VersolaChallengesList extends LitElement {
         this.authConversationTtlSeconds = 900;
         this.sessionTtlSeconds = 86400;
         this.sessionIdleTtlSeconds = null;
+        this.acrVocabulary = {};
         this.ipHeader = 'X-Real-IP';
       }
     } catch (e) {
@@ -530,6 +534,8 @@ export class VersolaChallengesList extends LitElement {
     this.editPasskeyRpName = this.passkeySettings?.rpName ?? '';
     this.editPasskeyOrigins = (this.passkeySettings?.origins ?? []).map(value => ({ value }));
     this.editPasskeyUserVerification = this.passkeySettings?.userVerification ?? 'preferred';
+    this.editAcrVocabulary = Object.entries(this.acrVocabulary)
+      .map(([acr, factors]) => ({ acr, factors: [...factors] }));
     this.settingsError = '';
   }
 
@@ -552,6 +558,14 @@ export class VersolaChallengesList extends LitElement {
 
   private removePasskeyOrigin(index: number) {
     this.editPasskeyOrigins = this.editPasskeyOrigins.filter((_, i) => i !== index);
+  }
+
+  private addAcrRow() {
+    this.editAcrVocabulary = [...this.editAcrVocabulary, { acr: '', factors: [] }];
+  }
+
+  private removeAcrRow(index: number) {
+    this.editAcrVocabulary = this.editAcrVocabulary.filter((_, i) => i !== index);
   }
 
   private addRateLimit(type: 'otpRequest' | 'otpSubmit' | 'passwordSubmit' | 'passkeyAssertion') {
@@ -596,6 +610,11 @@ export class VersolaChallengesList extends LitElement {
 
     this.isSavingSettings = true;
     this.settingsError = '';
+    const acrVocabulary = Object.fromEntries(
+      this.editAcrVocabulary
+        .filter(row => row.acr.trim() && row.factors.length > 0)
+        .map(row => [row.acr.trim(), row.factors]),
+    );
     try {
       await upsertChallengeSettings(
         this.tenantId,
@@ -608,6 +627,7 @@ export class VersolaChallengesList extends LitElement {
         this.editSessionTtlSeconds,
         this.editSessionIdleTtlSeconds,
         ipHeader,
+        acrVocabulary,
       );
       this.phonePrefixes = prefixes;
       this.submissionLimits = JSON.parse(JSON.stringify(this.editSubmissionLimits));
@@ -618,6 +638,7 @@ export class VersolaChallengesList extends LitElement {
       this.sessionIdleTtlSeconds = this.editSessionIdleTtlSeconds;
       this.ipHeader = ipHeader;
       this.passkeySettings = { ...passkeySettings, origins: [...passkeySettings.origins] };
+      this.acrVocabulary = acrVocabulary;
       this.hasChallengeSettings = true;
       this.editingSettings = false;
     } catch (e) {
@@ -680,6 +701,7 @@ export class VersolaChallengesList extends LitElement {
             </div>
           `;
         })}
+
         <div class="form-actions">
           <button class="btn btn-secondary" ?disabled=${this.saving} @click=${() => this.cancelEdit()}>Cancel</button>
           <button class="btn btn-primary" ?disabled=${this.saving} @click=${() => this.saveTemplate()}>
@@ -901,6 +923,24 @@ export class VersolaChallengesList extends LitElement {
             : html`<div class="hint">Passkeys are not configured for this tenant.</div>`}
         </div>
 
+        <div class="card" style="margin-bottom: var(--spacing-lg);">
+          <label>ACR Vocabulary</label>
+          ${Object.keys(this.acrVocabulary).length === 0
+            ? html`<div class="hint">No ACR vocabulary configured.</div>`
+            : html`
+              <div class="info-table">
+                ${Object.entries(this.acrVocabulary).map(([acr, factors]) => html`
+                  <div class="prop-row">
+                    <span class="prop-label prop-value" style="font-family: var(--font-mono);">${acr}</span>
+                    <div class="prefix-tags" style="margin-top: 0;">
+                      ${factors.map(f => html`<span class="prefix-tag">${f}</span>`)}
+                    </div>
+                  </div>
+                `)}
+              </div>
+            `}
+        </div>
+
         ${hasLimits || banDurationSeconds > 0 ? html`
           <div class="card">
             <div class="limits-card-header">
@@ -1001,8 +1041,6 @@ export class VersolaChallengesList extends LitElement {
           <span class="limit-hint">${this.editSessionIdleTtlSeconds != null ? this.formatDuration(this.editSessionIdleTtlSeconds) : 'Disabled'}</span>
         </div>
 
-        ${this.renderIpHeaderEdit()}
-
         <h3 style="margin-top: var(--spacing-xl); margin-bottom: var(--spacing-md);">Passkey (WebAuthn)</h3>
 
         <label>Relying Party ID</label>
@@ -1058,6 +1096,37 @@ export class VersolaChallengesList extends LitElement {
         ${this.renderEditLimitList('OTP Submit', 'otpSubmit')}
         ${this.renderEditLimitList('Password Submit', 'passwordSubmit')}
         ${this.renderEditLimitList('Passkey Assertion', 'passkeyAssertion')}
+
+        <h3 style="margin-top: var(--spacing-xl); margin-bottom: var(--spacing-md);">ACR Vocabulary</h3>
+        <div class="hint">Map ACR names to the authentication factors they require. Clients can request a specific ACR via the <code>acr_values</code> parameter.</div>
+
+        ${this.editAcrVocabulary.map((row, i) => html`
+          <div class="edit-loc-card" style="margin-bottom: var(--spacing-sm);">
+            <div class="locale-bar" style="align-items: flex-start; flex-wrap: wrap; gap: var(--spacing-md);">
+              <input type="text" class="form-control compact-input locale-select" .value=${row.acr}
+                placeholder="e.g. company_mfa"
+                @input=${(e: Event) => { row.acr = (e.target as HTMLInputElement).value; this.requestUpdate(); }} />
+              <div style="display: flex; gap: var(--spacing-lg); align-items: center; flex-wrap: wrap;">
+                ${(['otp', 'password', 'passkey'] as const).map(factor => html`
+                  <label style="display: flex; align-items: center; gap: var(--spacing-xs); font-size: 0.875rem; cursor: pointer;">
+                    <input type="checkbox"
+                      .checked=${row.factors.includes(factor)}
+                      @change=${(e: Event) => {
+                        const checked = (e.target as HTMLInputElement).checked;
+                        row.factors = checked
+                          ? [...row.factors, factor]
+                          : row.factors.filter(f => f !== factor);
+                        this.requestUpdate();
+                      }} />
+                    ${factor}
+                  </label>
+                `)}
+              </div>
+              <button class="icon-action danger" style="margin-left: auto;" @click=${() => this.removeAcrRow(i)} title="Remove">✕</button>
+            </div>
+          </div>
+        `)}
+        <button class="btn btn-secondary" @click=${() => this.addAcrRow()}>+ Add ACR</button>
 
         <div class="form-actions">
           <button class="btn btn-secondary" ?disabled=${this.isSavingSettings} @click=${() => this.cancelEditSettings()}>Cancel</button>

@@ -14,7 +14,7 @@ import versola.oauth.userinfo.UserInfoService
 import versola.user.UserRepository
 import versola.util.{AuthPropertyGenerator, Email, MAC, Phone, Secret, SecureRandom, SecurityService, UnitSpecBase}
 import zio.http.URL
-import zio.prelude.NonEmptySet
+import zio.prelude.{NonEmptyList, NonEmptySet}
 import zio.test.*
 
 import java.time.Instant
@@ -474,7 +474,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
         _ <- env.securityService.mac.succeedsWith(sessionMac)
         _ <- env.sessionRepository.find.succeedsWith(Some(session))
-        _ <- env.configurationService.getAcrVocabulary.succeedsWith(Map("otp" -> "otp"))
+        _ <- env.configurationService.getAcrVocabulary.succeedsWith(Map("otp" -> NonEmptyList(PassedAuthFactor.otp)))
         _ <- env.configurationService.getSessionIdleTtl.succeedsWith(Option.empty[zio.Duration])
         _ <- env.authPropertyGenerator.nextAuthorizationCode.succeedsWith(code)
         _ <- env.authPropertyGenerator.nextAccessToken.succeedsWith(accessToken)
@@ -493,7 +493,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         _ <- env.configurationService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
         _ <- env.securityService.mac.succeedsWith(sessionMac)
         _ <- env.sessionRepository.find.succeedsWith(Some(session))
-        _ <- env.configurationService.getAcrVocabulary.succeedsWith(Map("company_mfa" -> "mfa"))
+        _ <- env.configurationService.getAcrVocabulary.succeedsWith(Map("company_mfa" -> NonEmptyList(PassedAuthFactor.password, PassedAuthFactor.otp)))
         _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
         _ <- env.conversationRepository.create.succeedsWith(())
         result <- env.service.authorize(baseRequest.copy(sessionId = Some(rawSessionId), acrValues = Some(List("company_mfa"))))
@@ -510,7 +510,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
         _ <- env.securityService.mac.succeedsWith(sessionMac)
         _ <- env.sessionRepository.find.succeedsWith(Some(session))
-        _ <- env.configurationService.getAcrVocabulary.succeedsWith(Map("company_otp" -> "otp"))
+        _ <- env.configurationService.getAcrVocabulary.succeedsWith(Map("company_otp" -> NonEmptyList(PassedAuthFactor.otp)))
         _ <- env.configurationService.getSessionIdleTtl.succeedsWith(Option.empty[zio.Duration])
         _ <- env.authPropertyGenerator.nextAuthorizationCode.succeedsWith(code)
         _ <- env.authPropertyGenerator.nextAccessToken.succeedsWith(accessToken)
@@ -541,7 +541,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         _ <- env.configurationService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
         _ <- env.securityService.mac.succeedsWith(sessionMac)
         _ <- env.sessionRepository.find.succeedsWith(Some(session))
-        _ <- env.configurationService.getAcrVocabulary.succeedsWith(Map.empty)
+        _ <- env.configurationService.getAcrVocabulary.succeedsWith(Map("mfa" -> NonEmptyList(PassedAuthFactor.password, PassedAuthFactor.otp)))
         _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
         _ <- env.conversationRepository.create.succeedsWith(())
         result <- env.service.authorize(baseRequest.copy(sessionId = Some(rawSessionId), idTokenHint = Some(idTokenHintStr)))
