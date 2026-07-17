@@ -262,6 +262,11 @@ def writeFile(dir: File, name: String, content: String): Unit =
        |  url = "$authPgUrl"
        |  user = "$authPgUser"
        |  password = "$authPgPass"
+       |  maximum-pool-size = 10
+       |  minimum-idle = 10
+       |  connection-timeout = "30 seconds"
+       |  max-lifetime = "30 minutes"
+       |  leak-detection-threshold = "60 seconds"
        |}
        |
        |cleanup {
@@ -350,6 +355,11 @@ def writeFile(dir: File, name: String, content: String): Unit =
        |  url = "$centralPgUrl"
        |  user = "$centralPgUser"
        |  password = "$centralPgPass"
+       |  maximum-pool-size = 15
+       |  minimum-idle = 15
+       |  connection-timeout = "30 seconds"
+       |  max-lifetime = "30 minutes"
+       |  leak-detection-threshold = "0 seconds"
        |}
        |""".stripMargin
 
@@ -378,6 +388,11 @@ def writeFile(dir: File, name: String, content: String): Unit =
        |  url = "$edgePgUrl"
        |  user = "$edgePgUser"
        |  password = "$edgePgPass"
+       |  maximum-pool-size = 10
+       |  minimum-idle = 10
+       |  connection-timeout = "30 seconds"
+       |  max-lifetime = "30 minutes"
+       |  leak-detection-threshold = "60 seconds"
        |}
        |
        |cleanup {

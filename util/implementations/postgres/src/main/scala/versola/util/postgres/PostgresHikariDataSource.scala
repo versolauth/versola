@@ -46,6 +46,13 @@ object PostgresHikariDataSource:
             config.setJdbcUrl(postgres.url)
             config.setUsername(postgres.user)
             config.setPassword(postgres.password)
+            config.setMaximumPoolSize(postgres.maximumPoolSize)
+            config.setMinimumIdle(postgres.minimumIdle)
+            config.setConnectionTimeout(postgres.connectionTimeout.toMillis)
+            config.setMaxLifetime(postgres.maxLifetime.toMillis)
+            config.setLeakDetectionThreshold(postgres.leakDetectionThreshold.toMillis)
+            // poolName aids diagnostics; taken from the caller-provided service name.
+            serviceName.foreach(config.setPoolName)
             config
           }
           _ <- ZIO.when(migrate):
