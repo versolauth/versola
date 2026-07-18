@@ -44,6 +44,41 @@ jobs:
       - name: Set up Scala CLI
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: VirtusLab/scala-cli-setup@v1
+      - name: Enforce measured DB access in production code
+        shell: bash
+        run: |
+          set -eo pipefail
+          # Fail the build if production code (src/main) uses the raw transactor methods
+          # xa.connect / xa.transact instead of the measured wrappers
+          # xa.connectMeasured / xa.transactMeasured, so every query is recorded in the
+          # db_client_operation_duration_seconds metric.
+          #
+          # - Scoped to the `xa.` receiver (every TransactorZIO is named `xa` in this codebase),
+          #   so unrelated APIs with a connect/transact method are not flagged.
+          # - POSIX character class instead of `\b` (a GNU-only extension) for portability.
+          # - BasicCodecs.scala (which defines the wrappers) is excluded via a git pathspec, so
+          #   there is no second grep in a pipe: the exit status is git grep's alone, and a real
+          #   git error is surfaced as a failure instead of being masked into a silent pass.
+          status=0
+          matches="$(git grep -nE '(^|[^[:alnum:]_])xa\.(connect|transact)[:(]' \
+            -- '**/src/main/**/*.scala' \
+            ':(exclude)util/implementations/postgres/src/main/scala/versola/util/postgres/BasicCodecs.scala')" \
+            || status=$?
+
+          # git grep exit codes: 0 = matches found, 1 = no matches, >1 = error.
+          if [ "$status" -gt 1 ]; then
+            echo "::error::'git grep' failed with exit code $status while checking DB access; failing the build instead of passing silently."
+            exit 1
+          fi
+
+          if [ -n "$matches" ]; then
+            printf '%s\n' "$matches"
+            echo "::error::Use xa.connectMeasured(...)/xa.transactMeasured(...) instead of raw xa.connect/xa.transact in production code (src/main)."
+            exit 1
+          fi
+
+          echo "OK: no unmeasured xa.connect/xa.transact found in src/main."
+
       - name: Compile
         run: sbt compile
 

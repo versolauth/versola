@@ -64,7 +64,7 @@ class PostgresUserRepository(
         .headOption
 
   override def findByLogin(login: Login): Task[Option[UserRecord]] =
-    xa.connect:
+    xa.connectMeasured("find-user-by-login"):
       sql"select id, email, phone, login, claims, ui_locales from users where login = $login"
         .query[UserRecord]
         .run()
