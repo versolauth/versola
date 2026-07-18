@@ -51,7 +51,7 @@ class PostgresChallengeThrottleRepository(xa: TransactorZIO) extends ChallengeTh
       subjects: List[String],
       challengeType: ChallengeType,
   ): Task[List[ChallengeThrottleRecord]] =
-    xa.connect:
+    xa.connectMeasured("find-all-challenge-throttle-for-subjects"):
       sql"""SELECT tenant_id, subject, challenge_type, attempts, banned_until, expires_at
             FROM challenge_throttle
             WHERE tenant_id = $tenantId AND subject = ANY($subjects) AND challenge_type = $challengeType"""

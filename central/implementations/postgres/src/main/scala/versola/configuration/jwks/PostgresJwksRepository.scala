@@ -13,14 +13,14 @@ class PostgresJwksRepository(xa: TransactorZIO) extends JwksRepository, BasicCod
   given DbCodec[JwksRecord] = DbCodec.derived
 
   override def getAll: Task[Vector[JwksRecord]] =
-    xa.connect:
+    xa.connectMeasured("get-all-jwks"):
       sql"""
         SELECT kid, jwk
         FROM jwks
       """.query[JwksRecord].run()
 
   override def find(kid: String): Task[Option[JwksRecord]] =
-    xa.connect:
+    xa.connectMeasured("find-jwks"):
       sql"""
         SELECT kid, jwk
         FROM jwks
@@ -28,7 +28,7 @@ class PostgresJwksRepository(xa: TransactorZIO) extends JwksRepository, BasicCod
       """.query[JwksRecord].run().headOption
 
   override def create(kid: String, jwk: Json.Obj): Task[Unit] =
-    xa.connect:
+    xa.connectMeasured("create-jwks"):
       sql"""
         INSERT INTO jwks (kid, jwk)
         VALUES ($kid, $jwk)
@@ -36,7 +36,7 @@ class PostgresJwksRepository(xa: TransactorZIO) extends JwksRepository, BasicCod
     .unit
 
   override def update(kid: String, jwk: Json.Obj): Task[Unit] =
-    xa.connect:
+    xa.connectMeasured("update-jwks"):
       sql"""
         UPDATE jwks
         SET jwk = $jwk
@@ -45,7 +45,7 @@ class PostgresJwksRepository(xa: TransactorZIO) extends JwksRepository, BasicCod
     .unit
 
   override def delete(kid: String): Task[Unit] =
-    xa.connect:
+    xa.connectMeasured("delete-jwks"):
       sql"""
         DELETE FROM jwks
         WHERE kid = $kid
