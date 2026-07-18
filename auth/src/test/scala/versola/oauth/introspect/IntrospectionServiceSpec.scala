@@ -6,7 +6,7 @@ import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{AuthMethodRef, ClientId, ClientIdWithSecret, OAuthClientRecord, ScopeToken, TenantId}
 import versola.oauth.introspect.model.{IntrospectionError, IntrospectionResponse}
 import versola.oauth.model.{AccessToken, AccessTokenPayload, RefreshToken}
-import versola.oauth.session.RefreshTokenRepository
+import versola.oauth.session.SessionRepository
 import versola.oauth.session.model.{RefreshTokenRecord, SessionId}
 import versola.user.model.UserId
 import versola.util.{CoreConfig, MAC, Secret, SecurityService, UnitSpecBase}
@@ -80,7 +80,7 @@ object IntrospectionServiceSpec extends UnitSpecBase:
 
   class Env:
     val oauthClientService = stub[OAuthConfigurationService]
-    val tokenRepository = stub[RefreshTokenRepository]
+    val tokenRepository = stub[SessionRepository]
     val securityService = stub[SecurityService]
     val config = TestEnvConfig.coreConfig
 
@@ -153,7 +153,7 @@ object IntrospectionServiceSpec extends UnitSpecBase:
 
           _ <- env.oauthClientService.verifySecret.succeedsWith(Some(testClient))
           _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
-          _ <- env.tokenRepository.find.succeedsWith(Some(record))
+          _ <- env.tokenRepository.findToken.succeedsWith(Some(record))
 
           service <- ZIO.service[IntrospectionService]
           result <- service.introspectRefreshToken(refreshToken1, credentials)
@@ -176,7 +176,7 @@ object IntrospectionServiceSpec extends UnitSpecBase:
 
           _ <- env.oauthClientService.verifySecret.succeedsWith(Some(testClient))
           _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
-          _ <- env.tokenRepository.find.succeedsWith(None)
+          _ <- env.tokenRepository.findToken.succeedsWith(None)
 
           service <- ZIO.service[IntrospectionService]
           result <- service.introspectRefreshToken(refreshToken1, credentials)
@@ -206,7 +206,7 @@ object IntrospectionServiceSpec extends UnitSpecBase:
 
           _ <- env.oauthClientService.verifySecret.succeedsWith(Some(otherClient))
           _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
-          _ <- env.tokenRepository.find.succeedsWith(Some(record))
+          _ <- env.tokenRepository.findToken.succeedsWith(Some(record))
 
           service <- ZIO.service[IntrospectionService]
           result <- service.introspectRefreshToken(refreshToken1, credentials).either
@@ -214,4 +214,3 @@ object IntrospectionServiceSpec extends UnitSpecBase:
       },
     ),
   )
-

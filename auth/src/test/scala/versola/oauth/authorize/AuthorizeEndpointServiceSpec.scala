@@ -183,7 +183,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
       for
         _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
         _ <- env.securityService.mac.succeedsWith(sessionMac)
-        _ <- env.sessionRepository.find.succeedsWith(Some(session))
+        _ <- env.sessionRepository.findSession.succeedsWith(Some(session))
         _ <- env.configurationService.getSessionIdleTtl.succeedsWith(Option.empty[zio.Duration])
         _ <- env.authPropertyGenerator.nextAuthorizationCode.succeedsWith(code)
         _ <- env.authPropertyGenerator.nextAccessToken.succeedsWith(accessToken)
@@ -210,7 +210,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
       for
         _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
         _ <- env.securityService.mac.succeedsWith(sessionMac)
-        _ <- env.sessionRepository.find.succeedsWith(Some(session))
+        _ <- env.sessionRepository.findSession.succeedsWith(Some(session))
         _ <- env.configurationService.getSessionIdleTtl.succeedsWith(Option.empty[zio.Duration])
         _ <- env.authPropertyGenerator.nextAuthorizationCode.succeedsWith(code)
         _ <- env.authPropertyGenerator.nextAccessToken.succeedsWith(accessToken)
@@ -231,7 +231,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
       for
         _ <- env.configurationService.find.succeedsWith(Some(clientWithEquivalents))
         _ <- env.securityService.mac.succeedsWith(sessionMac)
-        _ <- env.sessionRepository.find.succeedsWith(Some(session))
+        _ <- env.sessionRepository.findSession.succeedsWith(Some(session))
         _ <- env.configurationService.getSessionIdleTtl.succeedsWith(Option.empty[zio.Duration])
         _ <- env.authPropertyGenerator.nextAuthorizationCode.succeedsWith(code)
         _ <- env.authPropertyGenerator.nextAccessToken.succeedsWith(accessToken)
@@ -248,7 +248,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
         _ <- env.configurationService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
         _ <- env.securityService.mac.succeedsWith(sessionMac)
-        _ <- env.sessionRepository.find.succeedsWith(Some(session))
+        _ <- env.sessionRepository.findSession.succeedsWith(Some(session))
         _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
         _ <- env.conversationRepository.create.succeedsWith(())
         result <- env.service.authorize(baseRequest.copy(sessionId = Some(rawSessionId), prompt = Set(Prompt.login)))
@@ -265,7 +265,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
       for
         _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
         _ <- env.securityService.mac.succeedsWith(sessionMac)
-        _ <- env.sessionRepository.find.succeedsWith(Some(session))
+        _ <- env.sessionRepository.findSession.succeedsWith(Some(session))
         result <- env.service.authorize(baseRequest.copy(sessionId = Some(rawSessionId), prompt = Set(Prompt.none))).exit
       yield assertTrue(result.isFailure)
     },
@@ -278,7 +278,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
         _ <- env.configurationService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
         _ <- env.securityService.mac.succeedsWith(sessionMac)
-        _ <- env.sessionRepository.find.succeedsWith(Some(session))
+        _ <- env.sessionRepository.findSession.succeedsWith(Some(session))
         _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
         _ <- env.conversationRepository.create.succeedsWith(())
         result <- env.service.authorize(baseRequest.copy(sessionId = Some(rawSessionId)))

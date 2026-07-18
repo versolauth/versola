@@ -11,7 +11,7 @@ object PostgresRefreshTokenRepositorySpec extends PostgresSpec, RefreshTokenRepo
     ZLayer:
       for
         xa <- ZIO.service[TransactorZIO]
-      yield RefreshTokenRepositorySpec.Env(PostgresRefreshTokenRepository(xa))
+      yield RefreshTokenRepositorySpec.Env(PostgresSessionRepository(xa))
 
   override def beforeEach(env: RefreshTokenRepositorySpec.Env) =
     for
