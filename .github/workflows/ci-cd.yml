@@ -166,6 +166,17 @@ jobs:
         id: version
         run: echo "version=${{ github.event.release.tag_name }}" >> $GITHUB_OUTPUT
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.12'
+
+      - name: Build central admin forms
+        working-directory: central-ui
+        run: |
+          npm install
+          npm run build:forms
+
       - name: Build and push central image
         uses: docker/build-push-action@v6
         with:
