@@ -184,12 +184,11 @@ object JWT:
     keys: PublicKeys,
     typ: Type,
     validateExpiry: Boolean = true,
-    lenientTyp: Boolean = false,   // ← добавить
   ): IO[Error, A] =
     for
       now <- Clock.instant
       jwt <- ZIO.attempt(SignedJWT.parse(token)).orElseFail(Error.NotJWT)
-      _ <- if lenientTyp then verifyTypeLenient(jwt, typ) else verifyType(jwt, typ)  // ← изменить
+      _ <- verifyType(jwt, typ)
       _ <- verifySignature(jwt, keys)
       _ <- if validateExpiry then checkExpiration(jwt, now) else ZIO.unit
       result <- ZIO.fromEither(claimsToJson(jwt.getJWTClaimsSet).as[A]).orElseFail(Error.InvalidClaims)
@@ -236,14 +235,6 @@ object JWT:
       .someOrFail(Error.InvalidType)
       .filterOrFail(_ == expectedTyp.joseObjectType)(Error.InvalidType)
       .unit
-
-  private def verifyTypeLenient(jwt: SignedJWT, expectedTyp: Type): IO[Error, Unit] =
-    ZIO.attempt(Option(jwt.getHeader.getType))
-    .orElseFail(Error.InvalidType)
-    .flatMap {
-      case None      => ZIO.unit
-      case Some(typ) => ZIO.cond(typ == expectedTyp.joseObjectType, (), Error.InvalidType)
-    }
 
   private def verifySymmetricSignature(jwt: SignedJWT, key: SecretKey): IO[Error, Unit] =
     ZIO.attempt(jwt.verify(MACVerifier(key)))

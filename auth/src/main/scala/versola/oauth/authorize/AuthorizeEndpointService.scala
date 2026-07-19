@@ -260,7 +260,7 @@ object AuthorizeEndpointService:
         case None => ZIO.none
         case Some(token) =>
           jwksService.getPublicKeys.flatMap: keys =>
-            JWT.deserialize[HintClaims](token, keys, JWT.Type.JWT, validateExpiry = false, lenientTyp = true)
+            JWT.deserialize[HintClaims](token, keys, JWT.Type.JWT, validateExpiry = false)
               .mapError(_ => Error.IdTokenHintInvalid(request.redirectUri, request.state))
               .flatMap: claims =>
                 val audList = claims.aud match
