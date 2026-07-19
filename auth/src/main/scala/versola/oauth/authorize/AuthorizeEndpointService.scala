@@ -17,6 +17,8 @@ import versola.util.{AuthPropertyGenerator, Base64Url, CoreConfig, JWT, Secret, 
 import zio.json.{JsonDecoder, ast}
 import zio.json.ast.Json
 import zio.{Chunk, Clock, Task, ZIO, ZLayer, durationInt}
+import versola.user.model.UserId
+import java.util.UUID
 import zio.prelude.{NonEmptyList, NonEmptySet}
 
 trait AuthorizeEndpointService:
@@ -90,19 +92,19 @@ object AuthorizeEndpointService:
                         ZIO.fail(Error.LoginRequired(request.redirectUri, request.state))
                       else
                         val expectedSub = if request.prompt.contains(Prompt.login) then hintSub
-                                          else hintSub.orElse(Some(session.userId.toString))
+                                          else hintSub.orElse(Some(session.userId))
                         createConversation(request, flow, uiLocales, Map.empty, expectedSub)
                     else if !acrSatisfied then
                       if request.prompt.contains(Prompt.none) then
                         ZIO.fail(Error.LoginRequired(request.redirectUri, request.state))
                       else
                         // ACR step-up: передаём уже пройденные факторы, login hint не применяем
-                        createConversation(request, flow, uiLocales, session.amr, Some(session.userId.toString), applyHint = false)
+                        createConversation(request, flow, uiLocales, session.amr, Some(session.userId), applyHint = false)
                     else if !factorsSatisfied then
                       if request.prompt.contains(Prompt.none) then
                         ZIO.fail(Error.LoginRequired(request.redirectUri, request.state))
                       else
-                        createConversation(request, flow, uiLocales, session.amr, Some(session.userId.toString))
+                        createConversation(request, flow, uiLocales, session.amr, Some(session.userId))
                     else
                       silentAuthorize(request, uiLocales, session, sessionMac)
                   yield result
@@ -113,9 +115,9 @@ object AuthorizeEndpointService:
         request: AuthorizeRequest,
         session: SessionRecord,
         now: java.time.Instant,
-        hintSub: Option[String],
+        hintSub: Option[UserId],
     ): Boolean =
-      val hintMismatch  = hintSub.exists(_ != session.userId.toString)
+      val hintMismatch  = hintSub.exists(_ != session.userId)
       val sessionTooOld = request.maxAge.exists(maxAge =>
         maxAge >= 0 && session.createdAt.isBefore(now.minusSeconds(maxAge))
       )
@@ -135,7 +137,7 @@ object AuthorizeEndpointService:
         flow: AuthFlow,
         uiLocales: Option[List[String]],
         amr: Map[PassedAuthFactor, PassedFactorRecord],
-        expectedSub: Option[String],
+        expectedSub: Option[UserId],
         applyHint: Boolean = true,
     ): Task[AuthorizeResponse] =
       AuthId.wrapAll(secureRandom.nextUUIDv7).flatMap: authId =>
@@ -255,7 +257,7 @@ object AuthorizeEndpointService:
         )
       yield Some(token)
 
-    private def extractHintSub(request: AuthorizeRequest): Task[Option[String]] =
+    private def extractHintSub(request: AuthorizeRequest): Task[Option[UserId]] =
       request.idTokenHint match
         case None => ZIO.none
         case Some(token) =>
@@ -270,7 +272,9 @@ object AuthorizeEndpointService:
                   case _                  => List.empty
                 val audValid = audList.contains(request.clientId.toString)
                 val issValid = claims.iss.contains(config.jwt.issuer)
-                if audValid && issValid then ZIO.some(claims.sub)
+                if audValid && issValid then
+                  ZIO.attempt(UserId(UUID.fromString(claims.sub)))
+                    .mapBoth(_ => Error.IdTokenHintInvalid(request.redirectUri, request.state), Some(_))
                 else ZIO.fail(Error.IdTokenHintInvalid(request.redirectUri, request.state))
 
     /** Narrows the requested ui_locales to those configured in central, preserving the client's

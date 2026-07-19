@@ -478,7 +478,7 @@ object ConversationService:
       conversation.userId match
         case None =>
           accessDenied(authId, conversation)
-        case Some(userId) if conversation.expectedUserId.exists(_ != userId.toString) =>
+        case Some(userId) if conversation.expectedUserId.exists(_ != userId) =>
           accessDenied(authId, conversation)
         case Some(userId) =>
           for

@@ -404,7 +404,7 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
         val differentUser = UserId(UUID.randomUUID())
         val recordWithMismatch = baseRecord.copy(
           userId = Some(differentUser),
-          expectedUserId = Some(expectedUser.toString),
+          expectedUserId = Some(expectedUser),
         )
         for
           _ <- env.conversationRepository.overwrite.succeedsWith(true)

@@ -22,9 +22,6 @@ import java.util.UUID
 import com.nimbusds.jose.crypto.RSASSASigner
 import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm, JWSHeader}
 import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
-import com.nimbusds.jose.crypto.RSASSASigner
-import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm, JWSHeader}
-import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 
 object AuthorizeEndpointServiceSpec extends UnitSpecBase:
 
@@ -321,7 +318,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         result == AuthorizeResponse.Initialize(versola.oauth.conversation.model.AuthId(uuid)),
         createCalls.nonEmpty,
         createCalls.head._2.amr == passkeySeedAmr,
-        createCalls.head._2.expectedUserId == Some(session.userId.toString),
+        createCalls.head._2.expectedUserId == Some(session.userId),
       )
     },
     test("advance conversation to password step when login_hint email is provided on email+password flow") {
@@ -383,7 +380,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
       yield assertTrue(
         result == AuthorizeResponse.Initialize(versola.oauth.conversation.model.AuthId(uuid)),
         createCalls.nonEmpty,
-        createCalls.head._2.expectedUserId == Some(sessionUserId.toString),
+        createCalls.head._2.expectedUserId == Some(sessionUserId),
       )
     },
     test("fail with LoginRequired when max_age exceeded and prompt=none") {
@@ -448,7 +445,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
       yield assertTrue(
         result == AuthorizeResponse.Initialize(versola.oauth.conversation.model.AuthId(uuid)),
         createCalls.nonEmpty,
-        createCalls.head._2.expectedUserId == Some(session.userId.toString),
+        createCalls.head._2.expectedUserId == Some(session.userId),
       )
     },
     test("fail with LoginRequired when acr_values not satisfied and prompt=none") {
@@ -523,7 +520,8 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
       val env = Env()
       val uuid = UUID.randomUUID()
       val session = sessionWithAmr(Map(PassedAuthFactor.otp -> PassedFactorRecord(now, Set(AuthMethodRef.otp))))
-      val differentSub = UUID.randomUUID().toString
+      val differentUserId = versola.user.model.UserId(UUID.randomUUID())
+      val differentSub = differentUserId.toString
       val header = new JWSHeader.Builder(JWSAlgorithm.RS256)
         .keyID("test-key-id")
         .`type`(JOSEObjectType.JWT)
@@ -550,7 +548,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         result == AuthorizeResponse.Initialize(versola.oauth.conversation.model.AuthId(uuid)),
         createCalls.nonEmpty,
         createCalls.head._2.amr.isEmpty,
-        createCalls.head._2.expectedUserId == Some(differentSub),
+        createCalls.head._2.expectedUserId == Some(differentUserId),
       )
     },
     test("force re-authentication when all acr_values are unrecognized") {
@@ -572,9 +570,11 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
       val env = Env()
       val uuid = UUID.randomUUID()
       val session = sessionWithAmr(Map(PassedAuthFactor.otp -> PassedFactorRecord(now, Set(AuthMethodRef.otp))))
-      val differentSub = UUID.randomUUID().toString
+      val differentUserId = versola.user.model.UserId(UUID.randomUUID())
+      val differentSub = differentUserId.toString
       val header = new JWSHeader.Builder(JWSAlgorithm.RS256)
         .keyID("test-key-id")
+        .`type`(JOSEObjectType.JWT)
         .build()
       val claims = new JWTClaimsSet.Builder()
         .subject(differentSub)
