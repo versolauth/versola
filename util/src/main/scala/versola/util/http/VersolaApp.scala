@@ -55,22 +55,13 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
   def diagnosticsPort: Int =
     Option(java.lang.System.getenv("DPORT")).flatMap(_.toIntOption).getOrElse(8081)
 
-  /** Whether to run Flyway migrations on startup. Defaults to true (previous hardcoded
-    * behavior) so existing deployments are unaffected unless RUN_MIGRATIONS is set explicitly.
-    *
-    * An unset variable falls back to the default, but a *set-and-unparseable* value (e.g. "1",
-    * "yes", or a value with stray whitespace - toBooleanOption is case-insensitive but requires
-    * an exact "true"/"false" match otherwise) fails fast instead of silently defaulting to true -
-    * this flag exists specifically so migrations can be deliberately skipped before a deploy, and
-    * silently running them anyway on a misconfigured value would defeat that purpose.
-    */
   def runMigrations: Boolean =
     Option(java.lang.System.getenv("RUN_MIGRATIONS")) match
       case None        => true
       case Some(value) =>
         value.toBooleanOption.getOrElse:
           throw new IllegalArgumentException(
-            s"RUN_MIGRATIONS must be 'true' or 'false' (case-insensitive, no surrounding whitespace), got: '$value'",
+            s"RUN_MIGRATIONS must be 'true' or 'false', got: '$value'",
           )
 
   def serverConfig: Server.Config =
@@ -89,26 +80,27 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
       readinessService <- ReadinessService.make
       client <- ZIO.service[Client]
 
-      fibers <- for
-        ready <- Promise.make[Throwable, Int]
-        fibers <- {
-          for
-            port <- Server.install[MetricsService](serviceRoutes(readinessService))
-            _ <- ready.succeed(port)
-            _ <- ZIO.never
-          yield ()
-        }.provide(
-          Server.live,
-          prometheusMetricsService,
-          ZLayer.succeed(MetricsConfig(1.second)),
-          ZLayer.succeed(diagnosticsConfig),
-        ).onExit {
-          case Exit.Failure(cause) => ready.failCause(cause)
-          case _ => ZIO.unit
-        }.fork
-        port <- ready.await
-        _ <- ZIO.logInfo(s"Diagnostics server started on port $port")
-      yield fibers
+      fibers <-
+        for
+          ready <- Promise.make[Throwable, Int]
+          fibers <- {
+            for
+              port <- Server.install[MetricsService](serviceRoutes(readinessService))
+              _ <- ready.succeed(port)
+              _ <- ZIO.never
+            yield ()
+          }.provide(
+            Server.live,
+            prometheusMetricsService,
+            ZLayer.succeed(MetricsConfig(1.second)),
+            ZLayer.succeed(diagnosticsConfig),
+          ).onExit {
+            case Exit.Failure(cause) => ready.failCause(cause)
+            case _ => ZIO.unit
+          }.fork
+          port <- ready.await
+          _ <- ZIO.logInfo(s"Diagnostics server started on port $port")
+        yield fibers
 
       _ <- scope.addFinalizer(fibers.interrupt *> fibers.join.ignore)
 
