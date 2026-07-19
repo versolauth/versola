@@ -57,9 +57,21 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
 
   /** Whether to run Flyway migrations on startup. Defaults to true (previous hardcoded
     * behavior) so existing deployments are unaffected unless RUN_MIGRATIONS is set explicitly.
+    *
+    * An unset variable falls back to the default, but a *set-and-unparseable* value (e.g. "1",
+    * "yes", or a value with stray whitespace - toBooleanOption is case-insensitive but requires
+    * an exact "true"/"false" match otherwise) fails fast instead of silently defaulting to true -
+    * this flag exists specifically so migrations can be deliberately skipped before a deploy, and
+    * silently running them anyway on a misconfigured value would defeat that purpose.
     */
   def runMigrations: Boolean =
-    Option(java.lang.System.getenv("RUN_MIGRATIONS")).flatMap(_.toBooleanOption).getOrElse(true)
+    Option(java.lang.System.getenv("RUN_MIGRATIONS")) match
+      case None        => true
+      case Some(value) =>
+        value.toBooleanOption.getOrElse:
+          throw new IllegalArgumentException(
+            s"RUN_MIGRATIONS must be 'true' or 'false' (case-insensitive, no surrounding whitespace), got: '$value'",
+          )
 
   def serverConfig: Server.Config =
     Server.Config.default.port(port)
