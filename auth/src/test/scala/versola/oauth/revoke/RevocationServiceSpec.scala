@@ -6,7 +6,7 @@ import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{AuthMethodRef, ClientId, ClientIdWithSecret, OAuthClientRecord, ScopeToken, TenantId}
 import versola.oauth.model.{AccessToken, AccessTokenPayload, RefreshToken}
 import versola.oauth.revoke.model.RevocationError
-import versola.oauth.session.RefreshTokenRepository
+import versola.oauth.session.SessionRepository
 import versola.oauth.session.model.{RefreshTokenRecord, SessionId}
 import versola.user.model.UserId
 import versola.util.{CoreConfig, MAC, Secret, SecurityService, UnitSpecBase}
@@ -80,7 +80,7 @@ object RevocationServiceSpec extends UnitSpecBase:
 
   class Env:
     val oauthClientService = stub[OAuthConfigurationService]
-    val tokenRepository = stub[RefreshTokenRepository]
+    val tokenRepository = stub[SessionRepository]
     val accessTokenRevocationService = stub[AccessTokenRevocationService]
     val securityService = stub[SecurityService]
     val config = TestEnvConfig.coreConfig
@@ -101,7 +101,7 @@ object RevocationServiceSpec extends UnitSpecBase:
 
           _ <- env.oauthClientService.verifySecret.succeedsWith(Some(testClient))
           _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
-          _ <- env.tokenRepository.find.succeedsWith(Some(tokenRecord(now)))
+          _ <- env.tokenRepository.findToken.succeedsWith(Some(tokenRecord(now)))
           _ <- env.tokenRepository.delete.succeedsWith(())
           _ <- env.accessTokenRevocationService.revoke.succeedsWith(())
 
@@ -129,7 +129,7 @@ object RevocationServiceSpec extends UnitSpecBase:
 
           _ <- env.oauthClientService.verifySecret.succeedsWith(Some(otherClient))
           _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
-          _ <- env.tokenRepository.find.succeedsWith(Some(tokenRecord(now)))
+          _ <- env.tokenRepository.findToken.succeedsWith(Some(tokenRecord(now)))
 
           service <- ZIO.service[RevocationService]
           result <- service.revokeRefreshToken(refreshToken1, credentials).either
@@ -142,7 +142,7 @@ object RevocationServiceSpec extends UnitSpecBase:
 
           _ <- env.oauthClientService.verifySecret.succeedsWith(Some(testClient))
           _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
-          _ <- env.tokenRepository.find.succeedsWith(None)
+          _ <- env.tokenRepository.findToken.succeedsWith(None)
           _ <- env.tokenRepository.delete.succeedsWith(())
 
           service <- ZIO.service[RevocationService]
@@ -194,4 +194,3 @@ object RevocationServiceSpec extends UnitSpecBase:
       },
     ),
   )
-

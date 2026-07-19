@@ -3,7 +3,9 @@ package versola.oauth.session
 import com.augustnagro.magnum.magzio.TransactorZIO
 import com.augustnagro.magnum.sql
 import versola.util.postgres.PostgresSpec
-import zio.{ZIO, ZLayer}
+import zio.*
+import zio.test.*
+
 
 object PostgresSessionRepositorySpec extends PostgresSpec, SessionRepositorySpec:
 
@@ -17,5 +19,5 @@ object PostgresSessionRepositorySpec extends PostgresSpec, SessionRepositorySpec
     for
       xa <- ZIO.service[TransactorZIO]
       _ <- xa.connect(sql"TRUNCATE TABLE sso_sessions".update.run())
+      _ <- xa.connect(sql"TRUNCATE TABLE refresh_tokens".update.run())
     yield ()
-

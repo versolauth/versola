@@ -5,7 +5,7 @@ import versola.oauth.client.model.{ClientCredentials, ClientId, ClientIdWithSecr
 import versola.oauth.model.{AccessToken, AuthorizationCodeRecord, RefreshToken}
 import versola.oauth.revoke.AccessTokenRevocationService
 import versola.oauth.session.model.{RefreshAlreadyExchanged, RefreshTokenRecord, WithTtl}
-import versola.oauth.session.{RefreshTokenRepository, SessionRepository}
+import versola.oauth.session.SessionRepository
 import versola.oauth.token.model.{ClientCredentialsRequest, CodeExchangeRequest, IssuedTokens, RefreshTokenRequest, TokenEndpointError}
 import versola.user.{UserRepository, UserRolesRepository}
 import versola.util.{AuthPropertyGenerator, CoreConfig, MAC, Secret, SecurityService}
@@ -38,7 +38,7 @@ object OAuthTokenService:
   class Impl(
       authorizationCodeRepository: AuthorizationCodeRepository,
       oauthClientService: OAuthConfigurationService,
-      tokenRepository: RefreshTokenRepository,
+      sessionRepository: SessionRepository,
       accessTokenRevocationService: AccessTokenRevocationService,
       securityService: SecurityService,
       authPropertyGenerator: AuthPropertyGenerator,
@@ -69,7 +69,7 @@ object OAuthTokenService:
         _ <- authorizationCodeRepository.markAsUsed(codeMac).flatMap:
           case Left(at) =>
             accessTokenRevocationService.revoke(at) *>
-              tokenRepository.deleteByAccessToken(at)
+              sessionRepository.deleteByAccessToken(at)
 
           case Right(_) =>
             ZIO.unit
@@ -115,7 +115,7 @@ object OAuthTokenService:
 
         refreshTokenMac <- securityService.mac(Secret(refreshToken), config.security.refreshTokensSecret)
 
-        tokenRecord <- tokenRepository.find(refreshTokenMac)
+        tokenRecord <- sessionRepository.findToken(refreshTokenMac)
           .someOrFail(TokenEndpointError.InvalidGrant)
           .filterOrFail(_.clientId == client.id)(TokenEndpointError.InvalidGrant)
 
@@ -184,7 +184,7 @@ object OAuthTokenService:
           for
             token <- authPropertyGenerator.nextRefreshToken
             mac <- securityService.mac(Secret(token), config.security.refreshTokensSecret)
-            _ <- tokenRepository.create(mac, record)
+            _ <- sessionRepository.createRefreshToken(mac, record)
               .mapError:
                 case ex: Throwable => ex
                 case _ => TokenEndpointError.InvalidGrant

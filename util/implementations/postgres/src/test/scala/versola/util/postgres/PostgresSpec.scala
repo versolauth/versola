@@ -19,6 +19,11 @@ object PostgresSpec:
             url = s"jdbc:postgresql://$host/auth",
             user = "dev",
             password = "1234",
+            maximumPoolSize = 4,
+            minimumIdle = 1,
+            connectionTimeout = 30.seconds,
+            maxLifetime = 30.minutes,
+            leakDetectionThreshold = Duration.Zero,
           )
 
   val transactor =

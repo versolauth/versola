@@ -4,7 +4,7 @@ import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{ClientCredentials, ClientIdWithSecret, OAuthClientRecord}
 import versola.oauth.model.{AccessTokenPayload, RefreshToken}
 import versola.oauth.revoke.model.RevocationError
-import versola.oauth.session.RefreshTokenRepository
+import versola.oauth.session.SessionRepository
 import versola.util.{CoreConfig, Secret, SecurityService}
 import zio.{IO, Task, ZIO, ZLayer}
 
@@ -21,14 +21,14 @@ trait RevocationService:
 
 object RevocationService:
   def live: ZLayer[
-    OAuthConfigurationService & RefreshTokenRepository & AccessTokenRevocationService & SecurityService & CoreConfig,
+    OAuthConfigurationService & SessionRepository & AccessTokenRevocationService & SecurityService & CoreConfig,
     Nothing,
     RevocationService,
   ] = ZLayer.fromFunction(Impl(_, _, _, _, _))
 
   private class Impl(
                       oauthClientService: OAuthConfigurationService,
-                      tokenRepository: RefreshTokenRepository,
+                      sessionRepository: SessionRepository,
                       accessTokenRevocationService: AccessTokenRevocationService,
                       securityService: SecurityService,
                       config: CoreConfig,
@@ -41,7 +41,7 @@ object RevocationService:
       for
         client <- authenticateClient(credentials)
         tokenMac <- securityService.mac(Secret(token), config.security.refreshTokensSecret)
-        tokenRecord <- tokenRepository.find(tokenMac)
+        tokenRecord <- sessionRepository.findToken(tokenMac)
 
         _ <- ZIO.fail(RevocationError.InvalidClient)
           .when(tokenRecord.exists(_.clientId != client.id))
@@ -50,7 +50,7 @@ object RevocationService:
           case None =>
             ZIO.unit
           case Some(record) =>
-            tokenRepository.delete(tokenMac) *>
+            sessionRepository.delete(tokenMac) *>
               accessTokenRevocationService.revoke(record.accessToken)
       yield ()
 

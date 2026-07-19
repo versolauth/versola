@@ -156,3 +156,7 @@ object SyncEvent:
 
   enum Op:
     case INSERT, UPDATE, DELETE
+
+  object Op:
+    def fromString(s: String): Option[Op] =
+      Op.values.find(_.toString == s)

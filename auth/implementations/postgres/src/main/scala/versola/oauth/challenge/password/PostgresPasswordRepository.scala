@@ -26,7 +26,7 @@ class PostgresPasswordRepository(xa: TransactorZIO) extends PasswordRepository, 
         SELECT id, user_id, password, salt, created_at, expires_at
         FROM user_passwords
         WHERE user_id = $userId
-        ORDER BY created_at DESC
+        ORDER BY created_at DESC, id DESC
       """.query[PasswordRecord]
         .run()
 
@@ -45,7 +45,7 @@ class PostgresPasswordRepository(xa: TransactorZIO) extends PasswordRepository, 
           SELECT id, user_id, password, salt, created_at, expires_at
           FROM user_passwords
           WHERE user_id = $userId AND expires_at IS NULL
-          ORDER BY created_at DESC
+          ORDER BY created_at DESC, id DESC
         """.query[PasswordRecord].run()
 
         if permanents.take(numDifferent).exists(_.password === password) then
@@ -59,9 +59,10 @@ class PostgresPasswordRepository(xa: TransactorZIO) extends PasswordRepository, 
                 VALUES ($userId, $password, $salt, $now, NULL)
              """.update.run()
 
-          if permanents.size >= historySize then
-            sql"""DELETE FROM user_passwords WHERE id = ${permanents.last.id}
-               """.update.run()
+          val toDelete = permanents.drop(historySize - 1)
+          if toDelete.nonEmpty then
+            val ids = toDelete.map(_.id)
+            sql"""DELETE FROM user_passwords WHERE id = ANY($ids)""".update.run()
           Right(())
         }
       }.absolve

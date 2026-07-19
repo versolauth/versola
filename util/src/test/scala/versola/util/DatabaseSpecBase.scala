@@ -10,7 +10,8 @@ trait DatabaseSpecBase[E: Tag] extends ZIOStubs { self: ZIOSpec[TransactorZIO] =
   def environment: ZLayer[TransactorZIO & TestEnvironment & Scope, Throwable, E]
 
   override final val spec: Spec[TransactorZIO & TestEnvironment & Scope, Any] = {
-    suite(this.getClass.getSimpleName.stripSuffix("$"))(
+    val name = this.getClass.getSimpleName.stripSuffix("$")
+    suite(name)(
       ZIO.serviceWith[E] { env =>
         testCases(env).map(_ @@ TestAspect.before(beforeEach(env)))
       }

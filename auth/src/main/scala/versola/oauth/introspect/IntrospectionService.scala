@@ -4,7 +4,7 @@ import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{ClientCredentials, ClientIdWithSecret, OAuthClientRecord}
 import versola.oauth.introspect.model.{IntrospectionError, IntrospectionResponse}
 import versola.oauth.model.{AccessTokenPayload, RefreshToken}
-import versola.oauth.session.RefreshTokenRepository
+import versola.oauth.session.SessionRepository
 import versola.oauth.session.model.RefreshTokenRecord
 import versola.util.{CoreConfig, Secret, SecurityService}
 import zio.{IO, ZIO, ZLayer}
@@ -22,14 +22,14 @@ trait IntrospectionService:
 
 object IntrospectionService:
   def live: ZLayer[
-    OAuthConfigurationService & RefreshTokenRepository & SecurityService & CoreConfig,
+    OAuthConfigurationService & SessionRepository & SecurityService & CoreConfig,
     Nothing,
     IntrospectionService,
   ] = ZLayer.fromFunction(Impl(_, _, _, _))
 
   class Impl(
               oauthClientService: OAuthConfigurationService,
-              tokenRepository: RefreshTokenRepository,
+              sessionRepository: SessionRepository,
               securityService: SecurityService,
               config: CoreConfig,
   ) extends IntrospectionService:
@@ -68,7 +68,7 @@ object IntrospectionService:
       for
         client <- authenticateClient(credentials)
         tokenMac <- securityService.mac(Secret(token), config.security.refreshTokensSecret)
-        tokenRecord <- tokenRepository.find(tokenMac)
+        tokenRecord <- sessionRepository.findToken(tokenMac)
 
         _ <- ZIO.fail(IntrospectionError.Unauthenticated)
           .when(tokenRecord.exists(_.clientId != client.id))
