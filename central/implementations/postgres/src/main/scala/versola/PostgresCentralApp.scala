@@ -110,7 +110,7 @@ object PostgresCentralApp extends VersolaApp("central"):
     ).reduce(_ ++ _)
 
   private val repositories =
-    PostgresHikariDataSource.transactor(serviceName = Some("central"), migrate = true) >+>
+    PostgresHikariDataSource.transactor(serviceName = Some("central"), migrate = runMigrations) >+>
       SecureRandom.live >+> (
         PostgresTenantRepository.live >+>
           PostgresPermissionRepository.live >+>

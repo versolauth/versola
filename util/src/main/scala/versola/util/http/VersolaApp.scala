@@ -55,6 +55,12 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
   def diagnosticsPort: Int =
     Option(java.lang.System.getenv("DPORT")).flatMap(_.toIntOption).getOrElse(8081)
 
+  /** Whether to run Flyway migrations on startup. Defaults to true (previous hardcoded
+    * behavior) so existing deployments are unaffected unless RUN_MIGRATIONS is set explicitly.
+    */
+  def runMigrations: Boolean =
+    Option(java.lang.System.getenv("RUN_MIGRATIONS")).flatMap(_.toBooleanOption).getOrElse(true)
+
   def serverConfig: Server.Config =
     Server.Config.default.port(port)
 

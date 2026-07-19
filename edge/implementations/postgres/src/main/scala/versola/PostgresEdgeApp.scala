@@ -50,7 +50,7 @@ object PostgresEdgeApp extends VersolaApp("edge"):
 
   val dependencies: ZLayer[Scope & EnvName & ConfigProvider & Tracing & Client, Throwable, Dependencies] =
     parseConfig[EdgeConfig] >+>
-      (PostgresHikariDataSource.transactor(serviceName = Some("edge"), migrate = true) >>>
+      (PostgresHikariDataSource.transactor(serviceName = Some("edge"), migrate = runMigrations) >>>
         (ZLayer.fromFunction(PostgresLoginRepository(_)) ++
           ZLayer.fromFunction(PostgresEdgeRefreshTokenRepository(_)) ++
           PostgresCleanupManager.live)) >+>
