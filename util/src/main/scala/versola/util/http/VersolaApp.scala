@@ -55,6 +55,15 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
   def diagnosticsPort: Int =
     Option(java.lang.System.getenv("DPORT")).flatMap(_.toIntOption).getOrElse(8081)
 
+  def runMigrations: Boolean =
+    Option(java.lang.System.getenv("RUN_MIGRATIONS")) match
+      case None        => true
+      case Some(value) =>
+        value.toBooleanOption.getOrElse:
+          throw new IllegalArgumentException(
+            s"RUN_MIGRATIONS must be 'true' or 'false', got: '$value'",
+          )
+
   def serverConfig: Server.Config =
     Server.Config.default.port(port)
 
@@ -71,26 +80,27 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
       readinessService <- ReadinessService.make
       client <- ZIO.service[Client]
 
-      fibers <- for
-        ready <- Promise.make[Throwable, Int]
-        fibers <- {
-          for
-            port <- Server.install[MetricsService](serviceRoutes(readinessService))
-            _ <- ready.succeed(port)
-            _ <- ZIO.never
-          yield ()
-        }.provide(
-          Server.live,
-          prometheusMetricsService,
-          ZLayer.succeed(MetricsConfig(1.second)),
-          ZLayer.succeed(diagnosticsConfig),
-        ).onExit {
-          case Exit.Failure(cause) => ready.failCause(cause)
-          case _ => ZIO.unit
-        }.fork
-        port <- ready.await
-        _ <- ZIO.logInfo(s"Diagnostics server started on port $port")
-      yield fibers
+      fibers <-
+        for
+          ready <- Promise.make[Throwable, Int]
+          fibers <- {
+            for
+              port <- Server.install[MetricsService](serviceRoutes(readinessService))
+              _ <- ready.succeed(port)
+              _ <- ZIO.never
+            yield ()
+          }.provide(
+            Server.live,
+            prometheusMetricsService,
+            ZLayer.succeed(MetricsConfig(1.second)),
+            ZLayer.succeed(diagnosticsConfig),
+          ).onExit {
+            case Exit.Failure(cause) => ready.failCause(cause)
+            case _ => ZIO.unit
+          }.fork
+          port <- ready.await
+          _ <- ZIO.logInfo(s"Diagnostics server started on port $port")
+        yield fibers
 
       _ <- scope.addFinalizer(fibers.interrupt *> fibers.join.ignore)
 
