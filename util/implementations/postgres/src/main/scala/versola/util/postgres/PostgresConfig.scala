@@ -1,6 +1,8 @@
 package versola.util.postgres
 
+import versola.util.Secret
 import zio.Duration
+import zio.config.magnolia.DeriveConfig
 
 /** Configuration for the PostgreSQL HikariCP connection pool.
   *
@@ -13,7 +15,8 @@ import zio.Duration
   * @param user
   *   Database user
   * @param password
-  *   Database password
+  *   Database password. Wrapped in [[Secret]] (an opaque `Array[Byte]` newtype) so it
+  *   doesn't leak through `toString`/logging of the config object.
   * @param maximumPoolSize
   *   Maximum number of connections in the pool (HikariCP `maximumPoolSize`)
   * @param minimumIdle
@@ -34,10 +37,19 @@ import zio.Duration
 case class PostgresConfig(
     url: String,
     user: String,
-    password: String,
+    password: Secret,
     maximumPoolSize: Int,
     minimumIdle: Int,
     connectionTimeout: Duration,
     maxLifetime: Duration,
     leakDetectionThreshold: Duration,
 )
+
+/** The DB password is a plain string in HOCON (not base64), so it's decoded via
+  * `Secret.fromString` rather than the base64url decoders used elsewhere for other secrets.
+  *
+  * Declared top-level (not inside `object PostgresConfig`) so every file in this package —
+  * `PostgresHikariDataSource` and the test specs — picks it up via ordinary same-package
+  * visibility, without needing an explicit import.
+  */
+given DeriveConfig[Secret] = DeriveConfig[String].map(Secret.fromString)
