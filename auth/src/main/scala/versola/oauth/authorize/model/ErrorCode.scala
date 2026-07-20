@@ -13,4 +13,5 @@ object ErrorCode:
   val InvalidScope: ErrorCode = "invalid_scope"
   val LoginRequired: ErrorCode = "login_required"
   val AccessDenied: ErrorCode = "access_denied"
+  val UnmetAuthenticationRequirements: ErrorCode = "unmet_authentication_requirements"
 

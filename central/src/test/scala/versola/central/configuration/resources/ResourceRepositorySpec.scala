@@ -37,6 +37,8 @@ trait ResourceRepositorySpec extends DatabaseSpecBase[ResourceRepositorySpec.Env
     fetchUserInfo = fetchUserInfo,
     allowExpression = allow,
     inject = inject,
+    acrValues = None,
+    maxAge = None,
   )
 
   def resourceRecord(

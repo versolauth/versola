@@ -197,7 +197,19 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       yield assertTrue(
         response.status == Status.SeeOther,
         response.header(Header.Location).map(_.url).contains(authorizeUrl),
-        service.authorize.calls == List(PresetId("preset-1")),
+        service.authorize.calls == List((PresetId("preset-1"), Map.empty[String, String])),
+      )
+    },
+    test("passes whitelisted query params to authorize") {
+      val authorizeUrl = URL.decode("https://idp.example/authorize?client_id=web-app").toOption.get
+      for
+        (response, service, _) <- run(
+          Request.get(URL.decode("/login/preset-1?acr_values=mfa&prompt=login&unknown=ignored").toOption.get),
+          (s, _) => s.authorize.succeedsWith(authorizeUrl),
+        )
+      yield assertTrue(
+        response.status == Status.SeeOther,
+        service.authorize.calls == List((PresetId("preset-1"), Map("acr_values" -> "mfa", "prompt" -> "login"))),
       )
     },
     test("returns 404 when the preset is unknown") {

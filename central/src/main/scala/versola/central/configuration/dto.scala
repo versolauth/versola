@@ -120,6 +120,8 @@ case class ResourceEndpointResponse(
     fetchUserInfo: Boolean,
     allow: Option[String],
     inject: Vector[InjectRule],
+    acrValues: Option[String],
+    maxAge: Option[Int],
 ) derives Schema, JsonCodec
 
 case class GetAllResourcesResponse(
@@ -165,6 +167,8 @@ case class CreateResourceEndpointRequest(
     fetchUserInfo: Boolean,
     allow: Option[String],
     inject: Vector[InjectRule],
+    acrValues: Option[String],
+    maxAge: Option[Int],
 ) derives Schema, JsonCodec
 
 case class CreateRoleRequest(
@@ -359,6 +363,8 @@ case class ResourceEndpointSyncResponse(
     fetchUserInfo: Boolean,
     allow: Option[String],
     inject: Vector[InjectRule],
+    acrValues: Option[String],
+    maxAge: Option[Int],
 ) derives Schema, JsonCodec
 
 case class ResourceSyncResponse(

@@ -81,7 +81,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
     version = 1,
     amr = Map.empty,
     needsPasswordChange = false,
-    expectedUserId = None,
+    targetAcr = None,
   )
 
   class Env:

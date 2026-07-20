@@ -42,6 +42,7 @@ import scala.jdk.CollectionConverters.{MapHasAsJava, SeqHasAsJava}
 trait EdgeService:
   def authorize(
       presetId: PresetId,
+      overrideParams: Map[String, String] = Map.empty,
   ): IO[Throwable | PresetNotFound, URL]
 
   def complete(
@@ -108,10 +109,11 @@ object EdgeService:
 
     override def authorize(
         presetId: PresetId,
+        overrideParams: Map[String, String] = Map.empty,
     ): IO[Throwable | PresetNotFound, URL] =
-      clientService.findPreset(presetId).someOrFail(PresetNotFound()).flatMap(prepareAuthorizeUrl)
+      clientService.findPreset(presetId).someOrFail(PresetNotFound()).flatMap(prepareAuthorizeUrl(_, overrideParams))
 
-    private def prepareAuthorizeUrl(preset: AuthorizationPreset): zio.Task[URL] =
+    private def prepareAuthorizeUrl(preset: AuthorizationPreset, overrideParams: Map[String, String]): zio.Task[URL] =
       for
         codeVerifier <- secureRandom.nextBytes(32).map(CodeVerifier.fromBytes)
 
@@ -132,7 +134,7 @@ object EdgeService:
           ttl = loginTtl,
         )
 
-        authUrl <- ssoClient.authorizeUri(preset, codeChallenge, state)
+        authUrl <- ssoClient.authorizeUri(preset, codeChallenge, state, overrideParams)
       yield authUrl
 
     override def complete(
@@ -223,6 +225,16 @@ object EdgeService:
               .addHeader(Header.Location(uri))
               .addCookie(clear),
           )
+        case Outcome.InsufficientAuthentication(acrValues, maxAge) =>
+          val params = List(
+            Some("""error="insufficient_user_authentication""""),
+            acrValues.map(v => s"""acr_values="$v""""),
+            maxAge.map(v => s"""max_age="$v""""),
+          ).flatten.mkString(", ")
+          ZIO.succeed(
+            Response.status(Status.Unauthorized)
+              .addHeader(Header.Custom("WWW-Authenticate", s"Bearer $params")),
+          )
         case ex: Throwable => ZIO.fail(ex)
 
     private val centralResourceId = ResourceId("central")
@@ -269,6 +281,7 @@ object EdgeService:
         endpoint <- findEndpoint(resource.endpoints, request.method.name, restPath)
         parsedBody <- readJsonBody(request)
         typedClaims <- checkPermissions(resourceId, session.claims, endpoint, request, parsedBody)
+        _ <- checkStepUp(endpoint, typedClaims, now)
         userInfo <- ssoClient.userInfo(session.accessToken)
           .when(endpoint.fetchUserInfo)
           .someOrElse(Json.Obj())
@@ -324,6 +337,29 @@ object EdgeService:
         _ <- ZIO.fail(Outcome.Forbidden)
           .unless(allowed.contains(endpoint.id))
       yield typed
+
+    /** RFC 9470 §2: verify the token satisfies both the ACR and max_age requirements of the
+      * endpoint. Both checks are always evaluated so the resulting challenge includes every
+      * unmet requirement, letting the client fix them in a single re-authentication round.
+      *
+      * - ACR: the token's `acr` claim must match at least one value from the space-separated
+      *   `acrValues` list on the endpoint.
+      * - max_age: the `auth_time` claim must be present and no older than `maxAge` seconds.
+      */
+    private def checkStepUp(endpoint: ResourceEndpoint, claims: AccessTokenClaims, now: Instant): IO[Outcome, Unit] =
+      val acrFailed = endpoint.acrValues.exists { required =>
+        val requiredSet = required.split(' ').toSet
+        !claims.acr.exists(requiredSet.contains)
+      }
+      val maxAgeFailed = endpoint.maxAge.exists { maxAge =>
+        !claims.authTime.exists(authTime => now.getEpochSecond - authTime <= maxAge)
+      }
+      if acrFailed || maxAgeFailed then
+        ZIO.fail(Outcome.InsufficientAuthentication(
+          acrValues = Option.when(acrFailed)(endpoint.acrValues).flatten,
+          maxAge    = Option.when(maxAgeFailed)(endpoint.maxAge).flatten,
+        ))
+      else ZIO.unit
 
     private def checkRules(
         claims: Json.Obj,
@@ -560,3 +596,6 @@ object EdgeService:
     case NotFound
     case InternalServerError
     case Reauthenticate(loginUri: URL, clearCookie: Cookie.Response)
+    /** The token is valid but its authentication does not meet what this endpoint
+      * requires (RFC 9470 §2): ACR too low (`acrValues`) and/or too old (`maxAge`). */
+    case InsufficientAuthentication(acrValues: Option[String], maxAge: Option[Int])

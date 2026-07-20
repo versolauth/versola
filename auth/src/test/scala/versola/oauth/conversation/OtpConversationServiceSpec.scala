@@ -1,6 +1,7 @@
 package versola.oauth.conversation
 
 import versola.auth.TestEnvConfig
+import versola.oauth.authorize.AcrResolutionService
 import versola.oauth.challenge.passkey.{PasskeyRepository, WebAuthnService}
 import versola.auth.model.OtpCode
 import versola.oauth.challenge.password.PasswordService
@@ -64,6 +65,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
     val webAuthnService = stub[WebAuthnService]
     val passkeyRepository = stub[PasskeyRepository]
     val configService = stub[OAuthConfigurationService]
+    val acrResolver = stub[AcrResolutionService]
     val config = TestEnvConfig.coreConfig
     val service = ConversationService.Impl(
       otpService,
@@ -80,6 +82,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
       webAuthnService,
       passkeyRepository,
       configService,
+      acrResolver,
     )
 
   val initialConversation = ConversationRecord(
@@ -105,7 +108,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
     version = 0,
     amr = Map.empty,
     needsPasswordChange = false,
-    expectedUserId = None,
+    targetAcr = None,
   )
 
   val otpRecord = initialConversation.copy(
@@ -255,7 +258,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           version = 0,
           amr = Map.empty,
           needsPasswordChange = false,
-          expectedUserId = None,
+          targetAcr = None,
         )
         for
           _ <- env.submissionLimiter.isBanned.succeedsWith(LimitStatus.Allowed)
@@ -290,7 +293,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           version = 0,
           amr = Map.empty,
           needsPasswordChange = false,
-          expectedUserId = None,
+          targetAcr = None,
         )
         for
           _ <- env.submissionLimiter.isBanned.succeedsWith(LimitStatus.Banned)

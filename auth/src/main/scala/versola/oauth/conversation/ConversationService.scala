@@ -2,12 +2,14 @@ package versola.oauth.conversation
 
 import versola.auth.model.CredentialDeviceType
 import versola.auth.model.{OtpCode, Password}
+import versola.oauth.authorize.AcrResolutionService
 import versola.oauth.authorize.model.ResponseTypeEntry
 import versola.oauth.challenge.passkey.{PasskeyRepository, WebAuthnError, WebAuthnService}
 import versola.oauth.challenge.password.PasswordService
 import versola.oauth.challenge.password.model.{CheckPassword, PasswordReuseError}
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{Acr, AuthMethodRef, PassedAuthFactor, PassedFactorRecord, PasskeySettings, ScopeToken}
+import versola.oauth.client.model.{Acr, AuthFactor, AuthFactorType, AuthMethodRef, PassedAuthFactor, PassedFactorRecord, PasskeySettings, ScopeToken}
+import zio.prelude.NonEmptyList
 import versola.oauth.conversation.limit.{ChallengeType, LimitStatus, SubmissionLimiter}
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
 import versola.oauth.conversation.otp.OtpService
@@ -138,7 +140,7 @@ trait ConversationService:
 
 object ConversationService:
   def live =
-    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _))
+    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _))
 
   class Impl(
       otpService: OtpService,
@@ -155,6 +157,7 @@ object ConversationService:
       webAuthnService: WebAuthnService,
       passkeyRepository: PasskeyRepository,
       configService: OAuthConfigurationService,
+      acrResolutionService: AcrResolutionService,
   ) extends ConversationService:
     export conversationRepository.find
 
@@ -478,8 +481,6 @@ object ConversationService:
       conversation.userId match
         case None =>
           accessDenied(authId, conversation)
-        case Some(userId) if conversation.expectedUserId.exists(_ != userId) =>
-          accessDenied(authId, conversation)
         case Some(userId) =>
           for
             code <- authPropertyGenerator.nextAuthorizationCode
@@ -502,6 +503,7 @@ object ConversationService:
               accessToken = accessToken,
               amr = amr,
               authTime = now,
+              acr = conversation.targetAcr,
             )
             session = SessionRecord(
               userId = userId,
@@ -520,7 +522,7 @@ object ConversationService:
                 _ <- authorizationCodeRepository.create(codeMac, record, 1.minute)
                 _ <- sessionRepository.create(sessionIdMac, session, sessionTtl, sessionIdleTtl)
                 idTokenData <- if conversation.responseType.contains(ResponseTypeEntry.IdToken) && conversation.scope.contains(ScopeToken.OpenId) then
-                  generateIdTokenData(userId, conversation, amr, now)
+                  generateIdTokenData(userId, conversation, amr, now, conversation.targetAcr)
                 else
                   ZIO.none
               yield ConversationResult.Complete(
@@ -704,7 +706,7 @@ object ConversationService:
             case LimitStatus.RateLimited(_) =>
               renderStep(authId, conversation, setPasswordStep.copy(rateLimitExceeded = true))
             case LimitStatus.Allowed =>
-              passwordService.setPassword(conversation.clientId, userId, newPassword).foldZIO(
+              passwordService.setPassword(userId, newPassword).foldZIO(
                 {
                   case _: versola.oauth.challenge.password.model.PasswordReuseError =>
                     submissionLimiter.recordLimitAll(conversation.clientId, subjects, ChallengeType.PasswordSubmit).flatMap:
@@ -738,6 +740,7 @@ object ConversationService:
         conversation: ConversationRecord,
         amr: Set[AuthMethodRef],
         authTime: Instant,
+        acr: Option[Acr],
     ): Task[Option[ConversationResult.IdTokenData]] =
       val user = UserRecord(
         id = userId,
@@ -758,7 +761,7 @@ object ConversationService:
       yield Some(
         ConversationResult.IdTokenData(
           userId = user.id,
-          claims = userInfo.claims ++ AuthMethodRef.idTokenClaims(amr, Some(authTime), Acr.acrClaim(conversation.amr)),
+          claims = userInfo.claims ++ AuthMethodRef.idTokenClaims(amr, Some(authTime), acr),
           clientId = conversation.clientId,
         ),
       )

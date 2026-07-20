@@ -4,18 +4,22 @@ import versola.auth.TestEnvConfig
 import versola.oauth.authorize.model.{AuthorizeRequest, AuthorizeResponse, Error, Prompt, ResponseTypeEntry}
 import versola.oauth.jwks.JwksService
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{AuthFactor, AuthFactorType, AuthFlow, AuthMethodRef, ClientId, OAuthClientRecord, PassedAuthFactor, PassedFactorRecord, PrimaryAuthFlow, PrimaryCredential, ScopeToken, TenantId}
+import versola.oauth.client.model.{Acr, AuthFactor, AuthFactorType, AuthFlow, AuthMethodRef, ClientId, OAuthClientRecord, PassedAuthFactor, PassedFactorRecord, PrimaryAuthFlow, PrimaryCredential, ScopeToken, TenantId}
 import versola.oauth.conversation.{ConversationRepository, ConversationResult, ConversationRouter, EmailSubmission, PhoneSubmission}
 import versola.oauth.model.{AccessToken, AuthorizationCode, CodeChallenge, CodeChallengeMethod, State}
-import versola.oauth.session.SessionRepository
-import versola.oauth.session.model.{SessionId, SessionRecord, UserAgentInfo}
+import versola.oauth.session.SessionService
+import versola.oauth.session.model.{SessionId, SessionInfo, SessionRecord, UserAgentInfo}
 import versola.oauth.token.AuthorizationCodeRepository
 import versola.oauth.userinfo.UserInfoService
 import versola.user.UserRepository
+import versola.user.model.UserRecord
 import versola.util.{AuthPropertyGenerator, Email, MAC, Phone, Secret, SecureRandom, SecurityService, UnitSpecBase}
+import zio.{ZIO, Exit}
 import zio.http.URL
 import zio.prelude.{NonEmptyList, NonEmptySet}
+import zio.*
 import zio.test.*
+
 
 import java.time.Instant
 import java.util.UUID
@@ -93,26 +97,28 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
     val secureRandom = stub[SecureRandom]
     val config = TestEnvConfig.coreConfig
     val securityService = stub[SecurityService]
-    val sessionRepository = stub[SessionRepository]
+    val sessionService = stub[SessionService]
     val authPropertyGenerator = stub[AuthPropertyGenerator]
     val authorizationCodeRepository = stub[AuthorizationCodeRepository]
     val userRepository = stub[UserRepository]
     val userInfoService = stub[UserInfoService]
     val jwksService = TestEnvConfig.jwksService
     val conversationRouter = stub[ConversationRouter]
+    val acrResolver = stub[AcrResolutionService]
     val service = AuthorizeEndpointService.Impl(
       conversationRepository,
       configurationService,
       secureRandom,
       config,
       securityService,
-      sessionRepository,
+      sessionService,
       authPropertyGenerator,
       authorizationCodeRepository,
       userRepository,
       userInfoService,
       jwksService,
       conversationRouter,
+      acrResolver,
     )
 
   val phoneHint = Phone("+12025551234")
@@ -157,7 +163,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
     version = 0,
     amr = Map.empty,
     needsPasswordChange = false,
-    expectedUserId = None,
+    targetAcr = None,
   )
 
   val spec = suite("AuthorizeEndpointService")(
@@ -179,6 +185,33 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         result <- env.service.authorize(baseRequest.copy(prompt = Set(Prompt.none))).exit
       yield assertTrue(result.isFailure)
     },
+    test("create new conversation when session cookie present but session not found in db") {
+      val env = Env()
+      val uuid = UUID.randomUUID()
+      for
+        _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
+        _ <- env.sessionService.find.succeedsWith(None)
+        _ <- env.configurationService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
+        _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
+        _ <- env.conversationRepository.create.succeedsWith(())
+        result <- env.service.authorize(baseRequest.copy(sessionId = Some(rawSessionId)))
+        createCalls = env.conversationRepository.create.calls
+      yield assertTrue(
+        result == AuthorizeResponse.Initialize(versola.oauth.conversation.model.AuthId(uuid)),
+        createCalls.nonEmpty,
+        createCalls.head._2.amr.isEmpty,
+      )
+    },
+    test("fail with LoginRequired when session cookie present but session not found in db and prompt=none") {
+      val env = Env()
+      for
+        _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
+        _ <- env.sessionService.find.succeedsWith(None)
+        result <- env.service.authorize(
+          baseRequest.copy(sessionId = Some(rawSessionId), prompt = Set(Prompt.none))
+        ).exit
+      yield assertTrue(result.isFailure)
+    },
     test("silently authorize when session amr satisfies all required factors") {
       val env = Env()
       val code = AuthorizationCode(Array.fill(16)(3.toByte))
@@ -187,8 +220,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
       val session = sessionWithAmr(Map(PassedAuthFactor.otp -> PassedFactorRecord(now, Set(AuthMethodRef.otp))))
       for
         _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
-        _ <- env.securityService.mac.succeedsWith(sessionMac)
-        _ <- env.sessionRepository.findSession.succeedsWith(Some(session))
+        _ <- env.sessionService.find.succeedsWith(Some(SessionInfo(sessionMac, session)))
         _ <- env.configurationService.getAcrVocabulary.succeedsWith(Map.empty)
         _ <- env.configurationService.getSessionIdleTtl.succeedsWith(Option.empty[zio.Duration])
         _ <- env.authPropertyGenerator.nextAuthorizationCode.succeedsWith(code)
@@ -215,8 +247,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
       )
       for
         _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
-        _ <- env.securityService.mac.succeedsWith(sessionMac)
-        _ <- env.sessionRepository.findSession.succeedsWith(Some(session))
+        _ <- env.sessionService.find.succeedsWith(Some(SessionInfo(sessionMac, session)))
         _ <- env.configurationService.getAcrVocabulary.succeedsWith(Map.empty)
         _ <- env.configurationService.getSessionIdleTtl.succeedsWith(Option.empty[zio.Duration])
         _ <- env.authPropertyGenerator.nextAuthorizationCode.succeedsWith(code)
@@ -237,8 +268,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
       val session = sessionWithAmr(Map(PassedAuthFactor.passkey -> PassedFactorRecord(now, Set(AuthMethodRef.swk, AuthMethodRef.user, AuthMethodRef.mfa))))
       for
         _ <- env.configurationService.find.succeedsWith(Some(clientWithEquivalents))
-        _ <- env.securityService.mac.succeedsWith(sessionMac)
-        _ <- env.sessionRepository.findSession.succeedsWith(Some(session))
+        _ <- env.sessionService.find.succeedsWith(Some(SessionInfo(sessionMac, session)))
         _ <- env.configurationService.getAcrVocabulary.succeedsWith(Map.empty)
         _ <- env.configurationService.getSessionIdleTtl.succeedsWith(Option.empty[zio.Duration])
         _ <- env.authPropertyGenerator.nextAuthorizationCode.succeedsWith(code)
@@ -255,8 +285,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
       for
         _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
         _ <- env.configurationService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
-        _ <- env.securityService.mac.succeedsWith(sessionMac)
-        _ <- env.sessionRepository.findSession.succeedsWith(Some(session))
+        _ <- env.sessionService.find.succeedsWith(Some(SessionInfo(sessionMac, session)))
         _ <- env.configurationService.getAcrVocabulary.succeedsWith(Map.empty)
         _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
         _ <- env.conversationRepository.create.succeedsWith(())
@@ -275,8 +304,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
       for
         _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
         _ <- env.configurationService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
-        _ <- env.securityService.mac.succeedsWith(sessionMac)
-        _ <- env.sessionRepository.findSession.succeedsWith(Some(session))
+        _ <- env.sessionService.find.succeedsWith(Some(SessionInfo(sessionMac, session)))
         _ <- env.configurationService.getAcrVocabulary.succeedsWith(Map.empty)
         _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
         _ <- env.conversationRepository.create.succeedsWith(())
@@ -285,7 +313,6 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
       yield assertTrue(
         result == AuthorizeResponse.Initialize(versola.oauth.conversation.model.AuthId(uuid)),
         createCalls.nonEmpty,
-        createCalls.head._2.expectedUserId == None,
       )
     },
     test("fail with LoginRequired when session found but not satisfied and prompt=none") {
@@ -293,8 +320,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
       val session = sessionWithAmr(Map.empty)
       for
         _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
-        _ <- env.securityService.mac.succeedsWith(sessionMac)
-        _ <- env.sessionRepository.findSession.succeedsWith(Some(session))
+        _ <- env.sessionService.find.succeedsWith(Some(SessionInfo(sessionMac, session)))
         _ <- env.configurationService.getAcrVocabulary.succeedsWith(Map.empty)
         result <- env.service.authorize(baseRequest.copy(sessionId = Some(rawSessionId), prompt = Set(Prompt.none))).exit
       yield assertTrue(result.isFailure)
@@ -307,8 +333,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
       for
         _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
         _ <- env.configurationService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
-        _ <- env.securityService.mac.succeedsWith(sessionMac)
-        _ <- env.sessionRepository.findSession.succeedsWith(Some(session))
+        _ <- env.sessionService.find.succeedsWith(Some(SessionInfo(sessionMac, session)))
         _ <- env.configurationService.getAcrVocabulary.succeedsWith(Map.empty)
         _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
         _ <- env.conversationRepository.create.succeedsWith(())
@@ -318,7 +343,6 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         result == AuthorizeResponse.Initialize(versola.oauth.conversation.model.AuthId(uuid)),
         createCalls.nonEmpty,
         createCalls.head._2.amr == passkeySeedAmr,
-        createCalls.head._2.expectedUserId == Some(session.userId),
       )
     },
     test("advance conversation to password step when login_hint email is provided on email+password flow") {
@@ -370,8 +394,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
       for
         _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
         _ <- env.configurationService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
-        _ <- env.securityService.mac.succeedsWith(sessionMac)
-        _ <- env.sessionRepository.findSession.succeedsWith(Some(oldSession))
+        _ <- env.sessionService.find.succeedsWith(Some(SessionInfo(sessionMac, oldSession)))
         _ <- env.configurationService.getAcrVocabulary.succeedsWith(Map.empty)
         _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
         _ <- env.conversationRepository.create.succeedsWith(())
@@ -380,7 +403,6 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
       yield assertTrue(
         result == AuthorizeResponse.Initialize(versola.oauth.conversation.model.AuthId(uuid)),
         createCalls.nonEmpty,
-        createCalls.head._2.expectedUserId == Some(sessionUserId),
       )
     },
     test("fail with LoginRequired when max_age exceeded and prompt=none") {
@@ -394,8 +416,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
       )
       for
         _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
-        _ <- env.securityService.mac.succeedsWith(sessionMac)
-        _ <- env.sessionRepository.findSession.succeedsWith(Some(oldSession))
+        _ <- env.sessionService.find.succeedsWith(Some(SessionInfo(sessionMac, oldSession)))
         _ <- env.configurationService.getAcrVocabulary.succeedsWith(Map.empty)
         result <- env.service.authorize(
           baseRequest.copy(sessionId = Some(rawSessionId), maxAge = Some(0), prompt = Set(Prompt.none))
@@ -417,8 +438,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
       )
       for
         _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
-        _ <- env.securityService.mac.succeedsWith(sessionMac)
-        _ <- env.sessionRepository.findSession.succeedsWith(Some(freshSession))
+        _ <- env.sessionService.find.succeedsWith(Some(SessionInfo(sessionMac, freshSession)))
         _ <- env.configurationService.getAcrVocabulary.succeedsWith(Map.empty)
         _ <- env.configurationService.getSessionIdleTtl.succeedsWith(Option.empty[zio.Duration])
         _ <- env.authPropertyGenerator.nextAuthorizationCode.succeedsWith(code)
@@ -435,17 +455,19 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
       for
         _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
         _ <- env.configurationService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
-        _ <- env.securityService.mac.succeedsWith(sessionMac)
-        _ <- env.sessionRepository.findSession.succeedsWith(Some(session))
-        _ <- env.configurationService.getAcrVocabulary.succeedsWith(Map.empty)
+        _ <- env.sessionService.find.succeedsWith(Some(SessionInfo(sessionMac, session)))
+        _ <- env.configurationService.getAcrVocabulary.succeedsWith(Map(Acr("mfa") -> NonEmptyList(PassedAuthFactor.password, PassedAuthFactor.otp)))
+        _ <- env.acrResolver.checkAcrSatisfaction.succeedsWith(None)
+        _ <- env.acrResolver.resolveAchievableAcr.succeedsWith(Some(Acr("mfa")))
         _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
         _ <- env.conversationRepository.create.succeedsWith(())
-        result <- env.service.authorize(baseRequest.copy(sessionId = Some(rawSessionId), acrValues = Some(List("mfa"))))
+        _ <- env.userRepository.find.succeedsWith(None)
+        _ <- env.conversationRouter.advance.succeedsWith(())
+        result <- env.service.authorize(baseRequest.copy(sessionId = Some(rawSessionId), acrValues = Some(NonEmptyList(Acr("mfa")))))
         createCalls = env.conversationRepository.create.calls
       yield assertTrue(
         result == AuthorizeResponse.Initialize(versola.oauth.conversation.model.AuthId(uuid)),
         createCalls.nonEmpty,
-        createCalls.head._2.expectedUserId == Some(session.userId),
       )
     },
     test("fail with LoginRequired when acr_values not satisfied and prompt=none") {
@@ -453,11 +475,11 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
       val session = sessionWithAmr(Map(PassedAuthFactor.otp -> PassedFactorRecord(now, Set(AuthMethodRef.otp))))
       for
         _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
-        _ <- env.securityService.mac.succeedsWith(sessionMac)
-        _ <- env.sessionRepository.findSession.succeedsWith(Some(session))
+        _ <- env.sessionService.find.succeedsWith(Some(SessionInfo(sessionMac, session)))
         _ <- env.configurationService.getAcrVocabulary.succeedsWith(Map.empty)
+        _ <- env.acrResolver.checkAcrSatisfaction.succeedsWith(None)
         result <- env.service.authorize(
-          baseRequest.copy(sessionId = Some(rawSessionId), acrValues = Some(List("mfa")), prompt = Set(Prompt.none))
+          baseRequest.copy(sessionId = Some(rawSessionId), acrValues = Some(NonEmptyList(Acr("mfa"))), prompt = Set(Prompt.none))
         ).exit
       yield assertTrue(result.isFailure)
     },
@@ -469,15 +491,15 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
       val session = sessionWithAmr(Map(PassedAuthFactor.otp -> PassedFactorRecord(now, Set(AuthMethodRef.otp))))
       for
         _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
-        _ <- env.securityService.mac.succeedsWith(sessionMac)
-        _ <- env.sessionRepository.findSession.succeedsWith(Some(session))
-        _ <- env.configurationService.getAcrVocabulary.succeedsWith(Map("otp" -> NonEmptyList(PassedAuthFactor.otp)))
+        _ <- env.sessionService.find.succeedsWith(Some(SessionInfo(sessionMac, session)))
+        _ <- env.configurationService.getAcrVocabulary.succeedsWith(Map(Acr("otp") -> NonEmptyList(PassedAuthFactor.otp)))
+        _ <- env.acrResolver.checkAcrSatisfaction.succeedsWith(Some(Acr("otp")))
         _ <- env.configurationService.getSessionIdleTtl.succeedsWith(Option.empty[zio.Duration])
         _ <- env.authPropertyGenerator.nextAuthorizationCode.succeedsWith(code)
         _ <- env.authPropertyGenerator.nextAccessToken.succeedsWith(accessToken)
         _ <- env.securityService.mac.succeedsWith(codeMac)
         _ <- env.authorizationCodeRepository.create.succeedsWith(())
-        result <- env.service.authorize(baseRequest.copy(sessionId = Some(rawSessionId), acrValues = Some(List("otp"))))
+        result <- env.service.authorize(baseRequest.copy(sessionId = Some(rawSessionId), acrValues = Some(NonEmptyList(Acr("otp")))))
       yield assertTrue(result == AuthorizeResponse.Authorized(code, None))
     },
     test("force re-authentication when tenant vocabulary ACR not satisfied") {
@@ -488,13 +510,41 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
       for
         _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
         _ <- env.configurationService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
-        _ <- env.securityService.mac.succeedsWith(sessionMac)
-        _ <- env.sessionRepository.findSession.succeedsWith(Some(session))
-        _ <- env.configurationService.getAcrVocabulary.succeedsWith(Map("company_mfa" -> NonEmptyList(PassedAuthFactor.password, PassedAuthFactor.otp)))
+        _ <- env.sessionService.find.succeedsWith(Some(SessionInfo(sessionMac, session)))
+        _ <- env.configurationService.getAcrVocabulary.succeedsWith(Map(Acr("company_mfa") -> NonEmptyList(PassedAuthFactor.password, PassedAuthFactor.otp)))
+        _ <- env.acrResolver.checkAcrSatisfaction.succeedsWith(None)
+        _ <- env.acrResolver.resolveAchievableAcr.succeedsWith(Some(Acr("company_mfa")))
         _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
         _ <- env.conversationRepository.create.succeedsWith(())
-        result <- env.service.authorize(baseRequest.copy(sessionId = Some(rawSessionId), acrValues = Some(List("company_mfa"))))
+        _ <- env.userRepository.find.succeedsWith(None)
+        _ <- env.conversationRouter.advance.succeedsWith(())
+        result <- env.service.authorize(baseRequest.copy(sessionId = Some(rawSessionId), acrValues = Some(NonEmptyList(Acr("company_mfa")))))
       yield assertTrue(result == AuthorizeResponse.Initialize(versola.oauth.conversation.model.AuthId(uuid)))
+    },
+    test("populate credential and user fields from found user during step-up") {
+      val env = Env()
+      val uuid = UUID.randomUUID()
+      val session = sessionWithAmr(Map(PassedAuthFactor.otp -> PassedFactorRecord(now, Set(AuthMethodRef.otp))))
+      val user = UserRecord.empty(session.userId).copy(email = Some(emailHint))
+      for
+        _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
+        _ <- env.configurationService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
+        _ <- env.sessionService.find.succeedsWith(Some(SessionInfo(sessionMac, session)))
+        _ <- env.configurationService.getAcrVocabulary.succeedsWith(Map(Acr("mfa") -> NonEmptyList(PassedAuthFactor.password, PassedAuthFactor.otp)))
+        _ <- env.acrResolver.checkAcrSatisfaction.succeedsWith(None)
+        _ <- env.acrResolver.resolveAchievableAcr.succeedsWith(Some(Acr("mfa")))
+        _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
+        _ <- env.conversationRepository.create.succeedsWith(())
+        _ <- env.userRepository.find.succeedsWith(Some(user))
+        _ <- env.conversationRouter.advance.succeedsWith(())
+        _ <- env.service.authorize(baseRequest.copy(sessionId = Some(rawSessionId), acrValues = Some(NonEmptyList(Acr("mfa")))))
+        createCalls = env.conversationRepository.create.calls
+      yield assertTrue(
+        createCalls.nonEmpty,
+        createCalls.head._2.credential == Some(Left(emailHint)),
+        createCalls.head._2.userEmail == Some(emailHint),
+        createCalls.head._2.userId == Some(session.userId),
+      )
     },
     test("silently authorize when tenant vocabulary ACR satisfied") {
       val env = Env()
@@ -505,15 +555,15 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
       val session = sessionWithAmr(Map(PassedAuthFactor.otp -> PassedFactorRecord(now, Set(AuthMethodRef.otp))))
       for
         _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
-        _ <- env.securityService.mac.succeedsWith(sessionMac)
-        _ <- env.sessionRepository.findSession.succeedsWith(Some(session))
-        _ <- env.configurationService.getAcrVocabulary.succeedsWith(Map("company_otp" -> NonEmptyList(PassedAuthFactor.otp)))
+        _ <- env.sessionService.find.succeedsWith(Some(SessionInfo(sessionMac, session)))
+        _ <- env.configurationService.getAcrVocabulary.succeedsWith(Map(Acr("company_otp") -> NonEmptyList(PassedAuthFactor.otp)))
+        _ <- env.acrResolver.checkAcrSatisfaction.succeedsWith(Some(Acr("company_otp")))
         _ <- env.configurationService.getSessionIdleTtl.succeedsWith(Option.empty[zio.Duration])
         _ <- env.authPropertyGenerator.nextAuthorizationCode.succeedsWith(code)
         _ <- env.authPropertyGenerator.nextAccessToken.succeedsWith(accessToken)
         _ <- env.securityService.mac.succeedsWith(codeMac)
         _ <- env.authorizationCodeRepository.create.succeedsWith(())
-        result <- env.service.authorize(baseRequest.copy(sessionId = Some(rawSessionId), acrValues = Some(List("company_otp"))))
+        result <- env.service.authorize(baseRequest.copy(sessionId = Some(rawSessionId), acrValues = Some(NonEmptyList(Acr("company_otp")))))
       yield assertTrue(result == AuthorizeResponse.Authorized(code, None))
     },
     test("force re-authentication when id_token_hint subject differs from session userId") {
@@ -537,9 +587,8 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
       for
         _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
         _ <- env.configurationService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
-        _ <- env.securityService.mac.succeedsWith(sessionMac)
-        _ <- env.sessionRepository.findSession.succeedsWith(Some(session))
-        _ <- env.configurationService.getAcrVocabulary.succeedsWith(Map("mfa" -> NonEmptyList(PassedAuthFactor.password, PassedAuthFactor.otp)))
+        _ <- env.sessionService.find.succeedsWith(Some(SessionInfo(sessionMac, session)))
+        _ <- env.configurationService.getAcrVocabulary.succeedsWith(Map(Acr("mfa") -> NonEmptyList(PassedAuthFactor.password, PassedAuthFactor.otp)))
         _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
         _ <- env.conversationRepository.create.succeedsWith(())
         result <- env.service.authorize(baseRequest.copy(sessionId = Some(rawSessionId), idTokenHint = Some(idTokenHintStr)))
@@ -548,23 +597,18 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         result == AuthorizeResponse.Initialize(versola.oauth.conversation.model.AuthId(uuid)),
         createCalls.nonEmpty,
         createCalls.head._2.amr.isEmpty,
-        createCalls.head._2.expectedUserId == Some(differentUserId),
       )
     },
-    test("force re-authentication when all acr_values are unrecognized") {
+    test("fail with AccessDenied when no achievable ACR can be resolved") {
       val env = Env()
-      val uuid = UUID.randomUUID()
       val session = sessionWithAmr(Map(PassedAuthFactor.otp -> PassedFactorRecord(now, Set(AuthMethodRef.otp))))
       for
         _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
-        _ <- env.configurationService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
-        _ <- env.securityService.mac.succeedsWith(sessionMac)
-        _ <- env.sessionRepository.findSession.succeedsWith(Some(session))
+        _ <- env.sessionService.find.succeedsWith(Some(SessionInfo(sessionMac, session)))
         _ <- env.configurationService.getAcrVocabulary.succeedsWith(Map.empty)
-        _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
-        _ <- env.conversationRepository.create.succeedsWith(())
-        result <- env.service.authorize(baseRequest.copy(sessionId = Some(rawSessionId), acrValues = Some(List("completely_unknown_acr"))))
-      yield assertTrue(result == AuthorizeResponse.Initialize(versola.oauth.conversation.model.AuthId(uuid)))
+        _ <- env.acrResolver.resolveAchievableAcr.succeedsWith(None)
+        result <- env.service.authorize(baseRequest.copy(sessionId = Some(rawSessionId), acrValues = Some(NonEmptyList(Acr("completely_unknown_acr"))))).exit
+      yield assertTrue(result.isFailure)
     },
     test("accept expired id_token_hint and force re-authentication when subject differs") {
       val env = Env()
@@ -588,12 +632,174 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
       for
         _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
         _ <- env.configurationService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
-        _ <- env.securityService.mac.succeedsWith(sessionMac)
-        _ <- env.sessionRepository.findSession.succeedsWith(Some(session))
+        _ <- env.sessionService.find.succeedsWith(Some(SessionInfo(sessionMac, session)))
         _ <- env.configurationService.getAcrVocabulary.succeedsWith(Map.empty)
         _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
         _ <- env.conversationRepository.create.succeedsWith(())
         result <- env.service.authorize(baseRequest.copy(sessionId = Some(rawSessionId), idTokenHint = Some(idTokenHintStr)))
       yield assertTrue(result == AuthorizeResponse.Initialize(versola.oauth.conversation.model.AuthId(uuid)))
+    },
+    // ── id_token_hint without an active session ──────────────────────────────
+    test("fail with AccessDenied when id_token_hint is provided without session and ACR not achievable") {
+      val env = Env()
+      val hintUserId = versola.user.model.UserId(UUID.randomUUID())
+      val header = new JWSHeader.Builder(JWSAlgorithm.RS256)
+        .keyID("test-key-id")
+        .`type`(JOSEObjectType.JWT)
+        .build()
+      val hintClaims = new JWTClaimsSet.Builder()
+        .subject(hintUserId.toString)
+        .audience(clientId.toString)
+        .issuer("https://versolauth.com")
+        .build()
+      val jwtToken = new SignedJWT(header, hintClaims)
+      jwtToken.sign(new RSASSASigner(TestEnvConfig.privateKey))
+      val idTokenHintStr = jwtToken.serialize()
+      for
+        _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
+        _ <- env.acrResolver.resolveAchievableAcr.succeedsWith(None)
+        result <- env.service.authorize(
+          baseRequest.copy(idTokenHint = Some(idTokenHintStr), acrValues = Some(NonEmptyList(Acr("mfa"))))
+        ).exit
+      yield assertTrue(result.isFailure)
+    },
+    test("create step-up conversation when id_token_hint provided without session and ACR is achievable") {
+      val env = Env()
+      val uuid = UUID.randomUUID()
+      val hintUserId = versola.user.model.UserId(UUID.randomUUID())
+      val targetAcr = Acr("mfa")
+      val header = new JWSHeader.Builder(JWSAlgorithm.RS256)
+        .keyID("test-key-id")
+        .`type`(JOSEObjectType.JWT)
+        .build()
+      val hintClaims = new JWTClaimsSet.Builder()
+        .subject(hintUserId.toString)
+        .audience(clientId.toString)
+        .issuer("https://versolauth.com")
+        .build()
+      val jwtToken = new SignedJWT(header, hintClaims)
+      jwtToken.sign(new RSASSASigner(TestEnvConfig.privateKey))
+      val idTokenHintStr = jwtToken.serialize()
+      for
+        _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
+        _ <- env.configurationService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
+        _ <- env.acrResolver.resolveAchievableAcr.succeedsWith(Some(targetAcr))
+        _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
+        _ <- env.conversationRepository.create.succeedsWith(())
+        _ <- env.userRepository.find.succeedsWith(None)
+        _ <- env.conversationRouter.advance.succeedsWith(())
+        result <- env.service.authorize(
+          baseRequest.copy(idTokenHint = Some(idTokenHintStr), acrValues = Some(NonEmptyList(targetAcr)))
+        )
+        createCalls = env.conversationRepository.create.calls
+      yield assertTrue(
+        result == AuthorizeResponse.Initialize(versola.oauth.conversation.model.AuthId(uuid)),
+        createCalls.nonEmpty,
+        createCalls.head._2.userId == Some(hintUserId),
+        createCalls.head._2.targetAcr == Some(targetAcr),
+      )
+    },
+    test("create conversation with known userId when id_token_hint provided without session and no acr_values") {
+      val env = Env()
+      val uuid = UUID.randomUUID()
+      val hintUserId = versola.user.model.UserId(UUID.randomUUID())
+      val header = new JWSHeader.Builder(JWSAlgorithm.RS256)
+        .keyID("test-key-id")
+        .`type`(JOSEObjectType.JWT)
+        .build()
+      val hintClaims = new JWTClaimsSet.Builder()
+        .subject(hintUserId.toString)
+        .audience(clientId.toString)
+        .issuer("https://versolauth.com")
+        .build()
+      val jwtToken = new SignedJWT(header, hintClaims)
+      jwtToken.sign(new RSASSASigner(TestEnvConfig.privateKey))
+      val idTokenHintStr = jwtToken.serialize()
+      for
+        _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
+        _ <- env.configurationService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
+        _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
+        _ <- env.conversationRepository.create.succeedsWith(())
+        result <- env.service.authorize(baseRequest.copy(idTokenHint = Some(idTokenHintStr)))
+        createCalls = env.conversationRepository.create.calls
+      yield assertTrue(
+        result == AuthorizeResponse.Initialize(versola.oauth.conversation.model.AuthId(uuid)),
+        createCalls.nonEmpty,
+        createCalls.head._2.userId == Some(hintUserId),
+      )
+    },
+    // ── forceReauth + acrValues path ─────────────────────────────────────────
+    test("fail with AccessDenied when forceReauth and ACR not achievable for the known user") {
+      val env = Env()
+      val session = sessionWithAmr(Map(PassedAuthFactor.otp -> PassedFactorRecord(now, Set(AuthMethodRef.otp))))
+      val differentUserId = versola.user.model.UserId(UUID.randomUUID())
+      val header = new JWSHeader.Builder(JWSAlgorithm.RS256)
+        .keyID("test-key-id")
+        .`type`(JOSEObjectType.JWT)
+        .build()
+      val hintClaims = new JWTClaimsSet.Builder()
+        .subject(differentUserId.toString)
+        .audience(clientId.toString)
+        .issuer("https://versolauth.com")
+        .build()
+      val jwtToken = new SignedJWT(header, hintClaims)
+      jwtToken.sign(new RSASSASigner(TestEnvConfig.privateKey))
+      val idTokenHintStr = jwtToken.serialize()
+      for
+        _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
+        _ <- env.sessionService.find.succeedsWith(Some(SessionInfo(sessionMac, session)))
+        _ <- env.acrResolver.checkAcrSatisfaction.succeedsWith(None)
+        _ <- env.acrResolver.resolveAchievableAcr.succeedsWith(None)
+        result <- env.service.authorize(
+          baseRequest.copy(
+            sessionId = Some(rawSessionId),
+            idTokenHint = Some(idTokenHintStr),
+            acrValues = Some(NonEmptyList(Acr("mfa"))),
+          )
+        ).exit
+      yield assertTrue(result.isFailure)
+    },
+    test("create step-up conversation when forceReauth and ACR achievable for the known user") {
+      val env = Env()
+      val uuid = UUID.randomUUID()
+      val session = sessionWithAmr(Map(PassedAuthFactor.otp -> PassedFactorRecord(now, Set(AuthMethodRef.otp))))
+      val differentUserId = versola.user.model.UserId(UUID.randomUUID())
+      val targetAcr = Acr("mfa")
+      val header = new JWSHeader.Builder(JWSAlgorithm.RS256)
+        .keyID("test-key-id")
+        .`type`(JOSEObjectType.JWT)
+        .build()
+      val hintClaims = new JWTClaimsSet.Builder()
+        .subject(differentUserId.toString)
+        .audience(clientId.toString)
+        .issuer("https://versolauth.com")
+        .build()
+      val jwtToken = new SignedJWT(header, hintClaims)
+      jwtToken.sign(new RSASSASigner(TestEnvConfig.privateKey))
+      val idTokenHintStr = jwtToken.serialize()
+      for
+        _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
+        _ <- env.configurationService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
+        _ <- env.sessionService.find.succeedsWith(Some(SessionInfo(sessionMac, session)))
+        _ <- env.acrResolver.checkAcrSatisfaction.succeedsWith(None)
+        _ <- env.acrResolver.resolveAchievableAcr.succeedsWith(Some(targetAcr))
+        _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
+        _ <- env.conversationRepository.create.succeedsWith(())
+        _ <- env.userRepository.find.succeedsWith(None)
+        _ <- env.conversationRouter.advance.succeedsWith(())
+        result <- env.service.authorize(
+          baseRequest.copy(
+            sessionId = Some(rawSessionId),
+            idTokenHint = Some(idTokenHintStr),
+            acrValues = Some(NonEmptyList(targetAcr)),
+          )
+        )
+        createCalls = env.conversationRepository.create.calls
+      yield assertTrue(
+        result == AuthorizeResponse.Initialize(versola.oauth.conversation.model.AuthId(uuid)),
+        createCalls.nonEmpty,
+        createCalls.head._2.userId == Some(differentUserId),
+        createCalls.head._2.targetAcr == Some(targetAcr),
+      )
     },
   )

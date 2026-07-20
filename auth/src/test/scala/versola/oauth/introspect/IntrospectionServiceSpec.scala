@@ -63,6 +63,7 @@ object IntrospectionServiceSpec extends UnitSpecBase:
     previousRefreshToken = None,
     amr = Set(AuthMethodRef.pwd),
     authTime = now,
+    acr = None,
   )
 
   def accessTokenPayload(now: Instant, audience: Vector[ClientId] = Vector(clientId1)) = AccessTokenPayload(

@@ -32,6 +32,12 @@ object CentralConfig:
       jwks: Option[Json.Obj],
       presets: Option[List[CentralConfig.BootstrapConfig.PresetSeed]],
       centralUrl: Option[String],
+      /** Base64Url-encoded fixed secret for the central-admin OAuth client.
+        * When set, bootstrap will force this exact secret on every startup (idempotent).
+        * Intended for local dev and e2e testing where a stable, known secret is needed.
+        * Leave unset in production; the secret is then generated randomly on first boot.
+        */
+      clientSecret: Option[String] = None,
   )
 
   object BootstrapConfig:

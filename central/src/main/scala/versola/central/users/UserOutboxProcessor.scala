@@ -2,7 +2,7 @@ package versola.central.users
 
 import versola.central.CentralConfig
 import versola.central.CentralConfig.UserOutboxConfig
-import zio.{Duration, Fiber, Ref, Schedule, Scope, UIO, URIO, ZIO, ZLayer}
+import zio.{Duration, Fiber, Ref, Schedule, Scope, Task, UIO, URIO, ZIO, ZLayer}
 
 /** Background service that polls `user_outbox`, dispatches events via [[AuthClient]],
   * deletes successful rows, and reschedules failures with exponential back-off.
@@ -14,6 +14,7 @@ import zio.{Duration, Fiber, Ref, Schedule, Scope, UIO, URIO, ZIO, ZLayer}
 trait UserOutboxProcessor:
   def start(): URIO[Scope, Unit]
   def stop(): UIO[Unit]
+  def flush(): Task[Unit]
 
 object UserOutboxProcessor:
   val live: ZLayer[CentralConfig & UserRepository & AuthClient & Scope, Nothing, UserOutboxProcessor] =
@@ -52,6 +53,8 @@ object UserOutboxProcessor:
         _ <- ZIO.foreachDiscard(fiber)(_.interrupt)
         _ <- ZIO.logInfo("OutboxProcessor stopped")
       yield ()
+
+    override def flush(): Task[Unit] = processOnce
 
     private[users] def processOnce: ZIO[Any, Nothing, Unit] =
       repo.claimDueEvents(config.batchSize, config.lease)

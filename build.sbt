@@ -1,6 +1,8 @@
 lazy val root = project.in(file("."))
   .settings(
     commonSettings,
+    Test / compile := (Test / compile)
+      .dependsOn(e2e / Test / compile).value,
   )
   .aggregate(
     util,
@@ -10,7 +12,7 @@ lazy val root = project.in(file("."))
     `edge-postgres-impl`,
     edge,
     central,
-    `central-postgres-impl`
+    `central-postgres-impl`,
   )
 
 lazy val util = project
@@ -114,6 +116,16 @@ lazy val `central-postgres-impl` = project.in(centralImplementations / "postgres
   ).dependsOn(
     central % CompileTest,
     `util-postgres` % CompileTest
+  )
+
+lazy val e2e = project
+  .in(file("e2e"))
+  .settings(
+    name := "e2e",
+    commonSettings,
+    libraryDependencies ++= Dependencies.http,
+    // Not part of the normal test run — only executed explicitly via `e2e/test`
+    Test / fork := true,
   )
 
 lazy val sbtForkSettings = Seq(

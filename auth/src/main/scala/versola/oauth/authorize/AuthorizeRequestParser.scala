@@ -2,7 +2,7 @@ package versola.oauth.authorize
 
 import versola.oauth.authorize.model.{AuthorizeRequest, Error, Prompt, ResponseTypeEntry}
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{ClientId, OAuthClientRecord, PrimaryCredential, ScopeToken}
+import versola.oauth.client.model.{Acr, ClientId, OAuthClientRecord, PrimaryCredential, ScopeToken}
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, Nonce, State}
 import versola.oauth.model.SessionCookie
 import versola.oauth.session.model.SessionId
@@ -10,7 +10,7 @@ import versola.oauth.userinfo.model.RequestedClaims
 import versola.util.{Base64, Email, Phone}
 import zio.http.{Header, Method, Request, URL}
 import zio.json.*
-import zio.prelude.NonEmptySet
+import zio.prelude.{NonEmptyList, NonEmptySet}
 import zio.{Chunk, IO, Task, ZIO, ZLayer}
 
 trait AuthorizeRequestParser:
@@ -114,8 +114,13 @@ object AuthorizeRequestParser:
           .map(_.flatMap(_.toLongOption))
 
         acrValues <- getParam(params, "acr_values")
-          .orElseFail(Error.MultipleValuesProvided(redirectUri, state, "acr_values"))
-          .map(_.map(_.split(' ').toList))
+          .orElseFail[Error](Error.MultipleValuesProvided(redirectUri, state, "acr_values"))
+          .flatMap:
+            case None => ZIO.none
+            case Some(values) =>
+              ZIO.fromOption(NonEmptyList.fromIterableOption(values.split(' ').map(Acr(_)).toList))
+                .orElseFail(Error.NoValuesProvided(redirectUri, state, "acr_values"))
+                .asSome
 
         userAgent =
           request.header(Header.UserAgent)

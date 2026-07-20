@@ -85,6 +85,8 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         tenantId: Option[String] = None,
         roles: List[String] = Nil,
         jti: String = UUID.randomUUID().toString,
+        acr: Option[String] = None,
+        authTime: Option[Long] = None,
     ): Task[AccessToken] =
       Clock.instant.flatMap { now =>
         ZIO.attemptBlocking {
@@ -102,6 +104,8 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
             .claim("client_id", clientId)
             .claim("role", role)
           tenantId.foreach(tid => builder.claim("tenant_id", tid))
+          acr.foreach(v => builder.claim("acr", v))
+          authTime.foreach(v => builder.claim("auth_time", v))
           val javaRoles = new java.util.ArrayList[String]()
           roles.foreach(javaRoles.add)
           builder.claim("roles", javaRoles)
@@ -153,22 +157,24 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
 
   private def usersEndpoint(allow: Option[String] = None,
                              inject: Vector[InjectRule] = Vector.empty,
-                             fetchUserInfo: Boolean = false) =
+                             fetchUserInfo: Boolean = false,
+                             acrValues: Option[String] = None,
+                             maxAge: Option[Int] = None) =
     ResourceEndpoint(
       id = usersEndpointId,
-      method = "GET", path = "/users", fetchUserInfo = fetchUserInfo, allow = allow, inject = inject
+      method = "GET", path = "/users", fetchUserInfo = fetchUserInfo, allow = allow, inject = inject, acrValues = acrValues, maxAge = maxAge,
     )
 
   private def userByIdEndpoint(allow: Option[String] = None, inject: Vector[InjectRule] = Vector.empty) =
     ResourceEndpoint(
       id = userByIdEndpointId,
-      method = "GET", path = "/users/{id}", fetchUserInfo = false, allow = allow, inject = inject,
+      method = "GET", path = "/users/{id}", fetchUserInfo = false, allow = allow, inject = inject, acrValues = None, maxAge = None,
     )
 
   private def createUserEndpoint(allow: Option[String] = None, inject: Vector[InjectRule] = Vector.empty) =
     ResourceEndpoint(
       id = createUserEndpointId,
-      method = "POST", path = "/users", fetchUserInfo = false, allow = allow, inject = inject,
+      method = "POST", path = "/users", fetchUserInfo = false, allow = allow, inject = inject, acrValues = None, maxAge = None,
     )
 
   private def usersResource(endpoints: ResourceEndpoint*) =
@@ -177,7 +183,7 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
   private def centralEndpoint() =
     ResourceEndpoint(
       id = ResourceEndpointId(java.util.UUID.fromString("018f0f2a-1c7b-7000-8000-000000000501")),
-      method = "GET", path = "/tenants", fetchUserInfo = false, allow = None, inject = Vector.empty,
+      method = "GET", path = "/tenants", fetchUserInfo = false, allow = None, inject = Vector.empty, acrValues = None, maxAge = None,
     )
 
   private def centralResource(endpoints: ResourceEndpoint*) =
@@ -283,6 +289,221 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         service = env.buildService(client, security)
         response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
       yield assertTrue(response.status == Status.Unauthorized)
+    },
+    test("returns 401 with acr_values challenge when token acr is below endpoint requirement") {
+      val env = new Env
+      val endpoint = usersEndpoint(acrValues = Some("passkey-level"))
+      for
+        _ <- env.setupDefaults()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(endpoint))
+        token <- env.signToken(acr = Some("otp-level"))
+        request = Request.get(URL.empty / "users").addCookie(sessionCookie(token))
+        service = env.buildService(client, security)
+        response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
+        challenge = response.headers.get("WWW-Authenticate")
+      yield assertTrue(
+        response.status == Status.Unauthorized,
+        challenge.exists(_.contains("""error="insufficient_user_authentication"""")),
+        challenge.exists(_.contains("""acr_values="passkey-level"""")),
+      )
+    },
+    test("forwards upstream when token acr satisfies endpoint requirement") {
+      val env = new Env
+      val endpoint = usersEndpoint(acrValues = Some("passkey-level"))
+      for
+        _ <- env.setupDefaults()
+        capture <- captureUpstream()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(endpoint))
+        token <- env.signToken(acr = Some("passkey-level"))
+        request = Request.get(URL.empty / "users").addCookie(sessionCookie(token))
+        service = env.buildService(client, security)
+        response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
+      yield assertTrue(response.status == Status.Ok)
+    },
+    test("forwards upstream when token acr matches any value in a multi-value requirement") {
+      val env = new Env
+      val endpoint = usersEndpoint(acrValues = Some("passkey-level mfa-level"))
+      for
+        _ <- env.setupDefaults()
+        capture <- captureUpstream()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(endpoint))
+        token <- env.signToken(acr = Some("mfa-level"))
+        request = Request.get(URL.empty / "users").addCookie(sessionCookie(token))
+        service = env.buildService(client, security)
+        response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
+      yield assertTrue(response.status == Status.Ok)
+    },
+    test("returns 401 when token acr does not match any value in a multi-value requirement") {
+      val env = new Env
+      val endpoint = usersEndpoint(acrValues = Some("passkey-level mfa-level"))
+      for
+        _ <- env.setupDefaults()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(endpoint))
+        token <- env.signToken(acr = Some("password-only"))
+        request = Request.get(URL.empty / "users").addCookie(sessionCookie(token))
+        service = env.buildService(client, security)
+        response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
+        challenge = response.headers.get("WWW-Authenticate")
+      yield assertTrue(
+        response.status == Status.Unauthorized,
+        challenge.exists(_.contains("""error="insufficient_user_authentication"""")),
+        challenge.exists(_.contains("""acr_values="passkey-level mfa-level"""")),
+      )
+    },
+    test("returns 401 with max_age challenge when auth_time is older than endpoint maxAge") {
+      val env = new Env
+      val endpoint = usersEndpoint(maxAge = Some(300))
+      for
+        _ <- env.setupDefaults()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        now <- Clock.instant
+        _ <- env.withResources(usersResource(endpoint))
+        token <- env.signToken(authTime = Some(now.getEpochSecond - 600))
+        request = Request.get(URL.empty / "users").addCookie(sessionCookie(token))
+        service = env.buildService(client, security)
+        response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
+        challenge = response.headers.get("WWW-Authenticate")
+      yield assertTrue(
+        response.status == Status.Unauthorized,
+        challenge.exists(_.contains("""error="insufficient_user_authentication"""")),
+        challenge.exists(_.contains("""max_age="300"""")),
+      )
+    },
+    test("returns 401 with max_age challenge when auth_time claim is absent") {
+      val env = new Env
+      val endpoint = usersEndpoint(maxAge = Some(300))
+      for
+        _ <- env.setupDefaults()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(endpoint))
+        token <- env.signToken()
+        request = Request.get(URL.empty / "users").addCookie(sessionCookie(token))
+        service = env.buildService(client, security)
+        response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
+      yield assertTrue(
+        response.status == Status.Unauthorized,
+        response.headers.get("WWW-Authenticate").exists(_.contains("""max_age="300"""")),
+      )
+    },
+    test("forwards upstream when auth_time is within endpoint maxAge") {
+      val env = new Env
+      val endpoint = usersEndpoint(maxAge = Some(300))
+      for
+        _ <- env.setupDefaults()
+        capture <- captureUpstream()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        now <- Clock.instant
+        _ <- env.withResources(usersResource(endpoint))
+        token <- env.signToken(authTime = Some(now.getEpochSecond - 60))
+        request = Request.get(URL.empty / "users").addCookie(sessionCookie(token))
+        service = env.buildService(client, security)
+        response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
+      yield assertTrue(response.status == Status.Ok)
+    },
+    test("forwards upstream when auth_time equals maxAge boundary exactly") {
+      val env = new Env
+      val endpoint = usersEndpoint(maxAge = Some(300))
+      for
+        _ <- env.setupDefaults()
+        capture <- captureUpstream()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        now <- Clock.instant
+        _ <- env.withResources(usersResource(endpoint))
+        token <- env.signToken(authTime = Some(now.getEpochSecond - 300))
+        request = Request.get(URL.empty / "users").addCookie(sessionCookie(token))
+        service = env.buildService(client, security)
+        response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
+      yield assertTrue(response.status == Status.Ok)
+    },
+    test("returns 401 with acr_values challenge when token has no acr claim") {
+      val env = new Env
+      val endpoint = usersEndpoint(acrValues = Some("passkey-level"))
+      for
+        _ <- env.setupDefaults()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(endpoint))
+        token <- env.signToken() // no acr claim
+        request = Request.get(URL.empty / "users").addCookie(sessionCookie(token))
+        service = env.buildService(client, security)
+        response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
+        challenge = response.headers.get("WWW-Authenticate")
+      yield assertTrue(
+        response.status == Status.Unauthorized,
+        challenge.exists(_.contains("""acr_values="passkey-level"""")),
+      )
+    },
+    test("returns 401 with both acr_values and max_age in challenge when both requirements fail") {
+      val env = new Env
+      val endpoint = usersEndpoint(acrValues = Some("passkey-level"), maxAge = Some(300))
+      for
+        _ <- env.setupDefaults()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        now <- Clock.instant
+        _ <- env.withResources(usersResource(endpoint))
+        token <- env.signToken(acr = Some("password-only"), authTime = Some(now.getEpochSecond - 600))
+        request = Request.get(URL.empty / "users").addCookie(sessionCookie(token))
+        service = env.buildService(client, security)
+        response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
+        challenge = response.headers.get("WWW-Authenticate")
+      yield assertTrue(
+        response.status == Status.Unauthorized,
+        challenge.exists(_.contains("""acr_values="passkey-level"""")),
+        challenge.exists(_.contains("""max_age="300"""")),
+      )
+    },
+    test("challenge includes only acr_values when only ACR fails and max_age is satisfied") {
+      val env = new Env
+      val endpoint = usersEndpoint(acrValues = Some("passkey-level"), maxAge = Some(300))
+      for
+        _ <- env.setupDefaults()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        now <- Clock.instant
+        _ <- env.withResources(usersResource(endpoint))
+        token <- env.signToken(acr = Some("password-only"), authTime = Some(now.getEpochSecond - 60))
+        request = Request.get(URL.empty / "users").addCookie(sessionCookie(token))
+        service = env.buildService(client, security)
+        response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
+        challenge = response.headers.get("WWW-Authenticate")
+      yield assertTrue(
+        response.status == Status.Unauthorized,
+        challenge.exists(_.contains("""acr_values="passkey-level"""")),
+        challenge.forall(!_.contains("max_age")),
+      )
+    },
+    test("challenge includes only max_age when only max_age fails and ACR is satisfied") {
+      val env = new Env
+      val endpoint = usersEndpoint(acrValues = Some("passkey-level"), maxAge = Some(300))
+      for
+        _ <- env.setupDefaults()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        now <- Clock.instant
+        _ <- env.withResources(usersResource(endpoint))
+        token <- env.signToken(acr = Some("passkey-level"), authTime = Some(now.getEpochSecond - 600))
+        request = Request.get(URL.empty / "users").addCookie(sessionCookie(token))
+        service = env.buildService(client, security)
+        response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
+        challenge = response.headers.get("WWW-Authenticate")
+      yield assertTrue(
+        response.status == Status.Unauthorized,
+        challenge.exists(_.contains("""max_age="300"""")),
+        challenge.forall(!_.contains("acr_values")),
+      )
     },
     test("matches parameterized path and exposes path parameters in CEL context") {
       val env = new Env

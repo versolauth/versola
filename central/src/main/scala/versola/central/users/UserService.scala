@@ -36,6 +36,8 @@ trait UserService:
 
   def resetPassword(request: ResetPasswordRequest): Task[Unit]
 
+  def setPassword(userId: UserId, password: String): Task[Unit]
+
 object UserService:
   val live: ZLayer[UserRepository & AuthClient & SecureRandom, Nothing, UserService] =
     ZLayer.fromFunction(Impl(_, _, _))
@@ -96,3 +98,6 @@ object UserService:
 
     override def resetPassword(request: ResetPasswordRequest): Task[Unit] =
       authClient.resetPassword(request)
+
+    override def setPassword(userId: UserId, password: String): Task[Unit] =
+      authClient.setPassword(userId, password)

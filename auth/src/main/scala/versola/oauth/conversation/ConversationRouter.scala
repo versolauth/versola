@@ -21,6 +21,13 @@ trait ConversationRouter:
     */
   def startPasskeyOptions(authId: AuthId): Task[Option[String]]
 
+  /** Advance an already-created conversation to the first factor step that still needs to be
+    * completed. The conversation must already have `credential` populated (set at creation time
+    * when `userId` and `targetAcr` are known). Satisfied factors (present in `amr`) are skipped
+    * automatically by the underlying `afterFactor` routing logic.
+    */
+  def advance(authId: AuthId, conversation: ConversationRecord): Task[Unit]
+
 object ConversationRouter:
   def live = ZLayer.fromFunction(Impl(_, _, _, _))
 
@@ -33,6 +40,9 @@ object ConversationRouter:
 
     override def getConversation(authId: AuthId): Task[Option[ConversationRecord]] =
       conversationService.find(authId)
+
+    override def advance(authId: AuthId, conversation: ConversationRecord): Task[Unit] =
+      afterFactor(authId, conversation, nextFactorIndex = 0).unit
 
     override def startPasskeyOptions(authId: AuthId): Task[Option[String]] =
       conversationService.find(authId).flatMap:
@@ -151,10 +161,7 @@ object ConversationRouter:
         conversation: ConversationRecord,
         credential: Either[Email, Phone],
     ): Task[ConversationResult.Render] =
-      conversation.authFlow.primary.factors
-        .zipWithIndex
-        .dropWhile { case (factor, _) => isSatisfied(conversation, factor) }
-        .headOption match
+      nextNeededFactor(conversation, conversation.authFlow.primary.factors.zipWithIndex).flatMap:
         case Some((AuthFactor(AuthFactorType.otp, _), idx)) =>
           conversationService.prepareInitialOtp(authId, conversation, credential, factorIndex = idx)
 
@@ -176,11 +183,7 @@ object ConversationRouter:
         conversation: ConversationRecord,
         nextFactorIndex: Int,
     ): Task[ConversationResult.Render] =
-      conversation.authFlow.primary.factors
-        .zipWithIndex
-        .drop(nextFactorIndex)
-        .dropWhile { case (factor, _) => isSatisfied(conversation, factor) }
-        .headOption match
+      nextNeededFactor(conversation, conversation.authFlow.primary.factors.zipWithIndex.drop(nextFactorIndex)).flatMap:
         case Some((AuthFactor(AuthFactorType.otp, _), idx)) =>
           conversation.credential match
             case Some(cred) => conversationService.prepareInitialOtp(authId, conversation, cred, idx)
@@ -197,3 +200,16 @@ object ConversationRouter:
             conversationService.offerSetPassword(authId, conversation)
           else
             conversationService.finish(authId, conversation)
+
+    private def nextNeededFactor(
+        conversation: ConversationRecord,
+        factors: List[(AuthFactor, Int)],
+    ): Task[Option[(AuthFactor, Int)]] =
+      for
+        vocabulary <- configService.getAcrVocabulary(conversation.clientId)
+        reqFactors = conversation.targetAcr.flatMap(vocabulary.get).map(_.toList.toSet).getOrElse(Set.empty)
+      yield factors.find { case (factor, _) =>
+        val passed = isSatisfied(conversation, factor)
+        val needed = factor.required || PassedAuthFactor.fromFactorType(factor.`type`).exists(reqFactors.contains)
+        !passed && needed
+      }

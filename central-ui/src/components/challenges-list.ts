@@ -931,7 +931,7 @@ export class VersolaChallengesList extends LitElement {
               <div class="info-table">
                 ${Object.entries(this.acrVocabulary).map(([acr, factors]) => html`
                   <div class="prop-row">
-                    <span class="prop-label prop-value" style="font-family: var(--font-mono);">${acr}</span>
+                    <span class="prop-label prop-value" style="font-family: var(--font-mono); text-transform: none;">${acr}</span>
                     <div class="prefix-tags" style="margin-top: 0;">
                       ${factors.map(f => html`<span class="prefix-tag">${f}</span>`)}
                     </div>

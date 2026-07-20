@@ -81,3 +81,8 @@ case class ResetPasswordRequest(
     expiresInSeconds: Option[Long],
     channel: Option[DeliveryChannel],
 ) derives JsonCodec, Schema
+
+case class SetPasswordRequest(
+    userId: UserId,
+    password: String,
+) derives JsonCodec, Schema

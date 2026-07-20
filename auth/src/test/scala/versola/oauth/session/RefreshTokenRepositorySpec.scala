@@ -1,7 +1,7 @@
 package versola.oauth.session
 
 import com.augustnagro.magnum.magzio.TransactorZIO
-import versola.oauth.client.model.{AuthMethodRef, ClientId, ScopeToken}
+import versola.oauth.client.model.{Acr, AuthMethodRef, ClientId, ScopeToken}
 import versola.oauth.model.{AccessToken, RefreshToken}
 import versola.oauth.session.model.{RefreshTokenRecord, SessionId}
 import versola.user.model.UserId
@@ -56,6 +56,7 @@ trait RefreshTokenRepositorySpec extends DatabaseSpecBase[RefreshTokenRepository
     previousRefreshToken = None,
     amr = Set(AuthMethodRef.pwd),
     authTime = now,
+    acr = None,
   )
 
   def tokenRecord2(now: Instant, ttl: Duration) = RefreshTokenRecord(
@@ -73,6 +74,7 @@ trait RefreshTokenRepositorySpec extends DatabaseSpecBase[RefreshTokenRepository
     previousRefreshToken = None,
     amr = Set(AuthMethodRef.pwd),
     authTime = now,
+    acr = None,
   )
 
   def testCases(env: RefreshTokenRepositorySpec.Env): List[Spec[RefreshTokenRepositorySpec.Env & Scope, Any]] =

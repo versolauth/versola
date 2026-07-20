@@ -29,6 +29,7 @@ trait OAuthClientService:
 
   def registerClient(
       request: CreateClientRequest,
+      presetSecret: Option[Secret] = None,
   ): IO[ClientAlreadyExists | Throwable, Secret]
 
   def updateClient(
@@ -117,9 +118,10 @@ object OAuthClientService:
 
     override def registerClient(
         request: CreateClientRequest,
+        presetSecret: Option[Secret] = None,
     ): IO[ClientAlreadyExists | Throwable, Secret] =
       for
-        secret <- generateSecret
+        secret <- presetSecret.fold(generateSecret)(ZIO.succeed(_))
         encryptedSecret <- encryptRawSecret(secret)
         client = OAuthClientRecord(
           id = request.id,

@@ -76,6 +76,11 @@ case class ResetPasswordPayload(
     channel: Option[DeliveryChannel],
 ) derives JsonCodec
 
+case class SetPasswordPayload(
+    userId: UserId,
+    password: String,
+) derives JsonCodec
+
 case class SessionResponse(
     clientId: String,
     platform: String,

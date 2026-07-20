@@ -330,7 +330,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
         for
           body <- response.body.asJson[CreateClientResponse]
         yield assertTrue(
-          service.registerClient.calls == List(createRequest),
+          service.registerClient.calls == List((createRequest, None)),
           body == CreateClientResponse(Base64Url.encode(rotatedSecret)),
         ),
     ),

@@ -16,7 +16,7 @@ import versola.central.configuration.tenants.{TenantId, TenantRepository}
 import versola.central.configuration.themes.{ThemeRecord, ThemeRepository}
 import versola.central.configuration.{CreateClaim, CreateClientRequest, ResourceUri}
 import versola.central.users.{Login, UserConflict, UserId, UserRepository}
-import versola.util.RedirectUri
+import versola.util.{RedirectUri, Secret}
 import zio.json.DecoderOps
 import zio.json.ast.Json
 import zio.{Task, ZIO, ZLayer}
@@ -581,13 +581,18 @@ object BootstrapService:
         authFlow       = Some(authFlow),
         otpTemplateId  = "default",
       )
-      clientService.registerClient(request).foldZIO(
-        {
-          case _: ClientAlreadyExists => ZIO.unit
-          case e: Throwable           => ZIO.fail(e)
-        },
-        _ => ZIO.unit,
-      )
+      for
+        presetSecret <- ZIO.foreach(config.clientSecret): secretB64 =>
+          ZIO.fromEither(Secret.fromBase64Url(secretB64))
+            .mapError(msg => RuntimeException(s"bootstrap.client-secret is not valid Base64Url: $msg"))
+        _ <- clientService.registerClient(request, presetSecret).foldZIO(
+          {
+            case _: ClientAlreadyExists => ZIO.unit
+            case e: Throwable           => ZIO.fail(e)
+          },
+          _ => ZIO.unit,
+        )
+      yield ()
 
     private def seedPresets(config: CentralConfig.BootstrapConfig): Task[Unit] =
       ZIO.foreachDiscard(config.presets.getOrElse(Nil)): seed =>
@@ -642,6 +647,8 @@ object BootstrapService:
             fetchUserInfo = false,
             allowExpression = None,
             inject = Vector.empty,
+            acrValues = None,
+            maxAge = None,
           )
         resourceRepo.getAll.flatMap: resources =>
           resources.find(r => r.tenantId == tenantId && r.resourceId == centralResourceId) match

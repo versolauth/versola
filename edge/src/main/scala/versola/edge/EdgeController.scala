@@ -20,12 +20,23 @@ object EdgeController extends Controller:
     proxyDeleteEndpoint,
   )
 
+  private val loginParamWhitelist = Set(
+    "acr_values",
+    "max_age",
+    "prompt",
+    "login_hint",
+    "ui_locales"
+  )
+
   val loginEndpoint =
     Method.GET / "login" / string("presetId") -> handler { (presetId: String, request: Request) =>
       for
         edgeService <- ZIO.service[EdgeService]
+        overrideParams: Map[String, String] = loginParamWhitelist.flatMap { key =>
+          request.url.queryParams.map.get(key).flatMap(_.headOption).map(key -> _)
+        }.toMap
 
-        response <- edgeService.authorize(PresetId(presetId))
+        response <- edgeService.authorize(PresetId(presetId), overrideParams)
           .either.flatMap:
             case Left(error: PresetNotFound) =>
               ZIO.succeed(Response.notFound)

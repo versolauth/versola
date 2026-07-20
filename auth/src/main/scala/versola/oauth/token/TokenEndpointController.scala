@@ -4,7 +4,7 @@ import com.nimbusds.jose.crypto.RSASSASigner
 import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm, JWSHeader}
 import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{Acr, AuthMethodRef, ScopeToken}
+import versola.oauth.client.model.{AuthMethodRef, ScopeToken}
 import versola.oauth.jwks.JwksService
 import versola.oauth.model.{AccessToken, AuthorizationCode, CodeVerifier, RefreshToken}
 import versola.oauth.token.model.{ClientCredentialsRequest, CodeExchangeRequest, IssuedTokens, RefreshTokenRequest, TokenEndpointError, TokenErrorResponse, TokenRequest, TokenResponse}
@@ -77,7 +77,8 @@ object TokenEndpointController extends Controller:
         "roles" -> Json.Arr(tokens.roles.map(Json.Str(_))*),
       ) ++
         tokens.tenantId.map("tenant_id" -> Json.Str(_)) ++
-        tokens.requestedClaims.map(rc => "requested_claims" -> rc.toJsonAST.toOption.get)
+        tokens.requestedClaims.map(rc => "requested_claims" -> rc.toJsonAST.toOption.get) ++
+        AuthMethodRef.idTokenClaims(tokens.amr, tokens.authTime, tokens.acr)
 
 
       // For client_credentials grant, use client_id as subject; otherwise use user_id
@@ -128,7 +129,7 @@ object TokenEndpointController extends Controller:
               issuer = config.jwt.issuer,
               subject = userId.toString,
               audience = List(tokens.clientId),
-              custom = Json.Obj(Chunk.fromIterable(userInfo.claims ++ AuthMethodRef.idTokenClaims(tokens.amr, tokens.authTime, Acr.acrClaim(tokens.amr)))),
+              custom = Json.Obj(Chunk.fromIterable(userInfo.claims ++ AuthMethodRef.idTokenClaims(tokens.amr, tokens.authTime, tokens.acr))),
             ),
             ttl = tokens.accessTokenTtl,
             signature = JWT.Signature.Asymmetric(

@@ -42,7 +42,7 @@ jobs:
           cache: 'sbt'
       - uses: sbt/setup-sbt@v1
       - name: Set up Scala CLI
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: github.event_name != 'release'
         uses: VirtusLab/scala-cli-setup@v1
       - name: Enforce measured DB access in production code
         shell: bash
@@ -101,6 +101,58 @@ jobs:
           GIST_ID: bd1fd5151f5190b2f8325a56610909ef
           GIST_FILENAME: versola-coverage.json
         run: scala-cli run .github/scripts/coverage-badge.scala
+
+      - name: Generate dev configs
+        if: github.event_name != 'release'
+        run: echo "local" | scala-cli run scripts/gen-env.scala
+
+      - name: Stage services for e2e tests
+        if: github.event_name != 'release'
+        run: sbt "central-postgres-impl/stage" "auth-postgres-impl/stage"
+
+      - name: Start central and auth services
+        if: github.event_name != 'release'
+        run: |
+          PORT=9001 DPORT=9002 \
+            central/implementations/postgres/target/universal/stage/bin/central-postgres-impl \
+            -Denv.path=central/dev/env.conf > /tmp/central.log 2>&1 &
+          echo $! > /tmp/central.pid
+
+          PORT=9003 DPORT=9004 \
+            auth/implementations/postgres/target/universal/stage/bin/auth-postgres-impl \
+            -Denv.path=auth/dev/env.conf > /tmp/auth.log 2>&1 &
+          echo $! > /tmp/auth.pid
+
+      - name: Wait for services to be ready
+        if: github.event_name != 'release'
+        run: |
+          for svc in "central:9002" "auth:9004"; do
+            name="${svc%%:*}"
+            port="${svc##*:}"
+            echo "Waiting for $name on port $port..."
+            for i in $(seq 1 60); do
+              if curl -sf "http://localhost:$port/readiness" > /dev/null 2>&1; then
+                echo "$name is ready after ${i}x2s"
+                break
+              fi
+              if [ "$i" -eq 60 ]; then
+                echo "$name did not become ready in 120s"
+                cat /tmp/$name.log
+                exit 1
+              fi
+              sleep 2
+            done
+          done
+
+      - name: Run e2e tests
+        if: github.event_name != 'release'
+        run: sbt e2e/test
+
+      - name: Stop services
+        if: always()
+        run: |
+          [ -f /tmp/auth.pid ]    && kill "$(cat /tmp/auth.pid)"    2>/dev/null || true
+          [ -f /tmp/central.pid ] && kill "$(cat /tmp/central.pid)" 2>/dev/null || true
 
   docker-auth:
     needs: build

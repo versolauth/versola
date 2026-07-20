@@ -17,7 +17,7 @@ import versola.central.configuration.roles.{RoleController, RoleRecord, RoleRepo
 import versola.central.configuration.scopes.{OAuthScopeRepository, OAuthScopeService, ScopeController}
 import versola.central.configuration.sync.{CacheSyncRepository, CacheSyncService}
 import versola.central.configuration.tenants.{TenantController, TenantRepository, TenantService}
-import versola.central.users.{AuthClient, UserOutboxProcessor, UserController, UserRepository, UserService}
+import versola.central.users.{AuthClient, ServiceController, UserOutboxProcessor, UserController, UserRepository, UserService}
 import versola.configuration.clients.{PostgresAuthorizationPresetRepository, PostgresOAuthClientRepository}
 import versola.configuration.challenges.{PostgresChallengeSettingsRepository, PostgresOtpChallengeRepository}
 import versola.configuration.system.PostgresSystemSettingsRepository
@@ -85,12 +85,13 @@ object PostgresCentralApp extends VersolaApp("central"):
       CacheSyncService &
       UserRepository &
       UserService &
+      UserOutboxProcessor &
       JwksRepository &
       JwksService &
       SecureRandom &
       SecurityService
 
-  override def routes: Routes[Dependencies & Tracing, Throwable] =
+  override def routes: Routes[Dependencies & Tracing & EnvName, Throwable] =
     List(
       TenantController.routes,
       PermissionController.routes,
@@ -107,6 +108,7 @@ object PostgresCentralApp extends VersolaApp("central"):
       SystemSettingsController.routes,
       UserController.routes,
       JwksController.routes,
+      ServiceController.routes,
     ).reduce(_ ++ _)
 
   private val repositories =

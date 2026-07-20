@@ -2,7 +2,9 @@ package versola.oauth.conversation
 
 import versola.auth.TestEnvConfig
 import versola.auth.model.{CredentialId, CredentialDeviceType, OtpCode, PasskeyRecord, Password}
+import versola.oauth.authorize.AcrResolutionService
 import versola.oauth.authorize.model.ResponseTypeEntry
+import zio.prelude.NonEmptyList
 import versola.oauth.challenge.passkey.PasskeyRepository
 import versola.oauth.challenge.password.PasswordService
 import versola.oauth.challenge.password.model.CheckPassword
@@ -68,7 +70,7 @@ object ConversationServiceSpec extends UnitSpecBase:
     version = 1,
     amr = Map.empty,
     needsPasswordChange = false,
-    expectedUserId = None,
+    targetAcr = None,
   )
 
   class Env:
@@ -85,6 +87,7 @@ object ConversationServiceSpec extends UnitSpecBase:
     val webAuthnService = stub[versola.oauth.challenge.passkey.WebAuthnService]
     val passkeyRepository = stub[PasskeyRepository]
     val configService = stub[OAuthConfigurationService]
+    val acrResolver = stub[AcrResolutionService]
 
     val service = ConversationService.Impl(
       otpService,
@@ -100,7 +103,8 @@ object ConversationServiceSpec extends UnitSpecBase:
       submissionLimiter,
       webAuthnService,
       passkeyRepository,
-      configService
+      configService,
+      acrResolver,
     )
 
   def spec = suite("ConversationService")(
@@ -303,5 +307,4 @@ object ConversationServiceSpec extends UnitSpecBase:
           assertTrue(result.isInstanceOf[ConversationResult.Complete])
       }
     )
-
   )

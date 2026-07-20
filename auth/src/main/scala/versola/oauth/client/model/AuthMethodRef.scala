@@ -45,7 +45,7 @@ object AuthMethodRef:
   /** Build the OIDC ID token claims (`amr`, `auth_time`) from the resolved set of
     * method references and the authentication time. Omits `amr` when empty.
     */
-  def idTokenClaims(amr: Set[AuthMethodRef], authTime: Option[Instant], acr: Option[String] = None): Map[String, Json] = {
+  def idTokenClaims(amr: Set[AuthMethodRef], authTime: Option[Instant], acr: Option[Acr] = None): Map[String, Json] = {
     val amrField      = Option.when(amr.nonEmpty) {
       "amr" -> Json.Arr(Chunk.fromIterable(amr.toList.sortBy(_.toString).map(m => Json.Str(m.toString))))
     }

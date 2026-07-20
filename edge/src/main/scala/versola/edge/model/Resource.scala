@@ -10,6 +10,8 @@ case class ResourceEndpoint(
     fetchUserInfo: Boolean,
     allow: Option[String],
     inject: Vector[InjectRule],
+    acrValues: Option[String],
+    maxAge: Option[Int],
 ) derives JsonCodec
 
 case class Resource(

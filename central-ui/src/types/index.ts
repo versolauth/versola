@@ -179,6 +179,8 @@ export interface ResourceEndpoint {
   fetchUserInfo: boolean;
   allow?: string;
   inject: InjectRule[];
+  acrValues?: string;
+  maxAge?: number;
 }
 
 export interface Resource {

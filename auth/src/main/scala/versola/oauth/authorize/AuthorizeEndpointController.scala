@@ -52,7 +52,7 @@ object AuthorizeEndpointController extends Controller:
           )
 
         case AuthorizeResponse.Initialize(authId) =>
-          Response.seeOther(URL.empty / "challenge")
+          Response.seeOther(URL.root / "challenge")
             .addCookie(
               ConversationCookie.responseCookie(
                 ConversationCookie(authId, request.clientId),

@@ -2,6 +2,7 @@ package versola.oauth.conversation
 
 import versola.auth.TestEnvConfig
 import versola.auth.model.Password
+import versola.oauth.authorize.AcrResolutionService
 import versola.oauth.challenge.passkey.{PasskeyRepository, WebAuthnService}
 import versola.oauth.challenge.password.PasswordService
 import versola.oauth.challenge.password.model.CheckPassword
@@ -58,6 +59,7 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
     val webAuthnService = stub[WebAuthnService]
     val passkeyRepository = stub[PasskeyRepository]
     val configService = stub[OAuthConfigurationService]
+    val acrResolver = stub[AcrResolutionService]
     val config = TestEnvConfig.coreConfig
     val service = ConversationService.Impl(
       otpService,
@@ -74,6 +76,7 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
       webAuthnService,
       passkeyRepository,
       configService,
+      acrResolver,
     )
 
   val baseRecord = ConversationRecord(
@@ -99,7 +102,7 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
     version = 0,
     amr = Map.empty,
     needsPasswordChange = false,
-    expectedUserId = None,
+    targetAcr = None,
   )
 
   val passwordRecord = baseRecord.copy(
@@ -398,18 +401,5 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
       },
     ),
     suite("finish")(
-      test("deny access when authenticated user does not match expectedUserId") {
-        val env = Env()
-        val expectedUser = UserId(UUID.randomUUID())
-        val differentUser = UserId(UUID.randomUUID())
-        val recordWithMismatch = baseRecord.copy(
-          userId = Some(differentUser),
-          expectedUserId = Some(expectedUser),
-        )
-        for
-          _ <- env.conversationRepository.overwrite.succeedsWith(true)
-          result <- env.service.finish(authId, recordWithMismatch)
-        yield assertTrue(result == ConversationResult.RenderStep(ConversationStep.AccessDenied))
-      },
     ),
   )

@@ -52,6 +52,8 @@ trait AuthClient:
 
   def resetPassword(request: ResetPasswordRequest): Task[Unit]
 
+  def setPassword(userId: UserId, password: String): Task[Unit]
+
 object AuthClient:
   val live: ZLayer[Scope & Client & CentralConfig, Throwable, AuthClient] =
     AuthTokenService.live >>> ZLayer.fromFunction(Impl(_, _, _))
@@ -98,6 +100,11 @@ object AuthClient:
       name: Option[String],
   ) derives JsonCodec
 
+  private case class SetPasswordPayload(
+      userId: UserId,
+      password: String,
+  ) derives JsonCodec
+
   class Impl(
       httpClient: Client,
       config: CentralConfig,
@@ -110,6 +117,7 @@ object AuthClient:
     private val limitsResetUrl: URL = usersUrl / "limits" / "reset"
     private val passkeysUrl: URL = usersUrl / "passkeys"
     private val passwordResetUrl: URL = usersUrl / "password" / "reset"
+    private val passwordSetUrl: URL = usersUrl / "password" / "set"
 
     override def upsertUser(
         id: UserId,
@@ -216,6 +224,15 @@ object AuthClient:
           method = Method.POST,
           url = passwordResetUrl,
           body = Body.from(request),
+        ),
+      )
+
+    override def setPassword(userId: UserId, password: String): Task[Unit] =
+      send(
+        Request(
+          method = Method.POST,
+          url = passwordSetUrl,
+          body = Body.from(SetPasswordPayload(userId, password)),
         ),
       )
 
