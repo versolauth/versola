@@ -1,12 +1,17 @@
 import { build } from 'esbuild';
 import { solidPlugin } from 'esbuild-plugin-solid';
-import { writeFile, copyFile } from 'node:fs/promises';
+import { writeFile, copyFile, mkdir } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const formsSrcDir = resolve(here, '../forms');
 const outDir = resolve(here, '../../central/src/main/resources/forms');
+
+// outDir is gitignored (generated output), so on a fresh checkout it doesn't exist yet.
+// writeFile/copyFile below don't create parent directories, so without this the first
+// write fails with ENOENT — this is exactly what would happen in CI right now.
+await mkdir(outDir, { recursive: true });
 
 const forms = ['credential', 'otp', 'password', 'access-denied', 'passkey-enroll', 'set-password'];
 const sharedAssets = ['common.css'];
