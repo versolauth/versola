@@ -118,6 +118,55 @@ trait ChallengeThrottleRepositorySpec extends DatabaseSpecBase[ChallengeThrottle
           found <- env.repository.findAll(tenantId, subject, List(ChallengeType.OtpRequest, ChallengeType.OtpSubmit))
         yield assertTrue(found.isEmpty)
       },
+      test("recordAttempt inserts a record when none exists and returns the mutate result") {
+        for
+          status <- env.repository.recordAttempt(
+            tenantId,
+            subject,
+            ChallengeType.OtpSubmit,
+            existing => (record(ChallengeType.OtpSubmit, attempts = List(42L)), if existing.isEmpty then LimitStatus.Allowed else LimitStatus.Banned),
+          )
+          found <- env.repository.find(tenantId, subject, ChallengeType.OtpSubmit)
+        yield assertTrue(status == LimitStatus.Allowed, found.exists(_.attempts == List(42L)))
+      },
+      test("recordAttempt passes the existing record to mutate and persists what it returns") {
+        for
+          _ <- env.repository.upsert(record(ChallengeType.OtpSubmit, attempts = List(1000L)))
+          status <- env.repository.recordAttempt(
+            tenantId,
+            subject,
+            ChallengeType.OtpSubmit,
+            { existing =>
+              val current = existing.get
+              val next = current.copy(attempts = current.attempts :+ 2000L)
+              (next, if current.attempts == List(1000L) then LimitStatus.Allowed else LimitStatus.Banned)
+            },
+          )
+          found <- env.repository.find(tenantId, subject, ChallengeType.OtpSubmit)
+        yield assertTrue(
+          status == LimitStatus.Allowed,
+          found.exists(_.attempts == List(1000L, 2000L)),
+        )
+      },
+      test("concurrent recordAttempt calls against the same key don't lose updates (regression for #91)") {
+        val concurrentAttempts = 20
+        for
+          _ <- ZIO.foreachParDiscard(1 to concurrentAttempts): i =>
+            env.repository.recordAttempt(
+              tenantId,
+              subject,
+              ChallengeType.OtpSubmit,
+              { existing =>
+                val attempts = existing.fold[List[Long]](Nil)(_.attempts) :+ i.toLong
+                (record(ChallengeType.OtpSubmit, attempts = attempts), LimitStatus.Allowed)
+              },
+            )
+          found <- env.repository.find(tenantId, subject, ChallengeType.OtpSubmit)
+        yield assertTrue(
+          found.exists(_.attempts.size == concurrentAttempts),
+          found.exists(_.attempts.toSet == (1 to concurrentAttempts).map(_.toLong).toSet),
+        )
+      },
     )
 
 object ChallengeThrottleRepositorySpec:

@@ -70,6 +70,35 @@ class PostgresChallengeThrottleRepository(xa: TransactorZIO) extends ChallengeTh
       """.update.run()
     .unit
 
+  override def recordAttempt(
+      tenantId: TenantId,
+      subject: String,
+      challengeType: ChallengeType,
+      mutate: Option[ChallengeThrottleRecord] => (ChallengeThrottleRecord, LimitStatus),
+  ): Task[LimitStatus] =
+    xa.transactMeasured("record-challenge-throttle-attempt"):
+      // Lock the row (if any) for the rest of the transaction so a concurrent attempt against the
+      // same key can't read the same snapshot and cause a lost update.
+      val existing =
+        sql"""SELECT tenant_id, subject, challenge_type, attempts, banned_until, expires_at
+              FROM challenge_throttle
+              WHERE tenant_id = $tenantId AND subject = $subject AND challenge_type = $challengeType
+              FOR UPDATE"""
+          .query[ChallengeThrottleRecord].run().headOption
+
+      val (record, result) = mutate(existing)
+
+      sql"""
+        INSERT INTO challenge_throttle (subject, tenant_id, challenge_type, attempts, banned_until, expires_at)
+        VALUES (${record.subject}, ${record.tenantId}, ${record.challengeType}, ${record.attempts}, ${record.bannedUntil}, ${record.expiresAt})
+        ON CONFLICT (subject, tenant_id, challenge_type) DO UPDATE SET
+          attempts = EXCLUDED.attempts,
+          banned_until = EXCLUDED.banned_until,
+          expires_at = EXCLUDED.expires_at
+      """.update.run()
+
+      result
+
   override def delete(
       tenantId: TenantId,
       subject: String,
