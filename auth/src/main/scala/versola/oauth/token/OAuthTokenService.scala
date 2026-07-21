@@ -69,13 +69,14 @@ object OAuthTokenService:
         _ <- authorizationCodeRepository.markAsUsed(codeMac).flatMap:
           case Left(at) =>
             accessTokenRevocationService.revoke(at) *>
-              sessionRepository.deleteByAccessToken(at)
+              sessionRepository.deleteByAccessToken(at) *>
+              ZIO.fail(TokenEndpointError.InvalidGrant)
 
           case Right(_) =>
             ZIO.unit
 
         now <- zio.Clock.instant
-        accessToken <- authPropertyGenerator.nextAccessToken
+        accessToken = codeRecord.accessToken
 
         issuedTokens <- issueTokens(
           accessToken = accessToken,

@@ -257,6 +257,79 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           result == Left(TokenEndpointError.InvalidGrant),
         )
       },
+      test("fail with InvalidGrant and revoke the previously issued token when code is reused (double-spend)") {
+        val env = new Env
+        for
+          codeRecord = AuthorizationCodeRecord(
+            sessionId = sessionId1,
+            clientId = clientId1,
+            userId = userId1,
+            redirectUri = redirectUri1,
+            scope = scope1,
+            codeChallenge = codeChallenge1,
+            codeChallengeMethod = CodeChallengeMethod.S256,
+            requestedClaims = None,
+            uiLocales = None,
+            nonce = None,
+            accessToken = accessToken1,
+            amr = amr1,
+            authTime = authTime1,
+          )
+
+          _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
+          _ <- env.securityService.mac.succeedsWith(codeMac1)
+          _ <- env.authCodeRepo.find.succeedsWith(Some(codeRecord))
+          _ <- env.authCodeRepo.markAsUsed.succeedsWith(Left(accessToken1))
+          _ <- env.accessTokenRevocationService.revoke.succeedsWith(())
+          _ <- env.tokenRepo.deleteByAccessToken.succeedsWith(())
+
+          request = CodeExchangeRequest(authCode1, redirectUri1, codeVerifier1)
+          credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
+
+          result <- env.service.exchangeAuthorizationCode(request, credentials).either
+        yield assertTrue(
+          result == Left(TokenEndpointError.InvalidGrant),
+          env.accessTokenRevocationService.revoke.calls == List(accessToken1),
+          env.tokenRepo.deleteByAccessToken.calls == List(accessToken1),
+          env.tokenRepo.createRefreshToken.calls.isEmpty,
+        )
+      },
+      test("issues the access token embedded in the authorization code, not a freshly generated one") {
+        val env = new Env
+        val freshAccessToken = AccessToken(Array.fill(32)(11.toByte))
+        for
+          codeRecord = AuthorizationCodeRecord(
+            sessionId = sessionId1,
+            clientId = clientId1,
+            userId = userId1,
+            redirectUri = redirectUri1,
+            scope = scope2,
+            codeChallenge = codeChallenge1,
+            codeChallengeMethod = CodeChallengeMethod.S256,
+            requestedClaims = None,
+            uiLocales = None,
+            nonce = None,
+            accessToken = accessToken1,
+            amr = amr1,
+            authTime = authTime1,
+          )
+
+          _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
+          _ <- env.securityService.mac.succeedsWith(codeMac1)
+          _ <- env.authCodeRepo.find.succeedsWith(Some(codeRecord))
+          _ <- env.authCodeRepo.markAsUsed.succeedsWith(Right(()))
+          _ <- env.propertyGenerator.nextAccessToken.succeedsWith(freshAccessToken)
+          _ <- env.userRolesRepo.findRolesByUserAndTenant.succeedsWith(List.empty)
+
+          request = CodeExchangeRequest(authCode1, redirectUri1, codeVerifier1)
+          credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
+
+          result <- env.service.exchangeAuthorizationCode(request, credentials)
+        yield assertTrue(
+          result.accessToken == accessToken1,
+          result.accessToken != freshAccessToken,
+        )
+      },
       test("does not fetch admin roles for non-admin clients") {
         val env = new Env
         for
