@@ -74,7 +74,7 @@ class PostgresChallengeThrottleRepository(xa: TransactorZIO) extends ChallengeTh
       tenantId: TenantId,
       subject: String,
       challengeType: ChallengeType,
-      mutate: Option[ChallengeThrottleRecord] => (ChallengeThrottleRecord, LimitStatus),
+      mutate: Option[ChallengeThrottleRecord] => (ThrottleUpdate, LimitStatus),
   ): Task[LimitStatus] =
     val lockKey = s"$tenantId|$subject|$challengeType"
     xa.transactMeasured("record-challenge-throttle-attempt"):
@@ -97,11 +97,14 @@ class PostgresChallengeThrottleRepository(xa: TransactorZIO) extends ChallengeTh
               FOR UPDATE"""
           .query[ChallengeThrottleRecord].run().headOption
 
-      val (record, result) = mutate(existing)
+      val (update, result) = mutate(existing)
 
+      // Key fields written are exactly the ones we locked above — `tenantId`/`subject`/
+      // `challengeType` parameters, never anything from `mutate`'s result — so `mutate` can't
+      // steer the write to a different row than the one this transaction holds the lock for.
       sql"""
         INSERT INTO challenge_throttle (subject, tenant_id, challenge_type, attempts, banned_until, expires_at)
-        VALUES (${record.subject}, ${record.tenantId}, ${record.challengeType}, ${record.attempts}, ${record.bannedUntil}, ${record.expiresAt})
+        VALUES ($subject, $tenantId, $challengeType, ${update.attempts}, ${update.bannedUntil}, ${update.expiresAt})
         ON CONFLICT (subject, tenant_id, challenge_type) DO UPDATE SET
           attempts = EXCLUDED.attempts,
           banned_until = EXCLUDED.banned_until,

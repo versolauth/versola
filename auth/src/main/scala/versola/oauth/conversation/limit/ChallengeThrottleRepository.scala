@@ -17,6 +17,17 @@ case class ChallengeThrottleRecord(
     expiresAt: Instant,
 )
 
+/** The non-key fields `recordAttempt` lets `mutate` decide. Key fields (`tenantId`, `subject`,
+  * `challengeType`) are fixed by the `recordAttempt` call itself, not by `mutate`'s result, so a
+  * `mutate` that computes the wrong record can't steer the write to a different row than the one
+  * `recordAttempt` locked.
+  */
+case class ThrottleUpdate(
+    attempts: List[Long],
+    bannedUntil: Option[Instant],
+    expiresAt: Instant,
+)
+
 trait ChallengeThrottleRepository:
   def find(
       tenantId: TenantId,
@@ -52,7 +63,7 @@ trait ChallengeThrottleRepository:
       tenantId: TenantId,
       subject: String,
       challengeType: ChallengeType,
-      mutate: Option[ChallengeThrottleRecord] => (ChallengeThrottleRecord, LimitStatus),
+      mutate: Option[ChallengeThrottleRecord] => (ThrottleUpdate, LimitStatus),
   ): Task[LimitStatus]
 
   def delete(

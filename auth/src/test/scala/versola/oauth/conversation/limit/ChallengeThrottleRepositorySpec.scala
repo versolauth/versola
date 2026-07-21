@@ -35,6 +35,9 @@ trait ChallengeThrottleRepositorySpec extends DatabaseSpecBase[ChallengeThrottle
       expiresAt = expiresAt,
     )
 
+  def update(attempts: List[Long], banned: Option[Instant] = None): ThrottleUpdate =
+    ThrottleUpdate(attempts = attempts, bannedUntil = banned, expiresAt = expiresAt)
+
   def testCases(env: ChallengeThrottleRepositorySpec.Env): List[Spec[ChallengeThrottleRepositorySpec.Env & Scope, Any]] =
     List(
       test("upsert and find round-trips a record including attempts and bannedUntil") {
@@ -124,7 +127,7 @@ trait ChallengeThrottleRepositorySpec extends DatabaseSpecBase[ChallengeThrottle
             tenantId,
             subject,
             ChallengeType.OtpSubmit,
-            existing => (record(ChallengeType.OtpSubmit, attempts = List(42L)), if existing.isEmpty then LimitStatus.Allowed else LimitStatus.Banned),
+            existing => (update(List(42L)), if existing.isEmpty then LimitStatus.Allowed else LimitStatus.Banned),
           )
           found <- env.repository.find(tenantId, subject, ChallengeType.OtpSubmit)
         yield assertTrue(status == LimitStatus.Allowed, found.exists(_.attempts == List(42L)))
@@ -138,8 +141,7 @@ trait ChallengeThrottleRepositorySpec extends DatabaseSpecBase[ChallengeThrottle
             ChallengeType.OtpSubmit,
             { existing =>
               val current = existing.get
-              val next = current.copy(attempts = current.attempts :+ 2000L)
-              (next, if current.attempts == List(1000L) then LimitStatus.Allowed else LimitStatus.Banned)
+              (update(current.attempts :+ 2000L), if current.attempts == List(1000L) then LimitStatus.Allowed else LimitStatus.Banned)
             },
           )
           found <- env.repository.find(tenantId, subject, ChallengeType.OtpSubmit)
@@ -162,7 +164,7 @@ trait ChallengeThrottleRepositorySpec extends DatabaseSpecBase[ChallengeThrottle
               ChallengeType.OtpSubmit,
               { existing =>
                 val attempts = existing.fold[List[Long]](Nil)(_.attempts) :+ i.toLong
-                (record(ChallengeType.OtpSubmit, attempts = attempts), LimitStatus.Allowed)
+                (update(attempts), LimitStatus.Allowed)
               },
             )
           found <- env.repository.find(tenantId, subject, ChallengeType.OtpSubmit)
@@ -184,7 +186,7 @@ trait ChallengeThrottleRepositorySpec extends DatabaseSpecBase[ChallengeThrottle
               ChallengeType.OtpSubmit,
               { existing =>
                 val attempts = existing.fold[List[Long]](Nil)(_.attempts) :+ i.toLong
-                (record(ChallengeType.OtpSubmit, attempts = attempts), LimitStatus.Allowed)
+                (update(attempts), LimitStatus.Allowed)
               },
             )
           found <- env.repository.find(tenantId, subject, ChallengeType.OtpSubmit)

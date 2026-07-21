@@ -1,7 +1,7 @@
 package versola.oauth.conversation.limit
 
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{ClientId, RateLimit, SubmissionLimits, TenantId}
+import versola.oauth.client.model.{ClientId, RateLimit, SubmissionLimits}
 import zio.{Clock, Task, UIO, ZIO, ZLayer}
 
 import java.time.Instant
@@ -175,13 +175,10 @@ object SubmissionLimiter:
       */
     private def nextThrottleState(
         recordOpt: Option[ChallengeThrottleRecord],
-        tenantId: TenantId,
-        subject: String,
-        challengeType: ChallengeType,
         now: Instant,
         wLimits: List[RateLimit],
         banDurationSeconds: Long,
-    ): (ChallengeThrottleRecord, LimitStatus) =
+    ): (ThrottleUpdate, LimitStatus) =
       val nowEpoch = now.getEpochSecond
       val longestWindow = wLimits.map(_.windowSeconds).max
       val existing = recordOpt.fold[List[Long]](Nil)(_.attempts)
@@ -203,15 +200,6 @@ object SubmissionLimiter:
           val ttl = now.plusSeconds(longestWindow)
           bannedUntil.filter(_.isAfter(ttl)).getOrElse(ttl)
 
-      val record = ChallengeThrottleRecord(
-        tenantId = tenantId,
-        subject = subject,
-        challengeType = challengeType,
-        attempts = finalAttempts,
-        bannedUntil = bannedUntil,
-        expiresAt = expiresAt,
-      )
-
       val rlWindows = rateLimitWindows(wLimits)
       val status =
         if applyBan then LimitStatus.Banned
@@ -219,7 +207,7 @@ object SubmissionLimiter:
           LimitStatus.RateLimited(retryAfterSeconds(updated, nowEpoch, rlWindows))
         else LimitStatus.Allowed
 
-      (record, status)
+      (ThrottleUpdate(finalAttempts, bannedUntil, expiresAt), status)
 
     /** Records a single failed attempt for the subject and returns the resulting status. See
       * [[nextThrottleState]] for the prune/append/ban decision; it runs inside the repository's
@@ -238,7 +226,7 @@ object SubmissionLimiter:
                   client.tenantId,
                   subject,
                   challengeType,
-                  recordOpt => nextThrottleState(recordOpt, client.tenantId, subject, challengeType, now, wLimits, limits.banDurationSeconds),
+                  recordOpt => nextThrottleState(recordOpt, now, wLimits, limits.banDurationSeconds),
                 )
 
     /** Batch variant of [[recordLimit]]: records a failed attempt for every subject, applying the
@@ -263,6 +251,6 @@ object SubmissionLimiter:
                     client.tenantId,
                     subject,
                     challengeType,
-                    recordOpt => nextThrottleState(recordOpt, client.tenantId, subject, challengeType, now, wLimits, limits.banDurationSeconds),
+                    recordOpt => nextThrottleState(recordOpt, now, wLimits, limits.banDurationSeconds),
                   )
                 }.map(_.foldLeft(LimitStatus.Allowed)(worstStatus))
