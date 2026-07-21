@@ -116,7 +116,7 @@ object ConversationServiceSpec extends UnitSpecBase:
           _ <- env.otpService.prepareOtp.succeedsWith(otpStep)
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
           _ <- env.otpService.sendOtp.succeedsWith(())
-          _ <- env.submissionLimiter.recordLimit.succeedsWith(LimitStatus.Allowed)
+          _ <- env.submissionLimiter.tryAcquire.succeedsWith(LimitStatus.Allowed)
           result <- env.service.prepareInitialOtp(authId, conversationRecord, Left(email), 0)
         yield
           assertTrue(result == ConversationResult.RenderStep(otpStep))
