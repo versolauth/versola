@@ -271,7 +271,7 @@ object SubmissionLimiterSpec extends UnitSpecBase:
           _ <- env.configService.getSubmissionLimits.succeedsWith(limits)
           _ <- env.configService.find.succeedsWith(Some(client))
           _ <- env.throttleRepo.find.succeedsWith(Some(throttleRecord(existing, None, now.plusSeconds(3600))))
-          _ <- env.throttleRepo.upsert.succeedsWith(())
+          _ <- env.throttleRepo.upsert.succeedsWith(true)
           result <- env.limiter.recordLimit(clientId, subject, ChallengeType.OtpSubmit)
           upserted = env.throttleRepo.upsert.calls.head
         yield assertTrue(
@@ -291,7 +291,7 @@ object SubmissionLimiterSpec extends UnitSpecBase:
           _ <- env.throttleRepo.find.succeedsWith(
             Some(throttleRecord(List(nowEpoch, nowEpoch), None, now.plusSeconds(3600))),
           )
-          _ <- env.throttleRepo.upsert.succeedsWith(())
+          _ <- env.throttleRepo.upsert.succeedsWith(true)
           result <- env.limiter.recordLimit(clientId, subject, ChallengeType.OtpSubmit)
           upserted = env.throttleRepo.upsert.calls.head
         yield assertTrue(
@@ -313,7 +313,7 @@ object SubmissionLimiterSpec extends UnitSpecBase:
           _ <- env.throttleRepo.find.succeedsWith(
             Some(throttleRecord(List(old, recent), None, now.plusSeconds(3600))),
           )
-          _ <- env.throttleRepo.upsert.succeedsWith(())
+          _ <- env.throttleRepo.upsert.succeedsWith(true)
           _ <- env.limiter.recordLimit(clientId, subject, ChallengeType.OtpSubmit)
           upserted = env.throttleRepo.upsert.calls.head
         yield assertTrue(
@@ -334,7 +334,7 @@ object SubmissionLimiterSpec extends UnitSpecBase:
           _ <- env.configService.getSubmissionLimits.succeedsWith(noBanLimits)
           _ <- env.configService.find.succeedsWith(Some(client))
           _ <- env.throttleRepo.find.succeedsWith(Some(throttleRecord(existing, None, now.plusSeconds(3600))))
-          _ <- env.throttleRepo.upsert.succeedsWith(())
+          _ <- env.throttleRepo.upsert.succeedsWith(true)
           _ <- env.limiter.recordLimit(clientId, subject, ChallengeType.OtpSubmit)
           upserted = env.throttleRepo.upsert.calls.head
         yield assertTrue(
@@ -363,24 +363,23 @@ object SubmissionLimiterSpec extends UnitSpecBase:
           result <- env.limiter.recordLimitAll(clientId, List(subject, subject2), ChallengeType.OtpSubmit)
         yield assertTrue(
           result == LimitStatus.Allowed,
-          env.throttleRepo.findAllForSubjects.calls.isEmpty,
+          env.throttleRepo.find.calls.isEmpty,
           env.throttleRepo.upsert.calls.isEmpty,
         )
       },
-      test("records an attempt for every subject in a single fetch and returns Allowed") {
+      test("records an attempt for every subject and returns Allowed") {
         val env = Env()
         for
           now <- Clock.instant
           nowEpoch = now.getEpochSecond
           _ <- env.configService.getSubmissionLimits.succeedsWith(limits)
           _ <- env.configService.find.succeedsWith(Some(client))
-          _ <- env.throttleRepo.findAllForSubjects.succeedsWith(Nil)
-          _ <- env.throttleRepo.upsert.succeedsWith(())
+          _ <- env.throttleRepo.find.succeedsWith(None)
+          _ <- env.throttleRepo.upsert.succeedsWith(true)
           result <- env.limiter.recordLimitAll(clientId, List(subject, subject2), ChallengeType.OtpSubmit)
           upsertedSubjects = env.throttleRepo.upsert.calls.map(_.subject).toSet
         yield assertTrue(
           result == LimitStatus.Allowed,
-          env.throttleRepo.findAllForSubjects.calls.length == 1,
           env.throttleRepo.upsert.calls.length == 2,
           upsertedSubjects == Set(subject, subject2),
           env.throttleRepo.upsert.calls.forall(_.attempts == List(nowEpoch)),
@@ -394,14 +393,143 @@ object SubmissionLimiterSpec extends UnitSpecBase:
           existing = List.fill(8)(nowEpoch - 1)
           _ <- env.configService.getSubmissionLimits.succeedsWith(limits)
           _ <- env.configService.find.succeedsWith(Some(client))
-          _ <- env.throttleRepo.findAllForSubjects.succeedsWith(
-            List(ChallengeThrottleRecord(tenantId, subject, ChallengeType.OtpSubmit, existing, None, now.plusSeconds(3600))),
-          )
-          _ <- env.throttleRepo.upsert.succeedsWith(())
+          _ <- env.throttleRepo.find.returnsZIO:
+            case (_, s, _) if s == subject =>
+              ZIO.succeed(Some(throttleRecord(existing, None, now.plusSeconds(3600))))
+            case _ => ZIO.succeed(None)
+          _ <- env.throttleRepo.upsert.succeedsWith(true)
           result <- env.limiter.recordLimitAll(clientId, List(subject, subject2), ChallengeType.OtpSubmit)
         yield assertTrue(
           result == LimitStatus.Banned,
           env.throttleRepo.upsert.calls.length == 2,
+        )
+      },
+    ),
+    suite("compare-and-set")(
+      test("recordLimit re-reads and recomputes when the first write loses the race") {
+        val env = Env()
+        for
+          now <- Clock.instant
+          nowEpoch = now.getEpochSecond
+          // The competing writer got 8 attempts in between, which tips the subject over the
+          // broadest window: the retry must see that and ban, not re-apply the stale count.
+          attemptsByVersion = Map(0L -> List.empty[Long], 1L -> List.fill(8)(nowEpoch - 1))
+          version <- Ref.make(0L)
+          _ <- env.configService.getSubmissionLimits.succeedsWith(limits)
+          _ <- env.configService.find.succeedsWith(Some(client))
+          _ <- env.throttleRepo.find.returnsZIO: _ =>
+            version.get.map: v =>
+              Some(throttleRecord(attemptsByVersion(v), None, now.plusSeconds(3600)).copy(version = v))
+          // Reject the write staged against version 0, then accept the recomputed one.
+          _ <- env.throttleRepo.upsert.returnsZIO: record =>
+            if record.version == 0 then version.set(1).as(false) else ZIO.succeed(true)
+          result <- env.limiter.recordLimit(clientId, subject, ChallengeType.OtpSubmit)
+        yield assertTrue(
+          result == LimitStatus.Banned,
+          env.throttleRepo.find.calls.length == 2,
+          env.throttleRepo.upsert.calls.length == 2,
+        )
+      },
+      test("recordLimit fails rather than under-counting when the row stays contended") {
+        val env = Env()
+        for
+          now <- Clock.instant
+          _ <- env.configService.getSubmissionLimits.succeedsWith(limits)
+          _ <- env.configService.find.succeedsWith(Some(client))
+          _ <- env.throttleRepo.find.succeedsWith(Some(throttleRecord(Nil, None, now.plusSeconds(3600))))
+          _ <- env.throttleRepo.upsert.succeedsWith(false)
+          result <- env.limiter.recordLimit(clientId, subject, ChallengeType.OtpSubmit).exit
+        yield assertTrue(
+          result.isFailure,
+          env.throttleRepo.upsert.calls.length == SubmissionLimiter.maxWriteAttempts,
+        )
+      },
+    ),
+    suite("tryAcquire")(
+      test("charges the attempt and returns Allowed when under the limit") {
+        val env = Env()
+        for
+          now <- Clock.instant
+          nowEpoch = now.getEpochSecond
+          _ <- env.configService.getSubmissionLimits.succeedsWith(limits)
+          _ <- env.configService.find.succeedsWith(Some(client))
+          _ <- env.throttleRepo.find.succeedsWith(
+            Some(throttleRecord(List(nowEpoch - 1), None, now.plusSeconds(3600))),
+          )
+          _ <- env.throttleRepo.upsert.succeedsWith(true)
+          result <- env.limiter.tryAcquire(clientId, subject, ChallengeType.OtpSubmit)
+          upserted = env.throttleRepo.upsert.calls.head
+        yield assertTrue(
+          result == LimitStatus.Allowed,
+          upserted.attempts == List(nowEpoch - 1, nowEpoch),
+        )
+      },
+      test("allows exactly maxAttempts claims, unlike recordLimit which reports the limit a claim early") {
+        val env = Env()
+        // Short window is 3/min, so the third claim must still be permitted.
+        val twoAlready = (now: Instant) => List(now.getEpochSecond - 2, now.getEpochSecond - 1)
+        for
+          now <- Clock.instant
+          _ <- env.configService.getSubmissionLimits.succeedsWith(limits)
+          _ <- env.configService.find.succeedsWith(Some(client))
+          _ <- env.throttleRepo.find.succeedsWith(Some(throttleRecord(twoAlready(now), None, now.plusSeconds(3600))))
+          _ <- env.throttleRepo.upsert.succeedsWith(true)
+          acquired <- env.limiter.tryAcquire(clientId, subject, ChallengeType.OtpSubmit)
+          recorded <- env.limiter.recordLimit(clientId, subject, ChallengeType.OtpSubmit)
+        yield assertTrue(
+          acquired == LimitStatus.Allowed,
+          recorded.isInstanceOf[LimitStatus.RateLimited],
+        )
+      },
+      test("reports the limit without charging an attempt once it is reached") {
+        val env = Env()
+        for
+          now <- Clock.instant
+          nowEpoch = now.getEpochSecond
+          _ <- env.configService.getSubmissionLimits.succeedsWith(limits)
+          _ <- env.configService.find.succeedsWith(Some(client))
+          _ <- env.throttleRepo.find.succeedsWith(
+            Some(throttleRecord(List.fill(3)(nowEpoch - 1), None, now.plusSeconds(3600))),
+          )
+          result <- env.limiter.tryAcquire(clientId, subject, ChallengeType.OtpSubmit)
+        yield assertTrue(
+          result.isInstanceOf[LimitStatus.RateLimited],
+          // Not charged: a flood against someone else's credential must not keep it pinned.
+          env.throttleRepo.upsert.calls.isEmpty,
+        )
+      },
+      test("reports Banned without charging while a ban is active") {
+        val env = Env()
+        for
+          now <- Clock.instant
+          _ <- env.configService.getSubmissionLimits.succeedsWith(limits)
+          _ <- env.configService.find.succeedsWith(Some(client))
+          _ <- env.throttleRepo.find.succeedsWith(
+            Some(throttleRecord(Nil, Some(now.plusSeconds(600)), now.plusSeconds(600))),
+          )
+          result <- env.limiter.tryAcquire(clientId, subject, ChallengeType.OtpSubmit)
+        yield assertTrue(result == LimitStatus.Banned, env.throttleRepo.upsert.calls.isEmpty)
+      },
+      test("re-evaluates against the winner's state when the claim loses the race") {
+        val env = Env()
+        for
+          now <- Clock.instant
+          nowEpoch = now.getEpochSecond
+          // A competitor claims the last slot between our read and our write.
+          attemptsByVersion = Map(0L -> List(nowEpoch - 1, nowEpoch - 1), 1L -> List.fill(3)(nowEpoch - 1))
+          version <- Ref.make(0L)
+          _ <- env.configService.getSubmissionLimits.succeedsWith(limits)
+          _ <- env.configService.find.succeedsWith(Some(client))
+          _ <- env.throttleRepo.find.returnsZIO: _ =>
+            version.get.map: v =>
+              Some(throttleRecord(attemptsByVersion(v), None, now.plusSeconds(3600)).copy(version = v))
+          _ <- env.throttleRepo.upsert.returnsZIO: record =>
+            if record.version == 0 then version.set(1).as(false) else ZIO.succeed(true)
+          result <- env.limiter.tryAcquire(clientId, subject, ChallengeType.OtpSubmit)
+        yield assertTrue(
+          // The retry sees the limit is now reached, so this claim is refused instead of granted.
+          result.isInstanceOf[LimitStatus.RateLimited],
+          env.throttleRepo.upsert.calls.length == 1,
         )
       },
     ),
