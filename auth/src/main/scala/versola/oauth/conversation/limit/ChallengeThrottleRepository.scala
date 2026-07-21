@@ -40,11 +40,13 @@ trait ChallengeThrottleRepository:
 
   def upsert(record: ChallengeThrottleRecord): Task[Unit]
 
-  /** Loads the record for the given key while holding a row-level lock for the rest of the
-    * transaction, applies `mutate` to compute both the record to persist and a derived status,
-    * and upserts the record — all atomically. This avoids the lost-update race where two
-    * concurrent callers read the same record and each write back an update missing the other's
-    * attempt (see issue #91).
+  /** Loads the record for the given key while holding a lock for the rest of the transaction,
+    * applies `mutate` to compute both the record to persist and a derived status, and upserts the
+    * record — all atomically. This avoids the lost-update race where two concurrent callers read
+    * the same record and each write back an update missing the other's attempt (see issue #91),
+    * including the case where the record doesn't exist yet: a Postgres advisory lock keyed on
+    * (tenantId, subject, challengeType) is taken before the row lookup, so concurrent first
+    * attempts for a brand-new subject also serialize instead of racing on the initial insert.
     */
   def recordAttempt(
       tenantId: TenantId,

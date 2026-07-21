@@ -148,7 +148,33 @@ trait ChallengeThrottleRepositorySpec extends DatabaseSpecBase[ChallengeThrottle
           found.exists(_.attempts == List(1000L, 2000L)),
         )
       },
-      test("concurrent recordAttempt calls against the same key don't lose updates (regression for #91)") {
+      test("concurrent recordAttempt calls against an existing key don't lose updates (regression for #91)") {
+        // Pre-seed the row so every concurrent call finds it — exercises the row-level
+        // `FOR UPDATE` lock against the exact scenario the issue describes: concurrent updates to
+        // an already-existing attempt list (e.g. a subject already mid-brute-force).
+        val concurrentAttempts = 20
+        for
+          _ <- env.repository.upsert(record(ChallengeType.OtpSubmit, attempts = Nil))
+          _ <- ZIO.foreachParDiscard(1 to concurrentAttempts): i =>
+            env.repository.recordAttempt(
+              tenantId,
+              subject,
+              ChallengeType.OtpSubmit,
+              { existing =>
+                val attempts = existing.fold[List[Long]](Nil)(_.attempts) :+ i.toLong
+                (record(ChallengeType.OtpSubmit, attempts = attempts), LimitStatus.Allowed)
+              },
+            )
+          found <- env.repository.find(tenantId, subject, ChallengeType.OtpSubmit)
+        yield assertTrue(
+          found.exists(_.attempts.size == concurrentAttempts),
+          found.exists(_.attempts.toSet == (1 to concurrentAttempts).map(_.toLong).toSet),
+        )
+      },
+      test("concurrent recordAttempt calls against a brand-new key (no existing row) don't lose updates") {
+        // No pre-seed this time — every one of these calls sees no row on its first read, so this
+        // exercises the advisory-lock path specifically (a plain FOR UPDATE has nothing to lock
+        // when the row doesn't exist yet).
         val concurrentAttempts = 20
         for
           _ <- ZIO.foreachParDiscard(1 to concurrentAttempts): i =>
