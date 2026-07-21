@@ -1,7 +1,7 @@
 package versola.oauth.conversation.limit
 
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{ClientId, RateLimit, SubmissionLimits}
+import versola.oauth.client.model.{ClientId, RateLimit, SubmissionLimits, TenantId}
 import zio.{Clock, Task, UIO, ZIO, ZLayer}
 
 import java.time.Instant
@@ -25,8 +25,24 @@ trait SubmissionLimiter:
     */
   def statusForSubjects(clientId: ClientId, subjects: List[String], challengeType: ChallengeType): Task[LimitStatus]
 
-  /** Records an attempt against the configured limits and returns the resulting limit status. */
+  /** Records an attempt against the configured limits and returns the resulting limit status.
+    *
+    * Charges the attempt unconditionally, so the returned status reflects the state *including* it.
+    * That suits recording a failure that has already happened; to gate an action that must not run
+    * once the limit is reached, use [[tryAcquire]] instead.
+    */
   def recordLimit(clientId: ClientId, subject: String, challengeType: ChallengeType): Task[LimitStatus]
+
+  /** Atomically claims one attempt: returns the status as of *before* this attempt, and only records
+    * it when that status is `Allowed`.
+    *
+    * This is the gate for actions where the request itself is the thing being limited (sending an
+    * OTP, say) rather than a failure being punished. Checking and recording in one step leaves no
+    * window for concurrent requests to all observe the same pre-limit state, and leaving rejected
+    * attempts unrecorded means a flood against someone else's credential cannot keep their counter
+    * pinned above the limit forever.
+    */
+  def tryAcquire(clientId: ClientId, subject: String, challengeType: ChallengeType): Task[LimitStatus]
 
   /** Records an attempt for each subject in a single fetch + parallel upserts, and returns the worst status. */
   def recordLimitAll(clientId: ClientId, subjects: List[String], challengeType: ChallengeType): Task[LimitStatus]
@@ -35,6 +51,9 @@ trait SubmissionLimiter:
   def reset(clientId: ClientId, subject: String, challengeType: ChallengeType): Task[Unit]
 
 object SubmissionLimiter:
+  /** How many times a compare-and-set write is retried before the operation fails. */
+  val maxWriteAttempts = 5
+
   def live = ZLayer.fromFunction(Impl(_, _))
 
   class Impl(
@@ -162,106 +181,147 @@ object SubmissionLimiter:
         case None => ZIO.unit
         case Some(client) => throttleRepo.delete(client.tenantId, subject, challengeType)
 
-    /** Records a single failed attempt for the subject and returns the resulting status. Prunes
-      * attempts older than the longest window, appends the current one, and if the broadest (ban)
-      * window is now exceeded and a ban duration is configured, applies a temporary ban (clearing
-      * attempts so the subject restarts once it expires). Otherwise reports `RateLimited` when a
-      * hard window is exceeded, or `Allowed`. The record's TTL is extended to cover the ban or the
-      * longest window.
+    /** Shared preamble for the write paths: resolves the windows configured for the challenge type
+      * and hands them, with the owning tenant, to `f`. Short-circuits to `Allowed` when no windows
+      * are configured or the client is unknown, matching the read-only checks above.
       */
-    override def recordLimit(clientId: ClientId, subject: String, challengeType: ChallengeType): Task[LimitStatus] =
+    private def withWindows(clientId: ClientId, challengeType: ChallengeType)(
+        f: (TenantId, SubmissionLimits, List[RateLimit]) => Task[LimitStatus],
+    ): Task[LimitStatus] =
       configService.getSubmissionLimits(clientId).flatMap: limits =>
         val wLimits = windowLimits(limits, challengeType)
         if wLimits.isEmpty then ZIO.succeed(LimitStatus.Allowed)
         else
           configService.find(clientId).flatMap:
             case None => ZIO.succeed(LimitStatus.Allowed)
-            case Some(client) =>
-              Clock.instant.flatMap: now =>
-                val nowEpoch = now.getEpochSecond
-                val longestWindow = wLimits.map(_.windowSeconds).max
-                throttleRepo.find(client.tenantId, subject, challengeType).flatMap: recordOpt =>
-                  val existing = recordOpt.fold[List[Long]](Nil)(_.attempts)
-                  val pruned = existing.filter(_ > nowEpoch - longestWindow)
-                  val updated = pruned :+ nowEpoch
+            case Some(client) => f(client.tenantId, limits, wLimits)
 
-                  val banExceeded = banWindow(wLimits).exists(windowExceeded(updated, nowEpoch, _))
-                  val applyBan = banExceeded && limits.banDurationSeconds > 0
+    /** Retries a compare-and-set round that reported a lost race, re-reading the record each time.
+      * A retry only happens when another writer actually landed first, so a handful covers the
+      * contention a single subject can realistically produce. Failing after that is deliberate:
+      * silently giving up would drop the attempt and hand back the under-counted limit we are trying
+      * to enforce.
+      */
+    private def withRetry(challengeType: ChallengeType)(round: Task[Option[LimitStatus]]): Task[LimitStatus] =
+      def loop(remaining: Int): Task[LimitStatus] =
+        round.flatMap:
+          case Some(status) => ZIO.succeed(status)
+          case None if remaining > 1 => loop(remaining - 1)
+          case None =>
+            ZIO.fail(
+              new IllegalStateException(
+                s"challenge throttle for $challengeType remained contended after ${SubmissionLimiter.maxWriteAttempts} attempts",
+              ),
+            )
+      loop(SubmissionLimiter.maxWriteAttempts)
 
-                  // Clear attempts on ban so the user starts fresh after the ban expires.
-                  val finalAttempts = if applyBan then Nil else updated
-                  val bannedUntil =
-                    if applyBan then Some(now.plusSeconds(limits.banDurationSeconds))
-                    else recordOpt.flatMap(_.bannedUntil).filter(_.isAfter(now))
+    /** The record to write, and the status it produces, once `existing` is charged one more attempt
+      * at `now`. Prunes attempts older than the longest window, appends the current one, and if the
+      * broadest (ban) window is now exceeded and a ban duration is configured, applies a temporary
+      * ban (clearing attempts so the subject restarts once it expires). Otherwise reports
+      * `RateLimited` when a hard window is exceeded, or `Allowed`. The record's TTL is extended to
+      * cover the ban or the longest window, and it carries the version `existing` was read at so the
+      * write can detect a concurrent change.
+      */
+    private def charged(
+        existing: Option[ChallengeThrottleRecord],
+        tenantId: TenantId,
+        subject: String,
+        challengeType: ChallengeType,
+        limits: SubmissionLimits,
+        wLimits: List[RateLimit],
+        now: Instant,
+    ): (ChallengeThrottleRecord, LimitStatus) =
+      val nowEpoch = now.getEpochSecond
+      val longestWindow = wLimits.map(_.windowSeconds).max
+      val pruned = existing.fold[List[Long]](Nil)(_.attempts).filter(_ > nowEpoch - longestWindow)
+      val updated = pruned :+ nowEpoch
 
-                  val expiresAt =
-                    if applyBan then bannedUntil.get
-                    else
-                      val ttl = now.plusSeconds(longestWindow)
-                      bannedUntil.filter(_.isAfter(ttl)).getOrElse(ttl)
+      val banExceeded = banWindow(wLimits).exists(windowExceeded(updated, nowEpoch, _))
+      val applyBan = banExceeded && limits.banDurationSeconds > 0
 
-                  throttleRepo.upsert(
-                    ChallengeThrottleRecord(
-                      tenantId = client.tenantId,
-                      subject = subject,
-                      challengeType = challengeType,
-                      attempts = finalAttempts,
-                      bannedUntil = bannedUntil,
-                      expiresAt = expiresAt,
-                    ),
-                  ).as:
-                    val rlWindows = rateLimitWindows(wLimits)
-                    if applyBan then LimitStatus.Banned
-                    else if limitsExceeded(updated, nowEpoch, rlWindows) then
-                      LimitStatus.RateLimited(retryAfterSeconds(updated, nowEpoch, rlWindows))
-                    else LimitStatus.Allowed
+      // Clear attempts on ban so the user starts fresh after the ban expires.
+      val finalAttempts = if applyBan then Nil else updated
+      val bannedUntil =
+        if applyBan then Some(now.plusSeconds(limits.banDurationSeconds))
+        else existing.flatMap(_.bannedUntil).filter(_.isAfter(now))
 
-    /** Batch variant of [[recordLimit]]: records a failed attempt for every subject using one fetch
-      * plus parallel upserts, applying the same prune/append/ban logic per subject. Used to charge
-      * related subjects (e.g. IP and credential) for the same failure. Returns the worst status
-      * across all subjects so a ban on any one dominates.
+      val expiresAt =
+        if applyBan then bannedUntil.get
+        else
+          val ttl = now.plusSeconds(longestWindow)
+          bannedUntil.filter(_.isAfter(ttl)).getOrElse(ttl)
+
+      val record = ChallengeThrottleRecord(
+        tenantId = tenantId,
+        subject = subject,
+        challengeType = challengeType,
+        attempts = finalAttempts,
+        bannedUntil = bannedUntil,
+        expiresAt = expiresAt,
+        version = existing.fold(0L)(_.version),
+      )
+
+      val rlWindows = rateLimitWindows(wLimits)
+      val status =
+        if applyBan then LimitStatus.Banned
+        else if limitsExceeded(updated, nowEpoch, rlWindows) then
+          LimitStatus.RateLimited(retryAfterSeconds(updated, nowEpoch, rlWindows))
+        else LimitStatus.Allowed
+
+      (record, status)
+
+    /** Charges one attempt to the subject, re-reading and recomputing if a concurrent writer beat us
+      * to the row.
+      */
+    private def chargeOne(
+        tenantId: TenantId,
+        subject: String,
+        challengeType: ChallengeType,
+        limits: SubmissionLimits,
+        wLimits: List[RateLimit],
+    ): Task[LimitStatus] =
+      withRetry(challengeType):
+        for
+          now <- Clock.instant
+          existing <- throttleRepo.find(tenantId, subject, challengeType)
+          (record, status) = charged(existing, tenantId, subject, challengeType, limits, wLimits, now)
+          written <- throttleRepo.upsert(record)
+        yield Option.when(written)(status)
+
+    override def recordLimit(clientId: ClientId, subject: String, challengeType: ChallengeType): Task[LimitStatus] =
+      withWindows(clientId, challengeType): (tenantId, limits, wLimits) =>
+        chargeOne(tenantId, subject, challengeType, limits, wLimits)
+
+    override def tryAcquire(clientId: ClientId, subject: String, challengeType: ChallengeType): Task[LimitStatus] =
+      withWindows(clientId, challengeType): (tenantId, limits, wLimits) =>
+        withRetry(challengeType):
+          for
+            now <- Clock.instant
+            existing <- throttleRepo.find(tenantId, subject, challengeType)
+            result <- existing.fold(LimitStatus.Allowed)(evaluate(_, wLimits, now)) match
+              case LimitStatus.Allowed =>
+                // Claim the attempt against the exact version we just evaluated: if a competing
+                // request recorded one in between, the write is rejected and we re-evaluate against
+                // its result rather than sending a second OTP off stale state.
+                val (record, _) = charged(existing, tenantId, subject, challengeType, limits, wLimits, now)
+                throttleRepo.upsert(record).map(Option.when(_)(LimitStatus.Allowed))
+              // Already over the limit. Report it without charging, so a flood aimed at someone
+              // else's credential cannot keep their counter pinned above the threshold forever.
+              case denied => ZIO.succeed(Some(denied))
+          yield result
+
+    /** Batch variant of [[recordLimit]]: charges an attempt to every subject in parallel, applying
+      * the same prune/append/ban logic to each. Used to charge related subjects (e.g. IP and
+      * credential) for the same failure. Returns the worst status across all subjects so a ban on
+      * any one dominates.
+      *
+      * Each subject is read individually rather than through one batched fetch: a compare-and-set
+      * retry has to re-read the row it lost, and per-subject reads keep that retry scoped to the row
+      * that was actually contended.
       */
     override def recordLimitAll(clientId: ClientId, subjects: List[String], challengeType: ChallengeType): Task[LimitStatus] =
-      configService.getSubmissionLimits(clientId).flatMap: limits =>
-        val wLimits = windowLimits(limits, challengeType)
-        if wLimits.isEmpty then ZIO.succeed(LimitStatus.Allowed)
-        else
-          configService.find(clientId).flatMap:
-            case None => ZIO.succeed(LimitStatus.Allowed)
-            case Some(client) =>
-              Clock.instant.flatMap: now =>
-                val nowEpoch = now.getEpochSecond
-                val longestWindow = wLimits.map(_.windowSeconds).max
-                throttleRepo.findAllForSubjects(client.tenantId, subjects, challengeType).flatMap: existingRecords =>
-                  val bySubject = existingRecords.map(r => r.subject -> r).toMap
-                  ZIO.foreachPar(subjects) { subject =>
-                    val existing = bySubject.get(subject).fold[List[Long]](Nil)(_.attempts)
-                    val pruned = existing.filter(_ > nowEpoch - longestWindow)
-                    val updated = pruned :+ nowEpoch
-                    val banExceeded = banWindow(wLimits).exists(windowExceeded(updated, nowEpoch, _))
-                    val applyBan = banExceeded && limits.banDurationSeconds > 0
-                    val finalAttempts = if applyBan then Nil else updated
-                    val bannedUntil =
-                      if applyBan then Some(now.plusSeconds(limits.banDurationSeconds))
-                      else bySubject.get(subject).flatMap(_.bannedUntil).filter(_.isAfter(now))
-                    val expiresAt =
-                      if applyBan then bannedUntil.get
-                      else
-                        val ttl = now.plusSeconds(longestWindow)
-                        bannedUntil.filter(_.isAfter(ttl)).getOrElse(ttl)
-                    throttleRepo.upsert(
-                      ChallengeThrottleRecord(
-                        tenantId = client.tenantId,
-                        subject = subject,
-                        challengeType = challengeType,
-                        attempts = finalAttempts,
-                        bannedUntil = bannedUntil,
-                        expiresAt = expiresAt,
-                      ),
-                    ).as:
-                      val rlWindows = rateLimitWindows(wLimits)
-                      if applyBan then LimitStatus.Banned
-                      else if limitsExceeded(updated, nowEpoch, rlWindows) then
-                        LimitStatus.RateLimited(retryAfterSeconds(updated, nowEpoch, rlWindows))
-                      else LimitStatus.Allowed
-                  }.map(_.foldLeft(LimitStatus.Allowed)(worstStatus))
+      withWindows(clientId, challengeType): (tenantId, limits, wLimits) =>
+        ZIO
+          .foreachPar(subjects)(chargeOne(tenantId, _, challengeType, limits, wLimits))
+          .map(_.foldLeft(LimitStatus.Allowed)(worstStatus))

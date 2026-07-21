@@ -198,12 +198,20 @@ object ConversationService:
     ): Task[ConversationResult.Render] =
       val subject = credential.merge
       for
-        status <- submissionLimiter.statusFor(
+        // A ban earned by submitting wrong codes also blocks asking for new ones; the request limit
+        // itself is enforced by the tryAcquire below, which checks and charges in one step.
+        submitStatus <- submissionLimiter.statusFor(
           conversation.clientId,
           subject,
-          List(ChallengeType.OtpRequest, ChallengeType.OtpSubmit),
+          List(ChallengeType.OtpSubmit),
         )
-        result <- status match
+        requestStatus <- submitStatus match
+          // Claimed before anything is sent: were this left until after sendOtp, concurrent requests
+          // for the same credential would all observe the pre-limit state and each send an OTP.
+          case LimitStatus.Allowed =>
+            submissionLimiter.tryAcquire(conversation.clientId, subject, ChallengeType.OtpRequest)
+          case denied => ZIO.succeed(denied)
+        result <- requestStatus match
           case LimitStatus.Banned | LimitStatus.RateLimited(_) =>
             accessDenied(authId, conversation)
           case LimitStatus.Allowed =>
@@ -223,10 +231,8 @@ object ConversationService:
               )
               written <- conversationRepository.overwrite(authId, updatedConversation)
               result2 <- if written then
-                for
-                  _ <- otpService.sendOtp(sentStep, credential, authId, conversation.clientId, conversation.uiLocales)
-                  _ <- submissionLimiter.recordLimit(conversation.clientId, subject, ChallengeType.OtpRequest)
-                yield ConversationResult.RenderStep(sentStep): ConversationResult.Render
+                otpService.sendOtp(sentStep, credential, authId, conversation.clientId, conversation.uiLocales)
+                  .as(ConversationResult.RenderStep(sentStep): ConversationResult.Render)
               else
                 ZIO.succeed(ConversationResult.IllegalState)
             yield result2
