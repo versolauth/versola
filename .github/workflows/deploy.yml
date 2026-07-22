@@ -18,22 +18,42 @@ on:
         type: boolean
         default: true
 
+# Concurrent manual runs would race on the same VPS state (in-place edits of
+# docker-compose.prod.yml, overlapping docker compose calls). Queue instead of
+# running in parallel, and don't cancel a deploy that's already in flight.
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
 jobs:
   deploy-central:
     if: inputs.service == 'central' || inputs.service == 'all'
     runs-on: ubuntu-latest
     steps:
+      - name: Validate version input
+        env:
+          DEPLOY_VERSION: ${{ inputs.version }}
+        run: |
+          if [[ ! "$DEPLOY_VERSION" =~ ^[A-Za-z0-9._-]+$ ]]; then
+            echo "::error::Invalid version '$DEPLOY_VERSION' — only letters, digits, dots, underscores and hyphens are allowed"
+            exit 1
+          fi
+
       - name: Deploy central
-        uses: appleboy/ssh-action@v1.2.0
+        uses: appleboy/ssh-action@7eaf76671a0d7eec5d98ee897acda4f968735a17 # v1.2.0
+        env:
+          DEPLOY_VERSION: ${{ inputs.version }}
+          DEPLOY_RUN_MIGRATIONS: ${{ inputs.run_migrations }}
         with:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
+          envs: DEPLOY_VERSION,DEPLOY_RUN_MIGRATIONS
           script: |
             set -e
             cd /opt/versola
-            sed -i "s|versola-central:[^[:space:]]*|versola-central:${{ inputs.version }}|" docker-compose.prod.yml
-            export RUN_MIGRATIONS=${{ inputs.run_migrations }}
+            sed -i "s|versola-central:[^[:space:]]*|versola-central:${DEPLOY_VERSION}|" docker-compose.prod.yml
+            export RUN_MIGRATIONS="$DEPLOY_RUN_MIGRATIONS"
             docker compose pull central
             docker compose up -d --no-deps central
 
@@ -57,12 +77,25 @@ jobs:
       (needs.deploy-central.result == 'success' || needs.deploy-central.result == 'skipped')
     runs-on: ubuntu-latest
     steps:
+      - name: Validate version input
+        env:
+          DEPLOY_VERSION: ${{ inputs.version }}
+        run: |
+          if [[ ! "$DEPLOY_VERSION" =~ ^[A-Za-z0-9._-]+$ ]]; then
+            echo "::error::Invalid version '$DEPLOY_VERSION' — only letters, digits, dots, underscores and hyphens are allowed"
+            exit 1
+          fi
+
       - name: Deploy auth
-        uses: appleboy/ssh-action@v1.2.0
+        uses: appleboy/ssh-action@7eaf76671a0d7eec5d98ee897acda4f968735a17 # v1.2.0
+        env:
+          DEPLOY_VERSION: ${{ inputs.version }}
+          DEPLOY_RUN_MIGRATIONS: ${{ inputs.run_migrations }}
         with:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
+          envs: DEPLOY_VERSION,DEPLOY_RUN_MIGRATIONS
           script: |
             set -e
             cd /opt/versola
@@ -73,8 +106,8 @@ jobs:
               exit 1
             fi
 
-            sed -i "s|versola-auth:[^[:space:]]*|versola-auth:${{ inputs.version }}|" docker-compose.prod.yml
-            export RUN_MIGRATIONS=${{ inputs.run_migrations }}
+            sed -i "s|versola-auth:[^[:space:]]*|versola-auth:${DEPLOY_VERSION}|" docker-compose.prod.yml
+            export RUN_MIGRATIONS="$DEPLOY_RUN_MIGRATIONS"
             docker compose pull auth
             docker compose up -d --no-deps auth
 
@@ -97,12 +130,25 @@ jobs:
       (needs.deploy-central.result == 'success' || needs.deploy-central.result == 'skipped')
     runs-on: ubuntu-latest
     steps:
+      - name: Validate version input
+        env:
+          DEPLOY_VERSION: ${{ inputs.version }}
+        run: |
+          if [[ ! "$DEPLOY_VERSION" =~ ^[A-Za-z0-9._-]+$ ]]; then
+            echo "::error::Invalid version '$DEPLOY_VERSION' — only letters, digits, dots, underscores and hyphens are allowed"
+            exit 1
+          fi
+
       - name: Deploy edge
-        uses: appleboy/ssh-action@v1.2.0
+        uses: appleboy/ssh-action@7eaf76671a0d7eec5d98ee897acda4f968735a17 # v1.2.0
+        env:
+          DEPLOY_VERSION: ${{ inputs.version }}
+          DEPLOY_RUN_MIGRATIONS: ${{ inputs.run_migrations }}
         with:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
+          envs: DEPLOY_VERSION,DEPLOY_RUN_MIGRATIONS
           script: |
             set -e
             cd /opt/versola
@@ -113,8 +159,8 @@ jobs:
               exit 1
             fi
 
-            sed -i "s|versola-edge:[^[:space:]]*|versola-edge:${{ inputs.version }}|" docker-compose.prod.yml
-            export RUN_MIGRATIONS=${{ inputs.run_migrations }}
+            sed -i "s|versola-edge:[^[:space:]]*|versola-edge:${DEPLOY_VERSION}|" docker-compose.prod.yml
+            export RUN_MIGRATIONS="$DEPLOY_RUN_MIGRATIONS"
             docker compose pull edge
             docker compose up -d --no-deps edge
 
