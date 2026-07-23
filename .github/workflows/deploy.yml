@@ -39,6 +39,25 @@ jobs:
             exit 1
           fi
 
+      - name: Checkout env-config
+        uses: actions/checkout@v4
+        with:
+          repository: versolauth/env-config
+          token: ${{ secrets.ENV_CONFIG_PAT }}
+          path: env-config
+
+      - name: Upload central.conf to VPS
+        uses: appleboy/scp-action@ff85246acaad7bdce478db94a363cd2bf7c90345 # v1.0.0
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          fingerprint: ${{ secrets.VPS_HOST_FINGERPRINT }}
+          source: "env-config/prod/central.conf"
+          target: "~/incoming-config"
+          strip_components: 2
+          overwrite: true
+
       - name: Deploy central
         uses: appleboy/ssh-action@7eaf76671a0d7eec5d98ee897acda4f968735a17 # v1.2.0
         env:
@@ -53,6 +72,16 @@ jobs:
           script: |
             set -e
             cd /opt/versola
+
+            if [ ! -s ~/incoming-config/central.conf ]; then
+              echo "central.conf from env-config is empty or missing" >&2
+              exit 1
+            fi
+            sudo -n cp /opt/versola/config/central.conf /opt/versola/config/central.conf.bak 2>/dev/null || true
+            sudo -n cp ~/incoming-config/central.conf /opt/versola/config/central.conf
+            sudo -n chmod 600 /opt/versola/config/central.conf
+            rm -rf ~/incoming-config
+
             sudo -n cp docker-compose.prod.yml docker-compose.prod.yml.bak
             sudo -n sed -i "s|versola-central:[^[:space:]]*|versola-central:${DEPLOY_VERSION}|" docker-compose.prod.yml
             # Fail loudly if sed matched nothing (e.g. compose format changed) instead of
@@ -94,6 +123,25 @@ jobs:
             exit 1
           fi
 
+      - name: Checkout env-config
+        uses: actions/checkout@v4
+        with:
+          repository: versolauth/env-config
+          token: ${{ secrets.ENV_CONFIG_PAT }}
+          path: env-config
+
+      - name: Upload auth.conf to VPS
+        uses: appleboy/scp-action@ff85246acaad7bdce478db94a363cd2bf7c90345 # v1.0.0
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          fingerprint: ${{ secrets.VPS_HOST_FINGERPRINT }}
+          source: "env-config/prod/auth.conf"
+          target: "~/incoming-config"
+          strip_components: 2
+          overwrite: true
+
       - name: Deploy auth
         uses: appleboy/ssh-action@7eaf76671a0d7eec5d98ee897acda4f968735a17 # v1.2.0
         env:
@@ -108,6 +156,15 @@ jobs:
           script: |
             set -e
             cd /opt/versola
+
+            if [ ! -s ~/incoming-config/auth.conf ]; then
+              echo "auth.conf from env-config is empty or missing" >&2
+              exit 1
+            fi
+            sudo -n cp /opt/versola/config/auth.conf /opt/versola/config/auth.conf.bak 2>/dev/null || true
+            sudo -n cp ~/incoming-config/auth.conf /opt/versola/config/auth.conf
+            sudo -n chmod 600 /opt/versola/config/auth.conf
+            rm -rf ~/incoming-config
 
             echo "Checking central is healthy before touching auth..."
             if ! curl -sf --max-time 5 http://127.0.0.1:8091/readiness > /dev/null; then
@@ -153,6 +210,25 @@ jobs:
             exit 1
           fi
 
+      - name: Checkout env-config
+        uses: actions/checkout@v4
+        with:
+          repository: versolauth/env-config
+          token: ${{ secrets.ENV_CONFIG_PAT }}
+          path: env-config
+
+      - name: Upload edge.conf to VPS
+        uses: appleboy/scp-action@ff85246acaad7bdce478db94a363cd2bf7c90345 # v1.0.0
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          fingerprint: ${{ secrets.VPS_HOST_FINGERPRINT }}
+          source: "env-config/prod/edge.conf"
+          target: "~/incoming-config"
+          strip_components: 2
+          overwrite: true
+
       - name: Deploy edge
         uses: appleboy/ssh-action@7eaf76671a0d7eec5d98ee897acda4f968735a17 # v1.2.0
         env:
@@ -167,6 +243,15 @@ jobs:
           script: |
             set -e
             cd /opt/versola
+
+            if [ ! -s ~/incoming-config/edge.conf ]; then
+              echo "edge.conf from env-config is empty or missing" >&2
+              exit 1
+            fi
+            sudo -n cp /opt/versola/config/edge.conf /opt/versola/config/edge.conf.bak 2>/dev/null || true
+            sudo -n cp ~/incoming-config/edge.conf /opt/versola/config/edge.conf
+            sudo -n chmod 600 /opt/versola/config/edge.conf
+            rm -rf ~/incoming-config
 
             echo "Checking central is healthy before touching edge..."
             if ! curl -sf --max-time 5 http://127.0.0.1:8091/readiness > /dev/null; then
