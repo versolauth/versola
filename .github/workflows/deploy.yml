@@ -45,6 +45,7 @@ jobs:
           repository: versolauth/env-config
           token: ${{ secrets.ENV_CONFIG_PAT }}
           path: env-config
+          persist-credentials: false
 
       - name: Upload central.conf to VPS
         uses: appleboy/scp-action@ff85246acaad7bdce478db94a363cd2bf7c90345 # v1.0.0
@@ -71,6 +72,7 @@ jobs:
           envs: DEPLOY_VERSION,DEPLOY_RUN_MIGRATIONS
           script: |
             set -e
+            trap 'rm -rf ~/incoming-config-central' EXIT
             cd /opt/versola
 
             if [ ! -s ~/incoming-config-central/central.conf ]; then
@@ -80,7 +82,6 @@ jobs:
             sudo -n cp /opt/versola/config/central.conf /opt/versola/config/central.conf.bak 2>/dev/null || true
             sudo -n cp ~/incoming-config-central/central.conf /opt/versola/config/central.conf
             sudo -n chmod 600 /opt/versola/config/central.conf
-            rm -rf ~/incoming-config-central
 
             sudo -n cp docker-compose.prod.yml docker-compose.prod.yml.bak
             sudo -n sed -i "s|versola-central:[^[:space:]]*|versola-central:${DEPLOY_VERSION}|" docker-compose.prod.yml
@@ -129,6 +130,7 @@ jobs:
           repository: versolauth/env-config
           token: ${{ secrets.ENV_CONFIG_PAT }}
           path: env-config
+          persist-credentials: false
 
       - name: Upload auth.conf to VPS
         uses: appleboy/scp-action@ff85246acaad7bdce478db94a363cd2bf7c90345 # v1.0.0
@@ -155,6 +157,7 @@ jobs:
           envs: DEPLOY_VERSION,DEPLOY_RUN_MIGRATIONS
           script: |
             set -e
+            trap 'rm -rf ~/incoming-config-auth' EXIT
             cd /opt/versola
 
             echo "Checking central is healthy before touching auth..."
@@ -170,7 +173,6 @@ jobs:
             sudo -n cp /opt/versola/config/auth.conf /opt/versola/config/auth.conf.bak 2>/dev/null || true
             sudo -n cp ~/incoming-config-auth/auth.conf /opt/versola/config/auth.conf
             sudo -n chmod 600 /opt/versola/config/auth.conf
-            rm -rf ~/incoming-config-auth
 
             sudo -n cp docker-compose.prod.yml docker-compose.prod.yml.bak
             sudo -n sed -i "s|versola-auth:[^[:space:]]*|versola-auth:${DEPLOY_VERSION}|" docker-compose.prod.yml
@@ -216,6 +218,7 @@ jobs:
           repository: versolauth/env-config
           token: ${{ secrets.ENV_CONFIG_PAT }}
           path: env-config
+          persist-credentials: false
 
       - name: Upload edge.conf to VPS
         uses: appleboy/scp-action@ff85246acaad7bdce478db94a363cd2bf7c90345 # v1.0.0
@@ -242,6 +245,7 @@ jobs:
           envs: DEPLOY_VERSION,DEPLOY_RUN_MIGRATIONS
           script: |
             set -e
+            trap 'rm -rf ~/incoming-config-edge' EXIT
             cd /opt/versola
 
             echo "Checking central is healthy before touching edge..."
@@ -257,7 +261,6 @@ jobs:
             sudo -n cp /opt/versola/config/edge.conf /opt/versola/config/edge.conf.bak 2>/dev/null || true
             sudo -n cp ~/incoming-config-edge/edge.conf /opt/versola/config/edge.conf
             sudo -n chmod 600 /opt/versola/config/edge.conf
-            rm -rf ~/incoming-config-edge
 
             sudo -n cp docker-compose.prod.yml docker-compose.prod.yml.bak
             sudo -n sed -i "s|versola-edge:[^[:space:]]*|versola-edge:${DEPLOY_VERSION}|" docker-compose.prod.yml
