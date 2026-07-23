@@ -53,7 +53,7 @@ jobs:
           script: |
             set -e
             cd /opt/versola
-            sed -i "s|versola-central:[^[:space:]]*|versola-central:${DEPLOY_VERSION}|" docker-compose.prod.yml
+            sudo -n sed -i "s|versola-central:[^[:space:]]*|versola-central:${DEPLOY_VERSION}|" docker-compose.prod.yml
             # Fail loudly if sed matched nothing (e.g. compose format changed) instead of
             # silently pulling/redeploying the old tag and reporting a green deploy.
             if ! grep -qF "versola-central:${DEPLOY_VERSION}" docker-compose.prod.yml; then
@@ -114,7 +114,7 @@ jobs:
               exit 1
             fi
 
-            sed -i "s|versola-auth:[^[:space:]]*|versola-auth:${DEPLOY_VERSION}|" docker-compose.prod.yml
+            sudo -n sed -i "s|versola-auth:[^[:space:]]*|versola-auth:${DEPLOY_VERSION}|" docker-compose.prod.yml
             if ! grep -qF "versola-auth:${DEPLOY_VERSION}" docker-compose.prod.yml; then
               echo "Failed to set auth image tag to '${DEPLOY_VERSION}' in docker-compose.prod.yml" >&2
               exit 1
@@ -172,7 +172,7 @@ jobs:
               exit 1
             fi
 
-            sed -i "s|versola-edge:[^[:space:]]*|versola-edge:${DEPLOY_VERSION}|" docker-compose.prod.yml
+            sudo -n sed -i "s|versola-edge:[^[:space:]]*|versola-edge:${DEPLOY_VERSION}|" docker-compose.prod.yml
             if ! grep -qF "versola-edge:${DEPLOY_VERSION}" docker-compose.prod.yml; then
               echo "Failed to set edge image tag to '${DEPLOY_VERSION}' in docker-compose.prod.yml" >&2
               exit 1
