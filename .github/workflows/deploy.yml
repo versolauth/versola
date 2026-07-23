@@ -54,7 +54,7 @@ jobs:
           key: ${{ secrets.VPS_SSH_KEY }}
           fingerprint: ${{ secrets.VPS_HOST_FINGERPRINT }}
           source: "env-config/prod/central.conf"
-          target: "~/incoming-config"
+          target: "~/incoming-config-central"
           strip_components: 2
           overwrite: true
 
@@ -73,14 +73,14 @@ jobs:
             set -e
             cd /opt/versola
 
-            if [ ! -s ~/incoming-config/central.conf ]; then
+            if [ ! -s ~/incoming-config-central/central.conf ]; then
               echo "central.conf from env-config is empty or missing" >&2
               exit 1
             fi
             sudo -n cp /opt/versola/config/central.conf /opt/versola/config/central.conf.bak 2>/dev/null || true
-            sudo -n cp ~/incoming-config/central.conf /opt/versola/config/central.conf
+            sudo -n cp ~/incoming-config-central/central.conf /opt/versola/config/central.conf
             sudo -n chmod 600 /opt/versola/config/central.conf
-            rm -rf ~/incoming-config
+            rm -rf ~/incoming-config-central
 
             sudo -n cp docker-compose.prod.yml docker-compose.prod.yml.bak
             sudo -n sed -i "s|versola-central:[^[:space:]]*|versola-central:${DEPLOY_VERSION}|" docker-compose.prod.yml
@@ -138,7 +138,7 @@ jobs:
           key: ${{ secrets.VPS_SSH_KEY }}
           fingerprint: ${{ secrets.VPS_HOST_FINGERPRINT }}
           source: "env-config/prod/auth.conf"
-          target: "~/incoming-config"
+          target: "~/incoming-config-auth"
           strip_components: 2
           overwrite: true
 
@@ -157,20 +157,20 @@ jobs:
             set -e
             cd /opt/versola
 
-            if [ ! -s ~/incoming-config/auth.conf ]; then
-              echo "auth.conf from env-config is empty or missing" >&2
-              exit 1
-            fi
-            sudo -n cp /opt/versola/config/auth.conf /opt/versola/config/auth.conf.bak 2>/dev/null || true
-            sudo -n cp ~/incoming-config/auth.conf /opt/versola/config/auth.conf
-            sudo -n chmod 600 /opt/versola/config/auth.conf
-            rm -rf ~/incoming-config
-
             echo "Checking central is healthy before touching auth..."
             if ! curl -sf --max-time 5 http://127.0.0.1:8091/readiness > /dev/null; then
               echo "central is not ready — refusing to deploy auth" >&2
               exit 1
             fi
+
+            if [ ! -s ~/incoming-config-auth/auth.conf ]; then
+              echo "auth.conf from env-config is empty or missing" >&2
+              exit 1
+            fi
+            sudo -n cp /opt/versola/config/auth.conf /opt/versola/config/auth.conf.bak 2>/dev/null || true
+            sudo -n cp ~/incoming-config-auth/auth.conf /opt/versola/config/auth.conf
+            sudo -n chmod 600 /opt/versola/config/auth.conf
+            rm -rf ~/incoming-config-auth
 
             sudo -n cp docker-compose.prod.yml docker-compose.prod.yml.bak
             sudo -n sed -i "s|versola-auth:[^[:space:]]*|versola-auth:${DEPLOY_VERSION}|" docker-compose.prod.yml
@@ -225,7 +225,7 @@ jobs:
           key: ${{ secrets.VPS_SSH_KEY }}
           fingerprint: ${{ secrets.VPS_HOST_FINGERPRINT }}
           source: "env-config/prod/edge.conf"
-          target: "~/incoming-config"
+          target: "~/incoming-config-edge"
           strip_components: 2
           overwrite: true
 
@@ -244,20 +244,20 @@ jobs:
             set -e
             cd /opt/versola
 
-            if [ ! -s ~/incoming-config/edge.conf ]; then
-              echo "edge.conf from env-config is empty or missing" >&2
-              exit 1
-            fi
-            sudo -n cp /opt/versola/config/edge.conf /opt/versola/config/edge.conf.bak 2>/dev/null || true
-            sudo -n cp ~/incoming-config/edge.conf /opt/versola/config/edge.conf
-            sudo -n chmod 600 /opt/versola/config/edge.conf
-            rm -rf ~/incoming-config
-
             echo "Checking central is healthy before touching edge..."
             if ! curl -sf --max-time 5 http://127.0.0.1:8091/readiness > /dev/null; then
               echo "central is not ready — refusing to deploy edge" >&2
               exit 1
             fi
+
+            if [ ! -s ~/incoming-config-edge/edge.conf ]; then
+              echo "edge.conf from env-config is empty or missing" >&2
+              exit 1
+            fi
+            sudo -n cp /opt/versola/config/edge.conf /opt/versola/config/edge.conf.bak 2>/dev/null || true
+            sudo -n cp ~/incoming-config-edge/edge.conf /opt/versola/config/edge.conf
+            sudo -n chmod 600 /opt/versola/config/edge.conf
+            rm -rf ~/incoming-config-edge
 
             sudo -n cp docker-compose.prod.yml docker-compose.prod.yml.bak
             sudo -n sed -i "s|versola-edge:[^[:space:]]*|versola-edge:${DEPLOY_VERSION}|" docker-compose.prod.yml
