@@ -62,8 +62,8 @@ jobs:
               exit 1
             fi
             export RUN_MIGRATIONS="$DEPLOY_RUN_MIGRATIONS"
-            docker compose pull central
-            docker compose up -d --no-deps central
+            docker compose -f docker-compose.prod.yml pull central
+            docker compose -f docker-compose.prod.yml up -d --no-deps central
 
             echo "Waiting for central to become ready..."
             for i in $(seq 1 30); do
@@ -74,7 +74,7 @@ jobs:
               sleep 2
             done
             echo "central did not become ready in time" >&2
-            docker compose logs --tail=50 central
+            docker compose -f docker-compose.prod.yml logs --tail=50 central
             exit 1
 
   deploy-auth:
@@ -122,8 +122,8 @@ jobs:
               exit 1
             fi
             export RUN_MIGRATIONS="$DEPLOY_RUN_MIGRATIONS"
-            docker compose pull auth
-            docker compose up -d --no-deps auth
+            docker compose -f docker-compose.prod.yml pull auth
+            docker compose -f docker-compose.prod.yml up -d --no-deps auth
 
             for i in $(seq 1 30); do
               if curl -sf --max-time 5 http://127.0.0.1:8081/readiness > /dev/null; then
@@ -133,7 +133,7 @@ jobs:
               sleep 2
             done
             echo "auth did not become ready in time" >&2
-            docker compose logs --tail=50 auth
+            docker compose -f docker-compose.prod.yml logs --tail=50 auth
             exit 1
 
   deploy-edge:
@@ -181,8 +181,8 @@ jobs:
               exit 1
             fi
             export RUN_MIGRATIONS="$DEPLOY_RUN_MIGRATIONS"
-            docker compose pull edge
-            docker compose up -d --no-deps edge
+            docker compose -f docker-compose.prod.yml pull edge
+            docker compose -f docker-compose.prod.yml up -d --no-deps edge
 
             for i in $(seq 1 30); do
               if curl -sf --max-time 5 http://127.0.0.1:8096/readiness > /dev/null; then
@@ -192,5 +192,5 @@ jobs:
               sleep 2
             done
             echo "edge did not become ready in time" >&2
-            docker compose logs --tail=50 edge
+            docker compose -f docker-compose.prod.yml logs --tail=50 edge
             exit 1
