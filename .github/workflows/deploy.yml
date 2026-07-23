@@ -1,0 +1,193 @@
+name: Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Image tag to deploy (e.g. 0.1.1, no "v" prefix — see registry tags)'
+        required: true
+        type: string
+      service:
+        description: 'Which service to deploy'
+        required: true
+        type: choice
+        options: [auth, central, edge, all]
+      run_migrations:
+        description: 'Run Flyway migrations on startup'
+        required: true
+        type: boolean
+        default: true
+
+# Concurrent manual runs would race on the same VPS state (in-place edits of
+# docker-compose.prod.yml, overlapping docker compose calls). Queue instead of
+# running in parallel, and don't cancel a deploy that's already in flight.
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy-central:
+    if: inputs.service == 'central' || inputs.service == 'all'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate version input
+        env:
+          DEPLOY_VERSION: ${{ inputs.version }}
+        run: |
+          if [[ ! "$DEPLOY_VERSION" =~ ^[A-Za-z0-9._-]+$ ]]; then
+            echo "::error::Invalid version '$DEPLOY_VERSION' — only letters, digits, dots, underscores and hyphens are allowed"
+            exit 1
+          fi
+
+      - name: Deploy central
+        uses: appleboy/ssh-action@7eaf76671a0d7eec5d98ee897acda4f968735a17 # v1.2.0
+        env:
+          DEPLOY_VERSION: ${{ inputs.version }}
+          DEPLOY_RUN_MIGRATIONS: ${{ inputs.run_migrations }}
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          fingerprint: ${{ secrets.VPS_HOST_FINGERPRINT }}
+          envs: DEPLOY_VERSION,DEPLOY_RUN_MIGRATIONS
+          script: |
+            set -e
+            cd /opt/versola
+            sed -i "s|versola-central:[^[:space:]]*|versola-central:${DEPLOY_VERSION}|" docker-compose.prod.yml
+            # Fail loudly if sed matched nothing (e.g. compose format changed) instead of
+            # silently pulling/redeploying the old tag and reporting a green deploy.
+            if ! grep -qF "versola-central:${DEPLOY_VERSION}" docker-compose.prod.yml; then
+              echo "Failed to set central image tag to '${DEPLOY_VERSION}' in docker-compose.prod.yml" >&2
+              exit 1
+            fi
+            export RUN_MIGRATIONS="$DEPLOY_RUN_MIGRATIONS"
+            docker compose pull central
+            docker compose up -d --no-deps central
+
+            echo "Waiting for central to become ready..."
+            for i in $(seq 1 30); do
+              if curl -sf --max-time 5 http://127.0.0.1:8091/readiness > /dev/null; then
+                echo "central is ready"
+                exit 0
+              fi
+              sleep 2
+            done
+            echo "central did not become ready in time" >&2
+            docker compose logs --tail=50 central
+            exit 1
+
+  deploy-auth:
+    needs: deploy-central
+    if: |
+      always() &&
+      (inputs.service == 'auth' || inputs.service == 'all') &&
+      (needs.deploy-central.result == 'success' || needs.deploy-central.result == 'skipped')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate version input
+        env:
+          DEPLOY_VERSION: ${{ inputs.version }}
+        run: |
+          if [[ ! "$DEPLOY_VERSION" =~ ^[A-Za-z0-9._-]+$ ]]; then
+            echo "::error::Invalid version '$DEPLOY_VERSION' — only letters, digits, dots, underscores and hyphens are allowed"
+            exit 1
+          fi
+
+      - name: Deploy auth
+        uses: appleboy/ssh-action@7eaf76671a0d7eec5d98ee897acda4f968735a17 # v1.2.0
+        env:
+          DEPLOY_VERSION: ${{ inputs.version }}
+          DEPLOY_RUN_MIGRATIONS: ${{ inputs.run_migrations }}
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          fingerprint: ${{ secrets.VPS_HOST_FINGERPRINT }}
+          envs: DEPLOY_VERSION,DEPLOY_RUN_MIGRATIONS
+          script: |
+            set -e
+            cd /opt/versola
+
+            echo "Checking central is healthy before touching auth..."
+            if ! curl -sf --max-time 5 http://127.0.0.1:8091/readiness > /dev/null; then
+              echo "central is not ready — refusing to deploy auth" >&2
+              exit 1
+            fi
+
+            sed -i "s|versola-auth:[^[:space:]]*|versola-auth:${DEPLOY_VERSION}|" docker-compose.prod.yml
+            if ! grep -qF "versola-auth:${DEPLOY_VERSION}" docker-compose.prod.yml; then
+              echo "Failed to set auth image tag to '${DEPLOY_VERSION}' in docker-compose.prod.yml" >&2
+              exit 1
+            fi
+            export RUN_MIGRATIONS="$DEPLOY_RUN_MIGRATIONS"
+            docker compose pull auth
+            docker compose up -d --no-deps auth
+
+            for i in $(seq 1 30); do
+              if curl -sf --max-time 5 http://127.0.0.1:8081/readiness > /dev/null; then
+                echo "auth is ready"
+                exit 0
+              fi
+              sleep 2
+            done
+            echo "auth did not become ready in time" >&2
+            docker compose logs --tail=50 auth
+            exit 1
+
+  deploy-edge:
+    needs: deploy-central
+    if: |
+      always() &&
+      (inputs.service == 'edge' || inputs.service == 'all') &&
+      (needs.deploy-central.result == 'success' || needs.deploy-central.result == 'skipped')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate version input
+        env:
+          DEPLOY_VERSION: ${{ inputs.version }}
+        run: |
+          if [[ ! "$DEPLOY_VERSION" =~ ^[A-Za-z0-9._-]+$ ]]; then
+            echo "::error::Invalid version '$DEPLOY_VERSION' — only letters, digits, dots, underscores and hyphens are allowed"
+            exit 1
+          fi
+
+      - name: Deploy edge
+        uses: appleboy/ssh-action@7eaf76671a0d7eec5d98ee897acda4f968735a17 # v1.2.0
+        env:
+          DEPLOY_VERSION: ${{ inputs.version }}
+          DEPLOY_RUN_MIGRATIONS: ${{ inputs.run_migrations }}
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          fingerprint: ${{ secrets.VPS_HOST_FINGERPRINT }}
+          envs: DEPLOY_VERSION,DEPLOY_RUN_MIGRATIONS
+          script: |
+            set -e
+            cd /opt/versola
+
+            echo "Checking central is healthy before touching edge..."
+            if ! curl -sf --max-time 5 http://127.0.0.1:8091/readiness > /dev/null; then
+              echo "central is not ready — refusing to deploy edge" >&2
+              exit 1
+            fi
+
+            sed -i "s|versola-edge:[^[:space:]]*|versola-edge:${DEPLOY_VERSION}|" docker-compose.prod.yml
+            if ! grep -qF "versola-edge:${DEPLOY_VERSION}" docker-compose.prod.yml; then
+              echo "Failed to set edge image tag to '${DEPLOY_VERSION}' in docker-compose.prod.yml" >&2
+              exit 1
+            fi
+            export RUN_MIGRATIONS="$DEPLOY_RUN_MIGRATIONS"
+            docker compose pull edge
+            docker compose up -d --no-deps edge
+
+            for i in $(seq 1 30); do
+              if curl -sf --max-time 5 http://127.0.0.1:8096/readiness > /dev/null; then
+                echo "edge is ready"
+                exit 0
+              fi
+              sleep 2
+            done
+            echo "edge did not become ready in time" >&2
+            docker compose logs --tail=50 edge
+            exit 1
