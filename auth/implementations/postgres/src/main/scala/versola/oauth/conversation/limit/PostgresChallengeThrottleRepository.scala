@@ -70,6 +70,49 @@ class PostgresChallengeThrottleRepository(xa: TransactorZIO) extends ChallengeTh
       """.update.run()
     .unit
 
+  override def recordAttempt(
+      tenantId: TenantId,
+      subject: String,
+      challengeType: ChallengeType,
+      mutate: Option[ChallengeThrottleRecord] => (ThrottleUpdate, LimitStatus),
+  ): Task[LimitStatus] =
+    val lockKey = s"$tenantId|$subject|$challengeType"
+    xa.transactMeasured("record-challenge-throttle-attempt"):
+      // Serialize concurrent attempts against this key even before any row exists. A plain
+      // `SELECT ... FOR UPDATE` below can only lock a row that's already there — without this,
+      // the very first concurrent attempts for a brand-new subject could still race: each would
+      // see no row, and the later `INSERT ... ON CONFLICT DO UPDATE` would overwrite instead of
+      // merge. The advisory lock is scoped to this transaction and auto-released on
+      // commit/rollback; wrapping it in a subquery so we select a plain Int (the function itself
+      // returns void, which isn't reliably decodable).
+      sql"SELECT 1 FROM (SELECT pg_advisory_xact_lock(hashtext($lockKey)::bigint)) AS throttle_lock"
+        .query[Int].run()
+
+      // Lock the row (if any) for the rest of the transaction too, as defense in depth — belt and
+      // braces alongside the advisory lock above.
+      val existing =
+        sql"""SELECT tenant_id, subject, challenge_type, attempts, banned_until, expires_at
+              FROM challenge_throttle
+              WHERE tenant_id = $tenantId AND subject = $subject AND challenge_type = $challengeType
+              FOR UPDATE"""
+          .query[ChallengeThrottleRecord].run().headOption
+
+      val (update, result) = mutate(existing)
+
+      // Key fields written are exactly the ones we locked above — `tenantId`/`subject`/
+      // `challengeType` parameters, never anything from `mutate`'s result — so `mutate` can't
+      // steer the write to a different row than the one this transaction holds the lock for.
+      sql"""
+        INSERT INTO challenge_throttle (subject, tenant_id, challenge_type, attempts, banned_until, expires_at)
+        VALUES ($subject, $tenantId, $challengeType, ${update.attempts}, ${update.bannedUntil}, ${update.expiresAt})
+        ON CONFLICT (subject, tenant_id, challenge_type) DO UPDATE SET
+          attempts = EXCLUDED.attempts,
+          banned_until = EXCLUDED.banned_until,
+          expires_at = EXCLUDED.expires_at
+      """.update.run()
+
+      result
+
   override def delete(
       tenantId: TenantId,
       subject: String,
