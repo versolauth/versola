@@ -5,7 +5,7 @@ import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.central.configuration.forms.{BackendProperty, FormId, FormRecord, FormRepository}
 import versola.util.postgres.BasicCodecs
 import zio.json.*
-import zio.{Task, ZLayer, Duration}
+import zio.{Task, ZLayer, Duration, ZIO}
 import zio.duration.*
 import java.sql.SQLException
 import scala.math._
@@ -66,7 +66,7 @@ class PostgresFormRepository(xa: TransactorZIO) extends FormRepository, BasicCod
           sql"""INSERT INTO forms (id, version, active, style, js_source, js_compiled, localizations, properties)
                 VALUES ($id, $nextVersion, $makeActive, $style, $jsSource, $jsCompiled, $localizations, $properties)""".update.run()
         ).catchSome {
-          case e: SQLException if isUniqueConstraintViolation(e) && attempt < MaxRetries - 1 =>
+          case e: SQLException if (isUniqueConstraintViolation(e) || isSerializationFailure(e)) && attempt < MaxRetries - 1 =>
             ZIO.sleep((BaseDelayMillis * math.pow(2, attempt).toLong).millis) *> insertWithRetry(attempt + 1)
         }
 
@@ -84,6 +84,10 @@ class PostgresFormRepository(xa: TransactorZIO) extends FormRepository, BasicCod
   private def isUniqueConstraintViolation(e: SQLException): Boolean =
     // PostgreSQL unique violation SQLState is 23505
     Option(e.getSQLState).exists(_ == "23505")
+
+  private def isSerializationFailure(e: SQLException): Boolean =
+    // PostgreSQL serialization failure SQLState is 40001
+    Option(e.getSQLState).exists(_ == "40001")
 
   override def setActiveVersion(id: FormId, version: Int): Task[Unit] =
     xa.transactMeasured("set-active-form-version"):
