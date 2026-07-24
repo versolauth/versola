@@ -39,6 +39,26 @@ jobs:
             exit 1
           fi
 
+      - name: Checkout env-config
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: versolauth/env-config
+          token: ${{ secrets.ENV_CONFIG_PAT }}
+          path: env-config
+          persist-credentials: false
+
+      - name: Upload central.conf to VPS
+        uses: appleboy/scp-action@ff85246acaad7bdce478db94a363cd2bf7c90345 # v1.0.0
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          fingerprint: ${{ secrets.VPS_HOST_FINGERPRINT }}
+          source: "env-config/prod/central.conf"
+          target: "~/incoming-config-central"
+          strip_components: 2
+          overwrite: true
+
       - name: Deploy central
         uses: appleboy/ssh-action@7eaf76671a0d7eec5d98ee897acda4f968735a17 # v1.2.0
         env:
@@ -52,7 +72,19 @@ jobs:
           envs: DEPLOY_VERSION,DEPLOY_RUN_MIGRATIONS
           script: |
             set -e
+            trap 'rm -rf ~/incoming-config-central' EXIT
             cd /opt/versola
+
+            if [ ! -s ~/incoming-config-central/central.conf ]; then
+              echo "central.conf from env-config is empty or missing" >&2
+              exit 1
+            fi
+            if [ -f /opt/versola/config/central.conf ]; then
+              sudo -n cp /opt/versola/config/central.conf /opt/versola/config/central.conf.bak
+            fi
+            sudo -n cp ~/incoming-config-central/central.conf /opt/versola/config/central.conf
+            sudo -n chmod 600 /opt/versola/config/central.conf
+
             sudo -n cp docker-compose.prod.yml docker-compose.prod.yml.bak
             sudo -n sed -i "s|versola-central:[^[:space:]]*|versola-central:${DEPLOY_VERSION}|" docker-compose.prod.yml
             # Fail loudly if sed matched nothing (e.g. compose format changed) instead of
@@ -77,6 +109,17 @@ jobs:
             docker compose -f docker-compose.prod.yml logs --tail=50 central
             exit 1
 
+      - name: Clean up staged config
+        if: always()
+        uses: appleboy/ssh-action@7eaf76671a0d7eec5d98ee897acda4f968735a17 # v1.2.0
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          fingerprint: ${{ secrets.VPS_HOST_FINGERPRINT }}
+          script: |
+            rm -rf ~/incoming-config-central
+
   deploy-auth:
     needs: deploy-central
     if: |
@@ -94,6 +137,26 @@ jobs:
             exit 1
           fi
 
+      - name: Checkout env-config
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: versolauth/env-config
+          token: ${{ secrets.ENV_CONFIG_PAT }}
+          path: env-config
+          persist-credentials: false
+
+      - name: Upload auth.conf to VPS
+        uses: appleboy/scp-action@ff85246acaad7bdce478db94a363cd2bf7c90345 # v1.0.0
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          fingerprint: ${{ secrets.VPS_HOST_FINGERPRINT }}
+          source: "env-config/prod/auth.conf"
+          target: "~/incoming-config-auth"
+          strip_components: 2
+          overwrite: true
+
       - name: Deploy auth
         uses: appleboy/ssh-action@7eaf76671a0d7eec5d98ee897acda4f968735a17 # v1.2.0
         env:
@@ -107,6 +170,7 @@ jobs:
           envs: DEPLOY_VERSION,DEPLOY_RUN_MIGRATIONS
           script: |
             set -e
+            trap 'rm -rf ~/incoming-config-auth' EXIT
             cd /opt/versola
 
             echo "Checking central is healthy before touching auth..."
@@ -114,6 +178,16 @@ jobs:
               echo "central is not ready — refusing to deploy auth" >&2
               exit 1
             fi
+
+            if [ ! -s ~/incoming-config-auth/auth.conf ]; then
+              echo "auth.conf from env-config is empty or missing" >&2
+              exit 1
+            fi
+            if [ -f /opt/versola/config/auth.conf ]; then
+              sudo -n cp /opt/versola/config/auth.conf /opt/versola/config/auth.conf.bak
+            fi
+            sudo -n cp ~/incoming-config-auth/auth.conf /opt/versola/config/auth.conf
+            sudo -n chmod 600 /opt/versola/config/auth.conf
 
             sudo -n cp docker-compose.prod.yml docker-compose.prod.yml.bak
             sudo -n sed -i "s|versola-auth:[^[:space:]]*|versola-auth:${DEPLOY_VERSION}|" docker-compose.prod.yml
@@ -136,6 +210,17 @@ jobs:
             docker compose -f docker-compose.prod.yml logs --tail=50 auth
             exit 1
 
+      - name: Clean up staged config
+        if: always()
+        uses: appleboy/ssh-action@7eaf76671a0d7eec5d98ee897acda4f968735a17 # v1.2.0
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          fingerprint: ${{ secrets.VPS_HOST_FINGERPRINT }}
+          script: |
+            rm -rf ~/incoming-config-auth
+
   deploy-edge:
     needs: deploy-central
     if: |
@@ -153,6 +238,26 @@ jobs:
             exit 1
           fi
 
+      - name: Checkout env-config
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: versolauth/env-config
+          token: ${{ secrets.ENV_CONFIG_PAT }}
+          path: env-config
+          persist-credentials: false
+
+      - name: Upload edge.conf to VPS
+        uses: appleboy/scp-action@ff85246acaad7bdce478db94a363cd2bf7c90345 # v1.0.0
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          fingerprint: ${{ secrets.VPS_HOST_FINGERPRINT }}
+          source: "env-config/prod/edge.conf"
+          target: "~/incoming-config-edge"
+          strip_components: 2
+          overwrite: true
+
       - name: Deploy edge
         uses: appleboy/ssh-action@7eaf76671a0d7eec5d98ee897acda4f968735a17 # v1.2.0
         env:
@@ -166,6 +271,7 @@ jobs:
           envs: DEPLOY_VERSION,DEPLOY_RUN_MIGRATIONS
           script: |
             set -e
+            trap 'rm -rf ~/incoming-config-edge' EXIT
             cd /opt/versola
 
             echo "Checking central is healthy before touching edge..."
@@ -173,6 +279,16 @@ jobs:
               echo "central is not ready — refusing to deploy edge" >&2
               exit 1
             fi
+
+            if [ ! -s ~/incoming-config-edge/edge.conf ]; then
+              echo "edge.conf from env-config is empty or missing" >&2
+              exit 1
+            fi
+            if [ -f /opt/versola/config/edge.conf ]; then
+              sudo -n cp /opt/versola/config/edge.conf /opt/versola/config/edge.conf.bak
+            fi
+            sudo -n cp ~/incoming-config-edge/edge.conf /opt/versola/config/edge.conf
+            sudo -n chmod 600 /opt/versola/config/edge.conf
 
             sudo -n cp docker-compose.prod.yml docker-compose.prod.yml.bak
             sudo -n sed -i "s|versola-edge:[^[:space:]]*|versola-edge:${DEPLOY_VERSION}|" docker-compose.prod.yml
@@ -194,3 +310,14 @@ jobs:
             echo "edge did not become ready in time" >&2
             docker compose -f docker-compose.prod.yml logs --tail=50 edge
             exit 1
+
+      - name: Clean up staged config
+        if: always()
+        uses: appleboy/ssh-action@7eaf76671a0d7eec5d98ee897acda4f968735a17 # v1.2.0
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          fingerprint: ${{ secrets.VPS_HOST_FINGERPRINT }}
+          script: |
+            rm -rf ~/incoming-config-edge
