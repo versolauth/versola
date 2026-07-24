@@ -298,6 +298,7 @@ object BootstrapService:
       sessionTtlSeconds = 86400,
       sessionIdleTtlSeconds = None,
       ipHeader = "X-Real-IP",
+      acrVocabulary = None,
     )
 
   /** Default theme seeded from the shared CSS resource. */

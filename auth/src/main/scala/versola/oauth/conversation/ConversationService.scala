@@ -7,7 +7,7 @@ import versola.oauth.challenge.passkey.{PasskeyRepository, WebAuthnError, WebAut
 import versola.oauth.challenge.password.PasswordService
 import versola.oauth.challenge.password.model.{CheckPassword, PasswordReuseError}
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{AuthMethodRef, PassedAuthFactor, PassedFactorRecord, PasskeySettings, ScopeToken}
+import versola.oauth.client.model.{Acr, AuthMethodRef, PassedAuthFactor, PassedFactorRecord, PasskeySettings, ScopeToken}
 import versola.oauth.conversation.limit.{ChallengeType, LimitStatus, SubmissionLimiter}
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
 import versola.oauth.conversation.otp.OtpService
@@ -475,59 +475,64 @@ object ConversationService:
       renderStep(authId, conversation, setPasswordStep)
 
     override def finish(authId: AuthId, conversation: ConversationRecord): Task[ConversationResult.Render] =
-      for
-        code <- authPropertyGenerator.nextAuthorizationCode
-        userId = conversation.userId.get // TODO handle illegal state
-        sessionId <- authPropertyGenerator.nextSessionId
-        sessionIdMac <- securityService.mac(Secret(sessionId), config.security.sessionsSecret)
-        accessToken <- authPropertyGenerator.nextAccessToken
-        now <- Clock.instant
-        amr = AuthMethodRef.amrClaim(conversation.amr)
-        record = AuthorizationCodeRecord(
-          sessionId = sessionIdMac,
-          clientId = conversation.clientId,
-          userId = userId,
-          redirectUri = conversation.redirectUri,
-          scope = conversation.scope,
-          codeChallenge = conversation.codeChallenge,
-          codeChallengeMethod = conversation.codeChallengeMethod,
-          requestedClaims = conversation.requestedClaims,
-          uiLocales = conversation.uiLocales,
-          nonce = conversation.nonce,
-          accessToken = accessToken,
-          amr = amr,
-          authTime = now,
-        )
-        session = SessionRecord(
-          userId = userId,
-          clientId = conversation.clientId,
-          userAgent = UserAgentInfo.parse(conversation.userAgent),
-          createdAt = now,
-          amr = conversation.amr,
-        )
-        codeMac <- securityService.mac(Secret(code), config.security.authCodesSecret)
-        sessionTtl <- configService.getSessionTtl(conversation.clientId)
-        sessionIdleTtl <- if conversation.scope.contains(ScopeToken.OfflineAccess) then ZIO.none
-        else configService.getSessionIdleTtl(conversation.clientId)
-        claimed <- conversationRepository.delete(authId, conversation.version)
-        result <- if claimed then
+      conversation.userId match
+        case None =>
+          accessDenied(authId, conversation)
+        case Some(userId) if conversation.expectedUserId.exists(_ != userId) =>
+          accessDenied(authId, conversation)
+        case Some(userId) =>
           for
-            _ <- authorizationCodeRepository.create(codeMac, record, 1.minute)
-            _ <- sessionRepository.create(sessionIdMac, session, sessionTtl, sessionIdleTtl)
-            idTokenData <- if conversation.responseType.contains(ResponseTypeEntry.IdToken) && conversation.scope.contains(ScopeToken.OpenId) then
-              generateIdTokenData(userId, conversation, amr, now)
+            code <- authPropertyGenerator.nextAuthorizationCode
+            sessionId <- authPropertyGenerator.nextSessionId
+            sessionIdMac <- securityService.mac(Secret(sessionId), config.security.sessionsSecret)
+            accessToken <- authPropertyGenerator.nextAccessToken
+            now <- Clock.instant
+            amr = AuthMethodRef.amrClaim(conversation.amr)
+            record = AuthorizationCodeRecord(
+              sessionId = sessionIdMac,
+              clientId = conversation.clientId,
+              userId = userId,
+              redirectUri = conversation.redirectUri,
+              scope = conversation.scope,
+              codeChallenge = conversation.codeChallenge,
+              codeChallengeMethod = conversation.codeChallengeMethod,
+              requestedClaims = conversation.requestedClaims,
+              uiLocales = conversation.uiLocales,
+              nonce = conversation.nonce,
+              accessToken = accessToken,
+              amr = amr,
+              authTime = now,
+            )
+            session = SessionRecord(
+              userId = userId,
+              clientId = conversation.clientId,
+              userAgent = UserAgentInfo.parse(conversation.userAgent),
+              createdAt = now,
+              amr = conversation.amr,
+            )
+            codeMac <- securityService.mac(Secret(code), config.security.authCodesSecret)
+            sessionTtl <- configService.getSessionTtl(conversation.clientId)
+            sessionIdleTtl <- if conversation.scope.contains(ScopeToken.OfflineAccess) then ZIO.none
+            else configService.getSessionIdleTtl(conversation.clientId)
+            claimed <- conversationRepository.delete(authId, conversation.version)
+            result <- if claimed then
+              for
+                _ <- authorizationCodeRepository.create(codeMac, record, 1.minute)
+                _ <- sessionRepository.create(sessionIdMac, session, sessionTtl, sessionIdleTtl)
+                idTokenData <- if conversation.responseType.contains(ResponseTypeEntry.IdToken) && conversation.scope.contains(ScopeToken.OpenId) then
+                  generateIdTokenData(userId, conversation, amr, now)
+                else
+                  ZIO.none
+              yield ConversationResult.Complete(
+                redirectUri = conversation.redirectUri,
+                state = conversation.state,
+                code = code,
+                sessionId = sessionId,
+                idTokenData = idTokenData,
+              )
             else
-              ZIO.none
-          yield ConversationResult.Complete(
-            redirectUri = conversation.redirectUri,
-            state = conversation.state,
-            code = code,
-            sessionId = sessionId,
-            idTokenData = idTokenData,
-          )
-        else
-          ZIO.succeed(ConversationResult.IllegalState)
-      yield result
+              ZIO.succeed(ConversationResult.IllegalState)
+          yield result
 
     override def startPasskeyAssertion(
         authId: AuthId,
@@ -734,15 +739,15 @@ object ConversationService:
         amr: Set[AuthMethodRef],
         authTime: Instant,
     ): Task[Option[ConversationResult.IdTokenData]] =
+      val user = UserRecord(
+        id = userId,
+        email = conversation.userEmail,
+        phone = conversation.userPhone,
+        login = conversation.userLogin,
+        claims = conversation.userClaims.getOrElse(Json.Obj()),
+        uiLocales = conversation.uiLocales,
+      )
       for
-        user = UserRecord(
-          id = userId,
-          email = conversation.userEmail,
-          phone = conversation.userPhone,
-          login = conversation.userLogin,
-          claims = conversation.userClaims.getOrElse(Json.Obj()),
-          uiLocales = conversation.uiLocales,
-        )
         userInfo <- userInfoService.getUserInfoForIdToken(
           user = user,
           scope = conversation.scope,
@@ -753,7 +758,7 @@ object ConversationService:
       yield Some(
         ConversationResult.IdTokenData(
           userId = user.id,
-          claims = userInfo.claims ++ AuthMethodRef.idTokenClaims(amr, Some(authTime)),
+          claims = userInfo.claims ++ AuthMethodRef.idTokenClaims(amr, Some(authTime), Acr.acrClaim(conversation.amr)),
           clientId = conversation.clientId,
         ),
       )

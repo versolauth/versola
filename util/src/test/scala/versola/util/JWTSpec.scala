@@ -98,7 +98,7 @@ object JWTSpec extends ZIOSpecDefault:
           ttl = 1.hour,
           signature = JWT.Signature.Symmetric(symmetricKey),
         )
-        result <- JWT.deserialize[TestClaims](token, symmetricKey)
+        result <- JWT.deserialize[TestClaims](token, symmetricKey, JWT.Type.JWT)
       yield assertTrue(
         result.sub == "user123",
         result.name == "Test User",
@@ -120,7 +120,7 @@ object JWTSpec extends ZIOSpecDefault:
           signature = JWT.Signature.Symmetric(symmetricKey),
         )
         _ <- TestClock.adjust(2.hours)
-        result <- JWT.deserialize[TestClaims](token, symmetricKey).either
+        result <- JWT.deserialize[TestClaims](token, symmetricKey, JWT.Type.JWT).either
       yield assertTrue(result.left.exists { case _: JWT.Error.Expired => true; case _ => false })
     },
   )

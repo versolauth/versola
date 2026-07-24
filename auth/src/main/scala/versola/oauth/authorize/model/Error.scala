@@ -104,9 +104,14 @@ private[authorize] object Error:
       errorDescription = "Invalid prompt parameter - none must not be combined with other values",
       errorUri = Some("https://openid.net/specs/openid-connect-core-1_0.html#AuthRequest"),
     )
+  case class IdTokenHintInvalid(uri: URL, state: Option[State]) extends RedirectError(
+      error = ErrorCode.InvalidRequest,
+      errorDescription = "The id_token_hint could not be verified or is invalid (invalid signature, audience, or issuer)",
+      errorUri = Some("https://openid.net/specs/openid-connect-core-1_0.html#AuthRequest"),
+    )
 
   case class LoginHintInvalid(uri: URL, state: Option[State]) extends RedirectError(
       error = ErrorCode.InvalidRequest,
-      errorDescription = "login_hint is invalid or not supported by the client auth flow",
+      errorDescription = "The login_hint parameter is invalid or not supported by the client auth flow",
       errorUri = Some("https://openid.net/specs/openid-connect-core-1_0.html#AuthRequest"),
     )

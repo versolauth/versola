@@ -105,6 +105,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
     version = 0,
     amr = Map.empty,
     needsPasswordChange = false,
+    expectedUserId = None,
   )
 
   val otpRecord = initialConversation.copy(
@@ -254,6 +255,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           version = 0,
           amr = Map.empty,
           needsPasswordChange = false,
+          expectedUserId = None,
         )
         for
           _ <- env.submissionLimiter.isBanned.succeedsWith(LimitStatus.Allowed)
@@ -288,6 +290,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           version = 0,
           amr = Map.empty,
           needsPasswordChange = false,
+          expectedUserId = None,
         )
         for
           _ <- env.submissionLimiter.isBanned.succeedsWith(LimitStatus.Banned)

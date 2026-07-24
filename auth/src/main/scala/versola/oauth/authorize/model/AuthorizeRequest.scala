@@ -26,4 +26,5 @@ case class AuthorizeRequest(
     acrValues: Option[List[String]],
     sessionId: Option[SessionId],
     loginHint: Option[Either[Email, Phone]],
+    idTokenHint: Option[String],
 )

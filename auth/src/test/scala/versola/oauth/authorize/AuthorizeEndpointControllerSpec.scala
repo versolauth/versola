@@ -41,6 +41,7 @@ object AuthorizeEndpointControllerSpec extends UnitSpecBase:
     acrValues          = None,
     sessionId          = None,
     loginHint          = None,
+    idTokenHint        = None,
   )
 
   case class Services(

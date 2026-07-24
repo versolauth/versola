@@ -1065,6 +1065,7 @@ export async function upsertChallengeSettings(
   sessionTtlSeconds: number,
   sessionIdleTtlSeconds: number | null,
   ipHeader: string,
+  acrVocabulary?: Record<string, string[]> | null,
 ): Promise<void> {
   await requestVoid('/configuration/challenges/challenge-settings', {
     method: 'PUT',
@@ -1079,6 +1080,7 @@ export async function upsertChallengeSettings(
       sessionTtlSeconds,
       sessionIdleTtlSeconds: sessionIdleTtlSeconds ?? null,
       ipHeader,
+      acrVocabulary: acrVocabulary ?? null,
     },
   });
 }

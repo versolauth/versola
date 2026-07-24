@@ -35,6 +35,7 @@ case class ConversationRecord(
     version: Long,
     amr: Map[PassedAuthFactor, PassedFactorRecord],
     needsPasswordChange: Boolean,
+    expectedUserId: Option[UserId],
 ):
   def patch(patch: ConversationRecord.Patch): ConversationRecord =
     this.copy(

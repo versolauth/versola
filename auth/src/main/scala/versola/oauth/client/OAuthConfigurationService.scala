@@ -1,11 +1,11 @@
 package versola.oauth.client
 
-import versola.oauth.client.model.{ChallengeSettingsRecord, ClientId, ClientSecret, FormRecord, Locales, OAuthClientRecord, OtpSettings, OtpTemplateRecord, PasskeySettings, PasswordHistorySettings, ScopeRecord, ScopeToken, SubmissionLimits, SystemSettingsRecord, TenantId, ThemeRecord}
+import versola.oauth.client.model.{ChallengeSettingsRecord, ClientId, ClientSecret, FormRecord, Locales, OAuthClientRecord, OtpSettings, OtpTemplateRecord, PassedAuthFactor, PasskeySettings, PasswordHistorySettings, ScopeRecord, ScopeToken, SubmissionLimits, SystemSettingsRecord, TenantId, ThemeRecord}
 import versola.oauth.conversation.otp.model.OtpTemplate
 import versola.util.{CoreConfig, ReloadingCache, Secret, SecureRandom, SecurityService}
 import zio.*
 import zio.http.Client
-import zio.prelude.{EqualOps, NonEmptySet}
+import zio.prelude.{EqualOps, NonEmptyList, NonEmptySet}
 
 trait OAuthConfigurationService:
   def find(id: ClientId): UIO[Option[OAuthClientRecord]]
@@ -44,6 +44,8 @@ trait OAuthConfigurationService:
   def getAuthConversationTtl(id: ClientId): UIO[Duration]
 
   def getSessionTtl(id: ClientId): UIO[Duration]
+
+  def getAcrVocabulary(id: ClientId): UIO[Map[String, NonEmptyList[PassedAuthFactor]]]
 
   def getSessionIdleTtl(id: ClientId): UIO[Option[Duration]]
 
@@ -247,4 +249,14 @@ object OAuthConfigurationService:
               .map(s => Duration.fromSeconds(s.toLong)),
           )
 
+    override def getAcrVocabulary(id: ClientId): UIO[Map[String, NonEmptyList[PassedAuthFactor]]] =
+      find(id).flatMap:
+        case None => ZIO.succeed(Map.empty)
+        case Some(client) =>
+          challengeSettingsCache.get.map(
+            _.find(_.tenantId == client.tenantId)
+              .flatMap(_.acrVocabulary)
+              .getOrElse(Map.empty)
+              .flatMap { case (k, vs) => NonEmptyList.fromIterableOption(vs).map(k -> _) },
+          )
     private val IllegalStateTemplate = OtpTemplate("{{code}}")
