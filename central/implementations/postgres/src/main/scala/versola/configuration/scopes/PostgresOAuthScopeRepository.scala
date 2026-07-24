@@ -54,9 +54,10 @@ class PostgresOAuthScopeRepository(
       id: ScopeToken,
       patch: PatchScope,
   ): Task[Unit] =
-    xa.repeatableRead.transactMeasured("update-scope"):
+    xa.transactMeasured("update-scope"):
+      // Lock the row (READ_COMMITTED + FOR UPDATE) to prevent lost updates from concurrent writers.
       val scope =
-        sql"""SELECT tenant_id, id, description, claims::jsonb[] FROM oauth_scopes WHERE tenant_id = $tenantId AND id = $id"""
+        sql"""SELECT tenant_id, id, description, claims::jsonb[] FROM oauth_scopes WHERE tenant_id = $tenantId AND id = $id FOR UPDATE"""
           .query[ScopeRecord].run().head
 
       val newClaims = scope.claims

@@ -66,10 +66,12 @@ class PostgresPermissionRepository(xa: TransactorZIO) extends PermissionReposito
       descriptionPatch: PatchDescription,
       endpointIdsPatch: Option[Set[ResourceEndpointId]],
   ): Task[Unit] =
-    xa.repeatableRead.transactMeasured("update-permission"):
+    xa.transactMeasured("update-permission"):
+      // Lock the row (READ_COMMITTED + FOR UPDATE) to prevent lost updates from concurrent writers.
       val existing = sql"""
         SELECT tenant_id, id, description, endpoint_ids FROM permissions
         WHERE tenant_id = $tenantId AND id = $permission
+        FOR UPDATE
       """.query[PermissionRecord].run().headOption
 
       existing match

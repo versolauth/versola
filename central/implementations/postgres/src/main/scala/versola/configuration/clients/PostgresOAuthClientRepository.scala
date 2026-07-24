@@ -70,8 +70,14 @@ class PostgresOAuthClientRepository(
       authFlow: Option[AuthFlow],
       otpTemplateId: Option[String],
   ): Task[Unit] =
-    xa.repeatableRead.transactMeasured("update-client"):
-      val client = findClient(clientId).query[OAuthClientRecord].run().head
+    xa.transactMeasured("update-client"):
+      // Lock the row (READ_COMMITTED + FOR UPDATE) to prevent lost updates from concurrent writers.
+      val client = sql"""
+        SELECT id, tenant_id, client_name, redirect_uris, scope, external_audience, secret, previous_secret, access_token_ttl, refresh_token_ttl, permissions, theme, auth_flow, otp_template_id
+        FROM oauth_clients
+        WHERE id = $clientId
+        FOR UPDATE
+      """.query[OAuthClientRecord].run().head
       val newClientName = clientName.getOrElse(client.clientName)
       val newRedirectUris = client.redirectUris -- patchRedirectUris.remove ++ patchRedirectUris.add
       val newScope = client.scope -- patchScope.remove ++ patchScope.add
