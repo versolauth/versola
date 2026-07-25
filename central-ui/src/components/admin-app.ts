@@ -23,6 +23,10 @@ import './system-settings';
 @customElement('versola-admin')
 export class VersolaAdmin extends LitElement {
   @property({ type: String, attribute: 'api-url' }) apiUrl: string | null = null;
+  // Where to send an unauthenticated visitor. Defaults (in central-api) to the
+  // central-admin preset's edge login; override only if this console is ever
+  // wired to a different preset.
+  @property({ type: String, attribute: 'login-url' }) loginUrl: string | null = null;
   @state() private currentView: NavItem = 'clients';
   @state() private currentTenantId: string | null = null;
   @state() private clientToExpandOnLoad: string | null = null;
@@ -51,7 +55,7 @@ export class VersolaAdmin extends LitElement {
   }
 
   updated(changed: Map<string, unknown>) {
-    if (changed.has('apiUrl')) {
+    if (changed.has('apiUrl') || changed.has('loginUrl')) {
       this.applyApiConfig();
       void this.loadPermissions();
     }
@@ -182,8 +186,12 @@ export class VersolaAdmin extends LitElement {
   }
 
   private applyApiConfig() {
+    // Always pass both — passing loginUrl even when null lets configureCentralApi
+    // reset it to the default if a previously-set login-url attribute is cleared,
+    // rather than leaving the old value stuck.
     configureCentralApi({
       baseUrl: this.apiUrl,
+      loginUrl: this.loginUrl,
     });
   }
 
