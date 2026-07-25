@@ -58,10 +58,14 @@ for what happens if you don't.
 ### The admin console (central-ui)
 
 `central-ui` is a static SPA (the admin dashboard). It is **not** one of the three Docker services
-— it is plain built assets served by nginx, like the marketing site, and deployed by its own
-[`Deploy Central UI`](https://github.com/versolauth/versola/blob/main/.github/workflows/deploy-central-ui.yml)
-workflow (auto-runs on push to `main` when `central-ui/**` changes; builds `dist/` and `scp`s it to
-`/website/central-ui/dist` on the VPS).
+— it is plain built assets served by nginx, like the marketing site. It is deployed by the same
+manual [`Deploy`](#4-deploying-a-new-version) workflow as the backend services, as a dedicated
+`central-ui` job: select `central-ui` (or `all`) for the `service` input and the job builds
+`dist/` and `scp`s it to `/website/central-ui/dist` on the VPS. Because it ships no Docker image,
+the `version` and `run_migrations` inputs are ignored for this job — it always builds from the
+commit being deployed. The `/website/central-ui` directory must exist on the VPS and be writable
+by the deploy user (created once, like `/website/versola`; the deploy user cannot `mkdir` under
+the root-owned `/website`).
 
 Rather than giving `edge` its own subdomain + certificate, the console and its edge API share the
 `id.versola.kz` origin via nginx path routing (in the [`nginx`](https://github.com/versolauth/nginx)
