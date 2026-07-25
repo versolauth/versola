@@ -1,0 +1,46 @@
+name: Deploy Central UI
+
+# central-ui is a static SPA (the admin console served at
+# https://id.versola.kz/admin — see nginx repo's envs/dev/versola.conf).
+# Unlike auth/central/edge it isn't a versioned Docker image behind a manual
+# workflow_dispatch release: it's plain static files, so it auto-deploys on
+# push to main, the same way the versola-website repo deploys the marketing
+# site. Scoped to central-ui/** so unrelated commits elsewhere in this
+# monorepo (auth, central, edge, util) don't trigger a redeploy.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'central-ui/**'
+      - '.github/workflows/deploy-central-ui.yml'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.12'
+
+      - name: Install dependencies
+        working-directory: central-ui
+        run: npm install
+
+      - name: Build
+        working-directory: central-ui
+        run: npm run build
+
+      - name: Copy files to VPS
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          source: "central-ui/dist/"
+          target: "/website/central-ui"
+          strip_components: 1
+          overwrite: true
