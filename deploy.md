@@ -33,7 +33,7 @@ this table looks wrong, `cat /opt/versola/docker-compose.prod.yml` is the source
 |---|---|---|---|
 | `auth` | 8080 | 8081 | yes — `https://id.versola.kz` via nginx |
 | `central` | 8090 | 8091 | no — admin API, reached through `edge` |
-| `edge` | 8095 | 8096 | not yet — needs a domain, see [Known gaps](#10-known-gaps) |
+| `edge` | 8095 | 8096 | yes — path-routed on `https://id.versola.kz` (`/resources`, `/permissions`, `/login`, `/complete`); see [The admin console](#the-admin-console-central-ui) |
 
 Note that the Dockerfiles `EXPOSE 8080 9345`, but `9345` is not what the deployment actually
 uses — with `network_mode: host` the `EXPOSE` directive is inert and `DPORT` decides.
@@ -54,6 +54,33 @@ blocks on its initial config sync. If you restart both, bring `central` up first
 a 502 on `id.versola.kz` until `auth` succeeds. The [`Deploy`](#4-deploying-a-new-version)
 workflow enforces this ordering automatically; see [9.5](#95-authedge-never-become-ready-after-restarting-the-whole-stack-together)
 for what happens if you don't.
+
+### The admin console (central-ui)
+
+`central-ui` is a static SPA (the admin dashboard). It is **not** one of the three Docker services
+— it is plain built assets served by nginx, like the marketing site, and deployed by its own
+[`Deploy Central UI`](https://github.com/versolauth/versola/blob/main/.github/workflows/deploy-central-ui.yml)
+workflow (auto-runs on push to `main` when `central-ui/**` changes; builds `dist/` and `scp`s it to
+`/website/central-ui/dist` on the VPS).
+
+Rather than giving `edge` its own subdomain + certificate, the console and its edge API share the
+`id.versola.kz` origin via nginx path routing (in the [`nginx`](https://github.com/versolauth/nginx)
+repo's `envs/dev/versola.conf`):
+
+| Path on `id.versola.kz` | Routed to | Purpose |
+|---|---|---|
+| `/admin/` | static `central-ui/dist` | the SPA itself |
+| `/resources/`, `/permissions/` | `edge` (8095) | admin API + the caller's permissions, proxied to `central` |
+| `/login/`, `/complete` | `edge` (8095) | OAuth login flow entry point and callback |
+| everything else | `auth` (8080) | the OIDC endpoints, unchanged |
+
+Sharing one origin is deliberate: the `EDGE_SESSION` cookie and the edge's `401`+`Location`
+re-auth redirect are same-origin, so there is no CORS or `SameSite=None` handling to get wrong.
+The browser-facing login preset lives in `env-config`'s `central.conf` (`bootstrap.presets`,
+id `central-admin`) with `redirect-uri = https://id.versola.kz/complete` and
+`post-login-redirect-uri = https://id.versola.kz/admin`; those seed values are applied once, on
+`central`'s first bootstrap against an empty database (see [3.5](#35-compose-file) /
+[6](#6-recreating-the-database-from-scratch)).
 
 ---
 
@@ -257,6 +284,11 @@ Do **not** hand-edit nginx on the server. The config is version-controlled in th
 [`nginx`](https://github.com/versolauth/nginx) repo (`envs/dev/versola.conf`) and its workflow
 copies it over, runs `nginx -t` and reloads on merge to `main`. Editing the file in place means
 the next deploy silently reverts you.
+
+The `id.versola.kz` server block also fronts the admin console: it path-routes `/admin` (static
+`central-ui`), `/resources`, `/permissions`, `/login` and `/complete` to `edge`, with everything
+else falling through to `auth`. See [The admin console](#the-admin-console-central-ui) for the full
+mapping.
 
 ---
 
@@ -714,11 +746,11 @@ each cause has actually happened here:
   `env-config` *is* the security boundary and should be reviewed accordingly, and it's worth
   revisiting if the team or access list grows — encrypting at rest with something like `sops` or
   `git-crypt` would remove this exposure at the cost of a decryption step in the pipeline.
-- **No public domain for `edge`.** Until one exists the admin console cannot be reached from a
-  browser. Needs a DNS record, an nginx server block, a certificate, and `edgeUrl` in
-  `edge.conf` regenerated to match.
-- **`central-ui/package-lock.json` is gitignored**, so the `npm install` in CI is not reproducible
-  between builds.
+- **`central-ui/package-lock.json` is gitignored**, so the `npm install` in both the central image
+  build (`build:forms`) and the `Deploy Central UI` workflow is not reproducible between builds — a
+  transitive dependency can shift under an unchanged commit. Committing the lockfile and switching
+  to `npm ci` would fix this, but it's a repo-wide convention change (the root `.gitignore` ignores
+  all lockfiles), so it's called out here rather than patched piecemeal.
 - **Interactive host access (for people, not the pipeline) is by password.** The `Deploy` workflow
   already authenticates with its own dedicated SSH key (`VPS_SSH_KEY`), which is unaffected by
   this. This gap is specifically about individual engineers' own logins to the host, which should

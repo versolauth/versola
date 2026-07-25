@@ -17,9 +17,23 @@ function distIndexHtmlPlugin(): Plugin {
       const outputDir = path.join(projectRoot, 'dist');
       const outputPath = path.join(outputDir, 'index.html');
       const source = await readFile(sourcePath, 'utf8');
+
+      // Guard against index.html being reformatted later without updating
+      // these markers — a silent no-op replace() would otherwise ship a
+      // dist/index.html with a dangling /src/index.ts reference or an
+      // un-prefixed favicon path, and nothing would fail the build to say so.
+      const scriptMarker = '/src/index.ts';
+      const faviconMarker = 'href="/logo-shield.svg"';
+      if (!source.includes(scriptMarker)) {
+        throw new Error(`dist-index-html: expected to find "${scriptMarker}" in index.html — update this plugin if index.html's shape changed.`);
+      }
+      if (!source.includes(faviconMarker)) {
+        throw new Error(`dist-index-html: expected to find '${faviconMarker}' in index.html — update this plugin if index.html's shape changed.`);
+      }
+
       const html = source
-        .replace('/src/index.ts', `${BASE_PATH}versola-admin.js`)
-        .replace('href="/logo-shield.svg"', `href="${BASE_PATH}logo-shield.svg"`);
+        .replace(scriptMarker, `${BASE_PATH}versola-admin.js`)
+        .replace(faviconMarker, `href="${BASE_PATH}logo-shield.svg"`);
 
       await mkdir(outputDir, { recursive: true });
       await writeFile(outputPath, html, 'utf8');
@@ -29,10 +43,13 @@ function distIndexHtmlPlugin(): Plugin {
 
 const isPlaywright = process.env.PLAYWRIGHT === 'true';
 
-export default defineConfig(({ command }) => ({
-  // Only prefix in production builds — the local dev server (npm run dev)
-  // still serves from the root so `localhost:3000/` keeps working as before.
-  base: command === 'build' ? BASE_PATH : '/',
+export default defineConfig(({ command, isPreview }) => ({
+  // Prefix in production builds, and also when previewing that build
+  // (`vite preview` still reports command === 'serve', with isPreview=true
+  // as the only signal) — otherwise `npm run preview` serves dist/ at "/"
+  // while its index.html references /admin/... assets, and everything 404s.
+  // The plain dev server (npm run dev) is the only case that stays at "/".
+  base: command === 'build' || isPreview ? BASE_PATH : '/',
   plugins: [distIndexHtmlPlugin()],
   build: {
     lib: {
