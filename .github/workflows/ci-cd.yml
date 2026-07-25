@@ -174,7 +174,7 @@ jobs:
       - name: Build central admin forms
         working-directory: central-ui
         run: |
-          npm install
+          npm ci
           npm run build:forms
 
       - name: Build and push central image

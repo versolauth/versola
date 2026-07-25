@@ -331,11 +331,16 @@ jobs:
   deploy-central-ui:
     if: inputs.service == 'central-ui' || inputs.service == 'all'
     runs-on: ubuntu-latest
+    # Least-privilege: this job only reads the repo to build and ships over SSH
+    # with our own deploy key — it never uses GITHUB_TOKEN. Keep it read-only so
+    # a compromised npm lifecycle script can't act with the default token.
+    permissions:
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          # npm install below runs dependency lifecycle scripts; don't leave the
+          # npm ci below runs dependency lifecycle scripts; don't leave the
           # job's git credentials on disk for them to reach. Matches the
           # env-config checkouts in the backend jobs above.
           persist-credentials: false
@@ -347,7 +352,7 @@ jobs:
 
       - name: Install dependencies
         working-directory: central-ui
-        run: npm install
+        run: npm ci
 
       - name: Build
         working-directory: central-ui

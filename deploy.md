@@ -750,11 +750,6 @@ each cause has actually happened here:
   `env-config` *is* the security boundary and should be reviewed accordingly, and it's worth
   revisiting if the team or access list grows — encrypting at rest with something like `sops` or
   `git-crypt` would remove this exposure at the cost of a decryption step in the pipeline.
-- **`central-ui/package-lock.json` is gitignored**, so the `npm install` in both the central image
-  build (`build:forms`) and the `Deploy Central UI` workflow is not reproducible between builds — a
-  transitive dependency can shift under an unchanged commit. Committing the lockfile and switching
-  to `npm ci` would fix this, but it's a repo-wide convention change (the root `.gitignore` ignores
-  all lockfiles), so it's called out here rather than patched piecemeal.
 - **Interactive host access (for people, not the pipeline) is by password.** The `Deploy` workflow
   already authenticates with its own dedicated SSH key (`VPS_SSH_KEY`), which is unaffected by
   this. This gap is specifically about individual engineers' own logins to the host, which should
