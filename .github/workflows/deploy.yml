@@ -11,7 +11,7 @@ on:
         description: 'Which service to deploy'
         required: true
         type: choice
-        options: [auth, central, edge, all]
+        options: [auth, central, edge, central-ui, all]
       run_migrations:
         description: 'Run Flyway migrations on startup'
         required: true
@@ -321,3 +321,75 @@ jobs:
           fingerprint: ${{ secrets.VPS_HOST_FINGERPRINT }}
           script: |
             rm -rf ~/incoming-config-edge
+
+  # central-ui is the static admin console SPA — not a versioned Docker image
+  # like auth/central/edge, so this job builds it from source and ships the
+  # static dist/ to nginx's docroot. It has no `version`/`run_migrations`
+  # inputs (nothing image-tagged) and no `needs: deploy-central` (static files
+  # don't depend on central being up). Runs independently, including under
+  # `service: all`.
+  deploy-central-ui:
+    if: inputs.service == 'central-ui' || inputs.service == 'all'
+    runs-on: ubuntu-latest
+    # Least-privilege: this job only reads the repo to build and ships over SSH
+    # with our own deploy key — it never uses GITHUB_TOKEN. Keep it read-only so
+    # a compromised npm lifecycle script can't act with the default token.
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          # npm ci below runs dependency lifecycle scripts; don't leave the
+          # job's git credentials on disk for them to reach. Matches the
+          # env-config checkouts in the backend jobs above.
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22.12'
+
+      - name: Install dependencies
+        working-directory: central-ui
+        run: npm ci
+
+      - name: Build
+        working-directory: central-ui
+        run: npm run build
+
+      - name: Copy files to VPS
+        uses: appleboy/scp-action@ff85246acaad7bdce478db94a363cd2bf7c90345 # v1.0.0
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          fingerprint: ${{ secrets.VPS_HOST_FINGERPRINT }}
+          source: "central-ui/dist/"
+          target: "/website/central-ui"
+          strip_components: 1
+          overwrite: true
+
+      # scp-action's tar + strip_components is easy to get subtly wrong (a wrong
+      # strip count silently nests or flattens the output). Fail the deploy
+      # loudly here instead of finding out via a 404 on /admin/ later.
+      - name: Verify remote layout
+        uses: appleboy/ssh-action@7eaf76671a0d7eec5d98ee897acda4f968735a17 # v1.2.0
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          fingerprint: ${{ secrets.VPS_HOST_FINGERPRINT }}
+          script: |
+            missing=0
+            for f in index.html versola-admin.js logo-shield.svg; do
+              if [ ! -f "/website/central-ui/dist/$f" ]; then
+                echo "Missing /website/central-ui/dist/$f after deploy." >&2
+                missing=1
+              fi
+            done
+            if [ "$missing" -eq 1 ]; then
+              echo "Check scp-action's source/target/strip_components, and that vite.config.ts's build.lib.fileName / public/ assets haven't changed — the nginx alias for /admin depends on these exact filenames." >&2
+              exit 1
+            fi
+            echo "OK: index.html, versola-admin.js, logo-shield.svg all present"

@@ -1,6 +1,7 @@
 # Dependencies
 node_modules/
-package-lock.json
+# package-lock.json is intentionally committed so CI builds are reproducible
+# via `npm ci`. yarn/pnpm lockfiles stay ignored — we use npm.
 yarn.lock
 pnpm-lock.yaml
 

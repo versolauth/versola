@@ -58,10 +58,14 @@ for what happens if you don't.
 ### The admin console (central-ui)
 
 `central-ui` is a static SPA (the admin dashboard). It is **not** one of the three Docker services
-— it is plain built assets served by nginx, like the marketing site, and deployed by its own
-[`Deploy Central UI`](https://github.com/versolauth/versola/blob/main/.github/workflows/deploy-central-ui.yml)
-workflow (auto-runs on push to `main` when `central-ui/**` changes; builds `dist/` and `scp`s it to
-`/website/central-ui/dist` on the VPS).
+— it is plain built assets served by nginx, like the marketing site. It is deployed by the same
+manual [`Deploy`](#4-deploying-a-new-version) workflow as the backend services, as a dedicated
+`central-ui` job: select `central-ui` (or `all`) for the `service` input and the job builds
+`dist/` and `scp`s it to `/website/central-ui/dist` on the VPS. Because it ships no Docker image,
+the `version` and `run_migrations` inputs are ignored for this job — it always builds from the
+commit being deployed. The `/website/central-ui` directory must exist on the VPS and be writable
+by the deploy user (created once, like `/website/versola`; the deploy user cannot `mkdir` under
+the root-owned `/website`).
 
 Rather than giving `edge` its own subdomain + certificate, the console and its edge API share the
 `id.versola.kz` origin via nginx path routing (in the [`nginx`](https://github.com/versolauth/nginx)
@@ -746,11 +750,6 @@ each cause has actually happened here:
   `env-config` *is* the security boundary and should be reviewed accordingly, and it's worth
   revisiting if the team or access list grows — encrypting at rest with something like `sops` or
   `git-crypt` would remove this exposure at the cost of a decryption step in the pipeline.
-- **`central-ui/package-lock.json` is gitignored**, so the `npm install` in both the central image
-  build (`build:forms`) and the `Deploy Central UI` workflow is not reproducible between builds — a
-  transitive dependency can shift under an unchanged commit. Committing the lockfile and switching
-  to `npm ci` would fix this, but it's a repo-wide convention change (the root `.gitignore` ignores
-  all lockfiles), so it's called out here rather than patched piecemeal.
 - **Interactive host access (for people, not the pipeline) is by password.** The `Deploy` workflow
   already authenticates with its own dedicated SSH key (`VPS_SSH_KEY`), which is unaffected by
   this. This gap is specifically about individual engineers' own logins to the host, which should
