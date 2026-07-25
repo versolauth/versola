@@ -35,7 +35,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
 
   class Env:
     val configuration = stub[OAuthConfigurationService]
-    val parser = AuthorizeRequestParser.Impl(configuration)
+    val parser = AuthorizeRequestParser.Impl(TestEnvConfig.coreConfig, configuration)
 
   def validParams = Map(
     "client_id" -> clientId.toString,

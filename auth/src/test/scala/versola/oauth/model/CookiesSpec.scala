@@ -8,6 +8,7 @@ import versola.util.Secret
 import zio.*
 import zio.json.*
 import zio.test.*
+import versola.util.Base64
 
 import java.util.UUID
 
@@ -50,15 +51,32 @@ object CookiesSpec extends ZIOSpecDefault:
     ),
 
     suite("SessionCookie")(
-      test("creates a session cookie with correct name and properties") {
+      test("creates a session cookie with valid signature") {
         val sessionId = SessionId(Array.fill(32)(1.toByte))
-        val cookie    = SessionCookie(sessionId, 1.hour)
+        val cookie    = SessionCookie(sessionId, 1.hour, secret)
         assertTrue(
           cookie.name == SessionCookie.name,
           cookie.isHttpOnly,
           cookie.isSecure,
           cookie.maxAge.contains(1.hour)
-        )
+        ) &&
+        assertTrue(SessionCookie.parse(cookie.content, secret).map(_.toSeq) == Right(sessionId.toSeq))
+      },
+
+      test("parse fails with wrong secret") {
+        val sessionId   = SessionId(Array.fill(32)(1.toByte))
+        val content     = SessionCookie(sessionId, 1.hour, secret).content
+        val wrongSecret = Secret.Bytes32(Array.fill(32)(9.toByte))
+        assertTrue(SessionCookie.parse(content, wrongSecret).isLeft)
+      },
+
+      test("parse fails with tampered content") {
+        val sessionId      = SessionId(Array.fill(32)(1.toByte))
+        val content        = SessionCookie(sessionId, 1.hour, secret).content
+        val parts          = content.split('.')
+        val tamperedPayload = Base64.urlEncode(Array.fill(32)(2.toByte))
+        val tamperedContent = s"$tamperedPayload.${parts(1)}"
+        assertTrue(SessionCookie.parse(tamperedContent, secret).isLeft)
       }
     )
   )
