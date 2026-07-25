@@ -83,6 +83,7 @@ object SessionCookie:
         payloadBytes <- scala.util.Try(Base64.urlDecode(payloadB64)).toEither.left.map(_.getMessage)
         sigBytes     <- scala.util.Try(Base64.urlDecode(sigB64)).toEither.left.map(_.getMessage)
         _            <- Either.cond(MessageDigest.isEqual(computeMac(payloadBytes, secret), sigBytes), (), "invalid signature")
+        _            <- Either.cond(payloadBytes.length == 32, (), "invalid session id length")
       yield SessionId(payloadBytes)
 
   private def computeMac(data: Array[Byte], key: Secret.Bytes32): Array[Byte] =
