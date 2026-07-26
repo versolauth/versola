@@ -100,6 +100,11 @@ class PostgresUserRepository(
       sql"update users set claims = jsonb_strip_nulls(claims || $patch::jsonb) where id = $id".update.run()
     .unit
 
+  override def delete(id: UserId): Task[Unit] =
+    xa.connectMeasured("delete-user"):
+      sql"delete from users where id = $id".update.run()
+    .unit
+
   private def findByPhoneQuery(phone: Phone) =
     sql"select id, email, phone, login, claims, ui_locales from users where phone = $phone".query[UserRecord]
 

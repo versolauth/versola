@@ -29,6 +29,15 @@ trait AuthorizeEndpointService:
 object AuthorizeEndpointService:
   private case class HintClaims(sub: UserId, aud: Option[Json], iss: Option[String]) derives JsonDecoder
 
+  /** What to do when a known identity (session- or id_token_hint-derived) no longer resolves to a user. */
+  private enum MissingUserBehavior:
+    /** Step-up / re-verify of the current session: the session-bound identity must exist. */
+    case Deny
+    /** Fresh id_token_hint or account switch: the hint is advisory, drop it and prompt for credentials. */
+    case Fallback
+    /** No known identity is expected. */
+    case Ignore
+
   def live =
     ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _))
 
@@ -89,9 +98,17 @@ object AuthorizeEndpointService:
                       applyHint = false,
                       knownUserId = Some(userId),
                       targetAcr = Some(targetAcr),
+                      missingUser = MissingUserBehavior.Fallback,
                     )
               case None =>
-                createConversation(request, flow, uiLocales, Map.empty, knownUserId = Some(userId))
+                createConversation(
+                  request,
+                  flow,
+                  uiLocales,
+                  Map.empty,
+                  knownUserId = Some(userId),
+                  missingUser = MissingUserBehavior.Fallback,
+                )
 
           case (None, None) =>
             // ACR is voluntary (OIDC Core §3.1.2.1): without a known user we cannot verify
@@ -125,6 +142,11 @@ object AuthorizeEndpointService:
                   ZIO.fail(Error.LoginRequired(request.redirectUri, request.state))
                 else if forceReauth then
                   val targetUserId = if request.promptLogin then idTokenUserId else idTokenUserId.orElse(Some(session.userId))
+                  // Re-verifying the existing session identity must deny on a missing user; switching to a
+                  // different (hint-derived) identity treats the hint as advisory and falls back to login.
+                  val reauthMissingUser =
+                    if targetUserId.contains(session.userId) then MissingUserBehavior.Deny
+                    else MissingUserBehavior.Fallback
                   request.acrValues match
                     case Some(values) if targetUserId.isDefined =>
                       acrResolutionService.resolveAchievableAcr(targetUserId.get, values, request.clientId, flow, Set.empty).flatMap:
@@ -139,31 +161,54 @@ object AuthorizeEndpointService:
                             applyHint = false,
                             knownUserId = targetUserId,
                             targetAcr = Some(targetAcr),
+                            missingUser = reauthMissingUser,
                           )
                     case _ =>
-                      createConversation(request, flow, uiLocales, Map.empty, knownUserId = targetUserId)
-                else if !acrSatisfied then
-                  acrResolutionService.resolveAchievableAcr(
-                    session.userId,
-                    request.acrValues.get,
-                    request.clientId,
-                    flow,
-                    session.amr.keySet,
-                  ).flatMap:
-                    case None =>
-                      ZIO.fail(Error.UnmetAuthenticationRequirements(request.redirectUri, request.state))
-                    case Some(targetAcr) =>
                       createConversation(
                         request,
                         flow,
                         uiLocales,
-                        session.amr,
-                        applyHint = false,
-                        knownUserId = Some(session.userId),
-                        targetAcr = Some(targetAcr),
+                        Map.empty,
+                        knownUserId = targetUserId,
+                        missingUser = reauthMissingUser,
                       )
+                else if !acrSatisfied then
+                  // A deleted user has no auth factors registered, so resolveAchievableAcr would
+                  // return None → UnmetAuthenticationRequirements instead of AccessDenied.
+                  // Check existence first so the right error is returned.
+                  userRepository.find(session.userId).flatMap:
+                    case None => ZIO.fail(Error.AccessDenied(request.redirectUri, request.state))
+                    case Some(_) =>
+                      acrResolutionService.resolveAchievableAcr(
+                        session.userId,
+                        request.acrValues.get,
+                        request.clientId,
+                        flow,
+                        session.amr.keySet,
+                      ).flatMap:
+                        case None =>
+                          ZIO.fail(Error.UnmetAuthenticationRequirements(request.redirectUri, request.state))
+                        case Some(targetAcr) =>
+                          createConversation(
+                            request,
+                            flow,
+                            uiLocales,
+                            session.amr,
+                            applyHint = false,
+                            knownUserId = Some(session.userId),
+                            targetAcr = Some(targetAcr),
+                            missingUser = MissingUserBehavior.Deny,
+                          )
                 else if !factorsSatisfied then
-                  createConversation(request, flow, uiLocales, session.amr, applyHint = false, knownUserId = Some(session.userId))
+                  createConversation(
+                    request,
+                    flow,
+                    uiLocales,
+                    session.amr,
+                    applyHint = false,
+                    knownUserId = Some(session.userId),
+                    missingUser = MissingUserBehavior.Deny,
+                  )
                 else
                   silentAuthorize(request, uiLocales, SessionInfo(id, session), satisfiedAcr)
             yield result
@@ -186,14 +231,27 @@ object AuthorizeEndpointService:
         applyHint: Boolean = true,
         knownUserId: Option[UserId] = None,
         targetAcr: Option[Acr] = None,
+        missingUser: MissingUserBehavior = MissingUserBehavior.Ignore,
     ): Task[AuthorizeResponse] =
       for
         authId <- AuthId.wrapAll(secureRandom.nextUUIDv7)
-        // When both userId and targetAcr are known (step-up flow), fetch user data up front so
-        // we can populate credential and user fields without a separate router step.
-        userOpt <- (knownUserId, targetAcr) match
-          case (Some(uid), Some(_)) => userRepository.find(uid)
-          case _ => ZIO.none
+        userOpt <- knownUserId match
+          case Some(uid) => userRepository.find(uid)
+          case None => ZIO.none
+        // Enforce that a known identity still resolves to a user:
+        //   • Deny (step-up / re-verify): the session-bound identity must exist, otherwise fail with
+        //     access_denied rather than admit a different identity.
+        //   • Fallback (fresh id_token_hint or account switch): the hint is advisory, so drop the
+        //     missing user and fall through to normal credential entry.
+        effectiveUserId <- (knownUserId, userOpt) match
+          case (Some(_), None) =>
+            missingUser match
+              case MissingUserBehavior.Deny => ZIO.fail(Error.AccessDenied(request.redirectUri, request.state))
+              case _ => ZIO.none
+          case _ => ZIO.succeed(knownUserId)
+        // When a verified userId is available (from session or id_token_hint), always populate all
+        // user fields so the credential step can be skipped and challenges are asked directly.
+        // If no userId is known, userOpt is None and fields remain empty for normal credential entry.
         credential = userOpt.flatMap(u => u.email.map(Left(_)).orElse(u.phone.map(Right(_))))
         conversation = ConversationRecord(
           clientId = request.clientId,
@@ -202,7 +260,7 @@ object AuthorizeEndpointService:
           codeChallenge = request.codeChallenge,
           codeChallengeMethod = request.codeChallengeMethod,
           state = request.state,
-          userId = knownUserId,
+          userId = effectiveUserId,
           credential = credential,
           step = ConversationStep.Credential(
             primaryCredentials = flow.primary.credentials,
@@ -229,7 +287,9 @@ object AuthorizeEndpointService:
         _ <- conversationRepository.create(authId, conversation, authConversationTtl)
         r = AuthorizeResponse.Initialize(authId)
         result <-
-          if knownUserId.isDefined && targetAcr.isDefined then
+          // If userId is already established (from a session or id_token_hint), skip the credential
+          // step entirely and advance straight to the required challenges.
+          if effectiveUserId.isDefined then
             conversationRouter.advance(authId, conversation).as(r)
           else if applyHint then applyLoginHint(request, uiLocales)(r)
           else ZIO.succeed(r)

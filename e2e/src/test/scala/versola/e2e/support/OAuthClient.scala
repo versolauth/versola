@@ -21,7 +21,7 @@ case class AuthorizeResult(
     response: Response,
     verifier: String,
     state: String,
-    conversationCookie: String,
+    conversationCookie: Option[String],
 ):
   val location: String = response.location
 
@@ -31,9 +31,28 @@ case class AuthorizeResult(
 
   def assertChallengeRedirect: Task[AuthorizeResult] = assertRedirectTo("/challenge")
 
+  def assertCodeRedirect: Task[String] =
+    if response.status != Status.SeeOther then
+      ZIO.fail(RuntimeException(s"Expected 303 code redirect, got status=${response.status}"))
+    else
+      ZIO.fromEither(URL.decode(location)).flatMap: url =>
+        url.queryZIO[String]("code")
+          .orElseFail(RuntimeException(s"Expected code in redirect location, got: $location"))
+
+  def assertErrorRedirect(expectedError: String): Task[Unit] =
+    if response.status != Status.SeeOther then
+      ZIO.fail(RuntimeException(s"Expected 303 error redirect, got status=${response.status}"))
+    else
+      ZIO.fromEither(URL.decode(location)).flatMap: url =>
+        url.queryZIO[String]("error").flatMap: actualError =>
+          if actualError == expectedError then ZIO.unit
+          else ZIO.fail(RuntimeException(s"Expected error='$expectedError', got error='$actualError'"))
+
 extension (task: Task[AuthorizeResult])
   def assertRedirectTo(path: String): Task[AuthorizeResult] = task.flatMap(_.assertRedirectTo(path))
   def assertChallengeRedirect: Task[AuthorizeResult] = task.flatMap(_.assertChallengeRedirect)
+  def assertCodeRedirect: Task[String] = task.flatMap(_.assertCodeRedirect)
+  def assertErrorRedirect(expectedError: String): Task[Unit] = task.flatMap(_.assertErrorRedirect(expectedError))
 
 case class ChallengeResult(response: Response, html: String):
   val step: Option[ConversationStep] = ConversationStep.fromHtml(html)
@@ -56,18 +75,24 @@ object TokenResult:
       accessToken: String,
       tokenType: String,
       expiresIn: Long,
+      idToken: Option[String],
   ) extends TokenResult
 
   case class Failure(response: Response, body: String) extends TokenResult
 
-  private case class Raw(access_token: String, token_type: String, expires_in: Long) derives JsonDecoder
+  private case class Raw(
+      access_token: String,
+      token_type: String,
+      expires_in: Long,
+      id_token: Option[String],
+  ) derives JsonDecoder
 
   def parse(response: Response): Task[TokenResult] =
     response.body.asString.map: body =>
       if response.status.isSuccess then
         body.fromJson[Raw].fold(
           err => Failure(response, s"JSON parse error [$err] body=$body"),
-          raw => Success(response, raw.access_token, raw.token_type, raw.expires_in),
+          raw => Success(response, raw.access_token, raw.token_type, raw.expires_in, raw.id_token),
         )
       else Failure(response, body)
 
@@ -184,6 +209,7 @@ extension (task: Task[SubmitResult])
 
 extension (task: Task[Response])
   /** Assert the response is a 303 redirect to the redirect_uri carrying an authorization code. */
+  @targetName("assertCodeRedirectResponse")
   def assertCodeRedirect: Task[String] =
     task.flatMap: response =>
       if response.status != Status.SeeOther then
@@ -194,6 +220,7 @@ extension (task: Task[Response])
             .orElseFail(RuntimeException(s"Expected code in redirect location, got: ${response.location}"))
 
   /** Assert the response is a 303 error redirect and that the OAuth `error` param matches. */
+  @targetName("assertErrorRedirectResponse")
   def assertErrorRedirect(expectedError: String): Task[Unit] =
     task.flatMap: response =>
       if response.status != Status.SeeOther then
@@ -239,25 +266,26 @@ final class OAuthClient(client: Client, config: E2EConfig):
         .orElseFail(new RuntimeException(
           s"No SSO_CONVERSATION cookie in /authorize response (status=${response.status})",
         ))
-    yield AuthorizeResult(response, verifier, state, cookie)
+    yield AuthorizeResult(response, verifier, state, Some(cookie))
 
   /** GET /authorize — raw variant with full control over which parameters are sent.
-    * Parameters set to [[None]] are omitted from the request.
-    * Returns the bare [[Response]]; useful for negative test cases.
+    * Generates PKCE and state internally; use the returned [[AuthorizeResult]] to access the verifier and cookie.
+    * Pass `omitCodeChallenge = true` to omit `code_challenge` from the request (e.g. to test missing-challenge errors).
     */
   def authorizeRaw(
       clientId: String,
       redirectUri: String,
       scope: Option[String] = Some("openid"),
       responseType: Option[String] = Some("code"),
-      codeChallenge: Option[String] = None,
-      codeChallengeMethod: Option[String] = Some("S256"),
-      state: Option[String] = None,
+      omitCodeChallenge: Boolean = false,
       prompt: Option[String] = None,
       maxAge: Option[Long] = None,
       sessionCookie: Option[String] = None,
       acrValues: Option[String] = None,
-  ): Task[Response] =
+      idTokenHint: Option[String] = None,
+  ): Task[AuthorizeResult] =
+    val (verifier, challenge) = PkceHelper.generate()
+    val state = java.util.UUID.randomUUID().toString
     for
       base <- ZIO.fromEither(URL.decode(s"${config.authUrl}/authorize")).mapError(new RuntimeException(_))
       params = List(
@@ -265,19 +293,20 @@ final class OAuthClient(client: Client, config: E2EConfig):
         "redirect_uri"         -> Some(redirectUri),
         "scope"                -> scope,
         "response_type"        -> responseType,
-        "code_challenge"       -> codeChallenge,
-        "code_challenge_method"-> codeChallengeMethod,
-        "state"                -> state,
+        "code_challenge"       -> (if omitCodeChallenge then None else Some(challenge)),
+        "code_challenge_method"-> (if omitCodeChallenge then None else Some("S256")),
+        "state"                -> Some(state),
         "prompt"               -> prompt,
         "max_age"              -> maxAge.map(_.toString),
         "acr_values"           -> acrValues,
+        "id_token_hint"        -> idTokenHint,
       ).collect { case (k, Some(v)) => k -> v }
       req = Request.get(base.addQueryParams(params))
       reqWithSession = sessionCookie.fold(req)(sc =>
         req.addHeader(Header.Cookie(NonEmptyChunk(Cookie.Request("SSO_SESSION", sc))))
       )
       response <- Client.batched(reqWithSession).provide(ZLayer.succeed(client))
-    yield response
+    yield AuthorizeResult(response, verifier, state, OAuthClient.extractConversationCookie(response))
 
   /** GET /challenge — fetches the current challenge form HTML and parses the step meta tag. */
   def getChallenge(cookie: String): Task[ChallengeResult] =
@@ -290,6 +319,10 @@ final class OAuthClient(client: Client, config: E2EConfig):
   /** POST /challenge/email — submits an email credential to start the OTP flow. */
   def submitEmail(cookie: String, email: String): Task[SubmitResult] =
     formPost(s"${config.authUrl}/challenge/email", Map("email" -> email), cookie).map(SubmitResult(_))
+
+  /** POST /challenge/phone — submits a phone credential to start the OTP flow. */
+  def submitPhone(cookie: String, phone: String): Task[SubmitResult] =
+    formPost(s"${config.authUrl}/challenge/phone", Map("phone" -> phone), cookie).map(SubmitResult(_))
 
   /** POST /challenge/otp — submits an OTP code (always "123456" in non-prod). */
   def submitOtp(cookie: String, code: String): Task[SubmitResult] =
@@ -330,11 +363,12 @@ final class OAuthClient(client: Client, config: E2EConfig):
     Client.batched(req).provide(ZLayer.succeed(client)).flatMap(TokenResult.parse)
 
   /** POST /users — registers a new user via the Central API, returns the generated user ID. */
-  def registerUser(email: Option[String] = None, login: Option[String] = None): Task[java.util.UUID] =
+  def registerUser(email: Option[String] = None, login: Option[String] = None, phone: Option[String] = None): Task[java.util.UUID] =
     import zio.json.ast.Json
     val fields = List(
       email.map("email" -> Json.Str(_)),
       login.map("login" -> Json.Str(_)),
+      phone.map("phone" -> Json.Str(_)),
     ).flatten
     val body = Body.fromString(Json.Obj(fields*).toJson)
     val req = Request.post(s"${config.centralUrl}/users", body)
@@ -351,6 +385,16 @@ final class OAuthClient(client: Client, config: E2EConfig):
             )
         else
           ZIO.fail(RuntimeException(s"registerUser failed: status=${resp.status} body=$bodyStr"))
+
+  /** DELETE /service/users — deletes a user via the Central service API (non-prod only). */
+  def deleteUser(userId: java.util.UUID): Task[Unit] =
+    val req = Request.delete(s"${config.centralUrl}/service/users?id=$userId")
+      .addHeader(Authorization.Basic(config.clientId, config.clientSecret))
+    Client.batched(req).provide(ZLayer.succeed(client)).flatMap: resp =>
+      if resp.status.isSuccess then ZIO.unit
+      else
+        resp.body.asString.flatMap: body =>
+          ZIO.fail(RuntimeException(s"deleteUser failed: status=${resp.status} body=$body"))
 
   /** POST /users/password/set — sets a permanent password for a user (non-prod only). */
   def setUserPassword(userId: java.util.UUID, password: String): Task[Unit] =
@@ -397,9 +441,11 @@ final class OAuthClient(client: Client, config: E2EConfig):
       .addHeader(Header.ContentType(MediaType.application.json))
     Client.batched(req).provide(ZLayer.succeed(client)).flatMap(RegisterClientResult.parse)
 
-  /** POST /users/outbox/flush — forces central to dispatch all pending user-outbox events to auth (non-prod only). */
+  /** POST /service/users/outbox/flush — forces central to dispatch all pending user-outbox events to auth (non-prod only). */
   def flushUserOutbox(): Task[Unit] =
-    Client.batched(Request.post(s"${config.centralUrl}/service/users/outbox/flush", Body.empty))
+    val req = Request.post(s"${config.centralUrl}/service/users/outbox/flush", Body.empty)
+      .addHeader(Authorization.Basic(config.clientId, config.clientSecret))
+    Client.batched(req)
       .provide(ZLayer.succeed(client))
       .flatMap: resp =>
         if resp.status.isSuccess then ZIO.unit
@@ -407,9 +453,13 @@ final class OAuthClient(client: Client, config: E2EConfig):
           resp.body.asString.flatMap: body =>
             ZIO.fail(RuntimeException(s"flushUserOutbox failed: status=${resp.status} body=$body"))
 
-  /** POST /configuration/sync — forces auth to reload all configuration caches from central (non-prod only). */
+  /** POST /service/configuration/sync — asks central to make auth reload all configuration caches (non-prod only).
+    * Central proxies this to auth using an internal service token.
+    */
   def syncConfiguration(): Task[Unit] =
-    Client.batched(Request.post(s"${config.authUrl}/service/configuration/sync", Body.empty))
+    val req = Request.post(s"${config.centralUrl}/service/configuration/sync", Body.empty)
+      .addHeader(Authorization.Basic(config.clientId, config.clientSecret))
+    Client.batched(req)
       .provide(ZLayer.succeed(client))
       .flatMap: resp =>
         if resp.status.isSuccess then ZIO.unit

@@ -18,26 +18,24 @@ object AuthorizeNegativeSpec extends E2ESpec:
     test("unknown client_id returns 400") {
       for
         (s, auth) <- setup(Flows.Id.LoginPassword)
-        resp <- auth.authorizeRaw(clientId = "no-such-client", redirectUri = s.redirectUri)
-      yield assertTrue(resp.status == Status.BadRequest)
+        result <- auth.authorizeRaw(clientId = "no-such-client", redirectUri = s.redirectUri)
+      yield assertTrue(result.response.status == Status.BadRequest)
     },
 
     test("unregistered redirect_uri returns 400") {
       for
         (s, auth) <- setup(Flows.Id.LoginPassword)
-        resp <- auth.authorizeRaw(clientId = s.clientId, redirectUri = "http://localhost:9999/not-registered")
-      yield assertTrue(resp.status == Status.BadRequest)
+        result <- auth.authorizeRaw(clientId = s.clientId, redirectUri = "http://localhost:9999/not-registered")
+      yield assertTrue(result.response.status == Status.BadRequest)
     },
 
     test("unsupported response_type redirects with error=unsupported_response_type") {
       for
         (s, auth) <- setup(Flows.Id.LoginPassword)
-        (_, challenge) = PkceHelper.generate()
         _ <- auth.authorizeRaw(
           clientId = s.clientId,
           redirectUri = s.redirectUri,
           responseType = Some("token"),
-          codeChallenge = Some(challenge),
         ).assertErrorRedirect("unsupported_response_type")
       yield assertCompletes
     },
@@ -48,7 +46,7 @@ object AuthorizeNegativeSpec extends E2ESpec:
         _ <- auth.authorizeRaw(
           clientId = s.clientId,
           redirectUri = s.redirectUri,
-          codeChallenge = None,
+          omitCodeChallenge = true,
         ).assertErrorRedirect("invalid_request")
       yield assertCompletes
     },
@@ -56,11 +54,9 @@ object AuthorizeNegativeSpec extends E2ESpec:
     test("prompt=none without session redirects with error=login_required") {
       for
         (s, auth) <- setup(Flows.Id.LoginPassword)
-        (_, challenge) = PkceHelper.generate()
         _ <- auth.authorizeRaw(
           clientId = s.clientId,
           redirectUri = s.redirectUri,
-          codeChallenge = Some(challenge),
           prompt = Some("none"),
         ).assertErrorRedirect("login_required")
       yield assertCompletes

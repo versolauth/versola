@@ -24,6 +24,8 @@ trait UserService:
 
   def patchClaims(id: UserId, patch: Json.Obj): Task[Unit]
 
+  def delete(id: UserId): Task[Unit]
+
   def updateRoles(request: UpdateUserRolesRequest): Task[Unit]
 
   def resetLimits(request: ResetUserLimitsRequest): Task[Unit]
@@ -80,6 +82,9 @@ object UserService:
 
     override def patchClaims(id: UserId, patch: Json.Obj): Task[Unit] =
       authClient.patchUserClaims(id, patch)
+
+    override def delete(id: UserId): Task[Unit] =
+      userRepository.delete(id)
 
     override def updateRoles(request: UpdateUserRolesRequest): Task[Unit] =
       userRepository.enqueueRoleUpdate(request.userId, request.tenantId, request.add, request.remove)

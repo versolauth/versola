@@ -23,3 +23,7 @@ enum OutboxEvent(val eventType: String) derives JsonCodec:
       remove: Set[RoleId],
   ) extends OutboxEvent("UpdateUserRoles")
 
+  case DeleteUser(
+      userId: UserId,
+  ) extends OutboxEvent("DeleteUser")
+

@@ -81,6 +81,9 @@ object ConversationRouter:
         ipAddress: Option[String],
     ): Task[ConversationResult.Render] =
       (submission, conversation) match
+        case (_: EmailSubmission | _: PhoneSubmission, _) if conversation.userId.isDefined =>
+          conversationService.accessDenied(authId, conversation)
+
         case (submitted: EmailSubmission, _) =>
           afterCredential(authId, conversation, Left(submitted.email))
 

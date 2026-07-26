@@ -85,6 +85,7 @@ object PostgresCentralApp extends VersolaApp("central"):
       CacheSyncService &
       UserRepository &
       UserService &
+      AuthClient &
       UserOutboxProcessor &
       JwksRepository &
       JwksService &

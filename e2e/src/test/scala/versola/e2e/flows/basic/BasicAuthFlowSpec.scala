@@ -18,8 +18,8 @@ object BasicAuthFlowSpec extends E2ESpec:
           clientId = Some(s.clientId),
           redirectUri = Some(s.redirectUri),
         ).assertChallengeRedirect
-        _ <- auth.getChallenge(authorize.conversationCookie).assertStep(ConversationStep.Credential)
-        code <- auth.submitLoginPassword(authorize.conversationCookie, s.login.get, s.password).assertRedirect(auth, authorize.conversationCookie)
+        _ <- auth.getChallenge(authorize.conversationCookie.get).assertStep(ConversationStep.Credential)
+        code <- auth.submitLoginPassword(authorize.conversationCookie.get, s.login.get, s.password).assertRedirect(auth, authorize.conversationCookie.get)
         token <- auth.token(
           code,
           authorize.verifier,
@@ -37,10 +37,10 @@ object BasicAuthFlowSpec extends E2ESpec:
         (s, auth) <- setup(Flows.Id.EmailOtp)
         authorize <- auth.authorize(scope = "openid email", clientId = Some(s.clientId), redirectUri = Some(s.redirectUri))
           .assertChallengeRedirect
-        _ <- auth.getChallenge(authorize.conversationCookie).assertStep(ConversationStep.Credential)
-        _ <- auth.submitEmail(authorize.conversationCookie, s.email.get)
-        _ <- auth.getChallenge(authorize.conversationCookie).assertStep(ConversationStep.Otp)
-        code <- auth.submitOtp(authorize.conversationCookie, fixedOtp).assertRedirect(auth, authorize.conversationCookie)
+        _ <- auth.getChallenge(authorize.conversationCookie.get).assertStep(ConversationStep.Credential)
+        _ <- auth.submitEmail(authorize.conversationCookie.get, s.email.get)
+        _ <- auth.getChallenge(authorize.conversationCookie.get).assertStep(ConversationStep.Otp)
+        code <- auth.submitOtp(authorize.conversationCookie.get, fixedOtp).assertRedirect(auth, authorize.conversationCookie.get)
         token <- auth.token(
           code,
           authorize.verifier,

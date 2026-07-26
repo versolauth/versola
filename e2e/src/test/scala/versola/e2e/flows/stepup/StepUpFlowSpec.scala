@@ -2,7 +2,7 @@ package versola.e2e.flows.stepup
 
 import versola.e2e.support.{*, given}
 import zio.*
-import zio.http.Status
+
 import zio.test.*
 
 /** Step-up / session-aware authorization tests, including `acr_values` handling.
@@ -29,8 +29,8 @@ object StepUpFlowSpec extends E2ESpec:
         clientId = Some(s.clientId),
         redirectUri = Some(s.redirectUri),
       ).assertChallengeRedirect
-      _ <- auth.submitEmail(authorize.conversationCookie, s.email.get)
-      submit <- auth.submitOtp(authorize.conversationCookie, fixedOtp)
+      _ <- auth.submitEmail(authorize.conversationCookie.get, s.email.get)
+      submit <- auth.submitOtp(authorize.conversationCookie.get, fixedOtp)
       sessionCookie <- ZIO.fromOption(submit.sessionCookie)
         .orElseFail(RuntimeException("No SSO_SESSION cookie in final submission response"))
     yield sessionCookie
@@ -43,11 +43,9 @@ object StepUpFlowSpec extends E2ESpec:
         for
           (s, auth) <- setup(Flows.Id.EmailOtp)
           sessionCookie <- completeOtpAuth(s, auth)
-          (_, challenge) = PkceHelper.generate()
           code <- auth.authorizeRaw(
             clientId = s.clientId,
             redirectUri = s.redirectUri,
-            codeChallenge = Some(challenge),
             sessionCookie = Some(sessionCookie),
           ).assertCodeRedirect
         yield assertTrue(code.nonEmpty).label("code must not be empty")
@@ -57,36 +55,26 @@ object StepUpFlowSpec extends E2ESpec:
         for
           (s, auth) <- setup(Flows.Id.EmailOtp)
           sessionCookie <- completeOtpAuth(s, auth)
-          (_, challenge) = PkceHelper.generate()
-          response <- auth.authorizeRaw(
+          _ <- auth.authorizeRaw(
             clientId = s.clientId,
             redirectUri = s.redirectUri,
-            codeChallenge = Some(challenge),
             sessionCookie = Some(sessionCookie),
             prompt = Some("login"),
-          )
-        yield assertTrue(response.status == Status.SeeOther)
-          .label("must redirect") &&
-          assertTrue(response.location.contains("/challenge"))
-            .label("prompt=login must redirect to /challenge even with valid session")
+          ).assertChallengeRedirect
+        yield assertCompletes
       },
 
       test("max_age=0 with valid session forces new challenge") {
         for
           (s, auth) <- setup(Flows.Id.EmailOtp)
           sessionCookie <- completeOtpAuth(s, auth)
-          (_, challenge) = PkceHelper.generate()
-          response <- auth.authorizeRaw(
+          _ <- auth.authorizeRaw(
             clientId = s.clientId,
             redirectUri = s.redirectUri,
-            codeChallenge = Some(challenge),
             sessionCookie = Some(sessionCookie),
             maxAge = Some(0),
-          )
-        yield assertTrue(response.status == Status.SeeOther)
-          .label("must redirect") &&
-          assertTrue(response.location.contains("/challenge"))
-            .label("max_age=0 must redirect to /challenge even with valid session")
+          ).assertChallengeRedirect
+        yield assertCompletes
       },
 
     ),
@@ -97,11 +85,9 @@ object StepUpFlowSpec extends E2ESpec:
         for
           (s, auth) <- setup(Flows.Id.EmailOtp)
           sessionCookie <- completeOtpAuth(s, auth)
-          (_, challenge) = PkceHelper.generate()
           code <- auth.authorizeRaw(
             clientId = s.clientId,
             redirectUri = s.redirectUri,
-            codeChallenge = Some(challenge),
             sessionCookie = Some(sessionCookie),
             acrValues = Some(Acr.OtpLevel),
           ).assertCodeRedirect
@@ -112,11 +98,9 @@ object StepUpFlowSpec extends E2ESpec:
         for
           (s, auth) <- setup(Flows.Id.EmailOtp)
           sessionCookie <- completeOtpAuth(s, auth)
-          (_, challenge) = PkceHelper.generate()
           _ <- auth.authorizeRaw(
             clientId = s.clientId,
             redirectUri = s.redirectUri,
-            codeChallenge = Some(challenge),
             sessionCookie = Some(sessionCookie),
             acrValues = Some(Acr.PasskeyLevel),
           ).assertErrorRedirect("unmet_authentication_requirements")
@@ -127,11 +111,9 @@ object StepUpFlowSpec extends E2ESpec:
         for
           (s, auth) <- setup(Flows.Id.EmailOtp)
           sessionCookie <- completeOtpAuth(s, auth)
-          (_, challenge) = PkceHelper.generate()
           _ <- auth.authorizeRaw(
             clientId = s.clientId,
             redirectUri = s.redirectUri,
-            codeChallenge = Some(challenge),
             sessionCookie = Some(sessionCookie),
             prompt = Some("none"),
             acrValues = Some(Acr.PasskeyLevel),
@@ -143,17 +125,202 @@ object StepUpFlowSpec extends E2ESpec:
         for
           (s, auth) <- setup(Flows.Id.EmailOtp)
           sessionCookie <- completeOtpAuth(s, auth)
-          (_, challenge) = PkceHelper.generate()
           _ <- auth.authorizeRaw(
             clientId = s.clientId,
             redirectUri = s.redirectUri,
-            codeChallenge = Some(challenge),
             sessionCookie = Some(sessionCookie),
             acrValues = Some("urn:unknown:acr:level99"),
           ).assertErrorRedirect("unmet_authentication_requirements")
         yield assertCompletes
       },
+    ),
 
+    suite("missing user (session / hint)")(
+
+      test("session user deleted -> step-up fails with access_denied") {
+        for
+          // Use shared client config but a fresh per-test user to avoid cross-test interference.
+          (s, auth) <- setup(Flows.Id.EmailOtp)
+          uid = java.util.UUID.randomUUID().toString.take(8)
+          email = s"del-stepup-$uid@example.test"
+          userId <- auth.registerUser(email = Some(email))
+          _ <- auth.flushUserOutbox()  // register user in auth before logging in
+          authorize <- auth.authorize(scope = "openid", clientId = Some(s.clientId), redirectUri = Some(s.redirectUri)).assertChallengeRedirect
+          _ <- auth.submitEmail(authorize.conversationCookie.get, email)
+          submit <- auth.submitOtp(authorize.conversationCookie.get, fixedOtp)
+          sessionCookie <- ZIO.fromOption(submit.sessionCookie).orElseFail(RuntimeException("No SSO_SESSION cookie"))
+          _ <- auth.deleteUser(userId)
+          _ <- auth.flushUserOutbox()  // propagate deletion to auth before step-up
+          _ <- auth.authorizeRaw(
+            clientId = s.clientId,
+            redirectUri = s.redirectUri,
+            sessionCookie = Some(sessionCookie),
+            acrValues = Some(Acr.PasskeyLevel),
+          ).assertErrorRedirect("access_denied")
+        yield assertCompletes
+      },
+
+      test("session user deleted -> max_age=0 fails with access_denied") {
+        for
+          (s, auth) <- setup(Flows.Id.EmailOtp)
+          uid = java.util.UUID.randomUUID().toString.take(8)
+          email = s"del-maxage-$uid@example.test"
+          userId <- auth.registerUser(email = Some(email))
+          _ <- auth.flushUserOutbox()
+          authorize <- auth.authorize(scope = "openid", clientId = Some(s.clientId), redirectUri = Some(s.redirectUri)).assertChallengeRedirect
+          _ <- auth.submitEmail(authorize.conversationCookie.get, email)
+          submit <- auth.submitOtp(authorize.conversationCookie.get, fixedOtp)
+          sessionCookie <- ZIO.fromOption(submit.sessionCookie).orElseFail(RuntimeException("No SSO_SESSION cookie"))
+          _ <- auth.deleteUser(userId)
+          _ <- auth.flushUserOutbox()
+          _ <- auth.authorizeRaw(
+            clientId = s.clientId,
+            redirectUri = s.redirectUri,
+            sessionCookie = Some(sessionCookie),
+            maxAge = Some(0),
+          ).assertErrorRedirect("access_denied")
+        yield assertCompletes
+      },
+      test("hint user deleted (no session) -> fall back to login prompt") {
+        for
+          (s, auth) <- setup(Flows.Id.EmailOtp)
+          uid = java.util.UUID.randomUUID().toString.take(8)
+          email = s"del-hint-$uid@example.test"
+          userId <- auth.registerUser(email = Some(email))
+          _ <- auth.flushUserOutbox()  // register in auth before getting id_token
+          authorize <- auth.authorize(scope = "openid email", clientId = Some(s.clientId), redirectUri = Some(s.redirectUri)).assertChallengeRedirect
+          _ <- auth.submitEmail(authorize.conversationCookie.get, email)
+          code <- auth.submitOtp(authorize.conversationCookie.get, fixedOtp).assertRedirect
+          token <- auth.token(
+            code,
+            authorize.verifier,
+            clientId = Some(s.clientId),
+            clientSecret = Some(s.clientSecret),
+            redirectUri = Some(s.redirectUri),
+          ).success
+          idToken <- ZIO.fromOption(token.idToken).orElseFail(RuntimeException("Missing id_token"))
+          _ <- auth.deleteUser(userId)
+          _ <- auth.flushUserOutbox()  // propagate deletion to auth before hint authorize
+          _ <- auth.authorizeRaw(
+            clientId = s.clientId,
+            redirectUri = s.redirectUri,
+            idTokenHint = Some(idToken),
+          ).assertChallengeRedirect
+        yield assertCompletes
+      }
+    ),
+
+    suite("id_token_hint (verified identity)")(
+
+      test("id_token_hint (user exists, no session) -> skip credential entry, go straight to OTP") {
+        for
+          (s, auth) <- setup(Flows.Id.EmailOtp)
+          uid = java.util.UUID.randomUUID().toString.take(8)
+          email = s"hint-skip-$uid@example.test"
+          _ <- auth.registerUser(email = Some(email))
+          _ <- auth.flushUserOutbox()
+          // 1. Get an id_token for this user
+          authorize1 <- auth.authorize(scope = "openid email", clientId = Some(s.clientId), redirectUri = Some(s.redirectUri)).assertChallengeRedirect
+          _ <- auth.submitEmail(authorize1.conversationCookie.get, email)
+          code1 <- auth.submitOtp(authorize1.conversationCookie.get, fixedOtp).assertRedirect
+          token1 <- auth.token(code1, authorize1.verifier, clientId = Some(s.clientId), clientSecret = Some(s.clientSecret), redirectUri = Some(s.redirectUri)).success
+          idToken <- ZIO.fromOption(token1.idToken).orElseFail(RuntimeException("Missing id_token"))
+          // 2. Start a NEW authorize flow with id_token_hint (no session) — must go straight to OTP, not credential
+          result <- auth.authorizeRaw(
+            clientId = s.clientId,
+            redirectUri = s.redirectUri,
+            idTokenHint = Some(idToken),
+          ).assertChallengeRedirect
+          cookie = result.conversationCookie.get
+          // 3. Fetch challenge form and verify it's the OTP step, NOT the credential step
+          challengePage <- auth.getChallenge(cookie)
+          _ <- challengePage.assertStep(ConversationStep.Otp)
+        yield assertCompletes
+      },
+
+      test("id_token_hint (user exists, no session, phone) -> skip credential entry, go straight to OTP") {
+        for
+          (s, auth) <- setup(Flows.Id.PhoneOtp)
+          phone = f"+49151${java.util.UUID.randomUUID().getLeastSignificantBits.abs % 100_000_000L}%08d"
+          _ <- auth.registerUser(phone = Some(phone))
+          _ <- auth.flushUserOutbox()
+          // 1. Get an id_token for this user
+          authorize1 <- auth.authorize(scope = "openid", clientId = Some(s.clientId), redirectUri = Some(s.redirectUri)).assertChallengeRedirect
+          _ <- auth.submitPhone(authorize1.conversationCookie.get, phone)
+          code1 <- auth.submitOtp(authorize1.conversationCookie.get, fixedOtp).assertRedirect
+          token1 <- auth.token(code1, authorize1.verifier, clientId = Some(s.clientId), clientSecret = Some(s.clientSecret), redirectUri = Some(s.redirectUri)).success
+          idToken <- ZIO.fromOption(token1.idToken).orElseFail(RuntimeException("Missing id_token"))
+          // 2. Start a NEW authorize flow with id_token_hint (no session) — must go straight to OTP, not credential
+          result <- auth.authorizeRaw(
+            clientId = s.clientId,
+            redirectUri = s.redirectUri,
+            idTokenHint = Some(idToken),
+          ).assertChallengeRedirect
+          cookie = result.conversationCookie.get
+          // 3. Fetch challenge form and verify it's the OTP step, NOT the credential step
+          challengePage <- auth.getChallenge(cookie)
+          _ <- challengePage.assertStep(ConversationStep.Otp)
+        yield assertCompletes
+      },
+
+      test("id_token_hint (user exists) -> submitting any phone is rejected with access_denied") {
+        for
+          (s, auth) <- setup(Flows.Id.PhoneOtp)
+          phone = f"+49151${java.util.UUID.randomUUID().getLeastSignificantBits.abs % 100_000_000L}%08d"
+          otherPhone = f"+49152${java.util.UUID.randomUUID().getLeastSignificantBits.abs % 100_000_000L}%08d"
+          _ <- auth.registerUser(phone = Some(phone))
+          _ <- auth.registerUser(phone = Some(otherPhone))
+          _ <- auth.flushUserOutbox()
+          // 1. Get an id_token for the real user
+          authorize1 <- auth.authorize(scope = "openid", clientId = Some(s.clientId), redirectUri = Some(s.redirectUri)).assertChallengeRedirect
+          _ <- auth.submitPhone(authorize1.conversationCookie.get, phone)
+          code1 <- auth.submitOtp(authorize1.conversationCookie.get, fixedOtp).assertRedirect
+          token1 <- auth.token(code1, authorize1.verifier, clientId = Some(s.clientId), clientSecret = Some(s.clientSecret), redirectUri = Some(s.redirectUri)).success
+          idToken <- ZIO.fromOption(token1.idToken).orElseFail(RuntimeException("Missing id_token"))
+          // 2. Start a flow with id_token_hint — identity is locked (userId set in conversation)
+          result <- auth.authorizeRaw(
+            clientId = s.clientId,
+            redirectUri = s.redirectUri,
+            idTokenHint = Some(idToken),
+          ).assertChallengeRedirect
+          cookie = result.conversationCookie.get
+          // 3. Manually POST to /challenge/phone with a different phone — must be rejected
+          _ <- auth.submitPhone(cookie, otherPhone)
+          // 4. Fetch the challenge — must show AccessDenied, not OTP
+          challengePage <- auth.getChallenge(cookie)
+          _ <- challengePage.assertStep(ConversationStep.AccessDenied)
+        yield assertCompletes
+      },
+
+      test("id_token_hint (user exists) -> submitting any email is rejected with access_denied") {
+        for
+          (s, auth) <- setup(Flows.Id.EmailOtp)
+          uid = java.util.UUID.randomUUID().toString.take(8)
+          email = s"hint-locked-$uid@example.test"
+          otherEmail = s"hint-attacker-$uid@example.test"
+          _ <- auth.registerUser(email = Some(email))
+          _ <- auth.registerUser(email = Some(otherEmail))
+          _ <- auth.flushUserOutbox()
+          // 1. Get an id_token for the real user
+          authorize1 <- auth.authorize(scope = "openid email", clientId = Some(s.clientId), redirectUri = Some(s.redirectUri)).assertChallengeRedirect
+          _ <- auth.submitEmail(authorize1.conversationCookie.get, email)
+          code1 <- auth.submitOtp(authorize1.conversationCookie.get, fixedOtp).assertRedirect
+          token1 <- auth.token(code1, authorize1.verifier, clientId = Some(s.clientId), clientSecret = Some(s.clientSecret), redirectUri = Some(s.redirectUri)).success
+          idToken <- ZIO.fromOption(token1.idToken).orElseFail(RuntimeException("Missing id_token"))
+          // 2. Start a flow with id_token_hint — identity is locked (userId set in conversation)
+          result <- auth.authorizeRaw(
+            clientId = s.clientId,
+            redirectUri = s.redirectUri,
+            idTokenHint = Some(idToken),
+          ).assertChallengeRedirect
+          cookie = result.conversationCookie.get
+          // 3. Manually POST to /challenge/email with a different email — must be rejected
+          _ <- auth.submitEmail(cookie, otherEmail)
+          // 4. Fetch the challenge — must show AccessDenied, not OTP
+          challengePage <- auth.getChallenge(cookie)
+          _ <- challengePage.assertStep(ConversationStep.AccessDenied)
+        yield assertCompletes
+      }
     ),
 
   ) @@ TestAspect.sequential @@ TestAspect.timeout(120.seconds)

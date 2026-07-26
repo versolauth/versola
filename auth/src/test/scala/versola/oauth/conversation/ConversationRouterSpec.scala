@@ -7,7 +7,7 @@ import versola.oauth.conversation.model.{AuthId, ConversationRecord, Conversatio
 import zio.{ZIO, Exit}
 import versola.oauth.model.{AuthorizationCode, CodeChallenge, CodeChallengeMethod, State}
 import versola.oauth.session.model.SessionId
-import versola.user.model.Login
+import versola.user.model.{Login, UserId}
 import versola.util.{Email, Phone, SecureRandom, UnitSpecBase}
 import zio.http.URL
 import zio.test.*
@@ -167,6 +167,38 @@ object ConversationRouterSpec extends UnitSpecBase:
           result == conversationResult,
           record == initialRecord,
           prepareTimes == 1,
+        )
+      },
+      test("email submission with locked identity (userId set) returns access_denied") {
+        val env = Env()
+        val lockedRecord = initialRecord.copy(userId = Some(UserId(UUID.randomUUID())))
+        val accessDeniedResult = ConversationResult.RenderStep(ConversationStep.AccessDenied)
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(lockedRecord))
+          _ <- env.otpConversationService.accessDenied.succeedsWith(accessDeniedResult)
+          (result, _) <- env.router.submit(authId, EmailSubmission(email), None, None)
+          accessDeniedTimes = env.otpConversationService.accessDenied.times
+          prepareOtpTimes = env.otpConversationService.prepareInitialOtp.times
+        yield assertTrue(
+          result == accessDeniedResult,
+          accessDeniedTimes == 1,
+          prepareOtpTimes == 0,
+        )
+      },
+      test("phone submission with locked identity (userId set) returns access_denied") {
+        val env = Env()
+        val lockedRecord = initialRecord.copy(userId = Some(UserId(UUID.randomUUID())))
+        val accessDeniedResult = ConversationResult.RenderStep(ConversationStep.AccessDenied)
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(lockedRecord))
+          _ <- env.otpConversationService.accessDenied.succeedsWith(accessDeniedResult)
+          (result, _) <- env.router.submit(authId, PhoneSubmission(phone), None, None)
+          accessDeniedTimes = env.otpConversationService.accessDenied.times
+          prepareOtpTimes = env.otpConversationService.prepareInitialOtp.times
+        yield assertTrue(
+          result == accessDeniedResult,
+          accessDeniedTimes == 1,
+          prepareOtpTimes == 0,
         )
       },
       test("handle phone submission") {
