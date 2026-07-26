@@ -123,7 +123,7 @@ jobs:
         if: github.event_name != 'release'
         run: sbt "central-postgres-impl/stage" "auth-postgres-impl/stage"
 
-      - name: Start central and auth services
+      - name: Start central service
         if: github.event_name != 'release'
         run: |
           PORT=9001 DPORT=9002 \
@@ -131,30 +131,46 @@ jobs:
             -Denv.path=central/dev/env.conf > /tmp/central.log 2>&1 &
           echo $! > /tmp/central.pid
 
+      - name: Wait for central to be ready
+        if: github.event_name != 'release'
+        run: |
+          echo "Waiting for central on port 9002..."
+          for i in $(seq 1 60); do
+            if curl -sf "http://localhost:9002/readiness" > /dev/null 2>&1; then
+              echo "central is ready after $(( (i - 1) * 2 ))s"
+              break
+            fi
+            if [ "$i" -eq 60 ]; then
+              echo "central did not become ready in 120s"
+              cat /tmp/central.log
+              exit 1
+            fi
+            sleep 2
+          done
+
+      - name: Start auth service
+        if: github.event_name != 'release'
+        run: |
           PORT=9003 DPORT=9004 \
             auth/implementations/postgres/target/universal/stage/bin/auth-postgres-impl \
             -Denv.path=auth/dev/env.conf > /tmp/auth.log 2>&1 &
           echo $! > /tmp/auth.pid
 
-      - name: Wait for services to be ready
+      - name: Wait for auth to be ready
         if: github.event_name != 'release'
         run: |
-          for svc in "central:9002" "auth:9004"; do
-            name="${svc%%:*}"
-            port="${svc##*:}"
-            echo "Waiting for $name on port $port..."
-            for i in $(seq 1 60); do
-              if curl -sf "http://localhost:$port/readiness" > /dev/null 2>&1; then
-                echo "$name is ready after ${i}x2s"
-                break
-              fi
-              if [ "$i" -eq 60 ]; then
-                echo "$name did not become ready in 120s"
-                cat /tmp/$name.log
-                exit 1
-              fi
-              sleep 2
-            done
+          echo "Waiting for auth on port 9004..."
+          for i in $(seq 1 60); do
+            if curl -sf "http://localhost:9004/readiness" > /dev/null 2>&1; then
+              echo "auth is ready after $(( (i - 1) * 2 ))s"
+              break
+            fi
+            if [ "$i" -eq 60 ]; then
+              echo "auth did not become ready in 120s"
+              cat /tmp/auth.log
+              exit 1
+            fi
+            sleep 2
           done
 
       - name: Run e2e tests
