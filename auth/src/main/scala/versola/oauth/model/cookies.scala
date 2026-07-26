@@ -59,13 +59,34 @@ object ConversationCookie:
 object SessionCookie:
   val name = "SSO_SESSION"
 
-  inline def apply(value: SessionId, ttl: Duration): Cookie.Response = Cookie.Response(
-    name = name,
-    content = Base64Url.encode(value),
-    domain = None,
-    path = Some(Path.root),
-    isSecure = true,
-    isHttpOnly = true,
-    maxAge = Some(ttl),
-    sameSite = None,
-  )
+  def apply(value: SessionId, ttl: Duration, secret: Secret.Bytes32): Cookie.Response =
+    val payloadB64 = Base64.urlEncode(value)
+    val sigB64     = Base64.urlEncode(computeMac(value, secret))
+    Cookie.Response(
+      name = name,
+      content = s"$payloadB64.$sigB64",
+      domain = None,
+      path = Some(Path.root),
+      isSecure = true,
+      isHttpOnly = true,
+      maxAge = Some(ttl),
+      sameSite = None,
+    )
+
+  def parse(content: String, secret: Secret.Bytes32): Either[String, SessionId] =
+    val dotIdx = content.lastIndexOf('.')
+    if dotIdx < 0 then Left("missing signature")
+    else
+      val payloadB64 = content.substring(0, dotIdx)
+      val sigB64     = content.substring(dotIdx + 1)
+      for
+        payloadBytes <- scala.util.Try(Base64.urlDecode(payloadB64)).toEither.left.map(_.getMessage)
+        sigBytes     <- scala.util.Try(Base64.urlDecode(sigB64)).toEither.left.map(_.getMessage)
+        _            <- Either.cond(MessageDigest.isEqual(computeMac(payloadBytes, secret), sigBytes), (), "invalid signature")
+        _            <- Either.cond(payloadBytes.length == 32, (), "invalid session id length")
+      yield SessionId(payloadBytes)
+
+  private def computeMac(data: Array[Byte], key: Secret.Bytes32): Array[Byte] =
+    val mac = Array.ofDim[Byte](32)
+    Blake3.initKeyedHash(key).update(data).doFinalize(mac)
+    mac

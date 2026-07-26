@@ -138,6 +138,7 @@ object ConversationRenderService:
               SessionCookie(
                 value = sessionId,
                 ttl = sessionTtl,
+                secret = config.security.sessionCookieSecret,
               ),
             )
 
