@@ -31,4 +31,3 @@ CREATE INDEX auth_conversations_credential_idx
 
 CREATE INDEX auth_conversations_expires_at_idx
     ON auth_conversations (expires_at);
-
