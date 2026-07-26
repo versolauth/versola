@@ -84,7 +84,23 @@ The browser-facing login preset lives in `env-config`'s `central.conf` (`bootstr
 id `central-admin`) with `redirect-uri = https://id.versola.kz/complete` and
 `post-login-redirect-uri = https://id.versola.kz/admin`; those seed values are applied once, on
 `central`'s first bootstrap against an empty database (see [3.5](#35-compose-file) /
-[6](#6-recreating-the-database-from-scratch)).
+[6](#6-recreating-the-database-from-scratch)). The `central-admin` client's `redirect-uris` must
+contain `https://id.versola.kz/complete` and nothing else in prod — no `localhost`/`http` entries
+in a high-privilege admin client's allowlist.
+
+An unauthenticated visit to `/admin` has no session cookie, so `edge` can't tell which login to
+send the browser to (the preset id lives in the cookie). `central-ui` handles that itself: on a
+`401` without a `Location`, it navigates to `/login/central-admin`. Merging a `central-ui` change
+does **not** deploy it — run the manual `Deploy` with `service: central-ui`, and remember returning
+browsers may cache the old `versola-admin.js` (see [Known gaps](#10-known-gaps)).
+
+**First admin login.** `AuthBootstrapService` (in `auth`) creates the `admin` user, grants it the
+`oauth-admin` role (full permissions — so no "Access Denied" after login), and sets a **temporary**
+password from `auth.conf`'s `bootstrap.password`, valid **24 hours**. Log in with that password and
+the flow forces a set-password step to choose a permanent one. If the temporary password has expired
+before first login, it isn't usable — restart `auth` (`docker compose -f docker-compose.prod.yml
+restart auth`) and bootstrap re-creates a fresh 24-hour one (log line: `Set temporary bootstrap
+password for admin user 'admin'`).
 
 ---
 
@@ -448,6 +464,25 @@ anyone with read access to `env-config` being able to read every secret it holds
 repository should be treated as equivalent to production database access. See
 [Known gaps](#10-known-gaps) for the honest accounting of what this costs.
 
+### File encoding — must be UTF-8
+
+The `.conf` files **must be UTF-8** (ASCII is fine; it's a subset). The services parse them with
+Typesafe Config (HOCON), which cannot read UTF-16 — a UTF-16 file fails at startup with a parse
+error like `'…' may not be followed by token: ''`, and the service then crash-loops (see
+[9.12](#912-a-service-crash-loops-with-a-hocon-parse-error-after-a-restart)). This actually
+happened: the files had been saved as UTF-16 and it only stayed hidden because the running
+containers held their already-parsed config in memory — the next restart of each service would
+have taken it down.
+
+Windows tooling is the trap here: PowerShell's `echo "…" > file` writes **UTF-16 LE** by default,
+and some editors save as UTF-16 too. Guard against it:
+
+- A `.gitattributes` in `env-config` marks `*.conf text eol=lf`, so Git normalizes line endings and
+  shows real text diffs (a UTF-16 file otherwise shows as "binary file not shown" in PRs — a useful
+  early warning that something re-encoded it).
+- Before committing, sanity-check: `file prod/*.conf` should say `ASCII`/`UTF-8`, never `UTF-16`.
+- To convert a stray UTF-16 file: `iconv -f UTF-16 -t UTF-8 in.conf > out.conf`.
+
 ### Updating a config
 
 1. Generate or hand-edit the relevant `.conf` (see [3.2](#32-generate-configuration) and
@@ -734,6 +769,38 @@ each cause has actually happened here:
 3. **The token's Repository permissions don't include Contents: Read** on `env-config` — this is a
    separate step from selecting the repository when creating a fine-grained token.
 
+### 9.12 A service crash-loops with a HOCON parse error after a restart
+
+Symptom: `auth`/`central`/`edge` restarts into a restart loop (`docker compose ps` shows
+`Restarting (1)`), and its log shows a Typesafe Config error such as:
+
+```
+'…' may not be followed by token: '' (if you intended '' to be part of a key or string value,
+try enclosing the key or value in double quotes)
+    … com.typesafe.config …
+    at versola.util.http.VersolaApp.configProvider(VersolaApp.scala:…)
+```
+
+Cause: the deployed config file is **UTF-16**, which HOCON can't parse (the NUL bytes read as empty
+tokens). A running service holds its already-parsed config in memory, so this stays hidden until the
+next restart — which is exactly when it bites. See [5 / File encoding](#file-encoding--must-be-utf-8)
+for why this happens (Windows tooling) and how to prevent it.
+
+Fix — convert the on-disk file to UTF-8 and restart (configs are `root`-owned, so `sudo`):
+
+```bash
+sudo cp /opt/versola/config/auth.conf /opt/versola/config/auth.conf.utf16-broken
+sudo sh -c 'iconv -f UTF-16 -t UTF-8 /opt/versola/config/auth.conf.utf16-broken > /opt/versola/config/auth.conf'
+sudo chmod 600 /opt/versola/config/auth.conf
+docker compose -f docker-compose.prod.yml restart auth
+```
+
+Then check `sudo file /opt/versola/config/*.conf` — **all three** must be `ASCII`/`UTF-8`. If
+`central.conf` or `edge.conf` is still UTF-16, convert them too (same commands) even if those
+services are currently up, or they'll crash-loop on their next restart. The durable fix is
+committing UTF-8 configs to `env-config` (already enforced via its `.gitattributes`) so future
+deploys stop shipping UTF-16.
+
 ---
 
 ## 10. Known gaps
@@ -758,3 +825,10 @@ each cause has actually happened here:
   every deploy overwrites the previous backup rather than keeping history, so at most one prior
   version is ever recoverable this way. Fine for the "did my last edit break the substitution"
   check they're there for; not a substitute for real version control or an audit trail.
+- **`central-ui`'s bundle filename isn't content-hashed** (minor). The build always emits
+  `versola-admin.js`, so there's no way to cache it long-term as immutable. This is currently
+  handled at the edge: nginx serves `/admin` with `Cache-Control: no-cache`, forcing a conditional
+  revalidation each load (cheap `304` while unchanged, new file immediately after a deploy) — so
+  stale bundles aren't a problem, at the cost of a revalidation round-trip per load. A content hash
+  in the filename would let hashed assets be cached immutably (no revalidation) with `no-cache` kept
+  only for the entrypoint HTML; worth doing if `/admin` ever gets heavy traffic.
