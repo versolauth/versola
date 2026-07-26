@@ -1,7 +1,9 @@
 package versola.user
 
+import versola.auth.model.Password
 import versola.oauth.challenge.passkey.PasskeyRepository
 import versola.oauth.challenge.password.PasswordService
+import versola.oauth.challenge.password.model.PasswordReuseError
 import versola.oauth.client.model.TenantId
 import versola.oauth.conversation.limit.ChallengeThrottleRepository
 import versola.oauth.session.SessionRepository
@@ -34,6 +36,7 @@ object UserController extends Controller:
     renamePasskeyEndpoint,
     deletePasskeyEndpoint,
     resetPasswordEndpoint,
+    setPasswordEndpoint,
   )
 
   val upsertUserEndpoint =
@@ -174,5 +177,18 @@ object UserController extends Controller:
         body <- request.body.asJsonFromCodec[ResetPasswordPayload]
         passwordService <- ZIO.service[PasswordService]
         _ <- passwordService.resetPassword(body.userId, body.expiresInSeconds, body.channel)
+      yield Response.status(Status.NoContent)
+    }
+
+  val setPasswordEndpoint =
+    Method.POST / "users" / "password" / "set" -> handler { (request: Request) =>
+      for
+        _ <- authorizeInternal(request)
+        body <- request.body.asJsonFromCodec[SetPasswordPayload]
+        passwordService <- ZIO.service[PasswordService]
+        _ <- passwordService.setPassword(body.userId, Password(body.password))
+          .mapError:
+            case PasswordReuseError(n) => RuntimeException(s"Password reuse: must differ from last $n passwords")
+            case t: Throwable => t
       yield Response.status(Status.NoContent)
     }

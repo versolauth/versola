@@ -99,7 +99,7 @@ object OAuthClientSyncClientSpec extends ZIOSpecDefault:
         request <- seen.get.someOrFail(new RuntimeException("No request captured"))
         token <- ZIO.fromOption(request.header(Header.Authorization).collect { case Header.Authorization.Bearer(v) => v.stringValue })
           .orElseFail(new RuntimeException("Missing bearer token"))
-        claims <- JWT.deserialize[SignedClaims](token, secretKey).mapError(e => new RuntimeException(e.toString))
+        claims <- JWT.deserialize[SignedClaims](token, secretKey, JWT.Type.JWT).mapError(e => new RuntimeException(e.toString))
         client = result(ClientId("web-app"))
       yield assertTrue(
         request.method == Method.GET,

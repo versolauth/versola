@@ -48,7 +48,7 @@ object JwksSyncClientSpec extends ZIOSpecDefault:
         token   <- ZIO
           .fromOption(request.header(Header.Authorization).collect { case Header.Authorization.Bearer(v) => v.stringValue })
           .orElseFail(new RuntimeException("Missing bearer token"))
-        claims  <- JWT.deserialize[SignedClaims](token, secretKey).mapError(e => new RuntimeException(e.toString))
+        claims  <- JWT.deserialize[SignedClaims](token, secretKey, JWT.Type.JWT).mapError(e => new RuntimeException(e.toString))
       yield assertTrue(
         request.method == Method.GET,
         request.url.encode.contains("configuration/jwks/sync"),

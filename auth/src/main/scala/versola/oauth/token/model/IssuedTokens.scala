@@ -1,8 +1,9 @@
 package versola.oauth.token.model
 
-import versola.oauth.client.model.{AuthMethodRef, ClientId, ScopeToken}
+import versola.oauth.client.model.{Acr, AuthMethodRef, ClientId, ScopeToken, TenantId}
 import versola.oauth.model.{AccessToken, Nonce, RefreshToken}
 import versola.oauth.userinfo.model.RequestedClaims
+import versola.role.model.RoleId
 import versola.user.model.{UserId, UserRecord}
 import zio.Duration
 
@@ -20,8 +21,9 @@ case class IssuedTokens(
     uiLocales: Option[List[String]],
     nonce: Option[Nonce],
     user: Option[UserRecord],
-    tenantId: Option[String],    // None for client_credentials service tokens
-    roles: List[String],         // role IDs within tenantId; empty for client_credentials
+    tenantId: Option[TenantId], // None for client_credentials service tokens
+    roles: List[RoleId],        // role IDs within tenantId; empty for client_credentials
     amr: Set[AuthMethodRef],
     authTime: Option[Instant], // None for client_credentials grant
+    acr: Option[Acr],
 )

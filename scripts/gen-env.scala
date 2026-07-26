@@ -115,6 +115,11 @@ def writeFile(dir: File, name: String, content: String): Unit =
   interactive = !isLocal
   if isLocal then println("  local env — using defaults, skipping prompts")
 
+  // Only pin a known secret in local dev so e2e tests can rely on a stable value.
+  // Non-local environments let the bootstrap generate a random secret on first boot.
+  val bootstrapClientSecretLine =
+    if isLocal then "  client-secret = \"ZGV2LWNlbnRyYWwtYWRtaW4tc2VjcmV0LTMyYnl0ZXM\"\n" else ""
+
   // ── Service URLs ──────────────────────────────────────────────────────────────
   // Each service's public base URL, prompted once and reused wherever another
   // service needs to reach it (auth is also the JWT issuer and edge's upstream).
@@ -336,7 +341,7 @@ def writeFile(dir: File, name: String, content: String): Unit =
        |    }
        |  ]
        |  central-url = "$centralUrl"
-       |}
+       |${bootstrapClientSecretLine}|}
        |
        |secret-key = "$centralSecretKey"
        |client-secrets-secret = "$clientSecretsSecret"

@@ -5,7 +5,7 @@ import versola.auth.TestEnvConfig
 import versola.auth.model.{Password, PasswordRecord}
 import versola.oauth.challenge.password.model.*
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{ClientId, PasswordHistorySettings, TenantId}
+import versola.oauth.client.model.{PasswordHistorySettings, TenantId}
 import versola.oauth.conversation.otp.model.OtpTemplate
 import versola.oauth.conversation.otp.{EmailOtpProvider, SmsOtpProvider}
 import versola.user.UserRepository
@@ -21,7 +21,6 @@ import java.util.UUID
 
 object PasswordServiceSpec extends ZIOSpecDefault, ZIOStubs:
 
-  private val clientId = ClientId("test-client")
   private val tenantId = TenantId("test-tenant")
   private val userId = UserId(UUID.randomUUID())
   private val email = Email("user@example.com")
@@ -149,7 +148,7 @@ object PasswordServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.configuration.getPasswordHistorySettings.succeedsWith(PasswordHistorySettings(historySize = 5, numDifferent = 3))
           _ <- env.securityService.hashPassword.succeedsWith(testHash)
           _ <- env.passwordRepo.create.succeedsWith(())
-          _ <- env.service.setPassword(clientId, userId, password)
+          _ <- env.service.setPassword(userId, password)
           createCalls = env.passwordRepo.create.calls
         yield assertTrue(
           createCalls.length == 1,
@@ -166,7 +165,7 @@ object PasswordServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.configuration.getPasswordHistorySettings.succeedsWith(PasswordHistorySettings(historySize = 5, numDifferent = 3))
           _ <- env.securityService.hashPassword.succeedsWith(testHash)
           _ <- env.passwordRepo.create.failsWith(PasswordReuseError(3))
-          result <- env.service.setPassword(clientId, userId, password).exit
+          result <- env.service.setPassword(userId, password).exit
         yield assert(result)(fails(equalTo(PasswordReuseError(3))))
       },
     ),

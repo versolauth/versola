@@ -188,6 +188,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
         authorizeCalls.size == 1,
         authorizeCalls.head._1 == Fixtures.preset,
         authorizeCalls.head._3 == Fixtures.state,
+        authorizeCalls.head._4 == Map.empty[String, String],
       )
     },
     test("fails with PresetNotFound when preset is missing from cache") {
@@ -334,6 +335,8 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
         fetchUserInfo = false,
         allow = Some("true"),
         inject = Vector.empty,
+        acrValues = None,
+        maxAge = None,
       )),
     )
 

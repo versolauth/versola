@@ -99,6 +99,7 @@ export interface ChallengeSettingsRecord {
   sessionTtlSeconds: number;
   sessionIdleTtlSeconds?: number | null;
   ipHeader: string;
+  acrVocabulary?: Record<string, string[]> | null;
 }
 
 // Global (non-tenant-scoped) password policy
@@ -178,6 +179,8 @@ export interface ResourceEndpoint {
   fetchUserInfo: boolean;
   allow?: string;
   inject: InjectRule[];
+  acrValues?: string;
+  maxAge?: number;
 }
 
 export interface Resource {

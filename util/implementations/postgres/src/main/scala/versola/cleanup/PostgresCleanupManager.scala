@@ -24,18 +24,21 @@ class PostgresCleanupManager(
 ) extends CleanupManager.Base(config, fibers):
 
   override protected def cleanupBatch(tableName: String, batchSize: Int, keyColumn: String): Task[Int] =
-    val table = SqlLiteral(tableName)
-    val key   = SqlLiteral(keyColumn)
+    val table    = SqlLiteral(tableName)
+    val key      = SqlLiteral(keyColumn)
+    val tableKey = SqlLiteral(s"$tableName.$keyColumn")
+    val subqKey  = SqlLiteral(s"subq.$keyColumn")
     xa.connect {
       sql"""
         DELETE FROM $table
-        WHERE $key IN (
+        USING (
           SELECT $key FROM $table
           WHERE expires_at < NOW()
           ORDER BY expires_at
           LIMIT $batchSize
           FOR UPDATE SKIP LOCKED
-        )
+        ) subq
+        WHERE $tableKey = $subqKey
       """.update.run()
     }
 

@@ -77,7 +77,8 @@ object TokenEndpointController extends Controller:
         "roles" -> Json.Arr(tokens.roles.map(Json.Str(_))*),
       ) ++
         tokens.tenantId.map("tenant_id" -> Json.Str(_)) ++
-        tokens.requestedClaims.map(rc => "requested_claims" -> rc.toJsonAST.toOption.get)
+        tokens.requestedClaims.map(rc => "requested_claims" -> rc.toJsonAST.toOption.get) ++
+        AuthMethodRef.idTokenClaims(tokens.amr, tokens.authTime, tokens.acr)
 
 
       // For client_credentials grant, use client_id as subject; otherwise use user_id
@@ -128,7 +129,7 @@ object TokenEndpointController extends Controller:
               issuer = config.jwt.issuer,
               subject = userId.toString,
               audience = List(tokens.clientId),
-              custom = Json.Obj(Chunk.fromIterable(userInfo.claims ++ AuthMethodRef.idTokenClaims(tokens.amr, tokens.authTime))),
+              custom = Json.Obj(Chunk.fromIterable(userInfo.claims ++ AuthMethodRef.idTokenClaims(tokens.amr, tokens.authTime, tokens.acr))),
             ),
             ttl = tokens.accessTokenTtl,
             signature = JWT.Signature.Asymmetric(

@@ -1,11 +1,11 @@
 package versola.oauth.client
 
-import versola.oauth.client.model.{ChallengeSettingsRecord, ClientId, ClientSecret, FormRecord, Locales, OAuthClientRecord, OtpSettings, OtpTemplateRecord, PasskeySettings, PasswordHistorySettings, ScopeRecord, ScopeToken, SubmissionLimits, SystemSettingsRecord, TenantId, ThemeRecord}
+import versola.oauth.client.model.{Acr, ChallengeSettingsRecord, ClientId, ClientSecret, FormRecord, Locales, OAuthClientRecord, OtpSettings, OtpTemplateRecord, PassedAuthFactor, PasskeySettings, PasswordHistorySettings, ScopeRecord, ScopeToken, SubmissionLimits, SystemSettingsRecord, TenantId, ThemeRecord}
 import versola.oauth.conversation.otp.model.OtpTemplate
 import versola.util.{CoreConfig, ReloadingCache, Secret, SecureRandom, SecurityService}
 import zio.*
 import zio.http.Client
-import zio.prelude.{EqualOps, NonEmptySet}
+import zio.prelude.{EqualOps, NonEmptyList, NonEmptySet}
 
 trait OAuthConfigurationService:
   def find(id: ClientId): UIO[Option[OAuthClientRecord]]
@@ -45,7 +45,11 @@ trait OAuthConfigurationService:
 
   def getSessionTtl(id: ClientId): UIO[Duration]
 
+  def getAcrVocabulary(id: ClientId): UIO[Map[Acr, NonEmptyList[PassedAuthFactor]]]
+
   def getSessionIdleTtl(id: ClientId): UIO[Option[Duration]]
+
+  def syncConfiguration: Task[Unit]
 
 object OAuthConfigurationService:
   def live(schedule: Schedule[Any, Any, Any]): ZLayer[
@@ -246,5 +250,36 @@ object OAuthConfigurationService:
               .flatMap(_.sessionIdleTtlSeconds)
               .map(s => Duration.fromSeconds(s.toLong)),
           )
+
+    override def getAcrVocabulary(id: ClientId): UIO[Map[Acr, NonEmptyList[PassedAuthFactor]]] =
+      find(id).flatMap:
+        case None => ZIO.succeed(Map.empty)
+        case Some(client) =>
+          challengeSettingsCache.get.map(
+            _.find(_.tenantId == client.tenantId)
+              .flatMap(_.acrVocabulary)
+              .getOrElse(Map.empty)
+              .flatMap { case (k, vs) => NonEmptyList.fromIterableOption(vs).map(Acr(k) -> _) },
+          )
+
+    override def syncConfiguration: Task[Unit] =
+      for
+        clients           <- clientRepository.getAll
+        _                 <- clientCache.set(clients)
+        scopes            <- scopeRepository.getAll
+        _                 <- scopeCache.set(scopes)
+        forms             <- formRepository.getAll
+        _                 <- formCache.set(forms)
+        themes            <- themeRepository.getAll
+        _                 <- themeCache.set(themes)
+        locales           <- localeRepository.getAll
+        _                 <- localeCache.set(locales)
+        otpTemplates      <- otpTemplateRepository.getAll
+        _                 <- otpTemplateCache.set(otpTemplates)
+        challengeSettings <- challengeSettingsRepository.getAll
+        _                 <- challengeSettingsCache.set(challengeSettings)
+        systemSettings    <- systemSettingsRepository.getAll
+        _                 <- systemSettingsCache.set(systemSettings)
+      yield ()
 
     private val IllegalStateTemplate = OtpTemplate("{{code}}")

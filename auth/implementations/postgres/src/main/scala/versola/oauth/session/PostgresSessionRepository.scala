@@ -3,7 +3,7 @@ package versola.oauth.session
 import com.augustnagro.magnum.*
 import com.augustnagro.magnum.magzio.TransactorZIO
 import com.augustnagro.magnum.pg.{PgCodec, SqlArrayCodec}
-import versola.oauth.client.model.{AuthMethodRef, ClientId, PassedAuthFactor, PassedFactorRecord, ScopeToken}
+import versola.oauth.client.model.{Acr, AuthMethodRef, ClientId, PassedAuthFactor, PassedFactorRecord, ScopeToken}
 import versola.oauth.model.{AccessToken, Nonce, RefreshToken}
 import versola.oauth.session.model.{RefreshAlreadyExchanged, RefreshTokenRecord, SessionId, SessionRecord, UserAgentInfo}
 import versola.oauth.userinfo.model.RequestedClaims
@@ -43,6 +43,7 @@ class PostgresSessionRepository(xa: TransactorZIO)
   given DbCodec[Nonce]                         = DbCodec.StringCodec.biMap(Nonce(_), identity[String])
   given DbCodec[RequestedClaims]               = jsonCodec[RequestedClaims]
   given DbCodec[Set[AuthMethodRef]]            = jsonBCodec[Set[AuthMethodRef]]
+  given DbCodec[Acr]                           = DbCodec.StringCodec.biMap(Acr(_), identity[String])
   given DbCodec[RefreshTokenRecord]            = DbCodec.derived[RefreshTokenRecord]
 
   // ── SessionRepository ─────────────────────────────────────────────────────
@@ -151,7 +152,8 @@ class PostgresSessionRepository(xa: TransactorZIO)
           ui_locales,
           nonce,
           amr,
-          auth_time
+          auth_time,
+          acr
         )
         VALUES (
           $refreshToken,
@@ -168,7 +170,8 @@ class PostgresSessionRepository(xa: TransactorZIO)
           ${record.uiLocales}::text[],
           ${record.nonce},
           ${record.amr},
-          ${record.authTime}
+          ${record.authTime},
+          ${record.acr}
         )
         """.update.run()
       ()
@@ -185,7 +188,7 @@ class PostgresSessionRepository(xa: TransactorZIO)
           SELECT session_id, access_token, user_id, client_id,
                  external_audience, scope, issued_at,
                  expires_at, requested_claims, ui_locales, nonce, previous_id,
-                 amr, auth_time
+                 amr, auth_time, acr
           FROM refresh_tokens
           WHERE id = $token
         """.query[RefreshTokenRecord]

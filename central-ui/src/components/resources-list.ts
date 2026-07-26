@@ -4,7 +4,7 @@ import { buttonStyles, cardStyles, formStyles, methodBadgeStyles, tableStyles } 
 import { celHighlightStyles } from '../styles/cel-highlight';
 import { theme } from '../styles/theme';
 import type { InjectRule, InjectTarget, Resource, ResourceEndpoint, ResourceEndpointId } from '../types';
-import { createResource, deleteResource, getResources, updateResource } from '../utils/central-api';
+import { createResource, deleteResource, fetchChallengeSettings, getResources, updateResource } from '../utils/central-api';
 import { renderHighlightedCel } from '../utils/cel-highlight';
 import { validateCel } from '../utils/cel-validator';
 import { confirmDestructiveAction } from '../utils/confirm-dialog';
@@ -21,6 +21,8 @@ type ResourceEndpointDraft = {
   fetchUserInfo: boolean;
   allow: string;
   inject: InjectRule[];
+  acrValues: string;
+  maxAge: string;
 };
 
 type EditableResourceEndpoint = ResourceEndpointDraft & {
@@ -55,6 +57,7 @@ export class VersolaResourcesList extends LitElement {
   @property({ type: String }) tenantId: string | null = null;
   @property({ type: Boolean }) canManage = false;
   @state() private resources: Resource[] = [];
+  @state() private acrVocabulary: Record<string, string[]> = {};
   @state() private expandedResources: Set<string> = new Set();
   @state() private expandedEndpoints: Set<ResourceEndpointId> = new Set();
   @state() private searchQuery = '';
@@ -227,6 +230,22 @@ export class VersolaResourcesList extends LitElement {
     .header-editor-item { grid-template-columns:minmax(0, 1.05fr) minmax(0, .85fr) minmax(0, 1.1fr) auto; align-items:start; }
     .editor-remove { justify-self:end; align-self:start; }
     .sub-actions { display:flex; gap:.75rem; justify-content:flex-end; margin-top:var(--spacing-lg); }
+    .prefix-tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: var(--spacing-sm);
+      margin-top: var(--spacing-sm);
+    }
+    .prefix-tag {
+      font-family: var(--font-mono);
+      font-weight: 600;
+      font-size: 0.9375rem;
+      color: var(--accent);
+      background: var(--bg-dark);
+      border: 1px solid var(--border-dark);
+      border-radius: var(--radius-md);
+      padding: var(--spacing-xs) var(--spacing-md);
+    }
     @media (max-width: 720px) {
       .resource-header { flex-direction:column; }
       .resource-actions, .form-actions, .section-header, .sub-actions { flex-direction:column; align-items:flex-start; }
@@ -290,6 +309,8 @@ export class VersolaResourcesList extends LitElement {
       fetchUserInfo: false,
       allow: '',
       inject: [],
+      acrValues: '',
+      maxAge: '',
     };
   }
 
@@ -306,8 +327,12 @@ export class VersolaResourcesList extends LitElement {
     if (!this.tenantId) { this.resources = []; this.error = ''; return; }
     this.loading = true; this.error = '';
     try {
-      const resources = await getResources(this.tenantId);
+      const [resources, challengeSettings] = await Promise.all([
+        getResources(this.tenantId),
+        fetchChallengeSettings(this.tenantId),
+      ]);
       this.resources = resources;
+      this.acrVocabulary = challengeSettings?.acrVocabulary ?? {};
       const validIds = new Set(resources.map(resource => resource.resourceId));
       const validEndpointIds = new Set(resources.flatMap(resource => resource.endpoints.map(endpoint => endpoint.id)));
       this.expandedResources = new Set([...this.expandedResources].filter(id => validIds.has(id)));
@@ -467,6 +492,8 @@ export class VersolaResourcesList extends LitElement {
         fetchUserInfo: endpoint.fetchUserInfo,
         allow: endpoint.allow ?? undefined,
         inject: cloneInject(endpoint.inject),
+        acrValues: endpoint.acrValues ?? undefined,
+        maxAge: endpoint.maxAge ?? undefined,
       })),
     };
   }
@@ -488,11 +515,15 @@ export class VersolaResourcesList extends LitElement {
       fetchUserInfo: endpoint.fetchUserInfo,
       allow: endpoint.allow ?? '',
       inject: cloneInject(endpoint.inject),
+      acrValues: endpoint.acrValues ?? '',
+      maxAge: endpoint.maxAge?.toString() ?? '',
     };
   }
 
   private toEndpointPayload(endpoint: EditableResourceEndpoint) {
     const allow = endpoint.allow.trim();
+    const acrValues = endpoint.acrValues.trim();
+    const maxAge = parseInt(endpoint.maxAge);
     return {
       ...(endpoint.id !== null ? { id: endpoint.id } : {}),
       method: endpoint.method,
@@ -500,6 +531,8 @@ export class VersolaResourcesList extends LitElement {
       fetchUserInfo: endpoint.fetchUserInfo,
       allow: allow.length > 0 ? allow : null,
       inject: cloneInject(endpoint.inject),
+      acrValues: acrValues.length > 0 ? acrValues : null,
+      maxAge: Number.isFinite(maxAge) ? maxAge : null,
     };
   }
 
@@ -528,6 +561,14 @@ export class VersolaResourcesList extends LitElement {
 
   private updateEndpointFetchUserInfo(draftId: string, value: boolean) {
     this.updateEndpointDraft(draftId, endpoint => ({ ...endpoint, fetchUserInfo: value }));
+  }
+
+  private updateEndpointAcrValues(draftId: string, value: string) {
+    this.updateEndpointDraft(draftId, endpoint => ({ ...endpoint, acrValues: value }));
+  }
+
+  private updateEndpointMaxAge(draftId: string, value: string) {
+    this.updateEndpointDraft(draftId, endpoint => ({ ...endpoint, maxAge: value }));
   }
 
   private addInjectRule(draftId: string) {
@@ -669,6 +710,30 @@ export class VersolaResourcesList extends LitElement {
     `;
   }
 
+  private renderAcrSection(acrValues: string | undefined) {
+    return html`
+      <div class="endpoint-editor-section">
+        <div class="endpoint-detail-label">Required ACR</div>
+        ${acrValues && acrValues.length > 0
+          ? html`<div class="prefix-tags" style="margin-top: 0;">
+              ${acrValues.split(' ').map(acr => html`<span class="prefix-tag">${acr}</span>`)}
+            </div>`
+          : html`<div class="endpoint-empty">— (any)</div>`}
+      </div>
+    `;
+  }
+
+  private renderMaxAgeSection(maxAge: number | undefined) {
+    return html`
+      <div class="endpoint-editor-section">
+        <div class="endpoint-detail-label">Max Auth Age</div>
+        ${maxAge != null
+          ? html`<div class="endpoint-detail-value">${maxAge} seconds</div>`
+          : html`<div class="endpoint-empty">— (unlimited)</div>`}
+      </div>
+    `;
+  }
+
   private renderEndpointDetails(endpoint: ResourceEndpoint) {
     return html`
       <div class="endpoint-card-details">
@@ -680,6 +745,8 @@ export class VersolaResourcesList extends LitElement {
         </div>
         <div class="endpoint-detail-grid">
           ${this.renderAllowSection(endpoint.allow)}
+          ${this.renderAcrSection(endpoint.acrValues)}
+          ${this.renderMaxAgeSection(endpoint.maxAge)}
           ${this.renderInjectSection(endpoint.inject)}
         </div>
       </div>
@@ -809,6 +876,69 @@ export class VersolaResourcesList extends LitElement {
     `;
   }
 
+  private renderAcrEditor(draftId: string, acrValues: string) {
+    const vocabularyAcrs = Object.keys(this.acrVocabulary);
+    const selectedAcrs = acrValues.split(' ').filter(v => v.length > 0);
+
+    return html`
+      <div class="endpoint-editor-section">
+        <div class="editor-section-header">
+          <div class="editor-section-title-row">
+            <h3 class="editor-section-title">Required ACR</h3>
+            ${this.renderOptionInfo(`${draftId}-acr-info`, html`
+              <div class="option-tooltip-title">Authentication Context Class Reference</div>
+              <p>Space-separated list of ACR values. The Edge will enforce that the access token carries at least one of these values in its <code>acr</code> claim.</p>
+              <p>If multiple values are provided, any of them is sufficient.</p>
+            `)}
+          </div>
+        </div>
+        ${vocabularyAcrs.length > 0 ? html`
+          <div style="display: flex; gap: var(--spacing-md); flex-wrap: wrap;">
+            ${vocabularyAcrs.map(acr => html`
+              <label style="display: flex; align-items: center; gap: var(--spacing-xs); font-size: 0.875rem; cursor: pointer;">
+                <input type="checkbox"
+                  .checked=${selectedAcrs.includes(acr)}
+                  @change=${(e: Event) => {
+                    const checked = (e.target as HTMLInputElement).checked;
+                    const next = checked
+                      ? [...selectedAcrs, acr]
+                      : selectedAcrs.filter(v => v !== acr);
+                    this.updateEndpointAcrValues(draftId, next.join(' '));
+                  }} />
+                ${acr}
+              </label>
+            `)}
+          </div>
+        ` : html`<div class="endpoint-empty">No ACR vocabulary defined. Configure it in Challenges &amp; Security.</div>`}
+      </div>
+    `;
+  }
+
+  private renderMaxAgeEditor(draftId: string, maxAge: string) {
+    return html`
+      <div class="endpoint-editor-section">
+        <div class="editor-section-header">
+          <div class="editor-section-title-row">
+            <h3 class="editor-section-title">Max Auth Age (seconds)</h3>
+            ${this.renderOptionInfo(`${draftId}-max-age-info`, html`
+              <div class="option-tooltip-title">Maximum Authentication Age</div>
+              <p>The Edge will enforce that the authentication event happened no longer than this many seconds ago, based on the <code>auth_time</code> claim in the token.</p>
+              <p>Leave empty to disable this check.</p>
+            `)}
+          </div>
+        </div>
+        <input
+          class="form-input compact-input"
+          type="number"
+          .value=${maxAge}
+          @input=${(event: Event) => this.updateEndpointMaxAge(draftId, (event.target as HTMLInputElement).value)}
+          placeholder="e.g. 3600"
+          min="0"
+        />
+      </div>
+    `;
+  }
+
   private renderEditableEndpoint(endpoint: EditableResourceEndpoint) {
     const isExpanded = this.expandedEditableEndpoints.has(endpoint.draftId);
 
@@ -871,6 +1001,8 @@ export class VersolaResourcesList extends LitElement {
               </label>
             </div>
             ${this.renderAllowEditor(endpoint.draftId, endpoint.allow)}
+            ${this.renderAcrEditor(endpoint.draftId, endpoint.acrValues)}
+            ${this.renderMaxAgeEditor(endpoint.draftId, endpoint.maxAge)}
             ${this.renderInjectEditor(endpoint.draftId, endpoint.inject)}
           </div>
         ` : ''}

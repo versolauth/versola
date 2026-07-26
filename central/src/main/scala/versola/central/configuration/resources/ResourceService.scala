@@ -131,4 +131,6 @@ object ResourceService:
         fetchUserInfo = request.fetchUserInfo,
         allowExpression = request.allow,
         inject = request.inject,
+        acrValues = request.acrValues,
+        maxAge = request.maxAge,
       )

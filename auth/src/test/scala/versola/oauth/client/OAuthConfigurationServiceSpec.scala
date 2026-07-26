@@ -60,6 +60,7 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
     sessionTtlSeconds = 86400,
     sessionIdleTtlSeconds = Some(3600),
     ipHeader = "X-Real-IP",
+    acrVocabulary = None,
   )
   val systemSettings = SystemSettingsRecord.default
 

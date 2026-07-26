@@ -3,7 +3,7 @@ package versola.oauth
 import com.augustnagro.magnum.*
 import com.augustnagro.magnum.magzio.TransactorZIO
 import com.augustnagro.magnum.pg.{PgCodec, SqlArrayCodec}
-import versola.oauth.client.model.{AuthMethodRef, Claim, ClientId, ScopeToken}
+import versola.oauth.client.model.{Acr, AuthMethodRef, Claim, ClientId, ScopeToken}
 import versola.oauth.model.*
 import versola.oauth.session.model.SessionId
 import versola.oauth.token.AuthorizationCodeRepository
@@ -44,6 +44,7 @@ class PostgresAuthorizationCodeRepository(
   private given DbCodec[RequestedClaims] = jsonCodec[RequestedClaims]
   private given DbCodec[AccessToken] = DbCodec.ByteArrayCodec.biMap(AccessToken(_), identity[Array[Byte]])
   private given DbCodec[Set[AuthMethodRef]] = jsonBCodec[Set[AuthMethodRef]]
+  private given DbCodec[Acr] = DbCodec.StringCodec.biMap(Acr(_), identity[String])
   private given DbCodec[AuthorizationCodeRecord] = DbCodec.derived[AuthorizationCodeRecord]
 
   override def find(code: MAC.Of[AuthorizationCode]): Task[Option[AuthorizationCodeRecord]] =
@@ -54,7 +55,7 @@ class PostgresAuthorizationCodeRepository(
           SELECT session_id, client_id, user_id, redirect_uri,
                  scope, code_challenge, code_challenge_method,
                  requested_claims, ui_locales, nonce, access_token,
-                 amr, auth_time,
+                 amr, auth_time, acr,
                  expires_at
           FROM authorization_codes
           WHERE code = $code
@@ -85,6 +86,7 @@ class PostgresAuthorizationCodeRepository(
             access_token,
             amr,
             auth_time,
+            acr,
             used,
             expires_at
           )
@@ -103,6 +105,7 @@ class PostgresAuthorizationCodeRepository(
             ${record.accessToken},
             ${record.amr},
             ${record.authTime},
+            ${record.acr},
             ${false},
             ${now.plusSeconds(ttl.toSeconds)}
           )

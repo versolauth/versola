@@ -2,6 +2,7 @@ package versola.oauth.conversation
 
 import versola.auth.TestEnvConfig
 import versola.auth.model.{AuthenticatorTransport, CredentialDeviceType, CredentialId, PasskeyRecord}
+import versola.oauth.authorize.AcrResolutionService
 import versola.oauth.challenge.passkey.{AssertionOutcome, PasskeyCeremony, PasskeyRepository, WebAuthnService}
 import versola.oauth.challenge.password.PasswordService
 import versola.oauth.client.OAuthConfigurationService
@@ -56,6 +57,7 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
     val webAuthnService = stub[WebAuthnService]
     val passkeyRepository = stub[PasskeyRepository]
     val configService = stub[OAuthConfigurationService]
+    val acrResolver = stub[AcrResolutionService]
     val config = TestEnvConfig.coreConfig
 
     val service = ConversationService.Impl(
@@ -73,6 +75,7 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
       webAuthnService,
       passkeyRepository,
       configService,
+      acrResolver,
     )
 
   val credentialStep = ConversationStep.Credential(
@@ -105,6 +108,7 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
     version = 0,
     amr = Map.empty,
     needsPasswordChange = false,
+    targetAcr = None,
   )
 
   // A minimal assertion response carrying a credential id, used as the throttle subject.

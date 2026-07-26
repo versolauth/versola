@@ -63,6 +63,7 @@ object RevocationServiceSpec extends UnitSpecBase:
     previousRefreshToken = None,
     amr = Set(AuthMethodRef.pwd),
     authTime = now,
+    acr = None,
   )
 
   def accessTokenPayload(now: Instant) = AccessTokenPayload(

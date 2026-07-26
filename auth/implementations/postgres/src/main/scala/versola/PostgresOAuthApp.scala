@@ -3,10 +3,10 @@ package versola
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.cleanup.PostgresCleanupManager
 import versola.oauth.PostgresAuthorizationCodeRepository
-import versola.oauth.authorize.{AuthorizeEndpointController, AuthorizeEndpointService, AuthorizeRequestParser}
+import versola.oauth.authorize.{AcrResolutionService, AuthorizeEndpointController, AuthorizeEndpointService, AuthorizeRequestParser}
 import versola.oauth.challenge.passkey.{PasskeyRepository, PostgresPasskeyRepository, WebAuthnService}
 import versola.oauth.challenge.password.{PasswordRepository, PasswordService, PostgresPasswordRepository}
-import versola.oauth.client.{OAuthClientSyncClient, OAuthConfigurationService, OAuthScopeSyncClient}
+import versola.oauth.client.{ServiceController, OAuthClientSyncClient, OAuthConfigurationService, OAuthScopeSyncClient}
 import versola.oauth.conversation.otp.{EmailOtpProvider, SmsOtpProvider, OtpGenerationService, OtpService}
 import versola.oauth.conversation.limit.{ChallengeThrottleRepository, PostgresChallengeThrottleRepository, SubmissionLimiter}
 import versola.oauth.conversation.{ConversationController, ConversationRenderService, ConversationRepository, ConversationRouter, ConversationService, PostgresConversationRepository}
@@ -14,7 +14,7 @@ import versola.oauth.introspect.{IntrospectionController, IntrospectionService}
 import versola.oauth.client.CentralSyncTokenService
 import versola.oauth.jwks.{JwksController, JwksService, JwksSyncClient}
 import versola.oauth.revoke.{AccessTokenRevocationService, RevocationController, RevocationService}
-import versola.oauth.session.{PostgresSessionRepository, SessionRepository}
+import versola.oauth.session.{PostgresSessionRepository, SessionRepository, SessionService}
 import versola.oauth.token.{AuthorizationCodeRepository, OAuthTokenService, TokenEndpointController}
 import versola.oauth.userinfo.{UserInfoController, UserInfoService}
 import versola.user.{PostgresUserRepository, PostgresUserRolesRepository, UserController, UserRepository, UserRolesRepository}
@@ -80,6 +80,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       UserInfoController.routes,
       JwksController.routes,
       UserController.routes,
+      ServiceController.routes,
     ).reduce(_ ++ _)
 
   val repositories = PostgresHikariDataSource.transactor(serviceName = Some("auth"), migrate = runMigrations) >+> (
@@ -104,6 +105,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       JwksSyncClient.live >+>
       JwksService.live(Schedule.spaced(1.minute)) >+>
       AuthPropertyGenerator.live >+>
+      SessionService.live >+>
       AccessTokenRevocationService.noop >+>
       OAuthTokenService.live >+>
       IntrospectionService.live >+>
@@ -119,6 +121,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       WebAuthnService.live >+>
       UserInfoService.live >+>
       SubmissionLimiter.live >+>
+      AcrResolutionService.live >+>
       ConversationService.live >+>
       ConversationRouter.live >+>
       AuthorizeEndpointService.live >+>

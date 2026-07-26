@@ -44,7 +44,7 @@ def authorizeInternal(request: Request): ZIO[CentralConfig & EdgeService, Unauth
           case None =>
             for
               config <- ZIO.service[CentralConfig]
-              _ <- JWT.deserialize[InternalAuthClaims](raw, config.secretKey)
+              _ <- JWT.deserialize[InternalAuthClaims](raw, config.secretKey, JWT.Type.JWT)
                 .orElseFail(Unauthorized)
             yield ()
       yield edgeId

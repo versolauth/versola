@@ -277,12 +277,21 @@ object ConversationRenderService:
           val params = List("error" -> "access_denied") ++ state.map("state" -> _)
           ZIO.succeed(StepView.AccessDenied(redirectUri = redirectUri.addQueryParams(params).encode))
 
+    private def stepName(step: StepView): String = step match
+      case _: StepView.Credential    => "credential"
+      case _: StepView.Password      => "password"
+      case _: StepView.SetPassword   => "set-password"
+      case _: StepView.Otp           => "otp"
+      case _: StepView.PasskeyEnroll => "passkey-enroll"
+      case _: StepView.AccessDenied  => "access-denied"
+
     private def solidPage(info: FormRenderInfo, themeCss: String): String =
       s"""<!DOCTYPE html>
          |<html lang="en">
          |  <head>
          |    <meta charset="UTF-8">
          |    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+         |    <meta name="versola-step" content="${stepName(info.config.step)}">
          |    <title>${info.title}</title>
          |    <style>
          |      $themeCss

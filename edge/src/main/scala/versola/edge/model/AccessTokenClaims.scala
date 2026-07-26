@@ -12,4 +12,6 @@ case class AccessTokenClaims(
     @jsonField("iat") issuedAt: Long,
     @jsonField("tenant_id") tenantId: Option[TenantId],
     roles: List[RoleId],
+    acr: Option[String],
+    @jsonField("auth_time") authTime: Option[Long],
 ) derives JsonCodec

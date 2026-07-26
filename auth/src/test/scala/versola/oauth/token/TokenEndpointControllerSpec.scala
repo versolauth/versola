@@ -48,6 +48,7 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
     roles = List.empty,
     amr = Set(AuthMethodRef.pwd),
     authTime = Some(java.time.Instant.ofEpochSecond(1700000000)),
+    acr = None,
   )
 
   def authHeader(clientId: ClientId, secret: Option[Secret]): Header.Authorization =

@@ -64,6 +64,8 @@ type ResourceEndpointWriteDto = {
   fetchUserInfo: boolean;
   allow: string | null;
   inject: InjectRule[];
+  acrValues?: string | null;
+  maxAge?: number | null;
 };
 type ResourceEndpointDto = {
   id?: ResourceEndpointId;
@@ -72,6 +74,8 @@ type ResourceEndpointDto = {
   fetchUserInfo: boolean;
   allow?: string;
   inject: InjectRule[];
+  acrValues?: string;
+  maxAge?: number;
 };
 type ResourceResponseDto = { resourceId: string; resource: string; endpoints: Array<ResourceEndpointDto & { id: ResourceEndpointId }> };
 
@@ -443,6 +447,8 @@ function serializeResourceEndpoint(
     fetchUserInfo: endpoint.fetchUserInfo,
     allow: endpoint.allow,
     inject: endpoint.inject.map(rule => ({ ...rule })),
+    acrValues: endpoint.acrValues ?? null,
+    maxAge: endpoint.maxAge ?? null,
   };
 }
 
@@ -465,6 +471,8 @@ function mapResource(resource: ResourceResponseDto): Resource {
       fetchUserInfo: endpoint.fetchUserInfo,
       allow: endpoint.allow,
       inject: endpoint.inject.map(rule => ({ ...rule })),
+      ...(endpoint.acrValues != null ? { acrValues: endpoint.acrValues } : {}),
+      ...(endpoint.maxAge != null ? { maxAge: endpoint.maxAge } : {}),
     })),
   };
 }
@@ -1112,6 +1120,7 @@ export async function upsertChallengeSettings(
   sessionTtlSeconds: number,
   sessionIdleTtlSeconds: number | null,
   ipHeader: string,
+  acrVocabulary?: Record<string, string[]> | null,
 ): Promise<void> {
   await requestVoid('/configuration/challenges/challenge-settings', {
     method: 'PUT',
@@ -1126,6 +1135,7 @@ export async function upsertChallengeSettings(
       sessionTtlSeconds,
       sessionIdleTtlSeconds: sessionIdleTtlSeconds ?? null,
       ipHeader,
+      acrVocabulary: acrVocabulary ?? null,
     },
   });
 }

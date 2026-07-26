@@ -4,7 +4,7 @@ import io.opentelemetry.api
 import org.scalamock.stubs.{Stub, ZIOStubs}
 import versola.central.{TestAdminAuth, TestCentralConfig}
 import versola.central.configuration.clients.OAuthClientService
-import versola.util.Email
+import versola.util.{Email, EnvName}
 import versola.util.http.Observability
 import zio.*
 import zio.http.*
@@ -51,6 +51,7 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
       description: String,
       request: Request,
       expectedStatus: Status,
+      env: EnvName = EnvName.Test("test"),
       setup: Stub[UserService] => UIO[Unit] = _ => ZIO.unit,
       verify: (Response, Stub[UserService]) => Task[TestResult] = (_, _) => ZIO.succeed(assertTrue(true)),
   ) =
@@ -65,7 +66,8 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
             UserController.routes.provideEnvironment(
               ZEnvironment[UserService](service) ++
                 ZEnvironment(TestCentralConfig.config) ++
-                tracing ++ ZEnvironment[OAuthClientService](oauthClientService)
+                tracing ++ ZEnvironment[OAuthClientService](oauthClientService) ++
+                ZEnvironment[EnvName](env)
             )
           )
         )
@@ -199,7 +201,31 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.NoContent,
       setup = service => service.resetPassword.succeedsWith(()),
-      verify = (response, service) =>
+      verify = (_, service) =>
         ZIO.succeed(assertTrue(service.resetPassword.calls.nonEmpty))
+    ),
+    controllerTestCase(
+      description = "set password returns 204 No Content in non-prod",
+      request = Request(
+        method = Method.POST,
+        url = URL.empty / "users" / "password" / "set",
+        body = Body.fromString(s"""{"userId":"$userId","password":"Secret123!"}"""),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.NoContent,
+      setup = service => service.setPassword.succeedsWith(()),
+      verify = (_, service) =>
+        ZIO.succeed(assertTrue(service.setPassword.calls == List((userId, "Secret123!")))),
+    ),
+    controllerTestCase(
+      description = "set password returns 404 Not Found in prod",
+      request = Request(
+        method = Method.POST,
+        url = URL.empty / "users" / "password" / "set",
+        body = Body.fromString(s"""{"userId":"$userId","password":"Secret123!"}"""),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.NotFound,
+      env = EnvName.Prod,
+      verify = (_, service) =>
+        ZIO.succeed(assertTrue(service.setPassword.calls.isEmpty)),
     ),
   )

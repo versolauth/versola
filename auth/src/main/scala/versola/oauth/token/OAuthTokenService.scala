@@ -47,6 +47,9 @@ object OAuthTokenService:
       config: CoreConfig,
   ) extends OAuthTokenService:
 
+    /** Completes the OAuth 2.0 Authorization Code exchange.
+     * Propagates AMR and ACR from the authorization code record to the issued tokens.
+     */
     override def exchangeAuthorizationCode(
         codeExchangeRequest: CodeExchangeRequest,
         tokenCredentials: ClientCredentials,
@@ -96,6 +99,7 @@ object OAuthTokenService:
             previousRefreshToken = None,
             amr = codeRecord.amr,
             authTime = codeRecord.authTime,
+            acr = codeRecord.acr,
           ),
         ).mapError {
           case ex: Throwable => ex
@@ -103,6 +107,9 @@ object OAuthTokenService:
         }
       yield issuedTokens
 
+    /** Refreshes an access token using a refresh token.
+     * Preserves the original authentication context (AMR, ACR, authTime) from the refresh token record.
+     */
     override def refreshAccessToken(
         refreshTokenRequest: RefreshTokenRequest,
         tokenCredentials: ClientCredentials,
@@ -173,8 +180,12 @@ object OAuthTokenService:
         roles = Nil,
         amr = Set.empty,
         authTime = None,
+        acr = None,
       )
 
+    /** Orchestrates token issuance for a specific authentication session.
+     * populates AMR, ACR, and user roles based on the client and user record.
+     */
     private def issueTokens(
         accessToken: AccessToken,
         client: OAuthClientRecord,
@@ -197,20 +208,7 @@ object OAuthTokenService:
           userRepository.find(record.userId),
         )
 
-        isCentralAdmin = record.clientId == centralAdminClientId
-
-        // Central admin: pick default-tenant roles.
-        // All other clients: roles for their own tenant only.
-        (tokenTenantId, tokenRoles) <-
-          if isCentralAdmin then
-            userRolesRepository.findRolesByUser(record.userId).map { allRoles =>
-              val defaultRoles = allRoles.getOrElse(TenantId.default, Nil)
-              (TenantId.default: String, defaultRoles.map(r => r: String))
-            }
-          else
-            userRolesRepository
-              .findRolesByUserAndTenant(record.userId, client.tenantId)
-              .map(roleIds => ((client.tenantId: String), roleIds.map(r => r: String)))
+        roles <- userRolesRepository.findRolesByUserAndTenant(record.userId, client.tenantId)
       yield IssuedTokens(
         accessToken = accessToken,
         clientId = record.clientId,
@@ -223,8 +221,9 @@ object OAuthTokenService:
         uiLocales = record.uiLocales,
         nonce = record.nonce,
         user = user.flatten,
-        tenantId = Some(tokenTenantId),
-        roles = tokenRoles,
+        tenantId = Some(client.tenantId),
+        roles = roles,
         amr = record.amr,
         authTime = Some(record.authTime),
+        acr = record.acr,
       )

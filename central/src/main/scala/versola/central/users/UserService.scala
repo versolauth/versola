@@ -24,6 +24,8 @@ trait UserService:
 
   def patchClaims(id: UserId, patch: Json.Obj): Task[Unit]
 
+  def delete(id: UserId): Task[Unit]
+
   def updateRoles(request: UpdateUserRolesRequest): Task[Unit]
 
   def resetLimits(request: ResetUserLimitsRequest): Task[Unit]
@@ -35,6 +37,8 @@ trait UserService:
   def deletePasskey(userId: UserId, credentialId: String): Task[Unit]
 
   def resetPassword(request: ResetPasswordRequest): Task[Unit]
+
+  def setPassword(userId: UserId, password: String): Task[Unit]
 
 object UserService:
   val live: ZLayer[UserRepository & AuthClient & SecureRandom, Nothing, UserService] =
@@ -79,6 +83,9 @@ object UserService:
     override def patchClaims(id: UserId, patch: Json.Obj): Task[Unit] =
       authClient.patchUserClaims(id, patch)
 
+    override def delete(id: UserId): Task[Unit] =
+      userRepository.delete(id)
+
     override def updateRoles(request: UpdateUserRolesRequest): Task[Unit] =
       userRepository.enqueueRoleUpdate(request.userId, request.tenantId, request.add, request.remove)
 
@@ -96,3 +103,6 @@ object UserService:
 
     override def resetPassword(request: ResetPasswordRequest): Task[Unit] =
       authClient.resetPassword(request)
+
+    override def setPassword(userId: UserId, password: String): Task[Unit] =
+      authClient.setPassword(userId, password)

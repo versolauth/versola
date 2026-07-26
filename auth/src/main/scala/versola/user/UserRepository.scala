@@ -28,4 +28,6 @@ trait UserRepository:
 
   def patchClaims(id: UserId, patch: Json.Obj): Task[Unit]
 
+  def delete(id: UserId): Task[Unit]
+
 

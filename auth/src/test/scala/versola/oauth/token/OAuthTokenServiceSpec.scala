@@ -131,6 +131,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             accessToken = accessToken1,
             amr = amr1,
             authTime = authTime1,
+            acr = None,
           )
 
           _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
@@ -177,6 +178,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             accessToken = accessToken1,
             amr = amr1,
             authTime = authTime1,
+            acr = None,
           )
 
           _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
@@ -243,6 +245,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             accessToken = accessToken1,
             amr = amr1,
             authTime = authTime1,
+            acr = None,
           )
 
           _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
@@ -274,6 +277,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             accessToken = accessToken1,
             amr = amr1,
             authTime = authTime1,
+            acr = None,
           )
 
           _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
@@ -312,6 +316,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             accessToken = accessToken1,
             amr = amr1,
             authTime = authTime1,
+            acr = None,
           )
 
           _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
@@ -347,6 +352,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             accessToken = accessToken1,
             amr = amr1,
             authTime = authTime1,
+            acr = None,
           )
 
           _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
@@ -384,6 +390,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             accessToken = accessToken1,
             amr = amr1,
             authTime = authTime1,
+            acr = None,
           )
 
           _ <- env.clientService.verifySecret.succeedsWith(Some(adminClient))
@@ -392,14 +399,14 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.authCodeRepo.markAsUsed.succeedsWith(Right(()))
           _ <- env.authCodeRepo.delete.succeedsWith(())
           _ <- env.propertyGenerator.nextAccessToken.succeedsWith(accessToken1)
-          _ <- env.userRolesRepo.findRolesByUser.succeedsWith(adminRoles1)
+          _ <- env.userRolesRepo.findRolesByUserAndTenant.succeedsWith(List(RoleId("admin")))
 
           request = CodeExchangeRequest(authCode1, redirectUri1, codeVerifier1)
           credentials = ClientIdWithSecret(OAuthTokenService.centralAdminClientId, Some(clientSecret1))
 
           result <- env.service.exchangeAuthorizationCode(request, credentials)
         yield assertTrue(
-          env.userRolesRepo.findRolesByUser.calls.nonEmpty,
+          env.userRolesRepo.findRolesByUserAndTenant.calls.nonEmpty,
           result.tenantId.contains("default"),
           result.roles == List("admin"),
         )
@@ -426,6 +433,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             previousRefreshToken = None,
             amr = amr1,
             authTime = authTime1,
+            acr = None,
           )
 
           newRefreshToken = RefreshToken(Array.fill(32)(7.toByte))
@@ -478,6 +486,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             previousRefreshToken = None,
             amr = amr1,
             authTime = authTime1,
+            acr = None,
           )
 
           newRefreshToken = RefreshToken(Array.fill(32)(9.toByte))
@@ -552,6 +561,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             previousRefreshToken = None,
             amr = amr1,
             authTime = authTime1,
+            acr = None,
           )
 
           _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
@@ -586,6 +596,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             previousRefreshToken = None,
             amr = amr1,
             authTime = authTime1,
+            acr = None,
           )
 
           newRefreshToken = RefreshToken(Array.fill(32)(7.toByte))

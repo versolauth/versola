@@ -182,6 +182,7 @@ trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
             previousRefreshToken = None,
             amr                  = Set(AuthMethodRef.pwd),
             authTime             = now,
+            acr                  = None,
           )
           _            <- env.repository.create(atomicSessionId, session1, 5.minutes, None)
           _            <- env.repository.createRefreshToken(atomicTokenId, record)

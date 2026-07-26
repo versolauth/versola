@@ -3,7 +3,6 @@ package versola.oauth.challenge.password
 import versola.auth.model.{Password, PasswordRecord}
 import versola.oauth.challenge.password.model.{CheckPassword, DeliveryChannel, PasswordDeliveryUnavailable, PasswordReuseError, TemporaryPasswordGenerationFailed}
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.ClientId
 import versola.oauth.conversation.otp.model.OtpTemplate
 import versola.oauth.conversation.otp.{EmailOtpProvider, SmsOtpProvider}
 import versola.user.UserRepository
@@ -17,7 +16,10 @@ import java.time.Instant
 trait PasswordService:
   def verifyPassword(userId: UserId, password: Password): Task[CheckPassword]
 
-  def setPassword(clientId: ClientId, userId: UserId, password: Password): IO[Throwable | PasswordReuseError, Unit]
+  /** Returns true if the user has at least one non-expired password on record. */
+  def hasPassword(userId: UserId): Task[Boolean]
+
+  def setPassword(userId: UserId, password: Password): IO[Throwable | PasswordReuseError, Unit]
 
   def setTemporaryPassword(userId: UserId, password: Password, expiresAt: Instant): Task[Unit]
 
@@ -41,6 +43,10 @@ object PasswordService:
       emailOtpProvider: EmailOtpProvider,
       smsOtpProvider: SmsOtpProvider,
   ) extends PasswordService:
+    override def hasPassword(userId: UserId): Task[Boolean] =
+      Clock.instant.flatMap: now =>
+        passwordRepository.list(userId).map(_.exists(_.expiresAt.forall(_.isAfter(now))))
+
     override def verifyPassword(userId: UserId, password: Password): Task[CheckPassword] =
       for
         now <- Clock.instant
@@ -74,7 +80,7 @@ object PasswordService:
       securityService.hashPassword(Secret.fromString(password), record.salt, config.security.passwordsSecret)
         .map(mac => mac === MAC(record.password))
 
-    override def setPassword(clientId: ClientId, userId: UserId, password: Password): IO[Throwable | PasswordReuseError, Unit] =
+    override def setPassword(userId: UserId, password: Password): IO[Throwable | PasswordReuseError, Unit] =
       for
         settings <- configuration.getPasswordHistorySettings
         salt <- secureRandom.nextBytes(16).map(Salt(_))

@@ -16,6 +16,8 @@ object ResourceServiceSpec extends ZIOSpecDefault:
     fetchUserInfo = false,
     allow = None,
     inject = Vector.empty,
+    acrValues = None,
+    maxAge = None,
   )
 
   private val alpha = Resource(
