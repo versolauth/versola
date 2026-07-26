@@ -103,6 +103,7 @@ def writeFile(dir: File, name: String, content: String): Unit =
   val sessionsSecret            = rand(rng, 32)
   val passwordsSecret           = rand(rng, 16)
   val conversationCookieSecret  = rand(rng, 32) // auth only: signs the SSO_CONVERSATION cookie
+  val sessionCookieSecret       = rand(rng, 32)
   val edgeTokenEncKey           = rand(rng, 32)
   val edgeSessionsSecret        = rand(rng, 32)
 
@@ -251,6 +252,7 @@ def writeFile(dir: File, name: String, content: String): Unit =
        |  sessions-secret              = "$sessionsSecret"
        |  passwords-secret             = "$passwordsSecret"
        |  conversation-cookie-secret   = "$conversationCookieSecret"
+       |  session-cookie-secret        = "$sessionCookieSecret"  
        |}
        |
        |jwt {

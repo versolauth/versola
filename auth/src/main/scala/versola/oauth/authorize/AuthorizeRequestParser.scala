@@ -11,6 +11,7 @@ import versola.util.{Base64, Email, Phone}
 import zio.http.{Header, Method, Request, URL}
 import zio.json.*
 import zio.prelude.{NonEmptyList, NonEmptySet}
+import versola.util.CoreConfig
 import zio.{Chunk, IO, Task, ZIO, ZLayer}
 
 trait AuthorizeRequestParser:
@@ -19,9 +20,9 @@ trait AuthorizeRequestParser:
   ): IO[Error, AuthorizeRequest]
 
 object AuthorizeRequestParser:
-  def live = ZLayer.fromFunction(Impl(_))
+  def live = ZLayer.fromFunction(Impl(_, _))
 
-  class Impl(oauthClientService: OAuthConfigurationService) extends AuthorizeRequestParser:
+  class Impl(config: CoreConfig, oauthClientService: OAuthConfigurationService) extends AuthorizeRequestParser:
 
     def parse(
         request: Request,
@@ -128,7 +129,7 @@ object AuthorizeRequestParser:
 
         sessionId =
           request.cookie(SessionCookie.name)
-            .flatMap(c => scala.util.Try(SessionId(Base64.urlDecode(c.content))).toOption)
+            .flatMap(c => SessionCookie.parse(c.content, config.security.sessionCookieSecret).toOption)
 
         loginHint <- getParam(params, "login_hint")
           .orElseFail(Error.MultipleValuesProvided(redirectUri, state, "login_hint"))
