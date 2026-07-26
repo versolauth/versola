@@ -6,6 +6,7 @@ import org.flywaydb.core.Flyway
 import zio.*
 import zio.config.magnolia.deriveConfig
 
+import java.nio.charset.StandardCharsets
 import java.nio.file.{Files, Paths}
 import java.util.concurrent.locks.ReentrantLock
 
@@ -46,7 +47,9 @@ object PostgresHikariDataSource:
             config.setDriverClassName("org.postgresql.Driver")
             config.setJdbcUrl(postgres.url)
             config.setUsername(postgres.user)
-            config.setPassword(postgres.password)
+            // Secret is an opaque Array[Byte] newtype (kept out of toString/logging); HikariConfig
+            // needs a plain String, so it's decoded back here at the point of use only.
+            config.setPassword(new String(postgres.password, StandardCharsets.UTF_8))
             config.setMaximumPoolSize(postgres.maximumPoolSize)
             config.setMinimumIdle(postgres.minimumIdle)
             config.setConnectionTimeout(postgres.connectionTimeout.toMillis)

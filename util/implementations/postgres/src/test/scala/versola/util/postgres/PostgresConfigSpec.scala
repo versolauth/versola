@@ -1,8 +1,10 @@
 package versola.util.postgres
 
+import versola.util.Secret
 import zio.*
 import zio.config.magnolia.deriveConfig
 import zio.config.typesafe.TypesafeConfigProvider
+import zio.prelude.EqualOps
 import zio.test.*
 
 /** Pure config-parsing and pool-validation tests (no database required).
@@ -30,7 +32,7 @@ object PostgresConfigSpec extends ZIOSpecDefault:
   private val validConfig = PostgresConfig(
     url = "jdbc:postgresql://localhost:5432/auth",
     user = "dev",
-    password = "1234",
+    password = Secret.fromString("1234"),
     maximumPoolSize = 10,
     minimumIdle = 10,
     connectionTimeout = 30.seconds,
@@ -45,7 +47,7 @@ object PostgresConfigSpec extends ZIOSpecDefault:
         yield assertTrue(
           config.url == "jdbc:postgresql://localhost:5432/auth",
           config.user == "dev",
-          config.password == "1234",
+          config.password === Secret.fromString("1234"),
           config.maximumPoolSize == 15,
           config.minimumIdle == 15,
           config.connectionTimeout == 30.seconds,
@@ -62,6 +64,10 @@ object PostgresConfigSpec extends ZIOSpecDefault:
             |}""".stripMargin
         for result <- TypesafeConfigProvider.fromHoconString(incompleteHocon).kebabCase.load(postgresConfig).exit
         yield assertTrue(result.isFailure)
+      },
+      test("does not leak the raw password through toString (regression for #64)") {
+        for config <- TypesafeConfigProvider.fromHoconString(fullHocon).kebabCase.load(postgresConfig)
+        yield assertTrue(!config.toString.contains("1234"))
       },
     ),
     suite("PostgresHikariDataSource.validate")(

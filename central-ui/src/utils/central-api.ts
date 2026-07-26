@@ -28,10 +28,17 @@ import type {
 export const DEFAULT_PAGE_SIZE = 30;
 const READ_CACHE_TTL_MS = 60_000;
 
+// Where to send the browser when a request comes back 401 without a Location
+// header — i.e. there is no session for the edge to reauthenticate, so it can't
+// tell us which login to use (the preset id lives in the session cookie). The
+// admin console is always the `central-admin` preset, so this is its login
+// entry point on the edge. Overridable via configureCentralApi({ loginUrl }).
+const DEFAULT_LOGIN_URL = '/login/central-admin';
+
 type LocalizedDescription = Record<string, string>;
 type PagedResult<T> = { items: T[]; total: number; hasNext: boolean };
 type QueryValue = string | number | undefined | null;
-type CentralApiConfig = { baseUrl: string | null };
+type CentralApiConfig = { baseUrl: string | null; loginUrl: string };
 
 type ClientSecretResponse = { secret: string };
 type AuthorizationPresetResponse = {
@@ -89,7 +96,7 @@ type ClientsResponse = { clients: Array<{ id: string; clientName: string; redire
 type RolesResponse = { roles: Array<{ id: string; description: LocalizedDescription; permissions: string[]; active: boolean }> };
 type ResourcesResponse = { resources: ResourceResponseDto[] };
 
-const apiConfig: CentralApiConfig = { baseUrl: null };
+const apiConfig: CentralApiConfig = { baseUrl: null, loginUrl: DEFAULT_LOGIN_URL };
 const permissionStore = new Map<string, Permission>();
 const clientSupplementStore = new Map<string, { externalAudience: string[]; accessTokenTtl: number; hasPreviousSecret: boolean }>();
 const roleSupplementStore = new Map<string, { active: boolean; createdAt: string; updatedAt: string }>();
@@ -199,10 +206,40 @@ function buildErrorMessage(status: number, bodyText: string): string {
   }
 }
 
-export function configureCentralApi(config: Partial<CentralApiConfig>): void {
-  apiConfig.baseUrl = config.baseUrl?.trim() || null;
+// null/empty for either field resets it to its default (host origin for baseUrl,
+// DEFAULT_LOGIN_URL for loginUrl) rather than leaving a previously-set value
+// stuck — so clearing the api-url / login-url attribute reverts to defaults.
+export function configureCentralApi(config: { baseUrl?: string | null; loginUrl?: string | null }): void {
+  if ('baseUrl' in config) {
+    apiConfig.baseUrl = config.baseUrl?.trim() || null;
+  }
+  if ('loginUrl' in config) {
+    apiConfig.loginUrl = config.loginUrl?.trim() || DEFAULT_LOGIN_URL;
+  }
   invalidateReadCache();
   invalidateAllRefData();
+}
+
+// A 401 means the caller isn't authenticated. If the edge included a Location
+// (session expired but it knows the preset from the cookie), follow it; if not
+// (no session at all — a fresh visit), the edge can't know which login to use,
+// so fall back to the console's configured login entry point. Either way this
+// is a top-level navigation, so the returned promise never resolves — callers
+// await it and stop, rather than surfacing a spurious error mid-redirect.
+//
+// The target is resolved against the API/edge origin (resolveBaseUrl()), not
+// the page origin: login/complete live on the edge alongside the API, and the
+// edge's own Location is a root-relative path, so when api-url points at a
+// different origin the login must follow it there. In the default same-origin
+// deployment resolveBaseUrl() is window.location.origin, so this is a no-op.
+//
+// Note: cross-origin, the browser won't expose the Location header to JS unless
+// the edge sends `Access-Control-Expose-Headers: Location`; without it we
+// simply fall back to apiConfig.loginUrl, which is the intended default anyway.
+function redirectToLogin(response: Response): Promise<never> {
+  const target = response.headers.get('Location') ?? apiConfig.loginUrl;
+  window.location.assign(new URL(target, resolveBaseUrl()).toString());
+  return new Promise<never>(() => undefined);
 }
 
 async function request<T>(
@@ -236,14 +273,17 @@ async function request<T>(
       credentials: 'include',
     });
 
-    // Session fully expired: the edge answers 401 with a same-origin Location to
-    // the app's login. Navigate the top window there instead of surfacing an error.
+    // Not authenticated — navigate to login (following the edge's Location if it
+    // gave one) instead of surfacing an error.
     if (response.status === 401) {
-      const location = response.headers.get('Location');
-      if (location) {
-        window.location.assign(location);
-        return await new Promise<T>(() => undefined);
+      // Drop this URL's in-flight entry before handing off to the redirect
+      // (whose promise never resolves): the outer `finally` that normally
+      // cleans it up won't run, so without this a concurrent read of the same
+      // URL would await a promise that never settles.
+      if (useReadCache) {
+        inFlightReads.delete(url);
       }
+      return await redirectToLogin(response);
     }
 
     if (!response.ok) {
@@ -1045,6 +1085,13 @@ export async function fetchMyPermissions(): Promise<MyPermissionsResponse> {
     headers: { Accept: 'application/json' },
     credentials: 'include',
   });
+
+  // This is the first call the console makes on load, so it's usually where an
+  // unauthenticated visit is detected. Redirect to login rather than throwing
+  // (which the caller would swallow into an empty-permissions "Access Denied").
+  if (response.status === 401) {
+    return await redirectToLogin(response);
+  }
 
   if (!response.ok) {
     const error = new Error(buildErrorMessage(response.status, await response.text())) as Error & { status: number };

@@ -83,7 +83,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       ServiceController.routes,
     ).reduce(_ ++ _)
 
-  val repositories = PostgresHikariDataSource.transactor(serviceName = Some("auth"), migrate = true) >+> (
+  val repositories = PostgresHikariDataSource.transactor(serviceName = Some("auth"), migrate = runMigrations) >+> (
     PostgresUserRepository.live >+>
       PostgresUserRolesRepository.live >+>
       PostgresConversationRepository.live >+>

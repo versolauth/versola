@@ -1,6 +1,7 @@
 package versola.util.postgres
 
 import com.augustnagro.magnum.magzio.TransactorZIO
+import versola.util.Secret
 import zio.*
 import zio.test.ZIOSpec
 
@@ -18,7 +19,7 @@ object PostgresSpec:
           PostgresConfig(
             url = s"jdbc:postgresql://$host/auth",
             user = "dev",
-            password = "1234",
+            password = Secret.fromString("1234"),
             maximumPoolSize = 4,
             minimumIdle = 1,
             connectionTimeout = 30.seconds,
