@@ -277,6 +277,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             accessToken = accessToken1,
             amr = amr1,
             authTime = authTime1,
+            acr = None,
           )
 
           _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
@@ -315,6 +316,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             accessToken = accessToken1,
             amr = amr1,
             authTime = authTime1,
+            acr = None,
           )
 
           _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
