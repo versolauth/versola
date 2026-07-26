@@ -106,6 +106,19 @@ jobs:
         if: github.event_name != 'release'
         run: echo "local" | scala-cli run scripts/gen-env.scala
 
+      - name: Set up Node.js
+        if: github.event_name != 'release'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.12'
+
+      - name: Build forms
+        if: github.event_name != 'release'
+        working-directory: central-ui
+        run: |
+          npm ci
+          npm run build:forms
+
       - name: Stage services for e2e tests
         if: github.event_name != 'release'
         run: sbt "central-postgres-impl/stage" "auth-postgres-impl/stage"
