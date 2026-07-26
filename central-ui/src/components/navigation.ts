@@ -12,6 +12,8 @@ export class VersolaNavigation extends LitElement {
   @property({ type: String }) tenantId: string | null = null;
   @property({ attribute: false }) permissions: Set<string> = new Set();
   @property({ attribute: false }) allowedTenantIds: string[] | null = null;
+  /** Mobile drawer state. Reflected so the `:host([open])` rule below can match. */
+  @property({ type: Boolean, reflect: true }) open = false;
 
   static styles = [
     theme,
@@ -26,6 +28,55 @@ export class VersolaNavigation extends LitElement {
         left: 0;
         top: 0;
         overflow-y: auto;
+      }
+
+      /* On narrow screens the sidebar becomes an off-canvas drawer: it stays
+         fixed (so it scrolls with nothing) but sits translated out of view
+         until opened, instead of permanently covering 250px of a ~390px wide
+         screen. Above this breakpoint it's the normal always-visible sidebar,
+         so no transform applies. */
+      @media (max-width: 768px) {
+        :host {
+          /* Local duration so the visibility delay below can reference exactly
+             the same value; --transition-fast bundles duration+easing together
+             and so can't be reused as a delay. */
+          --drawer-duration: 0.15s;
+
+          z-index: 200;
+          transform: translateX(-100%);
+          /* visibility (not just the transform) so the closed drawer leaves the
+             a11y tree and tab order — otherwise keyboard/screen-reader users can
+             tab into an off-screen menu.
+             visibility is a discrete property, so rather than relying on how a
+             given browser interpolates it mid-transition, the change is pushed
+             to the very end with an explicit delay: closing keeps the drawer
+             visible for the whole slide-out, then hides it. */
+          visibility: hidden;
+          transition:
+            transform var(--drawer-duration) ease,
+            visibility 0s linear var(--drawer-duration);
+          box-shadow: 2px 0 12px rgba(0, 0, 0, 0.4);
+        }
+
+        :host([open]) {
+          transform: translateX(0);
+          /* Opening is the mirror image: become visible immediately (no delay)
+             so the slide-in is actually seen. */
+          visibility: visible;
+          transition:
+            transform var(--drawer-duration) ease,
+            visibility 0s;
+        }
+      }
+
+      /* Users who prefer reduced motion get the same states without sliding.
+         Both selectors are listed because :host([open]) is more specific than
+         :host — overriding only the latter would leave the open state animating. */
+      @media (prefers-reduced-motion: reduce) {
+        :host,
+        :host([open]) {
+          transition: none;
+        }
       }
 
       .brand {
