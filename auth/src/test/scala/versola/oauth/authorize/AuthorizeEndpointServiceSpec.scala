@@ -409,6 +409,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
         _ <- env.conversationRepository.create.succeedsWith(())
         _ <- env.userRepository.find.succeedsWith(Some(UserRecord.empty(sessionUserId)))
+        _ <- env.conversationRouter.advance.succeedsWith(())
         result <- env.service.authorize(baseRequest.copy(sessionId = Some(rawSessionId), maxAge = Some(0)))
         createCalls = env.conversationRepository.create.calls
       yield assertTrue(
@@ -603,6 +604,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
         _ <- env.conversationRepository.create.succeedsWith(())
         _ <- env.userRepository.find.succeedsWith(Some(UserRecord.empty(differentUserId)))
+        _ <- env.conversationRouter.advance.succeedsWith(())
         result <- env.service.authorize(baseRequest.copy(sessionId = Some(rawSessionId), idTokenHint = Some(idTokenHintStr)))
         createCalls = env.conversationRepository.create.calls
       yield assertTrue(
@@ -649,6 +651,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
         _ <- env.conversationRepository.create.succeedsWith(())
         _ <- env.userRepository.find.succeedsWith(Some(UserRecord.empty(differentUserId)))
+        _ <- env.conversationRouter.advance.succeedsWith(())
         result <- env.service.authorize(baseRequest.copy(sessionId = Some(rawSessionId), idTokenHint = Some(idTokenHintStr)))
       yield assertTrue(result == AuthorizeResponse.Initialize(versola.oauth.conversation.model.AuthId(uuid)))
     },
@@ -734,6 +737,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
         _ <- env.conversationRepository.create.succeedsWith(())
         _ <- env.userRepository.find.succeedsWith(Some(UserRecord.empty(hintUserId)))
+        _ <- env.conversationRouter.advance.succeedsWith(())
         result <- env.service.authorize(baseRequest.copy(idTokenHint = Some(idTokenHintStr)))
         createCalls = env.conversationRepository.create.calls
       yield assertTrue(

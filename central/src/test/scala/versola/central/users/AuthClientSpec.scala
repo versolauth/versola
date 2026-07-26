@@ -80,6 +80,7 @@ object AuthClientSpec extends ZIOSpecDefault:
   private def tokenServiceLayer: ULayer[AuthTokenService] =
     ZLayer.fromZIO(fixedToken.map(t => new AuthTokenService:
       override def getToken: UIO[String] = ZIO.succeed(t)
+      override def refreshToken(): Task[String] = ZIO.succeed(t)
     ).orDie)
 
   private def authClientLayer: ZLayer[Client & CentralConfig & AuthTokenService, Nothing, AuthClient] =
@@ -160,13 +161,15 @@ object AuthClientSpec extends ZIOSpecDefault:
       ZClient.fromDriver(driver),
       TestCentralConfig.config,
       new AuthTokenService:
-        override def getToken: UIO[String] = ZIO.succeed(token),
+        override def getToken: UIO[String] = ZIO.succeed(token)
+        override def refreshToken(): Task[String] = ZIO.succeed(token),
     )
 
   def spec = suite("AuthClient")(
     bearerSuite,
     decodingSuite,
     retrySuite,
+    tokenRefreshSuite,
   ) @@ TestAspect.silentLogging
 
   // ── Bearer token is attached to every outbound request ─────────────────────
@@ -312,5 +315,52 @@ object AuthClientSpec extends ZIOSpecDefault:
       // recurs(3): 1 initial + 3 retries = 4 total, all fail → final error
       yield assertTrue(count == 4) &&
         assert(exit)(fails(isSubtype[ConnectException](anything)))
+    },
+  )
+
+  // ── Token refresh ──────────────────────────────────────────────────────────
+  private val tokenRefreshSuite = suite("token refresh")(
+    test("refreshes token and retries on 401 Unauthorized") {
+      for
+        token1            <- ZIO.succeed("token-1")
+        token2            <- ZIO.succeed("token-2")
+        tokens            <- Ref.make(List(token1, token2))
+        refreshed         <- Ref.make(false)
+
+        tokenService = new AuthTokenService:
+          override def getToken: UIO[String] = tokens.get.map(_.head)
+          override def refreshToken(): Task[String] =
+            refreshed.set(true) *> tokens.update(_.tail).flatMap(_ => getToken)
+
+        // Mock driver that returns 401 for token-1 and 204 for token-2
+        driver = new ZClient.Driver[Any, Scope, Throwable]:
+          override def request(
+            version: Version,
+            method: Method,
+            url: URL,
+            headers: Headers,
+            body: Body,
+            sslConfig: Option[ClientSSLConfig],
+            proxy: Option[Proxy],
+          )(using trace: Trace): ZIO[Scope, Throwable, Response] =
+            val bearer = headers.get(Header.Authorization).flatMap {
+              case Header.Authorization.Bearer(t) => Some(t.stringValue)
+              case _ => None
+            }
+            if bearer.contains("token-1") then ZIO.succeed(Response.status(Status.Unauthorized))
+            else ZIO.succeed(Response.status(Status.NoContent))
+
+          override def socket[Env1 <: Any](
+            version: Version,
+            url: URL,
+            headers: Headers,
+            app: WebSocketApp[Env1],
+          )(using trace: Trace, ev: Scope =:= Scope): ZIO[Env1 & Scope, Throwable, Response] =
+            ZIO.dieMessage("WebSocket not used in AuthClient tests")
+
+        client = AuthClient.Impl(ZClient.fromDriver(driver), TestCentralConfig.config, tokenService)
+        _      <- client.upsertUser(userId, version, None, None, None)
+        isRefreshed <- refreshed.get
+      yield assertTrue(isRefreshed)
     },
   )
