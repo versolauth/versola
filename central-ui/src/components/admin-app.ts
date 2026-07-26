@@ -1,5 +1,5 @@
 import { LitElement, html, css } from 'lit';
-import { customElement, property, state } from 'lit/decorators.js';
+import { customElement, property, query, state } from 'lit/decorators.js';
 import { theme, resetStyles } from '../styles/theme';
 import type { NavItem } from './navigation';
 import { configureCentralApi, fetchMyPermissions } from '../utils/central-api';
@@ -28,6 +28,9 @@ export class VersolaAdmin extends LitElement {
   // wired to a different preset.
   @property({ type: String, attribute: 'login-url' }) loginUrl: string | null = null;
   @state() private currentView: NavItem = 'clients';
+  /** Mobile drawer state; ignored by the layout above the 768px breakpoint. */
+  @state() private navOpen = false;
+  @query('.nav-toggle') private navToggleButton?: HTMLButtonElement;
   @state() private currentTenantId: string | null = null;
   @state() private clientToExpandOnLoad: string | null = null;
   @state() private edgeToExpandOnLoad: string | null = null;
@@ -36,6 +39,28 @@ export class VersolaAdmin extends LitElement {
   @state() private adminPermissions: Set<string> = new Set();
   // Tenant IDs accessible to this admin (null = all tenants visible)
   @state() private allowedTenantIds: string[] | null = null;
+
+  /** Mirrors the 768px breakpoint in navigation.ts's media query. Kept in sync
+    * by hand — if that breakpoint moves, move this one too. */
+  private readonly mobileQuery = window.matchMedia('(max-width: 768px)');
+
+  /** Escape closes the drawer — expected of anything overlaying the page, and
+    * the only keyboard-reachable way out for someone who opened it. */
+  private readonly handleKeyDown = (event: KeyboardEvent) => {
+    if (event.key === 'Escape' && this.navOpen) {
+      this.closeNav();
+    }
+  };
+
+  /** Growing past the breakpoint (a phone rotated to landscape can exceed
+    * 768px) turns the drawer back into a static sidebar. Leaving navOpen set
+    * would then spring the drawer open on the way back to portrait, so reset
+    * it while it can't be seen. */
+  private readonly handleBreakpointChange = (event: MediaQueryListEvent) => {
+    if (!event.matches) {
+      this.navOpen = false;
+    }
+  };
 
   private readonly handlePopState = () => {
     this.loadLocationState();
@@ -47,11 +72,33 @@ export class VersolaAdmin extends LitElement {
     this.loadLocationState();
     void this.loadPermissions();
     window.addEventListener('popstate', this.handlePopState);
+    window.addEventListener('keydown', this.handleKeyDown);
+    this.observeBreakpoint(true);
   }
 
   disconnectedCallback() {
     window.removeEventListener('popstate', this.handlePopState);
+    window.removeEventListener('keydown', this.handleKeyDown);
+    this.observeBreakpoint(false);
     super.disconnectedCallback();
+  }
+
+  /** Subscribes/unsubscribes to breakpoint changes.
+    *
+    * MediaQueryList only gained addEventListener in Safari 14; older iOS has
+    * just the deprecated addListener. Calling the modern API there throws a
+    * TypeError right inside connectedCallback, which would break component
+    * setup rather than merely the drawer — so it's feature-detected.
+    */
+  private observeBreakpoint(subscribe: boolean) {
+    const query = this.mobileQuery;
+    if (typeof query.addEventListener === 'function') {
+      if (subscribe) query.addEventListener('change', this.handleBreakpointChange);
+      else query.removeEventListener('change', this.handleBreakpointChange);
+      return;
+    }
+    if (subscribe) query.addListener(this.handleBreakpointChange);
+    else query.removeListener(this.handleBreakpointChange);
   }
 
   updated(changed: Map<string, unknown>) {
@@ -86,12 +133,54 @@ export class VersolaAdmin extends LitElement {
         margin-left: 250px;
         padding: 2rem;
         max-width: 1400px;
+        min-width: 0; /* let flex children shrink instead of overflowing */
+      }
+
+      /* Hamburger + backdrop only exist on mobile, where the sidebar is an
+         off-canvas drawer. Hidden entirely on desktop, where the sidebar is
+         always visible. */
+      .nav-toggle {
+        display: none;
+      }
+
+      .nav-backdrop {
+        display: none;
       }
 
       @media (max-width: 768px) {
         .main-content {
           margin-left: 0;
           padding: 1rem;
+          /* room for the fixed hamburger so content doesn't start underneath it */
+          padding-top: 4rem;
+        }
+
+        .nav-toggle {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          position: fixed;
+          top: 0.75rem;
+          left: 0.75rem;
+          z-index: 300; /* above the drawer, so it can also close it */
+          width: 2.75rem;
+          height: 2.75rem;
+          padding: 0;
+          border: 1px solid var(--border-dark);
+          border-radius: var(--radius-md);
+          background: var(--bg-card, var(--bg-dark));
+          color: var(--text-primary);
+          font-size: 1.25rem;
+          line-height: 1;
+          cursor: pointer;
+        }
+
+        .nav-backdrop.visible {
+          display: block;
+          position: fixed;
+          inset: 0;
+          z-index: 150; /* under the drawer, over the content */
+          background: rgba(0, 0, 0, 0.5);
         }
       }
     `,
@@ -179,6 +268,41 @@ export class VersolaAdmin extends LitElement {
 
   private handleNavChange(e: CustomEvent) {
     this.currentView = e.detail.item;
+    // Picking a destination on mobile should reveal it, not leave the drawer
+    // covering the screen. No-op on desktop, where the drawer is never open.
+    this.closeNav();
+  }
+
+  private toggleNav() {
+    this.navOpen = !this.navOpen;
+  }
+
+  /** Closes the mobile drawer, moving focus somewhere still visible.
+    *
+    * The element that triggered the close (a nav item) is inside the drawer,
+    * which becomes `visibility: hidden` — leaving focus on it would strand
+    * keyboard and screen-reader users on an unreachable element. The toggle
+    * button is the natural place to land: it's what reopens the drawer.
+    * Returns early when already closed, so this never runs on desktop.
+    */
+  private closeNav() {
+    if (!this.navOpen) return;
+    this.navOpen = false;
+    void this.updateComplete.then(() => {
+      const toggle = this.navToggleButton;
+      if (!toggle) return;
+      // Only move focus when the toggle is actually rendered: it's
+      // `display: none` above the breakpoint, and focusing a display:none
+      // element silently does nothing. Above the breakpoint the drawer isn't
+      // hidden either, so focus has nothing to escape from.
+      //
+      // Checked via computed display rather than offsetParent: offsetParent is
+      // null for `position: fixed` elements (which this button is on mobile),
+      // so that test would be false exactly when the focus restore is needed.
+      if (getComputedStyle(toggle).display !== 'none') {
+        toggle.focus();
+      }
+    });
   }
 
   private handleTenantChange(e: CustomEvent) {
@@ -297,11 +421,25 @@ export class VersolaAdmin extends LitElement {
   render() {
     return html`
       <div class="app-layout">
+        <button
+          type="button"
+          class="nav-toggle"
+          @click=${this.toggleNav}
+          aria-label=${this.navOpen ? 'Close navigation menu' : 'Open navigation menu'}
+          aria-expanded=${this.navOpen}
+        >${this.navOpen ? '✕' : '☰'}</button>
+
+        <div
+          class="nav-backdrop ${this.navOpen ? 'visible' : ''}"
+          @click=${this.closeNav}
+        ></div>
+
         <versola-navigation
           .activeItem=${this.currentView}
           .tenantId=${this.currentTenantId}
           .permissions=${this.adminPermissions}
           .allowedTenantIds=${this.allowedTenantIds}
+          .open=${this.navOpen}
           @nav-change=${this.handleNavChange}
           @tenant-change=${this.handleTenantChange}
         ></versola-navigation>
