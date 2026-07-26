@@ -5,6 +5,9 @@ import type { NavItem } from './navigation';
 import { configureCentralApi, fetchMyPermissions } from '../utils/central-api';
 
 import './navigation';
+// Imported directly (not just transitively via navigation) because the splash
+// screen renders the logo without the nav being on the page.
+import './versola-logo';
 import './clients-list';
 import './scopes-list';
 import './permissions-list';
@@ -37,6 +40,15 @@ export class VersolaAdmin extends LitElement {
 
   // Permission state resolved from /permissions/me
   @state() private adminPermissions: Set<string> = new Set();
+  /** False until /permissions/me has resolved once.
+    *
+    * Distinguishes "not loaded yet" from "loaded, and this admin has no
+    * permissions" — both of which are an empty adminPermissions set. Without
+    * it the app renders its shell and an "Access Denied" panel during the very
+    * first request, which for an unauthenticated visitor flashes on screen
+    * just before the redirect to login lands.
+    */
+  @state() private permissionsLoaded = false;
   // Tenant IDs accessible to this admin (null = all tenants visible)
   @state() private allowedTenantIds: string[] | null = null;
 
@@ -128,6 +140,27 @@ export class VersolaAdmin extends LitElement {
         min-height: 100vh;
       }
 
+      .app-splash {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 100vh;
+        /* Held only for as long as /permissions/me is in flight, so it fades in
+           rather than flashing on a fast response. */
+        animation: splash-fade-in 0.4s ease both;
+      }
+
+      @keyframes splash-fade-in {
+        from { opacity: 0; }
+        to { opacity: 1; }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .app-splash {
+          animation: none;
+        }
+      }
+
       .main-content {
         flex: 1;
         margin-left: 250px;
@@ -195,6 +228,12 @@ export class VersolaAdmin extends LitElement {
     } catch {
       this.adminPermissions = new Set();
       this.allowedTenantIds = [];
+    } finally {
+      // Deliberately never runs on the unauthenticated path: a 401 hands off to
+      // a top-level navigation and fetchMyPermissions' promise never settles,
+      // so the splash below stays up until the browser leaves for the login
+      // page — instead of briefly swapping in the console and an Access Denied.
+      this.permissionsLoaded = true;
     }
   }
 
@@ -419,6 +458,17 @@ export class VersolaAdmin extends LitElement {
   }
 
   render() {
+    // Until we know who the caller is, show only a neutral brand splash — no
+    // navigation, no content, no permission verdict. An unauthenticated visitor
+    // is on their way to the login page and should never glimpse the console.
+    if (!this.permissionsLoaded) {
+      return html`
+        <div class="app-splash" role="status" aria-label="Loading">
+          <versola-logo size="56"></versola-logo>
+        </div>
+      `;
+    }
+
     return html`
       <div class="app-layout">
         <button
