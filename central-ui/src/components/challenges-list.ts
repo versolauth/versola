@@ -12,8 +12,10 @@ import {
   upsertChallengeSettings,
 } from '../utils/central-api';
 import { confirmDestructiveAction } from '../utils/confirm-dialog';
+import './content-header';
 import './error-card';
 import './loading-cards';
+import './nav-toggle';
 
 const CODE_PLACEHOLDER = '{{code}}';
 const PASSWORD_PLACEHOLDER = '{{password}}';
@@ -94,19 +96,6 @@ export class VersolaChallengesList extends LitElement {
     iconActionStyles,
     css`
       :host { display: block; }
-      .page-header {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        margin-bottom: var(--spacing-xl);
-      }
-      .page-title {
-        font-size: 1.625rem;
-        font-weight: 700;
-        letter-spacing: -0.025em;
-        color: var(--text-primary);
-        margin: 0;
-      }
       .form-header {
         display: flex;
         justify-content: space-between;
@@ -245,6 +234,12 @@ export class VersolaChallengesList extends LitElement {
         border: 1px solid var(--border-dark);
         border-radius: var(--radius-md);
         padding: var(--spacing-xs) var(--spacing-md);
+        /* Phone prefixes and ACR names are short, but this class also renders
+           passkey origins, which are full URLs. Without these the tag is an
+           unbreakable box that pushes past the card's right edge on a phone. */
+        max-width: 100%;
+        min-width: 0;
+        overflow-wrap: anywhere;
       }
       .limit-row {
         display: flex;
@@ -339,6 +334,19 @@ export class VersolaChallengesList extends LitElement {
       .prop-value.muted {
         color: var(--text-secondary);
         font-style: italic;
+      }
+      /* The 11rem label column plus a 1.5rem gap leaves almost nothing for the
+         value on a ~390px screen. Below this width the label sits above its
+         value instead of beside it. */
+      @media (max-width: 720px) {
+        .prop-row {
+          grid-template-columns: minmax(0, 1fr);
+          gap: var(--spacing-xs);
+          padding: 0.875rem var(--spacing-md);
+        }
+        .prop-label {
+          white-space: normal;
+        }
       }
       .empty-state {
         text-align: center;
@@ -661,9 +669,12 @@ export class VersolaChallengesList extends LitElement {
 
     return html`
       <div class="form-header">
-        <div class="title-stack">
-          <h1 class="form-title">${isNewOtp ? `Add ${typeLabel}` : `Edit ${typeLabel}`}</h1>
-          ${isNewOtp ? nothing : html`<div class="entity-id-meta">${this.editId}</div>`}
+        <div class="form-header-lead">
+          <versola-nav-toggle></versola-nav-toggle>
+          <div class="title-stack">
+            <h1 class="form-title">${isNewOtp ? `Add ${typeLabel}` : `Edit ${typeLabel}`}</h1>
+            ${isNewOtp ? nothing : html`<div class="entity-id-meta">${this.editId}</div>`}
+          </div>
         </div>
       </div>
 
@@ -980,8 +991,11 @@ export class VersolaChallengesList extends LitElement {
   private renderChallengeEdit() {
     return html`
       <div class="form-header">
-        <div class="title-stack">
-          <h1 class="form-title">Edit Challenge Settings</h1>
+        <div class="form-header-lead">
+          <versola-nav-toggle></versola-nav-toggle>
+          <div class="title-stack">
+            <h1 class="form-title">Edit Challenge Settings</h1>
+          </div>
         </div>
       </div>
 
@@ -1195,9 +1209,7 @@ export class VersolaChallengesList extends LitElement {
     if (this.editingSettings) return this.renderChallengeEdit();
 
     return html`
-      <div class="page-header">
-        <h1 class="page-title">Challenges & Security</h1>
-      </div>
+      <content-header title="Challenges & Security"></content-header>
 
       ${this.isLoading ? html`<versola-loading-cards .count=${3}></versola-loading-cards>`
         : this.errorMessage ? html`

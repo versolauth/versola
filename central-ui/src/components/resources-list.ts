@@ -14,6 +14,7 @@ import './cel-editor';
 import './content-header';
 import './error-card';
 import './loading-cards';
+import './nav-toggle';
 
 type ResourceEndpointDraft = {
   method: string;
@@ -109,7 +110,6 @@ export class VersolaResourcesList extends LitElement {
     .endpoint-row { display:flex; align-items:center; justify-content:space-between; gap:.75rem; flex-wrap:wrap; padding:.875rem 1rem; border:1px solid var(--border-dark); border-radius:var(--radius-md); background:rgba(255,255,255,.02); }
     .endpoint-main { display:flex; align-items:center; gap:.75rem; flex-wrap:wrap; min-width:0; }
     .endpoint-actions { display:flex; align-items:center; gap:.5rem; margin-left:auto; }
-    .endpoint-path { font-family:var(--font-mono, monospace); color:var(--text-primary); word-break:break-all; }
     .endpoint-card { display:grid; gap:.75rem; padding:.875rem 1rem; border:1px solid var(--border-dark); border-radius:var(--radius-md); background:rgba(255,255,255,.02); cursor:pointer; transition:border-color var(--transition-base), background var(--transition-base); }
     .endpoint-card:hover { border-color:var(--accent); background:rgba(255,255,255,.03); }
     .endpoint-card-header { display:flex; align-items:center; justify-content:space-between; gap:.75rem; flex-wrap:wrap; }
@@ -247,8 +247,15 @@ export class VersolaResourcesList extends LitElement {
       padding: var(--spacing-xs) var(--spacing-md);
     }
     @media (max-width: 720px) {
-      .resource-header { flex-direction:column; }
-      .resource-actions, .form-actions, .section-header, .sub-actions { flex-direction:column; align-items:flex-start; }
+      /* Same inherited-align-items trap as permissions-list: in a column,
+         align-items:center centres the label horizontally instead of
+         vertically. */
+      .resource-header { flex-direction:column; align-items:flex-start; }
+      /* .resource-actions is deliberately NOT in the stacking list below: it
+         holds two icon buttons that belong side by side. Stacking them turned
+         a compact ✎ ✕ pair into a vertical column. */
+      .resource-actions { margin-left:0; }
+      .form-actions, .section-header, .sub-actions { flex-direction:column; align-items:flex-start; }
       .endpoint-editor-grid { grid-template-columns:minmax(0, var(--compact-field-width)); }
       .rule-editor-main, .rule-editor-pattern, .header-editor-item { grid-template-columns:minmax(0, 1fr); }
     }
@@ -1019,9 +1026,12 @@ export class VersolaResourcesList extends LitElement {
 
     return html`
       <div class="form-header">
-        <div class="title-stack">
-          <h1 class="form-title">${title}</h1>
-          ${isEditResource ? html`<div class="entity-id-meta">${this.resourceUri || '—'}</div>` : ''}
+        <div class="form-header-lead">
+          <versola-nav-toggle></versola-nav-toggle>
+          <div class="title-stack">
+            <h1 class="form-title">${title}</h1>
+            ${isEditResource ? html`<div class="entity-id-meta">${this.resourceUri || '—'}</div>` : ''}
+          </div>
         </div>
       </div>
       <div class="card">

@@ -5,6 +5,7 @@ import { buttonStyles, cardStyles, formStyles } from '../styles/components';
 import type { ThemeRecord } from '../types';
 import { createTheme, updateTheme, deleteTheme } from '../utils/central-api';
 import './code-editor';
+import './nav-toggle';
 
 @customElement('versola-theme-edit')
 export class VersolaThemeEdit extends LitElement {
@@ -94,7 +95,10 @@ export class VersolaThemeEdit extends LitElement {
     const canSave = this.editId.trim().length > 0;
     return html`
       <div class="title-stack" style="margin-bottom: var(--spacing-lg)">
-        <h1 class="form-title">${isNew ? 'New Theme' : 'Edit Theme'}</h1>
+        <div class="form-header-lead">
+          <versola-nav-toggle></versola-nav-toggle>
+          <h1 class="form-title">${isNew ? 'New Theme' : 'Edit Theme'}</h1>
+        </div>
         ${isNew ? html`
           <div>
             <label class="field-label">Theme ID</label>

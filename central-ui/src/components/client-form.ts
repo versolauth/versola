@@ -4,6 +4,7 @@ import { theme } from '../styles/theme';
 import { buttonStyles, cardStyles, formStyles, iconActionStyles } from '../styles/components';
 import { AuthFactorType, AuthFlow, OAuthClient, OAuthScope, OtpTemplateRecord, Permission, PrimaryCredential, Resource, ThemeRecord } from '../types';
 import { createDefaultAuthFlow, getLocalizedDescription, resolvePermissionEndpointGroups } from '../utils/helpers';
+import './nav-toggle';
 import {
   validateClientId,
   validateRedirectUri,
@@ -1174,11 +1175,14 @@ export class VersolaClientForm extends LitElement {
 
     return html`
       <div class="form-header">
-        <div class="title-stack">
-          <h1 class="form-title">
-            ${this.client ? 'Edit Client' : 'Create New Client'}
-          </h1>
-          ${this.client ? html`<div class="entity-id-meta">${this.formData.id || '—'}</div>` : ''}
+        <div class="form-header-lead">
+          <versola-nav-toggle></versola-nav-toggle>
+          <div class="title-stack">
+            <h1 class="form-title">
+              ${this.client ? 'Edit Client' : 'Create New Client'}
+            </h1>
+            ${this.client ? html`<div class="entity-id-meta">${this.formData.id || '—'}</div>` : ''}
+          </div>
         </div>
       </div>
 

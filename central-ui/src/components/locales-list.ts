@@ -4,8 +4,10 @@ import { theme } from '../styles/theme';
 import { badgeStyles, buttonStyles, cardStyles, formStyles, iconActionStyles } from '../styles/components';
 import type { FormRecord, Locale, OtpTemplateRecord } from '../types';
 import { fetchForms, fetchLocales, fetchOtpTemplates, updateLocales, setDefaultLocale } from '../utils/central-api';
+import './content-header';
 import './error-card';
 import './loading-cards';
+import './nav-toggle';
 
 // ISO 639-1 language codes; display names are resolved at runtime via Intl.DisplayNames.
 const LANGUAGE_CODES = [
@@ -295,7 +297,10 @@ export class VersolaLocalesList extends LitElement {
     const canAdd = !!this.newCode;
     return html`
       <div class="page-header">
-        <h1 class="page-title">Edit Locales</h1>
+        <div class="form-header-lead">
+          <versola-nav-toggle></versola-nav-toggle>
+          <h1 class="page-title">Edit Locales</h1>
+        </div>
       </div>
       <div class="card">
         ${this.draftLocales.length === 0
@@ -364,10 +369,9 @@ export class VersolaLocalesList extends LitElement {
     if (this.editing) return html`${this.renderEdit()}`;
 
     return html`
-      <div class="page-header">
-        <h1 class="page-title">Locales</h1>
-        ${this.canManage ? html`<button class="btn btn-secondary" @click=${() => this.startEdit()}>Edit</button>` : ''}
-      </div>
+      <content-header title="Locales">
+        ${this.canManage ? html`<button slot="actions" class="btn btn-secondary" @click=${() => this.startEdit()}>Edit</button>` : ''}
+      </content-header>
 
       ${this.isLoading ? html`<versola-loading-cards .count=${3}></versola-loading-cards>`
         : this.errorMessage ? html`

@@ -228,6 +228,18 @@ export const formStyles = css`
     min-width: 0;
   }
 
+  /* Keeps the mobile drawer toggle grouped with a form's title.
+     .form-header rows are justify-content: space-between, so without this
+     wrapper the toggle and the title would be pushed to opposite ends.
+     The toggle is display:none above the breakpoint, which collapses this
+     back to a plain title on desktop. */
+  .form-header-lead {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-md);
+    min-width: 0;
+  }
+
   .compact-input {
     display: block;
     width: 100%;
@@ -377,7 +389,20 @@ export const formStyles = css`
   }
 `;
 
+/** Endpoint method badge + path, as shown in permission and resource cards. */
 export const methodBadgeStyles = css`
+  /* Previously declared inline in permissions-list, permission-form and
+     resources-list, none of which set a size — so paths rendered at the
+     browser's default 16px while the rest of the UI sits at 0.875rem. The
+     oversized text pushed long paths (/configuration/edges/rotate-key) onto a
+     second line and shoved the row's remove button down with it. */
+  .endpoint-path {
+    font-family: var(--font-mono, monospace);
+    font-size: 0.8125rem;
+    color: var(--text-primary);
+    word-break: break-all;
+  }
+
   .method-badge {
     display: inline-flex;
     align-items: center;
