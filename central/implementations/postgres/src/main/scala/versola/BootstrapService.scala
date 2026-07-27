@@ -609,8 +609,8 @@ object BootstrapService:
               responseType         = ResponseType.Code,
               uiLocales            = None,
               customParameters     = Map.empty,
-              cookieDomain         = None,
-              cookiePath           = None,
+              cookieDomain         = seed.cookieDomain,
+              cookiePath           = seed.cookiePath,
             )
             presetRepo.replace(CentralConfig.centralClientId, Seq(preset))
 

@@ -33,7 +33,7 @@ this table looks wrong, `cat /opt/versola/docker-compose.prod.yml` is the source
 |---|---|---|---|
 | `auth` | 8080 | 8081 | yes — `https://id.versola.kz` via nginx |
 | `central` | 8090 | 8091 | no — admin API, reached through `edge` |
-| `edge` | 8095 | 8096 | yes — path-routed on `https://id.versola.kz` (`/resources`, `/permissions`, `/login`, `/complete`); see [The admin console](#the-admin-console-central-ui) |
+| `edge` | 8095 | 8096 | yes — path-routed on `https://id.versola.kz` (`/central`, `/resources`, `/permissions`, `/login`, `/complete`); see [The admin console](#the-admin-console-central-ui) |
 
 Note that the Dockerfiles `EXPOSE 8080 9345`, but `9345` is not what the deployment actually
 uses — with `network_mode: host` the `EXPOSE` directive is inert and `DPORT` decides.
@@ -73,26 +73,49 @@ repo's `envs/dev/versola.conf`):
 
 | Path on `id.versola.kz` | Routed to | Purpose |
 |---|---|---|
-| `/admin/` | static `central-ui/dist` | the SPA itself |
-| `/resources/`, `/permissions/` | `edge` (8095) | admin API + the caller's permissions, proxied to `central` |
+| `/central/admin/` | static `central-ui/dist` | the SPA itself |
+| `/central/permissions/me` | `edge` (8095) | the caller's permissions; rewritten back to `/permissions/me` |
+| `/central/…` (everything else) | `edge` (8095) | admin API; rewritten to `/resources/central/…` |
 | `/login/`, `/complete` | `edge` (8095) | OAuth login flow entry point and callback |
+| `/resources/`, `/permissions/` | `edge` (8095) | edge's own routes, kept for non-console clients |
+| `/admin`, `/admin/…` | `301` → `/central/admin/…` | legacy console location |
 | everything else | `auth` (8080) | the OIDC endpoints, unchanged |
 
 Sharing one origin is deliberate: the `EDGE_SESSION` cookie and the edge's `401`+`Location`
 re-auth redirect are same-origin, so there is no CORS or `SameSite=None` handling to get wrong.
-The browser-facing login preset lives in `env-config`'s `central.conf` (`bootstrap.presets`,
-id `central-admin`) with `redirect-uri = https://id.versola.kz/complete` and
-`post-login-redirect-uri = https://id.versola.kz/admin`; those seed values are applied once, on
-`central`'s first bootstrap against an empty database (see [3.5](#35-compose-file) /
-[6](#6-recreating-the-database-from-scratch)). The `central-admin` client's `redirect-uris` must
-contain `https://id.versola.kz/complete` and nothing else in prod — no `localhost`/`http` entries
-in a high-privilege admin client's allowlist.
 
-An unauthenticated visit to `/admin` has no session cookie, so `edge` can't tell which login to
-send the browser to (the preset id lives in the cookie). `central-ui` handles that itself: on a
-`401` without a `Location`, it navigates to `/login/central-admin`. Merging a `central-ui` change
-does **not** deploy it — run the manual `Deploy` with `service: central-ui`, and remember returning
-browsers may cache the old `versola-admin.js` (see [Known gaps](#10-known-gaps)).
+**Why everything sits under `/central`.** The `EDGE_SESSION` cookie is scoped with
+`Path=/central` so that the session belongs to this application rather than to the whole domain —
+a second app behind the same edge can then hold its own independent session. A browser only sends
+a cookie to URLs *beneath* its path, so every URL the console touches has to share that prefix:
+its assets (`/central/admin/`, baked in by `vite.config.ts`'s `BASE_PATH`), its API calls, and its
+permissions lookup. nginx unwraps the prefix before proxying — `/central/{x}` becomes edge's real
+`/resources/central/{x}` route and `/central/permissions/me` becomes `/permissions/me` — so `edge`
+itself knows nothing about this scheme. `/login` and `/complete` stay at the root because neither
+reads the cookie (`/complete` only *sets* it, and a `Set-Cookie` may declare any `Path`
+regardless of the URL that issued it).
+
+The browser-facing login preset lives in `env-config`'s `central.conf` (`bootstrap.presets`,
+id `central-admin`) with `redirect-uri = https://id.versola.kz/complete`,
+`post-login-redirect-uri = https://id.versola.kz/central/admin/` and `cookie-path = /central`;
+those seed values are applied once, on `central`'s first bootstrap against an empty database (see
+[3.5](#35-compose-file) / [6](#6-recreating-the-database-from-scratch)) — **editing them later has
+no effect on an existing database**, where the preset must be changed through the console's own
+client screen or by SQL. The `central-admin` client's `redirect-uris` must contain
+`https://id.versola.kz/complete` and nothing else in prod — no `localhost`/`http` entries in a
+high-privilege admin client's allowlist.
+
+An unauthenticated visit to `/central/admin/` has no session cookie, so `edge` can't tell which
+login to send the browser to (the preset id lives in the cookie). `central-ui` handles that itself:
+on a `401` without a `Location`, it navigates to `/login/central-admin`. Merging a `central-ui`
+change does **not** deploy it — run the manual `Deploy` with `service: central-ui`, and remember
+returning browsers may cache the old `versola-admin.js` (see [Known gaps](#10-known-gaps)).
+
+**When changing the cookie path,** note that a cookie is identified by name + domain + path, so an
+`EDGE_SESSION` left over at the old path is a *different* cookie that a logout scoped to the new
+path will not clear. Both would then be sent under the same name in one `Cookie` header; browsers
+order the more specific path first, so the right one wins, but the simplest cure is to clear
+cookies (or use a private window) once after the switch.
 
 **First admin login.** `AuthBootstrapService` (in `auth`) creates the `admin` user, grants it the
 `oauth-admin` role (full permissions — so no "Access Denied" after login), and sets a **temporary**
@@ -305,10 +328,11 @@ Do **not** hand-edit nginx on the server. The config is version-controlled in th
 copies it over, runs `nginx -t` and reloads on merge to `main`. Editing the file in place means
 the next deploy silently reverts you.
 
-The `id.versola.kz` server block also fronts the admin console: it path-routes `/admin` (static
-`central-ui`), `/resources`, `/permissions`, `/login` and `/complete` to `edge`, with everything
-else falling through to `auth`. See [The admin console](#the-admin-console-central-ui) for the full
-mapping.
+The `id.versola.kz` server block also fronts the admin console: it path-routes `/central/admin`
+(static `central-ui`), `/central/…`, `/resources`, `/permissions`, `/login` and `/complete` to
+`edge`, with everything else falling through to `auth`. See
+[The admin console](#the-admin-console-central-ui) for the full mapping and for why the console
+lives under a `/central` prefix.
 
 ---
 
@@ -827,8 +851,8 @@ deploys stop shipping UTF-16.
   check they're there for; not a substitute for real version control or an audit trail.
 - **`central-ui`'s bundle filename isn't content-hashed** (minor). The build always emits
   `versola-admin.js`, so there's no way to cache it long-term as immutable. This is currently
-  handled at the edge: nginx serves `/admin` with `Cache-Control: no-cache`, forcing a conditional
-  revalidation each load (cheap `304` while unchanged, new file immediately after a deploy) — so
-  stale bundles aren't a problem, at the cost of a revalidation round-trip per load. A content hash
-  in the filename would let hashed assets be cached immutably (no revalidation) with `no-cache` kept
-  only for the entrypoint HTML; worth doing if `/admin` ever gets heavy traffic.
+  handled at the edge: nginx serves `/central/admin/` with `Cache-Control: no-cache`, forcing a
+  conditional revalidation each load (cheap `304` while unchanged, new file immediately after a
+  deploy) — so stale bundles aren't a problem, at the cost of a revalidation round-trip per load. A
+  content hash in the filename would let hashed assets be cached immutably (no revalidation) with
+  `no-cache` kept only for the entrypoint HTML; worth doing if the console ever gets heavy traffic.

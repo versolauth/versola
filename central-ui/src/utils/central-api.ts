@@ -147,12 +147,20 @@ export function resolveBaseUrl(): string {
   return apiConfig.baseUrl?.trim() || window.location.origin;
 }
 
+// Everything the console talks to lives under this prefix. It exists so the
+// EDGE_SESSION cookie can be scoped to a path (Path=/central) and thereby
+// belong to this application alone rather than to the whole domain — and a
+// cookie is only sent to URLs beneath its path, so the console's assets
+// (/central/admin/, see vite.config.ts) and its API calls have to share one
+// prefix. nginx rewrites /central/{x} back to edge's real /resources/central/{x}
+// route, so edge itself is unaware of this prefix.
+export const CONSOLE_PREFIX = 'central';
+
 function buildUrl(path: string, query?: Record<string, QueryValue>): string {
   const baseUrl = resolveBaseUrl();
   const normalizedBase = baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`;
   const normalizedPath = path.replace(/^\//, '');
-  // Route through the edge proxy for the "central" resource
-  const proxiedPath = `resources/central/${normalizedPath}`;
+  const proxiedPath = `${CONSOLE_PREFIX}/${normalizedPath}`;
   const url = new URL(proxiedPath, normalizedBase);
   Object.entries(query ?? {}).forEach(([key, value]) => {
     if (value !== undefined && value !== null) {
@@ -1077,7 +1085,12 @@ export type MyPermissionsResponse = {
 export async function fetchMyPermissions(): Promise<MyPermissionsResponse> {
   const baseUrl = resolveBaseUrl();
   const normalizedBase = baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`;
-  const url = new URL('permissions/me', normalizedBase);
+  // edge serves this at /permissions/me, outside any resource prefix — but the
+  // call has to carry EDGE_SESSION, and that cookie is scoped to /central, so
+  // the browser would withhold it from a root-level URL and every load would
+  // bounce to login. It's requested under the prefix instead, and nginx
+  // rewrites /central/permissions/me back to /permissions/me.
+  const url = new URL(`${CONSOLE_PREFIX}/permissions/me`, normalizedBase);
   url.searchParams.set('resource', 'central');
 
   const response = await fetch(url.toString(), {
