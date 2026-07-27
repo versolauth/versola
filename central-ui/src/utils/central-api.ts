@@ -55,7 +55,12 @@ type AuthorizationPresetResponse = {
   cookiePath?: string;
 };
 type CreateResourceResponse = { resourceId: string };
-type CreateResourceEndpointPayload = Omit<ResourceEndpoint, 'id' | 'allow'> & { allow: string | null };
+type CreateResourceEndpointPayload = Omit<ResourceEndpoint, 'id' | 'allow' | 'stepUpCondition' | 'stepUpAcr' | 'maxAge'> & {
+  allow: string | null;
+  stepUpCondition: string | null;
+  stepUpAcr: string | null;
+  maxAge: number | null;
+};
 type SaveResourceEndpointPayload = CreateResourceEndpointPayload & { id?: ResourceEndpointId };
 type ResourceEndpointWriteDto = {
   id?: string | number;
@@ -64,7 +69,8 @@ type ResourceEndpointWriteDto = {
   fetchUserInfo: boolean;
   allow: string | null;
   inject: InjectRule[];
-  acrValues?: string | null;
+  stepUpCondition?: string | null;
+  stepUpAcr?: string | null;
   maxAge?: number | null;
 };
 type ResourceEndpointDto = {
@@ -74,7 +80,8 @@ type ResourceEndpointDto = {
   fetchUserInfo: boolean;
   allow?: string;
   inject: InjectRule[];
-  acrValues?: string;
+  stepUpCondition?: string;
+  stepUpAcr?: string;
   maxAge?: number;
 };
 type ResourceResponseDto = { resourceId: string; resource: string; endpoints: Array<ResourceEndpointDto & { id: ResourceEndpointId }> };
@@ -447,7 +454,8 @@ function serializeResourceEndpoint(
     fetchUserInfo: endpoint.fetchUserInfo,
     allow: endpoint.allow,
     inject: endpoint.inject.map(rule => ({ ...rule })),
-    acrValues: endpoint.acrValues ?? null,
+    stepUpCondition: endpoint.stepUpCondition ?? null,
+    stepUpAcr: endpoint.stepUpAcr ?? null,
     maxAge: endpoint.maxAge ?? null,
   };
 }
@@ -471,7 +479,8 @@ function mapResource(resource: ResourceResponseDto): Resource {
       fetchUserInfo: endpoint.fetchUserInfo,
       allow: endpoint.allow,
       inject: endpoint.inject.map(rule => ({ ...rule })),
-      ...(endpoint.acrValues != null ? { acrValues: endpoint.acrValues } : {}),
+      ...(endpoint.stepUpCondition != null ? { stepUpCondition: endpoint.stepUpCondition } : {}),
+      ...(endpoint.stepUpAcr != null ? { stepUpAcr: endpoint.stepUpAcr } : {}),
       ...(endpoint.maxAge != null ? { maxAge: endpoint.maxAge } : {}),
     })),
   };

@@ -6,7 +6,9 @@ object JsonJava:
   def toJava(json: Json): AnyRef =
     json match
       case Json.Str(s)  => s
-      case Json.Num(n)  => n
+      case Json.Num(n)  =>
+        try java.lang.Long.valueOf(n.longValueExact())
+        catch case _: ArithmeticException => java.lang.Double.valueOf(n.doubleValue())
       case Json.Bool(b) => java.lang.Boolean.valueOf(b)
       case Json.Null    => null
       case Json.Arr(elements) =>

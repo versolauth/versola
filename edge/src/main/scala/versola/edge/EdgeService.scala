@@ -225,10 +225,10 @@ object EdgeService:
               .addHeader(Header.Location(uri))
               .addCookie(clear),
           )
-        case Outcome.InsufficientAuthentication(acrValues, maxAge) =>
+        case Outcome.InsufficientAuthentication(acr, maxAge) =>
           val params = List(
             Some("""error="insufficient_user_authentication""""),
-            acrValues.map(v => s"""acr_values="$v""""),
+            acr.map(v => s"""acr_values="$v""""),
             maxAge.map(v => s"""max_age="$v""""),
           ).flatten.mkString(", ")
           ZIO.succeed(
@@ -281,7 +281,6 @@ object EdgeService:
         endpoint <- findEndpoint(resource.endpoints, request.method.name, restPath)
         parsedBody <- readJsonBody(request)
         typedClaims <- checkPermissions(resourceId, session.claims, endpoint, request, parsedBody)
-        _ <- checkStepUp(endpoint, typedClaims, now)
         userInfo <- ssoClient.userInfo(session.accessToken)
           .when(endpoint.fetchUserInfo)
           .someOrElse(Json.Obj())
@@ -290,6 +289,7 @@ object EdgeService:
             case _: Throwable => Outcome.InternalServerError
           }
         celContext <- checkRules(session.claims, userInfo, request, endpoint, restPath, parsedBody)
+        _ <- checkStepUp(endpoint, typedClaims, now, celContext)
         upstream <- buildUpstreamRequest(resource, endpoint, restPath, request, parsedBody, typedClaims.clientId, celContext)
         response <- ZIO.scoped(httpClient.request(upstream))
         stripped = response.removeHeader(Header.SetCookie)
@@ -338,28 +338,49 @@ object EdgeService:
           .unless(allowed.contains(endpoint.id))
       yield typed
 
-    /** RFC 9470 §2: verify the token satisfies both the ACR and max_age requirements of the
-      * endpoint. Both checks are always evaluated so the resulting challenge includes every
-      * unmet requirement, letting the client fix them in a single re-authentication round.
+    /** RFC 9470 §2: verify the token satisfies every authentication requirement of the
+      * endpoint. Runs after `checkRules` so that a request the client is not authorized to
+      * make at all is rejected with a definitive 403 rather than a misleading step-up
+      * challenge. All requirements are evaluated together so a single challenge lists every
+      * unmet one, letting the client fix them in one re-authentication round.
       *
-      * - ACR: the token's `acr` claim must match at least one value from the space-separated
-      *   `acrValues` list on the endpoint.
-      * - max_age: the `auth_time` claim must be present and no older than `maxAge` seconds.
+      * ACR requirement:
+      * - if `stepUpCondition` is absent or evaluates to false, no ACR is required.
+      * - if `stepUpCondition` evaluates to true (including the literal `"true"`), `stepUpAcr` is required.
+      * - to enforce ACR unconditionally, set `stepUpCondition` to `"true"`.
+      *
+      * `maxAge` is checked independently: if set, the token's `auth_time` claim must be present
+      * and no older than `maxAge` seconds. This applies regardless of whether `stepUpCondition`
+      * or `stepUpAcr` are configured.
       */
-    private def checkStepUp(endpoint: ResourceEndpoint, claims: AccessTokenClaims, now: Instant): IO[Outcome, Unit] =
-      val acrFailed = endpoint.acrValues.exists { required =>
-        val requiredSet = required.split(' ').toSet
-        !claims.acr.exists(requiredSet.contains)
-      }
+    private def checkStepUp(
+        endpoint: ResourceEndpoint,
+        claims: AccessTokenClaims,
+        now: Instant,
+        celContext: Map[String, AnyRef],
+    ): IO[Outcome, Unit] =
+      def unsatisfied(required: String): Option[String] =
+        val requiredSet = required.split(' ').toSet.filter(_.nonEmpty)
+        Option.unless(requiredSet.isEmpty || claims.acr.exists(requiredSet.contains))(required)
+
       val maxAgeFailed = endpoint.maxAge.exists { maxAge =>
         !claims.authTime.exists(authTime => now.getEpochSecond - authTime <= maxAge)
       }
-      if acrFailed || maxAgeFailed then
-        ZIO.fail(Outcome.InsufficientAuthentication(
-          acrValues = Option.when(acrFailed)(endpoint.acrValues).flatten,
-          maxAge    = Option.when(maxAgeFailed)(endpoint.maxAge).flatten,
-        ))
-      else ZIO.unit
+      for
+        conditionPassed <- endpoint.stepUpCondition match
+          case None => ZIO.succeed(false)
+          case Some(expression) =>
+            celEvaluator.compile(expression)
+              .flatMap(_.evaluateBoolean(celContext))
+
+        requiredAcr = Option.when(conditionPassed)(endpoint.stepUpAcr).flatten
+        acrFailed = requiredAcr.flatMap(unsatisfied)
+
+        _ <- ZIO.fail(Outcome.InsufficientAuthentication(
+          acr = acrFailed,
+          maxAge = Option.when(maxAgeFailed)(endpoint.maxAge).flatten,
+        )).when(acrFailed.isDefined || maxAgeFailed)
+      yield ()
 
     private def checkRules(
         claims: Json.Obj,
@@ -597,5 +618,5 @@ object EdgeService:
     case InternalServerError
     case Reauthenticate(loginUri: URL, clearCookie: Cookie.Response)
     /** The token is valid but its authentication does not meet what this endpoint
-      * requires (RFC 9470 §2): ACR too low (`acrValues`) and/or too old (`maxAge`). */
-    case InsufficientAuthentication(acrValues: Option[String], maxAge: Option[Int])
+      * requires (RFC 9470 §2): ACR too low (`acr`) and/or too old (`maxAge`). */
+    case InsufficientAuthentication(acr: Option[String], maxAge: Option[Int])

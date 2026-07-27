@@ -647,7 +647,8 @@ object BootstrapService:
             fetchUserInfo = false,
             allowExpression = None,
             inject = Vector.empty,
-            acrValues = None,
+            stepUpCondition = None,
+            stepUpAcr = None,
             maxAge = None,
           )
         resourceRepo.getAll.flatMap: resources =>

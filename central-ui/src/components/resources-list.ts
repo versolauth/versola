@@ -21,7 +21,8 @@ type ResourceEndpointDraft = {
   fetchUserInfo: boolean;
   allow: string;
   inject: InjectRule[];
-  acrValues: string;
+  stepUpCondition: string;
+  stepUpAcr: string;
   maxAge: string;
 };
 
@@ -30,9 +31,12 @@ type EditableResourceEndpoint = ResourceEndpointDraft & {
   draftId: string;
 };
 
-type SaveResourceEndpointPayload = Omit<ResourceEndpointDraft, 'allow'> & {
+type SaveResourceEndpointPayload = Omit<ResourceEndpointDraft, 'allow' | 'stepUpCondition' | 'stepUpAcr' | 'maxAge'> & {
   id?: ResourceEndpoint['id'];
   allow: string | null;
+  stepUpCondition?: string | null;
+  stepUpAcr?: string | null;
+  maxAge?: number | null;
 };
 
 type PersistedResourceEndpointPayload = SaveResourceEndpointPayload & {
@@ -309,7 +313,8 @@ export class VersolaResourcesList extends LitElement {
       fetchUserInfo: false,
       allow: '',
       inject: [],
-      acrValues: '',
+      stepUpCondition: '',
+      stepUpAcr: '',
       maxAge: '',
     };
   }
@@ -492,7 +497,8 @@ export class VersolaResourcesList extends LitElement {
         fetchUserInfo: endpoint.fetchUserInfo,
         allow: endpoint.allow ?? undefined,
         inject: cloneInject(endpoint.inject),
-        acrValues: endpoint.acrValues ?? undefined,
+        stepUpCondition: endpoint.stepUpCondition ?? undefined,
+        stepUpAcr: endpoint.stepUpAcr ?? undefined,
         maxAge: endpoint.maxAge ?? undefined,
       })),
     };
@@ -515,14 +521,16 @@ export class VersolaResourcesList extends LitElement {
       fetchUserInfo: endpoint.fetchUserInfo,
       allow: endpoint.allow ?? '',
       inject: cloneInject(endpoint.inject),
-      acrValues: endpoint.acrValues ?? '',
+      stepUpCondition: endpoint.stepUpCondition ?? '',
+      stepUpAcr: endpoint.stepUpAcr ?? '',
       maxAge: endpoint.maxAge?.toString() ?? '',
     };
   }
 
   private toEndpointPayload(endpoint: EditableResourceEndpoint) {
     const allow = endpoint.allow.trim();
-    const acrValues = endpoint.acrValues.trim();
+    const stepUpCondition = endpoint.stepUpCondition.trim();
+    const stepUpAcr = endpoint.stepUpAcr.trim();
     const maxAge = parseInt(endpoint.maxAge);
     return {
       ...(endpoint.id !== null ? { id: endpoint.id } : {}),
@@ -531,7 +539,8 @@ export class VersolaResourcesList extends LitElement {
       fetchUserInfo: endpoint.fetchUserInfo,
       allow: allow.length > 0 ? allow : null,
       inject: cloneInject(endpoint.inject),
-      acrValues: acrValues.length > 0 ? acrValues : null,
+      stepUpCondition: stepUpCondition.length > 0 ? stepUpCondition : null,
+      stepUpAcr: stepUpAcr.length > 0 ? stepUpAcr : null,
       maxAge: Number.isFinite(maxAge) ? maxAge : null,
     };
   }
@@ -563,8 +572,12 @@ export class VersolaResourcesList extends LitElement {
     this.updateEndpointDraft(draftId, endpoint => ({ ...endpoint, fetchUserInfo: value }));
   }
 
-  private updateEndpointAcrValues(draftId: string, value: string) {
-    this.updateEndpointDraft(draftId, endpoint => ({ ...endpoint, acrValues: value }));
+  private updateEndpointStepUpCondition(draftId: string, value: string) {
+    this.updateEndpointDraft(draftId, endpoint => ({ ...endpoint, stepUpCondition: value }));
+  }
+
+  private updateEndpointStepUpAcr(draftId: string, value: string) {
+    this.updateEndpointDraft(draftId, endpoint => ({ ...endpoint, stepUpAcr: value }));
   }
 
   private updateEndpointMaxAge(draftId: string, value: string) {
@@ -710,13 +723,19 @@ export class VersolaResourcesList extends LitElement {
     `;
   }
 
-  private renderAcrSection(acrValues: string | undefined) {
+  private renderStepUpSection(condition: string | undefined, acr: string | undefined) {
     return html`
       <div class="endpoint-editor-section">
-        <div class="endpoint-detail-label">Required ACR</div>
-        ${acrValues && acrValues.length > 0
+        <div class="endpoint-detail-label">Step-up Condition</div>
+        ${condition && condition.length > 0
+          ? html`<div class="cel-inline">${renderHighlightedCel(condition)}</div>`
+          : html`<div class="endpoint-empty">— (always)</div>`}
+      </div>
+      <div class="endpoint-editor-section">
+        <div class="endpoint-detail-label">Step-up ACR</div>
+        ${acr && acr.length > 0
           ? html`<div class="prefix-tags" style="margin-top: 0;">
-              ${acrValues.split(' ').map(acr => html`<span class="prefix-tag">${acr}</span>`)}
+              ${acr.split(' ').map(val => html`<span class="prefix-tag">${val}</span>`)}
             </div>`
           : html`<div class="endpoint-empty">— (any)</div>`}
       </div>
@@ -745,7 +764,7 @@ export class VersolaResourcesList extends LitElement {
         </div>
         <div class="endpoint-detail-grid">
           ${this.renderAllowSection(endpoint.allow)}
-          ${this.renderAcrSection(endpoint.acrValues)}
+          ${this.renderStepUpSection(endpoint.stepUpCondition, endpoint.stepUpAcr)}
           ${this.renderMaxAgeSection(endpoint.maxAge)}
           ${this.renderInjectSection(endpoint.inject)}
         </div>
@@ -876,40 +895,72 @@ export class VersolaResourcesList extends LitElement {
     `;
   }
 
-  private renderAcrEditor(draftId: string, acrValues: string) {
+  private renderStepUpEditor(draftId: string, condition: string, acr: string) {
     const vocabularyAcrs = Object.keys(this.acrVocabulary);
-    const selectedAcrs = acrValues.split(' ').filter(v => v.length > 0);
+    const selectedAcrs = acr.split(' ').filter(v => v.length > 0);
 
     return html`
       <div class="endpoint-editor-section">
         <div class="editor-section-header">
           <div class="editor-section-title-row">
-            <h3 class="editor-section-title">Required ACR</h3>
-            ${this.renderOptionInfo(`${draftId}-acr-info`, html`
-              <div class="option-tooltip-title">Authentication Context Class Reference</div>
-              <p>Space-separated list of ACR values. The Edge will enforce that the access token carries at least one of these values in its <code>acr</code> claim.</p>
-              <p>If multiple values are provided, any of them is sufficient.</p>
-            `)}
+            <h3 class="editor-section-title">Step-up Condition (CEL)</h3>
+            ${this.renderOptionInfo(
+              `${draftId}-stepup-cond-info`,
+              'Step-up Condition',
+              html`
+                <p>CEL boolean expression evaluated per request. The step-up ACR is required only when this evaluates to <code>true</code>.</p>
+                <p>Leave empty to disable the ACR requirement entirely. Use <code>true</code> to always enforce it.</p>
+                <p><strong>Note:</strong> Max Auth Age is enforced independently, regardless of this condition.</p>
+              `,
+              'Step-up condition info',
+            )}
+          </div>
+        </div>
+        <versola-cel-editor
+          multiline
+          rows="1"
+          .value=${condition}
+          ?disabled=${this.saving}
+          placeholder="e.g. true or request.body.amount > 1000"
+          aria-label="Step-up condition"
+          @cel-input=${(event: CustomEvent<{ value: string }>) => this.updateEndpointStepUpCondition(draftId, event.detail.value)}
+        ></versola-cel-editor>
+      </div>
+
+      <div class="endpoint-editor-section">
+        <div class="editor-section-header">
+          <div class="editor-section-title-row">
+            <h3 class="editor-section-title">Step-up ACR</h3>
+            ${this.renderOptionInfo(
+              `${draftId}-stepup-acr-info`,
+              'Step-up ACR',
+              html`
+                <p>Space-separated list of ACR values. The Edge will enforce that the access token carries at least one of these values in its <code>acr</code> claim when step-up is triggered.</p>
+              `,
+              'Step-up ACR info',
+            )}
           </div>
         </div>
         ${vocabularyAcrs.length > 0 ? html`
           <div style="display: flex; gap: var(--spacing-md); flex-wrap: wrap;">
-            ${vocabularyAcrs.map(acr => html`
+            ${vocabularyAcrs.map(val => html`
               <label style="display: flex; align-items: center; gap: var(--spacing-xs); font-size: 0.875rem; cursor: pointer;">
                 <input type="checkbox"
-                  .checked=${selectedAcrs.includes(acr)}
+                  .checked=${selectedAcrs.includes(val)}
                   @change=${(e: Event) => {
                     const checked = (e.target as HTMLInputElement).checked;
                     const next = checked
-                      ? [...selectedAcrs, acr]
-                      : selectedAcrs.filter(v => v !== acr);
-                    this.updateEndpointAcrValues(draftId, next.join(' '));
+                      ? [...selectedAcrs, val]
+                      : selectedAcrs.filter(v => v !== val);
+                    this.updateEndpointStepUpAcr(draftId, next.join(' '));
                   }} />
-                ${acr}
+                ${val}
               </label>
             `)}
           </div>
-        ` : html`<div class="endpoint-empty">No ACR vocabulary defined. Configure it in Challenges &amp; Security.</div>`}
+        ` : html`
+          <div class="endpoint-empty">No ACR values registered. Configure them in <strong>Challenge Settings</strong>.</div>
+        `}
       </div>
     `;
   }
@@ -920,11 +971,15 @@ export class VersolaResourcesList extends LitElement {
         <div class="editor-section-header">
           <div class="editor-section-title-row">
             <h3 class="editor-section-title">Max Auth Age (seconds)</h3>
-            ${this.renderOptionInfo(`${draftId}-max-age-info`, html`
-              <div class="option-tooltip-title">Maximum Authentication Age</div>
-              <p>The Edge will enforce that the authentication event happened no longer than this many seconds ago, based on the <code>auth_time</code> claim in the token.</p>
-              <p>Leave empty to disable this check.</p>
-            `)}
+            ${this.renderOptionInfo(
+              `${draftId}-max-age-info`,
+              'Max Auth Age',
+              html`
+                <p>The Edge will enforce that the authentication event happened no longer than this many seconds ago, based on the <code>auth_time</code> claim in the token.</p>
+                <p>Leave empty to disable this check.</p>
+              `,
+              'Max auth age info',
+            )}
           </div>
         </div>
         <input
@@ -1001,7 +1056,7 @@ export class VersolaResourcesList extends LitElement {
               </label>
             </div>
             ${this.renderAllowEditor(endpoint.draftId, endpoint.allow)}
-            ${this.renderAcrEditor(endpoint.draftId, endpoint.acrValues)}
+            ${this.renderStepUpEditor(endpoint.draftId, endpoint.stepUpCondition, endpoint.stepUpAcr)}
             ${this.renderMaxAgeEditor(endpoint.draftId, endpoint.maxAge)}
             ${this.renderInjectEditor(endpoint.draftId, endpoint.inject)}
           </div>

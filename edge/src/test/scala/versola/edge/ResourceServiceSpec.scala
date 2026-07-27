@@ -16,7 +16,8 @@ object ResourceServiceSpec extends ZIOSpecDefault:
     fetchUserInfo = false,
     allow = None,
     inject = Vector.empty,
-    acrValues = None,
+    stepUpCondition = None,
+    stepUpAcr = None,
     maxAge = None,
   )
 
