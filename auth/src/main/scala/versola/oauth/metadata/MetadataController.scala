@@ -7,7 +7,9 @@ import zio.http.*
 import zio.json.*
 
 object MetadataController extends Controller:
-  val routes: Routes[OAuthConfigurationService, Throwable] = Routes(
+  type Env = OAuthConfigurationService
+
+  def routes: Routes[Env, Throwable] = Routes(
     oauthMetadataEndpoint,
     oidcMetadataEndpoint,
   )
