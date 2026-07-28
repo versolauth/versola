@@ -323,4 +323,48 @@ object StepUpFlowSpec extends E2ESpec:
       }
     ),
 
+    suite("session rotation and token invalidation")(
+
+      test("step-up rotates session and invalidates old refresh tokens") {
+        for
+          (s, auth) <- setup(Flows.Id.EmailOtp)
+          // 1. First auth (OTP only)
+          authorize1 <- auth.authorize(
+            scope = "openid email offline_access",
+            clientId = Some(s.clientId),
+            redirectUri = Some(s.redirectUri)
+          ).assertChallengeRedirect
+          _ <- auth.submitEmail(authorize1.conversationCookie.get, s.email.get)
+          submit1 <- auth.submitOtp(authorize1.conversationCookie.get, fixedOtp)
+          code1 <- submit1.assertRedirect
+          sessionCookie1 <- ZIO.fromOption(submit1.sessionCookie).orElseFail(RuntimeException("No SSO_SESSION cookie 1"))
+          token1 <- auth.token(code1, authorize1.verifier, clientId = Some(s.clientId), clientSecret = Some(s.clientSecret), redirectUri = Some(s.redirectUri)).success
+          refreshToken1 <- ZIO.fromOption(token1.refreshToken).orElseFail(RuntimeException("Missing first refresh token"))
+
+          // 2. Perform step-up / re-auth
+          authorize2 <- auth.authorizeRaw(
+            clientId = s.clientId,
+            redirectUri = s.redirectUri,
+            scope = Some("openid email offline_access"),
+            prompt = Some("login"),
+            sessionCookie = Some(sessionCookie1)
+          ).assertChallengeRedirect
+          _ <- auth.submitEmail(authorize2.conversationCookie.get, s.email.get)
+          submit2 <- auth.submitOtp(authorize2.conversationCookie.get, fixedOtp)
+          code2 <- submit2.assertRedirect
+          sessionCookie2 <- ZIO.fromOption(submit2.sessionCookie).orElseFail(RuntimeException("No SSO_SESSION cookie 2"))
+          token2 <- auth.token(code2, authorize2.verifier, clientId = Some(s.clientId), clientSecret = Some(s.clientSecret), redirectUri = Some(s.redirectUri)).success
+
+          // 3. Verify old refresh token is now invalid
+          refreshFailure <- auth.refresh(refreshToken1, clientId = Some(s.clientId), clientSecret = Some(s.clientSecret)).success.exit
+          // 4. Verify via introspection that the old refresh token is inactive
+          introspectResult <- auth.introspect(refreshToken1, clientId = Some(s.clientId), clientSecret = Some(s.clientSecret)).success
+        yield assertTrue(
+          sessionCookie1 != sessionCookie2,
+          refreshFailure.isFailure,
+          !introspectResult.active,
+        )
+      }
+    ),
+
   ) @@ TestAspect.sequential @@ TestAspect.timeout(120.seconds)

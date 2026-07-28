@@ -74,6 +74,7 @@ object ConversationRouterSpec extends UnitSpecBase:
     amr = Map.empty,
     needsPasswordChange = false,
     targetAcr = None,
+    priorSessionId = None,
   )
 
   val otpRecord = ConversationRecord(
@@ -100,6 +101,7 @@ object ConversationRouterSpec extends UnitSpecBase:
     amr = Map.empty,
     needsPasswordChange = false,
     targetAcr = None,
+    priorSessionId = None,
   )
 
   val login = Login("testuser")

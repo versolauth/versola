@@ -76,6 +76,7 @@ object ConversationControllerSpec extends UnitSpecBase:
     amr = Map.empty,
     needsPasswordChange = false,
     targetAcr = None,
+    priorSessionId = None,
   )
 
   def successfulSubmitTestCase(

@@ -162,6 +162,7 @@ object AuthorizeEndpointService:
                             knownUserId = targetUserId,
                             targetAcr = Some(targetAcr),
                             missingUser = reauthMissingUser,
+                            priorSessionId = Some(id),
                           )
                     case _ =>
                       createConversation(
@@ -171,6 +172,7 @@ object AuthorizeEndpointService:
                         Map.empty,
                         knownUserId = targetUserId,
                         missingUser = reauthMissingUser,
+                        priorSessionId = Some(id),
                       )
                 else if !acrSatisfied then
                   // A deleted user has no auth factors registered, so resolveAchievableAcr would
@@ -198,6 +200,7 @@ object AuthorizeEndpointService:
                             knownUserId = Some(session.userId),
                             targetAcr = Some(targetAcr),
                             missingUser = MissingUserBehavior.Deny,
+                            priorSessionId = Some(id),
                           )
                 else if !factorsSatisfied then
                   createConversation(
@@ -208,6 +211,7 @@ object AuthorizeEndpointService:
                     applyHint = false,
                     knownUserId = Some(session.userId),
                     missingUser = MissingUserBehavior.Deny,
+                    priorSessionId = Some(id),
                   )
                 else
                   silentAuthorize(request, uiLocales, SessionInfo(id, session), satisfiedAcr)
@@ -232,6 +236,7 @@ object AuthorizeEndpointService:
         knownUserId: Option[UserId] = None,
         targetAcr: Option[Acr] = None,
         missingUser: MissingUserBehavior = MissingUserBehavior.Ignore,
+        priorSessionId: Option[MAC.Of[SessionId]] = None,
     ): Task[AuthorizeResponse] =
       for
         authId <- AuthId.wrapAll(secureRandom.nextUUIDv7)
@@ -282,6 +287,7 @@ object AuthorizeEndpointService:
           amr = amr,
           needsPasswordChange = false,
           targetAcr = targetAcr,
+          priorSessionId = priorSessionId,
         )
         authConversationTtl <- configurationService.getAuthConversationTtl(request.clientId)
         _ <- conversationRepository.create(authId, conversation, authConversationTtl)
