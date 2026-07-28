@@ -37,7 +37,8 @@ trait ResourceRepositorySpec extends DatabaseSpecBase[ResourceRepositorySpec.Env
     fetchUserInfo = fetchUserInfo,
     allowExpression = allow,
     inject = inject,
-    acrValues = None,
+    stepUpCondition = None,
+    stepUpAcr = None,
     maxAge = None,
   )
 

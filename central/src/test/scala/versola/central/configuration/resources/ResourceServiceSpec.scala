@@ -27,10 +27,10 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
   private val denyAware = Some("token.country != 'blocked'")
   private val inject = Vector(InjectRule(InjectTarget.header, "x-user", "token.sub"))
 
-  private val existingEndpoint = ResourceEndpointRecord(existingEndpointId, "/users", "GET", false, None, Vector.empty, None, None)
-  private val removedEndpoint = ResourceEndpointRecord(removedEndpointId, "/users", "DELETE", false, None, Vector.empty, None, None)
-  private val updatedEndpoint = ResourceEndpointRecord(existingEndpointId, "/users/me", "GET", true, allow, inject, None, None)
-  private val createdEndpoint = ResourceEndpointRecord(createdEndpointId, "/users", "POST", false, denyAware, Vector.empty, None, None)
+  private val existingEndpoint = ResourceEndpointRecord(existingEndpointId, "/users", "GET", false, None, Vector.empty, None, None, None)
+  private val removedEndpoint = ResourceEndpointRecord(removedEndpointId, "/users", "DELETE", false, None, Vector.empty, None, None, None)
+  private val updatedEndpoint = ResourceEndpointRecord(existingEndpointId, "/users/me", "GET", true, allow, inject, None, None, None)
+  private val createdEndpoint = ResourceEndpointRecord(createdEndpointId, "/users", "POST", false, denyAware, Vector.empty, None, None, None)
   private val resource = ResourceRecord(tenantId, resourceId, originalUri, Vector(existingEndpoint, removedEndpoint))
   private val otherTenantResource = ResourceRecord(otherTenantId, otherResourceId, ResourceUri("https://other.example.com"), Vector.empty)
 
@@ -39,8 +39,8 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
     resourceId = resourceId,
     resource = originalUri,
     endpoints = Vector(
-      CreateResourceEndpointRequest(existingEndpointId, "/users", "GET", false, allow, inject, None, None),
-      CreateResourceEndpointRequest(createdEndpointId, "/users", "POST", true, denyAware, Vector.empty, None, None),
+      CreateResourceEndpointRequest(existingEndpointId, "/users", "GET", false, allow, inject, maxAge = None),
+      CreateResourceEndpointRequest(createdEndpointId, "/users", "POST", true, denyAware, Vector.empty, maxAge = None),
     ),
   )
 
@@ -49,8 +49,8 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
     resource = Some(updatedUri),
     deleteEndpoints = Set(removedEndpointId),
     createEndpoints = Vector(
-      CreateResourceEndpointRequest(existingEndpointId, "/users/me", "GET", true, allow, inject, None, None),
-      CreateResourceEndpointRequest(createdEndpointId, "/users", "POST", false, denyAware, Vector.empty, None, None),
+      CreateResourceEndpointRequest(existingEndpointId, "/users/me", "GET", true, allow, inject, maxAge = None),
+      CreateResourceEndpointRequest(createdEndpointId, "/users", "POST", false, denyAware, Vector.empty, maxAge = None),
     ),
   )
 
@@ -88,8 +88,8 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
           resourceId,
           originalUri,
           Vector(
-            ResourceEndpointRecord(existingEndpointId, "/users", "GET", false, allow, inject, None, None),
-            ResourceEndpointRecord(createdEndpointId, "/users", "POST", true, denyAware, Vector.empty, None, None),
+            ResourceEndpointRecord(existingEndpointId, "/users", "GET", false, allow, inject, None, None, None),
+            ResourceEndpointRecord(createdEndpointId, "/users", "POST", true, denyAware, Vector.empty, None, None, None),
           ),
         )),
       )
@@ -98,7 +98,7 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val env = new Env
       val badRequest = createRequest.copy(
         endpoints = Vector(
-          CreateResourceEndpointRequest(existingEndpointId, "/users", "GET", false, Some("token.role =="), Vector.empty, None, None),
+          CreateResourceEndpointRequest(existingEndpointId, "/users", "GET", false, Some("token.role =="), Vector.empty, maxAge = None),
         ),
       )
 
@@ -115,7 +115,7 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val env = new Env
       val badRequest = createRequest.copy(
         endpoints = Vector(
-          CreateResourceEndpointRequest(existingEndpointId, "/users/{id}", "GET", false, None, Vector.empty, None, None),
+          CreateResourceEndpointRequest(existingEndpointId, "/users/{id}", "GET", false, None, Vector.empty, maxAge = None),
         ),
       )
       for result <- env.service.createResource(badRequest)
@@ -128,7 +128,7 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val env = new Env
       val badRequest = createRequest.copy(
         endpoints = Vector(
-          CreateResourceEndpointRequest(existingEndpointId, "/users//list", "GET", false, None, Vector.empty, None, None),
+          CreateResourceEndpointRequest(existingEndpointId, "/users//list", "GET", false, None, Vector.empty, maxAge = None),
         ),
       )
       for result <- env.service.createResource(badRequest)
@@ -141,7 +141,7 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val env = new Env
       val badRequest = createRequest.copy(
         endpoints = Vector(
-          CreateResourceEndpointRequest(existingEndpointId, "/users/:id", "GET", false, None, Vector.empty, None, None),
+          CreateResourceEndpointRequest(existingEndpointId, "/users/:id", "GET", false, None, Vector.empty, maxAge = None),
         ),
       )
       for result <- env.service.createResource(badRequest)
@@ -157,8 +157,7 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
           CreateResourceEndpointRequest(
             existingEndpointId, "/users", "GET", false, allow,
             Vector(InjectRule(InjectTarget.header, "x-bad", "(unterminated")),
-            None,
-            None,
+            maxAge = None,
           ),
         ),
       )
@@ -169,6 +168,50 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
       yield assertTrue(
         result.isLeft,
         result.swap.exists(_.isInstanceOf[ResourceValidationError.InvalidInjectExpression]),
+        env.repository.createResource.calls.isEmpty,
+      )
+    },
+    test("createResource returns error when stepUpCondition expression is invalid CEL") {
+      val env = new Env
+      val badRequest = createRequest.copy(
+        endpoints = Vector(
+          CreateResourceEndpointRequest(
+            existingEndpointId, "/users", "GET", false, allow,
+            Vector.empty,
+            stepUpCondition = Some("request.body.amount >"),
+            maxAge = None,
+          ),
+        ),
+      )
+
+      for
+        _ <- env.repository.createResource.succeedsWith(())
+        result <- env.service.createResource(badRequest)
+      yield assertTrue(
+        result.isLeft,
+        result.swap.exists(_.isInstanceOf[ResourceValidationError.InvalidStepUpConditionExpression]),
+        env.repository.createResource.calls.isEmpty,
+      )
+    },
+    test("createResource returns error when stepUpCondition expression does not return boolean") {
+      val env = new Env
+      val badRequest = createRequest.copy(
+        endpoints = Vector(
+          CreateResourceEndpointRequest(
+            existingEndpointId, "/users", "GET", false, allow,
+            Vector.empty,
+            stepUpCondition = Some("'mfa'"), // string instead of boolean
+            maxAge = None,
+          ),
+        ),
+      )
+
+      for
+        _ <- env.repository.createResource.succeedsWith(())
+        result <- env.service.createResource(badRequest)
+      yield assertTrue(
+        result.isLeft,
+        result.swap.exists(_.isInstanceOf[ResourceValidationError.InvalidStepUpConditionExpression]),
         env.repository.createResource.calls.isEmpty,
       )
     },

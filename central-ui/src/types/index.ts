@@ -179,7 +179,8 @@ export interface ResourceEndpoint {
   fetchUserInfo: boolean;
   allow?: string;
   inject: InjectRule[];
-  acrValues?: string;
+  stepUpCondition?: string;
+  stepUpAcr?: string;
   maxAge?: number;
 }
 

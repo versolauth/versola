@@ -120,7 +120,8 @@ case class ResourceEndpointResponse(
     fetchUserInfo: Boolean,
     allow: Option[String],
     inject: Vector[InjectRule],
-    acrValues: Option[String],
+    stepUpCondition: Option[String],
+    stepUpAcr: Option[String],
     maxAge: Option[Int],
 ) derives Schema, JsonCodec
 
@@ -167,7 +168,8 @@ case class CreateResourceEndpointRequest(
     fetchUserInfo: Boolean,
     allow: Option[String],
     inject: Vector[InjectRule],
-    acrValues: Option[String],
+    stepUpCondition: Option[String] = None,
+    stepUpAcr: Option[String] = None,
     maxAge: Option[Int],
 ) derives Schema, JsonCodec
 
@@ -363,7 +365,8 @@ case class ResourceEndpointSyncResponse(
     fetchUserInfo: Boolean,
     allow: Option[String],
     inject: Vector[InjectRule],
-    acrValues: Option[String],
+    stepUpCondition: Option[String],
+    stepUpAcr: Option[String],
     maxAge: Option[Int],
 ) derives Schema, JsonCodec
 

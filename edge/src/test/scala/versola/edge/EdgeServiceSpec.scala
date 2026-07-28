@@ -335,7 +335,8 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
         fetchUserInfo = false,
         allow = Some("true"),
         inject = Vector.empty,
-        acrValues = None,
+        stepUpCondition = None,
+        stepUpAcr = None,
         maxAge = None,
       )),
     )

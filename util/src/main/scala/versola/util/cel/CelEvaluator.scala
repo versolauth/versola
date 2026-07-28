@@ -1,6 +1,6 @@
 package versola.util.cel
 
-import dev.cel.common.types.SimpleType
+import dev.cel.common.types.{CelType, SimpleType}
 import dev.cel.compiler.CelCompilerFactory
 import dev.cel.runtime.{CelRuntime, CelRuntimeFactory}
 import zio.{IO, Ref, UIO, ULayer, ZIO, ZLayer}
@@ -9,7 +9,7 @@ import scala.jdk.CollectionConverters.MapHasAsJava
 
 trait CelEvaluator:
   def compile(expression: String): UIO[CelEvaluator.Program]
-  def validate(expression: String): IO[CelEvaluator.CompileError, CelEvaluator.Program]
+  def validate(expression: String, expectedType: Option[CelType] = None): IO[CelEvaluator.CompileError, CelEvaluator.Program]
 
 object CelEvaluator:
   case class CompileError(expression: String, message: String)
@@ -38,37 +38,59 @@ object CelEvaluator:
 
   class Impl(cache: Ref[Map[String, Either[CompileError, Program]]]) extends CelEvaluator:
     override def compile(expression: String): UIO[Program] =
-      compileCached(expression).flatMap:
+      compileCached(expression, None).flatMap:
         case Right(program) => ZIO.succeed(program)
         case Left(err) =>
           ZIO.logWarning(s"CEL compilation failed for trusted expression '${err.expression}': ${err.message}")
             .as(FailSafe)
 
-    override def validate(expression: String): IO[CompileError, Program] =
-      compileCached(expression).flatMap:
+    override def validate(expression: String, expectedType: Option[CelType]): IO[CompileError, Program] =
+      compileCached(expression, expectedType).flatMap:
         case Right(program) => ZIO.succeed(program)
         case Left(err)      => ZIO.fail(err)
 
-    private def compileCached(expression: String): UIO[Either[CompileError, Program]] =
-      cache.get.map(_.get(expression)).flatMap:
+    private def compileCached(expression: String, expectedType: Option[CelType]): UIO[Either[CompileError, Program]] =
+      val key = expectedType.fold(expression)(t => s"$expression:$t")
+      cache.get.map(_.get(key)).flatMap:
         case Some(result) => ZIO.succeed(result)
         case None =>
-          compileProgram(expression)
-            .tap(result => cache.update(_.updated(expression, result)))
+          compileProgram(expression, expectedType)
+            .tap(result => cache.update(_.updated(key, result)))
 
-    private def compileProgram(expression: String): UIO[Either[CompileError, Program]] =
+    private def compileProgram(expression: String, expectedType: Option[CelType]): UIO[Either[CompileError, Program]] =
       ZIO.attempt:
         val ast = compiler.compile(expression).getAst
-        ProgramImpl(runtime.createProgram(ast))
+        // Returns true when the expected type was accepted only because the compiler
+        // inferred DYN (i.e. the type guarantee could not be statically proven).
+        val dynAccepted = expectedType.exists: t =>
+          val actualType = ast.getType(ast.getExpr().id()).orElse(SimpleType.DYN)
+          if actualType != t && actualType != SimpleType.DYN then
+            throw new IllegalArgumentException(s"Expected return type $t but got $actualType")
+          actualType == SimpleType.DYN
+        (ProgramImpl(runtime.createProgram(ast)): Program, dynAccepted)
       .either
-      .map(_.left.map(ex => CompileError(expression, Option(ex.getMessage).getOrElse(ex.getClass.getSimpleName))))
+      .flatMap:
+        case Right((program, true)) =>
+          ZIO.logWarning(
+            s"CEL expression '$expression' has a dynamic return type; " +
+            s"the expected type could not be verified at compile time. " +
+            s"A wrong-typed result will silently evaluate to false at runtime."
+          ).as(Right(program))
+        case Right((program, false)) =>
+          ZIO.succeed(Right(program))
+        case Left(ex) =>
+          ZIO.succeed(Left(CompileError(expression, Option(ex.getMessage).getOrElse(ex.getClass.getSimpleName))))
 
   private class ProgramImpl(program: CelRuntime.Program) extends Program:
     override def evaluateBoolean(context: Map[String, AnyRef]): UIO[Boolean] =
       ZIO.attempt(program.eval(context.asJava))
-        .map:
-          case b: java.lang.Boolean => b.booleanValue
-          case _                    => false
+        .flatMap:
+          case b: java.lang.Boolean => ZIO.succeed(b.booleanValue)
+          case other                =>
+            ZIO.logWarning(
+              s"CEL expression returned ${other.getClass.getSimpleName} instead of Boolean; " +
+              s"treating as false. Check that the expression is a valid boolean CEL expression."
+            ).as(false)
         .catchAll: ex =>
           ZIO.logWarning(s"CEL evaluation failed: ${ex.getMessage}").as(false)
 
