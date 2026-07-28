@@ -174,13 +174,32 @@ export class VersolaAdmin extends LitElement {
       }
 
       /* Focus is moved here programmatically when the drawer closes (see
-         closeNav). Kept visible, just inset rather than the browser's default
-         halo around the whole content column — a keyboard/screen-reader user
-         needs to see where focus landed, it's just quieter than the ring on an
-         actual control. */
-      .main-content:focus {
-        outline: 2px solid var(--accent);
-        outline-offset: -2px;
+         closeNav). It still needs to be *visible* — a keyboard user shouldn't
+         be left wondering where focus went — but .main-content spans the full
+         page, so a static outline around it reads as a stray border around the
+         whole screen rather than a focus indicator, especially since it never
+         goes away until focus moves again. Faded flash instead: felt at the
+         moment focus lands, gone a moment later.
+         :focus-visible rather than :focus as a side benefit: it only fires
+         from keyboard-driven closes (Escape, the drawer's own ✕). Clicking the
+         backdrop with a mouse skips it, since the mouse user just watched the
+         drawer close and doesn't need the same cue. */
+      .main-content:focus-visible {
+        outline: none;
+        animation: focus-flash 0.6s ease-out;
+      }
+
+      @keyframes focus-flash {
+        from { box-shadow: inset 0 0 0 2px var(--accent); }
+        to { box-shadow: inset 0 0 0 2px transparent; }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .main-content:focus-visible {
+          animation: none;
+          outline: 2px solid var(--accent);
+          outline-offset: -2px;
+        }
       }
 
       /* The backdrop only exists on mobile, where the sidebar is an off-canvas
