@@ -70,8 +70,11 @@ class PostgresRoleRepository(
       descriptionPatch: PatchDescription,
       permissionsPatch: PatchPermissions,
   ): Task[Unit] =
-    xa.repeatableRead.transactMeasured("update-role"):
-      getRole(id, tenantId).run().headOption match
+    xa.transactMeasured("update-role"):
+      // Lock the row (READ_COMMITTED + FOR UPDATE) to prevent lost updates from concurrent writers.
+      sql"""SELECT id, tenant_id, description, permissions, active FROM roles
+            WHERE tenant_id = $tenantId AND id = $id
+            FOR UPDATE""".query[RoleRecord].run().headOption match
         case None => ()
         case Some(role) =>
           val newDescr = (role.description -- descriptionPatch.delete) ++ descriptionPatch.add

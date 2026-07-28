@@ -64,8 +64,13 @@ class PostgresResourceRepository(xa: TransactorZIO) extends ResourceRepository, 
       addEndpoints: Vector[ResourceEndpointRecord],
       deleteEndpoints: Set[ResourceEndpointId],
   ): Task[Unit] =
-    xa.repeatableRead.transactMeasured("update-resource"):
-      findResourceQuery(resourceId).run().headOption match
+    xa.transactMeasured("update-resource"):
+      // Lock the row (READ_COMMITTED + FOR UPDATE) to prevent lost updates from concurrent writers.
+      sql"""
+        SELECT tenant_id, resource_id, resource, endpoints FROM resources
+        WHERE resource_id = $resourceId
+        FOR UPDATE
+      """.query[ResourceRecord].run().headOption match
         case None => ()
         case Some(resource) =>
           val endpointsToRemove = deleteEndpoints ++ addEndpoints.map(_.id)
