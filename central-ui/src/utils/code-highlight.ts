@@ -5,8 +5,9 @@ import 'prismjs/components/prism-javascript';
 import 'prismjs/components/prism-typescript';
 import 'prismjs/components/prism-jsx';
 import 'prismjs/components/prism-tsx';
+import 'prismjs/components/prism-json';
 
-export type EditorLanguage = 'html' | 'css' | 'typescript';
+export type EditorLanguage = 'html' | 'css' | 'typescript' | 'json';
 
 export interface CodeToken {
   kind: string;
@@ -35,7 +36,9 @@ export function tokenize(source: string, language: EditorLanguage): CodeToken[] 
     ? Prism.languages.tsx
     : language === 'css'
       ? Prism.languages.css
-      : Prism.languages.markup;
+      : language === 'json'
+        ? Prism.languages.json
+        : Prism.languages.markup;
   return flattenTokens(Prism.tokenize(source, grammar));
 }
 

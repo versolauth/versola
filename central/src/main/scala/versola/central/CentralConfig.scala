@@ -30,6 +30,7 @@ object CentralConfig:
       redirectUris: List[String],
       edges: Option[List[CentralConfig.BootstrapConfig.EdgeSeed]],
       jwks: Option[Json.Obj],
+      metadata: Option[Json.Obj],
       presets: Option[List[CentralConfig.BootstrapConfig.PresetSeed]],
       centralUrl: Option[String],
       /** Base64Url-encoded fixed secret for the central-admin OAuth client.

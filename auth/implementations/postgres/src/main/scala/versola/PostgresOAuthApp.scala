@@ -17,6 +17,7 @@ import versola.oauth.revoke.{AccessTokenRevocationService, RevocationController,
 import versola.oauth.session.{PostgresSessionRepository, SessionRepository, SessionService}
 import versola.oauth.token.{AuthorizationCodeRepository, OAuthTokenService, TokenEndpointController}
 import versola.oauth.userinfo.{UserInfoController, UserInfoService}
+import versola.oauth.metadata.{MetadataController, MetadataSyncClient}
 import versola.user.{PostgresUserRepository, PostgresUserRolesRepository, UserController, UserRepository, UserRolesRepository}
 import versola.util.*
 import versola.util.http.VersolaApp
@@ -79,6 +80,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       ConversationController.routes,
       UserInfoController.routes,
       JwksController.routes,
+      MetadataController.routes,
       UserController.routes,
       ServiceController.routes,
     ).reduce(_ ++ _)
@@ -103,6 +105,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       OAuthConfigurationService.live(Schedule.spaced(1.minute)) >+>
       CentralSyncTokenService.live >+>
       JwksSyncClient.live >+>
+      MetadataSyncClient.live >+>
       JwksService.live(Schedule.spaced(1.minute)) >+>
       AuthPropertyGenerator.live >+>
       SessionService.live >+>

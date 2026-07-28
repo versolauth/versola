@@ -1,9 +1,11 @@
 package versola.oauth.client
 
 import versola.oauth.client.model.*
+import versola.oauth.metadata.MetadataSyncClient
 import versola.util.*
 import zio.*
 import zio.durationInt
+import zio.json.ast.Json
 import zio.prelude.NonEmptySet
 import zio.test.*
 
@@ -73,6 +75,7 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
       otpTemplates: Vector[OtpTemplateRecord] = Vector.empty,
       challengeSettingsVec: Vector[ChallengeSettingsRecord] = Vector(challengeSettings),
       sysSettings: SystemSettingsRecord = systemSettings,
+      metadata: Option[Json.Obj] = None,
   ) =
     for
       clientRef         <- Ref.make(clients)
@@ -83,6 +86,7 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
       otpRef            <- Ref.make(otpTemplates)
       challengeRef      <- Ref.make(challengeSettingsVec)
       sysRef            <- Ref.make(sysSettings)
+      metadataRef       <- Ref.make(metadata)
     yield OAuthConfigurationService.Impl(
       clientCache = ReloadingCache(clientRef),
       clientRepository = stub[OAuthClientSyncClient],
@@ -100,6 +104,8 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
       challengeSettingsRepository = stub[ChallengeSettingsSyncClient],
       systemSettingsCache = ReloadingCache(sysRef),
       systemSettingsRepository = stub[SystemSettingsSyncClient],
+      metadataCache = ReloadingCache(metadataRef),
+      metadataRepository = stub[MetadataSyncClient],
     )
 
   val spec = suite("OAuthConfigurationService")(

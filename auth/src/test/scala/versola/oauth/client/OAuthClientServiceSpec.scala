@@ -1,12 +1,15 @@
 package versola.oauth.client
 
-import versola.oauth.client.model.{ChallengeSettingsRecord, Claim, ClaimRecord, ClientId, FormRecord, Locales, OAuthClientRecord, OtpTemplateRecord, ScopeRecord, ScopeToken, SystemSettingsRecord, TenantId, ThemeRecord}
+import versola.oauth.client.model.{Acr, ChallengeSettingsRecord, Claim, ClaimRecord, ClientId, FormRecord, Locales, OAuthClientRecord, OtpTemplateRecord, PassedAuthFactor, PasskeySettings, RateLimit, ScopeRecord, ScopeToken, SubmissionLimits, SystemSettingsRecord, TenantId, ThemeRecord}
 import versola.oauth.conversation.otp.model.OtpTemplate
+import versola.oauth.metadata.MetadataSyncClient
 import versola.util.*
 import zio.*
 import zio.durationInt
-import zio.prelude.{EqualOps, NonEmptySet}
+import zio.json.ast.Json
+import zio.prelude.{EqualOps, NonEmptyList, NonEmptySet}
 import zio.test.*
+import zio.test.Assertion.*
 
 object OAuthClientServiceSpec extends UnitSpecBase:
   val clientId1 = ClientId("test-client-1")
@@ -74,14 +77,15 @@ object OAuthClientServiceSpec extends UnitSpecBase:
   )
 
   final class Env(
-      clientCache: ReloadingCache[Map[ClientId, OAuthClientRecord]],
-      scopeCache: ReloadingCache[Vector[ScopeRecord]],
-      formCache: ReloadingCache[Vector[FormRecord]],
-      themeCache: ReloadingCache[Vector[ThemeRecord]],
-      localeCache: ReloadingCache[Locales],
-      otpTemplateCache: ReloadingCache[Vector[OtpTemplateRecord]],
-      challengeSettingsCache: ReloadingCache[Vector[ChallengeSettingsRecord]],
-      systemSettingsCache: ReloadingCache[SystemSettingsRecord],
+      val clientCache: ReloadingCache[Map[ClientId, OAuthClientRecord]],
+      val scopeCache: ReloadingCache[Vector[ScopeRecord]],
+      val formCache: ReloadingCache[Vector[FormRecord]],
+      val themeCache: ReloadingCache[Vector[ThemeRecord]],
+      val localeCache: ReloadingCache[Locales],
+      val otpTemplateCache: ReloadingCache[Vector[OtpTemplateRecord]],
+      val challengeSettingsCache: ReloadingCache[Vector[ChallengeSettingsRecord]],
+      val systemSettingsCache: ReloadingCache[SystemSettingsRecord],
+      val metadataCache: ReloadingCache[Option[Json.Obj]],
   ):
     val clientSync = stub[OAuthClientSyncClient]
     val scopeSync = stub[OAuthScopeSyncClient]
@@ -91,6 +95,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
     val otpTemplateSync = stub[OtpTemplateSyncClient]
     val challengeSettingsSync = stub[ChallengeSettingsSyncClient]
     val systemSettingsSync = stub[SystemSettingsSyncClient]
+    val metadataSync = stub[MetadataSyncClient]
     val service: OAuthConfigurationService =
       OAuthConfigurationService.Impl(
         clientCache,
@@ -109,6 +114,8 @@ object OAuthClientServiceSpec extends UnitSpecBase:
         challengeSettingsSync,
         systemSettingsCache,
         systemSettingsSync,
+        metadataCache,
+        metadataSync,
       )
 
   private def makeEnv(
@@ -130,6 +137,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
       otpTemplateRef <- Ref.make(otpTemplates)
       challengeSettingsRef <- Ref.make(challengeSettings)
       systemSettingsRef <- Ref.make(systemSettings)
+      metadataRef <- Ref.make(Option.empty[Json.Obj])
     yield Env(
       clientCache = ReloadingCache(clientRef),
       scopeCache = ReloadingCache(scopeRef),
@@ -139,6 +147,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
       otpTemplateCache = ReloadingCache(otpTemplateRef),
       challengeSettingsCache = ReloadingCache(challengeSettingsRef),
       systemSettingsCache = ReloadingCache(systemSettingsRef),
+      metadataCache = ReloadingCache(metadataRef),
     )
 
   val spec = suite("OAuthConfigurationService")(
@@ -240,4 +249,147 @@ object OAuthClientServiceSpec extends UnitSpecBase:
         yield assertTrue(result == OtpTemplate("{{code}}"))
       },
     ),
+    suite("getPasswordTemplate")(
+      test("returns template body for preferred locale") {
+        val template = OtpTemplateRecord(
+          "password-template",
+          TenantId("default"),
+          Map("en" -> "Password reset: {{code}}", "ru" -> "Сброс пароля: {{code}}"),
+          purpose = "password",
+        )
+        for
+          env <- makeEnv(
+            otpTemplates = Vector(template),
+            locales = Locales(Vector.empty, "en"),
+          )
+          result <- env.service.getPasswordTemplate(Some(List("ru")))
+        yield assertTrue(result == OtpTemplate("Сброс пароля: {{code}}"))
+      },
+      test("fails when no password template found") {
+        for
+          env <- makeEnv(otpTemplates = Vector.empty)
+          result <- env.service.getPasswordTemplate(None).exit
+        yield assert(result)(fails(isSubtype[RuntimeException](hasMessage(equalTo("No global password template configured")))))
+      }
+    ),
+    test("getSubmissionLimits returns limits from challenge settings") {
+      val limits = SubmissionLimits(otpRequest = List(RateLimit(5, 60)))
+      val settings = ChallengeSettingsRecord(
+        tenantId = TenantId("default"),
+        allowedPrefixes = Nil,
+        submissionLimits = limits,
+        otpLength = 6,
+        otpResendAfter = 60,
+        passkeySettings = PasskeySettings("rp", "RP", Nil, "required"),
+        authConversationTtlSeconds = 900,
+        sessionTtlSeconds = 86400,
+        sessionIdleTtlSeconds = None,
+        ipHeader = "X-Forwarded-For",
+        acrVocabulary = None,
+      )
+      for
+        env <- makeEnv(challengeSettings = Vector(settings))
+        result <- env.service.getSubmissionLimits(clientId1)
+      yield assertTrue(result == limits)
+    },
+    test("getIpHeader returns header from challenge settings") {
+      val settings = ChallengeSettingsRecord(
+        tenantId = TenantId("default"),
+        allowedPrefixes = Nil,
+        submissionLimits = SubmissionLimits.empty,
+        otpLength = 6,
+        otpResendAfter = 60,
+        passkeySettings = PasskeySettings("rp", "RP", Nil, "required"),
+        authConversationTtlSeconds = 900,
+        sessionTtlSeconds = 86400,
+        sessionIdleTtlSeconds = None,
+        ipHeader = "X-Custom-IP",
+        acrVocabulary = None,
+      )
+      for
+        env <- makeEnv(challengeSettings = Vector(settings))
+        result <- env.service.getIpHeader(clientId1)
+      yield assertTrue(result == "X-Custom-IP")
+    },
+    test("getPasskeySettings returns settings from challenge settings") {
+      val passkey = PasskeySettings("rp.com", "RP", List("https://rp.com"), "preferred")
+      val settings = ChallengeSettingsRecord(
+        tenantId = TenantId("default"),
+        allowedPrefixes = Nil,
+        submissionLimits = SubmissionLimits.empty,
+        otpLength = 6,
+        otpResendAfter = 60,
+        passkeySettings = passkey,
+        authConversationTtlSeconds = 900,
+        sessionTtlSeconds = 86400,
+        sessionIdleTtlSeconds = None,
+        ipHeader = "X-Real-IP",
+        acrVocabulary = None,
+      )
+      for
+        env <- makeEnv(challengeSettings = Vector(settings))
+        result <- env.service.getPasskeySettings(clientId1)
+      yield assertTrue(result == Some(passkey))
+    },
+    test("getPasswordHistorySettings returns from system settings") {
+      val settings = SystemSettingsRecord.default.copy(passwordHistorySize = 10, passwordNumDifferent = 3)
+      for
+        env <- makeEnv(systemSettings = settings)
+        result <- env.service.getPasswordHistorySettings
+      yield assertTrue(result.historySize == 10, result.numDifferent == 3)
+    },
+    test("getMetadata returns cached metadata") {
+      val metadata = Json.Obj("issuer" -> Json.Str("https://issuer.com"))
+      for
+        env <- makeEnv()
+        _ <- env.metadataCache.set(Some(metadata))
+        result <- env.service.getMetadata
+      yield assertTrue(result == Some(metadata))
+    },
+    test("syncConfiguration fetches and updates all caches") {
+      for
+        env <- makeEnv(clients = Map.empty, scopes = Vector.empty)
+        _ <- env.clientSync.getAll.succeedsWith(testClients)
+        _ <- env.scopeSync.getAll.succeedsWith(testScopes)
+        _ <- env.formSync.getAll.succeedsWith(Vector.empty)
+        _ <- env.themeSync.getAll.succeedsWith(Vector.empty)
+        _ <- env.localeSync.getAll.succeedsWith(Locales(Vector.empty, "en"))
+        _ <- env.otpTemplateSync.getAll.succeedsWith(Vector.empty)
+        _ <- env.challengeSettingsSync.getAll.succeedsWith(Vector.empty)
+        _ <- env.systemSettingsSync.getAll.succeedsWith(SystemSettingsRecord.default)
+        _ <- env.metadataSync.getAll.succeedsWith(Some(Json.Obj("a" -> Json.Num(1))))
+
+        _ <- env.service.syncConfiguration
+
+        clients <- env.service.find(clientId1)
+        scopes <- env.service.getScopes
+        metadata <- env.service.getMetadata
+      yield assertTrue(
+        clients.isDefined,
+        scopes == testScopes,
+        metadata == Some(Json.Obj("a" -> Json.Num(1)))
+      )
+    },
+    test("getAcrVocabulary returns vocabulary from challenge settings") {
+      val vocabulary = Map("factor1" -> List(PassedAuthFactor.password))
+      val settings = ChallengeSettingsRecord(
+        tenantId = TenantId("default"),
+        allowedPrefixes = Nil,
+        submissionLimits = SubmissionLimits.empty,
+        otpLength = 6,
+        otpResendAfter = 60,
+        passkeySettings = PasskeySettings("rp", "RP", Nil, "required"),
+        authConversationTtlSeconds = 900,
+        sessionTtlSeconds = 86400,
+        sessionIdleTtlSeconds = None,
+        ipHeader = "X-Real-IP",
+        acrVocabulary = Some(vocabulary),
+      )
+      for
+        env <- makeEnv(challengeSettings = Vector(settings))
+        result <- env.service.getAcrVocabulary(clientId1)
+      yield assertTrue(result == Map(Acr("factor1") -> NonEmptyList(PassedAuthFactor.password)))
+    },
+
+
   )
