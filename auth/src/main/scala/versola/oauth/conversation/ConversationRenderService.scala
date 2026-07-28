@@ -128,7 +128,7 @@ object ConversationRenderService:
                 for
                   signingKey <- jwksService.getPublicKeys.map(_.active)
                   cHash = JWT.leftHalfHash(encodedCode, signingKey.algorithm)
-                  dataWithCHash = data.copy(claims = data.claims + ("c_hash" -> zio.json.ast.Json.Str(cHash)))
+                  dataWithCHash = data.copy(claims = data.claims + ("c_hash" -> Json.Str(cHash)))
                   token <- serializeIdToken(dataWithCHash, signingKey)
                 yield Some(token)
               case None => ZIO.none

@@ -2,19 +2,26 @@ import { LitElement, html, css } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
 import { buttonStyles, cardStyles, formStyles } from '../styles/components';
-import { createJwk, deleteJwk, fetchJwks, updateJwk } from '../utils/central-api';
+import { fetchJwks, deleteJwk, createJwk, updateJwk, fetchServerMetadata, upsertServerMetadata } from '../utils/central-api';
 import { confirmDestructiveAction } from '../utils/confirm-dialog';
 import './content-header';
 import './error-card';
 import './loading-cards';
 
-@customElement('versola-jwks-list')
-export class VersolaJwksList extends LitElement {
+@customElement('versola-well-known')
+export class VersolaWellKnown extends LitElement {
   @property({ type: Boolean }) canManage = false;
 
   @state() private keys: Record<string, unknown>[] = [];
+  @state() private metadata: Record<string, unknown> | null = null;
   @state() private isLoading = false;
+  @state() private isLoadingMetadata = false;
   @state() private errorMessage = '';
+  @state() private metadataError = '';
+  @state() private metadataInput = '';
+  @state() private isSavingMetadata = false;
+  @state() private isEditingMetadata = false;
+
   @state() private formMode: 'add' | 'edit' | null = null;
   @state() private editingKid = '';
   @state() private jwkInput = '';
@@ -24,6 +31,7 @@ export class VersolaJwksList extends LitElement {
   connectedCallback() {
     super.connectedCallback();
     void this.loadData();
+    void this.loadMetadata();
   }
 
   static styles = [
@@ -34,6 +42,38 @@ export class VersolaJwksList extends LitElement {
     css`
       :host {
         display: block;
+      }
+
+      .section-title {
+        font-size: 1.25rem;
+        font-weight: 600;
+        color: var(--text-primary);
+        margin: var(--spacing-xl) 0 var(--spacing-lg) 0;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+      }
+
+      .metadata-card {
+        background: var(--bg-dark-card);
+        border: 1px solid var(--border-dark);
+        border-radius: var(--radius-lg);
+        padding: var(--spacing-lg);
+        margin-bottom: var(--spacing-xl);
+      }
+
+      .metadata-json {
+        background: var(--bg-dark);
+        border: 1px solid var(--border-dark);
+        border-radius: var(--radius-md);
+        padding: var(--spacing-md);
+        font-family: var(--font-mono);
+        font-size: 0.8125rem;
+        color: var(--text-secondary);
+        overflow-x: auto;
+        white-space: pre-wrap;
+        word-break: break-all;
+        margin: 0;
       }
 
       .key-card {
@@ -174,6 +214,50 @@ export class VersolaJwksList extends LitElement {
     }
   }
 
+  private async loadMetadata() {
+    this.isLoadingMetadata = true;
+    this.metadataError = '';
+    try {
+      this.metadata = await fetchServerMetadata();
+      this.metadataInput = JSON.stringify(this.metadata, null, 2);
+    } catch (err) {
+      this.metadataError = err instanceof Error ? err.message : 'Failed to load server metadata';
+    } finally {
+      this.isLoadingMetadata = false;
+    }
+  }
+
+  private handleEditMetadata() {
+    this.isEditingMetadata = true;
+    this.metadataInput = JSON.stringify(this.metadata, null, 2);
+  }
+
+  private handleCancelMetadata() {
+    this.isEditingMetadata = false;
+    this.metadataInput = JSON.stringify(this.metadata, null, 2);
+  }
+
+  private async handleSaveMetadata() {
+    let parsed: Record<string, unknown>;
+    try {
+      parsed = JSON.parse(this.metadataInput);
+    } catch {
+      alert('Invalid JSON in metadata');
+      return;
+    }
+
+    this.isSavingMetadata = true;
+    try {
+      await upsertServerMetadata(parsed);
+      this.metadata = parsed;
+      this.isEditingMetadata = false;
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Failed to save metadata');
+    } finally {
+      this.isSavingMetadata = false;
+    }
+  }
+
   private handleAddClick() {
     this.formMode = 'add';
     this.editingKid = '';
@@ -251,7 +335,7 @@ export class VersolaJwksList extends LitElement {
     const isEdit = this.formMode === 'edit';
     return html`
       <div class="add-form-card">
-        <h3 class="add-form-title">${isEdit ? `Edit JWK · ${this.editingKid}` : 'Add JWK'}</h3>
+        <h3 class="add-form-title">\${isEdit ? \`Edit JWK · \${this.editingKid}\` : 'Add JWK'}</h3>
         <div class="form-group">
           <label class="form-label" for="jwk-input">JWK JSON</label>
           <textarea
@@ -259,19 +343,19 @@ export class VersolaJwksList extends LitElement {
             class="form-control"
             rows="10"
             placeholder='{"kid": "my-key-id", "kty": "RSA", "use": "sig", ...}'
-            .value=${this.jwkInput}
-            @input=${(e: Event) => { this.jwkInput = (e.target as HTMLTextAreaElement).value; }}
+            .value=\${this.jwkInput}
+            @input=\${(e: Event) => { this.jwkInput = (e.target as HTMLTextAreaElement).value; }}
           ></textarea>
-          ${isEdit ? html`<div class="form-hint">The 'kid' cannot be changed when editing.</div>` : ''}
-          ${this.formError ? html`<div class="add-error">${this.formError}</div>` : ''}
+          \${isEdit ? html\`<div class="form-hint">The 'kid' cannot be changed when editing.</div>\` : ''}
+          \${this.formError ? html\`<div class="add-error">\${this.formError}</div>\` : ''}
         </div>
         <div class="add-form-actions">
           <button
             class="btn btn-primary"
-            @click=${this.handleSubmitForm}
-            ?disabled=${this.isSubmitting}
-          >${this.isSubmitting ? 'Saving…' : isEdit ? 'Save Changes' : 'Add Key'}</button>
-          <button class="btn btn-secondary" @click=${this.handleCancelForm}>Cancel</button>
+            @click=\${this.handleSubmitForm}
+            ?disabled=\${this.isSubmitting}
+          >\${this.isSubmitting ? 'Saving…' : isEdit ? 'Save Changes' : 'Add Key'}</button>
+          <button class="btn btn-secondary" @click=\${this.handleCancelForm}>Cancel</button>
         </div>
       </div>
     `;
@@ -285,26 +369,26 @@ export class VersolaJwksList extends LitElement {
       <div class="key-card">
         <div class="key-header">
           <div class="key-header-info">
-            <span class="key-id">${kid}</span>
-            <span class="key-meta">${kty}${alg ? ` · ${alg}` : ''}</span>
+            <span class="key-id">\${kid}</span>
+            <span class="key-meta">\${kty}\${alg ? \` · \${alg}\` : ''}</span>
           </div>
-          ${this.canManage ? html`
+          \${this.canManage ? html\`
           <div class="key-actions">
             <button
               class="icon-action"
               title="Edit key"
-              aria-label="Edit key ${kid}"
-              @click=${() => this.handleEditClick(key)}
+              aria-label="Edit key \${kid}"
+              @click=\${() => this.handleEditClick(key)}
             >✎</button>
             <button
               class="icon-action danger"
               title="Delete key"
-              aria-label="Delete key ${kid}"
-              @click=${() => this.handleDeleteKey(kid)}
+              aria-label="Delete key \${kid}"
+              @click=\${() => this.handleDeleteKey(kid)}
             >✕</button>
-          </div>` : ''}
+          </div>\` : ''}
         </div>
-        <pre class="key-json">${JSON.stringify(key, null, 2)}</pre>
+        <pre class="key-json">\${JSON.stringify(key, null, 2)}</pre>
       </div>
     `;
   }
@@ -312,48 +396,89 @@ export class VersolaJwksList extends LitElement {
   render() {
     return html`
       <content-header
-        title="JWKS"
-        description="JSON Web Key Set served by this central instance"
-      >
-        ${this.canManage ? html`
-        <button slot="actions" class="btn btn-primary" @click=${this.handleAddClick}>
+        title="Well Known"
+        description="Public configuration and keys served by this central instance"
+      ></content-header>
+
+      <div class="section-title">
+        <span>Server Metadata</span>
+        \${this.canManage && !this.isEditingMetadata ? html\`
+          <button class="btn btn-primary" @click=\${this.handleEditMetadata}>Edit Metadata</button>
+        \` : ''}
+      </div>
+
+      \${this.isLoadingMetadata ? html\`<versola-loading-cards .count=\${1}></versola-loading-cards>\` : this.renderMetadata()}
+
+      <div class="section-title">
+        <span>JWKS</span>
+        \${this.canManage ? html\`
+        <button slot="actions" class="btn btn-primary" @click=\${this.handleAddClick}>
           + Add Key
-        </button>` : ''}
-      </content-header>
+        </button>\` : ''}
+      </div>
 
-      ${this.formMode !== null ? this.renderForm() : ''}
+      \${this.formMode !== null ? this.renderForm() : ''}
 
-      ${this.isLoading
-        ? html`<versola-loading-cards .count=${3}></versola-loading-cards>`
+      \${this.isLoading
+        ? html\`<versola-loading-cards .count=\${3}></versola-loading-cards>\`
         : this.errorMessage
-          ? html`
+          ? html\`
             <versola-error-card
               heading="Could not load JWKS"
-              .message=${this.errorMessage}
-              @retry=${() => this.loadData()}
+              .message=\${this.errorMessage}
+              @retry=\${() => this.loadData()}
             ></versola-error-card>
-          `
+          \`
           : this.keys.length === 0 && this.formMode === null
-            ? html`
+            ? html\`
               <div class="card">
                 <div class="empty-state">
                   <div class="empty-state-icon">🔑</div>
                   <p>No keys found.</p>
-                  ${this.canManage ? html`
-                  <button class="btn btn-primary" @click=${this.handleAddClick} style="margin-top: 1rem;">
+                  \${this.canManage ? html\`
+                  <button class="btn btn-primary" @click=\${this.handleAddClick} style="margin-top: 1rem;">
                     + Add Key
-                  </button>` : ''}
+                  </button>\` : ''}
                 </div>
               </div>
-            `
+            \`
             : this.keys.map(k => this.renderKey(k))
       }
+    `;
+  }
+
+  private renderMetadata() {
+    if (this.isEditingMetadata) {
+      return html`
+        <div class="metadata-card">
+          <div class="form-group">
+            <textarea
+              class="form-control"
+              rows="15"
+              .value=\${this.metadataInput}
+              @input=\${(e: Event) => this.metadataInput = (e.target as HTMLTextAreaElement).value}
+            ></textarea>
+          </div>
+          <div style="display: flex; gap: 1rem; margin-top: 1rem;">
+            <button class="btn btn-primary" @click=\${this.handleSaveMetadata} ?disabled=\${this.isSavingMetadata}>
+              \${this.isSavingMetadata ? 'Saving...' : 'Save Metadata'}
+            </button>
+            <button class="btn btn-secondary" @click=\${this.handleCancelMetadata}>Cancel</button>
+          </div>
+        </div>
+      `;
+    }
+
+    return html`
+      <div class="metadata-card">
+        <pre class="metadata-json">\${JSON.stringify(this.metadata, null, 2)}</pre>
+      </div>
     `;
   }
 }
 
 declare global {
   interface HTMLElementTagNameMap {
-    'versola-jwks-list': VersolaJwksList;
+    'versola-well-known': VersolaWellKnown;
   }
 }

@@ -6,7 +6,7 @@ import versola.central.configuration.system.{SystemSettingsRecord, SystemSetting
 import versola.central.configuration.clients.{AuthFlow, AuthorizationPreset, AuthorizationPresetRepository, ClientAlreadyExists, OAuthClientService, PresetId, PrimaryAuthFlow, PrimaryCredential, ResponseType}
 import versola.central.configuration.edges.{EdgeId, EdgeRepository}
 import versola.central.configuration.forms.{BackendProperty, BooleanProperty, FormId, FormRepository, NumberProperty, StringArrayProperty}
-import versola.central.configuration.jwks.{JwksRepository, JwksService}
+import versola.central.configuration.jwks.JwksRepository
 import versola.central.configuration.locales.{LocaleRecord, LocaleRepository}
 import versola.central.configuration.permissions.{Permission, PermissionRepository}
 import versola.central.configuration.resources.{ResourceEndpointId, ResourceEndpointRecord, ResourceId, ResourceRepository}
@@ -15,6 +15,7 @@ import versola.central.configuration.scopes.{Claim, OAuthScopeRepository, ScopeT
 import versola.central.configuration.tenants.{TenantId, TenantRepository}
 import versola.central.configuration.themes.{ThemeRecord, ThemeRepository}
 import versola.central.configuration.{CreateClaim, CreateClientRequest, ResourceUri}
+import versola.central.configuration.metadata.ServerMetadataRepository
 import versola.central.users.{Login, UserConflict, UserId, UserRepository}
 import versola.util.{RedirectUri, Secret}
 import zio.json.DecoderOps
@@ -366,6 +367,8 @@ object BootstrapService:
     "POST"   -> "/configuration/jwks",
     "PUT"    -> "/configuration/jwks",
     "DELETE" -> "/configuration/jwks",
+    "GET"    -> "/configuration/server-metadata",
+    "POST"   -> "/configuration/server-metadata",
     "GET"    -> "/configuration/locales",
     "PUT"    -> "/configuration/locales",
     "PUT"    -> "/configuration/locales/default",
@@ -415,7 +418,7 @@ object BootstrapService:
         try source.mkString finally source.close()
 
   val live: ZLayer[
-    TenantRepository & PermissionRepository & OAuthScopeRepository & RoleRepository & OtpChallengeRepository & ChallengeSettingsRepository & SystemSettingsRepository & ThemeRepository & LocaleRepository & FormRepository & OAuthClientService & AuthorizationPresetRepository & EdgeRepository & ResourceRepository & JwksRepository & JwksService & UserRepository & CentralConfig,
+    TenantRepository & PermissionRepository & OAuthScopeRepository & RoleRepository & OtpChallengeRepository & ChallengeSettingsRepository & SystemSettingsRepository & ThemeRepository & LocaleRepository & FormRepository & OAuthClientService & AuthorizationPresetRepository & EdgeRepository & ResourceRepository & JwksRepository & ServerMetadataRepository & UserRepository & CentralConfig,
     Throwable,
     BootstrapService,
   ] =
@@ -438,7 +441,7 @@ object BootstrapService:
       edgeRepo: EdgeRepository,
       resourceRepo: ResourceRepository,
       jwksRepo: JwksRepository,
-      jwksService: JwksService,
+      metadataRepo: ServerMetadataRepository,
       userRepo: UserRepository,
       config: CentralConfig,
   ) extends BootstrapService:
@@ -467,7 +470,7 @@ object BootstrapService:
           _ <- linkTenantEdge(tenantId, config)
           _ <- seedCentralResource(config)
           _ <- seedJwks(config)
-          _ <- jwksService.sync()
+          _ <- seedMetadata(config)
         yield ()
       }.unit
 
@@ -681,3 +684,9 @@ object BootstrapService:
               case None    => jwksRepo.create(kid, jwk)
           case None =>
             ZIO.logWarning("Skipping bootstrap JWK without a 'kid' field")
+
+    private def seedMetadata(config: CentralConfig.BootstrapConfig): Task[Unit] =
+      ZIO.foreachDiscard(config.metadata): metadata =>
+        metadataRepo.get.flatMap:
+          case Some(_) => ZIO.unit
+          case None    => metadataRepo.upsert(metadata)

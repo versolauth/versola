@@ -1,0 +1,33 @@
+package versola.oauth.metadata
+
+import versola.oauth.client.OAuthConfigurationService
+import versola.util.http.Controller
+import zio.*
+import zio.http.*
+import zio.json.*
+
+object MetadataController extends Controller:
+  val routes: Routes[OAuthConfigurationService, Throwable] = Routes(
+    oauthMetadataEndpoint,
+    oidcMetadataEndpoint,
+  )
+
+  private val oauthMetadataEndpoint =
+    Method.GET / ".well-known" / "oauth-authorization-server" -> handler { (request: Request) =>
+      for
+        service <- ZIO.service[OAuthConfigurationService]
+        metadata <- service.getMetadata
+      yield metadata match
+        case Some(json) => Response.json(json.toJson)
+        case None       => Response.status(Status.NotFound)
+    }
+
+  private val oidcMetadataEndpoint =
+    Method.GET / ".well-known" / "openid-configuration" -> handler { (request: Request) =>
+      for
+        service <- ZIO.service[OAuthConfigurationService]
+        metadata <- service.getMetadata
+      yield metadata match
+        case Some(json) => Response.json(json.toJson)
+        case None       => Response.status(Status.NotFound)
+    }

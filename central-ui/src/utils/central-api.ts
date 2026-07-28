@@ -956,6 +956,15 @@ export async function deleteJwk(kid: string): Promise<void> {
   await requestVoid('/configuration/jwks', { method: 'DELETE', query: { kid } });
 }
 
+export async function fetchServerMetadata(): Promise<Record<string, unknown>> {
+  return request<Record<string, unknown>>('/configuration/server-metadata');
+}
+
+export async function upsertServerMetadata(metadata: Record<string, unknown>): Promise<void> {
+  await requestVoid('/configuration/server-metadata', { method: 'POST', body: metadata });
+}
+
+
 export async function fetchEdges(): Promise<Edge[]> {
   const response = await request<EdgesResponse>('/configuration/edges');
   return sortById(response.edges.map(edge => ({
