@@ -1,5 +1,5 @@
 import { LitElement, html, css } from 'lit';
-import { customElement, property } from 'lit/decorators.js';
+import { customElement, property, query } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
 import './versola-logo';
 import './tenant-selector';
@@ -14,6 +14,21 @@ export class VersolaNavigation extends LitElement {
   @property({ attribute: false }) allowedTenantIds: string[] | null = null;
   /** Mobile drawer state. Reflected so the `:host([open])` rule below can match. */
   @property({ type: Boolean, reflect: true }) open = false;
+  @query('.brand-close') private closeButton?: HTMLButtonElement;
+
+  /** Called by admin-app right after opening the drawer.
+    *
+    * Without this, focus stays on the header toggle the user just activated —
+    * which the backdrop then visually covers, since it renders in normal
+    * document flow inside <main>, after the drawer in DOM order. A keyboard
+    * user pressing Tab from there continues through the rest of main's
+    * (now-obscured) content instead of landing in the panel that just opened.
+    * Landing on the drawer's own close button puts them somewhere real and
+    * gives an immediate, obvious way back out.
+    */
+  focusClose() {
+    this.closeButton?.focus();
+  }
 
   static styles = [
     theme,
@@ -88,6 +103,42 @@ export class VersolaNavigation extends LitElement {
         text-decoration: none;
       }
 
+      /* The drawer's own close button. Lives here, inside the panel, rather
+         than as an overlay pinned to the viewport: laid out as a sibling of the
+         logo it can't cover it, and it slides away with the panel instead of
+         lingering over the page. Only meaningful on mobile, where the panel is
+         a drawer that can be closed at all. */
+      .brand-close {
+        display: none;
+      }
+
+      @media (max-width: 768px) {
+        .brand-close {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          flex: none;
+          margin-left: auto;
+          width: 2.25rem;
+          height: 2.25rem;
+          padding: 0;
+          border: 1px solid var(--border-dark);
+          border-radius: var(--radius-md);
+          background: transparent;
+          color: var(--text-secondary);
+          font-family: var(--font-family);
+          font-size: 1.125rem;
+          line-height: 1;
+          cursor: pointer;
+          transition: all var(--transition-fast);
+        }
+
+        .brand-close:hover {
+          border-color: var(--accent);
+          color: var(--accent);
+        }
+      }
+
       .brand-logo {
         flex-shrink: 0;
         line-height: 0;
@@ -156,6 +207,13 @@ export class VersolaNavigation extends LitElement {
     `,
   ];
 
+  private handleCloseClick() {
+    this.dispatchEvent(new CustomEvent('close-nav', {
+      bubbles: true,
+      composed: true,
+    }));
+  }
+
   private handleNavClick(item: NavItem) {
     this.dispatchEvent(new CustomEvent('nav-change', {
       detail: { item },
@@ -212,6 +270,12 @@ export class VersolaNavigation extends LitElement {
           <versola-logo size="40"></versola-logo>
         </div>
         <div class="brand-name">Versola</div>
+        <button
+          type="button"
+          class="brand-close"
+          @click=${this.handleCloseClick}
+          aria-label="Close navigation menu"
+        >✕</button>
       </div>
 
       <div class="tenant-section">

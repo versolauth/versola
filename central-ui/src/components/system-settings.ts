@@ -4,6 +4,7 @@ import { theme } from '../styles/theme';
 import { buttonStyles, cardStyles, formStyles } from '../styles/components';
 import type { SystemSettingsRecord } from '../types';
 import { fetchSystemSettings, upsertSystemSettings } from '../utils/central-api';
+import './content-header';
 import './error-card';
 import './loading-cards';
 
@@ -33,19 +34,6 @@ export class VersolaSystemSettings extends LitElement {
         --compact-field-max-width: 22.8rem;
         --number-field-max-width: 8rem;
       }
-      .page-header {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        margin-bottom: var(--spacing-xl);
-      }
-      .page-title {
-        font-size: 1.625rem;
-        font-weight: 700;
-        letter-spacing: -0.025em;
-        color: var(--text-primary);
-        margin: 0;
-      }
       .prop-row {
         display: flex;
         gap: var(--spacing-md);
@@ -58,7 +46,23 @@ export class VersolaSystemSettings extends LitElement {
         color: var(--text-secondary);
         font-size: 0.875rem;
       }
-      .prop-value { color: var(--text-primary); font-size: 0.875rem; }
+      .prop-value {
+        color: var(--text-primary);
+        font-size: 0.875rem;
+        /* The password regex is a long unbroken string; without this it runs
+           past the card edge instead of wrapping. */
+        min-width: 0;
+        overflow-wrap: anywhere;
+      }
+      /* A fixed 220px label column leaves ~100px for the value on a phone.
+         Below this width the label sits above its value instead. */
+      @media (max-width: 720px) {
+        .prop-row {
+          flex-direction: column;
+          gap: var(--spacing-xs);
+        }
+        .prop-label { flex: none; }
+      }
       .form-grid { display: grid; gap: var(--spacing-lg); }
       .number-input {
         display: block;
@@ -130,12 +134,11 @@ export class VersolaSystemSettings extends LitElement {
 
   render() {
     return html`
-      <div class="page-header">
-        <h1 class="page-title">System Settings</h1>
+      <content-header title="System Settings">
         ${this.canManage && !this.editing && this.settings !== null
-          ? html`<button class="btn btn-primary" @click=${() => this.startEdit()}>Edit</button>`
+          ? html`<button slot="actions" class="btn btn-primary" @click=${() => this.startEdit()}>Edit</button>`
           : ''}
-      </div>
+      </content-header>
 
       ${this.errorMessage ? html`<versola-error-card .message=${this.errorMessage}></versola-error-card>` : ''}
       ${this.isLoading ? html`<versola-loading-cards></versola-loading-cards>` : ''}

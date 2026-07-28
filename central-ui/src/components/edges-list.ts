@@ -83,6 +83,10 @@ export class VersolaEdgesList extends LitElement {
         display: flex;
         align-items: center;
         gap: 0.75rem;
+        /* A long id and the "Key Rotation" badge can't share one line on a
+           phone; let the badge drop below rather than overflow the card. */
+        flex-wrap: wrap;
+        overflow-wrap: anywhere;
       }
 
       .edge-actions {
@@ -229,6 +233,21 @@ export class VersolaEdgesList extends LitElement {
       .empty-state-icon {
         font-size: 3rem;
         margin-bottom: 1rem;
+      }
+
+      /* This screen was the only list without a narrow-screen rule for its card
+         header. A long edge id plus the "Key Rotation" badge plus two icon
+         buttons don't fit one row on a phone, so the row is stacked to match
+         the other lists. */
+      @media (max-width: 720px) {
+        .edge-header {
+          flex-direction: column;
+          align-items: flex-start;
+        }
+
+        .edge-actions {
+          margin-left: 0;
+        }
       }
     `,
   ];

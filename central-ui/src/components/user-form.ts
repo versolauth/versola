@@ -5,6 +5,7 @@ import { theme } from '../styles/theme';
 import { buttonStyles, cardStyles, formStyles } from '../styles/components';
 import { Resource, Role, User, UserRoleAssignment } from '../types';
 import { resolvePermissionEndpointGroups } from '../utils/helpers';
+import './nav-toggle';
 
 @customElement('versola-user-form')
 export class VersolaUserForm extends LitElement {
@@ -170,8 +171,12 @@ export class VersolaUserForm extends LitElement {
         min-width: 3.5rem;
       }
 
+      /* Local to this screen (it truncates rather than wraps), but the missing
+         font-size was the same oversight as the shared .endpoint-path: without
+         it the path rendered at the browser default and got clipped sooner. */
       .endpoint-path {
         font-family: var(--font-mono);
+        font-size: 0.8125rem;
         color: var(--text-secondary);
         overflow: hidden;
         text-overflow: ellipsis;
@@ -469,9 +474,12 @@ export class VersolaUserForm extends LitElement {
 
     return html`
       <div class="form-header">
-        <div class="title-stack">
-          <h1 class="form-title">${title}</h1>
-          ${this.userData ? html`<div class="entity-id-meta">${this.formData.id}</div>` : ''}
+        <div class="form-header-lead">
+          <versola-nav-toggle></versola-nav-toggle>
+          <div class="title-stack">
+            <h1 class="form-title">${title}</h1>
+            ${this.userData ? html`<div class="entity-id-meta">${this.formData.id}</div>` : ''}
+          </div>
         </div>
       </div>
 

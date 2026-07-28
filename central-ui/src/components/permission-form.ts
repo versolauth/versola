@@ -5,6 +5,7 @@ import { theme } from '../styles/theme';
 import type { Permission, Resource, ResourceEndpointId } from '../types';
 import { formatResourceLabel, getLocalizedDescription } from '../utils/helpers';
 import { validatePermission } from '../utils/validators';
+import './nav-toggle';
 
 @customElement('versola-permission-form')
 export class VersolaPermissionForm extends LitElement {
@@ -54,7 +55,6 @@ export class VersolaPermissionForm extends LitElement {
     .endpoint-row { display:flex; align-items:center; justify-content:space-between; gap:.75rem; flex-wrap:wrap; padding:.875rem 1rem; border:1px solid var(--border-dark); border-radius:var(--radius-md); background:rgba(255,255,255,.02); }
     .endpoint-main { display:flex; align-items:center; gap:.75rem; flex-wrap:wrap; min-width:0; }
     .endpoint-meta { color:var(--text-secondary); font-size:.875rem; }
-    .endpoint-path { font-family:var(--font-mono, monospace); color:var(--text-primary); word-break:break-all; }
     .empty-state, .hint-note { color:var(--text-secondary); font-size:.875rem; }
     .actions { display:flex; gap:1rem; justify-content:flex-end; margin-top:var(--spacing-xl); padding-top:var(--spacing-xl); border-top:1px solid var(--border-dark); }
     @media (max-width: 720px) {
@@ -202,9 +202,12 @@ export class VersolaPermissionForm extends LitElement {
   render() {
     return html`
       <div class="form-header">
-        <div class="title-stack">
-          <h1 class="form-title">${this.mode === 'create' ? 'Create Permission' : 'Edit Permission'}</h1>
-          ${this.mode === 'edit' ? html`<div class="entity-id-meta">${this.permissionId || '—'}</div>` : ''}
+        <div class="form-header-lead">
+          <versola-nav-toggle></versola-nav-toggle>
+          <div class="title-stack">
+            <h1 class="form-title">${this.mode === 'create' ? 'Create Permission' : 'Edit Permission'}</h1>
+            ${this.mode === 'edit' ? html`<div class="entity-id-meta">${this.permissionId || '—'}</div>` : ''}
+          </div>
         </div>
       </div>
       <div class="card">

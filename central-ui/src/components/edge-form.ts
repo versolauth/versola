@@ -4,6 +4,7 @@ import { theme } from '../styles/theme';
 import { buttonStyles, cardStyles, formStyles } from '../styles/components';
 import type { Edge } from '../types/index';
 import { validateEdgeId } from '../utils/validators';
+import './nav-toggle';
 
 @customElement('versola-edge-form')
 export class VersolaEdgeForm extends LitElement {
@@ -50,6 +51,31 @@ export class VersolaEdgeForm extends LitElement {
         margin-top: var(--spacing-xl);
         padding-top: var(--spacing-xl);
         border-top: 1px solid var(--border-dark);
+      }
+
+      /* In edit mode the only child of .form-grid is the action row itself —
+         the Edge ID field is create-only. The separator and the 2rem of space
+         above it exist to divide actions from fields that aren't there, which
+         read as a broken, half-empty card. Dropped when the row stands alone.
+         :only-child is exact here: it matches only when nothing else rendered.
+         Once this form grows real edit-mode content, the divider returns on
+         its own with no CSS change needed. */
+      .form-actions:only-child {
+        margin-top: 0;
+        padding-top: 0;
+        border-top: none;
+      }
+
+      @media (max-width: 720px) {
+        .form-actions {
+          flex-wrap: wrap;
+        }
+
+        /* Rotate Key is pushed left by margin-right:auto; once the row wraps
+           that leaves it stranded on its own line. */
+        .secondary-action-button {
+          margin-right: 0;
+        }
       }
 
       .secondary-action-button {
@@ -160,11 +186,14 @@ export class VersolaEdgeForm extends LitElement {
 
     return html`
       <div class="form-header">
-        <div class="title-stack">
-          <h1 class="form-title">
-            ${isEditMode ? 'Edit Edge' : 'Create New Edge'}
-          </h1>
-          ${isEditMode ? html`<div class="entity-id-meta">${this.edge!.id}</div>` : ''}
+        <div class="form-header-lead">
+          <versola-nav-toggle></versola-nav-toggle>
+          <div class="title-stack">
+            <h1 class="form-title">
+              ${isEditMode ? 'Edit Edge' : 'Create New Edge'}
+            </h1>
+            ${isEditMode ? html`<div class="entity-id-meta">${this.edge!.id}</div>` : ''}
+          </div>
         </div>
       </div>
 

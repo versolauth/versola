@@ -4,6 +4,7 @@ import { theme } from '../styles/theme';
 import { buttonStyles, cardStyles, formStyles } from '../styles/components';
 import { OAuthScope, User } from '../types';
 import { getScopes } from '../utils/central-api';
+import './nav-toggle';
 
 const EXCLUDED_SCOPES = new Set(['openid', 'offline_access']);
 
@@ -180,9 +181,12 @@ export class VersolaClaimEdit extends LitElement {
   render() {
     return html`
       <div class="form-header">
-        <div class="title-stack">
-          <h1 class="form-title">Edit Claims</h1>
-          <div class="entity-id-meta">${this.user?.id}</div>
+        <div class="form-header-lead">
+          <versola-nav-toggle></versola-nav-toggle>
+          <div class="title-stack">
+            <h1 class="form-title">Edit Claims</h1>
+            <div class="entity-id-meta">${this.user?.id}</div>
+          </div>
         </div>
       </div>
 
