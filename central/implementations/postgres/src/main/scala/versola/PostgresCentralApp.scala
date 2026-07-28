@@ -8,6 +8,7 @@ import versola.central.configuration.system.{SystemSettingsController, SystemSet
 import versola.central.configuration.clients.{AuthorizationPresetController, AuthorizationPresetRepository, AuthorizationPresetService, ClientController, OAuthClientRepository, OAuthClientService}
 import versola.central.configuration.edges.{EdgeController, EdgeRepository, EdgeService}
 import versola.central.configuration.forms.{FormController, FormRepository, FormService}
+import versola.central.configuration.jwks.{JwksController, JwksService}
 import versola.central.configuration.metadata.{ServerMetadataController, ServerMetadataRepository, ServerMetadataService}
 import versola.configuration.metadata.PostgresServerMetadataRepository
 import versola.central.configuration.locales.{LocaleController, LocaleRepository, LocaleService}
@@ -90,6 +91,7 @@ object PostgresCentralApp extends VersolaApp("central"):
       UserOutboxProcessor &
       ServerMetadataRepository &
       ServerMetadataService &
+      JwksService
 
   override def routes: Routes[Dependencies & Tracing & EnvName, Throwable] =
     List(
