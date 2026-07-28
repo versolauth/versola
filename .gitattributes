@@ -1,0 +1,18 @@
+# Force LF line endings for text files regardless of a contributor's local
+# core.autocrlf setting. Without this, Git for Windows' common default
+# (autocrlf=true) rewrites every text file to CRLF on checkout, making the
+# entire repo show as "modified" against the LF blobs actually committed —
+# pure noise that risks getting committed by accident.
+* text=auto eol=lf
+
+# Known binary types: never touch these regardless of the auto-detection
+# above.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.eot binary

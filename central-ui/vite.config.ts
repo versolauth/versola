@@ -2,11 +2,16 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { defineConfig, type Plugin } from 'vite';
 
-// The admin console is served at https://id.versola.kz/admin/ in production
-// (see deploy.md / nginx routing), so every asset URL baked into the built
-// index.html must be prefixed with this path — otherwise the browser looks
-// for them at the domain root and gets a 404.
-const BASE_PATH = '/admin/';
+// The admin console is served at https://id.versola.kz/central/admin/ in
+// production (see deploy.md / nginx routing), so every asset URL baked into
+// the built index.html must be prefixed with this path — otherwise the browser
+// looks for them at the domain root and gets a 404.
+//
+// The /central segment isn't cosmetic: the EDGE_SESSION cookie is scoped to
+// that path so each app behind edge gets its own session, and a cookie is only
+// sent to URLs beneath its path. Both the console's assets and its API calls
+// therefore have to live under the same prefix — see central-api.ts.
+const BASE_PATH = '/central/admin/';
 
 function distIndexHtmlPlugin(): Plugin {
   return {
@@ -66,7 +71,33 @@ export default defineConfig(({ command, isPreview }) => ({
   server: {
     port: 3000,
     open: !isPlaywright,
+    // The console calls /central/... (see central-api.ts), but edge itself only
+    // speaks /resources/{resourceId}/... and /permissions/me. In production
+    // nginx rewrites between the two; these entries mirror those rewrites so a
+    // local edge sees exactly the same requests it would in prod.
+    //
+    // Keys starting with "^" are treated as regular expressions and are matched
+    // in declaration order, so the /permissions/me special case must come
+    // first — otherwise the general /central/ rule would swallow it and rewrite
+    // it to /resources/central/permissions/me, which edge doesn't serve.
+    //
+    // Each rewrite is a replace() on the matched prefix rather than a constant,
+    // because the path handed to rewrite() still carries the query string
+    // (/permissions/me is called with ?resource=central) and returning a
+    // constant would silently drop it.
     proxy: {
+      '^/central/permissions/me': {
+        target: 'http://localhost:9005',
+        changeOrigin: true,
+        rewrite: (path: string) => path.replace(/^\/central\/permissions\/me/, '/permissions/me'),
+      },
+      '^/central/': {
+        target: 'http://localhost:9005',
+        changeOrigin: true,
+        rewrite: (path: string) => path.replace(/^\/central\//, '/resources/central/'),
+      },
+      // edge's own routes, still reachable directly. The console no longer uses
+      // them, but they mirror what nginx keeps exposed for other edge clients.
       '/resources': {
         target: 'http://localhost:9005',
         changeOrigin: true,
