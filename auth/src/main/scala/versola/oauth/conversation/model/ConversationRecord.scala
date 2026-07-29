@@ -36,6 +36,7 @@ case class ConversationRecord(
     amr: Map[PassedAuthFactor, PassedFactorRecord],
     needsPasswordChange: Boolean,
     targetAcr: Option[Acr],
+    csrfToken: String,
 ):
   def patch(patch: ConversationRecord.Patch): ConversationRecord =
     this.copy(

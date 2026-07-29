@@ -74,6 +74,7 @@ object ConversationRouterSpec extends UnitSpecBase:
     amr = Map.empty,
     needsPasswordChange = false,
     targetAcr = None,
+    csrfToken = "test-csrf",
   )
 
   val otpRecord = ConversationRecord(
@@ -100,6 +101,7 @@ object ConversationRouterSpec extends UnitSpecBase:
     amr = Map.empty,
     needsPasswordChange = false,
     targetAcr = None,
+    csrfToken = "test-csrf",
   )
 
   val login = Login("testuser")
@@ -151,7 +153,7 @@ object ConversationRouterSpec extends UnitSpecBase:
         val env = Env()
         for
           _ <- env.otpConversationService.find.succeedsWith(None)
-          exit <- env.router.submit(authId, EmailSubmission(email), None, None).exit
+          exit <- env.router.submit(authId, EmailSubmission(email), "test-csrf", None, None).exit
         yield assertTrue(exit == Exit.fail(Error.BadRequest))
       },
       test("handle email submission") {
@@ -161,7 +163,7 @@ object ConversationRouterSpec extends UnitSpecBase:
           _ <- env.otpConversationService.find.succeedsWith(Some(initialRecord))
           _ <- env.configService.getAcrVocabulary.succeedsWith(Map.empty)
           _ <- env.otpConversationService.prepareInitialOtp.succeedsWith(conversationResult)
-          (result, record) <- env.router.submit(authId, submission, None, None)
+          (result, record) <- env.router.submit(authId, submission, "test-csrf", None, None)
           prepareTimes = env.otpConversationService.prepareInitialOtp.times
         yield assertTrue(
           result == conversationResult,
@@ -176,7 +178,7 @@ object ConversationRouterSpec extends UnitSpecBase:
         for
           _ <- env.otpConversationService.find.succeedsWith(Some(lockedRecord))
           _ <- env.otpConversationService.accessDenied.succeedsWith(accessDeniedResult)
-          (result, _) <- env.router.submit(authId, EmailSubmission(email), None, None)
+          (result, _) <- env.router.submit(authId, EmailSubmission(email), "test-csrf", None, None)
           accessDeniedTimes = env.otpConversationService.accessDenied.times
           prepareOtpTimes = env.otpConversationService.prepareInitialOtp.times
         yield assertTrue(
@@ -192,7 +194,7 @@ object ConversationRouterSpec extends UnitSpecBase:
         for
           _ <- env.otpConversationService.find.succeedsWith(Some(lockedRecord))
           _ <- env.otpConversationService.accessDenied.succeedsWith(accessDeniedResult)
-          (result, _) <- env.router.submit(authId, PhoneSubmission(phone), None, None)
+          (result, _) <- env.router.submit(authId, PhoneSubmission(phone), "test-csrf",None, None)
           accessDeniedTimes = env.otpConversationService.accessDenied.times
           prepareOtpTimes = env.otpConversationService.prepareInitialOtp.times
         yield assertTrue(
@@ -208,7 +210,7 @@ object ConversationRouterSpec extends UnitSpecBase:
           _ <- env.otpConversationService.find.succeedsWith(Some(initialRecord))
           _ <- env.configService.getAcrVocabulary.succeedsWith(Map.empty)
           _ <- env.otpConversationService.prepareInitialOtp.succeedsWith(conversationResult)
-          (result, record) <- env.router.submit(authId, submission, None, None)
+          (result, record) <- env.router.submit(authId, submission, "test-csrf", None, None)
           prepareTimes = env.otpConversationService.prepareInitialOtp.times
         yield assertTrue(
           result == conversationResult,
@@ -221,7 +223,7 @@ object ConversationRouterSpec extends UnitSpecBase:
         val boom = new RuntimeException("db down")
         for
           _ <- env.otpConversationService.find.failsWith(boom)
-          exit <- env.router.submit(authId, EmailSubmission(email), None, None).exit
+          exit <- env.router.submit(authId, EmailSubmission(email), "test-csrf", None, None).exit
         yield assertTrue(exit == Exit.fail(boom))
       },
       test("handle OTP submission and complete conversation on success") {
@@ -236,7 +238,7 @@ object ConversationRouterSpec extends UnitSpecBase:
           _ <- env.otpConversationService.checkOtp.succeedsWith(successResult)
           _ <- env.otpConversationService.finish.succeedsWith(completeResult)
           _ <- env.configService.getAcrVocabulary.succeedsWith(Map.empty)
-          (result, _) <- env.router.submit(authId, submission, None, None)
+          (result, _) <- env.router.submit(authId, submission, "test-csrf", None, None)
           checkOtpTimes = env.otpConversationService.checkOtp.times
           finishTimes = env.otpConversationService.finish.times
         yield assertTrue(
@@ -250,7 +252,7 @@ object ConversationRouterSpec extends UnitSpecBase:
         val submission = OtpSubmission(otpCode)
         for
           _ <- env.otpConversationService.find.succeedsWith(Some(initialRecord))
-          (result, _) <- env.router.submit(authId, submission, None, None)
+          (result, _) <- env.router.submit(authId, submission, "test-csrf", None, None)
         yield assertTrue(result == ConversationResult.NotFound)
       },
       test("skip OTP factor and finish when passkey satisfies it via equivalents") {
@@ -276,7 +278,7 @@ object ConversationRouterSpec extends UnitSpecBase:
           _ <- env.otpConversationService.find.succeedsWith(Some(recordWithPasskeyAmr))
           _ <- env.otpConversationService.finish.succeedsWith(completeResult)
           _ <- env.configService.getAcrVocabulary.succeedsWith(Map.empty)
-          (result, _) <- env.router.submit(authId, EmailSubmission(email), None, None)
+          (result, _) <- env.router.submit(authId, EmailSubmission(email), "test-csrf", None, None)
           finishTimes = env.otpConversationService.finish.times
           prepareOtpTimes = env.otpConversationService.prepareInitialOtp.times
         yield assertTrue(
@@ -297,7 +299,7 @@ object ConversationRouterSpec extends UnitSpecBase:
           _ <- env.otpConversationService.checkLoginPassword.succeedsWith(successResult)
           _ <- env.otpConversationService.finish.succeedsWith(completeResult)
           _ <- env.configService.getAcrVocabulary.succeedsWith(Map.empty)
-          (result, _) <- env.router.submit(authId, submission, None, None)
+          (result, _) <- env.router.submit(authId, submission, "test-csrf", None, None)
           checkTimes = env.otpConversationService.checkLoginPassword.times
           finishTimes = env.otpConversationService.finish.times
         yield assertTrue(
@@ -313,7 +315,7 @@ object ConversationRouterSpec extends UnitSpecBase:
         for
           _ <- env.otpConversationService.find.succeedsWith(Some(loginRecord))
           _ <- env.otpConversationService.checkLoginPassword.succeedsWith(renderResult)
-          (result, _) <- env.router.submit(authId, submission, None, None)
+          (result, _) <- env.router.submit(authId, submission, "test-csrf", None, None)
           checkTimes = env.otpConversationService.checkLoginPassword.times
           finishTimes = env.otpConversationService.finish.times
         yield assertTrue(
