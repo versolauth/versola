@@ -51,7 +51,7 @@ trait OAuthConfigurationService:
 
   def getSessionIdleTtl(id: ClientId): UIO[Option[Duration]]
 
-  def getMetadata: UIO[Option[Json.Obj]]
+  def getMetadata: UIO[Json.Obj]
 
   def syncConfiguration: Task[Unit]
 
@@ -71,7 +71,7 @@ object OAuthConfigurationService:
           (OtpTemplateSyncClient.live >+> ZLayer(ReloadingCache.make[Vector[OtpTemplateRecord]](schedule))) >+>
           (ChallengeSettingsSyncClient.live >+> ZLayer(ReloadingCache.make[Vector[ChallengeSettingsRecord]](schedule))) >+>
           (SystemSettingsSyncClient.live >+> ZLayer(ReloadingCache.make[SystemSettingsRecord](schedule))) >+>
-          (MetadataSyncClient.live >+> ZLayer(ReloadingCache.make[Option[Json.Obj]](schedule)))))
+          (MetadataSyncClient.live >+> ZLayer(ReloadingCache.make[Json.Obj](schedule)))))
     syncClients >>> ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _))
   }
 
@@ -92,7 +92,7 @@ object OAuthConfigurationService:
       challengeSettingsRepository: ChallengeSettingsSyncClient,
       systemSettingsCache: ReloadingCache[SystemSettingsRecord],
       systemSettingsRepository: SystemSettingsSyncClient,
-      metadataCache: ReloadingCache[Option[Json.Obj]],
+      metadataCache: ReloadingCache[Json.Obj],
       metadataRepository: MetadataSyncClient,
   ) extends OAuthConfigurationService:
 
@@ -269,7 +269,7 @@ object OAuthConfigurationService:
               .flatMap { case (k, vs) => NonEmptyList.fromIterableOption(vs).map(Acr(k) -> _) },
           )
 
-    override def getMetadata: UIO[Option[Json.Obj]] =
+    override def getMetadata: UIO[Json.Obj] =
       metadataCache.get
 
     override def syncConfiguration: Task[Unit] =

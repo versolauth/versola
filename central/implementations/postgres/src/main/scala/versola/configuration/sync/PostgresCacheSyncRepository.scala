@@ -56,6 +56,7 @@ object PostgresCacheSyncRepository:
     "challenge_settings_change",
     "theme_change",
     "system_settings_change",
+    "metadata_change",
   )
 
   // pgjdbc's own getNotifications(timeout) example uses 10s; see
@@ -152,6 +153,9 @@ object PostgresCacheSyncRepository:
 
       case "system_settings_change" =>
         SyncEvent.SystemSettingsUpdated
+
+      case "metadata_change" =>
+        SyncEvent.ServerMetadataUpdated
 
       case _ =>
         SyncEvent.Unknown

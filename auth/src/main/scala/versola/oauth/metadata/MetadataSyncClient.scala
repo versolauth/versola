@@ -7,7 +7,7 @@ import zio.json.DecoderOps
 import zio.json.ast.Json
 import zio.{Task, URLayer, ZIO, ZLayer}
 
-trait MetadataSyncClient extends CacheSource[Option[Json.Obj]]
+trait MetadataSyncClient extends CacheSource[Json.Obj]
 
 object MetadataSyncClient:
   val live: URLayer[CoreConfig & CentralSyncTokenService, MetadataSyncClient] =
@@ -19,8 +19,7 @@ object MetadataSyncClient:
   ) extends MetadataSyncClient:
     private val MetadataSyncURL = config.central.url / "configuration" / "server-metadata" / "sync"
 
-    override def getAll: Task[Option[Json.Obj]] =
+    override def getAll: Task[Json.Obj] =
       ZIO.scoped:
         centralSyncTokenService.syncRequest(Request.get(MetadataSyncURL))
           .flatMap(_.body.asJsonFromCodec[Json.Obj])
-          .map(Some(_))

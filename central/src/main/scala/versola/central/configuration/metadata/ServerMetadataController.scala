@@ -24,7 +24,7 @@ object ServerMetadataController extends Controller:
         _ <- authorizeBasic(request)
         service <- ZIO.service[ServerMetadataService]
         metadata <- service.getMetadata
-      yield Response.json(metadata.getOrElse(Json.Obj()).toJson)
+      yield Response.json(metadata.fold[Json](Json.Null)(identity).toJson)
     }
 
   val upsertMetadataEndpoint =

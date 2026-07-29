@@ -19,9 +19,7 @@ object MetadataController extends Controller:
       for
         service <- ZIO.service[OAuthConfigurationService]
         metadata <- service.getMetadata
-      yield metadata match
-        case Some(json) => Response.json(json.toJson)
-        case None       => Response.status(Status.NotFound)
+      yield Response.json(metadata.toJson)
     }
 
   private val oidcMetadataEndpoint =
@@ -29,7 +27,5 @@ object MetadataController extends Controller:
       for
         service <- ZIO.service[OAuthConfigurationService]
         metadata <- service.getMetadata
-      yield metadata match
-        case Some(json) => Response.json(json.toJson)
-        case None       => Response.status(Status.NotFound)
+      yield Response.json(metadata.toJson)
     }

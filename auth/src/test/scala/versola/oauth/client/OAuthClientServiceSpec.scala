@@ -85,7 +85,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
       val otpTemplateCache: ReloadingCache[Vector[OtpTemplateRecord]],
       val challengeSettingsCache: ReloadingCache[Vector[ChallengeSettingsRecord]],
       val systemSettingsCache: ReloadingCache[SystemSettingsRecord],
-      val metadataCache: ReloadingCache[Option[Json.Obj]],
+      val metadataCache: ReloadingCache[Json.Obj],
   ):
     val clientSync = stub[OAuthClientSyncClient]
     val scopeSync = stub[OAuthScopeSyncClient]
@@ -137,7 +137,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
       otpTemplateRef <- Ref.make(otpTemplates)
       challengeSettingsRef <- Ref.make(challengeSettings)
       systemSettingsRef <- Ref.make(systemSettings)
-      metadataRef <- Ref.make(Option.empty[Json.Obj])
+      metadataRef <- Ref.make(Json.Obj())
     yield Env(
       clientCache = ReloadingCache(clientRef),
       scopeCache = ReloadingCache(scopeRef),
@@ -342,9 +342,9 @@ object OAuthClientServiceSpec extends UnitSpecBase:
       val metadata = Json.Obj("issuer" -> Json.Str("https://issuer.com"))
       for
         env <- makeEnv()
-        _ <- env.metadataCache.set(Some(metadata))
+        _ <- env.metadataCache.set(metadata)
         result <- env.service.getMetadata
-      yield assertTrue(result == Some(metadata))
+      yield assertTrue(result == metadata)
     },
     test("syncConfiguration fetches and updates all caches") {
       for
@@ -357,7 +357,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
         _ <- env.otpTemplateSync.getAll.succeedsWith(Vector.empty)
         _ <- env.challengeSettingsSync.getAll.succeedsWith(Vector.empty)
         _ <- env.systemSettingsSync.getAll.succeedsWith(SystemSettingsRecord.default)
-        _ <- env.metadataSync.getAll.succeedsWith(Some(Json.Obj("a" -> Json.Num(1))))
+        _ <- env.metadataSync.getAll.succeedsWith(Json.Obj("a" -> Json.Num(1)))
 
         _ <- env.service.syncConfiguration
 
@@ -367,7 +367,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
       yield assertTrue(
         clients.isDefined,
         scopes == testScopes,
-        metadata == Some(Json.Obj("a" -> Json.Num(1)))
+        metadata == Json.Obj("a" -> Json.Num(1))
       )
     },
     test("getAcrVocabulary returns vocabulary from challenge settings") {

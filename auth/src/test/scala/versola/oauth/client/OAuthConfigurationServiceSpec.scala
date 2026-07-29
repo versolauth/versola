@@ -75,7 +75,7 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
       otpTemplates: Vector[OtpTemplateRecord] = Vector.empty,
       challengeSettingsVec: Vector[ChallengeSettingsRecord] = Vector(challengeSettings),
       sysSettings: SystemSettingsRecord = systemSettings,
-      metadata: Option[Json.Obj] = None,
+      metadata: Json.Obj = Json.Obj(),
   ) =
     for
       clientRef         <- Ref.make(clients)
