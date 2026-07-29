@@ -529,7 +529,9 @@ final class OAuthClient(client: Client, config: E2EConfig):
   // ── helpers ────────────────────────────────────────────────────────────────
 
   private def getCsrf(cookie: String): Task[String] =
-    getChallenge(cookie).map(_.csrf.getOrElse(""))
+    getChallenge(cookie).flatMap: result =>
+      ZIO.fromOption(result.csrf)
+        .orElseFail(RuntimeException("No versola-csrf meta tag found in challenge response"))
 
   private def formPost(url: String, fields: Map[String, String], cookie: String): Task[Response] =
     val req = Request.post(url, formBody(fields))

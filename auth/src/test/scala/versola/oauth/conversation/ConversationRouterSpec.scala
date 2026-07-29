@@ -324,6 +324,13 @@ object ConversationRouterSpec extends UnitSpecBase:
           finishTimes == 0,
         )
       },
+      test("submit with wrong csrf token fails with BadRequest") {
+        val env = Env()
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(otpRecord))
+          result <- env.router.submit(authId, OtpSubmission(otpCode), "wrong-csrf", None, None).exit
+        yield assertTrue(result == Exit.fail(Error.BadRequest))
+      },
     ),
     suite("advance")(
       test("routes to OTP step when credential is set and factor is not yet satisfied") {
