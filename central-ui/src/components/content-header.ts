@@ -56,6 +56,8 @@ export class ContentHeader extends LitElement {
       .header-actions {
         display: flex;
         gap: 0.5rem;
+        flex-wrap: wrap;
+        justify-content: flex-end;
       }
 
       @media (max-width: 768px) {

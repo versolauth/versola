@@ -11,6 +11,7 @@ export const codeHighlightStyles = css`
   .ch-number      { color: #f2cc60; }
   .ch-boolean     { color: #f47067; }
   .ch-keyword     { color: #f47067; }
+  .ch-null        { color: #f47067; }
   .ch-operator    { color: var(--text-secondary); }
 
   /* HTML / markup */

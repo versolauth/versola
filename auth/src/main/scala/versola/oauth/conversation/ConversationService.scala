@@ -707,7 +707,7 @@ object ConversationService:
                 else
                   val displayName: String =
                     conversation.userClaims.flatMap(_.fields.toMap.get("name"))
-                      .collect { case zio.json.ast.Json.Str(v) => v }
+                      .collect { case Json.Str(v) => v }
                       .orElse(conversation.userEmail.map(_.toString))
                       .orElse(conversation.userPhone.map(_.toString))
                       .orElse(conversation.userLogin.map(_.toString))

@@ -2,8 +2,10 @@ package versola.oauth.client
 
 import versola.oauth.client.model.{Acr, ChallengeSettingsRecord, ClientId, ClientSecret, FormRecord, Locales, OAuthClientRecord, OtpSettings, OtpTemplateRecord, PassedAuthFactor, PasskeySettings, PasswordHistorySettings, ScopeRecord, ScopeToken, SubmissionLimits, SystemSettingsRecord, TenantId, ThemeRecord}
 import versola.oauth.conversation.otp.model.OtpTemplate
+import versola.oauth.metadata.{MetadataSyncClient, ServerMetadataRecord}
 import versola.util.{CoreConfig, ReloadingCache, Secret, SecureRandom, SecurityService}
 import zio.*
+import zio.json.ast.Json
 import zio.http.Client
 import zio.prelude.{EqualOps, NonEmptyList, NonEmptySet}
 
@@ -49,6 +51,8 @@ trait OAuthConfigurationService:
 
   def getSessionIdleTtl(id: ClientId): UIO[Option[Duration]]
 
+  def getMetadata: UIO[Json.Obj]
+
   def syncConfiguration: Task[Unit]
 
 object OAuthConfigurationService:
@@ -66,8 +70,9 @@ object OAuthConfigurationService:
           (LocaleSyncClient.live >+> ZLayer(ReloadingCache.make[Locales](schedule))) >+>
           (OtpTemplateSyncClient.live >+> ZLayer(ReloadingCache.make[Vector[OtpTemplateRecord]](schedule))) >+>
           (ChallengeSettingsSyncClient.live >+> ZLayer(ReloadingCache.make[Vector[ChallengeSettingsRecord]](schedule))) >+>
-          (SystemSettingsSyncClient.live >+> ZLayer(ReloadingCache.make[SystemSettingsRecord](schedule)))))
-    syncClients >>> ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _))
+          (SystemSettingsSyncClient.live >+> ZLayer(ReloadingCache.make[SystemSettingsRecord](schedule))) >+>
+          (MetadataSyncClient.live >+> ZLayer(ReloadingCache.make[Json.Obj](schedule)))))
+    syncClients >>> ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _))
   }
 
   case class Impl(
@@ -87,6 +92,8 @@ object OAuthConfigurationService:
       challengeSettingsRepository: ChallengeSettingsSyncClient,
       systemSettingsCache: ReloadingCache[SystemSettingsRecord],
       systemSettingsRepository: SystemSettingsSyncClient,
+      metadataCache: ReloadingCache[Json.Obj],
+      metadataRepository: MetadataSyncClient,
   ) extends OAuthConfigurationService:
 
     def find(id: ClientId): UIO[Option[OAuthClientRecord]] =
@@ -262,6 +269,9 @@ object OAuthConfigurationService:
               .flatMap { case (k, vs) => NonEmptyList.fromIterableOption(vs).map(Acr(k) -> _) },
           )
 
+    override def getMetadata: UIO[Json.Obj] =
+      metadataCache.get
+
     override def syncConfiguration: Task[Unit] =
       for
         clients           <- clientRepository.getAll
@@ -280,6 +290,8 @@ object OAuthConfigurationService:
         _                 <- challengeSettingsCache.set(challengeSettings)
         systemSettings    <- systemSettingsRepository.getAll
         _                 <- systemSettingsCache.set(systemSettings)
+        metadata          <- metadataRepository.getAll
+        _                 <- metadataCache.set(metadata)
       yield ()
 
     private val IllegalStateTemplate = OtpTemplate("{{code}}")

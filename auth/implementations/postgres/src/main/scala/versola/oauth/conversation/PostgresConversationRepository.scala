@@ -14,6 +14,7 @@ import versola.util.postgres.BasicCodecs
 import versola.util.{Email, MAC, Phone}
 import zio.http.URL
 import zio.json.*
+import zio.json.ast.Json
 import zio.prelude.NonEmptySet
 import zio.{Clock, Duration, Task, ZLayer}
 
@@ -50,7 +51,7 @@ class PostgresConversationRepository(xa: TransactorZIO) extends ConversationRepo
   given DbCodec[Instant] = DbCodec.InstantCodec
   given DbCodec[ConversationStep] = jsonCodec[ConversationStep]
   given DbCodec[RequestedClaims] = jsonCodec[RequestedClaims]
-  given DbCodec[zio.json.ast.Json.Obj] = jsonCodec[zio.json.ast.Json.Obj]
+  given DbCodec[Json.Obj] = jsonCodec[Json.Obj]
   given DbCodec[AuthFlow] = jsonBCodec[AuthFlow]
   given DbCodec[ResponseTypeEntry] = DbCodec.StringCodec.biMap(ResponseTypeEntry.valueOf, _.toString)
   given DbCodec[NonEmptySet[ResponseTypeEntry]] = DbCodec.StringCodec.biMap(

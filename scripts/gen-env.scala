@@ -121,12 +121,14 @@ def writeFile(dir: File, name: String, content: String): Unit =
     if isLocal then "  client-secret = \"ZGV2LWNlbnRyYWwtYWRtaW4tc2VjcmV0LTMyYnl0ZXM\"\n" else ""
 
   // ── Service URLs ──────────────────────────────────────────────────────────────
-  // Each service's public base URL, prompted once and reused wherever another
-  // service needs to reach it (auth is also the JWT issuer and edge's upstream).
+  // authUrl      – public-facing URL (JWT issuer, server metadata, browser redirects via edge).
+  // authInternalUrl – internal S2S URL used by central to call auth's admin APIs.
+  //                   Defaults to authUrl; override in k8s / service-mesh deployments.
   section("\n── Service URLs ──────────────────────────────────────────────────────")
-  val authUrl    = prompt("  Auth URL [http://localhost:9003]: ",    "http://localhost:9003")
-  val centralUrl = prompt("  Central URL [http://localhost:9001]: ", "http://localhost:9001")
-  val edgeUrl    = prompt("  Edge URL [http://localhost:9005]: ",    "http://localhost:9005")
+  val authUrl         = prompt("  Auth public URL [http://localhost:9003]: ",           "http://localhost:9003")
+  val authInternalUrl = prompt(s"  Auth internal URL [$authUrl]: ",                    authUrl)
+  val centralUrl      = prompt("  Central URL [http://localhost:9001]: ",               "http://localhost:9001")
+  val edgeUrl         = prompt("  Edge URL [http://localhost:9005]: ",                  "http://localhost:9005")
 
   section("\n── Auth service ──────────────────────────────────────────────────────")
   val authPgUrl       = prompt("  Postgres URL [jdbc:postgresql://localhost:5432/auth]: ", "jdbc:postgresql://localhost:5432/auth")
@@ -142,6 +144,25 @@ def writeFile(dir: File, name: String, content: String): Unit =
   val centralPgUrl        = prompt("  Postgres URL [jdbc:postgresql://localhost:5432/auth]: ", "jdbc:postgresql://localhost:5432/auth")
   val centralPgUser       = prompt("  Postgres user [dev]: ",                         "dev")
   val centralPgPass       = prompt("  Postgres password [1234]: ",                    "1234")
+
+
+  val metadata =
+    s"""{
+       |  "issuer": "$authUrl",
+       |  "authorization_endpoint": "$authUrl/authorize",
+       |  "token_endpoint": "$authUrl/token",
+       |  "userinfo_endpoint": "$authUrl/userinfo",
+       |  "jwks_uri": "$authUrl/.well-known/jwks.json",
+       |  "introspection_endpoint": "$authUrl/introspect",
+       |  "revocation_endpoint": "$authUrl/revoke",
+       |  "scopes_supported": ["openid", "profile", "email", "phone", "offline_access"],
+       |  "response_types_supported": ["code", "code id_token"],
+       |  "grant_types_supported": ["authorization_code", "client_credentials", "refresh_token"],
+       |  "subject_types_supported": ["public", "pairwise"],
+       |  "id_token_signing_alg_values_supported": ["RS256"],
+       |  "token_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post"],
+       |  "claims_supported": ["sub", "iss", "aud", "exp", "iat", "jti", "nonce", "auth_time", "acr", "amr"]
+       |}""".stripMargin
 
   section("\n── Edge service ──────────────────────────────────────────────────────")
   val edgePgUrl       = prompt("  Postgres URL [jdbc:postgresql://localhost:5432/auth]: ", "jdbc:postgresql://localhost:5432/auth")
@@ -252,7 +273,7 @@ def writeFile(dir: File, name: String, content: String): Unit =
        |  sessions-secret              = "$sessionsSecret"
        |  passwords-secret             = "$passwordsSecret"
        |  conversation-cookie-secret   = "$conversationCookieSecret"
-       |  session-cookie-secret        = "$sessionCookieSecret"  
+       |  session-cookie-secret        = "$sessionCookieSecret"
        |}
        |
        |jwt {
@@ -332,6 +353,7 @@ def writeFile(dir: File, name: String, content: String): Unit =
        |  ]
        |  # Matches the JWT signing key in auth (jwt.private-key).
        |  jwks = \"\"\"$jwks\"\"\"
+       |  metadata = \"\"\"$metadata\"\"\"
        |  presets = [
        |    {
        |      id = "central-admin"
@@ -347,7 +369,7 @@ def writeFile(dir: File, name: String, content: String): Unit =
        |client-secrets-secret = "$clientSecretsSecret"
        |
        |auth {
-       |  url = "$authUrl"
+       |  url = "$authInternalUrl"
        |}
        |
        |user-outbox {
