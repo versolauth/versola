@@ -56,6 +56,8 @@ extension (task: Task[AuthorizeResult])
 
 case class ChallengeResult(response: Response, html: String):
   val step: Option[ConversationStep] = ConversationStep.fromHtml(html)
+  val csrf: Option[String] = """<meta name="versola-csrf" content="([^"]+)"""".r
+    .findFirstMatchIn(html).map(_.group(1))
 
   def assertStep(expected: ConversationStep): Task[ChallengeResult] =
     step.assertIs(expected).as(this)
@@ -318,27 +320,42 @@ final class OAuthClient(client: Client, config: E2EConfig):
 
   /** POST /challenge/email — submits an email credential to start the OTP flow. */
   def submitEmail(cookie: String, email: String): Task[SubmitResult] =
-    formPost(s"${config.authUrl}/challenge/email", Map("email" -> email), cookie).map(SubmitResult(_))
+    for
+      csrf <- getCsrf(cookie)
+      result <- formPost(s"${config.authUrl}/challenge/email", Map("email" -> email, "csrf" -> csrf), cookie)
+    yield SubmitResult(result)
 
   /** POST /challenge/phone — submits a phone credential to start the OTP flow. */
   def submitPhone(cookie: String, phone: String): Task[SubmitResult] =
-    formPost(s"${config.authUrl}/challenge/phone", Map("phone" -> phone), cookie).map(SubmitResult(_))
+    for
+      csrf <- getCsrf(cookie)
+      result <- formPost(s"${config.authUrl}/challenge/phone", Map("phone" -> phone, "csrf" -> csrf), cookie)
+    yield SubmitResult(result)
 
   /** POST /challenge/otp — submits an OTP code (always "123456" in non-prod). */
   def submitOtp(cookie: String, code: String): Task[SubmitResult] =
-    formPost(s"${config.authUrl}/challenge/otp", Map("code" -> code), cookie).map(SubmitResult(_))
+    for
+      csrf <- getCsrf(cookie)
+      result <- formPost(s"${config.authUrl}/challenge/otp", Map("code" -> code, "csrf" -> csrf), cookie)
+    yield SubmitResult(result)
 
   /** POST /challenge/set-password — submits a new password when the conversation requires it. */
   def submitSetPassword(cookie: String, password: String): Task[SubmitResult] =
-    formPost(s"${config.authUrl}/challenge/set-password", Map("password" -> password), cookie).map(SubmitResult(_))
+    for
+      csrf <- getCsrf(cookie)
+      result <- formPost(s"${config.authUrl}/challenge/set-password", Map("password" -> password, "csrf" -> csrf), cookie)
+    yield SubmitResult(result)
 
   /** POST /challenge/login-password — submits login + password in a single step. */
   def submitLoginPassword(cookie: String, login: String, password: String): Task[SubmitResult] =
-    formPost(
-      s"${config.authUrl}/challenge/login-password",
-      Map("login" -> login, "password" -> password),
-      cookie,
-    ).map(SubmitResult(_))
+    for
+      csrf <- getCsrf(cookie)
+      result <- formPost(
+        s"${config.authUrl}/challenge/login-password",
+        Map("login" -> login, "password" -> password, "csrf" -> csrf),
+        cookie,
+      )
+    yield SubmitResult(result)
 
   /** POST /token — exchanges authorization code for tokens. */
   def token(
@@ -510,6 +527,9 @@ final class OAuthClient(client: Client, config: E2EConfig):
     ).provide(ZLayer.succeed(client)).flatMap(UserinfoResult.parse)
 
   // ── helpers ────────────────────────────────────────────────────────────────
+
+  private def getCsrf(cookie: String): Task[String] =
+    getChallenge(cookie).map(_.csrf.getOrElse(""))
 
   private def formPost(url: String, fields: Map[String, String], cookie: String): Task[Response] =
     val req = Request.post(url, formBody(fields))
