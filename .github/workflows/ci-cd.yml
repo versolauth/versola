@@ -48,19 +48,25 @@ jobs:
         shell: bash
         run: |
           set -eo pipefail
-          # Fail the build if production code (src/main) uses the raw transactor methods
-          # xa.connect / xa.transact instead of the measured wrappers
-          # xa.connectMeasured / xa.transactMeasured, so every query is recorded in the
+          # Fail the build if any src/main Scala file calls the raw .connect / .transact
+          # transactor methods instead of the measured wrappers .connectMeasured /
+          # .transactMeasured, so every query is recorded in the
           # db_client_operation_duration_seconds metric.
           #
-          # - Scoped to the `xa.` receiver (every TransactorZIO is named `xa` in this codebase),
-          #   so unrelated APIs with a connect/transact method are not flagged.
-          # - POSIX character class instead of `\b` (a GNU-only extension) for portability.
-          # - BasicCodecs.scala (which defines the wrappers) is excluded via a git pathspec, so
-          #   there is no second grep in a pipe: the exit status is git grep's alone, and a real
-          #   git error is surfaced as a failure instead of being masked into a silent pass.
+          # Uses git grep boolean AND NOT so the check catches any call regardless of
+          # what precedes the method — xa.connect, xa.repeatableRead.transact,
+          # xa.serializable.connect, etc. — without relying on the receiver being named `xa`.
+          #
+          # The [^a-zA-Z_] guard prevents false positives from longer names that share
+          # the prefix: .transactor, .connectionTimeout, .connectors, etc.
+          #
+          # Exit codes: 0 = violations found, 1 = clean, >1 = git error.
+          # BasicCodecs.scala (which contains `xa.connect(f)` inside the wrapper bodies)
+          # is excluded via pathspec so its own implementation lines are never flagged.
           status=0
-          matches="$(git grep -nE '(^|[^[:alnum:]_])xa\.(connect|transact)[:(]' \
+          matches="$(git grep -nE \
+            -e '\.(connect|transact)[^a-zA-Z_]' \
+            --and --not -e '(connect|transact)Measured' \
             -- '**/src/main/**/*.scala' \
             ':(exclude)util/implementations/postgres/src/main/scala/versola/util/postgres/BasicCodecs.scala')" \
             || status=$?
@@ -73,11 +79,11 @@ jobs:
 
           if [ -n "$matches" ]; then
             printf '%s\n' "$matches"
-            echo "::error::Use xa.connectMeasured(...)/xa.transactMeasured(...) instead of raw xa.connect/xa.transact in production code (src/main)."
+            echo "::error::Use .connectMeasured(...) / .transactMeasured(...) instead of raw .connect / .transact in production code (src/main)."
             exit 1
           fi
 
-          echo "OK: no unmeasured xa.connect/xa.transact found in src/main."
+          echo "OK: no unmeasured .connect/.transact found in src/main."
 
       - name: Compile
         run: sbt compile

@@ -83,6 +83,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
     needsPasswordChange = false,
     targetAcr = None,
     csrfToken = "test-csrf",
+    priorSessionId = None,
   )
 
   class Env:

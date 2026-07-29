@@ -16,6 +16,7 @@ import versola.oauth.conversation.otp.OtpService
 import versola.oauth.conversation.otp.model.SubmitOtpResult
 import versola.oauth.model.*
 import versola.oauth.session.SessionRepository
+import versola.oauth.session.model.PriorSession
 import versola.oauth.session.model.*
 import versola.oauth.token.AuthorizationCodeRepository
 import versola.oauth.userinfo.UserInfoService
@@ -72,6 +73,7 @@ object ConversationServiceSpec extends UnitSpecBase:
     needsPasswordChange = false,
     targetAcr = None,
     csrfToken = "test-csrf",
+    priorSessionId = None,
   )
 
   class Env:
@@ -223,7 +225,84 @@ object ConversationServiceSpec extends UnitSpecBase:
               assertTrue(c == code) &&
               assertTrue(s == sessionId)
             case _ => assertTrue(false)
-      }
+      },
+      test("creates new session and issues cookie during step-up") {
+        val env = Env()
+        val now = Instant.parse("2026-07-13T10:00:00Z")
+        val priorSessionIdMac = MAC(Array.fill(32)(2.toByte))
+        val record = conversationRecord.copy(
+          userId = Some(userId),
+          priorSessionId = Some(priorSessionIdMac),
+        )
+        val code = AuthorizationCode.fromString("code")
+        val sessionId = SessionId.fromString("step-up-session")
+        val accessToken = AccessToken.fromString("token")
+        val sessionIdMac = MAC(Array.fill(32)(3.toByte))
+        val codeMac = MAC(Array.fill(32)(4.toByte))
+
+        for
+          _ <- TestClock.setTime(now)
+          _ <- env.authPropertyGenerator.nextAuthorizationCode.succeedsWith(code)
+          _ <- env.authPropertyGenerator.nextSessionId.succeedsWith(sessionId)
+          _ <- env.securityService.mac.returnsZIOOnCall:
+            case 1 => ZIO.succeed(sessionIdMac)
+            case 2 => ZIO.succeed(codeMac)
+          _ <- env.authPropertyGenerator.nextAccessToken.succeedsWith(accessToken)
+          _ <- env.configService.getSessionTtl.succeedsWith(1.hour)
+          _ <- env.configService.getSessionIdleTtl.succeedsWith(Some(30.minutes))
+          _ <- env.conversationRepository.delete.succeedsWith(true)
+          _ <- env.authorizationCodeRepository.create.succeedsWith(())
+          _ <- env.sessionRepository.create.succeedsWith(())
+          result <- env.service.finish(authId, record)
+          createCalls = env.sessionRepository.create.calls
+        yield
+          result match
+            case ConversationResult.Complete(_, _, _, s, _) =>
+              assertTrue(s == sessionId) &&
+              assertTrue(createCalls.nonEmpty) &&
+              assertTrue(createCalls.head._1 == sessionIdMac) &&
+              assertTrue(createCalls.head._5 == Some(PriorSession.Invalidate(priorSessionIdMac)))
+            case _ => assertTrue(false)
+      },
+      test("invalidates prior session and creates new one during re-auth") {
+        val env = Env()
+        val now = Instant.parse("2026-07-13T10:00:00Z")
+        val priorSessionIdMac = MAC(Array.fill(32)(2.toByte))
+        val record = conversationRecord.copy(
+          userId = Some(userId),
+          priorSessionId = Some(priorSessionIdMac),
+        )
+        val code = AuthorizationCode.fromString("code")
+        val sessionId = SessionId.fromString("new-session")
+        val accessToken = AccessToken.fromString("token")
+        val sessionIdMac = MAC(Array.fill(32)(3.toByte))
+        val codeMac = MAC(Array.fill(32)(4.toByte))
+
+        for
+          _ <- TestClock.setTime(now)
+          _ <- env.authPropertyGenerator.nextAuthorizationCode.succeedsWith(code)
+          _ <- env.authPropertyGenerator.nextSessionId.succeedsWith(sessionId)
+          _ <- env.securityService.mac.returnsZIOOnCall:
+            case 1 => ZIO.succeed(sessionIdMac)
+            case 2 => ZIO.succeed(codeMac)
+          _ <- env.authPropertyGenerator.nextAccessToken.succeedsWith(accessToken)
+          _ <- env.configService.getSessionTtl.succeedsWith(1.hour)
+          _ <- env.configService.getSessionIdleTtl.succeedsWith(Some(30.minutes))
+          _ <- env.conversationRepository.delete.succeedsWith(true)
+          _ <- env.authorizationCodeRepository.create.succeedsWith(())
+          _ <- env.sessionRepository.create.succeedsWith(())
+          result <- env.service.finish(authId, record)
+          createCalls = env.sessionRepository.create.calls
+        yield
+          result match
+            case ConversationResult.Complete(_, _, _, s, _) =>
+              assertTrue(s == sessionId) &&
+              assertTrue(createCalls.nonEmpty) &&
+              assertTrue(createCalls.head._1 == sessionIdMac) &&
+              assertTrue(createCalls.head._5 == Some(PriorSession.Invalidate(priorSessionIdMac)))
+            case _ => assertTrue(false)
+      },
+
     ),
 
     suite("checkLoginPassword")(

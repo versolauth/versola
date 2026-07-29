@@ -165,6 +165,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
     needsPasswordChange = false,
     targetAcr = None,
     csrfToken = "test-csrf",
+    priorSessionId = None,
   )
 
   val spec = suite("AuthorizeEndpointService")(

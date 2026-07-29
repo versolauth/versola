@@ -110,6 +110,7 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
     needsPasswordChange = false,
     targetAcr = None,
     csrfToken = "test-csrf",
+    priorSessionId = None,
   )
 
   // A minimal assertion response carrying a credential id, used as the throttle subject.

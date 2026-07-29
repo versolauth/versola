@@ -77,6 +77,7 @@ object TokenResult:
       accessToken: String,
       tokenType: String,
       expiresIn: Long,
+      refreshToken: Option[String],
       idToken: Option[String],
   ) extends TokenResult
 
@@ -86,6 +87,7 @@ object TokenResult:
       access_token: String,
       token_type: String,
       expires_in: Long,
+      refresh_token: Option[String],
       id_token: Option[String],
   ) derives JsonDecoder
 
@@ -94,7 +96,7 @@ object TokenResult:
       if response.status.isSuccess then
         body.fromJson[Raw].fold(
           err => Failure(response, s"JSON parse error [$err] body=$body"),
-          raw => Success(response, raw.access_token, raw.token_type, raw.expires_in, raw.id_token),
+          raw => Success(response, raw.access_token, raw.token_type, raw.expires_in, raw.refresh_token, raw.id_token),
         )
       else Failure(response, body)
 
@@ -145,6 +147,32 @@ object UserinfoResult:
 extension (task: Task[UserinfoResult])
   @targetName("userinfoSuccess")
   def success: Task[UserinfoResult.Success] = task.flatMap(_.success)
+
+sealed trait IntrospectResult:
+  def response: Response
+  def success: Task[IntrospectResult.Success] = this match
+    case s: IntrospectResult.Success => ZIO.succeed(s)
+    case IntrospectResult.Failure(resp, body) =>
+      ZIO.fail(RuntimeException(s"Expected introspect success but got: status=${resp.status} body=$body"))
+
+object IntrospectResult:
+  case class Success(response: Response, active: Boolean) extends IntrospectResult
+  case class Failure(response: Response, body: String) extends IntrospectResult
+
+  private case class Raw(active: Boolean) derives JsonDecoder
+
+  def parse(response: Response): Task[IntrospectResult] =
+    response.body.asString.map: body =>
+      if response.status.isSuccess then
+        body.fromJson[Raw].fold(
+          err => Failure(response, s"JSON parse error [$err] body=$body"),
+          raw => Success(response, raw.active),
+        )
+      else Failure(response, body)
+
+extension (task: Task[IntrospectResult])
+  @targetName("introspectSuccess")
+  def success: Task[IntrospectResult.Success] = task.flatMap(_.success)
 
 sealed trait RegisterClientResult:
   def response: Response
@@ -378,6 +406,38 @@ final class OAuthClient(client: Client, config: E2EConfig):
       .addHeader(Authorization.Basic(effectiveClientId, effectiveClientSecret))
       .addHeader(Header.ContentType(MediaType.application.`x-www-form-urlencoded`))
     Client.batched(req).provide(ZLayer.succeed(client)).flatMap(TokenResult.parse)
+
+  /** POST /token — refreshes an access token. */
+  def refresh(
+      refreshToken: String,
+      clientId: Option[String] = None,
+      clientSecret: Option[String] = None,
+      scope: Option[String] = None,
+  ): Task[TokenResult] =
+    val effectiveClientId = clientId.getOrElse(config.clientId)
+    val effectiveClientSecret = clientSecret.getOrElse(config.clientSecret)
+    val body = formBody(Map(
+      "grant_type" -> "refresh_token",
+      "refresh_token" -> refreshToken,
+    ) ++ scope.map("scope" -> _))
+    val req = Request.post(s"${config.authUrl}/token", body)
+      .addHeader(Authorization.Basic(effectiveClientId, effectiveClientSecret))
+      .addHeader(Header.ContentType(MediaType.application.`x-www-form-urlencoded`))
+    Client.batched(req).provide(ZLayer.succeed(client)).flatMap(TokenResult.parse)
+
+  /** POST /introspect — introspects a token (access or refresh) per RFC 7662. */
+  def introspect(
+      token: String,
+      clientId: Option[String] = None,
+      clientSecret: Option[String] = None,
+  ): Task[IntrospectResult] =
+    val effectiveClientId = clientId.getOrElse(config.clientId)
+    val effectiveClientSecret = clientSecret.getOrElse(config.clientSecret)
+    val body = formBody(Map("token" -> token))
+    val req = Request.post(s"${config.authUrl}/introspect", body)
+      .addHeader(Authorization.Basic(effectiveClientId, effectiveClientSecret))
+      .addHeader(Header.ContentType(MediaType.application.`x-www-form-urlencoded`))
+    Client.batched(req).provide(ZLayer.succeed(client)).flatMap(IntrospectResult.parse)
 
   /** POST /users — registers a new user via the Central API, returns the generated user ID. */
   def registerUser(email: Option[String] = None, login: Option[String] = None, phone: Option[String] = None): Task[java.util.UUID] =

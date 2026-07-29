@@ -96,7 +96,7 @@ object Flows:
         clientId,
         "OTP Test Client",
         Set(redirectUri),
-        allowedScopes = Set("openid", "email"),
+        allowedScopes = Set("openid", "email", "offline_access"),
         authFlow = Some(emailOtpAuthFlow),
       ).success
       userId <- oauthClient.registerUser(email = Some(email))

@@ -11,24 +11,46 @@ object AuthMethodRefSpec extends UnitSpecBase:
 
   def spec = suite("AuthMethodRef")(
     suite("amrClaim")(
-      test("returns flattened methods without mfa for a single factor") {
+      test("returns empty set for empty input") {
+        assertTrue(AuthMethodRef.amrClaim(Map.empty) == Set.empty[AuthMethodRef])
+      },
+      test("otp factor expands to {otp, sms} without mfa") {
         val amr = Map(
           PassedAuthFactor.otp -> PassedFactorRecord(Instant.EPOCH, Set(AuthMethodRef.otp, AuthMethodRef.sms)),
         )
         assertTrue(AuthMethodRef.amrClaim(amr) == Set(AuthMethodRef.otp, AuthMethodRef.sms))
       },
-      test("adds mfa when two or more distinct factors were passed") {
+      test("passkey factor expands to {swk, user} without mfa") {
+        val amr = Map(
+          PassedAuthFactor.passkey -> PassedFactorRecord(Instant.EPOCH, Set(AuthMethodRef.swk, AuthMethodRef.user)),
+        )
+        assertTrue(AuthMethodRef.amrClaim(amr) == Set(AuthMethodRef.swk, AuthMethodRef.user))
+      },
+      test("passkey factor with hwk expands to {hwk, user} without mfa") {
+        val amr = Map(
+          PassedAuthFactor.passkey -> PassedFactorRecord(Instant.EPOCH, Set(AuthMethodRef.hwk, AuthMethodRef.user)),
+        )
+        assertTrue(AuthMethodRef.amrClaim(amr) == Set(AuthMethodRef.hwk, AuthMethodRef.user))
+      },
+      test("password + otp adds mfa") {
         val amr = Map(
           PassedAuthFactor.password -> PassedFactorRecord(Instant.EPOCH, Set(AuthMethodRef.pwd)),
-          PassedAuthFactor.otp -> PassedFactorRecord(Instant.EPOCH, Set(AuthMethodRef.otp, AuthMethodRef.sms)),
+          PassedAuthFactor.otp      -> PassedFactorRecord(Instant.EPOCH, Set(AuthMethodRef.otp, AuthMethodRef.sms)),
         )
         assertTrue(
           AuthMethodRef.amrClaim(amr) ==
             Set(AuthMethodRef.pwd, AuthMethodRef.otp, AuthMethodRef.sms, AuthMethodRef.mfa),
         )
       },
-      test("returns empty set for empty input") {
-        assertTrue(AuthMethodRef.amrClaim(Map.empty) == Set.empty[AuthMethodRef])
+      test("password + passkey adds mfa") {
+        val amr = Map(
+          PassedAuthFactor.password -> PassedFactorRecord(Instant.EPOCH, Set(AuthMethodRef.pwd)),
+          PassedAuthFactor.passkey  -> PassedFactorRecord(Instant.EPOCH, Set(AuthMethodRef.swk, AuthMethodRef.user)),
+        )
+        assertTrue(
+          AuthMethodRef.amrClaim(amr) ==
+            Set(AuthMethodRef.pwd, AuthMethodRef.swk, AuthMethodRef.user, AuthMethodRef.mfa),
+        )
       },
     ),
     suite("idTokenClaims")(

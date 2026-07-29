@@ -36,7 +36,9 @@ object AuthMethodRef:
     else None
 
   /** Flatten the per-challenge records into the set of RFC 8176 values for the
-    * OIDC `amr` claim, adding [[mfa]] when more than one distinct factor was passed.
+    * OIDC `amr` claim, adding [[mfa]] when more than one distinct [[PassedAuthFactor]]
+    * was passed. Note that a single factor may expand to multiple RFC 8176 values
+    * (e.g. OTP → `{otp, sms}`, passkey → `{swk, user}`) but still counts as one factor.
     */
   def amrClaim(amr: Map[PassedAuthFactor, PassedFactorRecord]): Set[AuthMethodRef] =
     val methods = amr.values.flatMap(_.methods).toSet
