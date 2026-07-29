@@ -109,6 +109,7 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
     amr = Map.empty,
     needsPasswordChange = false,
     targetAcr = None,
+    priorSessionId = None,
   )
 
   // A minimal assertion response carrying a credential id, used as the throttle subject.

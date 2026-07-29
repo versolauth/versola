@@ -164,6 +164,8 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
     amr = Map.empty,
     needsPasswordChange = false,
     targetAcr = None,
+
+    priorSessionId = None,
   )
 
   val spec = suite("AuthorizeEndpointService")(

@@ -323,4 +323,83 @@ object StepUpFlowSpec extends E2ESpec:
       }
     ),
 
+    suite("session rotation and token invalidation")(
+
+      test("prompt=login without offline_access invalidates old refresh token (Invalidate path)") {
+        for
+          (s, auth) <- setup(Flows.Id.EmailOtp)
+          // 1. First auth — issue a refresh token
+          authorize1 <- auth.authorize(
+            scope = "openid email offline_access",
+            clientId = Some(s.clientId),
+            redirectUri = Some(s.redirectUri),
+          ).assertChallengeRedirect
+          _ <- auth.submitEmail(authorize1.conversationCookie.get, s.email.get)
+          submit1 <- auth.submitOtp(authorize1.conversationCookie.get, fixedOtp)
+          code1 <- submit1.assertRedirect
+          sessionCookie1 <- ZIO.fromOption(submit1.sessionCookie).orElseFail(RuntimeException("No SSO_SESSION cookie 1"))
+          token1 <- auth.token(code1, authorize1.verifier, clientId = Some(s.clientId), clientSecret = Some(s.clientSecret), redirectUri = Some(s.redirectUri)).success
+          refreshToken1 <- ZIO.fromOption(token1.refreshToken).orElseFail(RuntimeException("Missing first refresh token"))
+
+          // 2. Re-auth WITHOUT offline_access → Invalidate path (new session, old RT killed)
+          authorize2 <- auth.authorizeRaw(
+            clientId = s.clientId,
+            redirectUri = s.redirectUri,
+            scope = Some("openid email"),
+            prompt = Some("login"),
+            sessionCookie = Some(sessionCookie1),
+          ).assertChallengeRedirect
+          _ <- auth.submitEmail(authorize2.conversationCookie.get, s.email.get)
+          submit2 <- auth.submitOtp(authorize2.conversationCookie.get, fixedOtp)
+          code2 <- submit2.assertRedirect
+          sessionCookie2 <- ZIO.fromOption(submit2.sessionCookie).orElseFail(RuntimeException("No SSO_SESSION cookie 2"))
+          _ <- auth.token(code2, authorize2.verifier, clientId = Some(s.clientId), clientSecret = Some(s.clientSecret), redirectUri = Some(s.redirectUri)).success
+
+          // 3. Old refresh token must be dead
+          introspectResult <- auth.introspect(refreshToken1, clientId = Some(s.clientId), clientSecret = Some(s.clientSecret)).success
+        yield assertTrue(
+          sessionCookie1 != sessionCookie2,
+          !introspectResult.active,
+        )
+      },
+
+      test("prompt=login with offline_access migrates old refresh token to new session (MigrateTokens path)") {
+        for
+          (s, auth) <- setup(Flows.Id.EmailOtp)
+          // 1. First auth — issue a refresh token
+          authorize1 <- auth.authorize(
+            scope = "openid email offline_access",
+            clientId = Some(s.clientId),
+            redirectUri = Some(s.redirectUri),
+          ).assertChallengeRedirect
+          _ <- auth.submitEmail(authorize1.conversationCookie.get, s.email.get)
+          submit1 <- auth.submitOtp(authorize1.conversationCookie.get, fixedOtp)
+          code1 <- submit1.assertRedirect
+          sessionCookie1 <- ZIO.fromOption(submit1.sessionCookie).orElseFail(RuntimeException("No SSO_SESSION cookie 1"))
+          token1 <- auth.token(code1, authorize1.verifier, clientId = Some(s.clientId), clientSecret = Some(s.clientSecret), redirectUri = Some(s.redirectUri)).success
+          refreshToken1 <- ZIO.fromOption(token1.refreshToken).orElseFail(RuntimeException("Missing first refresh token"))
+
+          // 2. Re-auth WITH offline_access → MigrateTokens path (new session, old RT re-parented)
+          authorize2 <- auth.authorizeRaw(
+            clientId = s.clientId,
+            redirectUri = s.redirectUri,
+            scope = Some("openid email offline_access"),
+            prompt = Some("login"),
+            sessionCookie = Some(sessionCookie1),
+          ).assertChallengeRedirect
+          _ <- auth.submitEmail(authorize2.conversationCookie.get, s.email.get)
+          submit2 <- auth.submitOtp(authorize2.conversationCookie.get, fixedOtp)
+          code2 <- submit2.assertRedirect
+          sessionCookie2 <- ZIO.fromOption(submit2.sessionCookie).orElseFail(RuntimeException("No SSO_SESSION cookie 2"))
+          _ <- auth.token(code2, authorize2.verifier, clientId = Some(s.clientId), clientSecret = Some(s.clientSecret), redirectUri = Some(s.redirectUri)).success
+
+          // 3. Old refresh token must still be active (migrated to new session)
+          introspectResult <- auth.introspect(refreshToken1, clientId = Some(s.clientId), clientSecret = Some(s.clientSecret)).success
+        yield assertTrue(
+          sessionCookie1 != sessionCookie2,
+          introspectResult.active,
+        )
+      },
+    ),
+
   ) @@ TestAspect.sequential @@ TestAspect.timeout(120.seconds)

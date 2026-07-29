@@ -5,7 +5,7 @@ import com.augustnagro.magnum.magzio.TransactorZIO
 import com.augustnagro.magnum.pg.{PgCodec, SqlArrayCodec}
 import versola.oauth.client.model.{Acr, AuthMethodRef, ClientId, PassedAuthFactor, PassedFactorRecord, ScopeToken}
 import versola.oauth.model.{AccessToken, Nonce, RefreshToken}
-import versola.oauth.session.model.{RefreshAlreadyExchanged, RefreshTokenRecord, SessionId, SessionRecord, UserAgentInfo}
+import versola.oauth.session.model.{PriorSession, RefreshAlreadyExchanged, RefreshTokenRecord, SessionId, SessionRecord, UserAgentInfo}
 import versola.oauth.userinfo.model.RequestedClaims
 import versola.user.model.UserId
 import versola.util.MAC
@@ -53,10 +53,11 @@ class PostgresSessionRepository(xa: TransactorZIO)
       session: SessionRecord,
       ttl: Duration,
       idleTtl: Option[Duration],
+      priorSession: Option[PriorSession],
   ): Task[Unit] =
     Clock.instant.flatMap: now =>
       val idleExpiresAt = idleTtl.map(t => now.plusSeconds(t.toSeconds))
-      xa.connectMeasured("create-session"):
+      xa.transactMeasured("create-session"):
         sql"""
           INSERT INTO sso_sessions (id, client_id, user_id, user_agent, created_at, amr, expires_at, idle_expires_at)
           VALUES (
@@ -70,7 +71,18 @@ class PostgresSessionRepository(xa: TransactorZIO)
             $idleExpiresAt
           )
         """.update.run()
-      .unit
+        priorSession.foreach:
+          case PriorSession.Invalidate(prior) =>
+            sql"""UPDATE sso_sessions SET expires_at = $now WHERE id = $prior""".update.run()
+            sql"""UPDATE refresh_tokens SET expires_at = $now WHERE session_id = $prior""".update.run()
+          case PriorSession.MigrateTokens(prior, amr, authTime, acr) =>
+            sql"""UPDATE sso_sessions SET expires_at = $now WHERE id = $prior""".update.run()
+            sql"""
+              UPDATE refresh_tokens
+              SET session_id = $id, amr = $amr, auth_time = $authTime, acr = $acr
+              WHERE session_id = $prior AND expires_at > $now
+            """.update.run()
+        ()
 
   override def findSession(id: MAC.Of[SessionId]): Task[Option[SessionRecord]] =
     Clock.instant.flatMap: now =>
@@ -124,15 +136,24 @@ class PostgresSessionRepository(xa: TransactorZIO)
         """.update.run()
         ()
 
+  override def invalidate(id: MAC.Of[SessionId]): Task[Unit] =
+    Clock.instant.flatMap: now =>
+      xa.transactMeasured("invalidate-session"):
+        sql"""
+          UPDATE sso_sessions SET expires_at = $now WHERE id = $id
+        """.update.run()
+        sql"""
+          UPDATE refresh_tokens SET expires_at = $now WHERE session_id = $id
+        """.update.run()
+        ()
+
   // ── refresh token methods ─────────────────────────────────────────────────
 
   override def createRefreshToken(
       refreshToken: MAC.Of[RefreshToken],
       record: RefreshTokenRecord,
   ): IO[Throwable | RefreshAlreadyExchanged, Unit] =
-    xa.withConnectionConfig(
-      _.setTransactionIsolation(Connection.TRANSACTION_REPEATABLE_READ),
-    ).transactMeasured("create-refresh-token") {
+    xa.repeatableRead.transactMeasured("create-refresh-token") {
       record.previousRefreshToken
         .foreach { oldToken => sql"""DELETE FROM refresh_tokens WHERE id = $oldToken""".update.run() }
 

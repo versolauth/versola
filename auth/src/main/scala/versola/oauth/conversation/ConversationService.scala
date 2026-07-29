@@ -15,6 +15,7 @@ import versola.oauth.conversation.otp.OtpService
 import versola.oauth.conversation.otp.model.SubmitOtpResult
 import versola.oauth.model.{AuthorizationCode, AuthorizationCodeRecord}
 import versola.oauth.session.SessionRepository
+import versola.oauth.session.model.PriorSession
 import versola.oauth.session.model.{SessionRecord, UserAgentInfo}
 import versola.oauth.token.AuthorizationCodeRepository
 import versola.oauth.userinfo.UserInfoService
@@ -520,11 +521,20 @@ object ConversationService:
         case Some(userId) =>
           for
             code <- authPropertyGenerator.nextAuthorizationCode
-            sessionId <- authPropertyGenerator.nextSessionId
-            sessionIdMac <- securityService.mac(Secret(sessionId), config.security.sessionsSecret)
-            accessToken <- authPropertyGenerator.nextAccessToken
             now <- Clock.instant
             amr = AuthMethodRef.amrClaim(conversation.amr)
+            accessToken <- authPropertyGenerator.nextAccessToken
+            sessionTtl <- configService.getSessionTtl(conversation.clientId)
+            sessionIdleTtl <-
+              if conversation.scope.contains(ScopeToken.OfflineAccess) then
+                ZIO.none
+              else
+                configService.getSessionIdleTtl(conversation.clientId)
+
+            // Always generate a fresh session ID (rotates the ID, issues a fresh cookie with full TTL).
+            sessionId <- authPropertyGenerator.nextSessionId
+            sessionIdMac <- securityService.mac(Secret(sessionId), config.security.sessionsSecret)
+
             record = AuthorizationCodeRecord(
               sessionId = sessionIdMac,
               clientId = conversation.clientId,
@@ -549,14 +559,21 @@ object ConversationService:
               amr = conversation.amr,
             )
             codeMac <- securityService.mac(Secret(code), config.security.authCodesSecret)
-            sessionTtl <- configService.getSessionTtl(conversation.clientId)
-            sessionIdleTtl <- if conversation.scope.contains(ScopeToken.OfflineAccess) then ZIO.none
-            else configService.getSessionIdleTtl(conversation.clientId)
             claimed <- conversationRepository.delete(authId, conversation.version)
             result <- if claimed then
               for
                 _ <- authorizationCodeRepository.create(codeMac, record, 1.minute)
-                _ <- sessionRepository.create(sessionIdMac, session, sessionTtl, sessionIdleTtl)
+                // Always create a new session (rotates the ID, issues a fresh cookie with full TTL).
+                // For step-up the accumulated AMR is already in conversation.amr.
+                // When offline_access is in scope the client holds a refresh token on-device:
+                // migrate prior session's tokens to the new session so the device RT stays valid.
+                // Otherwise (web/BFF) expire the prior session's tokens outright.
+                priorSession = conversation.priorSessionId.map: prior =>
+                  if conversation.hasOfflineAccess then
+                    PriorSession.MigrateTokens(prior, amr, now, conversation.targetAcr)
+                  else
+                    PriorSession.Invalidate(prior)
+                _ <- sessionRepository.create(sessionIdMac, session, sessionTtl, sessionIdleTtl, priorSession)
                 idTokenData <- if conversation.responseType.contains(ResponseTypeEntry.IdToken) && conversation.scope.contains(ScopeToken.OpenId) then
                   generateIdTokenData(userId, conversation, amr, now, conversation.targetAcr)
                 else

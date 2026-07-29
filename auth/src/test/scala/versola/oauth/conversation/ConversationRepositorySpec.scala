@@ -70,6 +70,7 @@ trait ConversationRepositorySpec extends DatabaseSpecBase[ConversationRepository
     amr = Map.empty,
     needsPasswordChange = false,
     targetAcr = None,
+    priorSessionId = None,
   )
 
   val record2 = record1.copy(
@@ -103,6 +104,7 @@ trait ConversationRepositorySpec extends DatabaseSpecBase[ConversationRepository
     amr = Map.empty,
     needsPasswordChange = false,
     targetAcr = None,
+    priorSessionId = None,
   )
 
   def testCases(env: ConversationRepositorySpec.Env): List[Spec[ConversationRepositorySpec.Env & zio.Scope, Any]] =
@@ -161,6 +163,28 @@ trait ConversationRepositorySpec extends DatabaseSpecBase[ConversationRepository
           second <- env.repository.delete(authId1, record.version)
         yield assertTrue(first, !second)
       },
+      test("overwrite preserves priorSessionId") {
+        val mac = versola.util.MAC(Array.fill(32)(1.toByte))
+        val initialWithPrior = initial.copy(
+          priorSessionId = Some(mac)
+        )
+        val updatedRecord = initialWithPrior.copy(
+          step = realOtp,
+          userId = Some(userId1)
+        )
+        for
+          _ <- env.repository.create(authId1, initialWithPrior, ttl)
+          found1 <- env.repository.find(authId1).map(_.get)
+          overwritten <- env.repository.overwrite(authId1, updatedRecord.copy(version = found1.version))
+          found2 <- env.repository.find(authId1).map(_.get)
+        yield assertTrue(
+          found1.priorSessionId.exists(m => java.util.Arrays.equals(m: Array[Byte], mac: Array[Byte])),
+          overwritten,
+          found2.priorSessionId.exists(m => java.util.Arrays.equals(m: Array[Byte], mac: Array[Byte])),
+          found2.version == found1.version + 1
+        )
+      },
+
     )
 
 object ConversationRepositorySpec:

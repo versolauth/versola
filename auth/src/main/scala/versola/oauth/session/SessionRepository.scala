@@ -1,17 +1,24 @@
 package versola.oauth.session
 
 import versola.oauth.model.{AccessToken, RefreshToken}
-import versola.oauth.session.model.{RefreshAlreadyExchanged, RefreshTokenRecord, SessionId, SessionRecord}
+import versola.oauth.session.model.{PriorSession, RefreshAlreadyExchanged, RefreshTokenRecord, SessionId, SessionRecord}
 import versola.user.model.UserId
 import versola.util.MAC
 import zio.*
 
 trait SessionRepository:
+  /** Creates a new session in a single transaction.
+   *  When `priorSession` is provided the INSERT and prior-session handling are atomic.
+   *  [[PriorSession.Invalidate]] expires the prior session and all its refresh tokens.
+   *  [[PriorSession.MigrateTokens]] expires the prior session but re-parents its refresh
+   *  tokens to the new session with updated auth context.
+   */
   def create(
       id: MAC.Of[SessionId],
       session: SessionRecord,
       ttl: Duration,
       idleTtl: Option[Duration],
+      priorSession: Option[PriorSession],
   ): Task[Unit]
 
   def findSession(id: MAC.Of[SessionId]): Task[Option[SessionRecord]]
@@ -28,6 +35,10 @@ trait SessionRepository:
   def invalidateByUserId(
       userId: UserId,
   ): Task[Unit]
+
+  /** Atomically expires a single session and all refresh tokens that belong to it.
+   *  No-op if neither the session nor any of its refresh tokens exist. */
+  def invalidate(id: MAC.Of[SessionId]): Task[Unit]
 
   def createRefreshToken(
       refreshToken: MAC.Of[RefreshToken],
