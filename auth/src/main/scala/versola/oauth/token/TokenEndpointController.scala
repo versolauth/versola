@@ -126,7 +126,7 @@ object TokenEndpointController extends Controller:
             requestedClaims = tokens.requestedClaims,
             uiLocales = tokens.uiLocales,
             nonce = tokens.nonce,
-          v
+          )
 
           atHash = JWT.leftHalfHash(accessToken, signingKey.algorithm)
 
