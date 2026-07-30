@@ -176,7 +176,6 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
             Form.fromStrings(
               "grant_type" -> "refresh_token",
               "refresh_token" -> Base64.urlEncode(refreshToken1),
-            -> "read",
             )
           )
         ).addHeader(authHeader(clientId1, Some(clientSecret1))),
@@ -524,7 +523,7 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
               "sub" -> Json.Str(userId1.toString),
               "email" -> Json.Str("test@example.com"),
               "nonce" -> Json.Str(nonce1.toString),
-          )
+            )
           )
           for
             _ <- services.oauthTokenService.refreshAccessToken.succeedsWith(tokensWithOpenId)
