@@ -52,6 +52,7 @@ interface FormConfig {
   allT?: Record<string, Record<string, string>>;
   error?: string;
   previewId?: string;
+  csrf?: string;
 }
 
 declare global {
@@ -124,7 +125,7 @@ function CredentialForm(props: { config: FormConfig }) {
         return r.text();
       });
       const response = await getAssertionResponse(optionsJson);
-      submitViaForm(`/challenge/passkey?ui_locale=${currentLocale()}`, { response });
+      submitViaForm(`/challenge/passkey?ui_locale=${currentLocale()}`, { response, csrf: props.config.csrf ?? '' });
     } catch (_) {
       setPasskeyErrorKey('passkey_failed');
       setPasskeyBusy(false);
@@ -165,6 +166,7 @@ function CredentialForm(props: { config: FormConfig }) {
       </Show>
 
       <form method="post" onSubmit={handleSubmit}>
+        <input type="hidden" name="csrf" value={props.config.csrf ?? ''} />
         <Show when={single === 'email'}>
           <input type="email" name="email" class="input-field" placeholder={t().email_placeholder} required />
         </Show>

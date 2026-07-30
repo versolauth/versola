@@ -295,7 +295,6 @@ object ConversationRenderService:
          |    <meta charset="UTF-8">
          |    <meta name="viewport" content="width=device-width, initial-scale=1.0">
          |    <meta name="versola-step" content="${stepName(info.config.step)}">
-         |    <meta name="versola-csrf" content="${info.config.csrf}">
          |    <title>${info.title}</title>
          |    <style>
          |      $themeCss

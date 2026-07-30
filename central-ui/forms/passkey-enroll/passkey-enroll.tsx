@@ -44,6 +44,7 @@ interface FormConfig {
   allT?: Record<string, Record<string, string>>;
   error?: string;
   previewId?: string;
+  csrf?: string;
 }
 
 declare global {
@@ -88,7 +89,7 @@ function PasskeyEnrollForm(props: { config: FormConfig }) {
     setEnrollError(false);
     try {
       const response = await getRegistrationResponse(step.publicKeyOptions);
-      submitViaForm(`/challenge/passkey/enroll?ui_locale=${currentLocale()}`, { response, name: currentName });
+      submitViaForm(`/challenge/passkey/enroll?ui_locale=${currentLocale()}`, { response, name: currentName, csrf: props.config.csrf ?? '' });
     } catch (_) {
       setEnrollError(true);
       setBusy(false);
@@ -98,7 +99,7 @@ function PasskeyEnrollForm(props: { config: FormConfig }) {
   const handleSkip = () => {
     if (busy()) return;
     setBusy(true);
-    submitViaForm(`/challenge/passkey/skip?ui_locale=${currentLocale()}`, {});
+    submitViaForm(`/challenge/passkey/skip?ui_locale=${currentLocale()}`, { csrf: props.config.csrf ?? '' });
   };
 
   return (
