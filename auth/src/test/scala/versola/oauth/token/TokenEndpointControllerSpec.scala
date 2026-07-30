@@ -455,11 +455,12 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
             body <- response.body.asString
             tokenResponse <- ZIO.fromEither(body.fromJson[TokenResponse]).mapError(new RuntimeException(_))
 
-            idToken = tokenResponse.idToken
-              .map(SignedJWT.parse)
-              .map(_.getJWTClaimsSet)
+            signedIdToken = tokenResponse.idToken.map(SignedJWT.parse)
+            idToken = signedIdToken.map(_.getJWTClaimsSet)
 
-            expectedAtHash = JWT.leftHalfHash(tokenResponse.accessToken, JWT.Algorithm.RS256)
+            expectedAtHash = signedIdToken.map(jwt =>
+              JWT.leftHalfHash(tokenResponse.accessToken, JWT.Algorithm.valueOf(jwt.getHeader.getAlgorithm.getName))
+            )
 
           yield assertTrue(
             idToken.map(_.getSubject) == Some(userId1.toString),
@@ -467,7 +468,7 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
             idToken.map(_.getClaim("name")) != null,
             idToken.map(_.getStringListClaim("amr")) == Some(java.util.List.of("pwd")),
             idToken.map(_.getLongClaim("auth_time")) == Some(1700000000L),
-            idToken.map(_.getClaim("at_hash")) == Some(expectedAtHash),
+            idToken.map(_.getClaim("at_hash")) == expectedAtHash,
           ),
       ),
       tokenEndpointTestCase(
@@ -534,11 +535,12 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
             body <- response.body.asString
             tokenResponse <- ZIO.fromEither(body.fromJson[TokenResponse]).mapError(new RuntimeException(_))
 
-            idToken = tokenResponse.idToken
-              .map(SignedJWT.parse)
-              .map(_.getJWTClaimsSet)
+            signedIdToken = tokenResponse.idToken.map(SignedJWT.parse)
+            idToken = signedIdToken.map(_.getJWTClaimsSet)
 
-            expectedAtHash = JWT.leftHalfHash(tokenResponse.accessToken, JWT.Algorithm.RS256)
+            expectedAtHash = signedIdToken.map(jwt =>
+              JWT.leftHalfHash(tokenResponse.accessToken, JWT.Algorithm.valueOf(jwt.getHeader.getAlgorithm.getName))
+            )
 
           yield assertTrue(
             idToken.map(_.getSubject) == Some(userId1.toString),
@@ -546,7 +548,7 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
             idToken.map(_.getClaim("email")) != null,
             idToken.map(_.getStringListClaim("amr")) == Some(java.util.List.of("pwd")),
             idToken.map(_.getLongClaim("auth_time")) == Some(1700000000L),
-            idToken.map(_.getClaim("at_hash")) == Some(expectedAtHash),
+            idToken.map(_.getClaim("at_hash")) == expectedAtHash,
           ),
       ),
       tokenEndpointTestCase(
