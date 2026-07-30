@@ -13,7 +13,7 @@ import versola.oauth.userinfo.model.UserInfoResponse
 import versola.user.model.{UserId, UserRecord}
 import zio.json.ast.Json
 import versola.util.http.{ControllerSpec, NoopTracing, Observability}
-import versola.util.{Base64, CoreConfig, Secret, UnitSpecBase}
+import versola.util.{Base64, CoreConfig, JWT, Secret, UnitSpecBase}
 import zio.*
 import zio.http.*
 import zio.json.*
@@ -176,6 +176,7 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
             Form.fromStrings(
               "grant_type" -> "refresh_token",
               "refresh_token" -> Base64.urlEncode(refreshToken1),
+            -> "read",
             )
           )
         ).addHeader(authHeader(clientId1, Some(clientSecret1))),
@@ -459,12 +460,15 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
               .map(SignedJWT.parse)
               .map(_.getJWTClaimsSet)
 
+            expectedAtHash = JWT.leftHalfHash(tokenResponse.accessToken, JWT.Algorithm.RS256)
+
           yield assertTrue(
             idToken.map(_.getSubject) == Some(userId1.toString),
             idToken.map(_.getClaim("nonce")) == Some("test-nonce-value"),
             idToken.map(_.getClaim("name")) != null,
             idToken.map(_.getStringListClaim("amr")) == Some(java.util.List.of("pwd")),
             idToken.map(_.getLongClaim("auth_time")) == Some(1700000000L),
+            idToken.map(_.getClaim("at_hash")) == Some(expectedAtHash),
           ),
       ),
       tokenEndpointTestCase(
@@ -520,7 +524,7 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
               "sub" -> Json.Str(userId1.toString),
               "email" -> Json.Str("test@example.com"),
               "nonce" -> Json.Str(nonce1.toString),
-            )
+          )
           )
           for
             _ <- services.oauthTokenService.refreshAccessToken.succeedsWith(tokensWithOpenId)
@@ -535,12 +539,15 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
               .map(SignedJWT.parse)
               .map(_.getJWTClaimsSet)
 
+            expectedAtHash = JWT.leftHalfHash(tokenResponse.accessToken, JWT.Algorithm.RS256)
+
           yield assertTrue(
             idToken.map(_.getSubject) == Some(userId1.toString),
             idToken.map(_.getClaim("nonce")) == Some("refresh-nonce"),
             idToken.map(_.getClaim("email")) != null,
             idToken.map(_.getStringListClaim("amr")) == Some(java.util.List.of("pwd")),
             idToken.map(_.getLongClaim("auth_time")) == Some(1700000000L),
+            idToken.map(_.getClaim("at_hash")) == Some(expectedAtHash),
           ),
       ),
       tokenEndpointTestCase(
