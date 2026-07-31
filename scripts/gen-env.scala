@@ -117,8 +117,17 @@ def writeFile(dir: File, name: String, content: String): Unit =
 
   // Only pin a known secret in local dev so e2e tests can rely on a stable value.
   // Non-local environments let the bootstrap generate a random secret on first boot.
+  //
+  // Both branches MUST end with "\n": centralConf below interpolates this value into
+  // "|${bootstrapClientSecretLine}|}" — the `}` on that source line is its own
+  // stripMargin-delimited line only because this value supplies the newline that
+  // precedes it. An else-branch of "" (no trailing newline) collapses that into a
+  // single line "||}", and stripMargin only strips the *first* pipe, leaving a
+  // literal "|}" in the generated HOCON — which fails to parse with
+  // "Key '|' may not be followed by token: '}'". Learned this the hard way: it broke
+  // every non-"local" generation (i.e. every generation following deploy.md §3.2).
   val bootstrapClientSecretLine =
-    if isLocal then "  client-secret = \"ZGV2LWNlbnRyYWwtYWRtaW4tc2VjcmV0LTMyYnl0ZXM\"\n" else ""
+    if isLocal then "  client-secret = \"ZGV2LWNlbnRyYWwtYWRtaW4tc2VjcmV0LTMyYnl0ZXM\"\n" else "\n"
 
   // ── Service URLs ──────────────────────────────────────────────────────────────
   // authUrl      – public-facing URL (JWT issuer, server metadata, browser redirects via edge).
