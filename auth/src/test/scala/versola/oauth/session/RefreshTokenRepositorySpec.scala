@@ -3,7 +3,7 @@ package versola.oauth.session
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.oauth.client.model.{Acr, AuthMethodRef, ClientId, ScopeToken}
 import versola.oauth.model.{AccessToken, RefreshToken}
-import versola.oauth.session.model.{RefreshTokenRecord, SessionId}
+import versola.oauth.session.model.{PublicSessionId, RefreshTokenRecord, SessionId}
 import versola.user.model.UserId
 import versola.util.{DatabaseSpecBase, MAC}
 import zio.*
@@ -18,6 +18,9 @@ trait RefreshTokenRepositorySpec extends DatabaseSpecBase[RefreshTokenRepository
 
   val sessionId1 = MAC(Array.fill(32)(1.toByte))
   val sessionId2 = MAC(Array.fill(32)(2.toByte))
+
+  val publicSessionId1 = PublicSessionId("public-session-1")
+  val publicSessionId2 = PublicSessionId("public-session-2")
 
   val refreshToken1 = MAC(Array.fill(32)(20.toByte))
   val refreshToken2 = MAC(Array.fill(32)(21.toByte))
@@ -43,6 +46,7 @@ trait RefreshTokenRepositorySpec extends DatabaseSpecBase[RefreshTokenRepository
 
   def tokenRecord1(now: Instant, ttl: Duration) = RefreshTokenRecord(
     sessionId = sessionId1,
+    publicSessionId = publicSessionId1,
     accessToken = accessToken1,
     userId = userId1,
     clientId = clientId1,
@@ -61,6 +65,7 @@ trait RefreshTokenRepositorySpec extends DatabaseSpecBase[RefreshTokenRepository
 
   def tokenRecord2(now: Instant, ttl: Duration) = RefreshTokenRecord(
     sessionId = sessionId2,
+    publicSessionId = publicSessionId2,
     accessToken = accessToken2,
     userId = userId2,
     clientId = clientId2,

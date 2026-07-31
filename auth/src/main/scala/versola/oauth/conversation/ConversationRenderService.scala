@@ -7,7 +7,7 @@ import versola.oauth.conversation.model.{ConversationRecord, ConversationStep}
 import versola.oauth.jwks.JwksService
 import versola.oauth.model.SessionCookie
 import versola.oauth.model.State
-import versola.util.{Base64Url, CoreConfig, JWT}
+import versola.util.{Base64, Base64Url, CoreConfig, JWT}
 import zio.http.{Body, Header, Headers, MediaType, Response, Status, URL}
 import zio.json.*
 import zio.json.ast.Json
@@ -23,6 +23,12 @@ trait ConversationRenderService:
   def renderSubmit(
       result: ConversationResult.Render,
       record: ConversationRecord,
+  ): Task[Response]
+
+  def renderLogout(
+      logoutUris: List[URL],
+      postLogoutRedirectUri: Option[URL],
+      state: Option[String],
   ): Task[Response]
 
 object ConversationRenderService:
@@ -61,6 +67,9 @@ object ConversationRenderService:
   ) derives JsonCodec
 
   private val ThemeDefault = "default"
+
+  /** Grace period letting front-channel logout iframes fire before leaving the page. */
+  private val LogoutRedirectDelayMs = 2000
 
   case class FormRenderInfo(
       title: String,
@@ -142,14 +151,57 @@ object ConversationRenderService:
               ),
             )
 
+    override def renderLogout(
+        logoutUris: List[URL],
+        postLogoutRedirectUri: Option[URL],
+        state: Option[String],
+    ): Task[Response] =
+      val iframes = logoutUris
+        .map(uri => s"""    <iframe src="${escapeHtml(uri.encode)}" style="display:none" sandbox="allow-scripts allow-same-origin"></iframe>""")
+        .mkString("\n")
+
+      val redirectUrl = postLogoutRedirectUri
+        .map(url => state.fold(url)(url.addQueryParam("state", _)).encode)
+
+      val redirect = redirectUrl.fold("") { url =>
+        s"""    <p><a href="${escapeHtml(url)}">Continue</a></p>
+           |    <script>setTimeout(function() { window.location.href = ${url.toJson}; }, $LogoutRedirectDelayMs);</script>""".stripMargin
+      }
+
+      val body =
+        s"""<!DOCTYPE html>
+           |<html lang="en">
+           |  <head>
+           |    <meta charset="UTF-8">
+           |    <title>Signing out</title>
+           |  </head>
+           |  <body>
+           |$iframes
+           |$redirect
+           |  </body>
+           |</html>""".stripMargin
+
+      ZIO.succeed(
+        htmlResponse(body)
+          .addHeader(Header.Custom("Cache-Control", "no-cache, no-store")),
+      )
+
+    private def escapeHtml(value: String): String =
+      value
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace("\"", "&quot;")
+
     private def serializeIdToken(data: ConversationResult.IdTokenData, signingKey: JWT.PublicKey): Task[String] =
+      val claims = data.claims + ("sid" -> Json.Str(data.sessionId))
       JWT.serialize(
         typ = JWT.Type.JWT,
         claims = JWT.Claims(
           issuer = config.jwt.issuer,
           subject = data.userId.toString,
           audience = List(data.clientId),
-          custom = Json.Obj(Chunk.fromIterable(data.claims)),
+          custom = Json.Obj(Chunk.fromIterable(claims)),
         ),
         ttl = 15.minutes,
         signature = JWT.Signature.Asymmetric(

@@ -7,7 +7,7 @@ import versola.oauth.client.model.{AuthMethodRef, ClientId, ClientIdWithSecret, 
 import versola.oauth.model.{AccessToken, AuthorizationCode, AuthorizationCodeRecord, CodeChallenge, CodeChallengeMethod, CodeVerifier, RefreshToken}
 import versola.oauth.revoke.AccessTokenRevocationService
 import versola.oauth.session.SessionRepository
-import versola.oauth.session.model.{RefreshAlreadyExchanged, RefreshTokenRecord, SessionId}
+import versola.oauth.session.model.{PublicSessionId, RefreshAlreadyExchanged, RefreshTokenRecord, SessionId}
 import versola.oauth.token.model.{ClientCredentialsRequest, CodeExchangeRequest, RefreshTokenRequest, TokenEndpointError}
 import versola.oauth.client.model.Claim
 import versola.oauth.userinfo.model.{ClaimRequest, RequestedClaims}
@@ -28,6 +28,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
   val clientId1 = ClientId("test-client-1")
   val userId1 = UserId(UUID.fromString("f077fb08-9935-4a6d-8643-bf97c073bf0f"))
   val sessionId1 = MAC(Array.fill(32)(1.toByte))
+  val publicSessionId1 = PublicSessionId("public-session-1")
   val redirectUri1 = URL.decode("https://example.com/callback").toOption.get
   val scope1 = Set(ScopeToken("read"), ScopeToken("write"), ScopeToken.OfflineAccess)
   val scope2 = Set(ScopeToken("read"))
@@ -67,6 +68,8 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
     theme = "default",
     authFlow = None,
     otpTemplateId = "default",
+    frontChannelLogoutUri = None,
+    frontChannelLogoutSessionRequired = false,
   )
 
   val publicClientId = ClientId("public-client-1")
@@ -84,6 +87,8 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
     theme = "default",
     authFlow = None,
     otpTemplateId = "default",
+    frontChannelLogoutUri = None,
+    frontChannelLogoutSessionRequired = false,
   )
 
   val adminClient = testClient.copy(id = OAuthTokenService.centralAdminClientId)
@@ -119,6 +124,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
 
           codeRecord = AuthorizationCodeRecord(
             sessionId = sessionId1,
+            publicSessionId = publicSessionId1,
             clientId = clientId1,
             userId = userId1,
             redirectUri = redirectUri1,
@@ -166,6 +172,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
         for
           codeRecord = AuthorizationCodeRecord(
             sessionId = sessionId1,
+            publicSessionId = publicSessionId1,
             clientId = clientId1,
             userId = userId1,
             redirectUri = redirectUri1,
@@ -233,6 +240,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
         for
           codeRecord = AuthorizationCodeRecord(
             sessionId = sessionId1,
+            publicSessionId = publicSessionId1,
             clientId = clientId1,
             userId = userId1,
             redirectUri = redirectUri1,
@@ -265,6 +273,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
         for
           codeRecord = AuthorizationCodeRecord(
             sessionId = sessionId1,
+            publicSessionId = publicSessionId1,
             clientId = clientId1,
             userId = userId1,
             redirectUri = redirectUri1,
@@ -304,6 +313,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
         for
           codeRecord = AuthorizationCodeRecord(
             sessionId = sessionId1,
+            publicSessionId = publicSessionId1,
             clientId = clientId1,
             userId = userId1,
             redirectUri = redirectUri1,
@@ -340,6 +350,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
         for
           codeRecord = AuthorizationCodeRecord(
             sessionId = sessionId1,
+            publicSessionId = publicSessionId1,
             clientId = clientId1,
             userId = userId1,
             redirectUri = redirectUri1,
@@ -378,6 +389,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
         for
           codeRecord = AuthorizationCodeRecord(
             sessionId = sessionId1,
+            publicSessionId = publicSessionId1,
             clientId = OAuthTokenService.centralAdminClientId,
             userId = userId1,
             redirectUri = redirectUri1,
@@ -420,6 +432,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
 
           tokenRecord = RefreshTokenRecord(
             sessionId = sessionId1,
+            publicSessionId = publicSessionId1,
             accessToken = accessToken1,
             userId = userId1,
             clientId = clientId1,
@@ -473,6 +486,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
 
           tokenRecord = RefreshTokenRecord(
             sessionId = sessionId1,
+            publicSessionId = publicSessionId1,
             accessToken = accessToken1,
             userId = userId1,
             clientId = clientId1,
@@ -548,6 +562,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
 
           tokenRecord = RefreshTokenRecord(
             sessionId = sessionId1,
+            publicSessionId = publicSessionId1,
             accessToken = accessToken1,
             userId = userId1,
             clientId = clientId1,
@@ -583,6 +598,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
 
           tokenRecord = RefreshTokenRecord(
             sessionId = sessionId1,
+            publicSessionId = publicSessionId1,
             accessToken = accessToken1,
             userId = userId1,
             clientId = clientId1,

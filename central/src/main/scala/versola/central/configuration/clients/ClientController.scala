@@ -48,6 +48,8 @@ object ClientController extends Controller:
               theme = client.theme,
               authFlow = client.authFlow,
               otpTemplateId = client.otpTemplateId,
+              frontChannelLogoutUri = client.frontChannelLogoutUri,
+              frontChannelLogoutSessionRequired = client.frontChannelLogoutSessionRequired,
             )
           })
       yield Response.json(GetAllClientsResponse(clients.toList).toJson)
@@ -90,6 +92,8 @@ object ClientController extends Controller:
             theme = client.theme,
             authFlow = client.authFlow,
             otpTemplateId = client.otpTemplateId,
+            frontChannelLogoutUri = client.frontChannelLogoutUri,
+            frontChannelLogoutSessionRequired = client.frontChannelLogoutSessionRequired,
           )
         }
       yield Response.json(GetOAuthClientsSyncResponse(clients = encryptedClients).toJson)

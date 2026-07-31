@@ -8,7 +8,7 @@ import versola.oauth.client.model.{Acr, AuthFactor, AuthFactorType, AuthFlow, Au
 import versola.oauth.conversation.{ConversationRepository, ConversationResult, ConversationRouter, EmailSubmission, PhoneSubmission}
 import versola.oauth.model.{AccessToken, AuthorizationCode, CodeChallenge, CodeChallengeMethod, State}
 import versola.oauth.session.SessionService
-import versola.oauth.session.model.{SessionId, SessionInfo, SessionRecord, UserAgentInfo}
+import versola.oauth.session.model.{PublicSessionId, SessionId, SessionInfo, SessionRecord, UserAgentInfo}
 import versola.oauth.token.AuthorizationCodeRepository
 import versola.oauth.userinfo.UserInfoService
 import versola.user.UserRepository
@@ -57,6 +57,8 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
     theme = "default",
     authFlow = Some(otpFlow),
     otpTemplateId = "default",
+    frontChannelLogoutUri = None,
+    frontChannelLogoutSessionRequired = false,
   )
 
   val baseRequest = AuthorizeRequest(
@@ -81,6 +83,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
 
   val rawSessionId = SessionId(Array.fill(32)(5.toByte))
   val sessionMac = MAC(Array.fill(32)(1.toByte))
+  val publicSessionId = PublicSessionId("test-public-session")
   val now = Instant.now()
 
   def sessionWithAmr(amr: Map[PassedAuthFactor, PassedFactorRecord]) = SessionRecord(
@@ -89,6 +92,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
     userAgent = UserAgentInfo.parse(None),
     createdAt = now,
     amr = amr,
+    publicId = publicSessionId,
   )
 
   class Env:
@@ -402,6 +406,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         userAgent = UserAgentInfo.parse(None),
         createdAt = Instant.EPOCH.minusSeconds(1),
         amr = Map(PassedAuthFactor.otp -> PassedFactorRecord(Instant.EPOCH.minusSeconds(1), Set(AuthMethodRef.otp))),
+        publicId = publicSessionId,
       )
       for
         _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
@@ -427,6 +432,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         userAgent = UserAgentInfo.parse(None),
         createdAt = Instant.EPOCH.minusSeconds(1),
         amr = Map(PassedAuthFactor.otp -> PassedFactorRecord(Instant.EPOCH.minusSeconds(1), Set(AuthMethodRef.otp))),
+        publicId = publicSessionId,
       )
       for
         _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
@@ -449,6 +455,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         userAgent = UserAgentInfo.parse(None),
         createdAt = Instant.EPOCH,
         amr = Map(PassedAuthFactor.otp -> PassedFactorRecord(Instant.EPOCH, Set(AuthMethodRef.otp))),
+        publicId = publicSessionId,
       )
       for
         _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
@@ -846,6 +853,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         userAgent = UserAgentInfo.parse(None),
         createdAt = Instant.EPOCH.minusSeconds(1),
         amr = Map(PassedAuthFactor.otp -> PassedFactorRecord(Instant.EPOCH.minusSeconds(1), Set(AuthMethodRef.otp))),
+        publicId = publicSessionId,
       )
       for
         _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))

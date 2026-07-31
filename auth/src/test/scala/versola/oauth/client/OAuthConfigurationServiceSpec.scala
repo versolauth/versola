@@ -30,6 +30,8 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
     theme = "default",
     authFlow = None,
     otpTemplateId = "default",
+    frontChannelLogoutUri = None,
+    frontChannelLogoutSessionRequired = false,
   )
   val publicClient = OAuthClientRecord(
     id = publicClientId,
@@ -45,6 +47,8 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
     theme = "default",
     authFlow = None,
     otpTemplateId = "default",
+    frontChannelLogoutUri = None,
+    frontChannelLogoutSessionRequired = false,
   )
 
   val testScopes = Vector(ScopeRecord(ScopeToken("read"), Vector.empty))

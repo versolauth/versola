@@ -585,6 +585,8 @@ object BootstrapService:
         theme          = "default",
         authFlow       = Some(authFlow),
         otpTemplateId  = "default",
+        frontChannelLogoutUri = config.frontChannelLogoutUri,
+        frontChannelLogoutSessionRequired = false,
       )
       for
         presetSecret <- ZIO.foreach(config.clientSecret): secretB64 =>

@@ -3,7 +3,7 @@ package versola.oauth.conversation
 import versola.oauth.client.model.ClientId
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
 import versola.oauth.model.{AuthorizationCode, State}
-import versola.oauth.session.model.SessionId
+import versola.oauth.session.model.{PublicSessionId, SessionId}
 import versola.user.model.UserId
 import versola.util.Base64Url
 import zio.http.URL
@@ -27,6 +27,7 @@ object ConversationResult:
       userId: UserId,
       claims: Map[String, Json],
       clientId: ClientId,
+      sessionId: PublicSessionId,
   )
 
   case class Complete(

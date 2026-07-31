@@ -12,6 +12,8 @@ import zio.prelude.{EqualOps, NonEmptyList, NonEmptySet}
 trait OAuthConfigurationService:
   def find(id: ClientId): UIO[Option[OAuthClientRecord]]
 
+  def findByTenant(tenantId: TenantId): UIO[Vector[OAuthClientRecord]]
+
   def verifySecret(
       id: ClientId,
       providedSecret: Option[Secret],
@@ -98,6 +100,9 @@ object OAuthConfigurationService:
 
     def find(id: ClientId): UIO[Option[OAuthClientRecord]] =
       clientCache.get.map(_.get(id))
+
+    override def findByTenant(tenantId: TenantId): UIO[Vector[OAuthClientRecord]] =
+      clientCache.get.map(_.values.filter(_.tenantId == tenantId).toVector)
 
     private def verifyOneSecret(
         secret: Secret,

@@ -75,8 +75,9 @@ object TokenEndpointController extends Controller:
         "scope" -> Json.Str(tokens.scope.mkString(" ")),
         "jti" -> Json.Str(Base64Url.encode(tokens.accessToken)),
         "roles" -> Json.Arr(tokens.roles.map(Json.Str(_))*),
+        "tenant_id" -> Json.Str(tokens.tenantId),
       ) ++
-        tokens.tenantId.map("tenant_id" -> Json.Str(_)) ++
+        tokens.sessionId.map(sid => "sid" -> Json.Str(sid)) ++
         tokens.requestedClaims.map(rc => "requested_claims" -> rc.toJsonAST.toOption.get) ++
         AuthMethodRef.idTokenClaims(tokens.amr, tokens.authTime, tokens.acr)
 
@@ -122,14 +123,14 @@ object TokenEndpointController extends Controller:
             uiLocales = tokens.uiLocales,
             nonce = tokens.nonce,
           )
-
+          sidClaim = tokens.sessionId.map(sid => "sid" -> Json.Str(sid))
           serializedIdToken <- JWT.serialize(
             typ = JWT.Type.JWT,
             claims = JWT.Claims(
               issuer = config.jwt.issuer,
               subject = userId.toString,
               audience = List(tokens.clientId),
-              custom = Json.Obj(Chunk.fromIterable(userInfo.claims ++ AuthMethodRef.idTokenClaims(tokens.amr, tokens.authTime, tokens.acr))),
+              custom = Json.Obj(Chunk.fromIterable(userInfo.claims ++ AuthMethodRef.idTokenClaims(tokens.amr, tokens.authTime, tokens.acr) ++ sidClaim)),
             ),
             ttl = tokens.accessTokenTtl,
             signature = JWT.Signature.Asymmetric(

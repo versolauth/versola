@@ -54,6 +54,8 @@ export interface OAuthClient {
   theme: string;
   otpTemplateId?: string | null;
   authFlow: AuthFlow | null;
+  frontChannelLogoutUri?: string | null;
+  frontChannelLogoutSessionRequired: boolean;
   tenantId?: string;  // Tenant scope (clients inherit edge from their tenant)
   authorizationPresets?: AuthorizationPreset[];
 }

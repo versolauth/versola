@@ -371,6 +371,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
         )
         val testCode = versola.oauth.model.AuthorizationCode(Array.fill(32)(1.toByte))
         val testSessionId = versola.oauth.session.model.SessionId(Array.fill(32)(2.toByte))
+        val testPublicSessionId = versola.oauth.session.model.PublicSessionId("public-session")
         val testAccessToken = versola.oauth.model.AccessToken(Array.fill(32)(3.toByte))
         val testSessionIdMac: versola.util.MAC = versola.util.MAC(Array.fill(32)(4.toByte))
         val testCodeMac: versola.util.MAC = versola.util.MAC(Array.fill(32)(5.toByte))
@@ -378,6 +379,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
         for
           _ <- env.authPropertyGenerator.nextAuthorizationCode.succeedsWith(testCode)
           _ <- env.authPropertyGenerator.nextSessionId.succeedsWith(testSessionId)
+          _ <- env.authPropertyGenerator.nextPublicSessionId.succeedsWith(testPublicSessionId)
           _ <- env.authPropertyGenerator.nextAccessToken.succeedsWith(testAccessToken)
           _ <- env.securityService.mac.returnsZIOOnCall:
             case 1 => ZIO.succeed(testSessionIdMac)
@@ -419,6 +421,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
         )
         val testCode = versola.oauth.model.AuthorizationCode(Array.fill(32)(1.toByte))
         val testSessionId = versola.oauth.session.model.SessionId(Array.fill(32)(2.toByte))
+        val testPublicSessionId = versola.oauth.session.model.PublicSessionId("public-session")
         val testAccessToken = versola.oauth.model.AccessToken(Array.fill(32)(3.toByte))
         val testSessionIdMac: versola.util.MAC = versola.util.MAC(Array.fill(32)(4.toByte))
         val testCodeMac: versola.util.MAC = versola.util.MAC(Array.fill(32)(5.toByte))
@@ -426,6 +429,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
         for
           _ <- env.authPropertyGenerator.nextAuthorizationCode.succeedsWith(testCode)
           _ <- env.authPropertyGenerator.nextSessionId.succeedsWith(testSessionId)
+          _ <- env.authPropertyGenerator.nextPublicSessionId.succeedsWith(testPublicSessionId)
           _ <- env.authPropertyGenerator.nextAccessToken.succeedsWith(testAccessToken)
           _ <- env.securityService.mac.returnsZIOOnCall:
             case 1 => ZIO.succeed(testSessionIdMac)
@@ -449,6 +453,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
         )
         val testCode = versola.oauth.model.AuthorizationCode(Array.fill(32)(1.toByte))
         val testSessionId = versola.oauth.session.model.SessionId(Array.fill(32)(2.toByte))
+        val testPublicSessionId = versola.oauth.session.model.PublicSessionId("public-session")
         val testAccessToken = versola.oauth.model.AccessToken(Array.fill(32)(3.toByte))
         val testSessionIdMac: versola.util.MAC = versola.util.MAC(Array.fill(32)(4.toByte))
         val testCodeMac: versola.util.MAC = versola.util.MAC(Array.fill(32)(5.toByte))
@@ -456,6 +461,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
         for
           _ <- env.authPropertyGenerator.nextAuthorizationCode.succeedsWith(testCode)
           _ <- env.authPropertyGenerator.nextSessionId.succeedsWith(testSessionId)
+          _ <- env.authPropertyGenerator.nextPublicSessionId.succeedsWith(testPublicSessionId)
           _ <- env.authPropertyGenerator.nextAccessToken.succeedsWith(testAccessToken)
           _ <- env.securityService.mac.returnsZIOOnCall:
             case 1 => ZIO.succeed(testSessionIdMac)
