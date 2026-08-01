@@ -516,6 +516,7 @@ def writeFile(dir: File, name: String, content: String): Unit =
        |}
        |
        |versola-url = "$authUrl"
+       |versola-internal-url = "$authInternalUrl"
        |""".stripMargin
 
   // ── Write files ───────────────────────────────────────────────────────────────
