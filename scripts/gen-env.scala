@@ -111,9 +111,26 @@ def writeFile(dir: File, name: String, content: String): Unit =
   println("\n── Environment ───────────────────────────────────────────────────────")
   val env     = prompt("  Name [local]: ", "local")
   val isLocal = env == "local"
-  // Local env is non-interactive: skip all remaining prompts and use defaults.
-  interactive = !isLocal
+  // docker-local is for "versola bootstrap local": auth/central/edge each run
+  // in their own container on one Docker Compose bridge network, instead of
+  // sharing the host's network the way "local" (above) and prod both assume.
+  // Same idea as isLocal — skip prompts, use defaults — but the defaults
+  // themselves have to be different: "localhost" from inside one container
+  // doesn't reach a service running in another container, so anything that's
+  // a real network call (not just a JWT issuer string) needs to point at the
+  // other container's Compose service name instead. See versola-cli's
+  // manual-test/README.md for how these values were worked out by hand
+  // before being made the default here.
+  val isDockerLocal = env == "docker-local"
+  // Postgres user/password are the same across all three services either
+  // way; computed once here so the Auth/Central/Edge sections below don't
+  // each repeat the isDockerLocal check.
+  val pgUserDefault = if isDockerLocal then "versola" else "dev"
+  val pgPassDefault = if isDockerLocal then "versola" else "1234"
+  // Both isLocal and docker-local are non-interactive; only the values differ.
+  interactive = !(isLocal || isDockerLocal)
   if isLocal then println("  local env — using defaults, skipping prompts")
+  if isDockerLocal then println("  docker-local env — using bridge-network defaults, skipping prompts")
 
   // Only pin a known secret in local dev so e2e tests can rely on a stable value.
   // Non-local environments let the bootstrap generate a random secret on first boot.
@@ -134,25 +151,54 @@ def writeFile(dir: File, name: String, content: String): Unit =
   // authInternalUrl – internal S2S URL used by central to call auth's admin APIs.
   //                   Defaults to authUrl; override in k8s / service-mesh deployments.
   section("\n── Service URLs ──────────────────────────────────────────────────────")
-  val authUrl         = prompt("  Auth public URL [http://localhost:9003]: ",           "http://localhost:9003")
-  val authInternalUrl = prompt(s"  Auth internal URL [$authUrl]: ",                    authUrl)
-  val centralUrl      = prompt("  Central URL [http://localhost:9001]: ",               "http://localhost:9001")
-  val edgeUrl         = prompt("  Edge URL [http://localhost:9005]: ",                  "http://localhost:9005")
+  // authUrl is a public-facing string (JWT issuer, browser redirects) — it
+  // never needs to be a Docker service name, even in docker-local, since
+  // browsers/JWT verifiers reach it via the host's published port either way.
+  val authUrlDefault      = if isDockerLocal then "http://localhost:8080" else "http://localhost:9003"
+  val authUrl              = prompt(s"  Auth public URL [$authUrlDefault]: ", authUrlDefault)
+  // authInternalUrl, unlike authUrl, IS a real network call — central uses it
+  // to reach auth's admin API server-to-server. Defaulting this to authUrl
+  // (as the non-docker-local branch below does) is correct when both share
+  // the host's network, but would silently break in docker-local: central's
+  // container can't reach auth via "localhost", it needs auth's Compose
+  // service name.
+  val authInternalDefault = if isDockerLocal then "http://auth:8080" else authUrl
+  val authInternalUrl     = prompt(s"  Auth internal URL [$authInternalDefault]: ", authInternalDefault)
+  // centralUrl IS a real network call from both auth and edge, so it needs
+  // the same treatment.
+  val centralUrlDefault   = if isDockerLocal then "http://central:8090" else "http://localhost:9001"
+  val centralUrl           = prompt(s"  Central URL [$centralUrlDefault]: ", centralUrlDefault)
+  // edgeUrl is public-facing only (same reasoning as authUrl above).
+  val edgeUrlDefault      = if isDockerLocal then "http://localhost:8095" else "http://localhost:9005"
+  val edgeUrl              = prompt(s"  Edge URL [$edgeUrlDefault]: ", edgeUrlDefault)
 
   section("\n── Auth service ──────────────────────────────────────────────────────")
-  val authPgUrl       = prompt("  Postgres URL [jdbc:postgresql://localhost:5432/auth]: ", "jdbc:postgresql://localhost:5432/auth")
-  val authPgUser      = prompt("  Postgres user [dev]: ",                             "dev")
-  val authPgPass      = prompt("  Postgres password [1234]: ",                        "1234")
+  // Postgres is its own container in docker-local (compose service name
+  // "postgres"), and all three services share one database via
+  // ?currentSchema=, same as prod (see deploy.md) rather than each getting
+  // its own database.
+  val authPgUrlDefault = if isDockerLocal then "jdbc:postgresql://postgres:5432/auth?currentSchema=auth" else "jdbc:postgresql://localhost:5432/auth"
+  val authPgUrl        = prompt(s"  Postgres URL [$authPgUrlDefault]: ", authPgUrlDefault)
+  val authPgUser       = prompt(s"  Postgres user [$pgUserDefault]: ", pgUserDefault)
+  val authPgPass       = prompt(s"  Postgres password [$pgPassDefault]: ", pgPassDefault)
 
   section("\n── Auth bootstrap admin user ──────────────────────────────────────────────")
   val bootstrapLogin    = prompt("  Admin login [admin]: ", "admin")
   val bootstrapPassword = prompt("  Admin bootstrap password [Admin1234!]: ", "Admin1234!")
 
   section("\n── Central service ───────────────────────────────────────────────────")
-  val centralRedirectUris = prompt("  Admin panel bootstrap redirect URIs (comma-separated) [http://localhost:3000]: ", "http://localhost:3000")
-  val centralPgUrl        = prompt("  Postgres URL [jdbc:postgresql://localhost:5432/auth]: ", "jdbc:postgresql://localhost:5432/auth")
-  val centralPgUser       = prompt("  Postgres user [dev]: ",                         "dev")
-  val centralPgPass       = prompt("  Postgres password [1234]: ",                    "1234")
+  // edgeCompleteUrl (edgeUrl + "/complete") is always appended to this list
+  // further down regardless of what's entered here, so this default mainly
+  // matters for postLoginRedirectUri (the *first* entry) — pointing it at
+  // edge's own complete URL means a docker-local bootstrap gets a working
+  // post-login redirect out of the box, not localhost:3000 (nothing runs
+  // there in docker-local; central-ui isn't part of this compose stack).
+  val redirectUriDefault  = if isDockerLocal then s"$edgeUrl/complete" else "http://localhost:3000"
+  val centralRedirectUris = prompt(s"  Admin panel bootstrap redirect URIs (comma-separated) [$redirectUriDefault]: ", redirectUriDefault)
+  val centralPgUrlDefault = if isDockerLocal then "jdbc:postgresql://postgres:5432/auth?currentSchema=central" else "jdbc:postgresql://localhost:5432/auth"
+  val centralPgUrl        = prompt(s"  Postgres URL [$centralPgUrlDefault]: ", centralPgUrlDefault)
+  val centralPgUser       = prompt(s"  Postgres user [$pgUserDefault]: ", pgUserDefault)
+  val centralPgPass       = prompt(s"  Postgres password [$pgPassDefault]: ", pgPassDefault)
 
 
   val metadata =
@@ -174,9 +220,10 @@ def writeFile(dir: File, name: String, content: String): Unit =
        |}""".stripMargin
 
   section("\n── Edge service ──────────────────────────────────────────────────────")
-  val edgePgUrl       = prompt("  Postgres URL [jdbc:postgresql://localhost:5432/auth]: ", "jdbc:postgresql://localhost:5432/auth")
-  val edgePgUser      = prompt("  Postgres user [dev]: ",                             "dev")
-  val edgePgPass      = prompt("  Postgres password [1234]: ",                        "1234")
+  val edgePgUrlDefault = if isDockerLocal then "jdbc:postgresql://postgres:5432/auth?currentSchema=edge" else "jdbc:postgresql://localhost:5432/auth"
+  val edgePgUrl        = prompt(s"  Postgres URL [$edgePgUrlDefault]: ", edgePgUrlDefault)
+  val edgePgUser       = prompt(s"  Postgres user [$pgUserDefault]: ", pgUserDefault)
+  val edgePgPass       = prompt(s"  Postgres password [$pgPassDefault]: ", pgPassDefault)
 
   // Edge complete URL is always added as a registered redirect URI so the preset can use it.
   val edgeCompleteUrl        = s"$edgeUrl/complete"
