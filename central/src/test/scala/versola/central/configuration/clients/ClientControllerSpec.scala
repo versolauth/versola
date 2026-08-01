@@ -59,6 +59,8 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
     theme = "default",
     authFlow = Some(AuthFlow.default),
     otpTemplateId = "default",
+    frontChannelLogoutUri = None,
+    frontChannelLogoutSessionRequired = false,
   )
 
   private val updateRequest = UpdateClientRequest(
@@ -81,6 +83,8 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
     theme = None,
     authFlow = None,
     otpTemplateId = None,
+    frontChannelLogoutUri = None,
+    frontChannelLogoutSessionRequired = None,
   )
 
   private val clients = Vector(
@@ -99,6 +103,8 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       theme = "",
       authFlow = Some(AuthFlow.default),
       otpTemplateId = "default",
+      frontChannelLogoutUri = None,
+      frontChannelLogoutSessionRequired = false,
     ),
     OAuthClientRecord(
       id = ClientId("mobile-app"),
@@ -115,6 +121,8 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       theme = "",
       authFlow = Some(AuthFlow.default),
       otpTemplateId = "default",
+      frontChannelLogoutUri = None,
+      frontChannelLogoutSessionRequired = false,
     ),
   )
 
@@ -184,6 +192,8 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       secret: Option[Chunk[Byte]],
       previousSecret: Option[Chunk[Byte]],
       accessTokenTtl: Duration,
+      frontChannelLogoutUri: Option[String],
+      frontChannelLogoutSessionRequired: Boolean,
   )
 
   private def decryptSyncedClient(
@@ -202,6 +212,8 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       secret = secret.map(Chunk.fromArray),
       previousSecret = previousSecret.map(Chunk.fromArray),
       accessTokenTtl = client.accessTokenTtl,
+      frontChannelLogoutUri = client.frontChannelLogoutUri,
+      frontChannelLogoutSessionRequired = client.frontChannelLogoutSessionRequired,
     )
 
   def spec = suite("ClientController")(
@@ -233,6 +245,8 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
                 theme = "",
                 authFlow = Some(AuthFlow.default),
                 otpTemplateId = "default",
+                frontChannelLogoutUri = None,
+                frontChannelLogoutSessionRequired = false,
               ),
               OAuthClientResponse(
                 id = ClientId("mobile-app"),
@@ -245,6 +259,8 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
                 theme = "",
                 authFlow = Some(AuthFlow.default),
                 otpTemplateId = "default",
+                frontChannelLogoutUri = None,
+                frontChannelLogoutSessionRequired = false,
               ),
             ),
           ),
@@ -292,6 +308,8 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
               secret = Some(Chunk.fromArray(currentSecret)),
               previousSecret = None,
               accessTokenTtl = 5.minutes,
+              frontChannelLogoutUri = None,
+              frontChannelLogoutSessionRequired = false,
             ),
             DecryptedSyncOAuthClientRecord(
               id = "mobile-app",
@@ -302,6 +320,8 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
               secret = Some(Chunk.fromArray(currentSecret)),
               previousSecret = Some(Chunk.fromArray(previousSecret)),
               accessTokenTtl = 10.minutes,
+              frontChannelLogoutUri = None,
+              frontChannelLogoutSessionRequired = false,
             ),
           ),
         ),

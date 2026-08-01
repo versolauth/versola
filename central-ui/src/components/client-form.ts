@@ -33,6 +33,7 @@ export class VersolaClientForm extends LitElement {
     permissions: [],
     theme: 'default',
     authFlow: createDefaultAuthFlow(),
+    frontChannelLogoutSessionRequired: true,
   };
 
   @state() private redirectUriInput = '';
@@ -41,6 +42,7 @@ export class VersolaClientForm extends LitElement {
   @state() private ttlUnit: 'minutes' | 'hours' = 'hours';
   @state() private redirectUriError = '';
   @state() private audienceError = '';
+  @state() private frontChannelLogoutUriError = '';
   @state() private authFlowError = '';
   @state() private audienceSuggestionsOpen = false;
   @state() private openInfoKey: string | null = null;
@@ -634,6 +636,17 @@ export class VersolaClientForm extends LitElement {
 
     this.authFlowError = '';
 
+    const frontChannelLogoutUri = (this.formData.frontChannelLogoutUri || '').trim();
+    if (frontChannelLogoutUri) {
+      const uriValidation = validateRedirectUri(frontChannelLogoutUri);
+      if (!uriValidation.valid) {
+        this.frontChannelLogoutUriError = uriValidation.error || 'Invalid URI';
+        return;
+      }
+    }
+
+    this.frontChannelLogoutUriError = '';
+
     const client: OAuthClient = {
       id: this.formData.id!,
       clientName: this.formData.clientName!,
@@ -646,6 +659,10 @@ export class VersolaClientForm extends LitElement {
       theme: this.formData.theme || 'default',
       otpTemplateId: this.formData.otpTemplateId ?? null,
       authFlow,
+      frontChannelLogoutUri: frontChannelLogoutUri || null,
+      frontChannelLogoutSessionRequired: frontChannelLogoutUri
+        ? !!this.formData.frontChannelLogoutSessionRequired
+        : false,
     };
 
     this.dispatchEvent(new CustomEvent('submit', {
@@ -741,6 +758,29 @@ export class VersolaClientForm extends LitElement {
     if (this.redirectUriError) {
       this.redirectUriError = '';
     }
+  }
+
+  private handleFrontChannelLogoutUriInput(e: Event) {
+    const value = (e.target as HTMLInputElement).value;
+    const wasEmpty = !(this.formData.frontChannelLogoutUri || '').trim();
+    this.formData = {
+      ...this.formData,
+      frontChannelLogoutUri: value,
+      // Default to checked when a URI is first entered, unless already set.
+      frontChannelLogoutSessionRequired: wasEmpty && value.trim()
+        ? true
+        : this.formData.frontChannelLogoutSessionRequired,
+    };
+    if (this.frontChannelLogoutUriError) {
+      this.frontChannelLogoutUriError = '';
+    }
+  }
+
+  private toggleFrontChannelLogoutSessionRequired() {
+    this.formData = {
+      ...this.formData,
+      frontChannelLogoutSessionRequired: !this.formData.frontChannelLogoutSessionRequired,
+    };
   }
 
   private removeRedirectUri(uri: string) {
@@ -1251,6 +1291,44 @@ export class VersolaClientForm extends LitElement {
                   <option value=${t.id} ?selected=${this.formData.otpTemplateId === t.id}>${t.id}</option>
                 `)}
               </select>
+            </div>
+
+            <div class="form-group">
+              <div style="display: flex; align-items: center; gap: 0.4rem; margin-bottom: var(--spacing-sm);">
+                <label for="client-front-channel-logout-uri" style="margin-bottom: 0;">Front-Channel Logout URI</label>
+                ${this.renderOptionInfo(
+                  'front-channel-logout-uri',
+                  'Front-Channel Logout URI',
+                  html`
+                    <div class="option-tooltip-item">Loaded by the browser in a hidden iframe when logout is initiated, so this client can clear its own local session/cookies in response.</div>
+                    <div class="option-tooltip-item">If this client sits behind an edge, use the edge's own front-channel logout endpoint (<code>/logout/frontchannel</code>) rather than a client-specific URL — the edge clears the session for every client routed through it.</div>
+                  `,
+                  'Front-channel logout URI info',
+                )}
+              </div>
+              <input
+                type="text"
+                id="client-front-channel-logout-uri"
+                class="compact-input ${this.frontChannelLogoutUriError ? 'input-error' : ''}"
+                .value=${this.formData.frontChannelLogoutUri || ''}
+                @input=${this.handleFrontChannelLogoutUriInput}
+                placeholder="https://app.example.com/logout/frontchannel"
+              />
+              ${this.frontChannelLogoutUriError ? html`
+                <div class="error-message" style="margin-top: 0.5rem;">${this.frontChannelLogoutUriError}</div>
+              ` : html`
+                <div class="hint">Optional. Loaded in a hidden iframe to notify this client when the session ends elsewhere.</div>
+              `}
+              ${(this.formData.frontChannelLogoutUri || '').trim() ? html`
+                <label class="plain-checkbox-label" style="margin-top: 0.5rem;">
+                  <input
+                    type="checkbox"
+                    .checked=${!!this.formData.frontChannelLogoutSessionRequired}
+                    @change=${() => this.toggleFrontChannelLogoutSessionRequired()}
+                  />
+                  Include session parameters (iss &amp; sid)
+                </label>
+              ` : ''}
             </div>
 
             <div class="form-group">

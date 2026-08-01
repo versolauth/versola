@@ -38,7 +38,7 @@ object EdgeSessionCookie:
       case -1 => (PresetId(""), AccessToken(content))
       case i  => (PresetId(content.substring(0, i)), AccessToken(content.substring(i + 1)))
 
-  def clear(domain: Option[String], path: Option[String], now: Instant): Cookie.Response =
+  def clear(domain: Option[String], path: Option[String]): Cookie.Response =
     Cookie.Response(
       name = name,
       content = "",

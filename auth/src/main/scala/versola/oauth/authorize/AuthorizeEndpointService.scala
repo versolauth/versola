@@ -322,6 +322,7 @@ object AuthorizeEndpointService:
         accessToken <- authPropertyGenerator.nextAccessToken
         codeRecord = AuthorizationCodeRecord(
           sessionId = sessionInfo.id,
+          publicSessionId = session.publicId,
           clientId = request.clientId,
           userId = session.userId,
           redirectUri = request.redirectUri,
@@ -366,7 +367,7 @@ object AuthorizeEndpointService:
         cHash = JWT.leftHalfHash(Base64Url.encode(code), signingKey.algorithm)
         claims = userInfo.claims ++
           AuthMethodRef.idTokenClaims(amr, Some(session.createdAt), acr) +
-          ("c_hash" -> Json.Str(cHash))
+          ("c_hash" -> Json.Str(cHash)) + ("sid" -> Json.Str(session.publicId))
         token <- JWT.serialize(
           typ = JWT.Type.JWT,
           claims = JWT.Claims(

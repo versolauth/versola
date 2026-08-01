@@ -8,14 +8,16 @@ import org.scalamock.stubs.ZIOStubs
 import versola.edge.EdgeServiceSpec.Fixtures
 import versola.edge.login.{LoginRecord, LoginRepository}
 import versola.edge.model.*
+import versola.edge.session.EdgeSessionRecord
 import versola.util.cel.CelEvaluator
-import versola.util.{Base64, JWT, RedirectUri, ReloadingCache, Secret, SecureRandom, SecurityService}
+import versola.util.{JWT, RedirectUri, ReloadingCache, Secret, SecureRandom, SecurityService}
 import zio.*
 import zio.http.*
 import zio.test.*
 
 import java.security.KeyPairGenerator
 import java.security.interfaces.RSAPublicKey
+import java.time.Instant
 import java.util.{Collections, Date, UUID}
 import javax.crypto.spec.SecretKeySpec
 
@@ -50,10 +52,8 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
 
     val codeVerifierBytes = Array.fill[Byte](32)(7)
     val stateBytes = Array.fill[Byte](16)(9)
-    val loginIdBytes = Array.fill[Byte](32)(11)
 
     val state = State.fromBytes(stateBytes)
-    val loginId = Base64.urlEncode(loginIdBytes)
 
     val tokens = TokenResponse(
       accessToken = AccessToken("header.payload.sig"),
@@ -70,7 +70,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
     val loginRepository = stub[LoginRepository]
     val ssoClient = stub[SSOClient]
     val jwksService = stub[JwksService]
-    val refreshTokenRepository = stub[session.EdgeRefreshTokenRepository]
+    val sessionRepository = stub[session.EdgeSessionRepository]
     val permissionService = stub[PermissionService]
 
     val presetCache = ReloadingCache(Unsafe.unsafe(unsafe ?=> Ref.unsafe.make(Map.empty[PresetId, AuthorizationPreset])))
@@ -104,7 +104,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val rsaKey = RSAKey.Builder(keyPair.getPublic.asInstanceOf[RSAPublicKey]).keyID(edgeConfig.keyId).build()
       JWT.PublicKeys(JWKSet(rsaKey))
 
-    def signToken(jti: String = UUID.randomUUID().toString, ttlSeconds: Long = 600): Task[AccessToken] =
+    def signToken(jti: String = UUID.randomUUID().toString, ttlSeconds: Long = 600, sid: String = "sso-session-1"): Task[AccessToken] =
       Clock.instant.flatMap { now =>
         ZIO.attemptBlocking {
           val header = JWSHeader.Builder(JWSAlgorithm.RS256)
@@ -118,6 +118,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
             .issueTime(Date.from(now))
             .expirationTime(Date.from(now.plusSeconds(ttlSeconds)))
             .claim("client_id", "user-1-client")
+            .claim("sid", sid)
             .build()
           val jwt = SignedJWT(header, claims)
           jwt.sign(RSASSASigner(edgeConfig.privateKey))
@@ -145,7 +146,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
         security,
         httpClient,
         edgeConfig,
-        refreshTokenRepository,
+        sessionRepository,
         jwksService,
         permissionService,
       )
@@ -153,6 +154,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
   def spec = suite("EdgeService")(
     authorizeSuite,
     completeSuite,
+    frontChannelLogoutSuite,
     getMyPermissionsSuite,
   ).provideSomeLayer[Client](
     SecureRandom.live >>> SecurityService.live,
@@ -165,8 +167,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- env.withPresets(Fixtures.preset)
         _ <- env.secureRandom.nextBytes.returnsZIOOnCall:
           case 1 => ZIO.succeed(Fixtures.codeVerifierBytes)
-          case 2 => ZIO.succeed(Fixtures.stateBytes)
-          case _ => ZIO.succeed(Fixtures.loginIdBytes)
+          case _ => ZIO.succeed(Fixtures.stateBytes)
         _ <- env.loginRepository.create.succeedsWith(())
         _ <- env.ssoClient.authorizeUri.succeedsWith(Fixtures.authorizeUrl)
         security <- ZIO.service[SecurityService]
@@ -178,13 +179,12 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
       yield assertTrue(
         url == Fixtures.authorizeUrl,
         createCalls.size == 1,
-        createCalls.head._1 == Fixtures.loginId,
-        createCalls.head._2 == LoginRecord(
+        createCalls.head._1 == LoginRecord(
           codeVerifier = CodeVerifier.fromBytes(Fixtures.codeVerifierBytes),
           presetId = Fixtures.presetId,
           state = Fixtures.state,
         ),
-        createCalls.head._3 == 10.minutes,
+        createCalls.head._2 == 10.minutes,
         authorizeCalls.size == 1,
         authorizeCalls.head._1 == Fixtures.preset,
         authorizeCalls.head._3 == Fixtures.state,
@@ -221,14 +221,19 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
             state = Fixtures.state,
           )))
           _ <- env.loginRepository.deleteByState.succeedsWith(())
-          _ <- env.ssoClient.exchangeAuthorizationCode.succeedsWith(Fixtures.tokens)
+          _ <- env.jwksService.getPublicKeys.succeedsWith(env.publicKeys)
+          _ <- env.sessionRepository.create.succeedsWith(())
+          _ <- env.secureRandom.nextBytes.succeedsWith(Array.fill(32)(7.toByte))
           security <- ZIO.service[SecurityService]
           client <- ZIO.service[Client]
+          accessToken <- env.signToken()
+          tokens = Fixtures.tokens.copy(accessToken = accessToken)
+          _ <- env.ssoClient.exchangeAuthorizationCode.succeedsWith(tokens)
           service = env.buildService(client, security)
           completion <- service.complete(code, Fixtures.state)
         yield assertTrue(
-          completion.accessToken == Fixtures.tokens.accessToken,
-          completion.cookieTtl == zio.Duration.fromSeconds(Fixtures.tokens.expiresIn),
+          completion.accessToken == accessToken,
+          completion.cookieTtl == zio.Duration.fromSeconds(tokens.expiresIn),
           completion.postLoginRedirectUri == Fixtures.postLoginUri,
           completion.cookieDomain == Fixtures.preset.cookieDomain,
           completion.cookiePath == Fixtures.preset.cookiePath,
@@ -291,7 +296,8 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
           )))
           _ <- env.loginRepository.deleteByState.succeedsWith(())
           _ <- env.jwksService.getPublicKeys.succeedsWith(env.publicKeys)
-          _ <- env.refreshTokenRepository.create.succeedsWith(())
+          _ <- env.sessionRepository.create.succeedsWith(())
+          _ <- env.secureRandom.nextBytes.succeedsWith(Array.fill(32)(7.toByte))
           security <- ZIO.service[SecurityService]
           client <- ZIO.service[Client]
           accessToken <- env.signToken(jti = jti, ttlSeconds = 3600L)
@@ -307,22 +313,192 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.ssoClient.exchangeAuthorizationCode.succeedsWith(tokens)
           service = env.buildService(client, security)
           completion <- service.complete(code, Fixtures.state)
-          createCalls = env.refreshTokenRepository.create.calls
+          createCalls = env.sessionRepository.create.calls
           encryptionKey = SecretKeySpec(env.edgeConfig.security.tokenEncryption.key, "AES")
-          decryptedRefresh <- security.decryptAes256(createCalls.head._2.encryptedRefreshToken, encryptionKey)
+          decryptedRefresh <- security.decryptAes256(createCalls.head.encryptedRefreshToken.get, encryptionKey)
           now <- Clock.instant
         yield assertTrue(
           completion.accessToken == accessToken,
           completion.cookieTtl == zio.Duration.fromSeconds(tokens.refreshTokenExpiresIn.get),
           createCalls.size == 1,
-          createCalls.head._1 == AccessTokenId(jti),
-          createCalls.head._2.presetId == Fixtures.presetId,
+          createCalls.head.accessTokenId == AccessTokenId(jti),
+          createCalls.head.presetId == Fixtures.presetId,
           new String(decryptedRefresh, "UTF-8") == refreshTokenValue,
-          createCalls.head._2.expiresAt.isAfter(now.plusSeconds(7200L - 5)),
+          createCalls.head.expiresAt.isAfter(now.plusSeconds(7200L + 10 - 5)),
+          createCalls.head.expiresAt.isBefore(now.plusSeconds(7200L + 10 + 5)),
+        )
+      },
+      test("still records session participation when no refresh token is issued") {
+        val env = new Env
+        for
+          _ <- env.withPresets(Fixtures.preset)
+          _ <- env.withClients(Fixtures.client)
+          _ <- env.loginRepository.findByState.succeedsWith(Some(LoginRecord(
+            codeVerifier = CodeVerifier.fromBytes(Fixtures.codeVerifierBytes),
+            presetId = Fixtures.presetId,
+            state = Fixtures.state,
+          )))
+          _ <- env.loginRepository.deleteByState.succeedsWith(())
+          _ <- env.jwksService.getPublicKeys.succeedsWith(env.publicKeys)
+          _ <- env.sessionRepository.create.succeedsWith(())
+          _ <- env.secureRandom.nextBytes.succeedsWith(Array.fill(32)(7.toByte))
+          security <- ZIO.service[SecurityService]
+          client <- ZIO.service[Client]
+          accessToken <- env.signToken(jti = "jti-no-refresh")
+          _ <- env.ssoClient.exchangeAuthorizationCode.succeedsWith(
+            Fixtures.tokens.copy(accessToken = accessToken),
+          )
+          service = env.buildService(client, security)
+          _ <- service.complete(code, Fixtures.state)
+          createCalls = env.sessionRepository.create.calls
+        yield assertTrue(
+          createCalls.size == 1,
+          createCalls.head.accessTokenId == AccessTokenId("jti-no-refresh"),
+          createCalls.head.presetId == Fixtures.presetId,
+          createCalls.head.encryptedRefreshToken.isEmpty,
         )
       },
     )
   }
+
+  private val frontChannelLogoutSuite = suite("frontChannelLogout")(
+    test("deletes session rows and clears EDGE_SESSION cookie for the session's preset") {
+      val env = new Env
+      val sid = SessionId("sso-session-1")
+      val record = EdgeSessionRecord(
+        publicSessionId = sid,
+        presetId = Fixtures.presetId,
+        accessTokenId = AccessTokenId("jti-logout-1"),
+        encryptedRefreshToken = Some(Secret(Array.fill(16)(1.toByte))),
+        expiresAt = Instant.parse("2024-01-01T00:00:00Z"),
+      )
+      for
+        _ <- env.withPresets(Fixtures.preset)
+        _ <- env.sessionRepository.deleteBySessionId.succeedsWith(List(record))
+        security <- ZIO.service[SecurityService]
+        client <- ZIO.service[Client]
+        service = env.buildService(client, security)
+        cookies <- service.frontChannelLogout(env.edgeConfig.versolaUrl.encode, sid)
+      yield assertTrue(
+        cookies == List(EdgeSessionCookie.clear(Fixtures.preset.cookieDomain, Fixtures.preset.cookiePath)),
+        env.sessionRepository.deleteBySessionId.calls == List(sid),
+      )
+    },
+    test("clears the cookie of a preset that never received a refresh token") {
+      val env = new Env
+      val sid = SessionId("sso-session-no-refresh")
+      val record = EdgeSessionRecord(
+        publicSessionId = sid,
+        presetId = Fixtures.presetId,
+        accessTokenId = AccessTokenId("jti-logout-2"),
+        encryptedRefreshToken = None,
+        expiresAt = Instant.parse("2024-01-01T00:00:00Z"),
+      )
+      for
+        _ <- env.withPresets(Fixtures.preset)
+        _ <- env.sessionRepository.deleteBySessionId.succeedsWith(List(record))
+        security <- ZIO.service[SecurityService]
+        client <- ZIO.service[Client]
+        service = env.buildService(client, security)
+        cookies <- service.frontChannelLogout(env.edgeConfig.versolaUrl.encode, sid)
+      yield assertTrue(
+        cookies == List(EdgeSessionCookie.clear(Fixtures.preset.cookieDomain, Fixtures.preset.cookiePath)),
+      )
+    },
+    test("deduplicates presets shared by multiple session records") {
+      val env = new Env
+      val sid = SessionId("sso-session-multi")
+      def record(accessTokenId: String) = EdgeSessionRecord(
+        publicSessionId = sid,
+        presetId = Fixtures.presetId,
+        accessTokenId = AccessTokenId(accessTokenId),
+        encryptedRefreshToken = Some(Secret(Array.fill(16)(2.toByte))),
+        expiresAt = Instant.parse("2024-01-01T00:00:00Z"),
+      )
+      for
+        _ <- env.withPresets(Fixtures.preset)
+        _ <- env.sessionRepository.deleteBySessionId.succeedsWith(
+          List(record("jti-1"), record("jti-2")),
+        )
+        security <- ZIO.service[SecurityService]
+        client <- ZIO.service[Client]
+        service = env.buildService(client, security)
+        cookies <- service.frontChannelLogout(env.edgeConfig.versolaUrl.encode, sid)
+      yield assertTrue(cookies.size == 1)
+    },
+    test("returns no cookies and skips presets no longer present when session has no known preset") {
+      val env = new Env
+      val sid = SessionId("sso-session-empty")
+      for
+        _ <- env.sessionRepository.deleteBySessionId.succeedsWith(List.empty)
+        security <- ZIO.service[SecurityService]
+        client <- ZIO.service[Client]
+        service = env.buildService(client, security)
+        cookies <- service.frontChannelLogout(env.edgeConfig.versolaUrl.encode, sid)
+      yield assertTrue(
+        cookies.isEmpty,
+        env.sessionRepository.deleteBySessionId.calls == List(sid),
+      )
+    },
+    test("returns no cookies and does not touch session rows when issuer is unknown") {
+      val env = new Env
+      val sid = SessionId("sso-session-untrusted")
+      for
+        security <- ZIO.service[SecurityService]
+        client <- ZIO.service[Client]
+        service = env.buildService(client, security)
+        cookies <- service.frontChannelLogout("https://untrusted.example", sid)
+      yield assertTrue(
+        cookies.isEmpty,
+        env.sessionRepository.deleteBySessionId.calls.isEmpty,
+      )
+    },
+    test("accepts issuer with a trailing slash, an explicit default port, or different host casing") {
+      checkAll(Gen.fromIterable(List(
+        "https://idp.example/",
+        "https://idp.example:443",
+        "https://IDP.example",
+      ))) { iss =>
+        val env = new Env
+        val sid = SessionId("sso-session-equivalent")
+        val record = EdgeSessionRecord(
+          publicSessionId = sid,
+          presetId = Fixtures.presetId,
+          accessTokenId = AccessTokenId("jti-logout-equivalent"),
+          encryptedRefreshToken = None,
+          expiresAt = Instant.parse("2024-01-01T00:00:00Z"),
+        )
+        for
+          _ <- env.withPresets(Fixtures.preset)
+          _ <- env.sessionRepository.deleteBySessionId.succeedsWith(List(record))
+          security <- ZIO.service[SecurityService]
+          client <- ZIO.service[Client]
+          service = env.buildService(client, security)
+          cookies <- service.frontChannelLogout(iss, sid)
+        yield assertTrue(
+          cookies == List(EdgeSessionCookie.clear(Fixtures.preset.cookieDomain, Fixtures.preset.cookiePath)),
+        )
+      }
+    },
+    test("rejects issuer with a mismatched scheme or non-default port") {
+      checkAll(Gen.fromIterable(List(
+        "http://idp.example",
+        "https://idp.example:8443",
+      ))) { iss =>
+        val env = new Env
+        val sid = SessionId("sso-session-mismatched")
+        for
+          security <- ZIO.service[SecurityService]
+          client <- ZIO.service[Client]
+          service = env.buildService(client, security)
+          cookies <- service.frontChannelLogout(iss, sid)
+        yield assertTrue(
+          cookies.isEmpty,
+          env.sessionRepository.deleteBySessionId.calls.isEmpty,
+        )
+      }
+    },
+  )
 
   private def simpleResource(resourceId: String, endpointId: ResourceEndpointId): Resource =
     Resource(

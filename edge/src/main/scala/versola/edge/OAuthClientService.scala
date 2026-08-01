@@ -6,6 +6,7 @@ import zio.{Schedule, Scope, UIO, ZLayer}
 
 trait OAuthClientService:
   def findPreset(presetId: PresetId): UIO[Option[AuthorizationPreset]]
+  def listPresets(presetIds: List[PresetId]): UIO[List[AuthorizationPreset]]
   def findClient(clientId: ClientId): UIO[Option[OAuthClient]]
 
 object OAuthClientService:
@@ -28,6 +29,9 @@ object OAuthClientService:
 
     override def findPreset(presetId: PresetId): UIO[Option[AuthorizationPreset]] =
       presetCache.get.map(_.get(presetId))
+
+    override def listPresets(presetIds: List[PresetId]): UIO[List[AuthorizationPreset]] =
+      presetCache.get.map(cache => presetIds.flatMap(cache.get))
 
     override def findClient(clientId: ClientId): UIO[Option[OAuthClient]] =
       clientCache.get.map(_.get(clientId))

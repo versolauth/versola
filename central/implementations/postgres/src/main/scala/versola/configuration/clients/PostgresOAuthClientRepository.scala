@@ -28,7 +28,7 @@ class PostgresOAuthClientRepository(
 
   private def findClient(clientId: ClientId) =
     sql"""
-      SELECT id, tenant_id, client_name, redirect_uris, scope, external_audience, secret, previous_secret, access_token_ttl, refresh_token_ttl, permissions, theme, auth_flow, otp_template_id
+      SELECT id, tenant_id, client_name, redirect_uris, scope, external_audience, secret, previous_secret, access_token_ttl, refresh_token_ttl, permissions, theme, auth_flow, otp_template_id, front_channel_logout_uri, front_channel_logout_session_required
       FROM oauth_clients
       WHERE id = $clientId
     """
@@ -36,7 +36,7 @@ class PostgresOAuthClientRepository(
   override def getAll: Task[Vector[OAuthClientRecord]] =
     xa.connectMeasured("get-all-clients"):
       sql"""
-        SELECT id, tenant_id, client_name, redirect_uris, scope, external_audience, secret, previous_secret, access_token_ttl, refresh_token_ttl, permissions, theme, auth_flow, otp_template_id
+        SELECT id, tenant_id, client_name, redirect_uris, scope, external_audience, secret, previous_secret, access_token_ttl, refresh_token_ttl, permissions, theme, auth_flow, otp_template_id, front_channel_logout_uri, front_channel_logout_session_required
         FROM oauth_clients
       """
         .query[OAuthClientRecord].run()
@@ -48,9 +48,9 @@ class PostgresOAuthClientRepository(
   override def createClient(client: OAuthClientRecord): IO[ClientAlreadyExists | Throwable, Unit] =
     xa.connectMeasured("create-client"):
       sql"""
-        INSERT INTO oauth_clients (id, tenant_id, client_name, redirect_uris, scope, external_audience, secret, previous_secret, access_token_ttl, refresh_token_ttl, permissions, theme, auth_flow, otp_template_id)
+        INSERT INTO oauth_clients (id, tenant_id, client_name, redirect_uris, scope, external_audience, secret, previous_secret, access_token_ttl, refresh_token_ttl, permissions, theme, auth_flow, otp_template_id, front_channel_logout_uri, front_channel_logout_session_required)
         VALUES (${client.id}, ${client.tenantId}, ${client.clientName}, ${client.redirectUris}, ${client.scope},
-                ${client.externalAudience}, ${client.secret}, ${client.previousSecret}, ${client.accessTokenTtl}, ${client.refreshTokenTtl}, ${client.permissions}, ${client.theme}, ${client.authFlow}, ${client.otpTemplateId})
+                ${client.externalAudience}, ${client.secret}, ${client.previousSecret}, ${client.accessTokenTtl}, ${client.refreshTokenTtl}, ${client.permissions}, ${client.theme}, ${client.authFlow}, ${client.otpTemplateId}, ${client.frontChannelLogoutUri}, ${client.frontChannelLogoutSessionRequired})
       """.update.run()
     .unit
     .mapError {
@@ -69,11 +69,13 @@ class PostgresOAuthClientRepository(
       theme: Option[String],
       authFlow: Option[AuthFlow],
       otpTemplateId: Option[String],
+      frontChannelLogoutUri: Option[Option[String]],
+      frontChannelLogoutSessionRequired: Option[Boolean],
   ): Task[Unit] =
     xa.transactMeasured("update-client"):
       // Lock the row (READ_COMMITTED + FOR UPDATE) to prevent lost updates from concurrent writers.
       val client = sql"""
-        SELECT id, tenant_id, client_name, redirect_uris, scope, external_audience, secret, previous_secret, access_token_ttl, refresh_token_ttl, permissions, theme, auth_flow, otp_template_id
+        SELECT id, tenant_id, client_name, redirect_uris, scope, external_audience, secret, previous_secret, access_token_ttl, refresh_token_ttl, permissions, theme, auth_flow, otp_template_id, front_channel_logout_uri, front_channel_logout_session_required
         FROM oauth_clients
         WHERE id = $clientId
         FOR UPDATE
@@ -87,6 +89,8 @@ class PostgresOAuthClientRepository(
       val newTheme = theme.getOrElse(client.theme)
       val newAuthFlow = authFlow.orElse(client.authFlow)
       val newOtpTemplateId = otpTemplateId.getOrElse(client.otpTemplateId)
+      val newFrontChannelLogoutUri = frontChannelLogoutUri.getOrElse(client.frontChannelLogoutUri)
+      val newFrontChannelLogoutSessionRequired = frontChannelLogoutSessionRequired.getOrElse(client.frontChannelLogoutSessionRequired)
       sql"""
         UPDATE oauth_clients SET
           client_name = $newClientName,
@@ -97,7 +101,9 @@ class PostgresOAuthClientRepository(
           refresh_token_ttl = $newRefreshTokenTtl,
           theme = $newTheme,
           auth_flow = $newAuthFlow,
-          otp_template_id = $newOtpTemplateId
+          otp_template_id = $newOtpTemplateId,
+          front_channel_logout_uri = $newFrontChannelLogoutUri,
+          front_channel_logout_session_required = $newFrontChannelLogoutSessionRequired
         WHERE id = $clientId
       """.update.run()
     .unit

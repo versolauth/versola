@@ -10,7 +10,7 @@ case class AccessTokenClaims(
     @jsonField("aud") audience: List[String],
     @jsonField("exp") expiresAt: Long,
     @jsonField("iat") issuedAt: Long,
-    @jsonField("tenant_id") tenantId: Option[TenantId],
+    @jsonField("tenant_id") tenantId: TenantId,
     roles: List[RoleId],
     acr: Option[String],
     @jsonField("auth_time") authTime: Option[Long],

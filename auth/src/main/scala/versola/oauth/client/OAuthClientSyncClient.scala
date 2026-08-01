@@ -44,6 +44,8 @@ object OAuthClientSyncClient:
             theme = client.theme,
             authFlow = client.authFlow,
             otpTemplateId = client.otpTemplateId,
+            frontChannelLogoutUri = client.frontChannelLogoutUri,
+            frontChannelLogoutSessionRequired = client.frontChannelLogoutSessionRequired,
           )
         }
       yield decryptedClients.map(it => it.id -> it).toMap
@@ -71,6 +73,8 @@ object OAuthClientSyncClient:
         theme: String,
         authFlow: Option[AuthFlow],
         otpTemplateId: String,
+        frontChannelLogoutUri: Option[String],
+        frontChannelLogoutSessionRequired: Boolean,
     ) derives JsonCodec
 
     private case class OAuthClientsSyncResponse(

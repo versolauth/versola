@@ -5,7 +5,7 @@ import com.augustnagro.magnum.magzio.TransactorZIO
 import com.augustnagro.magnum.pg.{PgCodec, SqlArrayCodec}
 import versola.oauth.client.model.{Acr, AuthMethodRef, Claim, ClientId, ScopeToken}
 import versola.oauth.model.*
-import versola.oauth.session.model.SessionId
+import versola.oauth.session.model.{PublicSessionId, SessionId}
 import versola.oauth.token.AuthorizationCodeRepository
 import versola.oauth.userinfo.model.{ClaimRequest, RequestedClaims}
 import versola.user.model.UserId
@@ -45,6 +45,7 @@ class PostgresAuthorizationCodeRepository(
   private given DbCodec[AccessToken] = DbCodec.ByteArrayCodec.biMap(AccessToken(_), identity[Array[Byte]])
   private given DbCodec[Set[AuthMethodRef]] = jsonBCodec[Set[AuthMethodRef]]
   private given DbCodec[Acr] = DbCodec.StringCodec.biMap(Acr(_), identity[String])
+  private given DbCodec[PublicSessionId] = DbCodec.StringCodec.biMap(PublicSessionId(_), identity[String])
   private given DbCodec[AuthorizationCodeRecord] = DbCodec.derived[AuthorizationCodeRecord]
 
   override def find(code: MAC.Of[AuthorizationCode]): Task[Option[AuthorizationCodeRecord]] =
@@ -52,7 +53,7 @@ class PostgresAuthorizationCodeRepository(
       now <- Clock.instant
       result <- xa.connectMeasured("find-authorization-code"):
         sql"""
-          SELECT session_id, client_id, user_id, redirect_uri,
+          SELECT session_id, public_session_id, client_id, user_id, redirect_uri,
                  scope, code_challenge, code_challenge_method,
                  requested_claims, ui_locales, nonce, access_token,
                  amr, auth_time, acr,
@@ -74,6 +75,7 @@ class PostgresAuthorizationCodeRepository(
           INSERT INTO authorization_codes (
             code,
             session_id,
+            public_session_id,
             client_id,
             user_id,
             redirect_uri,
@@ -93,6 +95,7 @@ class PostgresAuthorizationCodeRepository(
           VALUES (
             $code,
             ${record.sessionId},
+            ${record.publicSessionId},
             ${record.clientId},
             ${record.userId},
             ${record.redirectUri},

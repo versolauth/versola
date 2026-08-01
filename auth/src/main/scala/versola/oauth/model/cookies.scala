@@ -73,6 +73,19 @@ object SessionCookie:
       sameSite = None,
     )
 
+  /** Cookie that instructs the browser to drop the current session cookie. */
+  def expired: Cookie.Response =
+    Cookie.Response(
+      name = name,
+      content = "",
+      domain = None,
+      path = Some(Path.root),
+      isSecure = true,
+      isHttpOnly = true,
+      maxAge = Some(Duration.Zero),
+      sameSite = None,
+    )
+
   def parse(content: String, secret: Secret.Bytes32): Either[String, SessionId] =
     val dotIdx = content.lastIndexOf('.')
     if dotIdx < 0 then Left("missing signature")

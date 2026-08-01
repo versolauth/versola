@@ -26,6 +26,8 @@ trait OAuthClientRepository extends CacheSource[Vector[OAuthClientRecord]]:
       theme: Option[String],
       authFlow: Option[AuthFlow],
       otpTemplateId: Option[String],
+      frontChannelLogoutUri: Option[Option[String]],
+      frontChannelLogoutSessionRequired: Option[Boolean],
   ): Task[Unit]
 
   def rotateClientSecret(clientId: ClientId, newSecret: Array[Byte]): Task[Unit]

@@ -1,6 +1,6 @@
 package versola.edge
 
-import versola.edge.model.{AuthConversationNotFound, Code, PresetId, PresetNotFound, ResourceId, State}
+import versola.edge.model.{AuthConversationNotFound, Code, PresetId, PresetNotFound, ResourceId, SessionId, State}
 import versola.util.http.Controller
 import zio.*
 import zio.http.*
@@ -12,6 +12,7 @@ object EdgeController extends Controller:
   def routes: Routes[Env, Throwable] = Routes(
     loginEndpoint,
     completeEndpoint,
+    frontChannelLogoutEndpoint,
     permissionsEndpoint,
     proxyGetEndpoint,
     proxyPostEndpoint,
@@ -25,7 +26,7 @@ object EdgeController extends Controller:
     "max_age",
     "prompt",
     "login_hint",
-    "ui_locales"
+    "ui_locales",
   )
 
   val loginEndpoint =
@@ -48,7 +49,7 @@ object EdgeController extends Controller:
               ZIO.succeed(Response.seeOther(url))
       yield response
     }
-  
+
   val completeEndpoint =
     Method.GET / "complete" -> handler { (request: Request) =>
       for
@@ -70,29 +71,46 @@ object EdgeController extends Controller:
               for
                 redirectUrl <- ZIO.fromEither(URL.decode(completion.postLoginRedirectUri))
                 now <- Clock.instant
-              yield
-                Response
-                  .seeOther(redirectUrl)
-                  .addCookie(
-                    EdgeSessionCookie(
-                      presetId = completion.presetId,
-                      accessToken = completion.accessToken,
-                      ttl = completion.cookieTtl,
-                      domain = completion.cookieDomain,
-                      path = completion.cookiePath,
-                      now = now,
-                    ),
-                  )
+              yield Response
+                .seeOther(redirectUrl)
+                .addCookie(
+                  EdgeSessionCookie(
+                    presetId = completion.presetId,
+                    accessToken = completion.accessToken,
+                    ttl = completion.cookieTtl,
+                    domain = completion.cookieDomain,
+                    path = completion.cookiePath,
+                    now = now,
+                  ),
+                )
       yield response
+    }
+
+  // OP-initiated front-channel logout, invoked by the OP in a hidden iframe (or via
+  // direct navigation) with the `iss`/`sid` query params of the OIDC logout token.
+  // Path-independent: it never reads EDGE_SESSION, only clears it for the presets
+  // it finds tied to the session.
+  val frontChannelLogoutEndpoint =
+    Method.GET / "logout" / "frontchannel" -> handler { (request: Request) =>
+      for
+        edgeService <- ZIO.service[EdgeService]
+        iss <- request.queryZIO[String]("iss")
+        sid <- request.queryZIO[SessionId]("sid")
+        cookies <- edgeService.frontChannelLogout(iss, sid)
+      yield cookies.foldLeft(
+        Response
+          .status(Status.Ok)
+          .addHeader(Header.CacheControl.NoStore),
+      )(_.addCookie(_))
     }
 
   val permissionsEndpoint =
     Method.GET / "permissions" / "me" -> handler { (request: Request) =>
       for
-        claims      <- authorize(request)
-        service     <- ZIO.service[EdgeService]
-        resourceIds <- request.queryZIO[List[String]]("resource")
-        response    <- service.getMyPermissions(claims, resourceIds.map(ResourceId(_)))
+        claims <- authorize(request)
+        service <- ZIO.service[EdgeService]
+        resourceIds <- request.queryZIO[List[ResourceId]]("resource")
+        response <- service.getMyPermissions(claims, resourceIds)
       yield Response.json(response.toJson)
     }
 

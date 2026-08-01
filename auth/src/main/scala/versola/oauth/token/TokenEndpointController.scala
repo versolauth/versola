@@ -75,8 +75,9 @@ object TokenEndpointController extends Controller:
         "scope" -> Json.Str(tokens.scope.mkString(" ")),
         "jti" -> Json.Str(Base64Url.encode(tokens.accessToken)),
         "roles" -> Json.Arr(tokens.roles.map(Json.Str(_))*),
+        "tenant_id" -> Json.Str(tokens.tenantId),
       ) ++
-        tokens.tenantId.map("tenant_id" -> Json.Str(_)) ++
+        tokens.sessionId.map(sid => "sid" -> Json.Str(sid)) ++
         tokens.requestedClaims.map(rc => "requested_claims" -> rc.toJsonAST.toOption.get) ++
         AuthMethodRef.idTokenClaims(tokens.amr, tokens.authTime, tokens.acr)
 
@@ -127,9 +128,8 @@ object TokenEndpointController extends Controller:
             uiLocales = tokens.uiLocales,
             nonce = tokens.nonce,
           )
-
           atHash = JWT.leftHalfHash(accessToken, signingKey.algorithm)
-
+          sidClaim = tokens.sessionId.map(sid => "sid" -> Json.Str(sid))
           serializedIdToken <- JWT.serialize(
             typ = JWT.Type.JWT,
             claims = JWT.Claims(
@@ -138,7 +138,7 @@ object TokenEndpointController extends Controller:
               audience = List(tokens.clientId),
               custom = Json.Obj(Chunk.fromIterable(
                 userInfo.claims ++
-                  AuthMethodRef.idTokenClaims(tokens.amr, tokens.authTime, tokens.acr) +
+                  AuthMethodRef.idTokenClaims(tokens.amr, tokens.authTime, tokens.acr) ++ sidClaim +
                   ("at_hash" -> Json.Str(atHash)),
               )),
             ),

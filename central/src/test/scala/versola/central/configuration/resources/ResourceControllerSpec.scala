@@ -35,8 +35,8 @@ object ResourceControllerSpec extends ZIOSpecDefault, ZIOStubs:
     resourceId = resourceId,
     resource = ResourceUri("https://api.example.com"),
     endpoints = Vector(
-      CreateResourceEndpointRequest(usersListEndpointId, "/users", "GET", true, allow, inject, maxAge = None),
-      CreateResourceEndpointRequest(usersCreateEndpointId, "/users", "POST", false, denyAware, Vector.empty, maxAge = None),
+      CreateResourceEndpointRequest(usersListEndpointId, "/users", "GET", true, allow, inject, stepUpCondition = None, stepUpAcr = None, maxAge = None),
+      CreateResourceEndpointRequest(usersCreateEndpointId, "/users", "POST", false, denyAware, Vector.empty, stepUpCondition = None, stepUpAcr = None, maxAge = None),
     ),
   )
 
@@ -45,7 +45,7 @@ object ResourceControllerSpec extends ZIOSpecDefault, ZIOStubs:
     resourceId = resourceId,
     resource = ResourceUri("https://api.example.com"),
     endpoints = Vector(
-      CreateResourceEndpointRequest(usersListEndpointId, "/users", "GET", true, numericAllow, Vector.empty, maxAge = None)
+      CreateResourceEndpointRequest(usersListEndpointId, "/users", "GET", true, numericAllow, Vector.empty, stepUpCondition = None, stepUpAcr = None, maxAge = None)
     ),
   )
 
@@ -54,7 +54,7 @@ object ResourceControllerSpec extends ZIOSpecDefault, ZIOStubs:
     resource = Some(ResourceUri("https://api.internal.example.com")),
     deleteEndpoints = Set(usersCreateEndpointId),
     createEndpoints = Vector(
-      CreateResourceEndpointRequest(usersMeEndpointId, "/users/me", "GET", true, allow, inject, maxAge = None)
+      CreateResourceEndpointRequest(usersMeEndpointId, "/users/me", "GET", true, allow, inject, stepUpCondition = None, stepUpAcr = None, maxAge = None)
     ),
   )
 
