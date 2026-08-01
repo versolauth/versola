@@ -5,7 +5,7 @@ import versola.auth.TestEnvConfig
 import com.nimbusds.jwt.SignedJWT
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.jwks.JwksService
-import versola.oauth.client.model.{AuthMethodRef, ClientId, ClientIdWithSecret, ScopeToken}
+import versola.oauth.client.model.{AuthMethodRef, ClientId, ClientIdWithSecret, ScopeToken, TenantId}
 import versola.oauth.model.{AccessToken, AuthorizationCode, CodeVerifier, Nonce, RefreshToken}
 import versola.oauth.token.model.{ClientCredentialsRequest, CodeExchangeRequest, IssuedTokens, RefreshTokenRequest, TokenEndpointError, TokenResponse}
 import versola.oauth.userinfo.UserInfoService
@@ -44,8 +44,9 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
     uiLocales = None,
     nonce = None,
     user = None,
-    tenantId = None,
+    tenantId = TenantId("default"),
     roles = List.empty,
+    sessionId = None,
     amr = Set(AuthMethodRef.pwd),
     authTime = Some(java.time.Instant.ofEpochSecond(1700000000)),
     acr = None,

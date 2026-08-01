@@ -5,7 +5,7 @@ import com.augustnagro.magnum.magzio.TransactorZIO
 import com.augustnagro.magnum.pg.{PgCodec, SqlArrayCodec}
 import versola.oauth.client.model.{Acr, AuthMethodRef, ClientId, PassedAuthFactor, PassedFactorRecord, ScopeToken}
 import versola.oauth.model.{AccessToken, Nonce, RefreshToken}
-import versola.oauth.session.model.{PriorSession, RefreshAlreadyExchanged, RefreshTokenRecord, SessionId, SessionRecord, UserAgentInfo}
+import versola.oauth.session.model.{PriorSession, PublicSessionId, RefreshAlreadyExchanged, RefreshTokenRecord, SessionId, SessionRecord, UserAgentInfo}
 import versola.oauth.userinfo.model.RequestedClaims
 import versola.user.model.UserId
 import versola.util.MAC
@@ -28,6 +28,7 @@ class PostgresSessionRepository(xa: TransactorZIO)
   given DbCodec[ClientId] = DbCodec.StringCodec.biMap(ClientId(_), identity[String])
 
   // ── session codecs ────────────────────────────────────────────────────────
+  given DbCodec[PublicSessionId] = DbCodec.StringCodec.biMap(PublicSessionId(_), identity[String])
   given DbCodec[UserAgentInfo] = jsonBCodec[UserAgentInfo]
   given amrSessionCodec: DbCodec[Map[PassedAuthFactor, PassedFactorRecord]] =
     jsonBCodec[Map[PassedAuthFactor, PassedFactorRecord]]
@@ -50,6 +51,7 @@ class PostgresSessionRepository(xa: TransactorZIO)
 
   override def create(
       id: MAC.Of[SessionId],
+      publicId: PublicSessionId,
       session: SessionRecord,
       ttl: Duration,
       idleTtl: Option[Duration],
@@ -59,9 +61,10 @@ class PostgresSessionRepository(xa: TransactorZIO)
       val idleExpiresAt = idleTtl.map(t => now.plusSeconds(t.toSeconds))
       xa.transactMeasured("create-session"):
         sql"""
-          INSERT INTO sso_sessions (id, client_id, user_id, user_agent, created_at, amr, expires_at, idle_expires_at)
+          INSERT INTO sso_sessions (id, public_id, client_id, user_id, user_agent, created_at, amr, expires_at, idle_expires_at)
           VALUES (
             $id,
+            $publicId,
             ${session.clientId},
             ${session.userId},
             ${session.userAgent},
@@ -88,7 +91,7 @@ class PostgresSessionRepository(xa: TransactorZIO)
     Clock.instant.flatMap: now =>
       xa.connectMeasured("find-session"):
         sql"""
-          SELECT user_id, client_id, user_agent, created_at, amr
+          SELECT user_id, client_id, user_agent, created_at, amr, public_id
           FROM sso_sessions
           WHERE id = $id
             AND expires_at > $now
@@ -110,7 +113,7 @@ class PostgresSessionRepository(xa: TransactorZIO)
       now    <- Clock.instant
       result <- xa.connectMeasured("find-sessions-by-user"):
         sql"""
-          SELECT user_id, client_id, user_agent, created_at, amr
+          SELECT user_id, client_id, user_agent, created_at, amr, public_id
           FROM sso_sessions
           WHERE
             user_id = $userId
@@ -136,16 +139,35 @@ class PostgresSessionRepository(xa: TransactorZIO)
         """.update.run()
         ()
 
-  override def invalidate(id: MAC.Of[SessionId]): Task[Unit] =
+  override def invalidate(id: MAC.Of[SessionId]): Task[Option[SessionRecord]] =
     Clock.instant.flatMap: now =>
       xa.transactMeasured("invalidate-session"):
-        sql"""
-          UPDATE sso_sessions SET expires_at = $now WHERE id = $id
-        """.update.run()
+        val session = sql"""
+          UPDATE sso_sessions
+          SET expires_at = $now
+          WHERE id = $id
+            AND expires_at > $now
+            AND (idle_expires_at IS NULL OR idle_expires_at > $now)
+          RETURNING user_id, client_id, user_agent, created_at, amr, public_id
+        """.query[SessionRecord].run().headOption
         sql"""
           UPDATE refresh_tokens SET expires_at = $now WHERE session_id = $id
         """.update.run()
-        ()
+        session
+
+  override def invalidateByPublicId(publicId: PublicSessionId): Task[Option[(MAC.Of[SessionId], SessionRecord)]] =
+    Clock.instant.flatMap: now =>
+      xa.transactMeasured("invalidate-session-by-public-id"):
+        val session = sql"""
+          UPDATE sso_sessions
+          SET expires_at = $now
+          WHERE public_id = $publicId
+          RETURNING id, user_id, client_id, user_agent, created_at, amr, public_id
+        """.query[(MAC, SessionRecord)].run().headOption
+        session.foreach { case (id, _) =>
+          sql"""UPDATE refresh_tokens SET expires_at = $now WHERE session_id = $id""".update.run()
+        }
+        session
 
   // ── refresh token methods ─────────────────────────────────────────────────
 
@@ -162,6 +184,7 @@ class PostgresSessionRepository(xa: TransactorZIO)
           id,
           previous_id,
           session_id,
+          public_session_id,
           access_token,
           user_id,
           client_id,
@@ -180,6 +203,7 @@ class PostgresSessionRepository(xa: TransactorZIO)
           $refreshToken,
           ${record.previousRefreshToken},
           ${record.sessionId},
+          ${record.publicSessionId},
           ${record.accessToken},
           ${record.userId},
           ${record.clientId},
@@ -206,7 +230,7 @@ class PostgresSessionRepository(xa: TransactorZIO)
       now    <- Clock.instant
       result <- xa.connectMeasured("find-refresh-token"):
         sql"""
-          SELECT session_id, access_token, user_id, client_id,
+          SELECT session_id, public_session_id, access_token, user_id, client_id,
                  external_audience, scope, issued_at,
                  expires_at, requested_claims, ui_locales, nonce, previous_id,
                  amr, auth_time, acr

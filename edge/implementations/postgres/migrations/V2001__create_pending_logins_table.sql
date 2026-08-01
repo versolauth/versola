@@ -1,6 +1,5 @@
 CREATE TABLE pending_logins (
-    login_id      TEXT PRIMARY KEY,
-    state         TEXT NOT NULL UNIQUE,
+    state         TEXT PRIMARY KEY,
     code_verifier TEXT NOT NULL,
     preset_id     TEXT NOT NULL,
     expires_at    TIMESTAMP WITH TIME ZONE NOT NULL

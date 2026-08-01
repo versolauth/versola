@@ -38,7 +38,14 @@ object CentralConfig:
         * Intended for local dev and e2e testing where a stable, known secret is needed.
         * Leave unset in production; the secret is then generated randomly on first boot.
         */
-      clientSecret: Option[String] = None,
+      clientSecret: Option[String],
+      /** OP-initiated front-channel logout endpoint notified so the browser-facing edge can
+        * clear its session cookie when this session is logged out elsewhere. Must be a
+        * publicly reachable URL (loaded by the browser), not necessarily edge's own address —
+        * by default the edge is path-routed on the same origin as auth (see deploy.md), so
+        * this is typically "$authUrl/logout/frontchannel".
+        */
+      frontChannelLogoutUri: Option[String],
   )
 
   object BootstrapConfig:

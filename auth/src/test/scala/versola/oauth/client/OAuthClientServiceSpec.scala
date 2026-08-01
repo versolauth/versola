@@ -33,6 +33,8 @@ object OAuthClientServiceSpec extends UnitSpecBase:
     theme = "default",
     authFlow = None,
     otpTemplateId = "default",
+    frontChannelLogoutUri = None,
+    frontChannelLogoutSessionRequired = false,
   )
   val privateClient2 = OAuthClientRecord(
     id = clientId2,
@@ -48,6 +50,8 @@ object OAuthClientServiceSpec extends UnitSpecBase:
     theme = "default",
     authFlow = None,
     otpTemplateId = "default",
+    frontChannelLogoutUri = None,
+    frontChannelLogoutSessionRequired = false,
   )
   val publicClient = OAuthClientRecord(
     id = publicClientId,
@@ -63,6 +67,8 @@ object OAuthClientServiceSpec extends UnitSpecBase:
     theme = "default",
     authFlow = None,
     otpTemplateId = "default",
+    frontChannelLogoutUri = None,
+    frontChannelLogoutSessionRequired = false,
   )
   val testClients = Map(clientId1 -> privateClient1, clientId2 -> privateClient2, publicClientId -> publicClient)
   val testScopes = Vector(

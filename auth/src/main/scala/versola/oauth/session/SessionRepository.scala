@@ -1,7 +1,8 @@
 package versola.oauth.session
 
+import versola.oauth.client.model.ClientId
 import versola.oauth.model.{AccessToken, RefreshToken}
-import versola.oauth.session.model.{PriorSession, RefreshAlreadyExchanged, RefreshTokenRecord, SessionId, SessionRecord}
+import versola.oauth.session.model.{PriorSession, PublicSessionId, RefreshAlreadyExchanged, RefreshTokenRecord, SessionId, SessionRecord}
 import versola.user.model.UserId
 import versola.util.MAC
 import zio.*
@@ -15,6 +16,7 @@ trait SessionRepository:
    */
   def create(
       id: MAC.Of[SessionId],
+      publicId: PublicSessionId,
       session: SessionRecord,
       ttl: Duration,
       idleTtl: Option[Duration],
@@ -36,9 +38,9 @@ trait SessionRepository:
       userId: UserId,
   ): Task[Unit]
 
-  /** Atomically expires a single session and all refresh tokens that belong to it.
-   *  No-op if neither the session nor any of its refresh tokens exist. */
-  def invalidate(id: MAC.Of[SessionId]): Task[Unit]
+  def invalidate(id: MAC.Of[SessionId]): Task[Option[SessionRecord]]
+
+  def invalidateByPublicId(publicId: PublicSessionId): Task[Option[(MAC.Of[SessionId], SessionRecord)]]
 
   def createRefreshToken(
       refreshToken: MAC.Of[RefreshToken],

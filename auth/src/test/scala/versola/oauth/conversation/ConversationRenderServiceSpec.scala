@@ -6,7 +6,7 @@ import versola.oauth.client.model.*
 import versola.oauth.conversation.model.*
 import versola.oauth.jwks.JwksService
 import versola.oauth.model.{AuthorizationCode, CodeChallenge, CodeChallengeMethod, SessionCookie, State}
-import versola.oauth.session.model.SessionId
+import versola.oauth.session.model.{PublicSessionId, SessionId}
 import versola.user.model.UserId
 import versola.util.*
 import zio.*
@@ -37,6 +37,8 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
     theme = "custom-theme",
     authFlow = None,
     otpTemplateId = "default",
+    frontChannelLogoutUri = None,
+    frontChannelLogoutSessionRequired = false,
   )
 
   private val theme = ThemeRecord("custom-theme", ".body { color: red; }", Some(tenantId))
@@ -235,7 +237,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
         val code = AuthorizationCode(Array.fill(16)(1.toByte))
         val sessionId = SessionId(Array.fill(32)(2.toByte))
         val userId = UserId(java.util.UUID.randomUUID())
-        val idTokenData = ConversationResult.IdTokenData(userId, Map.empty, clientId)
+        val idTokenData = ConversationResult.IdTokenData(userId, Map.empty, clientId, PublicSessionId("public-session-1"))
         val result = ConversationResult.Complete(redirectUri, Some(State("test-state")), code, sessionId, Some(idTokenData))
 
         for

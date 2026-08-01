@@ -35,6 +35,8 @@ object OAuthClientSyncClientSpec extends ZIOSpecDefault:
       refreshTokenTtl: Duration,
       theme: String,
       otpTemplateId: String,
+      frontChannelLogoutUri: Option[String],
+      frontChannelLogoutSessionRequired: Boolean,
   ) derives JsonCodec
   private case class EncodedClientsSyncResponse(clients: Vector[EncodedClient]) derives JsonCodec
 
@@ -87,6 +89,8 @@ object OAuthClientSyncClientSpec extends ZIOSpecDefault:
                       7776000.seconds,
                       "default",
                       "default",
+                      Some("https://example.com/frontchannel-logout"),
+                      true,
                     )
                   ),
                 ).toJson
@@ -113,6 +117,8 @@ object OAuthClientSyncClientSpec extends ZIOSpecDefault:
         client.secret.exists(_.sameElements(currentSecret)),
         client.previousSecret.exists(_.sameElements(previousSecret)),
         client.accessTokenTtl == 300.seconds,
+        client.frontChannelLogoutUri.contains("https://example.com/frontchannel-logout"),
+        client.frontChannelLogoutSessionRequired,
       )
     },
   ).provideShared(TestClient.layer, configLayer, tokenLayer, securityLayer, OAuthClientSyncClient.live) @@ TestAspect.silentLogging

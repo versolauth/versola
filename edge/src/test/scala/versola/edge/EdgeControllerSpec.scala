@@ -12,6 +12,7 @@ import versola.edge.model.{
   PresetNotFound,
   ResourceId,
   RoleId,
+  SessionId,
   TenantId,
 }
 import versola.util.http.Observability
@@ -253,6 +254,47 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
     },
   )
 
+  private val frontChannelLogoutSuite = suite("GET /logout/frontchannel")(
+    test("clears cookies returned by EdgeService and responds 200 with no-store") {
+      val clearCookie = EdgeSessionCookie.clear(domain = Some("app.example"), path = Some("/"))
+      for
+        (response, service, _) <- run(
+          Request.get(URL.decode("/logout/frontchannel?iss=https://idp.example&sid=sso-session-1").toOption.get),
+          (s, _) => s.frontChannelLogout.succeedsWith(List(clearCookie)),
+        )
+      yield assertTrue(
+        response.status == Status.Ok,
+        response.header(Header.CacheControl).contains(Header.CacheControl.NoStore),
+        response.header(Header.SetCookie).map(_.value.content).contains(""),
+        service.frontChannelLogout.calls == List(("https://idp.example", SessionId("sso-session-1"))),
+      )
+    },
+    test("responds 200 with no cookies when the session has no known refresh tokens") {
+      for
+        (response, service, _) <- run(
+          Request.get(URL.decode("/logout/frontchannel?iss=https://idp.example&sid=sso-session-unknown").toOption.get),
+          (s, _) => s.frontChannelLogout.succeedsWith(List.empty),
+        )
+      yield assertTrue(
+        response.status == Status.Ok,
+        response.header(Header.SetCookie).isEmpty,
+        service.frontChannelLogout.calls == List(("https://idp.example", SessionId("sso-session-unknown"))),
+      )
+    },
+    test("responds 200 with no cookies when the issuer is unknown") {
+      for
+        (response, service, _) <- run(
+          Request.get(URL.decode("/logout/frontchannel?iss=https://untrusted.example&sid=sso-session-1").toOption.get),
+          (s, _) => s.frontChannelLogout.succeedsWith(List.empty),
+        )
+      yield assertTrue(
+        response.status == Status.Ok,
+        response.header(Header.SetCookie).isEmpty,
+        service.frontChannelLogout.calls == List(("https://untrusted.example", SessionId("sso-session-1"))),
+      )
+    },
+  )
+
   private val proxySuite = suite("proxy routes")(
     test("GET /resources/{alias}/{rest} delegates to EdgeService.proxy") {
       for
@@ -355,11 +397,9 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       ZIO.succeed(assertTrue(cookie.path.contains(Path.root)))
     },
     test("clear produces empty content, maxAge=Zero, and security attributes") {
-      val now = Instant.now()
       val cookie = EdgeSessionCookie.clear(
         domain = Some("app.example"),
         path = Some("/"),
-        now = now,
       )
       ZIO.succeed(assertTrue(
         cookie.content.isEmpty,
@@ -370,8 +410,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       ))
     },
     test("clear falls back to Path.root when path is None") {
-      val now = Instant.now()
-      val cookie = EdgeSessionCookie.clear(domain = None, path = None, now = now)
+      val cookie = EdgeSessionCookie.clear(domain = None, path = None)
       ZIO.succeed(assertTrue(cookie.path.contains(Path.root)))
     },
   )
@@ -380,6 +419,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
     permissionsSuite,
     loginSuite,
     completeSuite,
+    frontChannelLogoutSuite,
     proxySuite,
     sessionCookieSuite,
   ).provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging

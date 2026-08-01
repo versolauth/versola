@@ -3,6 +3,7 @@ CREATE TABLE refresh_tokens(
     previous_id BYTEA UNIQUE,
     access_token BYTEA UNIQUE NOT NULL,
     session_id BYTEA NOT NULL,
+    public_session_id TEXT NOT NULL,
     user_id UUID NOT NULL,
     client_id TEXT NOT NULL,
     external_audience TEXT[] NOT NULL,

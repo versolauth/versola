@@ -4,8 +4,8 @@ import com.augustnagro.magnum.magzio.TransactorZIO
 import com.typesafe.config.ConfigFactory
 import versola.cleanup.PostgresCleanupManager
 import versola.edge.login.LoginRepository
-import versola.edge.session.EdgeRefreshTokenRepository
-import versola.edge.{AuthorizationPresetsSyncClient, CentralSyncTokenService, EdgeConfig, EdgeController, EdgeService, JwksService, JwksSyncClient, OAuthClientService, OAuthClientsSyncClient, PermissionService, PermissionsSyncClient, PostgresEdgeRefreshTokenRepository, PostgresLoginRepository, ResourceService, ResourcesSyncClient, RolesSyncClient, SSOClient}
+import versola.edge.session.EdgeSessionRepository
+import versola.edge.{AuthorizationPresetsSyncClient, CentralSyncTokenService, EdgeConfig, EdgeController, EdgeService, JwksService, JwksSyncClient, OAuthClientService, OAuthClientsSyncClient, PermissionService, PermissionsSyncClient, PostgresEdgeSessionRepository, PostgresLoginRepository, ResourceService, ResourcesSyncClient, RolesSyncClient, SSOClient}
 import versola.util.*
 import versola.util.cel.CelEvaluator
 import versola.util.http.VersolaApp
@@ -38,7 +38,7 @@ object PostgresEdgeApp extends VersolaApp("edge"):
     PermissionService &
     CelEvaluator &
     LoginRepository &
-    EdgeRefreshTokenRepository &
+    EdgeSessionRepository &
     JwksService &
     SSOClient &
     EdgeService
@@ -52,7 +52,7 @@ object PostgresEdgeApp extends VersolaApp("edge"):
     parseConfig[EdgeConfig] >+>
       (PostgresHikariDataSource.transactor(serviceName = Some("edge"), migrate = runMigrations) >>>
         (ZLayer.fromFunction(PostgresLoginRepository(_)) ++
-          ZLayer.fromFunction(PostgresEdgeRefreshTokenRepository(_)) ++
+          ZLayer.fromFunction(PostgresEdgeSessionRepository(_)) ++
           PostgresCleanupManager.live)) >+>
       SecureRandom.live >+>
       SecurityService.live >+>

@@ -20,6 +20,8 @@ case class OAuthClientRecord(
     theme: String,
     authFlow: Option[AuthFlow],
     otpTemplateId: String,
+    frontChannelLogoutUri: Option[String],
+    frontChannelLogoutSessionRequired: Boolean,
 ) derives CanEqual, Equal:
 
   def audience: List[ClientId] = id :: externalAudience

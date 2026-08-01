@@ -99,7 +99,22 @@ type BackendAuthFlow = {
   passkey?: { factors: BackendAuthFactor[] } | null;
   equivalents?: Record<string, string[]>;
 };
-type ClientsResponse = { clients: Array<{ id: string; clientName: string; redirectUris: string[]; scope: string[]; externalAudience: string[]; permissions: string[]; secretRotation: boolean; theme: string; otpTemplateId: string; authFlow?: BackendAuthFlow | null }> };
+type ClientsResponse = {
+  clients: Array<{
+    id: string;
+    clientName: string;
+    redirectUris: string[];
+    scope: string[];
+    externalAudience: string[];
+    permissions: string[];
+    secretRotation: boolean;
+    theme: string;
+    otpTemplateId: string;
+    authFlow?: BackendAuthFlow | null;
+    frontChannelLogoutUri?: string | null;
+    frontChannelLogoutSessionRequired: boolean;
+  }>;
+};
 type RolesResponse = { roles: Array<{ id: string; description: LocalizedDescription; permissions: string[]; active: boolean }> };
 type ResourcesResponse = { resources: ResourceResponseDto[] };
 
@@ -571,6 +586,8 @@ export async function fetchClients(tenantId: string, offset = 0, limit = DEFAULT
         theme: client.theme ?? 'default',
         otpTemplateId: client.otpTemplateId ?? null,
         authFlow: authFlowFromBackend(client.authFlow) ?? createDefaultAuthFlow(),
+        frontChannelLogoutUri: client.frontChannelLogoutUri ?? null,
+        frontChannelLogoutSessionRequired: client.frontChannelLogoutSessionRequired,
         tenantId,
       };
     }),
@@ -866,6 +883,8 @@ export async function createClient(tenantId: string, client: OAuthClient): Promi
       theme: client.theme ?? 'default',
       otpTemplateId: client.otpTemplateId ?? null,
       authFlow: authFlowToBackend(client.authFlow),
+      frontChannelLogoutUri: client.frontChannelLogoutUri ?? null,
+      frontChannelLogoutSessionRequired: client.frontChannelLogoutSessionRequired,
     },
   });
 
@@ -921,6 +940,8 @@ export async function updateClient(tenantId: string, existing: OAuthClient, clie
       theme: existing.theme !== client.theme ? client.theme : undefined,
       otpTemplateId: existing.otpTemplateId !== client.otpTemplateId ? (client.otpTemplateId ?? null) : undefined,
       authFlow: authFlowToBackend(client.authFlow),
+      frontChannelLogoutUri: existing.frontChannelLogoutUri !== client.frontChannelLogoutUri ? (client.frontChannelLogoutUri ?? null) : undefined,
+      frontChannelLogoutSessionRequired: existing.frontChannelLogoutSessionRequired !== client.frontChannelLogoutSessionRequired ? client.frontChannelLogoutSessionRequired : undefined,
     },
   });
 

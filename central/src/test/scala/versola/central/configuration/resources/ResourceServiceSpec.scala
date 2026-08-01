@@ -39,8 +39,8 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
     resourceId = resourceId,
     resource = originalUri,
     endpoints = Vector(
-      CreateResourceEndpointRequest(existingEndpointId, "/users", "GET", false, allow, inject, maxAge = None),
-      CreateResourceEndpointRequest(createdEndpointId, "/users", "POST", true, denyAware, Vector.empty, maxAge = None),
+      CreateResourceEndpointRequest(existingEndpointId, "/users", "GET", false, allow, inject, stepUpCondition = None, stepUpAcr = None, maxAge = None),
+      CreateResourceEndpointRequest(createdEndpointId, "/users", "POST", true, denyAware, Vector.empty, stepUpCondition = None, stepUpAcr = None, maxAge = None),
     ),
   )
 
@@ -49,8 +49,8 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
     resource = Some(updatedUri),
     deleteEndpoints = Set(removedEndpointId),
     createEndpoints = Vector(
-      CreateResourceEndpointRequest(existingEndpointId, "/users/me", "GET", true, allow, inject, maxAge = None),
-      CreateResourceEndpointRequest(createdEndpointId, "/users", "POST", false, denyAware, Vector.empty, maxAge = None),
+      CreateResourceEndpointRequest(existingEndpointId, "/users/me", "GET", true, allow, inject, stepUpCondition = None, stepUpAcr = None, maxAge = None),
+      CreateResourceEndpointRequest(createdEndpointId, "/users", "POST", false, denyAware, Vector.empty, stepUpCondition = None, stepUpAcr = None, maxAge = None),
     ),
   )
 
@@ -98,7 +98,7 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val env = new Env
       val badRequest = createRequest.copy(
         endpoints = Vector(
-          CreateResourceEndpointRequest(existingEndpointId, "/users", "GET", false, Some("token.role =="), Vector.empty, maxAge = None),
+          CreateResourceEndpointRequest(existingEndpointId, "/users", "GET", false, Some("token.role =="), Vector.empty, stepUpCondition = None, stepUpAcr = None, maxAge = None),
         ),
       )
 
@@ -115,7 +115,7 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val env = new Env
       val badRequest = createRequest.copy(
         endpoints = Vector(
-          CreateResourceEndpointRequest(existingEndpointId, "/users/{id}", "GET", false, None, Vector.empty, maxAge = None),
+          CreateResourceEndpointRequest(existingEndpointId, "/users/{id}", "GET", false, None, Vector.empty, stepUpCondition = None, stepUpAcr = None, maxAge = None),
         ),
       )
       for result <- env.service.createResource(badRequest)
@@ -128,7 +128,7 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val env = new Env
       val badRequest = createRequest.copy(
         endpoints = Vector(
-          CreateResourceEndpointRequest(existingEndpointId, "/users//list", "GET", false, None, Vector.empty, maxAge = None),
+          CreateResourceEndpointRequest(existingEndpointId, "/users//list", "GET", false, None, Vector.empty, stepUpCondition = None, stepUpAcr = None, maxAge = None),
         ),
       )
       for result <- env.service.createResource(badRequest)
@@ -141,7 +141,7 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val env = new Env
       val badRequest = createRequest.copy(
         endpoints = Vector(
-          CreateResourceEndpointRequest(existingEndpointId, "/users/:id", "GET", false, None, Vector.empty, maxAge = None),
+          CreateResourceEndpointRequest(existingEndpointId, "/users/:id", "GET", false, None, Vector.empty, stepUpCondition = None, stepUpAcr = None, maxAge = None),
         ),
       )
       for result <- env.service.createResource(badRequest)
@@ -157,6 +157,8 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
           CreateResourceEndpointRequest(
             existingEndpointId, "/users", "GET", false, allow,
             Vector(InjectRule(InjectTarget.header, "x-bad", "(unterminated")),
+            stepUpCondition = None,
+            stepUpAcr = None,
             maxAge = None,
           ),
         ),
@@ -179,6 +181,7 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
             existingEndpointId, "/users", "GET", false, allow,
             Vector.empty,
             stepUpCondition = Some("request.body.amount >"),
+            stepUpAcr = None,
             maxAge = None,
           ),
         ),
@@ -201,6 +204,7 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
             existingEndpointId, "/users", "GET", false, allow,
             Vector.empty,
             stepUpCondition = Some("'mfa'"), // string instead of boolean
+            stepUpAcr = None,
             maxAge = None,
           ),
         ),

@@ -202,6 +202,7 @@ object ConversationServiceSpec extends UnitSpecBase:
         val record = conversationRecord.copy(userId = Some(userId))
         val code = AuthorizationCode.fromString("code")
         val sessionId = SessionId.fromString("session")
+        val testPublicSessionId = versola.oauth.session.model.PublicSessionId("public-session")
         val accessToken = AccessToken.fromString("token")
         val mac = MAC(Array.fill(32)(1.toByte))
 
@@ -209,6 +210,7 @@ object ConversationServiceSpec extends UnitSpecBase:
           _ <- TestClock.setTime(now)
           _ <- env.authPropertyGenerator.nextAuthorizationCode.succeedsWith(code)
           _ <- env.authPropertyGenerator.nextSessionId.succeedsWith(sessionId)
+          _ <- env.authPropertyGenerator.nextPublicSessionId.succeedsWith(testPublicSessionId)
           _ <- env.securityService.mac.succeedsWith(mac)
           _ <- env.authPropertyGenerator.nextAccessToken.succeedsWith(accessToken)
           _ <- env.configService.getSessionTtl.succeedsWith(1.hour)
@@ -238,11 +240,13 @@ object ConversationServiceSpec extends UnitSpecBase:
         val accessToken = AccessToken.fromString("token")
         val sessionIdMac = MAC(Array.fill(32)(3.toByte))
         val codeMac = MAC(Array.fill(32)(4.toByte))
+        val testPublicSessionId = versola.oauth.session.model.PublicSessionId("public-session")
 
         for
           _ <- TestClock.setTime(now)
           _ <- env.authPropertyGenerator.nextAuthorizationCode.succeedsWith(code)
           _ <- env.authPropertyGenerator.nextSessionId.succeedsWith(sessionId)
+          _ <- env.authPropertyGenerator.nextPublicSessionId.succeedsWith(testPublicSessionId)
           _ <- env.securityService.mac.returnsZIOOnCall:
             case 1 => ZIO.succeed(sessionIdMac)
             case 2 => ZIO.succeed(codeMac)
@@ -260,7 +264,7 @@ object ConversationServiceSpec extends UnitSpecBase:
               assertTrue(s == sessionId) &&
               assertTrue(createCalls.nonEmpty) &&
               assertTrue(createCalls.head._1 == sessionIdMac) &&
-              assertTrue(createCalls.head._5 == Some(PriorSession.Invalidate(priorSessionIdMac)))
+              assertTrue(createCalls.head._6 == Some(PriorSession.Invalidate(priorSessionIdMac)))
             case _ => assertTrue(false)
       },
       test("invalidates prior session and creates new one during re-auth") {
@@ -276,11 +280,13 @@ object ConversationServiceSpec extends UnitSpecBase:
         val accessToken = AccessToken.fromString("token")
         val sessionIdMac = MAC(Array.fill(32)(3.toByte))
         val codeMac = MAC(Array.fill(32)(4.toByte))
+        val testPublicSessionId = versola.oauth.session.model.PublicSessionId("public-session")
 
         for
           _ <- TestClock.setTime(now)
           _ <- env.authPropertyGenerator.nextAuthorizationCode.succeedsWith(code)
           _ <- env.authPropertyGenerator.nextSessionId.succeedsWith(sessionId)
+          _ <- env.authPropertyGenerator.nextPublicSessionId.succeedsWith(testPublicSessionId)
           _ <- env.securityService.mac.returnsZIOOnCall:
             case 1 => ZIO.succeed(sessionIdMac)
             case 2 => ZIO.succeed(codeMac)
@@ -298,7 +304,7 @@ object ConversationServiceSpec extends UnitSpecBase:
               assertTrue(s == sessionId) &&
               assertTrue(createCalls.nonEmpty) &&
               assertTrue(createCalls.head._1 == sessionIdMac) &&
-              assertTrue(createCalls.head._5 == Some(PriorSession.Invalidate(priorSessionIdMac)))
+              assertTrue(createCalls.head._6 == Some(PriorSession.Invalidate(priorSessionIdMac)))
             case _ => assertTrue(false)
       },
 
@@ -350,6 +356,7 @@ object ConversationServiceSpec extends UnitSpecBase:
         val passkeySettings = PasskeySettings("rpId", "rpName", List("origin"), "required")
         val code = AuthorizationCode.fromString("code")
         val sessionId = SessionId.fromString("session")
+        val testPublicSessionId = versola.oauth.session.model.PublicSessionId("public-session")
         val accessToken = AccessToken.fromString("token")
         val mac = MAC(Array.fill(32)(1.toByte))
 
@@ -374,6 +381,7 @@ object ConversationServiceSpec extends UnitSpecBase:
           )))
           _ <- env.authPropertyGenerator.nextAuthorizationCode.succeedsWith(code)
           _ <- env.authPropertyGenerator.nextSessionId.succeedsWith(sessionId)
+          _ <- env.authPropertyGenerator.nextPublicSessionId.succeedsWith(testPublicSessionId)
           _ <- env.securityService.mac.succeedsWith(mac)
           _ <- env.authPropertyGenerator.nextAccessToken.succeedsWith(accessToken)
           _ <- env.configService.getSessionTtl.succeedsWith(1.hour)

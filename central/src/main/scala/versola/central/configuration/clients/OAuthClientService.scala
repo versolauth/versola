@@ -138,6 +138,8 @@ object OAuthClientService:
           theme = request.theme,
           authFlow = request.authFlow,
           otpTemplateId = request.otpTemplateId,
+          frontChannelLogoutUri = request.frontChannelLogoutUri,
+          frontChannelLogoutSessionRequired = request.frontChannelLogoutSessionRequired,
         )
         _ <- clientRepository.createClient(client)
       yield secret
@@ -156,6 +158,8 @@ object OAuthClientService:
         theme = request.theme,
         authFlow = request.authFlow,
         otpTemplateId = request.otpTemplateId,
+        frontChannelLogoutUri = request.frontChannelLogoutUri,
+        frontChannelLogoutSessionRequired = request.frontChannelLogoutSessionRequired,
       )
 
     override def rotateClientSecret(clientId: ClientId): Task[Secret] =

@@ -227,6 +227,10 @@ def writeFile(dir: File, name: String, content: String): Unit =
 
   // Edge complete URL is always added as a registered redirect URI so the preset can use it.
   val edgeCompleteUrl        = s"$edgeUrl/complete"
+  // OP-initiated front-channel logout is loaded by the browser, so it needs a publicly
+  // reachable URL. Locally, edge is exposed directly on its own port (edgeUrl); in
+  // production it's path-routed behind auth's public domain instead (see deploy.md).
+  val frontChannelLogoutUri = if isLocal then s"$edgeUrl/logout/frontchannel" else s"$authUrl/logout/frontchannel"
   val centralRedirectUriList =
     (centralRedirectUris.split(",").map(_.trim) :+ edgeCompleteUrl)
       .distinct
@@ -419,6 +423,7 @@ def writeFile(dir: File, name: String, content: String): Unit =
        |    }
        |  ]
        |  central-url = "$centralUrl"
+       |  front-channel-logout-uri = "$frontChannelLogoutUri"
        |${bootstrapClientSecretLine}|}
        |
        |secret-key = "$centralSecretKey"
@@ -487,12 +492,13 @@ def writeFile(dir: File, name: String, content: String): Unit =
        |      table-name = "pending_logins"
        |      batch-size = 1000
        |      interval   = "5 minutes"
-       |      key-column = "login_id"
+       |      key-column = "state"
        |    }
        |    {
-       |      table-name = "edge_refresh_tokens"
+       |      table-name = "edge_sessions"
        |      batch-size = 500
        |      interval   = "1 hour"
+       |      key-column = "ctid"
        |    }
        |  ]
        |}

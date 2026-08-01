@@ -13,4 +13,5 @@ case class SessionRecord(
     userAgent: UserAgentInfo,
     createdAt: Instant,
     amr: Map[PassedAuthFactor, PassedFactorRecord],
+    publicId: PublicSessionId,
 )
