@@ -22,12 +22,16 @@ case class EdgeConfig(
     // calls edge makes on its own, not through the user's browser. When
     // edge and auth aren't on the same network as the browser (e.g. each
     // in its own Docker container, "versola bootstrap local"), this is a
-    // *different* address than versolaUrl -- defaults to versolaUrl so
-    // existing configs that predate this field keep working unchanged
+    // *different* address than versolaUrl. Optional (rather than a plain
+    // URL defaulting to versolaUrl) because a case class default can't
+    // reference a sibling parameter -- use the `internalUrl` accessor
+    // below, which resolves the fallback. Absent for existing configs
+    // that predate this field, which keeps them working unchanged
     // (correct wherever edge/auth/the browser all share one network, as
     // in prod and plain local dev).
-    versolaInternalUrl: URL = versolaUrl,
-)
+    versolaInternalUrl: Option[URL] = None,
+):
+  def internalUrl: URL = versolaInternalUrl.getOrElse(versolaUrl)
 
 object EdgeConfig:
 

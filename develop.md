@@ -33,11 +33,13 @@ The script first asks for the environment **Name** (default `local`):
       hostnames, and edge's own port isn't published to the host at all.
 
     `edge` needs both at once for one thing: `EdgeConfig.versolaUrl` (public — the
-    browser redirect, and the token `iss` check) vs `EdgeConfig.versolaInternalUrl`
-    (real network call — edge's own token/userinfo exchange with `auth`). Getting this
-    backwards doesn't fail loudly; it 404s or connection-refuses partway through a login
-    that otherwise looks like it's working — confirmed by hand while testing
-    `versola bootstrap local`.
+    browser redirect, and the token `iss` check) vs `EdgeConfig.internalUrl` (real
+    network call — edge's own token/userinfo exchange with `auth`), which resolves
+    from the optional `EdgeConfig.versolaInternalUrl` field and falls back to
+    `versolaUrl` when it's absent, so configs generated before this field existed
+    keep working. Getting this backwards doesn't fail loudly; it 404s or
+    connection-refuses partway through a login that otherwise looks like it's
+    working — confirmed by hand while testing `versola bootstrap local`.
 - **any other name** — runs interactively, prompting for service URLs and Postgres
   credentials. Files are written to `.local/env/<name>/` (`auth.conf`, `central.conf`,
   `edge.conf`).

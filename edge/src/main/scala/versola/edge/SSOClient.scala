@@ -51,13 +51,13 @@ object SSOClient:
       config: EdgeConfig,
   ) extends SSOClient:
     // authorizeUrl is where the browser gets redirected -- it must stay on
-    // versolaUrl (public-facing), never versolaInternalUrl. tokenUrl and
+    // versolaUrl (public-facing), never internalUrl. tokenUrl and
     // userInfoUrl are real calls this process makes itself below, so they
-    // use versolaInternalUrl -- see the comments on EdgeConfig for why
-    // these two aren't the same address everywhere.
+    // use internalUrl -- see the comments on EdgeConfig for why these two
+    // aren't the same address everywhere.
     private val authorizeUrl: URL = config.versolaUrl / "authorize"
-    private val tokenUrl: URL = config.versolaInternalUrl / "token"
-    private val userInfoUrl = config.versolaInternalUrl / "userinfo"
+    private val tokenUrl: URL = config.internalUrl / "token"
+    private val userInfoUrl = config.internalUrl / "userinfo"
 
     override def authorizeUri(
         preset: AuthorizationPreset,
