@@ -100,7 +100,7 @@ object TokenEndpointController extends Controller:
           privateKey = config.jwt.privateKey,
         ),
       )
-      idToken <- generateIdToken(tokens, config, signingKey)
+      idToken <- generateIdToken(tokens, config, signingKey, serializedAT)
     yield TokenResponse(
       accessToken = serializedAT,
       tokenType = "Bearer",
@@ -110,7 +110,12 @@ object TokenEndpointController extends Controller:
       idToken = idToken,
     )
 
-  private def generateIdToken(tokens: IssuedTokens, config: CoreConfig, signingKey: JWT.PublicKey): ZIO[UserInfoService, Throwable, Option[String]] =
+  private def generateIdToken(
+      tokens: IssuedTokens,
+      config: CoreConfig,
+      signingKey: JWT.PublicKey,
+      accessToken: String,
+  ): ZIO[UserInfoService, Throwable, Option[String]] =
     (tokens.user, tokens.userId) match
       case (Some(user), Some(userId)) if tokens.scope.contains(ScopeToken.OpenId) =>
         for
@@ -123,6 +128,7 @@ object TokenEndpointController extends Controller:
             uiLocales = tokens.uiLocales,
             nonce = tokens.nonce,
           )
+          atHash = JWT.leftHalfHash(accessToken, signingKey.algorithm)
           sidClaim = tokens.sessionId.map(sid => "sid" -> Json.Str(sid))
           serializedIdToken <- JWT.serialize(
             typ = JWT.Type.JWT,
@@ -130,7 +136,11 @@ object TokenEndpointController extends Controller:
               issuer = config.jwt.issuer,
               subject = userId.toString,
               audience = List(tokens.clientId),
-              custom = Json.Obj(Chunk.fromIterable(userInfo.claims ++ AuthMethodRef.idTokenClaims(tokens.amr, tokens.authTime, tokens.acr) ++ sidClaim)),
+              custom = Json.Obj(Chunk.fromIterable(
+                userInfo.claims ++
+                  AuthMethodRef.idTokenClaims(tokens.amr, tokens.authTime, tokens.acr) ++ sidClaim +
+                  ("at_hash" -> Json.Str(atHash)),
+              )),
             ),
             ttl = tokens.accessTokenTtl,
             signature = JWT.Signature.Asymmetric(
