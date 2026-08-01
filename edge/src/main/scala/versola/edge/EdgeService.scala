@@ -248,13 +248,22 @@ object EdgeService:
       .map(entries => PermissionsResponse(entries.flatten.toMap))
 
     override def frontChannelLogout(iss: String, sid: SessionId): Task[List[Cookie.Response]] =
-      if iss != config.versolaUrl.encode then
+      if !URL.decode(iss).toOption.exists(sameOrigin(_, config.versolaUrl)) then
         ZIO.succeed(Nil)
       else
         for
           records <- sessionRepository.deleteBySessionId(sid)
           presets <- clientService.listPresets(records.map(_.presetId).distinct)
         yield presets.map(preset => EdgeSessionCookie.clear(preset.cookieDomain, preset.cookiePath))
+
+    /** Compares two URLs by origin (scheme, host, port), tolerating equivalent but
+      * textually different representations: host casing and an explicit default port
+      * (e.g. `:443` on `https`) rather than requiring a byte-for-byte string match.
+      */
+    private def sameOrigin(a: URL, b: URL): Boolean =
+      a.scheme.map(_.encode.toLowerCase) == b.scheme.map(_.encode.toLowerCase) &&
+        a.host.map(_.toLowerCase) == b.host.map(_.toLowerCase) &&
+        a.portOrDefault == b.portOrDefault
 
     private def proxyInternal(
         resourceId: ResourceId,

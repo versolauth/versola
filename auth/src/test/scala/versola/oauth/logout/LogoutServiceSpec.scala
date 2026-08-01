@@ -76,13 +76,13 @@ object LogoutServiceSpec extends UnitSpecBase:
 
   def spec = suite("LogoutService")(
     suite("logout")(
-      test("returns empty logoutUris and passes through redirect/state when no session is found") {
+      test("returns empty logoutUris and drops the redirect when no session is found") {
         val env = Env()
         for
           _      <- env.sessionService.invalidate.succeedsWith(None)
           result <- env.service.logout(Right(rawSessionId), Some(redirectUri), Some("st-1"))
         yield assertTrue(
-          result == LogoutService.LogoutResult(Nil, Some(redirectUri), Some("st-1")),
+          result == LogoutService.LogoutResult(Nil, None, Some("st-1")),
           env.configuration.find.calls.isEmpty,
         )
       },
@@ -143,12 +143,12 @@ object LogoutServiceSpec extends UnitSpecBase:
           result.state == Some("st-2"),
         )
       },
-      test("passes through postLogoutRedirectUri when no session is found, without checking origin") {
+      test("drops the postLogoutRedirectUri when no session is found, without checking origin") {
         val env = Env()
         for
           _      <- env.sessionService.invalidate.succeedsWith(None)
           result <- env.service.logout(Right(rawSessionId), Some(redirectUri), Some("st-3"))
-        yield assertTrue(result.postLogoutRedirectUri == Some(redirectUri))
+        yield assertTrue(result.postLogoutRedirectUri == None)
       },
       test("drops the postLogoutRedirectUri when its origin is not registered by any tenant client") {
         val env = Env()

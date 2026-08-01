@@ -259,7 +259,7 @@ object BootstrapService:
 
   /** Scopes granted to the central admin client. */
   private val clientScopes: Set[ScopeToken] =
-    List("openid", "profile", "email", "offline_access").map(ScopeToken(_)).toSet
+    List[String](/*"openid", "profile", "email"*/).map(ScopeToken(_)).toSet
 
   /** Default OTP message template referenced by the bootstrapped clients. */
   private val defaultOtpTemplateId = "default"
@@ -586,7 +586,7 @@ object BootstrapService:
         authFlow       = Some(authFlow),
         otpTemplateId  = "default",
         frontChannelLogoutUri = config.frontChannelLogoutUri,
-        frontChannelLogoutSessionRequired = false,
+        frontChannelLogoutSessionRequired = true,
       )
       for
         presetSecret <- ZIO.foreach(config.clientSecret): secretB64 =>

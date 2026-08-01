@@ -453,6 +453,51 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
         env.sessionRepository.deleteBySessionId.calls.isEmpty,
       )
     },
+    test("accepts issuer with a trailing slash, an explicit default port, or different host casing") {
+      checkAll(Gen.fromIterable(List(
+        "https://idp.example/",
+        "https://idp.example:443",
+        "https://IDP.example",
+      ))) { iss =>
+        val env = new Env
+        val sid = SessionId("sso-session-equivalent")
+        val record = EdgeSessionRecord(
+          publicSessionId = sid,
+          presetId = Fixtures.presetId,
+          accessTokenId = AccessTokenId("jti-logout-equivalent"),
+          encryptedRefreshToken = None,
+          expiresAt = Instant.parse("2024-01-01T00:00:00Z"),
+        )
+        for
+          _ <- env.withPresets(Fixtures.preset)
+          _ <- env.sessionRepository.deleteBySessionId.succeedsWith(List(record))
+          security <- ZIO.service[SecurityService]
+          client <- ZIO.service[Client]
+          service = env.buildService(client, security)
+          cookies <- service.frontChannelLogout(iss, sid)
+        yield assertTrue(
+          cookies == List(EdgeSessionCookie.clear(Fixtures.preset.cookieDomain, Fixtures.preset.cookiePath)),
+        )
+      }
+    },
+    test("rejects issuer with a mismatched scheme or non-default port") {
+      checkAll(Gen.fromIterable(List(
+        "http://idp.example",
+        "https://idp.example:8443",
+      ))) { iss =>
+        val env = new Env
+        val sid = SessionId("sso-session-mismatched")
+        for
+          security <- ZIO.service[SecurityService]
+          client <- ZIO.service[Client]
+          service = env.buildService(client, security)
+          cookies <- service.frontChannelLogout(iss, sid)
+        yield assertTrue(
+          cookies.isEmpty,
+          env.sessionRepository.deleteBySessionId.calls.isEmpty,
+        )
+      }
+    },
   )
 
   private def simpleResource(resourceId: String, endpointId: ResourceEndpointId): Resource =

@@ -183,7 +183,11 @@ object ConversationRenderService:
 
       ZIO.succeed(
         htmlResponse(body)
-          .addHeader(Header.Custom("Cache-Control", "no-cache, no-store")),
+          .addHeader(Header.Custom("Cache-Control", "no-cache, no-store"))
+          // logoutUris are rendered as third-party iframes; without this, the browser could
+          // leak this page's URL (id_token_hint, post_logout_redirect_uri, state) to those
+          // RPs via the Referer header on the iframe requests.
+          .addHeader(Header.Custom("Referrer-Policy", "no-referrer")),
       )
 
     private def escapeHtml(value: String): String =

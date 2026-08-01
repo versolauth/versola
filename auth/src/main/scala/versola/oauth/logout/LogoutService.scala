@@ -39,10 +39,10 @@ object LogoutService:
         session <- sessionService.invalidate(identifier)
 
         result <- session match
-          // No session to terminate means no clients to validate the redirect against;
-          // pass it through rather than dropping it outright.
+          // No session means there is no client to validate the redirect against; drop it
+          // rather than passing it through unvalidated, which would be an open redirect.
           case None =>
-            ZIO.succeed(LogoutResult(Nil, postLogoutRedirectUri, state))
+            ZIO.succeed(LogoutResult(Nil, None, state))
           case Some(session) =>
             for
               clients <- tenantClients(session.record.clientId)

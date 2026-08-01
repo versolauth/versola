@@ -149,6 +149,17 @@ object LogoutControllerSpec extends UnitSpecBase:
         )),
     ),
     controllerTestCase(
+      description = "returns 200 OK without calling LogoutService and drops the redirect when no identifier is present",
+      request = Request.get((URL.root / "logout").addQueryParam("post_logout_redirect_uri", redirectUri.encode)),
+      expectedStatus = Status.Ok,
+      setup = (_, renderService) => renderService.renderLogout.succeedsWith(Response.text("<html>logout</html>")),
+      verify = (_, logoutService, renderService) =>
+        ZIO.succeed(assertTrue(
+          logoutService.logout.calls.isEmpty,
+          renderService.renderLogout.calls == List((Nil, None, None)),
+        )),
+    ),
+    controllerTestCase(
       description = "falls back to id_token_hint when the session cookie is present but malformed",
       request = Request.get((URL.root / "logout").addQueryParam("id_token_hint", idTokenHint()))
         .addHeader(malformedSessionCookieHeader),

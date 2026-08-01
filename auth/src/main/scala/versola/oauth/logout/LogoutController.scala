@@ -40,11 +40,12 @@ object LogoutController extends Controller:
         // The browser cookie carries the session credential; the id_token_hint only the public
         // `sid`. Either identifies the same session, the cookie wins when both are present.
         identifier <- resolveIdentifier(sessionId, idTokenHint)
-        // Without either identifier there is no session to terminate and no client to notify;
-        // still respond 200 OK per OIDC Front-Channel Logout, just without any logout iframes.
+        // Without either identifier there is no session to terminate and no client to validate
+        // the redirect against, so it is dropped rather than passed through unvalidated; still
+        // respond 200 OK per OIDC Front-Channel Logout, just without any logout iframes.
         response <- identifier match
           case None =>
-            renderService.renderLogout(List.empty, postLogoutRedirectUri, state)
+            renderService.renderLogout(List.empty, None, state)
           case Some(id) =>
             for
               logoutService <- ZIO.service[LogoutService]
