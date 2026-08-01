@@ -527,6 +527,7 @@ export class VersolaAdmin extends LitElement {
           .permissions=${this.adminPermissions}
           .allowedTenantIds=${this.allowedTenantIds}
           .open=${this.navOpen}
+          .logoutUrl=${'/logout/central-admin'}
           @nav-change=${this.handleNavChange}
           @tenant-change=${this.handleTenantChange}
         ></versola-navigation>

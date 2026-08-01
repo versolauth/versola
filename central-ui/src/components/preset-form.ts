@@ -11,12 +11,14 @@ export class VersolaPresetForm extends LitElement {
   @property({ type: Object }) preset: AuthorizationPreset | null = null;
   @property({ type: Object }) client: OAuthClient | null = null;
   @property({ attribute: false }) availableScopes: OAuthScope[] = [];
+  @property({ attribute: false }) availablePostLogoutRedirectUris: string[] = [];
 
   @state() private formData: Partial<AuthorizationPreset> = {
     id: '',
     description: '',
     redirectUri: '',
     postLoginRedirectUri: 'https://',
+    postLogoutRedirectUri: '',
     scope: [],
     responseType: 'code',
     uiLocales: [],
@@ -30,6 +32,7 @@ export class VersolaPresetForm extends LitElement {
   @state() private customParamValue = '';
   @state() private presetIdError = '';
   @state() private postLoginRedirectUriError = '';
+  @state() private postLogoutRedirectUriError = '';
   @state() private uiLocaleError = '';
   @state() private customParamError = '';
   @state() private openInfoKey: string | null = null;
@@ -366,6 +369,7 @@ export class VersolaPresetForm extends LitElement {
         description: '',
         redirectUri: this.client?.redirectUris[0] || '',
         postLoginRedirectUri: 'https://',
+        postLogoutRedirectUri: '',
         scope: [],
         responseType: 'code',
         uiLocales: [],
@@ -417,6 +421,21 @@ export class VersolaPresetForm extends LitElement {
     return true;
   }
 
+  private validatePostLogoutRedirectUri(): boolean {
+    const uri = (this.formData.postLogoutRedirectUri || '').trim();
+    if (!uri) {
+      this.postLogoutRedirectUriError = '';
+      return true;
+    }
+    const result = validateRedirectUri(uri);
+    if (!result.valid) {
+      this.postLogoutRedirectUriError = result.error || 'Invalid post-logout redirect URI';
+      return false;
+    }
+    this.postLogoutRedirectUriError = '';
+    return true;
+  }
+
   private handleSubmit(e: Event) {
     e.preventDefault();
 
@@ -451,6 +470,16 @@ export class VersolaPresetForm extends LitElement {
     }
     this.postLoginRedirectUriError = '';
 
+    const postLogoutRedirectUri = (this.formData.postLogoutRedirectUri || '').trim();
+    if (postLogoutRedirectUri) {
+      const postLogoutValidation = validateRedirectUri(postLogoutRedirectUri);
+      if (!postLogoutValidation.valid) {
+        this.postLogoutRedirectUriError = postLogoutValidation.error || 'Invalid post-logout redirect URI';
+        return;
+      }
+    }
+    this.postLogoutRedirectUriError = '';
+
     const cookieDomain = (this.formData.cookieDomain || '').trim();
     const cookiePath = (this.formData.cookiePath || '').trim();
 
@@ -459,6 +488,7 @@ export class VersolaPresetForm extends LitElement {
       description: this.formData.description!,
       redirectUri: this.formData.redirectUri!,
       postLoginRedirectUri,
+      postLogoutRedirectUri: postLogoutRedirectUri || undefined,
       scope: this.formData.scope || [],
       responseType: this.formData.responseType as 'code' | 'code id_token',
       uiLocales: (this.formData.uiLocales && this.formData.uiLocales.length > 0) ? this.formData.uiLocales : undefined,
@@ -834,6 +864,28 @@ export class VersolaPresetForm extends LitElement {
                 ${this.postLoginRedirectUriError
                   ? html`<div class="error-text">${this.postLoginRedirectUriError}</div>`
                   : html`<div class="hint">Browser is redirected here after the OAuth code exchange completes</div>`}
+              </div>
+
+              <div class="form-group">
+                <label for="preset-post-logout-uri">Post-logout redirect URI (optional)</label>
+                <input
+                  type="text"
+                  id="preset-post-logout-uri"
+                  class="form-input compact-input ${this.postLogoutRedirectUriError ? 'input-error' : ''}"
+                  list="preset-post-logout-uri-options"
+                  .value=${this.formData.postLogoutRedirectUri || ''}
+                  @input=${(e: Event) => {
+                    this.formData = { ...this.formData, postLogoutRedirectUri: (e.target as HTMLInputElement).value };
+                    this.validatePostLogoutRedirectUri();
+                  }}
+                  placeholder="https://app.example.com/logged-out"
+                />
+                <datalist id="preset-post-logout-uri-options">
+                  ${this.availablePostLogoutRedirectUris.map(uri => html`<option value=${uri}></option>`)}
+                </datalist>
+                ${this.postLogoutRedirectUriError
+                  ? html`<div class="error-text">${this.postLogoutRedirectUriError}</div>`
+                  : html`<div class="hint">Entering a new URI registers it with the tenant's post-logout redirect allow-list</div>`}
               </div>
 
               <div class="form-group">

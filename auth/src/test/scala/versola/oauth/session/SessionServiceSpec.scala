@@ -2,7 +2,7 @@ package versola.oauth.session
 
 import versola.auth.TestEnvConfig
 import versola.oauth.client.model.ClientId
-import versola.oauth.session.model.{PublicSessionId, SessionId, SessionInfo, SessionRecord, UserAgentInfo}
+import versola.oauth.session.model.{ClientEntry, PublicSessionId, SessionId, SessionInfo, SessionRecord, UserAgentInfo}
 import versola.user.model.UserId
 import versola.util.{MAC, SecurityService, UnitSpecBase}
 import zio.*
@@ -21,7 +21,7 @@ object SessionServiceSpec extends UnitSpecBase:
 
   private val record = SessionRecord(
     userId = userId,
-    clientId = clientId,
+    clients = List(ClientEntry(clientId, Instant.EPOCH)),
     userAgent = UserAgentInfo("desktop", None, None, None),
     createdAt = Instant.EPOCH,
     amr = Map.empty,

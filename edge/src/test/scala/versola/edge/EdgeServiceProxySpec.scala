@@ -32,6 +32,7 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
     id = presetId, clientId = clientId, description = "default",
     redirectUri = versola.util.RedirectUri("https://app.example/complete"),
     postLoginRedirectUri = versola.util.RedirectUri("https://app.example/home"),
+    postLogoutRedirectUri = None,
     scope = Set("openid"), responseType = "code", uiLocales = None,
     customParameters = Map.empty, cookieDomain = Some("app.example"), cookiePath = Some("/"),
   )

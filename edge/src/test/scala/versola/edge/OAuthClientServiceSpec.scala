@@ -20,6 +20,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault:
     description = "Default web login",
     redirectUri = RedirectUri("https://app.example/callback"),
     postLoginRedirectUri = RedirectUri("https://app.example/home"),
+    postLogoutRedirectUri = None,
     scope = Set("openid", "profile"),
     responseType = "code",
     uiLocales = None,

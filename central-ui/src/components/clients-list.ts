@@ -9,6 +9,7 @@ import {
   deletePreviousClientSecret,
   fetchAllClients,
   fetchClientPresets,
+  fetchChallengeSettings,
   fetchOtpTemplates,
   fetchTenants,
   fetchThemes,
@@ -50,6 +51,7 @@ export class VersolaClientsList extends LitElement {
   @state() private availableResources: Resource[] = [];
   @state() private availableThemes: ThemeRecord[] = [];
   @state() private availableOtpTemplates: OtpTemplateRecord[] = [];
+  @state() private availablePostLogoutRedirectUris: string[] = [];
   @state() private isPreparingForm = false;
   @state() private createdSecret: { clientName: string; secret: string; action: 'created' | 'rotated' } | null = null;
   @state() private copyFeedback = '';
@@ -68,6 +70,7 @@ export class VersolaClientsList extends LitElement {
       this.availableScopes = [];
       this.availablePermissions = [];
       this.availableResources = [];
+      this.availablePostLogoutRedirectUris = [];
       this.createdSecret = null;
       this.copyFeedback = '';
       this.formOptionsTenantId = null;
@@ -611,12 +614,13 @@ export class VersolaClientsList extends LitElement {
       return;
     }
 
-    const [scopes, permissions, resources, themes, otpTemplates] = await Promise.all([
+    const [scopes, permissions, resources, themes, otpTemplates, challengeSettings] = await Promise.all([
       getScopes(tenantId),
       getPermissions(tenantId),
       getResources(tenantId),
       fetchThemes(tenantId),
       fetchOtpTemplates(tenantId),
+      fetchChallengeSettings(tenantId),
     ]);
 
     if (this.tenantId === tenantId) {
@@ -625,6 +629,7 @@ export class VersolaClientsList extends LitElement {
       this.availableResources = resources;
       this.availableThemes = themes;
       this.availableOtpTemplates = otpTemplates;
+      this.availablePostLogoutRedirectUris = challengeSettings?.postLogoutRedirectUris ?? [];
       this.formOptionsTenantId = tenantId;
     }
   }
@@ -877,6 +882,7 @@ export class VersolaClientsList extends LitElement {
           .preset=${this.editingPreset}
           .client=${this.editingPresetsForClient}
           .availableScopes=${this.availableScopes}
+          .availablePostLogoutRedirectUris=${this.availablePostLogoutRedirectUris}
           @close=${this.handlePresetFormClose}
           @submit=${this.handlePresetFormSubmit}
         ></versola-preset-form>
@@ -1397,6 +1403,12 @@ export class VersolaClientsList extends LitElement {
       <div class="preset-row">
         <span class="preset-label">Post-login redirect URI:</span>
         <span class="preset-value">${preset.postLoginRedirectUri}</span>
+      </div>
+      <div class="preset-row">
+        <span class="preset-label">Post-logout redirect URI:</span>
+        ${preset.postLogoutRedirectUri
+          ? html`<span class="preset-value">${preset.postLogoutRedirectUri}</span>`
+          : emptyValue}
       </div>
       <div class="preset-row">
         <span class="preset-label">Cookie domain:</span>

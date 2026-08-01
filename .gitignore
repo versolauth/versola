@@ -31,3 +31,4 @@ playwright/.cache/
 central/src/main/resources/forms/
 
 develop.txt
+.scala-semantic/

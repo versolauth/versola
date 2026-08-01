@@ -110,6 +110,9 @@ test('creates a client and shows the generated secret banner', async ({ page }) 
     },
     otpTemplateId: null,
     theme: 'default',
+    frontChannelLogoutUri: null,
+    frontChannelLogoutSessionRequired: false,
+    backChannelLogoutUri: null,
   });
 });
 
@@ -268,6 +271,7 @@ test('updates a client and sends patch-style changes', async ({ page }) => {
       passkey: null,
       equivalents: {},
     },
+    frontChannelLogoutSessionRequired: false,
   });
 });
 
@@ -371,6 +375,9 @@ test('shows error alert when creating a client with duplicate ID', async ({ page
     },
     otpTemplateId: null,
     theme: 'default',
+    frontChannelLogoutUri: null,
+    frontChannelLogoutSessionRequired: false,
+    backChannelLogoutUri: null,
   });
 
   // The client should NOT be added to the list

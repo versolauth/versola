@@ -39,6 +39,7 @@ type AuthorizationPresetDto = {
   description: string;
   redirectUri: string;
   postLoginRedirectUri: string;
+  postLogoutRedirectUri?: string;
   scope: string[];
   responseType: string;
   uiLocales?: string[]

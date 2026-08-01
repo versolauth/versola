@@ -148,6 +148,7 @@ object PostgresCentralApp extends VersolaApp("central"):
       PermissionService.live(schedule) >+>
       ResourceService.live(schedule) >+>
       OAuthClientService.live(schedule) >+>
+      ChallengeSettingsService.live(schedule) >+>
       AuthorizationPresetService.live(schedule) >+>
       OAuthScopeService.live(schedule) >+>
       RoleService.live(schedule) >+>
@@ -159,7 +160,6 @@ object PostgresCentralApp extends VersolaApp("central"):
       FormService.live(schedule) >+>
       ThemeService.live(schedule) >+>
       OtpChallengeService.live(schedule) >+>
-      ChallengeSettingsService.live(schedule) >+>
       SystemSettingsService.live(schedule) >+>
       CacheSyncService.live >+>
       AuthClient.live >+>

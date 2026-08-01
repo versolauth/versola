@@ -9,7 +9,7 @@ import java.time.Instant
 
 case class SessionRecord(
     userId: UserId,
-    clientId: ClientId,
+    clients: List[ClientEntry],
     userAgent: UserAgentInfo,
     createdAt: Instant,
     amr: Map[PassedAuthFactor, PassedFactorRecord],

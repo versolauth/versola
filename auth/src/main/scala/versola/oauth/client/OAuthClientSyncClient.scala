@@ -2,7 +2,7 @@ package versola.oauth.client
 
 import versola.oauth.client.model.{AuthFlow, ClientId, OAuthClientRecord, ScopeToken, TenantId}
 import versola.util.{Base64, CacheSource, CoreConfig, Secret, SecurityService}
-import zio.http.Request
+import zio.http.{Request, URL}
 import zio.json.JsonCodec
 import zio.prelude.NonEmptySet
 import zio.schema.codec.JsonCodec.zioJsonBinaryCodec
@@ -44,8 +44,9 @@ object OAuthClientSyncClient:
             theme = client.theme,
             authFlow = client.authFlow,
             otpTemplateId = client.otpTemplateId,
-            frontChannelLogoutUri = client.frontChannelLogoutUri,
+            frontChannelLogoutUri = client.frontChannelLogoutUri.flatMap(URL.decode(_).toOption),
             frontChannelLogoutSessionRequired = client.frontChannelLogoutSessionRequired,
+            backChannelLogoutUri = client.backChannelLogoutUri.flatMap(URL.decode(_).toOption),
           )
         }
       yield decryptedClients.map(it => it.id -> it).toMap
@@ -75,6 +76,7 @@ object OAuthClientSyncClient:
         otpTemplateId: String,
         frontChannelLogoutUri: Option[String],
         frontChannelLogoutSessionRequired: Boolean,
+        backChannelLogoutUri: Option[String],
     ) derives JsonCodec
 
     private case class OAuthClientsSyncResponse(

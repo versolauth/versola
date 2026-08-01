@@ -2,9 +2,12 @@ package versola.oauth.client.model
 
 import versola.util.Secret
 import zio.Duration
+import zio.http.URL
 import zio.json.{JsonCodec, JsonEncoder}
 import zio.prelude.{Equal, NonEmptySet}
 import zio.schema.*
+
+given Equal[URL] = (a, b) => a == b
 
 case class OAuthClientRecord(
     id: ClientId,
@@ -20,8 +23,9 @@ case class OAuthClientRecord(
     theme: String,
     authFlow: Option[AuthFlow],
     otpTemplateId: String,
-    frontChannelLogoutUri: Option[String],
+    frontChannelLogoutUri: Option[URL],
     frontChannelLogoutSessionRequired: Boolean,
+    backChannelLogoutUri: Option[URL],
 ) derives CanEqual, Equal:
 
   def audience: List[ClientId] = id :: externalAudience

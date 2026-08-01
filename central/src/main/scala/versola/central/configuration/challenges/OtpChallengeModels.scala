@@ -34,4 +34,5 @@ case class UpsertChallengeSettingsRequest(
     sessionIdleTtlSeconds: Option[Int],
     ipHeader: String,
     acrVocabulary: Option[Map[String, List[String]]],
+    postLogoutRedirectUris: Option[List[String]],
 ) derives Schema, JsonCodec

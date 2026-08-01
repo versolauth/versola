@@ -1,0 +1,2 @@
+.logout-description { color: var(--text-muted); line-height: 1.6; margin: -8px 0 28px; }
+select { position: fixed; top: 16px; right: 16px; padding: 8px; border: 1px solid var(--border); border-radius: var(--radius); }

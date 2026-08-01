@@ -35,6 +35,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
     otpTemplateId = "default",
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
+    backChannelLogoutUri = None,
   )
   val privateClient2 = OAuthClientRecord(
     id = clientId2,
@@ -52,6 +53,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
     otpTemplateId = "default",
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
+    backChannelLogoutUri = None,
   )
   val publicClient = OAuthClientRecord(
     id = publicClientId,
@@ -69,6 +71,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
     otpTemplateId = "default",
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
+    backChannelLogoutUri = None,
   )
   val testClients = Map(clientId1 -> privateClient1, clientId2 -> privateClient2, publicClientId -> publicClient)
   val testScopes = Vector(
@@ -292,6 +295,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
         sessionIdleTtlSeconds = None,
         ipHeader = "X-Forwarded-For",
         acrVocabulary = None,
+        postLogoutRedirectUris = List.empty,
       )
       for
         env <- makeEnv(challengeSettings = Vector(settings))
@@ -311,6 +315,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
         sessionIdleTtlSeconds = None,
         ipHeader = "X-Custom-IP",
         acrVocabulary = None,
+        postLogoutRedirectUris = List.empty,
       )
       for
         env <- makeEnv(challengeSettings = Vector(settings))
@@ -331,6 +336,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
         sessionIdleTtlSeconds = None,
         ipHeader = "X-Real-IP",
         acrVocabulary = None,
+        postLogoutRedirectUris = List.empty,
       )
       for
         env <- makeEnv(challengeSettings = Vector(settings))
@@ -390,6 +396,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
         sessionIdleTtlSeconds = None,
         ipHeader = "X-Real-IP",
         acrVocabulary = Some(vocabulary),
+        postLogoutRedirectUris = List.empty,
       )
       for
         env <- makeEnv(challengeSettings = Vector(settings))

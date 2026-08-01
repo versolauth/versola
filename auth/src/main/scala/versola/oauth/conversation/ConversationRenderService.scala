@@ -7,6 +7,7 @@ import versola.oauth.conversation.model.{ConversationRecord, ConversationStep}
 import versola.oauth.jwks.JwksService
 import versola.oauth.model.SessionCookie
 import versola.oauth.model.State
+import versola.oauth.session.model.SessionInfo
 import versola.util.{Base64, Base64Url, CoreConfig, JWT}
 import zio.http.{Body, Header, Headers, MediaType, Response, Status, URL}
 import zio.json.*
@@ -29,6 +30,14 @@ trait ConversationRenderService:
       logoutUris: List[URL],
       postLogoutRedirectUri: Option[URL],
       state: Option[String],
+  ): Task[Response]
+
+  def renderLogoutConfirm(
+      session: SessionInfo,
+      csrfToken: String,
+      postLogoutRedirectUri: Option[String],
+      state: Option[State],
+      uiLocales: Option[List[String]],
   ): Task[Response]
 
 object ConversationRenderService:
@@ -66,10 +75,18 @@ object ConversationRenderService:
       error: Option[String],
   ) derives JsonCodec
 
-  private val ThemeDefault = "default"
+  case class LogoutConfirm(
+      csrfToken: String,
+      postLogoutRedirectUri: Option[String],
+      state: Option[String],
+  ) extends StepView
 
-  /** Grace period letting front-channel logout iframes fire before leaving the page. */
-  private val LogoutRedirectDelayMs = 2000
+  case class SignedOut(
+      logoutUris: List[String],
+      redirectUri: Option[String],
+  ) extends StepView
+
+  private val ThemeDefault = "default"
 
   case class FormRenderInfo(
       title: String,
@@ -156,46 +173,64 @@ object ConversationRenderService:
         postLogoutRedirectUri: Option[URL],
         state: Option[String],
     ): Task[Response] =
-      val iframes = logoutUris
-        .map(uri => s"""    <iframe src="${escapeHtml(uri.encode)}" style="display:none" sandbox="allow-scripts allow-same-origin"></iframe>""")
-        .mkString("\n")
-
-      val redirectUrl = postLogoutRedirectUri
+      val redirectUri = postLogoutRedirectUri
         .map(url => state.fold(url)(url.addQueryParam("state", _)).encode)
+      for
+        css     <- themeCss(ThemeDefault)
+        formOpt <- configuration.getForm("signed-out")
+        locales <- configuration.getLocales
+      yield formOpt match
+        case None => htmlResponse(notFoundPage(css), Status.NotFound)
+        case Some(form) =>
+          val activeCodes = locales.locales.map(_.code).toSet + locales.default
+          val (chosenLocale, translations) = pickTranslations(form, None, locales.default, activeCodes)
+          val info = FormRenderInfo(
+            title = pageTitle(translations),
+            style = form.style,
+            jsCompiled = form.jsCompiled,
+            config = FormConfig(
+              step = SignedOut(logoutUris.map(_.encode), redirectUri),
+              t = translations,
+              locale = chosenLocale,
+              locales = (form.localizations.keySet & activeCodes).toList.sorted,
+              allT = form.localizations,
+              error = None,
+            ),
+            version = form.version,
+          )
+          htmlResponse(solidPage(info, css))
+            .addHeader(Header.Custom("Cache-Control", "no-cache, no-store"))
+            // logoutUris are rendered as third-party iframes; without this, the browser could
+            // leak this page's URL (id_token_hint, post_logout_redirect_uri, state) to those
+            // RPs via the Referer header on the iframe requests.
+            .addHeader(Header.Custom("Referrer-Policy", "no-referrer"))
 
-      val redirect = redirectUrl.fold("") { url =>
-        s"""    <p><a href="${escapeHtml(url)}">Continue</a></p>
-           |    <script>setTimeout(function() { window.location.href = ${url.toJson}; }, $LogoutRedirectDelayMs);</script>""".stripMargin
-      }
-
-      val body =
-        s"""<!DOCTYPE html>
-           |<html lang="en">
-           |  <head>
-           |    <meta charset="UTF-8">
-           |    <title>Signing out</title>
-           |  </head>
-           |  <body>
-           |$iframes
-           |$redirect
-           |  </body>
-           |</html>""".stripMargin
-
-      ZIO.succeed(
-        htmlResponse(body)
-          .addHeader(Header.Custom("Cache-Control", "no-cache, no-store"))
-          // logoutUris are rendered as third-party iframes; without this, the browser could
-          // leak this page's URL (id_token_hint, post_logout_redirect_uri, state) to those
-          // RPs via the Referer header on the iframe requests.
-          .addHeader(Header.Custom("Referrer-Policy", "no-referrer")),
-      )
-
-    private def escapeHtml(value: String): String =
-      value
-        .replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-        .replace("\"", "&quot;")
+    override def renderLogoutConfirm(
+        session: SessionInfo,
+        csrfToken: String,
+        postLogoutRedirectUri: Option[String],
+        state: Option[State],
+        uiLocales: Option[List[String]],
+    ): Task[Response] =
+      for
+        client <- session.record.clients.headOption.map(_.clientId).fold(ZIO.succeed(None))(configuration.find)
+        css <- themeCss(client.map(_.theme).getOrElse(ThemeDefault))
+        form <- configuration.getForm("confirm-logout")
+        locales <- configuration.getLocales
+      yield form match
+        case None => htmlResponse(notFoundPage(css), Status.NotFound)
+        case Some(value) =>
+          val activeCodes = locales.locales.map(_.code).toSet + locales.default
+          val (chosen, translations) = pickTranslations(value, uiLocales, locales.default, activeCodes)
+          val info = FormRenderInfo(
+            pageTitle(translations),
+            value.style,
+            value.jsCompiled,
+            FormConfig(LogoutConfirm(csrfToken, postLogoutRedirectUri, state), translations, chosen,
+              (value.localizations.keySet & activeCodes).toList.sorted, value.localizations, None),
+            value.version,
+          )
+          htmlResponse(logoutConfirmPage(info, css))
 
     private def serializeIdToken(data: ConversationResult.IdTokenData, signingKey: JWT.PublicKey): Task[String] =
       val claims = data.claims + ("sid" -> Json.Str(data.sessionId))
@@ -340,6 +375,11 @@ object ConversationRenderService:
       case _: StepView.Otp           => "otp"
       case _: StepView.PasskeyEnroll => "passkey-enroll"
       case _: StepView.AccessDenied  => "access-denied"
+      case _: LogoutConfirm          => "confirm-logout"
+      case _: SignedOut              => "signed-out"
+
+    private def logoutConfirmPage(info: FormRenderInfo, themeCss: String): String =
+      s"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>${info.title}</title><style>$themeCss ${info.style}</style><script>window.__VERSOLA_FORM__ = ${info.config.toJson};</script></head><body><div id="versola-form-root"></div><script>${info.jsCompiled.getOrElse("")}</script></body></html>"""
 
     private def solidPage(info: FormRenderInfo, themeCss: String): String =
       s"""<!DOCTYPE html>

@@ -318,6 +318,7 @@ object AuthorizeEndpointService:
           configurationService.getSessionIdleTtl(request.clientId),
         )
         _ <- ZIO.foreachDiscard(idleTtl.flatten)(sessionService.prolongIdle(sessionInfo.id, _))
+        _ <- sessionService.registerClient(sessionInfo.id, request.clientId)
         code <- authPropertyGenerator.nextAuthorizationCode
         accessToken <- authPropertyGenerator.nextAccessToken
         codeRecord = AuthorizationCodeRecord(

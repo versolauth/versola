@@ -13,6 +13,7 @@ CREATE TABLE refresh_tokens(
     requested_claims JSONB,
     ui_locales TEXT[],
     nonce TEXT,
+    acr TEXT,
     amr JSONB NOT NULL,
     auth_time TIMESTAMP WITH TIME ZONE NOT NULL
 );

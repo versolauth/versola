@@ -1,6 +1,7 @@
 package versola.central.users
 
 import versola.central.CentralConfig
+import versola.central.configuration.clients.ClientId
 import versola.central.configuration.roles.RoleId
 import versola.central.configuration.tenants.TenantId
 import versola.util.{Email, Patch, Phone}
@@ -10,6 +11,7 @@ import zio.json.{DecoderOps, EncoderOps, JsonCodec, JsonDecoder}
 import zio.schema.codec.JsonCodec.zioJsonBinaryCodec
 import zio.{Schedule, Scope, Task, ZIO, ZLayer, durationInt}
 
+import java.time.Instant
 import java.util.UUID
 
 trait AuthClient:
@@ -86,9 +88,17 @@ object AuthClient:
 
   private case class UserRolesResponse(roles: List[RoleId]) derives JsonCodec
 
+  case class ClientEntryDto(
+      clientId: ClientId,
+      enteredAt: Instant,
+  ) derives JsonCodec
+
   case class SessionDto(
-      clientId: String,
-      userAgent: Option[String],
+      clients: List[ClientEntryDto],
+      platform: String,
+      os: Option[String],
+      browser: Option[String],
+      version: Option[String],
       createdAt: String,
   ) derives JsonCodec
 
@@ -264,7 +274,7 @@ object AuthClient:
               if response.status == Status.Unauthorized then ZIO.fail(AuthClient.TokenExpiredError)
               else handle(response)
       for
-        token  <- tokenService.getToken
+        token <- tokenService.getToken
         result <- attemptWithToken(token).catchSome:
           case AuthClient.TokenExpiredError =>
             tokenService.refreshToken().flatMap(attemptWithToken)

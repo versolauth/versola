@@ -9,6 +9,8 @@ CREATE TABLE challenge_settings (
     session_ttl_seconds          INT NOT NULL,
     session_idle_ttl_seconds     INT,
     ip_header                    TEXT NOT NULL,
+    acr_vocabulary               JSONB,
+    post_logout_redirect_uris    TEXT[] NOT NULL DEFAULT '{}',
     PRIMARY KEY (tenant_id)
 );
 

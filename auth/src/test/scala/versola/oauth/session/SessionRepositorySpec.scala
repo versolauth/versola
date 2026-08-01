@@ -3,7 +3,7 @@ package versola.oauth.session
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.oauth.client.model.{AuthMethodRef, ClientId, ScopeToken}
 import versola.oauth.model.AccessToken
-import versola.oauth.session.model.{PublicSessionId, RefreshTokenRecord, SessionId, SessionRecord, UserAgentInfo}
+import versola.oauth.session.model.{ClientEntry, PriorSession, PublicSessionId, RefreshTokenRecord, SessionId, SessionRecord, UserAgentInfo}
 import versola.user.model.UserId
 import versola.util.{DatabaseSpecBase, MAC}
 import zio.*
@@ -36,7 +36,7 @@ trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
 
   val session1 = SessionRecord(
     userId = userId1,
-    clientId = clientId1,
+    clients = List(ClientEntry(clientId1, Instant.EPOCH)),
     userAgent = UserAgentInfo("desktop", Some("Windows 10 / 11"), Some("Chrome"), Some("125")),
     createdAt = Instant.EPOCH,
     amr = Map.empty,
@@ -45,7 +45,7 @@ trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
 
   val session2 = SessionRecord(
     userId = userId2,
-    clientId = clientId2,
+    clients = List(ClientEntry(clientId2, Instant.EPOCH)),
     userAgent = UserAgentInfo("unknown", None, None, None),
     createdAt = Instant.EPOCH,
     amr = Map.empty,
@@ -133,7 +133,7 @@ trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
         for
           _ <- env.repository.create(sessionId1, publicId1, session1, ttl, None, None)
           _ <- env.repository.create(sessionId2, publicId2, session2, ttl, None, None)
-          _ <- env.repository.create(sessionId3, publicId3, session1.copy(clientId = clientId2), ttl, None, None)
+          _ <- env.repository.create(sessionId3, publicId3, session1.copy(clients = List(ClientEntry(clientId2, Instant.EPOCH))), ttl, None, None)
           results <- env.repository.findByUserId(userId1)
         yield assertTrue(
           results.size == 2,
@@ -150,7 +150,7 @@ trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
       test("invalidateByUserId removes all user sessions") {
         for
           _ <- env.repository.create(sessionId1, publicId1, session1, ttl, None, None)
-          _ <- env.repository.create(sessionId3, publicId3, session1.copy(clientId = clientId2), ttl, None, None)
+          _ <- env.repository.create(sessionId3, publicId3, session1.copy(clients = List(ClientEntry(clientId2, Instant.EPOCH))), ttl, None, None)
           before <- env.repository.findByUserId(userId1)
           _ <- env.repository.invalidateByUserId(userId1)
           after <- env.repository.findByUserId(userId1)
@@ -291,6 +291,28 @@ trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
           _          <- env.repository.invalidateByPublicId(atomicPublicId)
           tokenAfter <- env.repository.findToken(atomicTokenId)
         yield assertTrue(tokenAfter.isEmpty)
+      },
+      test("registerClient adds a client id to the session") {
+        for
+          _     <- env.repository.create(sessionId1, publicId1, session1, ttl, None, None)
+          _     <- env.repository.registerClient(sessionId1, clientId2)
+          found <- env.repository.findSession(sessionId1)
+        yield assertTrue(found.exists(_.clients.map(_.clientId) == List(clientId1, clientId2)))
+      },
+      test("registerClient is idempotent") {
+        for
+          _     <- env.repository.create(sessionId1, publicId1, session1, ttl, None, None)
+          _     <- env.repository.registerClient(sessionId1, clientId1)
+          found <- env.repository.findSession(sessionId1)
+        yield assertTrue(found.exists(_.clients.map(_.clientId) == List(clientId1)))
+      },
+      test("create carries over prior session's client ids on rotation") {
+        for
+          _     <- env.repository.create(sessionId1, publicId1, session1, ttl, None, None)
+          _     <- env.repository.registerClient(sessionId1, clientId2)
+          _     <- env.repository.create(sessionId2, publicId2, session2, ttl, None, Some(PriorSession.Invalidate(sessionId1)))
+          found <- env.repository.findSession(sessionId2)
+        yield assertTrue(found.exists(_.clients.map(_.clientId).toSet == Set(clientId1, clientId2)))
       },
     )
 

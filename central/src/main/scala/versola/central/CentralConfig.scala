@@ -66,6 +66,7 @@ object CentralConfig:
         description: String,
         redirectUri: String,
         postLoginRedirectUri: String,
+        postLogoutRedirectUri: Option[String] = None,
         cookieDomain: Option[String] = None,
         cookiePath: Option[String] = None,
     )

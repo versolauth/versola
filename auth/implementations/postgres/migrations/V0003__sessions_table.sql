@@ -1,7 +1,7 @@
 CREATE TABLE sso_sessions (
     id BYTEA NOT NULL PRIMARY KEY,
     public_id TEXT NOT NULL UNIQUE,
-    client_id TEXT,
+    clients JSONB NOT NULL,
     user_id UUID NOT NULL,
     user_agent JSONB NOT NULL,
     created_at TIMESTAMP WITH TIME ZONE NOT NULL,

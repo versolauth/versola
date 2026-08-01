@@ -49,6 +49,7 @@ object RevocationServiceSpec extends UnitSpecBase:
     otpTemplateId = "default",
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
+    backChannelLogoutUri = None,
   )
 
   def tokenRecord(now: Instant) = RefreshTokenRecord(

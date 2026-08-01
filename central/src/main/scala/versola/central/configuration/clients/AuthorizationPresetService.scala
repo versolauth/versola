@@ -1,8 +1,10 @@
 package versola.central.configuration.clients
 
 import versola.central.configuration.SaveAuthorizationPresetsRequest
+import versola.central.configuration.challenges.ChallengeSettingsService
 import versola.central.configuration.edges.EdgeId
 import versola.central.configuration.sync.{SyncEvent, SyncOps}
+import versola.central.configuration.tenants.TenantId
 import versola.util.ReloadingCache
 import zio.{Schedule, Scope, Task, ZIO, ZLayer}
 
@@ -19,14 +21,19 @@ trait AuthorizationPresetService:
 object AuthorizationPresetService:
   def live(
       schedule: Schedule[Any, Any, Any],
-  ): ZLayer[AuthorizationPresetRepository & OAuthClientService & Scope, Throwable, AuthorizationPresetService] =
+  ): ZLayer[
+    AuthorizationPresetRepository & OAuthClientService & ChallengeSettingsService & Scope,
+    Throwable,
+    AuthorizationPresetService,
+  ] =
     ZLayer(ReloadingCache.make[Vector[AuthorizationPreset]](schedule))
-      >>> ZLayer.fromFunction(Impl(_, _, _))
+      >>> ZLayer.fromFunction(Impl(_, _, _, _))
 
   class Impl(
       cache: ReloadingCache[Vector[AuthorizationPreset]],
       repository: AuthorizationPresetRepository,
       clientService: OAuthClientService,
+      challengeSettingsService: ChallengeSettingsService,
   ) extends AuthorizationPresetService:
 
     override def getClientPresets(clientId: ClientId): Task[Vector[AuthorizationPreset]] =
@@ -57,6 +64,7 @@ object AuthorizationPresetService:
             description = presetRequest.description,
             redirectUri = presetRequest.redirectUri,
             postLoginRedirectUri = presetRequest.postLoginRedirectUri,
+            postLogoutRedirectUri = presetRequest.postLogoutRedirectUri,
             scope = presetRequest.scope,
             responseType = presetRequest.responseType,
             uiLocales = presetRequest.uiLocales,
@@ -66,6 +74,7 @@ object AuthorizationPresetService:
           )
 
         _ <- repository.replace(request.clientId, presets)
+        _ <- registerPostLogoutRedirectUris(client.tenantId)
       yield ())
         .either
         .flatMap {
@@ -73,6 +82,33 @@ object AuthorizationPresetService:
           case Left(error: PresetValidationError) => ZIO.left(error)
           case Right(_) => ZIO.right(())
         }
+
+    /** Ensures every `postLogoutRedirectUri` currently used by a preset of the tenant is present
+      * in the tenant's `ChallengeSettingsRecord.postLogoutRedirectUris` allow-list, so the auth
+      * server accepts it during RP-initiated logout.
+      */
+    private def registerPostLogoutRedirectUris(tenantId: TenantId): Task[Unit] =
+      for
+        clients <- clientService.getAllClients
+        tenantClientIds = clients.filter(_.tenantId == tenantId).map(_.id).toSet
+        allPresets <- repository.getAll
+        usedUris = allPresets.view
+          .filter(preset => tenantClientIds.contains(preset.clientId))
+          .flatMap(_.postLogoutRedirectUri)
+          .map(uri => uri: String)
+          .toSet
+        _ <- ZIO.unless(usedUris.isEmpty)(addToPostLogoutRedirectUriAllowlist(tenantId, usedUris))
+      yield ()
+
+    private def addToPostLogoutRedirectUriAllowlist(tenantId: TenantId, usedUris: Set[String]): Task[Unit] =
+      challengeSettingsService.getSettings(tenantId).flatMap {
+        case Some(settings) =>
+          val merged = (settings.postLogoutRedirectUris ++ usedUris).distinct
+          ZIO.when(merged != settings.postLogoutRedirectUris)(
+            challengeSettingsService.upsertSettings(settings.copy(postLogoutRedirectUris = merged)),
+          ).unit
+        case None => ZIO.unit
+      }
 
     override def getPresetsForSync(edgeId: Option[EdgeId]): Task[Vector[AuthorizationPreset]] =
       edgeId match
@@ -95,4 +131,5 @@ sealed trait PresetValidationError
 object PresetValidationError:
   case object ClientNotFound extends PresetValidationError
   case object InvalidRedirectUri extends PresetValidationError
+  case object InvalidPostLogoutRedirectUri extends PresetValidationError
   case object InvalidScope extends PresetValidationError

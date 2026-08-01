@@ -1,13 +1,13 @@
 package versola.edge
 
 import versola.edge.login.{LoginRecord, LoginRepository}
-import versola.edge.model.{AccessToken, AccessTokenClaims, AccessTokenId, AuthConversationNotFound, AuthorizationPreset, ClientId, Code, CodeVerifier, InjectRule, InjectTarget, PermissionId, PresetId, PresetNotFound, RefreshToken, Resource, ResourceEndpoint, ResourceEndpointId, ResourceId, RoleId, SessionId, State, TenantId, TokenResponse}
+import versola.edge.model.{AccessToken, AccessTokenClaims, AccessTokenId, AuthConversationNotFound, AuthorizationPreset, ClientId, Code, CodeVerifier, InjectRule, InjectTarget, InvalidLogoutToken, PermissionId, PresetId, PresetNotFound, RefreshToken, Resource, ResourceEndpoint, ResourceEndpointId, ResourceId, RoleId, SessionId, State, TenantId, TokenResponse}
 import versola.edge.session.{EdgeSessionRecord, EdgeSessionRepository}
 import versola.util.cel.CelEvaluator
 import versola.util.{Base64, Base64Url, JWT, JsonJava, RedirectUri, Secret, SecureRandom, SecurityService}
 import zio.http.{Body, Client, Cookie, Header, MediaType, Path, Request, Response, Status, URL}
 import zio.json.ast.Json
-import zio.json.{DecoderOps, EncoderOps, JsonCodec, jsonField}
+import zio.json.{DecoderOps, EncoderOps, JsonCodec, JsonDecoder, jsonField}
 import zio.{Chunk, Clock, Duration, IO, NonEmptyChunk, Task, UIO, ZIO, ZLayer, durationInt}
 
 import java.nio.charset.StandardCharsets
@@ -46,6 +46,13 @@ trait EdgeService:
     */
   def frontChannelLogout(iss: String, sid: SessionId): Task[List[Cookie.Response]]
 
+  /** OP-initiated back-channel logout: validates the OP-signed `logout_token` and drops
+    * the edge sessions tied to the SSO session it names. Server-to-server, so no cookie
+    * can be cleared; dropping the session rows is what stops the EDGE_SESSION cookie
+    * from being honoured on the next request.
+    */
+  def backChannelLogout(logoutToken: String): IO[Throwable | InvalidLogoutToken, Unit]
+
 object EdgeService:
   case class LoginCompletion(
       presetId: PresetId,
@@ -66,6 +73,20 @@ object EdgeService:
       @jsonField("jti") accessTokenId: AccessTokenId,
       @jsonField("sid") sessionId: SessionId,
   ) derives JsonCodec
+
+  private val BackChannelLogoutEvent = "http://schemas.openid.net/event/backchannel-logout"
+
+  /** The claims of an OIDC Back-Channel Logout token (spec §2.4) the edge validates and
+    * acts on. `sid` is optional in the spec, but the edge indexes its sessions by it and
+    * so cannot act on a token without one.
+    */
+  private case class LogoutTokenClaims(
+      @jsonField("iss") issuer: String,
+      @jsonField("aud") audience: List[ClientId],
+      @jsonField("sid") sessionId: Option[SessionId],
+      nonce: Option[String],
+      events: Map[String, Json],
+  ) derives JsonDecoder
 
   case class ResourcePermissions(
       permissions: Set[PermissionId],
@@ -255,6 +276,34 @@ object EdgeService:
           records <- sessionRepository.deleteBySessionId(sid)
           presets <- clientService.listPresets(records.map(_.presetId).distinct)
         yield presets.map(preset => EdgeSessionCookie.clear(preset.cookieDomain, preset.cookiePath))
+
+    override def backChannelLogout(logoutToken: String): IO[Throwable | InvalidLogoutToken, Unit] =
+      for
+        publicKeys <- jwksService.getPublicKeys
+        claims <- JWT.deserialize[EdgeService.LogoutTokenClaims](logoutToken, publicKeys, JWT.Type.JWT)
+          .mapError(error => InvalidLogoutToken(s"logout token is not a valid JWT: $error"))
+        _ <- validateLogoutToken(claims)
+        sid <- ZIO.fromOption(claims.sessionId)
+          .orElseFail(InvalidLogoutToken("logout token carries no sid claim"))
+        _ <- sessionRepository.deleteBySessionId(sid)
+      yield ()
+
+    /** OIDC Back-Channel Logout §2.6: the token must come from the configured OP, be
+      * addressed to a client this edge knows and carry the logout event. A `nonce` marks
+      * it as a replayed id token rather than a logout token, so it is rejected.
+      */
+    private def validateLogoutToken(claims: EdgeService.LogoutTokenClaims): IO[InvalidLogoutToken, Unit] =
+      for
+        _ <- ZIO.fail(InvalidLogoutToken("logout token was issued by an unknown issuer"))
+          .unless(URL.decode(claims.issuer).toOption.exists(sameOrigin(_, config.versolaUrl)))
+        knownAudience <- ZIO.exists(claims.audience)(clientService.findClient(_).map(_.isDefined))
+        _ <- ZIO.fail(InvalidLogoutToken("logout token is not addressed to a known client"))
+          .unless(knownAudience)
+        _ <- ZIO.fail(InvalidLogoutToken("logout token does not carry the back-channel logout event"))
+          .unless(claims.events.contains(EdgeService.BackChannelLogoutEvent))
+        _ <- ZIO.fail(InvalidLogoutToken("logout token must not carry a nonce"))
+          .when(claims.nonce.isDefined)
+      yield ()
 
     /** Compares two URLs by origin (scheme, host, port), tolerating equivalent but
       * textually different representations: host casing and an explicit default port

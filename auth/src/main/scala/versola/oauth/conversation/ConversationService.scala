@@ -15,7 +15,7 @@ import versola.oauth.conversation.otp.OtpService
 import versola.oauth.conversation.otp.model.SubmitOtpResult
 import versola.oauth.model.{AuthorizationCode, AuthorizationCodeRecord}
 import versola.oauth.session.SessionRepository
-import versola.oauth.session.model.{PublicSessionId, SessionId, SessionRecord, UserAgentInfo, PriorSession}
+import versola.oauth.session.model.{ClientEntry, PublicSessionId, SessionId, SessionRecord, UserAgentInfo, PriorSession}
 import versola.oauth.token.AuthorizationCodeRepository
 import versola.oauth.userinfo.UserInfoService
 import versola.user.UserRepository
@@ -547,7 +547,7 @@ object ConversationService:
             )
             session = SessionRecord(
               userId = userId,
-              clientId = conversation.clientId,
+              clients = List(ClientEntry(conversation.clientId, now)),
               userAgent = UserAgentInfo.parse(conversation.userAgent),
               createdAt = now,
               amr = conversation.amr,

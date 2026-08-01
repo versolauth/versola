@@ -1,1 +1,0 @@
-ALTER TABLE challenge_settings ADD COLUMN IF NOT EXISTS acr_vocabulary JSONB;

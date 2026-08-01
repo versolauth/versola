@@ -70,6 +70,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
     otpTemplateId = "default",
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
+    backChannelLogoutUri = None,
   )
 
   val publicClientId = ClientId("public-client-1")
@@ -89,6 +90,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
     otpTemplateId = "default",
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
+    backChannelLogoutUri = None,
   )
 
   val adminClient = testClient.copy(id = OAuthTokenService.centralAdminClientId)
