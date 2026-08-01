@@ -168,8 +168,16 @@ def writeFile(dir: File, name: String, content: String): Unit =
   // the same treatment.
   val centralUrlDefault   = if isDockerLocal then "http://central:8090" else "http://localhost:9001"
   val centralUrl           = prompt(s"  Central URL [$centralUrlDefault]: ", centralUrlDefault)
-  // edgeUrl is public-facing only (same reasoning as authUrl above).
-  val edgeUrlDefault      = if isDockerLocal then "http://localhost:8095" else "http://localhost:9005"
+  // edgeUrl is public-facing only, same reasoning as authUrl above — BUT
+  // in docker-local, nginx (not edge's own port) is the actual public
+  // entry point a browser can reach. edge's own port (8095) isn't
+  // published to the host at all; nginx already proxies /complete,
+  // /login, /resources, /permissions through to it internally (see
+  // versola-tools/nginx.conf.template). Confirmed by hand: pointing this
+  // at 8095 sent the post-login redirect straight to a closed port and
+  // the browser got ERR_CONNECTION_REFUSED right after a real login
+  // succeeded.
+  val edgeUrlDefault      = if isDockerLocal then "http://localhost:8080" else "http://localhost:9005"
   val edgeUrl              = prompt(s"  Edge URL [$edgeUrlDefault]: ", edgeUrlDefault)
 
   section("\n── Auth service ──────────────────────────────────────────────────────")
