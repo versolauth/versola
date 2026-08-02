@@ -1,0 +1,192 @@
+# Copied from versola-cli/manual-test/nginx/versola.local.conf, where it
+# was verified against the real auth/central/edge images (proxying
+# confirmed to behave identically to hitting auth directly, port for
+# port). Adapted from nginx/envs/dev/versola.conf (the id.versola.kz
+# server block only -- the marketing/blog/docs sites don't apply locally).
+#
+# Two changes from the prod config, everything else is the same routing
+# logic on purpose:
+#
+#   1. No TLS. Prod terminates HTTPS itself; locally there's no
+#      certificate and no domain, so this just listens on plain HTTP.
+#      Port 8080 matches what "versola doctor" checks is free.
+#   2. Upstreams point at container DNS names (auth, edge) instead of
+#      127.0.0.1 -- nginx is its own container here, not sharing the
+#      host's network with auth/edge like it does in prod.
+#
+# central-ui isn't an upstream at all, here or in prod: it's static files
+# nginx serves directly. Locally that means this nginx IS
+# ghcr.io/versolauth/versola-gateway (see docker/Dockerfile.gateway in the
+# versola repo), which already has central-ui's build baked in at
+# /usr/share/nginx/html/central/admin -- the location block below just
+# needs a matching `root`, no proxy, no separate container.
+#
+# central itself has no upstream here, same as prod -- the admin console
+# talks to it only through edge's /resources/central/* proxy below.
+#
+# No ${VERSION} placeholder in this file -- routing doesn't change between
+# Versola releases the way image tags do, so this is copied as-is by
+# entrypoint.sh rather than run through sed.
+
+upstream auth_backend {
+    server auth:8080;
+    keepalive 32;
+}
+
+upstream edge_backend {
+    server edge:8095;
+    keepalive 32;
+}
+
+server {
+    listen 8080;
+    server_name localhost;
+
+    client_max_body_size 8m;
+
+    location = /admin {
+        return 301 /central/admin/$is_args$args;
+    }
+
+    location /admin/ {
+        rewrite ^/admin/(.*)$ /central/admin/$1 permanent;
+    }
+
+    location = /central {
+        return 301 /central/admin/$is_args$args;
+    }
+
+    location = /central/ {
+        return 301 /central/admin/$is_args$args;
+    }
+
+    location = /central/admin {
+        return 301 /central/admin/$is_args$args;
+    }
+
+    # `root` (not `alias`): the request path /central/admin/... is appended
+    # as-is to /usr/share/nginx/html, landing on
+    # /usr/share/nginx/html/central/admin/... -- exactly where
+    # Dockerfile.gateway copies central-ui's dist/, and exactly what
+    # vite.config.ts bakes into every asset URL in dist/index.html. No
+    # rewrite, no separate container.
+    location /central/admin/ {
+        root /usr/share/nginx/html;
+        index index.html;
+        try_files $uri $uri/ =404;
+        add_header Cache-Control "no-cache" always;
+    }
+
+    location = /central/permissions/me {
+        proxy_pass http://edge_backend/permissions/me;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Connection "";
+    }
+
+    location /central/ {
+        rewrite ^/central/(.*)$ /resources/central/$1 break;
+
+        proxy_pass http://edge_backend;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Connection "";
+    }
+
+    location = /resources {
+        proxy_pass http://edge_backend;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Connection "";
+    }
+
+    location /resources/ {
+        proxy_pass http://edge_backend;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Connection "";
+    }
+
+    location = /permissions {
+        proxy_pass http://edge_backend;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Connection "";
+    }
+
+    location /permissions/ {
+        proxy_pass http://edge_backend;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Connection "";
+    }
+
+    location = /login {
+        proxy_pass http://edge_backend;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Connection "";
+    }
+
+    location /login/ {
+        proxy_pass http://edge_backend;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Connection "";
+    }
+
+    location = /complete {
+        proxy_pass http://edge_backend;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Connection "";
+    }
+
+    location = /complete/ {
+        proxy_pass http://edge_backend;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Connection "";
+    }
+
+    # Everything else stays on auth (OIDC endpoints, login forms, etc.)
+    location / {
+        proxy_pass http://auth_backend;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Connection "";
+    }
+}
