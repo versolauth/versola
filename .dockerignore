@@ -4,4 +4,15 @@ central-ui/dist
 # else (Dockerfile.central, which only needs central-ui's separately-built
 # "forms" under central/src/main/resources, not dist/) never references
 # this path, so un-excluding it here doesn't change what those get.
+#
+# Both lines needed: the first re-includes the dist/ directory entry
+# itself, the second explicitly re-includes everything under it. Verified
+# by hand (a full local build + running the resulting versola-gateway
+# image, with central-ui's admin console loading and working end-to-end)
+# that this isn't Docker's documented "can't re-include a file under an
+# excluded parent" trap -- that applies to re-including a *child* while
+# the parent stays excluded, not re-including the same path that was
+# excluded. Both lines are here anyway so the intent doesn't rely on that
+# distinction being obvious to the next person reading this file.
 !central-ui/dist
+!central-ui/dist/**

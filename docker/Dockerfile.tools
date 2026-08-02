@@ -9,7 +9,14 @@
 # more than once. Living in the same repo/release means there's only ever
 # one copy, and this image is always built from whatever gen-env.scala
 # actually shipped with that version.
-FROM virtuslab/scala-cli:latest
+#
+# Pinned by digest, not `:latest` -- this image is published per Versola
+# release tag and expected to stay reproducible if it's ever rebuilt (e.g.
+# patching an old release), which a floating tag can't guarantee: an
+# upstream update to scala-cli's own `latest` would silently change what
+# an old versola-tools tag builds into. Bump this deliberately, not by
+# surprise.
+FROM virtuslab/scala-cli@sha256:5f22057215b2d9fad3dd92305306e45249b5bf2e50800dd16dbff9c6c7bc0a37
 
 ARG VERSION=dev
 ENV VERSION=${VERSION}
