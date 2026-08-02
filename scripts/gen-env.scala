@@ -198,11 +198,16 @@ def writeFile(dir: File, name: String, content: String): Unit =
   section("\n── Central service ───────────────────────────────────────────────────")
   // edgeCompleteUrl (edgeUrl + "/complete") is always appended to this list
   // further down regardless of what's entered here, so this default mainly
-  // matters for postLoginRedirectUri (the *first* entry) — pointing it at
-  // edge's own complete URL means a docker-local bootstrap gets a working
-  // post-login redirect out of the box, not localhost:3000 (nothing runs
-  // there in docker-local; central-ui isn't part of this compose stack).
-  val redirectUriDefault  = if isDockerLocal then s"$edgeUrl/complete" else "http://localhost:3000"
+  // matters for postLoginRedirectUri (the *first* entry). It used to default
+  // to edgeCompleteUrl itself -- confirmed by hand that this is broken: it
+  // sends the browser back to /complete a second time with no code/state,
+  // which 500s (MissingQueryParams) since that endpoint always requires
+  // them. Pointing it at nginx's /central/admin/ path instead means a
+  // finished login lands somewhere that either works (once "versola
+  // bootstrap" wires up central-ui, see versola-cli) or 404s cleanly, not a
+  // crash loop. Still not localhost:3000 -- nothing runs there in
+  // docker-local.
+  val redirectUriDefault  = if isDockerLocal then s"$edgeUrl/central/admin/" else "http://localhost:3000"
   val centralRedirectUris = prompt(s"  Admin panel bootstrap redirect URIs (comma-separated) [$redirectUriDefault]: ", redirectUriDefault)
   val centralPgUrlDefault = if isDockerLocal then "jdbc:postgresql://postgres:5432/auth?currentSchema=central" else "jdbc:postgresql://localhost:5432/auth"
   val centralPgUrl        = prompt(s"  Postgres URL [$centralPgUrlDefault]: ", centralPgUrlDefault)
