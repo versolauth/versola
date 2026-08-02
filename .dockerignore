@@ -1,2 +1,7 @@
 ﻿central-ui/node_modules
 central-ui/dist
+# Dockerfile.gateway needs the built SPA in its build context -- everything
+# else (Dockerfile.central, which only needs central-ui's separately-built
+# "forms" under central/src/main/resources, not dist/) never references
+# this path, so un-excluding it here doesn't change what those get.
+!central-ui/dist
