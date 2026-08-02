@@ -222,8 +222,8 @@ object AuthorizeEndpointService:
       response match
         case AuthorizeResponse.Initialize(authId) =>
           request.loginHint match
-            case Some(Left(email)) => conversationRouter.submit(authId, EmailSubmission(email), csrfToken, uiLocales.flatMap(_.headOption), None).as(response)
-            case Some(Right(phone)) => conversationRouter.submit(authId, PhoneSubmission(phone), csrfToken, uiLocales.flatMap(_.headOption), None).as(response)
+            case Some(Left(email)) => conversationRouter.submit(authId, EmailSubmission(email, csrfToken), uiLocales.flatMap(_.headOption), None).as(response)
+            case Some(Right(phone)) => conversationRouter.submit(authId, PhoneSubmission(phone, csrfToken), uiLocales.flatMap(_.headOption), None).as(response)
             case None => ZIO.succeed(response)
         case _ => ZIO.succeed(response)
 
@@ -257,7 +257,7 @@ object AuthorizeEndpointService:
         // When a verified userId is available (from session or id_token_hint), always populate all
         // user fields so the credential step can be skipped and challenges are asked directly.
         // If no userId is known, userOpt is None and fields remain empty for normal credential entry.
-        csrfToken <- secureRandom.nextAlphanumeric(8)
+        csrfToken <- secureRandom.nextAlphanumeric(16)
         credential = userOpt.flatMap(u => u.email.map(Left(_)).orElse(u.phone.map(Right(_))))
         conversation = ConversationRecord(
           clientId = request.clientId,

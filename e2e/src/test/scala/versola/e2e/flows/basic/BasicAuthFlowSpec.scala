@@ -19,7 +19,7 @@ object BasicAuthFlowSpec extends E2ESpec:
           redirectUri = Some(s.redirectUri),
         ).assertChallengeRedirect
         challenge <- auth.getChallenge(authorize.conversationCookie.get).assertStep(ConversationStep.Credential)
-        csrf <- ZIO.fromOption(challenge.csrf).orElseFail(RuntimeException("No csrf in challenge"))
+        csrf = challenge.csrf
         code <- auth.submitLoginPassword(authorize.conversationCookie.get, s.login.get, s.password, csrf).assertRedirect(auth, authorize.conversationCookie.get)
         token <- auth.token(
           code,
@@ -39,10 +39,10 @@ object BasicAuthFlowSpec extends E2ESpec:
         authorize <- auth.authorize(scope = "openid email", clientId = Some(s.clientId), redirectUri = Some(s.redirectUri))
           .assertChallengeRedirect
         challenge1 <- auth.getChallenge(authorize.conversationCookie.get).assertStep(ConversationStep.Credential)
-        csrf1 <- ZIO.fromOption(challenge1.csrf).orElseFail(RuntimeException("No csrf in challenge"))
+        csrf1 = challenge1.csrf
         _ <- auth.submitEmail(authorize.conversationCookie.get, s.email.get, csrf1)
         challenge2 <- auth.getChallenge(authorize.conversationCookie.get).assertStep(ConversationStep.Otp)
-        csrf2 <- ZIO.fromOption(challenge2.csrf).orElseFail(RuntimeException("No csrf in challenge"))
+        csrf2 = challenge2.csrf
         code <- auth.submitOtp(authorize.conversationCookie.get, fixedOtp, csrf2).assertRedirect(auth, authorize.conversationCookie.get)
         token <- auth.token(
           code,

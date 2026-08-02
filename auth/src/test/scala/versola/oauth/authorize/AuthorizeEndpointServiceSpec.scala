@@ -377,7 +377,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
       yield assertTrue(
         result == AuthorizeResponse.Initialize(versola.oauth.conversation.model.AuthId(uuid)),
         submitCalls.nonEmpty,
-        submitCalls.head._2 == EmailSubmission(emailHint),
+        submitCalls.head._2 == EmailSubmission(emailHint, "testcsrf1"),
       )
     },
     test("advance conversation to OTP step when login_hint phone is provided on phone+otp flow") {
@@ -395,7 +395,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
       yield assertTrue(
         result == AuthorizeResponse.Initialize(versola.oauth.conversation.model.AuthId(uuid)),
         submitCalls.nonEmpty,
-        submitCalls.head._2 == PhoneSubmission(phoneHint),
+        submitCalls.head._2 == PhoneSubmission(phoneHint, "testcsrf1"),
       )
     },
     test("force re-authentication when max_age exceeded") {

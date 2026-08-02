@@ -12,7 +12,6 @@ trait ConversationRouter:
   def submit(
     authId: AuthId,
     submission: Submission,
-    csrfToken: String, 
     uiLocale: Option[String],
     ipAddress: Option[String],
   ): Task[(ConversationResult.Render, ConversationRecord)]
@@ -64,15 +63,14 @@ object ConversationRouter:
     override def submit(
         authId: AuthId,
         submission: Submission,
-        csrfToken: String, 
         uiLocale: Option[String],
         ipAddress: Option[String],
     ): Task[(ConversationResult.Render, ConversationRecord)] =
       conversationService.find(authId).flatMap:
         case None => ZIO.fail(Error.BadRequest)
         case Some(conversation) =>
-          if csrfToken != conversation.csrfToken then
-            ZIO.fail(Error.BadRequest)      // <-- добавить проверку
+          if submission.csrf != conversation.csrfToken then
+            ZIO.fail(Error.BadRequest)
           else
             val updated = withUiLocale(conversation, uiLocale)
             dispatch(authId, updated, submission, ipAddress)

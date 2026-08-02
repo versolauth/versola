@@ -56,8 +56,10 @@ extension (task: Task[AuthorizeResult])
 
 case class ChallengeResult(response: Response, html: String):
   val step: Option[ConversationStep] = ConversationStep.fromHtml(html)
-  val csrf: Option[String] = """"csrf"\s*:\s*"([^"]+)"""".r
-    .findFirstMatchIn(html).map(_.group(1))
+  val csrf: String = """"csrf"\s*:\s*"([^"]+)"""".r
+  .findFirstMatchIn(html)
+  .map(_.group(1))
+  .getOrElse(throw RuntimeException("CSRF token not found in challenge HTML"))
 
   def assertStep(expected: ConversationStep): Task[ChallengeResult] =
     step.assertIs(expected).as(this)

@@ -83,7 +83,7 @@ object ConversationControllerSpec extends UnitSpecBase:
   def successfulSubmitTestCase(
       description: String,
       request: Request,
-      submission: (AuthId, Submission, String, Option[String], Option[String]),
+      submission: (AuthId, Submission, Option[String], Option[String]),
       ipHeader: String = "X-Real-IP",
   )(using
       loc: SourceLocation,
@@ -181,70 +181,70 @@ object ConversationControllerSpec extends UnitSpecBase:
       request = Request.post(
         url = URL.empty / "challenge" / "email",
         body = Body.fromURLEncodedForm(
-          Form(FormField.Text("email", email, MediaType.text.plain)),
+          Form(FormField.Text("email", email, MediaType.text.plain), FormField.Text("csrf", "", MediaType.text.plain)),
         )
       ).addHeader(conversationCookie),
-      submission = (authId, EmailSubmission(email), "", None, None),
+      submission = (authId, EmailSubmission(email, ""), None, None),
     ),
     successfulSubmitTestCase(
       description = "submit phone",
       request = Request.post(
         url = URL.empty / "challenge" / "phone",
         body = Body.fromURLEncodedForm(
-          Form.fromStrings("phone" -> phone),
+          Form.fromStrings("phone" -> phone, "csrf" -> ""),
         )
       ).addHeader(conversationCookie),
-      submission = (authId, PhoneSubmission(phone), "", None, None),
+      submission = (authId, PhoneSubmission(phone, ""), None, None),
     ),
     successfulSubmitTestCase(
       description = "submit otp",
       request = Request.post(
         url = URL.empty / "challenge" / "otp",
         body = Body.fromURLEncodedForm(
-          Form.fromStrings("code" -> otpCode.toString),
+          Form.fromStrings("code" -> otpCode.toString, "csrf" -> ""),
         )
       ).addHeader(conversationCookie),
-      submission = (authId, OtpSubmission(otpCode), "",None, None),
+      submission = (authId, OtpSubmission(otpCode, ""), None, None),
     ),
     successfulSubmitTestCase(
       description = "submit otp resend",
       request = Request.post(
         url = URL.empty / "challenge" / "otp" / "resend",
         body = Body.fromURLEncodedForm(
-          Form.fromStrings(),
+          Form.fromStrings("csrf" -> ""),
         )
       ).addHeader(conversationCookie),
-      submission = (authId, OtpResendSubmission(), "", None, None),
+      submission = (authId, OtpResendSubmission(""), None, None),
     ),
     successfulSubmitTestCase(
       description = "submit forwards ui_locale from query param",
       request = Request.post(
         url = (URL.empty / "challenge" / "otp").addQueryParam("ui_locale", "ru"),
         body = Body.fromURLEncodedForm(
-          Form.fromStrings("code" -> otpCode.toString),
+          Form.fromStrings("code" -> otpCode.toString, "csrf" -> ""),
         )
       ).addHeader(conversationCookie),
-      submission = (authId, OtpSubmission(otpCode), "", Some("ru"), None),
+      submission = (authId, OtpSubmission(otpCode, ""), Some("ru"), None),
     ),
     successfulSubmitTestCase(
       description = "submit reads the tenant-configured header (X-Real-IP) as the throttle ip",
       request = Request.post(
         url = URL.empty / "challenge" / "otp",
         body = Body.fromURLEncodedForm(
-          Form.fromStrings("code" -> otpCode.toString),
+          Form.fromStrings("code" -> otpCode.toString, "csrf" -> ""),
         )
       ).addHeader(conversationCookie).addHeader("X-Real-IP", "9.9.9.9"),
-      submission = (authId, OtpSubmission(otpCode), "", None, Some("9.9.9.9")),
+      submission = (authId, OtpSubmission(otpCode, ""), None, Some("9.9.9.9")),
     ),
     successfulSubmitTestCase(
       description = "submit reads the tenant-configured header (X-Forwarded-For), taking the first value",
       request = Request.post(
         url = URL.empty / "challenge" / "otp",
         body = Body.fromURLEncodedForm(
-          Form.fromStrings("code" -> otpCode.toString),
+          Form.fromStrings("code" -> otpCode.toString, "csrf" -> ""),
         )
       ).addHeader(conversationCookie).addHeader("X-Forwarded-For", "7.7.7.7, 10.0.0.1"),
-      submission = (authId, OtpSubmission(otpCode), "", None, Some("7.7.7.7")),
+      submission = (authId, OtpSubmission(otpCode, ""), None, Some("7.7.7.7")),
       ipHeader = "X-Forwarded-For",
     ),
     successfulSubmitTestCase(
@@ -252,20 +252,20 @@ object ConversationControllerSpec extends UnitSpecBase:
       request = Request.post(
         url = URL.empty / "challenge" / "otp",
         body = Body.fromURLEncodedForm(
-          Form.fromStrings("code" -> otpCode.toString),
+          Form.fromStrings("code" -> otpCode.toString, "csrf" -> ""),
         )
       ).addHeader(conversationCookie),
-      submission = (authId, OtpSubmission(otpCode), "", None, None),
+      submission = (authId, OtpSubmission(otpCode, ""), None, None),
     ),
     successfulSubmitTestCase(
       description = "submit passes no ip when the configured header does not match any request header",
       request = Request.post(
         url = URL.empty / "challenge" / "otp",
         body = Body.fromURLEncodedForm(
-          Form.fromStrings("code" -> otpCode.toString),
+          Form.fromStrings("code" -> otpCode.toString, "csrf" -> ""),
         )
       ).addHeader(conversationCookie).addHeader("X-Real-IP", "9.9.9.9"),
-      submission = (authId, OtpSubmission(otpCode), "", None, None),
+      submission = (authId, OtpSubmission(otpCode, ""), None, None),
       ipHeader = "X-Forwarded-For",
     ),
     successfulSubmitTestCase(
@@ -273,10 +273,10 @@ object ConversationControllerSpec extends UnitSpecBase:
       request = Request.post(
         url = URL.empty / "challenge" / "login-password",
         body = Body.fromURLEncodedForm(
-          Form.fromStrings("login" -> "user", "password" -> "s3cret"),
+          Form.fromStrings("login" -> "user", "password" -> "s3cret", "csrf" -> ""),
         )
       ).addHeader(conversationCookie),
-      submission = (authId, LoginPasswordSubmission(Login("user"), Password("s3cret")), "", None, None),
+      submission = (authId, LoginPasswordSubmission(Login("user"), Password("s3cret"), ""), None, None),
     ),
     test("GET /challenge renders step") {
       for
