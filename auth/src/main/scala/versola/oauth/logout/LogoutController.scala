@@ -78,15 +78,18 @@ object LogoutController extends Controller:
         renderService <- ZIO.service[ConversationRenderService]
         hint <- resolveHint(idTokenHint)
         response <- (sessionId, hint) match
+          // The session survives an unverified confirmation, so the signed-out page must not be
+          // rendered here: it would tell the user they are logged out while their session and
+          // cookie are still live.
           case (Some(rawId), None) =>
             request.formAs[LogoutConfirmSubmission].foldZIO(
-              _ => renderService.renderLogout(List.empty, None, None),
+              _ => ZIO.succeed(Response.forbidden),
               submission =>
                 val expected = csrfToken(rawId, submission.postLogoutRedirectUri, submission.state, config)
                 if matches(submission.csrfToken, expected) then
                   performLogout(Right(rawId), submission.postLogoutRedirectUri.flatMap(URL.decode(_).toOption), submission.state, renderService)
                 else
-                  renderService.renderLogout(List.empty, None, None),
+                  ZIO.succeed(Response.forbidden),
             )
           case (Some(rawId), Some(hintId)) =>
             ZIO.serviceWithZIO[SessionService](_.find(rawId)).flatMap {

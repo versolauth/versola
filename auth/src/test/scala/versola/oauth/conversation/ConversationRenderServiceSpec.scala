@@ -248,5 +248,53 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
         yield
           assertTrue(response.header(Header.Location).exists(_.url.encode.contains("id_token=")))
       }
-    )
+    ),
+    suite("renderLogout")(
+      test("renders SignedOut view with encoded logout URIs and redirect URI including state") {
+        val env = Env()
+        val logoutUri1 = URL.decode("https://sp1.example/logout").toOption.get
+        val logoutUri2 = URL.decode("https://sp2.example/logout").toOption.get
+        for
+          _ <- env.configuration.getTheme.succeedsWith(Some(defaultTheme))
+          _ <- env.configuration.getForm.succeedsWith(Some(formRecord.copy(id = "signed-out")))
+          _ <- env.configuration.getLocales.succeedsWith(locales)
+          response <- env.service.renderLogout(List(logoutUri1, logoutUri2), Some(redirectUri), Some("st-1"))
+          body <- response.body.asString
+        yield
+          assertTrue(response.status == Status.Ok) &&
+          assertTrue(response.header(Header.ContentType).exists(_.mediaType == MediaType.text.html)) &&
+          assertTrue(response.headers.get("Cache-Control").contains("no-cache, no-store")) &&
+          assertTrue(response.headers.get("Referrer-Policy").contains("no-referrer")) &&
+          assertTrue(body.contains("versola-step\" content=\"signed-out\"")) &&
+          assertTrue(body.contains(logoutUri1.encode)) &&
+          assertTrue(body.contains(logoutUri2.encode)) &&
+          assertTrue(body.contains(redirectUri.addQueryParam("state", "st-1").encode)) &&
+          assertTrue(body.contains(".body { color: black; }"))
+      },
+      test("omits redirectUri when postLogoutRedirectUri is absent") {
+        val env = Env()
+        for
+          _ <- env.configuration.getTheme.succeedsWith(Some(defaultTheme))
+          _ <- env.configuration.getForm.succeedsWith(Some(formRecord.copy(id = "signed-out")))
+          _ <- env.configuration.getLocales.succeedsWith(locales)
+          response <- env.service.renderLogout(Nil, None, None)
+          body <- response.body.asString
+        yield
+          assertTrue(response.status == Status.Ok) &&
+          assertTrue(!body.contains("\"redirectUri\"")) &&
+          assertTrue(body.contains("\"logoutUris\":[]"))
+      },
+      test("renders 404 if signed-out form is not found") {
+        val env = Env()
+        for
+          _ <- env.configuration.getTheme.succeedsWith(Some(defaultTheme))
+          _ <- env.configuration.getForm.succeedsWith(None)
+          _ <- env.configuration.getLocales.succeedsWith(locales)
+          response <- env.service.renderLogout(Nil, Some(redirectUri), None)
+          body <- response.body.asString
+        yield
+          assertTrue(response.status == Status.NotFound) &&
+          assertTrue(body.contains("Page not found"))
+      },
+    ),
   )

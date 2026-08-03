@@ -108,6 +108,41 @@ export function validateRedirectUri(uri: string): { valid: boolean; error?: stri
 }
 
 /**
+ * Validates a logout notification URI (front-channel and back-channel)
+ * Unlike redirect URIs, custom schemes are not allowed: front-channel URIs are
+ * loaded in an iframe and back-channel URIs are called server-to-server, so only
+ * https:// (or http://localhost for dev) is accepted.
+ */
+export function validateLogoutUri(uri: string): { valid: boolean; error?: string } {
+  if (!uri || uri.trim() === '') {
+    return { valid: false, error: 'URI cannot be empty' };
+  }
+
+  if (uri.includes('#')) {
+    return { valid: false, error: 'URI must not contain fragment (#)' };
+  }
+
+  try {
+    const url = new URL(uri);
+
+    if (url.protocol === 'https:') {
+      return { valid: true };
+    }
+
+    if (url.protocol === 'http:') {
+      if (url.hostname === 'localhost' || url.hostname === '127.0.0.1') {
+        return { valid: true };
+      }
+      return { valid: false, error: 'HTTP only allowed for localhost' };
+    }
+
+    return { valid: false, error: 'Logout URI must use https://' };
+  } catch (e) {
+    return { valid: false, error: 'Invalid URI format' };
+  }
+}
+
+/**
  * Validates resource URI according to backend ResourceUri rules
  * - Must be absolute URI
  * - Must not contain a path

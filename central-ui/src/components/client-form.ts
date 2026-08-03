@@ -8,6 +8,7 @@ import './nav-toggle';
 import {
   validateClientId,
   validateRedirectUri,
+  validateLogoutUri,
   ttlToSeconds,
   secondsToTtl,
 } from '../utils/validators';
@@ -645,7 +646,7 @@ export class VersolaClientForm extends LitElement {
 
     const frontChannelLogoutUri = this.logoutMode === 'front' ? (this.formData.frontChannelLogoutUri || '').trim() : '';
     if (frontChannelLogoutUri) {
-      const uriValidation = validateRedirectUri(frontChannelLogoutUri);
+      const uriValidation = validateLogoutUri(frontChannelLogoutUri);
       if (!uriValidation.valid) {
         this.frontChannelLogoutUriError = uriValidation.error || 'Invalid URI';
         return;
@@ -656,7 +657,7 @@ export class VersolaClientForm extends LitElement {
 
     const backChannelLogoutUri = this.logoutMode === 'back' ? (this.formData.backChannelLogoutUri || '').trim() : '';
     if (backChannelLogoutUri) {
-      const uriValidation = validateRedirectUri(backChannelLogoutUri);
+      const uriValidation = validateLogoutUri(backChannelLogoutUri);
       if (!uriValidation.valid) {
         this.backChannelLogoutUriError = uriValidation.error || 'Invalid URI';
         return;

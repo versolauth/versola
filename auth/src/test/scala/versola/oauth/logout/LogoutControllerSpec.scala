@@ -180,24 +180,42 @@ object LogoutControllerSpec extends UnitSpecBase:
         )),
     ),
     controllerTestCase(
-      description = "POST /logout without a csrf_token does not log out or clear the cookie",
-      request = Request.post(URL.root / "logout", Body.empty).addHeader(sessionCookieHeader()),
-      expectedStatus = Status.Ok,
-      setup = (_, renderService, _) => renderService.renderLogout.succeedsWith(Response.text("<html>logout</html>")),
-      verify = (response, logoutService, _, _) =>
+      description = "POST /logout rejects a token bound to a different post_logout_redirect_uri",
+      request = Request.post(
+        URL.root / "logout",
+        Body.fromURLEncodedForm(Form.fromStrings(
+          "csrf_token" -> csrfToken(rawSessionId, Some(redirectUri.encode), Some("st-9")),
+          "post_logout_redirect_uri" -> "https://attacker.example/callback",
+          "state" -> "st-9",
+        )),
+      ).addHeader(sessionCookieHeader()),
+      expectedStatus = Status.Forbidden,
+      verify = (response, logoutService, renderService, _) =>
         ZIO.succeed(assertTrue(
           logoutService.logout.calls.isEmpty,
+          renderService.renderLogout.calls.isEmpty,
           response.headers.get(Header.SetCookie).isEmpty,
         )),
     ),
     controllerTestCase(
-      description = "POST /logout with an invalid csrf_token does not log out or clear the cookie",
-      request = postWithCsrf("not-the-right-token"),
-      expectedStatus = Status.Ok,
-      setup = (_, renderService, _) => renderService.renderLogout.succeedsWith(Response.text("<html>logout</html>")),
-      verify = (response, logoutService, _, _) =>
+      description = "POST /logout without a csrf_token returns 403 without logging out or rendering the signed-out page",
+      request = Request.post(URL.root / "logout", Body.empty).addHeader(sessionCookieHeader()),
+      expectedStatus = Status.Forbidden,
+      verify = (response, logoutService, renderService, _) =>
         ZIO.succeed(assertTrue(
           logoutService.logout.calls.isEmpty,
+          renderService.renderLogout.calls.isEmpty,
+          response.headers.get(Header.SetCookie).isEmpty,
+        )),
+    ),
+    controllerTestCase(
+      description = "POST /logout with an invalid csrf_token returns 403 without logging out or rendering the signed-out page",
+      request = postWithCsrf("not-the-right-token"),
+      expectedStatus = Status.Forbidden,
+      verify = (response, logoutService, renderService, _) =>
+        ZIO.succeed(assertTrue(
+          logoutService.logout.calls.isEmpty,
+          renderService.renderLogout.calls.isEmpty,
           response.headers.get(Header.SetCookie).isEmpty,
         )),
     ),
@@ -325,24 +343,6 @@ object LogoutControllerSpec extends UnitSpecBase:
       verify = (_, logoutService, _, _) =>
         ZIO.succeed(assertTrue(
           logoutService.logout.calls === List((Right(rawSessionId), Some(redirectUri), Some("st-9"))),
-        )),
-    ),
-    controllerTestCase(
-      description = "POST /logout rejects a token bound to a different post_logout_redirect_uri",
-      request = Request.post(
-        URL.root / "logout",
-        Body.fromURLEncodedForm(Form.fromStrings(
-          "csrf_token" -> csrfToken(rawSessionId, Some(redirectUri.encode), Some("st-9")),
-          "post_logout_redirect_uri" -> "https://attacker.example/callback",
-          "state" -> "st-9",
-        )),
-      ).addHeader(sessionCookieHeader()),
-      expectedStatus = Status.Ok,
-      setup = (_, renderService, _) => renderService.renderLogout.succeedsWith(Response.text("<html>logout</html>")),
-      verify = (response, logoutService, _, _) =>
-        ZIO.succeed(assertTrue(
-          logoutService.logout.calls.isEmpty,
-          response.headers.get(Header.SetCookie).isEmpty,
         )),
     ),
     controllerTestCase(
