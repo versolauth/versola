@@ -79,114 +79,119 @@ server {
 
     location = /central/permissions/me {
         proxy_pass http://edge_backend/permissions/me;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_set_header Connection "";
+        include proxy_params.conf;
     }
 
     location /central/ {
         rewrite ^/central/(.*)$ /resources/central/$1 break;
 
         proxy_pass http://edge_backend;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_set_header Connection "";
+        include proxy_params.conf;
     }
 
     location = /resources {
         proxy_pass http://edge_backend;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_set_header Connection "";
+        include proxy_params.conf;
     }
 
     location /resources/ {
         proxy_pass http://edge_backend;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_set_header Connection "";
+        include proxy_params.conf;
     }
 
     location = /permissions {
         proxy_pass http://edge_backend;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_set_header Connection "";
+        include proxy_params.conf;
     }
 
     location /permissions/ {
         proxy_pass http://edge_backend;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_set_header Connection "";
+        include proxy_params.conf;
+    }
+
+    # OAuth2 / OIDC core endpoints -- these already fall through to the
+    # catch-all below since it also points at auth_backend, but are listed
+    # explicitly here for clarity/documentation of the surface.
+    location = /authorize {
+        proxy_pass http://auth_backend;
+        include proxy_params.conf;
+    }
+
+    location = /token {
+        proxy_pass http://auth_backend;
+        include proxy_params.conf;
+    }
+
+    location = /introspect {
+        proxy_pass http://auth_backend;
+        include proxy_params.conf;
+    }
+
+    location = /revoke {
+        proxy_pass http://auth_backend;
+        include proxy_params.conf;
+    }
+
+    location = /userinfo {
+        proxy_pass http://auth_backend;
+        include proxy_params.conf;
+    }
+
+    location /.well-known/ {
+        proxy_pass http://auth_backend;
+        include proxy_params.conf;
+    }
+
+    # /challenge is the conversation/login-form step API (email, phone,
+    # password, otp, passkey, set-password submissions all nest under it).
+    location = /challenge {
+        proxy_pass http://auth_backend;
+        include proxy_params.conf;
+    }
+
+    location /challenge/ {
+        proxy_pass http://auth_backend;
+        include proxy_params.conf;
     }
 
     location = /login {
         proxy_pass http://edge_backend;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_set_header Connection "";
+        include proxy_params.conf;
     }
 
     location /login/ {
         proxy_pass http://edge_backend;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_set_header Connection "";
+        include proxy_params.conf;
     }
 
     location = /complete {
         proxy_pass http://edge_backend;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_set_header Connection "";
+        include proxy_params.conf;
     }
 
     location = /complete/ {
         proxy_pass http://edge_backend;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_set_header Connection "";
+        include proxy_params.conf;
+    }
+
+    # Bare /logout is auth's RP-initiated logout / end_session_endpoint --
+    # hit directly by RPs, and by the browser after edge's redirect below.
+    location = /logout {
+        proxy_pass http://auth_backend;
+        include proxy_params.conf;
+    }
+
+    # /logout/{presetId} (preset-scoped, edge-initiated logout) and
+    # /logout/frontchannel, /logout/backchannel (OIDC front/back-channel
+    # logout notifications from auth) all live on edge, same as /login/.
+    location /logout/ {
+        proxy_pass http://edge_backend;
+        include proxy_params.conf;
     }
 
     # Everything else stays on auth (OIDC endpoints, login forms, etc.)
     location / {
         proxy_pass http://auth_backend;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_set_header Connection "";
+        include proxy_params.conf;
     }
 }

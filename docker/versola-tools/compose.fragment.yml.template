@@ -116,5 +116,6 @@ services:
       - edge
     volumes:
       - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./proxy_params.conf:/etc/nginx/proxy_params.conf:ro
     ports:
       - "8080:8080"
