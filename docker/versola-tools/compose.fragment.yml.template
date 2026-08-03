@@ -2,6 +2,17 @@
 # "versola bootstrap" places this next to auth.conf/central.conf/edge.conf/
 # nginx.conf and runs it as-is; the relative paths below resolve against
 # whatever directory this file itself ends up in, not the caller's cwd.
+#
+# central/auth/edge/nginx set "platform: linux/amd64" -- these images are
+# only published for amd64 (see the CI jobs that build them), so on an
+# Apple Silicon Mac Docker would otherwise have to guess whether to run
+# them under emulation, which it doesn't always do predictably. Being
+# explicit here means it always emulates instead of erroring or behaving
+# oddly. This is a deliberate simplification for local dev, not a "we
+# didn't know" gap -- native arm64 images were evaluated and intentionally
+# deferred (this only runs locally; not worth the added CI complexity).
+# postgres is left alone -- its official image already publishes arm64,
+# so forcing amd64 there would only make it slower for no reason.
 
 services:
   postgres:
@@ -24,6 +35,7 @@ services:
 
   central:
     image: ghcr.io/versolauth/versola-central:${VERSION}
+    platform: linux/amd64
     container_name: versola-central
     restart: unless-stopped
     depends_on:
@@ -46,6 +58,7 @@ services:
 
   auth:
     image: ghcr.io/versolauth/versola-auth:${VERSION}
+    platform: linux/amd64
     container_name: versola-auth
     restart: unless-stopped
     # central has no healthcheck (no curl in eclipse-temurin:21-jre), so
@@ -73,6 +86,7 @@ services:
 
   edge:
     image: ghcr.io/versolauth/versola-edge:${VERSION}
+    platform: linux/amd64
     container_name: versola-edge
     restart: unless-stopped
     depends_on:
@@ -94,6 +108,7 @@ services:
   # target (docker-local vs prod), the static files don't.
   nginx:
     image: ghcr.io/versolauth/versola-gateway:${VERSION}
+    platform: linux/amd64
     container_name: versola-nginx
     restart: unless-stopped
     depends_on:
