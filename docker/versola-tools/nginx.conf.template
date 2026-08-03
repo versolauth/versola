@@ -9,7 +9,9 @@
 #
 #   1. No TLS. Prod terminates HTTPS itself; locally there's no
 #      certificate and no domain, so this just listens on plain HTTP.
-#      Port 8080 matches what "versola doctor" checks is free.
+#      Port 2821 matches what "versola doctor" checks is free -- chosen
+#      deliberately over 8080, which collides with enough other local dev
+#      tooling to be worth avoiding.
 #   2. Upstreams point at container DNS names (auth, edge) instead of
 #      127.0.0.1 -- nginx is its own container here, not sharing the
 #      host's network with auth/edge like it does in prod.
@@ -39,7 +41,7 @@ upstream edge_backend {
 }
 
 server {
-    listen 8080;
+    listen 2821;
     server_name localhost;
 
     client_max_body_size 8m;

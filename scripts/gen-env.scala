@@ -154,7 +154,7 @@ def writeFile(dir: File, name: String, content: String): Unit =
   // authUrl is a public-facing string (JWT issuer, browser redirects) — it
   // never needs to be a Docker service name, even in docker-local, since
   // browsers/JWT verifiers reach it via the host's published port either way.
-  val authUrlDefault      = if isDockerLocal then "http://localhost:8080" else "http://localhost:9003"
+  val authUrlDefault      = if isDockerLocal then "http://localhost:2821" else "http://localhost:9003"
   val authUrl              = prompt(s"  Auth public URL [$authUrlDefault]: ", authUrlDefault)
   // authInternalUrl, unlike authUrl, IS a real network call — central uses it
   // to reach auth's admin API server-to-server. Defaulting this to authUrl
@@ -178,7 +178,7 @@ def writeFile(dir: File, name: String, content: String): Unit =
   // this at 8095 sent the post-login redirect straight to a closed port
   // and the browser got ERR_CONNECTION_REFUSED right after a real login
   // succeeded.
-  val edgeUrlDefault      = if isDockerLocal then "http://localhost:8080" else "http://localhost:9005"
+  val edgeUrlDefault      = if isDockerLocal then "http://localhost:2821" else "http://localhost:9005"
   val edgeUrl              = prompt(s"  Edge URL [$edgeUrlDefault]: ", edgeUrlDefault)
 
   section("\n── Auth service ──────────────────────────────────────────────────────")
