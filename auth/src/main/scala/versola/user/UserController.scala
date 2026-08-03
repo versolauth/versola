@@ -103,7 +103,7 @@ object UserController extends Controller:
         SessionListResponse(
           sessions.map { record =>
             SessionResponse(
-              clientId = record.clientId,
+              clients = record.clients.map(c => ClientEntryResponse(c.clientId, c.enteredAt.toString)),
               platform = record.userAgent.platform,
               os = record.userAgent.os,
               browser = record.userAgent.browser,

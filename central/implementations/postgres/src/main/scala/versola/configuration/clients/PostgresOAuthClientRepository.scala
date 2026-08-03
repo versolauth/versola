@@ -9,6 +9,7 @@ import versola.central.configuration.tenants.TenantId
 import versola.central.configuration.{PatchClientRedirectUris, PatchClientScope, PatchPermissions}
 import versola.util.{RedirectUri, Secret}
 import versola.util.postgres.BasicCodecs
+import zio.http.URL
 import zio.{Duration, IO, Task, ZIO, ZLayer}
 
 import java.sql.SQLException
@@ -23,12 +24,13 @@ class PostgresOAuthClientRepository(
   given DbCodec[Permission] = DbCodec.StringCodec.biMap(Permission(_), identity[String])
   given DbCodec[RedirectUri] = DbCodec.StringCodec.biMap(RedirectUri(_), identity[String])
   given DbCodec[Duration] = DbCodec.LongCodec.biMap(Duration.fromSeconds, _.toSeconds)
+  given DbCodec[URL] = DbCodec.StringCodec.biMap(URL.decode(_).fold(throw _, identity), _.encode)
   given DbCodec[AuthFlow] = jsonBCodec[AuthFlow]
   given DbCodec[OAuthClientRecord] = DbCodec.derived
 
   private def findClient(clientId: ClientId) =
     sql"""
-      SELECT id, tenant_id, client_name, redirect_uris, scope, external_audience, secret, previous_secret, access_token_ttl, refresh_token_ttl, permissions, theme, auth_flow, otp_template_id, front_channel_logout_uri, front_channel_logout_session_required
+      SELECT id, tenant_id, client_name, redirect_uris, scope, external_audience, secret, previous_secret, access_token_ttl, refresh_token_ttl, permissions, theme, auth_flow, otp_template_id, front_channel_logout_uri, front_channel_logout_session_required, back_channel_logout_uri
       FROM oauth_clients
       WHERE id = $clientId
     """
@@ -36,7 +38,7 @@ class PostgresOAuthClientRepository(
   override def getAll: Task[Vector[OAuthClientRecord]] =
     xa.connectMeasured("get-all-clients"):
       sql"""
-        SELECT id, tenant_id, client_name, redirect_uris, scope, external_audience, secret, previous_secret, access_token_ttl, refresh_token_ttl, permissions, theme, auth_flow, otp_template_id, front_channel_logout_uri, front_channel_logout_session_required
+        SELECT id, tenant_id, client_name, redirect_uris, scope, external_audience, secret, previous_secret, access_token_ttl, refresh_token_ttl, permissions, theme, auth_flow, otp_template_id, front_channel_logout_uri, front_channel_logout_session_required, back_channel_logout_uri
         FROM oauth_clients
       """
         .query[OAuthClientRecord].run()
@@ -48,9 +50,9 @@ class PostgresOAuthClientRepository(
   override def createClient(client: OAuthClientRecord): IO[ClientAlreadyExists | Throwable, Unit] =
     xa.connectMeasured("create-client"):
       sql"""
-        INSERT INTO oauth_clients (id, tenant_id, client_name, redirect_uris, scope, external_audience, secret, previous_secret, access_token_ttl, refresh_token_ttl, permissions, theme, auth_flow, otp_template_id, front_channel_logout_uri, front_channel_logout_session_required)
+        INSERT INTO oauth_clients (id, tenant_id, client_name, redirect_uris, scope, external_audience, secret, previous_secret, access_token_ttl, refresh_token_ttl, permissions, theme, auth_flow, otp_template_id, front_channel_logout_uri, front_channel_logout_session_required, back_channel_logout_uri)
         VALUES (${client.id}, ${client.tenantId}, ${client.clientName}, ${client.redirectUris}, ${client.scope},
-                ${client.externalAudience}, ${client.secret}, ${client.previousSecret}, ${client.accessTokenTtl}, ${client.refreshTokenTtl}, ${client.permissions}, ${client.theme}, ${client.authFlow}, ${client.otpTemplateId}, ${client.frontChannelLogoutUri}, ${client.frontChannelLogoutSessionRequired})
+                ${client.externalAudience}, ${client.secret}, ${client.previousSecret}, ${client.accessTokenTtl}, ${client.refreshTokenTtl}, ${client.permissions}, ${client.theme}, ${client.authFlow}, ${client.otpTemplateId}, ${client.frontChannelLogoutUri}, ${client.frontChannelLogoutSessionRequired}, ${client.backChannelLogoutUri})
       """.update.run()
     .unit
     .mapError {
@@ -69,13 +71,14 @@ class PostgresOAuthClientRepository(
       theme: Option[String],
       authFlow: Option[AuthFlow],
       otpTemplateId: Option[String],
-      frontChannelLogoutUri: Option[Option[String]],
+      frontChannelLogoutUri: Option[Option[URL]],
       frontChannelLogoutSessionRequired: Option[Boolean],
+      backChannelLogoutUri: Option[Option[URL]],
   ): Task[Unit] =
     xa.transactMeasured("update-client"):
       // Lock the row (READ_COMMITTED + FOR UPDATE) to prevent lost updates from concurrent writers.
       val client = sql"""
-        SELECT id, tenant_id, client_name, redirect_uris, scope, external_audience, secret, previous_secret, access_token_ttl, refresh_token_ttl, permissions, theme, auth_flow, otp_template_id, front_channel_logout_uri, front_channel_logout_session_required
+        SELECT id, tenant_id, client_name, redirect_uris, scope, external_audience, secret, previous_secret, access_token_ttl, refresh_token_ttl, permissions, theme, auth_flow, otp_template_id, front_channel_logout_uri, front_channel_logout_session_required, back_channel_logout_uri
         FROM oauth_clients
         WHERE id = $clientId
         FOR UPDATE
@@ -91,6 +94,7 @@ class PostgresOAuthClientRepository(
       val newOtpTemplateId = otpTemplateId.getOrElse(client.otpTemplateId)
       val newFrontChannelLogoutUri = frontChannelLogoutUri.getOrElse(client.frontChannelLogoutUri)
       val newFrontChannelLogoutSessionRequired = frontChannelLogoutSessionRequired.getOrElse(client.frontChannelLogoutSessionRequired)
+      val newBackChannelLogoutUri = backChannelLogoutUri.getOrElse(client.backChannelLogoutUri)
       sql"""
         UPDATE oauth_clients SET
           client_name = $newClientName,
@@ -103,7 +107,8 @@ class PostgresOAuthClientRepository(
           auth_flow = $newAuthFlow,
           otp_template_id = $newOtpTemplateId,
           front_channel_logout_uri = $newFrontChannelLogoutUri,
-          front_channel_logout_session_required = $newFrontChannelLogoutSessionRequired
+          front_channel_logout_session_required = $newFrontChannelLogoutSessionRequired,
+          back_channel_logout_uri = $newBackChannelLogoutUri
         WHERE id = $clientId
       """.update.run()
     .unit

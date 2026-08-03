@@ -71,7 +71,8 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       JwksService &
       SubmissionLimiter &
       ChallengeThrottleRepository &
-      LogoutService
+      LogoutService &
+      SessionService
 
   override def routes: Routes[Dependencies & Tracing & EnvName, Throwable] =
     List(

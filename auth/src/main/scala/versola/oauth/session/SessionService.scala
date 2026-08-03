@@ -14,6 +14,10 @@ trait SessionService:
    *  data without a separate lookup. */
   def invalidate(id: Either[PublicSessionId, SessionId]): Task[Option[SessionInfo]]
 
+  /** Registers a relying party as logged-in on this session, so it can be notified on
+   *  front/back-channel logout. Idempotent: a no-op if the client is already registered. */
+  def registerClient(id: MAC.Of[SessionId], clientId: ClientId): Task[Unit]
+
 object SessionService:
   def live = ZLayer.fromFunction(Impl(_, _, _))
 
@@ -34,6 +38,9 @@ object SessionService:
 
     override def prolongIdle(id: MAC.Of[SessionId], idleTtl: Duration): Task[Unit] =
       repository.prolongIdle(id, idleTtl)
+
+    override def registerClient(id: MAC.Of[SessionId], clientId: ClientId): Task[Unit] =
+      repository.registerClient(id, clientId)
 
     override def invalidate(id: Either[PublicSessionId, SessionId]): Task[Option[SessionInfo]] =
       id match

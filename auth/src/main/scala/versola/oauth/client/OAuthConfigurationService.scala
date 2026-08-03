@@ -6,7 +6,7 @@ import versola.oauth.metadata.{MetadataSyncClient, ServerMetadataRecord}
 import versola.util.{CoreConfig, ReloadingCache, Secret, SecureRandom, SecurityService}
 import zio.*
 import zio.json.ast.Json
-import zio.http.Client
+import zio.http.{Client, URL}
 import zio.prelude.{EqualOps, NonEmptyList, NonEmptySet}
 
 trait OAuthConfigurationService:
@@ -52,6 +52,8 @@ trait OAuthConfigurationService:
   def getAcrVocabulary(id: ClientId): UIO[Map[Acr, NonEmptyList[PassedAuthFactor]]]
 
   def getSessionIdleTtl(id: ClientId): UIO[Option[Duration]]
+
+  def getPostLogoutRedirectUris(tenantId: TenantId): UIO[List[URL]]
 
   def getMetadata: UIO[Json.Obj]
 
@@ -273,6 +275,12 @@ object OAuthConfigurationService:
               .getOrElse(Map.empty)
               .flatMap { case (k, vs) => NonEmptyList.fromIterableOption(vs).map(Acr(k) -> _) },
           )
+
+    override def getPostLogoutRedirectUris(tenantId: TenantId): UIO[List[URL]] =
+      challengeSettingsCache.get.map(
+        _.find(_.tenantId == tenantId)
+          .fold(List.empty[URL])(_.postLogoutRedirectUris.flatMap(URL.decode(_).toOption)),
+      )
 
     override def getMetadata: UIO[Json.Obj] =
       metadataCache.get

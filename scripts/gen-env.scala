@@ -224,13 +224,18 @@ def writeFile(dir: File, name: String, content: String): Unit =
        |  "jwks_uri": "$authUrl/.well-known/jwks.json",
        |  "introspection_endpoint": "$authUrl/introspect",
        |  "revocation_endpoint": "$authUrl/revoke",
+       |  "end_session_endpoint": "$authUrl/logout",
        |  "scopes_supported": ["openid", "profile", "email", "phone", "offline_access"],
        |  "response_types_supported": ["code", "code id_token"],
        |  "grant_types_supported": ["authorization_code", "client_credentials", "refresh_token"],
        |  "subject_types_supported": ["public", "pairwise"],
        |  "id_token_signing_alg_values_supported": ["RS256"],
        |  "token_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post"],
-       |  "claims_supported": ["sub", "iss", "aud", "exp", "iat", "jti", "nonce", "auth_time", "acr", "amr"]
+       |  "claims_supported": ["sub", "iss", "aud", "exp", "iat", "jti", "nonce", "auth_time", "acr", "amr", "sid"],
+       |  "frontchannel_logout_supported": true,
+       |  "frontchannel_logout_session_supported": true,
+       |  "backchannel_logout_supported": true,
+       |  "backchannel_logout_session_supported": true
        |}""".stripMargin
 
   section("\n── Edge service ──────────────────────────────────────────────────────")

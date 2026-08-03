@@ -302,6 +302,7 @@ object BootstrapService:
       sessionIdleTtlSeconds = None,
       ipHeader = "X-Real-IP",
       acrVocabulary = None,
+      postLogoutRedirectUris = List("https://id.versola.kz/central/admin/"),
     )
 
   /** Default theme seeded from the shared CSS resource. */
@@ -328,6 +329,8 @@ object BootstrapService:
     "set-password" -> Vector.empty,
     "access-denied" -> Vector.empty,
     "passkey-enroll" -> Vector.empty,
+    "confirm-logout" -> Vector.empty,
+    "signed-out" -> Vector.empty,
   )
 
   /** Hard-coded resourceId for the edge-facing resource that proxies central's admin API. */
@@ -587,6 +590,7 @@ object BootstrapService:
         otpTemplateId  = "default",
         frontChannelLogoutUri = config.frontChannelLogoutUri,
         frontChannelLogoutSessionRequired = true,
+        backChannelLogoutUri = None,
       )
       for
         presetSecret <- ZIO.foreach(config.clientSecret): secretB64 =>
@@ -603,23 +607,41 @@ object BootstrapService:
 
     private def seedPresets(config: CentralConfig.BootstrapConfig): Task[Unit] =
       ZIO.foreachDiscard(config.presets.getOrElse(Nil)): seed =>
-        presetRepo.find(PresetId(seed.id)).flatMap:
-          case Some(_) => ZIO.unit
-          case None    =>
-            val preset = AuthorizationPreset(
-              id                   = PresetId(seed.id),
-              clientId             = CentralConfig.centralClientId,
-              description          = seed.description,
-              redirectUri          = RedirectUri(seed.redirectUri),
-              postLoginRedirectUri = RedirectUri(seed.postLoginRedirectUri),
-              scope                = clientScopes,
-              responseType         = ResponseType.Code,
-              uiLocales            = None,
-              customParameters     = Map.empty,
-              cookieDomain         = seed.cookieDomain,
-              cookiePath           = seed.cookiePath,
-            )
-            presetRepo.replace(CentralConfig.centralClientId, Seq(preset))
+        for
+          _ <- presetRepo.find(PresetId(seed.id)).flatMap:
+            case Some(_) => ZIO.unit
+            case None    =>
+              val preset = AuthorizationPreset(
+                id                   = PresetId(seed.id),
+                clientId             = CentralConfig.centralClientId,
+                description          = seed.description,
+                redirectUri          = RedirectUri(seed.redirectUri),
+                postLoginRedirectUri = RedirectUri(seed.postLoginRedirectUri),
+                postLogoutRedirectUri = seed.postLogoutRedirectUri.map(RedirectUri(_)).orElse(Some(RedirectUri(seed.postLoginRedirectUri))),
+                scope                = clientScopes,
+                responseType         = ResponseType.Code,
+                uiLocales            = None,
+                customParameters     = Map.empty,
+                cookieDomain         = seed.cookieDomain,
+                cookiePath           = seed.cookiePath,
+              )
+              presetRepo.replace(CentralConfig.centralClientId, Seq(preset))
+          _ <- ZIO.foreachDiscard(seed.postLogoutRedirectUri)(registerPostLogoutRedirectUri(CentralConfig.defaultTenantId, _))
+        yield ()
+
+    /** Ensures the given `postLogoutRedirectUri` is present in the tenant's
+      * `ChallengeSettingsRecord.postLogoutRedirectUris` allow-list, so the auth server accepts it
+      * during RP-initiated logout. Runs on every bootstrap (not just first-time preset creation)
+      * so config changes converge even when the preset/settings already exist.
+      */
+    private def registerPostLogoutRedirectUri(tenantId: TenantId, uri: String): Task[Unit] =
+      challengeSettingsRepo.findByTenant(tenantId).flatMap:
+        case Some(settings) =>
+          val merged = (settings.postLogoutRedirectUris :+ uri).distinct
+          ZIO.when(merged != settings.postLogoutRedirectUris)(
+            challengeSettingsRepo.upsert(settings.copy(postLogoutRedirectUris = merged)),
+          ).unit
+        case None => ZIO.unit
 
     private def seedEdges(config: CentralConfig.BootstrapConfig): Task[Unit] =
       ZIO.foreachDiscard(config.edges.getOrElse(Nil)): seed =>

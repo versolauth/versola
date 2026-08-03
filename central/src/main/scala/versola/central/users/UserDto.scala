@@ -1,11 +1,14 @@
 package versola.central.users
 
+import versola.central.configuration.clients.ClientId
 import versola.central.configuration.roles.RoleId
 import versola.central.configuration.tenants.TenantId
 import versola.util.{Email, Patch, Phone}
 import zio.json.JsonCodec
 import zio.json.ast.Json
 import zio.schema.{Schema, derived}
+
+import java.time.Instant
 
 case class CreateUserRequest(
     email: Option[Email],
@@ -85,4 +88,22 @@ case class ResetPasswordRequest(
 case class SetPasswordRequest(
     userId: UserId,
     password: String,
+) derives JsonCodec, Schema
+
+/** Client entry within a session, enriched with the computed expiration (derived from the
+  * client's access token TTL fetched from [[versola.central.configuration.clients.OAuthClientService]]).
+  */
+case class ClientSessionEntry(
+    clientId: ClientId,
+    enteredAt: Instant,
+    expiresAt: Instant,
+) derives JsonCodec, Schema
+
+case class SessionResponse(
+    clients: List[ClientSessionEntry],
+    platform: String,
+    os: Option[String],
+    browser: Option[String],
+    version: Option[String],
+    createdAt: String,
 ) derives JsonCodec, Schema

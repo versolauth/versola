@@ -33,6 +33,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
     otpTemplateId = "default",
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
+    backChannelLogoutUri = None,
   )
 
   class Env:

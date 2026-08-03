@@ -110,6 +110,9 @@ test('creates a client and shows the generated secret banner', async ({ page }) 
     },
     otpTemplateId: null,
     theme: 'default',
+    frontChannelLogoutUri: null,
+    frontChannelLogoutSessionRequired: false,
+    backChannelLogoutUri: null,
   });
 });
 
@@ -133,6 +136,33 @@ test('shows client form validation before submitting', async ({ page }) => {
   await page.getByPlaceholder('https://app.example.com/callback').fill('https://broken.example/callback#fragment');
   await page.getByPlaceholder('https://app.example.com/callback').press('Enter');
   await expect(page.getByText('URI must not contain fragment (#)', { exact: true })).toBeVisible();
+});
+
+test('rejects logout notification URIs with a non-http(s) scheme', async ({ page }) => {
+  const api = await loadAdminApp(page, {
+    path: clientsPath,
+    state: { clients: { 'tenant-alpha': [alphaClient] } },
+  });
+
+  await page.getByRole('button', { name: '+ Create Client', exact: true }).click();
+  await page.getByLabel('Client ID').fill('good-client');
+  await page.getByLabel('Client Name').fill('Good Client');
+  await page.getByPlaceholder('https://app.example.com/callback').fill('https://good.example/callback');
+  await page.getByPlaceholder('https://app.example.com/callback').press('Enter');
+
+  await page.getByRole('button', { name: 'front-channel', exact: true }).click();
+  await page.getByPlaceholder('https://app.example.com/logout/frontchannel').fill('javascript:alert(1)');
+  await page.getByRole('button', { name: 'Create Client', exact: true }).click();
+
+  await expect(page.getByText('Logout URI must use https://', { exact: true })).toBeVisible();
+  expect(api.requests.some(request => request.method === 'POST' && request.pathname === '/configuration/clients')).toBeFalsy();
+
+  await page.getByRole('button', { name: 'back-channel', exact: true }).click();
+  await page.getByPlaceholder('https://app.example.com/logout/backchannel').fill('com.example.app://logout');
+  await page.getByRole('button', { name: 'Create Client', exact: true }).click();
+
+  await expect(page.getByText('Logout URI must use https://', { exact: true })).toBeVisible();
+  expect(api.requests.some(request => request.method === 'POST' && request.pathname === '/configuration/clients')).toBeFalsy();
 });
 
 test('shows redirect URI validation with a red input border', async ({ page }) => {
@@ -268,6 +298,7 @@ test('updates a client and sends patch-style changes', async ({ page }) => {
       passkey: null,
       equivalents: {},
     },
+    frontChannelLogoutSessionRequired: false,
   });
 });
 
@@ -371,6 +402,9 @@ test('shows error alert when creating a client with duplicate ID', async ({ page
     },
     otpTemplateId: null,
     theme: 'default',
+    frontChannelLogoutUri: null,
+    frontChannelLogoutSessionRequired: false,
+    backChannelLogoutUri: null,
   });
 
   // The client should NOT be added to the list

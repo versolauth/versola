@@ -21,4 +21,5 @@ case class ChallengeSettingsRecord(
     sessionIdleTtlSeconds: Option[Int],
     ipHeader: String,
     acrVocabulary: Option[Map[String, List[PassedAuthFactor]]],
+    postLogoutRedirectUris: List[String],
 ) derives JsonCodec

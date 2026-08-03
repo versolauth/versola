@@ -14,6 +14,7 @@ CREATE TABLE authorization_codes (
     nonce TEXT,
     used BOOLEAN NOT NULL,
     access_token BYTEA NOT NULL,
+    acr TEXT,
     amr JSONB NOT NULL,
     auth_time TIMESTAMP WITH TIME ZONE NOT NULL
 );

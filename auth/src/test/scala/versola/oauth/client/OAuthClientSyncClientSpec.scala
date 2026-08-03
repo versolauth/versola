@@ -117,7 +117,7 @@ object OAuthClientSyncClientSpec extends ZIOSpecDefault:
         client.secret.exists(_.sameElements(currentSecret)),
         client.previousSecret.exists(_.sameElements(previousSecret)),
         client.accessTokenTtl == 300.seconds,
-        client.frontChannelLogoutUri.contains("https://example.com/frontchannel-logout"),
+        client.frontChannelLogoutUri.contains(URL.decode("https://example.com/frontchannel-logout").toOption.get),
         client.frontChannelLogoutSessionRequired,
       )
     },

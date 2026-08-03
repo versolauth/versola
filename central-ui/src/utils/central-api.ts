@@ -47,6 +47,7 @@ type AuthorizationPresetResponse = {
   description: string;
   redirectUri: string;
   postLoginRedirectUri: string;
+  postLogoutRedirectUri?: string;
   scope: string[];
   responseType: string;
   uiLocales?: string[];
@@ -113,6 +114,7 @@ type ClientsResponse = {
     authFlow?: BackendAuthFlow | null;
     frontChannelLogoutUri?: string | null;
     frontChannelLogoutSessionRequired: boolean;
+    backChannelLogoutUri?: string | null;
   }>;
 };
 type RolesResponse = { roles: Array<{ id: string; description: LocalizedDescription; permissions: string[]; active: boolean }> };
@@ -588,6 +590,7 @@ export async function fetchClients(tenantId: string, offset = 0, limit = DEFAULT
         authFlow: authFlowFromBackend(client.authFlow) ?? createDefaultAuthFlow(),
         frontChannelLogoutUri: client.frontChannelLogoutUri ?? null,
         frontChannelLogoutSessionRequired: client.frontChannelLogoutSessionRequired,
+        backChannelLogoutUri: client.backChannelLogoutUri ?? null,
         tenantId,
       };
     }),
@@ -630,6 +633,7 @@ export async function fetchClientPresets(clientId: string): Promise<Authorizatio
     description: preset.description,
     redirectUri: preset.redirectUri,
     postLoginRedirectUri: preset.postLoginRedirectUri,
+    postLogoutRedirectUri: preset.postLogoutRedirectUri,
     scope: [...preset.scope],
     responseType: preset.responseType as 'code' | 'code id_token',
     uiLocales: preset.uiLocales,
@@ -650,6 +654,7 @@ export async function saveClientPresets(clientId: string, presets: Authorization
         description: p.description,
         redirectUri: p.redirectUri,
         postLoginRedirectUri: p.postLoginRedirectUri,
+        postLogoutRedirectUri: p.postLogoutRedirectUri,
         scope: p.scope,
         responseType: p.responseType,
         uiLocales: p.uiLocales,
@@ -885,6 +890,7 @@ export async function createClient(tenantId: string, client: OAuthClient): Promi
       authFlow: authFlowToBackend(client.authFlow),
       frontChannelLogoutUri: client.frontChannelLogoutUri ?? null,
       frontChannelLogoutSessionRequired: client.frontChannelLogoutSessionRequired,
+      backChannelLogoutUri: client.backChannelLogoutUri ?? null,
     },
   });
 
@@ -942,6 +948,7 @@ export async function updateClient(tenantId: string, existing: OAuthClient, clie
       authFlow: authFlowToBackend(client.authFlow),
       frontChannelLogoutUri: existing.frontChannelLogoutUri !== client.frontChannelLogoutUri ? (client.frontChannelLogoutUri ?? null) : undefined,
       frontChannelLogoutSessionRequired: existing.frontChannelLogoutSessionRequired !== client.frontChannelLogoutSessionRequired ? client.frontChannelLogoutSessionRequired : undefined,
+      backChannelLogoutUri: existing.backChannelLogoutUri !== client.backChannelLogoutUri ? (client.backChannelLogoutUri ?? null) : undefined,
     },
   });
 
@@ -1173,6 +1180,7 @@ export async function upsertChallengeSettings(
   sessionIdleTtlSeconds: number | null,
   ipHeader: string,
   acrVocabulary?: Record<string, string[]> | null,
+  postLogoutRedirectUris?: string[],
 ): Promise<void> {
   await requestVoid('/configuration/challenges/challenge-settings', {
     method: 'PUT',
@@ -1188,6 +1196,7 @@ export async function upsertChallengeSettings(
       sessionIdleTtlSeconds: sessionIdleTtlSeconds ?? null,
       ipHeader,
       acrVocabulary: acrVocabulary ?? null,
+      postLogoutRedirectUris: postLogoutRedirectUris ?? null,
     },
   });
 }

@@ -27,5 +27,6 @@ cp .local/env/docker-local/edge.conf    "$OUT_DIR"/edge.conf
 # other "$" characters in the template to worry about mangling.
 sed "s/\${VERSION}/$VERSION/g" compose.fragment.yml.template > "$OUT_DIR"/compose.fragment.yml
 cp nginx.conf.template "$OUT_DIR"/nginx.conf
+cp proxy_params.conf.template "$OUT_DIR"/proxy_params.conf
 
-echo "versola-tools: wrote auth.conf, central.conf, edge.conf, compose.fragment.yml, nginx.conf to $OUT_DIR"
+echo "versola-tools: wrote auth.conf, central.conf, edge.conf, compose.fragment.yml, nginx.conf, proxy_params.conf to $OUT_DIR"

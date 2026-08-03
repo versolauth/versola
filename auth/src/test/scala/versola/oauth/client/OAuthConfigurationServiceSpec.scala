@@ -32,6 +32,7 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
     otpTemplateId = "default",
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
+    backChannelLogoutUri = None,
   )
   val publicClient = OAuthClientRecord(
     id = publicClientId,
@@ -49,6 +50,7 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
     otpTemplateId = "default",
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
+    backChannelLogoutUri = None,
   )
 
   val testScopes = Vector(ScopeRecord(ScopeToken("read"), Vector.empty))
@@ -67,6 +69,7 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
     sessionIdleTtlSeconds = Some(3600),
     ipHeader = "X-Real-IP",
     acrVocabulary = None,
+    postLogoutRedirectUris = List.empty,
   )
   val systemSettings = SystemSettingsRecord.default
 

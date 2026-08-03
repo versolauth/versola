@@ -38,6 +38,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
       description = "default",
       redirectUri = redirectUri,
       postLoginRedirectUri = postLoginUri,
+      postLogoutRedirectUri = None,
       scope = Set("openid"),
       responseType = "code",
       uiLocales = None,
@@ -126,6 +127,36 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
         }
       }
 
+    def signLogoutToken(
+        issuer: String = "https://idp.example",
+        audience: String = "web-app",
+        sid: Option[String] = Some("sso-session-1"),
+        nonce: Option[String] = None,
+        events: java.util.Map[String, ?] =
+          Collections.singletonMap(backChannelLogoutEvent, Collections.emptyMap()),
+        ttlSeconds: Long = 120,
+    ): Task[String] =
+      Clock.instant.flatMap { now =>
+        ZIO.attemptBlocking {
+          val header = JWSHeader.Builder(JWSAlgorithm.RS256)
+            .keyID(edgeConfig.keyId)
+            .`type`(JOSEObjectType.JWT)
+            .build()
+          val builder = JWTClaimsSet.Builder()
+            .issuer(issuer)
+            .audience(Collections.singletonList(audience))
+            .jwtID(UUID.randomUUID().toString)
+            .issueTime(Date.from(now))
+            .expirationTime(Date.from(now.plusSeconds(ttlSeconds)))
+            .claim("events", events)
+          sid.foreach(builder.claim("sid", _))
+          nonce.foreach(builder.claim("nonce", _))
+          val jwt = SignedJWT(header, builder.build())
+          jwt.sign(RSASSASigner(edgeConfig.privateKey))
+          jwt.serialize()
+        }
+      }
+
     def withPresets(values: AuthorizationPreset*): UIO[Unit] =
       presetCache.set(values.map(p => p.id -> p).toMap)
 
@@ -155,6 +186,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
     authorizeSuite,
     completeSuite,
     frontChannelLogoutSuite,
+    backChannelLogoutSuite,
     getMyPermissionsSuite,
   ).provideSomeLayer[Client](
     SecureRandom.live >>> SecurityService.live,
@@ -497,6 +529,131 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
           env.sessionRepository.deleteBySessionId.calls.isEmpty,
         )
       }
+    },
+  )
+
+  private val backChannelLogoutEvent = "http://schemas.openid.net/event/backchannel-logout"
+
+  private def rejection(result: Either[Throwable | InvalidLogoutToken, Unit]): Option[String] =
+    result.swap.toOption.collect { case invalid: InvalidLogoutToken => invalid.reason }
+
+  private val backChannelLogoutSuite = suite("backChannelLogout")(
+    test("deletes the session rows named by a valid logout token") {
+      val env = new Env
+      for
+        _ <- env.withClients(Fixtures.client)
+        _ <- env.jwksService.getPublicKeys.succeedsWith(env.publicKeys)
+        _ <- env.sessionRepository.deleteBySessionId.succeedsWith(List.empty)
+        security <- ZIO.service[SecurityService]
+        client <- ZIO.service[Client]
+        service = env.buildService(client, security)
+        token <- env.signLogoutToken()
+        _ <- service.backChannelLogout(token)
+      yield assertTrue(
+        env.sessionRepository.deleteBySessionId.calls == List(SessionId("sso-session-1")),
+      )
+    },
+    test("rejects a token that is not a valid JWT") {
+      val env = new Env
+      for
+        _ <- env.jwksService.getPublicKeys.succeedsWith(env.publicKeys)
+        security <- ZIO.service[SecurityService]
+        client <- ZIO.service[Client]
+        service = env.buildService(client, security)
+        result <- service.backChannelLogout("not-a-jwt").either
+      yield assertTrue(
+        rejection(result).exists(_.contains("not a valid JWT")),
+        env.sessionRepository.deleteBySessionId.calls.isEmpty,
+      )
+    },
+    test("rejects a token issued by an unknown issuer") {
+      val env = new Env
+      for
+        _ <- env.withClients(Fixtures.client)
+        _ <- env.jwksService.getPublicKeys.succeedsWith(env.publicKeys)
+        security <- ZIO.service[SecurityService]
+        client <- ZIO.service[Client]
+        service = env.buildService(client, security)
+        token <- env.signLogoutToken(issuer = "https://untrusted.example")
+        result <- service.backChannelLogout(token).either
+      yield assertTrue(
+        rejection(result).contains("logout token was issued by an unknown issuer"),
+        env.sessionRepository.deleteBySessionId.calls.isEmpty,
+      )
+    },
+    test("rejects a token addressed to a client this edge does not know") {
+      val env = new Env
+      for
+        _ <- env.jwksService.getPublicKeys.succeedsWith(env.publicKeys)
+        security <- ZIO.service[SecurityService]
+        client <- ZIO.service[Client]
+        service = env.buildService(client, security)
+        token <- env.signLogoutToken(audience = "ghost")
+        result <- service.backChannelLogout(token).either
+      yield assertTrue(
+        rejection(result).contains("logout token is not addressed to a known client"),
+        env.sessionRepository.deleteBySessionId.calls.isEmpty,
+      )
+    },
+    test("rejects a token without the back-channel logout event") {
+      val env = new Env
+      for
+        _ <- env.withClients(Fixtures.client)
+        _ <- env.jwksService.getPublicKeys.succeedsWith(env.publicKeys)
+        security <- ZIO.service[SecurityService]
+        client <- ZIO.service[Client]
+        service = env.buildService(client, security)
+        token <- env.signLogoutToken(events = Collections.emptyMap())
+        result <- service.backChannelLogout(token).either
+      yield assertTrue(
+        rejection(result).contains("logout token does not carry the back-channel logout event"),
+        env.sessionRepository.deleteBySessionId.calls.isEmpty,
+      )
+    },
+    test("rejects a token carrying a nonce") {
+      val env = new Env
+      for
+        _ <- env.withClients(Fixtures.client)
+        _ <- env.jwksService.getPublicKeys.succeedsWith(env.publicKeys)
+        security <- ZIO.service[SecurityService]
+        client <- ZIO.service[Client]
+        service = env.buildService(client, security)
+        token <- env.signLogoutToken(nonce = Some("n-1"))
+        result <- service.backChannelLogout(token).either
+      yield assertTrue(
+        rejection(result).contains("logout token must not carry a nonce"),
+        env.sessionRepository.deleteBySessionId.calls.isEmpty,
+      )
+    },
+    test("rejects a token without a sid claim") {
+      val env = new Env
+      for
+        _ <- env.withClients(Fixtures.client)
+        _ <- env.jwksService.getPublicKeys.succeedsWith(env.publicKeys)
+        security <- ZIO.service[SecurityService]
+        client <- ZIO.service[Client]
+        service = env.buildService(client, security)
+        token <- env.signLogoutToken(sid = None)
+        result <- service.backChannelLogout(token).either
+      yield assertTrue(
+        rejection(result).contains("logout token carries no sid claim"),
+        env.sessionRepository.deleteBySessionId.calls.isEmpty,
+      )
+    },
+    test("rejects an expired token") {
+      val env = new Env
+      for
+        _ <- env.withClients(Fixtures.client)
+        _ <- env.jwksService.getPublicKeys.succeedsWith(env.publicKeys)
+        security <- ZIO.service[SecurityService]
+        client <- ZIO.service[Client]
+        service = env.buildService(client, security)
+        token <- env.signLogoutToken(ttlSeconds = -60)
+        result <- service.backChannelLogout(token).either
+      yield assertTrue(
+        rejection(result).exists(_.contains("not a valid JWT")),
+        env.sessionRepository.deleteBySessionId.calls.isEmpty,
+      )
     },
   )
 

@@ -264,6 +264,7 @@ case class OAuthClientResponse(
     otpTemplateId: String,
     frontChannelLogoutUri: Option[String],
     frontChannelLogoutSessionRequired: Boolean,
+    backChannelLogoutUri: Option[String],
 ) derives Schema, JsonCodec
 
 case class GetAllClientsResponse(
@@ -285,6 +286,7 @@ case class CreateClientRequest(
     otpTemplateId: String,
     frontChannelLogoutUri: Option[String],
     frontChannelLogoutSessionRequired: Boolean,
+    backChannelLogoutUri: Option[String],
 ) derives Schema, JsonCodec
 
 case class CreateClientResponse(
@@ -308,6 +310,7 @@ case class UpdateClientRequest(
     otpTemplateId: Option[String],
     frontChannelLogoutUri: Option[Option[String]],
     frontChannelLogoutSessionRequired: Option[Boolean],
+    backChannelLogoutUri: Option[Option[String]],
 ) derives Schema, JsonCodec
 
 case class AuthorizationPresetInput(
@@ -315,6 +318,7 @@ case class AuthorizationPresetInput(
     description: String,
     redirectUri: RedirectUri,
     postLoginRedirectUri: RedirectUri,
+    postLogoutRedirectUri: Option[RedirectUri] = None,
     scope: Set[ScopeToken],
     responseType: ResponseType,
     uiLocales: Option[List[String]],
@@ -334,6 +338,7 @@ case class AuthorizationPresetResponse(
     description: String,
     redirectUri: RedirectUri,
     postLoginRedirectUri: RedirectUri,
+    postLogoutRedirectUri: Option[RedirectUri] = None,
     scope: Set[ScopeToken],
     responseType: ResponseType,
     uiLocales: Option[List[String]],
@@ -352,6 +357,7 @@ case class AuthorizationPresetSyncResponse(
     description: String,
     redirectUri: RedirectUri,
     postLoginRedirectUri: RedirectUri,
+    postLogoutRedirectUri: Option[RedirectUri] = None,
     scope: Set[ScopeToken],
     responseType: ResponseType,
     uiLocales: Option[List[String]],
@@ -434,6 +440,7 @@ case class SyncOAuthClientRecord(
     otpTemplateId: String,
     frontChannelLogoutUri: Option[String],
     frontChannelLogoutSessionRequired: Boolean,
+    backChannelLogoutUri: Option[String],
 ) derives JsonCodec, Schema
 
 case class GetOAuthClientsSyncResponse(

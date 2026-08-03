@@ -11,5 +11,8 @@ CREATE TABLE oauth_clients (
     refresh_token_ttl BIGINT NOT NULL,
     permissions       TEXT[] NOT NULL,
     auth_flow         JSONB,
-    otp_template_id   TEXT NOT NULL
+    otp_template_id   TEXT NOT NULL,
+    front_channel_logout_uri TEXT,
+    front_channel_logout_session_required BOOLEAN NOT NULL DEFAULT FALSE,
+    back_channel_logout_uri TEXT
 );

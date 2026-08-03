@@ -61,6 +61,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
     otpTemplateId = "default",
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
+    backChannelLogoutUri = None,
   )
 
   private val updateRequest = UpdateClientRequest(
@@ -85,6 +86,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
     otpTemplateId = None,
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = None,
+    backChannelLogoutUri = None,
   )
 
   private val clients = Vector(
@@ -105,6 +107,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       otpTemplateId = "default",
       frontChannelLogoutUri = None,
       frontChannelLogoutSessionRequired = false,
+      backChannelLogoutUri = None,
     ),
     OAuthClientRecord(
       id = ClientId("mobile-app"),
@@ -123,6 +126,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       otpTemplateId = "default",
       frontChannelLogoutUri = None,
       frontChannelLogoutSessionRequired = false,
+      backChannelLogoutUri = None,
     ),
   )
 
@@ -247,6 +251,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
                 otpTemplateId = "default",
                 frontChannelLogoutUri = None,
                 frontChannelLogoutSessionRequired = false,
+                backChannelLogoutUri = None,
               ),
               OAuthClientResponse(
                 id = ClientId("mobile-app"),
@@ -261,6 +266,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
                 otpTemplateId = "default",
                 frontChannelLogoutUri = None,
                 frontChannelLogoutSessionRequired = false,
+                backChannelLogoutUri = None,
               ),
             ),
           ),
@@ -355,6 +361,22 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
         ),
     ),
     controllerTestCase(
+      description = "create client returns 400 when both logout URIs are configured",
+      request = Request(
+        method = Method.POST,
+        url = URL.empty / "configuration" / "clients",
+        body = Body.fromString(createRequest.copy(
+          frontChannelLogoutUri = Some("https://example.com/front-logout"),
+          backChannelLogoutUri = Some("https://example.com/back-logout"),
+        ).toJson),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.BadRequest,
+      verify = (_, service, _) =>
+        ZIO.succeed(
+          assertTrue(service.registerClient.calls.isEmpty),
+        ),
+    ),
+    controllerTestCase(
       description = "update client and return no content",
       request = Request(
         method = Method.PUT,
@@ -367,6 +389,39 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       verify = (_, service, _) =>
         ZIO.succeed(
           assertTrue(service.updateClient.calls == List(updateRequest)),
+        ),
+    ),
+    controllerTestCase(
+      description = "update client returns 400 when both logout URIs are configured",
+      request = Request(
+        method = Method.PUT,
+        url = URL.empty / "configuration" / "clients",
+        body = Body.fromString(updateRequest.copy(
+          frontChannelLogoutUri = Some(Some("https://example.com/front-logout")),
+          backChannelLogoutUri = Some(Some("https://example.com/back-logout")),
+        ).toJson),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.BadRequest,
+      verify = (_, service, _) =>
+        ZIO.succeed(
+          assertTrue(service.updateClient.calls.isEmpty),
+        ),
+    ),
+    controllerTestCase(
+      description = "update client succeeds when setting only one logout URI",
+      request = Request(
+        method = Method.PUT,
+        url = URL.empty / "configuration" / "clients",
+        body = Body.fromString(updateRequest.copy(
+          frontChannelLogoutUri = Some(Some("https://example.com/front-logout")),
+        ).toJson),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.NoContent,
+      setup = service =>
+        service.updateClient.succeedsWith(()),
+      verify = (_, service, _) =>
+        ZIO.succeed(
+          assertTrue(service.updateClient.calls.nonEmpty),
         ),
     ),
     controllerTestCase(

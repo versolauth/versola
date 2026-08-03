@@ -120,6 +120,13 @@ export default defineConfig(({ command, isPreview }) => ({
         target: 'http://localhost:9005',
         changeOrigin: true,
       },
+      // The "Log out" link navigates to /logout/<presetId> (see navigation.ts) — edge's
+      // preset-scoped logout route, which redirects on to auth's own /logout with the
+      // preset's post_logout_redirect_uri. Same edge dev port as /login.
+      '/logout': {
+        target: 'http://localhost:9005',
+        changeOrigin: true,
+      },
     },
   },
   // Public directory for static assets

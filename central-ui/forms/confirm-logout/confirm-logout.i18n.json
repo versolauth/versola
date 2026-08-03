@@ -1,0 +1,4 @@
+{
+  "en": { "page_title": "Sign out", "title": "Sign out", "description": "Are you sure you want to sign out?", "confirm_button": "Sign out", "cancel_button": "Cancel" },
+  "ru": { "page_title": "Выход", "title": "Выйти", "description": "Вы действительно хотите выйти?", "confirm_button": "Выйти", "cancel_button": "Отмена" }
+}

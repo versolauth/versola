@@ -29,6 +29,7 @@ object AuthorizationSpec extends ZIOSpecDefault, ZIOStubs:
     otpTemplateId = "default",
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
+    backChannelLogoutUri = None,
   )
 
   private def service: OAuthClientService =

@@ -7,6 +7,7 @@ import versola.edge.model.{
   AuthConversationNotFound,
   ClientId,
   EdgeId,
+  InvalidLogoutToken,
   PermissionId,
   PresetId,
   PresetNotFound,
@@ -85,12 +86,14 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       client  <- ZIO.service[Client]
       service =  stub[EdgeService]
       jwks    =  stub[JwksService]
+      presets =  stub[AuthorizationPresetsSyncClient]
       tracing <- tracingLayer.build
       _ <- TestClient.addRoutes(
         Observability.handleErrors(
           EdgeController.routes.provideEnvironment(
             ZEnvironment[EdgeService](service) ++
               ZEnvironment[JwksService](jwks) ++
+              ZEnvironment[AuthorizationPresetsSyncClient](presets) ++
               ZEnvironment(edgeConfig) ++
               tracing,
           ),
@@ -295,6 +298,56 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
     },
   )
 
+  private val backChannelLogoutSuite = suite("POST /logout/backchannel")(
+    test("delegates the logout token to EdgeService and responds 200 with no-store") {
+      for
+        (response, service, _) <- run(
+          Request.post(
+            URL.decode("/logout/backchannel").toOption.get,
+            Body.fromURLEncodedForm(Form.fromStrings("logout_token" -> "header.payload.sig")),
+          ),
+          (s, _) => s.backChannelLogout.succeedsWith(()),
+        )
+      yield assertTrue(
+        response.status == Status.Ok,
+        response.header(Header.CacheControl).contains(Header.CacheControl.NoStore),
+        service.backChannelLogout.calls == List("header.payload.sig"),
+      )
+    },
+    test("responds 400 without calling EdgeService when logout_token is missing") {
+      for
+        (response, service, _) <- run(
+          Request.post(
+            URL.decode("/logout/backchannel").toOption.get,
+            Body.fromURLEncodedForm(Form.fromStrings("other" -> "value")),
+          ),
+        )
+        body <- response.body.asString
+      yield assertTrue(
+        response.status == Status.BadRequest,
+        body.fromJson[Map[String, String]].toOption.flatMap(_.get("error")).contains("invalid_request"),
+        service.backChannelLogout.calls.isEmpty,
+      )
+    },
+    test("responds 400 with the rejection reason when the logout token is invalid") {
+      for
+        (response, _, _) <- run(
+          Request.post(
+            URL.decode("/logout/backchannel").toOption.get,
+            Body.fromURLEncodedForm(Form.fromStrings("logout_token" -> "not-a-jwt")),
+          ),
+          (s, _) => s.backChannelLogout.failsWith(InvalidLogoutToken("logout token must not carry a nonce")),
+        )
+        body <- response.body.asString
+      yield assertTrue(
+        response.status == Status.BadRequest,
+        response.header(Header.CacheControl).contains(Header.CacheControl.NoStore),
+        body.fromJson[Map[String, String]].toOption.flatMap(_.get("error_description"))
+          .contains("logout token must not carry a nonce"),
+      )
+    },
+  )
+
   private val proxySuite = suite("proxy routes")(
     test("GET /resources/{alias}/{rest} delegates to EdgeService.proxy") {
       for
@@ -420,6 +473,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
     loginSuite,
     completeSuite,
     frontChannelLogoutSuite,
+    backChannelLogoutSuite,
     proxySuite,
     sessionCookieSuite,
   ).provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging

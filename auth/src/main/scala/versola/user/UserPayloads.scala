@@ -81,8 +81,13 @@ case class SetPasswordPayload(
     password: String,
 ) derives JsonCodec
 
-case class SessionResponse(
+case class ClientEntryResponse(
     clientId: String,
+    enteredAt: String,
+) derives JsonCodec
+
+case class SessionResponse(
+    clients: List[ClientEntryResponse],
     platform: String,
     os: Option[String],
     browser: Option[String],

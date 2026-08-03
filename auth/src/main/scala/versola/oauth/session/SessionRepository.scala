@@ -28,6 +28,10 @@ trait SessionRepository:
   /** Slide the idle expiry of an online session forward. No-op for sessions created without an idle window. */
   def prolongIdle(id: MAC.Of[SessionId], idleTtl: Duration): Task[Unit]
 
+  /** Registers a relying party as logged-in on this session, so it can be notified on
+   *  front/back-channel logout. Idempotent: a no-op if the client is already registered. */
+  def registerClient(id: MAC.Of[SessionId], clientId: ClientId): Task[Unit]
+
   def findByUserId(
       userId: UserId,
   ): Task[List[SessionRecord]]

@@ -290,7 +290,7 @@ export class VersolaUsersList extends LitElement {
       .session-prop-value.mono {
         font-family: var(--font-mono);
         font-size: 0.75rem;
-        color: var(--accent);
+        color: var(--text-primary);
       }
 
       .role-tag {
@@ -1049,8 +1049,10 @@ export class VersolaUsersList extends LitElement {
                     ${s.browser ? `${s.browser}${s.version ? ` ${s.version}` : ''}` : '—'}
                   </span>
 
-                  <span class="session-prop-label">Client</span>
-                  <span class="session-prop-value mono">${s.clientId}</span>
+                  <span class="session-prop-label">Clients</span>
+                  <span class="session-prop-value mono">
+                    ${s.clients.map(c => html`<div>${c.clientId} — ${this.formatDateTime(c.enteredAt)}${c.expiresAt ? html` (expires ${this.formatDateTime(c.expiresAt)})` : ''}</div>`)}
+                  </span>
 
                   ${s.createdAt ? html`
                     <span class="session-prop-label">Created</span>

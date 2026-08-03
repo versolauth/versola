@@ -18,6 +18,7 @@ case class AuthorizationPreset(
     description: String,
     redirectUri: RedirectUri,
     postLoginRedirectUri: RedirectUri,
+    postLogoutRedirectUri: Option[RedirectUri] = None,
     scope: Set[ScopeToken],
     responseType: ResponseType,
     uiLocales: Option[List[String]],

@@ -10,6 +10,7 @@ import versola.central.configuration.tenants.{TenantId, TenantRepository}
 import versola.central.configuration.{CreateClientRequest, UpdateClientRequest}
 import versola.util.{CacheSource, ReloadingCache, Secret, SecureRandom, SecurityService}
 import zio.*
+import zio.http.URL
 
 import java.security.MessageDigest
 import javax.crypto.SecretKey
@@ -138,8 +139,9 @@ object OAuthClientService:
           theme = request.theme,
           authFlow = request.authFlow,
           otpTemplateId = request.otpTemplateId,
-          frontChannelLogoutUri = request.frontChannelLogoutUri,
+          frontChannelLogoutUri = request.frontChannelLogoutUri.flatMap(URL.decode(_).toOption),
           frontChannelLogoutSessionRequired = request.frontChannelLogoutSessionRequired,
+          backChannelLogoutUri = request.backChannelLogoutUri.flatMap(URL.decode(_).toOption),
         )
         _ <- clientRepository.createClient(client)
       yield secret
@@ -147,20 +149,23 @@ object OAuthClientService:
     override def updateClient(
         request: UpdateClientRequest,
     ): Task[Unit] =
-      clientRepository.updateClient(
-        clientId = request.clientId,
-        clientName = request.clientName,
-        patchRedirectUris = request.redirectUris,
-        patchScope = request.scope,
-        patchPermissions = request.permissions,
-        accessTokenTtl = request.accessTokenTtl.map(Duration.fromSeconds),
-        refreshTokenTtl = request.refreshTokenTtl.map(Duration.fromSeconds),
-        theme = request.theme,
-        authFlow = request.authFlow,
-        otpTemplateId = request.otpTemplateId,
-        frontChannelLogoutUri = request.frontChannelLogoutUri,
-        frontChannelLogoutSessionRequired = request.frontChannelLogoutSessionRequired,
-      )
+      for
+        _ <- clientRepository.updateClient(
+          clientId = request.clientId,
+          clientName = request.clientName,
+          patchRedirectUris = request.redirectUris,
+          patchScope = request.scope,
+          patchPermissions = request.permissions,
+          accessTokenTtl = request.accessTokenTtl.map(Duration.fromSeconds),
+          refreshTokenTtl = request.refreshTokenTtl.map(Duration.fromSeconds),
+          theme = request.theme,
+          authFlow = request.authFlow,
+          otpTemplateId = request.otpTemplateId,
+          frontChannelLogoutUri = request.frontChannelLogoutUri.map(_.flatMap(URL.decode(_).toOption)),
+          frontChannelLogoutSessionRequired = request.frontChannelLogoutSessionRequired,
+          backChannelLogoutUri = request.backChannelLogoutUri.map(_.flatMap(URL.decode(_).toOption)),
+        )
+      yield ()
 
     override def rotateClientSecret(clientId: ClientId): Task[Secret] =
       for

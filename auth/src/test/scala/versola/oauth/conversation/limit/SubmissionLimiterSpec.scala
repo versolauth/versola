@@ -32,6 +32,7 @@ object SubmissionLimiterSpec extends UnitSpecBase:
     otpTemplateId = "default",
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
+    backChannelLogoutUri = None,
   )
 
   // Short window 3/min acts as an immediate rate limit; the broadest 9/hour window applies the ban.

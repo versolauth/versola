@@ -48,8 +48,9 @@ object ClientController extends Controller:
               theme = client.theme,
               authFlow = client.authFlow,
               otpTemplateId = client.otpTemplateId,
-              frontChannelLogoutUri = client.frontChannelLogoutUri,
+              frontChannelLogoutUri = client.frontChannelLogoutUri.map(_.encode),
               frontChannelLogoutSessionRequired = client.frontChannelLogoutSessionRequired,
+              backChannelLogoutUri = client.backChannelLogoutUri.map(_.encode),
             )
           })
       yield Response.json(GetAllClientsResponse(clients.toList).toJson)
@@ -92,8 +93,9 @@ object ClientController extends Controller:
             theme = client.theme,
             authFlow = client.authFlow,
             otpTemplateId = client.otpTemplateId,
-            frontChannelLogoutUri = client.frontChannelLogoutUri,
+            frontChannelLogoutUri = client.frontChannelLogoutUri.map(_.encode),
             frontChannelLogoutSessionRequired = client.frontChannelLogoutSessionRequired,
+            backChannelLogoutUri = client.backChannelLogoutUri.map(_.encode),
           )
         }
       yield Response.json(GetOAuthClientsSyncResponse(clients = encryptedClients).toJson)
@@ -106,6 +108,8 @@ object ClientController extends Controller:
         _ <- authorizeBasic(request)
         service <- ZIO.service[OAuthClientService]
         body <- request.body.asJson[CreateClientRequest]
+        _ <- ZIO.when(body.frontChannelLogoutUri.isDefined && body.backChannelLogoutUri.isDefined):
+          ZIO.fail(InvalidClientLogoutConfiguration(body.id))
         secret <- service.registerClient(body)
         response = CreateClientResponse(Base64Url.encode(secret))
       yield Response.json(response.toJson).status(Status.Created))
@@ -113,6 +117,10 @@ object ClientController extends Controller:
           case error: ClientAlreadyExists =>
             ZIO.succeed:
               Response.status(Status.Conflict)
+          case error: InvalidClientLogoutConfiguration =>
+            ZIO.succeed:
+              Response.text("A client can only have one of frontChannelLogoutUri or backChannelLogoutUri configured")
+                .status(Status.BadRequest)
           case error: Throwable =>
             ZIO.fail(error)
         }
@@ -120,13 +128,26 @@ object ClientController extends Controller:
 
   val updateClientEndpoint =
     Method.PUT / "configuration" / "clients" -> handler { (request: Request) =>
-      for
+      (for
         _ <- authorizeBasic(request)
         service <- ZIO.service[OAuthClientService]
         body <- request.body.asJson[UpdateClientRequest]
+        _ <- ZIO.when(hasInvalidLogoutConfiguration(body)):
+          ZIO.fail(InvalidClientLogoutConfiguration(body.clientId))
         _ <- service.updateClient(body)
-      yield Response.status(Status.NoContent)
+      yield Response.status(Status.NoContent))
+        .catchAll {
+          case error: InvalidClientLogoutConfiguration =>
+            ZIO.succeed:
+              Response.text("A client can only have one of frontChannelLogoutUri or backChannelLogoutUri configured")
+                .status(Status.BadRequest)
+          case error: Throwable =>
+            ZIO.fail(error)
+        }
     }
+
+  private def hasInvalidLogoutConfiguration(request: UpdateClientRequest): Boolean =
+    request.frontChannelLogoutUri.exists(_.isDefined) && request.backChannelLogoutUri.exists(_.isDefined)
 
   val rotateSecretEndpoint =
     Method.POST / "configuration" / "clients" / "rotate-secret" -> handler { (request: Request) =>

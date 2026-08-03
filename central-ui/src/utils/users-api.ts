@@ -1,4 +1,4 @@
-import type { PasskeyInfo, User, UserRoleAssignment, UserSearchField, UserSession } from '../types';
+import type { PasskeyInfo, SessionClientEntry, User, UserRoleAssignment, UserSearchField, UserSession } from '../types';
 import { CONSOLE_PREFIX, resolveBaseUrl } from './central-api';
 
 type UserSearchRecordDto = {
@@ -157,7 +157,7 @@ export async function updateUserRoles(
 }
 
 type UserSessionDto = {
-  clientId: string;
+  clients: SessionClientEntry[];
   platform: 'ios' | 'android' | 'desktop' | 'unknown';
   os?: string;
   browser?: string;
@@ -177,7 +177,7 @@ export async function fetchUserSessions(userId: string): Promise<UserSession[]> 
 
   const data = (await response.json()) as UserSessionDto[];
   return data.map(dto => ({
-    clientId: dto.clientId,
+    clients: dto.clients,
     platform: dto.platform,
     os: dto.os,
     browser: dto.browser,

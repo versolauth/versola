@@ -4,9 +4,16 @@ import versola.central.configuration.permissions.Permission
 import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.tenants.TenantId
 import versola.util.{RedirectUri, Secret}
+import zio.http.URL
 import zio.prelude.Equal
 import zio.schema.*
 import zio.{Duration, NonEmptyChunk}
+
+given Schema[URL] = Schema.primitive[String].transformOrFail(
+  string => URL.decode(string).left.map(_.getMessage),
+  url => Right(url.encode),
+)
+given Equal[URL] = (a, b) => a == b
 
 case class OAuthClientRecord(
     id: ClientId,
@@ -23,8 +30,9 @@ case class OAuthClientRecord(
     theme: String,
     authFlow: Option[AuthFlow],
     otpTemplateId: String,
-    frontChannelLogoutUri: Option[String],
+    frontChannelLogoutUri: Option[URL],
     frontChannelLogoutSessionRequired: Boolean,
+    backChannelLogoutUri: Option[URL],
 ) derives Schema, CanEqual, Equal:
 
   def audience: List[ClientId] = id :: externalAudience
