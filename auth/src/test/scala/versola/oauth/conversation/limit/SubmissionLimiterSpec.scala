@@ -41,6 +41,22 @@ object SubmissionLimiterSpec extends UnitSpecBase:
     banDurationSeconds = 600,
   )
 
+  // A distinct window per challenge type, so a test can tell which field was actually read.
+  private val allWindowsConfigured = SubmissionLimits(
+    otpRequest = List(RateLimit(maxAttempts = 1, windowSeconds = 10)),
+    otpSubmit = List(RateLimit(maxAttempts = 2, windowSeconds = 20)),
+    passwordSubmit = List(RateLimit(maxAttempts = 3, windowSeconds = 30)),
+    passkeyAssertion = List(RateLimit(maxAttempts = 4, windowSeconds = 40)),
+    banDurationSeconds = 600,
+  )
+
+  private val allChallengeTypes = List(
+    ChallengeType.OtpRequest -> allWindowsConfigured.otpRequest,
+    ChallengeType.OtpSubmit -> allWindowsConfigured.otpSubmit,
+    ChallengeType.PasswordSubmit -> allWindowsConfigured.passwordSubmit,
+    ChallengeType.PasskeyAssertion -> allWindowsConfigured.passkeyAssertion,
+  )
+
   private def throttleRecord(attempts: List[Long], bannedUntil: Option[Instant], expiresAt: Instant) =
     ChallengeThrottleRecord(tenantId, subject, ChallengeType.OtpSubmit, attempts, bannedUntil, expiresAt)
 
@@ -48,6 +64,23 @@ object SubmissionLimiterSpec extends UnitSpecBase:
     val throttleRepo = stub[ChallengeThrottleRepository]
     val configService = stub[OAuthConfigurationService]
     val limiter = SubmissionLimiter.Impl(throttleRepo, configService)
+
+  /** Each challenge type reads its own field off `SubmissionLimits`; a copy-paste slip there would
+    * silently throttle one type against another's windows, so every type gets checked.
+    */
+  private val windowSelectionTests =
+    allChallengeTypes.map { (challengeType, expectedWindows) =>
+      test(s"passes the $challengeType windows to recordAttempt") {
+        val env = Env()
+        for
+          _ <- env.configService.getSubmissionLimits.succeedsWith(allWindowsConfigured)
+          _ <- env.configService.find.succeedsWith(Some(client))
+          _ <- env.throttleRepo.recordAttempt.succeedsWith(LimitStatus.Allowed)
+          _ <- env.limiter.recordLimit(clientId, subject, challengeType)
+          call = env.throttleRepo.recordAttempt.calls.head
+        yield assertTrue(call._3 == challengeType, call._5.toChunk.toList == expectedWindows)
+      }
+    }
 
   val spec = suite("SubmissionLimiter")(
     suite("isBanned")(
@@ -272,10 +305,16 @@ object SubmissionLimiterSpec extends UnitSpecBase:
           call = env.throttleRepo.recordAttempt.calls.head
         yield assertTrue(
           result == LimitStatus.Banned,
-          call == (tenantId, subject, ChallengeType.OtpSubmit, now, limits.otpSubmit, limits.banDurationSeconds),
+          call._1 == tenantId,
+          call._2 == subject,
+          call._3 == ChallengeType.OtpSubmit,
+          call._4 == now,
+          call._5.toChunk.toList == limits.otpSubmit,
+          call._6 == limits.banDurationSeconds.toLong,
         )
       },
     ),
+    suite("recordLimit window selection")(windowSelectionTests*),
     suite("recordLimitAll")(
       test("returns Allowed and skips lookups when no windows are configured") {
         val env = Env()
@@ -313,7 +352,7 @@ object SubmissionLimiterSpec extends UnitSpecBase:
           result == LimitStatus.Allowed,
           calls.length == 2,
           recordedSubjects == Set(subject, subject2),
-          calls.forall(c => c._4 == now && c._5 == limits.otpSubmit && c._6 == limits.banDurationSeconds),
+          calls.forall(c => c._4 == now && c._5.toChunk.toList == limits.otpSubmit && c._6 == limits.banDurationSeconds.toLong),
         )
       },
       test("returns the worst status when one subject's recordAttempt reports Banned") {

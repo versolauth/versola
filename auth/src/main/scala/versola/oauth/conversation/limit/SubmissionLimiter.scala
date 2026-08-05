@@ -2,7 +2,7 @@ package versola.oauth.conversation.limit
 
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{ClientId, RateLimit, SubmissionLimits}
-import zio.{Clock, Task, UIO, ZIO, ZLayer}
+import zio.{Clock, NonEmptyChunk, Task, ZIO, ZLayer}
 
 enum LimitStatus:
   case Allowed
@@ -40,12 +40,17 @@ object SubmissionLimiter:
       configService: OAuthConfigurationService,
   ) extends SubmissionLimiter:
 
-    private def windowLimits(limits: SubmissionLimits, ct: ChallengeType): List[RateLimit] =
-      ct match
+    /** The configured windows for a challenge type, or `None` when throttling is switched off for
+      * it. Returning `NonEmptyChunk` means "has any windows configured" is answered once, here,
+      * and every downstream call to [[ThrottlePolicy]] carries the proof instead of re-checking.
+      */
+    private def windowLimits(limits: SubmissionLimits, ct: ChallengeType): Option[NonEmptyChunk[RateLimit]] =
+      val configured = ct match
         case ChallengeType.OtpRequest => limits.otpRequest
         case ChallengeType.OtpSubmit => limits.otpSubmit
         case ChallengeType.PasswordSubmit => limits.passwordSubmit
         case ChallengeType.PasskeyAssertion => limits.passkeyAssertion
+      NonEmptyChunk.fromIterableOption(configured)
 
     private def worstStatus(a: LimitStatus, b: LimitStatus): LimitStatus =
       (a, b) match
@@ -62,16 +67,16 @@ object SubmissionLimiter:
     override def isBanned(clientId: ClientId, subject: String, challengeType: ChallengeType): Task[LimitStatus] =
       for
         limits <- configService.getSubmissionLimits(clientId)
-        wLimits = windowLimits(limits, challengeType)
         result <-
-          if wLimits.isEmpty then ZIO.succeed(LimitStatus.Allowed)
-          else
-            configService.find(clientId).flatMap:
-              case None => ZIO.succeed(LimitStatus.Allowed)
-              case Some(client) =>
-                throttleRepo.find(client.tenantId, subject, challengeType).flatMap:
-                  case None => ZIO.succeed(LimitStatus.Allowed)
-                  case Some(record) => Clock.instant.map(ChallengeThrottleRepository.evaluate(record, wLimits, _))
+          windowLimits(limits, challengeType) match
+            case None => ZIO.succeed(LimitStatus.Allowed)
+            case Some(wLimits) =>
+              configService.find(clientId).flatMap:
+                case None => ZIO.succeed(LimitStatus.Allowed)
+                case Some(client) =>
+                  throttleRepo.find(client.tenantId, subject, challengeType).flatMap:
+                    case None => ZIO.succeed(LimitStatus.Allowed)
+                    case Some(record) => Clock.instant.map(ThrottlePolicy.evaluate(record, wLimits, _))
       yield result
 
     /** Read-only status check for one subject across several challenge types in a single lookup.
@@ -81,7 +86,7 @@ object SubmissionLimiter:
     override def statusFor(clientId: ClientId, subject: String, challengeTypes: List[ChallengeType]): Task[LimitStatus] =
       for
         limits <- configService.getSubmissionLimits(clientId)
-        typeWindows = challengeTypes.map(ct => ct -> windowLimits(limits, ct)).filter(_._2.nonEmpty)
+        typeWindows = challengeTypes.flatMap(ct => windowLimits(limits, ct).map(ct -> _).toList)
         result <-
           if typeWindows.isEmpty then ZIO.succeed(LimitStatus.Allowed)
           else
@@ -93,7 +98,7 @@ object SubmissionLimiter:
                   now <- Clock.instant
                   byType = records.map(r => r.challengeType -> r).toMap
                 yield typeWindows
-                  .map((ct, wLimits) => byType.get(ct).fold(LimitStatus.Allowed)(ChallengeThrottleRepository.evaluate(_, wLimits, now)))
+                  .map((ct, wLimits) => byType.get(ct).fold(LimitStatus.Allowed)(ThrottlePolicy.evaluate(_, wLimits, now)))
                   .foldLeft(LimitStatus.Allowed)(worstStatus)
       yield result
 
@@ -104,20 +109,20 @@ object SubmissionLimiter:
     override def statusForSubjects(clientId: ClientId, subjects: List[String], challengeType: ChallengeType): Task[LimitStatus] =
       for
         limits <- configService.getSubmissionLimits(clientId)
-        wLimits = windowLimits(limits, challengeType)
         result <-
-          if wLimits.isEmpty || subjects.isEmpty then ZIO.succeed(LimitStatus.Allowed)
-          else
-            configService.find(clientId).flatMap:
-              case None => ZIO.succeed(LimitStatus.Allowed)
-              case Some(client) =>
-                for
-                  records <- throttleRepo.findAllForSubjects(client.tenantId, subjects, challengeType)
-                  now <- Clock.instant
-                  bySubject = records.map(r => r.subject -> r).toMap
-                yield subjects
-                  .map(s => bySubject.get(s).fold(LimitStatus.Allowed)(ChallengeThrottleRepository.evaluate(_, wLimits, now)))
-                  .foldLeft(LimitStatus.Allowed)(worstStatus)
+          windowLimits(limits, challengeType).filter(_ => subjects.nonEmpty) match
+            case None => ZIO.succeed(LimitStatus.Allowed)
+            case Some(wLimits) =>
+              configService.find(clientId).flatMap:
+                case None => ZIO.succeed(LimitStatus.Allowed)
+                case Some(client) =>
+                  for
+                    records <- throttleRepo.findAllForSubjects(client.tenantId, subjects, challengeType)
+                    now <- Clock.instant
+                    bySubject = records.map(r => r.subject -> r).toMap
+                  yield subjects
+                    .map(s => bySubject.get(s).fold(LimitStatus.Allowed)(ThrottlePolicy.evaluate(_, wLimits, now)))
+                    .foldLeft(LimitStatus.Allowed)(worstStatus)
       yield result
 
     /** Deletes the subject's throttle record, clearing its accumulated attempts and any active ban.
@@ -129,20 +134,20 @@ object SubmissionLimiter:
         case Some(client) => throttleRepo.delete(client.tenantId, subject, challengeType)
 
     /** Records a single failed attempt for the subject and returns the resulting status. The
-      * prune/append/ban decision itself lives in [[ChallengeThrottleRepository.nextState]],
-      * applied by the repository's implementation inside its own atomic read-modify-write so it
-      * can't lose concurrent attempts against the same key (issue #91).
+      * prune/append/ban decision itself lives in [[ThrottlePolicy.nextState]], applied by the
+      * repository's implementation inside its own atomic read-modify-write so it can't lose
+      * concurrent attempts against the same key (issue #91).
       */
     override def recordLimit(clientId: ClientId, subject: String, challengeType: ChallengeType): Task[LimitStatus] =
       configService.getSubmissionLimits(clientId).flatMap: limits =>
-        val wLimits = windowLimits(limits, challengeType)
-        if wLimits.isEmpty then ZIO.succeed(LimitStatus.Allowed)
-        else
-          configService.find(clientId).flatMap:
-            case None => ZIO.succeed(LimitStatus.Allowed)
-            case Some(client) =>
-              Clock.instant.flatMap: now =>
-                throttleRepo.recordAttempt(client.tenantId, subject, challengeType, now, wLimits, limits.banDurationSeconds)
+        windowLimits(limits, challengeType) match
+          case None => ZIO.succeed(LimitStatus.Allowed)
+          case Some(wLimits) =>
+            configService.find(clientId).flatMap:
+              case None => ZIO.succeed(LimitStatus.Allowed)
+              case Some(client) =>
+                Clock.instant.flatMap: now =>
+                  throttleRepo.recordAttempt(client.tenantId, subject, challengeType, now, wLimits, limits.banDurationSeconds)
 
     /** Batch variant of [[recordLimit]]: records a failed attempt for every subject via its own
       * atomic [[ChallengeThrottleRepository.recordAttempt]] call. Used to charge related subjects
@@ -154,13 +159,13 @@ object SubmissionLimiter:
       */
     override def recordLimitAll(clientId: ClientId, subjects: List[String], challengeType: ChallengeType): Task[LimitStatus] =
       configService.getSubmissionLimits(clientId).flatMap: limits =>
-        val wLimits = windowLimits(limits, challengeType)
-        if wLimits.isEmpty then ZIO.succeed(LimitStatus.Allowed)
-        else
-          configService.find(clientId).flatMap:
-            case None => ZIO.succeed(LimitStatus.Allowed)
-            case Some(client) =>
-              Clock.instant.flatMap: now =>
-                ZIO.foreachPar(subjects) { subject =>
-                  throttleRepo.recordAttempt(client.tenantId, subject, challengeType, now, wLimits, limits.banDurationSeconds)
-                }.map(_.foldLeft(LimitStatus.Allowed)(worstStatus))
+        windowLimits(limits, challengeType) match
+          case None => ZIO.succeed(LimitStatus.Allowed)
+          case Some(wLimits) =>
+            configService.find(clientId).flatMap:
+              case None => ZIO.succeed(LimitStatus.Allowed)
+              case Some(client) =>
+                Clock.instant.flatMap: now =>
+                  ZIO.foreachPar(subjects) { subject =>
+                    throttleRepo.recordAttempt(client.tenantId, subject, challengeType, now, wLimits, limits.banDurationSeconds)
+                  }.map(_.foldLeft(LimitStatus.Allowed)(worstStatus))
