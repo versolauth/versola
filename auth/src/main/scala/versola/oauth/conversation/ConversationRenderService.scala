@@ -196,6 +196,7 @@ object ConversationRenderService:
               locales = (form.localizations.keySet & activeCodes).toList.sorted,
               allT = form.localizations,
               error = None,
+              csrf = "",
             ),
             version = form.version,
           )
@@ -228,7 +229,7 @@ object ConversationRenderService:
             value.style,
             value.jsCompiled,
             FormConfig(LogoutConfirm(csrfToken, postLogoutRedirectUri, state), translations, chosen,
-              (value.localizations.keySet & activeCodes).toList.sorted, value.localizations, None),
+              (value.localizations.keySet & activeCodes).toList.sorted, value.localizations, None, csrfToken),
             value.version,
           )
           htmlResponse(logoutConfirmPage(info, css))
