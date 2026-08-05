@@ -261,91 +261,18 @@ object SubmissionLimiterSpec extends UnitSpecBase:
           env.throttleRepo.recordAttempt.calls.isEmpty,
         )
       },
-      test("applies a temporary ban, clears attempts, and returns Banned when the broadest window is exceeded") {
+      test("delegates to recordAttempt with the client's tenant, the configured windows, and the current time") {
         val env = Env()
         for
           now <- Clock.instant
-          nowEpoch = now.getEpochSecond
-          existing = List.fill(8)(nowEpoch - 1)
-          existingOpt = Some(throttleRecord(existing, None, now.plusSeconds(3600)))
           _ <- env.configService.getSubmissionLimits.succeedsWith(limits)
           _ <- env.configService.find.succeedsWith(Some(client))
-          // The stub plays the role of Postgres: it hands `mutate` the existing record we set up
-          // and returns whatever status `mutate` computes, exactly like `recordAttempt` would after
-          // reading the row under lock.
-          _ <- env.throttleRepo.recordAttempt.returnsZIO:
-            case (_, _, _, mutate) => ZIO.succeed(mutate(existingOpt)._2)
+          _ <- env.throttleRepo.recordAttempt.succeedsWith(LimitStatus.Banned)
           result <- env.limiter.recordLimit(clientId, subject, ChallengeType.OtpSubmit)
-          mutate = env.throttleRepo.recordAttempt.calls.head._4
-          upserted = mutate(existingOpt)._1
+          call = env.throttleRepo.recordAttempt.calls.head
         yield assertTrue(
           result == LimitStatus.Banned,
-          upserted.attempts.isEmpty,
-          upserted.bannedUntil.contains(now.plusSeconds(600)),
-          upserted.expiresAt == now.plusSeconds(600),
-        )
-      },
-      test("records the attempt without banning and returns RateLimited when only a short window is exceeded") {
-        val env = Env()
-        for
-          now <- Clock.instant
-          nowEpoch = now.getEpochSecond
-          existingOpt = Some(throttleRecord(List(nowEpoch, nowEpoch), None, now.plusSeconds(3600)))
-          _ <- env.configService.getSubmissionLimits.succeedsWith(limits)
-          _ <- env.configService.find.succeedsWith(Some(client))
-          _ <- env.throttleRepo.recordAttempt.returnsZIO:
-            case (_, _, _, mutate) => ZIO.succeed(mutate(existingOpt)._2)
-          result <- env.limiter.recordLimit(clientId, subject, ChallengeType.OtpSubmit)
-          mutate = env.throttleRepo.recordAttempt.calls.head._4
-          upserted = mutate(existingOpt)._1
-        yield assertTrue(
-          result.isInstanceOf[LimitStatus.RateLimited],
-          upserted.attempts.size == 3,
-          upserted.bannedUntil.isEmpty,
-          upserted.expiresAt == now.plusSeconds(3600),
-        )
-      },
-      test("prunes attempts that fall outside the broadest window") {
-        val env = Env()
-        for
-          now <- Clock.instant
-          nowEpoch = now.getEpochSecond
-          old = nowEpoch - 4000
-          recent = nowEpoch - 10
-          existingOpt = Some(throttleRecord(List(old, recent), None, now.plusSeconds(3600)))
-          _ <- env.configService.getSubmissionLimits.succeedsWith(limits)
-          _ <- env.configService.find.succeedsWith(Some(client))
-          _ <- env.throttleRepo.recordAttempt.returnsZIO:
-            case (_, _, _, mutate) => ZIO.succeed(mutate(existingOpt)._2)
-          _ <- env.limiter.recordLimit(clientId, subject, ChallengeType.OtpSubmit)
-          mutate = env.throttleRepo.recordAttempt.calls.head._4
-          upserted = mutate(existingOpt)._1
-        yield assertTrue(
-          upserted.attempts == List(recent, nowEpoch),
-          !upserted.attempts.contains(old),
-        )
-      },
-      test("does not ban when banDurationSeconds is zero") {
-        val env = Env()
-        val noBanLimits = SubmissionLimits(
-          otpSubmit = List(RateLimit(maxAttempts = 9, windowSeconds = 3600)),
-          banDurationSeconds = 0,
-        )
-        for
-          now <- Clock.instant
-          nowEpoch = now.getEpochSecond
-          existing = List.fill(8)(nowEpoch - 1)
-          existingOpt = Some(throttleRecord(existing, None, now.plusSeconds(3600)))
-          _ <- env.configService.getSubmissionLimits.succeedsWith(noBanLimits)
-          _ <- env.configService.find.succeedsWith(Some(client))
-          _ <- env.throttleRepo.recordAttempt.returnsZIO:
-            case (_, _, _, mutate) => ZIO.succeed(mutate(existingOpt)._2)
-          _ <- env.limiter.recordLimit(clientId, subject, ChallengeType.OtpSubmit)
-          mutate = env.throttleRepo.recordAttempt.calls.head._4
-          upserted = mutate(existingOpt)._1
-        yield assertTrue(
-          upserted.attempts.size == 9,
-          upserted.bannedUntil.isEmpty,
+          call == (tenantId, subject, ChallengeType.OtpSubmit, now, limits.otpSubmit, limits.banDurationSeconds),
         )
       },
     ),
@@ -372,40 +299,32 @@ object SubmissionLimiterSpec extends UnitSpecBase:
           env.throttleRepo.recordAttempt.calls.isEmpty,
         )
       },
-      test("records an attempt for every subject via its own recordAttempt call and returns Allowed") {
+      test("calls recordAttempt for every subject and returns Allowed") {
         val env = Env()
         for
           now <- Clock.instant
-          nowEpoch = now.getEpochSecond
           _ <- env.configService.getSubmissionLimits.succeedsWith(limits)
           _ <- env.configService.find.succeedsWith(Some(client))
-          _ <- env.throttleRepo.recordAttempt.returnsZIO:
-            case (_, _, _, mutate) => ZIO.succeed(mutate(None)._2)
+          _ <- env.throttleRepo.recordAttempt.succeedsWith(LimitStatus.Allowed)
           result <- env.limiter.recordLimitAll(clientId, List(subject, subject2), ChallengeType.OtpSubmit)
           calls = env.throttleRepo.recordAttempt.calls
           recordedSubjects = calls.map(_._2).toSet
-          upsertedAttempts = calls.map(_._4(None)._1.attempts)
         yield assertTrue(
           result == LimitStatus.Allowed,
           calls.length == 2,
           recordedSubjects == Set(subject, subject2),
-          upsertedAttempts.forall(_ == List(nowEpoch)),
+          calls.forall(c => c._4 == now && c._5 == limits.otpSubmit && c._6 == limits.banDurationSeconds),
         )
       },
-      test("returns the worst status when one subject exceeds the broadest window") {
+      test("returns the worst status when one subject's recordAttempt reports Banned") {
         val env = Env()
         for
-          now <- Clock.instant
-          nowEpoch = now.getEpochSecond
-          existing = List.fill(8)(nowEpoch - 1)
-          bannedSubjectExisting = Some(throttleRecord(existing, None, now.plusSeconds(3600)))
           _ <- env.configService.getSubmissionLimits.succeedsWith(limits)
           _ <- env.configService.find.succeedsWith(Some(client))
-          // `subject` already has 8 attempts in the broadest window and will be pushed over the
-          // ban threshold; `subject2` has no prior record.
+          // `subject` is over the ban threshold; `subject2` isn't.
           _ <- env.throttleRepo.recordAttempt.returnsZIO:
-            case (_, subj, _, mutate) if subj == subject => ZIO.succeed(mutate(bannedSubjectExisting)._2)
-            case (_, _, _, mutate) => ZIO.succeed(mutate(None)._2)
+            case (_, subj, _, _, _, _) if subj == subject => ZIO.succeed(LimitStatus.Banned)
+            case _ => ZIO.succeed(LimitStatus.Allowed)
           result <- env.limiter.recordLimitAll(clientId, List(subject, subject2), ChallengeType.OtpSubmit)
         yield assertTrue(
           result == LimitStatus.Banned,

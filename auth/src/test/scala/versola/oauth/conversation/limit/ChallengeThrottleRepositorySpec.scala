@@ -1,7 +1,7 @@
 package versola.oauth.conversation.limit
 
 import com.augustnagro.magnum.magzio.TransactorZIO
-import versola.oauth.client.model.TenantId
+import versola.oauth.client.model.{RateLimit, TenantId}
 import versola.util.DatabaseSpecBase
 import zio.*
 import zio.test.*
@@ -19,6 +19,11 @@ trait ChallengeThrottleRepositorySpec extends DatabaseSpecBase[ChallengeThrottle
   val expiresAt = Instant.parse("2030-01-01T00:00:00Z")
   val bannedUntil = Instant.parse("2030-01-01T01:00:00Z")
 
+  // High enough that the basic recordAttempt tests below don't themselves trip the rate-limit/ban
+  // logic — that logic gets its own dedicated coverage in ChallengeThrottleDecisionSpec.
+  private val wLimits = List(RateLimit(maxAttempts = 1000, windowSeconds = 3600))
+  private val banDurationSeconds = 600L
+
   def record(
       challengeType: ChallengeType,
       subj: String = subject,
@@ -34,9 +39,6 @@ trait ChallengeThrottleRepositorySpec extends DatabaseSpecBase[ChallengeThrottle
       bannedUntil = banned,
       expiresAt = expiresAt,
     )
-
-  def update(attempts: List[Long], banned: Option[Instant] = None): ThrottleUpdate =
-    ThrottleUpdate(attempts = attempts, bannedUntil = banned, expiresAt = expiresAt)
 
   def testCases(env: ChallengeThrottleRepositorySpec.Env): List[Spec[ChallengeThrottleRepositorySpec.Env & Scope, Any]] =
     List(
@@ -121,52 +123,52 @@ trait ChallengeThrottleRepositorySpec extends DatabaseSpecBase[ChallengeThrottle
           found <- env.repository.findAll(tenantId, subject, List(ChallengeType.OtpRequest, ChallengeType.OtpSubmit))
         yield assertTrue(found.isEmpty)
       },
-      test("recordAttempt inserts a record when none exists and returns the mutate result") {
+      test("recordAttempt inserts a record when none exists (optimistic-insert path)") {
         for
-          status <- env.repository.recordAttempt(
-            tenantId,
-            subject,
-            ChallengeType.OtpSubmit,
-            existing => (update(List(42L)), if existing.isEmpty then LimitStatus.Allowed else LimitStatus.Banned),
-          )
-          found <- env.repository.find(tenantId, subject, ChallengeType.OtpSubmit)
-        yield assertTrue(status == LimitStatus.Allowed, found.exists(_.attempts == List(42L)))
-      },
-      test("recordAttempt passes the existing record to mutate and persists what it returns") {
-        for
-          _ <- env.repository.upsert(record(ChallengeType.OtpSubmit, attempts = List(1000L)))
-          status <- env.repository.recordAttempt(
-            tenantId,
-            subject,
-            ChallengeType.OtpSubmit,
-            { existing =>
-              val current = existing.get
-              (update(current.attempts :+ 2000L), if current.attempts == List(1000L) then LimitStatus.Allowed else LimitStatus.Banned)
-            },
-          )
+          now <- Clock.instant
+          status <- env.repository.recordAttempt(tenantId, subject, ChallengeType.OtpSubmit, now, wLimits, banDurationSeconds)
           found <- env.repository.find(tenantId, subject, ChallengeType.OtpSubmit)
         yield assertTrue(
           status == LimitStatus.Allowed,
-          found.exists(_.attempts == List(1000L, 2000L)),
+          found.exists(_.attempts == List(now.getEpochSecond)),
+        )
+      },
+      test("recordAttempt appends to an existing record (fallback update path)") {
+        for
+          now <- Clock.instant
+          _ <- env.repository.upsert(record(ChallengeType.OtpSubmit, attempts = List(1000L)))
+          status <- env.repository.recordAttempt(tenantId, subject, ChallengeType.OtpSubmit, now, wLimits, banDurationSeconds)
+          found <- env.repository.find(tenantId, subject, ChallengeType.OtpSubmit)
+        yield assertTrue(
+          status == LimitStatus.Allowed,
+          found.exists(_.attempts == List(1000L, now.getEpochSecond)),
+        )
+      },
+      test("recordAttempt persists a ban when the broadest window is exceeded on the very first attempt") {
+        // maxAttempts = 1 means a single attempt already exceeds the (sole, hence also broadest)
+        // window, so this exercises the ban decision end-to-end through the optimistic-insert path.
+        val tightLimits = List(RateLimit(maxAttempts = 1, windowSeconds = 3600))
+        for
+          now <- Clock.instant
+          status <- env.repository.recordAttempt(tenantId, subject, ChallengeType.OtpSubmit, now, tightLimits, banDurationSeconds)
+          found <- env.repository.find(tenantId, subject, ChallengeType.OtpSubmit)
+        yield assertTrue(
+          status == LimitStatus.Banned,
+          found.exists(_.attempts.isEmpty),
+          found.exists(_.bannedUntil.contains(now.plusSeconds(banDurationSeconds))),
         )
       },
       test("concurrent recordAttempt calls against an existing key don't lose updates (regression for #91)") {
-        // Pre-seed the row so every concurrent call finds it — exercises the row-level
-        // `FOR UPDATE` lock against the exact scenario the issue describes: concurrent updates to
-        // an already-existing attempt list (e.g. a subject already mid-brute-force).
+        // Pre-seed the row so every concurrent call finds it — exercises the fallback `FOR UPDATE`
+        // path against the exact scenario the issue describes: concurrent updates to an
+        // already-existing attempt list (e.g. a subject already mid-brute-force). Each call gets a
+        // distinct synthetic `now` so we can assert exactly which attempts survived, not just how
+        // many.
         val concurrentAttempts = 20
         for
           _ <- env.repository.upsert(record(ChallengeType.OtpSubmit, attempts = Nil))
           _ <- ZIO.foreachParDiscard(1 to concurrentAttempts): i =>
-            env.repository.recordAttempt(
-              tenantId,
-              subject,
-              ChallengeType.OtpSubmit,
-              { existing =>
-                val attempts = existing.fold[List[Long]](Nil)(_.attempts) :+ i.toLong
-                (update(attempts), LimitStatus.Allowed)
-              },
-            )
+            env.repository.recordAttempt(tenantId, subject, ChallengeType.OtpSubmit, Instant.EPOCH.plusSeconds(i.toLong), wLimits, banDurationSeconds)
           found <- env.repository.find(tenantId, subject, ChallengeType.OtpSubmit)
         yield assertTrue(
           found.exists(_.attempts.size == concurrentAttempts),
@@ -175,20 +177,13 @@ trait ChallengeThrottleRepositorySpec extends DatabaseSpecBase[ChallengeThrottle
       },
       test("concurrent recordAttempt calls against a brand-new key (no existing row) don't lose updates") {
         // No pre-seed this time — every one of these calls sees no row on its first read, so this
-        // exercises the advisory-lock path specifically (a plain FOR UPDATE has nothing to lock
-        // when the row doesn't exist yet).
+        // exercises the optimistic-insert path specifically: a plain `FOR UPDATE` has nothing to
+        // lock when the row doesn't exist yet, so only the `ON CONFLICT DO NOTHING` unique-index
+        // resolution (plus the fallback update for whoever loses that race) protects this case.
         val concurrentAttempts = 20
         for
           _ <- ZIO.foreachParDiscard(1 to concurrentAttempts): i =>
-            env.repository.recordAttempt(
-              tenantId,
-              subject,
-              ChallengeType.OtpSubmit,
-              { existing =>
-                val attempts = existing.fold[List[Long]](Nil)(_.attempts) :+ i.toLong
-                (update(attempts), LimitStatus.Allowed)
-              },
-            )
+            env.repository.recordAttempt(tenantId, subject, ChallengeType.OtpSubmit, Instant.EPOCH.plusSeconds(i.toLong), wLimits, banDurationSeconds)
           found <- env.repository.find(tenantId, subject, ChallengeType.OtpSubmit)
         yield assertTrue(
           found.exists(_.attempts.size == concurrentAttempts),
