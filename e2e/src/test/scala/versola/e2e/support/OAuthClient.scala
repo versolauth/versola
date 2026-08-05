@@ -503,6 +503,8 @@ final class OAuthClient(client: Client, config: E2EConfig):
       theme = "default",
       authFlow = authFlow,
       otpTemplateId = "default",
+      frontChannelLogoutUri = None,
+      frontChannelLogoutSessionRequired = false,
     ).toJson)
     val req = Request.post(s"${config.centralUrl}/configuration/clients", body)
       .addHeader(Authorization.Basic(config.clientId, config.clientSecret))
@@ -617,4 +619,6 @@ object OAuthClient:
       theme: String,
       authFlow: Option[zio.json.ast.Json],
       otpTemplateId: String,
+      frontChannelLogoutUri: Option[String],
+      frontChannelLogoutSessionRequired: Boolean,
   ) derives JsonEncoder

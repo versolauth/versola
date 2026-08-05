@@ -3,6 +3,7 @@ CREATE TABLE authorization_codes (
     client_id TEXT NOT NULL,
     user_id UUID NOT NULL,
     session_id BYTEA NOT NULL,
+    public_session_id TEXT NOT NULL,
     redirect_uri TEXT NOT NULL,
     scope TEXT[] NOT NULL,
     code_challenge TEXT NOT NULL,
@@ -13,6 +14,7 @@ CREATE TABLE authorization_codes (
     nonce TEXT,
     used BOOLEAN NOT NULL,
     access_token BYTEA NOT NULL,
+    acr TEXT,
     amr JSONB NOT NULL,
     auth_time TIMESTAMP WITH TIME ZONE NOT NULL
 );

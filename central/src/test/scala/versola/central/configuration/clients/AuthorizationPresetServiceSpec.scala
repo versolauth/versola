@@ -2,6 +2,7 @@ package versola.central.configuration.clients
 
 import org.scalamock.stubs.{Stub, ZIOStubs}
 import versola.central.configuration.{AuthorizationPresetInput, SaveAuthorizationPresetsRequest}
+import versola.central.configuration.challenges.{ChallengeSettingsRecord, ChallengeSettingsService, PasskeySettings, SubmissionLimits}
 import versola.central.configuration.edges.EdgeId
 import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.tenants.TenantId
@@ -16,7 +17,8 @@ object AuthorizationPresetServiceSpec extends ZIOSpecDefault, ZIOStubs:
     val cache = ReloadingCache(Unsafe.unsafe(unsafe ?=> Ref.unsafe.make(initial)))
     val presetRepo = stub[AuthorizationPresetRepository]
     val clientService = stub[OAuthClientService]
-    val service = AuthorizationPresetService.Impl(cache, presetRepo, clientService)
+    val challengeSettingsService = stub[ChallengeSettingsService]
+    val service = AuthorizationPresetService.Impl(cache, presetRepo, clientService, challengeSettingsService)
 
   private val edgeId = EdgeId("edge-1")
   private val tenantId = TenantId("tenant-a")
@@ -37,6 +39,9 @@ object AuthorizationPresetServiceSpec extends ZIOSpecDefault, ZIOStubs:
     theme = "",
     authFlow = Some(AuthFlow.default),
     otpTemplateId = "default",
+    frontChannelLogoutUri = None,
+    frontChannelLogoutSessionRequired = false,
+    backChannelLogoutUri = None,
   )
 
   private val validRequest = SaveAuthorizationPresetsRequest(
@@ -71,15 +76,100 @@ object AuthorizationPresetServiceSpec extends ZIOSpecDefault, ZIOStubs:
     cookiePath = None,
   )
 
+  private val challengeSettings = ChallengeSettingsRecord(
+    tenantId = tenantId,
+    allowedPrefixes = Nil,
+    submissionLimits = SubmissionLimits.empty,
+    otpLength = 6,
+    otpResendAfter = 60,
+    passkeySettings = PasskeySettings("localhost", "Test", List("http://localhost"), "preferred"),
+    authConversationTtlSeconds = 900,
+    sessionTtlSeconds = 86400,
+    sessionIdleTtlSeconds = None,
+    ipHeader = "X-Real-IP",
+    acrVocabulary = None,
+    postLogoutRedirectUris = Nil,
+  )
+
   override def spec = suite("AuthorizationPresetService")(
     test("save presets successfully when client exists and data is valid") {
       val env = Env()
       for
         _ <- env.clientService.getAllClients.succeedsWith(Vector(client))
         _ <- env.presetRepo.replace.succeedsWith(())
+        _ <- env.presetRepo.getAll.succeedsWith(Vector(preset1))
 
         result <- env.service.savePresets(validRequest)
       yield assertTrue(result.isRight)
+    },
+    test("registers preset's postLogoutRedirectUri in the tenant's challenge settings whitelist") {
+      val uri = "https://example.com/logged-out"
+      val request = validRequest.copy(
+        presets = validRequest.presets.map(_.copy(postLogoutRedirectUri = Some(RedirectUri(uri)))),
+      )
+      val savedPreset = preset1.copy(postLogoutRedirectUri = Some(RedirectUri(uri)))
+      val env = Env()
+      for
+        _ <- env.clientService.getAllClients.succeedsWith(Vector(client))
+        _ <- env.presetRepo.replace.succeedsWith(())
+        _ <- env.presetRepo.getAll.succeedsWith(Vector(savedPreset))
+        _ <- env.challengeSettingsService.getSettings.succeedsWith(Some(challengeSettings))
+        _ <- env.challengeSettingsService.upsertSettings.succeedsWith(())
+
+        result <- env.service.savePresets(request)
+      yield assertTrue(
+        result.isRight,
+        env.challengeSettingsService.upsertSettings.calls == List(
+          challengeSettings.copy(postLogoutRedirectUris = List(uri)),
+        ),
+      )
+    },
+    test("does not update challenge settings when postLogoutRedirectUri already whitelisted") {
+      val uri = "https://example.com/logged-out"
+      val request = validRequest.copy(
+        presets = validRequest.presets.map(_.copy(postLogoutRedirectUri = Some(RedirectUri(uri)))),
+      )
+      val savedPreset = preset1.copy(postLogoutRedirectUri = Some(RedirectUri(uri)))
+      val settings = challengeSettings.copy(postLogoutRedirectUris = List(uri))
+      val env = Env()
+      for
+        _ <- env.clientService.getAllClients.succeedsWith(Vector(client))
+        _ <- env.presetRepo.replace.succeedsWith(())
+        _ <- env.presetRepo.getAll.succeedsWith(Vector(savedPreset))
+        _ <- env.challengeSettingsService.getSettings.succeedsWith(Some(settings))
+
+        result <- env.service.savePresets(request)
+      yield assertTrue(result.isRight, env.challengeSettingsService.upsertSettings.calls.isEmpty)
+    },
+    test("does not touch challenge settings when no preset defines a postLogoutRedirectUri") {
+      val env = Env()
+      for
+        _ <- env.clientService.getAllClients.succeedsWith(Vector(client))
+        _ <- env.presetRepo.replace.succeedsWith(())
+        _ <- env.presetRepo.getAll.succeedsWith(Vector(preset1))
+
+        result <- env.service.savePresets(validRequest)
+      yield assertTrue(
+        result.isRight,
+        env.challengeSettingsService.getSettings.calls.isEmpty,
+        env.challengeSettingsService.upsertSettings.calls.isEmpty,
+      )
+    },
+    test("does nothing when challenge settings are not found for the tenant") {
+      val uri = "https://example.com/logged-out"
+      val request = validRequest.copy(
+        presets = validRequest.presets.map(_.copy(postLogoutRedirectUri = Some(RedirectUri(uri)))),
+      )
+      val savedPreset = preset1.copy(postLogoutRedirectUri = Some(RedirectUri(uri)))
+      val env = Env()
+      for
+        _ <- env.clientService.getAllClients.succeedsWith(Vector(client))
+        _ <- env.presetRepo.replace.succeedsWith(())
+        _ <- env.presetRepo.getAll.succeedsWith(Vector(savedPreset))
+        _ <- env.challengeSettingsService.getSettings.succeedsWith(None)
+
+        result <- env.service.savePresets(request)
+      yield assertTrue(result.isRight, env.challengeSettingsService.upsertSettings.calls.isEmpty)
     },
     test("return error when client not found") {
       val env = Env()

@@ -22,6 +22,7 @@ object ChallengeSettingsServiceSpec extends UnitSpecBase:
     sessionIdleTtlSeconds = None,
     ipHeader = "X-Real-IP",
     acrVocabulary = None,
+    postLogoutRedirectUris = List.empty,
   )
 
   class Env(initial: Vector[ChallengeSettingsRecord] = Vector.empty):

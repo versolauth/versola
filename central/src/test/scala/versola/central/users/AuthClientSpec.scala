@@ -1,6 +1,7 @@
 package versola.central.users
 
 import versola.central.{CentralConfig, TestCentralConfig}
+import versola.central.configuration.clients.ClientId
 import versola.central.configuration.roles.RoleId
 import versola.central.configuration.tenants.TenantId
 import versola.util.JWT
@@ -13,6 +14,7 @@ import zio.test.Assertion.*
 
 import java.io.IOException
 import java.net.ConnectException
+import java.time.Instant
 import java.util.UUID
 
 object AuthClientSpec extends ZIOSpecDefault:
@@ -39,8 +41,11 @@ object AuthClientSpec extends ZIOSpecDefault:
   )
 
   private val sessionDto = AuthClient.SessionDto(
-    clientId = "client-1",
-    userAgent = Some("Mozilla"),
+    clients = List(AuthClient.ClientEntryDto(ClientId("client-1"), Instant.parse("2024-01-01T00:00:00Z"))),
+    platform = "desktop",
+    os = Some("macOS"),
+    browser = Some("Chrome"),
+    version = Some("125"),
     createdAt = "2024-01-01T00:00:00Z",
   )
 

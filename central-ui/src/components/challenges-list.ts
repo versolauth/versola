@@ -12,6 +12,7 @@ import {
   upsertChallengeSettings,
 } from '../utils/central-api';
 import { confirmDestructiveAction } from '../utils/confirm-dialog';
+import { validateRedirectUri } from '../utils/validators';
 import './content-header';
 import './error-card';
 import './loading-cards';
@@ -87,6 +88,9 @@ export class VersolaChallengesList extends LitElement {
   @state() private editPasskeyUserVerification = 'preferred';
   @state() private acrVocabulary: Record<string, string[]> = {};
   @state() private editAcrVocabulary: Array<{ acr: string; factors: string[] }> = [];
+
+  @state() private postLogoutRedirectUris: string[] = [];
+  @state() private editPostLogoutRedirectUris: Array<{ value: string }> = [];
 
   static styles = [
     theme,
@@ -390,6 +394,7 @@ export class VersolaChallengesList extends LitElement {
         this.sessionIdleTtlSeconds = challengeSettings.sessionIdleTtlSeconds ?? null;
         this.acrVocabulary = challengeSettings.acrVocabulary ?? {};
         this.ipHeader = challengeSettings.ipHeader || 'X-Real-IP';
+        this.postLogoutRedirectUris = challengeSettings.postLogoutRedirectUris ?? [];
       } else {
         this.phonePrefixes = [];
         this.submissionLimits = { otpRequest: [], otpSubmit: [], passwordSubmit: [], passkeyAssertion: [], banDurationSeconds: 0 };
@@ -401,6 +406,7 @@ export class VersolaChallengesList extends LitElement {
         this.sessionIdleTtlSeconds = null;
         this.acrVocabulary = {};
         this.ipHeader = 'X-Real-IP';
+        this.postLogoutRedirectUris = [];
       }
     } catch (e) {
       this.errorMessage = e instanceof Error ? e.message : 'Failed to load data';
@@ -544,6 +550,7 @@ export class VersolaChallengesList extends LitElement {
     this.editPasskeyUserVerification = this.passkeySettings?.userVerification ?? 'preferred';
     this.editAcrVocabulary = Object.entries(this.acrVocabulary)
       .map(([acr, factors]) => ({ acr, factors: [...factors] }));
+    this.editPostLogoutRedirectUris = this.postLogoutRedirectUris.map(value => ({ value }));
     this.settingsError = '';
   }
 
@@ -566,6 +573,14 @@ export class VersolaChallengesList extends LitElement {
 
   private removePasskeyOrigin(index: number) {
     this.editPasskeyOrigins = this.editPasskeyOrigins.filter((_, i) => i !== index);
+  }
+
+  private addPostLogoutRedirectUri() {
+    this.editPostLogoutRedirectUris = [...this.editPostLogoutRedirectUris, { value: '' }];
+  }
+
+  private removePostLogoutRedirectUri(index: number) {
+    this.editPostLogoutRedirectUris = this.editPostLogoutRedirectUris.filter((_, i) => i !== index);
   }
 
   private addAcrRow() {
@@ -616,6 +631,15 @@ export class VersolaChallengesList extends LitElement {
       return;
     }
 
+    const postLogoutRedirectUris = this.editPostLogoutRedirectUris.map(p => p.value.trim()).filter(p => p.length > 0);
+    for (const uri of postLogoutRedirectUris) {
+      const validation = validateRedirectUri(uri);
+      if (!validation.valid) {
+        this.settingsError = `Invalid post-logout redirect URI "${uri}": ${validation.error}`;
+        return;
+      }
+    }
+
     this.isSavingSettings = true;
     this.settingsError = '';
     const acrVocabulary = Object.fromEntries(
@@ -636,6 +660,7 @@ export class VersolaChallengesList extends LitElement {
         this.editSessionIdleTtlSeconds,
         ipHeader,
         acrVocabulary,
+        postLogoutRedirectUris,
       );
       this.phonePrefixes = prefixes;
       this.submissionLimits = JSON.parse(JSON.stringify(this.editSubmissionLimits));
@@ -647,6 +672,7 @@ export class VersolaChallengesList extends LitElement {
       this.ipHeader = ipHeader;
       this.passkeySettings = { ...passkeySettings, origins: [...passkeySettings.origins] };
       this.acrVocabulary = acrVocabulary;
+      this.postLogoutRedirectUris = postLogoutRedirectUris;
       this.hasChallengeSettings = true;
       this.editingSettings = false;
     } catch (e) {
@@ -952,6 +978,18 @@ export class VersolaChallengesList extends LitElement {
             `}
         </div>
 
+        <div class="card" style="margin-bottom: var(--spacing-lg);">
+          <label>Post-Logout Redirect URIs</label>
+          <div class="hint">Exact-match URIs RPs may request as <code>post_logout_redirect_uri</code> after OIDC logout.</div>
+          ${this.postLogoutRedirectUris.length === 0
+            ? html`<div class="hint">No post-logout redirect URIs configured.</div>`
+            : html`
+              <div class="prefix-tags">
+                ${this.postLogoutRedirectUris.map(uri => html`<span class="prefix-tag">${uri}</span>`)}
+              </div>
+            `}
+        </div>
+
         ${hasLimits || banDurationSeconds > 0 ? html`
           <div class="card">
             <div class="limits-card-header">
@@ -1141,6 +1179,23 @@ export class VersolaChallengesList extends LitElement {
           </div>
         `)}
         <button class="btn btn-secondary" @click=${() => this.addAcrRow()}>+ Add ACR</button>
+
+        <h3 style="margin-top: var(--spacing-xl); margin-bottom: var(--spacing-md);">Logout</h3>
+        <label>Post-Logout Redirect URIs</label>
+        <div class="hint">RPs must request an exact match of one of these URIs as <code>post_logout_redirect_uri</code>.</div>
+
+        ${this.editPostLogoutRedirectUris.length === 0
+          ? html`<div class="hint">No post-logout redirect URIs configured.</div>`
+          : this.editPostLogoutRedirectUris.map((entry, i) => html`
+            <div class="locale-bar">
+              <input type="text" class="form-control compact-input locale-select" .value=${entry.value}
+                @input=${(e: Event) => { entry.value = (e.target as HTMLInputElement).value; }}
+                placeholder="https://app.example.com/logged-out" />
+              <button class="icon-action danger" @click=${() => this.removePostLogoutRedirectUri(i)} title="Remove">✕</button>
+            </div>
+          `)}
+
+        <button class="btn btn-secondary" @click=${() => this.addPostLogoutRedirectUri()}>+ Add URI</button>
 
         <div class="form-actions">
           <button class="btn btn-secondary" ?disabled=${this.isSavingSettings} @click=${() => this.cancelEditSettings()}>Cancel</button>

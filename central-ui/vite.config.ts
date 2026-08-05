@@ -106,6 +106,27 @@ export default defineConfig(({ command, isPreview }) => ({
         target: 'http://localhost:9005',
         changeOrigin: true,
       },
+      // A 401 from the console redirects the browser to /login/<presetId> (see
+      // central-api.ts's redirectToLogin). Without this proxy that top-level
+      // navigation hits Vite's own dev server, which has no such route and
+      // falls back to serving index.html — reloading the console, which
+      // immediately 401s and redirects again, looping forever instead of ever
+      // reaching edge to set the EDGE_SESSION cookie.
+      '/login': {
+        target: 'http://localhost:9005',
+        changeOrigin: true,
+      },
+      '/complete': {
+        target: 'http://localhost:9005',
+        changeOrigin: true,
+      },
+      // The "Log out" link navigates to /logout/<presetId> (see navigation.ts) — edge's
+      // preset-scoped logout route, which redirects on to auth's own /logout with the
+      // preset's post_logout_redirect_uri. Same edge dev port as /login.
+      '/logout': {
+        target: 'http://localhost:9005',
+        changeOrigin: true,
+      },
     },
   },
   // Public directory for static assets

@@ -4,7 +4,7 @@ import { theme } from '../styles/theme';
 import './versola-logo';
 import './tenant-selector';
 
-export type NavItem = 'clients' | 'scopes' | 'permissions' | 'resources' | 'roles' | 'tenants' | 'edges' | 'users' | 'forms' | 'locales' | 'challenges' | 'jwks' | 'system-settings';
+export type NavItem = 'clients' | 'scopes' | 'permissions' | 'resources' | 'roles' | 'tenants' | 'edges' | 'users' | 'forms' | 'locales' | 'challenges' | 'well-known' | 'system-settings';
 
 @customElement('versola-navigation')
 export class VersolaNavigation extends LitElement {
@@ -14,6 +14,7 @@ export class VersolaNavigation extends LitElement {
   @property({ attribute: false }) allowedTenantIds: string[] | null = null;
   /** Mobile drawer state. Reflected so the `:host([open])` rule below can match. */
   @property({ type: Boolean, reflect: true }) open = false;
+  @property({ type: String }) logoutUrl = '/logout/central-admin';
   @query('.brand-close') private closeButton?: HTMLButtonElement;
 
   /** Called by admin-app right after opening the drawer.
@@ -34,7 +35,8 @@ export class VersolaNavigation extends LitElement {
     theme,
     css`
       :host {
-        display: block;
+        display: flex;
+        flex-direction: column;
         background: var(--bg-dark);
         border-right: 1px solid var(--border-dark);
         height: 100vh;
@@ -42,7 +44,13 @@ export class VersolaNavigation extends LitElement {
         position: fixed;
         left: 0;
         top: 0;
+        overflow: hidden;
+      }
+
+      .nav-scroll {
+        flex: 1 1 auto;
         overflow-y: auto;
+        min-height: 0;
       }
 
       /* On narrow screens the sidebar becomes an off-canvas drawer: it stays
@@ -203,7 +211,17 @@ export class VersolaNavigation extends LitElement {
         font-size: 1.2rem;
         width: 20px;
         text-align: center;
-      } 
+      }
+
+      .nav-footer {
+        flex: none;
+        padding: 1rem;
+        border-top: 1px solid var(--border-dark);
+      }
+
+      .nav-footer .nav-item {
+        margin-bottom: 0;
+      }
     `,
   ];
 
@@ -229,7 +247,7 @@ export class VersolaNavigation extends LitElement {
         return p.has('tenants:read');
       case 'edges':
         return p.has('edges:read');
-      case 'jwks':
+      case 'well-known':
         return p.has('jwks:read');
       case 'clients':
       case 'scopes':
@@ -265,48 +283,54 @@ export class VersolaNavigation extends LitElement {
 
   render() {
     return html`
-      <div class="brand">
-        <div class="brand-logo">
-          <versola-logo size="40"></versola-logo>
+      <div class="nav-scroll">
+        <div class="brand">
+          <div class="brand-logo">
+            <versola-logo size="40"></versola-logo>
+          </div>
+          <div class="brand-name">Versola</div>
+          <button
+            type="button"
+            class="brand-close"
+            @click=${this.handleCloseClick}
+            aria-label="Close navigation menu"
+          >✕</button>
         </div>
-        <div class="brand-name">Versola</div>
-        <button
-          type="button"
-          class="brand-close"
-          @click=${this.handleCloseClick}
-          aria-label="Close navigation menu"
-        >✕</button>
+
+        <div class="tenant-section">
+          <tenant-selector
+            .selectedTenantId=${this.tenantId}
+            .allowedTenantIds=${this.allowedTenantIds}
+          ></tenant-selector>
+        </div>
+
+        <nav class="nav">
+          <div class="nav-section">
+            <div class="nav-section-title">Tenant Scoped</div>
+            ${this.navItem('challenges', 'Challenges & Security')}
+            ${this.navItem('clients', 'Clients')}
+            ${this.navItem('permissions', 'Permissions')}
+            ${this.navItem('resources', 'Resources')}
+            ${this.navItem('roles', 'Roles')}
+            ${this.navItem('scopes', 'Scopes')}
+          </div>
+
+          <div class="nav-section">
+            <div class="nav-section-title">Global</div>
+            ${this.navItem('edges', 'Edges')}
+            ${this.navItem('forms', 'Forms')}
+            ${this.navItem('locales', 'Locales')}
+            ${this.navItem('system-settings', 'System Settings')}
+            ${this.navItem('tenants', 'Tenants')}
+            ${this.navItem('users', 'Users')}
+            ${this.navItem('well-known', 'Well Known')}
+          </div>
+        </nav>
       </div>
 
-      <div class="tenant-section">
-        <tenant-selector
-          .selectedTenantId=${this.tenantId}
-          .allowedTenantIds=${this.allowedTenantIds}
-        ></tenant-selector>
+      <div class="nav-footer">
+        <a class="nav-item" href=${this.logoutUrl}>Log out</a>
       </div>
-
-      <nav class="nav">
-        <div class="nav-section">
-          <div class="nav-section-title">General</div>
-          ${this.navItem('clients', 'Clients')}
-          ${this.navItem('scopes', 'Scopes')}
-          ${this.navItem('permissions', 'Permissions')}
-          ${this.navItem('resources', 'Resources')}
-          ${this.navItem('roles', 'Roles')}
-          ${this.navItem('challenges', 'Challenges & Security')}
-        </div>
-
-        <div class="nav-section">
-          <div class="nav-section-title">Global</div>
-          ${this.navItem('edges', 'Edges')}
-          ${this.navItem('forms', 'Forms')}
-          ${this.navItem('jwks', 'JWKS')}
-          ${this.navItem('locales', 'Locales')}
-          ${this.navItem('system-settings', 'System Settings')}
-          ${this.navItem('tenants', 'Tenants')}
-          ${this.navItem('users', 'Users')}
-        </div>
-      </nav>
     `;
   }
 }

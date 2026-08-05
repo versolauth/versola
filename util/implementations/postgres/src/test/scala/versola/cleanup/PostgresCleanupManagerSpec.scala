@@ -56,14 +56,14 @@ object PostgresCleanupManagerSpec extends PostgresSpec:
           _ <- xa.connect:
             sql"""
               INSERT INTO authorization_codes
-                (code, client_id, user_id, session_id, redirect_uri, scope,
+                (code, client_id, user_id, session_id, public_session_id, redirect_uri, scope,
                  code_challenge, code_challenge_method, expires_at,
                  used, access_token, amr, auth_time)
               VALUES
-                (decode('0101', 'hex'), 'c1', $userId1, decode('02', 'hex'), 'https://x.com', ARRAY['openid'],
+                (decode('0101', 'hex'), 'c1', $userId1, decode('02', 'hex'), 'sid1', 'https://x.com', ARRAY['openid'],
                  'ch', 'S256', NOW() - INTERVAL '1 minute',
                  false, decode('03', 'hex'), '[]'::jsonb, NOW()),
-                (decode('0202', 'hex'), 'c1', $userId2, decode('02', 'hex'), 'https://x.com', ARRAY['openid'],
+                (decode('0202', 'hex'), 'c1', $userId2, decode('02', 'hex'), 'sid2', 'https://x.com', ARRAY['openid'],
                  'ch', 'S256', NOW() + INTERVAL '5 minutes',
                  false, decode('04', 'hex'), '[]'::jsonb, NOW())
             """.update.run()

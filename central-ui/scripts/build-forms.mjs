@@ -13,7 +13,7 @@ const outDir = resolve(here, '../../central/src/main/resources/forms');
 // write fails with ENOENT — this is exactly what would happen in CI right now.
 await mkdir(outDir, { recursive: true });
 
-const forms = ['credential', 'otp', 'password', 'access-denied', 'passkey-enroll', 'set-password'];
+const forms = ['credential', 'otp', 'password', 'access-denied', 'passkey-enroll', 'set-password', 'confirm-logout', 'signed-out'];
 const sharedAssets = ['common.css'];
 
 for (const id of forms) {

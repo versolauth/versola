@@ -8,7 +8,7 @@ import versola.oauth.client.model.{Acr, AuthFactor, AuthFactorType, AuthFlow, Au
 import versola.oauth.conversation.{ConversationRepository, ConversationResult, ConversationRouter, EmailSubmission, PhoneSubmission}
 import versola.oauth.model.{AccessToken, AuthorizationCode, CodeChallenge, CodeChallengeMethod, State}
 import versola.oauth.session.SessionService
-import versola.oauth.session.model.{SessionId, SessionInfo, SessionRecord, UserAgentInfo}
+import versola.oauth.session.model.{ClientEntry, PublicSessionId, SessionId, SessionInfo, SessionRecord, UserAgentInfo}
 import versola.oauth.token.AuthorizationCodeRepository
 import versola.oauth.userinfo.UserInfoService
 import versola.user.UserRepository
@@ -57,6 +57,9 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
     theme = "default",
     authFlow = Some(otpFlow),
     otpTemplateId = "default",
+    frontChannelLogoutUri = None,
+    frontChannelLogoutSessionRequired = false,
+    backChannelLogoutUri = None,
   )
 
   val baseRequest = AuthorizeRequest(
@@ -81,14 +84,16 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
 
   val rawSessionId = SessionId(Array.fill(32)(5.toByte))
   val sessionMac = MAC(Array.fill(32)(1.toByte))
+  val publicSessionId = PublicSessionId("test-public-session")
   val now = Instant.now()
 
   def sessionWithAmr(amr: Map[PassedAuthFactor, PassedFactorRecord]) = SessionRecord(
     userId = versola.user.model.UserId(UUID.randomUUID()),
-    clientId = clientId,
+    clients = List(ClientEntry(clientId, now)),
     userAgent = UserAgentInfo.parse(None),
     createdAt = now,
     amr = amr,
+    publicId = publicSessionId,
   )
 
   class Env:
@@ -227,6 +232,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         _ <- env.sessionService.find.succeedsWith(Some(SessionInfo(sessionMac, session)))
         _ <- env.configurationService.getAcrVocabulary.succeedsWith(Map.empty)
         _ <- env.configurationService.getSessionIdleTtl.succeedsWith(Option.empty[zio.Duration])
+        _ <- env.sessionService.registerClient.succeedsWith(())
         _ <- env.authPropertyGenerator.nextAuthorizationCode.succeedsWith(code)
         _ <- env.authPropertyGenerator.nextAccessToken.succeedsWith(accessToken)
         _ <- env.securityService.mac.succeedsWith(codeMac)
@@ -254,6 +260,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         _ <- env.sessionService.find.succeedsWith(Some(SessionInfo(sessionMac, session)))
         _ <- env.configurationService.getAcrVocabulary.succeedsWith(Map.empty)
         _ <- env.configurationService.getSessionIdleTtl.succeedsWith(Option.empty[zio.Duration])
+        _ <- env.sessionService.registerClient.succeedsWith(())
         _ <- env.authPropertyGenerator.nextAuthorizationCode.succeedsWith(code)
         _ <- env.authPropertyGenerator.nextAccessToken.succeedsWith(accessToken)
         _ <- env.securityService.mac.succeedsWith(codeMac)
@@ -275,6 +282,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         _ <- env.sessionService.find.succeedsWith(Some(SessionInfo(sessionMac, session)))
         _ <- env.configurationService.getAcrVocabulary.succeedsWith(Map.empty)
         _ <- env.configurationService.getSessionIdleTtl.succeedsWith(Option.empty[zio.Duration])
+        _ <- env.sessionService.registerClient.succeedsWith(())
         _ <- env.authPropertyGenerator.nextAuthorizationCode.succeedsWith(code)
         _ <- env.authPropertyGenerator.nextAccessToken.succeedsWith(accessToken)
         _ <- env.securityService.mac.succeedsWith(codeMac)
@@ -405,10 +413,11 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
       val sessionUserId = versola.user.model.UserId(UUID.randomUUID())
       val oldSession = SessionRecord(
         userId = sessionUserId,
-        clientId = clientId,
+        clients = List(ClientEntry(clientId, Instant.EPOCH.minusSeconds(1))),
         userAgent = UserAgentInfo.parse(None),
         createdAt = Instant.EPOCH.minusSeconds(1),
         amr = Map(PassedAuthFactor.otp -> PassedFactorRecord(Instant.EPOCH.minusSeconds(1), Set(AuthMethodRef.otp))),
+        publicId = publicSessionId,
       )
       for
         _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
@@ -431,10 +440,11 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
       val env = Env()
       val oldSession = SessionRecord(
         userId = versola.user.model.UserId(UUID.randomUUID()),
-        clientId = clientId,
+        clients = List(ClientEntry(clientId, Instant.EPOCH.minusSeconds(1))),
         userAgent = UserAgentInfo.parse(None),
         createdAt = Instant.EPOCH.minusSeconds(1),
         amr = Map(PassedAuthFactor.otp -> PassedFactorRecord(Instant.EPOCH.minusSeconds(1), Set(AuthMethodRef.otp))),
+        publicId = publicSessionId,
       )
       for
         _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
@@ -453,16 +463,18 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
       // Test clock is at Instant.EPOCH; session also at EPOCH → not before EPOCH - 3600
       val freshSession = SessionRecord(
         userId = versola.user.model.UserId(UUID.randomUUID()),
-        clientId = clientId,
+        clients = List(ClientEntry(clientId, Instant.EPOCH)),
         userAgent = UserAgentInfo.parse(None),
         createdAt = Instant.EPOCH,
         amr = Map(PassedAuthFactor.otp -> PassedFactorRecord(Instant.EPOCH, Set(AuthMethodRef.otp))),
+        publicId = publicSessionId,
       )
       for
         _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
         _ <- env.sessionService.find.succeedsWith(Some(SessionInfo(sessionMac, freshSession)))
         _ <- env.configurationService.getAcrVocabulary.succeedsWith(Map.empty)
         _ <- env.configurationService.getSessionIdleTtl.succeedsWith(Option.empty[zio.Duration])
+        _ <- env.sessionService.registerClient.succeedsWith(())
         _ <- env.authPropertyGenerator.nextAuthorizationCode.succeedsWith(code)
         _ <- env.authPropertyGenerator.nextAccessToken.succeedsWith(accessToken)
         _ <- env.securityService.mac.succeedsWith(codeMac)
@@ -518,6 +530,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         _ <- env.configurationService.getAcrVocabulary.succeedsWith(Map(Acr("otp") -> NonEmptyList(PassedAuthFactor.otp)))
         _ <- env.acrResolver.checkAcrSatisfaction.succeedsWith(Some(Acr("otp")))
         _ <- env.configurationService.getSessionIdleTtl.succeedsWith(Option.empty[zio.Duration])
+        _ <- env.sessionService.registerClient.succeedsWith(())
         _ <- env.authPropertyGenerator.nextAuthorizationCode.succeedsWith(code)
         _ <- env.authPropertyGenerator.nextAccessToken.succeedsWith(accessToken)
         _ <- env.securityService.mac.succeedsWith(codeMac)
@@ -584,6 +597,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         _ <- env.configurationService.getAcrVocabulary.succeedsWith(Map(Acr("company_otp") -> NonEmptyList(PassedAuthFactor.otp)))
         _ <- env.acrResolver.checkAcrSatisfaction.succeedsWith(Some(Acr("company_otp")))
         _ <- env.configurationService.getSessionIdleTtl.succeedsWith(Option.empty[zio.Duration])
+        _ <- env.sessionService.registerClient.succeedsWith(())
         _ <- env.authPropertyGenerator.nextAuthorizationCode.succeedsWith(code)
         _ <- env.authPropertyGenerator.nextAccessToken.succeedsWith(accessToken)
         _ <- env.securityService.mac.succeedsWith(codeMac)
@@ -859,10 +873,11 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
       val sessionUserId = versola.user.model.UserId(UUID.randomUUID())
       val oldSession = SessionRecord(
         userId = sessionUserId,
-        clientId = clientId,
+        clients = List(ClientEntry(clientId, Instant.EPOCH.minusSeconds(1))),
         userAgent = UserAgentInfo.parse(None),
         createdAt = Instant.EPOCH.minusSeconds(1),
         amr = Map(PassedAuthFactor.otp -> PassedFactorRecord(Instant.EPOCH.minusSeconds(1), Set(AuthMethodRef.otp))),
+        publicId = publicSessionId,
       )
       for
         _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))

@@ -15,13 +15,12 @@ import versola.oauth.conversation.otp.OtpService
 import versola.oauth.conversation.otp.model.SubmitOtpResult
 import versola.oauth.model.{AuthorizationCode, AuthorizationCodeRecord}
 import versola.oauth.session.SessionRepository
-import versola.oauth.session.model.PriorSession
-import versola.oauth.session.model.{SessionRecord, UserAgentInfo}
+import versola.oauth.session.model.{ClientEntry, PublicSessionId, SessionId, SessionRecord, UserAgentInfo, PriorSession}
 import versola.oauth.token.AuthorizationCodeRepository
 import versola.oauth.userinfo.UserInfoService
 import versola.user.UserRepository
 import versola.user.model.{Login, UserId, UserRecord}
-import versola.util.{AuthPropertyGenerator, Base64, CoreConfig, Email, Phone, Secret, SecureRandom, SecurityService}
+import versola.util.{AuthPropertyGenerator, Base64, CoreConfig, Email, MAC, Phone, Secret, SecureRandom, SecurityService}
 import zio.*
 import zio.json.ast.Json
 import zio.prelude.NonEmptyList
@@ -521,22 +520,17 @@ object ConversationService:
         case Some(userId) =>
           for
             code <- authPropertyGenerator.nextAuthorizationCode
-            now <- Clock.instant
-            amr = AuthMethodRef.amrClaim(conversation.amr)
+            sessionId <- authPropertyGenerator.nextSessionId
+            publicSessionId <- authPropertyGenerator.nextPublicSessionId
+            sessionIdMac <- securityService.mac(Secret(sessionId), config.security.sessionsSecret)
             accessToken <- authPropertyGenerator.nextAccessToken
             sessionTtl <- configService.getSessionTtl(conversation.clientId)
-            sessionIdleTtl <-
-              if conversation.scope.contains(ScopeToken.OfflineAccess) then
-                ZIO.none
-              else
-                configService.getSessionIdleTtl(conversation.clientId)
-
-            // Always generate a fresh session ID (rotates the ID, issues a fresh cookie with full TTL).
-            sessionId <- authPropertyGenerator.nextSessionId
-            sessionIdMac <- securityService.mac(Secret(sessionId), config.security.sessionsSecret)
-
+            sessionIdleTtl <- configService.getSessionIdleTtl(conversation.clientId)
+            now <- Clock.instant
+            amr = AuthMethodRef.amrClaim(conversation.amr)
             record = AuthorizationCodeRecord(
               sessionId = sessionIdMac,
+              publicSessionId = publicSessionId,
               clientId = conversation.clientId,
               userId = userId,
               redirectUri = conversation.redirectUri,
@@ -553,10 +547,11 @@ object ConversationService:
             )
             session = SessionRecord(
               userId = userId,
-              clientId = conversation.clientId,
+              clients = List(ClientEntry(conversation.clientId, now)),
               userAgent = UserAgentInfo.parse(conversation.userAgent),
               createdAt = now,
               amr = conversation.amr,
+              publicId = publicSessionId,
             )
             codeMac <- securityService.mac(Secret(code), config.security.authCodesSecret)
             claimed <- conversationRepository.delete(authId, conversation.version)
@@ -573,9 +568,9 @@ object ConversationService:
                     PriorSession.MigrateTokens(prior, amr, now, conversation.targetAcr)
                   else
                     PriorSession.Invalidate(prior)
-                _ <- sessionRepository.create(sessionIdMac, session, sessionTtl, sessionIdleTtl, priorSession)
+                _ <- sessionRepository.create(sessionIdMac, publicSessionId, session, sessionTtl, sessionIdleTtl, priorSession)
                 idTokenData <- if conversation.responseType.contains(ResponseTypeEntry.IdToken) && conversation.scope.contains(ScopeToken.OpenId) then
-                  generateIdTokenData(userId, conversation, amr, now, conversation.targetAcr)
+                  generateIdTokenData(userId, conversation, amr, now, conversation.targetAcr, publicSessionId)
                 else
                   ZIO.none
               yield ConversationResult.Complete(
@@ -707,7 +702,7 @@ object ConversationService:
                 else
                   val displayName: String =
                     conversation.userClaims.flatMap(_.fields.toMap.get("name"))
-                      .collect { case zio.json.ast.Json.Str(v) => v }
+                      .collect { case Json.Str(v) => v }
                       .orElse(conversation.userEmail.map(_.toString))
                       .orElse(conversation.userPhone.map(_.toString))
                       .orElse(conversation.userLogin.map(_.toString))
@@ -808,6 +803,7 @@ object ConversationService:
         amr: Set[AuthMethodRef],
         authTime: Instant,
         acr: Option[Acr],
+        sessionId: PublicSessionId,
     ): Task[Option[ConversationResult.IdTokenData]] =
       val user = UserRecord(
         id = userId,
@@ -830,5 +826,6 @@ object ConversationService:
           userId = user.id,
           claims = userInfo.claims ++ AuthMethodRef.idTokenClaims(amr, Some(authTime), acr),
           clientId = conversation.clientId,
+          sessionId = sessionId,
         ),
       )

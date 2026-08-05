@@ -1,17 +1,27 @@
 package versola.edge
 
-import versola.edge.model.{AuthConversationNotFound, Code, PresetId, PresetNotFound, ResourceId, State}
+import versola.edge.model.{AuthConversationNotFound, Code, InvalidLogoutToken, PresetId, PresetNotFound, ResourceId, SessionId, State}
+import versola.util.FormDecoder
 import versola.util.http.Controller
 import zio.*
 import zio.http.*
-import zio.json.EncoderOps
+import zio.json.{EncoderOps, JsonEncoder, jsonField}
 
 object EdgeController extends Controller:
-  type Env = Tracing & EdgeService & EdgeConfig & JwksService
+  type Env = Tracing & EdgeService & EdgeConfig & JwksService & AuthorizationPresetsSyncClient
+
+  /** OIDC Back-Channel Logout §2.8 error response body. */
+  private case class LogoutError(
+      error: String,
+      @jsonField("error_description") errorDescription: String,
+  ) derives JsonEncoder
 
   def routes: Routes[Env, Throwable] = Routes(
     loginEndpoint,
+    logoutEndpoint,
     completeEndpoint,
+    frontChannelLogoutEndpoint,
+    backChannelLogoutEndpoint,
     permissionsEndpoint,
     proxyGetEndpoint,
     proxyPostEndpoint,
@@ -25,7 +35,7 @@ object EdgeController extends Controller:
     "max_age",
     "prompt",
     "login_hint",
-    "ui_locales"
+    "ui_locales",
   )
 
   val loginEndpoint =
@@ -48,7 +58,21 @@ object EdgeController extends Controller:
               ZIO.succeed(Response.seeOther(url))
       yield response
     }
-  
+
+  val logoutEndpoint: Route[EdgeConfig & AuthorizationPresetsSyncClient, Throwable] =
+    Method.GET / "logout" / string("presetId") -> handler { (presetId: String, _: Request) =>
+      for
+        config <- ZIO.service[EdgeConfig]
+        presets <- ZIO.service[AuthorizationPresetsSyncClient]
+        preset <- presets.getAll.map(_.get(PresetId(presetId))).someOrFail(PresetNotFound).mapError {
+          case error: Throwable => error
+          case _ => RuntimeException("Preset not found")
+        }
+        redirect <- ZIO.fromEither(URL.decode(config.versolaUrl.toString + "/logout"))
+        target = preset.postLogoutRedirectUri.fold(redirect)(uri => redirect.addQueryParam("post_logout_redirect_uri", uri.toString))
+      yield Response.seeOther(target)
+    }
+
   val completeEndpoint =
     Method.GET / "complete" -> handler { (request: Request) =>
       for
@@ -70,29 +94,70 @@ object EdgeController extends Controller:
               for
                 redirectUrl <- ZIO.fromEither(URL.decode(completion.postLoginRedirectUri))
                 now <- Clock.instant
-              yield
-                Response
-                  .seeOther(redirectUrl)
-                  .addCookie(
-                    EdgeSessionCookie(
-                      presetId = completion.presetId,
-                      accessToken = completion.accessToken,
-                      ttl = completion.cookieTtl,
-                      domain = completion.cookieDomain,
-                      path = completion.cookiePath,
-                      now = now,
-                    ),
-                  )
+              yield Response
+                .seeOther(redirectUrl)
+                .addCookie(
+                  EdgeSessionCookie(
+                    presetId = completion.presetId,
+                    accessToken = completion.accessToken,
+                    ttl = completion.cookieTtl,
+                    domain = completion.cookieDomain,
+                    path = completion.cookiePath,
+                    now = now,
+                  ),
+                )
       yield response
+    }
+
+  // OP-initiated front-channel logout, invoked by the OP in a hidden iframe (or via
+  // direct navigation) with the `iss`/`sid` query params of the OIDC logout token.
+  // Path-independent: it never reads EDGE_SESSION, only clears it for the presets
+  // it finds tied to the session.
+  val frontChannelLogoutEndpoint =
+    Method.GET / "logout" / "frontchannel" -> handler { (request: Request) =>
+      for
+        edgeService <- ZIO.service[EdgeService]
+        iss <- request.queryZIO[String]("iss")
+        sid <- request.queryZIO[SessionId]("sid")
+        cookies <- edgeService.frontChannelLogout(iss, sid)
+      yield cookies.foldLeft(
+        Response
+          .status(Status.Ok)
+          .addHeader(Header.CacheControl.NoStore),
+      )(_.addCookie(_))
+    }
+
+  // OP-initiated back-channel logout, invoked by the OP directly, server-to-server, with
+  // the signed `logout_token` of the OIDC logout. The browser is not involved, so no
+  // cookie is cleared: dropping the session rows is what stops EDGE_SESSION from being
+  // honoured. One registration covers every preset behind this edge.
+  val backChannelLogoutEndpoint =
+    Method.POST / "logout" / "backchannel" -> handler { (request: Request) =>
+      (for
+        edgeService <- ZIO.service[EdgeService]
+        form <- request.body.asURLEncodedForm
+        logoutToken <- FormDecoder.single(form, "logout_token", Right(_))
+          .mapError(InvalidLogoutToken(_))
+        _ <- edgeService.backChannelLogout(logoutToken)
+      yield Response.status(Status.Ok).addHeader(Header.CacheControl.NoStore))
+        .catchAll:
+          case invalid: InvalidLogoutToken =>
+            ZIO.succeed(
+              Response
+                .json(LogoutError("invalid_request", invalid.reason).toJson)
+                .status(Status.BadRequest)
+                .addHeader(Header.CacheControl.NoStore),
+            )
+          case error: Throwable => ZIO.fail(error)
     }
 
   val permissionsEndpoint =
     Method.GET / "permissions" / "me" -> handler { (request: Request) =>
       for
-        claims      <- authorize(request)
-        service     <- ZIO.service[EdgeService]
-        resourceIds <- request.queryZIO[List[String]]("resource")
-        response    <- service.getMyPermissions(claims, resourceIds.map(ResourceId(_)))
+        claims <- authorize(request)
+        service <- ZIO.service[EdgeService]
+        resourceIds <- request.queryZIO[List[ResourceId]]("resource")
+        response <- service.getMyPermissions(claims, resourceIds)
       yield Response.json(response.toJson)
     }
 

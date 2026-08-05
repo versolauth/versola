@@ -13,6 +13,7 @@ given Equal[Instant] = Equal.default
 
 case class RefreshTokenRecord(
     sessionId: MAC.Of[SessionId],
+    publicSessionId: PublicSessionId,
     accessToken: AccessToken,
     userId: UserId,
     clientId: ClientId,

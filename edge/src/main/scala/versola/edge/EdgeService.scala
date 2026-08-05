@@ -1,36 +1,13 @@
 package versola.edge
 
 import versola.edge.login.{LoginRecord, LoginRepository}
-import versola.edge.model.{
-  AccessToken,
-  AccessTokenClaims,
-  AccessTokenId,
-  AuthConversationNotFound,
-  AuthorizationPreset,
-  ClientId,
-  Code,
-  CodeVerifier,
-  InjectRule,
-  InjectTarget,
-  PermissionId,
-  PresetId,
-  PresetNotFound,
-  RefreshToken,
-  Resource,
-  ResourceEndpoint,
-  ResourceEndpointId,
-  ResourceId,
-  RoleId,
-  State,
-  TenantId,
-  TokenResponse,
-}
-import versola.edge.session.EdgeRefreshTokenRepository
+import versola.edge.model.{AccessToken, AccessTokenClaims, AccessTokenId, AuthConversationNotFound, AuthorizationPreset, ClientId, Code, CodeVerifier, InjectRule, InjectTarget, InvalidLogoutToken, PermissionId, PresetId, PresetNotFound, RefreshToken, Resource, ResourceEndpoint, ResourceEndpointId, ResourceId, RoleId, SessionId, State, TenantId, TokenResponse}
+import versola.edge.session.{EdgeSessionRecord, EdgeSessionRepository}
 import versola.util.cel.CelEvaluator
 import versola.util.{Base64, Base64Url, JWT, JsonJava, RedirectUri, Secret, SecureRandom, SecurityService}
 import zio.http.{Body, Client, Cookie, Header, MediaType, Path, Request, Response, Status, URL}
 import zio.json.ast.Json
-import zio.json.{DecoderOps, EncoderOps, JsonCodec}
+import zio.json.{DecoderOps, EncoderOps, JsonCodec, JsonDecoder, jsonField}
 import zio.{Chunk, Clock, Duration, IO, NonEmptyChunk, Task, UIO, ZIO, ZLayer, durationInt}
 
 import java.nio.charset.StandardCharsets
@@ -61,6 +38,21 @@ trait EdgeService:
       resourceIds: List[ResourceId],
   ): UIO[EdgeService.PermissionsResponse]
 
+  /** OP-initiated front-channel logout: drops the edge sessions tied to the SSO
+    * session and returns a clearing cookie for every preset whose EDGE_SESSION
+    * cookie may have been derived from it. `iss` is the only credential this
+    * unauthenticated endpoint has; when it doesn't match the configured OP, the
+    * request is silently ignored (no cookies cleared) rather than failing.
+    */
+  def frontChannelLogout(iss: String, sid: SessionId): Task[List[Cookie.Response]]
+
+  /** OP-initiated back-channel logout: validates the OP-signed `logout_token` and drops
+    * the edge sessions tied to the SSO session it names. Server-to-server, so no cookie
+    * can be cleared; dropping the session rows is what stops the EDGE_SESSION cookie
+    * from being honoured on the next request.
+    */
+  def backChannelLogout(logoutToken: String): IO[Throwable | InvalidLogoutToken, Unit]
+
 object EdgeService:
   case class LoginCompletion(
       presetId: PresetId,
@@ -74,6 +66,28 @@ object EdgeService:
   case class ClientNotFound(clientId: ClientId)
     extends RuntimeException(s"OAuth client not found in cache: $clientId")
 
+  /** The `jti` and `sid` claims of the access token. Both are minted by auth
+    * for every token issued to an authenticated session, so neither is optional.
+    */
+  private case class TokenIds(
+      @jsonField("jti") accessTokenId: AccessTokenId,
+      @jsonField("sid") sessionId: SessionId,
+  ) derives JsonCodec
+
+  private val BackChannelLogoutEvent = "http://schemas.openid.net/event/backchannel-logout"
+
+  /** The claims of an OIDC Back-Channel Logout token (spec §2.4) the edge validates and
+    * acts on. `sid` is optional in the spec, but the edge indexes its sessions by it and
+    * so cannot act on a token without one.
+    */
+  private case class LogoutTokenClaims(
+      @jsonField("iss") issuer: String,
+      @jsonField("aud") audience: List[ClientId],
+      @jsonField("sid") sessionId: Option[SessionId],
+      nonce: Option[String],
+      events: Map[String, Json],
+  ) derives JsonDecoder
+
   case class ResourcePermissions(
       permissions: Set[PermissionId],
   ) derives JsonCodec
@@ -83,7 +97,7 @@ object EdgeService:
   ) derives JsonCodec
 
   def live: ZLayer[
-    OAuthClientService & ResourceService & CelEvaluator & SecureRandom & LoginRepository & SSOClient & SecurityService & Client & EdgeConfig & session.EdgeRefreshTokenRepository & JwksService & PermissionService,
+    OAuthClientService & ResourceService & CelEvaluator & SecureRandom & LoginRepository & SSOClient & SecurityService & Client & EdgeConfig & session.EdgeSessionRepository & JwksService & PermissionService,
     Nothing,
     EdgeService,
   ] =
@@ -99,13 +113,18 @@ object EdgeService:
       securityService: SecurityService,
       httpClient: Client,
       config: EdgeConfig,
-      refreshTokenRepository: EdgeRefreshTokenRepository,
+      sessionRepository: EdgeSessionRepository,
       jwksService: JwksService,
       permissionService: PermissionService,
   ) extends EdgeService:
 
     private val loginTtl = 10.minutes
     private val encryptionKey = SecretKeySpec(config.security.tokenEncryption.key, "AES")
+
+    /** Extra time the edge_sessions row is kept alive past the cookie/token expiry,
+      * so the session record is never deleted before the cookie has actually expired.
+      */
+    private val sessionExpiryGracePeriod = 10.seconds
 
     override def authorize(
         presetId: PresetId,
@@ -122,10 +141,8 @@ object EdgeService:
             .digest(codeVerifier.getBytes(StandardCharsets.UTF_8))
 
         state <- secureRandom.nextBytes(16).map(State.fromBytes)
-        loginId <- secureRandom.nextBytes(32).map(Base64.urlEncode)
 
         _ <- loginRepository.create(
-          loginId = loginId,
           record = LoginRecord(
             codeVerifier = codeVerifier,
             presetId = preset.id,
@@ -153,7 +170,7 @@ object EdgeService:
           clientSecret = client.secret,
         )
         cookieTtl = Duration.fromSeconds(tokens.refreshTokenExpiresIn.getOrElse(tokens.expiresIn))
-        _ <- storeRefreshToken(tokens, preset.id, cookieTtl)
+        _ <- storeSession(tokens, preset.id, cookieTtl)
         _ <- loginRepository.deleteByState(state)
       yield LoginCompletion(
         presetId = preset.id,
@@ -164,29 +181,38 @@ object EdgeService:
         cookiePath = preset.cookiePath,
       )
 
-    private def storeRefreshToken(
+    /** Records this preset's participation in the SSO session. Written on every login
+      * and rotation regardless of whether a refresh token was issued, since logout has
+      * to clear the EDGE_SESSION cookie of presets that never received one.
+      */
+    private def storeSession(
         tokens: TokenResponse,
         presetId: PresetId,
-        refreshTokenTtl: Duration,
+        cookieTtl: Duration,
     ): zio.Task[Unit] =
-      tokens.refreshToken match
-        case Some(refreshToken) =>
-          for
-            now <- Clock.instant
-            accessTokenId <- extractAccessTokenId(tokens.accessToken)
-            expiresAt = now.plusSeconds(refreshTokenTtl.toSeconds)
-            encryptedRefreshToken <- encryptRefreshToken(refreshToken)
-            _ <- refreshTokenRepository.create(
-              accessTokenId,
-              session.EdgeRefreshTokenRecord(
-                presetId = presetId,
-                encryptedRefreshToken = encryptedRefreshToken,
-                expiresAt = expiresAt,
-              ),
-            )
-          yield ()
-        case None =>
-          ZIO.unit
+      for
+        now <- Clock.instant
+        ids <- extractTokenIds(tokens)
+        encryptedRefreshToken <- ZIO.foreach(tokens.refreshToken)(encryptRefreshToken)
+        _ <- sessionRepository.create(
+          EdgeSessionRecord(
+            publicSessionId = ids.sessionId,
+            presetId = presetId,
+            accessTokenId = ids.accessTokenId,
+            encryptedRefreshToken = encryptedRefreshToken,
+            expiresAt = now.plusSeconds(cookieTtl.toSeconds + sessionExpiryGracePeriod.toSeconds),
+          ),
+        )
+      yield ()
+
+    /** Extracts the access token's `jti` and `sid` claims together, since every caller
+      * that needs one needs the other to build an [[session.EdgeSessionRecord]]. Both
+      * claims are minted by auth for every token issued to an authenticated session.
+      */
+    private def extractTokenIds(tokens: TokenResponse): Task[EdgeService.TokenIds] =
+      jwksService.getPublicKeys
+        .flatMap(keys => JWT.deserialize[EdgeService.TokenIds](tokens.accessToken, keys, JWT.Type.AccessToken))
+        .mapError(e => new RuntimeException(s"Failed to validate JWT: $e"))
 
     private def encryptRefreshToken(refreshToken: RefreshToken): Task[Secret] =
       securityService.encryptAes256(
@@ -197,17 +223,6 @@ object EdgeService:
     private def decryptRefreshToken(encrypted: Secret): Task[RefreshToken] =
       securityService.decryptAes256(encrypted, encryptionKey)
         .map(bytes => RefreshToken(new String(bytes, StandardCharsets.UTF_8)))
-
-    private def extractAccessTokenId(accessToken: AccessToken): Task[AccessTokenId] =
-      jwksService.getPublicKeys
-        .flatMap { keys =>
-          JWT.deserialize[Json.Obj](accessToken, keys, JWT.Type.AccessToken)
-            .flatMap { claims =>
-              ZIO.fromOption(claims.get("jti").collect { case Json.Str(s) => AccessTokenId(s) })
-                .orElseFail(new RuntimeException("jti claim missing from JWT"))
-            }
-        }
-        .mapError(e => new RuntimeException(s"Failed to validate JWT: $e"))
 
     override def proxy(
         resourceId: ResourceId,
@@ -237,8 +252,6 @@ object EdgeService:
           )
         case ex: Throwable => ZIO.fail(ex)
 
-    private val centralResourceId = ResourceId("central")
-
     override def getMyPermissions(
         claims: PermissionsClaims,
         resourceIds: List[ResourceId],
@@ -254,6 +267,52 @@ object EdgeService:
           perms <- permissionService.getPermissionsForRoles(rolesMap, endpointIds)
         yield Some(resourceId -> ResourcePermissions(perms))
       .map(entries => PermissionsResponse(entries.flatten.toMap))
+
+    override def frontChannelLogout(iss: String, sid: SessionId): Task[List[Cookie.Response]] =
+      if !URL.decode(iss).toOption.exists(sameOrigin(_, config.versolaUrl)) then
+        ZIO.succeed(Nil)
+      else
+        for
+          records <- sessionRepository.deleteBySessionId(sid)
+          presets <- clientService.listPresets(records.map(_.presetId).distinct)
+        yield presets.map(preset => EdgeSessionCookie.clear(preset.cookieDomain, preset.cookiePath))
+
+    override def backChannelLogout(logoutToken: String): IO[Throwable | InvalidLogoutToken, Unit] =
+      for
+        publicKeys <- jwksService.getPublicKeys
+        claims <- JWT.deserialize[EdgeService.LogoutTokenClaims](logoutToken, publicKeys, JWT.Type.JWT)
+          .mapError(error => InvalidLogoutToken(s"logout token is not a valid JWT: $error"))
+        _ <- validateLogoutToken(claims)
+        sid <- ZIO.fromOption(claims.sessionId)
+          .orElseFail(InvalidLogoutToken("logout token carries no sid claim"))
+        _ <- sessionRepository.deleteBySessionId(sid)
+      yield ()
+
+    /** OIDC Back-Channel Logout §2.6: the token must come from the configured OP, be
+      * addressed to a client this edge knows and carry the logout event. A `nonce` marks
+      * it as a replayed id token rather than a logout token, so it is rejected.
+      */
+    private def validateLogoutToken(claims: EdgeService.LogoutTokenClaims): IO[InvalidLogoutToken, Unit] =
+      for
+        _ <- ZIO.fail(InvalidLogoutToken("logout token was issued by an unknown issuer"))
+          .unless(URL.decode(claims.issuer).toOption.exists(sameOrigin(_, config.versolaUrl)))
+        knownAudience <- ZIO.exists(claims.audience)(clientService.findClient(_).map(_.isDefined))
+        _ <- ZIO.fail(InvalidLogoutToken("logout token is not addressed to a known client"))
+          .unless(knownAudience)
+        _ <- ZIO.fail(InvalidLogoutToken("logout token does not carry the back-channel logout event"))
+          .unless(claims.events.contains(EdgeService.BackChannelLogoutEvent))
+        _ <- ZIO.fail(InvalidLogoutToken("logout token must not carry a nonce"))
+          .when(claims.nonce.isDefined)
+      yield ()
+
+    /** Compares two URLs by origin (scheme, host, port), tolerating equivalent but
+      * textually different representations: host casing and an explicit default port
+      * (e.g. `:443` on `https`) rather than requiring a byte-for-byte string match.
+      */
+    private def sameOrigin(a: URL, b: URL): Boolean =
+      a.scheme.map(_.encode.toLowerCase) == b.scheme.map(_.encode.toLowerCase) &&
+        a.host.map(_.toLowerCase) == b.host.map(_.toLowerCase) &&
+        a.portOrDefault == b.portOrDefault
 
     private def proxyInternal(
         resourceId: ResourceId,
@@ -280,7 +339,7 @@ object EdgeService:
         resource <- resourceService.findByResourceId(resourceId).someOrFail(Outcome.NotFound)
         endpoint <- findEndpoint(resource.endpoints, request.method.name, restPath)
         parsedBody <- readJsonBody(request)
-        typedClaims <- checkPermissions(resourceId, session.claims, endpoint, request, parsedBody)
+        typedClaims <- checkPermissions(session.claims, endpoint, request, parsedBody)
         userInfo <- ssoClient.userInfo(session.accessToken)
           .when(endpoint.fetchUserInfo)
           .someOrElse(Json.Obj())
@@ -314,7 +373,6 @@ object EdgeService:
       ).orElseFail(Outcome.Unauthorized)
 
     private def checkPermissions(
-        resourceId: ResourceId,
         claims: Json.Obj,
         endpoint: ResourceEndpoint,
         request: Request,
@@ -322,17 +380,13 @@ object EdgeService:
     ): IO[Outcome, AccessTokenClaims] =
       for
         typed <- ZIO.fromEither(claims.as[AccessTokenClaims]).orElseFail(Outcome.Unauthorized)
-        isCentral = resourceId == centralResourceId
         isServiceToken = typed.subject == typed.clientId
 
         allowed <-
           if isServiceToken then
             permissionService.getAllowedEndpointsForClient(typed.clientId)
-          else if isCentral then
-            permissionService.getAllowedEndpointsForRoles(Map(TenantId.default -> typed.roles))
           else
-            val rolesMap = typed.tenantId.fold(Map.empty[TenantId, List[RoleId]])(tid => Map(tid -> typed.roles))
-            permissionService.getAllowedEndpointsForRoles(rolesMap)
+            permissionService.getAllowedEndpointsForRoles(typed.tenantId, typed.roles)
 
         _ <- ZIO.fail(Outcome.Forbidden)
           .unless(allowed.contains(endpoint.id))
@@ -402,15 +456,17 @@ object EdgeService:
         cookiePresetId: PresetId,
         now: Instant,
     ): IO[Throwable | Outcome, ActiveSession] =
-      // When the refresh record or its preset is gone the session is fully
-      // expired; fall back to the preset carried by the cookie so the caller is
-      // sent to the right app's login, whichever app this edge is fronting.
+      // When the session record, its preset or its refresh token is gone the
+      // session is fully expired; fall back to the preset carried by the cookie so
+      // the caller is sent to the right app's login, whichever app this edge is fronting.
       for
-        record <- refreshTokenRepository.find(accessTokenId)
+        record <- sessionRepository.findByAccessTokenId(accessTokenId)
           .someOrElseZIO(failWithReauthenticate(cookiePresetId, None, None))
         preset <- clientService.findPreset(record.presetId)
           .someOrElseZIO(failWithReauthenticate(cookiePresetId, None, None))
-        decryptedRefreshToken <- decryptRefreshToken(record.encryptedRefreshToken)
+        encryptedRefreshToken <- ZIO.succeed(record.encryptedRefreshToken)
+          .someOrElseZIO(failWithReauthenticate(record.presetId, preset.cookieDomain, preset.cookiePath))
+        decryptedRefreshToken <- decryptRefreshToken(encryptedRefreshToken)
         session <- rotate(decryptedRefreshToken, preset, record.presetId)
       yield session
 
@@ -424,7 +480,7 @@ object EdgeService:
           client <- clientService.findClient(preset.clientId).someOrFail(ClientNotFound(preset.clientId))
           tokens <- ssoClient.exchangeRefreshToken(refreshToken, client.id, client.secret)
           cookieTtl = Duration.fromSeconds(tokens.refreshTokenExpiresIn.getOrElse(tokens.expiresIn))
-          _ <- storeRefreshToken(tokens, presetId, cookieTtl)
+          _ <- storeSession(tokens, presetId, cookieTtl)
           publicKeys <- jwksService.getPublicKeys
           claims <- JWT.deserialize[Json.Obj](tokens.accessToken, publicKeys, JWT.Type.AccessToken)
             .orElseFail(Outcome.Unauthorized)
@@ -454,14 +510,12 @@ object EdgeService:
         cookieDomain: Option[String],
         cookiePath: Option[String],
     ): IO[Throwable | Outcome, Nothing] =
-      Clock.instant.flatMap { now =>
-        ZIO.fail(
-          Outcome.Reauthenticate(
-            loginUri = URL(Path.root / "login" / presetId),
-            clearCookie = EdgeSessionCookie.clear(cookieDomain, cookiePath, now),
-          ),
-        )
-      }
+      ZIO.fail(
+        Outcome.Reauthenticate(
+          loginUri = URL(Path.root / "login" / presetId),
+          clearCookie = EdgeSessionCookie.clear(cookieDomain, cookiePath),
+        ),
+      )
 
     private def buildCelContext(
         claims: Json.Obj,

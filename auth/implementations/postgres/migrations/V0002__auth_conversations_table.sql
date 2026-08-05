@@ -23,6 +23,8 @@ CREATE TABLE auth_conversations (
     amr JSONB NOT NULL,
     needs_password_change BOOLEAN NOT NULL,
     csrf_token TEXT NOT NULL,
+    target_acr TEXT,
+    prior_session_id BYTEA,
     expires_at TIMESTAMP WITH TIME ZONE NOT NULL
 );
 

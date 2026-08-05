@@ -1,10 +1,14 @@
 package versola.central.users
 
+import versola.central.configuration.clients.{ClientId, OAuthClientService}
 import versola.central.configuration.roles.RoleId
 import versola.central.configuration.tenants.TenantId
 import versola.util.{Email, Phone, SecureRandom}
 import zio.json.ast.Json
-import zio.{IO, Task, ZIO, ZLayer}
+import zio.{Duration, IO, Task, ZIO, ZLayer, duration2DurationOps}
+
+import java.time.Instant
+import scala.util.Try
 
 trait UserService:
   def findById(id: UserId): Task[Option[UserSearchRecord]]
@@ -14,7 +18,7 @@ trait UserService:
 
   def getRoles(id: UserId, tenantId: TenantId): Task[List[RoleId]]
 
-  def getSessions(id: UserId): Task[List[AuthClient.SessionDto]]
+  def getSessions(id: UserId): Task[List[SessionResponse]]
 
   def invalidateSession(userId: UserId): Task[Unit]
 
@@ -41,10 +45,15 @@ trait UserService:
   def setPassword(userId: UserId, password: String): Task[Unit]
 
 object UserService:
-  val live: ZLayer[UserRepository & AuthClient & SecureRandom, Nothing, UserService] =
-    ZLayer.fromFunction(Impl(_, _, _))
+  val live: ZLayer[UserRepository & AuthClient & OAuthClientService & SecureRandom, Nothing, UserService] =
+    ZLayer.fromFunction(Impl(_, _, _, _))
 
-  class Impl(userRepository: UserRepository, authClient: AuthClient, secureRandom: SecureRandom) extends UserService:
+  class Impl(
+      userRepository: UserRepository,
+      authClient: AuthClient,
+      oAuthClientService: OAuthClientService,
+      secureRandom: SecureRandom,
+  ) extends UserService:
     override def findById(id: UserId): Task[Option[UserSearchRecord]] =
       userRepository.findById(id).flatMap(enrich)
 
@@ -65,8 +74,36 @@ object UserService:
     override def getRoles(id: UserId, tenantId: TenantId): Task[List[RoleId]] =
       authClient.getUserRoles(id, tenantId)
 
-    override def getSessions(id: UserId): Task[List[AuthClient.SessionDto]] =
-      authClient.getUserSessions(id)
+    override def getSessions(id: UserId): Task[List[SessionResponse]] =
+      for
+        sessions <- authClient.getUserSessions(id)
+        clients <- oAuthClientService.getAllClients
+        ttlByClientId = clients.map(c => c.id -> c.accessTokenTtl).toMap
+      yield sessions.map(toSessionResponse(_, ttlByClientId))
+
+    private def toSessionResponse(
+        session: AuthClient.SessionDto,
+        ttlByClientId: Map[ClientId, Duration],
+    ): SessionResponse =
+      SessionResponse(
+        clients = session.clients
+          .flatMap { entry =>
+            ttlByClientId.get(entry.clientId)
+              .map { duration =>
+                ClientSessionEntry(
+                  entry.clientId,
+                  entry.enteredAt,
+                  entry.enteredAt.plus(duration.asJava),
+                )
+              }
+          }
+          .sortBy(_.enteredAt)(using Ordering[Instant].reverse),
+        platform = session.platform,
+        os = session.os,
+        browser = session.browser,
+        version = session.version,
+        createdAt = session.createdAt,
+      )
 
     override def invalidateSession(userId: UserId): Task[Unit] =
       authClient.invalidateSession(userId)

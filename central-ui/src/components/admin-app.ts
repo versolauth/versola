@@ -22,7 +22,7 @@ import './users-list';
 import './forms-list';
 import './locales-list';
 import './challenges-list';
-import './jwks-list';
+import './well-known';
 import './system-settings';
 
 
@@ -140,7 +140,6 @@ export class VersolaAdmin extends LitElement {
       }
 
       .app-layout {
-        display: flex;
         min-height: 100vh;
       }
 
@@ -166,11 +165,10 @@ export class VersolaAdmin extends LitElement {
       }
 
       .main-content {
-        flex: 1;
         margin-left: 250px;
         padding: 2rem;
         max-width: 1400px;
-        min-width: 0; /* let flex children shrink instead of overflowing */
+        min-width: 0; /* let children shrink instead of overflowing */
       }
 
       /* Focus is moved here programmatically when the drawer closes (see
@@ -252,7 +250,7 @@ export class VersolaAdmin extends LitElement {
         return p.has('tenants:read');
       case 'edges':
         return p.has('edges:read');
-      case 'jwks':
+      case 'well-known':
         return p.has('jwks:read');
       case 'clients':
       case 'scopes':
@@ -284,7 +282,7 @@ export class VersolaAdmin extends LitElement {
         return p.has('tenants:manage');
       case 'edges':
         return p.has('edges:manage');
-      case 'jwks':
+      case 'well-known':
         return p.has('jwks:manage');
       case 'clients':
       case 'scopes':
@@ -405,7 +403,7 @@ export class VersolaAdmin extends LitElement {
     const expandClient = params.get('expandClient');
     const expandEdge = params.get('expandEdge');
 
-    if (urlView === 'clients' || urlView === 'scopes' || urlView === 'permissions' || urlView === 'resources' || urlView === 'roles' || urlView === 'tenants' || urlView === 'edges' || urlView === 'users' || urlView === 'forms' || urlView === 'locales' || urlView === 'challenges' || urlView === 'jwks' || urlView === 'system-settings') {
+    if (urlView === 'clients' || urlView === 'scopes' || urlView === 'permissions' || urlView === 'resources' || urlView === 'roles' || urlView === 'tenants' || urlView === 'edges' || urlView === 'users' || urlView === 'forms' || urlView === 'locales' || urlView === 'challenges' || urlView === 'well-known' || urlView === 'system-settings') {
       this.currentView = urlView;
     }
 
@@ -495,8 +493,8 @@ export class VersolaAdmin extends LitElement {
         return html`<versola-locales-list .tenantId=${this.currentTenantId} .canManage=${this.canManage('locales')}></versola-locales-list>`;
       case 'challenges':
         return html`<versola-challenges-list .tenantId=${this.currentTenantId} .canManage=${this.canManage('challenges')}></versola-challenges-list>`;
-      case 'jwks':
-        return html`<versola-jwks-list .canManage=${this.canManage('jwks')}></versola-jwks-list>`;
+      case 'well-known':
+        return html`<versola-well-known .canManage=${this.canManage('well-known')}></versola-well-known>`;
       case 'system-settings':
         return html`<versola-system-settings .canManage=${this.canManage('system-settings')}></versola-system-settings>`;
       default:
@@ -529,6 +527,7 @@ export class VersolaAdmin extends LitElement {
           .permissions=${this.adminPermissions}
           .allowedTenantIds=${this.allowedTenantIds}
           .open=${this.navOpen}
+          .logoutUrl=${'/logout/central-admin'}
           @nav-change=${this.handleNavChange}
           @tenant-change=${this.handleTenantChange}
         ></versola-navigation>

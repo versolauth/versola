@@ -8,7 +8,9 @@ import versola.central.configuration.system.{SystemSettingsController, SystemSet
 import versola.central.configuration.clients.{AuthorizationPresetController, AuthorizationPresetRepository, AuthorizationPresetService, ClientController, OAuthClientRepository, OAuthClientService}
 import versola.central.configuration.edges.{EdgeController, EdgeRepository, EdgeService}
 import versola.central.configuration.forms.{FormController, FormRepository, FormService}
-import versola.central.configuration.jwks.{JwksController, JwksRepository, JwksService}
+import versola.central.configuration.jwks.{JwksController, JwksService}
+import versola.central.configuration.metadata.{ServerMetadataController, ServerMetadataRepository, ServerMetadataService}
+import versola.configuration.metadata.PostgresServerMetadataRepository
 import versola.central.configuration.locales.{LocaleController, LocaleRepository, LocaleService}
 import versola.central.configuration.themes.{ThemeController, ThemeRepository, ThemeService}
 import versola.central.configuration.permissions.{PermissionController, PermissionRepository, PermissionService}
@@ -83,14 +85,14 @@ object PostgresCentralApp extends VersolaApp("central"):
       SystemSettingsService &
       CacheSyncRepository &
       CacheSyncService &
+      SecurityService &
       UserRepository &
       UserService &
       AuthClient &
       UserOutboxProcessor &
-      JwksRepository &
-      JwksService &
-      SecureRandom &
-      SecurityService
+      ServerMetadataRepository &
+      ServerMetadataService &
+      JwksService
 
   override def routes: Routes[Dependencies & Tracing & EnvName, Throwable] =
     List(
@@ -109,6 +111,7 @@ object PostgresCentralApp extends VersolaApp("central"):
       SystemSettingsController.routes,
       UserController.routes,
       JwksController.routes,
+      ServerMetadataController.routes,
       ServiceController.routes,
     ).reduce(_ ++ _)
 
@@ -131,6 +134,7 @@ object PostgresCentralApp extends VersolaApp("central"):
           PostgresSystemSettingsRepository.live >+>
           PostgresCacheSyncRepository.live >+>
           PostgresJwksRepository.live >+>
+          PostgresServerMetadataRepository.live >+>
           PostgresUserRepository.live
       )
 
@@ -144,17 +148,18 @@ object PostgresCentralApp extends VersolaApp("central"):
       PermissionService.live(schedule) >+>
       ResourceService.live(schedule) >+>
       OAuthClientService.live(schedule) >+>
+      ChallengeSettingsService.live(schedule) >+>
       AuthorizationPresetService.live(schedule) >+>
       OAuthScopeService.live(schedule) >+>
       RoleService.live(schedule) >+>
       EdgeService.live(schedule) >+>
       LocaleService.live >+>
       JwksService.live(schedule) >+>
+      ServerMetadataService.live(schedule) >+>
       BootstrapService.live >+>
       FormService.live(schedule) >+>
       ThemeService.live(schedule) >+>
       OtpChallengeService.live(schedule) >+>
-      ChallengeSettingsService.live(schedule) >+>
       SystemSettingsService.live(schedule) >+>
       CacheSyncService.live >+>
       AuthClient.live >+>

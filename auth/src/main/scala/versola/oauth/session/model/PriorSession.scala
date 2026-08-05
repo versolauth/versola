@@ -7,6 +7,8 @@ import java.time.Instant
 
 /** What to do with the prior session (and its refresh tokens) when creating a new session. */
 enum PriorSession:
+  def id: MAC.Of[SessionId]
+
   /** Expire the prior session and all its refresh tokens. Use for true re-authentication
    *  (prompt=login, account switch) where the old credential must be fully invalidated. */
   case Invalidate(id: MAC.Of[SessionId])

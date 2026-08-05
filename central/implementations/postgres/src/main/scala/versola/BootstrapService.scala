@@ -6,7 +6,7 @@ import versola.central.configuration.system.{SystemSettingsRecord, SystemSetting
 import versola.central.configuration.clients.{AuthFlow, AuthorizationPreset, AuthorizationPresetRepository, ClientAlreadyExists, OAuthClientService, PresetId, PrimaryAuthFlow, PrimaryCredential, ResponseType}
 import versola.central.configuration.edges.{EdgeId, EdgeRepository}
 import versola.central.configuration.forms.{BackendProperty, BooleanProperty, FormId, FormRepository, NumberProperty, StringArrayProperty}
-import versola.central.configuration.jwks.{JwksRepository, JwksService}
+import versola.central.configuration.jwks.JwksRepository
 import versola.central.configuration.locales.{LocaleRecord, LocaleRepository}
 import versola.central.configuration.permissions.{Permission, PermissionRepository}
 import versola.central.configuration.resources.{ResourceEndpointId, ResourceEndpointRecord, ResourceId, ResourceRepository}
@@ -15,6 +15,7 @@ import versola.central.configuration.scopes.{Claim, OAuthScopeRepository, ScopeT
 import versola.central.configuration.tenants.{TenantId, TenantRepository}
 import versola.central.configuration.themes.{ThemeRecord, ThemeRepository}
 import versola.central.configuration.{CreateClaim, CreateClientRequest, ResourceUri}
+import versola.central.configuration.metadata.ServerMetadataRepository
 import versola.central.users.{Login, UserConflict, UserId, UserRepository}
 import versola.util.{RedirectUri, Secret}
 import zio.json.DecoderOps
@@ -152,13 +153,15 @@ object BootstrapService:
       endpointId("POST", "/configuration/edges/rotate-key"),
       endpointId("DELETE", "/configuration/edges/old-key"),
     )),
-    (Permission("jwks:read"), localized("View JWKS", "Просмотр JWKS"), Set(
+    (Permission("jwks:read"), localized("View JWKS and Server Metadata", "Просмотр JWKS и серверных метаданных"), Set(
       endpointId("GET", "/configuration/jwks"),
+      endpointId("GET", "/configuration/server-metadata"),
     )),
-    (Permission("jwks:manage"), localized("Manage JWKS", "Управление JWKS"), Set(
+    (Permission("jwks:manage"), localized("Manage JWKS and Server Metadata", "Управление JWKS и серверными метаданными"), Set(
       endpointId("POST", "/configuration/jwks"),
       endpointId("PUT", "/configuration/jwks"),
       endpointId("DELETE", "/configuration/jwks"),
+      endpointId("POST", "/configuration/server-metadata"),
     )),
   )
 
@@ -256,7 +259,7 @@ object BootstrapService:
 
   /** Scopes granted to the central admin client. */
   private val clientScopes: Set[ScopeToken] =
-    List("openid", "profile", "email", "offline_access").map(ScopeToken(_)).toSet
+    List[String](/*"openid", "profile", "email"*/).map(ScopeToken(_)).toSet
 
   /** Default OTP message template referenced by the bootstrapped clients. */
   private val defaultOtpTemplateId = "default"
@@ -299,6 +302,7 @@ object BootstrapService:
       sessionIdleTtlSeconds = None,
       ipHeader = "X-Real-IP",
       acrVocabulary = None,
+      postLogoutRedirectUris = List("https://id.versola.kz/central/admin/"),
     )
 
   /** Default theme seeded from the shared CSS resource. */
@@ -325,6 +329,8 @@ object BootstrapService:
     "set-password" -> Vector.empty,
     "access-denied" -> Vector.empty,
     "passkey-enroll" -> Vector.empty,
+    "confirm-logout" -> Vector.empty,
+    "signed-out" -> Vector.empty,
   )
 
   /** Hard-coded resourceId for the edge-facing resource that proxies central's admin API. */
@@ -366,6 +372,8 @@ object BootstrapService:
     "POST"   -> "/configuration/jwks",
     "PUT"    -> "/configuration/jwks",
     "DELETE" -> "/configuration/jwks",
+    "GET"    -> "/configuration/server-metadata",
+    "POST"   -> "/configuration/server-metadata",
     "GET"    -> "/configuration/locales",
     "PUT"    -> "/configuration/locales",
     "PUT"    -> "/configuration/locales/default",
@@ -415,7 +423,7 @@ object BootstrapService:
         try source.mkString finally source.close()
 
   val live: ZLayer[
-    TenantRepository & PermissionRepository & OAuthScopeRepository & RoleRepository & OtpChallengeRepository & ChallengeSettingsRepository & SystemSettingsRepository & ThemeRepository & LocaleRepository & FormRepository & OAuthClientService & AuthorizationPresetRepository & EdgeRepository & ResourceRepository & JwksRepository & JwksService & UserRepository & CentralConfig,
+    TenantRepository & PermissionRepository & OAuthScopeRepository & RoleRepository & OtpChallengeRepository & ChallengeSettingsRepository & SystemSettingsRepository & ThemeRepository & LocaleRepository & FormRepository & OAuthClientService & AuthorizationPresetRepository & EdgeRepository & ResourceRepository & JwksRepository & ServerMetadataRepository & UserRepository & CentralConfig,
     Throwable,
     BootstrapService,
   ] =
@@ -438,7 +446,7 @@ object BootstrapService:
       edgeRepo: EdgeRepository,
       resourceRepo: ResourceRepository,
       jwksRepo: JwksRepository,
-      jwksService: JwksService,
+      metadataRepo: ServerMetadataRepository,
       userRepo: UserRepository,
       config: CentralConfig,
   ) extends BootstrapService:
@@ -467,7 +475,7 @@ object BootstrapService:
           _ <- linkTenantEdge(tenantId, config)
           _ <- seedCentralResource(config)
           _ <- seedJwks(config)
-          _ <- jwksService.sync()
+          _ <- seedMetadata(config)
         yield ()
       }.unit
 
@@ -580,6 +588,9 @@ object BootstrapService:
         theme          = "default",
         authFlow       = Some(authFlow),
         otpTemplateId  = "default",
+        frontChannelLogoutUri = config.frontChannelLogoutUri,
+        frontChannelLogoutSessionRequired = true,
+        backChannelLogoutUri = None,
       )
       for
         presetSecret <- ZIO.foreach(config.clientSecret): secretB64 =>
@@ -596,23 +607,41 @@ object BootstrapService:
 
     private def seedPresets(config: CentralConfig.BootstrapConfig): Task[Unit] =
       ZIO.foreachDiscard(config.presets.getOrElse(Nil)): seed =>
-        presetRepo.find(PresetId(seed.id)).flatMap:
-          case Some(_) => ZIO.unit
-          case None    =>
-            val preset = AuthorizationPreset(
-              id                   = PresetId(seed.id),
-              clientId             = CentralConfig.centralClientId,
-              description          = seed.description,
-              redirectUri          = RedirectUri(seed.redirectUri),
-              postLoginRedirectUri = RedirectUri(seed.postLoginRedirectUri),
-              scope                = clientScopes,
-              responseType         = ResponseType.Code,
-              uiLocales            = None,
-              customParameters     = Map.empty,
-              cookieDomain         = seed.cookieDomain,
-              cookiePath           = seed.cookiePath,
-            )
-            presetRepo.replace(CentralConfig.centralClientId, Seq(preset))
+        for
+          _ <- presetRepo.find(PresetId(seed.id)).flatMap:
+            case Some(_) => ZIO.unit
+            case None    =>
+              val preset = AuthorizationPreset(
+                id                   = PresetId(seed.id),
+                clientId             = CentralConfig.centralClientId,
+                description          = seed.description,
+                redirectUri          = RedirectUri(seed.redirectUri),
+                postLoginRedirectUri = RedirectUri(seed.postLoginRedirectUri),
+                postLogoutRedirectUri = seed.postLogoutRedirectUri.map(RedirectUri(_)).orElse(Some(RedirectUri(seed.postLoginRedirectUri))),
+                scope                = clientScopes,
+                responseType         = ResponseType.Code,
+                uiLocales            = None,
+                customParameters     = Map.empty,
+                cookieDomain         = seed.cookieDomain,
+                cookiePath           = seed.cookiePath,
+              )
+              presetRepo.replace(CentralConfig.centralClientId, Seq(preset))
+          _ <- ZIO.foreachDiscard(seed.postLogoutRedirectUri)(registerPostLogoutRedirectUri(CentralConfig.defaultTenantId, _))
+        yield ()
+
+    /** Ensures the given `postLogoutRedirectUri` is present in the tenant's
+      * `ChallengeSettingsRecord.postLogoutRedirectUris` allow-list, so the auth server accepts it
+      * during RP-initiated logout. Runs on every bootstrap (not just first-time preset creation)
+      * so config changes converge even when the preset/settings already exist.
+      */
+    private def registerPostLogoutRedirectUri(tenantId: TenantId, uri: String): Task[Unit] =
+      challengeSettingsRepo.findByTenant(tenantId).flatMap:
+        case Some(settings) =>
+          val merged = (settings.postLogoutRedirectUris :+ uri).distinct
+          ZIO.when(merged != settings.postLogoutRedirectUris)(
+            challengeSettingsRepo.upsert(settings.copy(postLogoutRedirectUris = merged)),
+          ).unit
+        case None => ZIO.unit
 
     private def seedEdges(config: CentralConfig.BootstrapConfig): Task[Unit] =
       ZIO.foreachDiscard(config.edges.getOrElse(Nil)): seed =>
@@ -681,3 +710,11 @@ object BootstrapService:
               case None    => jwksRepo.create(kid, jwk)
           case None =>
             ZIO.logWarning("Skipping bootstrap JWK without a 'kid' field")
+
+    private def seedMetadata(config: CentralConfig.BootstrapConfig): Task[Unit] =
+      ZIO.foreachDiscard(config.metadata): metadata =>
+        metadataRepo.get.flatMap:
+          case Some(_) => ZIO.unit
+          case None    =>
+            ZIO.logInfo("Seeding server metadata from bootstrap config...") *>
+              metadataRepo.upsert(metadata)

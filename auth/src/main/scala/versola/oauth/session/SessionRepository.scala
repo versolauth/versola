@@ -1,7 +1,8 @@
 package versola.oauth.session
 
+import versola.oauth.client.model.ClientId
 import versola.oauth.model.{AccessToken, RefreshToken}
-import versola.oauth.session.model.{PriorSession, RefreshAlreadyExchanged, RefreshTokenRecord, SessionId, SessionRecord}
+import versola.oauth.session.model.{PriorSession, PublicSessionId, RefreshAlreadyExchanged, RefreshTokenRecord, SessionId, SessionRecord}
 import versola.user.model.UserId
 import versola.util.MAC
 import zio.*
@@ -15,6 +16,7 @@ trait SessionRepository:
    */
   def create(
       id: MAC.Of[SessionId],
+      publicId: PublicSessionId,
       session: SessionRecord,
       ttl: Duration,
       idleTtl: Option[Duration],
@@ -26,6 +28,10 @@ trait SessionRepository:
   /** Slide the idle expiry of an online session forward. No-op for sessions created without an idle window. */
   def prolongIdle(id: MAC.Of[SessionId], idleTtl: Duration): Task[Unit]
 
+  /** Registers a relying party as logged-in on this session, so it can be notified on
+   *  front/back-channel logout. Idempotent: a no-op if the client is already registered. */
+  def registerClient(id: MAC.Of[SessionId], clientId: ClientId): Task[Unit]
+
   def findByUserId(
       userId: UserId,
   ): Task[List[SessionRecord]]
@@ -36,9 +42,9 @@ trait SessionRepository:
       userId: UserId,
   ): Task[Unit]
 
-  /** Atomically expires a single session and all refresh tokens that belong to it.
-   *  No-op if neither the session nor any of its refresh tokens exist. */
-  def invalidate(id: MAC.Of[SessionId]): Task[Unit]
+  def invalidate(id: MAC.Of[SessionId]): Task[Option[SessionRecord]]
+
+  def invalidateByPublicId(publicId: PublicSessionId): Task[Option[(MAC.Of[SessionId], SessionRecord)]]
 
   def createRefreshToken(
       refreshToken: MAC.Of[RefreshToken],

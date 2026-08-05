@@ -14,7 +14,6 @@ class PostgresLoginRepository(xa: TransactorZIO) extends LoginRepository, BasicC
   given DbCodec[LoginRecord] = DbCodec.derived[LoginRecord]
 
   override def create(
-      loginId: String,
       data: LoginRecord,
       ttl: Duration,
   ): Task[Unit] =
@@ -22,29 +21,14 @@ class PostgresLoginRepository(xa: TransactorZIO) extends LoginRepository, BasicC
       val expiresAt = now.plusSeconds(ttl.toSeconds)
       xa.connectMeasured("create-login") {
         sql"""
-          INSERT INTO pending_logins (login_id, state, code_verifier, preset_id, expires_at)
-          VALUES ($loginId, ${data.state}, ${data.codeVerifier}, ${data.presetId}, $expiresAt)
-          ON CONFLICT (login_id) DO UPDATE SET
-            state = EXCLUDED.state,
+          INSERT INTO pending_logins (state, code_verifier, preset_id, expires_at)
+          VALUES (${data.state}, ${data.codeVerifier}, ${data.presetId}, $expiresAt)
+          ON CONFLICT (state) DO UPDATE SET
             code_verifier = EXCLUDED.code_verifier,
             preset_id = EXCLUDED.preset_id,
             expires_at = EXCLUDED.expires_at
         """.update.run()
       }.unit
-    }
-
-  override def find(loginId: String): Task[Option[LoginRecord]] =
-    Clock.instant.flatMap { now =>
-      xa.connectMeasured("find-login") {
-        sql"""
-          SELECT code_verifier, preset_id, state
-          FROM pending_logins
-          WHERE login_id = $loginId AND expires_at > $now
-        """
-          .query[LoginRecord]
-          .run()
-          .headOption
-      }
     }
 
   override def findByState(state: State): Task[Option[LoginRecord]] =
@@ -60,13 +44,6 @@ class PostgresLoginRepository(xa: TransactorZIO) extends LoginRepository, BasicC
           .headOption
       }
     }
-
-  override def delete(loginId: String): Task[Unit] =
-    xa.connectMeasured("delete-login") {
-      sql"""
-        DELETE FROM pending_logins WHERE login_id = $loginId
-      """.update.run()
-    }.unit
 
   override def deleteByState(state: State): Task[Unit] =
     xa.connectMeasured("delete-login-by-state") {

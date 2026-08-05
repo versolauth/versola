@@ -13,10 +13,12 @@ import versola.oauth.conversation.{ConversationController, ConversationRenderSer
 import versola.oauth.introspect.{IntrospectionController, IntrospectionService}
 import versola.oauth.client.CentralSyncTokenService
 import versola.oauth.jwks.{JwksController, JwksService, JwksSyncClient}
+import versola.oauth.logout.{LogoutController, LogoutService}
 import versola.oauth.revoke.{AccessTokenRevocationService, RevocationController, RevocationService}
 import versola.oauth.session.{PostgresSessionRepository, SessionRepository, SessionService}
 import versola.oauth.token.{AuthorizationCodeRepository, OAuthTokenService, TokenEndpointController}
 import versola.oauth.userinfo.{UserInfoController, UserInfoService}
+import versola.oauth.metadata.{MetadataController, MetadataSyncClient}
 import versola.user.{PostgresUserRepository, PostgresUserRolesRepository, UserController, UserRepository, UserRolesRepository}
 import versola.util.*
 import versola.util.http.VersolaApp
@@ -68,7 +70,9 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       UserInfoService &
       JwksService &
       SubmissionLimiter &
-      ChallengeThrottleRepository
+      ChallengeThrottleRepository &
+      LogoutService &
+      SessionService
 
   override def routes: Routes[Dependencies & Tracing & EnvName, Throwable] =
     List(
@@ -79,8 +83,10 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       ConversationController.routes,
       UserInfoController.routes,
       JwksController.routes,
+      MetadataController.routes,
       UserController.routes,
       ServiceController.routes,
+      LogoutController.routes,
     ).reduce(_ ++ _)
 
   val repositories = PostgresHikariDataSource.transactor(serviceName = Some("auth"), migrate = runMigrations) >+> (
@@ -103,6 +109,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       OAuthConfigurationService.live(Schedule.spaced(1.minute)) >+>
       CentralSyncTokenService.live >+>
       JwksSyncClient.live >+>
+      MetadataSyncClient.live >+>
       JwksService.live(Schedule.spaced(1.minute)) >+>
       AuthPropertyGenerator.live >+>
       SessionService.live >+>
@@ -125,7 +132,8 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       ConversationService.live >+>
       ConversationRouter.live >+>
       AuthorizeEndpointService.live >+>
-      ConversationRenderService.live
+      ConversationRenderService.live >+>
+      LogoutService.live
 
   given DeriveConfig[Secret.Bytes16] = DeriveConfig[String]
     .mapOrFail(parseBase64UrlSecret(Secret.Bytes16))

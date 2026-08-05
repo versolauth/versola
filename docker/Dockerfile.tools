@@ -1,0 +1,54 @@
+# versola-tools: generates auth.conf/central.conf/edge.conf (via
+# scripts/gen-env.scala, answered "docker-local") plus compose.fragment.yml
+# and nginx.conf, everything "versola bootstrap local <version>" (see
+# versola-cli) needs to bring up a local stack with nothing but Docker.
+#
+# gen-env.scala is COPYed straight from scripts/ below -- not a duplicated
+# snapshot. It used to be a manually-synced copy living in a separate draft
+# folder outside this repo, which drifted out of sync with the real script
+# more than once. Living in the same repo/release means there's only ever
+# one copy, and this image is always built from whatever gen-env.scala
+# actually shipped with that version.
+#
+# Pinned by digest, not `:latest` -- this image is published per Versola
+# release tag and expected to stay reproducible if it's ever rebuilt (e.g.
+# patching an old release), which a floating tag can't guarantee: an
+# upstream update to scala-cli's own `latest` would silently change what
+# an old versola-tools tag builds into. Bump this deliberately, not by
+# surprise.
+FROM virtuslab/scala-cli@sha256:5f22057215b2d9fad3dd92305306e45249b5bf2e50800dd16dbff9c6c7bc0a37
+
+ARG VERSION=dev
+ENV VERSION=${VERSION}
+
+WORKDIR /opt/versola-tools
+
+# Warm scala-cli's JVM + compiler cache in its own layer, using a
+# throwaway script with the same `using scala`/`using jvm` directives as
+# gen-env.scala (it only imports java.* stdlib, so this covers everything
+# it needs). This is the slow part -- downloading Temurin 21 -- and it
+# must come BEFORE the COPY below: gen-env.scala changes across releases,
+# and Docker invalidates every layer after a COPY once that file's
+# contents change, which would otherwise force this entire download to
+# repeat on every rebuild whose gen-env.scala differs from the last.
+RUN echo '//> using scala 3.6.3' > Warm.scala && \
+    echo '//> using jvm 21' >> Warm.scala && \
+    echo '@main def warm(): Unit = println("warm")' >> Warm.scala && \
+    scala-cli run Warm.scala && \
+    rm Warm.scala
+
+COPY scripts/gen-env.scala .
+COPY docker/versola-tools/nginx.conf.template .
+COPY docker/versola-tools/compose.fragment.yml.template .
+COPY docker/versola-tools/entrypoint.sh .
+RUN chmod +x entrypoint.sh
+
+# Smoke-test gen-env.scala itself and warm its own .scala-build cache, so
+# a fresh "docker run" at bootstrap time doesn't need network access.
+# JDK/compiler are already cached by the layer above, so this is fast even
+# though it reruns whenever gen-env.scala changes. Output is discarded --
+# gen-env.scala generates fresh random secrets/keys every run, and every
+# real deployment needs its own, not whatever got baked in here.
+RUN printf 'docker-local\n' | scala-cli run gen-env.scala && rm -rf .local
+
+ENTRYPOINT ["./entrypoint.sh"]

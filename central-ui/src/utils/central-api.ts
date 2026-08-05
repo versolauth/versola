@@ -47,6 +47,7 @@ type AuthorizationPresetResponse = {
   description: string;
   redirectUri: string;
   postLoginRedirectUri: string;
+  postLogoutRedirectUri?: string;
   scope: string[];
   responseType: string;
   uiLocales?: string[];
@@ -99,7 +100,23 @@ type BackendAuthFlow = {
   passkey?: { factors: BackendAuthFactor[] } | null;
   equivalents?: Record<string, string[]>;
 };
-type ClientsResponse = { clients: Array<{ id: string; clientName: string; redirectUris: string[]; scope: string[]; externalAudience: string[]; permissions: string[]; secretRotation: boolean; theme: string; otpTemplateId: string; authFlow?: BackendAuthFlow | null }> };
+type ClientsResponse = {
+  clients: Array<{
+    id: string;
+    clientName: string;
+    redirectUris: string[];
+    scope: string[];
+    externalAudience: string[];
+    permissions: string[];
+    secretRotation: boolean;
+    theme: string;
+    otpTemplateId: string;
+    authFlow?: BackendAuthFlow | null;
+    frontChannelLogoutUri?: string | null;
+    frontChannelLogoutSessionRequired: boolean;
+    backChannelLogoutUri?: string | null;
+  }>;
+};
 type RolesResponse = { roles: Array<{ id: string; description: LocalizedDescription; permissions: string[]; active: boolean }> };
 type ResourcesResponse = { resources: ResourceResponseDto[] };
 
@@ -571,6 +588,9 @@ export async function fetchClients(tenantId: string, offset = 0, limit = DEFAULT
         theme: client.theme ?? 'default',
         otpTemplateId: client.otpTemplateId ?? null,
         authFlow: authFlowFromBackend(client.authFlow) ?? createDefaultAuthFlow(),
+        frontChannelLogoutUri: client.frontChannelLogoutUri ?? null,
+        frontChannelLogoutSessionRequired: client.frontChannelLogoutSessionRequired,
+        backChannelLogoutUri: client.backChannelLogoutUri ?? null,
         tenantId,
       };
     }),
@@ -613,6 +633,7 @@ export async function fetchClientPresets(clientId: string): Promise<Authorizatio
     description: preset.description,
     redirectUri: preset.redirectUri,
     postLoginRedirectUri: preset.postLoginRedirectUri,
+    postLogoutRedirectUri: preset.postLogoutRedirectUri,
     scope: [...preset.scope],
     responseType: preset.responseType as 'code' | 'code id_token',
     uiLocales: preset.uiLocales,
@@ -633,6 +654,7 @@ export async function saveClientPresets(clientId: string, presets: Authorization
         description: p.description,
         redirectUri: p.redirectUri,
         postLoginRedirectUri: p.postLoginRedirectUri,
+        postLogoutRedirectUri: p.postLogoutRedirectUri,
         scope: p.scope,
         responseType: p.responseType,
         uiLocales: p.uiLocales,
@@ -866,6 +888,9 @@ export async function createClient(tenantId: string, client: OAuthClient): Promi
       theme: client.theme ?? 'default',
       otpTemplateId: client.otpTemplateId ?? null,
       authFlow: authFlowToBackend(client.authFlow),
+      frontChannelLogoutUri: client.frontChannelLogoutUri ?? null,
+      frontChannelLogoutSessionRequired: client.frontChannelLogoutSessionRequired,
+      backChannelLogoutUri: client.backChannelLogoutUri ?? null,
     },
   });
 
@@ -921,6 +946,9 @@ export async function updateClient(tenantId: string, existing: OAuthClient, clie
       theme: existing.theme !== client.theme ? client.theme : undefined,
       otpTemplateId: existing.otpTemplateId !== client.otpTemplateId ? (client.otpTemplateId ?? null) : undefined,
       authFlow: authFlowToBackend(client.authFlow),
+      frontChannelLogoutUri: existing.frontChannelLogoutUri !== client.frontChannelLogoutUri ? (client.frontChannelLogoutUri ?? null) : undefined,
+      frontChannelLogoutSessionRequired: existing.frontChannelLogoutSessionRequired !== client.frontChannelLogoutSessionRequired ? client.frontChannelLogoutSessionRequired : undefined,
+      backChannelLogoutUri: existing.backChannelLogoutUri !== client.backChannelLogoutUri ? (client.backChannelLogoutUri ?? null) : undefined,
     },
   });
 
@@ -955,6 +983,15 @@ export async function updateJwk(jwk: Record<string, unknown>): Promise<void> {
 export async function deleteJwk(kid: string): Promise<void> {
   await requestVoid('/configuration/jwks', { method: 'DELETE', query: { kid } });
 }
+
+export async function fetchServerMetadata(): Promise<Record<string, unknown>> {
+  return request<Record<string, unknown>>('/configuration/server-metadata');
+}
+
+export async function upsertServerMetadata(metadata: Record<string, unknown>): Promise<void> {
+  await requestVoid('/configuration/server-metadata', { method: 'POST', body: metadata });
+}
+
 
 export async function fetchEdges(): Promise<Edge[]> {
   const response = await request<EdgesResponse>('/configuration/edges');
@@ -1143,6 +1180,7 @@ export async function upsertChallengeSettings(
   sessionIdleTtlSeconds: number | null,
   ipHeader: string,
   acrVocabulary?: Record<string, string[]> | null,
+  postLogoutRedirectUris?: string[],
 ): Promise<void> {
   await requestVoid('/configuration/challenges/challenge-settings', {
     method: 'PUT',
@@ -1158,6 +1196,7 @@ export async function upsertChallengeSettings(
       sessionIdleTtlSeconds: sessionIdleTtlSeconds ?? null,
       ipHeader,
       acrVocabulary: acrVocabulary ?? null,
+      postLogoutRedirectUris: postLogoutRedirectUris ?? null,
     },
   });
 }

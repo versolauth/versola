@@ -33,6 +33,7 @@ object SSOClientSpec extends ZIOSpecDefault:
     description = "test",
     redirectUri = RedirectUri("https://app.example/callback"),
     postLoginRedirectUri = RedirectUri("https://app.example/home"),
+    postLogoutRedirectUri = None,
     scope = Set("openid"),
     responseType = "code",
     uiLocales = None,

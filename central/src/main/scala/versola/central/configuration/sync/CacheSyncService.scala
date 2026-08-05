@@ -5,6 +5,7 @@ import versola.central.configuration.clients.{AuthorizationPresetService, OAuthC
 import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.forms.FormService
 import versola.central.configuration.jwks.JwksService
+import versola.central.configuration.metadata.ServerMetadataService
 import versola.central.configuration.permissions.PermissionService
 import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.roles.RoleService
@@ -19,8 +20,8 @@ trait CacheSyncService:
   def sync(): Task[Unit]
 
 object CacheSyncService:
-  def live: ZLayer[CacheSyncRepository & TenantService & PermissionService & ResourceService & OAuthClientService & OAuthScopeService & RoleService & AuthorizationPresetService & EdgeService & FormService & OtpChallengeService & ChallengeSettingsService & SystemSettingsService & JwksService & ThemeService & Scope, Nothing, CacheSyncService] =
-    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _)) >>>
+  def live: ZLayer[CacheSyncRepository & TenantService & PermissionService & ResourceService & OAuthClientService & OAuthScopeService & RoleService & AuthorizationPresetService & EdgeService & FormService & OtpChallengeService & ChallengeSettingsService & SystemSettingsService & JwksService & ThemeService & ServerMetadataService & Scope, Nothing, CacheSyncService] =
+    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _)) >>>
       ZLayer(ZIO.serviceWithZIO[CacheSyncService.Impl](service => service.sync().forkScoped.as(service)))
 
   class Impl(
@@ -39,6 +40,7 @@ object CacheSyncService:
       systemSettingsService: SystemSettingsService,
       jwksService: JwksService,
       themeService: ThemeService,
+      serverMetadataService: ServerMetadataService,
   ) extends CacheSyncService:
 
     override def sync(): Task[Unit] =
@@ -85,6 +87,9 @@ object CacheSyncService:
 
           case SyncEvent.SystemSettingsUpdated =>
             systemSettingsService.sync().either
+
+          case SyncEvent.ServerMetadataUpdated =>
+            serverMetadataService.sync().either
 
           case SyncEvent.Unknown =>
             ZIO.unit

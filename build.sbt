@@ -2,7 +2,7 @@ lazy val root = project.in(file("."))
   .settings(
     commonSettings,
     Test / compile := (Test / compile)
-      .dependsOn(e2e / Test / compile).value,
+      .dependsOn(e2e / Test / compile).value
   )
   .aggregate(
     util,
@@ -165,6 +165,7 @@ lazy val commonSettings =
     testFrameworks += new TestFramework("zio.test.sbt.ZTestFramework"),
     // Entry points and bootstrap wiring are not unit-testable in isolation, exclude from coverage.
     coverageExcludedFiles := ".*App.*|.*BootstrapService.*",
+    semanticdbEnabled := true
   )
 
 val CompileTest = "compile->compile;test->test"

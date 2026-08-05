@@ -5,7 +5,7 @@ import versola.auth.TestEnvConfig
 import com.nimbusds.jwt.SignedJWT
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.jwks.JwksService
-import versola.oauth.client.model.{AuthMethodRef, ClientId, ClientIdWithSecret, ScopeToken}
+import versola.oauth.client.model.{AuthMethodRef, ClientId, ClientIdWithSecret, ScopeToken, TenantId}
 import versola.oauth.model.{AccessToken, AuthorizationCode, CodeVerifier, Nonce, RefreshToken}
 import versola.oauth.token.model.{ClientCredentialsRequest, CodeExchangeRequest, IssuedTokens, RefreshTokenRequest, TokenEndpointError, TokenResponse}
 import versola.oauth.userinfo.UserInfoService
@@ -13,7 +13,7 @@ import versola.oauth.userinfo.model.UserInfoResponse
 import versola.user.model.{UserId, UserRecord}
 import zio.json.ast.Json
 import versola.util.http.{ControllerSpec, NoopTracing, Observability}
-import versola.util.{Base64, CoreConfig, Secret, UnitSpecBase}
+import versola.util.{Base64, CoreConfig, JWT, Secret, UnitSpecBase}
 import zio.*
 import zio.http.*
 import zio.json.*
@@ -44,8 +44,9 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
     uiLocales = None,
     nonce = None,
     user = None,
-    tenantId = None,
+    tenantId = TenantId("default"),
     roles = List.empty,
+    sessionId = None,
     amr = Set(AuthMethodRef.pwd),
     authTime = Some(java.time.Instant.ofEpochSecond(1700000000)),
     acr = None,
@@ -455,9 +456,12 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
             body <- response.body.asString
             tokenResponse <- ZIO.fromEither(body.fromJson[TokenResponse]).mapError(new RuntimeException(_))
 
-            idToken = tokenResponse.idToken
-              .map(SignedJWT.parse)
-              .map(_.getJWTClaimsSet)
+            signedIdToken = tokenResponse.idToken.map(SignedJWT.parse)
+            idToken = signedIdToken.map(_.getJWTClaimsSet)
+
+            expectedAtHash = signedIdToken.map(jwt =>
+              JWT.leftHalfHash(tokenResponse.accessToken, JWT.Algorithm.valueOf(jwt.getHeader.getAlgorithm.getName))
+            )
 
           yield assertTrue(
             idToken.map(_.getSubject) == Some(userId1.toString),
@@ -465,6 +469,7 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
             idToken.map(_.getClaim("name")) != null,
             idToken.map(_.getStringListClaim("amr")) == Some(java.util.List.of("pwd")),
             idToken.map(_.getLongClaim("auth_time")) == Some(1700000000L),
+            idToken.map(_.getClaim("at_hash")) == expectedAtHash,
           ),
       ),
       tokenEndpointTestCase(
@@ -531,9 +536,12 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
             body <- response.body.asString
             tokenResponse <- ZIO.fromEither(body.fromJson[TokenResponse]).mapError(new RuntimeException(_))
 
-            idToken = tokenResponse.idToken
-              .map(SignedJWT.parse)
-              .map(_.getJWTClaimsSet)
+            signedIdToken = tokenResponse.idToken.map(SignedJWT.parse)
+            idToken = signedIdToken.map(_.getJWTClaimsSet)
+
+            expectedAtHash = signedIdToken.map(jwt =>
+              JWT.leftHalfHash(tokenResponse.accessToken, JWT.Algorithm.valueOf(jwt.getHeader.getAlgorithm.getName))
+            )
 
           yield assertTrue(
             idToken.map(_.getSubject) == Some(userId1.toString),
@@ -541,6 +549,7 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
             idToken.map(_.getClaim("email")) != null,
             idToken.map(_.getStringListClaim("amr")) == Some(java.util.List.of("pwd")),
             idToken.map(_.getLongClaim("auth_time")) == Some(1700000000L),
+            idToken.map(_.getClaim("at_hash")) == expectedAtHash,
           ),
       ),
       tokenEndpointTestCase(

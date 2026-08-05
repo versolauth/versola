@@ -100,6 +100,7 @@ object OtpChallengeController extends Controller:
             body.sessionIdleTtlSeconds.orElse(existing.flatMap(_.sessionIdleTtlSeconds)),
             body.ipHeader,
             body.acrVocabulary.orElse(existing.flatMap(_.acrVocabulary)),
+            body.postLogoutRedirectUris.orElse(existing.map(_.postLogoutRedirectUris)).getOrElse(Nil),
           ),
         )
       yield Response.status(Status.NoContent)

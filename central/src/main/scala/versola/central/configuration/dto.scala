@@ -168,8 +168,8 @@ case class CreateResourceEndpointRequest(
     fetchUserInfo: Boolean,
     allow: Option[String],
     inject: Vector[InjectRule],
-    stepUpCondition: Option[String] = None,
-    stepUpAcr: Option[String] = None,
+    stepUpCondition: Option[String],
+    stepUpAcr: Option[String],
     maxAge: Option[Int],
 ) derives Schema, JsonCodec
 
@@ -262,6 +262,9 @@ case class OAuthClientResponse(
     theme: String,
     authFlow: Option[AuthFlow],
     otpTemplateId: String,
+    frontChannelLogoutUri: Option[String],
+    frontChannelLogoutSessionRequired: Boolean,
+    backChannelLogoutUri: Option[String],
 ) derives Schema, JsonCodec
 
 case class GetAllClientsResponse(
@@ -281,6 +284,9 @@ case class CreateClientRequest(
     theme: String,
     authFlow: Option[AuthFlow],
     otpTemplateId: String,
+    frontChannelLogoutUri: Option[String],
+    frontChannelLogoutSessionRequired: Boolean,
+    backChannelLogoutUri: Option[String],
 ) derives Schema, JsonCodec
 
 case class CreateClientResponse(
@@ -302,6 +308,9 @@ case class UpdateClientRequest(
     theme: Option[String],
     authFlow: Option[AuthFlow],
     otpTemplateId: Option[String],
+    frontChannelLogoutUri: Option[Option[String]],
+    frontChannelLogoutSessionRequired: Option[Boolean],
+    backChannelLogoutUri: Option[Option[String]],
 ) derives Schema, JsonCodec
 
 case class AuthorizationPresetInput(
@@ -309,6 +318,7 @@ case class AuthorizationPresetInput(
     description: String,
     redirectUri: RedirectUri,
     postLoginRedirectUri: RedirectUri,
+    postLogoutRedirectUri: Option[RedirectUri] = None,
     scope: Set[ScopeToken],
     responseType: ResponseType,
     uiLocales: Option[List[String]],
@@ -328,6 +338,7 @@ case class AuthorizationPresetResponse(
     description: String,
     redirectUri: RedirectUri,
     postLoginRedirectUri: RedirectUri,
+    postLogoutRedirectUri: Option[RedirectUri] = None,
     scope: Set[ScopeToken],
     responseType: ResponseType,
     uiLocales: Option[List[String]],
@@ -346,6 +357,7 @@ case class AuthorizationPresetSyncResponse(
     description: String,
     redirectUri: RedirectUri,
     postLoginRedirectUri: RedirectUri,
+    postLogoutRedirectUri: Option[RedirectUri] = None,
     scope: Set[ScopeToken],
     responseType: ResponseType,
     uiLocales: Option[List[String]],
@@ -426,6 +438,9 @@ case class SyncOAuthClientRecord(
     theme: String,
     authFlow: Option[AuthFlow],
     otpTemplateId: String,
+    frontChannelLogoutUri: Option[String],
+    frontChannelLogoutSessionRequired: Boolean,
+    backChannelLogoutUri: Option[String],
 ) derives JsonCodec, Schema
 
 case class GetOAuthClientsSyncResponse(

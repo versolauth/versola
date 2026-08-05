@@ -105,6 +105,31 @@ export async function copyToClipboard(text: string): Promise<boolean> {
 }
 
 /**
+ * Parse a JSON object string and check that the given top-level keys are
+ * present with a non-empty value. Returns an error message, or null if the
+ * text is a valid JSON object containing all required keys.
+ */
+export function validateJsonObject(text: string, requiredKeys: string[] = []): string | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return 'Invalid JSON.';
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    return 'Value must be a JSON object.';
+  }
+  const missing = requiredKeys.filter(key => {
+    const value = (parsed as Record<string, unknown>)[key];
+    return value === undefined || value === null || value === '';
+  });
+  if (missing.length > 0) {
+    return `Missing required field${missing.length > 1 ? 's' : ''}: ${missing.join(', ')}.`;
+  }
+  return null;
+}
+
+/**
  * Get localized description
  */
 export function getLocalizedDescription(

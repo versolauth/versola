@@ -12,6 +12,7 @@ export interface AuthorizationPreset {
   description: string;
   redirectUri: string;
   postLoginRedirectUri: string;
+  postLogoutRedirectUri?: string;
   scope: string[];
   responseType: 'code' | 'code id_token';
   uiLocales?: string[];
@@ -54,6 +55,9 @@ export interface OAuthClient {
   theme: string;
   otpTemplateId?: string | null;
   authFlow: AuthFlow | null;
+  frontChannelLogoutUri?: string | null;
+  frontChannelLogoutSessionRequired: boolean;
+  backChannelLogoutUri?: string | null;
   tenantId?: string;  // Tenant scope (clients inherit edge from their tenant)
   authorizationPresets?: AuthorizationPreset[];
 }
@@ -100,6 +104,7 @@ export interface ChallengeSettingsRecord {
   sessionIdleTtlSeconds?: number | null;
   ipHeader: string;
   acrVocabulary?: Record<string, string[]> | null;
+  postLogoutRedirectUris: string[];
 }
 
 // Global (non-tenant-scoped) password policy
@@ -288,8 +293,14 @@ export interface SortConfig {
   direction: 'asc' | 'desc';
 }
 
-export interface UserSession {
+export interface SessionClientEntry {
   clientId: string;
+  enteredAt: string;
+  expiresAt: string;
+}
+
+export interface UserSession {
+  clients: SessionClientEntry[];
   createdAt?: string;
   platform: 'ios' | 'android' | 'desktop' | 'unknown';
   os?: string;

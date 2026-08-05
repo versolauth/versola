@@ -37,6 +37,9 @@ object PostgresCacheSyncRepositorySpec extends ZIOSpecDefault:
       test("system_settings_change ignores the payload") {
         assertTrue(parseNotification("system_settings_change", "") == SyncEvent.SystemSettingsUpdated)
       },
+      test("metadata_change ignores the payload") {
+        assertTrue(parseNotification("metadata_change", "") == SyncEvent.ServerMetadataUpdated)
+      },
       test("unrecognized channel falls back to Unknown") {
         assertTrue(parseNotification("some_future_channel", "") == SyncEvent.Unknown)
       },

@@ -34,7 +34,7 @@ class PostgresAuthorizationPresetRepository(
   override def find(id: PresetId): Task[Option[AuthorizationPreset]] =
     xa.connectMeasured("find-preset"):
       sql"""
-        SELECT id, client_id, description, redirect_uri, post_login_redirect_uri, scope, response_type, ui_locales, custom_parameters, cookie_domain, cookie_path
+        SELECT id, client_id, description, redirect_uri, post_login_redirect_uri, post_logout_redirect_uri, scope, response_type, ui_locales, custom_parameters, cookie_domain, cookie_path
         FROM authorization_presets
         WHERE id = $id
       """
@@ -47,11 +47,11 @@ class PostgresAuthorizationPresetRepository(
         batchUpdate(presets): preset =>
           sql"""
             INSERT INTO authorization_presets (
-              id, client_id, description, redirect_uri, post_login_redirect_uri, scope, response_type, ui_locales, custom_parameters, cookie_domain, cookie_path
+              id, client_id, description, redirect_uri, post_login_redirect_uri, post_logout_redirect_uri, scope, response_type, ui_locales, custom_parameters, cookie_domain, cookie_path
             )
             VALUES (
               ${preset.id}, ${preset.clientId}, ${preset.description},
-              ${preset.redirectUri}, ${preset.postLoginRedirectUri}, ${preset.scope}, ${preset.responseType}, ${preset.uiLocales}::text[], ${preset.customParameters}::jsonb,
+              ${preset.redirectUri}, ${preset.postLoginRedirectUri}, ${preset.postLogoutRedirectUri}, ${preset.scope}, ${preset.responseType}, ${preset.uiLocales}::text[], ${preset.customParameters}::jsonb,
               ${preset.cookieDomain}, ${preset.cookiePath}
             )
           """.update
@@ -60,7 +60,7 @@ class PostgresAuthorizationPresetRepository(
   override def getAll: Task[Vector[AuthorizationPreset]] =
     xa.connectMeasured("get-all-presets"):
       sql"""
-        SELECT id, client_id, description, redirect_uri, post_login_redirect_uri, scope, response_type, ui_locales, custom_parameters, cookie_domain, cookie_path
+        SELECT id, client_id, description, redirect_uri, post_login_redirect_uri, post_logout_redirect_uri, scope, response_type, ui_locales, custom_parameters, cookie_domain, cookie_path
         FROM authorization_presets
         ORDER BY client_id, id
       """

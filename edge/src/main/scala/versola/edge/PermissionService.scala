@@ -5,7 +5,7 @@ import versola.util.ReloadingCache
 import zio.{Schedule, Scope, UIO, ZIO, ZLayer}
 
 trait PermissionService:
-  def getAllowedEndpointsForRoles(roles: Map[TenantId, List[RoleId]]): UIO[Set[ResourceEndpointId]]
+  def getAllowedEndpointsForRoles(tenantId: TenantId, roles: List[RoleId]): UIO[Set[ResourceEndpointId]]
 
   def getAllowedEndpointsForClient(clientId: ClientId): UIO[Set[ResourceEndpointId]]
 
@@ -38,11 +38,11 @@ object PermissionService:
         roleIds.flatMap(roleId => roleMap.getOrElse((tenantId, roleId), Set.empty))
       }.toSet
 
-    override def getAllowedEndpointsForRoles(roles: Map[TenantId, List[RoleId]]): UIO[Set[ResourceEndpointId]] =
+    override def getAllowedEndpointsForRoles(tenantId: TenantId, roles: List[RoleId]): UIO[Set[ResourceEndpointId]] =
       for
         roleMap <- rolesCache.get
         permMap <- permissionsCache.get
-        permIds = permissionsFor(roles, roleMap)
+        permIds = permissionsFor(Map(tenantId -> roles), roleMap)
       yield permIds.flatMap(permMap.getOrElse(_, Set.empty))
 
     override def getAllowedEndpointsForClient(clientId: ClientId): UIO[Set[ResourceEndpointId]] =
