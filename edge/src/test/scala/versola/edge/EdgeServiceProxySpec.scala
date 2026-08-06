@@ -193,8 +193,14 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
       method = "GET", path = "/tenants", fetchUserInfo = false, allow = None, inject = Vector.empty, stepUpCondition = None, stepUpAcr = None, maxAge = None,
     )
 
+  private val centralResourceCredential = Secret(Array.fill(48)(2.toByte))
+
+  /** The central-facing resource is internal: it always carries a credential, so edge
+    * authenticates to it with `Basic(resourceId, credential)` instead of forwarding
+    * the caller's own token (see [[EdgeService.Impl.resolveAuthHeader]]).
+    */
   private def centralResource(endpoints: ResourceEndpoint*) =
-    Resource(resourceId = ResourceId("central"), resource = centralUrl, endpoints = endpoints.toVector)
+    Resource(resourceId = ResourceId("central"), resource = centralUrl, endpoints = endpoints.toVector, credential = Some(centralResourceCredential))
 
   private def captureUpstream(status: Status = Status.Ok, body: String = "ok"): ZIO[TestClient, Nothing, Ref[Option[Request]]] =
     for
@@ -278,7 +284,7 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
       yield assertTrue(
         response.status == Status.Ok,
         body == "users-payload",
-        upstream.exists(_.header(Header.Authorization).exists(_.renderedValue.startsWith("Basic "))),
+        upstream.exists(_.header(Header.Authorization).contains(Header.Authorization.Bearer(token))),
         upstream.exists(_.headers.get("x-user").contains("user-1")),
         upstream.exists(_.headers.get(Header.Cookie.name).isEmpty),
       )
@@ -711,7 +717,7 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         upstream <- capture.get
       yield assertTrue(
         response.status == Status.Ok,
-        upstream.exists(_.header(Header.Authorization).exists(_.renderedValue.startsWith("Basic "))),
+        upstream.exists(_.header(Header.Authorization).contains(Header.Authorization.Bearer(token))),
       )
     },
     test("returns 401 when bearer header token is expired (no refresh attempt)") {
@@ -1027,7 +1033,7 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         setCookieHeader = response.header(Header.SetCookie).map(_.value)
       yield assertTrue(
         response.status == Status.Ok,
-        upstream.exists(_.header(Header.Authorization).exists(_.renderedValue.startsWith("Basic "))),
+        upstream.exists(_.header(Header.Authorization).contains(Header.Authorization.Bearer(newAccessToken))),
         setCookieHeader.exists(c => c.name == EdgeSessionCookie.name && c.content == s"${presetId}:${newAccessToken}"),
         env.ssoClient.exchangeRefreshToken.calls.headOption.exists(_._1 == RefreshToken(refreshTokenValue)),
         env.sessionRepository.create.calls.size == 1,
@@ -1178,21 +1184,15 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         response.status == Status.InternalServerError,
       )
     },
-    test("central alias injects Basic auth header instead of Bearer") {
+    test("central alias injects Basic auth header with resource credential instead of Bearer") {
       val env = new Env
       val endpoint = centralEndpoint()
-      val centralClient = OAuthClient(
-        id = centralClientId,
-        secret = Secret(Array.fill(48)(2.toByte)),
-        permissions = Set.empty,
-      )
       for
         _ <- env.jwksService.getPublicKeys.succeedsWith(env.publicKeys)
         _ <- env.permissionService.getAllowedEndpointsForRoles.succeedsWith(Set(endpoint.id))
         _ <- env.permissionService.getAllowedEndpointsForClient.succeedsWith(Set.empty)
         _ <- env.sessionRepository.findByAccessTokenId.succeedsWith(None)
         _ <- env.withResources(centralResource(endpoint))
-        _ <- env.withClients(centralClient)
         capture <- captureUpstream()
         client <- ZIO.service[Client]
         security <- ZIO.service[SecurityService]
@@ -1203,7 +1203,9 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         upstream <- capture.get
       yield assertTrue(
         response.status == Status.Ok,
-        upstream.exists(_.header(Header.Authorization).exists(_.renderedValue.startsWith("Basic "))),
+        upstream.exists(_.header(Header.Authorization).contains(
+          Header.Authorization.Basic(ResourceId("central"), versola.util.Base64.urlEncode(centralResourceCredential)),
+        )),
       )
     },
     test("central alias is deny-by-default: returns 403 when endpoint not in allowed set") {

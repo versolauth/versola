@@ -5,7 +5,7 @@ import versola.auth.TestEnvConfig
 import com.nimbusds.jwt.SignedJWT
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.jwks.JwksService
-import versola.oauth.client.model.{AuthMethodRef, ClientId, ClientIdWithSecret, ScopeToken, TenantId}
+import versola.oauth.client.model.{AuthMethodRef, ClientId, ClientIdWithSecret, ResourceId, ScopeToken, TenantId}
 import versola.oauth.model.{AccessToken, AuthorizationCode, CodeVerifier, Nonce, RefreshToken}
 import versola.oauth.token.model.{ClientCredentialsRequest, CodeExchangeRequest, IssuedTokens, RefreshTokenRequest, TokenEndpointError, TokenResponse}
 import versola.oauth.userinfo.UserInfoService
@@ -35,7 +35,7 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
   val issuedTokens = IssuedTokens(
     accessToken = accessToken1,
     clientId = clientId1,
-    audience = List(clientId1),
+    audience = List(ResourceId("https://api.example.com")),
     accessTokenTtl = 10.minutes,
     userId = Some(userId1),
     refreshToken = Some(refreshToken1),

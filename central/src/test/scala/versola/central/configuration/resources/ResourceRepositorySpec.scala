@@ -46,24 +46,50 @@ trait ResourceRepositorySpec extends DatabaseSpecBase[ResourceRepositorySpec.Env
       id: ResourceId = resourceId,
       resource: ResourceUri = resourceUri,
       endpoints: Vector[ResourceEndpointRecord] = Vector.empty,
+      credential: Option[versola.util.Secret] = None,
+      previousCredential: Option[versola.util.Secret] = None,
   ) =
     ResourceRecord(
       tenantId = tenantId,
       resourceId = id,
       resource = resource,
       endpoints = endpoints,
+      credential = credential,
+      previousCredential = previousCredential,
     )
 
   override def testCases(env: ResourceRepositorySpec.Env) =
     List(
       test("create and find resource") {
         for
-          _ <- env.resourceRepository.createResource(tenantId, resourceId, resourceUri, Vector(endpointRecord(usersListEndpointId, allow = allow, inject = inject)))
+          _ <- env.resourceRepository.createResource(tenantId, resourceId, resourceUri, Vector(endpointRecord(usersListEndpointId, allow = allow, inject = inject)), None)
           found <- env.resourceRepository.findResource(resourceId)
           all <- env.resourceRepository.getAll
         yield assertTrue(
           found == Some(resourceRecord(resourceId, endpoints = Vector(endpointRecord(usersListEndpointId, allow = allow, inject = inject)))),
           all == Vector(resourceRecord(resourceId, endpoints = Vector(endpointRecord(usersListEndpointId, allow = allow, inject = inject)))),
+        )
+      },
+      test("create resource with credential") {
+        val credential = Array.fill(32)(9.toByte)
+        for
+          _ <- env.resourceRepository.createResource(tenantId, resourceId, resourceUri, Vector.empty, Some(credential))
+          found <- env.resourceRepository.findResource(resourceId)
+        yield assertTrue(found.map(_.credential.map(_.toVector)) == Some(Some(credential.toVector)))
+      },
+      test("rotate and delete previous credential") {
+        val credential1 = Array.fill(32)(1.toByte)
+        val credential2 = Array.fill(32)(2.toByte)
+        for
+          _ <- env.resourceRepository.createResource(tenantId, resourceId, resourceUri, Vector.empty, Some(credential1))
+          _ <- env.resourceRepository.rotateCredential(resourceId, credential2)
+          afterRotate <- env.resourceRepository.findResource(resourceId)
+          _ <- env.resourceRepository.deletePreviousCredential(resourceId)
+          afterDelete <- env.resourceRepository.findResource(resourceId)
+        yield assertTrue(
+          afterRotate.map(_.credential.map(_.toVector)) == Some(Some(credential2.toVector)),
+          afterRotate.map(_.previousCredential.map(_.toVector)) == Some(Some(credential1.toVector)),
+          afterDelete.flatMap(_.previousCredential) == None,
         )
       },
       test("update resource fields and embedded endpoints") {
@@ -73,6 +99,7 @@ trait ResourceRepositorySpec extends DatabaseSpecBase[ResourceRepositorySpec.Env
             resourceId,
             resourceUri,
             Vector(endpointRecord(usersListEndpointId), endpointRecord(usersDeleteEndpointId, method = "DELETE")),
+            None,
           )
           _ <- env.resourceRepository.updateResource(
             resourceId = resourceId,
@@ -99,7 +126,7 @@ trait ResourceRepositorySpec extends DatabaseSpecBase[ResourceRepositorySpec.Env
       },
       test("delete resource") {
         for
-          _ <- env.resourceRepository.createResource(tenantId, resourceId, resourceUri, Vector(endpointRecord(usersListEndpointId)))
+          _ <- env.resourceRepository.createResource(tenantId, resourceId, resourceUri, Vector(endpointRecord(usersListEndpointId)), None)
           _ <- env.resourceRepository.deleteResource(resourceId)
           found <- env.resourceRepository.findResource(resourceId)
         yield assertTrue(found.isEmpty)

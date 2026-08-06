@@ -1,6 +1,6 @@
 package versola.oauth.model
 
-import versola.oauth.client.model.{Acr, AuthMethodRef, ClientId, ScopeToken}
+import versola.oauth.client.model.{Acr, AuthMethodRef, ClientId, ResourceId, ScopeToken}
 import versola.oauth.session.model.{PublicSessionId, RefreshTokenRecord, SessionId}
 import versola.oauth.userinfo.model.RequestedClaims
 import versola.user.model.UserId
@@ -29,6 +29,9 @@ case class AuthorizationCodeRecord(
     amr: Set[AuthMethodRef],
     authTime: Instant,
     acr: Option[Acr],
+    /** RFC 8707 `resource` parameter(s) requested at `/authorize`; carried forward into the
+      * issued access token's `aud` claim. */
+    resources: List[ResourceId] = Nil,
 ) derives CanEqual, Equal:
 
   def verify(verifier: CodeVerifier): Boolean =

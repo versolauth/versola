@@ -30,7 +30,6 @@ trait OAuthClientRepositorySpec extends DatabaseSpecBase[OAuthClientRepositorySp
     clientName = "Web App",
     redirectUris = Set(redirectUri1),
     scope = Set(readScope),
-    externalAudience = List(ClientId("api")),
     secret = Some(secret1),
     previousSecret = None,
     accessTokenTtl = 5.minutes,

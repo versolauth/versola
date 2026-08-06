@@ -1,7 +1,7 @@
 package versola.oauth.conversation.model
 
 import versola.oauth.authorize.model.ResponseTypeEntry
-import versola.oauth.client.model.{Acr, AuthFlow, ClientId, PassedAuthFactor, PassedFactorRecord, ScopeToken}
+import versola.oauth.client.model.{Acr, AuthFlow, ClientId, PassedAuthFactor, PassedFactorRecord, ResourceId, ScopeToken}
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, Nonce, State}
 import versola.oauth.session.model.SessionId
 import versola.oauth.userinfo.model.RequestedClaims
@@ -38,6 +38,8 @@ case class ConversationRecord(
     targetAcr: Option[Acr],
     /** MAC of the session that existed before this conversation was started. */
     priorSessionId: Option[MAC.Of[SessionId]],
+    /** RFC 8707 `resource` parameter(s) requested at `/authorize`. */
+    resources: List[ResourceId] = Nil,
 ):
 
   def hasOfflineAccess = scope.contains(ScopeToken.OfflineAccess)

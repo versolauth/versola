@@ -18,6 +18,7 @@ trait ResourceRepository extends CacheSource[Vector[ResourceRecord]]:
       resourceId: ResourceId,
       resource: ResourceUri,
       endpoints: Vector[ResourceEndpointRecord],
+      credential: Option[Array[Byte]],
   ): Task[Unit]
 
   def updateResource(
@@ -26,6 +27,10 @@ trait ResourceRepository extends CacheSource[Vector[ResourceRecord]]:
       addEndpoints: Vector[ResourceEndpointRecord],
       deleteEndpoints: Set[ResourceEndpointId],
   ): Task[Unit]
+
+  def rotateCredential(resourceId: ResourceId, newCredential: Array[Byte]): Task[Unit]
+
+  def deletePreviousCredential(resourceId: ResourceId): Task[Unit]
 
   def deleteResource(
       resourceId: ResourceId,

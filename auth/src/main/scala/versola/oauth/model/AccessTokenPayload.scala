@@ -18,7 +18,8 @@ case class AccessTokenPayload(
     @jsonField("exp") expiresAt: Instant,
     @jsonField("iat") issuedAt: Instant,
     @jsonField("nbf") notBefore: Option[Instant],
-    @jsonField("aud") audience: Vector[ClientId],
+    // Absent per RFC 8707 when no `resource` was requested (see JWT.serialize).
+    @jsonField("aud") audience: Vector[String] = Vector.empty,
     @jsonField("iss") issuer: String,
     @jsonField("jti") id: AccessToken,
 ):
@@ -34,8 +35,8 @@ object AccessTokenPayload:
 
   given JsonDecoder[Instant] = JsonDecoder[Long].map(Instant.ofEpochSecond)
 
-  private given audienceDecoder: JsonDecoder[Vector[ClientId]] =
-    JsonDecoder[ClientId].map(Vector(_))
-      .orElse(JsonDecoder[Vector[String]].map(_.map(ClientId(_))))
+  private given audienceDecoder: JsonDecoder[Vector[String]] =
+    JsonDecoder[String].map(Vector(_))
+      .orElse(JsonDecoder[Vector[String]])
 
   given JsonDecoder[AccessTokenPayload] = DeriveJsonDecoder.gen[AccessTokenPayload]

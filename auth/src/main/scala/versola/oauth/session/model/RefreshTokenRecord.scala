@@ -1,6 +1,6 @@
 package versola.oauth.session.model
 
-import versola.oauth.client.model.{Acr, AuthMethodRef, ClientId, ScopeToken}
+import versola.oauth.client.model.{Acr, AuthMethodRef, ClientId, ResourceId, ScopeToken}
 import versola.oauth.model.{AccessToken, Nonce, RefreshToken}
 import versola.oauth.userinfo.model.RequestedClaims
 import versola.user.model.UserId
@@ -17,7 +17,9 @@ case class RefreshTokenRecord(
     accessToken: AccessToken,
     userId: UserId,
     clientId: ClientId,
-    externalAudience: List[ClientId],
+    /** RFC 8707 `resource` parameter(s) requested at `/authorize`; carried into the `aud`
+      * claim of access tokens issued from this refresh token (and its successors). */
+    resources: List[ResourceId],
     scope: Set[ScopeToken],
     issuedAt: Instant,
     expiresAt: Instant,

@@ -35,9 +35,11 @@ object JWT:
           .jwtID(java.util.UUID.randomUUID().toString)
           .issuer(claims.issuer)
           .subject(claims.subject)
-          .audience(claims.audience.asJava)
           .issueTime(Date.from(now))
           .expirationTime(Date.from(now.plusSeconds(ttl.toSeconds)))
+        // Per RFC 8707, the `aud` claim is only included when at least one resource/audience
+        // value is present; an absent `resource` request parameter must not add an empty `aud`.
+        if claims.audience.nonEmpty then claimsBuilder.audience(claims.audience.asJava)
 
         claims.custom.fields.foreach { (key, value) =>
           value match

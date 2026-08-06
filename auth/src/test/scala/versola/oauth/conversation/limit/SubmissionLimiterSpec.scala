@@ -22,7 +22,6 @@ object SubmissionLimiterSpec extends UnitSpecBase:
     clientName = "Test Client",
     redirectUris = NonEmptySet("https://example.com/callback"),
     scope = Set(ScopeToken("openid")),
-    externalAudience = Nil,
     secret = None,
     previousSecret = None,
     accessTokenTtl = 5.minutes,

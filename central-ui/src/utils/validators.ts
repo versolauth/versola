@@ -173,14 +173,6 @@ export function validateResourceUri(uri: string): { valid: boolean; error?: stri
 }
 
 /**
- * Validates audience (same as client ID validation)
- * Lowercase letters, numbers, hyphen, starting with letter
- */
-export function validateAudience(audience: string): boolean {
-  return validateClientId(audience);
-}
-
-/**
  * Convert TTL value and unit to seconds
  */
 export function ttlToSeconds(value: number, unit: 'minutes' | 'hours'): number {

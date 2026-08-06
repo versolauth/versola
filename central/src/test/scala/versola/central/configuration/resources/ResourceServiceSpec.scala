@@ -1,10 +1,11 @@
 package versola.central.configuration.resources
 
 import org.scalamock.stubs.ZIOStubs
+import versola.central.{CentralConfig, TestCentralConfig}
 import versola.central.configuration.tenants.TenantId
 import versola.central.configuration.sync.SyncEvent
 import versola.central.configuration.{CreateResourceEndpointRequest, CreateResourceRequest, InjectRule, InjectTarget, ResourceUri, UpdateResourceRequest}
-import versola.util.ReloadingCache
+import versola.util.{ReloadingCache, SecureRandom, Secret, SecurityService}
 import versola.util.cel.CelEvaluator
 import zio.*
 import zio.test.*
@@ -42,6 +43,7 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
       CreateResourceEndpointRequest(existingEndpointId, "/users", "GET", false, allow, inject, stepUpCondition = None, stepUpAcr = None, maxAge = None),
       CreateResourceEndpointRequest(createdEndpointId, "/users", "POST", true, denyAware, Vector.empty, stepUpCondition = None, stepUpAcr = None, maxAge = None),
     ),
+    internal = false,
   )
 
   private val updateRequest = UpdateResourceRequest(
@@ -59,7 +61,10 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
     val repository = stub[ResourceRepository]
     val tenantRepository = stub[versola.central.configuration.tenants.TenantRepository]
     val celEvaluator = CelEvaluator.Impl(Unsafe.unsafe(unsafe ?=> Ref.unsafe.make(Map.empty)))
-    val service = ResourceService.Impl(cache, repository, tenantRepository, celEvaluator)
+    val secureRandom = stub[SecureRandom]
+    val securityService = stub[SecurityService]
+    val config = TestCentralConfig.config
+    val service = ResourceService.Impl(cache, repository, tenantRepository, celEvaluator, secureRandom, securityService, config)
 
   def spec = suite("ResourceService")(
     test("getTenantResources returns only tenant resources") {
@@ -82,7 +87,7 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- env.repository.createResource.succeedsWith(())
         result <- env.service.createResource(createRequest)
       yield assertTrue(
-        result == Right(resourceId),
+        result == Right((resourceId, None)),
         env.repository.createResource.calls == List((
           tenantId,
           resourceId,
@@ -91,7 +96,23 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
             ResourceEndpointRecord(existingEndpointId, "/users", "GET", false, allow, inject, None, None, None),
             ResourceEndpointRecord(createdEndpointId, "/users", "POST", true, denyAware, Vector.empty, None, None, None),
           ),
+          None,
         )),
+      )
+    },
+    test("createResource generates and encrypts a credential when internal is true") {
+      val env = new Env
+      val rawCredential = Array.fill(32)(7.toByte)
+      val encryptedCredential = Array.fill(32)(8.toByte)
+
+      for
+        _ <- env.secureRandom.nextBytes.succeedsWith(rawCredential)
+        _ <- env.securityService.encryptAes256.succeedsWith(encryptedCredential)
+        _ <- env.repository.createResource.succeedsWith(())
+        result <- env.service.createResource(createRequest.copy(internal = true))
+      yield assertTrue(
+        result == Right((resourceId, Some(Secret(rawCredential)))),
+        env.repository.createResource.calls.head._5 == Some(encryptedCredential),
       )
     },
     test("createResource returns error when allow expression is invalid CEL") {
@@ -242,6 +263,31 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- env.repository.deleteResource.succeedsWith(())
         _ <- env.service.deleteResource(resourceId)
       yield assertTrue(env.repository.deleteResource.calls == List(resourceId))
+    },
+    test("rotateCredential returns new secret and stores encrypted credential") {
+      val env = new Env
+      val rawCredential = Array.fill(32)(3.toByte)
+      val encryptedCredential = Array.fill(32)(4.toByte)
+
+      for
+        _ <- env.secureRandom.nextBytes.succeedsWith(rawCredential)
+        _ <- env.securityService.encryptAes256.succeedsWith(encryptedCredential)
+        _ <- env.repository.rotateCredential.succeedsWith(())
+        result <- env.service.rotateCredential(resourceId)
+        rotateCall = env.repository.rotateCredential.calls.head
+      yield assertTrue(
+        result == Secret(rawCredential),
+        rotateCall._1 == resourceId,
+        rotateCall._2.sameElements(encryptedCredential),
+      )
+    },
+    test("deletePreviousCredential delegates id to repository") {
+      val env = new Env
+
+      for
+        _ <- env.repository.deletePreviousCredential.succeedsWith(())
+        _ <- env.service.deletePreviousCredential(resourceId)
+      yield assertTrue(env.repository.deletePreviousCredential.calls == List(resourceId))
     },
     test("sync removes cached resource on delete event") {
       val env = new Env(Vector(resource, otherTenantResource))

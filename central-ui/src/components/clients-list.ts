@@ -921,7 +921,6 @@ export class VersolaClientsList extends LitElement {
           .availableScopes=${this.availableScopes}
           .availablePermissions=${this.availablePermissions}
           .availableResources=${this.availableResources}
-          .availableClientIds=${this.clients.map(client => client.id)}
           .availableThemes=${this.availableThemes}
           .availableOtpTemplates=${this.availableOtpTemplates}
           .canManageSecrets=${this.canManageSecrets}
@@ -1042,17 +1041,6 @@ export class VersolaClientsList extends LitElement {
                           `)}
                         </div>
                       </div>
-
-                      ${client.externalAudience.length > 0 ? html`
-                        <div class="detail-section">
-                          <div class="detail-label">External Audience</div>
-                          <div class="uri-list">
-                            ${client.externalAudience.map(aud => html`
-                              <div class="uri-item">${aud}</div>
-                            `)}
-                          </div>
-                        </div>
-                      ` : ''}
 
                       <div class="detail-section">
                         <div class="detail-label">OAuth Scopes</div>

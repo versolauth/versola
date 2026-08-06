@@ -5,7 +5,7 @@ import com.augustnagro.magnum.magzio.TransactorZIO
 import com.augustnagro.magnum.pg.{PgCodec, SqlArrayCodec}
 import versola.auth.model.OtpCode
 import versola.oauth.authorize.model.ResponseTypeEntry
-import versola.oauth.client.model.{Acr, AuthFlow, ClientId, PassedAuthFactor, PassedFactorRecord, ScopeToken}
+import versola.oauth.client.model.{Acr, AuthFlow, ClientId, PassedAuthFactor, PassedFactorRecord, ResourceId, ScopeToken}
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, Nonce, State}
 import versola.oauth.userinfo.model.RequestedClaims
@@ -41,6 +41,8 @@ class PostgresConversationRepository(xa: TransactorZIO) extends ConversationRepo
   given DbCodec[ClientId] = DbCodec.StringCodec.biMap(ClientId(_), identity[String])
   given DbCodec[ScopeToken] = DbCodec.StringCodec.biMap(ScopeToken(_), identity[String])
   given DbCodec[List[String]] = PgCodec.SeqCodec[String].biMap(_.toList, _.toSeq)
+  given listResourceIdDbCodec: DbCodec[List[ResourceId]] =
+    PgCodec.SeqCodec[String].biMap(_.map(ResourceId(_)).toList, _.map(identity[String]))
   given DbCodec[CodeChallengeMethod] = DbCodec.StringCodec.biMap(CodeChallengeMethod.valueOf, _.toString)
   given DbCodec[CodeChallenge] = DbCodec.StringCodec.biMap(CodeChallenge(_), identity[String])
   given DbCodec[State] = DbCodec.StringCodec.biMap(State(_), identity[String])
@@ -65,7 +67,7 @@ class PostgresConversationRepository(xa: TransactorZIO) extends ConversationRepo
   override def find(authId: AuthId): Task[Option[ConversationRecord]] =
     Clock.instant.flatMap: now =>
       xa.connectMeasured("find-conversation") {
-        sql"""select client_id, redirect_uri, scope, code_challenge, code_challenge_method, state, user_id, credential, step, requested_claims, ui_locales, nonce, response_type, user_email, user_phone, user_login, user_claims, auth_flow, user_agent, version, amr, needs_password_change, target_acr, prior_session_id, expires_at
+        sql"""select client_id, redirect_uri, scope, code_challenge, code_challenge_method, state, user_id, credential, step, requested_claims, ui_locales, nonce, response_type, user_email, user_phone, user_login, user_claims, auth_flow, user_agent, version, amr, needs_password_change, target_acr, prior_session_id, resources, expires_at
               from auth_conversations
               where id = $authId"""
           .query[(ConversationRecord, Instant)]
@@ -104,6 +106,7 @@ class PostgresConversationRepository(xa: TransactorZIO) extends ConversationRepo
                 needs_password_change,
                 target_acr,
                 prior_session_id,
+                resources,
                 expires_at
             ) values (
                 $authId,
@@ -131,6 +134,7 @@ class PostgresConversationRepository(xa: TransactorZIO) extends ConversationRepo
                 ${record.needsPasswordChange},
                 ${record.targetAcr},
                 ${record.priorSessionId},
+                ${record.resources},
                 ${authId.createdAt.plusSeconds(ttl.toSeconds)})
          """
         .update.run()

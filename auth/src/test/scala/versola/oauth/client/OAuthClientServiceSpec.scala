@@ -1,6 +1,6 @@
 package versola.oauth.client
 
-import versola.oauth.client.model.{Acr, ChallengeSettingsRecord, Claim, ClaimRecord, ClientId, FormRecord, Locales, OAuthClientRecord, OtpTemplateRecord, PassedAuthFactor, PasskeySettings, RateLimit, ScopeRecord, ScopeToken, SubmissionLimits, SystemSettingsRecord, TenantId, ThemeRecord}
+import versola.oauth.client.model.{Acr, ChallengeSettingsRecord, Claim, ClaimRecord, ClientId, FormRecord, Locales, OAuthClientRecord, OtpTemplateRecord, PassedAuthFactor, PasskeySettings, RateLimit, ResourceRecord, ScopeRecord, ScopeToken, SubmissionLimits, SystemSettingsRecord, TenantId, ThemeRecord}
 import versola.oauth.conversation.otp.model.OtpTemplate
 import versola.oauth.metadata.MetadataSyncClient
 import versola.util.*
@@ -25,7 +25,6 @@ object OAuthClientServiceSpec extends UnitSpecBase:
     clientName = "Private 1",
     redirectUris = NonEmptySet("https://example.com/callback"),
     scope = Set(ScopeToken("read"), ScopeToken("write")),
-    externalAudience = Nil,
     secret = Some(testSecret),
     previousSecret = None,
     accessTokenTtl = 10.minutes,
@@ -43,7 +42,6 @@ object OAuthClientServiceSpec extends UnitSpecBase:
     clientName = "Private 2",
     redirectUris = NonEmptySet("https://example2.com/callback"),
     scope = Set(ScopeToken("read")),
-    externalAudience = Nil,
     secret = Some(testSecret),
     previousSecret = Some(previousClientSecret),
     accessTokenTtl = 10.minutes,
@@ -61,7 +59,6 @@ object OAuthClientServiceSpec extends UnitSpecBase:
     clientName = "Public",
     redirectUris = NonEmptySet("https://public.example.com/callback"),
     scope = Set(ScopeToken("read")),
-    externalAudience = Nil,
     secret = None,
     previousSecret = None,
     accessTokenTtl = 10.minutes,
@@ -95,6 +92,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
       val challengeSettingsCache: ReloadingCache[Vector[ChallengeSettingsRecord]],
       val systemSettingsCache: ReloadingCache[SystemSettingsRecord],
       val metadataCache: ReloadingCache[Json.Obj],
+      val resourceCache: ReloadingCache[Vector[ResourceRecord]],
   ):
     val clientSync = stub[OAuthClientSyncClient]
     val scopeSync = stub[OAuthScopeSyncClient]
@@ -105,6 +103,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
     val challengeSettingsSync = stub[ChallengeSettingsSyncClient]
     val systemSettingsSync = stub[SystemSettingsSyncClient]
     val metadataSync = stub[MetadataSyncClient]
+    val resourceSync = stub[ResourceSyncClient]
     val service: OAuthConfigurationService =
       OAuthConfigurationService.Impl(
         clientCache,
@@ -125,6 +124,8 @@ object OAuthClientServiceSpec extends UnitSpecBase:
         systemSettingsSync,
         metadataCache,
         metadataSync,
+        resourceCache,
+        resourceSync,
       )
 
   private def makeEnv(
@@ -136,6 +137,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
       otpTemplates: Vector[OtpTemplateRecord] = Vector.empty,
       challengeSettings: Vector[ChallengeSettingsRecord] = Vector.empty,
       systemSettings: SystemSettingsRecord = SystemSettingsRecord.default,
+      resources: Vector[ResourceRecord] = Vector.empty,
   ) =
     for
       clientRef <- Ref.make(clients)
@@ -147,6 +149,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
       challengeSettingsRef <- Ref.make(challengeSettings)
       systemSettingsRef <- Ref.make(systemSettings)
       metadataRef <- Ref.make(Json.Obj())
+      resourceRef <- Ref.make(resources)
     yield Env(
       clientCache = ReloadingCache(clientRef),
       scopeCache = ReloadingCache(scopeRef),
@@ -157,6 +160,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
       challengeSettingsCache = ReloadingCache(challengeSettingsRef),
       systemSettingsCache = ReloadingCache(systemSettingsRef),
       metadataCache = ReloadingCache(metadataRef),
+      resourceCache = ReloadingCache(resourceRef),
     )
 
   val spec = suite("OAuthConfigurationService")(
@@ -370,6 +374,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
         _ <- env.challengeSettingsSync.getAll.succeedsWith(Vector.empty)
         _ <- env.systemSettingsSync.getAll.succeedsWith(SystemSettingsRecord.default)
         _ <- env.metadataSync.getAll.succeedsWith(Json.Obj("a" -> Json.Num(1)))
+        _ <- env.resourceSync.getAll.succeedsWith(Vector.empty)
 
         _ <- env.service.syncConfiguration
 

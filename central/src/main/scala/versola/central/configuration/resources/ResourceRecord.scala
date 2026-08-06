@@ -2,13 +2,19 @@ package versola.central.configuration.resources
 
 import versola.central.configuration.tenants.TenantId
 import versola.central.configuration.{InjectRule, ResourceUri}
+import versola.util.Secret
 
 case class ResourceRecord(
     tenantId: TenantId,
     resourceId: ResourceId,
     resource: ResourceUri,
-    endpoints: Vector[ResourceEndpointRecord]
-)
+    endpoints: Vector[ResourceEndpointRecord],
+    credential: Option[Secret] = None,
+    previousCredential: Option[Secret] = None,
+):
+  /** A resource with a credential is internal (edge authenticates to it with the
+    * credential); one without is public (edge forwards the caller's own token). */
+  def isInternal: Boolean = credential.nonEmpty
 
 case class ResourceEndpointRecord(
     id: ResourceEndpointId,

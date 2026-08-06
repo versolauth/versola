@@ -3,7 +3,7 @@ package versola.oauth.session
 import com.augustnagro.magnum.*
 import com.augustnagro.magnum.magzio.TransactorZIO
 import com.augustnagro.magnum.pg.{PgCodec, SqlArrayCodec}
-import versola.oauth.client.model.{Acr, AuthMethodRef, ClientId, PassedAuthFactor, PassedFactorRecord, ScopeToken}
+import versola.oauth.client.model.{Acr, AuthMethodRef, ClientId, PassedAuthFactor, PassedFactorRecord, ResourceId, ScopeToken}
 import versola.oauth.model.{AccessToken, Nonce, RefreshToken}
 import versola.oauth.session.model.{ClientEntry, PriorSession, PublicSessionId, RefreshAlreadyExchanged, RefreshTokenRecord, SessionId, SessionRecord, UserAgentInfo}
 import versola.oauth.userinfo.model.RequestedClaims
@@ -42,6 +42,8 @@ class PostgresSessionRepository(xa: TransactorZIO)
   given listStringDbCodec: DbCodec[List[String]]     = PgCodec.SeqCodec[String].biMap(_.toList, _.toSeq)
   given listClientIdDbCodec: DbCodec[List[ClientId]] =
     PgCodec.SeqCodec[String].biMap(_.map(ClientId(_)).toList, _.map(identity[String]))
+  given listResourceIdDbCodec: DbCodec[List[ResourceId]] =
+    PgCodec.SeqCodec[String].biMap(_.map(ResourceId(_)).toList, _.map(identity[String]))
   given DbCodec[Nonce]                         = DbCodec.StringCodec.biMap(Nonce(_), identity[String])
   given DbCodec[RequestedClaims]               = jsonCodec[RequestedClaims]
   given DbCodec[Set[AuthMethodRef]]            = jsonBCodec[Set[AuthMethodRef]]
@@ -207,7 +209,7 @@ class PostgresSessionRepository(xa: TransactorZIO)
           access_token,
           user_id,
           client_id,
-          external_audience,
+          resources,
           scope,
           issued_at,
           expires_at,
@@ -226,7 +228,7 @@ class PostgresSessionRepository(xa: TransactorZIO)
           ${record.accessToken},
           ${record.userId},
           ${record.clientId},
-          ${record.externalAudience},
+          ${record.resources},
           ${record.scope},
           ${record.issuedAt},
           ${record.expiresAt},
@@ -250,7 +252,7 @@ class PostgresSessionRepository(xa: TransactorZIO)
       result <- xa.connectMeasured("find-refresh-token"):
         sql"""
           SELECT session_id, public_session_id, access_token, user_id, client_id,
-                 external_audience, scope, issued_at,
+                 resources, scope, issued_at,
                  expires_at, requested_claims, ui_locales, nonce, previous_id,
                  amr, auth_time, acr
           FROM refresh_tokens

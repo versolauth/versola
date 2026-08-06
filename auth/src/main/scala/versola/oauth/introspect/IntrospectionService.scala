@@ -39,10 +39,7 @@ object IntrospectionService:
         credentials: ClientCredentials,
     ): IO[Throwable | IntrospectionError, IntrospectionResponse] =
       for
-        client <- authenticateClient(credentials)
-
-        _ <- ZIO.fail(IntrospectionError.Unauthenticated)
-          .when(!token.audience.contains(client.id))
+        _ <- authenticateClient(credentials)
       yield buildJwtIntrospectionResponse(token)
 
     private def buildJwtIntrospectionResponse(token: AccessTokenPayload): IntrospectionResponse =
@@ -56,7 +53,7 @@ object IntrospectionService:
         iat = Some(token.issuedAt.getEpochSecond),
         nbf = token.notBefore.map(_.getEpochSecond),
         sub = Some(token.subject),
-        aud = Some(token.audience),
+        aud = Option.when(token.audience.nonEmpty)(token.audience),
         iss = Some(token.issuer),
         jti = Some(token.id.encoded),
       )
@@ -96,7 +93,7 @@ object IntrospectionService:
             nbf = None,
             iss = Some(config.jwt.issuer),
             iat = Some(record.issuedAt.getEpochSecond),
-            aud = Some((record.clientId :: record.externalAudience).toVector),
+            aud = Option.when(record.resources.nonEmpty)(record.resources.toVector),
             jti = None,
           )
         case None =>

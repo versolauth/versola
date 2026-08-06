@@ -30,7 +30,6 @@ object AuthorizationPresetServiceSpec extends ZIOSpecDefault, ZIOStubs:
     clientName = "Web App",
     redirectUris = Set(RedirectUri("https://example.com/callback")),
     scope = Set(ScopeToken("openid"), ScopeToken("profile")),
-    externalAudience = Nil,
     secret = None,
     previousSecret = None,
     accessTokenTtl = 5.minutes,

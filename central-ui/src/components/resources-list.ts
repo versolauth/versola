@@ -1,14 +1,14 @@
 import { LitElement, css, html, type TemplateResult } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
-import { buttonStyles, cardStyles, formStyles, methodBadgeStyles, tableStyles } from '../styles/components';
+import { badgeStyles, buttonStyles, cardStyles, formStyles, methodBadgeStyles, tableStyles } from '../styles/components';
 import { celHighlightStyles } from '../styles/cel-highlight';
 import { theme } from '../styles/theme';
 import type { InjectRule, InjectTarget, Resource, ResourceEndpoint, ResourceEndpointId } from '../types';
-import { createResource, deleteResource, fetchChallengeSettings, getResources, updateResource } from '../utils/central-api';
+import { createResource, deletePreviousResourceCredential, deleteResource, fetchChallengeSettings, getResources, rotateResourceCredential, updateResource } from '../utils/central-api';
 import { renderHighlightedCel } from '../utils/cel-highlight';
 import { validateCel } from '../utils/cel-validator';
 import { confirmDestructiveAction } from '../utils/confirm-dialog';
-import { formatResourceLabel } from '../utils/helpers';
+import { copyToClipboard, formatResourceLabel } from '../utils/helpers';
 import { validateResourceUri } from '../utils/validators';
 import './cel-editor';
 import './content-header';
@@ -75,13 +75,16 @@ export class VersolaResourcesList extends LitElement {
   @state() private openInfoKey: string | null = null;
   @state() private resourceUri = '';
   @state() private resourceId = '';
+  @state() private resourceInternal = false;
   @state() private endpointDrafts: EditableResourceEndpoint[] = [];
+  @state() private createdCredential: { resourceId: string; credential: string; action: 'created' | 'rotated' } | null = null;
+  @state() private copyFeedback = '';
   private nextEndpointDraftId = 0;
   private handleDocumentClick = () => {
     this.openInfoKey = null;
   };
 
-  static styles = [theme, buttonStyles, cardStyles, formStyles, methodBadgeStyles, tableStyles, celHighlightStyles, css`
+  static styles = [theme, buttonStyles, cardStyles, formStyles, methodBadgeStyles, tableStyles, badgeStyles, celHighlightStyles, css`
     :host {
       display:block;
       --compact-field-max-width: 22.8rem;
@@ -110,6 +113,19 @@ export class VersolaResourcesList extends LitElement {
     .resource-id-badge { display:inline-flex; align-items:center; min-height:1.5rem; padding:0 .6rem; border-radius:999px; font-size:.75rem; font-weight:600; letter-spacing:.01em; background:rgba(88, 166, 255, .16); color:#7cc4ff; border:1px solid rgba(88, 166, 255, .28); flex:none; }
     .input-with-info { display:flex; align-items:center; gap:.5rem; }
     .input-with-info > .form-input { flex:1; min-width:0; }
+    .cred-mode-cards { display:grid; grid-template-columns:repeat(auto-fill, minmax(160px, 1fr)); gap:.75rem; margin-top:.5rem; }
+    .cred-mode-card { display:flex; align-items:center; justify-content:center; text-align:center; padding:.625rem .75rem; border:1px solid var(--border-dark); border-radius:var(--radius-sm); background:transparent; color:var(--text-primary); font-size:.875rem; font-family:var(--font-mono); cursor:pointer; transition:all var(--transition-fast); }
+    .cred-mode-card:hover { border-color:var(--accent); background:rgba(88, 166, 255, .05); }
+    .cred-mode-card.selected { border-color:var(--accent); background:rgba(88, 166, 255, .12); }
+    .secret-banner { margin-bottom:var(--spacing-lg); border-color:rgba(63, 185, 80, .35); background:linear-gradient(180deg, rgba(63, 185, 80, .08), rgba(63, 185, 80, .04)); }
+    .secret-banner-header { display:flex; justify-content:space-between; align-items:flex-start; gap:var(--spacing-md); margin-bottom:var(--spacing-md); }
+    .secret-banner-title { margin:0; font-size:1rem; color:var(--text-primary); }
+    .secret-banner-text { margin:.35rem 0 0; color:var(--text-secondary); font-size:.875rem; }
+    .secret-value { margin:0; padding:.875rem 1rem; background:rgba(0, 0, 0, .25); border:1px solid var(--border-dark); border-radius:var(--radius-md); color:var(--text-primary); font-family:var(--font-mono); font-size:.875rem; line-height:1.5; word-break:break-all; }
+    .secret-banner-actions { display:flex; gap:.75rem; align-items:center; margin-top:var(--spacing-md); }
+    .copy-feedback { font-size:.8125rem; color:var(--success, #3fb950); }
+    .btn-ghost { background:transparent; color:var(--text-secondary); border-color:var(--border-dark); }
+    .btn-ghost:not(:disabled):hover { color:var(--text-primary); border-color:var(--text-secondary); }
     .endpoint-list { display:grid; gap:.75rem; }
     .endpoint-row { display:flex; align-items:center; justify-content:space-between; gap:.75rem; flex-wrap:wrap; padding:.875rem 1rem; border:1px solid var(--border-dark); border-radius:var(--radius-md); background:rgba(255,255,255,.02); }
     .endpoint-main { display:flex; align-items:center; gap:.75rem; flex-wrap:wrap; min-width:0; }
@@ -286,6 +302,7 @@ export class VersolaResourcesList extends LitElement {
 
   private resetForms() {
     this.formMode = 'none'; this.activeResourceId = null; this.resourceUri = ''; this.resourceId = '';
+    this.resourceInternal = false;
     this.endpointDrafts = [];
     this.expandedEditableEndpoints = new Set();
   }
@@ -296,6 +313,7 @@ export class VersolaResourcesList extends LitElement {
     this.activeResourceId = null;
     this.resourceUri = 'https://';
     this.resourceId = '';
+    this.resourceInternal = false;
     this.endpointDrafts = [];
     this.expandedEditableEndpoints = new Set();
   }
@@ -306,6 +324,7 @@ export class VersolaResourcesList extends LitElement {
     this.activeResourceId = resource.resourceId;
     this.resourceUri = resource.resource;
     this.resourceId = resource.resourceId;
+    this.resourceInternal = resource.hasCredential;
     this.endpointDrafts = resource.endpoints.map(endpoint => this.toEditableEndpoint(endpoint));
     this.expandedEditableEndpoints = new Set(); // Start with all cards collapsed
     this.expandedResources = new Set([...this.expandedResources, resource.resourceId]);
@@ -380,20 +399,30 @@ export class VersolaResourcesList extends LitElement {
     try {
       let savedResourceId: string | null = null;
       let savedEndpoints: PersistedResourceEndpointPayload[] = [];
+      let hasCredential = this.resourceInternal;
+      let hasPreviousCredential = false;
+      let credential: string | null = null;
       if (this.formMode === 'edit-resource' && this.activeResourceId !== null) {
         const activeResource = this.resources.find(candidate => candidate.resourceId === this.activeResourceId);
         if (!activeResource) throw new Error('Resource not found in local state');
         savedResourceId = this.activeResourceId;
         savedEndpoints = await updateResource(savedResourceId, activeResource.endpoints, resource, endpointPayloads);
+        hasCredential = activeResource.hasCredential;
+        hasPreviousCredential = activeResource.hasPreviousCredential;
       } else {
-        const createdResource = await createResource(this.tenantId, resourceId, resource, endpointPayloads);
+        const createdResource = await createResource(this.tenantId, resourceId, resource, endpointPayloads, this.resourceInternal);
         savedResourceId = createdResource.resourceId;
         savedEndpoints = createdResource.endpoints;
+        credential = createdResource.credential;
       }
 
       if (savedResourceId !== null) {
-        this.upsertResource(this.buildSavedResource(savedResourceId, resource, savedEndpoints));
+        this.upsertResource(this.buildSavedResource(savedResourceId, resource, savedEndpoints, hasCredential, hasPreviousCredential));
         this.expandedResources = new Set([...this.expandedResources, savedResourceId]);
+        if (credential) {
+          this.createdCredential = { resourceId: savedResourceId, credential, action: 'created' };
+          this.copyFeedback = '';
+        }
       }
 
       this.resetForms();
@@ -469,6 +498,54 @@ export class VersolaResourcesList extends LitElement {
     }
   }
 
+  private updateResourceCredentialState(resourceId: string, hasCredential: boolean, hasPreviousCredential: boolean) {
+    this.resources = this.resources.map(resource =>
+      resource.resourceId === resourceId ? { ...resource, hasCredential, hasPreviousCredential } : resource,
+    );
+  }
+
+  private async handleRotateCredential(resource: Resource) {
+    this.error = '';
+    try {
+      const credential = await rotateResourceCredential(resource.resourceId);
+      this.updateResourceCredentialState(resource.resourceId, true, true);
+      this.createdCredential = { resourceId: resource.resourceId, credential, action: 'rotated' };
+      this.copyFeedback = '';
+    } catch (error) {
+      this.error = error instanceof Error ? error.message : 'Failed to rotate resource credential';
+    }
+  }
+
+  private async handleDeletePreviousCredential(resource: Resource) {
+    const confirmed = await confirmDestructiveAction({
+      title: 'Delete old credential',
+      messagePrefix: 'Delete the old credential for ',
+      messageSubject: resource.resourceId,
+      messageSuffix: '? This action cannot be undone.',
+      confirmLabel: 'Delete',
+    });
+    if (!confirmed) return;
+
+    this.error = '';
+    try {
+      await deletePreviousResourceCredential(resource.resourceId);
+      this.updateResourceCredentialState(resource.resourceId, true, false);
+    } catch (error) {
+      this.error = error instanceof Error ? error.message : 'Failed to delete old resource credential';
+    }
+  }
+
+  private dismissCreatedCredential() {
+    this.createdCredential = null;
+    this.copyFeedback = '';
+  }
+
+  private async handleCopyCredential() {
+    if (!this.createdCredential) return;
+    const copied = await copyToClipboard(this.createdCredential.credential);
+    this.copyFeedback = copied ? 'Credential copied to clipboard.' : 'Could not copy credential.';
+  }
+
   private get filteredResources(): Resource[] {
     const query = this.searchQuery.trim().toLowerCase();
     if (!query) return this.resources;
@@ -493,7 +570,13 @@ export class VersolaResourcesList extends LitElement {
     this.expandedEndpoints = new Set([...this.expandedEndpoints].filter(id => validEndpointIds.has(id)));
   }
 
-  private buildSavedResource(resourceId: string, resource: string, endpoints: PersistedResourceEndpointPayload[]): Resource {
+  private buildSavedResource(
+    resourceId: string,
+    resource: string,
+    endpoints: PersistedResourceEndpointPayload[],
+    hasCredential: boolean,
+    hasPreviousCredential: boolean,
+  ): Resource {
     return {
       resourceId,
       resource,
@@ -508,6 +591,8 @@ export class VersolaResourcesList extends LitElement {
         stepUpAcr: endpoint.stepUpAcr ?? undefined,
         maxAge: endpoint.maxAge ?? undefined,
       })),
+      hasCredential,
+      hasPreviousCredential,
     };
   }
 
@@ -1109,6 +1194,37 @@ export class VersolaResourcesList extends LitElement {
                   <input class="form-input compact-input ${this.isResourceUriInvalid ? 'input-error' : ''}" type="url" aria-label="Absolute resource URI" .value=${this.resourceUri} @input=${(e: Event) => this.resourceUri = (e.target as HTMLInputElement).value} placeholder="https://api.example.com" ?disabled=${this.saving} required />
             </div>
           </div>
+          ${!isEditResource ? html`
+            <div class="form-group">
+              <div class="editor-section-title-row">
+                <label class="form-label" style="margin-bottom: 0;">Resource Type</label>
+                ${this.renderOptionInfo(
+                  'resource-type-info',
+                  'Resource Type',
+                  html`
+                    <p><strong>Internal</strong> resources get a generated credential. Edge authenticates to them on the caller's behalf using that credential (HTTP Basic auth) instead of forwarding the caller's own access token.</p>
+                    <p><strong>Public</strong> resources have no credential. Edge forwards the caller's original access token as-is, so the resource itself is responsible for validating it.</p>
+                  `,
+                  'Resource type info',
+                )}
+              </div>
+              <div class="cred-mode-cards">
+                <button
+                  type="button"
+                  class=${`cred-mode-card ${!this.resourceInternal ? 'selected' : ''}`}
+                  ?disabled=${this.saving}
+                  @click=${() => this.resourceInternal = false}
+                >public</button>
+                <button
+                  type="button"
+                  class=${`cred-mode-card ${this.resourceInternal ? 'selected' : ''}`}
+                  ?disabled=${this.saving}
+                  @click=${() => this.resourceInternal = true}
+                >internal</button>
+              </div>
+              <div class="hint">Choose whether edge authenticates to this resource with its own credential (internal) or forwards the caller's token (public).</div>
+            </div>
+          ` : ''}
           <div class="section-header">
             <h2 class="section-title">Endpoints</h2>
             <button type="button" class="btn btn-secondary btn-sm" ?disabled=${this.saving} @click=${() => this.startCreateEndpoint()}>Add endpoint</button>
@@ -1137,12 +1253,37 @@ export class VersolaResourcesList extends LitElement {
       `;
     }
 
+    const credentialTitle = this.createdCredential?.action === 'rotated'
+      ? `Credential rotated: ${this.createdCredential.resourceId}`
+      : this.createdCredential
+        ? `Resource created: ${this.createdCredential.resourceId}`
+        : '';
+    const credentialText = this.createdCredential?.action === 'rotated'
+      ? 'Copy the new resource credential now. It may not be shown again.'
+      : 'Copy this credential now. It may not be shown again.';
+
     return html`
       <content-header title="Resources">
         ${this.resources.length > 0 && this.canManage ? html`
           <button slot="actions" class="btn btn-primary" @click=${() => this.openCreateResourceForm()}>+ Create Resource</button>
         ` : ''}
       </content-header>
+      ${this.createdCredential ? html`
+        <div class="card secret-banner">
+          <div class="secret-banner-header">
+            <div>
+              <h3 class="secret-banner-title">${credentialTitle}</h3>
+              <p class="secret-banner-text">${credentialText}</p>
+            </div>
+            <button class="btn btn-ghost btn-sm" @click=${this.dismissCreatedCredential}>Dismiss</button>
+          </div>
+          <pre class="secret-value">${this.createdCredential.credential}</pre>
+          <div class="secret-banner-actions">
+            <button class="btn btn-primary btn-sm" @click=${this.handleCopyCredential}>Copy credential</button>
+            ${this.copyFeedback ? html`<span class="copy-feedback">${this.copyFeedback}</span>` : ''}
+          </div>
+        </div>
+      ` : ''}
       ${this.loading ? html`<versola-loading-cards .count=${3}></versola-loading-cards>`
       : this.error ? html`
         <versola-error-card heading="Could not load resources" .message=${this.error} @retry=${() => this.loadData()}></versola-error-card>
@@ -1173,9 +1314,17 @@ export class VersolaResourcesList extends LitElement {
               <div class="resource-label-card">
                 <div class="resource-label">${formatResourceLabel(resource.resource)}</div>
                 <span class="resource-id-badge" title="Resource ID">${resource.resourceId}</span>
+                ${resource.hasCredential ? html`<span class="badge badge-success">Internal</span>` : ''}
+                ${resource.hasPreviousCredential ? html`<span class="badge badge-warning">Credential Rotation</span>` : ''}
               </div>
               ${this.canManage ? html`
               <div class="resource-actions" @click=${(e: Event) => e.stopPropagation()}>
+                ${resource.hasCredential ? html`
+                  <button class="btn btn-secondary btn-sm" @click=${() => this.handleRotateCredential(resource)} title="Rotate credential">Rotate credential</button>
+                  ${resource.hasPreviousCredential ? html`
+                    <button class="btn btn-danger-secondary btn-sm" @click=${() => this.handleDeletePreviousCredential(resource)} title="Delete old credential">Delete old credential</button>
+                  ` : ''}
+                ` : ''}
                 <button class="icon-action" @click=${() => this.openEditResourceForm(resource)} title="Edit resource" aria-label=${`Edit resource ${resource.resourceId}`}>✎</button>
                 <button class="icon-action danger" @click=${() => this.removeResource(resource)} title="Delete resource" aria-label=${`Delete resource ${resource.resourceId}`}>✕</button>
               </div>` : ''}

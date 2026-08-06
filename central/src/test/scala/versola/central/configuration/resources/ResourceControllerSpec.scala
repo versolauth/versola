@@ -7,6 +7,7 @@ import versola.central.configuration.clients.OAuthClientService
 import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.tenants.TenantId
 import versola.central.configuration.*
+import versola.util.SecurityService
 import versola.util.http.Observability
 import zio.*
 import zio.http.*
@@ -38,6 +39,7 @@ object ResourceControllerSpec extends ZIOSpecDefault, ZIOStubs:
       CreateResourceEndpointRequest(usersListEndpointId, "/users", "GET", true, allow, inject, stepUpCondition = None, stepUpAcr = None, maxAge = None),
       CreateResourceEndpointRequest(usersCreateEndpointId, "/users", "POST", false, denyAware, Vector.empty, stepUpCondition = None, stepUpAcr = None, maxAge = None),
     ),
+    internal = false,
   )
 
   private val createRequestBodyWithNumericRule = CreateResourceRequest(
@@ -47,6 +49,7 @@ object ResourceControllerSpec extends ZIOSpecDefault, ZIOStubs:
     endpoints = Vector(
       CreateResourceEndpointRequest(usersListEndpointId, "/users", "GET", true, numericAllow, Vector.empty, stepUpCondition = None, stepUpAcr = None, maxAge = None)
     ),
+    internal = false,
   )
 
   private val updateRequestBody = UpdateResourceRequest(
@@ -67,6 +70,8 @@ object ResourceControllerSpec extends ZIOSpecDefault, ZIOStubs:
         ResourceEndpointRecord(usersListEndpointId, "/users", "GET", true, allow, inject, None, None, None),
         ResourceEndpointRecord(usersCreateEndpointId, "/users", "POST", false, denyAware, Vector.empty, None, None, None),
       ),
+      credential = None,
+      previousCredential = None,
     )
   )
 
@@ -74,6 +79,17 @@ object ResourceControllerSpec extends ZIOSpecDefault, ZIOStubs:
 
   private val tracingLayer: ULayer[Tracing] =
     ZLayer.make[Tracing](Tracing.live(logAnnotated = false), OpenTelemetry.contextZIO, ZLayer.succeed(api.OpenTelemetry.noop().getTracer("test")))
+
+  private val securityLayer: ULayer[SecurityService] =
+    ZLayer.succeed(new SecurityService:
+      override def encryptAes256(data: Array[Byte], key: javax.crypto.SecretKey) = ZIO.succeed(data)
+      override def decryptAes256(data: Array[Byte], key: javax.crypto.SecretKey) = ZIO.succeed(data)
+      override def encryptRsa(data: Array[Byte], key: java.security.PublicKey) = ZIO.dieMessage("Unused in test")
+      override def decryptRsa(data: Array[Byte], key: java.security.PrivateKey) = ZIO.dieMessage("Unused in test")
+      override def mac(secret: versola.util.Secret, key: Array[Byte]) = ZIO.dieMessage("Unused in test")
+      override def hashPassword(password: versola.util.Secret, salt: versola.util.Salt, pepper: versola.util.Secret.Bytes16) = ZIO.dieMessage("Unused in test")
+      override def generateRsaKeyPair = ZIO.dieMessage("Unused in test")
+    )
 
   private def controllerTestCase(
       description: String,
@@ -89,10 +105,11 @@ object ResourceControllerSpec extends ZIOSpecDefault, ZIOStubs:
         edgeService = stub[EdgeService]
         oauthClientService = stub[OAuthClientService]
         tracing <- tracingLayer.build
+        security <- securityLayer.build
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             ResourceController.routes.provideEnvironment(
-              ZEnvironment[ResourceService](service) ++ ZEnvironment(config) ++ tracing ++
+              ZEnvironment[ResourceService](service) ++ ZEnvironment(config) ++ tracing ++ security ++
                 ZEnvironment[EdgeService](edgeService) ++ ZEnvironment[OAuthClientService](oauthClientService)
             )
           )
@@ -134,6 +151,8 @@ object ResourceControllerSpec extends ZIOSpecDefault, ZIOStubs:
                   ResourceEndpointResponse(usersListEndpointId, "GET", "/users", true, allow, inject, None, None, None),
                   ResourceEndpointResponse(usersCreateEndpointId, "POST", "/users", false, denyAware, Vector.empty, None, None, None),
                 ),
+                internal = false,
+                credentialRotation = false,
               )
             )
           ),
@@ -159,11 +178,11 @@ object ResourceControllerSpec extends ZIOSpecDefault, ZIOStubs:
         body = Body.fromString(createRequestBody.toJson),
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.Created,
-      setup = service => service.createResource.succeedsWith(Right(resourceId)),
+      setup = service => service.createResource.succeedsWith(Right((resourceId, None))),
       verify = (response, service) =>
         for payload <- decodeJsonBody[CreateResourceResponse](response)
         yield assertTrue(
-          payload == CreateResourceResponse(resourceId),
+          payload == CreateResourceResponse(resourceId, None),
           service.createResource.calls == List(createRequestBody),
         ),
     ),
@@ -175,11 +194,11 @@ object ResourceControllerSpec extends ZIOSpecDefault, ZIOStubs:
         body = Body.fromString(createRequestBodyWithNumericRule.toJson),
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.Created,
-      setup = service => service.createResource.succeedsWith(Right(resourceId)),
+      setup = service => service.createResource.succeedsWith(Right((resourceId, None))),
       verify = (response, service) =>
         for payload <- decodeJsonBody[CreateResourceResponse](response)
         yield assertTrue(
-          payload == CreateResourceResponse(resourceId),
+          payload == CreateResourceResponse(resourceId, None),
           service.createResource.calls == List(createRequestBodyWithNumericRule),
         ),
     ),

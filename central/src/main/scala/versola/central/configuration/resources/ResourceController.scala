@@ -4,21 +4,25 @@ import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
 import versola.central.configuration.clients.OAuthClientService
 import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.tenants.TenantId
-import versola.central.configuration.{CreateResourceRequest, CreateResourceResponse, GetAllResourcesResponse, GetResourcesSyncResponse, ResourceEndpointResponse, ResourceEndpointSyncResponse, ResourceResponse, ResourceSyncResponse, UpdateResourceRequest}
-import versola.util.http.Controller
+import versola.central.configuration.{CreateResourceRequest, CreateResourceResponse, GetAllResourcesResponse, GetResourcesRegistryResponse, GetResourcesSyncResponse, ResourceEndpointResponse, ResourceEndpointSyncResponse, ResourceRegistryEntry, ResourceResponse, RotateResourceCredentialResponse, ResourceSyncResponse, UpdateResourceRequest}
+import versola.util.http.{Controller, Unauthorized}
+import versola.util.{Base64Url, Secret, SecurityService}
 import zio.http.{Method, Request, Response, Routes, Status, handler}
 import zio.json.{DecoderOps, EncoderOps, JsonDecoder}
 import zio.ZIO
 
 object ResourceController extends Controller:
-  type Env = Tracing & ResourceService & OAuthClientService & CentralConfig & EdgeService
+  type Env = Tracing & ResourceService & OAuthClientService & CentralConfig & EdgeService & SecurityService
 
   def routes: Routes[Env, Throwable] = Routes(
     getAllResourcesEndpoint,
     createResourceRoute,
     updateResourceRoute,
+    rotateCredentialEndpoint,
+    deletePreviousCredentialEndpoint,
     deleteResourceRoute,
     syncResourcesEndpoint,
+    resourcesRegistryEndpoint,
   )
 
   val getAllResourcesEndpoint =
@@ -41,7 +45,8 @@ object ResourceController extends Controller:
         body <- decodeJsonBody[CreateResourceRequest](request)
         result <- service.createResource(body)
       yield result match
-        case Right(resourceId) => Response.json(CreateResourceResponse(resourceId).toJson).status(Status.Created)
+        case Right((resourceId, credential)) =>
+          Response.json(CreateResourceResponse(resourceId, credential.map(Base64Url.encode)).toJson).status(Status.Created)
         case Left(error) => Response.json(error.toJson).status(Status.BadRequest)
     }
 
@@ -55,6 +60,27 @@ object ResourceController extends Controller:
       yield result match
         case Right(_) => Response.status(Status.NoContent)
         case Left(error) => Response.json(error.toJson).status(Status.BadRequest)
+    }
+
+  val rotateCredentialEndpoint =
+    Method.POST / "configuration" / "resources" / "rotate-credential" -> handler { (request: Request) =>
+      for
+        _ <- authorizeBasic(request)
+        service <- ZIO.service[ResourceService]
+        resourceId <- request.url.queryZIO[ResourceId]("resourceId")
+        newCredential <- service.rotateCredential(resourceId)
+        response = RotateResourceCredentialResponse(Base64Url.encode(newCredential))
+      yield Response.json(response.toJson)
+    }
+
+  val deletePreviousCredentialEndpoint =
+    Method.DELETE / "configuration" / "resources" / "previous-credential" -> handler { (request: Request) =>
+      for
+        _ <- authorizeBasic(request)
+        service <- ZIO.service[ResourceService]
+        resourceId <- request.url.queryZIO[ResourceId]("resourceId")
+        _ <- service.deletePreviousCredential(resourceId)
+      yield Response.status(Status.NoContent)
     }
 
   val deleteResourceRoute =
@@ -71,9 +97,37 @@ object ResourceController extends Controller:
     Method.GET / "configuration" / "resources" / "sync" -> handler { (request: Request) =>
       for
         service <- ZIO.service[ResourceService]
+        centralConfig <- ZIO.service[CentralConfig]
+        securityService <- ZIO.service[SecurityService]
+        edgeService <- ZIO.service[EdgeService]
         edgeId <- authorizeInternal(request)
+        transportEncrypt <- edgeId match
+          case Some(id) =>
+            edgeService.find(id).someOrFail(Unauthorized).map { edge =>
+              (credential: Secret) =>
+                securityService.encryptRsa(credential, edge.activeRsaPublicKey).map(Base64Url.encode)
+            }
+          case None =>
+            ZIO.succeed: (credential: Secret) =>
+              securityService.encryptAes256(credential, centralConfig.secretKey).map(Base64Url.encode)
         resources <- service.getResourcesForSync(edgeId)
-        response = GetResourcesSyncResponse(resources.map(toResourceSyncResponse))
+        encryptedResources <- ZIO.foreach(resources)(toResourceSyncResponse(_, transportEncrypt))
+        response = GetResourcesSyncResponse(encryptedResources)
+      yield Response.json(response.toJson)
+    }
+
+  /** Lightweight resource registry for auth's RFC 8707 `resource` parameter validation:
+    * only what's needed to resolve a requested resource URI to its id and tenant.
+    */
+  val resourcesRegistryEndpoint =
+    Method.GET / "configuration" / "resources" / "registry" -> handler { (request: Request) =>
+      for
+        service <- ZIO.service[ResourceService]
+        _ <- authorizeInternal(request)
+        resources <- service.getResourcesForSync(None)
+        response = GetResourcesRegistryResponse(resources.map { r =>
+          ResourceRegistryEntry(resourceId = r.resourceId, tenantId = r.tenantId, resource = r.resource)
+        })
       yield Response.json(response.toJson)
     }
 
@@ -100,24 +154,32 @@ object ResourceController extends Controller:
           maxAge = endpoint.maxAge,
         )
       },
+      internal = record.isInternal,
+      credentialRotation = record.previousCredential.nonEmpty,
     )
 
-  private def toResourceSyncResponse(record: ResourceRecord): ResourceSyncResponse =
-    ResourceSyncResponse(
-      resourceId = record.resourceId,
-      tenantId = record.tenantId,
-      resource = record.resource,
-      endpoints = record.endpoints.map { endpoint =>
-        ResourceEndpointSyncResponse(
-          id = endpoint.id,
-          method = endpoint.method,
-          path = endpoint.path,
-          fetchUserInfo = endpoint.fetchUserInfo,
-          allow = endpoint.allowExpression,
-          inject = endpoint.inject,
-          stepUpCondition = endpoint.stepUpCondition,
-          stepUpAcr = endpoint.stepUpAcr,
-          maxAge = endpoint.maxAge,
-        )
-      },
-    )
+  private def toResourceSyncResponse(
+      record: ResourceRecord,
+      transportEncrypt: Secret => zio.Task[String],
+  ): zio.Task[ResourceSyncResponse] =
+    ZIO.foreach(record.credential)(transportEncrypt).map { credential =>
+      ResourceSyncResponse(
+        resourceId = record.resourceId,
+        tenantId = record.tenantId,
+        resource = record.resource,
+        endpoints = record.endpoints.map { endpoint =>
+          ResourceEndpointSyncResponse(
+            id = endpoint.id,
+            method = endpoint.method,
+            path = endpoint.path,
+            fetchUserInfo = endpoint.fetchUserInfo,
+            allow = endpoint.allowExpression,
+            inject = endpoint.inject,
+            stepUpCondition = endpoint.stepUpCondition,
+            stepUpAcr = endpoint.stepUpAcr,
+            maxAge = endpoint.maxAge,
+          )
+        },
+        credential = credential,
+      )
+    }

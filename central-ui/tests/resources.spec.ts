@@ -10,6 +10,8 @@ const alphaApi = {
     { id: 101, method: 'GET', path: '/alpha/items', fetchUserInfo: false, allow: 'true', inject: [] },
     { id: 102, method: 'POST', path: '/alpha/items', fetchUserInfo: false, allow: 'true', inject: [] },
   ],
+  internal: false,
+  credentialRotation: false,
 };
 
 const reportsApi = {
@@ -86,6 +88,57 @@ test('creates a resource with endpoints', async ({ page }) => {
     inject: [],
   });
   expect(api.requests.filter(request => request.method === 'GET' && request.pathname === '/configuration/resources')).toHaveLength(1);
+});
+
+test('creates an internal resource and shows the generated credential banner', async ({ page }) => {
+  const api = await loadAdminApp(page, {
+    path: resourcesPath,
+    state: { resources: { 'tenant-alpha': [] } },
+  });
+
+  await page.getByRole('button', { name: '+ Create Resource', exact: true }).click();
+  await page.getByRole('textbox', { name: 'Resource ID' }).fill('service');
+  await page.getByLabel('Absolute resource URI').fill('https://service.example');
+  await page.getByRole('button', { name: 'internal', exact: true }).click();
+  await page.getByRole('button', { name: 'Create Resource', exact: true }).click();
+
+  const credentialBanner = page.locator('.secret-banner').first();
+  await expect(page.getByRole('heading', { name: 'Resource created: service', exact: true })).toBeVisible();
+  await expect(credentialBanner.locator('.secret-value')).toContainText('generated-service');
+
+  const created = resourceCard(page, 'service.example');
+  await expect(created).toContainText('Internal');
+
+  expect(findRequest(api.requests, 'POST', '/configuration/resources').body).toMatchObject({
+    resourceId: 'service',
+    resource: 'https://service.example',
+    internal: true,
+  });
+});
+
+test('rotates a resource credential and deletes the previous credential', async ({ page }) => {
+  const api = await loadAdminApp(page, {
+    path: resourcesPath,
+    state: { resources: { 'tenant-alpha': [{ ...alphaApi, internal: true }] } },
+  });
+
+  await resourceCard(page, 'alpha.example').getByRole('button', { name: 'Rotate credential', exact: true }).click();
+
+  expect(findRequest(api.requests, 'POST', '/configuration/resources/rotate-credential').searchParams).toEqual({
+    resourceId: 'alpha',
+  });
+
+  await expect(page.getByText('Credential Rotation')).toBeVisible();
+  await expect(page.locator('.secret-banner .secret-value')).toContainText('rotated-alpha');
+
+  await resourceCard(page, 'alpha.example').getByRole('button', { name: 'Delete old credential', exact: true }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Delete', exact: true }).click();
+
+  expect(findRequest(api.requests, 'DELETE', '/configuration/resources/previous-credential').searchParams).toEqual({
+    resourceId: 'alpha',
+  });
+
+  await expect(resourceCard(page, 'alpha.example')).not.toContainText('Credential Rotation');
 });
 
 test('shows resource validation errors before saving', async ({ page }) => {

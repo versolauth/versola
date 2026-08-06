@@ -18,7 +18,6 @@ object AuthorizationSpec extends ZIOSpecDefault, ZIOStubs:
     clientName = "central-admin",
     redirectUris = Set.empty,
     scope = Set.empty,
-    externalAudience = Nil,
     secret = Some(TestCentralConfig.edgeSecret),
     previousSecret = None,
     accessTokenTtl = 5.minutes,

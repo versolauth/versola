@@ -12,6 +12,7 @@ import versola.central.configuration.resources.{
   ResourceRepository,
 }
 import versola.central.configuration.tenants.TenantId
+import versola.util.Secret
 import versola.util.postgres.BasicCodecs
 import zio.json.JsonCodec
 import zio.{Task, ZLayer}
@@ -29,14 +30,14 @@ class PostgresResourceRepository(xa: TransactorZIO) extends ResourceRepository, 
 
   private def findResourceQuery(resourceId: ResourceId) =
     sql"""
-      SELECT tenant_id, resource_id, resource, endpoints FROM resources
+      SELECT tenant_id, resource_id, resource, endpoints, credential, previous_credential FROM resources
       WHERE resource_id = $resourceId
     """.query[ResourceRecord]
 
   override def getAll: Task[Vector[ResourceRecord]] =
     xa.connectMeasured("get-all-resources"):
       sql"""
-        SELECT tenant_id, resource_id, resource, endpoints FROM resources
+        SELECT tenant_id, resource_id, resource, endpoints, credential, previous_credential FROM resources
       """.query[ResourceRecord].run()
 
   override def findResource(
@@ -50,11 +51,12 @@ class PostgresResourceRepository(xa: TransactorZIO) extends ResourceRepository, 
       resourceId: ResourceId,
       resource: ResourceUri,
       endpoints: Vector[ResourceEndpointRecord],
+      credential: Option[Array[Byte]],
   ): Task[Unit] =
     xa.connectMeasured("create-resource"):
       sql"""
-        INSERT INTO resources (resource_id, tenant_id, resource, endpoints)
-        VALUES ($resourceId, $tenantId, $resource, $endpoints)
+        INSERT INTO resources (resource_id, tenant_id, resource, endpoints, credential)
+        VALUES ($resourceId, $tenantId, $resource, $endpoints, ${credential.map(Secret(_))})
       """.update.run()
     .unit
 
@@ -67,7 +69,7 @@ class PostgresResourceRepository(xa: TransactorZIO) extends ResourceRepository, 
     xa.transactMeasured("update-resource"):
       // Lock the row (READ_COMMITTED + FOR UPDATE) to prevent lost updates from concurrent writers.
       sql"""
-        SELECT tenant_id, resource_id, resource, endpoints FROM resources
+        SELECT tenant_id, resource_id, resource, endpoints, credential, previous_credential FROM resources
         WHERE resource_id = $resourceId
         FOR UPDATE
       """.query[ResourceRecord].run().headOption match
@@ -85,6 +87,25 @@ class PostgresResourceRepository(xa: TransactorZIO) extends ResourceRepository, 
               endpoints = $newEndpoints::jsonb[]
             WHERE resource_id = $resourceId
           """.update.run()
+    .unit
+
+  override def rotateCredential(resourceId: ResourceId, newCredential: Array[Byte]): Task[Unit] =
+    xa.connectMeasured("rotate-resource-credential"):
+      sql"""
+        UPDATE resources
+        SET previous_credential = credential,
+            credential = ${Secret(newCredential)}
+        WHERE resource_id = $resourceId
+      """.update.run()
+    .unit
+
+  override def deletePreviousCredential(resourceId: ResourceId): Task[Unit] =
+    xa.connectMeasured("delete-previous-resource-credential"):
+      sql"""
+        UPDATE resources
+        SET previous_credential = NULL
+        WHERE resource_id = $resourceId
+      """.update.run()
     .unit
 
   override def deleteResource(

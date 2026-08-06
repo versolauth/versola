@@ -29,7 +29,7 @@ type InjectTargetDto = 'header' | 'query' | 'body';
 type InjectRuleDto = { target: InjectTargetDto; name: string; expression: string };
 type ResourceEndpointId = string | number;
 type ResourceEndpointDto = { id: ResourceEndpointId; method: string; path: string; fetchUserInfo: boolean; allow?: string | null; inject: InjectRuleDto[] };
-type ResourceDto = { resourceId: string; resource: string; endpoints: ResourceEndpointDto[] };
+type ResourceDto = { resourceId: string; resource: string; endpoints: ResourceEndpointDto[]; internal?: boolean; credentialRotation?: boolean };
 type RoleDto = { id: string; description: Record<string, string>; permissions: string[]; active: boolean };
 type EdgeDto = { id: string; hasOldKey?: boolean; tenants?: string[]; clients?: EdgeClientLinkDto[] };
 type EdgeClientLinkDto = { tenantId: string; clientId: string };
@@ -92,6 +92,7 @@ type CreateResourceRequest = {
   resourceId: string;
   resource: string;
   endpoints: Array<{ id?: ResourceEndpointId; method: string; path: string; fetchUserInfo: boolean; allow?: string | null; inject: InjectRuleDto[] }>;
+  internal?: boolean;
 };
 type UpdateResourceRequest = {
   resourceId: string;
@@ -687,10 +688,15 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
             ...(endpoint.allow != null && endpoint.allow.length > 0 ? { allow: endpoint.allow } : {}),
             inject: endpoint.inject.map(rule => ({ ...rule })),
           })),
+          internal: payload.internal ?? false,
+          credentialRotation: false,
         };
 
         state.resources[payload.tenantId] = [createdResource, ...(state.resources[payload.tenantId] ?? [])];
-        await route.fulfill(json({ resourceId: createdResource.resourceId }, 201));
+        await route.fulfill(json({
+          resourceId: createdResource.resourceId,
+          credential: payload.internal ? `generated-${createdResource.resourceId}` : null,
+        }, 201));
         return;
       }
 
@@ -735,6 +741,35 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
         await route.fulfill({ status: 204, body: '' });
         return;
       }
+    }
+
+    if (pathname === '/configuration/resources/rotate-credential' && method === 'POST') {
+      const resourceId = url.searchParams.get('resourceId');
+      const resource = Object.values(state.resources).flat().find(candidate => candidate.resourceId === resourceId);
+
+      if (!resource || !resourceId) {
+        await route.fulfill(json({ message: `Resource ${resourceId} was not found` }, 404));
+        return;
+      }
+
+      resource.internal = true;
+      resource.credentialRotation = true;
+      await route.fulfill(json({ credential: `rotated-${resourceId}` }));
+      return;
+    }
+
+    if (pathname === '/configuration/resources/previous-credential' && method === 'DELETE') {
+      const resourceId = url.searchParams.get('resourceId');
+      const resource = Object.values(state.resources).flat().find(candidate => candidate.resourceId === resourceId);
+
+      if (!resource || !resourceId) {
+        await route.fulfill(json({ message: `Resource ${resourceId} was not found` }, 404));
+        return;
+      }
+
+      resource.credentialRotation = false;
+      await route.fulfill({ status: 204, body: '' });
+      return;
     }
 
     if (pathname === '/configuration/roles') {
