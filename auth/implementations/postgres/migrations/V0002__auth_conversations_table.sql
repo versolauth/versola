@@ -24,6 +24,7 @@ CREATE TABLE auth_conversations (
     needs_password_change BOOLEAN NOT NULL,
     target_acr TEXT,
     prior_session_id BYTEA,
+    resources TEXT[] NOT NULL,
     expires_at TIMESTAMP WITH TIME ZONE NOT NULL
 );
 

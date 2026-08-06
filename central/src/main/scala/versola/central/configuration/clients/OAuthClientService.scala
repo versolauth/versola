@@ -130,7 +130,6 @@ object OAuthClientService:
           clientName = request.clientName,
           redirectUris = request.redirectUris,
           scope = request.allowedScopes,
-          externalAudience = request.audience,
           secret = Some(encryptedSecret),
           previousSecret = None,
           accessTokenTtl = Duration.fromSeconds(request.accessTokenTtl),

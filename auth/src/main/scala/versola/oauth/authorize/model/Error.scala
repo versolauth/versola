@@ -133,3 +133,9 @@ private[authorize] object Error:
       errorDescription = "The login_hint parameter is invalid or not supported by the client auth flow",
       errorUri = Some("https://openid.net/specs/openid-connect-core-1_0.html#AuthRequest"),
     )
+
+  case class InvalidTarget(uri: URL, state: Option[State], value: String) extends RedirectError(
+      error = ErrorCode.InvalidTarget,
+      errorDescription = s"The requested resource is invalid, malformed, or unknown - $value",
+      errorUri = Some("https://datatracker.ietf.org/doc/html/rfc8707#section-2"),
+    )

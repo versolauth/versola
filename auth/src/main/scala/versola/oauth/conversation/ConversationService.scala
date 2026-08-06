@@ -544,6 +544,7 @@ object ConversationService:
               amr = amr,
               authTime = now,
               acr = conversation.targetAcr,
+              resources = conversation.resources,
             )
             session = SessionRecord(
               userId = userId,

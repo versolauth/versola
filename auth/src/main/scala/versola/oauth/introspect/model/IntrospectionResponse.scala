@@ -18,7 +18,7 @@ case class IntrospectionResponse(
     iat: Option[Long],
     nbf: Option[Long],
     sub: Option[String],
-    aud: Option[Vector[ClientId]],
+    aud: Option[Vector[String]],
     iss: Option[String],
     jti: Option[String],
 ) derives JsonCodec, Schema

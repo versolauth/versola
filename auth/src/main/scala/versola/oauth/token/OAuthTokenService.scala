@@ -90,7 +90,7 @@ object OAuthTokenService:
             accessToken = accessToken,
             userId = codeRecord.userId,
             clientId = codeRecord.clientId,
-            externalAudience = client.externalAudience,
+            resources = codeRecord.resources,
             scope = codeRecord.scope,
             issuedAt = now,
             expiresAt = now.plusSeconds(client.refreshTokenTtl.toSeconds),
@@ -168,7 +168,7 @@ object OAuthTokenService:
       yield IssuedTokens(
         accessToken = accessToken,
         clientId = client.id,
-        audience = client.audience,
+        audience = Nil,
         accessTokenTtl = client.accessTokenTtl,
         userId = None,
         refreshToken = None,
@@ -214,7 +214,7 @@ object OAuthTokenService:
       yield IssuedTokens(
         accessToken = accessToken,
         clientId = record.clientId,
-        audience = client.audience,
+        audience = record.resources,
         accessTokenTtl = client.accessTokenTtl,
         userId = Some(record.userId),
         refreshToken = refreshToken,

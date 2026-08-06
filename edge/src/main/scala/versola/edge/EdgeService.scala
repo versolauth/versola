@@ -349,7 +349,7 @@ object EdgeService:
           }
         celContext <- checkRules(session.claims, userInfo, request, endpoint, restPath, parsedBody)
         _ <- checkStepUp(endpoint, typedClaims, now, celContext)
-        upstream <- buildUpstreamRequest(resource, endpoint, restPath, request, parsedBody, typedClaims.clientId, celContext)
+        upstream <- buildUpstreamRequest(resource, endpoint, restPath, request, parsedBody, typedClaims.clientId, session.accessToken, celContext)
         response <- ZIO.scoped(httpClient.request(upstream))
         stripped = response.removeHeader(Header.SetCookie)
       yield session.rotatedCookie.fold(stripped)(stripped.addCookie)
@@ -548,6 +548,25 @@ object EdgeService:
         "request" -> requestData.asJava,
       )
 
+    /** Chooses the upstream `Authorization` header for a resource: internal resources
+      * (those with a credential) are proxied with edge's own `Basic(resourceId, credential)`
+      * so the resource never sees the caller's token; public resources (no credential)
+      * get the caller's own access token forwarded as-is (RFC 8707 leaves audience
+      * enforcement to the resource server, which for a public resource is out of edge's hands).
+      */
+    private def resolveAuthHeader(
+        resource: Resource,
+        clientId: ClientId,
+        accessToken: AccessToken,
+    ): IO[Throwable | Outcome, Header.Authorization] =
+      resource.credential match
+        case Some(credential) =>
+          ZIO.succeed(Header.Authorization.Basic(resource.resourceId, Base64.urlEncode(credential)))
+        case None =>
+          clientService.findClient(clientId)
+            .someOrFail(Outcome.InternalServerError: Throwable | Outcome)
+            .as(Header.Authorization.Bearer(accessToken.toString))
+
     private def buildUpstreamRequest(
         resource: Resource,
         endpoint: ResourceEndpoint,
@@ -555,6 +574,7 @@ object EdgeService:
         request: Request,
         parsedBody: Option[Json],
         clientId: ClientId,
+        accessToken: AccessToken,
         celContext: Map[String, AnyRef],
     ): IO[Throwable | Outcome, Request] =
       val grouped = endpoint.inject.groupBy(_.target)
@@ -584,9 +604,7 @@ object EdgeService:
         case None => baseHeaders
 
       for
-        authHeader <- clientService.findClient(clientId)
-          .someOrFail(Outcome.InternalServerError: Throwable | Outcome)
-          .map(client => Header.Authorization.Basic(client.id, Base64.urlEncode(client.secret)))
+        authHeader <- resolveAuthHeader(resource, clientId, accessToken)
         injectedHeaders <- evaluateAll(headerInjects, celContext)
         injectedQuery <- evaluateAll(queryInjects, celContext)
         finalHeaders = injectedHeaders.foldLeft(headersWithCookies):

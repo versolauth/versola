@@ -23,7 +23,6 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
     clientName = "Test Client",
     redirectUris = NonEmptySet("https://example.com/callback"),
     scope = Set(ScopeToken("openid"), ScopeToken("profile"), ScopeToken("email")),
-    externalAudience = Nil,
     secret = None,
     previousSecret = None,
     accessTokenTtl = 1.hour,

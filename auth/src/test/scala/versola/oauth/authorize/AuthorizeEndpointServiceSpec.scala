@@ -49,7 +49,6 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
     clientName = "Test Client",
     redirectUris = NonEmptySet("https://example.com/callback"),
     scope = Set(ScopeToken("openid")),
-    externalAudience = List.empty,
     secret = None,
     previousSecret = None,
     accessTokenTtl = zio.durationInt(10).minutes,
@@ -80,6 +79,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
     sessionId = None,
     loginHint = None,
     idTokenHint = None,
+    resources = Nil,
   )
 
   val rawSessionId = SessionId(Array.fill(32)(5.toByte))

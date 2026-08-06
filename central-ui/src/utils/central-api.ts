@@ -55,7 +55,8 @@ type AuthorizationPresetResponse = {
   cookieDomain?: string;
   cookiePath?: string;
 };
-type CreateResourceResponse = { resourceId: string };
+type CreateResourceResponse = { resourceId: string; credential: string | null };
+type RotateResourceCredentialResponse = { credential: string };
 type CreateResourceEndpointPayload = Omit<ResourceEndpoint, 'id' | 'allow' | 'stepUpCondition' | 'stepUpAcr' | 'maxAge'> & {
   allow: string | null;
   stepUpCondition: string | null;
@@ -85,7 +86,7 @@ type ResourceEndpointDto = {
   stepUpAcr?: string;
   maxAge?: number;
 };
-type ResourceResponseDto = { resourceId: string; resource: string; endpoints: Array<ResourceEndpointDto & { id: ResourceEndpointId }> };
+type ResourceResponseDto = { resourceId: string; resource: string; endpoints: Array<ResourceEndpointDto & { id: ResourceEndpointId }>; internal: boolean; credentialRotation: boolean };
 
 type EdgeResponseDto = { id: string; hasOldKey?: boolean };
 type EdgesResponse = { edges: EdgeResponseDto[] };
@@ -106,7 +107,6 @@ type ClientsResponse = {
     clientName: string;
     redirectUris: string[];
     scope: string[];
-    externalAudience: string[];
     permissions: string[];
     secretRotation: boolean;
     theme: string;
@@ -122,7 +122,7 @@ type ResourcesResponse = { resources: ResourceResponseDto[] };
 
 const apiConfig: CentralApiConfig = { baseUrl: null, loginUrl: DEFAULT_LOGIN_URL };
 const permissionStore = new Map<string, Permission>();
-const clientSupplementStore = new Map<string, { externalAudience: string[]; accessTokenTtl: number; hasPreviousSecret: boolean }>();
+const clientSupplementStore = new Map<string, { accessTokenTtl: number; hasPreviousSecret: boolean }>();
 const roleSupplementStore = new Map<string, { active: boolean; createdAt: string; updatedAt: string }>();
 const readCache = new Map<string, { expiresAt: number; value: unknown }>();
 const inFlightReads = new Map<string, Promise<unknown>>();
@@ -508,6 +508,8 @@ function mapResource(resource: ResourceResponseDto): Resource {
       ...(endpoint.stepUpAcr != null ? { stepUpAcr: endpoint.stepUpAcr } : {}),
       ...(endpoint.maxAge != null ? { maxAge: endpoint.maxAge } : {}),
     })),
+    hasCredential: resource.internal,
+    hasPreviousCredential: resource.credentialRotation,
   };
 }
 
@@ -581,7 +583,6 @@ export async function fetchClients(tenantId: string, offset = 0, limit = DEFAULT
         clientName: client.clientName,
         redirectUris: [...client.redirectUris],
         scope: [...client.scope],
-        externalAudience: client.externalAudience ? [...client.externalAudience] : (supplement?.externalAudience ? [...supplement.externalAudience] : []),
         hasPreviousSecret: supplement?.hasPreviousSecret ?? client.secretRotation,
         accessTokenTtl: supplement?.accessTokenTtl ?? 3600,
         permissions: [...client.permissions],
@@ -701,14 +702,32 @@ export async function createResource(
   resourceId: string,
   resource: string,
   endpoints: CreateResourceEndpointPayload[] = [],
-): Promise<{ resourceId: string; endpoints: Array<ResourceEndpointWriteDto & { id: ResourceEndpointId }> }> {
+  internal = false,
+): Promise<{ resourceId: string; endpoints: Array<ResourceEndpointWriteDto & { id: ResourceEndpointId }>; credential: string | null }> {
   const serializedEndpoints = endpoints.map(endpoint => serializePersistedResourceEndpoint(endpoint));
   const response = await request<CreateResourceResponse>('/configuration/resources', {
     method: 'POST',
-    body: { tenantId, resourceId, resource, endpoints: serializedEndpoints },
+    body: { tenantId, resourceId, resource, endpoints: serializedEndpoints, internal },
   });
   resourcesStore.clear();
-  return { resourceId: response.resourceId, endpoints: serializedEndpoints };
+  return { resourceId: response.resourceId, endpoints: serializedEndpoints, credential: response.credential };
+}
+
+export async function rotateResourceCredential(resourceId: string): Promise<string> {
+  const response = await request<RotateResourceCredentialResponse>('/configuration/resources/rotate-credential', {
+    method: 'POST',
+    query: { resourceId },
+  });
+  resourcesStore.clear();
+  return response.credential;
+}
+
+export async function deletePreviousResourceCredential(resourceId: string): Promise<void> {
+  await requestVoid('/configuration/resources/previous-credential', {
+    method: 'DELETE',
+    query: { resourceId },
+  });
+  resourcesStore.clear();
 }
 
 export async function updateResource(
@@ -882,7 +901,6 @@ export async function createClient(tenantId: string, client: OAuthClient): Promi
       clientName: client.clientName,
       redirectUris: unique(client.redirectUris),
       allowedScopes: unique(client.scope),
-      audience: unique(client.externalAudience),
       permissions: unique(client.permissions),
       accessTokenTtl: client.accessTokenTtl,
       theme: client.theme ?? 'default',
@@ -895,7 +913,6 @@ export async function createClient(tenantId: string, client: OAuthClient): Promi
   });
 
   clientSupplementStore.set(entityKey(tenantId, client.id), {
-    externalAudience: [...client.externalAudience],
     accessTokenTtl: client.accessTokenTtl,
     hasPreviousSecret: client.hasPreviousSecret,
   });
@@ -911,7 +928,6 @@ export async function rotateClientSecret(tenantId: string, clientId: string): Pr
 
   const existing = clientSupplementStore.get(entityKey(tenantId, clientId));
   clientSupplementStore.set(entityKey(tenantId, clientId), {
-    externalAudience: existing?.externalAudience ? [...existing.externalAudience] : [],
     accessTokenTtl: existing?.accessTokenTtl ?? 3600,
     hasPreviousSecret: true,
   });
@@ -927,7 +943,6 @@ export async function deletePreviousClientSecret(tenantId: string, clientId: str
 
   const existing = clientSupplementStore.get(entityKey(tenantId, clientId));
   clientSupplementStore.set(entityKey(tenantId, clientId), {
-    externalAudience: existing?.externalAudience ? [...existing.externalAudience] : [],
     accessTokenTtl: existing?.accessTokenTtl ?? 3600,
     hasPreviousSecret: false,
   });
@@ -953,7 +968,6 @@ export async function updateClient(tenantId: string, existing: OAuthClient, clie
   });
 
   clientSupplementStore.set(entityKey(tenantId, client.id), {
-    externalAudience: [...client.externalAudience],
     accessTokenTtl: client.accessTokenTtl,
     hasPreviousSecret: client.hasPreviousSecret,
   });

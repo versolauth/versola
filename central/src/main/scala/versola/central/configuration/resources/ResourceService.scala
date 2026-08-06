@@ -1,13 +1,17 @@
 package versola.central.configuration.resources
 
+import versola.central.CentralConfig
 import versola.central.configuration.edges.EdgeId
 import versola.central.configuration.sync.{SyncEvent, SyncOps}
 import versola.central.configuration.tenants.{TenantId, TenantRepository}
 import versola.central.configuration.{CreateResourceEndpointRequest, CreateResourceRequest, UpdateResourceRequest}
-import versola.util.ReloadingCache
+import versola.util.{CacheSource, ReloadingCache, Secret, SecureRandom, SecurityService}
 import versola.util.cel.CelEvaluator
 import dev.cel.common.types.{CelType, SimpleType}
-import zio.{Schedule, Scope, Task, ZIO, ZLayer}
+import zio.{Schedule, Scope, Task, URLayer, ZIO, ZLayer}
+
+import javax.crypto.SecretKey
+import javax.crypto.spec.SecretKeySpec
 
 trait ResourceService:
   def getTenantResources(
@@ -18,9 +22,13 @@ trait ResourceService:
 
   def getResourcesForSync(edgeId: Option[EdgeId]): Task[Vector[ResourceRecord]]
 
-  def createResource(request: CreateResourceRequest): Task[Either[ResourceValidationError, ResourceId]]
+  def createResource(request: CreateResourceRequest): Task[Either[ResourceValidationError, (ResourceId, Option[Secret])]]
 
   def updateResource(request: UpdateResourceRequest): Task[Either[ResourceValidationError, Unit]]
+
+  def rotateCredential(resourceId: ResourceId): Task[Secret]
+
+  def deletePreviousCredential(resourceId: ResourceId): Task[Unit]
 
   def deleteResource(resourceId: ResourceId): Task[Unit]
 
@@ -29,15 +37,48 @@ trait ResourceService:
 object ResourceService:
   def live(
       schedule: Schedule[Any, Any, Any],
-  ): ZLayer[ResourceRepository & TenantRepository & CelEvaluator & Scope, Throwable, ResourceService] =
-    ZLayer(ReloadingCache.make[Vector[ResourceRecord]](schedule))
-      >>> ZLayer.fromFunction(Impl(_, _, _, _))
+  ): ZLayer[
+    ResourceRepository & TenantRepository & CelEvaluator & SecureRandom & SecurityService & CentralConfig & Scope,
+    Throwable,
+    ResourceService,
+  ] =
+    decryptingCacheSource >>>
+      ZLayer(ReloadingCache.make[Vector[ResourceRecord]](schedule)) >>>
+      ZLayer.fromFunction(Impl(_, _, _, _, _, _, _))
+
+  /** A [[CacheSource]] that reads the resource records from the repository and decrypts
+    * their credentials, so the in-memory cache holds plaintext credentials and no
+    * decryption is needed on cache reads.
+    */
+  private val decryptingCacheSource
+      : URLayer[ResourceRepository & SecurityService & CentralConfig, CacheSource[Vector[ResourceRecord]]] =
+    ZLayer.fromFunction: (repository: ResourceRepository, securityService: SecurityService, config: CentralConfig) =>
+      new CacheSource[Vector[ResourceRecord]]:
+        override def getAll: Task[Vector[ResourceRecord]] =
+          repository.getAll.flatMap(ZIO.foreach(_)(decryptCredentials(_, securityService, resourceCredentialsKey(config))))
+
+  private def resourceCredentialsKey(config: CentralConfig): SecretKey =
+    SecretKeySpec(config.clientSecretsSecret, "AES")
+
+  /** Decrypts the at-rest encrypted `credential` and `previousCredential` of a resource record. */
+  private def decryptCredentials(
+      record: ResourceRecord,
+      securityService: SecurityService,
+      key: SecretKey,
+  ): Task[ResourceRecord] =
+    for
+      credential         <- ZIO.foreach(record.credential)(c => securityService.decryptAes256(c, key).map(Secret(_)))
+      previousCredential <- ZIO.foreach(record.previousCredential)(c => securityService.decryptAes256(c, key).map(Secret(_)))
+    yield record.copy(credential = credential, previousCredential = previousCredential)
 
   class Impl(
       cache: ReloadingCache[Vector[ResourceRecord]],
       resourceRepository: ResourceRepository,
       tenantRepository: TenantRepository,
       celEvaluator: CelEvaluator,
+      secureRandom: SecureRandom,
+      securityService: SecurityService,
+      config: CentralConfig,
   ) extends ResourceService:
     export resourceRepository.deleteResource
 
@@ -62,16 +103,21 @@ object ResourceService:
             allowedTenantIds = tenants.filter(_.edgeId.contains(id)).map(_.id).toSet
           yield resources.filter(r => allowedTenantIds.contains(r.tenantId))
 
-    override def createResource(request: CreateResourceRequest): Task[Either[ResourceValidationError, ResourceId]] =
+    override def createResource(request: CreateResourceRequest): Task[Either[ResourceValidationError, (ResourceId, Option[Secret])]] =
       validateEndpoints(request.endpoints).flatMap:
         case Some(error) => ZIO.left(error)
         case None =>
-          resourceRepository.createResource(
-            tenantId = request.tenantId,
-            resourceId = request.resourceId,
-            resource = request.resource,
-            endpoints = request.endpoints.map(asRecord),
-          ).as(Right(request.resourceId))
+          for
+            credential <- if request.internal then generateCredential.map(Some(_)) else ZIO.none
+            encryptedCredential <- ZIO.foreach(credential)(encryptRawCredential)
+            _ <- resourceRepository.createResource(
+              tenantId = request.tenantId,
+              resourceId = request.resourceId,
+              resource = request.resource,
+              endpoints = request.endpoints.map(asRecord),
+              credential = encryptedCredential,
+            )
+          yield Right((request.resourceId, credential))
 
     override def updateResource(request: UpdateResourceRequest): Task[Either[ResourceValidationError, Unit]] =
       validateEndpoints(request.createEndpoints).flatMap:
@@ -84,11 +130,29 @@ object ResourceService:
             addEndpoints = request.createEndpoints.map(asRecord),
           ).map(Right(_))
 
+    override def rotateCredential(resourceId: ResourceId): Task[Secret] =
+      for
+        newCredential <- generateCredential
+        encryptedCredential <- encryptRawCredential(newCredential)
+        _ <- resourceRepository.rotateCredential(resourceId, encryptedCredential)
+      yield newCredential
+
+    override def deletePreviousCredential(resourceId: ResourceId): Task[Unit] =
+      resourceRepository.deletePreviousCredential(resourceId)
+
     override def sync(event: SyncEvent.ResourcesUpdated): Task[Unit] =
       SyncOps.syncCache(event)(
         cache,
-        resourceRepository.findResource(event.id),
+        resourceRepository.findResource(event.id).flatMap(ZIO.foreach(_)(decryptCredentials(_, securityService, credentialsKey))),
       )
+
+    private val credentialsKey: SecretKey = ResourceService.resourceCredentialsKey(config)
+
+    private def generateCredential: Task[Secret] =
+      secureRandom.nextBytes(32).map(Secret(_))
+
+    private def encryptRawCredential(credential: Secret): Task[Array[Byte]] =
+      securityService.encryptAes256(credential, credentialsKey)
 
     private def validateEndpoints(
         endpoints: Vector[CreateResourceEndpointRequest],

@@ -3,7 +3,7 @@ package versola
 import versola.central.CentralConfig
 import versola.central.configuration.challenges.{ChallengeSettingsRecord, ChallengeSettingsRepository, OtpChallengeRepository, OtpTemplateRecord, PasskeySettings, RateLimit, SubmissionLimits}
 import versola.central.configuration.system.{SystemSettingsRecord, SystemSettingsRepository}
-import versola.central.configuration.clients.{AuthFlow, AuthorizationPreset, AuthorizationPresetRepository, ClientAlreadyExists, OAuthClientService, PresetId, PrimaryAuthFlow, PrimaryCredential, ResponseType}
+import versola.central.configuration.clients.{AuthFlow, AuthorizationPreset, AuthorizationPresetRepository, ClientAlreadyExists, OAuthClientRepository, OAuthClientService, PresetId, PrimaryAuthFlow, PrimaryCredential, ResponseType}
 import versola.central.configuration.edges.{EdgeId, EdgeRepository}
 import versola.central.configuration.forms.{BackendProperty, BooleanProperty, FormId, FormRepository, NumberProperty, StringArrayProperty}
 import versola.central.configuration.jwks.JwksRepository
@@ -423,11 +423,11 @@ object BootstrapService:
         try source.mkString finally source.close()
 
   val live: ZLayer[
-    TenantRepository & PermissionRepository & OAuthScopeRepository & RoleRepository & OtpChallengeRepository & ChallengeSettingsRepository & SystemSettingsRepository & ThemeRepository & LocaleRepository & FormRepository & OAuthClientService & AuthorizationPresetRepository & EdgeRepository & ResourceRepository & JwksRepository & ServerMetadataRepository & UserRepository & CentralConfig,
+    TenantRepository & PermissionRepository & OAuthScopeRepository & RoleRepository & OtpChallengeRepository & ChallengeSettingsRepository & SystemSettingsRepository & ThemeRepository & LocaleRepository & FormRepository & OAuthClientService & OAuthClientRepository & AuthorizationPresetRepository & EdgeRepository & ResourceRepository & JwksRepository & ServerMetadataRepository & UserRepository & CentralConfig,
     Throwable,
     BootstrapService,
   ] =
-    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _)) >+>
+    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _)) >+>
       ZLayer(ZIO.serviceWithZIO[BootstrapService](_.bootstrap))
 
   private final class Impl(
@@ -442,6 +442,7 @@ object BootstrapService:
       localeRepo: LocaleRepository,
       formRepo: FormRepository,
       clientService: OAuthClientService,
+      clientRepo: OAuthClientRepository,
       presetRepo: AuthorizationPresetRepository,
       edgeRepo: EdgeRepository,
       resourceRepo: ResourceRepository,
@@ -581,7 +582,6 @@ object BootstrapService:
         clientName     = "Central Admin",
         redirectUris   = redirectUris,
         allowedScopes  = clientScopes,
-        audience       = List.empty,
         permissions    = Set.empty,
         accessTokenTtl = 3600,
         refreshTokenTtl = None,
@@ -664,6 +664,15 @@ object BootstrapService:
     /** Seeds the edge-facing resource that proxies the admin API back to central.
       * Created for the default tenant (linked to the bootstrap edge) so it syncs
       * to the edge. Skipped if a resource with the same resourceId already exists.
+      *
+      * Marked internal: its credential is the central-admin OAuth client's own
+      * at-rest encrypted secret (both use the same `clientSecretsSecret` AES key,
+      * so the bytes can be copied as-is without re-encryption). Edge then
+      * authenticates to central with `Basic(centralResourceId, credential)` for
+      * this resource instead of forwarding the caller's access token — the same
+      * shared-secret scheme `authorizeBasic` already accepts, since it only checks
+      * the password against the central-admin client's current/previous secret
+      * and ignores the Basic username.
       */
     private def seedCentralResource(config: CentralConfig.BootstrapConfig): Task[Unit] =
       ZIO.foreachDiscard(config.centralUrl): url =>
@@ -680,18 +689,28 @@ object BootstrapService:
             stepUpAcr = None,
             maxAge = None,
           )
-        resourceRepo.getAll.flatMap: resources =>
-          resources.find(r => r.tenantId == tenantId && r.resourceId == centralResourceId) match
+        for
+          centralClient <- clientRepo.find(CentralConfig.centralClientId)
+          credential = centralClient.flatMap(_.secret)
+          resources <- resourceRepo.getAll
+          _ <- resources.find(r => r.tenantId == tenantId && r.resourceId == centralResourceId) match
             case None =>
-              resourceRepo.createResource(tenantId, centralResourceId, ResourceUri(url), allEndpoints.toVector)
+              resourceRepo.createResource(tenantId, centralResourceId, ResourceUri(url), allEndpoints.toVector, credential)
             case Some(existing) =>
               val existingIds = existing.endpoints.map(_.id).toSet
               val missing = allEndpoints.filterNot(e => existingIds.contains(e.id))
-              if missing.isEmpty then
-                ZIO.logInfo(s"Central resource '$centralResourceId' is up to date, skipping")
-              else
-                ZIO.logInfo(s"Adding ${missing.size} missing endpoint(s) to central resource '$centralResourceId'") *>
-                  resourceRepo.updateResource(centralResourceId, None, missing.toVector, Set.empty)
+              val syncEndpoints =
+                if missing.isEmpty then
+                  ZIO.logInfo(s"Central resource '$centralResourceId' endpoints are up to date, skipping")
+                else
+                  ZIO.logInfo(s"Adding ${missing.size} missing endpoint(s) to central resource '$centralResourceId'") *>
+                    resourceRepo.updateResource(centralResourceId, None, missing.toVector, Set.empty)
+              val backfillCredential =
+                ZIO.foreachDiscard(credential.filter(_ => existing.credential.isEmpty)): cred =>
+                  ZIO.logInfo(s"Seeding credential for central resource '$centralResourceId'") *>
+                    resourceRepo.rotateCredential(centralResourceId, cred)
+              syncEndpoints *> backfillCredential
+        yield ()
 
     private def seedJwks(config: CentralConfig.BootstrapConfig): Task[Unit] =
       val keys: Vector[Json.Obj] = config.jwks match

@@ -3,7 +3,7 @@ package versola.oauth
 import com.augustnagro.magnum.*
 import com.augustnagro.magnum.magzio.TransactorZIO
 import com.augustnagro.magnum.pg.{PgCodec, SqlArrayCodec}
-import versola.oauth.client.model.{Acr, AuthMethodRef, Claim, ClientId, ScopeToken}
+import versola.oauth.client.model.{Acr, AuthMethodRef, Claim, ClientId, ResourceId, ScopeToken}
 import versola.oauth.model.*
 import versola.oauth.session.model.{PublicSessionId, SessionId}
 import versola.oauth.token.AuthorizationCodeRepository
@@ -37,6 +37,8 @@ class PostgresAuthorizationCodeRepository(
   private given DbCodec[ClientId] = DbCodec.StringCodec.biMap(ClientId(_), identity[String])
   private given DbCodec[ScopeToken] = DbCodec.StringCodec.biMap(ScopeToken(_), identity[String])
   private given DbCodec[List[String]] = PgCodec.SeqCodec[String].biMap(_.toList, _.toSeq)
+  private given listResourceIdDbCodec: DbCodec[List[ResourceId]] =
+    PgCodec.SeqCodec[String].biMap(_.map(ResourceId(_)).toList, _.map(identity[String]))
   private given DbCodec[CodeChallengeMethod] = DbCodec.StringCodec.biMap(CodeChallengeMethod.valueOf, _.toString)
   private given DbCodec[CodeChallenge] = DbCodec.StringCodec.biMap(CodeChallenge(_), identity[String])
   private given DbCodec[Nonce] = DbCodec.StringCodec.biMap(Nonce(_), identity[String])
@@ -56,7 +58,7 @@ class PostgresAuthorizationCodeRepository(
           SELECT session_id, public_session_id, client_id, user_id, redirect_uri,
                  scope, code_challenge, code_challenge_method,
                  requested_claims, ui_locales, nonce, access_token,
-                 amr, auth_time, acr,
+                 amr, auth_time, acr, resources,
                  expires_at
           FROM authorization_codes
           WHERE code = $code
@@ -89,6 +91,7 @@ class PostgresAuthorizationCodeRepository(
             amr,
             auth_time,
             acr,
+            resources,
             used,
             expires_at
           )
@@ -109,6 +112,7 @@ class PostgresAuthorizationCodeRepository(
             ${record.amr},
             ${record.authTime},
             ${record.acr},
+            ${record.resources},
             ${false},
             ${now.plusSeconds(ttl.toSeconds)}
           )

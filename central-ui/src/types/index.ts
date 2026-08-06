@@ -48,7 +48,6 @@ export interface OAuthClient {
   clientName: string;
   redirectUris: string[];
   scope: string[];
-  externalAudience: string[];
   hasPreviousSecret: boolean;
   accessTokenTtl: number;
   permissions: string[];
@@ -193,6 +192,10 @@ export interface Resource {
   resourceId: string;
   resource: string;
   endpoints: ResourceEndpoint[];
+  // Internal resources carry a credential edge authenticates with (Basic auth) instead
+  // of forwarding the caller's own access token. Public resources have neither.
+  hasCredential: boolean;
+  hasPreviousCredential: boolean;
 }
 
 // Pagination

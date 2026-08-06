@@ -111,6 +111,8 @@ case class ResourceResponse(
     resourceId: ResourceId,
     resource: ResourceUri,
     endpoints: Vector[ResourceEndpointResponse],
+    internal: Boolean,
+    credentialRotation: Boolean,
 ) derives Schema, JsonCodec
 
 case class ResourceEndpointResponse(
@@ -148,6 +150,7 @@ case class CreateResourceRequest(
     resourceId: ResourceId,
     resource: ResourceUri,
     endpoints: Vector[CreateResourceEndpointRequest],
+    internal: Boolean,
 ) derives Schema, JsonCodec
 
 case class UpdateResourceRequest(
@@ -159,7 +162,12 @@ case class UpdateResourceRequest(
 
 case class CreateResourceResponse(
     resourceId: ResourceId,
+    credential: Option[String],
 ) derives Schema, JsonCodec
+
+case class RotateResourceCredentialResponse(
+    credential: String,
+) derives Schema, JsonEncoder
 
 case class CreateResourceEndpointRequest(
     id: ResourceEndpointId,
@@ -256,7 +264,6 @@ case class OAuthClientResponse(
     clientName: String,
     redirectUris: Set[RedirectUri],
     scope: Set[ScopeToken],
-    externalAudience: List[ClientId],
     permissions: Set[Permission],
     secretRotation: Boolean,
     theme: String,
@@ -277,7 +284,6 @@ case class CreateClientRequest(
     clientName: String,
     redirectUris: Set[RedirectUri],
     allowedScopes: Set[ScopeToken],
-    audience: List[ClientId],
     permissions: Set[Permission],
     accessTokenTtl: Int,
     refreshTokenTtl: Option[Int],
@@ -387,10 +393,21 @@ case class ResourceSyncResponse(
     tenantId: TenantId,
     resource: ResourceUri,
     endpoints: Vector[ResourceEndpointSyncResponse],
+    credential: Option[String],
 ) derives Schema, JsonCodec
 
 case class GetResourcesSyncResponse(
     resources: Vector[ResourceSyncResponse],
+) derives Schema, JsonCodec
+
+case class ResourceRegistryEntry(
+    resourceId: ResourceId,
+    tenantId: TenantId,
+    resource: ResourceUri,
+) derives Schema, JsonCodec
+
+case class GetResourcesRegistryResponse(
+    resources: Vector[ResourceRegistryEntry],
 ) derives Schema, JsonCodec
 
 type ResourceUri = ResourceUri.Type
@@ -429,7 +446,6 @@ case class SyncOAuthClientRecord(
     clientName: String,
     redirectUris: Set[RedirectUri],
     scope: Set[ScopeToken],
-    externalAudience: List[ClientId],
     secret: Option[String],
     previousSecret: Option[String],
     accessTokenTtl: Duration,

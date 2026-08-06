@@ -29,7 +29,6 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
     clientName = "Test Client",
     redirectUris = zio.prelude.NonEmptySet("https://example.com/callback"),
     scope = Set(ScopeToken("read")),
-    externalAudience = Nil,
     secret = None,
     previousSecret = None,
     accessTokenTtl = 1.hour,

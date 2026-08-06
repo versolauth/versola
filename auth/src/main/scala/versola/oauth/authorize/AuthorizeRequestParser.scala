@@ -2,7 +2,7 @@ package versola.oauth.authorize
 
 import versola.oauth.authorize.model.{AuthorizeRequest, Error, Prompt, ResponseTypeEntry}
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{Acr, ClientId, OAuthClientRecord, PrimaryCredential, ScopeToken}
+import versola.oauth.client.model.{Acr, ClientId, OAuthClientRecord, PrimaryCredential, ResourceId, ResourceUri, ScopeToken}
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, Nonce, State}
 import versola.oauth.model.SessionCookie
 import versola.oauth.session.model.SessionId
@@ -142,6 +142,8 @@ object AuthorizeRequestParser:
         idTokenHint <- getParam(params, "id_token_hint")
           .orElseFail(Error.MultipleValuesProvided(redirectUri, state, "id_token_hint"))
 
+        resources <- resolveResources(params, client, redirectUri, state)
+
         authorizeRequest = AuthorizeRequest(
           clientId = clientId,
           redirectUri = redirectUri,
@@ -160,8 +162,32 @@ object AuthorizeRequestParser:
           sessionId = sessionId,
           loginHint = loginHint,
           idTokenHint = idTokenHint,
+          resources = resources,
         )
       yield authorizeRequest
+
+    /** RFC 8707 §2: parses all `resource` values (the parameter may be repeated), validates
+      * each is a well-formed resource URI, and resolves it to a resource registered for the
+      * client's tenant. Any unresolvable value fails the whole request with `invalid_target`.
+      */
+    private def resolveResources(
+        params: Map[String, Chunk[String]],
+        client: OAuthClientRecord,
+        redirectUri: URL,
+        state: Option[State],
+    ): IO[Error, List[ResourceId]] =
+      params.getOrElse("resource", Chunk.empty).toList match
+        case Nil => ZIO.succeed(Nil)
+        case values =>
+          ZIO.foreach(values) { value =>
+            ZIO.fromEither(ResourceUri.parse(value))
+              .orElseFail(Error.InvalidTarget(redirectUri, state, value))
+              .flatMap { uri =>
+                oauthClientService.findResource(client.tenantId, uri)
+                  .someOrFail(Error.InvalidTarget(redirectUri, state, value))
+              }
+              .map(_.resourceId)
+          }
 
     private def parseEmailLoginHint(
         value: String,

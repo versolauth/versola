@@ -39,7 +39,6 @@ object IntrospectionServiceSpec extends UnitSpecBase:
     clientName = "Test Client",
     redirectUris = NonEmptySet("https://example.com/callback"),
     scope = scope1,
-    externalAudience = List.empty,
     secret = Some(clientSecret1),
     previousSecret = None,
     accessTokenTtl = 10.minutes,
@@ -58,7 +57,7 @@ object IntrospectionServiceSpec extends UnitSpecBase:
     accessToken = accessToken1,
     userId = userId1,
     clientId = clientId1,
-    externalAudience = List.empty,
+    resources = List.empty,
     scope = scope1,
     issuedAt = now,
     expiresAt = now.plusSeconds(3600),
@@ -71,7 +70,7 @@ object IntrospectionServiceSpec extends UnitSpecBase:
     acr = None,
   )
 
-  def accessTokenPayload(now: Instant, audience: Vector[ClientId] = Vector(clientId1)) = AccessTokenPayload(
+  def accessTokenPayload(now: Instant, audience: Vector[String] = Vector.empty) = AccessTokenPayload(
     subject = userId1.toString,
     clientId = clientId1,
     scope = scope1,
@@ -117,7 +116,7 @@ object IntrospectionServiceSpec extends UnitSpecBase:
           result.exp == Some(now.plusSeconds(3600).getEpochSecond),
           result.iat == Some(now.getEpochSecond),
           result.nbf == Some(now.getEpochSecond),
-          result.aud == Some(Vector(clientId1)),
+          result.aud == None,
           result.iss == Some("https://auth.example.com"),
         )).provide(env.layer)
       },
@@ -134,19 +133,19 @@ object IntrospectionServiceSpec extends UnitSpecBase:
           result <- service.introspectAccessToken(payload, credentials).either
         yield assertTrue(result.isLeft)).provide(env.layer)
       },
-      test("fail with Unauthenticated when client not in audience") {
+      test("succeeds regardless of audience, as long as the calling client authenticates") {
         val env = Env()
         (for
           now <- Clock.instant
           credentials = ClientIdWithSecret(clientId2, Some(clientSecret1))
-          payload = accessTokenPayload(now, audience = Vector(clientId1)) // clientId2 not in audience
+          payload = accessTokenPayload(now, audience = Vector("https://api.example.com")) // clientId2 not in audience
           otherClient = testClient.copy(id = clientId2)
 
           _ <- env.oauthClientService.verifySecret.succeedsWith(Some(otherClient))
 
           service <- ZIO.service[IntrospectionService]
           result <- service.introspectAccessToken(payload, credentials).either
-        yield assertTrue(result.isLeft)).provide(env.layer)
+        yield assertTrue(result.isRight)).provide(env.layer)
       },
     ),
     suite("introspectRefreshToken")(
@@ -172,7 +171,7 @@ object IntrospectionServiceSpec extends UnitSpecBase:
           result.exp == Some(now.plusSeconds(3600).getEpochSecond),
           result.iat == Some(now.getEpochSecond),
           result.iss == Some(env.config.jwt.issuer),
-          result.aud == Some(Vector(clientId1)),
+          result.aud == None,
         )).provide(env.layer)
       },
       test("return inactive when token not found") {

@@ -6,7 +6,7 @@ CREATE TABLE refresh_tokens(
     public_session_id TEXT NOT NULL,
     user_id UUID NOT NULL,
     client_id TEXT NOT NULL,
-    external_audience TEXT[] NOT NULL,
+    resources TEXT[] NOT NULL,
     scope TEXT[] NOT NULL,
     issued_at TIMESTAMP WITH TIME ZONE NOT NULL,
     expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
