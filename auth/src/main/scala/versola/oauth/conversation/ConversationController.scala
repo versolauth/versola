@@ -103,8 +103,7 @@ object ConversationController extends Controller:
         router <- ZIO.service[ConversationRouter]
         conversationRenderService <- ZIO.service[ConversationRenderService]
         cookie <- extractCookie(request)
-        form <- request.body.asURLEncodedForm.mapError(_.getMessage).orElseFail(Error.BadRequest)
-        body <- summon[FormDecoder[Body]].decode(form).orElseFail(Error.BadRequest)
+        body <- request.formAs[Body].orElseFail(Error.BadRequest)
         _ <- ZIO.fail(Error.BadRequest).unlessZIO(validate(cookie.clientId, body))
         uiLocale <- request.queryZIO[Option[String]]("ui_locale")
         ipHeader <- ZIO.serviceWithZIO[OAuthConfigurationService](_.getIpHeader(cookie.clientId))

@@ -83,7 +83,7 @@ object SessionCookie:
       isSecure = true,
       isHttpOnly = true,
       maxAge = Some(Duration.Zero),
-      sameSite = None,
+      sameSite = Some(Cookie.SameSite.Lax),
     )
 
   def parse(content: String, secret: Secret.Bytes32): Either[String, SessionId] =
