@@ -20,7 +20,7 @@ import versola.oauth.userinfo.model.UserInfoResponse
 import versola.user.UserRepository
 import versola.user.model.{UserId, UserRecord}
 import versola.util.{AuthPropertyGenerator, CoreConfig, Email, EnvName, Secret, SecureRandom, SecurityService, UnitSpecBase}
-import zio.ZIO
+import zio.{Ref, ZIO}
 import zio.http.URL
 import zio.json.ast
 import zio.test.*
@@ -126,7 +126,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
         val env = Env()
         for
           _ <- env.submissionLimiter.statusFor.succeedsWith(LimitStatus.Allowed)
-          _ <- env.submissionLimiter.recordLimit.succeedsWith(LimitStatus.Allowed)
+          _ <- env.submissionLimiter.tryAcquire.succeedsWith(LimitStatus.Allowed)
           _ <- env.userRepository.findByCredential.succeedsWith(Some(UserRecord.empty(userId)))
           _ <- env.otpService.prepareOtp.succeedsWith(realOtp)
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
@@ -160,7 +160,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
         )
         for
           _ <- env.submissionLimiter.statusFor.succeedsWith(LimitStatus.Allowed)
-          _ <- env.submissionLimiter.recordLimit.succeedsWith(LimitStatus.Allowed)
+          _ <- env.submissionLimiter.tryAcquire.succeedsWith(LimitStatus.Allowed)
           _ <- env.userRepository.findByCredential.succeedsWith(Some(user))
           _ <- env.otpService.prepareOtp.succeedsWith(realOtp)
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
@@ -180,7 +180,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
         val env = Env()
         for
           _ <- env.submissionLimiter.statusFor.succeedsWith(LimitStatus.Allowed)
-          _ <- env.submissionLimiter.recordLimit.succeedsWith(LimitStatus.Allowed)
+          _ <- env.submissionLimiter.tryAcquire.succeedsWith(LimitStatus.Allowed)
           _ <- env.userRepository.findByCredential.succeedsWith(None)
           _ <- env.otpService.prepareOtp.succeedsWith(realOtp)
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
@@ -196,21 +196,54 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           overwriteCalls.head._2.userClaims.isEmpty,
         )
       },
-      test("return AccessDenied when banned on OTP request") {
+      test("claim the request against the limiter before any OTP is sent") {
         val env = Env()
+        // Both stubs append to one shared trace, so this asserts the actual ordering rather than
+        // merely that each was called: the bug in #103 was precisely that the limiter ran too late,
+        // and a test that only counted calls would still pass with the charge moved back after send.
         for
-          _ <- env.submissionLimiter.statusFor.succeedsWith(LimitStatus.Banned)
+          trace <- Ref.make(List.empty[String])
+          _ <- env.submissionLimiter.statusFor.succeedsWith(LimitStatus.Allowed)
+          _ <- env.submissionLimiter.tryAcquire.returnsZIO: _ =>
+            trace.update(_ :+ "tryAcquire").as(LimitStatus.Allowed)
+          _ <- env.userRepository.findByCredential.succeedsWith(None)
+          _ <- env.otpService.prepareOtp.succeedsWith(realOtp)
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
-          result <- env.service.prepareInitialOtp(authId, initialConversation, Left(email), factorIndex = 0)
-        yield assertTrue(result == ConversationResult.RenderStep(ConversationStep.AccessDenied))
+          _ <- env.otpService.sendOtp.returnsZIO: _ =>
+            trace.update(_ :+ "sendOtp")
+          _ <- env.service.prepareInitialOtp(authId, initialConversation, Left(email), factorIndex = 0)
+          order <- trace.get
+        yield assertTrue(
+          order == List("tryAcquire", "sendOtp"),
+          env.submissionLimiter.tryAcquire.calls.map(_._3) == List(ChallengeType.OtpRequest),
+          // The old code recorded only after sending, leaving a window for concurrent requests to
+          // each pass the check and each send an OTP.
+          env.submissionLimiter.recordLimit.calls.isEmpty,
+        )
       },
-      test("return AccessDenied when rate limited on OTP request") {
+      test("return AccessDenied and send nothing when banned on OTP request") {
         val env = Env()
         for
-          _ <- env.submissionLimiter.statusFor.succeedsWith(LimitStatus.RateLimited(30L))
+          _ <- env.submissionLimiter.statusFor.succeedsWith(LimitStatus.Allowed)
+          _ <- env.submissionLimiter.tryAcquire.succeedsWith(LimitStatus.Banned)
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
           result <- env.service.prepareInitialOtp(authId, initialConversation, Left(email), factorIndex = 0)
-        yield assertTrue(result == ConversationResult.RenderStep(ConversationStep.AccessDenied))
+        yield assertTrue(
+          result == ConversationResult.RenderStep(ConversationStep.AccessDenied),
+          env.otpService.sendOtp.calls.isEmpty,
+        )
+      },
+      test("return AccessDenied and send nothing when rate limited on OTP request") {
+        val env = Env()
+        for
+          _ <- env.submissionLimiter.statusFor.succeedsWith(LimitStatus.Allowed)
+          _ <- env.submissionLimiter.tryAcquire.succeedsWith(LimitStatus.RateLimited(30L))
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          result <- env.service.prepareInitialOtp(authId, initialConversation, Left(email), factorIndex = 0)
+        yield assertTrue(
+          result == ConversationResult.RenderStep(ConversationStep.AccessDenied),
+          env.otpService.sendOtp.calls.isEmpty,
+        )
       },
       test("return AccessDenied when banned on OTP submit (ban earned via wrong codes)") {
         val env = Env()
@@ -220,12 +253,18 @@ object OtpConversationServiceSpec extends UnitSpecBase:
             case _ => ZIO.succeed(LimitStatus.Allowed)
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
           result <- env.service.prepareInitialOtp(authId, initialConversation, Left(email), factorIndex = 0)
-        yield assertTrue(result == ConversationResult.RenderStep(ConversationStep.AccessDenied))
+        yield assertTrue(
+          result == ConversationResult.RenderStep(ConversationStep.AccessDenied),
+          // A submit ban must not cost the subject a request attempt on top.
+          env.submissionLimiter.tryAcquire.calls.isEmpty,
+          env.otpService.sendOtp.calls.isEmpty,
+        )
       },
       test("return IllegalState when overwrite fails due to optimistic concurrency conflict") {
         val env = Env()
         for
           _ <- env.submissionLimiter.statusFor.succeedsWith(LimitStatus.Allowed)
+          _ <- env.submissionLimiter.tryAcquire.succeedsWith(LimitStatus.Allowed)
           _ <- env.userRepository.findByCredential.succeedsWith(None)
           _ <- env.otpService.prepareOtp.succeedsWith(realOtp)
           _ <- env.conversationRepository.overwrite.succeedsWith(false)

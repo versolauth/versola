@@ -40,19 +40,60 @@ trait ChallengeThrottleRepositorySpec extends DatabaseSpecBase[ChallengeThrottle
       test("upsert and find round-trips a record including attempts and bannedUntil") {
         val rec = record(ChallengeType.OtpSubmit, banned = Some(bannedUntil))
         for
-          _ <- env.repository.upsert(rec)
+          written <- env.repository.upsert(rec)
           found <- env.repository.find(tenantId, subject, ChallengeType.OtpSubmit)
-        yield assertTrue(found.contains(rec))
+        yield assertTrue(written, found.contains(rec.copy(version = 1)))
       },
-      test("upsert updates the existing row on conflict") {
+      test("upsert updates the existing row when the version still matches") {
         val initial = record(ChallengeType.OtpSubmit, attempts = List(1000L))
-        val updated = record(ChallengeType.OtpSubmit, attempts = List(1000L, 2000L, 3000L), banned = Some(bannedUntil))
+        val updated = record(
+          ChallengeType.OtpSubmit,
+          attempts = List(1000L, 2000L, 3000L),
+          banned = Some(bannedUntil),
+        ).copy(version = 1)
         for
           _ <- env.repository.upsert(initial)
-          _ <- env.repository.upsert(updated)
+          written <- env.repository.upsert(updated)
           found <- env.repository.find(tenantId, subject, ChallengeType.OtpSubmit)
           all <- env.repository.findAll(tenantId, subject, List(ChallengeType.OtpSubmit))
-        yield assertTrue(found.contains(updated), all.length == 1)
+        yield assertTrue(written, found.contains(updated.copy(version = 2)), all.length == 1)
+      },
+      test("upsert rejects a write staged against a stale version and leaves the row untouched") {
+        val initial = record(ChallengeType.OtpSubmit, attempts = List(1000L))
+        val winner = record(ChallengeType.OtpSubmit, attempts = List(1000L, 2000L)).copy(version = 1)
+        // Same version as the winner staged against: this writer read before the winner landed.
+        val loser = record(ChallengeType.OtpSubmit, attempts = List(1000L, 3000L)).copy(version = 1)
+        for
+          _ <- env.repository.upsert(initial)
+          firstWrite <- env.repository.upsert(winner)
+          secondWrite <- env.repository.upsert(loser)
+          found <- env.repository.find(tenantId, subject, ChallengeType.OtpSubmit)
+        yield assertTrue(
+          firstWrite,
+          !secondWrite,
+          found.map(_.attempts).contains(List(1000L, 2000L)),
+          found.map(_.version).contains(2L),
+        )
+      },
+      test("upsert rejects an insert for a subject that already has a row") {
+        val initial = record(ChallengeType.OtpSubmit, attempts = List(1000L))
+        // version 0 means "no row yet"; another writer created it first.
+        val racingInsert = record(ChallengeType.OtpSubmit, attempts = List(9000L))
+        for
+          _ <- env.repository.upsert(initial)
+          written <- env.repository.upsert(racingInsert)
+          found <- env.repository.find(tenantId, subject, ChallengeType.OtpSubmit)
+        yield assertTrue(!written, found.map(_.attempts).contains(List(1000L)))
+      },
+      test("concurrent writers against the same row produce exactly one winner") {
+        val initial = record(ChallengeType.OtpSubmit, attempts = List(1000L))
+        for
+          _ <- env.repository.upsert(initial)
+          current <- env.repository.find(tenantId, subject, ChallengeType.OtpSubmit)
+          staged = (1 to 10).toList.map(i => initial.copy(attempts = List(1000L, i.toLong), version = current.get.version))
+          results <- ZIO.foreachPar(staged)(env.repository.upsert)
+          found <- env.repository.find(tenantId, subject, ChallengeType.OtpSubmit)
+        yield assertTrue(results.count(identity) == 1, found.map(_.version).contains(2L))
       },
       test("findAll returns only the requested types for the subject in a single query") {
         for

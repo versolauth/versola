@@ -8,6 +8,10 @@ import java.time.Instant
 enum ChallengeType:
   case OtpRequest, OtpSubmit, PasswordSubmit, PasskeyAssertion
 
+/** @param version
+  *   the version this record was read at; `0` for a record that does not exist yet. [[ChallengeThrottleRepository.upsert]]
+  *   only writes when the stored version still matches, so a concurrent write is detected instead of silently overwritten.
+  */
 case class ChallengeThrottleRecord(
     tenantId: TenantId,
     subject: String,
@@ -15,6 +19,7 @@ case class ChallengeThrottleRecord(
     attempts: List[Long],
     bannedUntil: Option[Instant],
     expiresAt: Instant,
+    version: Long = 0,
 )
 
 trait ChallengeThrottleRepository:
@@ -38,7 +43,11 @@ trait ChallengeThrottleRepository:
       challengeType: ChallengeType,
   ): Task[List[ChallengeThrottleRecord]]
 
-  def upsert(record: ChallengeThrottleRecord): Task[Unit]
+  /** Writes the record only if the stored row is still at `record.version` (or, for version `0`, if no
+    * row exists yet), bumping the version on success. Returns `false` when another writer got there
+    * first — the caller must re-read and recompute rather than retrying the same write.
+    */
+  def upsert(record: ChallengeThrottleRecord): Task[Boolean]
 
   def delete(
       tenantId: TenantId,
