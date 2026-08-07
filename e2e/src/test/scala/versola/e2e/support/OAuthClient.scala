@@ -56,6 +56,10 @@ extension (task: Task[AuthorizeResult])
 
 case class ChallengeResult(response: Response, html: String):
   val step: Option[ConversationStep] = ConversationStep.fromHtml(html)
+  val csrf: String = """"csrf"\s*:\s*"([^"]+)"""".r
+  .findFirstMatchIn(html)
+  .map(_.group(1))
+  .getOrElse(throw RuntimeException("CSRF token not found in challenge HTML"))
 
   def assertStep(expected: ConversationStep): Task[ChallengeResult] =
     step.assertIs(expected).as(this)
@@ -345,26 +349,30 @@ final class OAuthClient(client: Client, config: E2EConfig):
       .flatMap(resp => resp.body.asString.map(ChallengeResult(resp, _)))
 
   /** POST /challenge/email — submits an email credential to start the OTP flow. */
-  def submitEmail(cookie: String, email: String): Task[SubmitResult] =
-    formPost(s"${config.authUrl}/challenge/email", Map("email" -> email), cookie).map(SubmitResult(_))
+  def submitEmail(cookie: String, email: String, csrf: String): Task[SubmitResult] =
+    formPost(s"${config.authUrl}/challenge/email", Map("email" -> email, "csrf" -> csrf), cookie)
+      .map(SubmitResult(_))
 
   /** POST /challenge/phone — submits a phone credential to start the OTP flow. */
-  def submitPhone(cookie: String, phone: String): Task[SubmitResult] =
-    formPost(s"${config.authUrl}/challenge/phone", Map("phone" -> phone), cookie).map(SubmitResult(_))
+  def submitPhone(cookie: String, phone: String, csrf: String): Task[SubmitResult] =
+    formPost(s"${config.authUrl}/challenge/phone", Map("phone" -> phone, "csrf" -> csrf), cookie)
+      .map(SubmitResult(_))
 
   /** POST /challenge/otp — submits an OTP code (always "123456" in non-prod). */
-  def submitOtp(cookie: String, code: String): Task[SubmitResult] =
-    formPost(s"${config.authUrl}/challenge/otp", Map("code" -> code), cookie).map(SubmitResult(_))
+  def submitOtp(cookie: String, code: String, csrf: String): Task[SubmitResult] =
+    formPost(s"${config.authUrl}/challenge/otp", Map("code" -> code, "csrf" -> csrf), cookie)
+      .map(SubmitResult(_))
 
   /** POST /challenge/set-password — submits a new password when the conversation requires it. */
-  def submitSetPassword(cookie: String, password: String): Task[SubmitResult] =
-    formPost(s"${config.authUrl}/challenge/set-password", Map("password" -> password), cookie).map(SubmitResult(_))
+  def submitSetPassword(cookie: String, password: String, csrf: String): Task[SubmitResult] =
+    formPost(s"${config.authUrl}/challenge/set-password", Map("password" -> password, "csrf" -> csrf), cookie)
+      .map(SubmitResult(_))
 
   /** POST /challenge/login-password — submits login + password in a single step. */
-  def submitLoginPassword(cookie: String, login: String, password: String): Task[SubmitResult] =
+  def submitLoginPassword(cookie: String, login: String, password: String, csrf: String): Task[SubmitResult] =
     formPost(
       s"${config.authUrl}/challenge/login-password",
-      Map("login" -> login, "password" -> password),
+      Map("login" -> login, "password" -> password, "csrf" -> csrf),
       cookie,
     ).map(SubmitResult(_))
 

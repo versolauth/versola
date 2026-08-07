@@ -109,6 +109,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
     amr = Map.empty,
     needsPasswordChange = false,
     targetAcr = None,
+    csrfToken = "test-csrf",
     priorSessionId = None,
   )
 
@@ -260,6 +261,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           amr = Map.empty,
           needsPasswordChange = false,
           targetAcr = None,
+          csrfToken = "test-csrf",
           priorSessionId = None,
         )
         for
@@ -296,6 +298,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           amr = Map.empty,
           needsPasswordChange = false,
           targetAcr = None,
+          csrfToken = "test-csrf",
           priorSessionId = None,
         )
         for

@@ -103,6 +103,7 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
     amr = Map.empty,
     needsPasswordChange = false,
     targetAcr = None,
+    csrfToken = "test-csrf",
     priorSessionId = None,
   )
 

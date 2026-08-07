@@ -69,10 +69,13 @@ object ConversationRouter:
       conversationService.find(authId).flatMap:
         case None => ZIO.fail(Error.BadRequest)
         case Some(conversation) =>
-          val updated = withUiLocale(conversation, uiLocale)
-          dispatch(authId, updated, submission, ipAddress)
-            .orElseSucceed(ConversationResult.ServiceUnavailable)
-            .map(_ -> updated)
+          if submission.csrf != conversation.csrfToken then
+            ZIO.fail(Error.BadRequest)
+          else
+            val updated = withUiLocale(conversation, uiLocale)
+            dispatch(authId, updated, submission, ipAddress)
+              .orElseSucceed(ConversationResult.ServiceUnavailable)
+              .map(_ -> updated)
 
     private def dispatch(
         authId: AuthId,

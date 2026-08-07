@@ -32,7 +32,7 @@ object ConversationCookie:
       isSecure = true,
       isHttpOnly = true,
       maxAge = Some(ttl),
-      sameSite = None,
+      sameSite = Some(Cookie.SameSite.Lax),
     )
 
   /** Parses and HMAC-verifies a cookie produced by [[responseCookie]].
@@ -70,7 +70,7 @@ object SessionCookie:
       isSecure = true,
       isHttpOnly = true,
       maxAge = Some(ttl),
-      sameSite = None,
+      sameSite = Some(Cookie.SameSite.Lax),
     )
 
   /** Cookie that instructs the browser to drop the current session cookie. */
@@ -83,7 +83,7 @@ object SessionCookie:
       isSecure = true,
       isHttpOnly = true,
       maxAge = Some(Duration.Zero),
-      sameSite = None,
+      sameSite = Some(Cookie.SameSite.Lax),
     )
 
   def parse(content: String, secret: Secret.Bytes32): Either[String, SessionId] =

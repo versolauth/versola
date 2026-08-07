@@ -43,6 +43,7 @@ interface FormConfig {
   allT?: Record<string, Record<string, string>>;
   error?: string;
   previewId?: string;
+  csrf?: string;
 }
 
 declare global {
@@ -109,7 +110,8 @@ function OtpForm(props: { config: FormConfig }) {
       <Show when={props.config.error && lockRemaining() <= 0}>
         <div class="error-text" style="margin-bottom: 8px;">{t()[props.config.error!] ?? props.config.error}</div>
       </Show>
-      <form method="post">
+        <form method="post">
+        <input type="hidden" name="csrf" value={props.config.csrf ?? ''} />
         <div class="otp-wrapper" onClick={() => lockRemaining() <= 0 && inputRef.focus()}>
           <div class="otp-dots">
             {Array.from({ length: otpLength }, (_, i) => {
@@ -149,6 +151,7 @@ function OtpForm(props: { config: FormConfig }) {
         }
       >
         <form method="post" action={`/challenge/otp/resend?ui_locale=${currentLocale()}`}>
+          <input type="hidden" name="csrf" value={props.config.csrf ?? ''} />
           <button type="submit" class="btn btn-secondary">
             {t().resend_button}
           </button>

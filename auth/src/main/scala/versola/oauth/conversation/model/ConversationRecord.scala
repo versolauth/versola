@@ -36,6 +36,7 @@ case class ConversationRecord(
     amr: Map[PassedAuthFactor, PassedFactorRecord],
     needsPasswordChange: Boolean,
     targetAcr: Option[Acr],
+    csrfToken: String,
     /** MAC of the session that existed before this conversation was started. */
     priorSessionId: Option[MAC.Of[SessionId]],
 ):

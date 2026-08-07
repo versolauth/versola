@@ -158,33 +158,44 @@ object ConversationController extends Controller:
     request.headers.get(ipHeader).map(_.split(',').head.trim).filter(_.nonEmpty)
 
   given FormDecoder[PhoneSubmission] = (form: Form) =>
-    FormDecoder.single[Phone](form, "phone", Phone.parse)
-      .map(PhoneSubmission(_))
+    for
+      phone <- FormDecoder.single[Phone](form, "phone", Phone.parse)
+      csrf  <- FormDecoder.single[String](form, "csrf", Right(_))
+    yield PhoneSubmission(phone, csrf)
 
   given FormDecoder[EmailSubmission] = (form: Form) =>
-    FormDecoder.single[Email](form, "email", Email.from)
-      .map(EmailSubmission(_))
+    for
+      email <- FormDecoder.single[Email](form, "email", Email.from)
+      csrf  <- FormDecoder.single[String](form, "csrf", Right(_))
+    yield EmailSubmission(email, csrf)
 
-  given FormDecoder[OtpResendSubmission] = (_: Form) =>
-    ZIO.succeed(OtpResendSubmission())
+  given FormDecoder[OtpResendSubmission] = (form: Form) =>
+    FormDecoder.single[String](form, "csrf", Right(_)).map(OtpResendSubmission(_))
 
   given FormDecoder[OtpSubmission] = (form: Form) =>
-    FormDecoder.single[OtpCode](form, "code", code => Right(OtpCode(code)))
-      .map(OtpSubmission(_))
+    for
+      code <- FormDecoder.single[OtpCode](form, "code", code => Right(OtpCode(code)))
+      csrf <- FormDecoder.single[String](form, "csrf", Right(_))
+    yield OtpSubmission(code, csrf)
 
   given FormDecoder[PasswordSubmission] = (form: Form) =>
-    FormDecoder.single[String](form, "password", Right(_))
-      .map(p => PasswordSubmission(Password(p)))
+    for
+      password <- FormDecoder.single[String](form, "password", Right(_))
+      csrf     <- FormDecoder.single[String](form, "csrf", Right(_))
+    yield PasswordSubmission(Password(password), csrf)
 
   given FormDecoder[LoginPasswordSubmission] = (form: Form) =>
     for
       login    <- FormDecoder.single[String](form, "login", Right(_))
       password <- FormDecoder.single[String](form, "password", Right(_))
-    yield LoginPasswordSubmission(Login(login), Password(password))
+      csrf     <- FormDecoder.single[String](form, "csrf", Right(_))
+    yield LoginPasswordSubmission(Login(login), Password(password), csrf)
 
   given FormDecoder[PasskeyAssertionSubmission] = (form: Form) =>
-    FormDecoder.single[String](form, "response", Right(_))
-      .map(PasskeyAssertionSubmission(_))
+    for
+      response <- FormDecoder.single[String](form, "response", Right(_))
+      csrf     <- FormDecoder.single[String](form, "csrf", Right(_))
+    yield PasskeyAssertionSubmission(response, csrf)
 
   private val PasskeyNameRegex = "^[\\p{L}\\p{N} ()-]+$"
 
@@ -195,11 +206,14 @@ object ConversationController extends Controller:
         if n == n.trim && n.nonEmpty && n.matches(PasskeyNameRegex) then Right(n)
         else Left("Invalid passkey name: only letters, digits, spaces, hyphens, and parentheses are allowed, with no leading or trailing spaces"),
       )
-    yield PasskeyEnrollSubmission(response, name)
+      csrf     <- FormDecoder.single[String](form, "csrf", Right(_))
+    yield PasskeyEnrollSubmission(response, name, csrf)
 
-  given FormDecoder[PasskeySkipSubmission] = (_: Form) =>
-    ZIO.succeed(PasskeySkipSubmission())
+  given FormDecoder[PasskeySkipSubmission] = (form: Form) =>
+    FormDecoder.single[String](form, "csrf", Right(_)).map(PasskeySkipSubmission(_))
 
   given FormDecoder[SetPasswordSubmission] = (form: Form) =>
-    FormDecoder.single[String](form, "password", Right(_))
-      .map(p => SetPasswordSubmission(Password(p)))
+    for
+      password <- FormDecoder.single[String](form, "password", Right(_))
+      csrf     <- FormDecoder.single[String](form, "csrf", Right(_))
+    yield SetPasswordSubmission(Password(password), csrf)

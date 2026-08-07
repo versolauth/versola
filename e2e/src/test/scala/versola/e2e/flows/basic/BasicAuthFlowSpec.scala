@@ -18,8 +18,9 @@ object BasicAuthFlowSpec extends E2ESpec:
           clientId = Some(s.clientId),
           redirectUri = Some(s.redirectUri),
         ).assertChallengeRedirect
-        _ <- auth.getChallenge(authorize.conversationCookie.get).assertStep(ConversationStep.Credential)
-        code <- auth.submitLoginPassword(authorize.conversationCookie.get, s.login.get, s.password).assertRedirect(auth, authorize.conversationCookie.get)
+        challenge <- auth.getChallenge(authorize.conversationCookie.get).assertStep(ConversationStep.Credential)
+        csrf = challenge.csrf
+        code <- auth.submitLoginPassword(authorize.conversationCookie.get, s.login.get, s.password, csrf).assertRedirect(auth, authorize.conversationCookie.get)
         token <- auth.token(
           code,
           authorize.verifier,
@@ -37,10 +38,12 @@ object BasicAuthFlowSpec extends E2ESpec:
         (s, auth) <- setup(Flows.Id.EmailOtp)
         authorize <- auth.authorize(scope = "openid email", clientId = Some(s.clientId), redirectUri = Some(s.redirectUri))
           .assertChallengeRedirect
-        _ <- auth.getChallenge(authorize.conversationCookie.get).assertStep(ConversationStep.Credential)
-        _ <- auth.submitEmail(authorize.conversationCookie.get, s.email.get)
-        _ <- auth.getChallenge(authorize.conversationCookie.get).assertStep(ConversationStep.Otp)
-        code <- auth.submitOtp(authorize.conversationCookie.get, fixedOtp).assertRedirect(auth, authorize.conversationCookie.get)
+        challenge1 <- auth.getChallenge(authorize.conversationCookie.get).assertStep(ConversationStep.Credential)
+        csrf1 = challenge1.csrf
+        _ <- auth.submitEmail(authorize.conversationCookie.get, s.email.get, csrf1)
+        challenge2 <- auth.getChallenge(authorize.conversationCookie.get).assertStep(ConversationStep.Otp)
+        csrf2 = challenge2.csrf
+        code <- auth.submitOtp(authorize.conversationCookie.get, fixedOtp, csrf2).assertRedirect(auth, authorize.conversationCookie.get)
         token <- auth.token(
           code,
           authorize.verifier,

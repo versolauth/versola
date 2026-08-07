@@ -70,6 +70,7 @@ trait ConversationRepositorySpec extends DatabaseSpecBase[ConversationRepository
     amr = Map.empty,
     needsPasswordChange = false,
     targetAcr = None,
+    csrfToken = "test-csrf",
     priorSessionId = None,
   )
 
@@ -104,6 +105,7 @@ trait ConversationRepositorySpec extends DatabaseSpecBase[ConversationRepository
     amr = Map.empty,
     needsPasswordChange = false,
     targetAcr = None,
+    csrfToken = "test-csrf",
     priorSessionId = None,
   )
 

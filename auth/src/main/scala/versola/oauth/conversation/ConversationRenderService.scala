@@ -73,6 +73,7 @@ object ConversationRenderService:
       locales: List[String],
       allT: Map[String, Map[String, String]],
       error: Option[String],
+      csrf: String, 
   ) derives JsonCodec
 
   case class LogoutConfirm(
@@ -106,7 +107,7 @@ object ConversationRenderService:
         client <- configuration.find(record.clientId)
         themeId = client.map(_.theme).getOrElse(ThemeDefault)
         css <- themeCss(themeId)
-        maybeInfo <- formFor(record.step, record.clientId, record.uiLocales, record.redirectUri, record.state, errorOverride = errorKey)
+        maybeInfo <- formFor(record.step, record.clientId, record.uiLocales, record.redirectUri, record.state, record.csrfToken, errorOverride = errorKey)
         response <- maybeInfo match
           case None =>
             ZIO.succeed(htmlResponse(notFoundPage(css), Status.NotFound))
@@ -195,6 +196,7 @@ object ConversationRenderService:
               locales = (form.localizations.keySet & activeCodes).toList.sorted,
               allT = form.localizations,
               error = None,
+              csrf = "",
             ),
             version = form.version,
           )
@@ -227,7 +229,7 @@ object ConversationRenderService:
             value.style,
             value.jsCompiled,
             FormConfig(LogoutConfirm(csrfToken, postLogoutRedirectUri, state), translations, chosen,
-              (value.localizations.keySet & activeCodes).toList.sorted, value.localizations, None),
+              (value.localizations.keySet & activeCodes).toList.sorted, value.localizations, None, csrfToken),
             value.version,
           )
           htmlResponse(logoutConfirmPage(info, css))
@@ -256,6 +258,7 @@ object ConversationRenderService:
         locale: Option[List[String]],
         redirectUri: URL,
         state: Option[State],
+        csrfToken: String,
         errorOverride: Option[String] = None,
     ): Task[Option[FormRenderInfo]] =
       val formId = step match
@@ -285,6 +288,7 @@ object ConversationRenderService:
             locales = allLocales,
             allT = form.localizations,
             error = errorMessage,
+            csrf = csrfToken,
           ),
           version = form.version,
         )

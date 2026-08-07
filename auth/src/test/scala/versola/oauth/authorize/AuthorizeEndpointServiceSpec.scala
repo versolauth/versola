@@ -169,7 +169,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
     amr = Map.empty,
     needsPasswordChange = false,
     targetAcr = None,
-
+    csrfToken = "test-csrf",
     priorSessionId = None,
   )
 
@@ -181,6 +181,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
         _ <- env.configurationService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
         _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
+        _ <- env.secureRandom.nextAlphanumeric.succeedsWith("testcsrf1")
         _ <- env.conversationRepository.create.succeedsWith(())
         result <- env.service.authorize(baseRequest)
       yield assertTrue(result == AuthorizeResponse.Initialize(versola.oauth.conversation.model.AuthId(uuid)))
@@ -200,6 +201,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         _ <- env.sessionService.find.succeedsWith(None)
         _ <- env.configurationService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
         _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
+        _ <- env.secureRandom.nextAlphanumeric.succeedsWith("testcsrf1")
         _ <- env.conversationRepository.create.succeedsWith(())
         result <- env.service.authorize(baseRequest.copy(sessionId = Some(rawSessionId)))
         createCalls = env.conversationRepository.create.calls
@@ -298,6 +300,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         _ <- env.sessionService.find.succeedsWith(Some(SessionInfo(sessionMac, session)))
         _ <- env.configurationService.getAcrVocabulary.succeedsWith(Map.empty)
         _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
+        _ <- env.secureRandom.nextAlphanumeric.succeedsWith("testcsrf1")
         _ <- env.conversationRepository.create.succeedsWith(())
         result <- env.service.authorize(baseRequest.copy(sessionId = Some(rawSessionId), prompt = Set(Prompt.login)))
         createCalls = env.conversationRepository.create.calls
@@ -317,6 +320,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         _ <- env.sessionService.find.succeedsWith(Some(SessionInfo(sessionMac, session)))
         _ <- env.configurationService.getAcrVocabulary.succeedsWith(Map.empty)
         _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
+        _ <- env.secureRandom.nextAlphanumeric.succeedsWith("testcsrf1")
         _ <- env.conversationRepository.create.succeedsWith(())
         result <- env.service.authorize(baseRequest.copy(sessionId = Some(rawSessionId), prompt = Set(Prompt.login)))
         createCalls = env.conversationRepository.create.calls
@@ -350,6 +354,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         _ <- env.sessionService.find.succeedsWith(Some(SessionInfo(sessionMac, session)))
         _ <- env.configurationService.getAcrVocabulary.succeedsWith(Map.empty)
         _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
+        _ <- env.secureRandom.nextAlphanumeric.succeedsWith("testcsrf1")
         _ <- env.userRepository.find.succeedsWith(Some(user))
         _ <- env.conversationRepository.create.succeedsWith(())
         _ <- env.conversationRouter.advance.succeedsWith(())
@@ -372,6 +377,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         _ <- env.configurationService.find.succeedsWith(Some(clientWithPasswordFlow))
         _ <- env.configurationService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
         _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
+        _ <- env.secureRandom.nextAlphanumeric.succeedsWith("testcsrf1")
         _ <- env.conversationRepository.create.succeedsWith(())
         _ <- env.conversationRouter.submit.succeedsWith((ConversationResult.IllegalState, dummyConversation))
         result <- env.service.authorize(baseRequest.copy(loginHint = Some(Left(emailHint))))
@@ -379,7 +385,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
       yield assertTrue(
         result == AuthorizeResponse.Initialize(versola.oauth.conversation.model.AuthId(uuid)),
         submitCalls.nonEmpty,
-        submitCalls.head._2 == EmailSubmission(emailHint),
+        submitCalls.head._2 == EmailSubmission(emailHint, "testcsrf1"),
       )
     },
     test("advance conversation to OTP step when login_hint phone is provided on phone+otp flow") {
@@ -389,6 +395,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
         _ <- env.configurationService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
         _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
+        _ <- env.secureRandom.nextAlphanumeric.succeedsWith("testcsrf1")
         _ <- env.conversationRepository.create.succeedsWith(())
         _ <- env.conversationRouter.submit.succeedsWith((ConversationResult.IllegalState, dummyConversation))
         result <- env.service.authorize(baseRequest.copy(loginHint = Some(Right(phoneHint))))
@@ -396,7 +403,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
       yield assertTrue(
         result == AuthorizeResponse.Initialize(versola.oauth.conversation.model.AuthId(uuid)),
         submitCalls.nonEmpty,
-        submitCalls.head._2 == PhoneSubmission(phoneHint),
+        submitCalls.head._2 == PhoneSubmission(phoneHint, "testcsrf1"),
       )
     },
     test("force re-authentication when max_age exceeded") {
@@ -418,6 +425,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         _ <- env.sessionService.find.succeedsWith(Some(SessionInfo(sessionMac, oldSession)))
         _ <- env.configurationService.getAcrVocabulary.succeedsWith(Map.empty)
         _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
+        _ <- env.secureRandom.nextAlphanumeric.succeedsWith("testcsrf1")
         _ <- env.conversationRepository.create.succeedsWith(())
         _ <- env.userRepository.find.succeedsWith(Some(UserRecord.empty(sessionUserId)))
         _ <- env.conversationRouter.advance.succeedsWith(())
@@ -486,6 +494,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         _ <- env.acrResolver.checkAcrSatisfaction.succeedsWith(None)
         _ <- env.acrResolver.resolveAchievableAcr.succeedsWith(Some(Acr("mfa")))
         _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
+        _ <- env.secureRandom.nextAlphanumeric.succeedsWith("testcsrf1")
         _ <- env.conversationRepository.create.succeedsWith(())
         _ <- env.userRepository.find.succeedsWith(Some(UserRecord.empty(session.userId)))
         _ <- env.conversationRouter.advance.succeedsWith(())
@@ -542,6 +551,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         _ <- env.acrResolver.checkAcrSatisfaction.succeedsWith(None)
         _ <- env.acrResolver.resolveAchievableAcr.succeedsWith(Some(Acr("company_mfa")))
         _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
+        _ <- env.secureRandom.nextAlphanumeric.succeedsWith("testcsrf1")
         _ <- env.conversationRepository.create.succeedsWith(())
         _ <- env.userRepository.find.succeedsWith(Some(UserRecord.empty(session.userId)))
         _ <- env.conversationRouter.advance.succeedsWith(())
@@ -561,6 +571,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         _ <- env.acrResolver.checkAcrSatisfaction.succeedsWith(None)
         _ <- env.acrResolver.resolveAchievableAcr.succeedsWith(Some(Acr("mfa")))
         _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
+        _ <- env.secureRandom.nextAlphanumeric.succeedsWith("testcsrf1")
         _ <- env.conversationRepository.create.succeedsWith(())
         _ <- env.userRepository.find.succeedsWith(Some(user))
         _ <- env.conversationRouter.advance.succeedsWith(())
@@ -618,6 +629,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         _ <- env.sessionService.find.succeedsWith(Some(SessionInfo(sessionMac, session)))
         _ <- env.configurationService.getAcrVocabulary.succeedsWith(Map(Acr("mfa") -> NonEmptyList(PassedAuthFactor.password, PassedAuthFactor.otp)))
         _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
+        _ <- env.secureRandom.nextAlphanumeric.succeedsWith("testcsrf1")
         _ <- env.conversationRepository.create.succeedsWith(())
         _ <- env.userRepository.find.succeedsWith(Some(UserRecord.empty(differentUserId)))
         _ <- env.conversationRouter.advance.succeedsWith(())
@@ -665,6 +677,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         _ <- env.sessionService.find.succeedsWith(Some(SessionInfo(sessionMac, session)))
         _ <- env.configurationService.getAcrVocabulary.succeedsWith(Map.empty)
         _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
+        _ <- env.secureRandom.nextAlphanumeric.succeedsWith("testcsrf1")
         _ <- env.conversationRepository.create.succeedsWith(())
         _ <- env.userRepository.find.succeedsWith(Some(UserRecord.empty(differentUserId)))
         _ <- env.conversationRouter.advance.succeedsWith(())
@@ -717,6 +730,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         _ <- env.configurationService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
         _ <- env.acrResolver.resolveAchievableAcr.succeedsWith(Some(targetAcr))
         _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
+        _ <- env.secureRandom.nextAlphanumeric.succeedsWith("testcsrf1")
         _ <- env.conversationRepository.create.succeedsWith(())
         _ <- env.userRepository.find.succeedsWith(Some(UserRecord.empty(hintUserId)))
         _ <- env.conversationRouter.advance.succeedsWith(())
@@ -751,6 +765,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
         _ <- env.configurationService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
         _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
+        _ <- env.secureRandom.nextAlphanumeric.succeedsWith("testcsrf1")
         _ <- env.conversationRepository.create.succeedsWith(())
         _ <- env.userRepository.find.succeedsWith(Some(UserRecord.empty(hintUserId)))
         _ <- env.conversationRouter.advance.succeedsWith(())
@@ -818,6 +833,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         _ <- env.acrResolver.checkAcrSatisfaction.succeedsWith(None)
         _ <- env.acrResolver.resolveAchievableAcr.succeedsWith(Some(targetAcr))
         _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
+        _ <- env.secureRandom.nextAlphanumeric.succeedsWith("testcsrf1")
         _ <- env.conversationRepository.create.succeedsWith(())
         _ <- env.userRepository.find.succeedsWith(Some(UserRecord.empty(differentUserId)))
         _ <- env.conversationRouter.advance.succeedsWith(())
@@ -846,6 +862,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         _ <- env.sessionService.find.succeedsWith(Some(SessionInfo(sessionMac, session)))
         _ <- env.configurationService.getAcrVocabulary.succeedsWith(Map.empty)
         _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
+        _ <- env.secureRandom.nextAlphanumeric.succeedsWith("testcsrf1")
         _ <- env.userRepository.find.succeedsWith(None)
         result <- env.service.authorize(baseRequest.copy(sessionId = Some(rawSessionId))).flip
       yield assertTrue(result == Error.AccessDenied(redirectUri, baseRequest.state))
@@ -867,6 +884,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         _ <- env.sessionService.find.succeedsWith(Some(SessionInfo(sessionMac, oldSession)))
         _ <- env.configurationService.getAcrVocabulary.succeedsWith(Map.empty)
         _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
+        _ <- env.secureRandom.nextAlphanumeric.succeedsWith("testcsrf1")
         _ <- env.userRepository.find.succeedsWith(None)
         result <- env.service.authorize(baseRequest.copy(sessionId = Some(rawSessionId), maxAge = Some(0))).flip
       yield assertTrue(result == Error.AccessDenied(redirectUri, baseRequest.state))
@@ -891,6 +909,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
         _ <- env.configurationService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
         _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
+        _ <- env.secureRandom.nextAlphanumeric.succeedsWith("testcsrf1")
         _ <- env.conversationRepository.create.succeedsWith(())
         _ <- env.userRepository.find.succeedsWith(None)
         _ <- env.conversationRouter.advance.succeedsWith(())
@@ -927,6 +946,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         _ <- env.sessionService.find.succeedsWith(Some(SessionInfo(sessionMac, session)))
         _ <- env.configurationService.getAcrVocabulary.succeedsWith(Map.empty)
         _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
+        _ <- env.secureRandom.nextAlphanumeric.succeedsWith("testcsrf1")
         _ <- env.conversationRepository.create.succeedsWith(())
         _ <- env.userRepository.find.succeedsWith(None)
         _ <- env.conversationRouter.advance.succeedsWith(())
