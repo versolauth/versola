@@ -115,6 +115,41 @@ trait PasswordRepositorySpec extends DatabaseSpecBase[PasswordRepositorySpec.Env
           rows2 <- env.repository.list(userId2)
         yield assertTrue(rows1.size == 1, rows2.size == 1)
       },
+
+      // Concurrency: two simultaneous changes to the SAME new password must not both pass the
+      // reuse check. With per-user serialization the second transaction observes the first's
+      // committed insert, so exactly one succeeds and the other is rejected as reuse.
+      test("concurrent create of the same password: exactly one succeeds, the other is reuse") {
+        for
+          _ <- env.repository.create(userId1, pass(1), salt(1), historySize = 5, numDifferent = 3)
+          results <- ZIO.collectAllPar(List(
+            env.repository.create(userId1, pass(2), salt(2), historySize = 5, numDifferent = 3).either,
+            env.repository.create(userId1, pass(2), salt(2), historySize = 5, numDifferent = 3).either,
+          ))
+          rows <- env.repository.list(userId1)
+        yield assertTrue(
+          results.count(_.isRight) == 1,
+          results.count(_ == Left(PasswordReuseError(3))) == 1,
+          // seed pass(1) + exactly one pass(2) → 2 rows (would be 3 without the lock)
+          rows.size == 2,
+        )
+      },
+
+      // Concurrency: two simultaneous changes with an empty starting history must still respect
+      // historySize. Without serialization both read the empty history, both insert, and prune
+      // removes nothing, leaving historySize + 1 rows.
+      test("concurrent create with empty history respects historySize (prune)") {
+        for
+          results <- ZIO.collectAllPar(List(
+            env.repository.create(userId1, pass(1), salt(1), historySize = 1, numDifferent = 1).either,
+            env.repository.create(userId1, pass(2), salt(2), historySize = 1, numDifferent = 1).either,
+          ))
+          rows <- env.repository.list(userId1)
+        yield assertTrue(
+          results.forall(_.isRight),
+          rows.size == 1,
+        )
+      },
     )
 
 object PasswordRepositorySpec:
