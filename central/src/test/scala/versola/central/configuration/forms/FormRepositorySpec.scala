@@ -4,6 +4,8 @@ import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.util.DatabaseSpecBase
 import zio.ZIO
 import zio.test.*
+import zio.test.Assertion.*
+import zio.duration.*
 
 trait FormRepositorySpec extends DatabaseSpecBase[FormRepositorySpec.Env]:
   self: ZIOSpec[TransactorZIO] =>
@@ -62,6 +64,35 @@ trait FormRepositorySpec extends DatabaseSpecBase[FormRepositorySpec.Env]:
           v2.map(_.active) == Some(true),
         )
       },
+      test("upsertForm handles concurrent calls without duplicate key errors") {
+        val formId = FormId("concurrent-test")
+        val numConcurrent = 5
+        // Run multiple upsertForm calls concurrently
+        val concurrentUpdates = ZIO.foreachPar(1 to numConcurrent) { i =>
+          env.repository.upsertForm(
+            formId,
+            s"style$i",
+            Some(s"source$i"),
+            Some(s"compiled$i"),
+            Map("en" -> Map("title" -> s"Form $i")),
+            Vector.empty,
+            activate = true
+          )
+        }
+        for
+          _ <- concurrentUpdates
+          // Verify we don't have duplicate key errors (test would fail if we did)
+          all <- env.repository.getAll
+          versions = all.filter(_.id == formId).map(_.version).distinct.sorted
+        yield assertTrue(
+          // We should have exactly numConcurrent versions (no duplicates from concurrent inserts)
+          versions.length == numConcurrent,
+          // Versions should be sequential starting from 1
+          versions.head == 1,
+          versions.last == numConcurrent,
+          versions == (1 to numConcurrent).toList
+        )
+      }
     )
 
 object FormRepositorySpec:
