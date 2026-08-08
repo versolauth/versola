@@ -4,7 +4,6 @@ import versola.oauth.authorize.AuthorizeRedirect
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{ClientId, FormRecord, PrimaryCredential}
 import versola.oauth.conversation.model.{ConversationRecord, ConversationStep}
-import versola.oauth.jwks.JwksService
 import versola.oauth.model.SessionCookie
 import versola.oauth.model.State
 import versola.oauth.session.model.SessionInfo
@@ -41,7 +40,7 @@ trait ConversationRenderService:
   ): Task[Response]
 
 object ConversationRenderService:
-  val live = ZLayer.fromFunction(Impl(_, _, _))
+  val live = ZLayer.fromFunction(Impl(_, _))
 
   @jsonDiscriminator("type")
   sealed trait StepView derives JsonCodec
@@ -100,7 +99,6 @@ object ConversationRenderService:
   class Impl(
       config: CoreConfig,
       configuration: OAuthConfigurationService,
-      jwksService: JwksService,
   ) extends ConversationRenderService:
     override def renderStep(record: ConversationRecord, ifNoneMatch: Option[String], errorKey: Option[String] = None): Task[Response] =
       for
@@ -152,12 +150,9 @@ object ConversationRenderService:
             sessionTtl <- configuration.getSessionTtl(record.clientId)
             idToken <- idTokenData match
               case Some(data) =>
-                for
-                  signingKey <- jwksService.getPublicKeys.map(_.active)
-                  cHash = JWT.leftHalfHash(encodedCode, signingKey.algorithm)
-                  dataWithCHash = data.copy(claims = data.claims + ("c_hash" -> Json.Str(cHash)))
-                  token <- serializeIdToken(dataWithCHash, signingKey)
-                yield Some(token)
+                val cHash = JWT.leftHalfHash(encodedCode, JWT.Algorithm.RS256)
+                val dataWithCHash = data.copy(claims = data.claims + ("c_hash" -> Json.Str(cHash)))
+                serializeIdToken(dataWithCHash).map(Some(_))
               case None => ZIO.none
             redirectUrl = AuthorizeRedirect.responseUrl(redirectUri, encodedCode, state, idToken)
           yield Response.seeOther(redirectUrl)
@@ -234,23 +229,26 @@ object ConversationRenderService:
           )
           htmlResponse(logoutConfirmPage(info, css))
 
-    private def serializeIdToken(data: ConversationResult.IdTokenData, signingKey: JWT.PublicKey): Task[String] =
+    private def serializeIdToken(data: ConversationResult.IdTokenData): Task[String] =
       val claims = data.claims + ("sid" -> Json.Str(data.sessionId))
-      JWT.serialize(
-        typ = JWT.Type.JWT,
-        claims = JWT.Claims(
-          issuer = config.jwt.issuer,
-          subject = data.userId.toString,
-          audience = List(data.clientId),
-          custom = Json.Obj(Chunk.fromIterable(claims)),
-        ),
-        ttl = 15.minutes,
-        signature = JWT.Signature.Asymmetric(
-          algorithm = signingKey.algorithm,
-          keyId = signingKey.id,
-          privateKey = config.jwt.privateKey,
-        ),
-      )
+      for
+        keyId <- config.jwt.requireKeyId
+        token <- JWT.serialize(
+          typ = JWT.Type.JWT,
+          claims = JWT.Claims(
+            issuer = config.jwt.issuer,
+            subject = data.userId.toString,
+            audience = List(data.clientId),
+            custom = Json.Obj(Chunk.fromIterable(claims)),
+          ),
+          ttl = 15.minutes,
+          signature = JWT.Signature.Asymmetric(
+            algorithm = JWT.Algorithm.RS256,
+            keyId = keyId,
+            privateKey = config.jwt.privateKey,
+          ),
+        )
+      yield token
 
     private def formFor(
         step: ConversationStep,

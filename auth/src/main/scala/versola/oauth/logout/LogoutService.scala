@@ -2,7 +2,6 @@ package versola.oauth.logout
 
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{ClientId, OAuthClientRecord}
-import versola.oauth.jwks.JwksService
 import versola.oauth.session.SessionService
 import versola.oauth.session.model.{PublicSessionId, SessionId, SessionInfo, SessionRecord}
 import versola.util.{CoreConfig, JWT}
@@ -33,13 +32,12 @@ object LogoutService:
     * giving up on that single, fire-and-forget delivery attempt (no retries). */
   private val RequestTimeout = 5.seconds
 
-  val live = ZLayer.fromFunction(Impl(_, _, _, _, _))
+  val live = ZLayer.fromFunction(Impl(_, _, _, _))
 
   class Impl(
       sessionService: SessionService,
       configuration: OAuthConfigurationService,
       config: CoreConfig,
-      jwksService: JwksService,
       httpClient: Client,
   ) extends LogoutService:
 
@@ -114,8 +112,7 @@ object LogoutService:
 
     private def deliverLogoutToken(client: OAuthClientRecord, session: SessionRecord, uri: URL): Task[Unit] =
       for
-        signingKey <- jwksService.getPublicKeys.map(_.active)
-        token <- logoutToken(client, session, signingKey)
+        token <- logoutToken(client, session)
         request = Request.post(uri, Body.fromURLEncodedForm(Form.fromStrings("logout_token" -> token)))
         response <- ZIO.scoped(httpClient.request(request))
         _ <- ZIO
@@ -123,21 +120,24 @@ object LogoutService:
           .unless(response.status.isSuccess)
       yield ()
 
-    private def logoutToken(client: OAuthClientRecord, session: SessionRecord, signingKey: JWT.PublicKey): Task[String] =
-      JWT.serialize(
-        claims = JWT.Claims(
-          issuer = config.jwt.issuer,
-          subject = session.userId.toString,
-          audience = List(client.id),
-          custom = Json.Obj(
-            "sid" -> Json.Str(session.publicId),
-            "events" -> Json.Obj(BackChannelLogoutEvent -> Json.Obj()),
+    private def logoutToken(client: OAuthClientRecord, session: SessionRecord): Task[String] =
+      for
+        keyId <- config.jwt.requireKeyId
+        token <- JWT.serialize(
+          claims = JWT.Claims(
+            issuer = config.jwt.issuer,
+            subject = session.userId.toString,
+            audience = List(client.id),
+            custom = Json.Obj(
+              "sid" -> Json.Str(session.publicId),
+              "events" -> Json.Obj(BackChannelLogoutEvent -> Json.Obj()),
+            ),
           ),
-        ),
-        ttl = TokenTtl,
-        signature = JWT.Signature.Asymmetric(
-          algorithm = signingKey.algorithm,
-          keyId = signingKey.id,
-          privateKey = config.jwt.privateKey,
-        ),
-      )
+          ttl = TokenTtl,
+          signature = JWT.Signature.Asymmetric(
+            algorithm = JWT.Algorithm.RS256,
+            keyId = keyId,
+            privateKey = config.jwt.privateKey,
+          ),
+        )
+      yield token
