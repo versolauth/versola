@@ -24,10 +24,10 @@ class PostgresLocaleRepository(xa: TransactorZIO) extends LocaleRepository, Basi
         sql"""UPDATE otp_templates
               SET localizations = localizations - $delete
               WHERE jsonb_exists_any(localizations, $delete)""".update.run()
-      add.foreach { locale =>
-        sql"""INSERT INTO locales (code, name, is_default, active) VALUES (${locale.code}, ${locale.name}, ${locale.isDefault}, ${locale.active})
-              ON CONFLICT (code) DO UPDATE SET name = EXCLUDED.name, active = EXCLUDED.active""".update.run()
-      }
+      if add.nonEmpty then
+        batchUpdate(add): locale =>
+          sql"""INSERT INTO locales (code, name, is_default, active) VALUES (${locale.code}, ${locale.name}, ${locale.isDefault}, ${locale.active})
+                ON CONFLICT (code) DO UPDATE SET name = EXCLUDED.name, active = EXCLUDED.active""".update
 
   override def setDefault(code: String): Task[Unit] =
     xa.repeatableRead.transactMeasured("set-default-locale"):
