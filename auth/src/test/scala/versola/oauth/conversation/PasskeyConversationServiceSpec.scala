@@ -11,8 +11,6 @@ import versola.oauth.conversation.limit.{ChallengeType, LimitStatus, SubmissionL
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
 import versola.oauth.conversation.otp.OtpService
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod}
-import versola.oauth.session.SessionRepository
-import versola.oauth.token.AuthorizationCodeRepository
 import versola.oauth.userinfo.UserInfoService
 import versola.user.UserRepository
 import versola.user.model.{UserId, UserRecord}
@@ -48,8 +46,7 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
     val passwordService = stub[PasswordService]
     val conversationRepository = stub[ConversationRepository]
     val userRepository = stub[UserRepository]
-    val authorizationCodeRepository = stub[AuthorizationCodeRepository]
-    val sessionRepository = stub[SessionRepository]
+    val conversationFinalizer = stub[ConversationFinalizer]
     val authPropertyGenerator = stub[AuthPropertyGenerator]
     val securityService = stub[SecurityService]
     val userInfoService = stub[UserInfoService]
@@ -65,8 +62,7 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
       passwordService,
       conversationRepository,
       userRepository,
-      authorizationCodeRepository,
-      sessionRepository,
+      conversationFinalizer,
       authPropertyGenerator,
       securityService,
       userInfoService,
@@ -351,9 +347,7 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
           _ <- env.authPropertyGenerator.nextPublicSessionId.succeedsWith(testPublicSessionId)
           _ <- env.securityService.mac.succeedsWith(testMac)
           _ <- env.authPropertyGenerator.nextAccessToken.succeedsWith(testAccessToken)
-          _ <- env.authorizationCodeRepository.create.succeedsWith(())
-          _ <- env.sessionRepository.create.succeedsWith(())
-          _ <- env.conversationRepository.delete.succeedsWith(true)
+          _ <- env.conversationFinalizer.finish.succeedsWith(true)
           _ <- env.configService.getSessionTtl.succeedsWith(zio.Duration.fromSeconds(86400))
           _ <- env.configService.getSessionIdleTtl.succeedsWith(Option.empty[zio.Duration])
           result <- env.service.offerPasskeyEnroll(authId, recordWithUser)
@@ -395,9 +389,7 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
           _ <- env.authPropertyGenerator.nextPublicSessionId.succeedsWith(testPublicSessionId)
           _ <- env.securityService.mac.succeedsWith(testMac)
           _ <- env.authPropertyGenerator.nextAccessToken.succeedsWith(testAccessToken)
-          _ <- env.authorizationCodeRepository.create.succeedsWith(())
-          _ <- env.sessionRepository.create.succeedsWith(())
-          _ <- env.conversationRepository.delete.succeedsWith(true)
+          _ <- env.conversationFinalizer.finish.succeedsWith(true)
           _ <- env.configService.getSessionTtl.succeedsWith(zio.Duration.fromSeconds(86400))
           _ <- env.configService.getSessionIdleTtl.succeedsWith(Option.empty[zio.Duration])
           result <- env.service.finishPasskeyEnroll(authId, recordWithUser, enrollStep, "resp", "my-passkey")
@@ -430,9 +422,7 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
           _ <- env.authPropertyGenerator.nextPublicSessionId.succeedsWith(testPublicSessionId)
           _ <- env.securityService.mac.succeedsWith(testMac)
           _ <- env.authPropertyGenerator.nextAccessToken.succeedsWith(testAccessToken)
-          _ <- env.authorizationCodeRepository.create.succeedsWith(())
-          _ <- env.sessionRepository.create.succeedsWith(())
-          _ <- env.conversationRepository.delete.succeedsWith(true)
+          _ <- env.conversationFinalizer.finish.succeedsWith(true)
           _ <- env.configService.getSessionTtl.succeedsWith(zio.Duration.fromSeconds(86400))
           _ <- env.configService.getSessionIdleTtl.succeedsWith(Option.empty[zio.Duration])
           result <- env.service.skipPasskey(authId, recordWithUser)

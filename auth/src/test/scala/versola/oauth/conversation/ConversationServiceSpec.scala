@@ -15,10 +15,8 @@ import versola.oauth.conversation.model.{AuthId, ConversationRecord, Conversatio
 import versola.oauth.conversation.otp.OtpService
 import versola.oauth.conversation.otp.model.SubmitOtpResult
 import versola.oauth.model.*
-import versola.oauth.session.SessionRepository
 import versola.oauth.session.model.PriorSession
 import versola.oauth.session.model.*
-import versola.oauth.token.AuthorizationCodeRepository
 import versola.oauth.userinfo.UserInfoService
 import versola.user.UserRepository
 import versola.user.model.*
@@ -81,8 +79,7 @@ object ConversationServiceSpec extends UnitSpecBase:
     val passwordService = stub[PasswordService]
     val conversationRepository = stub[ConversationRepository]
     val userRepository = stub[UserRepository]
-    val authorizationCodeRepository = stub[AuthorizationCodeRepository]
-    val sessionRepository = stub[SessionRepository]
+    val conversationFinalizer = stub[ConversationFinalizer]
     val authPropertyGenerator = stub[AuthPropertyGenerator]
     val securityService = stub[SecurityService]
     val userInfoService = stub[UserInfoService]
@@ -97,8 +94,7 @@ object ConversationServiceSpec extends UnitSpecBase:
       passwordService,
       conversationRepository,
       userRepository,
-      authorizationCodeRepository,
-      sessionRepository,
+      conversationFinalizer,
       authPropertyGenerator,
       securityService,
       userInfoService,
@@ -216,9 +212,7 @@ object ConversationServiceSpec extends UnitSpecBase:
           _ <- env.authPropertyGenerator.nextAccessToken.succeedsWith(accessToken)
           _ <- env.configService.getSessionTtl.succeedsWith(1.hour)
           _ <- env.configService.getSessionIdleTtl.succeedsWith(Some(30.minutes))
-          _ <- env.conversationRepository.delete.succeedsWith(true)
-          _ <- env.authorizationCodeRepository.create.succeedsWith(())
-          _ <- env.sessionRepository.create.succeedsWith(())
+          _ <- env.conversationFinalizer.finish.succeedsWith(true)
           result <- env.service.finish(authId, record)
         yield
           result match
@@ -254,18 +248,16 @@ object ConversationServiceSpec extends UnitSpecBase:
           _ <- env.authPropertyGenerator.nextAccessToken.succeedsWith(accessToken)
           _ <- env.configService.getSessionTtl.succeedsWith(1.hour)
           _ <- env.configService.getSessionIdleTtl.succeedsWith(Some(30.minutes))
-          _ <- env.conversationRepository.delete.succeedsWith(true)
-          _ <- env.authorizationCodeRepository.create.succeedsWith(())
-          _ <- env.sessionRepository.create.succeedsWith(())
+          _ <- env.conversationFinalizer.finish.succeedsWith(true)
           result <- env.service.finish(authId, record)
-          createCalls = env.sessionRepository.create.calls
+          finishCalls = env.conversationFinalizer.finish.calls
         yield
           result match
             case ConversationResult.Complete(_, _, _, s, _) =>
               assertTrue(s == sessionId) &&
-              assertTrue(createCalls.nonEmpty) &&
-              assertTrue(createCalls.head._1 == sessionIdMac) &&
-              assertTrue(createCalls.head._6 == Some(PriorSession.Invalidate(priorSessionIdMac)))
+              assertTrue(finishCalls.nonEmpty) &&
+              assertTrue(finishCalls.head.sessionIdMac == sessionIdMac) &&
+              assertTrue(finishCalls.head.priorSession == Some(PriorSession.Invalidate(priorSessionIdMac)))
             case _ => assertTrue(false)
       },
       test("invalidates prior session and creates new one during re-auth") {
@@ -294,19 +286,43 @@ object ConversationServiceSpec extends UnitSpecBase:
           _ <- env.authPropertyGenerator.nextAccessToken.succeedsWith(accessToken)
           _ <- env.configService.getSessionTtl.succeedsWith(1.hour)
           _ <- env.configService.getSessionIdleTtl.succeedsWith(Some(30.minutes))
-          _ <- env.conversationRepository.delete.succeedsWith(true)
-          _ <- env.authorizationCodeRepository.create.succeedsWith(())
-          _ <- env.sessionRepository.create.succeedsWith(())
+          _ <- env.conversationFinalizer.finish.succeedsWith(true)
           result <- env.service.finish(authId, record)
-          createCalls = env.sessionRepository.create.calls
+          finishCalls = env.conversationFinalizer.finish.calls
         yield
           result match
             case ConversationResult.Complete(_, _, _, s, _) =>
               assertTrue(s == sessionId) &&
-              assertTrue(createCalls.nonEmpty) &&
-              assertTrue(createCalls.head._1 == sessionIdMac) &&
-              assertTrue(createCalls.head._6 == Some(PriorSession.Invalidate(priorSessionIdMac)))
+              assertTrue(finishCalls.nonEmpty) &&
+              assertTrue(finishCalls.head.sessionIdMac == sessionIdMac) &&
+              assertTrue(finishCalls.head.priorSession == Some(PriorSession.Invalidate(priorSessionIdMac)))
             case _ => assertTrue(false)
+      },
+      test("returns IllegalState when the finalizer doesn't claim the conversation") {
+        // Covers issue #102: delete+create+create now happen inside ConversationFinalizer.finish
+        // as one DB transaction. If it reports `false` (stale version / already finished /
+        // create failed and rolled back), finish() must not report success.
+        val env = Env()
+        val now = Instant.parse("2026-07-13T10:00:00Z")
+        val record = conversationRecord.copy(userId = Some(userId))
+        val code = AuthorizationCode.fromString("code")
+        val sessionId = SessionId.fromString("session")
+        val testPublicSessionId = versola.oauth.session.model.PublicSessionId("public-session")
+        val accessToken = AccessToken.fromString("token")
+        val mac = MAC(Array.fill(32)(1.toByte))
+
+        for
+          _ <- TestClock.setTime(now)
+          _ <- env.authPropertyGenerator.nextAuthorizationCode.succeedsWith(code)
+          _ <- env.authPropertyGenerator.nextSessionId.succeedsWith(sessionId)
+          _ <- env.authPropertyGenerator.nextPublicSessionId.succeedsWith(testPublicSessionId)
+          _ <- env.securityService.mac.succeedsWith(mac)
+          _ <- env.authPropertyGenerator.nextAccessToken.succeedsWith(accessToken)
+          _ <- env.configService.getSessionTtl.succeedsWith(1.hour)
+          _ <- env.configService.getSessionIdleTtl.succeedsWith(Some(30.minutes))
+          _ <- env.conversationFinalizer.finish.succeedsWith(false)
+          result <- env.service.finish(authId, record)
+        yield assertTrue(result == ConversationResult.IllegalState)
       },
 
     ),
@@ -387,9 +403,7 @@ object ConversationServiceSpec extends UnitSpecBase:
           _ <- env.authPropertyGenerator.nextAccessToken.succeedsWith(accessToken)
           _ <- env.configService.getSessionTtl.succeedsWith(1.hour)
           _ <- env.configService.getSessionIdleTtl.succeedsWith(None)
-          _ <- env.conversationRepository.delete.succeedsWith(true)
-          _ <- env.authorizationCodeRepository.create.succeedsWith(())
-          _ <- env.sessionRepository.create.succeedsWith(())
+          _ <- env.conversationFinalizer.finish.succeedsWith(true)
           result <- env.service.offerPasskeyEnroll(authId, record)
         yield
           assertTrue(result.isInstanceOf[ConversationResult.Complete])

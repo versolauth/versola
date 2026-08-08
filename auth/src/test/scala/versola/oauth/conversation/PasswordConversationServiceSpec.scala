@@ -12,8 +12,6 @@ import versola.oauth.conversation.limit.{LimitStatus, SubmissionLimiter}
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
 import versola.oauth.conversation.otp.OtpService
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod}
-import versola.oauth.session.SessionRepository
-import versola.oauth.token.AuthorizationCodeRepository
 import versola.oauth.userinfo.UserInfoService
 import versola.user.UserRepository
 import versola.user.model.{Login, UserId, UserRecord}
@@ -50,8 +48,7 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
     val passwordService = stub[PasswordService]
     val conversationRepository = stub[ConversationRepository]
     val userRepository = stub[UserRepository]
-    val authorizationCodeRepository = stub[AuthorizationCodeRepository]
-    val sessionRepository = stub[SessionRepository]
+    val conversationFinalizer = stub[ConversationFinalizer]
     val authPropertyGenerator = stub[AuthPropertyGenerator]
     val securityService = stub[SecurityService]
     val userInfoService = stub[UserInfoService]
@@ -66,8 +63,7 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
       passwordService,
       conversationRepository,
       userRepository,
-      authorizationCodeRepository,
-      sessionRepository,
+      conversationFinalizer,
       authPropertyGenerator,
       securityService,
       userInfoService,
