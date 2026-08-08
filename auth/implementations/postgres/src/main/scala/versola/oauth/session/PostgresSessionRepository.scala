@@ -254,11 +254,10 @@ class PostgresSessionRepository(xa: TransactorZIO)
                  expires_at, requested_claims, ui_locales, nonce, previous_id,
                  amr, auth_time, acr
           FROM refresh_tokens
-          WHERE id = $token
-        """.query[RefreshTokenRecord]
+          WHERE id = $token AND expires_at > $now"""
+          .query[RefreshTokenRecord]
           .run()
           .headOption
-          .filter(_.expiresAt.isAfter(now))
     yield result
 
   override def delete(token: MAC.Of[RefreshToken]): Task[Unit] =
