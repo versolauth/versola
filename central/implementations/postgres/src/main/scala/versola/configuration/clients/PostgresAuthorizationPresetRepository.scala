@@ -41,7 +41,7 @@ class PostgresAuthorizationPresetRepository(
         .query[AuthorizationPreset].run().headOption
 
   override def replace(clientId: ClientId, presets: Seq[AuthorizationPreset]): Task[Unit] =
-    xa.repeatableRead.transactMeasured("replace-presets"):
+    xa.transactMeasured("replace-presets"):
       sql"""DELETE FROM authorization_presets WHERE client_id = $clientId""".update.run()
       if presets.nonEmpty then
         batchUpdate(presets): preset =>
