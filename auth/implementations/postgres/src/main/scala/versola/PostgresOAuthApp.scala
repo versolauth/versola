@@ -9,7 +9,7 @@ import versola.oauth.challenge.password.{PasswordRepository, PasswordService, Po
 import versola.oauth.client.{ServiceController, OAuthClientSyncClient, OAuthConfigurationService, OAuthScopeSyncClient}
 import versola.oauth.conversation.otp.{EmailOtpProvider, SmsOtpProvider, OtpGenerationService, OtpService}
 import versola.oauth.conversation.limit.{ChallengeThrottleRepository, PostgresChallengeThrottleRepository, SubmissionLimiter}
-import versola.oauth.conversation.{ConversationController, ConversationRenderService, ConversationRepository, ConversationRouter, ConversationService, PostgresConversationRepository}
+import versola.oauth.conversation.{ConversationController, ConversationRenderService, ConversationRepository, ConversationRouter, ConversationService, PostgresConversationFinalizer, PostgresConversationRepository}
 import versola.oauth.introspect.{IntrospectionController, IntrospectionService}
 import versola.oauth.client.CentralSyncTokenService
 import versola.oauth.jwks.{JwksController, JwksService, JwksSyncClient}
@@ -93,6 +93,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
     PostgresUserRepository.live >+>
       PostgresUserRolesRepository.live >+>
       PostgresConversationRepository.live >+>
+      PostgresConversationFinalizer.live >+>
       PostgresAuthorizationCodeRepository.live >+>
       PostgresSessionRepository.live >+>
       PostgresPasswordRepository.live >+>

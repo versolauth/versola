@@ -71,49 +71,60 @@ class PostgresAuthorizationCodeRepository(
   ): Task[Unit] =
     Clock.instant.flatMap: now =>
       xa.connectMeasured("create-authorization-code"):
-        sql"""
-          INSERT INTO authorization_codes (
-            code,
-            session_id,
-            public_session_id,
-            client_id,
-            user_id,
-            redirect_uri,
-            scope,
-            code_challenge,
-            code_challenge_method,
-            requested_claims,
-            ui_locales,
-            nonce,
-            access_token,
-            amr,
-            auth_time,
-            acr,
-            used,
-            expires_at
-          )
-          VALUES (
-            $code,
-            ${record.sessionId},
-            ${record.publicSessionId},
-            ${record.clientId},
-            ${record.userId},
-            ${record.redirectUri},
-            ${record.scope},
-            ${record.codeChallenge},
-            ${record.codeChallengeMethod.toString},
-            ${record.requestedClaims},
-            ${record.uiLocales}::text[],
-            ${record.nonce},
-            ${record.accessToken},
-            ${record.amr},
-            ${record.authTime},
-            ${record.acr},
-            ${false},
-            ${now.plusSeconds(ttl.toSeconds)}
-          )
-        """.update.run()
+        insertRaw(code, record, now.plusSeconds(ttl.toSeconds))
     .unit
+
+  /** Same insert, without the connect/measure wrapper, so it can be composed into a larger
+    * transaction (see [[versola.oauth.conversation.PostgresConversationFinalizer]]).
+    */
+  private[oauth] def insertRaw(
+      code: MAC.Of[AuthorizationCode],
+      record: AuthorizationCodeRecord,
+      expiresAt: Instant,
+  )(using DbCon): Unit =
+    sql"""
+      INSERT INTO authorization_codes (
+        code,
+        session_id,
+        public_session_id,
+        client_id,
+        user_id,
+        redirect_uri,
+        scope,
+        code_challenge,
+        code_challenge_method,
+        requested_claims,
+        ui_locales,
+        nonce,
+        access_token,
+        amr,
+        auth_time,
+        acr,
+        used,
+        expires_at
+      )
+      VALUES (
+        $code,
+        ${record.sessionId},
+        ${record.publicSessionId},
+        ${record.clientId},
+        ${record.userId},
+        ${record.redirectUri},
+        ${record.scope},
+        ${record.codeChallenge},
+        ${record.codeChallengeMethod.toString},
+        ${record.requestedClaims},
+        ${record.uiLocales}::text[],
+        ${record.nonce},
+        ${record.accessToken},
+        ${record.amr},
+        ${record.authTime},
+        ${record.acr},
+        ${false},
+        $expiresAt
+      )
+    """.update.run()
+    ()
 
   override def delete(code: MAC.Of[AuthorizationCode]): Task[Unit] =
     xa.connectMeasured("delete-authorization-code"):
