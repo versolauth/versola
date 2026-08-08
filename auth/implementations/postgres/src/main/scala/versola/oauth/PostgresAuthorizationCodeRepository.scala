@@ -56,12 +56,11 @@ class PostgresAuthorizationCodeRepository(
           SELECT session_id, public_session_id, client_id, user_id, redirect_uri,
                  scope, code_challenge, code_challenge_method,
                  requested_claims, ui_locales, nonce, access_token,
-                 amr, auth_time, acr,
-                 expires_at
+                 amr, auth_time, acr
           FROM authorization_codes
-          WHERE code = $code
-        """.query[(AuthorizationCodeRecord, Instant)].run().headOption
-          .collect { case (record, expiresAt) if expiresAt.isAfter(now) => record }
+          WHERE code = $code AND expires_at > $now"""
+          .query[AuthorizationCodeRecord].run()
+          .headOption
     yield result
 
   override def create(
