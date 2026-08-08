@@ -99,7 +99,6 @@ object ConversationControllerSpec extends UnitSpecBase:
           .provideSome[zio.Scope](
             ZLayer.succeed(TestEnvConfig.coreConfig),
             ZLayer.succeed(configuration),
-            ZLayer.succeed(TestEnvConfig.jwksService),
           )
 
         tracing <- NoopTracing.layer.build
@@ -148,7 +147,6 @@ object ConversationControllerSpec extends UnitSpecBase:
           .provideSome[zio.Scope](
             ZLayer.succeed(TestEnvConfig.coreConfig),
             ZLayer.succeed(configuration),
-            ZLayer.succeed(TestEnvConfig.jwksService),
           )
 
         tracing <- NoopTracing.layer.build

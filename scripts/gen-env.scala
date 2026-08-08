@@ -357,6 +357,7 @@ def writeFile(dir: File, name: String, content: String): Unit =
        |
        |jwt {
        |  issuer = "$authUrl"
+       |  key-id = "${jwtKey.kid}"
        |  private-key = \"\"\"${jwtKey.privateB64}\"\"\"
        |}
        |

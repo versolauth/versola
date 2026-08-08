@@ -55,6 +55,7 @@ object TestEnvConfig:
 
   val jwtConfig = CoreConfig.JwtConfig(
     privateKey = privateKey,
+    keyId = Some(testKeyId),
     issuer = "https://versolauth.com",
   )
 
