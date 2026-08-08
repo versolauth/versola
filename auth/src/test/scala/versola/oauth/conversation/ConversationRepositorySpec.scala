@@ -186,6 +186,12 @@ trait ConversationRepositorySpec extends DatabaseSpecBase[ConversationRepository
           found2.version == found1.version + 1
         )
       },
+      test("find returns None for expired conversation") {
+        for
+          _ <- env.repository.create(authId1, record1, ttl = Duration.Zero)
+          result <- env.repository.find(authId1)
+        yield assertTrue(result.isEmpty)
+      },
 
     )
 
