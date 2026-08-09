@@ -102,6 +102,7 @@ export interface ChallengeSettingsRecord {
   authConversationTtlSeconds: number;
   sessionTtlSeconds: number;
   sessionIdleTtlSeconds?: number | null;
+  userAgentTtlSeconds: number;
   ipHeader: string;
   acrVocabulary?: Record<string, string[]> | null;
   postLogoutRedirectUris: string[];
@@ -302,7 +303,7 @@ export interface SessionClientEntry {
 export interface UserSession {
   clients: SessionClientEntry[];
   createdAt?: string;
-  platform: 'ios' | 'android' | 'desktop' | 'unknown';
+  platform?: 'ios' | 'android' | 'desktop';
   os?: string;
   browser?: string;
   version?: string;

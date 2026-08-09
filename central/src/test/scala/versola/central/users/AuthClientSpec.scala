@@ -41,8 +41,9 @@ object AuthClientSpec extends ZIOSpecDefault:
   )
 
   private val sessionDto = AuthClient.SessionDto(
+    publicId = "public-session-1",
     clients = List(AuthClient.ClientEntryDto(ClientId("client-1"), Instant.parse("2024-01-01T00:00:00Z"))),
-    platform = "desktop",
+    platform = Some("desktop"),
     os = Some("macOS"),
     browser = Some("Chrome"),
     version = Some("125"),

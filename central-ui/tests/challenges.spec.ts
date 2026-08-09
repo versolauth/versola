@@ -23,6 +23,7 @@ const settingsWithoutPasskey = {
   passwordNumDifferent: 0,
   authConversationTtlSeconds: 900,
   sessionTtlSeconds: 86400,
+  userAgentTtlSeconds: 15552000,
   passkeySettings: null,
 };
 

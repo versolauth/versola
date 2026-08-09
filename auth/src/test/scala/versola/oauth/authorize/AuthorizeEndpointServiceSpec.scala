@@ -8,7 +8,7 @@ import versola.oauth.client.model.{Acr, AuthFactor, AuthFactorType, AuthFlow, Au
 import versola.oauth.conversation.{ConversationRepository, ConversationResult, ConversationRouter, EmailSubmission, PhoneSubmission}
 import versola.oauth.model.{AccessToken, AuthorizationCode, CodeChallenge, CodeChallengeMethod, State}
 import versola.oauth.session.SessionService
-import versola.oauth.session.model.{ClientEntry, PublicSessionId, SessionId, SessionInfo, SessionRecord, UserAgentInfo}
+import versola.oauth.session.model.{ClientEntry, PublicSessionId, SessionId, SessionInfo, SessionRecord, UserAgentId}
 import versola.oauth.token.AuthorizationCodeRepository
 import versola.oauth.userinfo.UserInfoService
 import versola.user.UserRepository
@@ -32,6 +32,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
   val clientId = ClientId("test-client")
   val redirectUri = URL.decode("https://example.com/callback").toOption.get
   val codeChallenge = CodeChallenge("E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM")
+  val testUserAgentId = UserAgentId(UUID.randomUUID())
 
   val otpFlow = AuthFlow(
     primary = PrimaryAuthFlow(
@@ -74,6 +75,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
     uiLocales = None,
     nonce = None,
     userAgent = None,
+    userAgentCookie = None,
     prompt = Set.empty,
     maxAge = None,
     acrValues = None,
@@ -90,7 +92,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
   def sessionWithAmr(amr: Map[PassedAuthFactor, PassedFactorRecord]) = SessionRecord(
     userId = versola.user.model.UserId(UUID.randomUUID()),
     clients = List(ClientEntry(clientId, now)),
-    userAgent = UserAgentInfo.parse(None),
+    userAgentId = testUserAgentId,
     createdAt = now,
     amr = amr,
     publicId = publicSessionId,
@@ -165,6 +167,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
     userClaims = None,
     authFlow = otpFlow,
     userAgent = None,
+    userAgentCookie = None,
     version = 0,
     amr = Map.empty,
     needsPasswordChange = false,
@@ -414,7 +417,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
       val oldSession = SessionRecord(
         userId = sessionUserId,
         clients = List(ClientEntry(clientId, Instant.EPOCH.minusSeconds(1))),
-        userAgent = UserAgentInfo.parse(None),
+        userAgentId = testUserAgentId,
         createdAt = Instant.EPOCH.minusSeconds(1),
         amr = Map(PassedAuthFactor.otp -> PassedFactorRecord(Instant.EPOCH.minusSeconds(1), Set(AuthMethodRef.otp))),
         publicId = publicSessionId,
@@ -441,7 +444,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
       val oldSession = SessionRecord(
         userId = versola.user.model.UserId(UUID.randomUUID()),
         clients = List(ClientEntry(clientId, Instant.EPOCH.minusSeconds(1))),
-        userAgent = UserAgentInfo.parse(None),
+        userAgentId = testUserAgentId,
         createdAt = Instant.EPOCH.minusSeconds(1),
         amr = Map(PassedAuthFactor.otp -> PassedFactorRecord(Instant.EPOCH.minusSeconds(1), Set(AuthMethodRef.otp))),
         publicId = publicSessionId,
@@ -464,7 +467,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
       val freshSession = SessionRecord(
         userId = versola.user.model.UserId(UUID.randomUUID()),
         clients = List(ClientEntry(clientId, Instant.EPOCH)),
-        userAgent = UserAgentInfo.parse(None),
+        userAgentId = testUserAgentId,
         createdAt = Instant.EPOCH,
         amr = Map(PassedAuthFactor.otp -> PassedFactorRecord(Instant.EPOCH, Set(AuthMethodRef.otp))),
         publicId = publicSessionId,
@@ -874,7 +877,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
       val oldSession = SessionRecord(
         userId = sessionUserId,
         clients = List(ClientEntry(clientId, Instant.EPOCH.minusSeconds(1))),
-        userAgent = UserAgentInfo.parse(None),
+        userAgentId = testUserAgentId,
         createdAt = Instant.EPOCH.minusSeconds(1),
         amr = Map(PassedAuthFactor.otp -> PassedFactorRecord(Instant.EPOCH.minusSeconds(1), Set(AuthMethodRef.otp))),
         publicId = publicSessionId,

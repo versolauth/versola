@@ -59,9 +59,11 @@ export class VersolaChallengesList extends LitElement {
   @state() private authConversationTtlSeconds = 900;
   @state() private sessionTtlSeconds = 86400;
   @state() private sessionIdleTtlSeconds: number | null = null;
+  @state() private userAgentTtlSeconds = 15552000;
   @state() private editAuthConversationTtlSeconds = 900;
   @state() private editSessionTtlSeconds = 86400;
   @state() private editSessionIdleTtlSeconds: number | null = null;
+  @state() private editUserAgentTtlSeconds = 15552000;
 
   @state() private ipHeader = 'X-Real-IP';
   @state() private editIpHeader = 'X-Real-IP';
@@ -392,6 +394,7 @@ export class VersolaChallengesList extends LitElement {
         this.authConversationTtlSeconds = challengeSettings.authConversationTtlSeconds;
         this.sessionTtlSeconds = challengeSettings.sessionTtlSeconds;
         this.sessionIdleTtlSeconds = challengeSettings.sessionIdleTtlSeconds ?? null;
+        this.userAgentTtlSeconds = challengeSettings.userAgentTtlSeconds;
         this.acrVocabulary = challengeSettings.acrVocabulary ?? {};
         this.ipHeader = challengeSettings.ipHeader || 'X-Real-IP';
         this.postLogoutRedirectUris = challengeSettings.postLogoutRedirectUris ?? [];
@@ -404,6 +407,7 @@ export class VersolaChallengesList extends LitElement {
         this.authConversationTtlSeconds = 900;
         this.sessionTtlSeconds = 86400;
         this.sessionIdleTtlSeconds = null;
+        this.userAgentTtlSeconds = 15552000;
         this.acrVocabulary = {};
         this.ipHeader = 'X-Real-IP';
         this.postLogoutRedirectUris = [];
@@ -466,6 +470,10 @@ export class VersolaChallengesList extends LitElement {
 
   private formatDuration(seconds: number): string {
     if (seconds === 0) return '—';
+    if (seconds % 86400 === 0 && seconds >= 86400) {
+      const days = seconds / 86400;
+      return `${days} day${days === 1 ? '' : 's'}`;
+    }
     if (seconds % 3600 === 0) return `${seconds / 3600} hr`;
     if (seconds % 60 === 0) return `${seconds / 60} min`;
     return `${seconds}s`;
@@ -543,6 +551,7 @@ export class VersolaChallengesList extends LitElement {
     this.editAuthConversationTtlSeconds = this.authConversationTtlSeconds;
     this.editSessionTtlSeconds = this.sessionTtlSeconds;
     this.editSessionIdleTtlSeconds = this.sessionIdleTtlSeconds;
+    this.editUserAgentTtlSeconds = this.userAgentTtlSeconds;
     this.editIpHeader = this.ipHeader;
     this.editPasskeyRpId = this.passkeySettings?.rpId ?? '';
     this.editPasskeyRpName = this.passkeySettings?.rpName ?? '';
@@ -658,6 +667,7 @@ export class VersolaChallengesList extends LitElement {
         this.editAuthConversationTtlSeconds,
         this.editSessionTtlSeconds,
         this.editSessionIdleTtlSeconds,
+        this.editUserAgentTtlSeconds,
         ipHeader,
         acrVocabulary,
         postLogoutRedirectUris,
@@ -669,6 +679,7 @@ export class VersolaChallengesList extends LitElement {
       this.authConversationTtlSeconds = this.editAuthConversationTtlSeconds;
       this.sessionTtlSeconds = this.editSessionTtlSeconds;
       this.sessionIdleTtlSeconds = this.editSessionIdleTtlSeconds;
+      this.userAgentTtlSeconds = this.editUserAgentTtlSeconds;
       this.ipHeader = ipHeader;
       this.passkeySettings = { ...passkeySettings, origins: [...passkeySettings.origins] };
       this.acrVocabulary = acrVocabulary;
@@ -924,6 +935,9 @@ export class VersolaChallengesList extends LitElement {
           <label style="margin-top: var(--spacing-lg);">SSO Session Idle Timeout</label>
           <div class="template-text">${this.sessionIdleTtlSeconds != null ? this.formatDuration(this.sessionIdleTtlSeconds) : 'Disabled'}</div>
 
+          <label style="margin-top: var(--spacing-lg);">User Agent TTL</label>
+          <div class="template-text">${this.formatDuration(this.userAgentTtlSeconds)}</div>
+
           <label style="margin-top: var(--spacing-lg);">Client IP Header</label>
           <div class="template-text">${this.ipHeader}</div>
         </div>
@@ -1077,11 +1091,11 @@ export class VersolaChallengesList extends LitElement {
           <span class="limit-hint">${this.formatDuration(this.editAuthConversationTtlSeconds)}</span>
         </div>
 
-        <label style="margin-top: var(--spacing-lg);">SSO Session TTL (seconds)</label>
+        <label style="margin-top: var(--spacing-lg);">SSO Session TTL (days)</label>
         <div class="hint">How long the SSO session cookie remains valid after authentication.</div>
         <div class="limit-row" style="margin-bottom: 0;">
-          <input type="number" class="form-control compact-input limit-input" .value=${this.editSessionTtlSeconds}
-            @input=${(e: Event) => { this.editSessionTtlSeconds = Math.max(1, parseInt((e.target as HTMLInputElement).value) || 1); this.requestUpdate(); }} />
+          <input type="number" step="0.5" class="form-control compact-input limit-input" .value=${this.editSessionTtlSeconds / 86400}
+            @input=${(e: Event) => { const days = Math.max(1 / 86400, parseFloat((e.target as HTMLInputElement).value) || 0); this.editSessionTtlSeconds = Math.round(days * 86400); this.requestUpdate(); }} />
           <span class="limit-hint">${this.formatDuration(this.editSessionTtlSeconds)}</span>
         </div>
 
@@ -1091,6 +1105,14 @@ export class VersolaChallengesList extends LitElement {
           <input type="number" class="form-control compact-input limit-input" .value=${this.editSessionIdleTtlSeconds ?? ''}
             @input=${(e: Event) => { const v = parseInt((e.target as HTMLInputElement).value); this.editSessionIdleTtlSeconds = Number.isFinite(v) && v > 0 ? v : null; this.requestUpdate(); }} />
           <span class="limit-hint">${this.editSessionIdleTtlSeconds != null ? this.formatDuration(this.editSessionIdleTtlSeconds) : 'Disabled'}</span>
+        </div>
+
+        <label style="margin-top: var(--spacing-lg);">User Agent TTL (days)</label>
+        <div class="hint">How long a recognized device (user agent) is remembered before it needs to be re-verified.</div>
+        <div class="limit-row" style="margin-bottom: 0;">
+          <input type="number" step="0.5" class="form-control compact-input limit-input" .value=${this.editUserAgentTtlSeconds / 86400}
+            @input=${(e: Event) => { const days = Math.max(1 / 86400, parseFloat((e.target as HTMLInputElement).value) || 0); this.editUserAgentTtlSeconds = Math.round(days * 86400); this.requestUpdate(); }} />
+          <span class="limit-hint">${this.formatDuration(this.editUserAgentTtlSeconds)}</span>
         </div>
 
         <h3 style="margin-top: var(--spacing-xl); margin-bottom: var(--spacing-md);">Passkey (WebAuthn)</h3>

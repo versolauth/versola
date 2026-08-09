@@ -86,6 +86,7 @@ object UserService:
         ttlByClientId: Map[ClientId, Duration],
     ): SessionResponse =
       SessionResponse(
+        publicId = session.publicId,
         clients = session.clients
           .flatMap { entry =>
             ttlByClientId.get(entry.clientId)

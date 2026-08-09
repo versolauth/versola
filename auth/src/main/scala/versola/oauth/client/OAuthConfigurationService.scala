@@ -53,6 +53,8 @@ trait OAuthConfigurationService:
 
   def getSessionIdleTtl(id: ClientId): UIO[Option[Duration]]
 
+  def getUserAgentTtl(id: ClientId): UIO[Duration]
+
   def getPostLogoutRedirectUris(tenantId: TenantId): UIO[List[URL]]
 
   def getMetadata: UIO[Json.Obj]
@@ -60,6 +62,9 @@ trait OAuthConfigurationService:
   def syncConfiguration: Task[Unit]
 
 object OAuthConfigurationService:
+  /** Default TTL for a user-agent (device) record: 6 months. */
+  val DefaultUserAgentTtl: Duration = Duration.fromSeconds(15552000L)
+
   def live(schedule: Schedule[Any, Any, Any]): ZLayer[
     Client & SecurityService & Scope & CoreConfig,
     Throwable,
@@ -263,6 +268,15 @@ object OAuthConfigurationService:
             _.find(_.tenantId == client.tenantId)
               .flatMap(_.sessionIdleTtlSeconds)
               .map(s => Duration.fromSeconds(s.toLong)),
+          )
+
+    override def getUserAgentTtl(id: ClientId): UIO[Duration] =
+      find(id).flatMap:
+        case None => ZIO.succeed(OAuthConfigurationService.DefaultUserAgentTtl)
+        case Some(client) =>
+          challengeSettingsCache.get.map(
+            _.find(_.tenantId == client.tenantId)
+              .fold(OAuthConfigurationService.DefaultUserAgentTtl)(s => Duration.fromSeconds(s.userAgentTtlSeconds.toLong)),
           )
 
     override def getAcrVocabulary(id: ClientId): UIO[Map[Acr, NonEmptyList[PassedAuthFactor]]] =

@@ -3,6 +3,7 @@ package versola.oauth.conversation.model
 import versola.oauth.authorize.model.ResponseTypeEntry
 import versola.oauth.client.model.{Acr, AuthFlow, ClientId, PassedAuthFactor, PassedFactorRecord, ScopeToken}
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, Nonce, State}
+import versola.oauth.model.UserAgentCookiePayload
 import versola.oauth.session.model.SessionId
 import versola.oauth.userinfo.model.RequestedClaims
 import versola.user.model.{Login, UserId}
@@ -32,6 +33,8 @@ case class ConversationRecord(
     userClaims: Option[Json.Obj],
     authFlow: AuthFlow,
     userAgent: Option[String],
+    /** Full signed user-agent cookie payload persisted as one JSONB value. */
+    userAgentCookie: Option[UserAgentCookiePayload],
     version: Long,
     amr: Map[PassedAuthFactor, PassedFactorRecord],
     needsPasswordChange: Boolean,

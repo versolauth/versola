@@ -282,8 +282,9 @@ object AuthorizeEndpointService:
           userLogin = userOpt.flatMap(_.login),
           userClaims = userOpt.map(_.claims),
           authFlow = flow,
-          userAgent = request.userAgent.map(_.filter(c => c >= ' ' && c <= '~')),
           // Strip non-printable ASCII (0x20–0x7E); does not escape HTML — always escape at render time
+          userAgent = request.userAgent.map(_.filter(c => c >= ' ' && c <= '~')),
+          userAgentCookie = request.userAgentCookie,
           version = 0,
           amr = amr,
           needsPasswordChange = false,

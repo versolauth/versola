@@ -57,4 +57,5 @@ object CoreConfig:
     passwordsSecret: Secret.Bytes16,
     conversationCookieSecret: Secret.Bytes32,
     sessionCookieSecret: Secret.Bytes32,
+    userAgentCookieSecret: Secret.Bytes32,
 )

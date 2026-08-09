@@ -2,6 +2,7 @@ package versola.oauth.authorize.model
 
 import versola.oauth.client.model.{Acr, ClientId, ScopeToken}
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, Nonce, State}
+import versola.oauth.model.UserAgentCookiePayload
 import versola.oauth.session.model.SessionId
 import versola.oauth.userinfo.model.RequestedClaims
 import versola.util.{Email, Phone}
@@ -20,6 +21,7 @@ private[authorize] case class AuthorizeRequest(
     uiLocales: Option[List[String]],
     nonce: Option[Nonce],
     userAgent: Option[String],
+    userAgentCookie: Option[UserAgentCookiePayload],
     prompt: Set[Prompt],
     maxAge: Option[Long],
     acrValues: Option[NonEmptyList[Acr]],

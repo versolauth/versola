@@ -158,7 +158,7 @@ export async function updateUserRoles(
 
 type UserSessionDto = {
   clients: SessionClientEntry[];
-  platform: 'ios' | 'android' | 'desktop' | 'unknown';
+  platform?: 'ios' | 'android' | 'desktop';
   os?: string;
   browser?: string;
   version?: string;

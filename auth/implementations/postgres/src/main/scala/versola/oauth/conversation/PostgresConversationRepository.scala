@@ -8,6 +8,7 @@ import versola.oauth.authorize.model.ResponseTypeEntry
 import versola.oauth.client.model.{Acr, AuthFlow, ClientId, PassedAuthFactor, PassedFactorRecord, ScopeToken}
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, Nonce, State}
+import versola.oauth.model.UserAgentCookiePayload
 import versola.oauth.userinfo.model.RequestedClaims
 import versola.user.model.{Login, UserId}
 import versola.util.postgres.BasicCodecs
@@ -48,6 +49,7 @@ class PostgresConversationRepository(xa: TransactorZIO) extends ConversationRepo
   given DbCodec[URL] = DbCodec.StringCodec.biMap(URL.decode(_).fold(throw _, identity), _.toString)
   given DbCodec[UserId] = DbCodec.UUIDCodec.biMap(UserId(_), identity[UUID])
   given DbCodec[AuthId] = DbCodec.UUIDCodec.biMap(AuthId(_), identity[UUID])
+  given DbCodec[UserAgentCookiePayload] = jsonBCodec[UserAgentCookiePayload]
   given DbCodec[Instant] = DbCodec.InstantCodec
   given DbCodec[ConversationStep] = jsonCodec[ConversationStep]
   given DbCodec[RequestedClaims] = jsonCodec[RequestedClaims]
@@ -65,7 +67,7 @@ class PostgresConversationRepository(xa: TransactorZIO) extends ConversationRepo
   override def find(authId: AuthId): Task[Option[ConversationRecord]] =
     Clock.instant.flatMap: now =>
       xa.connectMeasured("find-conversation") {
-        sql"""select client_id, redirect_uri, scope, code_challenge, code_challenge_method, state, user_id, credential, step, requested_claims, ui_locales, nonce, response_type, user_email, user_phone, user_login, user_claims, auth_flow, user_agent, version, amr, needs_password_change, target_acr, csrf_token, prior_session_id
+        sql"""select client_id, redirect_uri, scope, code_challenge, code_challenge_method, state, user_id, credential, step, requested_claims, ui_locales, nonce, response_type, user_email, user_phone, user_login, user_claims, auth_flow, user_agent, user_agent_cookie, version, amr, needs_password_change, target_acr, csrf_token, prior_session_id
               from auth_conversations
               where id = $authId AND expires_at > $now"""
           .query[ConversationRecord]
@@ -96,6 +98,7 @@ class PostgresConversationRepository(xa: TransactorZIO) extends ConversationRepo
                 user_claims,
                 auth_flow,
                 user_agent,
+                user_agent_cookie,
                 version,
                 amr,
                 needs_password_change,
@@ -124,6 +127,7 @@ class PostgresConversationRepository(xa: TransactorZIO) extends ConversationRepo
                 ${record.userClaims},
                 ${record.authFlow},
                 ${record.userAgent},
+                ${record.userAgentCookie},
                 ${record.version},
                 ${record.amr},
                 ${record.needsPasswordChange},

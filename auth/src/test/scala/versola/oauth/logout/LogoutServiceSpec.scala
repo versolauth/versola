@@ -4,7 +4,7 @@ import versola.auth.TestEnvConfig
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{ClientId, OAuthClientRecord, ScopeToken, TenantId}
 import versola.oauth.session.SessionService
-import versola.oauth.session.model.{ClientEntry, PublicSessionId, SessionId, SessionInfo, SessionRecord, UserAgentInfo}
+import versola.oauth.session.model.{ClientEntry, PublicSessionId, SessionId, SessionInfo, SessionRecord, UserAgentId}
 import versola.user.model.UserId
 import versola.util.{MAC, UnitSpecBase}
 import zio.*
@@ -24,11 +24,12 @@ object LogoutServiceSpec extends UnitSpecBase:
   private val rawSessionId = SessionId(Array.fill(32)(9.toByte))
   private val mac = MAC(Array.fill(32)(1.toByte))
   private val redirectUri = URL.decode("https://example.com/callback").toOption.get
+  private val testUserAgentId = UserAgentId(UUID.randomUUID())
 
   private val record1 = SessionRecord(
     userId = userId,
     clients = List(ClientEntry(clientId1, Instant.EPOCH)),
-    userAgent = UserAgentInfo("desktop", None, None, None),
+    userAgentId = testUserAgentId,
     createdAt = Instant.EPOCH,
     amr = Map.empty,
     publicId = publicSessionId1,

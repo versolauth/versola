@@ -13,9 +13,9 @@ import versola.oauth.conversation.limit.{ChallengeType, LimitStatus, SubmissionL
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
 import versola.oauth.conversation.otp.OtpService
 import versola.oauth.conversation.otp.model.SubmitOtpResult
-import versola.oauth.model.{AuthorizationCode, AuthorizationCodeRecord}
-import versola.oauth.session.SessionRepository
-import versola.oauth.session.model.{ClientEntry, PublicSessionId, SessionId, SessionRecord, UserAgentInfo, PriorSession}
+import versola.oauth.model.{AuthorizationCode, AuthorizationCodeRecord, UserAgentData}
+import versola.oauth.session.model.{ClientEntry, PriorSession, PublicSessionId, SessionId, SessionRecord, UserAgentDetails, UserAgentId}
+import versola.oauth.session.{SessionRepository, UserAgentRepository}
 import versola.oauth.token.AuthorizationCodeRepository
 import versola.oauth.userinfo.UserInfoService
 import versola.user.UserRepository
@@ -143,7 +143,7 @@ trait ConversationService:
 
 object ConversationService:
   def live =
-    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _))
+    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _))
 
   class Impl(
       otpService: OtpService,
@@ -161,6 +161,8 @@ object ConversationService:
       passkeyRepository: PasskeyRepository,
       configService: OAuthConfigurationService,
       acrResolutionService: AcrResolutionService,
+      userAgentRepository: UserAgentRepository,
+      secureRandom: SecureRandom,
   ) extends ConversationService:
     export conversationRepository.find
 
@@ -513,6 +515,12 @@ object ConversationService:
       )
       renderStep(authId, conversation, setPasswordStep)
 
+    private def createUserAgent(data: UserAgentData, ttl: Duration): Task[UserAgentId] =
+      for
+        newId <- secureRandom.nextUUIDv7.map(UserAgentId(_))
+        _ <- userAgentRepository.create(newId, data, ttl)
+      yield newId
+
     override def finish(authId: AuthId, conversation: ConversationRecord): Task[ConversationResult.Render] =
       conversation.userId match
         case None =>
@@ -545,10 +553,26 @@ object ConversationService:
               authTime = now,
               acr = conversation.targetAcr,
             )
+            userAgentTtl <- configService.getUserAgentTtl(conversation.clientId)
+            userAgentData = UserAgentData(
+              userAgent = conversation.userAgent,
+              userId = userId,
+              details = UserAgentDetails.parse(conversation.userAgent),
+            )
+            // If the cookie's user-agent row is gone (e.g. expired and swept by the cleanup
+            // job), touch returns false: fall back to creating a fresh row instead of
+            // referencing a dangling id, which would violate sso_sessions' FK on user_agents.
+            userAgentId <- conversation.userAgentCookie match
+              case Some(cookie) =>
+                userAgentRepository.touch(cookie.id, userAgentData, userAgentTtl).flatMap:
+                  case true => ZIO.succeed(cookie.id)
+                  case false => createUserAgent(userAgentData, userAgentTtl)
+              case None =>
+                createUserAgent(userAgentData, userAgentTtl)
             session = SessionRecord(
               userId = userId,
               clients = List(ClientEntry(conversation.clientId, now)),
-              userAgent = UserAgentInfo.parse(conversation.userAgent),
+              userAgentId = userAgentId,
               createdAt = now,
               amr = conversation.amr,
               publicId = publicSessionId,
@@ -568,7 +592,7 @@ object ConversationService:
                     PriorSession.MigrateTokens(prior, amr, now, conversation.targetAcr)
                   else
                     PriorSession.Invalidate(prior)
-                _ <- sessionRepository.create(sessionIdMac, publicSessionId, session, sessionTtl, sessionIdleTtl, priorSession)
+                _ <- sessionRepository.create(sessionIdMac, session, sessionTtl, sessionIdleTtl, priorSession)
                 idTokenData <- if conversation.responseType.contains(ResponseTypeEntry.IdToken) && conversation.scope.contains(ScopeToken.OpenId) then
                   generateIdTokenData(userId, conversation, amr, now, conversation.targetAcr, publicSessionId)
                 else
@@ -579,6 +603,8 @@ object ConversationService:
                 code = code,
                 sessionId = sessionId,
                 idTokenData = idTokenData,
+                userAgentId = userAgentId,
+                userAgentData = userAgentData,
               )
             else
               ZIO.succeed(ConversationResult.IllegalState)

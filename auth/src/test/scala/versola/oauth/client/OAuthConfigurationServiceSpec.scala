@@ -67,6 +67,7 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
     authConversationTtlSeconds = 900,
     sessionTtlSeconds = 86400,
     sessionIdleTtlSeconds = Some(3600),
+    userAgentTtlSeconds = 15552000,
     ipHeader = "X-Real-IP",
     acrVocabulary = None,
     postLogoutRedirectUris = List.empty,
@@ -219,5 +220,17 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
         env <- makeEnv()
         result <- env.getSessionIdleTtl(clientId1)
       yield assertTrue(result.contains(Duration.fromSeconds(3600)))
+    },
+    test("getUserAgentTtl returns duration from challenge settings") {
+      for
+        env <- makeEnv()
+        result <- env.getUserAgentTtl(clientId1)
+      yield assertTrue(result == Duration.fromSeconds(15552000))
+    },
+    test("getUserAgentTtl returns default when client not found") {
+      for
+        env <- makeEnv()
+        result <- env.getUserAgentTtl(ClientId("unknown"))
+      yield assertTrue(result == OAuthConfigurationService.DefaultUserAgentTtl)
     },
   )

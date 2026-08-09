@@ -2,8 +2,8 @@ package versola.oauth.conversation
 
 import versola.oauth.client.model.ClientId
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
-import versola.oauth.model.{AuthorizationCode, State}
-import versola.oauth.session.model.{PublicSessionId, SessionId}
+import versola.oauth.model.{AuthorizationCode, State, UserAgentData}
+import versola.oauth.session.model.{PublicSessionId, SessionId, UserAgentId}
 import versola.user.model.UserId
 import versola.util.Base64Url
 import zio.http.URL
@@ -36,6 +36,8 @@ object ConversationResult:
       code: AuthorizationCode,
       sessionId: SessionId,
       idTokenData: Option[IdTokenData],
+      userAgentId: UserAgentId,
+      userAgentData: UserAgentData,
   ) extends Render
 
   case class StepPassed(record: ConversationRecord) extends Decision

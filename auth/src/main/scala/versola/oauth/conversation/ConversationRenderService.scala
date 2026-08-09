@@ -5,8 +5,8 @@ import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{ClientId, FormRecord, PrimaryCredential}
 import versola.oauth.conversation.model.{ConversationRecord, ConversationStep}
 import versola.oauth.jwks.JwksService
-import versola.oauth.model.SessionCookie
 import versola.oauth.model.State
+import versola.oauth.model.{SessionCookie, UserAgentCookie}
 import versola.oauth.session.model.SessionInfo
 import versola.util.{Base64, Base64Url, CoreConfig, JWT}
 import zio.http.{Body, Header, Headers, MediaType, Response, Status, URL}
@@ -73,7 +73,7 @@ object ConversationRenderService:
       locales: List[String],
       allT: Map[String, Map[String, String]],
       error: Option[String],
-      csrf: String, 
+      csrf: String,
   ) derives JsonCodec
 
   case class LogoutConfirm(
@@ -107,7 +107,8 @@ object ConversationRenderService:
         client <- configuration.find(record.clientId)
         themeId = client.map(_.theme).getOrElse(ThemeDefault)
         css <- themeCss(themeId)
-        maybeInfo <- formFor(record.step, record.clientId, record.uiLocales, record.redirectUri, record.state, record.csrfToken, errorOverride = errorKey)
+        maybeInfo <-
+          formFor(record.step, record.clientId, record.uiLocales, record.redirectUri, record.state, record.csrfToken, errorOverride = errorKey)
         response <- maybeInfo match
           case None =>
             ZIO.succeed(htmlResponse(notFoundPage(css), Status.NotFound))
@@ -146,10 +147,11 @@ object ConversationRenderService:
         case ConversationResult.IllegalState =>
           ZIO.succeed(Response.badRequest)
 
-        case ConversationResult.Complete(redirectUri, state, code, sessionId, idTokenData) =>
+        case ConversationResult.Complete(redirectUri, state, code, sessionId, idTokenData, userAgentId, userAgentData) =>
           val encodedCode = Base64Url.encode(code)
           for
             sessionTtl <- configuration.getSessionTtl(record.clientId)
+            userAgentTtl <- configuration.getUserAgentTtl(record.clientId)
             idToken <- idTokenData match
               case Some(data) =>
                 for
@@ -168,6 +170,14 @@ object ConversationRenderService:
                 secret = config.security.sessionCookieSecret,
               ),
             )
+            .addCookie(
+              UserAgentCookie(
+                id = userAgentId,
+                data = userAgentData,
+                ttl = userAgentTtl,
+                secret = config.security.userAgentCookieSecret,
+              ),
+            )
 
     override def renderLogout(
         logoutUris: List[URL],
@@ -177,7 +187,7 @@ object ConversationRenderService:
       val redirectUri = postLogoutRedirectUri
         .map(url => state.fold(url)(url.addQueryParam("state", _)).encode)
       for
-        css     <- themeCss(ThemeDefault)
+        css <- themeCss(ThemeDefault)
         formOpt <- configuration.getForm("signed-out")
         locales <- configuration.getLocales
       yield formOpt match
@@ -228,8 +238,15 @@ object ConversationRenderService:
             pageTitle(translations),
             value.style,
             value.jsCompiled,
-            FormConfig(LogoutConfirm(csrfToken, postLogoutRedirectUri, state), translations, chosen,
-              (value.localizations.keySet & activeCodes).toList.sorted, value.localizations, None, csrfToken),
+            FormConfig(
+              LogoutConfirm(csrfToken, postLogoutRedirectUri, state),
+              translations,
+              chosen,
+              (value.localizations.keySet & activeCodes).toList.sorted,
+              value.localizations,
+              None,
+              csrfToken,
+            ),
             value.version,
           )
           htmlResponse(logoutConfirmPage(info, css))
@@ -262,12 +279,12 @@ object ConversationRenderService:
         errorOverride: Option[String] = None,
     ): Task[Option[FormRenderInfo]] =
       val formId = step match
-        case _: ConversationStep.Credential    => "credential"
-        case _: ConversationStep.Password      => "password"
-        case _: ConversationStep.SetPassword   => "set-password"
-        case _: ConversationStep.Otp           => "otp"
+        case _: ConversationStep.Credential => "credential"
+        case _: ConversationStep.Password => "password"
+        case _: ConversationStep.SetPassword => "set-password"
+        case _: ConversationStep.Otp => "otp"
         case _: ConversationStep.PasskeyEnroll => "passkey-enroll"
-        case ConversationStep.AccessDenied     => "access-denied"
+        case ConversationStep.AccessDenied => "access-denied"
       for
         view <- stepView(step, clientId, redirectUri, state)
         formOpt <- configuration.getForm(formId)
@@ -373,17 +390,19 @@ object ConversationRenderService:
           ZIO.succeed(StepView.AccessDenied(redirectUri = redirectUri.addQueryParams(params).encode))
 
     private def stepName(step: StepView): String = step match
-      case _: StepView.Credential    => "credential"
-      case _: StepView.Password      => "password"
-      case _: StepView.SetPassword   => "set-password"
-      case _: StepView.Otp           => "otp"
+      case _: StepView.Credential => "credential"
+      case _: StepView.Password => "password"
+      case _: StepView.SetPassword => "set-password"
+      case _: StepView.Otp => "otp"
       case _: StepView.PasskeyEnroll => "passkey-enroll"
-      case _: StepView.AccessDenied  => "access-denied"
-      case _: LogoutConfirm          => "confirm-logout"
-      case _: SignedOut              => "signed-out"
+      case _: StepView.AccessDenied => "access-denied"
+      case _: LogoutConfirm => "confirm-logout"
+      case _: SignedOut => "signed-out"
 
     private def logoutConfirmPage(info: FormRenderInfo, themeCss: String): String =
-      s"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>${info.title}</title><style>$themeCss ${info.style}</style><script>window.__VERSOLA_FORM__ = ${info.config.toJson};</script></head><body><div id="versola-form-root"></div><script>${info.jsCompiled.getOrElse("")}</script></body></html>"""
+      s"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>${info.title}</title><style>$themeCss ${info.style}</style><script>window.__VERSOLA_FORM__ = ${info.config.toJson};</script></head><body><div id="versola-form-root"></div><script>${info.jsCompiled.getOrElse(
+          "",
+        )}</script></body></html>"""
 
     private def solidPage(info: FormRenderInfo, themeCss: String): String =
       s"""<!DOCTYPE html>
