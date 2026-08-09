@@ -194,7 +194,7 @@ class PostgresSessionRepository(xa: TransactorZIO)
       refreshToken: MAC.Of[RefreshToken],
       record: RefreshTokenRecord,
   ): IO[Throwable | RefreshAlreadyExchanged, Unit] =
-    xa.repeatableRead.transactMeasured("create-refresh-token") {
+    xa.transactMeasured("create-refresh-token") {
       record.previousRefreshToken
         .foreach { oldToken => sql"""DELETE FROM refresh_tokens WHERE id = $oldToken""".update.run() }
 
