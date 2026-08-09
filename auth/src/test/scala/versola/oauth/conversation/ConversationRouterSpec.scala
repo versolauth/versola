@@ -5,8 +5,8 @@ import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{AuthFactor, AuthFactorType, AuthFlow, AuthMethodRef, ClientId, PassedAuthFactor, PassedFactorRecord, PrimaryAuthFlow, PrimaryCredential, ScopeToken}
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep, Error}
 import zio.{ZIO, Exit}
-import versola.oauth.model.{AuthorizationCode, CodeChallenge, CodeChallengeMethod, State}
-import versola.oauth.session.model.SessionId
+import versola.oauth.model.{AuthorizationCode, CodeChallenge, CodeChallengeMethod, State, UserAgentData}
+import versola.oauth.session.model.{SessionId, UserAgentDetails, UserAgentId}
 import versola.user.model.{Login, UserId}
 import versola.util.{Email, Phone, SecureRandom, UnitSpecBase}
 import zio.http.URL
@@ -18,6 +18,8 @@ import java.util.UUID
 object ConversationRouterSpec extends UnitSpecBase:
 
   val authId = AuthId(UUID.randomUUID())
+  val testUserAgentId = UserAgentId(UUID.randomUUID())
+  val testUserId = UserId(UUID.randomUUID())
   val email = Email("test@example.com")
   val phone = Phone("+1234567890")
   val otpCode = OtpCode("123456")
@@ -70,6 +72,7 @@ object ConversationRouterSpec extends UnitSpecBase:
     userClaims = None,
     authFlow = otpAuthFlow,
     userAgent = None,
+    userAgentCookie = None,
     version = 0,
     amr = Map.empty,
     needsPasswordChange = false,
@@ -98,6 +101,7 @@ object ConversationRouterSpec extends UnitSpecBase:
     userClaims = None,
     authFlow = otpAuthFlow,
     userAgent = None,
+    userAgentCookie = None,
     version = 0,
     amr = Map.empty,
     needsPasswordChange = false,
@@ -234,7 +238,7 @@ object ConversationRouterSpec extends UnitSpecBase:
         val successResult = ConversationResult.StepPassed(otpRecord)
         val testCode = AuthorizationCode(Array.fill(32)(1.toByte))
         val testSessionId: SessionId = SessionId(Array.fill(32)(2.toByte))
-        val completeResult = ConversationResult.Complete(redirectUri, Some(State("test-state")), testCode, testSessionId, None)
+        val completeResult = ConversationResult.Complete(redirectUri, Some(State("test-state")), testCode, testSessionId, None, testUserAgentId, UserAgentData(None, testUserId, UserAgentDetails.parse(None)))
         for
           _ <- env.otpConversationService.find.succeedsWith(Some(otpRecord))
           _ <- env.otpConversationService.checkOtp.succeedsWith(successResult)
@@ -275,7 +279,7 @@ object ConversationRouterSpec extends UnitSpecBase:
         )
         val testCode = AuthorizationCode(Array.fill(32)(1.toByte))
         val testSessionId = SessionId(Array.fill(32)(2.toByte))
-        val completeResult = ConversationResult.Complete(redirectUri, Some(State("test-state")), testCode, testSessionId, None)
+        val completeResult = ConversationResult.Complete(redirectUri, Some(State("test-state")), testCode, testSessionId, None, testUserAgentId, UserAgentData(None, testUserId, UserAgentDetails.parse(None)))
         for
           _ <- env.otpConversationService.find.succeedsWith(Some(recordWithPasskeyAmr))
           _ <- env.otpConversationService.finish.succeedsWith(completeResult)
@@ -295,7 +299,7 @@ object ConversationRouterSpec extends UnitSpecBase:
         val successResult = ConversationResult.StepPassed(loginRecord)
         val testCode = AuthorizationCode(Array.fill(32)(1.toByte))
         val testSessionId: SessionId = SessionId(Array.fill(32)(2.toByte))
-        val completeResult = ConversationResult.Complete(redirectUri, Some(State("test-state")), testCode, testSessionId, None)
+        val completeResult = ConversationResult.Complete(redirectUri, Some(State("test-state")), testCode, testSessionId, None, testUserAgentId, UserAgentData(None, testUserId, UserAgentDetails.parse(None)))
         for
           _ <- env.otpConversationService.find.succeedsWith(Some(loginRecord))
           _ <- env.otpConversationService.checkLoginPassword.succeedsWith(successResult)
@@ -380,7 +384,7 @@ object ConversationRouterSpec extends UnitSpecBase:
         val now = Instant.now()
         val testCode = AuthorizationCode(Array.fill(32)(1.toByte))
         val testSessionId = SessionId(Array.fill(32)(2.toByte))
-        val completeResult = ConversationResult.Complete(redirectUri, Some(State("test-state")), testCode, testSessionId, None)
+        val completeResult = ConversationResult.Complete(redirectUri, Some(State("test-state")), testCode, testSessionId, None, testUserAgentId, UserAgentData(None, testUserId, UserAgentDetails.parse(None)))
         val record = otpRecord.copy(
           amr = Map(PassedAuthFactor.otp -> PassedFactorRecord(now, Set(AuthMethodRef.otp))),
         )

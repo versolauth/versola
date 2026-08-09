@@ -83,8 +83,9 @@ object UserServiceSpec extends UnitSpecBase:
         backChannelLogoutUri = None,
       )
       val sessionDto = AuthClient.SessionDto(
+        publicId = "public-session-1",
         clients = List(AuthClient.ClientEntryDto(clientId, enteredAt)),
-        platform = "desktop",
+        platform = Some("desktop"),
         os = None,
         browser = None,
         version = None,
@@ -128,11 +129,12 @@ object UserServiceSpec extends UnitSpecBase:
         backChannelLogoutUri = None,
       )
       val sessionDto = AuthClient.SessionDto(
+        publicId = "public-session-1",
         clients = List(
           AuthClient.ClientEntryDto(clientIdA, olderEnteredAt),
           AuthClient.ClientEntryDto(clientIdB, newerEnteredAt),
         ),
-        platform = "desktop",
+        platform = Some("desktop"),
         os = None,
         browser = None,
         version = None,

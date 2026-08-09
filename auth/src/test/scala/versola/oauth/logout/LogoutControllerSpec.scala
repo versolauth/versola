@@ -9,7 +9,7 @@ import versola.oauth.client.model.ClientId
 import versola.oauth.conversation.ConversationRenderService
 import versola.oauth.model.SessionCookie
 import versola.oauth.session.SessionService
-import versola.oauth.session.model.{ClientEntry, PublicSessionId, SessionId, SessionInfo, SessionRecord, UserAgentInfo}
+import versola.oauth.session.model.{ClientEntry, PublicSessionId, SessionId, SessionInfo, SessionRecord, UserAgentId}
 import versola.user.model.UserId
 import versola.util.{Base64, MAC}
 import versola.util.UnitSpecBase
@@ -34,11 +34,12 @@ object LogoutControllerSpec extends UnitSpecBase:
   private val sessionMac = MAC(Array.fill(32)(1.toByte))
   private val redirectUri = URL.decode("https://example.com/callback").toOption.get
   private val logoutUri = URL.decode("https://rp.example/logout").toOption.get
+  private val testUserAgentId = UserAgentId(UUID.randomUUID())
 
   private val sessionRecord = SessionRecord(
     userId = userId,
     clients = List(ClientEntry(clientId1, Instant.EPOCH)),
-    userAgent = UserAgentInfo("desktop", None, None, None),
+    userAgentId = testUserAgentId,
     createdAt = Instant.EPOCH,
     amr = Map.empty,
     publicId = publicSessionId,

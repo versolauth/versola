@@ -100,8 +100,11 @@ case class ClientSessionEntry(
 ) derives JsonCodec, Schema
 
 case class SessionResponse(
+    /** Not rendered to end users, but kept available for internal use (e.g. a future
+     *  per-session invalidation call). */
+    publicId: String,
     clients: List[ClientSessionEntry],
-    platform: String,
+    platform: Option[String],
     os: Option[String],
     browser: Option[String],
     version: Option[String],

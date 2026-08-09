@@ -1038,7 +1038,7 @@ export class VersolaUsersList extends LitElement {
             ${sessions.map(s => html`
               <div class="session-card">
                 <div class="session-card-header">
-                  <div class="session-card-name">${s.platform}</div>
+                  <div class="session-card-name">${s.platform ?? 'unknown'}</div>
                 </div>
                 <div class="session-card-body">
                   <span class="session-prop-label">OS</span>

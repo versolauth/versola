@@ -20,6 +20,7 @@ object ChallengeSettingsServiceSpec extends UnitSpecBase:
     authConversationTtlSeconds = 900,
     sessionTtlSeconds = 86400,
     sessionIdleTtlSeconds = None,
+    userAgentTtlSeconds = 15552000,
     ipHeader = "X-Real-IP",
     acrVocabulary = None,
     postLogoutRedirectUris = List.empty,

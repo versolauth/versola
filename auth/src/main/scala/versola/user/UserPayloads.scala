@@ -83,16 +83,19 @@ case class SetPasswordPayload(
 
 case class ClientEntryResponse(
     clientId: String,
-    enteredAt: String,
+    enteredAt: Instant,
 ) derives JsonCodec
 
 case class SessionResponse(
+    /** Not rendered to end users, but forwarded so internal callers (e.g. central)
+     *  can reference or invalidate this specific session. */
+    publicId: String,
     clients: List[ClientEntryResponse],
-    platform: String,
+    platform: Option[String],
     os: Option[String],
     browser: Option[String],
     version: Option[String],
-    createdAt: String,
+    createdAt: Instant,
 ) derives JsonCodec
 
 case class SessionListResponse(sessions: List[SessionResponse]) derives JsonCodec

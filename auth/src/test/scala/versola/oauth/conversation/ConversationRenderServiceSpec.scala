@@ -5,8 +5,8 @@ import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.*
 import versola.oauth.conversation.model.*
 import versola.oauth.jwks.JwksService
-import versola.oauth.model.{AuthorizationCode, CodeChallenge, CodeChallengeMethod, SessionCookie, State}
-import versola.oauth.session.model.{PublicSessionId, SessionId}
+import versola.oauth.model.{AuthorizationCode, CodeChallenge, CodeChallengeMethod, SessionCookie, State, UserAgentData}
+import versola.oauth.session.model.{PublicSessionId, SessionId, UserAgentDetails, UserAgentId}
 import versola.user.model.UserId
 import versola.util.*
 import zio.*
@@ -16,12 +16,14 @@ import zio.json.ast.Json
 import zio.test.*
 
 import java.time.Instant
+import java.util.UUID
 
 object ConversationRenderServiceSpec extends UnitSpecBase:
 
   private val tenantId = TenantId("tenant-1")
   private val clientId = ClientId("client-1")
   private val redirectUri = URL.decode("https://example.com/callback").toOption.get
+  private val testUserAgentId = UserAgentId(UUID.randomUUID())
 
   private val clientRecord = OAuthClientRecord(
     id = clientId,
@@ -81,7 +83,8 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
     userClaims = None,
     authFlow = AuthFlow.default,
     userAgent = None,
-    version = 1,
+    userAgentCookie = None,
+        version = 1,
     amr = Map.empty,
     needsPasswordChange = false,
     targetAcr = None,
@@ -225,9 +228,11 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
         val env = Env()
         val code = AuthorizationCode(Array.fill(16)(1.toByte))
         val sessionId = SessionId(Array.fill(32)(2.toByte))
-        val result = ConversationResult.Complete(redirectUri, Some(State("test-state")), code, sessionId, None)
+        val userId = UserId(UUID.randomUUID())
+        val result = ConversationResult.Complete(redirectUri, Some(State("test-state")), code, sessionId, None, testUserAgentId, UserAgentData(None, userId, UserAgentDetails.parse(None)))
         for
           _ <- env.configuration.getSessionTtl.succeedsWith(1.hour)
+          _ <- env.configuration.getUserAgentTtl.succeedsWith(180.days)
           response <- env.service.renderSubmit(result, conversationRecord)
         yield
           assertTrue(response.status == Status.SeeOther) &&
@@ -240,10 +245,11 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
         val sessionId = SessionId(Array.fill(32)(2.toByte))
         val userId = UserId(java.util.UUID.randomUUID())
         val idTokenData = ConversationResult.IdTokenData(userId, Map.empty, clientId, PublicSessionId("public-session-1"))
-        val result = ConversationResult.Complete(redirectUri, Some(State("test-state")), code, sessionId, Some(idTokenData))
+        val result = ConversationResult.Complete(redirectUri, Some(State("test-state")), code, sessionId, Some(idTokenData), testUserAgentId, UserAgentData(None, userId, UserAgentDetails.parse(None)))
 
         for
           _ <- env.configuration.getSessionTtl.succeedsWith(1.hour)
+          _ <- env.configuration.getUserAgentTtl.succeedsWith(180.days)
           _ <- env.jwksService.getPublicKeys.succeedsWith(TestEnvConfig.publicKeys)
           response <- env.service.renderSubmit(result, conversationRecord)
         yield

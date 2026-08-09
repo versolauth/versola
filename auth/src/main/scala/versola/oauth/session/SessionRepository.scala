@@ -16,7 +16,6 @@ trait SessionRepository:
    */
   def create(
       id: MAC.Of[SessionId],
-      publicId: PublicSessionId,
       session: SessionRecord,
       ttl: Duration,
       idleTtl: Option[Duration],

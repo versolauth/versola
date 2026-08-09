@@ -4,7 +4,7 @@ import versola.oauth.authorize.model.{AuthorizeRequest, Error, Prompt, ResponseT
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{Acr, ClientId, OAuthClientRecord, PrimaryCredential, ScopeToken}
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, Nonce, State}
-import versola.oauth.model.SessionCookie
+import versola.oauth.model.{SessionCookie, UserAgentCookie}
 import versola.oauth.session.model.SessionId
 import versola.oauth.userinfo.model.RequestedClaims
 import versola.util.{Base64, Email, Phone}
@@ -131,6 +131,10 @@ object AuthorizeRequestParser:
           request.cookie(SessionCookie.name)
             .flatMap(c => SessionCookie.parse(c.content, config.security.sessionCookieSecret).toOption)
 
+        userAgentCookie =
+          request.cookie(UserAgentCookie.name)
+            .flatMap(c => UserAgentCookie.parse(c.content, config.security.userAgentCookieSecret).toOption)
+
         loginHint <- getParam(params, "login_hint")
           .orElseFail(Error.MultipleValuesProvided(redirectUri, state, "login_hint"))
           .flatMap {
@@ -154,6 +158,7 @@ object AuthorizeRequestParser:
           uiLocales = uiLocales,
           nonce = nonce,
           userAgent = userAgent,
+          userAgentCookie = userAgentCookie,
           prompt = prompt,
           maxAge = maxAge,
           acrValues = acrValues,

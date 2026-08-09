@@ -74,6 +74,7 @@ object ConversationRouter:
           else
             val updated = withUiLocale(conversation, uiLocale)
             dispatch(authId, updated, submission, ipAddress)
+              .tapErrorCause(cause => ZIO.logErrorCause("Couldn't submit auth step", cause))
               .orElseSucceed(ConversationResult.ServiceUnavailable)
               .map(_ -> updated)
 

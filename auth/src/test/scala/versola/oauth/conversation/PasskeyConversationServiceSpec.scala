@@ -11,12 +11,12 @@ import versola.oauth.conversation.limit.{ChallengeType, LimitStatus, SubmissionL
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
 import versola.oauth.conversation.otp.OtpService
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod}
-import versola.oauth.session.SessionRepository
+import versola.oauth.session.{SessionRepository, UserAgentRepository}
 import versola.oauth.token.AuthorizationCodeRepository
 import versola.oauth.userinfo.UserInfoService
 import versola.user.UserRepository
 import versola.user.model.{UserId, UserRecord}
-import versola.util.{AuthPropertyGenerator, SecurityService, UnitSpecBase}
+import versola.util.{AuthPropertyGenerator, SecureRandom, SecurityService, UnitSpecBase}
 import zio.http.URL
 import zio.test.*
 
@@ -59,6 +59,8 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
     val configService = stub[OAuthConfigurationService]
     val acrResolver = stub[AcrResolutionService]
     val config = TestEnvConfig.coreConfig
+    val userAgentRepository = stub[UserAgentRepository]
+    val secureRandom = stub[SecureRandom]
 
     val service = ConversationService.Impl(
       otpService,
@@ -76,6 +78,8 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
       passkeyRepository,
       configService,
       acrResolver,
+      userAgentRepository,
+      secureRandom,
     )
 
   val credentialStep = ConversationStep.Credential(
@@ -105,6 +109,7 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
     userClaims = None,
     authFlow = passkeyAuthFlow,
     userAgent = None,
+    userAgentCookie = None,
     version = 0,
     amr = Map.empty,
     needsPasswordChange = false,
@@ -355,7 +360,10 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
           _ <- env.sessionRepository.create.succeedsWith(())
           _ <- env.conversationRepository.delete.succeedsWith(true)
           _ <- env.configService.getSessionTtl.succeedsWith(zio.Duration.fromSeconds(86400))
+          _ <- env.configService.getUserAgentTtl.succeedsWith(zio.Duration.fromSeconds(15552000))
           _ <- env.configService.getSessionIdleTtl.succeedsWith(Option.empty[zio.Duration])
+          _ <- env.secureRandom.nextUUIDv7.succeedsWith(java.util.UUID.randomUUID())
+          _ <- env.userAgentRepository.create.succeedsWith(())
           result <- env.service.offerPasskeyEnroll(authId, recordWithUser)
         yield assertTrue(result.isInstanceOf[ConversationResult.Complete])
       }
@@ -399,7 +407,10 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
           _ <- env.sessionRepository.create.succeedsWith(())
           _ <- env.conversationRepository.delete.succeedsWith(true)
           _ <- env.configService.getSessionTtl.succeedsWith(zio.Duration.fromSeconds(86400))
+          _ <- env.configService.getUserAgentTtl.succeedsWith(zio.Duration.fromSeconds(15552000))
           _ <- env.configService.getSessionIdleTtl.succeedsWith(Option.empty[zio.Duration])
+          _ <- env.secureRandom.nextUUIDv7.succeedsWith(java.util.UUID.randomUUID())
+          _ <- env.userAgentRepository.create.succeedsWith(())
           result <- env.service.finishPasskeyEnroll(authId, recordWithUser, enrollStep, "resp", "my-passkey")
         yield assertTrue(result.isInstanceOf[ConversationResult.Complete])
       },
@@ -434,7 +445,10 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
           _ <- env.sessionRepository.create.succeedsWith(())
           _ <- env.conversationRepository.delete.succeedsWith(true)
           _ <- env.configService.getSessionTtl.succeedsWith(zio.Duration.fromSeconds(86400))
+          _ <- env.configService.getUserAgentTtl.succeedsWith(zio.Duration.fromSeconds(15552000))
           _ <- env.configService.getSessionIdleTtl.succeedsWith(Option.empty[zio.Duration])
+          _ <- env.secureRandom.nextUUIDv7.succeedsWith(java.util.UUID.randomUUID())
+          _ <- env.userAgentRepository.create.succeedsWith(())
           result <- env.service.skipPasskey(authId, recordWithUser)
         yield assertTrue(result.isInstanceOf[ConversationResult.Complete])
       }
