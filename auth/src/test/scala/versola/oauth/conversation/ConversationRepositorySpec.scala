@@ -186,6 +186,14 @@ trait ConversationRepositorySpec extends DatabaseSpecBase[ConversationRepository
           found2.version == found1.version + 1
         )
       },
+      test("find returns None for expired conversation") {
+        val pastAuthId = AuthId(UUID.fromString("00000000-0001-7000-8000-000000000001"))
+        for
+          _ <- env.repository.create(pastAuthId, record1, ttl = 1.second)
+          _ <- TestClock.adjust(2.seconds)
+          result <- env.repository.find(pastAuthId)
+        yield assertTrue(result.isEmpty)
+      },
 
     )
 
