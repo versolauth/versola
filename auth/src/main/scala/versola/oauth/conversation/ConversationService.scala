@@ -14,9 +14,7 @@ import versola.oauth.conversation.model.{AuthId, ConversationRecord, Conversatio
 import versola.oauth.conversation.otp.OtpService
 import versola.oauth.conversation.otp.model.SubmitOtpResult
 import versola.oauth.model.{AuthorizationCode, AuthorizationCodeRecord}
-import versola.oauth.session.SessionRepository
 import versola.oauth.session.model.{ClientEntry, PublicSessionId, SessionId, SessionRecord, UserAgentInfo, PriorSession}
-import versola.oauth.token.AuthorizationCodeRepository
 import versola.oauth.userinfo.UserInfoService
 import versola.user.UserRepository
 import versola.user.model.{Login, UserId, UserRecord}
@@ -143,15 +141,14 @@ trait ConversationService:
 
 object ConversationService:
   def live =
-    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _))
+    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _))
 
   class Impl(
       otpService: OtpService,
       passwordService: PasswordService,
       conversationRepository: ConversationRepository,
       userRepository: UserRepository,
-      authorizationCodeRepository: AuthorizationCodeRepository,
-      sessionRepository: SessionRepository,
+      conversationFinalizer: ConversationFinalizer,
       authPropertyGenerator: AuthPropertyGenerator,
       securityService: SecurityService,
       userInfoService: UserInfoService,
@@ -554,21 +551,36 @@ object ConversationService:
               publicId = publicSessionId,
             )
             codeMac <- securityService.mac(Secret(code), config.security.authCodesSecret)
-            claimed <- conversationRepository.delete(authId, conversation.version)
+            // Always create a new session (rotates the ID, issues a fresh cookie with full TTL).
+            // For step-up the accumulated AMR is already in conversation.amr.
+            // When offline_access is in scope the client holds a refresh token on-device:
+            // migrate prior session's tokens to the new session so the device RT stays valid.
+            // Otherwise (web/BFF) expire the prior session's tokens outright.
+            priorSession = conversation.priorSessionId.map: prior =>
+              if conversation.hasOfflineAccess then
+                PriorSession.MigrateTokens(prior, amr, now, conversation.targetAcr)
+              else
+                PriorSession.Invalidate(prior)
+            // Deletes the conversation and creates the authorization code + session in one DB
+            // transaction, so a failure partway through rolls everything back instead of leaving
+            // the conversation deleted with no code/session to show for it (issue #102).
+            claimed <- conversationFinalizer.finish(
+              FinishConversationRequest(
+                authId = authId,
+                version = conversation.version,
+                codeMac = codeMac,
+                codeRecord = record,
+                codeTtl = 1.minute,
+                sessionIdMac = sessionIdMac,
+                publicSessionId = publicSessionId,
+                session = session,
+                sessionTtl = sessionTtl,
+                sessionIdleTtl = sessionIdleTtl,
+                priorSession = priorSession,
+              ),
+            )
             result <- if claimed then
               for
-                _ <- authorizationCodeRepository.create(codeMac, record, 1.minute)
-                // Always create a new session (rotates the ID, issues a fresh cookie with full TTL).
-                // For step-up the accumulated AMR is already in conversation.amr.
-                // When offline_access is in scope the client holds a refresh token on-device:
-                // migrate prior session's tokens to the new session so the device RT stays valid.
-                // Otherwise (web/BFF) expire the prior session's tokens outright.
-                priorSession = conversation.priorSessionId.map: prior =>
-                  if conversation.hasOfflineAccess then
-                    PriorSession.MigrateTokens(prior, amr, now, conversation.targetAcr)
-                  else
-                    PriorSession.Invalidate(prior)
-                _ <- sessionRepository.create(sessionIdMac, publicSessionId, session, sessionTtl, sessionIdleTtl, priorSession)
                 idTokenData <- if conversation.responseType.contains(ResponseTypeEntry.IdToken) && conversation.scope.contains(ScopeToken.OpenId) then
                   generateIdTokenData(userId, conversation, amr, now, conversation.targetAcr, publicSessionId)
                 else

@@ -14,6 +14,7 @@ import zio.json.*
 import zio.{Clock, Duration, IO, Task, ZIO, ZLayer}
 
 import java.sql.{Connection, SQLException}
+import java.time.Instant
 import java.util.UUID
 
 class PostgresSessionRepository(xa: TransactorZIO)
@@ -60,40 +61,58 @@ class PostgresSessionRepository(xa: TransactorZIO)
   ): Task[Unit] =
     Clock.instant.flatMap: now =>
       val idleExpiresAt = idleTtl.map(t => now.plusSeconds(t.toSeconds))
-      val priorId = priorSession.map(_.id)
       xa.transactMeasured("create-session"):
-        // The new session continues the same browser session as the prior one (step-up,
-        // idle-slide re-issue): carry over the RPs already registered on it so none of them
-        // miss a later logout notification because of the rotation.
-        val priorClients = priorId.toList.flatMap: prior =>
-          sql"""SELECT clients FROM sso_sessions WHERE id = $prior""".query[List[ClientEntry]].run().headOption.getOrElse(Nil)
-        val clients = (session.clients ++ priorClients).distinctBy(_.clientId)
+        createRaw(id, publicId, session, now, now.plusSeconds(ttl.toSeconds), idleExpiresAt, priorSession)
+
+  /** Same insert (including prior-session handling), without the transact/measure wrapper, so it
+    * can be composed into a larger transaction (see
+    * [[versola.oauth.conversation.PostgresConversationFinalizer]]).
+    *
+    * @param now used both for `created_at`-relative expiry math already baked into `expiresAt`/
+    *            `idleExpiresAt` by the caller, and to timestamp the prior-session invalidation.
+    */
+  private[oauth] def createRaw(
+      id: MAC.Of[SessionId],
+      publicId: PublicSessionId,
+      session: SessionRecord,
+      now: Instant,
+      expiresAt: Instant,
+      idleExpiresAt: Option[Instant],
+      priorSession: Option[PriorSession],
+  )(using DbCon): Unit =
+    // The new session continues the same browser session as the prior one (step-up,
+    // idle-slide re-issue): carry over the RPs already registered on it so none of them
+    // miss a later logout notification because of the rotation.
+    val priorId = priorSession.map(_.id)
+    val priorClients = priorId.toList.flatMap: prior =>
+      sql"""SELECT clients FROM sso_sessions WHERE id = $prior""".query[List[ClientEntry]].run().headOption.getOrElse(Nil)
+    val clients = (session.clients ++ priorClients).distinctBy(_.clientId)
+    sql"""
+      INSERT INTO sso_sessions (id, public_id, clients, user_id, user_agent, created_at, amr, expires_at, idle_expires_at)
+      VALUES (
+        $id,
+        $publicId,
+        $clients,
+        ${session.userId},
+        ${session.userAgent},
+        ${session.createdAt},
+        ${session.amr},
+        $expiresAt,
+        $idleExpiresAt
+      )
+    """.update.run()
+    priorSession.foreach:
+      case PriorSession.Invalidate(prior) =>
+        sql"""UPDATE sso_sessions SET expires_at = $now WHERE id = $prior""".update.run()
+        sql"""UPDATE refresh_tokens SET expires_at = $now WHERE session_id = $prior""".update.run()
+      case PriorSession.MigrateTokens(prior, amr, authTime, acr) =>
+        sql"""UPDATE sso_sessions SET expires_at = $now WHERE id = $prior""".update.run()
         sql"""
-          INSERT INTO sso_sessions (id, public_id, clients, user_id, user_agent, created_at, amr, expires_at, idle_expires_at)
-          VALUES (
-            $id,
-            $publicId,
-            $clients,
-            ${session.userId},
-            ${session.userAgent},
-            ${session.createdAt},
-            ${session.amr},
-            ${now.plusSeconds(ttl.toSeconds)},
-            $idleExpiresAt
-          )
+          UPDATE refresh_tokens
+          SET session_id = $id, amr = $amr, auth_time = $authTime, acr = $acr
+          WHERE session_id = $prior AND expires_at > $now
         """.update.run()
-        priorSession.foreach:
-          case PriorSession.Invalidate(prior) =>
-            sql"""UPDATE sso_sessions SET expires_at = $now WHERE id = $prior""".update.run()
-            sql"""UPDATE refresh_tokens SET expires_at = $now WHERE session_id = $prior""".update.run()
-          case PriorSession.MigrateTokens(prior, amr, authTime, acr) =>
-            sql"""UPDATE sso_sessions SET expires_at = $now WHERE id = $prior""".update.run()
-            sql"""
-              UPDATE refresh_tokens
-              SET session_id = $id, amr = $amr, auth_time = $authTime, acr = $acr
-              WHERE session_id = $prior AND expires_at > $now
-            """.update.run()
-        ()
+    ()
 
   override def findSession(id: MAC.Of[SessionId]): Task[Option[SessionRecord]] =
     Clock.instant.flatMap: now =>

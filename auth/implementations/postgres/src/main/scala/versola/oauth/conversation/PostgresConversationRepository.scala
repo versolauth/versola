@@ -156,10 +156,14 @@ class PostgresConversationRepository(xa: TransactorZIO) extends ConversationRepo
     }.map(_ > 0)
 
   override def delete(authId: AuthId, version: Long): Task[Boolean] =
-    xa.connectMeasured("delete-conversation") {
-      sql"""delete from auth_conversations where id = $authId and version = $version"""
-        .update.run()
-    }.map(_ > 0)
+    xa.connectMeasured("delete-conversation")(deleteRaw(authId, version))
+
+  /** Same delete, without the connect/measure wrapper, so it can be composed into a larger
+    * transaction (see [[versola.oauth.conversation.PostgresConversationFinalizer]]).
+    */
+  private[oauth] def deleteRaw(authId: AuthId, version: Long)(using DbCon): Boolean =
+    sql"""delete from auth_conversations where id = $authId and version = $version"""
+      .update.run() > 0
 
 object PostgresConversationRepository:
   def live: ZLayer[TransactorZIO, Throwable, ConversationRepository] =

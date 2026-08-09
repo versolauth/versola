@@ -13,8 +13,6 @@ import versola.oauth.conversation.model.{AuthId, ConversationRecord, Conversatio
 import versola.oauth.conversation.otp.OtpService
 import versola.oauth.conversation.otp.model.SubmitOtpResult
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod}
-import versola.oauth.session.SessionRepository
-import versola.oauth.token.AuthorizationCodeRepository
 import versola.oauth.userinfo.UserInfoService
 import versola.oauth.userinfo.model.UserInfoResponse
 import versola.user.UserRepository
@@ -56,8 +54,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
     val passwordService = stub[PasswordService]
     val conversationRepository = stub[ConversationRepository]
     val userRepository = stub[UserRepository]
-    val authorizationCodeRepository = stub[AuthorizationCodeRepository]
-    val sessionRepository = stub[SessionRepository]
+    val conversationFinalizer = stub[ConversationFinalizer]
     val authPropertyGenerator = stub[AuthPropertyGenerator]
     val securityService = stub[SecurityService]
     val userInfoService = stub[versola.oauth.userinfo.UserInfoService]
@@ -72,8 +69,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
       passwordService,
       conversationRepository,
       userRepository,
-      authorizationCodeRepository,
-      sessionRepository,
+      conversationFinalizer,
       authPropertyGenerator,
       securityService,
       userInfoService,
@@ -387,9 +383,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           _ <- env.securityService.mac.returnsZIOOnCall:
             case 1 => ZIO.succeed(testSessionIdMac)
             case 2 => ZIO.succeed(testCodeMac)
-          _ <- env.authorizationCodeRepository.create.succeedsWith(())
-          _ <- env.sessionRepository.create.succeedsWith(())
-          _ <- env.conversationRepository.delete.succeedsWith(true)
+          _ <- env.conversationFinalizer.finish.succeedsWith(true)
           _ <- env.configService.getSessionTtl.succeedsWith(zio.Duration.fromSeconds(86400))
           _ <- env.configService.getSessionIdleTtl.succeedsWith(Option.empty[zio.Duration])
           _ <- env.userInfoService.getUserInfoForIdToken.succeedsWith(
@@ -437,9 +431,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           _ <- env.securityService.mac.returnsZIOOnCall:
             case 1 => ZIO.succeed(testSessionIdMac)
             case 2 => ZIO.succeed(testCodeMac)
-          _ <- env.authorizationCodeRepository.create.succeedsWith(())
-          _ <- env.sessionRepository.create.succeedsWith(())
-          _ <- env.conversationRepository.delete.succeedsWith(true)
+          _ <- env.conversationFinalizer.finish.succeedsWith(true)
           _ <- env.configService.getSessionTtl.succeedsWith(zio.Duration.fromSeconds(86400))
           _ <- env.configService.getSessionIdleTtl.succeedsWith(Option.empty[zio.Duration])
           result <- env.service.finish(authId, conversation)
@@ -469,9 +461,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           _ <- env.securityService.mac.returnsZIOOnCall:
             case 1 => ZIO.succeed(testSessionIdMac)
             case 2 => ZIO.succeed(testCodeMac)
-          _ <- env.authorizationCodeRepository.create.succeedsWith(())
-          _ <- env.sessionRepository.create.succeedsWith(())
-          _ <- env.conversationRepository.delete.succeedsWith(true)
+          _ <- env.conversationFinalizer.finish.succeedsWith(true)
           _ <- env.configService.getSessionTtl.succeedsWith(zio.Duration.fromSeconds(86400))
           _ <- env.configService.getSessionIdleTtl.succeedsWith(Option.empty[zio.Duration])
           result <- env.service.finish(authId, conversation)
