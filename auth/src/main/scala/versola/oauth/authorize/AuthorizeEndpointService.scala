@@ -366,11 +366,11 @@ object AuthorizeEndpointService:
           uiLocales = uiLocales,
           nonce = request.nonce,
         )
-        signingKey <- jwksService.getPublicKeys.map(_.active)
-        cHash = JWT.leftHalfHash(Base64Url.encode(code), signingKey.algorithm)
+        cHash = JWT.leftHalfHash(Base64Url.encode(code), JWT.Algorithm.RS256)
         claims = userInfo.claims ++
           AuthMethodRef.idTokenClaims(amr, Some(session.createdAt), acr) +
           ("c_hash" -> Json.Str(cHash)) + ("sid" -> Json.Str(session.publicId))
+        keyId <- config.jwt.requireKeyId
         token <- JWT.serialize(
           typ = JWT.Type.JWT,
           claims = JWT.Claims(
@@ -381,8 +381,8 @@ object AuthorizeEndpointService:
           ),
           ttl = 15.minutes,
           signature = JWT.Signature.Asymmetric(
-            algorithm = signingKey.algorithm,
-            keyId = signingKey.id,
+            algorithm = JWT.Algorithm.RS256,
+            keyId = keyId,
             privateKey = config.jwt.privateKey,
           ),
         )

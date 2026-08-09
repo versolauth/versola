@@ -4,7 +4,6 @@ import versola.auth.TestEnvConfig
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.*
 import versola.oauth.conversation.model.*
-import versola.oauth.jwks.JwksService
 import versola.oauth.model.{AuthorizationCode, CodeChallenge, CodeChallengeMethod, SessionCookie, State}
 import versola.oauth.session.model.{PublicSessionId, SessionId}
 import versola.user.model.UserId
@@ -91,8 +90,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
 
   class Env:
     val configuration = stub[OAuthConfigurationService]
-    val jwksService   = stub[JwksService]
-    val service       = ConversationRenderService.Impl(TestEnvConfig.coreConfig, configuration, jwksService)
+    val service       = ConversationRenderService.Impl(TestEnvConfig.coreConfig, configuration)
 
   def spec = suite("ConversationRenderService")(
     suite("renderStep")(
@@ -244,7 +242,6 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
 
         for
           _ <- env.configuration.getSessionTtl.succeedsWith(1.hour)
-          _ <- env.jwksService.getPublicKeys.succeedsWith(TestEnvConfig.publicKeys)
           response <- env.service.renderSubmit(result, conversationRecord)
         yield
           assertTrue(response.header(Header.Location).exists(_.url.encode.contains("id_token=")))

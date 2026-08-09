@@ -101,7 +101,6 @@ object LogoutServiceSpec extends UnitSpecBase:
       sessionService,
       configuration,
       TestEnvConfig.coreConfig,
-      TestEnvConfig.jwksService,
       unusedHttpClient,
     )
 

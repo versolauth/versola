@@ -2,6 +2,9 @@ package versola.oauth.token
 
 import org.scalamock.stubs.Stub
 import versola.auth.TestEnvConfig
+import com.nimbusds.jose.JWSAlgorithm
+import com.nimbusds.jose.crypto.RSASSAVerifier
+import com.nimbusds.jose.jwk.{KeyUse, RSAKey}
 import com.nimbusds.jwt.SignedJWT
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.jwks.JwksService
@@ -19,6 +22,8 @@ import zio.http.*
 import zio.json.*
 import zio.test.*
 
+import java.security.KeyPairGenerator
+import java.security.interfaces.RSAPublicKey
 import java.util.UUID
 
 object TokenEndpointControllerSpec extends UnitSpecBase:
@@ -580,6 +585,111 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
             tokenResponse.idToken.isEmpty, // No ID token for client_credentials
           ),
       ),
+    ),
+    // Regression for #104: JwksService reloads the JWKS from central on a schedule and its
+    // "active" (first) key can drift out of sync with auth's static private key. Signing must
+    // always use config.jwt.keyId — never whatever kid JwksService currently reports as active —
+    // otherwise the issued token carries a kid that doesn't match the key that actually signed it.
+    suite("signing key consistency (regression for #104)")(
+      test("signs the access token with config.jwt.keyId even when JwksService reports a different active kid") {
+        // Simulates central having rotated in a brand-new key pair that JwksService now
+        // reports as "active", while auth's own config.jwt.keyId/privateKey (TestEnvConfig's
+        // pair, kid = "test-key-id") hasn't changed.
+        val staleActiveKeyPairGenerator = KeyPairGenerator.getInstance("RSA")
+        staleActiveKeyPairGenerator.initialize(2048)
+        val staleActiveKeyPair = staleActiveKeyPairGenerator.generateKeyPair()
+        val staleActiveJwk = new RSAKey.Builder(staleActiveKeyPair.getPublic.asInstanceOf[RSAPublicKey])
+          .keyID("stale-active-kid-from-central")
+          .algorithm(JWSAlgorithm.RS256)
+          .keyUse(KeyUse.SIGNATURE)
+          .build()
+        val staleActiveJwkJson = staleActiveJwk.toJSONString.fromJson[Json.Obj].toOption.get
+        val driftedJwks = JWT.PublicKeys.fromJson(Json.Obj("keys" -> Json.Arr(staleActiveJwkJson)))
+        val driftedJwksService: JwksService = new JwksService:
+          override def getPublicKeys: UIO[JWT.PublicKeys] = ZIO.succeed(driftedJwks)
+
+        for
+          client <- ZIO.service[Client]
+          tokenService = stub[OAuthTokenService]
+          clientService = stub[OAuthConfigurationService]
+          userInfoService = stub[UserInfoService]
+          tracing <- NoopTracing.layer.build
+          _ <- tokenService.exchangeAuthorizationCode.succeedsWith(issuedTokens)
+          _ <- TestClient.addRoutes(
+            Observability.handleErrors(
+              TokenEndpointController.routes
+                .provideEnvironment(
+                  ZEnvironment(tokenService) ++ ZEnvironment(clientService) ++ ZEnvironment(userInfoService) ++
+                    ZEnvironment(driftedJwksService) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ tracing,
+                )
+            )
+          )
+          response <- client.batched(
+            Request.post(
+              url = URL.empty / "token",
+              body = Body.fromURLEncodedForm(
+                Form.fromStrings(
+                  "grant_type" -> "authorization_code",
+                  "code" -> Base64.urlEncode(authCode1),
+                  "redirect_uri" -> redirectUri,
+                  "code_verifier" -> codeVerifier1,
+                )
+              )
+            ).addHeader(authHeader(clientId1, Some(clientSecret1))),
+          )
+          body <- response.body.asString
+          tokenResponse <- ZIO.fromEither(body.fromJson[TokenResponse]).mapError(new RuntimeException(_))
+          signedJwt = SignedJWT.parse(tokenResponse.accessToken)
+        yield assertTrue(
+          // kid must be the one that matches the private key actually used to sign,
+          // never the unrelated "active" kid JwksService happened to report.
+          TestEnvConfig.jwtConfig.keyId.contains(signedJwt.getHeader.getKeyID),
+          signedJwt.getHeader.getKeyID != "stale-active-kid-from-central",
+          // and the signature must actually verify against the public key that
+          // corresponds to that kid, proving kid and signature are for the same key.
+          signedJwt.verify(new RSASSAVerifier(TestEnvConfig.publicKey)),
+        )
+      }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging,
+      test("fails the request (not the whole service) when jwt.key-id is not configured") {
+        // config and code are deployed separately (see PR #104 review discussion); an old
+        // runtime config paired with this code has jwt.key-id absent. That must not crash
+        // config parsing / service startup -- it should fail only the requests that need to
+        // sign, leaving the rest of the service up.
+        val configWithoutKeyId = TestEnvConfig.coreConfig.copy(
+          jwt = TestEnvConfig.jwtConfig.copy(keyId = None),
+        )
+
+        for
+          client <- ZIO.service[Client]
+          tokenService = stub[OAuthTokenService]
+          clientService = stub[OAuthConfigurationService]
+          userInfoService = stub[UserInfoService]
+          tracing <- NoopTracing.layer.build
+          _ <- tokenService.exchangeAuthorizationCode.succeedsWith(issuedTokens)
+          _ <- TestClient.addRoutes(
+            Observability.handleErrors(
+              TokenEndpointController.routes
+                .provideEnvironment(
+                  ZEnvironment(tokenService) ++ ZEnvironment(clientService) ++ ZEnvironment(userInfoService) ++
+                    ZEnvironment(configWithoutKeyId) ++ tracing,
+                )
+            )
+          )
+          response <- client.batched(
+            Request.post(
+              url = URL.empty / "token",
+              body = Body.fromURLEncodedForm(
+                Form.fromStrings(
+                  "grant_type" -> "authorization_code",
+                  "code" -> Base64.urlEncode(authCode1),
+                  "redirect_uri" -> redirectUri,
+                  "code_verifier" -> codeVerifier1,
+                )
+              )
+            ).addHeader(authHeader(clientId1, Some(clientSecret1))),
+          )
+        yield assertTrue(response.status == Status.InternalServerError)
+      }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging,
     ),
   )
 
