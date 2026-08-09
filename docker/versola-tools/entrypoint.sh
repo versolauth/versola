@@ -15,7 +15,18 @@ echo "versola-tools ${VERSION}: generating configs for docker-local..."
 # answers, or hangs) instead of silently producing a wrong config, which
 # is what the old fixed-stdin-answer-sequence approach this replaced
 # would have done.
-printf 'docker-local\n' | scala-cli run gen-env.scala
+#
+# `java -cp 'lib/*' genEnv` instead of `scala-cli run gen-env.scala` --
+# this image no longer ships scala-cli, gen-env.scala is compiled ahead of
+# time (see build.sbt's `tools` project) and staged here. Not
+# ./bin/tools (the sbt-native-packager launcher also staged alongside
+# lib/): that script's shebang is `#!/usr/bin/env bash`, and this image's
+# base (Alpine) has no bash, only busybox's ash -- invoking java directly
+# sidesteps needing it. `lib/*` is Java's own classpath wildcard syntax
+# (expands to every jar in lib/, including gen-env.scala's compiled
+# classes and the Scala runtime it needs) -- not a shell glob, so the
+# quotes are required to stop the shell from expanding it first.
+printf 'docker-local\n' | java -cp 'lib/*' genEnv
 
 cp .local/env/docker-local/auth.conf    "$OUT_DIR"/auth.conf
 cp .local/env/docker-local/central.conf "$OUT_DIR"/central.conf

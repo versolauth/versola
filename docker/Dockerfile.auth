@@ -1,47 +1,49 @@
-# Build stage
-FROM eclipse-temurin:21-jdk AS builder
+# versola-auth: no sbt in this image. auth-postgres-impl is staged in CI
+# (see ci-cd.yml's "Stage auth for release image" step, `sbt
+# auth-postgres-impl/stage`) and downloaded as an artifact by the
+# docker-auth job before this Dockerfile ever runs -- this just copies
+# the already-built application onto a bare JRE, the same shape as
+# Dockerfile.gateway. Migrations come straight from the checkout (they're
+# source files, not build output), no staging needed for those.
+#
+# Pinned by digest, not just `:25-jre` -- a floating tag would let an
+# upstream Temurin update silently change what a given Versola release
+# runs on, defeating the point of pinning the runtime at all. Bump this
+# deliberately when a new Java 25 patch/point release is wanted, not by
+# surprise on a rebuild.
+FROM eclipse-temurin:25-jre@sha256:f19dbf0a22d0b3658fda48ce7d7181df05ad14bda151dd5ad12cc09d1451c70e
 
 WORKDIR /app
 
-# Install sbt
-RUN apt-get update && apt-get install -y curl gnupg && \
-    curl -sL "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x2EE0EA64E40A89B84B2DF73499E82A75642AC823" \
-      | gpg --dearmor > /usr/share/keyrings/sbt-keyring.gpg && \
-    echo "deb [signed-by=/usr/share/keyrings/sbt-keyring.gpg] https://repo.scala-sbt.org/scalasbt/debian all main" \
-      > /etc/apt/sources.list.d/sbt.list && \
-    apt-get update && apt-get install -y sbt && \
-    rm -rf /var/lib/apt/lists/*
+# Staged application (see ci-cd.yml) -- carved back out of .dockerignore's
+# blanket `target/` exclusion for exactly this path.
+COPY auth/implementations/postgres/target/universal/stage /app
 
-# Copy build files first for better caching
-COPY project/build.properties project/plugins.sbt project/Dependencies.scala project/
-COPY build.sbt .
+# actions/upload-artifact normalizes file modes to 0644 on upload -- the
+# release/workflow_dispatch path (stage -> upload-artifact -> download-
+# artifact -> this COPY) loses bin/auth-postgres-impl's executable bit
+# along the way, even though it's +x right after `sbt stage` locally.
+# Re-set it explicitly here instead of relying on the artifact round trip
+# preserving it, so a build from a downloaded artifact can't silently
+# produce an image whose entrypoint fails with "Permission denied".
+RUN chmod +x /app/bin/*
 
-# Download dependencies (cached layer)
-RUN sbt update
-
-# Copy source code
-COPY util util
-COPY auth auth
-
-# Build the application
-RUN sbt "project auth-postgres-impl" stage
-
-# Runtime stage
-FROM eclipse-temurin:21-jre
-
-WORKDIR /app
-
-# Copy the staged application from builder
-COPY --from=builder /app/auth/implementations/postgres/target/universal/stage /app
-
-# Copy migrations to the path expected by Flyway
-COPY --from=builder /app/auth/implementations/postgres/migrations /app/auth/implementations/postgres/migrations
+# Migrations, to the path expected by Flyway. Already present in the
+# build context from checkout -- not a build artifact.
+COPY auth/implementations/postgres/migrations /app/auth/implementations/postgres/migrations
 
 # Expose ports
 EXPOSE 8080 9345
 
 # Set environment variables
-ENV JAVA_OPTS="-XX:+UseG1GC -XX:MaxRAMPercentage=75.0"
+# UseCompactObjectHeaders is a stable (non-experimental) product flag as
+# of JDK 25 -- no -XX:+UnlockExperimentalVMOptions needed ahead of it.
+# --enable-native-access=ALL-UNNAMED silences (and future-proofs against)
+# JDK 25's new native-access warnings from Netty's use of native sockets --
+# confirmed by hand these appear on startup without this flag; JDK docs
+# say restricted native calls get blocked outright in a future release
+# without it, not just warned about.
+ENV JAVA_OPTS="-XX:+UseG1GC -XX:MaxRAMPercentage=75.0 -XX:+UseCompactObjectHeaders --enable-native-access=ALL-UNNAMED"
 ENV CONFIG_PATH="/app/config/env.conf"
 
 # Run the application with config path
