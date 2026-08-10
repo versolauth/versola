@@ -1,0 +1,395 @@
+name: Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Image tag to deploy (e.g. 0.1.1, no "v" prefix — see registry tags)'
+        required: true
+        type: string
+      service:
+        description: 'Which service to deploy'
+        required: true
+        type: choice
+        options: [auth, central, edge, central-ui, all]
+      run_migrations:
+        description: 'Run Flyway migrations on startup'
+        required: true
+        type: boolean
+        default: true
+
+# Concurrent manual runs would race on the same VPS state (in-place edits of
+# docker-compose.prod.yml, overlapping docker compose calls). Queue instead of
+# running in parallel, and don't cancel a deploy that's already in flight.
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy-central:
+    if: inputs.service == 'central' || inputs.service == 'all'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate version input
+        env:
+          DEPLOY_VERSION: ${{ inputs.version }}
+        run: |
+          if [[ ! "$DEPLOY_VERSION" =~ ^[A-Za-z0-9._-]+$ ]]; then
+            echo "::error::Invalid version '$DEPLOY_VERSION' — only letters, digits, dots, underscores and hyphens are allowed"
+            exit 1
+          fi
+
+      - name: Checkout env-config
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: versolauth/env-config
+          token: ${{ secrets.ENV_CONFIG_PAT }}
+          path: env-config
+          persist-credentials: false
+
+      - name: Upload central.conf to VPS
+        uses: appleboy/scp-action@ff85246acaad7bdce478db94a363cd2bf7c90345 # v1.0.0
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          fingerprint: ${{ secrets.VPS_HOST_FINGERPRINT }}
+          source: "env-config/prod/central.conf"
+          target: "~/incoming-config-central"
+          strip_components: 2
+          overwrite: true
+
+      - name: Deploy central
+        uses: appleboy/ssh-action@7eaf76671a0d7eec5d98ee897acda4f968735a17 # v1.2.0
+        env:
+          DEPLOY_VERSION: ${{ inputs.version }}
+          DEPLOY_RUN_MIGRATIONS: ${{ inputs.run_migrations }}
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          fingerprint: ${{ secrets.VPS_HOST_FINGERPRINT }}
+          envs: DEPLOY_VERSION,DEPLOY_RUN_MIGRATIONS
+          script: |
+            set -e
+            trap 'rm -rf ~/incoming-config-central' EXIT
+            cd /opt/versola
+
+            if [ ! -s ~/incoming-config-central/central.conf ]; then
+              echo "central.conf from env-config is empty or missing" >&2
+              exit 1
+            fi
+            if [ -f /opt/versola/config/central.conf ]; then
+              sudo -n cp /opt/versola/config/central.conf /opt/versola/config/central.conf.bak
+            fi
+            sudo -n cp ~/incoming-config-central/central.conf /opt/versola/config/central.conf
+            sudo -n chmod 600 /opt/versola/config/central.conf
+
+            sudo -n cp docker-compose.prod.yml docker-compose.prod.yml.bak
+            sudo -n sed -i "s|versola-central:[^[:space:]]*|versola-central:${DEPLOY_VERSION}|" docker-compose.prod.yml
+            # Fail loudly if sed matched nothing (e.g. compose format changed) instead of
+            # silently pulling/redeploying the old tag and reporting a green deploy.
+            if ! grep -qF "versola-central:${DEPLOY_VERSION}" docker-compose.prod.yml; then
+              echo "Failed to set central image tag to '${DEPLOY_VERSION}' in docker-compose.prod.yml" >&2
+              exit 1
+            fi
+            export RUN_MIGRATIONS="$DEPLOY_RUN_MIGRATIONS"
+            docker compose -f docker-compose.prod.yml pull central
+            docker compose -f docker-compose.prod.yml up -d --no-deps central
+
+            echo "Waiting for central to become ready..."
+            for i in $(seq 1 30); do
+              if curl -sf --max-time 5 http://127.0.0.1:8091/readiness > /dev/null; then
+                echo "central is ready"
+                exit 0
+              fi
+              sleep 2
+            done
+            echo "central did not become ready in time" >&2
+            docker compose -f docker-compose.prod.yml logs --tail=50 central
+            exit 1
+
+      - name: Clean up staged config
+        if: always()
+        uses: appleboy/ssh-action@7eaf76671a0d7eec5d98ee897acda4f968735a17 # v1.2.0
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          fingerprint: ${{ secrets.VPS_HOST_FINGERPRINT }}
+          script: |
+            rm -rf ~/incoming-config-central
+
+  deploy-auth:
+    needs: deploy-central
+    if: |
+      always() &&
+      (inputs.service == 'auth' || inputs.service == 'all') &&
+      (needs.deploy-central.result == 'success' || needs.deploy-central.result == 'skipped')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate version input
+        env:
+          DEPLOY_VERSION: ${{ inputs.version }}
+        run: |
+          if [[ ! "$DEPLOY_VERSION" =~ ^[A-Za-z0-9._-]+$ ]]; then
+            echo "::error::Invalid version '$DEPLOY_VERSION' — only letters, digits, dots, underscores and hyphens are allowed"
+            exit 1
+          fi
+
+      - name: Checkout env-config
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: versolauth/env-config
+          token: ${{ secrets.ENV_CONFIG_PAT }}
+          path: env-config
+          persist-credentials: false
+
+      - name: Upload auth.conf to VPS
+        uses: appleboy/scp-action@ff85246acaad7bdce478db94a363cd2bf7c90345 # v1.0.0
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          fingerprint: ${{ secrets.VPS_HOST_FINGERPRINT }}
+          source: "env-config/prod/auth.conf"
+          target: "~/incoming-config-auth"
+          strip_components: 2
+          overwrite: true
+
+      - name: Deploy auth
+        uses: appleboy/ssh-action@7eaf76671a0d7eec5d98ee897acda4f968735a17 # v1.2.0
+        env:
+          DEPLOY_VERSION: ${{ inputs.version }}
+          DEPLOY_RUN_MIGRATIONS: ${{ inputs.run_migrations }}
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          fingerprint: ${{ secrets.VPS_HOST_FINGERPRINT }}
+          envs: DEPLOY_VERSION,DEPLOY_RUN_MIGRATIONS
+          script: |
+            set -e
+            trap 'rm -rf ~/incoming-config-auth' EXIT
+            cd /opt/versola
+
+            echo "Checking central is healthy before touching auth..."
+            if ! curl -sf --max-time 5 http://127.0.0.1:8091/readiness > /dev/null; then
+              echo "central is not ready — refusing to deploy auth" >&2
+              exit 1
+            fi
+
+            if [ ! -s ~/incoming-config-auth/auth.conf ]; then
+              echo "auth.conf from env-config is empty or missing" >&2
+              exit 1
+            fi
+            if [ -f /opt/versola/config/auth.conf ]; then
+              sudo -n cp /opt/versola/config/auth.conf /opt/versola/config/auth.conf.bak
+            fi
+            sudo -n cp ~/incoming-config-auth/auth.conf /opt/versola/config/auth.conf
+            sudo -n chmod 600 /opt/versola/config/auth.conf
+
+            sudo -n cp docker-compose.prod.yml docker-compose.prod.yml.bak
+            sudo -n sed -i "s|versola-auth:[^[:space:]]*|versola-auth:${DEPLOY_VERSION}|" docker-compose.prod.yml
+            if ! grep -qF "versola-auth:${DEPLOY_VERSION}" docker-compose.prod.yml; then
+              echo "Failed to set auth image tag to '${DEPLOY_VERSION}' in docker-compose.prod.yml" >&2
+              exit 1
+            fi
+            export RUN_MIGRATIONS="$DEPLOY_RUN_MIGRATIONS"
+            docker compose -f docker-compose.prod.yml pull auth
+            docker compose -f docker-compose.prod.yml up -d --no-deps auth
+
+            for i in $(seq 1 30); do
+              if curl -sf --max-time 5 http://127.0.0.1:8081/readiness > /dev/null; then
+                echo "auth is ready"
+                exit 0
+              fi
+              sleep 2
+            done
+            echo "auth did not become ready in time" >&2
+            docker compose -f docker-compose.prod.yml logs --tail=50 auth
+            exit 1
+
+      - name: Clean up staged config
+        if: always()
+        uses: appleboy/ssh-action@7eaf76671a0d7eec5d98ee897acda4f968735a17 # v1.2.0
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          fingerprint: ${{ secrets.VPS_HOST_FINGERPRINT }}
+          script: |
+            rm -rf ~/incoming-config-auth
+
+  deploy-edge:
+    needs: deploy-central
+    if: |
+      always() &&
+      (inputs.service == 'edge' || inputs.service == 'all') &&
+      (needs.deploy-central.result == 'success' || needs.deploy-central.result == 'skipped')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate version input
+        env:
+          DEPLOY_VERSION: ${{ inputs.version }}
+        run: |
+          if [[ ! "$DEPLOY_VERSION" =~ ^[A-Za-z0-9._-]+$ ]]; then
+            echo "::error::Invalid version '$DEPLOY_VERSION' — only letters, digits, dots, underscores and hyphens are allowed"
+            exit 1
+          fi
+
+      - name: Checkout env-config
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: versolauth/env-config
+          token: ${{ secrets.ENV_CONFIG_PAT }}
+          path: env-config
+          persist-credentials: false
+
+      - name: Upload edge.conf to VPS
+        uses: appleboy/scp-action@ff85246acaad7bdce478db94a363cd2bf7c90345 # v1.0.0
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          fingerprint: ${{ secrets.VPS_HOST_FINGERPRINT }}
+          source: "env-config/prod/edge.conf"
+          target: "~/incoming-config-edge"
+          strip_components: 2
+          overwrite: true
+
+      - name: Deploy edge
+        uses: appleboy/ssh-action@7eaf76671a0d7eec5d98ee897acda4f968735a17 # v1.2.0
+        env:
+          DEPLOY_VERSION: ${{ inputs.version }}
+          DEPLOY_RUN_MIGRATIONS: ${{ inputs.run_migrations }}
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          fingerprint: ${{ secrets.VPS_HOST_FINGERPRINT }}
+          envs: DEPLOY_VERSION,DEPLOY_RUN_MIGRATIONS
+          script: |
+            set -e
+            trap 'rm -rf ~/incoming-config-edge' EXIT
+            cd /opt/versola
+
+            echo "Checking central is healthy before touching edge..."
+            if ! curl -sf --max-time 5 http://127.0.0.1:8091/readiness > /dev/null; then
+              echo "central is not ready — refusing to deploy edge" >&2
+              exit 1
+            fi
+
+            if [ ! -s ~/incoming-config-edge/edge.conf ]; then
+              echo "edge.conf from env-config is empty or missing" >&2
+              exit 1
+            fi
+            if [ -f /opt/versola/config/edge.conf ]; then
+              sudo -n cp /opt/versola/config/edge.conf /opt/versola/config/edge.conf.bak
+            fi
+            sudo -n cp ~/incoming-config-edge/edge.conf /opt/versola/config/edge.conf
+            sudo -n chmod 600 /opt/versola/config/edge.conf
+
+            sudo -n cp docker-compose.prod.yml docker-compose.prod.yml.bak
+            sudo -n sed -i "s|versola-edge:[^[:space:]]*|versola-edge:${DEPLOY_VERSION}|" docker-compose.prod.yml
+            if ! grep -qF "versola-edge:${DEPLOY_VERSION}" docker-compose.prod.yml; then
+              echo "Failed to set edge image tag to '${DEPLOY_VERSION}' in docker-compose.prod.yml" >&2
+              exit 1
+            fi
+            export RUN_MIGRATIONS="$DEPLOY_RUN_MIGRATIONS"
+            docker compose -f docker-compose.prod.yml pull edge
+            docker compose -f docker-compose.prod.yml up -d --no-deps edge
+
+            for i in $(seq 1 30); do
+              if curl -sf --max-time 5 http://127.0.0.1:8096/readiness > /dev/null; then
+                echo "edge is ready"
+                exit 0
+              fi
+              sleep 2
+            done
+            echo "edge did not become ready in time" >&2
+            docker compose -f docker-compose.prod.yml logs --tail=50 edge
+            exit 1
+
+      - name: Clean up staged config
+        if: always()
+        uses: appleboy/ssh-action@7eaf76671a0d7eec5d98ee897acda4f968735a17 # v1.2.0
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          fingerprint: ${{ secrets.VPS_HOST_FINGERPRINT }}
+          script: |
+            rm -rf ~/incoming-config-edge
+
+  # central-ui is the static admin console SPA — not a versioned Docker image
+  # like auth/central/edge, so this job builds it from source and ships the
+  # static dist/ to nginx's docroot. It has no `version`/`run_migrations`
+  # inputs (nothing image-tagged) and no `needs: deploy-central` (static files
+  # don't depend on central being up). Runs independently, including under
+  # `service: all`.
+  deploy-central-ui:
+    if: inputs.service == 'central-ui' || inputs.service == 'all'
+    runs-on: ubuntu-latest
+    # Least-privilege: this job only reads the repo to build and ships over SSH
+    # with our own deploy key — it never uses GITHUB_TOKEN. Keep it read-only so
+    # a compromised npm lifecycle script can't act with the default token.
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          # npm ci below runs dependency lifecycle scripts; don't leave the
+          # job's git credentials on disk for them to reach. Matches the
+          # env-config checkouts in the backend jobs above.
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22.12'
+
+      - name: Install dependencies
+        working-directory: central-ui
+        run: npm ci
+
+      - name: Build
+        working-directory: central-ui
+        run: npm run build
+
+      - name: Copy files to VPS
+        uses: appleboy/scp-action@ff85246acaad7bdce478db94a363cd2bf7c90345 # v1.0.0
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          fingerprint: ${{ secrets.VPS_HOST_FINGERPRINT }}
+          source: "central-ui/dist/"
+          target: "/website/central-ui"
+          strip_components: 1
+          overwrite: true
+
+      # scp-action's tar + strip_components is easy to get subtly wrong (a wrong
+      # strip count silently nests or flattens the output). Fail the deploy
+      # loudly here instead of finding out via a 404 on /admin/ later.
+      - name: Verify remote layout
+        uses: appleboy/ssh-action@7eaf76671a0d7eec5d98ee897acda4f968735a17 # v1.2.0
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          fingerprint: ${{ secrets.VPS_HOST_FINGERPRINT }}
+          script: |
+            missing=0
+            for f in index.html versola-admin.js logo-shield.svg; do
+              if [ ! -f "/website/central-ui/dist/$f" ]; then
+                echo "Missing /website/central-ui/dist/$f after deploy." >&2
+                missing=1
+              fi
+            done
+            if [ "$missing" -eq 1 ]; then
+              echo "Check scp-action's source/target/strip_components, and that vite.config.ts's build.lib.fileName / public/ assets haven't changed — the nginx alias for /admin depends on these exact filenames." >&2
+              exit 1
+            fi
+            echo "OK: index.html, versola-admin.js, logo-shield.svg all present"

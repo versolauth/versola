@@ -10,6 +10,7 @@ export class VersolaCodeEditor extends LitElement {
   @property({ type: String }) language: EditorLanguage = 'html';
   @property({ type: Number }) rows = 10;
   @property({ type: Boolean }) disabled = false;
+  @property({ type: Boolean }) invalid = false;
 
   @query('textarea') private textarea!: HTMLTextAreaElement;
   @query('pre') private pre!: HTMLPreElement;
@@ -36,6 +37,12 @@ export class VersolaCodeEditor extends LitElement {
       .wrapper:focus-within {
         border-color: var(--accent);
         box-shadow: 0 0 0 2px rgba(88, 166, 255, 0.15);
+      }
+      .wrapper.invalid {
+        border-color: var(--danger, #f85149);
+      }
+      .wrapper.invalid:focus-within {
+        box-shadow: 0 0 0 2px rgba(248, 81, 73, 0.15);
       }
       pre, textarea {
         margin: 0;
@@ -77,7 +84,7 @@ export class VersolaCodeEditor extends LitElement {
     const tokens = tokenize(this.value, this.language);
     const height = `min-height: calc(${this.rows} * var(--ce-line-height) * var(--ce-font-size) + var(--ce-padding-y) * 2);`;
     return html`
-      <div class="wrapper">
+      <div class="wrapper ${this.invalid ? 'invalid' : ''}">
         <pre aria-hidden="true" style=${height}>${tokens.map(t =>
           html`<span class=${`ch-tok ch-${t.kind}`}>${t.value}</span>`,
         )}<span class="ch-tok ch-text">${'\n'}</span></pre>

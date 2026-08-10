@@ -95,6 +95,9 @@ object ResourceController extends Controller:
           fetchUserInfo = endpoint.fetchUserInfo,
           allow = endpoint.allowExpression,
           inject = endpoint.inject,
+          stepUpCondition = endpoint.stepUpCondition,
+          stepUpAcr = endpoint.stepUpAcr,
+          maxAge = endpoint.maxAge,
         )
       },
     )
@@ -112,6 +115,9 @@ object ResourceController extends Controller:
           fetchUserInfo = endpoint.fetchUserInfo,
           allow = endpoint.allowExpression,
           inject = endpoint.inject,
+          stepUpCondition = endpoint.stepUpCondition,
+          stepUpAcr = endpoint.stepUpAcr,
+          maxAge = endpoint.maxAge,
         )
       },
     )

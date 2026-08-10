@@ -31,11 +31,14 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
     theme = "default",
     authFlow = Some(AuthFlow.default.copy(primary = AuthFlow.default.primary.copy(credentials = List(PrimaryCredential.email, PrimaryCredential.phone)))),
     otpTemplateId = "default",
+    frontChannelLogoutUri = None,
+    frontChannelLogoutSessionRequired = false,
+    backChannelLogoutUri = None,
   )
 
   class Env:
     val configuration = stub[OAuthConfigurationService]
-    val parser = AuthorizeRequestParser.Impl(configuration)
+    val parser = AuthorizeRequestParser.Impl(TestEnvConfig.coreConfig, configuration)
 
   def validParams = Map(
     "client_id" -> clientId.toString,

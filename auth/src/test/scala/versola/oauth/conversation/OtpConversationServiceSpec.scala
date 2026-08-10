@@ -1,6 +1,7 @@
 package versola.oauth.conversation
 
 import versola.auth.TestEnvConfig
+import versola.oauth.authorize.AcrResolutionService
 import versola.oauth.challenge.passkey.{PasskeyRepository, WebAuthnService}
 import versola.auth.model.OtpCode
 import versola.oauth.challenge.password.PasswordService
@@ -12,7 +13,7 @@ import versola.oauth.conversation.model.{AuthId, ConversationRecord, Conversatio
 import versola.oauth.conversation.otp.OtpService
 import versola.oauth.conversation.otp.model.SubmitOtpResult
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod}
-import versola.oauth.session.SessionRepository
+import versola.oauth.session.{SessionRepository, UserAgentRepository}
 import versola.oauth.token.AuthorizationCodeRepository
 import versola.oauth.userinfo.UserInfoService
 import versola.oauth.userinfo.model.UserInfoResponse
@@ -64,7 +65,10 @@ object OtpConversationServiceSpec extends UnitSpecBase:
     val webAuthnService = stub[WebAuthnService]
     val passkeyRepository = stub[PasskeyRepository]
     val configService = stub[OAuthConfigurationService]
+    val acrResolver = stub[AcrResolutionService]
     val config = TestEnvConfig.coreConfig
+    val userAgentRepository = stub[UserAgentRepository]
+    val secureRandom = stub[SecureRandom]
     val service = ConversationService.Impl(
       otpService,
       passwordService,
@@ -80,6 +84,9 @@ object OtpConversationServiceSpec extends UnitSpecBase:
       webAuthnService,
       passkeyRepository,
       configService,
+      acrResolver,
+      userAgentRepository,
+      secureRandom,
     )
 
   val initialConversation = ConversationRecord(
@@ -102,9 +109,13 @@ object OtpConversationServiceSpec extends UnitSpecBase:
     userClaims = None,
     authFlow = AuthFlow.default,
     userAgent = None,
+    userAgentCookie = None,
     version = 0,
     amr = Map.empty,
     needsPasswordChange = false,
+    targetAcr = None,
+    csrfToken = "test-csrf",
+    priorSessionId = None,
   )
 
   val otpRecord = initialConversation.copy(
@@ -290,9 +301,13 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           userClaims = Some(zio.json.ast.Json.Obj()),
           authFlow = AuthFlow.default,
           userAgent = None,
-          version = 0,
+          userAgentCookie = None,
+                    version = 0,
           amr = Map.empty,
           needsPasswordChange = false,
+          targetAcr = None,
+          csrfToken = "test-csrf",
+          priorSessionId = None,
         )
         for
           _ <- env.submissionLimiter.isBanned.succeedsWith(LimitStatus.Allowed)
@@ -324,9 +339,13 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           userClaims = Some(zio.json.ast.Json.Obj()),
           authFlow = AuthFlow.default,
           userAgent = None,
-          version = 0,
+          userAgentCookie = None,
+                    version = 0,
           amr = Map.empty,
           needsPasswordChange = false,
+          targetAcr = None,
+          csrfToken = "test-csrf",
+          priorSessionId = None,
         )
         for
           _ <- env.submissionLimiter.isBanned.succeedsWith(LimitStatus.Banned)
@@ -401,6 +420,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
         )
         val testCode = versola.oauth.model.AuthorizationCode(Array.fill(32)(1.toByte))
         val testSessionId = versola.oauth.session.model.SessionId(Array.fill(32)(2.toByte))
+        val testPublicSessionId = versola.oauth.session.model.PublicSessionId("public-session")
         val testAccessToken = versola.oauth.model.AccessToken(Array.fill(32)(3.toByte))
         val testSessionIdMac: versola.util.MAC = versola.util.MAC(Array.fill(32)(4.toByte))
         val testCodeMac: versola.util.MAC = versola.util.MAC(Array.fill(32)(5.toByte))
@@ -408,6 +428,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
         for
           _ <- env.authPropertyGenerator.nextAuthorizationCode.succeedsWith(testCode)
           _ <- env.authPropertyGenerator.nextSessionId.succeedsWith(testSessionId)
+          _ <- env.authPropertyGenerator.nextPublicSessionId.succeedsWith(testPublicSessionId)
           _ <- env.authPropertyGenerator.nextAccessToken.succeedsWith(testAccessToken)
           _ <- env.securityService.mac.returnsZIOOnCall:
             case 1 => ZIO.succeed(testSessionIdMac)
@@ -416,7 +437,10 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           _ <- env.sessionRepository.create.succeedsWith(())
           _ <- env.conversationRepository.delete.succeedsWith(true)
           _ <- env.configService.getSessionTtl.succeedsWith(zio.Duration.fromSeconds(86400))
+          _ <- env.configService.getUserAgentTtl.succeedsWith(zio.Duration.fromSeconds(15552000))
           _ <- env.configService.getSessionIdleTtl.succeedsWith(Option.empty[zio.Duration])
+          _ <- env.secureRandom.nextUUIDv7.succeedsWith(java.util.UUID.randomUUID())
+          _ <- env.userAgentRepository.create.succeedsWith(())
           _ <- env.userInfoService.getUserInfoForIdToken.succeedsWith(
             UserInfoResponse(
               claims = Map("sub" -> ast.Json.Str(userId.toString), "email" -> ast.Json.Str(userEmail)),
@@ -449,6 +473,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
         )
         val testCode = versola.oauth.model.AuthorizationCode(Array.fill(32)(1.toByte))
         val testSessionId = versola.oauth.session.model.SessionId(Array.fill(32)(2.toByte))
+        val testPublicSessionId = versola.oauth.session.model.PublicSessionId("public-session")
         val testAccessToken = versola.oauth.model.AccessToken(Array.fill(32)(3.toByte))
         val testSessionIdMac: versola.util.MAC = versola.util.MAC(Array.fill(32)(4.toByte))
         val testCodeMac: versola.util.MAC = versola.util.MAC(Array.fill(32)(5.toByte))
@@ -456,6 +481,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
         for
           _ <- env.authPropertyGenerator.nextAuthorizationCode.succeedsWith(testCode)
           _ <- env.authPropertyGenerator.nextSessionId.succeedsWith(testSessionId)
+          _ <- env.authPropertyGenerator.nextPublicSessionId.succeedsWith(testPublicSessionId)
           _ <- env.authPropertyGenerator.nextAccessToken.succeedsWith(testAccessToken)
           _ <- env.securityService.mac.returnsZIOOnCall:
             case 1 => ZIO.succeed(testSessionIdMac)
@@ -464,7 +490,10 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           _ <- env.sessionRepository.create.succeedsWith(())
           _ <- env.conversationRepository.delete.succeedsWith(true)
           _ <- env.configService.getSessionTtl.succeedsWith(zio.Duration.fromSeconds(86400))
+          _ <- env.configService.getUserAgentTtl.succeedsWith(zio.Duration.fromSeconds(15552000))
           _ <- env.configService.getSessionIdleTtl.succeedsWith(Option.empty[zio.Duration])
+          _ <- env.secureRandom.nextUUIDv7.succeedsWith(java.util.UUID.randomUUID())
+          _ <- env.userAgentRepository.create.succeedsWith(())
           result <- env.service.finish(authId, conversation)
         yield result match
           case complete: ConversationResult.Complete => assertTrue(complete.idTokenData.isEmpty)
@@ -479,6 +508,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
         )
         val testCode = versola.oauth.model.AuthorizationCode(Array.fill(32)(1.toByte))
         val testSessionId = versola.oauth.session.model.SessionId(Array.fill(32)(2.toByte))
+        val testPublicSessionId = versola.oauth.session.model.PublicSessionId("public-session")
         val testAccessToken = versola.oauth.model.AccessToken(Array.fill(32)(3.toByte))
         val testSessionIdMac: versola.util.MAC = versola.util.MAC(Array.fill(32)(4.toByte))
         val testCodeMac: versola.util.MAC = versola.util.MAC(Array.fill(32)(5.toByte))
@@ -486,6 +516,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
         for
           _ <- env.authPropertyGenerator.nextAuthorizationCode.succeedsWith(testCode)
           _ <- env.authPropertyGenerator.nextSessionId.succeedsWith(testSessionId)
+          _ <- env.authPropertyGenerator.nextPublicSessionId.succeedsWith(testPublicSessionId)
           _ <- env.authPropertyGenerator.nextAccessToken.succeedsWith(testAccessToken)
           _ <- env.securityService.mac.returnsZIOOnCall:
             case 1 => ZIO.succeed(testSessionIdMac)
@@ -494,7 +525,10 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           _ <- env.sessionRepository.create.succeedsWith(())
           _ <- env.conversationRepository.delete.succeedsWith(true)
           _ <- env.configService.getSessionTtl.succeedsWith(zio.Duration.fromSeconds(86400))
+          _ <- env.configService.getUserAgentTtl.succeedsWith(zio.Duration.fromSeconds(15552000))
           _ <- env.configService.getSessionIdleTtl.succeedsWith(Option.empty[zio.Duration])
+          _ <- env.secureRandom.nextUUIDv7.succeedsWith(java.util.UUID.randomUUID())
+          _ <- env.userAgentRepository.create.succeedsWith(())
           result <- env.service.finish(authId, conversation)
         yield result match
           case complete: ConversationResult.Complete => assertTrue(complete.idTokenData.isEmpty)

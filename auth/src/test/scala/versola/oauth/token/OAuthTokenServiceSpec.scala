@@ -7,7 +7,7 @@ import versola.oauth.client.model.{AuthMethodRef, ClientId, ClientIdWithSecret, 
 import versola.oauth.model.{AccessToken, AuthorizationCode, AuthorizationCodeRecord, CodeChallenge, CodeChallengeMethod, CodeVerifier, RefreshToken}
 import versola.oauth.revoke.AccessTokenRevocationService
 import versola.oauth.session.SessionRepository
-import versola.oauth.session.model.{RefreshAlreadyExchanged, RefreshTokenRecord, SessionId}
+import versola.oauth.session.model.{PublicSessionId, RefreshAlreadyExchanged, RefreshTokenRecord, SessionId}
 import versola.oauth.token.model.{ClientCredentialsRequest, CodeExchangeRequest, RefreshTokenRequest, TokenEndpointError}
 import versola.oauth.client.model.Claim
 import versola.oauth.userinfo.model.{ClaimRequest, RequestedClaims}
@@ -28,6 +28,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
   val clientId1 = ClientId("test-client-1")
   val userId1 = UserId(UUID.fromString("f077fb08-9935-4a6d-8643-bf97c073bf0f"))
   val sessionId1 = MAC(Array.fill(32)(1.toByte))
+  val publicSessionId1 = PublicSessionId("public-session-1")
   val redirectUri1 = URL.decode("https://example.com/callback").toOption.get
   val scope1 = Set(ScopeToken("read"), ScopeToken("write"), ScopeToken.OfflineAccess)
   val scope2 = Set(ScopeToken("read"))
@@ -67,6 +68,9 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
     theme = "default",
     authFlow = None,
     otpTemplateId = "default",
+    frontChannelLogoutUri = None,
+    frontChannelLogoutSessionRequired = false,
+    backChannelLogoutUri = None,
   )
 
   val publicClientId = ClientId("public-client-1")
@@ -84,6 +88,9 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
     theme = "default",
     authFlow = None,
     otpTemplateId = "default",
+    frontChannelLogoutUri = None,
+    frontChannelLogoutSessionRequired = false,
+    backChannelLogoutUri = None,
   )
 
   val adminClient = testClient.copy(id = OAuthTokenService.centralAdminClientId)
@@ -119,6 +126,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
 
           codeRecord = AuthorizationCodeRecord(
             sessionId = sessionId1,
+            publicSessionId = publicSessionId1,
             clientId = clientId1,
             userId = userId1,
             redirectUri = redirectUri1,
@@ -131,6 +139,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             accessToken = accessToken1,
             amr = amr1,
             authTime = authTime1,
+            acr = None,
           )
 
           _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
@@ -165,6 +174,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
         for
           codeRecord = AuthorizationCodeRecord(
             sessionId = sessionId1,
+            publicSessionId = publicSessionId1,
             clientId = clientId1,
             userId = userId1,
             redirectUri = redirectUri1,
@@ -177,6 +187,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             accessToken = accessToken1,
             amr = amr1,
             authTime = authTime1,
+            acr = None,
           )
 
           _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
@@ -231,6 +242,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
         for
           codeRecord = AuthorizationCodeRecord(
             sessionId = sessionId1,
+            publicSessionId = publicSessionId1,
             clientId = clientId1,
             userId = userId1,
             redirectUri = redirectUri1,
@@ -243,6 +255,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             accessToken = accessToken1,
             amr = amr1,
             authTime = authTime1,
+            acr = None,
           )
 
           _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
@@ -257,11 +270,52 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           result == Left(TokenEndpointError.InvalidGrant),
         )
       },
-      test("does not fetch admin roles for non-admin clients") {
+      test("fail with InvalidGrant and revoke the previously issued token when code is reused (double-spend)") {
         val env = new Env
         for
           codeRecord = AuthorizationCodeRecord(
             sessionId = sessionId1,
+            publicSessionId = publicSessionId1,
+            clientId = clientId1,
+            userId = userId1,
+            redirectUri = redirectUri1,
+            scope = scope1,
+            codeChallenge = codeChallenge1,
+            codeChallengeMethod = CodeChallengeMethod.S256,
+            requestedClaims = None,
+            uiLocales = None,
+            nonce = None,
+            accessToken = accessToken1,
+            amr = amr1,
+            authTime = authTime1,
+            acr = None,
+          )
+
+          _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
+          _ <- env.securityService.mac.succeedsWith(codeMac1)
+          _ <- env.authCodeRepo.find.succeedsWith(Some(codeRecord))
+          _ <- env.authCodeRepo.markAsUsed.succeedsWith(Left(accessToken1))
+          _ <- env.accessTokenRevocationService.revoke.succeedsWith(())
+          _ <- env.tokenRepo.deleteByAccessToken.succeedsWith(())
+
+          request = CodeExchangeRequest(authCode1, redirectUri1, codeVerifier1)
+          credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
+
+          result <- env.service.exchangeAuthorizationCode(request, credentials).either
+        yield assertTrue(
+          result == Left(TokenEndpointError.InvalidGrant),
+          env.accessTokenRevocationService.revoke.calls == List(accessToken1),
+          env.tokenRepo.deleteByAccessToken.calls == List(accessToken1),
+          env.tokenRepo.createRefreshToken.calls.isEmpty,
+        )
+      },
+      test("issues the access token embedded in the authorization code, not a freshly generated one") {
+        val env = new Env
+        val freshAccessToken = AccessToken(Array.fill(32)(11.toByte))
+        for
+          codeRecord = AuthorizationCodeRecord(
+            sessionId = sessionId1,
+            publicSessionId = publicSessionId1,
             clientId = clientId1,
             userId = userId1,
             redirectUri = redirectUri1,
@@ -274,6 +328,44 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             accessToken = accessToken1,
             amr = amr1,
             authTime = authTime1,
+            acr = None,
+          )
+
+          _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
+          _ <- env.securityService.mac.succeedsWith(codeMac1)
+          _ <- env.authCodeRepo.find.succeedsWith(Some(codeRecord))
+          _ <- env.authCodeRepo.markAsUsed.succeedsWith(Right(()))
+          _ <- env.propertyGenerator.nextAccessToken.succeedsWith(freshAccessToken)
+          _ <- env.userRolesRepo.findRolesByUserAndTenant.succeedsWith(List.empty)
+
+          request = CodeExchangeRequest(authCode1, redirectUri1, codeVerifier1)
+          credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
+
+          result <- env.service.exchangeAuthorizationCode(request, credentials)
+        yield assertTrue(
+          result.accessToken == accessToken1,
+          result.accessToken != freshAccessToken,
+        )
+      },
+      test("does not fetch admin roles for non-admin clients") {
+        val env = new Env
+        for
+          codeRecord = AuthorizationCodeRecord(
+            sessionId = sessionId1,
+            publicSessionId = publicSessionId1,
+            clientId = clientId1,
+            userId = userId1,
+            redirectUri = redirectUri1,
+            scope = scope2,
+            codeChallenge = codeChallenge1,
+            codeChallengeMethod = CodeChallengeMethod.S256,
+            requestedClaims = None,
+            uiLocales = None,
+            nonce = None,
+            accessToken = accessToken1,
+            amr = amr1,
+            authTime = authTime1,
+            acr = None,
           )
 
           _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
@@ -299,6 +391,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
         for
           codeRecord = AuthorizationCodeRecord(
             sessionId = sessionId1,
+            publicSessionId = publicSessionId1,
             clientId = OAuthTokenService.centralAdminClientId,
             userId = userId1,
             redirectUri = redirectUri1,
@@ -311,6 +404,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             accessToken = accessToken1,
             amr = amr1,
             authTime = authTime1,
+            acr = None,
           )
 
           _ <- env.clientService.verifySecret.succeedsWith(Some(adminClient))
@@ -319,14 +413,14 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.authCodeRepo.markAsUsed.succeedsWith(Right(()))
           _ <- env.authCodeRepo.delete.succeedsWith(())
           _ <- env.propertyGenerator.nextAccessToken.succeedsWith(accessToken1)
-          _ <- env.userRolesRepo.findRolesByUser.succeedsWith(adminRoles1)
+          _ <- env.userRolesRepo.findRolesByUserAndTenant.succeedsWith(List(RoleId("admin")))
 
           request = CodeExchangeRequest(authCode1, redirectUri1, codeVerifier1)
           credentials = ClientIdWithSecret(OAuthTokenService.centralAdminClientId, Some(clientSecret1))
 
           result <- env.service.exchangeAuthorizationCode(request, credentials)
         yield assertTrue(
-          env.userRolesRepo.findRolesByUser.calls.nonEmpty,
+          env.userRolesRepo.findRolesByUserAndTenant.calls.nonEmpty,
           result.tenantId.contains("default"),
           result.roles == List("admin"),
         )
@@ -340,6 +434,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
 
           tokenRecord = RefreshTokenRecord(
             sessionId = sessionId1,
+            publicSessionId = publicSessionId1,
             accessToken = accessToken1,
             userId = userId1,
             clientId = clientId1,
@@ -353,6 +448,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             previousRefreshToken = None,
             amr = amr1,
             authTime = authTime1,
+            acr = None,
           )
 
           newRefreshToken = RefreshToken(Array.fill(32)(7.toByte))
@@ -392,6 +488,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
 
           tokenRecord = RefreshTokenRecord(
             sessionId = sessionId1,
+            publicSessionId = publicSessionId1,
             accessToken = accessToken1,
             userId = userId1,
             clientId = clientId1,
@@ -405,6 +502,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             previousRefreshToken = None,
             amr = amr1,
             authTime = authTime1,
+            acr = None,
           )
 
           newRefreshToken = RefreshToken(Array.fill(32)(9.toByte))
@@ -466,6 +564,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
 
           tokenRecord = RefreshTokenRecord(
             sessionId = sessionId1,
+            publicSessionId = publicSessionId1,
             accessToken = accessToken1,
             userId = userId1,
             clientId = clientId1,
@@ -479,6 +578,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             previousRefreshToken = None,
             amr = amr1,
             authTime = authTime1,
+            acr = None,
           )
 
           _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
@@ -500,6 +600,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
 
           tokenRecord = RefreshTokenRecord(
             sessionId = sessionId1,
+            publicSessionId = publicSessionId1,
             accessToken = accessToken1,
             userId = userId1,
             clientId = clientId1,
@@ -513,6 +614,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             previousRefreshToken = None,
             amr = amr1,
             authTime = authTime1,
+            acr = None,
           )
 
           newRefreshToken = RefreshToken(Array.fill(32)(7.toByte))

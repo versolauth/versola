@@ -284,6 +284,58 @@ test('edits an existing preset', async ({ page }) => {
   });
 });
 
+test('saves and reloads a preset with a post-logout redirect URI', async ({ page }) => {
+  const api = await loadAdminApp(page, {
+    path: clientsPath,
+    state: {
+      clients: { 'tenant-alpha': [alphaWebClient] },
+      authorizationPresets: { 'alpha-web': [] },
+    },
+  });
+
+  const card = clientCard(page, 'alpha-web');
+  await card.locator('.client-header').click();
+
+  // Click on "Authorization Presets" to expand the section
+  await card.getByText('Authorization Presets').click();
+
+  // Click the edit icon to open the preset editing view
+  await card.getByRole('button', { name: 'Edit presets for alpha-web' }).click();
+
+  // Click "+ Add Preset" to open the form
+  await page.getByRole('button', { name: '+ Add Preset' }).click();
+
+  await page.getByLabel('Description').fill('Admin Login');
+  await page.getByLabel('Redirect URI *', { exact: true }).selectOption('https://alpha.example.com/callback');
+  await page.getByLabel('Post-login redirect URI').fill('http://localhost:9005/login/central-admin');
+  await page.getByLabel('Post-logout redirect URI').fill('http://localhost:9005/logged-out');
+  await page.locator('.checkbox-item').filter({ hasText: 'openid' }).click();
+
+  await page.getByRole('button', { name: 'Create Preset' }).click();
+  await expect(page.getByRole('button', { name: 'Save Presets' })).toBeVisible();
+  await page.getByRole('button', { name: 'Save Presets' }).click();
+  await page.waitForTimeout(300);
+
+  // Verify the save request includes the post-logout redirect URI
+  const saveRequest = api.requests.find(req =>
+    req.pathname === '/configuration/auth-request-presets' &&
+    req.method === 'POST'
+  );
+  expect(saveRequest?.body).toMatchObject({
+    presets: expect.arrayContaining([
+      expect.objectContaining({
+        postLoginRedirectUri: 'http://localhost:9005/login/central-admin',
+        postLogoutRedirectUri: 'http://localhost:9005/logged-out',
+      }),
+    ]),
+  });
+
+  // The saved preset should immediately reflect the post-logout redirect URI in the UI
+  const presetCard = page.locator('.preset-card').filter({ hasText: 'Admin Login' });
+  await presetCard.locator('.preset-card-header').click();
+  await expect(presetCard).toContainText('http://localhost:9005/logged-out');
+});
+
 test('deletes a preset', async ({ page }) => {
   const api = await loadAdminApp(page, {
     path: clientsPath,

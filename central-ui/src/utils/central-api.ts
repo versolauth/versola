@@ -28,10 +28,17 @@ import type {
 export const DEFAULT_PAGE_SIZE = 30;
 const READ_CACHE_TTL_MS = 60_000;
 
+// Where to send the browser when a request comes back 401 without a Location
+// header — i.e. there is no session for the edge to reauthenticate, so it can't
+// tell us which login to use (the preset id lives in the session cookie). The
+// admin console is always the `central-admin` preset, so this is its login
+// entry point on the edge. Overridable via configureCentralApi({ loginUrl }).
+const DEFAULT_LOGIN_URL = '/login/central-admin';
+
 type LocalizedDescription = Record<string, string>;
 type PagedResult<T> = { items: T[]; total: number; hasNext: boolean };
 type QueryValue = string | number | undefined | null;
-type CentralApiConfig = { baseUrl: string | null };
+type CentralApiConfig = { baseUrl: string | null; loginUrl: string };
 
 type ClientSecretResponse = { secret: string };
 type AuthorizationPresetResponse = {
@@ -40,6 +47,7 @@ type AuthorizationPresetResponse = {
   description: string;
   redirectUri: string;
   postLoginRedirectUri: string;
+  postLogoutRedirectUri?: string;
   scope: string[];
   responseType: string;
   uiLocales?: string[];
@@ -48,7 +56,12 @@ type AuthorizationPresetResponse = {
   cookiePath?: string;
 };
 type CreateResourceResponse = { resourceId: string };
-type CreateResourceEndpointPayload = Omit<ResourceEndpoint, 'id' | 'allow'> & { allow: string | null };
+type CreateResourceEndpointPayload = Omit<ResourceEndpoint, 'id' | 'allow' | 'stepUpCondition' | 'stepUpAcr' | 'maxAge'> & {
+  allow: string | null;
+  stepUpCondition: string | null;
+  stepUpAcr: string | null;
+  maxAge: number | null;
+};
 type SaveResourceEndpointPayload = CreateResourceEndpointPayload & { id?: ResourceEndpointId };
 type ResourceEndpointWriteDto = {
   id?: string | number;
@@ -57,6 +70,9 @@ type ResourceEndpointWriteDto = {
   fetchUserInfo: boolean;
   allow: string | null;
   inject: InjectRule[];
+  stepUpCondition?: string | null;
+  stepUpAcr?: string | null;
+  maxAge?: number | null;
 };
 type ResourceEndpointDto = {
   id?: ResourceEndpointId;
@@ -65,6 +81,9 @@ type ResourceEndpointDto = {
   fetchUserInfo: boolean;
   allow?: string;
   inject: InjectRule[];
+  stepUpCondition?: string;
+  stepUpAcr?: string;
+  maxAge?: number;
 };
 type ResourceResponseDto = { resourceId: string; resource: string; endpoints: Array<ResourceEndpointDto & { id: ResourceEndpointId }> };
 
@@ -81,11 +100,27 @@ type BackendAuthFlow = {
   passkey?: { factors: BackendAuthFactor[] } | null;
   equivalents?: Record<string, string[]>;
 };
-type ClientsResponse = { clients: Array<{ id: string; clientName: string; redirectUris: string[]; scope: string[]; externalAudience: string[]; permissions: string[]; secretRotation: boolean; theme: string; otpTemplateId: string; authFlow?: BackendAuthFlow | null }> };
+type ClientsResponse = {
+  clients: Array<{
+    id: string;
+    clientName: string;
+    redirectUris: string[];
+    scope: string[];
+    externalAudience: string[];
+    permissions: string[];
+    secretRotation: boolean;
+    theme: string;
+    otpTemplateId: string;
+    authFlow?: BackendAuthFlow | null;
+    frontChannelLogoutUri?: string | null;
+    frontChannelLogoutSessionRequired: boolean;
+    backChannelLogoutUri?: string | null;
+  }>;
+};
 type RolesResponse = { roles: Array<{ id: string; description: LocalizedDescription; permissions: string[]; active: boolean }> };
 type ResourcesResponse = { resources: ResourceResponseDto[] };
 
-const apiConfig: CentralApiConfig = { baseUrl: null };
+const apiConfig: CentralApiConfig = { baseUrl: null, loginUrl: DEFAULT_LOGIN_URL };
 const permissionStore = new Map<string, Permission>();
 const clientSupplementStore = new Map<string, { externalAudience: string[]; accessTokenTtl: number; hasPreviousSecret: boolean }>();
 const roleSupplementStore = new Map<string, { active: boolean; createdAt: string; updatedAt: string }>();
@@ -136,12 +171,20 @@ export function resolveBaseUrl(): string {
   return apiConfig.baseUrl?.trim() || window.location.origin;
 }
 
+// Everything the console talks to lives under this prefix. It exists so the
+// EDGE_SESSION cookie can be scoped to a path (Path=/central) and thereby
+// belong to this application alone rather than to the whole domain — and a
+// cookie is only sent to URLs beneath its path, so the console's assets
+// (/central/admin/, see vite.config.ts) and its API calls have to share one
+// prefix. nginx rewrites /central/{x} back to edge's real /resources/central/{x}
+// route, so edge itself is unaware of this prefix.
+export const CONSOLE_PREFIX = 'central';
+
 function buildUrl(path: string, query?: Record<string, QueryValue>): string {
   const baseUrl = resolveBaseUrl();
   const normalizedBase = baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`;
   const normalizedPath = path.replace(/^\//, '');
-  // Route through the edge proxy for the "central" resource
-  const proxiedPath = `resources/central/${normalizedPath}`;
+  const proxiedPath = `${CONSOLE_PREFIX}/${normalizedPath}`;
   const url = new URL(proxiedPath, normalizedBase);
   Object.entries(query ?? {}).forEach(([key, value]) => {
     if (value !== undefined && value !== null) {
@@ -195,10 +238,40 @@ function buildErrorMessage(status: number, bodyText: string): string {
   }
 }
 
-export function configureCentralApi(config: Partial<CentralApiConfig>): void {
-  apiConfig.baseUrl = config.baseUrl?.trim() || null;
+// null/empty for either field resets it to its default (host origin for baseUrl,
+// DEFAULT_LOGIN_URL for loginUrl) rather than leaving a previously-set value
+// stuck — so clearing the api-url / login-url attribute reverts to defaults.
+export function configureCentralApi(config: { baseUrl?: string | null; loginUrl?: string | null }): void {
+  if ('baseUrl' in config) {
+    apiConfig.baseUrl = config.baseUrl?.trim() || null;
+  }
+  if ('loginUrl' in config) {
+    apiConfig.loginUrl = config.loginUrl?.trim() || DEFAULT_LOGIN_URL;
+  }
   invalidateReadCache();
   invalidateAllRefData();
+}
+
+// A 401 means the caller isn't authenticated. If the edge included a Location
+// (session expired but it knows the preset from the cookie), follow it; if not
+// (no session at all — a fresh visit), the edge can't know which login to use,
+// so fall back to the console's configured login entry point. Either way this
+// is a top-level navigation, so the returned promise never resolves — callers
+// await it and stop, rather than surfacing a spurious error mid-redirect.
+//
+// The target is resolved against the API/edge origin (resolveBaseUrl()), not
+// the page origin: login/complete live on the edge alongside the API, and the
+// edge's own Location is a root-relative path, so when api-url points at a
+// different origin the login must follow it there. In the default same-origin
+// deployment resolveBaseUrl() is window.location.origin, so this is a no-op.
+//
+// Note: cross-origin, the browser won't expose the Location header to JS unless
+// the edge sends `Access-Control-Expose-Headers: Location`; without it we
+// simply fall back to apiConfig.loginUrl, which is the intended default anyway.
+function redirectToLogin(response: Response): Promise<never> {
+  const target = response.headers.get('Location') ?? apiConfig.loginUrl;
+  window.location.assign(new URL(target, resolveBaseUrl()).toString());
+  return new Promise<never>(() => undefined);
 }
 
 async function request<T>(
@@ -232,14 +305,17 @@ async function request<T>(
       credentials: 'include',
     });
 
-    // Session fully expired: the edge answers 401 with a same-origin Location to
-    // the app's login. Navigate the top window there instead of surfacing an error.
+    // Not authenticated — navigate to login (following the edge's Location if it
+    // gave one) instead of surfacing an error.
     if (response.status === 401) {
-      const location = response.headers.get('Location');
-      if (location) {
-        window.location.assign(location);
-        return await new Promise<T>(() => undefined);
+      // Drop this URL's in-flight entry before handing off to the redirect
+      // (whose promise never resolves): the outer `finally` that normally
+      // cleans it up won't run, so without this a concurrent read of the same
+      // URL would await a promise that never settles.
+      if (useReadCache) {
+        inFlightReads.delete(url);
       }
+      return await redirectToLogin(response);
     }
 
     if (!response.ok) {
@@ -403,6 +479,9 @@ function serializeResourceEndpoint(
     fetchUserInfo: endpoint.fetchUserInfo,
     allow: endpoint.allow,
     inject: endpoint.inject.map(rule => ({ ...rule })),
+    stepUpCondition: endpoint.stepUpCondition ?? null,
+    stepUpAcr: endpoint.stepUpAcr ?? null,
+    maxAge: endpoint.maxAge ?? null,
   };
 }
 
@@ -425,6 +504,9 @@ function mapResource(resource: ResourceResponseDto): Resource {
       fetchUserInfo: endpoint.fetchUserInfo,
       allow: endpoint.allow,
       inject: endpoint.inject.map(rule => ({ ...rule })),
+      ...(endpoint.stepUpCondition != null ? { stepUpCondition: endpoint.stepUpCondition } : {}),
+      ...(endpoint.stepUpAcr != null ? { stepUpAcr: endpoint.stepUpAcr } : {}),
+      ...(endpoint.maxAge != null ? { maxAge: endpoint.maxAge } : {}),
     })),
   };
 }
@@ -506,6 +588,9 @@ export async function fetchClients(tenantId: string, offset = 0, limit = DEFAULT
         theme: client.theme ?? 'default',
         otpTemplateId: client.otpTemplateId ?? null,
         authFlow: authFlowFromBackend(client.authFlow) ?? createDefaultAuthFlow(),
+        frontChannelLogoutUri: client.frontChannelLogoutUri ?? null,
+        frontChannelLogoutSessionRequired: client.frontChannelLogoutSessionRequired,
+        backChannelLogoutUri: client.backChannelLogoutUri ?? null,
         tenantId,
       };
     }),
@@ -548,6 +633,7 @@ export async function fetchClientPresets(clientId: string): Promise<Authorizatio
     description: preset.description,
     redirectUri: preset.redirectUri,
     postLoginRedirectUri: preset.postLoginRedirectUri,
+    postLogoutRedirectUri: preset.postLogoutRedirectUri,
     scope: [...preset.scope],
     responseType: preset.responseType as 'code' | 'code id_token',
     uiLocales: preset.uiLocales,
@@ -568,6 +654,7 @@ export async function saveClientPresets(clientId: string, presets: Authorization
         description: p.description,
         redirectUri: p.redirectUri,
         postLoginRedirectUri: p.postLoginRedirectUri,
+        postLogoutRedirectUri: p.postLogoutRedirectUri,
         scope: p.scope,
         responseType: p.responseType,
         uiLocales: p.uiLocales,
@@ -801,6 +888,9 @@ export async function createClient(tenantId: string, client: OAuthClient): Promi
       theme: client.theme ?? 'default',
       otpTemplateId: client.otpTemplateId ?? null,
       authFlow: authFlowToBackend(client.authFlow),
+      frontChannelLogoutUri: client.frontChannelLogoutUri ?? null,
+      frontChannelLogoutSessionRequired: client.frontChannelLogoutSessionRequired,
+      backChannelLogoutUri: client.backChannelLogoutUri ?? null,
     },
   });
 
@@ -856,6 +946,9 @@ export async function updateClient(tenantId: string, existing: OAuthClient, clie
       theme: existing.theme !== client.theme ? client.theme : undefined,
       otpTemplateId: existing.otpTemplateId !== client.otpTemplateId ? (client.otpTemplateId ?? null) : undefined,
       authFlow: authFlowToBackend(client.authFlow),
+      frontChannelLogoutUri: existing.frontChannelLogoutUri !== client.frontChannelLogoutUri ? (client.frontChannelLogoutUri ?? null) : undefined,
+      frontChannelLogoutSessionRequired: existing.frontChannelLogoutSessionRequired !== client.frontChannelLogoutSessionRequired ? client.frontChannelLogoutSessionRequired : undefined,
+      backChannelLogoutUri: existing.backChannelLogoutUri !== client.backChannelLogoutUri ? (client.backChannelLogoutUri ?? null) : undefined,
     },
   });
 
@@ -890,6 +983,15 @@ export async function updateJwk(jwk: Record<string, unknown>): Promise<void> {
 export async function deleteJwk(kid: string): Promise<void> {
   await requestVoid('/configuration/jwks', { method: 'DELETE', query: { kid } });
 }
+
+export async function fetchServerMetadata(): Promise<Record<string, unknown>> {
+  return request<Record<string, unknown>>('/configuration/server-metadata');
+}
+
+export async function upsertServerMetadata(metadata: Record<string, unknown>): Promise<void> {
+  await requestVoid('/configuration/server-metadata', { method: 'POST', body: metadata });
+}
+
 
 export async function fetchEdges(): Promise<Edge[]> {
   const response = await request<EdgesResponse>('/configuration/edges');
@@ -1029,7 +1131,12 @@ export type MyPermissionsResponse = {
 export async function fetchMyPermissions(): Promise<MyPermissionsResponse> {
   const baseUrl = resolveBaseUrl();
   const normalizedBase = baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`;
-  const url = new URL('permissions/me', normalizedBase);
+  // edge serves this at /permissions/me, outside any resource prefix — but the
+  // call has to carry EDGE_SESSION, and that cookie is scoped to /central, so
+  // the browser would withhold it from a root-level URL and every load would
+  // bounce to login. It's requested under the prefix instead, and nginx
+  // rewrites /central/permissions/me back to /permissions/me.
+  const url = new URL(`${CONSOLE_PREFIX}/permissions/me`, normalizedBase);
   url.searchParams.set('resource', 'central');
 
   const response = await fetch(url.toString(), {
@@ -1037,6 +1144,13 @@ export async function fetchMyPermissions(): Promise<MyPermissionsResponse> {
     headers: { Accept: 'application/json' },
     credentials: 'include',
   });
+
+  // This is the first call the console makes on load, so it's usually where an
+  // unauthenticated visit is detected. Redirect to login rather than throwing
+  // (which the caller would swallow into an empty-permissions "Access Denied").
+  if (response.status === 401) {
+    return await redirectToLogin(response);
+  }
 
   if (!response.ok) {
     const error = new Error(buildErrorMessage(response.status, await response.text())) as Error & { status: number };
@@ -1064,7 +1178,10 @@ export async function upsertChallengeSettings(
   authConversationTtlSeconds: number,
   sessionTtlSeconds: number,
   sessionIdleTtlSeconds: number | null,
+  userAgentTtlSeconds: number,
   ipHeader: string,
+  acrVocabulary?: Record<string, string[]> | null,
+  postLogoutRedirectUris?: string[],
 ): Promise<void> {
   await requestVoid('/configuration/challenges/challenge-settings', {
     method: 'PUT',
@@ -1078,7 +1195,10 @@ export async function upsertChallengeSettings(
       authConversationTtlSeconds,
       sessionTtlSeconds,
       sessionIdleTtlSeconds: sessionIdleTtlSeconds ?? null,
+      userAgentTtlSeconds,
       ipHeader,
+      acrVocabulary: acrVocabulary ?? null,
+      postLogoutRedirectUris: postLogoutRedirectUris ?? null,
     },
   });
 }

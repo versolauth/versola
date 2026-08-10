@@ -44,6 +44,8 @@ trait UserRepository:
       remove: Set[RoleId],
   ): Task[Unit]
 
+  def delete(id: UserId): Task[Unit]
+
   /** Atomically claim up to `limit` due outbox rows by leasing them for `lease` (other instances skip them).
     * The lease is reset to a backoff value by [[rescheduleEvent]] on failure, or the row is removed on success.
     */

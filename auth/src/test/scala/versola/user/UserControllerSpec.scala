@@ -7,7 +7,7 @@ import versola.oauth.challenge.password.PasswordService
 import versola.oauth.client.model.TenantId
 import versola.oauth.conversation.limit.ChallengeThrottleRepository
 import org.scalamock.stubs.ZIOStubs
-import versola.oauth.session.SessionRepository
+import versola.oauth.session.{SessionRepository, SessionService}
 import versola.role.model.RoleId
 import versola.user.model.*
 import versola.util.http.{NoopTracing, Observability}
@@ -32,6 +32,7 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
   private val userRepo             = stub[UserRepository]
   private val rolesRepo            = stub[UserRolesRepository]
   private val sessionRepo          = stub[SessionRepository]
+  private val sessionService       = stub[SessionService]
   private val noopThrottle         = stub[ChallengeThrottleRepository]
   private val noopPasskeyRepo      = stub[PasskeyRepository]
   private val noopPasswordSvc      = stub[PasswordService]
@@ -73,12 +74,13 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
       sessions: SessionRepository = sessionRepo,
       throttle: ChallengeThrottleRepository = noopThrottle,
       passkey: PasskeyRepository = noopPasskeyRepo,
+      sessionsService: SessionService = sessionService,
   ) =
     Observability.handleErrors(
       UserController.routes
         .provideEnvironment(
           ZEnvironment(users) ++ ZEnvironment(roles) ++ ZEnvironment(config) ++
-            ZEnvironment(sessions) ++ ZEnvironment(throttle) ++ ZEnvironment(passkey) ++
+            ZEnvironment(sessions) ++ ZEnvironment(sessionsService) ++ ZEnvironment(throttle) ++ ZEnvironment(passkey) ++
             ZEnvironment(noopPasswordSvc) ++ tracing,
         ),
     )
@@ -266,7 +268,7 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
         client <- ZIO.service[Client]
         tracing <- NoopTracing.layer.build
         token <- validToken(secretKey)
-        _ <- sessionRepo.findByUserId.succeedsWith(Nil)
+        _ <- sessionService.listByUser.succeedsWith(Nil)
         _ <- TestClient.addRoutes(routes(tracing))
         resp <- client.batched(
           Request.get((URL.empty / "users" / "sessions").addQueryParam("id", "f077fb08-9935-4a6d-8643-bf97c073bf0f"))
@@ -450,6 +452,7 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
                 ZEnvironment(userRepo) ++ ZEnvironment(rolesRepo) ++ ZEnvironment(config) ++
                   ZEnvironment(sessionRepo) ++
                   ZEnvironment(noopThrottle) ++ ZEnvironment(noopPasskeyRepo) ++
+                  ZEnvironment(sessionService) ++
                   ZEnvironment(passwordSvc) ++ tracing,
               ),
           ),
@@ -484,6 +487,7 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
                 ZEnvironment(userRepo) ++ ZEnvironment(rolesRepo) ++ ZEnvironment(config) ++
                   ZEnvironment(sessionRepo) ++
                   ZEnvironment(noopThrottle) ++ ZEnvironment(noopPasskeyRepo) ++
+                  ZEnvironment(sessionService) ++
                   ZEnvironment(passwordSvc) ++ tracing,
               ),
           ),

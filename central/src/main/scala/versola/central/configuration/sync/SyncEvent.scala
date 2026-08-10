@@ -141,6 +141,7 @@ object SyncEvent:
 
   case object ThemesUpdated extends SyncEvent
   case object SystemSettingsUpdated extends SyncEvent
+  case object ServerMetadataUpdated extends SyncEvent
 
   case class ChallengeSettingsUpdated(
       tenantId: TenantId,

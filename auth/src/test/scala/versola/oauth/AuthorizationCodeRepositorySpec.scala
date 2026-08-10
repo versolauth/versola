@@ -3,6 +3,7 @@ package versola.oauth
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.oauth.client.model.{AuthMethodRef, Claim, ClientId, ScopeToken}
 import versola.oauth.model.*
+import versola.oauth.session.model.PublicSessionId
 import versola.oauth.token.AuthorizationCodeRepository
 import versola.oauth.userinfo.model.{ClaimRequest, RequestedClaims}
 import versola.user.model.UserId
@@ -37,6 +38,7 @@ trait AuthorizationCodeRepositorySpec extends DatabaseSpecBase[AuthorizationCode
   val ttl = 5.minutes
 
   val sessionId1 = MAC(Array.fill(32)(3.toByte))
+  val publicSessionId1 = PublicSessionId("public-session-1")
 
   val requestedClaims1 = RequestedClaims(
     userinfo = Map(
@@ -59,6 +61,7 @@ trait AuthorizationCodeRepositorySpec extends DatabaseSpecBase[AuthorizationCode
 
   val record = AuthorizationCodeRecord(
     sessionId = sessionId1,
+    publicSessionId = publicSessionId1,
     clientId = clientId1,
     userId = userId1,
     redirectUri = redirectUri1,
@@ -71,10 +74,12 @@ trait AuthorizationCodeRepositorySpec extends DatabaseSpecBase[AuthorizationCode
     accessToken = accessToken1,
     amr = amr1,
     authTime = authTime1,
+    acr = None,
   )
 
   val recordWithClaims = AuthorizationCodeRecord(
     sessionId = sessionId1,
+    publicSessionId = publicSessionId1,
     clientId = clientId1,
     userId = userId1,
     redirectUri = redirectUri1,
@@ -87,6 +92,7 @@ trait AuthorizationCodeRepositorySpec extends DatabaseSpecBase[AuthorizationCode
     accessToken = accessToken1,
     amr = amr1,
     authTime = authTime1,
+    acr = None,
   )
 
   def testCases(env: AuthorizationCodeRepositorySpec.Env): List[Spec[AuthorizationCodeRepositorySpec.Env & Scope, Any]] =

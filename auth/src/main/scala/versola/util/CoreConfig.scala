@@ -49,11 +49,13 @@ object CoreConfig:
   )
 
   case class Security(
-      accessTokensSecret: Secret.Bytes32,
-      clientSecretsSecret: Secret.Bytes16,
-      refreshTokensSecret: Secret.Bytes32,
-      authCodesSecret: Secret.Bytes32,
-      sessionsSecret: Secret.Bytes32,
-      passwordsSecret: Secret.Bytes16,
-      conversationCookieSecret: Secret.Bytes32,
-  )
+    accessTokensSecret: Secret.Bytes32,
+    clientSecretsSecret: Secret.Bytes16,
+    refreshTokensSecret: Secret.Bytes32,
+    authCodesSecret: Secret.Bytes32,
+    sessionsSecret: Secret.Bytes32,
+    passwordsSecret: Secret.Bytes16,
+    conversationCookieSecret: Secret.Bytes32,
+    sessionCookieSecret: Secret.Bytes32,
+    userAgentCookieSecret: Secret.Bytes32,
+)

@@ -59,6 +59,9 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
     theme = "default",
     authFlow = Some(AuthFlow.default),
     otpTemplateId = "default",
+    frontChannelLogoutUri = None,
+    frontChannelLogoutSessionRequired = false,
+    backChannelLogoutUri = None,
   )
 
   private val updateRequest = UpdateClientRequest(
@@ -81,6 +84,9 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
     theme = None,
     authFlow = None,
     otpTemplateId = None,
+    frontChannelLogoutUri = None,
+    frontChannelLogoutSessionRequired = None,
+    backChannelLogoutUri = None,
   )
 
   private val clients = Vector(
@@ -99,6 +105,9 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       theme = "",
       authFlow = Some(AuthFlow.default),
       otpTemplateId = "default",
+      frontChannelLogoutUri = None,
+      frontChannelLogoutSessionRequired = false,
+      backChannelLogoutUri = None,
     ),
     OAuthClientRecord(
       id = ClientId("mobile-app"),
@@ -115,6 +124,9 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       theme = "",
       authFlow = Some(AuthFlow.default),
       otpTemplateId = "default",
+      frontChannelLogoutUri = None,
+      frontChannelLogoutSessionRequired = false,
+      backChannelLogoutUri = None,
     ),
   )
 
@@ -184,6 +196,8 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       secret: Option[Chunk[Byte]],
       previousSecret: Option[Chunk[Byte]],
       accessTokenTtl: Duration,
+      frontChannelLogoutUri: Option[String],
+      frontChannelLogoutSessionRequired: Boolean,
   )
 
   private def decryptSyncedClient(
@@ -202,6 +216,8 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       secret = secret.map(Chunk.fromArray),
       previousSecret = previousSecret.map(Chunk.fromArray),
       accessTokenTtl = client.accessTokenTtl,
+      frontChannelLogoutUri = client.frontChannelLogoutUri,
+      frontChannelLogoutSessionRequired = client.frontChannelLogoutSessionRequired,
     )
 
   def spec = suite("ClientController")(
@@ -233,6 +249,9 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
                 theme = "",
                 authFlow = Some(AuthFlow.default),
                 otpTemplateId = "default",
+                frontChannelLogoutUri = None,
+                frontChannelLogoutSessionRequired = false,
+                backChannelLogoutUri = None,
               ),
               OAuthClientResponse(
                 id = ClientId("mobile-app"),
@@ -245,6 +264,9 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
                 theme = "",
                 authFlow = Some(AuthFlow.default),
                 otpTemplateId = "default",
+                frontChannelLogoutUri = None,
+                frontChannelLogoutSessionRequired = false,
+                backChannelLogoutUri = None,
               ),
             ),
           ),
@@ -292,6 +314,8 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
               secret = Some(Chunk.fromArray(currentSecret)),
               previousSecret = None,
               accessTokenTtl = 5.minutes,
+              frontChannelLogoutUri = None,
+              frontChannelLogoutSessionRequired = false,
             ),
             DecryptedSyncOAuthClientRecord(
               id = "mobile-app",
@@ -302,6 +326,8 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
               secret = Some(Chunk.fromArray(currentSecret)),
               previousSecret = Some(Chunk.fromArray(previousSecret)),
               accessTokenTtl = 10.minutes,
+              frontChannelLogoutUri = None,
+              frontChannelLogoutSessionRequired = false,
             ),
           ),
         ),
@@ -330,8 +356,24 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
         for
           body <- response.body.asJson[CreateClientResponse]
         yield assertTrue(
-          service.registerClient.calls == List(createRequest),
+          service.registerClient.calls == List((createRequest, None)),
           body == CreateClientResponse(Base64Url.encode(rotatedSecret)),
+        ),
+    ),
+    controllerTestCase(
+      description = "create client returns 400 when both logout URIs are configured",
+      request = Request(
+        method = Method.POST,
+        url = URL.empty / "configuration" / "clients",
+        body = Body.fromString(createRequest.copy(
+          frontChannelLogoutUri = Some("https://example.com/front-logout"),
+          backChannelLogoutUri = Some("https://example.com/back-logout"),
+        ).toJson),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.BadRequest,
+      verify = (_, service, _) =>
+        ZIO.succeed(
+          assertTrue(service.registerClient.calls.isEmpty),
         ),
     ),
     controllerTestCase(
@@ -347,6 +389,39 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       verify = (_, service, _) =>
         ZIO.succeed(
           assertTrue(service.updateClient.calls == List(updateRequest)),
+        ),
+    ),
+    controllerTestCase(
+      description = "update client returns 400 when both logout URIs are configured",
+      request = Request(
+        method = Method.PUT,
+        url = URL.empty / "configuration" / "clients",
+        body = Body.fromString(updateRequest.copy(
+          frontChannelLogoutUri = Some(Some("https://example.com/front-logout")),
+          backChannelLogoutUri = Some(Some("https://example.com/back-logout")),
+        ).toJson),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.BadRequest,
+      verify = (_, service, _) =>
+        ZIO.succeed(
+          assertTrue(service.updateClient.calls.isEmpty),
+        ),
+    ),
+    controllerTestCase(
+      description = "update client succeeds when setting only one logout URI",
+      request = Request(
+        method = Method.PUT,
+        url = URL.empty / "configuration" / "clients",
+        body = Body.fromString(updateRequest.copy(
+          frontChannelLogoutUri = Some(Some("https://example.com/front-logout")),
+        ).toJson),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.NoContent,
+      setup = service =>
+        service.updateClient.succeedsWith(()),
+      verify = (_, service, _) =>
+        ZIO.succeed(
+          assertTrue(service.updateClient.calls.nonEmpty),
         ),
     ),
     controllerTestCase(

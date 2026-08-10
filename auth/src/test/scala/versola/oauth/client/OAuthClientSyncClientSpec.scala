@@ -35,6 +35,8 @@ object OAuthClientSyncClientSpec extends ZIOSpecDefault:
       refreshTokenTtl: Duration,
       theme: String,
       otpTemplateId: String,
+      frontChannelLogoutUri: Option[String],
+      frontChannelLogoutSessionRequired: Boolean,
   ) derives JsonCodec
   private case class EncodedClientsSyncResponse(clients: Vector[EncodedClient]) derives JsonCodec
 
@@ -87,6 +89,8 @@ object OAuthClientSyncClientSpec extends ZIOSpecDefault:
                       7776000.seconds,
                       "default",
                       "default",
+                      Some("https://example.com/frontchannel-logout"),
+                      true,
                     )
                   ),
                 ).toJson
@@ -99,7 +103,7 @@ object OAuthClientSyncClientSpec extends ZIOSpecDefault:
         request <- seen.get.someOrFail(new RuntimeException("No request captured"))
         token <- ZIO.fromOption(request.header(Header.Authorization).collect { case Header.Authorization.Bearer(v) => v.stringValue })
           .orElseFail(new RuntimeException("Missing bearer token"))
-        claims <- JWT.deserialize[SignedClaims](token, secretKey).mapError(e => new RuntimeException(e.toString))
+        claims <- JWT.deserialize[SignedClaims](token, secretKey, JWT.Type.JWT).mapError(e => new RuntimeException(e.toString))
         client = result(ClientId("web-app"))
       yield assertTrue(
         request.method == Method.GET,
@@ -113,6 +117,8 @@ object OAuthClientSyncClientSpec extends ZIOSpecDefault:
         client.secret.exists(_.sameElements(currentSecret)),
         client.previousSecret.exists(_.sameElements(previousSecret)),
         client.accessTokenTtl == 300.seconds,
+        client.frontChannelLogoutUri.contains(URL.decode("https://example.com/frontchannel-logout").toOption.get),
+        client.frontChannelLogoutSessionRequired,
       )
     },
   ).provideShared(TestClient.layer, configLayer, tokenLayer, securityLayer, OAuthClientSyncClient.live) @@ TestAspect.silentLogging

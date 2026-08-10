@@ -50,57 +50,43 @@ object PermissionServiceSpec extends ZIOSpecDefault:
     suite("getAllowedEndpointsForRoles")(
       test("returns endpoints composed from a single role's permissions") {
         val service = buildService()
-        for endpoints <- service.getAllowedEndpointsForRoles(Map(defaultTenant -> List(viewerRole)))
+        for endpoints <- service.getAllowedEndpointsForRoles(defaultTenant, List(viewerRole))
         yield assertTrue(endpoints == Set(listUsersEndpoint))
       },
       test("merges and dedupes endpoints across multiple roles") {
         val service = buildService()
-        for endpoints <- service.getAllowedEndpointsForRoles(Map(defaultTenant -> List(viewerRole, editorRole)))
+        for endpoints <- service.getAllowedEndpointsForRoles(defaultTenant, List(viewerRole, editorRole))
         yield assertTrue(endpoints == Set(listUsersEndpoint, createUserEndpoint))
       },
-      test("returns empty set when role map is empty") {
+      test("returns empty set when role list is empty") {
         val service = buildService()
-        for endpoints <- service.getAllowedEndpointsForRoles(Map.empty)
+        for endpoints <- service.getAllowedEndpointsForRoles(defaultTenant, Nil)
         yield assertTrue(endpoints.isEmpty)
       },
       test("ignores unknown roles silently") {
         val service = buildService()
-        for endpoints <- service.getAllowedEndpointsForRoles(Map(defaultTenant -> List(RoleId("ghost"), viewerRole)))
+        for endpoints <- service.getAllowedEndpointsForRoles(defaultTenant, List(RoleId("ghost"), viewerRole))
         yield assertTrue(endpoints == Set(listUsersEndpoint))
       },
       test("returns empty set when role grants permissions absent from permissionsCache") {
         val service = buildService(permissions = Map.empty)
-        for endpoints <- service.getAllowedEndpointsForRoles(Map(defaultTenant -> List(adminRole)))
+        for endpoints <- service.getAllowedEndpointsForRoles(defaultTenant, List(adminRole))
         yield assertTrue(endpoints.isEmpty)
       },
       test("returns full endpoint set for admin role") {
         val service = buildService()
-        for endpoints <- service.getAllowedEndpointsForRoles(Map(defaultTenant -> List(adminRole)))
+        for endpoints <- service.getAllowedEndpointsForRoles(defaultTenant, List(adminRole))
         yield assertTrue(endpoints == Set(listUsersEndpoint, createUserEndpoint, deleteUserEndpoint))
       },
-      test("merges endpoints across multiple tenants") {
+      test("does not leak permissions granted to the same role in a different tenant") {
         val tenantA = TenantId("tenant-a")
         val multiTenantRoles: Map[(TenantId, RoleId), Set[PermissionId]] = Map(
           (defaultTenant, viewerRole) -> Set(readPerm),
           (tenantA, editorRole)       -> Set(writePerm),
         )
         val service = buildService(roles = multiTenantRoles)
-        for endpoints <- service.getAllowedEndpointsForRoles(
-          Map(defaultTenant -> List(viewerRole), tenantA -> List(editorRole)),
-        )
-        yield assertTrue(endpoints == Set(listUsersEndpoint, createUserEndpoint))
-      },
-      test("deduplicates endpoints when multiple tenants grant the same permission") {
-        val tenantA = TenantId("tenant-a")
-        val multiTenantRoles: Map[(TenantId, RoleId), Set[PermissionId]] = Map(
-          (defaultTenant, viewerRole) -> Set(readPerm),
-          (tenantA, viewerRole)       -> Set(readPerm),
-        )
-        val service = buildService(roles = multiTenantRoles)
-        for endpoints <- service.getAllowedEndpointsForRoles(
-          Map(defaultTenant -> List(viewerRole), tenantA -> List(viewerRole)),
-        )
-        yield assertTrue(endpoints == Set(listUsersEndpoint))
+        for endpoints <- service.getAllowedEndpointsForRoles(defaultTenant, List(editorRole))
+        yield assertTrue(endpoints.isEmpty)
       },
     ),
     suite("getAllowedEndpointsForClient")(

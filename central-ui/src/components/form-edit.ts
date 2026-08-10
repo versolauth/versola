@@ -8,6 +8,7 @@ import { buildPreviewSrcdoc } from '../utils/preview';
 import { humanizeLabel, toggleAnyOf, exclusiveAnyOfValues } from '../utils/helpers';
 import './content-header';
 import './code-editor';
+import './nav-toggle';
 
 @customElement('versola-form-edit')
 export class VersolaFormEdit extends LitElement {
@@ -308,7 +309,10 @@ export class VersolaFormEdit extends LitElement {
 
     return html`
       <div class="title-stack" style="margin-bottom: var(--spacing-lg)">
-        <h1 class="form-title">${this.form?.id === '' ? 'New Form' : 'New Version'}</h1>
+        <div class="form-header-lead">
+          <versola-nav-toggle></versola-nav-toggle>
+          <h1 class="form-title">${this.form?.id === '' ? 'New Form' : 'New Version'}</h1>
+        </div>
         ${this.form?.id === '' ? html`
           <div>
             <label class="field-label">Form ID</label>

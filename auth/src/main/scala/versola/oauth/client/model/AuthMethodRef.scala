@@ -36,7 +36,9 @@ object AuthMethodRef:
     else None
 
   /** Flatten the per-challenge records into the set of RFC 8176 values for the
-    * OIDC `amr` claim, adding [[mfa]] when more than one distinct factor was passed.
+    * OIDC `amr` claim, adding [[mfa]] when more than one distinct [[PassedAuthFactor]]
+    * was passed. Note that a single factor may expand to multiple RFC 8176 values
+    * (e.g. OTP → `{otp, sms}`, passkey → `{swk, user}`) but still counts as one factor.
     */
   def amrClaim(amr: Map[PassedAuthFactor, PassedFactorRecord]): Set[AuthMethodRef] =
     val methods = amr.values.flatMap(_.methods).toSet
@@ -45,11 +47,14 @@ object AuthMethodRef:
   /** Build the OIDC ID token claims (`amr`, `auth_time`) from the resolved set of
     * method references and the authentication time. Omits `amr` when empty.
     */
-  def idTokenClaims(amr: Set[AuthMethodRef], authTime: Option[Instant]): Map[String, Json] =
-    val amrField = Option.when(amr.nonEmpty):
+  def idTokenClaims(amr: Set[AuthMethodRef], authTime: Option[Instant], acr: Option[Acr] = None): Map[String, Json] = {
+    val amrField      = Option.when(amr.nonEmpty) {
       "amr" -> Json.Arr(Chunk.fromIterable(amr.toList.sortBy(_.toString).map(m => Json.Str(m.toString))))
+    }
     val authTimeField = authTime.map(t => "auth_time" -> Json.Num(t.getEpochSecond))
-    (amrField ++ authTimeField).toMap
+    val acrField      = acr.map(v => "acr" -> Json.Str(v))
+    (amrField ++ authTimeField ++ acrField).toMap
+  }
 
 /** The record of a single authentication challenge that was passed, storing
   * the timestamp and the typed RFC 8176 method references for that challenge.

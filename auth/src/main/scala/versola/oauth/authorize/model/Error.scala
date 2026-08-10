@@ -33,6 +33,12 @@ private[authorize] object Error:
       errorUri = Some("https://datatracker.ietf.org/doc/html/rfc6749#section-4.1.2.1"),
     )
 
+  case class NoValuesProvided(uri: URL, state: Option[State], queryParamName: String) extends RedirectError(
+    error = ErrorCode.InvalidRequest,
+    errorDescription = s"At least one value should be provided - $queryParamName",
+    errorUri = Some("https://datatracker.ietf.org/doc/html/rfc6749#section-4.1.2.1"),
+  )
+
   case class ResponseTypeMissing(uri: URL, state: Option[State]) extends RedirectError(
       error = ErrorCode.InvalidRequest,
       errorDescription = "Missing required parameter - response_type",
@@ -99,14 +105,31 @@ private[authorize] object Error:
       errorUri = Some("https://datatracker.ietf.org/doc/html/rfc6749#section-4.1.2.1"),
     )
 
+  case class UnmetAuthenticationRequirements(uri: URL, state: Option[State]) extends RedirectError(
+      error = ErrorCode.UnmetAuthenticationRequirements,
+      errorDescription = "The requested Authentication Context Class cannot be satisfied",
+      errorUri = Some("https://openid.net/specs/openid-connect-unmet-authentication-requirements-1_0.html"),
+    )
+
   case class PromptInvalid(uri: URL, state: Option[State]) extends RedirectError(
       error = ErrorCode.InvalidRequest,
       errorDescription = "Invalid prompt parameter - none must not be combined with other values",
       errorUri = Some("https://openid.net/specs/openid-connect-core-1_0.html#AuthRequest"),
     )
+  case class IdTokenHintInvalid(uri: URL, state: Option[State]) extends RedirectError(
+      error = ErrorCode.InvalidRequest,
+      errorDescription = "The id_token_hint could not be verified or is invalid (invalid signature, audience, or issuer)",
+      errorUri = Some("https://openid.net/specs/openid-connect-core-1_0.html#AuthRequest"),
+    )
+
+  case class ConflictingHints(uri: URL, state: Option[State]) extends RedirectError(
+      error = ErrorCode.InvalidRequest,
+      errorDescription = "login_hint and id_token_hint must not be used together",
+      errorUri = Some("https://openid.net/specs/openid-connect-core-1_0.html#AuthRequest"),
+    )
 
   case class LoginHintInvalid(uri: URL, state: Option[State]) extends RedirectError(
       error = ErrorCode.InvalidRequest,
-      errorDescription = "login_hint is invalid or not supported by the client auth flow",
+      errorDescription = "The login_hint parameter is invalid or not supported by the client auth flow",
       errorUri = Some("https://openid.net/specs/openid-connect-core-1_0.html#AuthRequest"),
     )

@@ -1,10 +1,12 @@
 package versola.user
 
+import versola.auth.model.Password
 import versola.oauth.challenge.passkey.PasskeyRepository
 import versola.oauth.challenge.password.PasswordService
+import versola.oauth.challenge.password.model.PasswordReuseError
 import versola.oauth.client.model.TenantId
 import versola.oauth.conversation.limit.ChallengeThrottleRepository
-import versola.oauth.session.SessionRepository
+import versola.oauth.session.{SessionRepository, SessionService}
 import versola.oauth.session.model.SessionId
 import versola.role.model.RoleId
 import versola.user.model.*
@@ -19,7 +21,7 @@ import zio.json.JsonCodec
 import zio.telemetry.opentelemetry.tracing.Tracing
 
 object UserController extends Controller:
-  type Env = Tracing & UserRepository & UserRolesRepository & CoreConfig & SessionRepository & ChallengeThrottleRepository & PasskeyRepository & PasswordService
+  type Env = Tracing & UserRepository & UserRolesRepository & CoreConfig & SessionRepository & SessionService & ChallengeThrottleRepository & PasskeyRepository & PasswordService
 
   def routes: Routes[Env, Throwable] = Routes(
     upsertUserEndpoint,
@@ -34,6 +36,7 @@ object UserController extends Controller:
     renamePasskeyEndpoint,
     deletePasskeyEndpoint,
     resetPasswordEndpoint,
+    setPasswordEndpoint,
   )
 
   val upsertUserEndpoint =
@@ -93,23 +96,21 @@ object UserController extends Controller:
     Method.GET / "users" / "sessions" -> handler { (request: Request) =>
       for
         _ <- authorizeInternal(request)
-        repo <- ZIO.service[SessionRepository]
+        sessionService <- ZIO.service[SessionService]
         userId <- request.url.queryZIO[UserId]("id")
-        sessions <- repo.findByUserId(userId)
-      yield Response.json(
-        SessionListResponse(
-          sessions.map { record =>
-            SessionResponse(
-              clientId = record.clientId,
-              platform = record.userAgent.platform,
-              os = record.userAgent.os,
-              browser = record.userAgent.browser,
-              version = record.userAgent.version,
-              createdAt = record.createdAt.toString,
-            )
-          },
-        ).toJson,
-      )
+        sessions <- sessionService.listByUser(userId)
+        responses = sessions.map { session =>
+          SessionResponse(
+            publicId = session.publicId,
+            clients = session.clients.map(c => ClientEntryResponse(c.clientId, c.enteredAt)),
+            platform = session.platform,
+            os = session.os,
+            browser = session.browser,
+            version = session.version,
+            createdAt = session.createdAt,
+          )
+        }
+      yield Response.json(SessionListResponse(responses).toJson)
     }
 
   val invalidateSessionEndpoint =
@@ -174,5 +175,18 @@ object UserController extends Controller:
         body <- request.body.asJsonFromCodec[ResetPasswordPayload]
         passwordService <- ZIO.service[PasswordService]
         _ <- passwordService.resetPassword(body.userId, body.expiresInSeconds, body.channel)
+      yield Response.status(Status.NoContent)
+    }
+
+  val setPasswordEndpoint =
+    Method.POST / "users" / "password" / "set" -> handler { (request: Request) =>
+      for
+        _ <- authorizeInternal(request)
+        body <- request.body.asJsonFromCodec[SetPasswordPayload]
+        passwordService <- ZIO.service[PasswordService]
+        _ <- passwordService.setPassword(body.userId, Password(body.password))
+          .mapError:
+            case PasswordReuseError(n) => RuntimeException(s"Password reuse: must differ from last $n passwords")
+            case t: Throwable => t
       yield Response.status(Status.NoContent)
     }

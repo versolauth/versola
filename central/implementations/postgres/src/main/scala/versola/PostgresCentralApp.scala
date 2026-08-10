@@ -8,7 +8,9 @@ import versola.central.configuration.system.{SystemSettingsController, SystemSet
 import versola.central.configuration.clients.{AuthorizationPresetController, AuthorizationPresetRepository, AuthorizationPresetService, ClientController, OAuthClientRepository, OAuthClientService}
 import versola.central.configuration.edges.{EdgeController, EdgeRepository, EdgeService}
 import versola.central.configuration.forms.{FormController, FormRepository, FormService}
-import versola.central.configuration.jwks.{JwksController, JwksRepository, JwksService}
+import versola.central.configuration.jwks.{JwksController, JwksService}
+import versola.central.configuration.metadata.{ServerMetadataController, ServerMetadataRepository, ServerMetadataService}
+import versola.configuration.metadata.PostgresServerMetadataRepository
 import versola.central.configuration.locales.{LocaleController, LocaleRepository, LocaleService}
 import versola.central.configuration.themes.{ThemeController, ThemeRepository, ThemeService}
 import versola.central.configuration.permissions.{PermissionController, PermissionRepository, PermissionService}
@@ -17,7 +19,7 @@ import versola.central.configuration.roles.{RoleController, RoleRecord, RoleRepo
 import versola.central.configuration.scopes.{OAuthScopeRepository, OAuthScopeService, ScopeController}
 import versola.central.configuration.sync.{CacheSyncRepository, CacheSyncService}
 import versola.central.configuration.tenants.{TenantController, TenantRepository, TenantService}
-import versola.central.users.{AuthClient, UserOutboxProcessor, UserController, UserRepository, UserService}
+import versola.central.users.{AuthClient, ServiceController, UserOutboxProcessor, UserController, UserRepository, UserService}
 import versola.configuration.clients.{PostgresAuthorizationPresetRepository, PostgresOAuthClientRepository}
 import versola.configuration.challenges.{PostgresChallengeSettingsRepository, PostgresOtpChallengeRepository}
 import versola.configuration.system.PostgresSystemSettingsRepository
@@ -83,14 +85,16 @@ object PostgresCentralApp extends VersolaApp("central"):
       SystemSettingsService &
       CacheSyncRepository &
       CacheSyncService &
+      SecurityService &
       UserRepository &
       UserService &
-      JwksRepository &
-      JwksService &
-      SecureRandom &
-      SecurityService
+      AuthClient &
+      UserOutboxProcessor &
+      ServerMetadataRepository &
+      ServerMetadataService &
+      JwksService
 
-  override def routes: Routes[Dependencies & Tracing, Throwable] =
+  override def routes: Routes[Dependencies & Tracing & EnvName, Throwable] =
     List(
       TenantController.routes,
       PermissionController.routes,
@@ -107,6 +111,8 @@ object PostgresCentralApp extends VersolaApp("central"):
       SystemSettingsController.routes,
       UserController.routes,
       JwksController.routes,
+      ServerMetadataController.routes,
+      ServiceController.routes,
     ).reduce(_ ++ _)
 
   private val repositories =
@@ -128,6 +134,7 @@ object PostgresCentralApp extends VersolaApp("central"):
           PostgresSystemSettingsRepository.live >+>
           PostgresCacheSyncRepository.live >+>
           PostgresJwksRepository.live >+>
+          PostgresServerMetadataRepository.live >+>
           PostgresUserRepository.live
       )
 
@@ -141,17 +148,18 @@ object PostgresCentralApp extends VersolaApp("central"):
       PermissionService.live(schedule) >+>
       ResourceService.live(schedule) >+>
       OAuthClientService.live(schedule) >+>
+      ChallengeSettingsService.live(schedule) >+>
       AuthorizationPresetService.live(schedule) >+>
       OAuthScopeService.live(schedule) >+>
       RoleService.live(schedule) >+>
       EdgeService.live(schedule) >+>
       LocaleService.live >+>
       JwksService.live(schedule) >+>
+      ServerMetadataService.live(schedule) >+>
       BootstrapService.live >+>
       FormService.live(schedule) >+>
       ThemeService.live(schedule) >+>
       OtpChallengeService.live(schedule) >+>
-      ChallengeSettingsService.live(schedule) >+>
       SystemSettingsService.live(schedule) >+>
       CacheSyncService.live >+>
       AuthClient.live >+>

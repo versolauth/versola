@@ -66,7 +66,7 @@ object CleanupManager:
           s"Starting cleanup manager with max-threads=${config.maxThreads}, tables=${config.tables.size}",
         ) *>
           ZIO.foreachPar(config.tables) { tableConfig =>
-            semaphore.withPermit(cleanupTable(tableConfig))
+            drainTable(semaphore, tableConfig)
               .repeat(Schedule.spaced(tableConfig.interval))
               .forkScoped
           }
@@ -80,16 +80,15 @@ object CleanupManager:
         _ <- ZIO.logInfo(s"Stopped ${fib.size} cleanup jobs")
       yield ()
 
-    private def cleanupTable(config: TableCleanupConfig): Task[CleanupResult] =
+    private def drainTable(semaphore: Semaphore, config: TableCleanupConfig): Task[Unit] =
       val keyColumn = config.keyColumn.getOrElse("id")
-      for
-        start <- Clock.currentTime(TimeUnit.MILLISECONDS)
-        deleted <- cleanupBatch(config.tableName, config.batchSize, keyColumn)
-        end <- Clock.currentTime(TimeUnit.MILLISECONDS)
-        duration = end - start
-        _ <- ZIO.logInfo(s"Cleaned ${config.tableName}: $deleted rows in ${duration}ms")
-      yield CleanupResult(
-        tableName = config.tableName,
-        rowsDeleted = deleted,
-        durationMs = duration,
-      )
+      def runBatch: Task[Int] =
+        semaphore.withPermit:
+          for
+            start   <- Clock.currentTime(TimeUnit.MILLISECONDS)
+            deleted <- cleanupBatch(config.tableName, config.batchSize, keyColumn)
+            end     <- Clock.currentTime(TimeUnit.MILLISECONDS)
+            _       <- ZIO.logInfo(s"Cleaned ${config.tableName}: $deleted rows in ${end - start}ms")
+          yield deleted
+      def loop: Task[Unit] = runBatch.flatMap(deleted => ZIO.when(deleted >= config.batchSize)(loop).unit)
+      loop

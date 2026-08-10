@@ -4,14 +4,14 @@ import versola.central.configuration.clients.OAuthClientService
 import versola.central.configuration.tenants.TenantId
 import versola.central.authorizeBasic
 import versola.util.http.Controller
-import versola.util.{Email, Phone}
+import versola.util.{Email, EnvName, Phone}
 import zio.ZIO
 import zio.http.{Method, Request, Response, Routes, Status, handler}
 import zio.json.EncoderOps
 import zio.telemetry.opentelemetry.tracing.Tracing
 
 object UserController extends Controller:
-  type Env = Tracing & UserService & OAuthClientService
+  type Env = Tracing & UserService & OAuthClientService & EnvName
 
   def routes: Routes[Env, Throwable] = Routes(
     findUsersEndpoint,
@@ -27,6 +27,7 @@ object UserController extends Controller:
     renamePasskeyEndpoint,
     deletePasskeyEndpoint,
     resetPasswordEndpoint,
+    setPasswordEndpoint,
   )
 
   val findUsersEndpoint =
@@ -173,4 +174,16 @@ object UserController extends Controller:
         body <- request.body.asJsonFromCodec[ResetPasswordRequest]
         _ <- service.resetPassword(body)
       yield Response.status(Status.NoContent)
+    }
+
+  val setPasswordEndpoint =
+    Method.POST / "users" / "password" / "set" -> handler { (request: Request) =>
+      ZIO.service[EnvName].flatMap: env =>
+        if env.isProd then ZIO.succeed(Response.status(Status.NotFound))
+        else for
+          _ <- authorizeBasic(request)
+          service <- ZIO.service[UserService]
+          body <- request.body.asJsonFromCodec[SetPasswordRequest]
+          _ <- service.setPassword(body.userId, body.password)
+        yield Response.status(Status.NoContent)
     }

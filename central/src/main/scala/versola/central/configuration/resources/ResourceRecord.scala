@@ -17,4 +17,7 @@ case class ResourceEndpointRecord(
     fetchUserInfo: Boolean,
     allowExpression: Option[String],
     inject: Vector[InjectRule],
+    stepUpCondition: Option[String],
+    stepUpAcr: Option[String],
+    maxAge: Option[Int],
 ) derives CanEqual

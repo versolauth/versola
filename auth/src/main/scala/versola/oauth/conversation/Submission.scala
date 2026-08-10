@@ -1,41 +1,39 @@
 package versola.oauth.conversation
-
 import versola.auth.model.{OtpCode, Password}
 import versola.user.model.Login
 import versola.util.{Email, FormDecoder, Phone}
 import zio.http.Form
 import zio.schema.*
 
-sealed trait Submission
+sealed trait Submission:
+  def csrf: String
 
-case class PhoneSubmission(phone: Phone)
+case class PhoneSubmission(phone: Phone, csrf: String)
   extends Submission derives Schema
 
-case class EmailSubmission(email: Email)
+case class EmailSubmission(email: Email, csrf: String)
   extends Submission derives Schema
 
-case class OtpResendSubmission()
+case class OtpResendSubmission(csrf: String)
   extends Submission derives Schema
 
-case class OtpSubmission(code: OtpCode)
+case class OtpSubmission(code: OtpCode, csrf: String)
   extends Submission derives Schema
 
-case class PasswordSubmission(password: Password)
+case class PasswordSubmission(password: Password, csrf: String)
   extends Submission derives Schema
 
-case class LoginPasswordSubmission(login: Login, password: Password)
+case class LoginPasswordSubmission(login: Login, password: Password, csrf: String)
   extends Submission derives Schema
 
-case class PasskeyAssertionSubmission(response: String)
+case class PasskeyAssertionSubmission(response: String, csrf: String)
   extends Submission derives Schema
 
-case class PasskeyEnrollSubmission(response: String, name: String)
+case class PasskeyEnrollSubmission(response: String, name: String, csrf: String)
   extends Submission derives Schema
 
-case class PasskeySkipSubmission()
+case class PasskeySkipSubmission(csrf: String)
   extends Submission derives Schema
-
-case class SetPasswordSubmission(password: Password)
+  
+case class SetPasswordSubmission(password: Password, csrf: String)
   extends Submission derives Schema
-
-

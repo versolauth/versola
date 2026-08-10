@@ -39,6 +39,9 @@ trait OAuthClientRepositorySpec extends DatabaseSpecBase[OAuthClientRepositorySp
     theme = "default",
     authFlow = Some(AuthFlow.default),
     otpTemplateId = "default",
+    frontChannelLogoutUri = None,
+    frontChannelLogoutSessionRequired = false,
+    backChannelLogoutUri = None,
   )
 
   override def testCases(env: OAuthClientRepositorySpec.Env) =
@@ -82,6 +85,9 @@ trait OAuthClientRepositorySpec extends DatabaseSpecBase[OAuthClientRepositorySp
             theme = None,
             authFlow = None,
             otpTemplateId = None,
+            frontChannelLogoutUri = None,
+            frontChannelLogoutSessionRequired = None,
+            backChannelLogoutUri = None,
           )
           found <- env.repository.find(clientId)
         yield assertTrue(

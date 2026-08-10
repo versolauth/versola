@@ -32,14 +32,14 @@ object PostgresCleanupManagerSpec extends PostgresSpec:
             sql"""
               INSERT INTO auth_conversations
                 (id, client_id, redirect_uri, scope, code_challenge, code_challenge_method,
-                 step, response_type, auth_flow, version, amr, needs_password_change, expires_at)
+                step, response_type, auth_flow, version, amr, needs_password_change, csrf_token, expires_at)
               VALUES
                 ($id1, 'c1', 'https://x.com', ARRAY['openid'], 'ch', 'S256',
-                 '{"type":"start"}'::json, 'code', '{"type":"pwd"}'::jsonb, 1, '[]'::jsonb,
-                 false, NOW() - INTERVAL '2 minutes'),
+                '{"type":"start"}'::json, 'code', '{"type":"pwd"}'::jsonb, 1, '[]'::jsonb,
+                false, '', NOW() - INTERVAL '2 minutes'),
                 ($id2, 'c1', 'https://x.com', ARRAY['openid'], 'ch', 'S256',
-                 '{"type":"start"}'::json, 'code', '{"type":"pwd"}'::jsonb, 1, '[]'::jsonb,
-                 false, NOW() + INTERVAL '5 minutes')
+                '{"type":"start"}'::json, 'code', '{"type":"pwd"}'::jsonb, 1, '[]'::jsonb,
+                false, '', NOW() + INTERVAL '5 minutes')
             """.update.run()
           _             <- manager.runBatch("auth_conversations", 1000, "id")
           expiredExists <- xa.connect(sql"SELECT COUNT(*) FROM auth_conversations WHERE id = $id1".query[Long].run().head)
@@ -56,14 +56,14 @@ object PostgresCleanupManagerSpec extends PostgresSpec:
           _ <- xa.connect:
             sql"""
               INSERT INTO authorization_codes
-                (code, client_id, user_id, session_id, redirect_uri, scope,
+                (code, client_id, user_id, session_id, public_session_id, redirect_uri, scope,
                  code_challenge, code_challenge_method, expires_at,
                  used, access_token, amr, auth_time)
               VALUES
-                (decode('0101', 'hex'), 'c1', $userId1, decode('02', 'hex'), 'https://x.com', ARRAY['openid'],
+                (decode('0101', 'hex'), 'c1', $userId1, decode('02', 'hex'), 'sid1', 'https://x.com', ARRAY['openid'],
                  'ch', 'S256', NOW() - INTERVAL '1 minute',
                  false, decode('03', 'hex'), '[]'::jsonb, NOW()),
-                (decode('0202', 'hex'), 'c1', $userId2, decode('02', 'hex'), 'https://x.com', ARRAY['openid'],
+                (decode('0202', 'hex'), 'c1', $userId2, decode('02', 'hex'), 'sid2', 'https://x.com', ARRAY['openid'],
                  'ch', 'S256', NOW() + INTERVAL '5 minutes',
                  false, decode('04', 'hex'), '[]'::jsonb, NOW())
             """.update.run()

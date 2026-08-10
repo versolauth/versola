@@ -12,8 +12,11 @@ import {
   upsertChallengeSettings,
 } from '../utils/central-api';
 import { confirmDestructiveAction } from '../utils/confirm-dialog';
+import { validateRedirectUri } from '../utils/validators';
+import './content-header';
 import './error-card';
 import './loading-cards';
+import './nav-toggle';
 
 const CODE_PLACEHOLDER = '{{code}}';
 const PASSWORD_PLACEHOLDER = '{{password}}';
@@ -56,9 +59,11 @@ export class VersolaChallengesList extends LitElement {
   @state() private authConversationTtlSeconds = 900;
   @state() private sessionTtlSeconds = 86400;
   @state() private sessionIdleTtlSeconds: number | null = null;
+  @state() private userAgentTtlSeconds = 15552000;
   @state() private editAuthConversationTtlSeconds = 900;
   @state() private editSessionTtlSeconds = 86400;
   @state() private editSessionIdleTtlSeconds: number | null = null;
+  @state() private editUserAgentTtlSeconds = 15552000;
 
   @state() private ipHeader = 'X-Real-IP';
   @state() private editIpHeader = 'X-Real-IP';
@@ -83,6 +88,11 @@ export class VersolaChallengesList extends LitElement {
   @state() private editPasskeyRpName = '';
   @state() private editPasskeyOrigins: Array<{ value: string }> = [];
   @state() private editPasskeyUserVerification = 'preferred';
+  @state() private acrVocabulary: Record<string, string[]> = {};
+  @state() private editAcrVocabulary: Array<{ acr: string; factors: string[] }> = [];
+
+  @state() private postLogoutRedirectUris: string[] = [];
+  @state() private editPostLogoutRedirectUris: Array<{ value: string }> = [];
 
   static styles = [
     theme,
@@ -92,19 +102,6 @@ export class VersolaChallengesList extends LitElement {
     iconActionStyles,
     css`
       :host { display: block; }
-      .page-header {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        margin-bottom: var(--spacing-xl);
-      }
-      .page-title {
-        font-size: 1.625rem;
-        font-weight: 700;
-        letter-spacing: -0.025em;
-        color: var(--text-primary);
-        margin: 0;
-      }
       .form-header {
         display: flex;
         justify-content: space-between;
@@ -243,6 +240,12 @@ export class VersolaChallengesList extends LitElement {
         border: 1px solid var(--border-dark);
         border-radius: var(--radius-md);
         padding: var(--spacing-xs) var(--spacing-md);
+        /* Phone prefixes and ACR names are short, but this class also renders
+           passkey origins, which are full URLs. Without these the tag is an
+           unbreakable box that pushes past the card's right edge on a phone. */
+        max-width: 100%;
+        min-width: 0;
+        overflow-wrap: anywhere;
       }
       .limit-row {
         display: flex;
@@ -338,6 +341,19 @@ export class VersolaChallengesList extends LitElement {
         color: var(--text-secondary);
         font-style: italic;
       }
+      /* The 11rem label column plus a 1.5rem gap leaves almost nothing for the
+         value on a ~390px screen. Below this width the label sits above its
+         value instead of beside it. */
+      @media (max-width: 720px) {
+        .prop-row {
+          grid-template-columns: minmax(0, 1fr);
+          gap: var(--spacing-xs);
+          padding: 0.875rem var(--spacing-md);
+        }
+        .prop-label {
+          white-space: normal;
+        }
+      }
       .empty-state {
         text-align: center;
         padding: 3rem;
@@ -378,7 +394,10 @@ export class VersolaChallengesList extends LitElement {
         this.authConversationTtlSeconds = challengeSettings.authConversationTtlSeconds;
         this.sessionTtlSeconds = challengeSettings.sessionTtlSeconds;
         this.sessionIdleTtlSeconds = challengeSettings.sessionIdleTtlSeconds ?? null;
+        this.userAgentTtlSeconds = challengeSettings.userAgentTtlSeconds;
+        this.acrVocabulary = challengeSettings.acrVocabulary ?? {};
         this.ipHeader = challengeSettings.ipHeader || 'X-Real-IP';
+        this.postLogoutRedirectUris = challengeSettings.postLogoutRedirectUris ?? [];
       } else {
         this.phonePrefixes = [];
         this.submissionLimits = { otpRequest: [], otpSubmit: [], passwordSubmit: [], passkeyAssertion: [], banDurationSeconds: 0 };
@@ -388,7 +407,10 @@ export class VersolaChallengesList extends LitElement {
         this.authConversationTtlSeconds = 900;
         this.sessionTtlSeconds = 86400;
         this.sessionIdleTtlSeconds = null;
+        this.userAgentTtlSeconds = 15552000;
+        this.acrVocabulary = {};
         this.ipHeader = 'X-Real-IP';
+        this.postLogoutRedirectUris = [];
       }
     } catch (e) {
       this.errorMessage = e instanceof Error ? e.message : 'Failed to load data';
@@ -448,6 +470,10 @@ export class VersolaChallengesList extends LitElement {
 
   private formatDuration(seconds: number): string {
     if (seconds === 0) return '—';
+    if (seconds % 86400 === 0 && seconds >= 86400) {
+      const days = seconds / 86400;
+      return `${days} day${days === 1 ? '' : 's'}`;
+    }
     if (seconds % 3600 === 0) return `${seconds / 3600} hr`;
     if (seconds % 60 === 0) return `${seconds / 60} min`;
     return `${seconds}s`;
@@ -525,11 +551,15 @@ export class VersolaChallengesList extends LitElement {
     this.editAuthConversationTtlSeconds = this.authConversationTtlSeconds;
     this.editSessionTtlSeconds = this.sessionTtlSeconds;
     this.editSessionIdleTtlSeconds = this.sessionIdleTtlSeconds;
+    this.editUserAgentTtlSeconds = this.userAgentTtlSeconds;
     this.editIpHeader = this.ipHeader;
     this.editPasskeyRpId = this.passkeySettings?.rpId ?? '';
     this.editPasskeyRpName = this.passkeySettings?.rpName ?? '';
     this.editPasskeyOrigins = (this.passkeySettings?.origins ?? []).map(value => ({ value }));
     this.editPasskeyUserVerification = this.passkeySettings?.userVerification ?? 'preferred';
+    this.editAcrVocabulary = Object.entries(this.acrVocabulary)
+      .map(([acr, factors]) => ({ acr, factors: [...factors] }));
+    this.editPostLogoutRedirectUris = this.postLogoutRedirectUris.map(value => ({ value }));
     this.settingsError = '';
   }
 
@@ -552,6 +582,22 @@ export class VersolaChallengesList extends LitElement {
 
   private removePasskeyOrigin(index: number) {
     this.editPasskeyOrigins = this.editPasskeyOrigins.filter((_, i) => i !== index);
+  }
+
+  private addPostLogoutRedirectUri() {
+    this.editPostLogoutRedirectUris = [...this.editPostLogoutRedirectUris, { value: '' }];
+  }
+
+  private removePostLogoutRedirectUri(index: number) {
+    this.editPostLogoutRedirectUris = this.editPostLogoutRedirectUris.filter((_, i) => i !== index);
+  }
+
+  private addAcrRow() {
+    this.editAcrVocabulary = [...this.editAcrVocabulary, { acr: '', factors: [] }];
+  }
+
+  private removeAcrRow(index: number) {
+    this.editAcrVocabulary = this.editAcrVocabulary.filter((_, i) => i !== index);
   }
 
   private addRateLimit(type: 'otpRequest' | 'otpSubmit' | 'passwordSubmit' | 'passkeyAssertion') {
@@ -594,8 +640,22 @@ export class VersolaChallengesList extends LitElement {
       return;
     }
 
+    const postLogoutRedirectUris = this.editPostLogoutRedirectUris.map(p => p.value.trim()).filter(p => p.length > 0);
+    for (const uri of postLogoutRedirectUris) {
+      const validation = validateRedirectUri(uri);
+      if (!validation.valid) {
+        this.settingsError = `Invalid post-logout redirect URI "${uri}": ${validation.error}`;
+        return;
+      }
+    }
+
     this.isSavingSettings = true;
     this.settingsError = '';
+    const acrVocabulary = Object.fromEntries(
+      this.editAcrVocabulary
+        .filter(row => row.acr.trim() && row.factors.length > 0)
+        .map(row => [row.acr.trim(), row.factors]),
+    );
     try {
       await upsertChallengeSettings(
         this.tenantId,
@@ -607,7 +667,10 @@ export class VersolaChallengesList extends LitElement {
         this.editAuthConversationTtlSeconds,
         this.editSessionTtlSeconds,
         this.editSessionIdleTtlSeconds,
+        this.editUserAgentTtlSeconds,
         ipHeader,
+        acrVocabulary,
+        postLogoutRedirectUris,
       );
       this.phonePrefixes = prefixes;
       this.submissionLimits = JSON.parse(JSON.stringify(this.editSubmissionLimits));
@@ -616,8 +679,11 @@ export class VersolaChallengesList extends LitElement {
       this.authConversationTtlSeconds = this.editAuthConversationTtlSeconds;
       this.sessionTtlSeconds = this.editSessionTtlSeconds;
       this.sessionIdleTtlSeconds = this.editSessionIdleTtlSeconds;
+      this.userAgentTtlSeconds = this.editUserAgentTtlSeconds;
       this.ipHeader = ipHeader;
       this.passkeySettings = { ...passkeySettings, origins: [...passkeySettings.origins] };
+      this.acrVocabulary = acrVocabulary;
+      this.postLogoutRedirectUris = postLogoutRedirectUris;
       this.hasChallengeSettings = true;
       this.editingSettings = false;
     } catch (e) {
@@ -640,9 +706,12 @@ export class VersolaChallengesList extends LitElement {
 
     return html`
       <div class="form-header">
-        <div class="title-stack">
-          <h1 class="form-title">${isNewOtp ? `Add ${typeLabel}` : `Edit ${typeLabel}`}</h1>
-          ${isNewOtp ? nothing : html`<div class="entity-id-meta">${this.editId}</div>`}
+        <div class="form-header-lead">
+          <versola-nav-toggle></versola-nav-toggle>
+          <div class="title-stack">
+            <h1 class="form-title">${isNewOtp ? `Add ${typeLabel}` : `Edit ${typeLabel}`}</h1>
+            ${isNewOtp ? nothing : html`<div class="entity-id-meta">${this.editId}</div>`}
+          </div>
         </div>
       </div>
 
@@ -680,6 +749,7 @@ export class VersolaChallengesList extends LitElement {
             </div>
           `;
         })}
+
         <div class="form-actions">
           <button class="btn btn-secondary" ?disabled=${this.saving} @click=${() => this.cancelEdit()}>Cancel</button>
           <button class="btn btn-primary" ?disabled=${this.saving} @click=${() => this.saveTemplate()}>
@@ -865,6 +935,9 @@ export class VersolaChallengesList extends LitElement {
           <label style="margin-top: var(--spacing-lg);">SSO Session Idle Timeout</label>
           <div class="template-text">${this.sessionIdleTtlSeconds != null ? this.formatDuration(this.sessionIdleTtlSeconds) : 'Disabled'}</div>
 
+          <label style="margin-top: var(--spacing-lg);">User Agent TTL</label>
+          <div class="template-text">${this.formatDuration(this.userAgentTtlSeconds)}</div>
+
           <label style="margin-top: var(--spacing-lg);">Client IP Header</label>
           <div class="template-text">${this.ipHeader}</div>
         </div>
@@ -899,6 +972,36 @@ export class VersolaChallengesList extends LitElement {
               </div>
             `
             : html`<div class="hint">Passkeys are not configured for this tenant.</div>`}
+        </div>
+
+        <div class="card" style="margin-bottom: var(--spacing-lg);">
+          <label>ACR Vocabulary</label>
+          ${Object.keys(this.acrVocabulary).length === 0
+            ? html`<div class="hint">No ACR vocabulary configured.</div>`
+            : html`
+              <div class="info-table">
+                ${Object.entries(this.acrVocabulary).map(([acr, factors]) => html`
+                  <div class="prop-row">
+                    <span class="prop-label prop-value" style="font-family: var(--font-mono); text-transform: none;">${acr}</span>
+                    <div class="prefix-tags" style="margin-top: 0;">
+                      ${factors.map(f => html`<span class="prefix-tag">${f}</span>`)}
+                    </div>
+                  </div>
+                `)}
+              </div>
+            `}
+        </div>
+
+        <div class="card" style="margin-bottom: var(--spacing-lg);">
+          <label>Post-Logout Redirect URIs</label>
+          <div class="hint">Exact-match URIs RPs may request as <code>post_logout_redirect_uri</code> after OIDC logout.</div>
+          ${this.postLogoutRedirectUris.length === 0
+            ? html`<div class="hint">No post-logout redirect URIs configured.</div>`
+            : html`
+              <div class="prefix-tags">
+                ${this.postLogoutRedirectUris.map(uri => html`<span class="prefix-tag">${uri}</span>`)}
+              </div>
+            `}
         </div>
 
         ${hasLimits || banDurationSeconds > 0 ? html`
@@ -940,8 +1043,11 @@ export class VersolaChallengesList extends LitElement {
   private renderChallengeEdit() {
     return html`
       <div class="form-header">
-        <div class="title-stack">
-          <h1 class="form-title">Edit Challenge Settings</h1>
+        <div class="form-header-lead">
+          <versola-nav-toggle></versola-nav-toggle>
+          <div class="title-stack">
+            <h1 class="form-title">Edit Challenge Settings</h1>
+          </div>
         </div>
       </div>
 
@@ -985,11 +1091,11 @@ export class VersolaChallengesList extends LitElement {
           <span class="limit-hint">${this.formatDuration(this.editAuthConversationTtlSeconds)}</span>
         </div>
 
-        <label style="margin-top: var(--spacing-lg);">SSO Session TTL (seconds)</label>
+        <label style="margin-top: var(--spacing-lg);">SSO Session TTL (days)</label>
         <div class="hint">How long the SSO session cookie remains valid after authentication.</div>
         <div class="limit-row" style="margin-bottom: 0;">
-          <input type="number" class="form-control compact-input limit-input" .value=${this.editSessionTtlSeconds}
-            @input=${(e: Event) => { this.editSessionTtlSeconds = Math.max(1, parseInt((e.target as HTMLInputElement).value) || 1); this.requestUpdate(); }} />
+          <input type="number" step="0.5" class="form-control compact-input limit-input" .value=${this.editSessionTtlSeconds / 86400}
+            @input=${(e: Event) => { const days = Math.max(1 / 86400, parseFloat((e.target as HTMLInputElement).value) || 0); this.editSessionTtlSeconds = Math.round(days * 86400); this.requestUpdate(); }} />
           <span class="limit-hint">${this.formatDuration(this.editSessionTtlSeconds)}</span>
         </div>
 
@@ -1001,7 +1107,13 @@ export class VersolaChallengesList extends LitElement {
           <span class="limit-hint">${this.editSessionIdleTtlSeconds != null ? this.formatDuration(this.editSessionIdleTtlSeconds) : 'Disabled'}</span>
         </div>
 
-        ${this.renderIpHeaderEdit()}
+        <label style="margin-top: var(--spacing-lg);">User Agent TTL (days)</label>
+        <div class="hint">How long a recognized device (user agent) is remembered before it needs to be re-verified.</div>
+        <div class="limit-row" style="margin-bottom: 0;">
+          <input type="number" step="0.5" class="form-control compact-input limit-input" .value=${this.editUserAgentTtlSeconds / 86400}
+            @input=${(e: Event) => { const days = Math.max(1 / 86400, parseFloat((e.target as HTMLInputElement).value) || 0); this.editUserAgentTtlSeconds = Math.round(days * 86400); this.requestUpdate(); }} />
+          <span class="limit-hint">${this.formatDuration(this.editUserAgentTtlSeconds)}</span>
+        </div>
 
         <h3 style="margin-top: var(--spacing-xl); margin-bottom: var(--spacing-md);">Passkey (WebAuthn)</h3>
 
@@ -1058,6 +1170,54 @@ export class VersolaChallengesList extends LitElement {
         ${this.renderEditLimitList('OTP Submit', 'otpSubmit')}
         ${this.renderEditLimitList('Password Submit', 'passwordSubmit')}
         ${this.renderEditLimitList('Passkey Assertion', 'passkeyAssertion')}
+
+        <h3 style="margin-top: var(--spacing-xl); margin-bottom: var(--spacing-md);">ACR Vocabulary</h3>
+        <div class="hint">Map ACR names to the authentication factors they require. Clients can request a specific ACR via the <code>acr_values</code> parameter.</div>
+
+        ${this.editAcrVocabulary.map((row, i) => html`
+          <div class="edit-loc-card" style="margin-bottom: var(--spacing-sm);">
+            <div class="locale-bar" style="align-items: flex-start; flex-wrap: wrap; gap: var(--spacing-md);">
+              <input type="text" class="form-control compact-input locale-select" .value=${row.acr}
+                placeholder="e.g. company_mfa"
+                @input=${(e: Event) => { row.acr = (e.target as HTMLInputElement).value; this.requestUpdate(); }} />
+              <div style="display: flex; gap: var(--spacing-lg); align-items: center; flex-wrap: wrap;">
+                ${(['otp', 'password', 'passkey'] as const).map(factor => html`
+                  <label style="display: flex; align-items: center; gap: var(--spacing-xs); font-size: 0.875rem; cursor: pointer;">
+                    <input type="checkbox"
+                      .checked=${row.factors.includes(factor)}
+                      @change=${(e: Event) => {
+                        const checked = (e.target as HTMLInputElement).checked;
+                        row.factors = checked
+                          ? [...row.factors, factor]
+                          : row.factors.filter(f => f !== factor);
+                        this.requestUpdate();
+                      }} />
+                    ${factor}
+                  </label>
+                `)}
+              </div>
+              <button class="icon-action danger" style="margin-left: auto;" @click=${() => this.removeAcrRow(i)} title="Remove">✕</button>
+            </div>
+          </div>
+        `)}
+        <button class="btn btn-secondary" @click=${() => this.addAcrRow()}>+ Add ACR</button>
+
+        <h3 style="margin-top: var(--spacing-xl); margin-bottom: var(--spacing-md);">Logout</h3>
+        <label>Post-Logout Redirect URIs</label>
+        <div class="hint">RPs must request an exact match of one of these URIs as <code>post_logout_redirect_uri</code>.</div>
+
+        ${this.editPostLogoutRedirectUris.length === 0
+          ? html`<div class="hint">No post-logout redirect URIs configured.</div>`
+          : this.editPostLogoutRedirectUris.map((entry, i) => html`
+            <div class="locale-bar">
+              <input type="text" class="form-control compact-input locale-select" .value=${entry.value}
+                @input=${(e: Event) => { entry.value = (e.target as HTMLInputElement).value; }}
+                placeholder="https://app.example.com/logged-out" />
+              <button class="icon-action danger" @click=${() => this.removePostLogoutRedirectUri(i)} title="Remove">✕</button>
+            </div>
+          `)}
+
+        <button class="btn btn-secondary" @click=${() => this.addPostLogoutRedirectUri()}>+ Add URI</button>
 
         <div class="form-actions">
           <button class="btn btn-secondary" ?disabled=${this.isSavingSettings} @click=${() => this.cancelEditSettings()}>Cancel</button>
@@ -1126,9 +1286,7 @@ export class VersolaChallengesList extends LitElement {
     if (this.editingSettings) return this.renderChallengeEdit();
 
     return html`
-      <div class="page-header">
-        <h1 class="page-title">Challenges & Security</h1>
-      </div>
+      <content-header title="Challenges & Security"></content-header>
 
       ${this.isLoading ? html`<versola-loading-cards .count=${3}></versola-loading-cards>`
         : this.errorMessage ? html`

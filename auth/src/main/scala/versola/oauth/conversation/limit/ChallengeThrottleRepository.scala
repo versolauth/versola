@@ -1,7 +1,7 @@
 package versola.oauth.conversation.limit
 
-import versola.oauth.client.model.TenantId
-import zio.Task
+import versola.oauth.client.model.{RateLimit, TenantId}
+import zio.{NonEmptyChunk, Task}
 
 import java.time.Instant
 
@@ -48,6 +48,21 @@ trait ChallengeThrottleRepository:
     * first — the caller must re-read and recompute rather than retrying the same write.
     */
   def upsert(record: ChallengeThrottleRecord): Task[Boolean]
+
+  /** Records an attempt against `wLimits`/`banDurationSeconds` and returns the resulting status.
+    *
+    * Implementations must apply [[ThrottlePolicy.nextState]] and persist its result as a single
+    * atomic read-modify-write, so that concurrent attempts against the same key can't overwrite
+    * each other — including the very first attempt for a key that has no row yet (issue #91).
+    */
+  def recordAttempt(
+      tenantId: TenantId,
+      subject: String,
+      challengeType: ChallengeType,
+      now: Instant,
+      wLimits: NonEmptyChunk[RateLimit],
+      banDurationSeconds: Long,
+  ): Task[LimitStatus]
 
   def delete(
       tenantId: TenantId,

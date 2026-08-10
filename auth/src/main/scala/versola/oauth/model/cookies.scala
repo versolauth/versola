@@ -3,7 +3,8 @@ package versola.oauth.model
 import org.apache.commons.codec.digest.Blake3
 import versola.oauth.client.model.ClientId
 import versola.oauth.conversation.model.AuthId
-import versola.oauth.session.model.SessionId
+import versola.oauth.session.model.{SessionId, UserAgentDetails, UserAgentId}
+import versola.user.model.UserId
 import versola.util.{Base64, Base64Url, Secret}
 import zio.Duration
 import zio.http.{Cookie, Path}
@@ -22,8 +23,8 @@ object ConversationCookie:
    */
   def responseCookie(payload: ConversationCookie, ttl: Duration, secret: Secret.Bytes32): Cookie.Response =
     val payloadBytes = payload.toJson.getBytes(StandardCharsets.UTF_8)
-    val payloadB64   = Base64.urlEncode(payloadBytes)
-    val sigB64       = Base64.urlEncode(computeMac(payloadBytes, secret))
+    val payloadB64 = Base64.urlEncode(payloadBytes)
+    val sigB64 = Base64.urlEncode(computeMac(payloadBytes, secret))
     Cookie.Response(
       name = name,
       content = s"$payloadB64.$sigB64",
@@ -32,7 +33,7 @@ object ConversationCookie:
       isSecure = true,
       isHttpOnly = true,
       maxAge = Some(ttl),
-      sameSite = None,
+      sameSite = Some(Cookie.SameSite.Lax),
     )
 
   /** Parses and HMAC-verifies a cookie produced by [[responseCookie]].
@@ -43,13 +44,64 @@ object ConversationCookie:
     if dotIdx < 0 then Left("missing signature")
     else
       val payloadB64 = content.substring(0, dotIdx)
-      val sigB64     = content.substring(dotIdx + 1)
+      val sigB64 = content.substring(dotIdx + 1)
       for
         payloadBytes <- scala.util.Try(Base64.urlDecode(payloadB64)).toEither.left.map(_.getMessage)
-        sigBytes     <- scala.util.Try(Base64.urlDecode(sigB64)).toEither.left.map(_.getMessage)
-        _            <- Either.cond(MessageDigest.isEqual(computeMac(payloadBytes, secret), sigBytes), (), "invalid signature")
-        cookie       <- new String(payloadBytes, StandardCharsets.UTF_8).fromJson[ConversationCookie]
+        sigBytes <- scala.util.Try(Base64.urlDecode(sigB64)).toEither.left.map(_.getMessage)
+        _ <- Either.cond(MessageDigest.isEqual(computeMac(payloadBytes, secret), sigBytes), (), "invalid signature")
+        cookie <- new String(payloadBytes, StandardCharsets.UTF_8).fromJson[ConversationCookie]
       yield cookie
+
+  private def computeMac(data: Array[Byte], key: Secret.Bytes32): Array[Byte] =
+    val mac = Array.ofDim[Byte](32)
+    Blake3.initKeyedHash(key).update(data).doFinalize(mac)
+    mac
+
+/** The raw `User-Agent` header value seen when the device id was last (re)issued, plus
+ *  the user it was bound to at that time and the parsed [[UserAgentDetails]].
+ */
+case class UserAgentData(
+    userAgent: Option[String],
+    userId: UserId,
+    details: UserAgentDetails,
+) derives JsonCodec
+
+/** Cookie payload: the stable device id plus the [[UserAgentData]] seen when the id was
+ *  last (re)issued. Signed as a whole, so `userAgent` can later be compared against the
+ *  request's current header without an extra DB round trip.
+ */
+case class UserAgentCookiePayload(id: UserAgentId, data: UserAgentData) derives JsonCodec
+
+object UserAgentCookie:
+  val name = "SSO_USER_AGENT_ID"
+
+  def apply(id: UserAgentId, data: UserAgentData, ttl: Duration, secret: Secret.Bytes32): Cookie.Response =
+    val payloadBytes = UserAgentCookiePayload(id, data).toJson.getBytes(StandardCharsets.UTF_8)
+    val payloadB64 = Base64.urlEncode(payloadBytes)
+    val sigB64 = Base64.urlEncode(computeMac(payloadBytes, secret))
+    Cookie.Response(
+      name = name,
+      content = s"$payloadB64.$sigB64",
+      domain = None,
+      path = Some(Path.root),
+      isSecure = true,
+      isHttpOnly = true,
+      maxAge = Some(ttl),
+      sameSite = None,
+    )
+
+  def parse(content: String, secret: Secret.Bytes32): Either[String, UserAgentCookiePayload] =
+    val dotIdx = content.lastIndexOf('.')
+    if dotIdx < 0 then Left("missing signature")
+    else
+      val payloadB64 = content.substring(0, dotIdx)
+      val sigB64 = content.substring(dotIdx + 1)
+      for
+        payloadBytes <- scala.util.Try(Base64.urlDecode(payloadB64)).toEither.left.map(_.getMessage)
+        sigBytes <- scala.util.Try(Base64.urlDecode(sigB64)).toEither.left.map(_.getMessage)
+        _ <- Either.cond(MessageDigest.isEqual(computeMac(payloadBytes, secret), sigBytes), (), "invalid signature")
+        payload <- new String(payloadBytes, StandardCharsets.UTF_8).fromJson[UserAgentCookiePayload]
+      yield payload
 
   private def computeMac(data: Array[Byte], key: Secret.Bytes32): Array[Byte] =
     val mac = Array.ofDim[Byte](32)
@@ -59,13 +111,47 @@ object ConversationCookie:
 object SessionCookie:
   val name = "SSO_SESSION"
 
-  inline def apply(value: SessionId, ttl: Duration): Cookie.Response = Cookie.Response(
-    name = name,
-    content = Base64Url.encode(value),
-    domain = None,
-    path = Some(Path.root),
-    isSecure = true,
-    isHttpOnly = true,
-    maxAge = Some(ttl),
-    sameSite = None,
-  )
+  def apply(value: SessionId, ttl: Duration, secret: Secret.Bytes32): Cookie.Response =
+    val payloadB64 = Base64.urlEncode(value)
+    val sigB64 = Base64.urlEncode(computeMac(value, secret))
+    Cookie.Response(
+      name = name,
+      content = s"$payloadB64.$sigB64",
+      domain = None,
+      path = Some(Path.root),
+      isSecure = true,
+      isHttpOnly = true,
+      maxAge = Some(ttl),
+      sameSite = Some(Cookie.SameSite.Lax),
+    )
+
+  /** Cookie that instructs the browser to drop the current session cookie. */
+  def expired: Cookie.Response =
+    Cookie.Response(
+      name = name,
+      content = "",
+      domain = None,
+      path = Some(Path.root),
+      isSecure = true,
+      isHttpOnly = true,
+      maxAge = Some(Duration.Zero),
+      sameSite = Some(Cookie.SameSite.Lax),
+    )
+
+  def parse(content: String, secret: Secret.Bytes32): Either[String, SessionId] =
+    val dotIdx = content.lastIndexOf('.')
+    if dotIdx < 0 then Left("missing signature")
+    else
+      val payloadB64 = content.substring(0, dotIdx)
+      val sigB64 = content.substring(dotIdx + 1)
+      for
+        payloadBytes <- scala.util.Try(Base64.urlDecode(payloadB64)).toEither.left.map(_.getMessage)
+        sigBytes <- scala.util.Try(Base64.urlDecode(sigB64)).toEither.left.map(_.getMessage)
+        _ <- Either.cond(MessageDigest.isEqual(computeMac(payloadBytes, secret), sigBytes), (), "invalid signature")
+        _ <- Either.cond(payloadBytes.length == 32, (), "invalid session id length")
+      yield SessionId(payloadBytes)
+
+  private def computeMac(data: Array[Byte], key: Secret.Bytes32): Array[Byte] =
+    val mac = Array.ofDim[Byte](32)
+    Blake3.initKeyedHash(key).update(data).doFinalize(mac)
+    mac

@@ -13,6 +13,7 @@ trait SSOClient:
       preset: AuthorizationPreset,
       codeChallenge: String,
       state: State,
+      overrideParams: Map[String, String] = Map.empty,
   ): UIO[URL]
 
   def exchangeAuthorizationCode(
@@ -49,14 +50,20 @@ object SSOClient:
       httpClient: Client,
       config: EdgeConfig,
   ) extends SSOClient:
+    // authorizeUrl is where the browser gets redirected -- it must stay on
+    // versolaUrl (public-facing), never internalUrl. tokenUrl and
+    // userInfoUrl are real calls this process makes itself below, so they
+    // use internalUrl -- see the comments on EdgeConfig for why these two
+    // aren't the same address everywhere.
     private val authorizeUrl: URL = config.versolaUrl / "authorize"
-    private val tokenUrl: URL = config.versolaUrl / "token"
-    private val userInfoUrl = config.versolaUrl / "userinfo"
+    private val tokenUrl: URL = config.internalUrl / "token"
+    private val userInfoUrl = config.internalUrl / "userinfo"
 
     override def authorizeUri(
         preset: AuthorizationPreset,
         codeChallenge: String,
         state: State,
+        overrideParams: Map[String, String] = Map.empty,
     ): UIO[URL] = ZIO.succeed:
       val params = List(
         "client_id" -> preset.clientId,
@@ -66,10 +73,13 @@ object SSOClient:
         "code_challenge" -> codeChallenge,
         "code_challenge_method" -> "S256",
         "state" -> state,
-      ) ++ preset.uiLocales.map(locales => "ui_locales" -> locales.mkString(" "))
-        ++ preset.customParameters.flatMap { case (key, values) =>
-          values.map(value => key -> value)
-        }
+      ) ++ preset.uiLocales
+          .filterNot(_ => overrideParams.contains("ui_locales"))
+          .map(locales => "ui_locales" -> locales.mkString(" "))
+        ++ preset.customParameters
+          .filterNot { case (key, _) => overrideParams.contains(key) }
+          .flatMap { case (key, values) => values.map(value => key -> value) }
+        ++ overrideParams.toList
 
       authorizeUrl.addQueryParams(params)
 

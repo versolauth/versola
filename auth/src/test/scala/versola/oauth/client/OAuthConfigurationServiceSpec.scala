@@ -1,9 +1,11 @@
 package versola.oauth.client
 
 import versola.oauth.client.model.*
+import versola.oauth.metadata.MetadataSyncClient
 import versola.util.*
 import zio.*
 import zio.durationInt
+import zio.json.ast.Json
 import zio.prelude.NonEmptySet
 import zio.test.*
 
@@ -28,6 +30,9 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
     theme = "default",
     authFlow = None,
     otpTemplateId = "default",
+    frontChannelLogoutUri = None,
+    frontChannelLogoutSessionRequired = false,
+    backChannelLogoutUri = None,
   )
   val publicClient = OAuthClientRecord(
     id = publicClientId,
@@ -43,6 +48,9 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
     theme = "default",
     authFlow = None,
     otpTemplateId = "default",
+    frontChannelLogoutUri = None,
+    frontChannelLogoutSessionRequired = false,
+    backChannelLogoutUri = None,
   )
 
   val testScopes = Vector(ScopeRecord(ScopeToken("read"), Vector.empty))
@@ -59,7 +67,10 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
     authConversationTtlSeconds = 900,
     sessionTtlSeconds = 86400,
     sessionIdleTtlSeconds = Some(3600),
+    userAgentTtlSeconds = 15552000,
     ipHeader = "X-Real-IP",
+    acrVocabulary = None,
+    postLogoutRedirectUris = List.empty,
   )
   val systemSettings = SystemSettingsRecord.default
 
@@ -72,6 +83,7 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
       otpTemplates: Vector[OtpTemplateRecord] = Vector.empty,
       challengeSettingsVec: Vector[ChallengeSettingsRecord] = Vector(challengeSettings),
       sysSettings: SystemSettingsRecord = systemSettings,
+      metadata: Json.Obj = Json.Obj(),
   ) =
     for
       clientRef         <- Ref.make(clients)
@@ -82,6 +94,7 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
       otpRef            <- Ref.make(otpTemplates)
       challengeRef      <- Ref.make(challengeSettingsVec)
       sysRef            <- Ref.make(sysSettings)
+      metadataRef       <- Ref.make(metadata)
     yield OAuthConfigurationService.Impl(
       clientCache = ReloadingCache(clientRef),
       clientRepository = stub[OAuthClientSyncClient],
@@ -99,6 +112,8 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
       challengeSettingsRepository = stub[ChallengeSettingsSyncClient],
       systemSettingsCache = ReloadingCache(sysRef),
       systemSettingsRepository = stub[SystemSettingsSyncClient],
+      metadataCache = ReloadingCache(metadataRef),
+      metadataRepository = stub[MetadataSyncClient],
     )
 
   val spec = suite("OAuthConfigurationService")(
@@ -205,5 +220,17 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
         env <- makeEnv()
         result <- env.getSessionIdleTtl(clientId1)
       yield assertTrue(result.contains(Duration.fromSeconds(3600)))
+    },
+    test("getUserAgentTtl returns duration from challenge settings") {
+      for
+        env <- makeEnv()
+        result <- env.getUserAgentTtl(clientId1)
+      yield assertTrue(result == Duration.fromSeconds(15552000))
+    },
+    test("getUserAgentTtl returns default when client not found") {
+      for
+        env <- makeEnv()
+        result <- env.getUserAgentTtl(ClientId("unknown"))
+      yield assertTrue(result == OAuthConfigurationService.DefaultUserAgentTtl)
     },
   )

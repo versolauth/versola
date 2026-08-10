@@ -66,9 +66,13 @@ trait ConversationRepositorySpec extends DatabaseSpecBase[ConversationRepository
     userClaims = Some(zio.json.ast.Json.Obj()),
     authFlow = AuthFlow.default,
     userAgent = None,
+    userAgentCookie = None,
     version = 0,
     amr = Map.empty,
     needsPasswordChange = false,
+    targetAcr = None,
+    csrfToken = "test-csrf",
+    priorSessionId = None,
   )
 
   val record2 = record1.copy(
@@ -98,9 +102,13 @@ trait ConversationRepositorySpec extends DatabaseSpecBase[ConversationRepository
     userClaims = None,
     authFlow = AuthFlow.default,
     userAgent = None,
+    userAgentCookie = None,
     version = 0,
     amr = Map.empty,
     needsPasswordChange = false,
+    targetAcr = None,
+    csrfToken = "test-csrf",
+    priorSessionId = None,
   )
 
   def testCases(env: ConversationRepositorySpec.Env): List[Spec[ConversationRepositorySpec.Env & zio.Scope, Any]] =
@@ -159,6 +167,36 @@ trait ConversationRepositorySpec extends DatabaseSpecBase[ConversationRepository
           second <- env.repository.delete(authId1, record.version)
         yield assertTrue(first, !second)
       },
+      test("overwrite preserves priorSessionId") {
+        val mac = versola.util.MAC(Array.fill(32)(1.toByte))
+        val initialWithPrior = initial.copy(
+          priorSessionId = Some(mac)
+        )
+        val updatedRecord = initialWithPrior.copy(
+          step = realOtp,
+          userId = Some(userId1)
+        )
+        for
+          _ <- env.repository.create(authId1, initialWithPrior, ttl)
+          found1 <- env.repository.find(authId1).map(_.get)
+          overwritten <- env.repository.overwrite(authId1, updatedRecord.copy(version = found1.version))
+          found2 <- env.repository.find(authId1).map(_.get)
+        yield assertTrue(
+          found1.priorSessionId.exists(m => java.util.Arrays.equals(m: Array[Byte], mac: Array[Byte])),
+          overwritten,
+          found2.priorSessionId.exists(m => java.util.Arrays.equals(m: Array[Byte], mac: Array[Byte])),
+          found2.version == found1.version + 1
+        )
+      },
+      test("find returns None for expired conversation") {
+        val pastAuthId = AuthId(UUID.fromString("00000000-0001-7000-8000-000000000001"))
+        for
+          _ <- env.repository.create(pastAuthId, record1, ttl = 1.second)
+          _ <- TestClock.adjust(2.seconds)
+          result <- env.repository.find(pastAuthId)
+        yield assertTrue(result.isEmpty)
+      },
+
     )
 
 object ConversationRepositorySpec:

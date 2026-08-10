@@ -121,6 +121,15 @@ class PostgresUserRepository(xa: TransactorZIO, secureRandom: SecureRandom) exte
         ), now)
     yield ()
 
+  override def delete(id: UserId): Task[Unit] =
+    for
+      now <- Clock.instant
+      eventId <- secureRandom.nextUUIDv7
+      _ <- xa.transactMeasured("delete-user"):
+             sql"DELETE FROM user_index WHERE id = $id".update.run()
+             enqueueEventSql(id, eventId, OutboxEvent.DeleteUser(id), now)
+    yield ()
+
   override def enqueueRoleUpdate(
       userId: UserId,
       tenantId: TenantId,

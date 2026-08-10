@@ -98,7 +98,10 @@ object OtpChallengeController extends Controller:
             body.authConversationTtlSeconds.orElse(existing.map(_.authConversationTtlSeconds)).getOrElse(900),
             body.sessionTtlSeconds.orElse(existing.map(_.sessionTtlSeconds)).getOrElse(86400),
             body.sessionIdleTtlSeconds.orElse(existing.flatMap(_.sessionIdleTtlSeconds)),
+            body.userAgentTtlSeconds.orElse(existing.map(_.userAgentTtlSeconds)).getOrElse(15552000),
             body.ipHeader,
+            body.acrVocabulary.orElse(existing.flatMap(_.acrVocabulary)),
+            body.postLogoutRedirectUris.orElse(existing.map(_.postLogoutRedirectUris)).getOrElse(Nil),
           ),
         )
       yield Response.status(Status.NoContent)

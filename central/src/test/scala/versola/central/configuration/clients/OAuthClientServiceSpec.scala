@@ -42,6 +42,9 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     theme = "default",
     authFlow = Some(AuthFlow.default),
     otpTemplateId = "default",
+    frontChannelLogoutUri = None,
+    frontChannelLogoutSessionRequired = false,
+    backChannelLogoutUri = None,
   )
 
   private val otherTenantClient = OAuthClientRecord(
@@ -59,6 +62,9 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     theme = "default",
     authFlow = Some(AuthFlow.default),
     otpTemplateId = "default",
+    frontChannelLogoutUri = None,
+    frontChannelLogoutSessionRequired = false,
+    backChannelLogoutUri = None,
   )
 
   private val createRequest = CreateClientRequest(
@@ -74,6 +80,9 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     theme = "default",
     authFlow = Some(AuthFlow.default),
     otpTemplateId = "default",
+    frontChannelLogoutUri = None,
+    frontChannelLogoutSessionRequired = false,
+    backChannelLogoutUri = None,
   )
 
   private val updateRequest = UpdateClientRequest(
@@ -87,6 +96,9 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     theme = None,
     authFlow = None,
     otpTemplateId = None,
+    frontChannelLogoutUri = None,
+    frontChannelLogoutSessionRequired = None,
+    backChannelLogoutUri = None,
   )
 
   class Env(initial: Vector[OAuthClientRecord] = Vector.empty):
@@ -153,6 +165,9 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         theme = "default",
         authFlow = Some(AuthFlow.default),
         otpTemplateId = "default",
+        frontChannelLogoutUri = None,
+        frontChannelLogoutSessionRequired = false,
+        backChannelLogoutUri = None,
       )
 
       for
@@ -183,6 +198,9 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
             updateRequest.scope,
             updateRequest.permissions,
             Some(900.seconds),
+            None,
+            None,
+            None,
             None,
             None,
             None,

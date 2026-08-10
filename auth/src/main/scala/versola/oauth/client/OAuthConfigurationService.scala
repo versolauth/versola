@@ -1,14 +1,18 @@
 package versola.oauth.client
 
-import versola.oauth.client.model.{ChallengeSettingsRecord, ClientId, ClientSecret, FormRecord, Locales, OAuthClientRecord, OtpSettings, OtpTemplateRecord, PasskeySettings, PasswordHistorySettings, ScopeRecord, ScopeToken, SubmissionLimits, SystemSettingsRecord, TenantId, ThemeRecord}
+import versola.oauth.client.model.{Acr, ChallengeSettingsRecord, ClientId, ClientSecret, FormRecord, Locales, OAuthClientRecord, OtpSettings, OtpTemplateRecord, PassedAuthFactor, PasskeySettings, PasswordHistorySettings, ScopeRecord, ScopeToken, SubmissionLimits, SystemSettingsRecord, TenantId, ThemeRecord}
 import versola.oauth.conversation.otp.model.OtpTemplate
+import versola.oauth.metadata.{MetadataSyncClient, ServerMetadataRecord}
 import versola.util.{CoreConfig, ReloadingCache, Secret, SecureRandom, SecurityService}
 import zio.*
-import zio.http.Client
-import zio.prelude.{EqualOps, NonEmptySet}
+import zio.json.ast.Json
+import zio.http.{Client, URL}
+import zio.prelude.{EqualOps, NonEmptyList, NonEmptySet}
 
 trait OAuthConfigurationService:
   def find(id: ClientId): UIO[Option[OAuthClientRecord]]
+
+  def findByTenant(tenantId: TenantId): UIO[Vector[OAuthClientRecord]]
 
   def verifySecret(
       id: ClientId,
@@ -45,9 +49,22 @@ trait OAuthConfigurationService:
 
   def getSessionTtl(id: ClientId): UIO[Duration]
 
+  def getAcrVocabulary(id: ClientId): UIO[Map[Acr, NonEmptyList[PassedAuthFactor]]]
+
   def getSessionIdleTtl(id: ClientId): UIO[Option[Duration]]
 
+  def getUserAgentTtl(id: ClientId): UIO[Duration]
+
+  def getPostLogoutRedirectUris(tenantId: TenantId): UIO[List[URL]]
+
+  def getMetadata: UIO[Json.Obj]
+
+  def syncConfiguration: Task[Unit]
+
 object OAuthConfigurationService:
+  /** Default TTL for a user-agent (device) record: 6 months. */
+  val DefaultUserAgentTtl: Duration = Duration.fromSeconds(15552000L)
+
   def live(schedule: Schedule[Any, Any, Any]): ZLayer[
     Client & SecurityService & Scope & CoreConfig,
     Throwable,
@@ -62,8 +79,9 @@ object OAuthConfigurationService:
           (LocaleSyncClient.live >+> ZLayer(ReloadingCache.make[Locales](schedule))) >+>
           (OtpTemplateSyncClient.live >+> ZLayer(ReloadingCache.make[Vector[OtpTemplateRecord]](schedule))) >+>
           (ChallengeSettingsSyncClient.live >+> ZLayer(ReloadingCache.make[Vector[ChallengeSettingsRecord]](schedule))) >+>
-          (SystemSettingsSyncClient.live >+> ZLayer(ReloadingCache.make[SystemSettingsRecord](schedule)))))
-    syncClients >>> ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _))
+          (SystemSettingsSyncClient.live >+> ZLayer(ReloadingCache.make[SystemSettingsRecord](schedule))) >+>
+          (MetadataSyncClient.live >+> ZLayer(ReloadingCache.make[Json.Obj](schedule)))))
+    syncClients >>> ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _))
   }
 
   case class Impl(
@@ -83,10 +101,15 @@ object OAuthConfigurationService:
       challengeSettingsRepository: ChallengeSettingsSyncClient,
       systemSettingsCache: ReloadingCache[SystemSettingsRecord],
       systemSettingsRepository: SystemSettingsSyncClient,
+      metadataCache: ReloadingCache[Json.Obj],
+      metadataRepository: MetadataSyncClient,
   ) extends OAuthConfigurationService:
 
     def find(id: ClientId): UIO[Option[OAuthClientRecord]] =
       clientCache.get.map(_.get(id))
+
+    override def findByTenant(tenantId: TenantId): UIO[Vector[OAuthClientRecord]] =
+      clientCache.get.map(_.values.filter(_.tenantId == tenantId).toVector)
 
     private def verifyOneSecret(
         secret: Secret,
@@ -246,5 +269,56 @@ object OAuthConfigurationService:
               .flatMap(_.sessionIdleTtlSeconds)
               .map(s => Duration.fromSeconds(s.toLong)),
           )
+
+    override def getUserAgentTtl(id: ClientId): UIO[Duration] =
+      find(id).flatMap:
+        case None => ZIO.succeed(OAuthConfigurationService.DefaultUserAgentTtl)
+        case Some(client) =>
+          challengeSettingsCache.get.map(
+            _.find(_.tenantId == client.tenantId)
+              .fold(OAuthConfigurationService.DefaultUserAgentTtl)(s => Duration.fromSeconds(s.userAgentTtlSeconds.toLong)),
+          )
+
+    override def getAcrVocabulary(id: ClientId): UIO[Map[Acr, NonEmptyList[PassedAuthFactor]]] =
+      find(id).flatMap:
+        case None => ZIO.succeed(Map.empty)
+        case Some(client) =>
+          challengeSettingsCache.get.map(
+            _.find(_.tenantId == client.tenantId)
+              .flatMap(_.acrVocabulary)
+              .getOrElse(Map.empty)
+              .flatMap { case (k, vs) => NonEmptyList.fromIterableOption(vs).map(Acr(k) -> _) },
+          )
+
+    override def getPostLogoutRedirectUris(tenantId: TenantId): UIO[List[URL]] =
+      challengeSettingsCache.get.map(
+        _.find(_.tenantId == tenantId)
+          .fold(List.empty[URL])(_.postLogoutRedirectUris.flatMap(URL.decode(_).toOption)),
+      )
+
+    override def getMetadata: UIO[Json.Obj] =
+      metadataCache.get
+
+    override def syncConfiguration: Task[Unit] =
+      for
+        clients           <- clientRepository.getAll
+        _                 <- clientCache.set(clients)
+        scopes            <- scopeRepository.getAll
+        _                 <- scopeCache.set(scopes)
+        forms             <- formRepository.getAll
+        _                 <- formCache.set(forms)
+        themes            <- themeRepository.getAll
+        _                 <- themeCache.set(themes)
+        locales           <- localeRepository.getAll
+        _                 <- localeCache.set(locales)
+        otpTemplates      <- otpTemplateRepository.getAll
+        _                 <- otpTemplateCache.set(otpTemplates)
+        challengeSettings <- challengeSettingsRepository.getAll
+        _                 <- challengeSettingsCache.set(challengeSettings)
+        systemSettings    <- systemSettingsRepository.getAll
+        _                 <- systemSettingsCache.set(systemSettings)
+        metadata          <- metadataRepository.getAll
+        _                 <- metadataCache.set(metadata)
+      yield ()
 
     private val IllegalStateTemplate = OtpTemplate("{{code}}")

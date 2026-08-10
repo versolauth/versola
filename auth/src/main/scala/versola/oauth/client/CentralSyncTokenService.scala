@@ -2,6 +2,7 @@ package versola.oauth.client
 
 import versola.util.{CacheSource, CoreConfig, JWT, ReloadingCache}
 import zio.http.{Client, Header, Request, Response, Status}
+import zio.json.ast.Json
 import zio.{Schedule, Scope, Task, UIO, ZIO, ZLayer, durationInt}
 
 trait CentralSyncTokenService:
@@ -23,7 +24,7 @@ object CentralSyncTokenService:
         issuer = "auth",
         subject = "auth",
         audience = List("central"),
-        custom = zio.json.ast.Json.Obj(),
+        custom = Json.Obj(),
       ),
       ttl = TokenTtl,
       signature = JWT.Signature.Symmetric(config.central.secretKey),

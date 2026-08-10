@@ -11,10 +11,35 @@ scala-cli run scripts/gen-env.scala
 The script first asks for the environment **Name** (default `local`):
 
 - **`local`** — runs non-interactively. All remaining prompts are skipped and defaults are
-  used. Files are written to the service dev directories consumed by `sbt` (see below):
+  used (`localhost`-based — auth/central/edge are assumed to share one network, e.g. run
+  directly via `sbt` or with `network_mode: host`). Files are written to the service dev
+  directories consumed by `sbt` (see below):
     - `auth/dev/env.conf`
     - `central/dev/env.conf`
     - `edge/dev/env.conf`
+- **`docker-local`** — also runs non-interactively, for the case where auth/central/edge
+  each run in their own container on one Docker Compose bridge network, sitting behind
+  nginx as the single published port (used by `versola bootstrap local`). Files are
+  written to `.local/env/docker-local/` (see below).
+
+  Defaults split into two kinds, and it matters which is which:
+    - **Real network calls between containers** (Postgres, `central`'s and `edge`'s calls
+      to `auth`'s admin API) point at the other container's Compose service name, e.g.
+      `http://auth:8080`, `jdbc:postgresql://postgres:5432/...` — containers on a bridge
+      network can't reach each other via `localhost`.
+    - **Anything a browser has to load** (auth/edge's own public URLs, the post-login
+      redirect) points at nginx's published port instead, `http://localhost:8080` — a
+      browser outside the Compose network has no way to resolve `auth` or `edge` as
+      hostnames, and edge's own port isn't published to the host at all.
+
+    `edge` needs both at once for one thing: `EdgeConfig.versolaUrl` (public — the
+    browser redirect, and the token `iss` check) vs `EdgeConfig.internalUrl` (real
+    network call — edge's own token/userinfo exchange with `auth`), which resolves
+    from the optional `EdgeConfig.versolaInternalUrl` field and falls back to
+    `versolaUrl` when it's absent, so configs generated before this field existed
+    keep working. Getting this backwards doesn't fail loudly; it 404s or
+    connection-refuses partway through a login that otherwise looks like it's
+    working — confirmed by hand while testing `versola bootstrap local`.
 - **any other name** — runs interactively, prompting for service URLs and Postgres
   credentials. Files are written to `.local/env/<name>/` (`auth.conf`, `central.conf`,
   `edge.conf`).
@@ -43,8 +68,13 @@ The script first asks for the environment **Name** (default `local`):
 
 ### Build Locally
 
-Build the Docker image locally:
+The runtime images no longer bundle sbt -- `docker build` copies an already
+built application from `<module>/target/universal/stage` (same as CI, see
+`ci-cd.yml`'s "Stage services for release images" step), it doesn't build it.
+Stage the module first, then build:
+
 ```bash
+sbt "auth-postgres-impl/stage"
 docker build -t versola-auth -f docker/Dockerfile.auth .
 ```
 
@@ -57,9 +87,16 @@ docker run -p 8080:8080 -p 9345:9345 \
 
 To build central or edge locally:
 ```bash
+sbt "central-postgres-impl/stage"
 docker build -t versola-central -f docker/Dockerfile.central .
+
+sbt "edge-postgres-impl/stage"
 docker build -t versola-edge -f docker/Dockerfile.edge .
 ```
+
+(`central` additionally expects `central-ui`'s forms already built into
+`central/src/main/resources` -- see the `npm run build:forms` step above --
+before staging, same as CI's `build` job.)
 
 You can override the config path via `CONFIG_PATH` environment variable:
 ```bash

@@ -52,6 +52,8 @@ trait BasicCodecs:
       it => Json.Obj(it.map((k, v) => k -> Json.Str(v)).toSeq*),
     )
 
+  given mapStringListStringDbCodec: DbCodec[Map[String, List[String]]] = jsonBCodec[Map[String, List[String]]]
+  
   given UUIDSqlArrayCodec: SqlArrayCodec[UUID] = new SqlArrayCodec[UUID]:
     val jdbcTypeName: String = "uuid"
 

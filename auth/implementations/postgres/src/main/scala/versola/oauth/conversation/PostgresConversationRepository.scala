@@ -5,15 +5,17 @@ import com.augustnagro.magnum.magzio.TransactorZIO
 import com.augustnagro.magnum.pg.{PgCodec, SqlArrayCodec}
 import versola.auth.model.OtpCode
 import versola.oauth.authorize.model.ResponseTypeEntry
-import versola.oauth.client.model.{AuthFlow, ClientId, PassedAuthFactor, PassedFactorRecord, ScopeToken}
+import versola.oauth.client.model.{Acr, AuthFlow, ClientId, PassedAuthFactor, PassedFactorRecord, ScopeToken}
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, Nonce, State}
+import versola.oauth.model.UserAgentCookiePayload
 import versola.oauth.userinfo.model.RequestedClaims
 import versola.user.model.{Login, UserId}
 import versola.util.postgres.BasicCodecs
-import versola.util.{Email, Phone}
+import versola.util.{Email, MAC, Phone}
 import zio.http.URL
 import zio.json.*
+import zio.json.ast.Json
 import zio.prelude.NonEmptySet
 import zio.{Clock, Duration, Task, ZLayer}
 
@@ -47,30 +49,30 @@ class PostgresConversationRepository(xa: TransactorZIO) extends ConversationRepo
   given DbCodec[URL] = DbCodec.StringCodec.biMap(URL.decode(_).fold(throw _, identity), _.toString)
   given DbCodec[UserId] = DbCodec.UUIDCodec.biMap(UserId(_), identity[UUID])
   given DbCodec[AuthId] = DbCodec.UUIDCodec.biMap(AuthId(_), identity[UUID])
+  given DbCodec[UserAgentCookiePayload] = jsonBCodec[UserAgentCookiePayload]
   given DbCodec[Instant] = DbCodec.InstantCodec
   given DbCodec[ConversationStep] = jsonCodec[ConversationStep]
   given DbCodec[RequestedClaims] = jsonCodec[RequestedClaims]
-  given DbCodec[zio.json.ast.Json.Obj] = jsonCodec[zio.json.ast.Json.Obj]
+  given DbCodec[Json.Obj] = jsonCodec[Json.Obj]
   given DbCodec[AuthFlow] = jsonBCodec[AuthFlow]
   given DbCodec[ResponseTypeEntry] = DbCodec.StringCodec.biMap(ResponseTypeEntry.valueOf, _.toString)
   given DbCodec[NonEmptySet[ResponseTypeEntry]] = DbCodec.StringCodec.biMap(
     str => NonEmptySet.fromIterableOption(str.split(" ").map(ResponseTypeEntry.valueOf)).getOrElse(NonEmptySet(ResponseTypeEntry.Code)),
     _.toSet.map(_.toString).mkString(" "),
   )
+  given DbCodec[Acr] = DbCodec.StringCodec.biMap(Acr(_), identity[String])
+  given DbCodec[MAC] = DbCodec.ByteArrayCodec.biMap(MAC(_), identity[Array[Byte]])
   given DbCodec[ConversationRecord] = DbCodec.derived[ConversationRecord]
 
   override def find(authId: AuthId): Task[Option[ConversationRecord]] =
     Clock.instant.flatMap: now =>
       xa.connectMeasured("find-conversation") {
-        sql"""select client_id, redirect_uri, scope, code_challenge, code_challenge_method, state, user_id, credential, step, requested_claims, ui_locales, nonce, response_type, user_email, user_phone, user_login, user_claims, auth_flow, user_agent, version, amr, needs_password_change, expires_at
+        sql"""select client_id, redirect_uri, scope, code_challenge, code_challenge_method, state, user_id, credential, step, requested_claims, ui_locales, nonce, response_type, user_email, user_phone, user_login, user_claims, auth_flow, user_agent, user_agent_cookie, version, amr, needs_password_change, target_acr, csrf_token, prior_session_id
               from auth_conversations
-              where id = $authId"""
-          .query[(ConversationRecord, Instant)]
+              where id = $authId AND expires_at > $now"""
+          .query[ConversationRecord]
           .run()
           .headOption
-          .collect { case (conversation, expiresAt) if expiresAt.isAfter(now) =>
-            conversation
-          }
       }
 
   override def create(authId: AuthId, record: ConversationRecord, ttl: Duration): Task[Unit] =
@@ -96,9 +98,13 @@ class PostgresConversationRepository(xa: TransactorZIO) extends ConversationRepo
                 user_claims,
                 auth_flow,
                 user_agent,
+                user_agent_cookie,
                 version,
                 amr,
                 needs_password_change,
+                target_acr,
+                csrf_token,
+                prior_session_id,
                 expires_at
             ) values (
                 $authId,
@@ -121,9 +127,13 @@ class PostgresConversationRepository(xa: TransactorZIO) extends ConversationRepo
                 ${record.userClaims},
                 ${record.authFlow},
                 ${record.userAgent},
+                ${record.userAgentCookie},
                 ${record.version},
                 ${record.amr},
                 ${record.needsPasswordChange},
+                ${record.targetAcr},
+                ${record.csrfToken},
+                ${record.priorSessionId},
                 ${authId.createdAt.plusSeconds(ttl.toSeconds)})
          """
         .update.run()
@@ -142,6 +152,8 @@ class PostgresConversationRepository(xa: TransactorZIO) extends ConversationRepo
               auth_flow = ${record.authFlow},
               amr = ${record.amr},
               needs_password_change = ${record.needsPasswordChange},
+              target_acr = ${record.targetAcr},
+              prior_session_id = ${record.priorSessionId},
               version = version + 1
             where id = $authId and version = ${record.version}"""
         .update.run()

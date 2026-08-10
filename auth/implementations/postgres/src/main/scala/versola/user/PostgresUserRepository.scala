@@ -7,11 +7,11 @@ import com.augustnagro.magnum.pg.PgCodec.given
 import versola.util.postgres.BasicCodecs
 import versola.user.model.*
 import versola.util.{Email, Phone}
-import zio.{Clock, Task, ZIO, ZLayer}
+import zio.{Task, ZIO, ZLayer}
 import zio.json.*
 import zio.json.ast.Json
 
-import java.time.{Instant, LocalDate}
+import java.time.LocalDate
 import java.util.UUID
 
 class PostgresUserRepository(
@@ -19,22 +19,17 @@ class PostgresUserRepository(
 ) extends UserRepository, BasicCodecs:
 
   override def findOrCreate(userId: UserId, credential: Either[Email, Phone]): Task[(UserRecord, WasCreated)] =
-    for
-      now <- Clock.instant
-      (user, wasCreated) <- xa.connectMeasured("find-or-create-user"):
-        credential match
-          case Left(email) => createByEmailQuery(userId, email, now).run().head
-          case Right(phone) => createByPhoneQuery(userId, phone, now).run().head
-    yield (user, WasCreated(wasCreated))
+    xa.connectMeasured("find-or-create-user"):
+      credential match
+        case Left(email) => createByEmailQuery(userId, email).run().head
+        case Right(phone) => createByPhoneQuery(userId, phone).run().head
+    .map((user, wasCreated) => (user, WasCreated(wasCreated)))
 
   override def create(id: UserId): Task[UserRecord] =
-    for
-      now <- Clock.instant
-      user <- xa.connectMeasured("create-user"):
-        createQuery(id, now).run().head
-    yield user
+    xa.connectMeasured("create-user"):
+      createQuery(id).run().head
 
-  private def createByEmailQuery(id: UserId, email: Email, now: Instant) =
+  private def createByEmailQuery(id: UserId, email: Email) =
     sql"""insert into users (id, email, phone, login, claims, ui_locales)
           values ($id, $email, null, null, '{}'::jsonb, null)
           on conflict (email) where email is not null
@@ -42,7 +37,7 @@ class PostgresUserRepository(
           returning id, email, phone, login, claims, ui_locales, (xmax = 0) as created
        """.returning[(UserRecord, Boolean)]
 
-  private def createByPhoneQuery(id: UserId, phone: Phone, now: Instant) =
+  private def createByPhoneQuery(id: UserId, phone: Phone) =
     sql"""insert into users (id, email, phone, login, claims, ui_locales)
           values ($id, null, $phone, null, '{}'::jsonb, null)
           on conflict (phone) where phone is not null
@@ -50,7 +45,7 @@ class PostgresUserRepository(
           returning id, email, phone, login, claims, ui_locales, (xmax = 0) as created
        """.returning[(UserRecord, Boolean)]
 
-  private def createQuery(id: UserId, now: Instant) =
+  private def createQuery(id: UserId) =
     sql"""insert into users (id, email, phone, login, claims, ui_locales)
           values ($id, null, null, null, '{}'::jsonb, null)
           returning id, email, phone, login, claims, ui_locales
@@ -98,6 +93,11 @@ class PostgresUserRepository(
   override def patchClaims(id: UserId, patch: Json.Obj): Task[Unit] =
     xa.connectMeasured("patch-user-claims"):
       sql"update users set claims = jsonb_strip_nulls(claims || $patch::jsonb) where id = $id".update.run()
+    .unit
+
+  override def delete(id: UserId): Task[Unit] =
+    xa.connectMeasured("delete-user"):
+      sql"delete from users where id = $id".update.run()
     .unit
 
   private def findByPhoneQuery(phone: Phone) =

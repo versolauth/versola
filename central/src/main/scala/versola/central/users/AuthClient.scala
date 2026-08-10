@@ -1,6 +1,7 @@
 package versola.central.users
 
 import versola.central.CentralConfig
+import versola.central.configuration.clients.ClientId
 import versola.central.configuration.roles.RoleId
 import versola.central.configuration.tenants.TenantId
 import versola.util.{Email, Patch, Phone}
@@ -10,6 +11,7 @@ import zio.json.{DecoderOps, EncoderOps, JsonCodec, JsonDecoder}
 import zio.schema.codec.JsonCodec.zioJsonBinaryCodec
 import zio.{Schedule, Scope, Task, ZIO, ZLayer, durationInt}
 
+import java.time.Instant
 import java.util.UUID
 
 trait AuthClient:
@@ -27,6 +29,8 @@ trait AuthClient:
       add: Set[RoleId],
       remove: Set[RoleId],
   ): Task[Unit]
+
+  def deleteUser(userId: UserId): Task[Unit]
 
   def getUserClaims(id: UserId): Task[Option[Json.Obj]]
 
@@ -52,9 +56,16 @@ trait AuthClient:
 
   def resetPassword(request: ResetPasswordRequest): Task[Unit]
 
+  def setPassword(userId: UserId, password: String): Task[Unit]
+
+  /** Forces auth to reload all configuration caches from central (non-prod only). */
+  def syncConfiguration(): Task[Unit]
+
 object AuthClient:
   val live: ZLayer[Scope & Client & CentralConfig, Throwable, AuthClient] =
     AuthTokenService.live >>> ZLayer.fromFunction(Impl(_, _, _))
+
+  private[users] case object TokenExpiredError extends Exception("central→auth token expired; retrying with fresh token")
 
   private case class UpsertUserPayload(
       id: UserId,
@@ -77,9 +88,20 @@ object AuthClient:
 
   private case class UserRolesResponse(roles: List[RoleId]) derives JsonCodec
 
+  case class ClientEntryDto(
+      clientId: ClientId,
+      enteredAt: Instant,
+  ) derives JsonCodec
+
   case class SessionDto(
-      clientId: String,
-      userAgent: Option[String],
+      /** Not rendered to end users, but kept available for internal use (e.g. a future
+       *  per-session invalidation call). */
+      publicId: String,
+      clients: List[ClientEntryDto],
+      platform: Option[String],
+      os: Option[String],
+      browser: Option[String],
+      version: Option[String],
       createdAt: String,
   ) derives JsonCodec
 
@@ -98,6 +120,11 @@ object AuthClient:
       name: Option[String],
   ) derives JsonCodec
 
+  private case class SetPasswordPayload(
+      userId: UserId,
+      password: String,
+  ) derives JsonCodec
+
   class Impl(
       httpClient: Client,
       config: CentralConfig,
@@ -110,6 +137,9 @@ object AuthClient:
     private val limitsResetUrl: URL = usersUrl / "limits" / "reset"
     private val passkeysUrl: URL = usersUrl / "passkeys"
     private val passwordResetUrl: URL = usersUrl / "password" / "reset"
+    private val passwordSetUrl: URL = usersUrl / "password" / "set"
+    private val configSyncUrl: URL = config.auth.url / "service" / "configuration" / "sync"
+    private val serviceUsersUrl: URL = config.auth.url / "service" / "users"
 
     override def upsertUser(
         id: UserId,
@@ -219,15 +249,44 @@ object AuthClient:
         ),
       )
 
+    override def setPassword(userId: UserId, password: String): Task[Unit] =
+      send(
+        Request(
+          method = Method.POST,
+          url = passwordSetUrl,
+          body = Body.from(SetPasswordPayload(userId, password)),
+        ),
+      )
+
+    override def deleteUser(userId: UserId): Task[Unit] =
+      send(
+        Request(
+          method = Method.DELETE,
+          url = serviceUsersUrl.addQueryParam("id", userId.toString),
+        ),
+      )
+
+    override def syncConfiguration(): Task[Unit] =
+      send(Request(method = Method.POST, url = configSyncUrl, body = Body.empty))
+
     private def execute[A](request: Request)(handle: Response => Task[A]): Task[A] =
+      def attemptWithToken(token: String): Task[A] =
+        withConnectionRetry:
+          ZIO.scoped:
+            httpClient.request(authorized(request, token)).flatMap: response =>
+              if response.status == Status.Unauthorized then ZIO.fail(AuthClient.TokenExpiredError)
+              else handle(response)
       for
         token <- tokenService.getToken
-        authorized = request
-          .addHeader(Header.ContentType(MediaType.application.json))
-          .addHeader(Header.Authorization.Bearer(token))
-        result <- withConnectionRetry(ZIO.scoped:
-          httpClient.request(authorized).flatMap(handle))
+        result <- attemptWithToken(token).catchSome:
+          case AuthClient.TokenExpiredError =>
+            tokenService.refreshToken().flatMap(attemptWithToken)
       yield result
+
+    private def authorized(request: Request, token: String): Request =
+      request
+        .addHeader(Header.ContentType(MediaType.application.json))
+        .addHeader(Header.Authorization.Bearer(token))
 
     private def send(request: Request): Task[Unit] =
       execute(request): response =>

@@ -4,7 +4,7 @@ import { buttonStyles, cardStyles, formStyles, methodBadgeStyles, tableStyles } 
 import { celHighlightStyles } from '../styles/cel-highlight';
 import { theme } from '../styles/theme';
 import type { InjectRule, InjectTarget, Resource, ResourceEndpoint, ResourceEndpointId } from '../types';
-import { createResource, deleteResource, getResources, updateResource } from '../utils/central-api';
+import { createResource, deleteResource, fetchChallengeSettings, getResources, updateResource } from '../utils/central-api';
 import { renderHighlightedCel } from '../utils/cel-highlight';
 import { validateCel } from '../utils/cel-validator';
 import { confirmDestructiveAction } from '../utils/confirm-dialog';
@@ -14,6 +14,7 @@ import './cel-editor';
 import './content-header';
 import './error-card';
 import './loading-cards';
+import './nav-toggle';
 
 type ResourceEndpointDraft = {
   method: string;
@@ -21,6 +22,9 @@ type ResourceEndpointDraft = {
   fetchUserInfo: boolean;
   allow: string;
   inject: InjectRule[];
+  stepUpCondition: string;
+  stepUpAcr: string;
+  maxAge: string;
 };
 
 type EditableResourceEndpoint = ResourceEndpointDraft & {
@@ -28,9 +32,12 @@ type EditableResourceEndpoint = ResourceEndpointDraft & {
   draftId: string;
 };
 
-type SaveResourceEndpointPayload = Omit<ResourceEndpointDraft, 'allow'> & {
+type SaveResourceEndpointPayload = Omit<ResourceEndpointDraft, 'allow' | 'stepUpCondition' | 'stepUpAcr' | 'maxAge'> & {
   id?: ResourceEndpoint['id'];
   allow: string | null;
+  stepUpCondition?: string | null;
+  stepUpAcr?: string | null;
+  maxAge?: number | null;
 };
 
 type PersistedResourceEndpointPayload = SaveResourceEndpointPayload & {
@@ -55,6 +62,7 @@ export class VersolaResourcesList extends LitElement {
   @property({ type: String }) tenantId: string | null = null;
   @property({ type: Boolean }) canManage = false;
   @state() private resources: Resource[] = [];
+  @state() private acrVocabulary: Record<string, string[]> = {};
   @state() private expandedResources: Set<string> = new Set();
   @state() private expandedEndpoints: Set<ResourceEndpointId> = new Set();
   @state() private searchQuery = '';
@@ -106,7 +114,6 @@ export class VersolaResourcesList extends LitElement {
     .endpoint-row { display:flex; align-items:center; justify-content:space-between; gap:.75rem; flex-wrap:wrap; padding:.875rem 1rem; border:1px solid var(--border-dark); border-radius:var(--radius-md); background:rgba(255,255,255,.02); }
     .endpoint-main { display:flex; align-items:center; gap:.75rem; flex-wrap:wrap; min-width:0; }
     .endpoint-actions { display:flex; align-items:center; gap:.5rem; margin-left:auto; }
-    .endpoint-path { font-family:var(--font-mono, monospace); color:var(--text-primary); word-break:break-all; }
     .endpoint-card { display:grid; gap:.75rem; padding:.875rem 1rem; border:1px solid var(--border-dark); border-radius:var(--radius-md); background:rgba(255,255,255,.02); cursor:pointer; transition:border-color var(--transition-base), background var(--transition-base); }
     .endpoint-card:hover { border-color:var(--accent); background:rgba(255,255,255,.03); }
     .endpoint-card-header { display:flex; align-items:center; justify-content:space-between; gap:.75rem; flex-wrap:wrap; }
@@ -227,9 +234,32 @@ export class VersolaResourcesList extends LitElement {
     .header-editor-item { grid-template-columns:minmax(0, 1.05fr) minmax(0, .85fr) minmax(0, 1.1fr) auto; align-items:start; }
     .editor-remove { justify-self:end; align-self:start; }
     .sub-actions { display:flex; gap:.75rem; justify-content:flex-end; margin-top:var(--spacing-lg); }
+    .prefix-tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: var(--spacing-sm);
+      margin-top: var(--spacing-sm);
+    }
+    .prefix-tag {
+      font-family: var(--font-mono);
+      font-weight: 600;
+      font-size: 0.9375rem;
+      color: var(--accent);
+      background: var(--bg-dark);
+      border: 1px solid var(--border-dark);
+      border-radius: var(--radius-md);
+      padding: var(--spacing-xs) var(--spacing-md);
+    }
     @media (max-width: 720px) {
-      .resource-header { flex-direction:column; }
-      .resource-actions, .form-actions, .section-header, .sub-actions { flex-direction:column; align-items:flex-start; }
+      /* Same inherited-align-items trap as permissions-list: in a column,
+         align-items:center centres the label horizontally instead of
+         vertically. */
+      .resource-header { flex-direction:column; align-items:flex-start; }
+      /* .resource-actions is deliberately NOT in the stacking list below: it
+         holds two icon buttons that belong side by side. Stacking them turned
+         a compact ✎ ✕ pair into a vertical column. */
+      .resource-actions { margin-left:0; }
+      .form-actions, .section-header, .sub-actions { flex-direction:column; align-items:flex-start; }
       .endpoint-editor-grid { grid-template-columns:minmax(0, var(--compact-field-width)); }
       .rule-editor-main, .rule-editor-pattern, .header-editor-item { grid-template-columns:minmax(0, 1fr); }
     }
@@ -290,6 +320,9 @@ export class VersolaResourcesList extends LitElement {
       fetchUserInfo: false,
       allow: '',
       inject: [],
+      stepUpCondition: '',
+      stepUpAcr: '',
+      maxAge: '',
     };
   }
 
@@ -306,8 +339,12 @@ export class VersolaResourcesList extends LitElement {
     if (!this.tenantId) { this.resources = []; this.error = ''; return; }
     this.loading = true; this.error = '';
     try {
-      const resources = await getResources(this.tenantId);
+      const [resources, challengeSettings] = await Promise.all([
+        getResources(this.tenantId),
+        fetchChallengeSettings(this.tenantId),
+      ]);
       this.resources = resources;
+      this.acrVocabulary = challengeSettings?.acrVocabulary ?? {};
       const validIds = new Set(resources.map(resource => resource.resourceId));
       const validEndpointIds = new Set(resources.flatMap(resource => resource.endpoints.map(endpoint => endpoint.id)));
       this.expandedResources = new Set([...this.expandedResources].filter(id => validIds.has(id)));
@@ -467,6 +504,9 @@ export class VersolaResourcesList extends LitElement {
         fetchUserInfo: endpoint.fetchUserInfo,
         allow: endpoint.allow ?? undefined,
         inject: cloneInject(endpoint.inject),
+        stepUpCondition: endpoint.stepUpCondition ?? undefined,
+        stepUpAcr: endpoint.stepUpAcr ?? undefined,
+        maxAge: endpoint.maxAge ?? undefined,
       })),
     };
   }
@@ -488,11 +528,17 @@ export class VersolaResourcesList extends LitElement {
       fetchUserInfo: endpoint.fetchUserInfo,
       allow: endpoint.allow ?? '',
       inject: cloneInject(endpoint.inject),
+      stepUpCondition: endpoint.stepUpCondition ?? '',
+      stepUpAcr: endpoint.stepUpAcr ?? '',
+      maxAge: endpoint.maxAge?.toString() ?? '',
     };
   }
 
   private toEndpointPayload(endpoint: EditableResourceEndpoint) {
     const allow = endpoint.allow.trim();
+    const stepUpCondition = endpoint.stepUpCondition.trim();
+    const stepUpAcr = endpoint.stepUpAcr.trim();
+    const maxAge = parseInt(endpoint.maxAge);
     return {
       ...(endpoint.id !== null ? { id: endpoint.id } : {}),
       method: endpoint.method,
@@ -500,6 +546,9 @@ export class VersolaResourcesList extends LitElement {
       fetchUserInfo: endpoint.fetchUserInfo,
       allow: allow.length > 0 ? allow : null,
       inject: cloneInject(endpoint.inject),
+      stepUpCondition: stepUpCondition.length > 0 ? stepUpCondition : null,
+      stepUpAcr: stepUpAcr.length > 0 ? stepUpAcr : null,
+      maxAge: Number.isFinite(maxAge) ? maxAge : null,
     };
   }
 
@@ -528,6 +577,18 @@ export class VersolaResourcesList extends LitElement {
 
   private updateEndpointFetchUserInfo(draftId: string, value: boolean) {
     this.updateEndpointDraft(draftId, endpoint => ({ ...endpoint, fetchUserInfo: value }));
+  }
+
+  private updateEndpointStepUpCondition(draftId: string, value: string) {
+    this.updateEndpointDraft(draftId, endpoint => ({ ...endpoint, stepUpCondition: value }));
+  }
+
+  private updateEndpointStepUpAcr(draftId: string, value: string) {
+    this.updateEndpointDraft(draftId, endpoint => ({ ...endpoint, stepUpAcr: value }));
+  }
+
+  private updateEndpointMaxAge(draftId: string, value: string) {
+    this.updateEndpointDraft(draftId, endpoint => ({ ...endpoint, maxAge: value }));
   }
 
   private addInjectRule(draftId: string) {
@@ -669,6 +730,36 @@ export class VersolaResourcesList extends LitElement {
     `;
   }
 
+  private renderStepUpSection(condition: string | undefined, acr: string | undefined) {
+    return html`
+      <div class="endpoint-editor-section">
+        <div class="endpoint-detail-label">Step-up Condition</div>
+        ${condition && condition.length > 0
+          ? html`<div class="cel-inline">${renderHighlightedCel(condition)}</div>`
+          : html`<div class="endpoint-empty">— (always)</div>`}
+      </div>
+      <div class="endpoint-editor-section">
+        <div class="endpoint-detail-label">Step-up ACR</div>
+        ${acr && acr.length > 0
+          ? html`<div class="prefix-tags" style="margin-top: 0;">
+              ${acr.split(' ').map(val => html`<span class="prefix-tag">${val}</span>`)}
+            </div>`
+          : html`<div class="endpoint-empty">— (any)</div>`}
+      </div>
+    `;
+  }
+
+  private renderMaxAgeSection(maxAge: number | undefined) {
+    return html`
+      <div class="endpoint-editor-section">
+        <div class="endpoint-detail-label">Max Auth Age</div>
+        ${maxAge != null
+          ? html`<div class="endpoint-detail-value">${maxAge} seconds</div>`
+          : html`<div class="endpoint-empty">— (unlimited)</div>`}
+      </div>
+    `;
+  }
+
   private renderEndpointDetails(endpoint: ResourceEndpoint) {
     return html`
       <div class="endpoint-card-details">
@@ -680,6 +771,8 @@ export class VersolaResourcesList extends LitElement {
         </div>
         <div class="endpoint-detail-grid">
           ${this.renderAllowSection(endpoint.allow)}
+          ${this.renderStepUpSection(endpoint.stepUpCondition, endpoint.stepUpAcr)}
+          ${this.renderMaxAgeSection(endpoint.maxAge)}
           ${this.renderInjectSection(endpoint.inject)}
         </div>
       </div>
@@ -809,6 +902,105 @@ export class VersolaResourcesList extends LitElement {
     `;
   }
 
+  private renderStepUpEditor(draftId: string, condition: string, acr: string) {
+    const vocabularyAcrs = Object.keys(this.acrVocabulary);
+    const selectedAcrs = acr.split(' ').filter(v => v.length > 0);
+
+    return html`
+      <div class="endpoint-editor-section">
+        <div class="editor-section-header">
+          <div class="editor-section-title-row">
+            <h3 class="editor-section-title">Step-up Condition (CEL)</h3>
+            ${this.renderOptionInfo(
+              `${draftId}-stepup-cond-info`,
+              'Step-up Condition',
+              html`
+                <p>CEL boolean expression evaluated per request. The step-up ACR is required only when this evaluates to <code>true</code>.</p>
+                <p>Leave empty to disable the ACR requirement entirely. Use <code>true</code> to always enforce it.</p>
+                <p><strong>Note:</strong> Max Auth Age is enforced independently, regardless of this condition.</p>
+              `,
+              'Step-up condition info',
+            )}
+          </div>
+        </div>
+        <versola-cel-editor
+          multiline
+          rows="1"
+          .value=${condition}
+          ?disabled=${this.saving}
+          placeholder="e.g. true or request.body.amount > 1000"
+          aria-label="Step-up condition"
+          @cel-input=${(event: CustomEvent<{ value: string }>) => this.updateEndpointStepUpCondition(draftId, event.detail.value)}
+        ></versola-cel-editor>
+      </div>
+
+      <div class="endpoint-editor-section">
+        <div class="editor-section-header">
+          <div class="editor-section-title-row">
+            <h3 class="editor-section-title">Step-up ACR</h3>
+            ${this.renderOptionInfo(
+              `${draftId}-stepup-acr-info`,
+              'Step-up ACR',
+              html`
+                <p>Space-separated list of ACR values. The Edge will enforce that the access token carries at least one of these values in its <code>acr</code> claim when step-up is triggered.</p>
+              `,
+              'Step-up ACR info',
+            )}
+          </div>
+        </div>
+        ${vocabularyAcrs.length > 0 ? html`
+          <div style="display: flex; gap: var(--spacing-md); flex-wrap: wrap;">
+            ${vocabularyAcrs.map(val => html`
+              <label style="display: flex; align-items: center; gap: var(--spacing-xs); font-size: 0.875rem; cursor: pointer;">
+                <input type="checkbox"
+                  .checked=${selectedAcrs.includes(val)}
+                  @change=${(e: Event) => {
+                    const checked = (e.target as HTMLInputElement).checked;
+                    const next = checked
+                      ? [...selectedAcrs, val]
+                      : selectedAcrs.filter(v => v !== val);
+                    this.updateEndpointStepUpAcr(draftId, next.join(' '));
+                  }} />
+                ${val}
+              </label>
+            `)}
+          </div>
+        ` : html`
+          <div class="endpoint-empty">No ACR values registered. Configure them in <strong>Challenge Settings</strong>.</div>
+        `}
+      </div>
+    `;
+  }
+
+  private renderMaxAgeEditor(draftId: string, maxAge: string) {
+    return html`
+      <div class="endpoint-editor-section">
+        <div class="editor-section-header">
+          <div class="editor-section-title-row">
+            <h3 class="editor-section-title">Max Auth Age (seconds)</h3>
+            ${this.renderOptionInfo(
+              `${draftId}-max-age-info`,
+              'Max Auth Age',
+              html`
+                <p>The Edge will enforce that the authentication event happened no longer than this many seconds ago, based on the <code>auth_time</code> claim in the token.</p>
+                <p>Leave empty to disable this check.</p>
+              `,
+              'Max auth age info',
+            )}
+          </div>
+        </div>
+        <input
+          class="form-input compact-input"
+          type="number"
+          .value=${maxAge}
+          @input=${(event: Event) => this.updateEndpointMaxAge(draftId, (event.target as HTMLInputElement).value)}
+          placeholder="e.g. 3600"
+          min="0"
+        />
+      </div>
+    `;
+  }
+
   private renderEditableEndpoint(endpoint: EditableResourceEndpoint) {
     const isExpanded = this.expandedEditableEndpoints.has(endpoint.draftId);
 
@@ -871,6 +1063,8 @@ export class VersolaResourcesList extends LitElement {
               </label>
             </div>
             ${this.renderAllowEditor(endpoint.draftId, endpoint.allow)}
+            ${this.renderStepUpEditor(endpoint.draftId, endpoint.stepUpCondition, endpoint.stepUpAcr)}
+            ${this.renderMaxAgeEditor(endpoint.draftId, endpoint.maxAge)}
             ${this.renderInjectEditor(endpoint.draftId, endpoint.inject)}
           </div>
         ` : ''}
@@ -887,9 +1081,12 @@ export class VersolaResourcesList extends LitElement {
 
     return html`
       <div class="form-header">
-        <div class="title-stack">
-          <h1 class="form-title">${title}</h1>
-          ${isEditResource ? html`<div class="entity-id-meta">${this.resourceUri || '—'}</div>` : ''}
+        <div class="form-header-lead">
+          <versola-nav-toggle></versola-nav-toggle>
+          <div class="title-stack">
+            <h1 class="form-title">${title}</h1>
+            ${isEditResource ? html`<div class="entity-id-meta">${this.resourceUri || '—'}</div>` : ''}
+          </div>
         </div>
       </div>
       <div class="card">

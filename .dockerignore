@@ -1,2 +1,52 @@
-﻿central-ui/node_modules
+central-ui/node_modules
 central-ui/dist
+node_modules/
+target/
+.git/
+.idea/
+.bsp/
+
+# Build outputs under target/ are excluded above to keep the build context
+# small (compiled .class files, zinc/coverage caches, etc. add up to
+# hundreds of MB and don't belong in any image, and were previously being
+# sent to the Docker daemon on every single build). Dockerfile.auth/
+# .central/.edge each need their own sbt-native-packager stage output
+# specifically (produced by `sbt <module>/stage` in CI before the docker
+# build, see ci-cd.yml's "Stage services for release images" step) --
+# carved back out here. Every intermediate directory needs its own
+# negation: Docker's ignore rules won't descend into an excluded parent to
+# find a re-included child, so a single deep `!.../stage/**` line on its
+# own would not work.
+!auth/implementations/postgres/target
+!auth/implementations/postgres/target/universal
+!auth/implementations/postgres/target/universal/stage
+!auth/implementations/postgres/target/universal/stage/**
+!central/implementations/postgres/target
+!central/implementations/postgres/target/universal
+!central/implementations/postgres/target/universal/stage
+!central/implementations/postgres/target/universal/stage/**
+!edge/implementations/postgres/target
+!edge/implementations/postgres/target/universal
+!edge/implementations/postgres/target/universal/stage
+!edge/implementations/postgres/target/universal/stage/**
+!scripts/target
+!scripts/target/universal
+!scripts/target/universal/stage
+!scripts/target/universal/stage/**
+
+# Dockerfile.gateway needs the built SPA in its build context -- everything
+# else (Dockerfile.central, which only needs central-ui's separately-built
+# "forms" under central/src/main/resources, not dist/) never references
+# this path, so un-excluding it here doesn't change what those get.
+#
+# Both lines needed: the first re-includes the dist/ directory entry
+# itself, the second explicitly re-includes everything under it. Verified
+# by hand (a full local build + running the resulting versola-gateway
+# image, with central-ui's admin console loading and working end-to-end)
+# that this isn't Docker's documented "can't re-include a file under an
+# excluded parent" trap -- that applies to re-including a *child* while
+# the parent stays excluded, not re-including the same path that was
+# excluded. Both lines are here anyway so the intent doesn't rely on that
+# distinction being obvious to the next person reading this file.
+!central-ui/dist
+!central-ui/dist/**

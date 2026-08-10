@@ -4,6 +4,7 @@ import { theme } from '../styles/theme';
 import { buttonStyles, cardStyles, formStyles, iconActionStyles } from '../styles/components';
 import { OAuthScope, OAuthClaim } from '../types';
 import { validateScopeId } from '../utils/validators';
+import './nav-toggle';
 
 @customElement('versola-scope-form')
 export class VersolaScopeForm extends LitElement {
@@ -213,11 +214,14 @@ export class VersolaScopeForm extends LitElement {
   render() {
     return html`
       <div class="form-header">
-        <div class="title-stack">
-          <h1 class="form-title">
-            ${this.scope ? 'Edit Scope' : 'Create New Scope'}
-          </h1>
-          ${this.scope ? html`<div class="entity-id-meta">${this.formData.id || '—'}</div>` : ''}
+        <div class="form-header-lead">
+          <versola-nav-toggle></versola-nav-toggle>
+          <div class="title-stack">
+            <h1 class="form-title">
+              ${this.scope ? 'Edit Scope' : 'Create New Scope'}
+            </h1>
+            ${this.scope ? html`<div class="entity-id-meta">${this.formData.id || '—'}</div>` : ''}
+          </div>
         </div>
       </div>
 

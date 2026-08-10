@@ -6,6 +6,7 @@ import versola.central.configuration.tenants.{TenantId, TenantRepository}
 import versola.central.configuration.{CreateResourceEndpointRequest, CreateResourceRequest, UpdateResourceRequest}
 import versola.util.ReloadingCache
 import versola.util.cel.CelEvaluator
+import dev.cel.common.types.{CelType, SimpleType}
 import zio.{Schedule, Scope, Task, ZIO, ZLayer}
 
 trait ResourceService:
@@ -107,7 +108,7 @@ object ResourceService:
       val allowCheck = endpoint.allow.filter(_.trim.nonEmpty) match
         case None => ZIO.none
         case Some(expression) =>
-          celEvaluator.validate(expression)
+          celEvaluator.validate(expression, Some(SimpleType.BOOL))
             .as(Option.empty[ResourceValidationError])
             .catchAll: err =>
               ZIO.some(ResourceValidationError.InvalidAllowExpression(endpoint.id, err.expression, err.message))
@@ -115,13 +116,24 @@ object ResourceService:
       allowCheck.flatMap:
         case Some(err) => ZIO.some(err)
         case None =>
-          ZIO.foldLeft(endpoint.inject)(Option.empty[ResourceValidationError]):
+          val injectCheck = ZIO.foldLeft(endpoint.inject)(Option.empty[ResourceValidationError]):
             case (Some(err), _) => ZIO.succeed(Some(err))
             case (None, rule) =>
-              celEvaluator.validate(rule.expression)
+              celEvaluator.validate(rule.expression, None)
                 .as(Option.empty[ResourceValidationError])
                 .catchAll: err =>
                   ZIO.some(ResourceValidationError.InvalidInjectExpression(endpoint.id, rule.name, err.expression, err.message))
+
+          injectCheck.flatMap:
+            case Some(err) => ZIO.some(err)
+            case None =>
+              endpoint.stepUpCondition.filter(_.trim.nonEmpty) match
+                case None => ZIO.none
+                case Some(expression) =>
+                  celEvaluator.validate(expression, Some(SimpleType.BOOL))
+                    .as(Option.empty[ResourceValidationError])
+                    .catchAll: err =>
+                      ZIO.some(ResourceValidationError.InvalidStepUpConditionExpression(endpoint.id, err.expression, err.message))
 
     private def asRecord(request: CreateResourceEndpointRequest) =
       ResourceEndpointRecord(
@@ -131,4 +143,7 @@ object ResourceService:
         fetchUserInfo = request.fetchUserInfo,
         allowExpression = request.allow,
         inject = request.inject,
+        stepUpCondition = request.stepUpCondition,
+        stepUpAcr = request.stepUpAcr,
+        maxAge = request.maxAge,
       )

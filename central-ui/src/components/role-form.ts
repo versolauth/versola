@@ -4,6 +4,7 @@ import { theme } from '../styles/theme';
 import { buttonStyles, cardStyles, formStyles } from '../styles/components';
 import { Role, Permission, Resource } from '../types';
 import './permission-info';
+import './nav-toggle';
 import { validateRoleId } from '../utils/validators';
 
 @customElement('versola-role-form')
@@ -221,11 +222,14 @@ export class VersolaRoleForm extends LitElement {
 
     return html`
       <div class="form-header">
-        <div class="title-stack">
-          <h1 class="form-title">
-            ${this.roleData ? 'Edit Role' : 'Create New Role'}
-          </h1>
-          ${this.roleData ? html`<div class="entity-id-meta">${this.formData.id || '—'}</div>` : ''}
+        <div class="form-header-lead">
+          <versola-nav-toggle></versola-nav-toggle>
+          <div class="title-stack">
+            <h1 class="form-title">
+              ${this.roleData ? 'Edit Role' : 'Create New Role'}
+            </h1>
+            ${this.roleData ? html`<div class="entity-id-meta">${this.formData.id || '—'}</div>` : ''}
+          </div>
         </div>
       </div>
 

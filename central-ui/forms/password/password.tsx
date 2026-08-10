@@ -43,6 +43,7 @@ interface FormConfig {
   allT?: Record<string, Record<string, string>>;
   error?: string;
   previewId?: string;
+  csrf?: string;
 }
 
 declare global {
@@ -102,10 +103,11 @@ function PasswordForm(props: { config: FormConfig }) {
       <Show when={props.config.error}>
         <div class="error-text" style="margin-bottom: 8px;">{t()[props.config.error!] ?? props.config.error}</div>
       </Show>
-      <form method="post" onSubmit={handleSubmit}>
-        <input
-          type="password"
-          name="password"
+        <form method="post" onSubmit={handleSubmit}>
+          <input type="hidden" name="csrf" value={props.config.csrf ?? ''} />
+          <input
+            type="password"
+            name="password"
           class={`input-field${passwordNotAllowed() ? ' input-error' : ''}`}
           placeholder={t().password_placeholder}
           autocomplete="current-password"

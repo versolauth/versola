@@ -2,6 +2,7 @@ package versola.oauth.conversation
 
 import versola.auth.TestEnvConfig
 import versola.auth.model.Password
+import versola.oauth.authorize.AcrResolutionService
 import versola.oauth.challenge.passkey.{PasskeyRepository, WebAuthnService}
 import versola.oauth.challenge.password.PasswordService
 import versola.oauth.challenge.password.model.CheckPassword
@@ -11,12 +12,12 @@ import versola.oauth.conversation.limit.{LimitStatus, SubmissionLimiter}
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
 import versola.oauth.conversation.otp.OtpService
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod}
-import versola.oauth.session.SessionRepository
+import versola.oauth.session.{SessionRepository, UserAgentRepository}
 import versola.oauth.token.AuthorizationCodeRepository
 import versola.oauth.userinfo.UserInfoService
 import versola.user.UserRepository
 import versola.user.model.{Login, UserId, UserRecord}
-import versola.util.{AuthPropertyGenerator, Email, Phone, SecurityService, UnitSpecBase}
+import versola.util.{AuthPropertyGenerator, Email, Phone, SecureRandom, SecurityService, UnitSpecBase}
 import zio.http.URL
 import zio.json.ast
 import zio.test.*
@@ -58,7 +59,10 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
     val webAuthnService = stub[WebAuthnService]
     val passkeyRepository = stub[PasskeyRepository]
     val configService = stub[OAuthConfigurationService]
+    val acrResolver = stub[AcrResolutionService]
     val config = TestEnvConfig.coreConfig
+    val userAgentRepository = stub[UserAgentRepository]
+    val secureRandom = stub[SecureRandom]
     val service = ConversationService.Impl(
       otpService,
       passwordService,
@@ -74,6 +78,9 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
       webAuthnService,
       passkeyRepository,
       configService,
+      acrResolver,
+      userAgentRepository,
+      secureRandom,
     )
 
   val baseRecord = ConversationRecord(
@@ -96,9 +103,13 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
     userClaims = None,
     authFlow = AuthFlow.default,
     userAgent = None,
+    userAgentCookie = None,
     version = 0,
     amr = Map.empty,
     needsPasswordChange = false,
+    targetAcr = None,
+    csrfToken = "test-csrf",
+    priorSessionId = None,
   )
 
   val passwordRecord = baseRecord.copy(
@@ -395,5 +406,7 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
           result <- env.service.checkLoginPassword(authId, baseRecord, login, password)
         yield assertTrue(result == ConversationResult.RenderStep(ConversationStep.AccessDenied))
       },
+    ),
+    suite("finish")(
     ),
   )

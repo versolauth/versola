@@ -1,5 +1,24 @@
 import type { Page, Request } from '@playwright/test';
 
+/**
+ * The console addresses everything under the /central prefix (see
+ * CONSOLE_PREFIX in central-api.ts) so that the EDGE_SESSION cookie can be
+ * scoped to that path. In a real deployment nginx unwraps the prefix — mapping
+ * /central/{x} to edge's /resources/central/{x} and /central/permissions/me
+ * back to /permissions/me — before anything reaches a backend.
+ *
+ * These mocks stand in for the backend and so have to unwrap it themselves;
+ * stripping the single leading /central segment covers all three shapes at
+ * once, since what follows it is already the backend path in each case.
+ */
+function backendPath(pathname: string): string {
+  // The lookahead requires the match to end at a "/" or the end of the
+  // string, so this only strips the /central path segment itself — not a
+  // same-prefixed segment like /central-admin/... — mirroring nginx's
+  // location-prefix matching, which only ever matches on a path boundary.
+  return pathname.replace(/^\/central(?=\/|$)/, '');
+}
+
 type TenantDto = { id: string; description: string; edgeId?: string | null };
 type BackendAuthFactor = { type: string; required: boolean };
 type BackendAuthFlow = { primary: { credentials: string[]; inlinePassword: boolean; factors: BackendAuthFactor[] }; passkey?: { factors: BackendAuthFactor[] } | null };
@@ -20,6 +39,7 @@ type AuthorizationPresetDto = {
   description: string;
   redirectUri: string;
   postLoginRedirectUri: string;
+  postLogoutRedirectUri?: string;
   scope: string[];
   responseType: string;
   uiLocales?: string[]
@@ -343,8 +363,7 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
   await page.route('**/configuration/**', async route => {
     const request = route.request();
     const url = new URL(request.url());
-    // Requests are routed through the edge proxy at `resources/central/`; strip it to match config paths.
-    const pathname = url.pathname.replace(/^\/resources\/central/, '');
+    const pathname = backendPath(url.pathname);
     const method = request.method();
     const body = readBody(request);
 
@@ -1032,8 +1051,7 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
   await page.route('**/users**', async route => {
     const request = route.request();
     const url = new URL(request.url());
-    // Requests are routed through the edge proxy at `resources/central/`; strip it to match user paths.
-    const pathname = url.pathname.replace(/^\/resources\/central/, '');
+    const pathname = backendPath(url.pathname);
     const method = request.method();
     const body = readBody(request);
 
@@ -1219,7 +1237,7 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
   await page.route('**/permissions/me**', async route => {
     const request = route.request();
     const url = new URL(request.url());
-    const pathname = url.pathname.replace(/^\/resources\/central/, '');
+    const pathname = backendPath(url.pathname);
     const method = request.method();
 
     if (pathname === '/permissions/me' && method === 'GET') {

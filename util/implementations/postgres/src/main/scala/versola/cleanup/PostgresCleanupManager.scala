@@ -2,6 +2,7 @@ package versola.cleanup
 
 import com.augustnagro.magnum.*
 import com.augustnagro.magnum.magzio.TransactorZIO
+import versola.util.postgres.BasicCodecs
 import zio.*
 import zio.config.magnolia.deriveConfig
 
@@ -21,21 +22,24 @@ class PostgresCleanupManager(
     xa: TransactorZIO,
     config: CleanupConfig,
     fibers: Ref[List[Fiber.Runtime[Throwable, Long]]],
-) extends CleanupManager.Base(config, fibers):
+) extends CleanupManager.Base(config, fibers), BasicCodecs:
 
   override protected def cleanupBatch(tableName: String, batchSize: Int, keyColumn: String): Task[Int] =
-    val table = SqlLiteral(tableName)
-    val key   = SqlLiteral(keyColumn)
-    xa.connect {
+    val table    = SqlLiteral(tableName)
+    val key      = SqlLiteral(keyColumn)
+    val tableKey = SqlLiteral(s"$tableName.$keyColumn")
+    val subqKey  = SqlLiteral(s"subq.$keyColumn")
+    xa.connectMeasured(s"cleanup-batch-$tableName") {
       sql"""
         DELETE FROM $table
-        WHERE $key IN (
+        USING (
           SELECT $key FROM $table
           WHERE expires_at < NOW()
           ORDER BY expires_at
           LIMIT $batchSize
           FOR UPDATE SKIP LOCKED
-        )
+        ) subq
+        WHERE $tableKey = $subqKey
       """.update.run()
     }
 

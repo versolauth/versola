@@ -7,11 +7,13 @@ import versola.edge.model.{
   AuthConversationNotFound,
   ClientId,
   EdgeId,
+  InvalidLogoutToken,
   PermissionId,
   PresetId,
   PresetNotFound,
   ResourceId,
   RoleId,
+  SessionId,
   TenantId,
 }
 import versola.util.http.Observability
@@ -84,12 +86,14 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       client  <- ZIO.service[Client]
       service =  stub[EdgeService]
       jwks    =  stub[JwksService]
+      presets =  stub[AuthorizationPresetsSyncClient]
       tracing <- tracingLayer.build
       _ <- TestClient.addRoutes(
         Observability.handleErrors(
           EdgeController.routes.provideEnvironment(
             ZEnvironment[EdgeService](service) ++
               ZEnvironment[JwksService](jwks) ++
+              ZEnvironment[AuthorizationPresetsSyncClient](presets) ++
               ZEnvironment(edgeConfig) ++
               tracing,
           ),
@@ -197,7 +201,19 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       yield assertTrue(
         response.status == Status.SeeOther,
         response.header(Header.Location).map(_.url).contains(authorizeUrl),
-        service.authorize.calls == List(PresetId("preset-1")),
+        service.authorize.calls == List((PresetId("preset-1"), Map.empty[String, String])),
+      )
+    },
+    test("passes whitelisted query params to authorize") {
+      val authorizeUrl = URL.decode("https://idp.example/authorize?client_id=web-app").toOption.get
+      for
+        (response, service, _) <- run(
+          Request.get(URL.decode("/login/preset-1?acr_values=mfa&prompt=login&unknown=ignored").toOption.get),
+          (s, _) => s.authorize.succeedsWith(authorizeUrl),
+        )
+      yield assertTrue(
+        response.status == Status.SeeOther,
+        service.authorize.calls == List((PresetId("preset-1"), Map("acr_values" -> "mfa", "prompt" -> "login"))),
       )
     },
     test("returns 404 when the preset is unknown") {
@@ -238,6 +254,97 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
           (s, _) => s.complete.failsWith(AuthConversationNotFound()),
         )
       yield assertTrue(response.status == Status.BadRequest)
+    },
+  )
+
+  private val frontChannelLogoutSuite = suite("GET /logout/frontchannel")(
+    test("clears cookies returned by EdgeService and responds 200 with no-store") {
+      val clearCookie = EdgeSessionCookie.clear(domain = Some("app.example"), path = Some("/"))
+      for
+        (response, service, _) <- run(
+          Request.get(URL.decode("/logout/frontchannel?iss=https://idp.example&sid=sso-session-1").toOption.get),
+          (s, _) => s.frontChannelLogout.succeedsWith(List(clearCookie)),
+        )
+      yield assertTrue(
+        response.status == Status.Ok,
+        response.header(Header.CacheControl).contains(Header.CacheControl.NoStore),
+        response.header(Header.SetCookie).map(_.value.content).contains(""),
+        service.frontChannelLogout.calls == List(("https://idp.example", SessionId("sso-session-1"))),
+      )
+    },
+    test("responds 200 with no cookies when the session has no known refresh tokens") {
+      for
+        (response, service, _) <- run(
+          Request.get(URL.decode("/logout/frontchannel?iss=https://idp.example&sid=sso-session-unknown").toOption.get),
+          (s, _) => s.frontChannelLogout.succeedsWith(List.empty),
+        )
+      yield assertTrue(
+        response.status == Status.Ok,
+        response.header(Header.SetCookie).isEmpty,
+        service.frontChannelLogout.calls == List(("https://idp.example", SessionId("sso-session-unknown"))),
+      )
+    },
+    test("responds 200 with no cookies when the issuer is unknown") {
+      for
+        (response, service, _) <- run(
+          Request.get(URL.decode("/logout/frontchannel?iss=https://untrusted.example&sid=sso-session-1").toOption.get),
+          (s, _) => s.frontChannelLogout.succeedsWith(List.empty),
+        )
+      yield assertTrue(
+        response.status == Status.Ok,
+        response.header(Header.SetCookie).isEmpty,
+        service.frontChannelLogout.calls == List(("https://untrusted.example", SessionId("sso-session-1"))),
+      )
+    },
+  )
+
+  private val backChannelLogoutSuite = suite("POST /logout/backchannel")(
+    test("delegates the logout token to EdgeService and responds 200 with no-store") {
+      for
+        (response, service, _) <- run(
+          Request.post(
+            URL.decode("/logout/backchannel").toOption.get,
+            Body.fromURLEncodedForm(Form.fromStrings("logout_token" -> "header.payload.sig")),
+          ),
+          (s, _) => s.backChannelLogout.succeedsWith(()),
+        )
+      yield assertTrue(
+        response.status == Status.Ok,
+        response.header(Header.CacheControl).contains(Header.CacheControl.NoStore),
+        service.backChannelLogout.calls == List("header.payload.sig"),
+      )
+    },
+    test("responds 400 without calling EdgeService when logout_token is missing") {
+      for
+        (response, service, _) <- run(
+          Request.post(
+            URL.decode("/logout/backchannel").toOption.get,
+            Body.fromURLEncodedForm(Form.fromStrings("other" -> "value")),
+          ),
+        )
+        body <- response.body.asString
+      yield assertTrue(
+        response.status == Status.BadRequest,
+        body.fromJson[Map[String, String]].toOption.flatMap(_.get("error")).contains("invalid_request"),
+        service.backChannelLogout.calls.isEmpty,
+      )
+    },
+    test("responds 400 with the rejection reason when the logout token is invalid") {
+      for
+        (response, _, _) <- run(
+          Request.post(
+            URL.decode("/logout/backchannel").toOption.get,
+            Body.fromURLEncodedForm(Form.fromStrings("logout_token" -> "not-a-jwt")),
+          ),
+          (s, _) => s.backChannelLogout.failsWith(InvalidLogoutToken("logout token must not carry a nonce")),
+        )
+        body <- response.body.asString
+      yield assertTrue(
+        response.status == Status.BadRequest,
+        response.header(Header.CacheControl).contains(Header.CacheControl.NoStore),
+        body.fromJson[Map[String, String]].toOption.flatMap(_.get("error_description"))
+          .contains("logout token must not carry a nonce"),
+      )
     },
   )
 
@@ -343,11 +450,9 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       ZIO.succeed(assertTrue(cookie.path.contains(Path.root)))
     },
     test("clear produces empty content, maxAge=Zero, and security attributes") {
-      val now = Instant.now()
       val cookie = EdgeSessionCookie.clear(
         domain = Some("app.example"),
         path = Some("/"),
-        now = now,
       )
       ZIO.succeed(assertTrue(
         cookie.content.isEmpty,
@@ -358,8 +463,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       ))
     },
     test("clear falls back to Path.root when path is None") {
-      val now = Instant.now()
-      val cookie = EdgeSessionCookie.clear(domain = None, path = None, now = now)
+      val cookie = EdgeSessionCookie.clear(domain = None, path = None)
       ZIO.succeed(assertTrue(cookie.path.contains(Path.root)))
     },
   )
@@ -368,6 +472,8 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
     permissionsSuite,
     loginSuite,
     completeSuite,
+    frontChannelLogoutSuite,
+    backChannelLogoutSuite,
     proxySuite,
     sessionCookieSuite,
   ).provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging

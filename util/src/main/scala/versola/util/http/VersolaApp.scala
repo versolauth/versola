@@ -128,8 +128,19 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
       )
     yield ()
   }
-    .catchAll { (ex: Throwable) => ZIO.logErrorCause("Could not start application", Cause.fail(ex)).as(ExitCode.failure) }
-    .catchAllDefect(ex => ZIO.logErrorCause("Could not start application", Cause.die(ex)).as(ExitCode.failure))
+    .catchAll { (ex: Throwable) =>
+      // The diagnostics server is forked above onto non-daemon Netty threads that keep the JVM
+      // alive even after startup fails. Merely returning ExitCode.failure here therefore leaves a
+      // "zombie": the process never exits, so `restart: unless-stopped` never fires and /readiness
+      // stays false forever (see deploy.md 8.5). Force-terminate so the orchestrator restarts us -
+      // by then the dependency this startup failed on (e.g. central sync) is typically available.
+      ZIO.logErrorCause("Could not start application", Cause.fail(ex)) *>
+        ZIO.succeed(java.lang.System.exit(1))
+    }
+    .catchAllDefect { ex =>
+      ZIO.logErrorCause("Could not start application", Cause.die(ex)) *>
+        ZIO.succeed(java.lang.System.exit(1))
+    }
 
   def parseConfig[A: {DeriveConfig, Tag}] =
     ZLayer:

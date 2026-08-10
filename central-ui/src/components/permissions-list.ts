@@ -59,10 +59,14 @@ export class VersolaPermissionsList extends LitElement {
     .endpoint-list { display:grid; gap:.75rem; }
     .endpoint-row { display:flex; align-items:center; justify-content:space-between; gap:.75rem; flex-wrap:wrap; padding:.875rem 1rem; border:1px solid var(--border-dark); border-radius:var(--radius-md); background:rgba(255,255,255,.02); }
     .endpoint-main { display:flex; align-items:center; gap:.75rem; flex-wrap:wrap; min-width:0; }
-    .endpoint-path { font-family:var(--font-mono, monospace); color:var(--text-primary); word-break:break-all; }
     @media (max-width: 720px) {
-      .permission-header { flex-direction:column; }
-      .permission-actions { width:100%; }
+      /* align-items:center is inherited from the base rule, where it vertically
+         centres title against actions in a row. Once the flow turns to a
+         column it centres them *horizontally* instead, which left the title
+         centred while .permission-actions — being full-width — kept its
+         buttons packed to the left. Both now start at the same left edge. */
+      .permission-header { flex-direction:column; align-items:flex-start; }
+      .permission-actions { width:100%; margin-left:0; }
     }
   `];
 

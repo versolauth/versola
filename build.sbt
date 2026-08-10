@@ -1,6 +1,8 @@
 lazy val root = project.in(file("."))
   .settings(
     commonSettings,
+    Test / compile := (Test / compile)
+      .dependsOn(e2e / Test / compile).value
   )
   .aggregate(
     util,
@@ -10,7 +12,7 @@ lazy val root = project.in(file("."))
     `edge-postgres-impl`,
     edge,
     central,
-    `central-postgres-impl`
+    `central-postgres-impl`,
   )
 
 lazy val util = project
@@ -116,6 +118,62 @@ lazy val `central-postgres-impl` = project.in(centralImplementations / "postgres
     `util-postgres` % CompileTest
   )
 
+lazy val e2e = project
+  .in(file("e2e"))
+  .settings(
+    name := "e2e",
+    commonSettings,
+    libraryDependencies ++= Dependencies.http,
+    // Not part of the normal test run — only executed explicitly via `e2e/test`
+    Test / fork := true,
+  )
+
+// versola-tools: packages scripts/gen-env.scala as a plain JVM app instead
+// of relying on scala-cli at image-build/run time (see docker/Dockerfile.tools).
+// Deliberately NOT using commonSettings -- that pulls in Dependencies.core
+// (ZIO, etc.), which gen-env.scala doesn't use and which would bloat the
+// staged jar for no reason. Base directory is scripts/ itself (not a new
+// top-level tools/ folder) and Compile/scalaSource points at that same
+// directory, so gen-env.scala stays the single copy on disk, compiled by
+// both `scala-cli run scripts/gen-env.scala` (local dev, see develop.md)
+// and this sbt project (CI release staging) -- not a duplicated snapshot
+// that could drift, the exact property the old Dockerfile.tools comments
+// cared about preserving.
+// Not part of `root`'s aggregate, same reasoning as `e2e` above: staged
+// explicitly in CI (`sbt tools/stage`), not part of the default
+// `sbt compile`/`sbt test` loop.
+lazy val tools = project
+  .in(file("scripts"))
+  .enablePlugins(JavaAppPackaging)
+  .settings(
+    name := "tools",
+    scalaVersion := "3.8.1",
+    scalacOptions ++= Seq(
+      "-deprecation",
+      "-source:future",
+      "-new-syntax",
+      "-indent",
+    ),
+    // scripts/ also holds scala-cli's own build cache (.scala-build/,
+    // possibly .bsp/) from `scala-cli run scripts/gen-env.scala` -- full
+    // of old generated snapshots of this same file from past edits, with
+    // top-level defs that collide with the real gen-env.scala once sbt
+    // globs a whole directory recursively for sources. Tried excluding
+    // .scala-build via `excludeFilter` first (sbt's default excludeFilter,
+    // HiddenFileFilter, only recognizes the OS-level hidden attribute --
+    // .scala-build isn't flagged hidden on Windows despite the leading
+    // dot); that didn't take effect either (confirmed by hand: same
+    // duplicate-definition errors regardless). Sidestepping the whole
+    // recursive-discovery-plus-filter mechanism instead: there is exactly
+    // one real source file here, so list it directly rather than pointing
+    // at the directory and hoping nothing else in it gets swept up.
+    Compile / unmanagedSourceDirectories := Seq(baseDirectory.value),
+    Compile / unmanagedSources := Seq(baseDirectory.value / "gen-env.scala"),
+    // Matches the synthetic object Scala 3 generates for gen-env.scala's
+    // top-level `@main def genEnv(): Unit`.
+    Compile / mainClass := Some("genEnv"),
+  )
+
 lazy val sbtForkSettings = Seq(
   fork := true,
   run / baseDirectory := (ThisBuild / baseDirectory).value,
@@ -153,6 +211,7 @@ lazy val commonSettings =
     testFrameworks += new TestFramework("zio.test.sbt.ZTestFramework"),
     // Entry points and bootstrap wiring are not unit-testable in isolation, exclude from coverage.
     coverageExcludedFiles := ".*App.*|.*BootstrapService.*",
+    semanticdbEnabled := true
   )
 
 val CompileTest = "compile->compile;test->test"

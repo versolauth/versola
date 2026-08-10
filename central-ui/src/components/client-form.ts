@@ -4,9 +4,11 @@ import { theme } from '../styles/theme';
 import { buttonStyles, cardStyles, formStyles, iconActionStyles } from '../styles/components';
 import { AuthFactorType, AuthFlow, OAuthClient, OAuthScope, OtpTemplateRecord, Permission, PrimaryCredential, Resource, ThemeRecord } from '../types';
 import { createDefaultAuthFlow, getLocalizedDescription, resolvePermissionEndpointGroups } from '../utils/helpers';
+import './nav-toggle';
 import {
   validateClientId,
   validateRedirectUri,
+  validateLogoutUri,
   ttlToSeconds,
   secondsToTtl,
 } from '../utils/validators';
@@ -32,6 +34,7 @@ export class VersolaClientForm extends LitElement {
     permissions: [],
     theme: 'default',
     authFlow: createDefaultAuthFlow(),
+    frontChannelLogoutSessionRequired: true,
   };
 
   @state() private redirectUriInput = '';
@@ -40,6 +43,9 @@ export class VersolaClientForm extends LitElement {
   @state() private ttlUnit: 'minutes' | 'hours' = 'hours';
   @state() private redirectUriError = '';
   @state() private audienceError = '';
+  @state() private logoutMode: 'none' | 'front' | 'back' = 'none';
+  @state() private frontChannelLogoutUriError = '';
+  @state() private backChannelLogoutUriError = '';
   @state() private authFlowError = '';
   @state() private audienceSuggestionsOpen = false;
   @state() private openInfoKey: string | null = null;
@@ -588,6 +594,11 @@ export class VersolaClientForm extends LitElement {
       const { value, unit } = secondsToTtl(this.client.accessTokenTtl);
       this.ttlValue = value;
       this.ttlUnit = unit;
+      this.logoutMode = this.client.frontChannelLogoutUri
+        ? 'front'
+        : this.client.backChannelLogoutUri
+          ? 'back'
+          : 'none';
     } else {
       // Defaults: 1 hour, pre-select first available OTP template
       this.ttlValue = 1;
@@ -633,6 +644,28 @@ export class VersolaClientForm extends LitElement {
 
     this.authFlowError = '';
 
+    const frontChannelLogoutUri = this.logoutMode === 'front' ? (this.formData.frontChannelLogoutUri || '').trim() : '';
+    if (frontChannelLogoutUri) {
+      const uriValidation = validateLogoutUri(frontChannelLogoutUri);
+      if (!uriValidation.valid) {
+        this.frontChannelLogoutUriError = uriValidation.error || 'Invalid URI';
+        return;
+      }
+    }
+
+    this.frontChannelLogoutUriError = '';
+
+    const backChannelLogoutUri = this.logoutMode === 'back' ? (this.formData.backChannelLogoutUri || '').trim() : '';
+    if (backChannelLogoutUri) {
+      const uriValidation = validateLogoutUri(backChannelLogoutUri);
+      if (!uriValidation.valid) {
+        this.backChannelLogoutUriError = uriValidation.error || 'Invalid URI';
+        return;
+      }
+    }
+
+    this.backChannelLogoutUriError = '';
+
     const client: OAuthClient = {
       id: this.formData.id!,
       clientName: this.formData.clientName!,
@@ -645,6 +678,11 @@ export class VersolaClientForm extends LitElement {
       theme: this.formData.theme || 'default',
       otpTemplateId: this.formData.otpTemplateId ?? null,
       authFlow,
+      frontChannelLogoutUri: frontChannelLogoutUri || null,
+      frontChannelLogoutSessionRequired: frontChannelLogoutUri
+        ? !!this.formData.frontChannelLogoutSessionRequired
+        : false,
+      backChannelLogoutUri: backChannelLogoutUri || null,
     };
 
     this.dispatchEvent(new CustomEvent('submit', {
@@ -739,6 +777,50 @@ export class VersolaClientForm extends LitElement {
     this.redirectUriInput = (e.target as HTMLInputElement).value;
     if (this.redirectUriError) {
       this.redirectUriError = '';
+    }
+  }
+
+  private setLogoutMode(mode: 'none' | 'front' | 'back') {
+    if (this.logoutMode === mode) return;
+    this.logoutMode = mode;
+    this.frontChannelLogoutUriError = '';
+    this.backChannelLogoutUriError = '';
+    this.formData = {
+      ...this.formData,
+      frontChannelLogoutUri: mode === 'front' ? this.formData.frontChannelLogoutUri : '',
+      frontChannelLogoutSessionRequired: mode === 'front' ? this.formData.frontChannelLogoutSessionRequired : false,
+      backChannelLogoutUri: mode === 'back' ? this.formData.backChannelLogoutUri : '',
+    };
+  }
+
+  private handleFrontChannelLogoutUriInput(e: Event) {
+    const value = (e.target as HTMLInputElement).value;
+    const wasEmpty = !(this.formData.frontChannelLogoutUri || '').trim();
+    this.formData = {
+      ...this.formData,
+      frontChannelLogoutUri: value,
+      // Default to checked when a URI is first entered, unless already set.
+      frontChannelLogoutSessionRequired: wasEmpty && value.trim()
+        ? true
+        : this.formData.frontChannelLogoutSessionRequired,
+    };
+    if (this.frontChannelLogoutUriError) {
+      this.frontChannelLogoutUriError = '';
+    }
+  }
+
+  private toggleFrontChannelLogoutSessionRequired() {
+    this.formData = {
+      ...this.formData,
+      frontChannelLogoutSessionRequired: !this.formData.frontChannelLogoutSessionRequired,
+    };
+  }
+
+  private handleBackChannelLogoutUriInput(e: Event) {
+    const value = (e.target as HTMLInputElement).value;
+    this.formData = { ...this.formData, backChannelLogoutUri: value };
+    if (this.backChannelLogoutUriError) {
+      this.backChannelLogoutUriError = '';
     }
   }
 
@@ -1174,11 +1256,14 @@ export class VersolaClientForm extends LitElement {
 
     return html`
       <div class="form-header">
-        <div class="title-stack">
-          <h1 class="form-title">
-            ${this.client ? 'Edit Client' : 'Create New Client'}
-          </h1>
-          ${this.client ? html`<div class="entity-id-meta">${this.formData.id || '—'}</div>` : ''}
+        <div class="form-header-lead">
+          <versola-nav-toggle></versola-nav-toggle>
+          <div class="title-stack">
+            <h1 class="form-title">
+              ${this.client ? 'Edit Client' : 'Create New Client'}
+            </h1>
+            ${this.client ? html`<div class="entity-id-meta">${this.formData.id || '—'}</div>` : ''}
+          </div>
         </div>
       </div>
 
@@ -1247,6 +1332,98 @@ export class VersolaClientForm extends LitElement {
                   <option value=${t.id} ?selected=${this.formData.otpTemplateId === t.id}>${t.id}</option>
                 `)}
               </select>
+            </div>
+
+            <div class="form-group">
+              <label style="margin-bottom: 0;">Logout Notification</label>
+              <div class="cred-mode-cards">
+                <button
+                  type="button"
+                  class=${`cred-mode-card ${this.logoutMode === 'none' ? 'selected' : ''}`}
+                  @click=${() => this.setLogoutMode('none')}
+                >none</button>
+                <button
+                  type="button"
+                  class=${`cred-mode-card ${this.logoutMode === 'front' ? 'selected' : ''}`}
+                  @click=${() => this.setLogoutMode('front')}
+                >front-channel</button>
+                <button
+                  type="button"
+                  class=${`cred-mode-card ${this.logoutMode === 'back' ? 'selected' : ''}`}
+                  @click=${() => this.setLogoutMode('back')}
+                >back-channel</button>
+              </div>
+              <div class="hint">How this client is notified when the session ends elsewhere. Choose one.</div>
+
+              ${this.logoutMode === 'front' ? html`
+                <div class="cred-options">
+                  <div style="display: flex; align-items: center; gap: 0.4rem; margin-bottom: var(--spacing-sm);">
+                    <label for="client-front-channel-logout-uri" style="margin-bottom: 0;">Front-Channel Logout URI</label>
+                    ${this.renderOptionInfo(
+                      'front-channel-logout-uri',
+                      'Front-Channel Logout URI',
+                      html`
+                        <div class="option-tooltip-item">Loaded by the browser in a hidden iframe when logout is initiated, so this client can clear its own local session/cookies in response.</div>
+                        <div class="option-tooltip-item">If this client sits behind an edge, use the edge's own front-channel logout endpoint (<code>/logout/frontchannel</code>) rather than a client-specific URL — the edge clears the session for every client routed through it.</div>
+                      `,
+                      'Front-channel logout URI info',
+                    )}
+                  </div>
+                  <input
+                    type="text"
+                    id="client-front-channel-logout-uri"
+                    class="compact-input ${this.frontChannelLogoutUriError ? 'input-error' : ''}"
+                    .value=${this.formData.frontChannelLogoutUri || ''}
+                    @input=${this.handleFrontChannelLogoutUriInput}
+                    placeholder="https://app.example.com/logout/frontchannel"
+                  />
+                  ${this.frontChannelLogoutUriError ? html`
+                    <div class="error-message" style="margin-top: 0.5rem;">${this.frontChannelLogoutUriError}</div>
+                  ` : html`
+                    <div class="hint">Loaded in a hidden iframe to notify this client when the session ends elsewhere.</div>
+                  `}
+                  ${(this.formData.frontChannelLogoutUri || '').trim() ? html`
+                    <label class="plain-checkbox-label" style="margin-top: 0.5rem;">
+                      <input
+                        type="checkbox"
+                        .checked=${!!this.formData.frontChannelLogoutSessionRequired}
+                        @change=${() => this.toggleFrontChannelLogoutSessionRequired()}
+                      />
+                      Include session parameters (iss &amp; sid)
+                    </label>
+                  ` : ''}
+                </div>
+              ` : ''}
+
+              ${this.logoutMode === 'back' ? html`
+                <div class="cred-options">
+                  <div style="display: flex; align-items: center; gap: 0.4rem; margin-bottom: var(--spacing-sm);">
+                    <label for="client-back-channel-logout-uri" style="margin-bottom: 0;">Back-Channel Logout URI</label>
+                    ${this.renderOptionInfo(
+                      'back-channel-logout-uri',
+                      'Back-Channel Logout URI',
+                      html`
+                        <div class="option-tooltip-item">Called directly, server-to-server, when logout is initiated, so this client can revoke its own sessions/tokens without relying on the browser.</div>
+                        <div class="option-tooltip-item">If this client sits behind an edge, use the edge's own back-channel logout endpoint (<code>/logout/backchannel</code>) rather than a client-specific URL — the edge revokes the session for every client routed through it.</div>
+                      `,
+                      'Back-channel logout URI info',
+                    )}
+                  </div>
+                  <input
+                    type="text"
+                    id="client-back-channel-logout-uri"
+                    class="compact-input ${this.backChannelLogoutUriError ? 'input-error' : ''}"
+                    .value=${this.formData.backChannelLogoutUri || ''}
+                    @input=${this.handleBackChannelLogoutUriInput}
+                    placeholder="https://app.example.com/logout/backchannel"
+                  />
+                  ${this.backChannelLogoutUriError ? html`
+                    <div class="error-message" style="margin-top: 0.5rem;">${this.backChannelLogoutUriError}</div>
+                  ` : html`
+                    <div class="hint">Called server-to-server to notify this client when the session ends elsewhere.</div>
+                  `}
+                </div>
+              ` : ''}
             </div>
 
             <div class="form-group">

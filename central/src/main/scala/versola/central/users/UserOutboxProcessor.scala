@@ -2,7 +2,7 @@ package versola.central.users
 
 import versola.central.CentralConfig
 import versola.central.CentralConfig.UserOutboxConfig
-import zio.{Duration, Fiber, Ref, Schedule, Scope, UIO, URIO, ZIO, ZLayer}
+import zio.{Duration, Fiber, Ref, Schedule, Scope, Task, UIO, URIO, ZIO, ZLayer}
 
 /** Background service that polls `user_outbox`, dispatches events via [[AuthClient]],
   * deletes successful rows, and reschedules failures with exponential back-off.
@@ -14,6 +14,7 @@ import zio.{Duration, Fiber, Ref, Schedule, Scope, UIO, URIO, ZIO, ZLayer}
 trait UserOutboxProcessor:
   def start(): URIO[Scope, Unit]
   def stop(): UIO[Unit]
+  def flush(): Task[Unit]
 
 object UserOutboxProcessor:
   val live: ZLayer[CentralConfig & UserRepository & AuthClient & Scope, Nothing, UserOutboxProcessor] =
@@ -53,6 +54,8 @@ object UserOutboxProcessor:
         _ <- ZIO.logInfo("OutboxProcessor stopped")
       yield ()
 
+    override def flush(): Task[Unit] = processOnce
+
     private[users] def processOnce: ZIO[Any, Nothing, Unit] =
       repo.claimDueEvents(config.batchSize, config.lease)
         .flatMap(ZIO.foreachDiscard(_)(handle))
@@ -79,6 +82,7 @@ object UserOutboxProcessor:
       event match
         case e: OutboxEvent.UpsertUser => client.upsertUser(e.userId, e.version, e.email, e.phone, e.login)
         case e: OutboxEvent.UpdateUserRoles => client.updateUserRoles(e.userId, e.tenantId, e.add, e.remove)
+        case e: OutboxEvent.DeleteUser => client.deleteUser(e.userId)
 
     private def backoff(attempts: Int): Duration =
       val seconds = math.min(math.pow(2.0, attempts).toLong, config.maxBackoff.toSeconds)

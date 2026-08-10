@@ -4,6 +4,7 @@ CREATE TABLE authorization_presets (
     description                    TEXT NOT NULL,
     redirect_uri                   TEXT NOT NULL,
     post_login_redirect_uri        TEXT NOT NULL,
+    post_logout_redirect_uri       TEXT,
     scope                          TEXT[] NOT NULL,
     response_type                  TEXT NOT NULL,
     ui_locales                     TEXT[],

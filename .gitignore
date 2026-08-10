@@ -14,7 +14,8 @@ dev/
 
 # Node.js
 node_modules/
-package-lock.json
+# package-lock.json is intentionally committed (esp. central-ui/) so CI builds
+# are reproducible via `npm ci`. yarn/pnpm lockfiles stay ignored — we use npm.
 yarn.lock
 pnpm-lock.yaml
 
@@ -30,3 +31,4 @@ playwright/.cache/
 central/src/main/resources/forms/
 
 develop.txt
+.scala-semantic/
