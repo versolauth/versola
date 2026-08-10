@@ -227,6 +227,7 @@ object ConversationService:
               sentStep = otp.copy(factorIndex = factorIndex, timesRequested = 1, lastSentAt = Some(now))
               updatedConversation = conversation.copy(
                 userId = effectiveUserId,
+                // Persist the credential once it has been entered or resolved from the selected flow for OTP dispatch.
                 credential = Some(credential),
                 step = sentStep,
                 userEmail = lookedUpUser.flatMap(_.email).orElse(conversation.userEmail),

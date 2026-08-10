@@ -258,7 +258,6 @@ object AuthorizeEndpointService:
         // user fields so the credential step can be skipped and challenges are asked directly.
         // If no userId is known, userOpt is None and fields remain empty for normal credential entry.
         csrfToken <- secureRandom.nextAlphanumeric(16)
-        credential = userOpt.flatMap(u => u.email.map(Left(_)).orElse(u.phone.map(Right(_))))
         conversation = ConversationRecord(
           clientId = request.clientId,
           redirectUri = request.redirectUri,
@@ -267,7 +266,7 @@ object AuthorizeEndpointService:
           codeChallengeMethod = request.codeChallengeMethod,
           state = request.state,
           userId = effectiveUserId,
-          credential = credential,
+          credential = None,
           step = ConversationStep.Credential(
             primaryCredentials = flow.primary.credentials,
             inlinePassword = flow.primary.inlinePassword,

@@ -1,7 +1,7 @@
 package versola.oauth.conversation
 
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{AuthFactor, AuthFactorType, PassedAuthFactor}
+import versola.oauth.client.model.{AuthFactor, AuthFactorType, PassedAuthFactor, PrimaryCredential}
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep, Error}
 import versola.util.{Email, Phone, SecureRandom}
 import zio.{Task, ZIO, ZLayer}
@@ -192,9 +192,14 @@ object ConversationRouter:
     ): Task[ConversationResult.Render] =
       nextNeededFactor(conversation, conversation.authFlow.primary.factors.zipWithIndex.drop(nextFactorIndex)).flatMap:
         case Some((AuthFactor(AuthFactorType.otp, _), idx)) =>
-          conversation.credential match
+          val credential = conversation.authFlow.primary.credentials match
+            case List(PrimaryCredential.email) => conversation.userEmail.map(Left(_))
+            case List(PrimaryCredential.phone) => conversation.userPhone.map(Right(_))
+            case _ => None
+
+          credential match
             case Some(cred) => conversationService.prepareInitialOtp(authId, conversation, cred, idx)
-            case None       => ZIO.succeed(ConversationResult.IllegalState)
+            case None       => conversationService.accessDenied(authId, conversation)
 
         case Some((AuthFactor(AuthFactorType.password, _), idx)) =>
           conversationService.preparePasswordStep(authId, conversation, idx)

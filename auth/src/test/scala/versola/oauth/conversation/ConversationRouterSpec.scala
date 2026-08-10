@@ -339,14 +339,45 @@ object ConversationRouterSpec extends UnitSpecBase:
       },
     ),
     suite("advance")(
-      test("routes to OTP step when credential is set and factor is not yet satisfied") {
+      test("routes to OTP step from the configured flow when factor is not yet satisfied") {
         val env = Env()
+        val recordWithoutCredential = otpRecord.copy(credential = None, userPhone = Some(phone))
         for
           _ <- env.configService.getAcrVocabulary.succeedsWith(Map.empty)
           _ <- env.otpConversationService.prepareInitialOtp.succeedsWith(conversationResult)
-          _ <- env.router.advance(authId, otpRecord)
+          _ <- env.router.advance(authId, recordWithoutCredential)
           prepareOtpTimes = env.otpConversationService.prepareInitialOtp.times
         yield assertTrue(prepareOtpTimes == 1)
+      },
+      test("routes to OTP using email from the configured email flow") {
+        val env = Env()
+        val emailFlow = otpAuthFlow.copy(primary = otpAuthFlow.primary.copy(credentials = List(PrimaryCredential.email)))
+        val recordWithoutCredential = otpRecord.copy(
+          authFlow = emailFlow,
+          credential = None,
+          userEmail = Some(email),
+        )
+        for
+          _ <- env.configService.getAcrVocabulary.succeedsWith(Map.empty)
+          _ <- env.otpConversationService.prepareInitialOtp.succeedsWith(conversationResult)
+          _ <- env.router.advance(authId, recordWithoutCredential)
+          prepareOtpTimes = env.otpConversationService.prepareInitialOtp.times
+        yield assertTrue(prepareOtpTimes == 1)
+      },
+      test("returns AccessDenied when OTP is required but credential is missing") {
+        val env = Env()
+        val accessDeniedResult = ConversationResult.RenderStep(ConversationStep.AccessDenied)
+        val recordWithoutCredential = otpRecord.copy(credential = None)
+        for
+          _ <- env.configService.getAcrVocabulary.succeedsWith(Map.empty)
+          _ <- env.otpConversationService.accessDenied.succeedsWith(accessDeniedResult)
+          _ <- env.router.advance(authId, recordWithoutCredential)
+          accessDeniedTimes = env.otpConversationService.accessDenied.times
+          prepareOtpTimes = env.otpConversationService.prepareInitialOtp.times
+        yield assertTrue(
+          accessDeniedTimes == 1,
+          prepareOtpTimes == 0,
+        )
       },
       test("skips OTP factor already in amr and routes to password") {
         val env = Env()

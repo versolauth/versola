@@ -2,7 +2,7 @@ import { LitElement, html, css } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
 import { buttonStyles, cardStyles, formStyles, iconActionStyles } from '../styles/components';
-import { AuthFactorType, AuthFlow, OAuthClient, OAuthScope, OtpTemplateRecord, Permission, PrimaryCredential, Resource, ThemeRecord } from '../types';
+import { AuthFactorType, AuthFlow, OAuthClient, OAuthScope, OtpTemplateRecord, Permission, Resource, ThemeRecord } from '../types';
 import { createDefaultAuthFlow, getLocalizedDescription, resolvePermissionEndpointGroups } from '../utils/helpers';
 import './nav-toggle';
 import {
@@ -1101,29 +1101,18 @@ export class VersolaClientForm extends LitElement {
     return 'phone-email';
   }
 
-  private selectPhoneEmailMode() {
-    if (this.credentialMode === 'phone-email') return;
-    const preserved = this.authFlow.primaryCredentials.filter(c => c !== 'login');
-    const next = preserved.length > 0 ? preserved : ['email' as PrimaryCredential];
+  private selectPhoneEmailMode(credential: 'email' | 'phone') {
+    if (this.credentialMode === 'phone-email' && this.authFlow.primaryCredentials.includes(credential)) return;
     const real = this.realFactors.length > 0
       ? this.realFactors.map(f => ({ ...f, required: true }))
       : [{ type: 'otp' as AuthFactorType, required: true }];
-    this.setAuthFlow({ primaryCredentials: next, inlinePassword: false, factors: this.withPasskeyEnroll(real) });
+    this.setAuthFlow({ primaryCredentials: [credential], inlinePassword: false, factors: this.withPasskeyEnroll(real) });
   }
 
   private selectLoginPasswordMode() {
     if (this.credentialMode === 'login-password') return;
     const otp = this.realFactors.find(f => f.type === 'otp');
     this.setAuthFlow({ primaryCredentials: ['login'], inlinePassword: true, factors: this.withPasskeyEnroll(otp ? [otp] : []) });
-  }
-
-  private togglePhoneEmailCredential(credential: 'email' | 'phone') {
-    const current = this.authFlow.primaryCredentials;
-    const next = current.includes(credential)
-      ? current.filter(c => c !== credential)
-      : [...current, credential];
-    if (next.length === 0) return;
-    this.setAuthFlow({ primaryCredentials: next });
   }
 
   private toggleInlinePassword() {
@@ -1601,11 +1590,13 @@ export class VersolaClientForm extends LitElement {
               <div class="flow-subsection">
                 <div class="flow-subtitle">Primary credentials</div>
                 <div class="cred-mode-cards">
-                  <button
-                    type="button"
-                    class=${`cred-mode-card ${this.credentialMode === 'phone-email' ? 'selected' : ''}`}
-                    @click=${() => this.selectPhoneEmailMode()}
-                  >phone or email</button>
+                  ${(['phone', 'email'] as const).map(credential => html`
+                    <button
+                      type="button"
+                      class=${`cred-mode-card ${this.credentialMode === 'phone-email' && this.authFlow.primaryCredentials.includes(credential) ? 'selected' : ''}`}
+                      @click=${() => this.selectPhoneEmailMode(credential)}
+                    >${credential}</button>
+                  `)}
                   <button
                     type="button"
                     class=${`cred-mode-card ${this.credentialMode === 'login-password' ? 'selected' : ''}`}
@@ -1626,21 +1617,6 @@ export class VersolaClientForm extends LitElement {
                     passkey
                   </div>
                 </div>
-
-                ${this.credentialMode === 'phone-email' ? html`
-                  <div class="plain-checkboxes">
-                    ${(['email', 'phone'] as const).map(cred => html`
-                      <label class="plain-checkbox-label">
-                        <input
-                          type="checkbox"
-                          .checked=${this.authFlow.primaryCredentials.includes(cred)}
-                          @change=${() => this.togglePhoneEmailCredential(cred)}
-                        />
-                        ${cred}
-                      </label>
-                    `)}
-                  </div>
-                ` : ''}
 
                 ${this.credentialMode === 'phone-email' ? html`
                   <div class="cred-options">

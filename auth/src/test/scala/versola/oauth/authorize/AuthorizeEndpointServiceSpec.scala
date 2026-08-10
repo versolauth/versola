@@ -142,6 +142,8 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
   )
 
   val clientWithPasswordFlow = clientWithOtpFlow.copy(authFlow = Some(passwordFlow))
+  val emailOtpFlow = otpFlow.copy(primary = otpFlow.primary.copy(credentials = List(PrimaryCredential.email)))
+  val clientWithEmailOtpFlow = clientWithOtpFlow.copy(authFlow = Some(emailOtpFlow))
 
   val dummyConversation = versola.oauth.conversation.model.ConversationRecord(
     clientId = clientId,
@@ -347,10 +349,10 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
       val uuid = UUID.randomUUID()
       val passkeySeedAmr = Map(PassedAuthFactor.passkey -> PassedFactorRecord(now, Set(AuthMethodRef.swk, AuthMethodRef.user, AuthMethodRef.mfa)))
       val session = sessionWithAmr(passkeySeedAmr)
-      // User has a phone — the otpFlow uses phone as primary credential, so the credential step
+      // User has both credentials — the otpFlow selects phone, so the credential step
       // can be bypassed and advance() jumps straight to the missing OTP factor.
       val phone = Phone("+12025551234")
-      val user = UserRecord.empty(session.userId).copy(phone = Some(phone))
+      val user = UserRecord.empty(session.userId).copy(email = Some(emailHint), phone = Some(phone))
       for
         _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
         _ <- env.configurationService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
@@ -369,8 +371,31 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         createCalls.nonEmpty,
         createCalls.head._2.amr == passkeySeedAmr,
         createCalls.head._2.userId == Some(session.userId),
-        createCalls.head._2.credential == Some(Right(phone)),
+        createCalls.head._2.credential.isEmpty,
         advanceTimes == 1,
+      )
+    },
+    test("select email for OTP when the email flow bypasses credential entry") {
+      val env = Env()
+      val uuid = UUID.randomUUID()
+      val session = sessionWithAmr(Map.empty)
+      val phone = Phone("+12025551234")
+      val user = UserRecord.empty(session.userId).copy(email = Some(emailHint), phone = Some(phone))
+      for
+        _ <- env.configurationService.find.succeedsWith(Some(clientWithEmailOtpFlow))
+        _ <- env.configurationService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
+        _ <- env.sessionService.find.succeedsWith(Some(SessionInfo(sessionMac, session)))
+        _ <- env.configurationService.getAcrVocabulary.succeedsWith(Map.empty)
+        _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
+        _ <- env.secureRandom.nextAlphanumeric.succeedsWith("testcsrf1")
+        _ <- env.userRepository.find.succeedsWith(Some(user))
+        _ <- env.conversationRepository.create.succeedsWith(())
+        _ <- env.conversationRouter.advance.succeedsWith(())
+        _ <- env.service.authorize(baseRequest.copy(sessionId = Some(rawSessionId)))
+        createCalls = env.conversationRepository.create.calls
+      yield assertTrue(
+        createCalls.nonEmpty,
+        createCalls.head._2.credential.isEmpty,
       )
     },
     test("advance conversation to password step when login_hint email is provided on email+password flow") {
@@ -567,7 +592,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
       val session = sessionWithAmr(Map(PassedAuthFactor.otp -> PassedFactorRecord(now, Set(AuthMethodRef.otp))))
       val user = UserRecord.empty(session.userId).copy(email = Some(emailHint))
       for
-        _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
+        _ <- env.configurationService.find.succeedsWith(Some(clientWithEmailOtpFlow))
         _ <- env.configurationService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
         _ <- env.sessionService.find.succeedsWith(Some(SessionInfo(sessionMac, session)))
         _ <- env.configurationService.getAcrVocabulary.succeedsWith(Map(Acr("mfa") -> NonEmptyList(PassedAuthFactor.password, PassedAuthFactor.otp)))
@@ -582,7 +607,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         createCalls = env.conversationRepository.create.calls
       yield assertTrue(
         createCalls.nonEmpty,
-        createCalls.head._2.credential == Some(Left(emailHint)),
+        createCalls.head._2.credential.isEmpty,
         createCalls.head._2.userEmail == Some(emailHint),
         createCalls.head._2.userId == Some(session.userId),
       )
