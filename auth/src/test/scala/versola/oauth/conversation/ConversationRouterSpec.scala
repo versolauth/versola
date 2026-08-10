@@ -153,14 +153,22 @@ object ConversationRouterSpec extends UnitSpecBase:
           result <- env.router.getConversation(authId)
         yield assertTrue(result.isEmpty)
       },
+      test("fail with ServiceUnavailable when conversation lookup fails") {
+        val env = Env()
+        val boom = new RuntimeException("db down")
+        for
+          _ <- env.otpConversationService.find.failsWith(boom)
+          exit <- env.router.getConversation(authId).exit
+        yield assertTrue(exit == Exit.fail(Error.ServiceUnavailable))
+      },
     ),
     suite("submit")(
-      test("fail with BadRequest when conversation does not exist") {
+      test("fail with ConversationExpired when conversation does not exist") {
         val env = Env()
         for
           _ <- env.otpConversationService.find.succeedsWith(None)
           exit <- env.router.submit(authId, EmailSubmission(email, "test-csrf"), None, None).exit
-        yield assertTrue(exit == Exit.fail(Error.BadRequest))
+        yield assertTrue(exit == Exit.fail(Error.ConversationExpired))
       },
       test("handle email submission") {
         val env = Env()
@@ -224,13 +232,13 @@ object ConversationRouterSpec extends UnitSpecBase:
           prepareTimes == 1,
         )
       },
-      test("propagate infrastructure failures from the conversation lookup") {
+      test("return ServiceUnavailable when conversation lookup fails") {
         val env = Env()
         val boom = new RuntimeException("db down")
         for
           _ <- env.otpConversationService.find.failsWith(boom)
           exit <- env.router.submit(authId, EmailSubmission(email, "test-csrf"), None, None).exit
-        yield assertTrue(exit == Exit.fail(boom))
+        yield assertTrue(exit == Exit.fail(Error.ServiceUnavailable))
       },
       test("handle OTP submission and complete conversation on success") {
         val env = Env()

@@ -10,10 +10,10 @@ trait ConversationRouter:
   def getConversation(authId: AuthId): Task[Option[ConversationRecord]]
 
   def submit(
-    authId: AuthId,
-    submission: Submission,
-    uiLocale: Option[String],
-    ipAddress: Option[String],
+      authId: AuthId,
+      submission: Submission,
+      uiLocale: Option[String],
+      ipAddress: Option[String],
   ): Task[(ConversationResult.Render, ConversationRecord)]
 
   /** Begin a discoverable-credentials assertion and return the JSON public-key options.
@@ -39,26 +39,28 @@ object ConversationRouter:
   ) extends ConversationRouter:
 
     override def getConversation(authId: AuthId): Task[Option[ConversationRecord]] =
-      conversationService.find(authId)
+      conversationService.find(authId).orElseFail(Error.ServiceUnavailable)
 
     override def advance(authId: AuthId, conversation: ConversationRecord): Task[Unit] =
       afterFactor(authId, conversation, nextFactorIndex = 0).unit
 
     override def startPasskeyOptions(authId: AuthId): Task[Option[String]] =
-      conversationService.find(authId).flatMap:
-        case None => ZIO.none
-        case Some(record) =>
-          record.step match
-            case cred: ConversationStep.Credential if record.authFlow.passkey.isDefined =>
-              configService.getPasskeySettings(record.clientId).flatMap:
-                case None =>
-                  ZIO.fail(new Exception("Passkeys not configured for this tenant"))
-                case Some(settings) =>
-                  conversationService.startPasskeyAssertion(authId, record, cred, settings).map(Some(_))
-            case _: ConversationStep.Credential =>
-              ZIO.none
-            case _ =>
-              ZIO.fail(new Exception("startPasskeyAssertion called outside Credential step"))
+      conversationService.find(authId)
+        .orElseFail(Error.ServiceUnavailable)
+        .flatMap:
+          case None => ZIO.fail(Error.ConversationExpired)
+          case Some(record) =>
+            record.step match
+              case cred: ConversationStep.Credential if record.authFlow.passkey.isDefined =>
+                configService.getPasskeySettings(record.clientId).flatMap:
+                  case None =>
+                    ZIO.fail(new Exception("Passkeys not configured for this tenant"))
+                  case Some(settings) =>
+                    conversationService.startPasskeyAssertion(authId, record, cred, settings).map(Some(_))
+              case _: ConversationStep.Credential =>
+                ZIO.none
+              case _ =>
+                ZIO.fail(new Exception("startPasskeyAssertion called outside Credential step"))
 
     override def submit(
         authId: AuthId,
@@ -66,8 +68,8 @@ object ConversationRouter:
         uiLocale: Option[String],
         ipAddress: Option[String],
     ): Task[(ConversationResult.Render, ConversationRecord)] =
-      conversationService.find(authId).flatMap:
-        case None => ZIO.fail(Error.BadRequest)
+      conversationService.find(authId).orElseFail(Error.ServiceUnavailable).flatMap:
+        case None => ZIO.fail(Error.ConversationExpired)
         case Some(conversation) =>
           if submission.csrf != conversation.csrfToken then
             ZIO.fail(Error.BadRequest)
@@ -199,7 +201,7 @@ object ConversationRouter:
 
           credential match
             case Some(cred) => conversationService.prepareInitialOtp(authId, conversation, cred, idx)
-            case None       => conversationService.accessDenied(authId, conversation)
+            case None => conversationService.accessDenied(authId, conversation)
 
         case Some((AuthFactor(AuthFactorType.password, _), idx)) =>
           conversationService.preparePasswordStep(authId, conversation, idx)

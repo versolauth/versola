@@ -27,6 +27,13 @@ trait EdgeService:
       state: State,
   ): IO[Throwable | AuthConversationNotFound, EdgeService.LoginCompletion]
 
+  def completeError(
+      state: State,
+      error: String,
+      errorDescription: Option[String],
+      errorUri: Option[String],
+  ): IO[Throwable | AuthConversationNotFound, URL]
+
   def proxy(
       resourceId: ResourceId,
       restPath: Path,
@@ -179,6 +186,22 @@ object EdgeService:
         postLoginRedirectUri = preset.postLoginRedirectUri,
         cookieDomain = preset.cookieDomain,
         cookiePath = preset.cookiePath,
+      )
+
+    override def completeError(
+        state: State,
+        error: String,
+        errorDescription: Option[String],
+        errorUri: Option[String],
+    ): IO[Throwable | AuthConversationNotFound, URL] =
+      for
+        record <- loginRepository.findByState(state).someOrFail(AuthConversationNotFound())
+        preset <- clientService.findPreset(record.presetId).someOrFail(AuthConversationNotFound())
+        _ <- loginRepository.deleteByState(state)
+      yield preset.postLoginRedirectUri.toUrl.addQueryParams(
+        List("error" -> error) ++
+          errorDescription.map("error_description" -> _) ++
+          errorUri.map("error_uri" -> _),
       )
 
     /** Records this preset's participation in the SSO session. Written on every login

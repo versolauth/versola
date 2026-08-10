@@ -21,6 +21,10 @@ import java.security.MessageDigest
 trait ConversationRenderService:
   def renderStep(record: ConversationRecord, ifNoneMatch: Option[String], errorKey: Option[String] = None): Task[Response]
 
+  def renderExpired(clientId: ClientId, redirectUri: String, state: Option[String]): Task[Response]
+
+  def renderServiceUnavailable(clientId: ClientId, redirectUri: String, state: Option[String]): Task[Response]
+
   def renderSubmit(
       result: ConversationResult.Render,
       record: ConversationRecord,
@@ -65,6 +69,12 @@ object ConversationRenderService:
     case class PasskeyEnroll(publicKeyOptions: String) extends StepView
     @jsonHint("access-denied")
     case class AccessDenied(redirectUri: String) extends StepView
+
+    @jsonHint("conversation-expired")
+    case class ConversationExpired(redirectUri: Option[String]) extends StepView
+
+    @jsonHint("service-unavailable")
+    case class ServiceUnavailable(redirectUri: Option[String]) extends StepView
 
   case class FormConfig(
       step: StepView,
@@ -124,6 +134,57 @@ object ConversationRenderService:
                   .addHeader(Header.Custom("Cache-Control", "private, no-cache")),
               )
       yield response
+
+    override def renderExpired(clientId: ClientId, redirectUri: String, state: Option[String]): Task[Response] =
+      renderTerminal(
+        clientId,
+        "conversation-expired",
+        StepView.ConversationExpired(returnUri(redirectUri, state, "login_required")),
+      )
+
+    override def renderServiceUnavailable(clientId: ClientId, redirectUri: String, state: Option[String]): Task[Response] =
+      renderTerminal(
+        clientId,
+        "service-unavailable",
+        StepView.ServiceUnavailable(returnUri(redirectUri, state, "temporarily_unavailable")),
+      )
+
+    private def returnUri(
+        redirectUri: String,
+        state: Option[String],
+        error: String,
+    ): Option[String] =
+      URL.decode(redirectUri).toOption.map: url =>
+        url.addQueryParams(List("error" -> error) ++ state.map("state" -> _)).encode
+
+    private def renderTerminal(clientId: ClientId, formId: String, step: StepView): Task[Response] =
+      for
+        client <- configuration.find(clientId)
+        themeId = client.map(_.theme).getOrElse(ThemeDefault)
+        css <- themeCss(themeId)
+        formOpt <- configuration.getForm(formId)
+        locales <- configuration.getLocales
+      yield formOpt match
+        case None => htmlResponse(notFoundPage(css), Status.NotFound)
+        case Some(form) =>
+          val activeCodes = locales.locales.map(_.code).toSet + locales.default
+          val (chosenLocale, translations) = pickTranslations(form, None, locales.default, activeCodes)
+          val info = FormRenderInfo(
+            title = pageTitle(translations),
+            style = form.style,
+            jsCompiled = form.jsCompiled,
+            config = FormConfig(
+              step = step,
+              t = translations,
+              locale = chosenLocale,
+              locales = (form.localizations.keySet & activeCodes).toList.sorted,
+              allT = form.localizations,
+              error = None,
+              csrf = "",
+            ),
+            version = form.version,
+          )
+          htmlResponse(solidPage(info, css))
 
     private def etagFor(body: String): String =
       val digest = MessageDigest.getInstance("SHA-256")
@@ -396,6 +457,8 @@ object ConversationRenderService:
       case _: StepView.Otp => "otp"
       case _: StepView.PasskeyEnroll => "passkey-enroll"
       case _: StepView.AccessDenied => "access-denied"
+      case _: StepView.ConversationExpired => "conversation-expired"
+      case _: StepView.ServiceUnavailable => "service-unavailable"
       case _: LogoutConfirm => "confirm-logout"
       case _: SignedOut => "signed-out"
 

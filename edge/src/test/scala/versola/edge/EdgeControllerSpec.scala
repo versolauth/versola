@@ -255,6 +255,39 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         )
       yield assertTrue(response.status == Status.BadRequest)
     },
+    test("redirects OAuth errors to the post-login URL without setting a session cookie") {
+      val redirectUrl = URL.decode("https://app.example/home?from=login").toOption.get.addQueryParams(
+        List(
+          "error" -> "access_denied",
+          "error_description" -> "User cancelled",
+          "error_uri" -> "https://idp.example/errors/access_denied",
+        ),
+      )
+      for
+        (response, service, _) <- run(
+          Request.get(URL.decode("/complete?error=access_denied&error_description=User%20cancelled&error_uri=https%3A%2F%2Fidp.example%2Ferrors%2Faccess_denied&state=s-1").toOption.get),
+          (s, _) => s.completeError.succeedsWith(redirectUrl),
+        )
+        location = response.header(Header.Location).map(_.url)
+      yield assertTrue(
+        response.status == Status.SeeOther,
+        location.contains(redirectUrl),
+        response.header(Header.SetCookie).isEmpty,
+        service.complete.calls.isEmpty,
+        service.completeError.calls.size == 1,
+      )
+    },
+    test("returns 400 when neither code nor error is supplied") {
+      for
+        (response, service, _) <- run(
+          Request.get(URL.decode("/complete?state=s-1").toOption.get),
+        )
+      yield assertTrue(
+        response.status == Status.BadRequest,
+        service.complete.calls.isEmpty,
+        service.completeError.calls.isEmpty,
+      )
+    },
   )
 
   private val frontChannelLogoutSuite = suite("GET /logout/frontchannel")(

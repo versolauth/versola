@@ -13,7 +13,12 @@ import zio.json.*
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 
-case class ConversationCookie(authId: AuthId, clientId: ClientId) derives JsonCodec
+case class ConversationCookie(
+    authId: AuthId,
+    clientId: ClientId,
+    redirectUri: String,
+    state: Option[String],
+) derives JsonCodec
 
 object ConversationCookie:
   val name = "SSO_CONVERSATION"

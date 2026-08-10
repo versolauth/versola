@@ -22,7 +22,7 @@ object CookiesSpec extends ZIOSpecDefault:
   def spec = suite("CookiesSpec")(
     suite("ConversationCookie")(
       test("responseCookie creates a secure cookie with valid signature") {
-        val cookie = ConversationCookie(authId, clientId)
+        val cookie = ConversationCookie(authId, clientId, "https://example.com/callback", None)
         val resp   = ConversationCookie.responseCookie(cookie, 15.minutes, secret)
         assertTrue(
           resp.name == ConversationCookie.name,
@@ -34,15 +34,26 @@ object CookiesSpec extends ZIOSpecDefault:
         assertTrue(ConversationCookie.parse(resp.content, secret) == Right(cookie))
       },
 
+      test("round-trips the redirect context used by the expired page") {
+        val cookie = ConversationCookie(
+          authId,
+          clientId,
+          redirectUri = "https://example.com/callback",
+          state = Some("state-1"),
+        )
+        val content = ConversationCookie.responseCookie(cookie, 15.minutes, secret).content
+        assertTrue(ConversationCookie.parse(content, secret) == Right(cookie))
+      },
+
       test("parse fails with wrong secret") {
-        val cookie      = ConversationCookie(authId, clientId)
+        val cookie      = ConversationCookie(authId, clientId, "https://example.com/callback", None)
         val content     = ConversationCookie.responseCookie(cookie, 15.minutes, secret).content
         val wrongSecret = Secret.Bytes32(Array.fill(32)(9.toByte))
         assertTrue(ConversationCookie.parse(content, wrongSecret).isLeft)
       },
 
       test("parse fails with tampered payload") {
-        val cookie          = ConversationCookie(authId, clientId)
+        val cookie          = ConversationCookie(authId, clientId, "https://example.com/callback", None)
         val content         = ConversationCookie.responseCookie(cookie, 15.minutes, secret).content
         val parts           = content.split('.')
         val tamperedPayload = "eyJhdXRoSWQiOiJiYmJiYmJiYi1iYmJiLWJiYmItYmJiYi1iYmJiYmJiYmJiYmIiLCJjbGllbnRJZCI6InRlc3QtY2xpZW50In0"
