@@ -10,6 +10,7 @@
 // isn't valid Scala syntax for plain scalac/sbt to compile.
 
 import java.io.{File, PrintWriter}
+import java.net.URI
 import java.security.{KeyPairGenerator, SecureRandom}
 import java.security.interfaces.{RSAPrivateCrtKey, RSAPublicKey}
 import java.util.Base64
@@ -130,6 +131,7 @@ def writeFile(dir: File, name: String, content: String): Unit =
   // manual-test/README.md for how these values were worked out by hand
   // before being made the default here.
   val isDockerLocal = env == "docker-local"
+  val configurationCacheRefreshInterval = if isLocal || isDockerLocal then "1 minute" else "5 minutes"
   // Postgres user/password are the same across all three services either
   // way; computed once here so the Auth/Central/Edge sections below don't
   // each repeat the isDockerLocal check.
@@ -140,19 +142,16 @@ def writeFile(dir: File, name: String, content: String): Unit =
   if isLocal then println("  local env — using defaults, skipping prompts")
   if isDockerLocal then println("  docker-local env — using bridge-network defaults, skipping prompts")
 
-  // Only pin a known secret in local dev so e2e tests can rely on a stable value.
-  // Non-local environments let the bootstrap generate a random secret on first boot.
+  // Pin a known resource secret in local dev so e2e tests can rely on a stable value.
+  // Other environments let central bootstrap generate and persist one.
   //
-  // Both branches MUST end with "\n": centralConf below interpolates this value into
-  // "|${bootstrapClientSecretLine}|}" — the `}` on that source line is its own
+  // The line MUST end with "\n": centralConf below interpolates this value into
+  // "|${bootstrapResourceSecretLine}|}" — the `}` on that source line is its own
   // stripMargin-delimited line only because this value supplies the newline that
-  // precedes it. An else-branch of "" (no trailing newline) collapses that into a
-  // single line "||}", and stripMargin only strips the *first* pipe, leaving a
-  // literal "|}" in the generated HOCON — which fails to parse with
-  // "Key '|' may not be followed by token: '}'". Learned this the hard way: it broke
-  // every non-"local" generation (i.e. every generation following deploy.md §3.2).
-  val bootstrapClientSecretLine =
-    if isLocal then "  client-secret = \"ZGV2LWNlbnRyYWwtYWRtaW4tc2VjcmV0LTMyYnl0ZXM\"\n" else "\n"
+  // precedes it. Without the newline, stripMargin leaves a literal "|}" in the
+  // generated HOCON, which fails to parse.
+  val bootstrapResourceSecretLine =
+    if isLocal then "  resource-secret = \"ZGV2LWNlbnRyYWwtYWRtaW4tc2VjcmV0LTMyYnl0ZXM\"\n" else "\n"
 
   // ── Service URLs ──────────────────────────────────────────────────────────────
   // authUrl      – public-facing URL (JWT issuer, server metadata, browser redirects via edge).
@@ -164,6 +163,7 @@ def writeFile(dir: File, name: String, content: String): Unit =
   // browsers/JWT verifiers reach it via the host's published port either way.
   val authUrlDefault      = if isDockerLocal then "http://localhost:2821" else "http://localhost:9003"
   val authUrl              = prompt(s"  Auth public URL [$authUrlDefault]: ", authUrlDefault)
+  val passkeyRpId         = URI.create(authUrl).getHost
   // authInternalUrl, unlike authUrl, IS a real network call — central uses it
   // to reach auth's admin API server-to-server. Defaulting this to authUrl
   // (as the non-docker-local branch below does) is correct when both share
@@ -188,7 +188,6 @@ def writeFile(dir: File, name: String, content: String): Unit =
   // succeeded.
   val edgeUrlDefault      = if isDockerLocal then "http://localhost:2821" else "http://localhost:9005"
   val edgeUrl              = prompt(s"  Edge URL [$edgeUrlDefault]: ", edgeUrlDefault)
-
   section("\n── Auth service ──────────────────────────────────────────────────────")
   // Postgres is its own container in docker-local (compose service name
   // "postgres"), and all three services share one database via
@@ -344,6 +343,8 @@ def writeFile(dir: File, name: String, content: String): Unit =
   val authConf =
     s"""env = $env
        |
+       |configuration-cache-refresh-interval = "$configurationCacheRefreshInterval"
+       |
        |# otel-exporter = "http://localhost:4317"
        |
        |bootstrap {
@@ -432,6 +433,8 @@ def writeFile(dir: File, name: String, content: String): Unit =
   val centralConf =
     s"""env = $env
        |
+       |configuration-cache-refresh-interval = "$configurationCacheRefreshInterval"
+       |
        |# otel-exporter = "http://localhost:4317"
        |
        |bootstrap {
@@ -457,7 +460,11 @@ def writeFile(dir: File, name: String, content: String): Unit =
        |  ]
        |  central-url = "$centralUrl"
        |  front-channel-logout-uri = "$frontChannelLogoutUri"
-       |${bootstrapClientSecretLine}|}
+       |  passkey {
+       |    rp-id = "$passkeyRpId"
+       |    origins = ["$authUrl"]
+       |  }
+       |${bootstrapResourceSecretLine}|}
        |
        |secret-key = "$centralSecretKey"
        |client-secrets-secret = "$clientSecretsSecret"
@@ -488,6 +495,8 @@ def writeFile(dir: File, name: String, content: String): Unit =
 
   val edgeConf =
     s"""env = $env
+       |
+       |configuration-cache-refresh-interval = "$configurationCacheRefreshInterval"
        |
        |# otel-exporter = "http://localhost:4317"
        |

@@ -1,6 +1,6 @@
 package versola.oauth.token.model
 
-import versola.oauth.client.model.{ClientSecret, ScopeToken}
+import versola.oauth.client.model.{ClientSecret, ResourceUri, ScopeToken}
 import versola.oauth.model.{AuthorizationCode, CodeVerifier, GrantType, RefreshToken}
 import zio.http.URL
 
@@ -15,8 +15,10 @@ case class CodeExchangeRequest(
 case class RefreshTokenRequest(
     refreshToken: RefreshToken,
     scope: Option[Set[ScopeToken]],
+    resources: Option[List[ResourceUri]],
 ) extends TokenRequest
 
 case class ClientCredentialsRequest(
     scope: Option[Set[ScopeToken]],
+    resources: Option[List[ResourceUri]],
 ) extends TokenRequest

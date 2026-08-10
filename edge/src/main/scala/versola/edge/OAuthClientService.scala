@@ -2,7 +2,7 @@ package versola.edge
 
 import versola.edge.model.{AuthorizationPreset, ClientId, OAuthClient, PresetId}
 import versola.util.ReloadingCache
-import zio.{Schedule, Scope, UIO, ZLayer}
+import zio.{Schedule, Scope, UIO, ZIO, ZLayer}
 
 trait OAuthClientService:
   def findPreset(presetId: PresetId): UIO[Option[AuthorizationPreset]]
@@ -10,16 +10,22 @@ trait OAuthClientService:
   def findClient(clientId: ClientId): UIO[Option[OAuthClient]]
 
 object OAuthClientService:
-  def live(
-      schedule: Schedule[Any, Any, Any],
-  ): ZLayer[
-    AuthorizationPresetsSyncClient & OAuthClientsSyncClient & Scope,
+  def live: ZLayer[
+    AuthorizationPresetsSyncClient & OAuthClientsSyncClient & Scope & EdgeConfig,
     Throwable,
     OAuthClientService,
   ] =
     (
-      ZLayer(ReloadingCache.make[Map[PresetId, AuthorizationPreset]](schedule)) ++
-      ZLayer(ReloadingCache.make[Map[ClientId, OAuthClient]](schedule))
+      (ZLayer.fromZIO:
+        ZIO.serviceWithZIO[EdgeConfig](config =>
+          ReloadingCache.make[Map[PresetId, AuthorizationPreset]](Schedule.spaced(config.configurationCacheRefreshInterval)),
+        )
+      ) ++
+      (ZLayer.fromZIO:
+        ZIO.serviceWithZIO[EdgeConfig](config =>
+          ReloadingCache.make[Map[ClientId, OAuthClient]](Schedule.spaced(config.configurationCacheRefreshInterval)),
+        )
+      )
     ) >>> ZLayer.fromFunction(Impl(_, _))
 
   class Impl(

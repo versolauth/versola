@@ -22,7 +22,6 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
     clientName = "Private",
     redirectUris = NonEmptySet("https://example.com/callback"),
     scope = Set(ScopeToken("read")),
-    externalAudience = Nil,
     secret = Some(testSecret),
     previousSecret = None,
     accessTokenTtl = 10.minutes,
@@ -40,7 +39,6 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
     clientName = "Public",
     redirectUris = NonEmptySet("https://public.example.com/callback"),
     scope = Set(ScopeToken("read")),
-    externalAudience = Nil,
     secret = None,
     previousSecret = None,
     accessTokenTtl = 10.minutes,
@@ -84,6 +82,7 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
       challengeSettingsVec: Vector[ChallengeSettingsRecord] = Vector(challengeSettings),
       sysSettings: SystemSettingsRecord = systemSettings,
       metadata: Json.Obj = Json.Obj(),
+      resources: Vector[ResourceRecord] = Vector.empty,
   ) =
     for
       clientRef         <- Ref.make(clients)
@@ -95,6 +94,7 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
       challengeRef      <- Ref.make(challengeSettingsVec)
       sysRef            <- Ref.make(sysSettings)
       metadataRef       <- Ref.make(metadata)
+      resourceRef       <- Ref.make(resources)
     yield OAuthConfigurationService.Impl(
       clientCache = ReloadingCache(clientRef),
       clientRepository = stub[OAuthClientSyncClient],
@@ -114,6 +114,8 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
       systemSettingsRepository = stub[SystemSettingsSyncClient],
       metadataCache = ReloadingCache(metadataRef),
       metadataRepository = stub[MetadataSyncClient],
+      resourceCache = ReloadingCache(resourceRef),
+      resourceRepository = stub[ResourceSyncClient],
     )
 
   val spec = suite("OAuthConfigurationService")(

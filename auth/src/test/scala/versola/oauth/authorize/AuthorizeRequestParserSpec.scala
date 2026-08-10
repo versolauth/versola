@@ -23,7 +23,6 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
     clientName = "Test Client",
     redirectUris = NonEmptySet("https://example.com/callback"),
     scope = Set(ScopeToken("openid"), ScopeToken("profile"), ScopeToken("email")),
-    externalAudience = Nil,
     secret = None,
     previousSecret = None,
     accessTokenTtl = 1.hour,
@@ -38,6 +37,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
 
   class Env:
     val configuration = stub[OAuthConfigurationService]
+    configuration.getResourcesForClient.returnsWith(ZIO.succeed(Nil))
     val parser = AuthorizeRequestParser.Impl(TestEnvConfig.coreConfig, configuration)
 
   def validParams = Map(
@@ -91,6 +91,82 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
           assertTrue(result.prompt == Set(Prompt.login, Prompt.consent))
       }
     ),
+      test("retains a registered resource URI for the access-token audience") {
+        val env = Env()
+        val resourceUri = ResourceUri("https://api.example.com")
+        val request = Request.get(URL.root.addQueryParams(validParams + ("resource" -> resourceUri)))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          _ <- env.configuration.findResource.succeedsWith(Some(ResourceRecord(ResourceId("api"), tenantId, resourceUri, List(clientId), internal = false)))
+          result <- env.parser.parse(request)
+        yield assertTrue(result.resources == List(resourceUri))
+      },
+      test("uses public resources and edge when resource is omitted") {
+        val env = Env()
+        val publicResource = ResourceUri("https://api.example.com")
+        val edgeResource = ResourceUri("resource://edge")
+        val resources = List(
+          ResourceRecord(ResourceId("api"), tenantId, publicResource, List(clientId), internal = false),
+          ResourceRecord(ResourceId("internal"), tenantId, ResourceUri("https://internal.example.com"), List(clientId), internal = true),
+          ResourceRecord(ResourceId("reports"), tenantId, ResourceUri("https://reports.internal.example.com"), List(clientId), internal = true),
+        )
+        val request = Request.get(URL.root.addQueryParams(validParams))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          _ <- env.configuration.getResourcesForClient.succeedsWith(resources)
+          result <- env.parser.parse(request)
+        yield assertTrue(result.resources == List(publicResource, edgeResource))
+      },
+      test("uses edge when resource is omitted and no internal resources are available") {
+        val env = Env()
+        val publicResource = ResourceUri("https://api.example.com")
+        val request = Request.get(URL.root.addQueryParams(validParams))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          _ <- env.configuration.getResourcesForClient.succeedsWith(List(
+            ResourceRecord(ResourceId("api"), tenantId, publicResource, List(clientId), internal = false),
+          ))
+          result <- env.parser.parse(request)
+        yield assertTrue(result.resources == List(publicResource, ResourceUri("resource://edge")))
+      },
+      test("resolves an internal resource indicator by resource ID") {
+        val env = Env()
+        val resourceId = ResourceId("internal-api")
+        val resourceUri = ResourceUri(s"resource://$resourceId")
+        val request = Request.get(URL.root.addQueryParams(validParams + ("resource" -> resourceUri)))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          _ <- env.configuration.findResourceById.succeedsWith(Some(ResourceRecord(resourceId, tenantId, ResourceUri("https://internal.example.com"), List(clientId), internal = true)))
+          result <- env.parser.parse(request)
+        yield assertTrue(
+          result.resources == List(ResourceUri("resource://internal-api")),
+          env.configuration.findResourceById.calls == List((tenantId, resourceId)),
+        )
+      },
+      test("accepts an explicit edge resource") {
+        val env = Env()
+        val edgeResource = ResourceUri("resource://edge")
+        val request = Request.get(URL.root.addQueryParams(validParams + ("resource" -> edgeResource)))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request)
+        yield assertTrue(result.resources == List(edgeResource))
+      },
+      test("rejects edge when combined with an explicit internal resource") {
+        val env = Env()
+        val edgeResource = ResourceUri("resource://edge")
+        val internalResource = ResourceUri("resource://internal-api")
+        val request = Request.post(
+          URL.root,
+          Body.fromURLEncodedForm(Form.fromStrings(
+            (validParams.toSeq ++ Seq("resource" -> edgeResource, "resource" -> internalResource))*
+          )),
+        )
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request).either
+        yield assertTrue(result == Left(Error.InvalidTarget(redirectUri, Some(State("test-state")), edgeResource.toString)))
+      },
     suite("parse POST")(
       test("successfully parses valid form-urlencoded request") {
         val env = Env()
@@ -100,7 +176,27 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
           result <- env.parser.parse(request)
         yield
           assertTrue(result.clientId == clientId)
-      }
+        },
+        test("retains repeated resource parameters") {
+          val env = Env()
+          val first = ResourceUri("https://api.example.com")
+          val second = ResourceUri("https://reports.example.com")
+          val body = (validParams.toSeq ++ Seq("resource" -> first, "resource" -> second))
+            .map((name, value) => s"$name=${java.net.URLEncoder.encode(value, java.nio.charset.StandardCharsets.UTF_8)}")
+            .mkString("&")
+          val request = Request.post(URL.root, Body.fromString(body))
+            .addHeader(Header.ContentType(MediaType.application.`x-www-form-urlencoded`))
+          for
+            _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+            _ <- env.configuration.findResource.returnsZIO { case (_, resource) =>
+              ZIO.succeed(Map(
+                first -> ResourceRecord(ResourceId("resource"), tenantId, first, List(clientId), internal = false),
+                second -> ResourceRecord(ResourceId("reports"), tenantId, second, List(clientId), internal = false),
+              ).get(resource))
+            }
+            result <- env.parser.parse(request)
+          yield assertTrue(result.resources == List(first, second))
+        },
     ),
     suite("state")(
       test("accepts state at the maximum allowed length") {

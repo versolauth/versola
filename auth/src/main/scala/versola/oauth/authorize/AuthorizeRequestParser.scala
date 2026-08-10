@@ -1,17 +1,17 @@
 package versola.oauth.authorize
 
 import versola.oauth.authorize.model.{AuthorizeRequest, Error, Prompt, ResponseTypeEntry}
-import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{Acr, ClientId, OAuthClientRecord, PrimaryCredential, ScopeToken}
+import versola.oauth.client.{OAuthConfigurationService, ResourceResolver}
+import versola.oauth.client.model.{Acr, ClientId, OAuthClientRecord, PrimaryCredential, ResourceUri, ScopeToken}
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, Nonce, State}
 import versola.oauth.model.{SessionCookie, UserAgentCookie}
 import versola.oauth.session.model.SessionId
 import versola.oauth.userinfo.model.RequestedClaims
+import versola.util.CoreConfig
 import versola.util.{Base64, Email, Phone}
 import zio.http.{Header, Method, Request, URL}
 import zio.json.*
 import zio.prelude.{NonEmptyList, NonEmptySet}
-import versola.util.CoreConfig
 import zio.{Chunk, IO, Task, ZIO, ZLayer}
 
 trait AuthorizeRequestParser:
@@ -145,13 +145,15 @@ object AuthorizeRequestParser:
         loginHint <- getParam(params, "login_hint")
           .orElseFail(Error.MultipleValuesProvided(redirectUri, state, "login_hint"))
           .flatMap {
-            case None                                  => ZIO.none
+            case None => ZIO.none
             case Some(value) if value.startsWith("+") && value.drop(1).forall(_.isDigit) => parsePhoneLoginHint(value, client, redirectUri, state)
-            case Some(value)                           => parseEmailLoginHint(value, client, redirectUri, state)
+            case Some(value) => parseEmailLoginHint(value, client, redirectUri, state)
           }
 
         idTokenHint <- getParam(params, "id_token_hint")
           .orElseFail(Error.MultipleValuesProvided(redirectUri, state, "id_token_hint"))
+
+        resources <- resolveResources(params, client, redirectUri, state)
 
         authorizeRequest = AuthorizeRequest(
           clientId = clientId,
@@ -172,8 +174,36 @@ object AuthorizeRequestParser:
           sessionId = sessionId,
           loginHint = loginHint,
           idTokenHint = idTokenHint,
+          resources = resources,
         )
       yield authorizeRequest
+
+    /** RFC 8707 §2: parses all `resource` values (the parameter may be repeated), validates
+      * each is a well-formed resource URI, and resolves it to a resource registered for the
+      * client's tenant. Public resources retain their registered URI. Explicit internal
+      * resources use `resource://{resourceId}`; when no resource is requested, public resources
+      * are returned alongside the `resource://edge` indicator, even if no internal resource exists;
+      * the edge indicator cannot be combined with an explicitly requested internal resource;
+      * any unresolvable value fails the whole request with `invalid_target`.
+      */
+    private def resolveResources(
+        params: Map[String, Chunk[String]],
+        client: OAuthClientRecord,
+        redirectUri: URL,
+        state: Option[State],
+    ): IO[Error, List[ResourceUri]] =
+      params.getOrElse("resource", Chunk.empty).toList match
+        case Nil =>
+          ResourceResolver.resolve(oauthClientService, client, None)
+            .mapError(resource => Error.InvalidTarget(redirectUri, state, resource.toString))
+        case values =>
+          ZIO.foreach(values)(value =>
+            ZIO.fromEither(ResourceUri.parse(value))
+              .orElseFail(Error.InvalidTarget(redirectUri, state, value)),
+          ).flatMap(resources =>
+            ResourceResolver.resolve(oauthClientService, client, Some(resources))
+              .mapError(resource => Error.InvalidTarget(redirectUri, state, resource.toString)),
+          )
 
     private def parseEmailLoginHint(
         value: String,
@@ -183,8 +213,9 @@ object AuthorizeRequestParser:
     ): IO[Error.LoginHintInvalid, Option[Either[Email, Phone]]] =
       val allowed = client.authFlow.exists(_.primary.credentials.contains(PrimaryCredential.email))
       if !allowed then ZIO.fail(Error.LoginHintInvalid(redirectUri, state))
-      else ZIO.fromEither(Email.from(value))
-        .mapBoth(_ => Error.LoginHintInvalid(redirectUri, state), e => Some(Left(e)))
+      else
+        ZIO.fromEither(Email.from(value))
+          .mapBoth(_ => Error.LoginHintInvalid(redirectUri, state), e => Some(Left(e)))
 
     private def parsePhoneLoginHint(
         value: String,
@@ -196,7 +227,8 @@ object AuthorizeRequestParser:
       if !allowed then ZIO.fail(Error.LoginHintInvalid(redirectUri, state))
       else if value.drop(1).forall(_.isDigit) then
         oauthClientService.getAllowedPhonePrefixes(client.id).flatMap: prefixes =>
-          if prefixes.isEmpty || prefixes.exists(value.startsWith) then ZIO.fromEither(Phone.parse(value)).mapBoth(_ => Error.LoginHintInvalid(redirectUri, state), p => Some(Right(p)))
+          if prefixes.isEmpty || prefixes.exists(value.startsWith) then
+            ZIO.fromEither(Phone.parse(value)).mapBoth(_ => Error.LoginHintInvalid(redirectUri, state), p => Some(Right(p)))
           else ZIO.fail(Error.LoginHintInvalid(redirectUri, state))
       else ZIO.fail(Error.LoginHintInvalid(redirectUri, state))
 
@@ -217,7 +249,15 @@ object AuthorizeRequestParser:
           ZIO.succeed(request.url.queryParams.map)
         case Method.POST | _ =>
           request.body.asURLEncodedForm
-            .map(_.formData.flatMap(fd => fd.stringValue.map(v => fd.name -> Chunk(v))).toMap)
+            .map(_.formData.flatMap { field =>
+              field.stringValue.toList.flatMap { value =>
+                val values =
+                  if field.name == "resource" then ResourceUri.splitFormValue(value)
+                  else List(value)
+                values.map(field.name -> _)
+              }
+            })
+            .map(_.groupMap(_._1)(_._2).view.mapValues(Chunk.fromIterable).toMap)
 
     private def getParam(params: Map[String, Chunk[String]], key: String): IO[Unit, Option[String]] =
       ZIO.succeed(params.get(key))

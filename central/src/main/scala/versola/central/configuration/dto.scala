@@ -110,7 +110,10 @@ case class GetAllPermissionsResponse(
 case class ResourceResponse(
     resourceId: ResourceId,
     resource: ResourceUri,
+    audience: List[ClientId],
     endpoints: Vector[ResourceEndpointResponse],
+    internal: Boolean,
+    secretRotation: Boolean,
 ) derives Schema, JsonCodec
 
 case class ResourceEndpointResponse(
@@ -147,19 +150,27 @@ case class CreateResourceRequest(
     tenantId: TenantId,
     resourceId: ResourceId,
     resource: ResourceUri,
+    audience: List[ClientId],
     endpoints: Vector[CreateResourceEndpointRequest],
+    internal: Boolean,
 ) derives Schema, JsonCodec
 
 case class UpdateResourceRequest(
     resourceId: ResourceId,
     resource: Option[ResourceUri],
+    audience: Option[List[ClientId]],
     deleteEndpoints: Set[ResourceEndpointId],
     createEndpoints: Vector[CreateResourceEndpointRequest],
 ) derives Schema, JsonCodec
 
 case class CreateResourceResponse(
     resourceId: ResourceId,
+    secret: Option[String],
 ) derives Schema, JsonCodec
+
+case class RotateResourceSecretResponse(
+    secret: String,
+) derives Schema, JsonEncoder
 
 case class CreateResourceEndpointRequest(
     id: ResourceEndpointId,
@@ -256,7 +267,6 @@ case class OAuthClientResponse(
     clientName: String,
     redirectUris: Set[RedirectUri],
     scope: Set[ScopeToken],
-    externalAudience: List[ClientId],
     permissions: Set[Permission],
     secretRotation: Boolean,
     theme: String,
@@ -277,7 +287,6 @@ case class CreateClientRequest(
     clientName: String,
     redirectUris: Set[RedirectUri],
     allowedScopes: Set[ScopeToken],
-    audience: List[ClientId],
     permissions: Set[Permission],
     accessTokenTtl: Int,
     refreshTokenTtl: Option[Int],
@@ -387,10 +396,23 @@ case class ResourceSyncResponse(
     tenantId: TenantId,
     resource: ResourceUri,
     endpoints: Vector[ResourceEndpointSyncResponse],
+    secret: Option[String],
 ) derives Schema, JsonCodec
 
 case class GetResourcesSyncResponse(
     resources: Vector[ResourceSyncResponse],
+) derives Schema, JsonCodec
+
+case class ResourceRegistryEntry(
+    resourceId: ResourceId,
+    tenantId: TenantId,
+    resource: ResourceUri,
+    audience: List[ClientId],
+    internal: Boolean,
+) derives Schema, JsonCodec
+
+case class GetResourcesRegistryResponse(
+    resources: Vector[ResourceRegistryEntry],
 ) derives Schema, JsonCodec
 
 type ResourceUri = ResourceUri.Type
@@ -406,6 +428,8 @@ object ResourceUri:
         Left(s"Invalid URI format: $uri")
       case Right(url) if !url.isAbsolute =>
         Left("Resource URI must be absolute")
+      case _ if uri.regionMatches(true, 0, "resource://", 0, "resource://".length) =>
+        Left("Resource URI scheme resource:// is reserved")
       case Right(url) if url.path.nonEmpty =>
         Left("Resource URI path must be empty")
       case Right(url) if url.queryParams.nonEmpty =>
@@ -429,7 +453,6 @@ case class SyncOAuthClientRecord(
     clientName: String,
     redirectUris: Set[RedirectUri],
     scope: Set[ScopeToken],
-    externalAudience: List[ClientId],
     secret: Option[String],
     previousSecret: Option[String],
     accessTokenTtl: Duration,

@@ -1,6 +1,6 @@
 package versola.central.users
 
-import versola.central.configuration.clients.OAuthClientService
+import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.TenantId
 import versola.central.authorizeBasic
 import versola.util.http.Controller
@@ -11,7 +11,7 @@ import zio.json.EncoderOps
 import zio.telemetry.opentelemetry.tracing.Tracing
 
 object UserController extends Controller:
-  type Env = Tracing & UserService & OAuthClientService & EnvName
+  type Env = Tracing & UserService & ResourceService & EnvName
 
   def routes: Routes[Env, Throwable] = Routes(
     findUsersEndpoint,

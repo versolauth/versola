@@ -2,8 +2,8 @@ package versola.central.configuration.scopes
 
 import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
 import versola.central.configuration.{ClaimResponse, CreateScopeRequest, GetAllScopesResponse, ScopeWithClaimsResponse, UpdateScopeRequest}
-import versola.central.configuration.clients.OAuthClientService
 import versola.central.configuration.edges.EdgeService
+import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.TenantId
 import versola.util.http.Controller
 import zio.http.{Method, Request, Response, Routes, Status, handler}
@@ -12,7 +12,7 @@ import zio.schema.*
 import zio.ZIO
 
 object ScopeController extends Controller:
-  type Env = Tracing & OAuthScopeService & OAuthClientService & CentralConfig & EdgeService
+  type Env = Tracing & OAuthScopeService & ResourceService & CentralConfig & EdgeService
 
   def routes: Routes[Env, Throwable] = Routes(
     createScopeEndpoint,

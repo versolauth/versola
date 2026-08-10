@@ -15,7 +15,6 @@ case class OAuthClientRecord(
     clientName: String,
     redirectUris: NonEmptySet[String],
     scope: Set[ScopeToken],
-    externalAudience: List[ClientId],
     secret: Option[Secret],
     previousSecret: Option[Secret],
     accessTokenTtl: Duration,
@@ -27,8 +26,6 @@ case class OAuthClientRecord(
     frontChannelLogoutSessionRequired: Boolean,
     backChannelLogoutUri: Option[URL],
 ) derives CanEqual, Equal:
-
-  def audience: List[ClientId] = id :: externalAudience
 
   def isConfidential: Boolean = secret.nonEmpty
 

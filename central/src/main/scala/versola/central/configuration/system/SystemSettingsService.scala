@@ -1,7 +1,8 @@
 package versola.central.configuration.system
 
+import versola.central.CentralConfig
 import versola.util.ReloadingCache
-import zio.{Schedule, Scope, Task, ZLayer}
+import zio.{Schedule, Scope, Task, ZIO, ZLayer}
 
 trait SystemSettingsService:
   def getSettings: Task[SystemSettingsRecord]
@@ -9,10 +10,12 @@ trait SystemSettingsService:
   def sync(): Task[Unit]
 
 object SystemSettingsService:
-  def live(
-      schedule: Schedule[Any, Any, Any],
-  ): ZLayer[SystemSettingsRepository & Scope, Throwable, SystemSettingsService] =
-    ZLayer(ReloadingCache.make[SystemSettingsRecord](schedule))
+  def live: ZLayer[SystemSettingsRepository & Scope & CentralConfig, Throwable, SystemSettingsService] =
+    (ZLayer.fromZIO:
+      ZIO.serviceWithZIO[CentralConfig](config =>
+        ReloadingCache.make[SystemSettingsRecord](Schedule.spaced(config.configurationCacheRefreshInterval)),
+      )
+    )
       >>> ZLayer.fromFunction(Impl(_, _))
 
   class Impl(

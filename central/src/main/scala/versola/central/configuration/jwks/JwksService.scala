@@ -1,8 +1,9 @@
 package versola.central.configuration.jwks
 
+import versola.central.CentralConfig
 import versola.util.{JWT, ReloadingCache}
 import zio.json.ast.Json
-import zio.{Schedule, Scope, Task, UIO, ZLayer}
+import zio.{Schedule, Scope, Task, UIO, ZIO, ZLayer}
 
 /** Central is the source of truth for the JWKS, stored in the database and
   * served from a periodically reloaded cache.
@@ -21,10 +22,12 @@ trait JwksService:
   def deleteKey(kid: String): Task[Unit]
 
 object JwksService:
-  def live(
-      schedule: Schedule[Any, Any, Any],
-  ): ZLayer[JwksRepository & Scope, Throwable, JwksService] =
-    ZLayer(ReloadingCache.make[Vector[JwksRecord]](schedule))
+  def live: ZLayer[JwksRepository & Scope & CentralConfig, Throwable, JwksService] =
+    (ZLayer.fromZIO:
+      ZIO.serviceWithZIO[CentralConfig](config =>
+        ReloadingCache.make[Vector[JwksRecord]](Schedule.spaced(config.configurationCacheRefreshInterval)),
+      )
+    )
       >>> ZLayer.fromFunction(Impl(_, _))
 
   private def toJwks(records: Vector[JwksRecord]): Json.Obj =

@@ -1,6 +1,7 @@
 package versola.util
 
 import zio.http.{Method, URL}
+import zio.Duration
 
 import java.security.PrivateKey
 import javax.crypto.SecretKey
@@ -12,6 +13,7 @@ case class CoreConfig(
     bootstrap: Option[CoreConfig.BootstrapConfig],
     otpProvider: Option[CoreConfig.OtpProvider],
     smtp: Option[CoreConfig.SmtpConfig],
+    configurationCacheRefreshInterval: Duration,
 )
 
 object CoreConfig:

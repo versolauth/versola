@@ -278,6 +278,26 @@ object ObservabilitySpec extends ZIOSpecDefault:
           !headers.exists(_.contains("secret-token")),
         )
       }.provideSomeLayer[Scope](testLayer) @@ TestAspect.silentLogging,
+      test("masks Basic Authorization header while preserving the scheme") {
+        for
+          _ <- TestClient.addRoutes(Routes(Method.GET / "secure" -> Handler.ok))
+          rawClient <- ZIO.service[Client]
+          tracing <- ZIO.service[Tracing]
+          client = rawClient @@ Observability.clientMiddleware(tracing)
+          _ <- client.batched(
+            Request.get(URL.empty / "secure").addHeader(Header.Authorization.Basic("user", "c2VjcmV0")),
+          )
+          logs <- ZTestLogger.logOutput
+          sendLogs = logs.filter(_.message() == "send-http")
+          rawLog <- ZIO.fromOption(sendLogs.headOption).orElseFail(new RuntimeException("Missing send-http log"))
+          entry <- ZIO.fromEither(rawLog.call(clientLogFormat.toJsonLogger).fromJson[ClientLoggedEntry])
+            .mapError(new RuntimeException(_))
+          headers = entry.http.request.headers
+        yield assertTrue(
+          headers.exists(_.contains("Basic ***")),
+          !headers.exists(_.contains("c2VjcmV0")),
+        )
+      }.provideSomeLayer[Scope](testLayer) @@ TestAspect.silentLogging,
       test("logs only query params allowed by client config") {
         for
           _ <- TestClient.addRoutes(Routes(Method.GET / "query" -> Handler.ok))

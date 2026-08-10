@@ -1,6 +1,6 @@
 package versola.oauth.authorize.model
 
-import versola.oauth.client.model.{Acr, ClientId, ScopeToken}
+import versola.oauth.client.model.{Acr, ClientId, ResourceUri, ScopeToken}
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, Nonce, State}
 import versola.oauth.model.UserAgentCookiePayload
 import versola.oauth.session.model.SessionId
@@ -28,6 +28,8 @@ private[authorize] case class AuthorizeRequest(
     sessionId: Option[SessionId],
     loginHint: Option[Either[Email, Phone]],
     idTokenHint: Option[String],
+    /** RFC 8707 `resource` parameter(s), canonicalized for the access-token `aud` claim. */
+    resources: List[ResourceUri],
 ):
   def promptNone: Boolean = prompt.contains(Prompt.none)
   def promptLogin: Boolean = prompt.contains(Prompt.login)

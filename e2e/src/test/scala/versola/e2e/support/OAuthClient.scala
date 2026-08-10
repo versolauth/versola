@@ -270,6 +270,8 @@ extension (task: Task[Response])
   */
 final class OAuthClient(client: Client, config: E2EConfig):
 
+  private val centralAuthorization = Authorization.Basic("central", config.resourceSecret)
+
   /** GET /authorize — generates PKCE + state, starts a new conversation, extracts the
     * SSO_CONVERSATION cookie, and returns everything the caller needs for subsequent steps.
     */
@@ -385,7 +387,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
       redirectUri: Option[String] = None,
   ): Task[TokenResult] =
     val effectiveClientId = clientId.getOrElse(config.clientId)
-    val effectiveClientSecret = clientSecret.getOrElse(config.clientSecret)
+    val effectiveClientSecret = clientSecret.getOrElse(throw IllegalArgumentException("clientSecret must be provided for token requests"))
     val effectiveRedirectUri = redirectUri.getOrElse(config.redirectUri)
     val body = formBody(Map(
       "grant_type" -> "authorization_code",
@@ -406,7 +408,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
       scope: Option[String] = None,
   ): Task[TokenResult] =
     val effectiveClientId = clientId.getOrElse(config.clientId)
-    val effectiveClientSecret = clientSecret.getOrElse(config.clientSecret)
+    val effectiveClientSecret = clientSecret.getOrElse(throw IllegalArgumentException("clientSecret must be provided for token requests"))
     val body = formBody(Map(
       "grant_type" -> "refresh_token",
       "refresh_token" -> refreshToken,
@@ -423,7 +425,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
       clientSecret: Option[String] = None,
   ): Task[IntrospectResult] =
     val effectiveClientId = clientId.getOrElse(config.clientId)
-    val effectiveClientSecret = clientSecret.getOrElse(config.clientSecret)
+    val effectiveClientSecret = clientSecret.getOrElse(throw IllegalArgumentException("clientSecret must be provided for introspection requests"))
     val body = formBody(Map("token" -> token))
     val req = Request.post(s"${config.authUrl}/introspect", body)
       .addHeader(Authorization.Basic(effectiveClientId, effectiveClientSecret))
@@ -440,7 +442,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
     ).flatten
     val body = Body.fromString(Json.Obj(fields*).toJson)
     val req = Request.post(s"${config.centralUrl}/users", body)
-      .addHeader(Authorization.Basic(config.clientId, config.clientSecret))
+      .addHeader(centralAuthorization)
       .addHeader(Header.ContentType(MediaType.application.json))
     Client.batched(req).provide(ZLayer.succeed(client)).flatMap: resp =>
       resp.body.asString.flatMap: bodyStr =>
@@ -457,7 +459,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
   /** DELETE /service/users — deletes a user via the Central service API (non-prod only). */
   def deleteUser(userId: java.util.UUID): Task[Unit] =
     val req = Request.delete(s"${config.centralUrl}/service/users?id=$userId")
-      .addHeader(Authorization.Basic(config.clientId, config.clientSecret))
+      .addHeader(centralAuthorization)
     Client.batched(req).provide(ZLayer.succeed(client)).flatMap: resp =>
       if resp.status.isSuccess then ZIO.unit
       else
@@ -471,7 +473,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
       Json.Obj("userId" -> Json.Str(userId.toString), "password" -> Json.Str(password)).toJson,
     )
     val req = Request.post(s"${config.centralUrl}/users/password/set", body)
-      .addHeader(Authorization.Basic(config.clientId, config.clientSecret))
+      .addHeader(centralAuthorization)
       .addHeader(Header.ContentType(MediaType.application.json))
     Client.batched(req).provide(ZLayer.succeed(client)).flatMap: resp =>
       if resp.status.isSuccess then ZIO.unit
@@ -480,7 +482,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
           ZIO.fail(RuntimeException(s"setUserPassword failed: status=${resp.status} body=$bodyStr"))
 
   /** POST /configuration/clients — registers a new OAuth client via the Central API.
-    * Authenticates with the central-admin secret (same credential as [[token]]).
+    * Authenticates with the central resource secret.
     */
   def registerClient(
       clientId: String,
@@ -507,14 +509,14 @@ final class OAuthClient(client: Client, config: E2EConfig):
       frontChannelLogoutSessionRequired = false,
     ).toJson)
     val req = Request.post(s"${config.centralUrl}/configuration/clients", body)
-      .addHeader(Authorization.Basic(config.clientId, config.clientSecret))
+      .addHeader(centralAuthorization)
       .addHeader(Header.ContentType(MediaType.application.json))
     Client.batched(req).provide(ZLayer.succeed(client)).flatMap(RegisterClientResult.parse)
 
   /** POST /service/users/outbox/flush — forces central to dispatch all pending user-outbox events to auth (non-prod only). */
   def flushUserOutbox(): Task[Unit] =
     val req = Request.post(s"${config.centralUrl}/service/users/outbox/flush", Body.empty)
-      .addHeader(Authorization.Basic(config.clientId, config.clientSecret))
+      .addHeader(centralAuthorization)
     Client.batched(req)
       .provide(ZLayer.succeed(client))
       .flatMap: resp =>
@@ -528,7 +530,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
     */
   def syncConfiguration(): Task[Unit] =
     val req = Request.post(s"${config.centralUrl}/service/configuration/sync", Body.empty)
-      .addHeader(Authorization.Basic(config.clientId, config.clientSecret))
+      .addHeader(centralAuthorization)
     Client.batched(req)
       .provide(ZLayer.succeed(client))
       .flatMap: resp =>
@@ -564,7 +566,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
          |  "acrVocabulary": $vocabJson
          |}""".stripMargin
     val req = Request.put(s"${config.centralUrl}/configuration/challenges/challenge-settings", Body.fromString(bodyStr))
-      .addHeader(Authorization.Basic(config.clientId, config.clientSecret))
+      .addHeader(centralAuthorization)
       .addHeader(Header.ContentType(MediaType.application.json))
     Client.batched(req).provide(ZLayer.succeed(client)).flatMap: resp =>
       if resp.status.isSuccess then ZIO.unit

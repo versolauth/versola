@@ -2,8 +2,8 @@ package versola.central.configuration.system
 
 import io.opentelemetry.api
 import org.scalamock.stubs.{Stub, ZIOStubs}
-import versola.central.{TestAdminAuth, TestCentralConfig}
-import versola.central.configuration.clients.OAuthClientService
+import versola.central.{CentralConfig, TestAdminAuth, TestCentralConfig}
+import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.edges.EdgeService
 import versola.util.JWT
 import versola.util.http.Observability
@@ -58,19 +58,19 @@ object SystemSettingsControllerSpec extends ZIOSpecDefault, ZIOStubs:
         client             <- ZIO.service[Client]
         service             = stub[SystemSettingsService]
         edgeService         = stub[EdgeService]
-        oauthClientService  = stub[OAuthClientService]
+        resourceService  = stub[ResourceService]
         tracing            <- tracingLayer.build
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             SystemSettingsController.routes.provideEnvironment(
               ZEnvironment[SystemSettingsService](service) ++
-                tracing ++ ZEnvironment(config) ++
+                tracing ++ ZEnvironment[CentralConfig](config) ++
                 ZEnvironment[EdgeService](edgeService) ++
-                ZEnvironment[OAuthClientService](oauthClientService)
+                ZEnvironment[ResourceService](resourceService)
             )
           )
         )
-        _               <- oauthClientService.verifySecret.succeedsWith(true)
+        _               <- resourceService.verifySecret.succeedsWith(true)
         _               <- setup(service)
         requestWithAuth  = request.headers.header(Header.Authorization) match
           case None => request.addHeader(TestAdminAuth.basicAuthHeader)

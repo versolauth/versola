@@ -99,6 +99,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
         url = URL.decode("https://central.example").toOption.get,
       ),
       versolaUrl = URL.decode("https://idp.example").toOption.get,
+      configurationCacheRefreshInterval = 5.minutes,
     )
 
     val publicKeys: JWT.PublicKeys =
@@ -698,6 +699,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
         stepUpAcr = None,
         maxAge = None,
       )),
+      secret = None,
     )
 
   private val centralEndpointId = ResourceEndpointId(java.util.UUID.fromString("018f0f2a-1c7b-7000-9000-000000000000"))

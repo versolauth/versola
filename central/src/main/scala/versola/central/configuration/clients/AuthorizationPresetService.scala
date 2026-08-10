@@ -1,5 +1,6 @@
 package versola.central.configuration.clients
 
+import versola.central.CentralConfig
 import versola.central.configuration.SaveAuthorizationPresetsRequest
 import versola.central.configuration.challenges.ChallengeSettingsService
 import versola.central.configuration.edges.EdgeId
@@ -19,14 +20,16 @@ trait AuthorizationPresetService:
   def sync(event: SyncEvent.PresetsUpdated): Task[Unit]
 
 object AuthorizationPresetService:
-  def live(
-      schedule: Schedule[Any, Any, Any],
-  ): ZLayer[
-    AuthorizationPresetRepository & OAuthClientService & ChallengeSettingsService & Scope,
+  def live: ZLayer[
+    AuthorizationPresetRepository & OAuthClientService & ChallengeSettingsService & Scope & CentralConfig,
     Throwable,
     AuthorizationPresetService,
   ] =
-    ZLayer(ReloadingCache.make[Vector[AuthorizationPreset]](schedule))
+    (ZLayer.fromZIO:
+      ZIO.serviceWithZIO[CentralConfig](config =>
+        ReloadingCache.make[Vector[AuthorizationPreset]](Schedule.spaced(config.configurationCacheRefreshInterval)),
+      )
+    )
       >>> ZLayer.fromFunction(Impl(_, _, _, _))
 
   class Impl(

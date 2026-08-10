@@ -1,7 +1,8 @@
 package versola.central.configuration.edges
 
+import versola.central.CentralConfig
 import versola.util.{ReloadingCache, RsaKeyPair, SecurityService}
-import zio.{Schedule, Scope, Task, UIO, ZLayer}
+import zio.{Schedule, Scope, Task, UIO, ZIO, ZLayer}
 
 trait EdgeService:
   def getAllEdges: UIO[Vector[EdgeRecord]]
@@ -19,10 +20,12 @@ trait EdgeService:
   def sync(): Task[Unit]
 
 object EdgeService:
-  def live(
-      schedule: Schedule[Any, Any, Any],
-  ): ZLayer[EdgeRepository & SecurityService & Scope, Throwable, EdgeService] =
-    ZLayer(ReloadingCache.make[Vector[EdgeRecord]](schedule))
+  def live: ZLayer[EdgeRepository & SecurityService & Scope & CentralConfig, Throwable, EdgeService] =
+    (ZLayer.fromZIO:
+      ZIO.serviceWithZIO[CentralConfig](config =>
+        ReloadingCache.make[Vector[EdgeRecord]](Schedule.spaced(config.configurationCacheRefreshInterval)),
+      )
+    )
       >>> ZLayer.fromFunction(Impl(_, _, _))
 
   case class Impl(

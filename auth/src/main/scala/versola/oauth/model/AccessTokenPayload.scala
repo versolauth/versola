@@ -1,7 +1,7 @@
 package versola.oauth.model
 
 import com.nimbusds.jose.jwk.JWKSet
-import versola.oauth.client.model.{ClientId, ScopeToken}
+import versola.oauth.client.model.{ClientId, ResourceUri, ScopeToken}
 import versola.oauth.userinfo.model.RequestedClaims
 import versola.user.model.UserId
 import versola.util.{CoreConfig, JWT}
@@ -18,7 +18,7 @@ case class AccessTokenPayload(
     @jsonField("exp") expiresAt: Instant,
     @jsonField("iat") issuedAt: Instant,
     @jsonField("nbf") notBefore: Option[Instant],
-    @jsonField("aud") audience: Vector[ClientId],
+    @jsonField("aud") audience: Vector[ResourceUri],
     @jsonField("iss") issuer: String,
     @jsonField("jti") id: AccessToken,
 ):
@@ -34,8 +34,8 @@ object AccessTokenPayload:
 
   given JsonDecoder[Instant] = JsonDecoder[Long].map(Instant.ofEpochSecond)
 
-  private given audienceDecoder: JsonDecoder[Vector[ClientId]] =
-    JsonDecoder[ClientId].map(Vector(_))
-      .orElse(JsonDecoder[Vector[String]].map(_.map(ClientId(_))))
+  private given audienceDecoder: JsonDecoder[Vector[ResourceUri]] =
+    JsonDecoder[ResourceUri].map(Vector(_))
+      .orElse(JsonDecoder[List[ResourceUri]].map(_.toVector))
 
   given JsonDecoder[AccessTokenPayload] = DeriveJsonDecoder.gen[AccessTokenPayload]

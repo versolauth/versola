@@ -1,15 +1,15 @@
 import { LitElement, css, html, type TemplateResult } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
-import { buttonStyles, cardStyles, formStyles, methodBadgeStyles, tableStyles } from '../styles/components';
+import { badgeStyles, buttonStyles, cardStyles, formStyles, methodBadgeStyles, tableStyles } from '../styles/components';
 import { celHighlightStyles } from '../styles/cel-highlight';
 import { theme } from '../styles/theme';
 import type { InjectRule, InjectTarget, Resource, ResourceEndpoint, ResourceEndpointId } from '../types';
-import { createResource, deleteResource, fetchChallengeSettings, getResources, updateResource } from '../utils/central-api';
+import { createResource, deletePreviousResourceSecret, deleteResource, fetchAllClients, fetchChallengeSettings, getResources, rotateResourceSecret, updateResource } from '../utils/central-api';
 import { renderHighlightedCel } from '../utils/cel-highlight';
 import { validateCel } from '../utils/cel-validator';
 import { confirmDestructiveAction } from '../utils/confirm-dialog';
-import { formatResourceLabel } from '../utils/helpers';
-import { validateResourceUri } from '../utils/validators';
+import { copyToClipboard, formatResourceLabel } from '../utils/helpers';
+import { validateResourceId, validateResourceUri } from '../utils/validators';
 import './cel-editor';
 import './content-header';
 import './error-card';
@@ -45,12 +45,23 @@ type PersistedResourceEndpointPayload = SaveResourceEndpointPayload & {
 };
 
 type ResourceFormMode = 'none' | 'create-resource' | 'edit-resource';
+type EndpointSearch = { method?: string; path: string };
 
 const endpointMethods = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'] as const;
 const injectTargets: InjectTarget[] = ['header', 'query', 'body'];
 
 function endpointLabel(endpoint: Pick<ResourceEndpointDraft, 'method' | 'path'>) {
   return `${endpoint.method} ${endpoint.path}`;
+}
+
+function parseEndpointSearch(query: string): EndpointSearch | null {
+  const normalized = query.trim();
+  if (normalized.startsWith('/')) return { path: normalized.toLowerCase() };
+
+  const methodAndPath = /^(GET|POST|PUT|PATCH|DELETE)\s+(\/.*)$/i.exec(normalized);
+  return methodAndPath
+    ? { method: methodAndPath[1].toUpperCase(), path: methodAndPath[2].toLowerCase() }
+    : null;
 }
 
 function cloneInject(rules: InjectRule[]): InjectRule[] {
@@ -62,12 +73,15 @@ export class VersolaResourcesList extends LitElement {
   @property({ type: String }) tenantId: string | null = null;
   @property({ type: Boolean }) canManage = false;
   @state() private resources: Resource[] = [];
+  @state() private clientIds: string[] = [];
   @state() private acrVocabulary: Record<string, string[]> = {};
   @state() private expandedResources: Set<string> = new Set();
   @state() private expandedEndpoints: Set<ResourceEndpointId> = new Set();
   @state() private searchQuery = '';
+  @state() private endpointEditSearchQuery = '';
   @state() private loading = false;
   @state() private saving = false;
+  @state() private secretActionResourceId: string | null = null;
   @state() private error = '';
   @state() private formMode: ResourceFormMode = 'none';
   @state() private activeResourceId: string | null = null;
@@ -75,13 +89,19 @@ export class VersolaResourcesList extends LitElement {
   @state() private openInfoKey: string | null = null;
   @state() private resourceUri = '';
   @state() private resourceId = '';
+  @state() private resourceAudience: string[] = [];
+  @state() private audienceToAdd = '';
+  @state() private resourceInternal = false;
   @state() private endpointDrafts: EditableResourceEndpoint[] = [];
+  @state() private createdSecret: { resourceId: string; secret: string; action: 'created' | 'rotated' } | null = null;
+  @state() private copyFeedback = '';
+  @state() private collapsedAudiences: Set<string> = new Set();
   private nextEndpointDraftId = 0;
   private handleDocumentClick = () => {
     this.openInfoKey = null;
   };
 
-  static styles = [theme, buttonStyles, cardStyles, formStyles, methodBadgeStyles, tableStyles, celHighlightStyles, css`
+  static styles = [theme, buttonStyles, cardStyles, formStyles, methodBadgeStyles, tableStyles, badgeStyles, celHighlightStyles, css`
     :host {
       display:block;
       --compact-field-max-width: 22.8rem;
@@ -98,6 +118,7 @@ export class VersolaResourcesList extends LitElement {
     .form-grid { display:grid; grid-template-columns:minmax(0, 1fr); gap:var(--spacing-lg); }
     .form-grid > * { min-width:0; }
     .form-actions { display:flex; gap:1rem; justify-content:flex-end; margin-top:var(--spacing-xl); padding-top:var(--spacing-xl); border-top:1px solid var(--border-dark); }
+    .secondary-action-button { margin-right:auto; }
     .search-bar { margin-bottom:var(--spacing-lg); max-width:28rem; }
     .stack { display:grid; gap:var(--spacing-md); }
     .resource-shell { transition:border-color var(--transition-base); }
@@ -110,6 +131,33 @@ export class VersolaResourcesList extends LitElement {
     .resource-id-badge { display:inline-flex; align-items:center; min-height:1.5rem; padding:0 .6rem; border-radius:999px; font-size:.75rem; font-weight:600; letter-spacing:.01em; background:rgba(88, 166, 255, .16); color:#7cc4ff; border:1px solid rgba(88, 166, 255, .28); flex:none; }
     .input-with-info { display:flex; align-items:center; gap:.5rem; }
     .input-with-info > .form-input { flex:1; min-width:0; }
+    .cred-mode-cards { display:grid; grid-template-columns:repeat(auto-fill, minmax(160px, 1fr)); gap:.75rem; margin-top:.5rem; }
+    .cred-mode-card { display:flex; align-items:center; justify-content:center; text-align:center; padding:.625rem .75rem; border:1px solid var(--border-dark); border-radius:var(--radius-sm); background:transparent; color:var(--text-primary); font-size:.875rem; font-family:var(--font-mono); cursor:pointer; transition:all var(--transition-fast); }
+    .cred-mode-card:hover { border-color:var(--accent); background:rgba(88, 166, 255, .05); }
+    .cred-mode-card.selected { border-color:var(--accent); background:rgba(88, 166, 255, .12); }
+    .audience-add-row { display:flex; align-items:center; gap:.75rem; flex-wrap:wrap; margin-top:.5rem; }
+    .audience-input-wrap { position:relative; flex:1; min-width:16rem; }
+    .audience-suggestions { position:absolute; top:calc(100% + .25rem); left:0; right:0; z-index:30; display:grid; max-height:12rem; overflow-y:auto; padding:.25rem; border:1px solid var(--border-dark); border-radius:var(--radius-sm); background:var(--bg-dark-card); box-shadow:0 8px 20px rgba(0,0,0,.35); }
+    .audience-suggestion { width:100%; padding:.5rem .625rem; border:0; border-radius:var(--radius-sm); background:transparent; color:var(--text-primary); font-family:var(--font-mono); font-size:.875rem; text-align:left; cursor:pointer; }
+    .audience-suggestion:hover, .audience-suggestion:focus-visible { background:rgba(88,166,255,.12); color:var(--accent); outline:none; }
+    .audience-list { display:grid; gap:.5rem; margin-top:.75rem; }
+    .audience-item { display:flex; align-items:center; justify-content:space-between; gap:.75rem; min-height:2.25rem; padding:.375rem .5rem .375rem .75rem; border:1px solid var(--border-dark); border-radius:var(--radius-sm); background:rgba(255,255,255,.02); font-family:var(--font-mono); font-size:.875rem; }
+    .audience-empty { margin-top:.75rem; }
+    .resource-audience { display:grid; gap:.625rem; }
+    .resource-section-trigger { display:flex; align-items:center; gap:.625rem; width:max-content; padding:0; border:0; background:transparent; color:var(--text-primary); font-size:.875rem; font-weight:600; cursor:pointer; }
+    .resource-section-trigger:hover { color:var(--accent); }
+    .resource-section-chevron { color:var(--text-secondary); font-size:.7rem; }
+    .audience-view-list { display:flex; flex-wrap:wrap; gap:.5rem; }
+    .audience-view-item { padding:.375rem .625rem; border:1px solid rgba(88,166,255,.3); border-radius:var(--radius-sm); background:rgba(88,166,255,.08); color:var(--text-primary); font-family:var(--font-mono); font-size:.8125rem; }
+    .secret-banner { margin-bottom:var(--spacing-lg); border-color:rgba(63, 185, 80, .35); background:linear-gradient(180deg, rgba(63, 185, 80, .08), rgba(63, 185, 80, .04)); }
+    .secret-banner-header { display:flex; justify-content:space-between; align-items:flex-start; gap:var(--spacing-md); margin-bottom:var(--spacing-md); }
+    .secret-banner-title { margin:0; font-size:1rem; color:var(--text-primary); }
+    .secret-banner-text { margin:.35rem 0 0; color:var(--text-secondary); font-size:.875rem; }
+    .secret-value { margin:0; padding:.875rem 1rem; background:rgba(0, 0, 0, .25); border:1px solid var(--border-dark); border-radius:var(--radius-md); color:var(--text-primary); font-family:var(--font-mono); font-size:.875rem; line-height:1.5; word-break:break-all; }
+    .secret-banner-actions { display:flex; gap:.75rem; align-items:center; margin-top:var(--spacing-md); }
+    .copy-feedback { font-size:.8125rem; color:var(--success, #3fb950); }
+    .btn-ghost { background:transparent; color:var(--text-secondary); border-color:var(--border-dark); }
+    .btn-ghost:not(:disabled):hover { color:var(--text-primary); border-color:var(--text-secondary); }
     .endpoint-list { display:grid; gap:.75rem; }
     .endpoint-row { display:flex; align-items:center; justify-content:space-between; gap:.75rem; flex-wrap:wrap; padding:.875rem 1rem; border:1px solid var(--border-dark); border-radius:var(--radius-md); background:rgba(255,255,255,.02); }
     .endpoint-main { display:flex; align-items:center; gap:.75rem; flex-wrap:wrap; min-width:0; }
@@ -269,6 +317,7 @@ export class VersolaResourcesList extends LitElement {
     if (changed.has('tenantId')) {
       this.expandedResources = new Set();
       this.expandedEndpoints = new Set();
+      this.collapsedAudiences = new Set();
       this.resetForms();
       void this.loadData();
     }
@@ -286,7 +335,11 @@ export class VersolaResourcesList extends LitElement {
 
   private resetForms() {
     this.formMode = 'none'; this.activeResourceId = null; this.resourceUri = ''; this.resourceId = '';
+    this.resourceAudience = [];
+    this.audienceToAdd = '';
+    this.resourceInternal = false;
     this.endpointDrafts = [];
+    this.endpointEditSearchQuery = '';
     this.expandedEditableEndpoints = new Set();
   }
 
@@ -296,7 +349,11 @@ export class VersolaResourcesList extends LitElement {
     this.activeResourceId = null;
     this.resourceUri = 'https://';
     this.resourceId = '';
+    this.resourceAudience = [];
+    this.audienceToAdd = '';
+    this.resourceInternal = false;
     this.endpointDrafts = [];
+    this.endpointEditSearchQuery = '';
     this.expandedEditableEndpoints = new Set();
   }
 
@@ -306,7 +363,11 @@ export class VersolaResourcesList extends LitElement {
     this.activeResourceId = resource.resourceId;
     this.resourceUri = resource.resource;
     this.resourceId = resource.resourceId;
+    this.resourceAudience = [...resource.audience];
+    this.audienceToAdd = '';
+    this.resourceInternal = resource.hasSecret;
     this.endpointDrafts = resource.endpoints.map(endpoint => this.toEditableEndpoint(endpoint));
+    this.endpointEditSearchQuery = '';
     this.expandedEditableEndpoints = new Set(); // Start with all cards collapsed
     this.expandedResources = new Set([...this.expandedResources, resource.resourceId]);
   }
@@ -339,16 +400,19 @@ export class VersolaResourcesList extends LitElement {
     if (!this.tenantId) { this.resources = []; this.error = ''; return; }
     this.loading = true; this.error = '';
     try {
-      const [resources, challengeSettings] = await Promise.all([
+      const [resources, challengeSettings, clients] = await Promise.all([
         getResources(this.tenantId),
         fetchChallengeSettings(this.tenantId),
+        fetchAllClients(this.tenantId),
       ]);
       this.resources = resources;
+      this.clientIds = clients.map(client => client.id);
       this.acrVocabulary = challengeSettings?.acrVocabulary ?? {};
       const validIds = new Set(resources.map(resource => resource.resourceId));
       const validEndpointIds = new Set(resources.flatMap(resource => resource.endpoints.map(endpoint => endpoint.id)));
       this.expandedResources = new Set([...this.expandedResources].filter(id => validIds.has(id)));
       this.expandedEndpoints = new Set([...this.expandedEndpoints].filter(id => validEndpointIds.has(id)));
+      this.collapsedAudiences = new Set([...this.collapsedAudiences].filter(id => validIds.has(id)));
       if (this.formMode === 'edit-resource' && this.activeResourceId !== null) {
         const activeResource = this.resources.find(resource => resource.resourceId === this.activeResourceId);
         if (!activeResource) {
@@ -365,6 +429,8 @@ export class VersolaResourcesList extends LitElement {
     const resource = this.resourceUri.trim();
     const resourceId = this.resourceId.trim();
     if (resourceId.length === 0) { this.error = 'Resource ID is required'; return; }
+    const resourceIdValidation = validateResourceId(resourceId);
+    if (!resourceIdValidation.valid) { this.error = resourceIdValidation.error ?? 'Resource ID is invalid'; return; }
     const validation = validateResourceUri(resource);
     if (!validation.valid) { this.error = validation.error ?? 'Resource URI is invalid'; return; }
     const invalidEndpoint = this.endpointDrafts.find(endpoint => this.isEndpointPathInvalid(endpoint.path));
@@ -380,20 +446,30 @@ export class VersolaResourcesList extends LitElement {
     try {
       let savedResourceId: string | null = null;
       let savedEndpoints: PersistedResourceEndpointPayload[] = [];
+      let hasSecret = this.resourceInternal;
+      let hasPreviousSecret = false;
+      let secret: string | null = null;
       if (this.formMode === 'edit-resource' && this.activeResourceId !== null) {
         const activeResource = this.resources.find(candidate => candidate.resourceId === this.activeResourceId);
         if (!activeResource) throw new Error('Resource not found in local state');
         savedResourceId = this.activeResourceId;
-        savedEndpoints = await updateResource(savedResourceId, activeResource.endpoints, resource, endpointPayloads);
+        savedEndpoints = await updateResource(savedResourceId, activeResource.endpoints, resource, this.resourceAudience, endpointPayloads);
+        hasSecret = activeResource.hasSecret;
+        hasPreviousSecret = activeResource.hasPreviousSecret;
       } else {
-        const createdResource = await createResource(this.tenantId, resourceId, resource, endpointPayloads);
+        const createdResource = await createResource(this.tenantId, resourceId, resource, this.resourceAudience, endpointPayloads, this.resourceInternal);
         savedResourceId = createdResource.resourceId;
         savedEndpoints = createdResource.endpoints;
+        secret = createdResource.secret;
       }
 
       if (savedResourceId !== null) {
-        this.upsertResource(this.buildSavedResource(savedResourceId, resource, savedEndpoints));
+        this.upsertResource(this.buildSavedResource(savedResourceId, resource, this.resourceAudience, savedEndpoints, hasSecret, hasPreviousSecret));
         this.expandedResources = new Set([...this.expandedResources, savedResourceId]);
+        if (secret) {
+          this.createdSecret = { resourceId: savedResourceId, secret, action: 'created' };
+          this.copyFeedback = '';
+        }
       }
 
       this.resetForms();
@@ -405,6 +481,11 @@ export class VersolaResourcesList extends LitElement {
   private get isResourceUriInvalid() {
     const resource = this.resourceUri.trim();
     return resource.length > 0 && !validateResourceUri(resource).valid;
+  }
+
+  private get isResourceIdInvalid() {
+    const resourceId = this.resourceId.trim();
+    return resourceId.length > 0 && !validateResourceId(resourceId).valid;
   }
 
   private isEndpointPathInvalid(path: string) {
@@ -463,22 +544,106 @@ export class VersolaResourcesList extends LitElement {
       this.resources = this.resources.filter(candidate => candidate.resourceId !== resource.resourceId);
       this.expandedResources = new Set([...this.expandedResources].filter(id => id !== resource.resourceId));
       this.expandedEndpoints = new Set([...this.expandedEndpoints].filter(id => !resource.endpoints.some(endpoint => endpoint.id === id)));
+      this.collapsedAudiences = new Set([...this.collapsedAudiences].filter(id => id !== resource.resourceId));
       if (this.activeResourceId === resource.resourceId) this.resetForms();
     } catch (error) {
       this.error = error instanceof Error ? error.message : 'Failed to delete resource';
     }
   }
 
+  private updateResourceSecretState(resourceId: string, hasSecret: boolean, hasPreviousSecret: boolean) {
+    this.resources = this.resources.map(resource =>
+      resource.resourceId === resourceId ? { ...resource, hasSecret, hasPreviousSecret } : resource,
+    );
+  }
+
+  private async handleRotateSecret(resource: Resource) {
+    if (this.secretActionResourceId !== null) return;
+    this.secretActionResourceId = resource.resourceId;
+    this.error = '';
+    try {
+      const secret = await rotateResourceSecret(resource.resourceId);
+      this.updateResourceSecretState(resource.resourceId, true, true);
+      this.createdSecret = { resourceId: resource.resourceId, secret, action: 'rotated' };
+      this.copyFeedback = '';
+      this.resetForms();
+    } catch (error) {
+      this.error = error instanceof Error ? error.message : 'Failed to rotate resource secret';
+    } finally {
+      this.secretActionResourceId = null;
+    }
+  }
+
+  private async handleActivateNewSecret(resource: Resource) {
+    if (this.secretActionResourceId !== null) return;
+    const confirmed = await confirmDestructiveAction({
+      title: 'Activate new secret',
+      messagePrefix: 'Activate the new secret for ',
+      messageSubject: resource.resourceId,
+      messageSuffix: '? Do this only after the upstream accepts the new secret. Edge will switch after its next sync.',
+      confirmLabel: 'Activate',
+    });
+    if (!confirmed) return;
+
+    this.secretActionResourceId = resource.resourceId;
+    this.error = '';
+    try {
+      await deletePreviousResourceSecret(resource.resourceId);
+      this.updateResourceSecretState(resource.resourceId, true, false);
+      this.resetForms();
+    } catch (error) {
+      this.error = error instanceof Error ? error.message : 'Failed to activate new resource secret';
+    } finally {
+      this.secretActionResourceId = null;
+    }
+  }
+
+  private dismissCreatedSecret() {
+    this.createdSecret = null;
+    this.copyFeedback = '';
+  }
+
+  private async handleCopySecret() {
+    if (!this.createdSecret) return;
+    const copied = await copyToClipboard(this.createdSecret.secret);
+    this.copyFeedback = copied ? 'Secret copied to clipboard.' : 'Could not copy secret.';
+  }
+
   private get filteredResources(): Resource[] {
     const query = this.searchQuery.trim().toLowerCase();
-    if (!query) return this.resources;
+    const endpointSearch = this.endpointSearch;
 
     return this.resources.filter(resource => {
       const label = formatResourceLabel(resource.resource).toLowerCase();
       const original = resource.resource.toLowerCase();
       const resourceId = resource.resourceId.toLowerCase();
-      return label.includes(query) || original.includes(query) || resourceId.includes(query);
+      const matchesResource = !query || label.includes(query) || original.includes(query) || resourceId.includes(query);
+      return endpointSearch
+        ? this.filteredEndpoints(resource, endpointSearch).length > 0
+        : matchesResource;
     });
+  }
+
+  private get endpointSearch(): EndpointSearch | null {
+    return parseEndpointSearch(this.searchQuery);
+  }
+
+  private matchesEndpointSearch(endpoint: Pick<ResourceEndpointDraft, 'method' | 'path'>, endpointSearch: EndpointSearch) {
+    return endpoint.path.toLowerCase().includes(endpointSearch.path) &&
+      (!endpointSearch.method || endpoint.method === endpointSearch.method);
+  }
+
+  private filteredEndpoints(resource: Resource, endpointSearch = this.endpointSearch): ResourceEndpoint[] {
+    if (!endpointSearch) return resource.endpoints;
+
+    return resource.endpoints.filter(endpoint => this.matchesEndpointSearch(endpoint, endpointSearch));
+  }
+
+  private get filteredEndpointDrafts(): EditableResourceEndpoint[] {
+    const endpointSearch = parseEndpointSearch(this.endpointEditSearchQuery);
+    if (!endpointSearch) return this.endpointDrafts;
+
+    return this.endpointDrafts.filter(endpoint => this.matchesEndpointSearch(endpoint, endpointSearch));
   }
 
   private createEndpointDraftId() {
@@ -491,12 +656,21 @@ export class VersolaResourcesList extends LitElement {
     const validEndpointIds = new Set(resources.flatMap(resource => resource.endpoints.map(endpoint => endpoint.id)));
     this.expandedResources = new Set([...this.expandedResources].filter(id => validResourceIds.has(id)));
     this.expandedEndpoints = new Set([...this.expandedEndpoints].filter(id => validEndpointIds.has(id)));
+    this.collapsedAudiences = new Set([...this.collapsedAudiences].filter(id => validResourceIds.has(id)));
   }
 
-  private buildSavedResource(resourceId: string, resource: string, endpoints: PersistedResourceEndpointPayload[]): Resource {
+  private buildSavedResource(
+    resourceId: string,
+    resource: string,
+    audience: string[],
+    endpoints: PersistedResourceEndpointPayload[],
+    hasSecret: boolean,
+    hasPreviousSecret: boolean,
+  ): Resource {
     return {
       resourceId,
       resource,
+      audience: [...audience],
       endpoints: endpoints.map(endpoint => ({
         id: endpoint.id,
         method: endpoint.method,
@@ -508,6 +682,8 @@ export class VersolaResourcesList extends LitElement {
         stepUpAcr: endpoint.stepUpAcr ?? undefined,
         maxAge: endpoint.maxAge ?? undefined,
       })),
+      hasSecret,
+      hasPreviousSecret,
     };
   }
 
@@ -517,6 +693,29 @@ export class VersolaResourcesList extends LitElement {
       ? [resource, ...this.resources]
       : this.resources.map(candidate => candidate.resourceId === resource.resourceId ? resource : candidate);
     this.syncExpandedEntityState();
+  }
+
+  private addAudience() {
+    const clientId = this.audienceToAdd;
+    if (!clientId || !this.clientIds.includes(clientId) || this.resourceAudience.includes(clientId)) return;
+    this.resourceAudience = [...this.resourceAudience, clientId];
+    this.audienceToAdd = '';
+  }
+
+  private removeAudience(clientId: string) {
+    this.resourceAudience = this.resourceAudience.filter(id => id !== clientId);
+  }
+
+  private get audienceSuggestions(): string[] {
+    const query = this.audienceToAdd.trim().toLowerCase();
+    if (!query) return [];
+    return this.clientIds.filter(clientId =>
+      !this.resourceAudience.includes(clientId) && clientId.toLowerCase().includes(query),
+    );
+  }
+
+  private chooseAudienceSuggestion(clientId: string) {
+    this.audienceToAdd = clientId;
   }
 
   private toEditableEndpoint(endpoint: ResourceEndpoint): EditableResourceEndpoint {
@@ -695,6 +894,15 @@ export class VersolaResourcesList extends LitElement {
     this.requestUpdate();
   }
 
+  private toggleAudienceExpand(resourceId: string) {
+    if (this.collapsedAudiences.has(resourceId)) {
+      this.collapsedAudiences.delete(resourceId);
+    } else {
+      this.collapsedAudiences.add(resourceId);
+    }
+    this.requestUpdate();
+  }
+
   private renderAllowSection(allow: string | undefined) {
     const hasAllow = allow != null && allow.length > 0;
     return html`
@@ -779,14 +987,40 @@ export class VersolaResourcesList extends LitElement {
     `;
   }
 
+  private renderResourceAudience(resource: Resource) {
+    const audienceExpanded = !this.collapsedAudiences.has(resource.resourceId);
+    return html`
+      <div class="resource-audience" @click=${(event: Event) => event.stopPropagation()}>
+        <button
+          type="button"
+          class="resource-section-trigger"
+          aria-expanded=${audienceExpanded ? 'true' : 'false'}
+          aria-label=${`${audienceExpanded ? 'Collapse' : 'Expand'} audience ${resource.resourceId}`}
+          @click=${() => this.toggleAudienceExpand(resource.resourceId)}
+        >
+          <span class="resource-section-chevron">${audienceExpanded ? '▼' : '▶'}</span>
+          <span>Audience</span>
+        </button>
+        ${audienceExpanded ? html`
+          ${resource.audience.length > 0 ? html`
+            <div class="audience-view-list" aria-label=${`Audience for ${resource.resourceId}`}>
+              ${resource.audience.map(clientId => html`<span class="audience-view-item">${clientId}</span>`)}
+            </div>
+          ` : html`<div class="endpoint-empty">No clients are assigned to this resource.</div>`}
+        ` : ''}
+      </div>
+    `;
+  }
+
   private renderResourceEndpoints(resource: Resource) {
-    if (resource.endpoints.length === 0) {
+    const endpoints = this.filteredEndpoints(resource);
+    if (endpoints.length === 0) {
       return html`<div class="status">No endpoints yet.</div>`;
     }
 
     return html`
       <div class="endpoint-list" @click=${(event: Event) => event.stopPropagation()}>
-        ${resource.endpoints.map(endpoint => {
+        ${endpoints.map(endpoint => {
           const isExpanded = this.expandedEndpoints.has(endpoint.id);
 
           return html`
@@ -1078,6 +1312,9 @@ export class VersolaResourcesList extends LitElement {
     const isEditResource = this.formMode === 'edit-resource';
     const title = isEditResource ? 'Edit Resource' : 'Create Resource';
     const submitLabel = isEditResource ? 'Save Resource' : 'Create Resource';
+    const activeResource = isEditResource
+      ? this.resources.find(resource => resource.resourceId === this.activeResourceId)
+      : undefined;
 
     return html`
       <div class="form-header">
@@ -1095,7 +1332,7 @@ export class VersolaResourcesList extends LitElement {
             <div class="form-group">
               <label class="form-label">Resource ID</label>
               <div class="input-with-info">
-                <input class="form-input compact-input" type="text" aria-label="Resource ID" .value=${this.resourceId} @input=${(e: Event) => this.resourceId = (e.target as HTMLInputElement).value} placeholder="users-api" ?disabled=${this.saving || isEditResource} required />
+                <input class="form-input compact-input ${this.isResourceIdInvalid ? 'input-error' : ''}" type="text" aria-label="Resource ID" .value=${this.resourceId} @input=${(e: Event) => this.resourceId = (e.target as HTMLInputElement).value} placeholder="users-api" ?disabled=${this.saving || isEditResource} required />
                 ${this.renderOptionInfo(
                   'resource-id-info',
                   'Resource ID',
@@ -1109,16 +1346,127 @@ export class VersolaResourcesList extends LitElement {
                   <input class="form-input compact-input ${this.isResourceUriInvalid ? 'input-error' : ''}" type="url" aria-label="Absolute resource URI" .value=${this.resourceUri} @input=${(e: Event) => this.resourceUri = (e.target as HTMLInputElement).value} placeholder="https://api.example.com" ?disabled=${this.saving} required />
             </div>
           </div>
+          <div class="form-group">
+            <label class="form-label">Audience</label>
+            <div class="audience-add-row">
+              <div class="audience-input-wrap">
+                <input
+                  class="form-input compact-input"
+                  type="text"
+                  aria-label="Audience client"
+                  placeholder="Type or select a client"
+                  .value=${this.audienceToAdd}
+                  ?disabled=${this.saving || this.clientIds.length === 0}
+                  @input=${(event: Event) => this.audienceToAdd = (event.target as HTMLInputElement).value}
+                />
+                ${this.audienceSuggestions.length > 0 ? html`
+                  <div class="audience-suggestions" role="listbox" aria-label="Available clients">
+                    ${this.audienceSuggestions.map(clientId => html`
+                      <button
+                        type="button"
+                        class="audience-suggestion"
+                        role="option"
+                        @click=${() => this.chooseAudienceSuggestion(clientId)}
+                      >${clientId}</button>
+                    `)}
+                  </div>
+                ` : ''}
+              </div>
+              <button
+                type="button"
+                class="btn btn-secondary btn-sm"
+                ?disabled=${this.saving || !this.clientIds.includes(this.audienceToAdd) || this.resourceAudience.includes(this.audienceToAdd)}
+                @click=${() => this.addAudience()}
+              >Add audience</button>
+            </div>
+            ${this.resourceAudience.length > 0 ? html`
+              <div class="audience-list" aria-label="Selected resource audience">
+                ${this.resourceAudience.map(clientId => html`
+                  <div class="audience-item">
+                    <span>${clientId}</span>
+                    <button
+                      type="button"
+                      class="icon-action danger"
+                      ?disabled=${this.saving}
+                      aria-label=${`Remove audience ${clientId}`}
+                      title=${`Remove audience ${clientId}`}
+                      @click=${() => this.removeAudience(clientId)}
+                    >✕</button>
+                  </div>
+                `)}
+              </div>
+            ` : html`<div class="status audience-empty">No clients are selected for this resource.</div>`}
+            ${this.clientIds.length === 0 ? html`<div class="hint">No clients are configured for this tenant.</div>` : ''}
+            <div class="hint">Clients allowed to request this resource and receive its URI in their access-token audience.</div>
+          </div>
+          ${!isEditResource ? html`
+            <div class="form-group">
+              <div class="editor-section-title-row">
+                <label class="form-label" style="margin-bottom: 0;">Resource Type</label>
+                ${this.renderOptionInfo(
+                  'resource-type-info',
+                  'Resource Type',
+                  html`
+                    <p><strong>Internal</strong> resources get a generated secret. Edge authenticates to them on the caller's behalf using that secret (HTTP Basic auth) instead of forwarding the caller's own access token.</p>
+                    <p><strong>Public</strong> resources have no secret. Edge forwards the caller's original access token as-is, so the resource itself is responsible for validating it.</p>
+                  `,
+                  'Resource type info',
+                )}
+              </div>
+              <div class="cred-mode-cards">
+                <button
+                  type="button"
+                  class=${`cred-mode-card ${!this.resourceInternal ? 'selected' : ''}`}
+                  ?disabled=${this.saving}
+                  @click=${() => this.resourceInternal = false}
+                >public</button>
+                <button
+                  type="button"
+                  class=${`cred-mode-card ${this.resourceInternal ? 'selected' : ''}`}
+                  ?disabled=${this.saving}
+                  @click=${() => this.resourceInternal = true}
+                >internal</button>
+              </div>
+              <div class="hint">Choose whether edge authenticates to this resource with its own secret (internal) or forwards the caller's token (public).</div>
+            </div>
+          ` : ''}
           <div class="section-header">
             <h2 class="section-title">Endpoints</h2>
             <button type="button" class="btn btn-secondary btn-sm" ?disabled=${this.saving} @click=${() => this.startCreateEndpoint()}>Add endpoint</button>
           </div>
           ${this.endpointDrafts.length === 0 ? html`<div class="status">No endpoints yet.</div>` : html`
-            <div class="endpoint-list">
-              ${this.endpointDrafts.map(endpoint => this.renderEditableEndpoint(endpoint))}
-            </div>
+            ${isEditResource ? html`
+              <div class="search-bar">
+                <label class="form-label" for="endpoint-edit-search">Filter endpoints</label>
+                <input id="endpoint-edit-search" class="form-input" type="search" aria-label="Filter endpoints" .value=${this.endpointEditSearchQuery} @input=${(e: Event) => this.endpointEditSearchQuery = (e.target as HTMLInputElement).value} placeholder="/path or METHOD /path" />
+              </div>
+            ` : ''}
+            ${this.filteredEndpointDrafts.length === 0 ? html`<div class="status">No endpoints match your search.</div>` : html`
+              <div class="endpoint-list">
+                ${this.filteredEndpointDrafts.map(endpoint => this.renderEditableEndpoint(endpoint))}
+              </div>
+            `}
           `}
           <div class="form-actions">
+            ${activeResource && this.canManage && activeResource.hasSecret ? html`
+              ${activeResource.hasPreviousSecret ? html`
+                <button
+                  type="button"
+                  class="btn btn-secondary btn-sm secondary-action-button"
+                  @click=${() => this.handleActivateNewSecret(activeResource)}
+                  ?disabled=${this.secretActionResourceId !== null}
+                  title="Activate new secret"
+                  aria-label="Activate new secret"
+                >Activate new secret</button>
+              ` : html`
+                <button
+                  type="button"
+                  class="btn btn-secondary secondary-action-button"
+                  @click=${() => this.handleRotateSecret(activeResource)}
+                  ?disabled=${this.secretActionResourceId !== null}
+                >${this.secretActionResourceId === activeResource.resourceId ? 'Rotating…' : 'Rotate Secret'}</button>
+              `}
+            ` : ''}
             <button type="button" class="btn btn-secondary" @click=${() => this.resetForms()}>Cancel</button>
             <button class="btn btn-primary" ?disabled=${this.saving}>${this.saving ? 'Saving…' : submitLabel}</button>
           </div>
@@ -1137,12 +1485,37 @@ export class VersolaResourcesList extends LitElement {
       `;
     }
 
+    const secretTitle = this.createdSecret?.action === 'rotated'
+      ? `Secret rotated: ${this.createdSecret.resourceId}`
+      : this.createdSecret
+        ? `Resource created: ${this.createdSecret.resourceId}`
+        : '';
+    const secretText = this.createdSecret?.action === 'rotated'
+      ? 'Copy the new resource secret now. It may not be shown again.'
+      : 'Copy this secret now. It may not be shown again.';
+
     return html`
       <content-header title="Resources">
         ${this.resources.length > 0 && this.canManage ? html`
           <button slot="actions" class="btn btn-primary" @click=${() => this.openCreateResourceForm()}>+ Create Resource</button>
         ` : ''}
       </content-header>
+      ${this.createdSecret ? html`
+        <div class="card secret-banner">
+          <div class="secret-banner-header">
+            <div>
+              <h3 class="secret-banner-title">${secretTitle}</h3>
+              <p class="secret-banner-text">${secretText}</p>
+            </div>
+            <button class="btn btn-ghost btn-sm" @click=${this.dismissCreatedSecret}>Dismiss</button>
+          </div>
+          <pre class="secret-value">${this.createdSecret.secret}</pre>
+          <div class="secret-banner-actions">
+            <button class="btn btn-primary btn-sm" @click=${this.handleCopySecret}>Copy secret</button>
+            ${this.copyFeedback ? html`<span class="copy-feedback">${this.copyFeedback}</span>` : ''}
+          </div>
+        </div>
+      ` : ''}
       ${this.loading ? html`<versola-loading-cards .count=${3}></versola-loading-cards>`
       : this.error ? html`
         <versola-error-card heading="Could not load resources" .message=${this.error} @retry=${() => this.loadData()}></versola-error-card>
@@ -1158,11 +1531,14 @@ export class VersolaResourcesList extends LitElement {
           </div>
         </div>
       ` : html`
-        <div class="search-bar"><input class="form-input" type="search" aria-label="Search resources" .value=${this.searchQuery} @input=${(e: Event) => this.searchQuery = (e.target as HTMLInputElement).value} placeholder="Search resources" /></div>
+        <div class="search-bar">
+          <label class="form-label" for="resource-search">Search resources or endpoints</label>
+          <input id="resource-search" class="form-input" type="search" aria-label="Search resources or endpoints" .value=${this.searchQuery} @input=${(e: Event) => this.searchQuery = (e.target as HTMLInputElement).value} placeholder="Alias, URI, /path, or METHOD /path" />
+        </div>
         ${this.filteredResources.length === 0 ? html`
           <div class="card">
             <div class="empty-state">
-              <h3>No resources match your search</h3>
+              <h3>No resources or endpoints match your search</h3>
             </div>
           </div>
         ` : html`
@@ -1173,6 +1549,8 @@ export class VersolaResourcesList extends LitElement {
               <div class="resource-label-card">
                 <div class="resource-label">${formatResourceLabel(resource.resource)}</div>
                 <span class="resource-id-badge" title="Resource ID">${resource.resourceId}</span>
+                ${resource.hasSecret ? html`<span class="badge badge-success">Internal</span>` : ''}
+                ${resource.hasPreviousSecret ? html`<span class="badge badge-warning">Secret Rotation</span>` : ''}
               </div>
               ${this.canManage ? html`
               <div class="resource-actions" @click=${(e: Event) => e.stopPropagation()}>
@@ -1180,6 +1558,7 @@ export class VersolaResourcesList extends LitElement {
                 <button class="icon-action danger" @click=${() => this.removeResource(resource)} title="Delete resource" aria-label=${`Delete resource ${resource.resourceId}`}>✕</button>
               </div>` : ''}
             </div>
+            ${isExpanded ? this.renderResourceAudience(resource) : ''}
             ${isExpanded ? this.renderResourceEndpoints(resource) : ''}
           </div></div>`;
           })}</div>

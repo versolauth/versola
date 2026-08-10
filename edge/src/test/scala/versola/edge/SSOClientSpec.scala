@@ -25,6 +25,7 @@ object SSOClientSpec extends ZIOSpecDefault:
     ),
     central = EdgeConfig.CentralConfig(url = URL.decode("https://central.example").toOption.get),
     versolaUrl = URL.decode("https://idp.example").toOption.get,
+    configurationCacheRefreshInterval = 5.minutes,
   )
 
   private val basePreset = AuthorizationPreset(

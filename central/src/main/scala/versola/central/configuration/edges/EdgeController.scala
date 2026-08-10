@@ -1,6 +1,7 @@
 package versola.central.configuration.edges
 
-import versola.central.configuration.clients.{ClientId, OAuthClientService}
+import versola.central.configuration.clients.ClientId
+import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.TenantId
 import versola.central.authorizeBasic
 import versola.util.Base64Url
@@ -11,7 +12,7 @@ import zio.json.{EncoderOps, JsonCodec, JsonEncoder}
 import zio.schema.*
 
 object EdgeController extends Controller:
-  type Env = Tracing & EdgeService & OAuthClientService
+  type Env = Tracing & EdgeService & ResourceService
 
   def routes: Routes[Env, Throwable] = Routes(
     getAllEdgesEndpoint,

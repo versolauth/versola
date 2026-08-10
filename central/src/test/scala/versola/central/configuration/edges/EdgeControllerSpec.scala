@@ -3,7 +3,7 @@ package versola.central.configuration.edges
 import io.opentelemetry.api
 import org.scalamock.stubs.{Stub, ZIOStubs}
 import versola.central.TestAdminAuth
-import versola.central.configuration.clients.OAuthClientService
+import versola.central.configuration.resources.ResourceService
 import versola.util.http.Observability
 import zio.*
 import zio.http.*
@@ -33,18 +33,18 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       for
         client <- ZIO.service[Client]
         edgeService = stub[EdgeService]
-        oauthClientService = stub[OAuthClientService]
+        resourceService = stub[ResourceService]
         tracing <- tracingLayer.build
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             EdgeController.routes.provideEnvironment(
               ZEnvironment[EdgeService](edgeService) ++
-                ZEnvironment[OAuthClientService](oauthClientService) ++
+                ZEnvironment[ResourceService](resourceService) ++
                 tracing
             )
           )
         )
-        _ <- oauthClientService.verifySecret.succeedsWith(true)
+        _ <- resourceService.verifySecret.succeedsWith(true)
         _ <- setup(edgeService)
         response <- client.batched(request.addHeader(TestAdminAuth.basicAuthHeader))
       yield assertTrue(response.status == expectedStatus)

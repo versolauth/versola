@@ -63,6 +63,15 @@ object Observability:
   private val clientRequestDuration =
     Metric.histogram("http_client_request_duration_seconds", clientDurationBoundaries)
 
+  /** Masks an `Authorization` header value while preserving its scheme, e.g. `Bearer secret`
+    * becomes `Bearer ***` and `Basic secret` becomes `Basic ***`, so logs stay useful for
+    * distinguishing auth schemes without leaking credentials. Falls back to `***` when no
+    * scheme token is present. */
+  private[http] def maskAuthorization(value: String): String =
+    value.indexOf(' ') match
+      case -1 => "***"
+      case i => s"${value.substring(0, i)} ***"
+
   def handleErrors[Env](routes: Routes[Env, Throwable]): Routes[Env, Nothing] =
     routes.handleErrorZIO {
       case Unauthorized => ZIO.succeed(Response.unauthorized)
@@ -77,7 +86,7 @@ object Observability:
 
     val headers = request.headers
       .collect {
-        case h if h.headerName == Header.Authorization.name => s"${h.headerName}=Bearer ***"
+        case h if h.headerName == Header.Authorization.name => s"${h.headerName}=${maskAuthorization(h.renderedValue)}"
         case h if masking.logRequestHeaders.contains(h.headerName) => s"${h.headerName}=${h.renderedValue}"
       }.toSeq
 
@@ -239,7 +248,7 @@ object Observability:
       .collect { case (k, vs) if masking.logQuery.contains(k) => s"$k=${vs.mkString(",")}" }
       .toSeq
     val maskedHeaders = headers.collect:
-      case h if h.headerName == Header.Authorization.name => s"${h.headerName}=Bearer ***"
+      case h if h.headerName == Header.Authorization.name => s"${h.headerName}=${maskAuthorization(h.renderedValue)}"
       case h if masking.logRequestHeaders.contains(h.headerName) => s"${h.headerName}=${h.renderedValue}"
     .toSeq
     val baseUri = url.kind match

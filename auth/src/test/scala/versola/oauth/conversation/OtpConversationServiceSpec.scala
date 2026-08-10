@@ -116,6 +116,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
     targetAcr = None,
     csrfToken = "test-csrf",
     priorSessionId = None,
+    resources = Nil,
   )
 
   val otpRecord = initialConversation.copy(
@@ -308,6 +309,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           targetAcr = None,
           csrfToken = "test-csrf",
           priorSessionId = None,
+          resources = Nil,
         )
         for
           _ <- env.submissionLimiter.isBanned.succeedsWith(LimitStatus.Allowed)
@@ -346,6 +348,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           targetAcr = None,
           csrfToken = "test-csrf",
           priorSessionId = None,
+          resources = Nil,
         )
         for
           _ <- env.submissionLimiter.isBanned.succeedsWith(LimitStatus.Banned)

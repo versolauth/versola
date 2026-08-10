@@ -157,6 +157,9 @@ export function validateResourceUri(uri: string): { valid: boolean; error?: stri
 
   try {
     const url = new URL(trimmed);
+    if (url.protocol.toLowerCase() === 'resource:') {
+      return { valid: false, error: 'Resource URI scheme resource:// is reserved' };
+    }
     if (url.search) {
       return { valid: false, error: 'Resource URI query must be empty' };
     }
@@ -173,11 +176,17 @@ export function validateResourceUri(uri: string): { valid: boolean; error?: stri
 }
 
 /**
- * Validates audience (same as client ID validation)
- * Lowercase letters, numbers, hyphen, starting with letter
+ * Validates a resource ID. IDs are also used in resource://<id> internal-resource URIs.
  */
-export function validateAudience(audience: string): boolean {
-  return validateClientId(audience);
+export function validateResourceId(resourceId: string): { valid: boolean; error?: string } {
+  const trimmed = resourceId.trim();
+  if (!/^[a-z][a-z0-9-]*$/.test(trimmed)) {
+    return { valid: false, error: 'Resource ID must start with a lowercase Latin letter and contain only lowercase Latin letters, numbers, and hyphens' };
+  }
+  if (trimmed === 'edge') {
+    return { valid: false, error: 'Resource ID "edge" is reserved' };
+  }
+  return { valid: true };
 }
 
 /**

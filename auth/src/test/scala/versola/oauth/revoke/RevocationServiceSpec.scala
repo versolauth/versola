@@ -3,7 +3,7 @@ package versola.oauth.revoke
 import org.scalamock.stubs.ZIOStubs
 import versola.auth.TestEnvConfig
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{AuthMethodRef, ClientId, ClientIdWithSecret, OAuthClientRecord, ScopeToken, TenantId}
+import versola.oauth.client.model.{AuthMethodRef, ClientId, ClientIdWithSecret, OAuthClientRecord, ResourceUri, ScopeToken, TenantId}
 import versola.oauth.model.{AccessToken, AccessTokenPayload, RefreshToken}
 import versola.oauth.revoke.model.RevocationError
 import versola.oauth.session.SessionRepository
@@ -39,7 +39,6 @@ object RevocationServiceSpec extends UnitSpecBase:
     clientName = "Test Client",
     redirectUris = NonEmptySet("https://example.com/callback"),
     scope = scope1,
-    externalAudience = List.empty,
     secret = Some(clientSecret1),
     previousSecret = None,
     accessTokenTtl = 10.minutes,
@@ -58,7 +57,7 @@ object RevocationServiceSpec extends UnitSpecBase:
     accessToken = accessToken1,
     userId = userId1,
     clientId = clientId1,
-    externalAudience = List.empty,
+    audience = List.empty,
     scope = scope1,
     issuedAt = now,
     expiresAt = now.plusSeconds(3600),
@@ -79,7 +78,7 @@ object RevocationServiceSpec extends UnitSpecBase:
     expiresAt = now.plusSeconds(3600),
     issuedAt = now,
     notBefore = None,
-    audience = Vector(clientId1),
+    audience = Vector(ResourceUri("https://api.example.com")),
     issuer = "https://auth.example.com",
     id = accessToken1,
   )

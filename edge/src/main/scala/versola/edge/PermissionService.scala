@@ -15,13 +15,23 @@ trait PermissionService:
   ): UIO[Set[PermissionId]]
 
 object PermissionService:
-  def live(
-      schedule: Schedule[Any, Any, Any],
-  ): ZLayer[RolesSyncClient & PermissionsSyncClient & OAuthClientsSyncClient & Scope, Throwable, PermissionService] =
+  def live: ZLayer[RolesSyncClient & PermissionsSyncClient & OAuthClientsSyncClient & Scope & EdgeConfig, Throwable, PermissionService] =
     (
-      ZLayer(ReloadingCache.make[Map[(TenantId, RoleId), Set[PermissionId]]](schedule)) ++ // (tenantId, roleId) → permIds
-      ZLayer(ReloadingCache.make[Map[PermissionId, Set[ResourceEndpointId]]](schedule)) ++ // permId → endpointIds
-      ZLayer(ReloadingCache.make[Map[ClientId, OAuthClient]](schedule))           // clientId → OAuthClient
+      (ZLayer.fromZIO:
+        ZIO.serviceWithZIO[EdgeConfig](config =>
+          ReloadingCache.make[Map[(TenantId, RoleId), Set[PermissionId]]](Schedule.spaced(config.configurationCacheRefreshInterval)),
+        )
+      ) ++ // (tenantId, roleId) → permIds
+      (ZLayer.fromZIO:
+        ZIO.serviceWithZIO[EdgeConfig](config =>
+          ReloadingCache.make[Map[PermissionId, Set[ResourceEndpointId]]](Schedule.spaced(config.configurationCacheRefreshInterval)),
+        )
+      ) ++ // permId → endpointIds
+      (ZLayer.fromZIO:
+        ZIO.serviceWithZIO[EdgeConfig](config =>
+          ReloadingCache.make[Map[ClientId, OAuthClient]](Schedule.spaced(config.configurationCacheRefreshInterval)),
+        )
+      )           // clientId → OAuthClient
     ) >>> ZLayer.fromFunction(Impl(_, _, _))
 
   class Impl(

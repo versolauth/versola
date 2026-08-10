@@ -2,6 +2,7 @@ package versola.central.configuration.jwks
 
 import com.nimbusds.jose.JWSAlgorithm
 import com.nimbusds.jose.jwk.{KeyUse, RSAKey}
+import versola.central.TestCentralConfig
 import zio.*
 import zio.json.*
 import zio.json.ast.Json
@@ -42,7 +43,8 @@ object JwksServiceSpec extends ZIOSpecDefault:
     ZLayer.make[JwksService](
       inMemoryRepo(records),
       Scope.default,
-      JwksService.live(Schedule.fixed(1.hour)),
+      ZLayer.succeed(TestCentralConfig.config),
+      JwksService.live,
     )
 
   def spec = suite("JwksService")(

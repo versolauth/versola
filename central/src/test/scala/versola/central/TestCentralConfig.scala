@@ -2,6 +2,7 @@ package versola.central
 
 import versola.util.{Base64Url, Secret}
 import zio.Duration
+import zio.durationInt
 import zio.http.{Header, URL}
 
 import javax.crypto.spec.SecretKeySpec
@@ -22,7 +23,7 @@ object TestCentralConfig:
   val edgeSecret: Secret = Secret(Array.fill(32)(1.toByte))
 
   val basicAuthHeader: Header.Authorization =
-    Header.Authorization.Basic("edge", Base64Url.encode(edgeSecret))
+    Header.Authorization.Basic("central", Base64Url.encode(edgeSecret))
 
   val config = CentralConfig(
     bootstrap = None,
@@ -30,4 +31,5 @@ object TestCentralConfig:
     secretKey = SecretKeySpec(Array.fill(32)(7.toByte), "AES"),
     auth = authConfig,
     userOutbox = userOutboxConfig,
+    configurationCacheRefreshInterval = 5.minutes,
   )

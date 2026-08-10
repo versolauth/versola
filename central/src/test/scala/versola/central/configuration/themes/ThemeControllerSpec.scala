@@ -2,10 +2,10 @@ package versola.central.configuration.themes
 
 import io.opentelemetry.api
 import org.scalamock.stubs.{Stub, ZIOStubs}
-import versola.central.TestAdminAuth
+import versola.central.{CentralConfig, TestAdminAuth}
 import versola.central.TestCentralConfig
-import versola.central.configuration.clients.OAuthClientService
 import versola.central.configuration.edges.EdgeService
+import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.TenantId
 import versola.util.http.Observability
 import zio.*
@@ -38,21 +38,21 @@ object ThemeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       for
         client             <- ZIO.service[Client]
         themeService        = stub[ThemeService]
-        oauthClientService  = stub[OAuthClientService]
+        resourceService  = stub[ResourceService]
         edgeService         = stub[EdgeService]
         tracing            <- tracingLayer.build
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             ThemeController.routes.provideEnvironment(
               ZEnvironment[ThemeService](themeService) ++
-                ZEnvironment[OAuthClientService](oauthClientService) ++
+                ZEnvironment[ResourceService](resourceService) ++
                 ZEnvironment[EdgeService](edgeService) ++
-                ZEnvironment(TestCentralConfig.config) ++
+                ZEnvironment[CentralConfig](TestCentralConfig.config) ++
                 tracing
             )
           )
         )
-        _ <- oauthClientService.verifySecret.succeedsWith(true)
+        _ <- resourceService.verifySecret.succeedsWith(true)
         _ <- setup(themeService)
         response <- client.batched(request.addHeader(TestAdminAuth.basicAuthHeader))
       yield assertTrue(response.status == expectedStatus)

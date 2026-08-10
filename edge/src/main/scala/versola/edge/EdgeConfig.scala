@@ -30,6 +30,7 @@ case class EdgeConfig(
     // (correct wherever edge/auth/the browser all share one network, as
     // in prod and plain local dev).
     versolaInternalUrl: Option[URL] = None,
+    configurationCacheRefreshInterval: Duration,
 ):
   def internalUrl: URL = versolaInternalUrl.getOrElse(versolaUrl)
 

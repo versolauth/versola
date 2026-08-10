@@ -3,7 +3,7 @@ package versola
 import versola.central.CentralConfig
 import versola.central.configuration.challenges.{ChallengeSettingsRecord, ChallengeSettingsRepository, OtpChallengeRepository, OtpTemplateChannel, OtpTemplatePurpose, OtpTemplateRecord, PasskeySettings, RateLimit, SubmissionLimits}
 import versola.central.configuration.system.{SystemSettingsRecord, SystemSettingsRepository}
-import versola.central.configuration.clients.{AuthFlow, AuthorizationPreset, AuthorizationPresetRepository, ClientAlreadyExists, OAuthClientService, OtpType, PresetId, PrimaryAuthFlow, PrimaryCredential, ResponseType}
+import versola.central.configuration.clients.{AuthFactor, AuthFactorType, AuthFlow, AuthorizationPreset, AuthorizationPresetRepository, ClientAlreadyExists, ClientId, OAuthClientService, OtpType, PasskeyAuthFlow, PresetId, PrimaryAuthFlow, PrimaryCredential, ResponseType}
 import versola.central.configuration.edges.{EdgeId, EdgeRepository}
 import versola.central.configuration.forms.{BackendProperty, BooleanProperty, FormId, FormRepository, NumberProperty, StringArrayProperty}
 import versola.central.configuration.jwks.JwksRepository
@@ -14,22 +14,52 @@ import versola.central.configuration.roles.{RoleId, RoleRepository}
 import versola.central.configuration.scopes.{Claim, OAuthScopeRepository, ScopeToken}
 import versola.central.configuration.tenants.{TenantId, TenantRepository}
 import versola.central.configuration.themes.{ThemeRecord, ThemeRepository}
-import versola.central.configuration.{CreateClaim, CreateClientRequest, ResourceUri}
+import versola.central.configuration.{CreateClaim, CreateClientRequest, PatchClientRedirectUris, PatchClientScope, PatchPermissions, ResourceUri, UpdateClientRequest}
 import versola.central.configuration.metadata.ServerMetadataRepository
 import versola.central.users.{Login, UserConflict, UserId, UserRepository}
-import versola.util.{RedirectUri, Secret}
+import versola.util.{EnvName, Phone, RedirectUri, Secret, SecureRandom, SecurityService}
 import zio.json.DecoderOps
 import zio.json.ast.Json
-import zio.{Task, ZIO, ZLayer}
+import zio.{Task, UIO, ZIO, ZLayer}
 
 import java.nio.charset.StandardCharsets
 import java.util.UUID
 import scala.io.Source
 
+import javax.crypto.spec.SecretKeySpec
+
 trait BootstrapService:
   def bootstrap: Task[Unit]
 
 object BootstrapService:
+
+  private val NonProdAdminPhone = Phone("+12025551234")
+
+  private[versola] def adminPhone(envName: EnvName): Option[Phone] =
+    Option.when(envName.isTest)(NonProdAdminPhone)
+
+  private[versola] def adminAuthFactors(envName: EnvName): List[AuthFactor] =
+    Option
+      .when(envName.isTest)(AuthFactor(`type` = AuthFactorType.otp, required = true))
+      .toList :+ AuthFactor(`type` = AuthFactorType.passkeyEnroll, required = true)
+
+  private[versola] def adminAuthFlow(envName: EnvName): AuthFlow =
+    AuthFlow(
+      primary = PrimaryAuthFlow(
+        credentials = List(PrimaryCredential.login),
+        inlinePassword = true,
+        factors = adminAuthFactors(envName),
+      ),
+      passkey = Some(PasskeyAuthFlow(factors = Nil)),
+      equivalents = Map.empty,
+      otpType = OtpType.sms,
+    )
+
+  private[versola] def resolveResourceSecret(
+      configured: Option[Secret],
+      secureRandom: SecureRandom,
+  ): UIO[Secret] =
+    configured.fold(secureRandom.nextBytes(32).map(Secret(_)))(ZIO.succeed(_))
 
   private def localized(en: String, ru: String): Map[String, String] =
     Map("en" -> en, "ru" -> ru)
@@ -45,6 +75,14 @@ object BootstrapService:
 
   private def endpointId(method: String, path: String): ResourceEndpointId =
     ResourceEndpointId(UUID.nameUUIDFromBytes(s"$method $path".getBytes(StandardCharsets.UTF_8)))
+
+  private[versola] val resourceManagementEndpointIds: Set[ResourceEndpointId] = Set(
+    endpointId("POST", "/configuration/resources"),
+    endpointId("PUT", "/configuration/resources"),
+    endpointId("DELETE", "/configuration/resources"),
+    endpointId("POST", "/configuration/resources/rotate-secret"),
+    endpointId("DELETE", "/configuration/resources/previous-secret"),
+  )
 
   private val permissionCatalog: List[(Permission, Map[String, String], Set[ResourceEndpointId])] = List(
     (Permission("oauth:read"), localized("View OAuth clients and scopes", "Просмотр OAuth клиентов и скоупов"), Set(
@@ -113,11 +151,7 @@ object BootstrapService:
     (Permission("resources:read"), localized("View protected resources", "Просмотр защищенных ресурсов"), Set(
       endpointId("GET", "/configuration/resources"),
     )),
-    (Permission("resources:manage"), localized("Manage protected resources", "Управление защищенными ресурсами"), Set(
-      endpointId("POST", "/configuration/resources"),
-      endpointId("PUT", "/configuration/resources"),
-      endpointId("DELETE", "/configuration/resources"),
-    )),
+    (Permission("resources:manage"), localized("Manage protected resources", "Управление защищенными ресурсами"), resourceManagementEndpointIds),
     (Permission("forms:read"), localized("View forms", "Просмотр форм"), Set(
       endpointId("GET", "/configuration/forms"),
     )),
@@ -371,7 +405,10 @@ object BootstrapService:
     )
 
   /** Default authentication challenge settings seeded for the default tenant. */
-  private def defaultChallengeSettings(tenantId: TenantId): ChallengeSettingsRecord =
+  private def defaultChallengeSettings(
+      tenantId: TenantId,
+      passkeyConfig: CentralConfig.PasskeyConfig,
+  ): ChallengeSettingsRecord =
     ChallengeSettingsRecord(
       tenantId = tenantId,
       allowedPrefixes = List.empty,
@@ -385,9 +422,9 @@ object BootstrapService:
       otpLength = 6,
       otpResendAfter = 60,
       passkeySettings = PasskeySettings(
-        rpId = "localhost",
+        rpId = passkeyConfig.rpId,
         rpName = "Versola",
-        origins = List("http://localhost:9003"),
+        origins = passkeyConfig.origins,
         userVerification = "preferred",
       ),
       authConversationTtlSeconds = 900,
@@ -431,7 +468,6 @@ object BootstrapService:
 
   /** Hard-coded resourceId for the edge-facing resource that proxies central's admin API. */
   private val centralResourceId = ResourceId("central")
-
   /** Admin API surface exposed to the console through the edge proxy. Each
     * (method, path) is registered as a resource endpoint; the edge validates the
     * caller's session token and performs the real per-user authorization
@@ -481,6 +517,8 @@ object BootstrapService:
     "POST"   -> "/configuration/resources",
     "PUT"    -> "/configuration/resources",
     "DELETE" -> "/configuration/resources",
+    "POST"   -> "/configuration/resources/rotate-secret",
+    "DELETE" -> "/configuration/resources/previous-secret",
     "GET"    -> "/configuration/roles",
     "POST"   -> "/configuration/roles",
     "PUT"    -> "/configuration/roles",
@@ -519,11 +557,11 @@ object BootstrapService:
         try source.mkString finally source.close()
 
   val live: ZLayer[
-    TenantRepository & PermissionRepository & OAuthScopeRepository & RoleRepository & OtpChallengeRepository & ChallengeSettingsRepository & SystemSettingsRepository & ThemeRepository & LocaleRepository & FormRepository & OAuthClientService & AuthorizationPresetRepository & EdgeRepository & ResourceRepository & JwksRepository & ServerMetadataRepository & UserRepository & CentralConfig,
+    TenantRepository & PermissionRepository & OAuthScopeRepository & RoleRepository & OtpChallengeRepository & ChallengeSettingsRepository & SystemSettingsRepository & ThemeRepository & LocaleRepository & FormRepository & OAuthClientService & AuthorizationPresetRepository & EdgeRepository & ResourceRepository & JwksRepository & ServerMetadataRepository & UserRepository & CentralConfig & SecurityService & SecureRandom & EnvName,
     Throwable,
     BootstrapService,
   ] =
-    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _)) >+>
+    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _)) >+>
       ZLayer(ZIO.serviceWithZIO[BootstrapService](_.bootstrap))
 
   private final class Impl(
@@ -545,6 +583,9 @@ object BootstrapService:
       metadataRepo: ServerMetadataRepository,
       userRepo: UserRepository,
       config: CentralConfig,
+      securityService: SecurityService,
+      secureRandom: SecureRandom,
+      envName: EnvName,
   ) extends BootstrapService:
 
     def bootstrap: Task[Unit] =
@@ -559,7 +600,7 @@ object BootstrapService:
           _ <- seedRoles(tenantId)
           _ <- seedOtpTemplates(tenantId)
           _ <- seedPasswordTemplate(tenantId)
-          _ <- seedChallengeSettings(tenantId)
+          _ <- seedChallengeSettings(tenantId, config.passkey)
           _ <- seedSystemSettings()
           _ <- seedTheme()
           _ <- seedLocales()
@@ -614,10 +655,10 @@ object BootstrapService:
               OtpTemplateRecord(passwordTemplateId, tenantId, localizations, purpose = OtpTemplatePurpose.password, channel = channel),
             )
 
-    private def seedChallengeSettings(tenantId: TenantId): Task[Unit] =
+    private def seedChallengeSettings(tenantId: TenantId, passkeyConfig: CentralConfig.PasskeyConfig): Task[Unit] =
       challengeSettingsRepo.findByTenant(tenantId).flatMap:
         case Some(_) => ZIO.unit
-        case None    => challengeSettingsRepo.upsert(defaultChallengeSettings(tenantId))
+        case None    => challengeSettingsRepo.upsert(defaultChallengeSettings(tenantId, passkeyConfig))
 
     private def seedSystemSettings(): Task[Unit] =
       systemSettingsRepo.getAll.unit.catchAll: _ =>
@@ -663,7 +704,7 @@ object BootstrapService:
         case Some(_) => ZIO.logInfo(s"Admin user '${config.login}' already exists in user index, skipping")
         case None =>
           userRepo
-            .create(adminUserId, email = None, phone = None, login = Some(Login(config.login)))
+            .create(adminUserId, email = None, phone = BootstrapService.adminPhone(envName), login = Some(Login(config.login)))
             .foldZIO(
               {
                 case _: UserConflict => ZIO.logInfo(s"Admin user '${config.login}' already exists in user index (conflict), skipping")
@@ -674,23 +715,13 @@ object BootstrapService:
 
     private def seedClient(config: CentralConfig.BootstrapConfig): Task[Unit] =
       val redirectUris = config.redirectUris.map(RedirectUri(_)).toSet
-      val authFlow = AuthFlow(
-        primary = PrimaryAuthFlow(
-          credentials = List(PrimaryCredential.login),
-          inlinePassword = true,
-          factors = List.empty,
-        ),
-        passkey = None,
-        equivalents = Map.empty,
-        otpType = OtpType.sms,
-      )
+      val authFlow = BootstrapService.adminAuthFlow(envName)
       val request = CreateClientRequest(
         tenantId       = CentralConfig.defaultTenantId,
         id             = CentralConfig.centralClientId,
         clientName     = "Central Admin",
         redirectUris   = redirectUris,
         allowedScopes  = clientScopes,
-        audience       = List.empty,
         permissions    = Set.empty,
         accessTokenTtl = 3600,
         refreshTokenTtl = None,
@@ -701,18 +732,30 @@ object BootstrapService:
         frontChannelLogoutSessionRequired = true,
         backChannelLogoutUri = None,
       )
-      for
-        presetSecret <- ZIO.foreach(config.clientSecret): secretB64 =>
-          ZIO.fromEither(Secret.fromBase64Url(secretB64))
-            .mapError(msg => RuntimeException(s"bootstrap.client-secret is not valid Base64Url: $msg"))
-        _ <- clientService.registerClient(request, presetSecret).foldZIO(
-          {
-            case _: ClientAlreadyExists => ZIO.unit
-            case e: Throwable           => ZIO.fail(e)
-          },
-          _ => ZIO.unit,
-        )
-      yield ()
+      clientService.registerClient(request).foldZIO(
+        {
+          case _: ClientAlreadyExists =>
+            clientService.updateClient(
+              UpdateClientRequest(
+                clientId = CentralConfig.centralClientId,
+                clientName = None,
+                redirectUris = PatchClientRedirectUris(Set.empty, Set.empty),
+                scope = PatchClientScope(Set.empty, Set.empty),
+                permissions = PatchPermissions(Set.empty, Set.empty),
+                accessTokenTtl = None,
+                refreshTokenTtl = None,
+                theme = None,
+                authFlow = Some(authFlow),
+                otpTemplateId = None,
+                frontChannelLogoutUri = None,
+                frontChannelLogoutSessionRequired = None,
+                backChannelLogoutUri = None,
+              ),
+            )
+          case e: Throwable           => ZIO.fail(e)
+        },
+        _ => ZIO.unit,
+      )
 
     private def seedPresets(config: CentralConfig.BootstrapConfig): Task[Unit] =
       ZIO.foreachDiscard(config.presets.getOrElse(Nil)): seed =>
@@ -773,9 +816,14 @@ object BootstrapService:
     /** Seeds the edge-facing resource that proxies the admin API back to central.
       * Created for the default tenant (linked to the bootstrap edge) so it syncs
       * to the edge. Skipped if a resource with the same resourceId already exists.
+      *
+      * Its configured secret is encrypted at rest with the shared
+      * `clientSecretsSecret` AES key before it is persisted. Edge authenticates
+      * to central with this resource secret instead of forwarding the caller's
+      * access token.
       */
-    private def seedCentralResource(config: CentralConfig.BootstrapConfig): Task[Unit] =
-      ZIO.foreachDiscard(config.centralUrl): url =>
+    private def seedCentralResource(bootstrapConfig: CentralConfig.BootstrapConfig): Task[Unit] =
+      ZIO.foreachDiscard(bootstrapConfig.centralUrl): url =>
         val tenantId = CentralConfig.defaultTenantId
         val allEndpoints = centralEndpointCatalog.map: (method, path) =>
           ResourceEndpointRecord(
@@ -789,18 +837,32 @@ object BootstrapService:
             stepUpAcr = None,
             maxAge = None,
           )
-        resourceRepo.getAll.flatMap: resources =>
-          resources.find(r => r.tenantId == tenantId && r.resourceId == centralResourceId) match
+        for
+          resources <- resourceRepo.getAll
+          _ <- resources.find(r => r.tenantId == tenantId && r.resourceId == centralResourceId) match
             case None =>
-              resourceRepo.createResource(tenantId, centralResourceId, ResourceUri(url), allEndpoints.toVector)
+              for
+                resourceSecret <- BootstrapService.resolveResourceSecret(bootstrapConfig.resourceSecret, secureRandom)
+                encryptedSecret <- securityService.encryptAes256(resourceSecret, SecretKeySpec(this.config.clientSecretsSecret, "AES"))
+                _ <- resourceRepo.createResource(
+                  tenantId,
+                  centralResourceId,
+                  ResourceUri(url),
+                  List(CentralConfig.centralClientId),
+                  allEndpoints.toVector,
+                  Some(encryptedSecret),
+                )
+              yield ()
             case Some(existing) =>
               val existingIds = existing.endpoints.map(_.id).toSet
               val missing = allEndpoints.filterNot(e => existingIds.contains(e.id))
               if missing.isEmpty then
-                ZIO.logInfo(s"Central resource '$centralResourceId' is up to date, skipping")
+                ZIO.logInfo(s"Central resource '$centralResourceId' endpoints are up to date, skipping")
               else
                 ZIO.logInfo(s"Adding ${missing.size} missing endpoint(s) to central resource '$centralResourceId'") *>
-                  resourceRepo.updateResource(centralResourceId, None, missing.toVector, Set.empty)
+                  resourceRepo.updateResource(centralResourceId, None, None, missing.toVector, Set.empty)
+
+        yield ()
 
     private def seedJwks(config: CentralConfig.BootstrapConfig): Task[Unit] =
       val keys: Vector[Json.Obj] = config.jwks match

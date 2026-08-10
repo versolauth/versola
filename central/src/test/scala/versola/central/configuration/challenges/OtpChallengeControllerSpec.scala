@@ -2,9 +2,9 @@ package versola.central.configuration.challenges
 
 import io.opentelemetry.api
 import org.scalamock.stubs.{Stub, ZIOStubs}
-import versola.central.{TestAdminAuth, TestCentralConfig}
-import versola.central.configuration.clients.OAuthClientService
+import versola.central.{CentralConfig, TestAdminAuth, TestCentralConfig}
 import versola.central.configuration.edges.EdgeService
+import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.TenantId
 import versola.util.JWT
 import versola.util.http.Observability
@@ -57,19 +57,19 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         service       = stub[OtpChallengeService]
         challengeSettingsService = stub[ChallengeSettingsService]
         edgeService   = stub[EdgeService]
-        oauthClientService = stub[OAuthClientService]
+        resourceService = stub[ResourceService]
         tracing       <- tracingLayer.build
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             OtpChallengeController.routes.provideEnvironment(
               ZEnvironment[OtpChallengeService](service) ++
                 ZEnvironment[ChallengeSettingsService](challengeSettingsService) ++
-                tracing ++ ZEnvironment(config) ++ ZEnvironment[EdgeService](edgeService) ++
-                ZEnvironment[OAuthClientService](oauthClientService)
+                tracing ++ ZEnvironment[CentralConfig](config) ++ ZEnvironment[EdgeService](edgeService) ++
+                ZEnvironment[ResourceService](resourceService)
             )
           )
         )
-        _            <- oauthClientService.verifySecret.succeedsWith(true)
+        _            <- resourceService.verifySecret.succeedsWith(true)
         _            <- setup(service)
         requestWithAuth = request.headers.header(Header.Authorization) match
           case None => request.addHeader(TestAdminAuth.basicAuthHeader)

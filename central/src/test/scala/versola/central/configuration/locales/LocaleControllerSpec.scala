@@ -2,9 +2,9 @@ package versola.central.configuration.locales
 
 import io.opentelemetry.api
 import org.scalamock.stubs.{Stub, ZIOStubs}
-import versola.central.{TestAdminAuth, TestCentralConfig}
-import versola.central.configuration.clients.OAuthClientService
+import versola.central.{CentralConfig, TestAdminAuth, TestCentralConfig}
 import versola.central.configuration.edges.EdgeService
+import versola.central.configuration.resources.ResourceService
 import versola.util.JWT
 import versola.util.http.Observability
 import zio.*
@@ -55,17 +55,17 @@ object LocaleControllerSpec extends ZIOSpecDefault, ZIOStubs:
         client      <- ZIO.service[Client]
         service     = stub[LocaleService]
         edgeService = stub[EdgeService]
-        oauthClientService = stub[OAuthClientService]
+        resourceService = stub[ResourceService]
         tracing     <- tracingLayer.build
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             LocaleController.routes.provideEnvironment(
-              ZEnvironment[LocaleService](service) ++ tracing ++ ZEnvironment(config) ++
-                ZEnvironment[EdgeService](edgeService) ++ ZEnvironment[OAuthClientService](oauthClientService)
+              ZEnvironment[LocaleService](service) ++ tracing ++ ZEnvironment[CentralConfig](config) ++
+                ZEnvironment[EdgeService](edgeService) ++ ZEnvironment[ResourceService](resourceService)
             )
           )
         )
-        _            <- oauthClientService.verifySecret.succeedsWith(true)
+        _            <- resourceService.verifySecret.succeedsWith(true)
         _            <- setup(service)
         requestWithAuth = request.headers.header(Header.Authorization) match
           case None => request.addHeader(TestAdminAuth.basicAuthHeader)

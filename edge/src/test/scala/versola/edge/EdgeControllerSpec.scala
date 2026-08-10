@@ -48,6 +48,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
     ),
     central = EdgeConfig.CentralConfig(url = URL.decode("https://central.example").toOption.get),
     versolaUrl = URL.decode("https://idp.example").toOption.get,
+    configurationCacheRefreshInterval = 5.minutes,
   )
 
   private val publicKeys: JWT.PublicKeys =
@@ -94,7 +95,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
             ZEnvironment[EdgeService](service) ++
               ZEnvironment[JwksService](jwks) ++
               ZEnvironment[AuthorizationPresetsSyncClient](presets) ++
-              ZEnvironment(edgeConfig) ++
+              ZEnvironment[EdgeConfig](edgeConfig) ++
               tracing,
           ),
         ),

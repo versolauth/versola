@@ -48,7 +48,7 @@ object UserInfoControllerSpec extends UnitSpecBase:
       .claim("client_id", clientId.toString)
       .claim("scope", scope.map(_.toString).mkString(" "))
       .claim("jti", "test-access-token-id")
-      .audience(clientId.toString)
+      .audience("https://api.example.com")
       .issuer(config.jwt.issuer)
       .issueTime(Date.from(now))
       .expirationTime(Date.from(now.plusSeconds(3600)))

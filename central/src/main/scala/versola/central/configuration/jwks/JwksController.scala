@@ -1,7 +1,7 @@
 package versola.central.configuration.jwks
 
-import versola.central.configuration.clients.OAuthClientService
 import versola.central.configuration.edges.EdgeService
+import versola.central.configuration.resources.ResourceService
 import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
 import versola.util.http.Controller
 import zio.http.{Method, Request, Response, Routes, Status, handler}
@@ -18,7 +18,7 @@ import zio.{Task, ZIO}
   *   - `GET /configuration/jwks/sync` — internal endpoint used by auth/edge.
   */
 object JwksController extends Controller:
-  type Env = Tracing & JwksService & CentralConfig & EdgeService & OAuthClientService
+  type Env = Tracing & JwksService & CentralConfig & EdgeService & ResourceService
 
   def routes: Routes[Env, Throwable] = Routes(
     getJwksEndpoint,

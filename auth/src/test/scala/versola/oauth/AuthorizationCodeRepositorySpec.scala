@@ -75,6 +75,7 @@ trait AuthorizationCodeRepositorySpec extends DatabaseSpecBase[AuthorizationCode
     amr = amr1,
     authTime = authTime1,
     acr = None,
+    resources = Nil,
   )
 
   val recordWithClaims = AuthorizationCodeRecord(
@@ -93,6 +94,7 @@ trait AuthorizationCodeRepositorySpec extends DatabaseSpecBase[AuthorizationCode
     amr = amr1,
     authTime = authTime1,
     acr = None,
+    resources = Nil,
   )
 
   def testCases(env: AuthorizationCodeRepositorySpec.Env): List[Spec[AuthorizationCodeRepositorySpec.Env & Scope, Any]] =

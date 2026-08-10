@@ -11,7 +11,6 @@ import {
   fetchClientPresets,
   fetchChallengeSettings,
   fetchOtpTemplates,
-  fetchTenants,
   fetchThemes,
   getPermissions,
   getResources,
@@ -36,7 +35,6 @@ export class VersolaClientsList extends LitElement {
   @property({ type: Boolean }) canManageSecrets = false;
 
   @state() private clients: OAuthClient[] = [];
-  @state() private tenantEdgeId: string | null = null;
   @state() private searchQuery = '';
   @state() private isLoading = false;
   @state() private errorMessage = '';
@@ -89,7 +87,6 @@ export class VersolaClientsList extends LitElement {
   private async loadData() {
     if (!this.tenantId) {
       this.clients = [];
-      this.tenantEdgeId = null;
       this.errorMessage = '';
       return;
     }
@@ -99,13 +96,9 @@ export class VersolaClientsList extends LitElement {
     this.errorMessage = '';
 
     try {
-      const [result, tenants] = await Promise.all([
-        fetchAllClients(this.tenantId),
-        fetchTenants(),
-      ]);
+      const result = await fetchAllClients(this.tenantId);
       if (requestId !== this.loadRequestId) return;
       this.clients = result;
-      this.tenantEdgeId = tenants.find(t => t.id === this.tenantId)?.edgeId ?? null;
     } catch (error) {
       if (requestId !== this.loadRequestId) return;
       this.clients = [];
@@ -1003,7 +996,6 @@ export class VersolaClientsList extends LitElement {
           .availableScopes=${this.availableScopes}
           .availablePermissions=${this.availablePermissions}
           .availableResources=${this.availableResources}
-          .availableClientIds=${this.clients.map(client => client.id)}
           .availableThemes=${this.availableThemes}
           .availableOtpTemplates=${this.availableOtpTemplates}
           .canManageSecrets=${this.canManageSecrets}
@@ -1116,16 +1108,14 @@ export class VersolaClientsList extends LitElement {
                 ${isExpanded ? html`
                   <div class="client-body">
                     <div class="details-grid">
-                      ${client.externalAudience.length > 0 ? html`
-                        <div class="detail-section">
-                          <div class="detail-label">External Audience</div>
-                          <div class="uri-list">
-                            ${client.externalAudience.map(aud => html`
-                              <div class="uri-item">${aud}</div>
-                            `)}
-                          </div>
+                      <div class="detail-section">
+                        <div class="detail-label">Redirect URIs</div>
+                        <div class="uri-list">
+                          ${client.redirectUris.map(uri => html`
+                            <div class="uri-item">${uri}</div>
+                          `)}
                         </div>
-                      ` : ''}
+                      </div>
 
                       <div class="detail-section">
                         <div class="detail-label">OAuth Scopes</div>
@@ -1647,12 +1637,5 @@ export class VersolaClientsList extends LitElement {
     }
   }
 
-  private navigateToEdge(edgeId: string) {
-    this.dispatchEvent(new CustomEvent('navigate-to-edge', {
-      detail: { edgeId },
-      bubbles: true,
-      composed: true,
-    }));
-  }
 }
 
