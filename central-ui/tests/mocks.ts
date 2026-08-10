@@ -21,7 +21,7 @@ function backendPath(pathname: string): string {
 
 type TenantDto = { id: string; description: string; edgeId?: string | null };
 type BackendAuthFactor = { type: string; required: boolean };
-type BackendAuthFlow = { primary: { credentials: string[]; inlinePassword: boolean; factors: BackendAuthFactor[] }; passkey?: { factors: BackendAuthFactor[] } | null };
+type BackendAuthFlow = { primary: { credentials: string[]; inlinePassword: boolean; factors: BackendAuthFactor[] }; passkey?: { factors: BackendAuthFactor[] } | null; otpType: 'sms' | 'email' };
 type ClientDto = { id: string; clientName: string; redirectUris: string[]; scope: string[]; permissions: string[]; secretRotation: boolean; edgeId?: string; authFlow?: BackendAuthFlow | null };
 type ScopeDto = { scope: string; description: Record<string, string>; claims: Array<{ claim: string; description: Record<string, string> }> };
 type PermissionDto = { permission: string; description: Record<string, string>; endpointIds: ResourceEndpointId[] };
@@ -170,7 +170,7 @@ type SubmissionLimitsDto = {
   banDurationSeconds: number;
 };
 type PasskeySettingsDto = { rpId: string; rpName: string; origins: string[]; userVerification: string };
-type OtpTemplateDto = { id: string; tenantId: string; localizations: Record<string, string> };
+type OtpTemplateDto = { id: string; tenantId: string; localizations: Record<string, string>; purpose: string; channel: 'sms' | 'email' };
 type ChallengeSettingsDto = {
   tenantId: string;
   allowedPrefixes: string[];
@@ -1002,11 +1002,19 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
       if (method === 'PUT') {
         const payload = body as OtpTemplateDto;
         const templates = state.otpTemplates[payload.tenantId] ?? [];
-        const existing = templates.find(template => template.id === payload.id);
+        const existing = templates.find(template => template.id === payload.id && template.purpose === payload.purpose && template.channel === payload.channel);
         if (existing) {
           existing.localizations = { ...payload.localizations };
+          existing.purpose = payload.purpose;
+          existing.channel = payload.channel;
         } else {
-          templates.push({ id: payload.id, tenantId: payload.tenantId, localizations: { ...payload.localizations } });
+          templates.push({
+            id: payload.id,
+            tenantId: payload.tenantId,
+            localizations: { ...payload.localizations },
+            purpose: payload.purpose,
+            channel: payload.channel,
+          });
         }
         state.otpTemplates[payload.tenantId] = templates;
         await route.fulfill({ status: 204, body: '' });
@@ -1014,9 +1022,9 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
       }
 
       if (method === 'DELETE') {
-        const payload = body as { id: string; tenantId: string };
+        const payload = body as { id: string; tenantId: string; purpose: string; channel: 'sms' | 'email' };
         state.otpTemplates[payload.tenantId] = (state.otpTemplates[payload.tenantId] ?? [])
-          .filter(template => template.id !== payload.id);
+          .filter(template => !(template.id === payload.id && template.purpose === payload.purpose && template.channel === payload.channel));
         await route.fulfill({ status: 204, body: '' });
         return;
       }

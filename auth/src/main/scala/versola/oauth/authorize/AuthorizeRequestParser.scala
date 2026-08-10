@@ -22,6 +22,12 @@ trait AuthorizeRequestParser:
 object AuthorizeRequestParser:
   def live = ZLayer.fromFunction(Impl(_, _))
 
+  /** Keeps `state` (echoed into the ConversationCookie alongside the redirect URI) small
+    * enough that it can't push that cookie past the ~4 KiB per-cookie limit browsers
+    * enforce, which would otherwise silently drop the cookie and break /challenge.
+    */
+  private val MaxStateLength = 128
+
   class Impl(config: CoreConfig, oauthClientService: OAuthConfigurationService) extends AuthorizeRequestParser:
 
     def parse(
@@ -45,6 +51,7 @@ object AuthorizeRequestParser:
             _ => Error.MultipleValuesProvided(redirectUri, None, "state"),
             _.map(State(_)),
           )
+          .filterOrFail(_.forall(_.length <= MaxStateLength))(Error.StateInvalid(redirectUri))
 
         responseTypeEntries <- getParam(params, "response_type")
           .orElseFail(Error.MultipleValuesProvided(redirectUri, state, "response_type"))

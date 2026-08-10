@@ -506,6 +506,38 @@ export class VersolaClientForm extends LitElement {
         border-top: 1px solid var(--border-dark);
       }
 
+      .otp-settings-grid {
+        display: grid;
+        gap: 0.75rem;
+        padding-top: 0.875rem;
+        border-top: 1px dashed var(--border-dark);
+      }
+
+      .otp-settings-section {
+        margin-top: 1rem;
+        padding-top: 1rem;
+      }
+
+      .otp-settings-title {
+        margin-bottom: 0.875rem;
+        font-size: 0.875rem;
+        font-weight: 500;
+        line-height: 18px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+      }
+
+      .otp-settings-label {
+        text-transform: none;
+        letter-spacing: normal;
+      }
+
+      .logout-settings-title {
+        margin-bottom: 0.875rem;
+        padding-bottom: 0.875rem;
+        border-bottom: 1px dashed var(--border-dark);
+      }
+
       .plain-checkboxes {
         display: grid;
         grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
@@ -589,7 +621,10 @@ export class VersolaClientForm extends LitElement {
     super.connectedCallback();
     document.addEventListener('click', this.handleDocumentClick);
     if (this.client) {
-      this.formData = { ...this.client };
+      this.formData = {
+        ...this.client,
+        scope: this.client.authFlow ? [...this.client.scope] : this.client.scope.filter(scope => scope !== 'openid'),
+      };
       // Convert TTL from seconds to value + unit
       const { value, unit } = secondsToTtl(this.client.accessTokenTtl);
       this.ttlValue = value;
@@ -603,8 +638,8 @@ export class VersolaClientForm extends LitElement {
       // Defaults: 1 hour, pre-select first available OTP template
       this.ttlValue = 1;
       this.ttlUnit = 'hours';
-      if (this.availableOtpTemplates.length > 0) {
-        this.formData = { ...this.formData, otpTemplateId: this.availableOtpTemplates[0].id };
+      if (this.otpTemplateOptions.length > 0) {
+        this.formData = { ...this.formData, otpTemplateId: this.otpTemplateOptions[0].id };
       }
     }
   }
@@ -644,7 +679,13 @@ export class VersolaClientForm extends LitElement {
 
     this.authFlowError = '';
 
-    const frontChannelLogoutUri = this.logoutMode === 'front' ? (this.formData.frontChannelLogoutUri || '').trim() : '';
+    const logoutEnabled = authFlow !== null;
+    const authFlowTheme = authFlow ? (this.formData.theme || 'default') : 'default';
+    const authFlowRedirectUris = authFlow ? (this.formData.redirectUris || []) : [];
+    const authFlowOtpTemplateId = authFlow ? this.selectedOtpTemplateId : 'default';
+    const frontChannelLogoutUri = logoutEnabled && this.logoutMode === 'front'
+      ? (this.formData.frontChannelLogoutUri || '').trim()
+      : '';
     if (frontChannelLogoutUri) {
       const uriValidation = validateLogoutUri(frontChannelLogoutUri);
       if (!uriValidation.valid) {
@@ -655,7 +696,9 @@ export class VersolaClientForm extends LitElement {
 
     this.frontChannelLogoutUriError = '';
 
-    const backChannelLogoutUri = this.logoutMode === 'back' ? (this.formData.backChannelLogoutUri || '').trim() : '';
+    const backChannelLogoutUri = logoutEnabled && this.logoutMode === 'back'
+      ? (this.formData.backChannelLogoutUri || '').trim()
+      : '';
     if (backChannelLogoutUri) {
       const uriValidation = validateLogoutUri(backChannelLogoutUri);
       if (!uriValidation.valid) {
@@ -669,14 +712,14 @@ export class VersolaClientForm extends LitElement {
     const client: OAuthClient = {
       id: this.formData.id!,
       clientName: this.formData.clientName!,
-      redirectUris: this.formData.redirectUris || [],
+      redirectUris: authFlowRedirectUris,
       scope: this.formData.scope || [],
       externalAudience: this.formData.externalAudience || [],
       hasPreviousSecret: false,
       accessTokenTtl: ttlToSeconds(this.ttlValue, this.ttlUnit),
       permissions: this.formData.permissions || [],
-      theme: this.formData.theme || 'default',
-      otpTemplateId: this.formData.otpTemplateId ?? null,
+      theme: authFlowTheme,
+      otpTemplateId: authFlowOtpTemplateId,
       authFlow,
       frontChannelLogoutUri: frontChannelLogoutUri || null,
       frontChannelLogoutSessionRequired: frontChannelLogoutUri
@@ -785,12 +828,6 @@ export class VersolaClientForm extends LitElement {
     this.logoutMode = mode;
     this.frontChannelLogoutUriError = '';
     this.backChannelLogoutUriError = '';
-    this.formData = {
-      ...this.formData,
-      frontChannelLogoutUri: mode === 'front' ? this.formData.frontChannelLogoutUri : '',
-      frontChannelLogoutSessionRequired: mode === 'front' ? this.formData.frontChannelLogoutSessionRequired : false,
-      backChannelLogoutUri: mode === 'back' ? this.formData.backChannelLogoutUri : '',
-    };
   }
 
   private handleFrontChannelLogoutUriInput(e: Event) {
@@ -822,6 +859,97 @@ export class VersolaClientForm extends LitElement {
     if (this.backChannelLogoutUriError) {
       this.backChannelLogoutUriError = '';
     }
+  }
+
+  private renderLogoutSettings() {
+    return html`
+      <div class="form-group">
+        <label class="logout-settings-title">Logout Settings</label>
+        <div class="cred-mode-cards">
+          <button
+            type="button"
+            class=${`cred-mode-card ${this.logoutMode === 'none' ? 'selected' : ''}`}
+            @click=${() => this.setLogoutMode('none')}
+          >none</button>
+          <button
+            type="button"
+            class=${`cred-mode-card ${this.logoutMode === 'front' ? 'selected' : ''}`}
+            @click=${() => this.setLogoutMode('front')}
+          >front-channel</button>
+          <button
+            type="button"
+            class=${`cred-mode-card ${this.logoutMode === 'back' ? 'selected' : ''}`}
+            @click=${() => this.setLogoutMode('back')}
+          >back-channel</button>
+        </div>
+
+        ${this.logoutMode === 'front' ? html`
+          <div class="cred-options">
+            <div style="display: flex; align-items: center; gap: 0.4rem; margin-bottom: var(--spacing-sm);">
+              <label for="client-front-channel-logout-uri" style="margin-bottom: 0;">Front-Channel Logout URI</label>
+              ${this.renderOptionInfo(
+                'front-channel-logout-uri',
+                'Front-Channel Logout URI',
+                html`
+                  <div class="option-tooltip-item">Loaded by the browser in a hidden iframe when logout is initiated, so this client can clear its own local session/cookies in response.</div>
+                  <div class="option-tooltip-item">If this client sits behind an edge, use the edge's own front-channel logout endpoint (<code>/logout/frontchannel</code>) rather than a client-specific URL — the edge clears the session for every client routed through it.</div>
+                `,
+                'Front-channel logout URI info',
+              )}
+            </div>
+            <input
+              type="text"
+              id="client-front-channel-logout-uri"
+              class="compact-input ${this.frontChannelLogoutUriError ? 'input-error' : ''}"
+              .value=${this.formData.frontChannelLogoutUri || ''}
+              @input=${this.handleFrontChannelLogoutUriInput}
+              placeholder="https://app.example.com/logout/frontchannel"
+            />
+            ${this.frontChannelLogoutUriError ? html`
+              <div class="error-message" style="margin-top: 0.5rem;">${this.frontChannelLogoutUriError}</div>
+            ` : ''}
+            ${(this.formData.frontChannelLogoutUri || '').trim() ? html`
+              <label class="plain-checkbox-label" style="margin-top: 0.5rem;">
+                <input
+                  type="checkbox"
+                  .checked=${!!this.formData.frontChannelLogoutSessionRequired}
+                  @change=${() => this.toggleFrontChannelLogoutSessionRequired()}
+                />
+                Include session parameters (iss &amp; sid)
+              </label>
+            ` : ''}
+          </div>
+        ` : ''}
+
+        ${this.logoutMode === 'back' ? html`
+          <div class="cred-options">
+            <div style="display: flex; align-items: center; gap: 0.4rem; margin-bottom: var(--spacing-sm);">
+              <label for="client-back-channel-logout-uri" style="margin-bottom: 0;">Back-Channel Logout URI</label>
+              ${this.renderOptionInfo(
+                'back-channel-logout-uri',
+                'Back-Channel Logout URI',
+                html`
+                  <div class="option-tooltip-item">Called directly, server-to-server, when logout is initiated, so this client can revoke its own sessions/tokens without relying on the browser.</div>
+                  <div class="option-tooltip-item">If this client sits behind an edge, use the edge's own back-channel logout endpoint (<code>/logout/backchannel</code>) rather than a client-specific URL — the edge revokes the session for every client routed through it.</div>
+                `,
+                'Back-channel logout URI info',
+              )}
+            </div>
+            <input
+              type="text"
+              id="client-back-channel-logout-uri"
+              class="compact-input ${this.backChannelLogoutUriError ? 'input-error' : ''}"
+              .value=${this.formData.backChannelLogoutUri || ''}
+              @input=${this.handleBackChannelLogoutUriInput}
+              placeholder="https://app.example.com/logout/backchannel"
+            />
+            ${this.backChannelLogoutUriError ? html`
+              <div class="error-message" style="margin-top: 0.5rem;">${this.backChannelLogoutUriError}</div>
+            ` : ''}
+          </div>
+        ` : ''}
+      </div>
+    `;
   }
 
   private removeRedirectUri(uri: string) {
@@ -1042,6 +1170,10 @@ export class VersolaClientForm extends LitElement {
   }
 
   private toggleScope(scope: string) {
+    if (scope === 'openid' && !this.hasAuthFlow) {
+      return;
+    }
+
     const scopes = this.formData.scope || [];
     this.formData = {
       ...this.formData,
@@ -1066,7 +1198,14 @@ export class VersolaClientForm extends LitElement {
   }
 
   private toggleAuthFlowEnabled() {
-    this.formData = { ...this.formData, authFlow: this.hasAuthFlow ? null : createDefaultAuthFlow() };
+    const enablingAuthFlow = !this.hasAuthFlow;
+    this.formData = {
+      ...this.formData,
+      authFlow: enablingAuthFlow ? createDefaultAuthFlow() : null,
+      scope: enablingAuthFlow
+        ? (this.formData.scope || [])
+        : (this.formData.scope || []).filter(scope => scope !== 'openid'),
+    };
     if (this.authFlowError) {
       this.authFlowError = '';
     }
@@ -1074,6 +1213,20 @@ export class VersolaClientForm extends LitElement {
 
   private get authFlow(): AuthFlow {
     return this.formData.authFlow ?? createDefaultAuthFlow();
+  }
+
+  private get otpTemplateOptions(): OtpTemplateRecord[] {
+    return this.availableOtpTemplates.filter(template =>
+      (template.purpose ?? 'otp') === 'otp'
+      && (template.channel ?? 'sms') === this.otpChannel,
+    );
+  }
+
+  private get selectedOtpTemplateId(): string {
+    const current = this.formData.otpTemplateId;
+    return this.otpTemplateOptions.some(template => template.id === current)
+      ? current!
+      : this.otpTemplateOptions[0]?.id ?? current ?? 'default';
   }
 
   private setAuthFlow(patch: Partial<AuthFlow>) {
@@ -1102,17 +1255,37 @@ export class VersolaClientForm extends LitElement {
   }
 
   private selectPhoneEmailMode(credential: 'email' | 'phone') {
-    if (this.credentialMode === 'phone-email' && this.authFlow.primaryCredentials.includes(credential)) return;
+    const otpType = credential === 'email' ? 'email' : 'sms';
+    if (
+      this.credentialMode === 'phone-email'
+      && this.authFlow.primaryCredentials.includes(credential)
+      && this.authFlow.otpType === otpType
+    ) return;
     const real = this.realFactors.length > 0
       ? this.realFactors.map(f => ({ ...f, required: true }))
       : [{ type: 'otp' as AuthFactorType, required: true }];
-    this.setAuthFlow({ primaryCredentials: [credential], inlinePassword: false, factors: this.withPasskeyEnroll(real) });
+    this.setAuthFlow({
+      primaryCredentials: [credential],
+      otpType,
+      inlinePassword: false,
+      factors: this.withPasskeyEnroll(real),
+    });
   }
 
   private selectLoginPasswordMode() {
     if (this.credentialMode === 'login-password') return;
     const otp = this.realFactors.find(f => f.type === 'otp');
-    this.setAuthFlow({ primaryCredentials: ['login'], inlinePassword: true, factors: this.withPasskeyEnroll(otp ? [otp] : []) });
+    this.setAuthFlow({
+      primaryCredentials: ['login'],
+      otpType: this.authFlow.otpType ?? 'sms',
+      inlinePassword: true,
+      factors: this.withPasskeyEnroll(otp ? [otp] : []),
+    });
+  }
+
+  private setOtpType(otpType: 'sms' | 'email') {
+    if (this.otpChannelLocked) return;
+    this.setAuthFlow({ otpType });
   }
 
   private toggleInlinePassword() {
@@ -1164,6 +1337,23 @@ export class VersolaClientForm extends LitElement {
 
   private get passkeyOtpEnabled(): boolean {
     return (this.authFlow.passkeyFactors ?? []).some(f => f.type === 'otp');
+  }
+
+  private get otpSettingsVisible(): boolean {
+    return this.hasAuthFlow
+      && (this.realFactors.some(f => f.type === 'otp')
+        || (this.authFlow.passkey && this.passkeyOtpEnabled));
+  }
+
+  private get otpChannelLocked(): boolean {
+    return this.authFlow.primaryCredentials.includes('email')
+      || this.authFlow.primaryCredentials.includes('phone');
+  }
+
+  private get otpChannel(): 'sms' | 'email' {
+    if (this.authFlow.primaryCredentials.includes('email')) return 'email';
+    if (this.authFlow.primaryCredentials.includes('phone')) return 'sms';
+    return this.authFlow.otpType;
   }
 
   private get passkeyOtpRequired(): boolean {
@@ -1289,163 +1479,6 @@ export class VersolaClientForm extends LitElement {
             </div>
 
             <div class="form-group">
-              <label for="client-theme">Theme</label>
-              <select
-                id="client-theme"
-                class="compact-input"
-                .value=${this.formData.theme || 'default'}
-                @change=${(e: Event) => this.formData = { ...this.formData, theme: (e.target as HTMLSelectElement).value }}
-              >
-                ${this.availableThemes.length === 0
-                  ? html`<option value="default">Default</option>`
-                  : this.availableThemes.map(t => html`
-                    <option value=${t.id} ?selected=${(this.formData.theme || 'default') === t.id}>${t.id}</option>
-                  `)}
-              </select>
-            </div>
-
-            <div class="form-group">
-              <label for="client-otp-template">OTP Template</label>
-              <select
-                id="client-otp-template"
-                class="compact-input"
-                .value=${this.formData.otpTemplateId || ''}
-                @change=${(e: Event) => {
-                  const val = (e.target as HTMLSelectElement).value;
-                  this.formData = { ...this.formData, otpTemplateId: val || null };
-                }}
-              >
-                ${this.availableOtpTemplates.length === 0 ? html`
-                  <option value="" disabled selected>— No templates loaded —</option>
-                ` : this.availableOtpTemplates.map(t => html`
-                  <option value=${t.id} ?selected=${this.formData.otpTemplateId === t.id}>${t.id}</option>
-                `)}
-              </select>
-            </div>
-
-            <div class="form-group">
-              <label style="margin-bottom: 0;">Logout Notification</label>
-              <div class="cred-mode-cards">
-                <button
-                  type="button"
-                  class=${`cred-mode-card ${this.logoutMode === 'none' ? 'selected' : ''}`}
-                  @click=${() => this.setLogoutMode('none')}
-                >none</button>
-                <button
-                  type="button"
-                  class=${`cred-mode-card ${this.logoutMode === 'front' ? 'selected' : ''}`}
-                  @click=${() => this.setLogoutMode('front')}
-                >front-channel</button>
-                <button
-                  type="button"
-                  class=${`cred-mode-card ${this.logoutMode === 'back' ? 'selected' : ''}`}
-                  @click=${() => this.setLogoutMode('back')}
-                >back-channel</button>
-              </div>
-              <div class="hint">How this client is notified when the session ends elsewhere. Choose one.</div>
-
-              ${this.logoutMode === 'front' ? html`
-                <div class="cred-options">
-                  <div style="display: flex; align-items: center; gap: 0.4rem; margin-bottom: var(--spacing-sm);">
-                    <label for="client-front-channel-logout-uri" style="margin-bottom: 0;">Front-Channel Logout URI</label>
-                    ${this.renderOptionInfo(
-                      'front-channel-logout-uri',
-                      'Front-Channel Logout URI',
-                      html`
-                        <div class="option-tooltip-item">Loaded by the browser in a hidden iframe when logout is initiated, so this client can clear its own local session/cookies in response.</div>
-                        <div class="option-tooltip-item">If this client sits behind an edge, use the edge's own front-channel logout endpoint (<code>/logout/frontchannel</code>) rather than a client-specific URL — the edge clears the session for every client routed through it.</div>
-                      `,
-                      'Front-channel logout URI info',
-                    )}
-                  </div>
-                  <input
-                    type="text"
-                    id="client-front-channel-logout-uri"
-                    class="compact-input ${this.frontChannelLogoutUriError ? 'input-error' : ''}"
-                    .value=${this.formData.frontChannelLogoutUri || ''}
-                    @input=${this.handleFrontChannelLogoutUriInput}
-                    placeholder="https://app.example.com/logout/frontchannel"
-                  />
-                  ${this.frontChannelLogoutUriError ? html`
-                    <div class="error-message" style="margin-top: 0.5rem;">${this.frontChannelLogoutUriError}</div>
-                  ` : html`
-                    <div class="hint">Loaded in a hidden iframe to notify this client when the session ends elsewhere.</div>
-                  `}
-                  ${(this.formData.frontChannelLogoutUri || '').trim() ? html`
-                    <label class="plain-checkbox-label" style="margin-top: 0.5rem;">
-                      <input
-                        type="checkbox"
-                        .checked=${!!this.formData.frontChannelLogoutSessionRequired}
-                        @change=${() => this.toggleFrontChannelLogoutSessionRequired()}
-                      />
-                      Include session parameters (iss &amp; sid)
-                    </label>
-                  ` : ''}
-                </div>
-              ` : ''}
-
-              ${this.logoutMode === 'back' ? html`
-                <div class="cred-options">
-                  <div style="display: flex; align-items: center; gap: 0.4rem; margin-bottom: var(--spacing-sm);">
-                    <label for="client-back-channel-logout-uri" style="margin-bottom: 0;">Back-Channel Logout URI</label>
-                    ${this.renderOptionInfo(
-                      'back-channel-logout-uri',
-                      'Back-Channel Logout URI',
-                      html`
-                        <div class="option-tooltip-item">Called directly, server-to-server, when logout is initiated, so this client can revoke its own sessions/tokens without relying on the browser.</div>
-                        <div class="option-tooltip-item">If this client sits behind an edge, use the edge's own back-channel logout endpoint (<code>/logout/backchannel</code>) rather than a client-specific URL — the edge revokes the session for every client routed through it.</div>
-                      `,
-                      'Back-channel logout URI info',
-                    )}
-                  </div>
-                  <input
-                    type="text"
-                    id="client-back-channel-logout-uri"
-                    class="compact-input ${this.backChannelLogoutUriError ? 'input-error' : ''}"
-                    .value=${this.formData.backChannelLogoutUri || ''}
-                    @input=${this.handleBackChannelLogoutUriInput}
-                    placeholder="https://app.example.com/logout/backchannel"
-                  />
-                  ${this.backChannelLogoutUriError ? html`
-                    <div class="error-message" style="margin-top: 0.5rem;">${this.backChannelLogoutUriError}</div>
-                  ` : html`
-                    <div class="hint">Called server-to-server to notify this client when the session ends elsewhere.</div>
-                  `}
-                </div>
-              ` : ''}
-            </div>
-
-            <div class="form-group">
-              <label>Redirect URIs</label>
-              <div class="array-input-group compact-inline-row">
-                <input
-                  type="text"
-                  class="${this.isRedirectUriInvalid || this.redirectUriError ? 'input-error' : ''}"
-                  .value=${this.redirectUriInput}
-                  @input=${this.handleRedirectUriInput}
-                  @keydown=${(e: KeyboardEvent) => e.key === 'Enter' && (e.preventDefault(), this.addRedirectUri())}
-                  placeholder="https://app.example.com/callback"
-                />
-                <button type="button" class="btn btn-secondary inline-action-button" @click=${this.addRedirectUri}>
-                  Add
-                </button>
-              </div>
-              ${this.redirectUriError ? html`
-                <div class="error-message" style="margin-top: 0.5rem;">${this.redirectUriError}</div>
-              ` : ''}
-              ${(this.formData.redirectUris || []).length > 0 ? html`
-                <div class="tag-list">
-                  ${this.formData.redirectUris!.map(uri => html`
-                    <div class="tag">
-                      <span>${uri}</span>
-                      <button type="button" class="icon-action danger tag-remove" @click=${() => this.removeRedirectUri(uri)} title="Remove redirect URI" aria-label=${`Remove redirect URI ${uri}`}>✕</button>
-                    </div>
-                  `)}
-                </div>
-              ` : ''}
-            </div>
-
-            <div class="form-group">
               <label for="external-audience">External Audience</label>
               <div class="autocomplete-wrapper compact-input">
                 <input
@@ -1539,6 +1572,7 @@ export class VersolaClientForm extends LitElement {
                       type="checkbox"
                       id="scope-${scope.id}"
                       .checked=${(this.formData.scope || []).includes(scope.id)}
+                      ?disabled=${scope.id === 'openid' && !this.hasAuthFlow}
                       @click=${(e: Event) => e.stopPropagation()}
                       @change=${() => this.toggleScope(scope.id)}
                     />
@@ -1766,10 +1800,102 @@ export class VersolaClientForm extends LitElement {
                   </select>
                 </div>
               </div>
+
               ` : ''}
 
               ${this.authFlowError ? html`<div class="error-message" style="margin-top: 0.5rem;">${this.authFlowError}</div>` : ''}
             </div>
+
+            ${this.otpSettingsVisible ? html`
+              <div class="form-group">
+                <div class="flow-subsection otp-settings-section">
+                  <div class="flow-subtitle otp-settings-title">OTP Settings</div>
+                  <div class="otp-settings-grid">
+                    <div>
+                      <label class="otp-settings-label" for="client-otp-template">OTP Template</label>
+                      <select
+                        id="client-otp-template"
+                        class="compact-input"
+                        .value=${this.selectedOtpTemplateId}
+                        @change=${(e: Event) => {
+                          const val = (e.target as HTMLSelectElement).value;
+                          this.formData = { ...this.formData, otpTemplateId: val || null };
+                        }}
+                      >
+                        ${this.otpTemplateOptions.length === 0 ? html`
+                          <option value="" disabled selected>— No templates loaded —</option>
+                        ` : this.otpTemplateOptions.map(t => html`
+                          <option value=${t.id} ?selected=${this.selectedOtpTemplateId === t.id}>${t.id}</option>
+                        `)}
+                      </select>
+                    </div>
+                    <div>
+                      <label class="otp-settings-label" for="client-otp-channel">OTP channel</label>
+                      <select
+                        id="client-otp-channel"
+                        class="compact-input"
+                        .value=${this.otpChannel}
+                        ?disabled=${this.otpChannelLocked}
+                        @change=${(e: Event) => this.setOtpType((e.target as HTMLSelectElement).value as 'sms' | 'email')}
+                      >
+                        <option value="sms">sms</option>
+                        <option value="email">email</option>
+                      </select>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ` : ''}
+
+            ${this.hasAuthFlow ? html`
+            <div class="form-group">
+              <label for="client-theme">Forms Theme</label>
+              <select
+                id="client-theme"
+                class="compact-input"
+                .value=${this.formData.theme || 'default'}
+                @change=${(e: Event) => this.formData = { ...this.formData, theme: (e.target as HTMLSelectElement).value }}
+              >
+                ${this.availableThemes.length === 0
+                  ? html`<option value="default">Default</option>`
+                  : this.availableThemes.map(t => html`
+                    <option value=${t.id} ?selected=${(this.formData.theme || 'default') === t.id}>${t.id}</option>
+                  `)}
+              </select>
+            </div>
+
+            <div class="form-group">
+              <label>Redirect URIs</label>
+              <div class="array-input-group compact-inline-row">
+                <input
+                  type="text"
+                  class="${this.isRedirectUriInvalid || this.redirectUriError ? 'input-error' : ''}"
+                  .value=${this.redirectUriInput}
+                  @input=${this.handleRedirectUriInput}
+                  @keydown=${(e: KeyboardEvent) => e.key === 'Enter' && (e.preventDefault(), this.addRedirectUri())}
+                  placeholder="https://app.example.com/callback"
+                />
+                <button type="button" class="btn btn-secondary inline-action-button" @click=${this.addRedirectUri}>
+                  Add
+                </button>
+              </div>
+              ${this.redirectUriError ? html`
+                <div class="error-message" style="margin-top: 0.5rem;">${this.redirectUriError}</div>
+              ` : ''}
+              ${(this.formData.redirectUris || []).length > 0 ? html`
+                <div class="tag-list">
+                  ${this.formData.redirectUris!.map(uri => html`
+                    <div class="tag">
+                      <span>${uri}</span>
+                      <button type="button" class="icon-action danger tag-remove" @click=${() => this.removeRedirectUri(uri)} title="Remove redirect URI" aria-label=${`Remove redirect URI ${uri}`}>✕</button>
+                    </div>
+                  `)}
+                </div>
+              ` : ''}
+            </div>
+            ` : ''}
+
+            ${this.hasAuthFlow ? this.renderLogoutSettings() : ''}
           </div>
 
           <div class="form-actions">

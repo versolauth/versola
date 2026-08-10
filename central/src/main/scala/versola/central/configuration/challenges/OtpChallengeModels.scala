@@ -4,18 +4,27 @@ import versola.central.configuration.tenants.TenantId
 import zio.json.JsonCodec
 import zio.schema.{Schema, derived}
 
+enum OtpTemplatePurpose derives Schema, JsonCodec:
+  case otp, password
+
+enum OtpTemplateChannel derives Schema, JsonCodec:
+  case sms, email
+
 case class GetOtpTemplatesResponse(templates: Vector[OtpTemplateRecord]) derives Schema, JsonCodec
 
 case class UpsertOtpTemplateRequest(
     id: String,
     tenantId: TenantId,
     localizations: Map[String, String],
-    purpose: String,
+    purpose: OtpTemplatePurpose,
+    channel: OtpTemplateChannel,
 ) derives Schema, JsonCodec
 
 case class DeleteOtpTemplateRequest(
     id: String,
     tenantId: TenantId,
+    purpose: OtpTemplatePurpose,
+    channel: OtpTemplateChannel,
 ) derives Schema, JsonCodec
 
 case class GetChallengeSettingsResponse(settings: Option[ChallengeSettingsRecord]) derives Schema, JsonCodec

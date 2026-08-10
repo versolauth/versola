@@ -39,6 +39,17 @@ private[authorize] object Error:
     errorUri = Some("https://datatracker.ietf.org/doc/html/rfc6749#section-4.1.2.1"),
   )
 
+  /** The `state` value itself is deliberately not echoed back here: it is invalid because it
+    * is too long, and echoing it would grow the redirect URI further (and could push a
+    * later ConversationCookie past the ~4 KiB per-cookie limit).
+    */
+  case class StateInvalid(uri: URL) extends RedirectError(
+      error = ErrorCode.InvalidRequest,
+      errorDescription = "The state parameter exceeds the maximum allowed length of 128 characters",
+      errorUri = Some("https://datatracker.ietf.org/doc/html/rfc6749#section-4.1.1"),
+    ):
+    val state: Option[State] = None
+
   case class ResponseTypeMissing(uri: URL, state: Option[State]) extends RedirectError(
       error = ErrorCode.InvalidRequest,
       errorDescription = "Missing required parameter - response_type",

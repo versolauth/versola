@@ -82,6 +82,7 @@ export class VersolaClientsList extends LitElement {
 
     if (changedProperties.has('expandClientId') && this.expandClientId) {
       this.expandedClients = new Set([...this.expandedClients, this.expandClientId]);
+      this.expandedFlows = new Set([...this.expandedFlows, this.expandClientId]);
     }
   }
 
@@ -282,6 +283,76 @@ export class VersolaClientsList extends LitElement {
         gap: var(--spacing-lg);
       }
 
+      .auth-flow-settings {
+        margin-top: var(--spacing-lg);
+        border-top: 1px solid var(--border-dark);
+        padding-top: var(--spacing-lg);
+      }
+
+      .auth-flow-settings-list {
+        display: grid;
+        gap: var(--spacing-md);
+      }
+
+      .auth-flow-setting-row {
+        display: grid;
+        grid-template-columns: minmax(10rem, 0.3fr) minmax(0, 1fr);
+        align-items: start;
+        gap: var(--spacing-lg);
+        padding: 0.875rem 0;
+      }
+
+      .auth-flow-setting-label {
+        color: var(--text-secondary);
+        font-size: 0.8125rem;
+        font-weight: 600;
+      }
+
+      .auth-flow-setting-value {
+        min-width: 0;
+        color: var(--text-primary);
+        font-size: 0.875rem;
+      }
+
+      .auth-flow-setting-stack {
+        display: grid;
+        gap: 0.625rem;
+      }
+
+      .auth-flow-setting-detail {
+        display: grid;
+        grid-template-columns: minmax(7rem, auto) minmax(0, 1fr);
+        gap: 0.75rem;
+        align-items: baseline;
+      }
+
+      .auth-flow-setting-detail-label {
+        color: var(--text-secondary);
+        font-size: 0.75rem;
+      }
+
+      .logout-session-note {
+        color: var(--text-secondary);
+        font-size: 0.8125rem;
+      }
+
+      .logout-claim-key {
+        padding: 0.1rem 0.3rem;
+        border-radius: var(--radius-sm);
+        background: rgba(88, 166, 255, 0.15);
+        color: var(--accent);
+        font-family: var(--font-mono);
+        font-size: 0.75rem;
+      }
+
+      @media (max-width: 640px) {
+        .auth-flow-setting-row,
+        .auth-flow-setting-detail {
+          grid-template-columns: 1fr;
+          gap: 0.35rem;
+        }
+      }
+
       .flow-chain {
         display: flex;
         flex-direction: column;
@@ -444,6 +515,14 @@ export class VersolaClientsList extends LitElement {
         padding-top: var(--spacing-md);
       }
 
+      .auth-flow-body {
+        padding-left: 1.25rem;
+      }
+
+      .auth-flow-body > .flow-section {
+        margin-left: -1.25rem;
+      }
+
       .empty-presets {
         padding: var(--spacing-lg);
         text-align: center;
@@ -558,8 +637,10 @@ export class VersolaClientsList extends LitElement {
   private async toggleExpand(clientId: string) {
     if (this.expandedClients.has(clientId)) {
       this.expandedClients.delete(clientId);
+      this.expandedFlows.delete(clientId);
     } else {
       this.expandedClients.add(clientId);
+      this.expandedFlows.add(clientId);
       // Load presets when expanding if not already loaded
       await this.loadPresetsForClient(clientId);
     }
@@ -840,6 +921,7 @@ export class VersolaClientsList extends LitElement {
         };
         this.copyFeedback = '';
         this.expandedClients = new Set([...this.expandedClients, client.id]);
+        this.expandedFlows = new Set([...this.expandedFlows, client.id]);
       }
     } catch (error) {
       // Check if it's a 409 Conflict (duplicate client)
@@ -1034,15 +1116,6 @@ export class VersolaClientsList extends LitElement {
                 ${isExpanded ? html`
                   <div class="client-body">
                     <div class="details-grid">
-                      <div class="detail-section">
-                        <div class="detail-label">Redirect URIs</div>
-                        <div class="uri-list">
-                          ${client.redirectUris.map(uri => html`
-                            <div class="uri-item">${uri}</div>
-                          `)}
-                        </div>
-                      </div>
-
                       ${client.externalAudience.length > 0 ? html`
                         <div class="detail-section">
                           <div class="detail-label">External Audience</div>
@@ -1077,33 +1150,6 @@ export class VersolaClientsList extends LitElement {
                         <div class="detail-value">${formatDuration(client.accessTokenTtl)}</div>
                       </div>
 
-                      <div class="detail-section">
-                        <div class="detail-label">Theme</div>
-                        <div class="detail-value">${client.theme ?? 'default'}</div>
-                      </div>
-
-                      ${client.otpTemplateId ? html`
-                        <div class="detail-section">
-                          <div class="detail-label">OTP Template</div>
-                          <div class="detail-value">${client.otpTemplateId}</div>
-                        </div>
-                      ` : ''}
-
-                      ${this.tenantEdgeId ? html`
-                        <div class="detail-section">
-                          <div class="detail-label">Edge</div>
-                          <div class="detail-value">
-                            <button
-                              type="button"
-                              class="client-link"
-                              @click=${() => this.navigateToEdge(this.tenantEdgeId!)}
-                              aria-label=${`Open edge ${this.tenantEdgeId}`}
-                            >
-                              ${this.tenantEdgeId}
-                            </button>
-                          </div>
-                        </div>
-                      ` : ''}
                     </div>
 
                     ${this.renderAuthFlowSection(client)}
@@ -1251,14 +1297,88 @@ export class VersolaClientsList extends LitElement {
         </div>
 
         ${isFlowsExpanded ? html`
-          <div class="presets-body">
+          <div class="presets-body auth-flow-body">
             ${client.authFlow ? this.renderAuthFlow(client.authFlow) : html`
               <div class="empty-presets">
                 No authorization flow configured. This client cannot be used for interactive authentication.
               </div>
             `}
+            ${this.renderAuthFlowSettings(client)}
           </div>
         ` : ''}
+      </div>
+    `;
+  }
+
+  private renderAuthFlowSettings(client: OAuthClient) {
+    const flow = client.authFlow;
+    if (!flow) return '';
+
+    const hasOtp = flow.factors.some(factor => factor.type === 'otp')
+      || (flow.passkeyFactors ?? []).some(factor => factor.type === 'otp');
+    const otpChannel = flow.primaryCredentials.includes('email')
+      ? 'email'
+      : flow.primaryCredentials.includes('phone')
+        ? 'sms'
+        : flow.otpType;
+    const logoutMode = client.frontChannelLogoutUri
+      ? 'front-channel'
+      : client.backChannelLogoutUri
+        ? 'back-channel'
+        : 'none';
+
+    return html`
+      <div class="auth-flow-settings">
+        <div class="auth-flow-settings-list">
+          <div class="auth-flow-setting-row">
+            <div class="auth-flow-setting-label">Forms Theme</div>
+            <div class="auth-flow-setting-value">${client.theme ?? 'default'}</div>
+          </div>
+
+          <div class="auth-flow-setting-row">
+            <div class="auth-flow-setting-label">Redirect URIs</div>
+            <div class="auth-flow-setting-value">
+              ${client.redirectUris.length > 0 ? html`
+                <div class="uri-list">
+                  ${client.redirectUris.map(uri => html`<div class="uri-item">${uri}</div>`)}
+                </div>
+              ` : '—'}
+            </div>
+          </div>
+
+          ${hasOtp ? html`
+            <div class="auth-flow-setting-row">
+              <div class="auth-flow-setting-label">OTP Settings</div>
+              <div class="auth-flow-setting-value auth-flow-setting-stack">
+                <div class="auth-flow-setting-detail">
+                  <div class="auth-flow-setting-detail-label">Template</div>
+                  <div>${client.otpTemplateId || 'default'}</div>
+                </div>
+                <div class="auth-flow-setting-detail">
+                  <div class="auth-flow-setting-detail-label">Channel</div>
+                  <div>${otpChannel}</div>
+                </div>
+              </div>
+            </div>
+          ` : ''}
+
+          <div class="auth-flow-setting-row">
+            <div class="auth-flow-setting-label">Logout Settings</div>
+            <div class="auth-flow-setting-value auth-flow-setting-stack">
+              <div>${logoutMode}</div>
+              ${client.frontChannelLogoutUri ? html`
+                <div class="uri-item">${client.frontChannelLogoutUri}</div>
+                <div class="logout-session-note">
+                  <span class="logout-claim-key">iss</span> and <span class="logout-claim-key">sid</span>
+                  ${client.frontChannelLogoutSessionRequired ? ' included' : ' not included'}
+                </div>
+              ` : ''}
+              ${client.backChannelLogoutUri ? html`
+                <div class="uri-item">${client.backChannelLogoutUri}</div>
+              ` : ''}
+            </div>
+          </div>
+        </div>
       </div>
     `;
   }

@@ -23,7 +23,7 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
   private val tenantId = TenantId("tenant-a")
   private val secretKey = SecretKeySpec(Array.fill(32)(7.toByte), "AES")
 
-  private val template = OtpTemplateRecord("default", tenantId, Map("en" -> "Code: {{code}}"), purpose = "otp")
+  private val template = OtpTemplateRecord("default", tenantId, Map("en" -> "Code: {{code}}"), purpose = OtpTemplatePurpose.otp, channel = OtpTemplateChannel.sms)
 
   private val syncToken = Unsafe.unsafe { unsafe ?=>
     Runtime.default.unsafe
@@ -121,7 +121,7 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       request = Request(
         method = Method.PUT,
         url = URL.empty / "configuration" / "challenges" / "otp-templates",
-        body = Body.fromString(UpsertOtpTemplateRequest(template.id, template.tenantId, template.localizations, template.purpose).toJson),
+        body = Body.fromString(UpsertOtpTemplateRequest(template.id, template.tenantId, template.localizations, template.purpose, template.channel).toJson),
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.NoContent,
       setup = service => service.upsertTemplate.succeedsWith(()),
@@ -133,11 +133,11 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       request = Request(
         method = Method.DELETE,
         url = URL.empty / "configuration" / "challenges" / "otp-templates",
-        body = Body.fromString(DeleteOtpTemplateRequest(template.id, template.tenantId).toJson),
+        body = Body.fromString(DeleteOtpTemplateRequest(template.id, template.tenantId, template.purpose, OtpTemplateChannel.sms).toJson),
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.NoContent,
       setup = service => service.deleteTemplate.succeedsWith(()),
       verify = (_, service) =>
-        ZIO.succeed(assertTrue(service.deleteTemplate.calls == List((template.id, template.tenantId)))),
+        ZIO.succeed(assertTrue(service.deleteTemplate.calls == List((template.id, template.tenantId, template.purpose, template.channel)))),
     ),
   )

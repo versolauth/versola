@@ -120,10 +120,16 @@ function CredentialForm(props: { config: FormConfig }) {
     setPasskeyBusy(true);
     setPasskeyErrorKey(null);
     try {
-      const optionsJson = await fetch(`/challenge/passkey/options?ui_locale=${currentLocale()}`).then((r) => {
-        if (!r.ok) throw new Error('options request failed');
-        return r.text();
-      });
+      const optionsResponse = await fetch(`/challenge/passkey/options?ui_locale=${currentLocale()}`);
+      // Conversation expired (410) or the auth service failed (500): reload the
+      // conversation page itself so the server renders the proper terminal screen instead
+      // of surfacing a generic passkey-failed dialog on top of a stale form.
+      if (optionsResponse.status === 410 || optionsResponse.status === 500) {
+        window.location.href = '/challenge';
+        return;
+      }
+      if (!optionsResponse.ok) throw new Error('options request failed');
+      const optionsJson = await optionsResponse.text();
       const response = await getAssertionResponse(optionsJson);
       submitViaForm(`/challenge/passkey?ui_locale=${currentLocale()}`, { response, csrf: props.config.csrf ?? '' });
     } catch (_) {

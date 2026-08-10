@@ -1,9 +1,9 @@
 package versola
 
 import versola.central.CentralConfig
-import versola.central.configuration.challenges.{ChallengeSettingsRecord, ChallengeSettingsRepository, OtpChallengeRepository, OtpTemplateRecord, PasskeySettings, RateLimit, SubmissionLimits}
+import versola.central.configuration.challenges.{ChallengeSettingsRecord, ChallengeSettingsRepository, OtpChallengeRepository, OtpTemplateChannel, OtpTemplatePurpose, OtpTemplateRecord, PasskeySettings, RateLimit, SubmissionLimits}
 import versola.central.configuration.system.{SystemSettingsRecord, SystemSettingsRepository}
-import versola.central.configuration.clients.{AuthFlow, AuthorizationPreset, AuthorizationPresetRepository, ClientAlreadyExists, OAuthClientService, PresetId, PrimaryAuthFlow, PrimaryCredential, ResponseType}
+import versola.central.configuration.clients.{AuthFlow, AuthorizationPreset, AuthorizationPresetRepository, ClientAlreadyExists, OAuthClientService, OtpType, PresetId, PrimaryAuthFlow, PrimaryCredential, ResponseType}
 import versola.central.configuration.edges.{EdgeId, EdgeRepository}
 import versola.central.configuration.forms.{BackendProperty, BooleanProperty, FormId, FormRepository, NumberProperty, StringArrayProperty}
 import versola.central.configuration.jwks.JwksRepository
@@ -268,13 +268,106 @@ object BootstrapService:
       "You are entering Versola. Your verification code is: {{code}}",
       "Вы входите в Versola. Ваш код подтверждения: {{code}}",
     )
+  private val defaultEmailOtpTemplateId = defaultOtpTemplateId
+  private val defaultEmailOtpTemplate: Map[String, String] =
+    localized(
+      """|<!doctype html>
+       |<html>
+       |  <body style="margin:0;padding:20px;background:#f6f8fa;font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#15171c">
+       |    <table role="presentation" style="width:100%;border-collapse:collapse">
+       |      <tr>
+       |        <td align="center">
+       |          <table role="presentation" style="width:100%;max-width:540px;background:#fff;border:1px solid #e3e6eb;border-radius:24px">
+       |            <tr>
+       |              <td style="padding:48px 44px;text-align:center">
+       |                <div style="font-size:20px;font-weight:700;margin-bottom:28px">Versola</div>
+       |                <h1 style="font-size:26px;font-weight:600;margin:0 0 14px">Verify your identity</h1>
+       |                <p style="font-size:16px;line-height:1.6;color:#6b7280;margin:0 0 24px">Your verification code is:</p>
+       |                <div style="display:inline-block;padding:15px 24px;background:#f6f7f9;border:1px solid #e3e6eb;border-radius:14px;font-size:28px;font-weight:700;letter-spacing:8px;color:#15171c">{{code}}</div>
+       |              </td>
+       |            </tr>
+       |          </table>
+       |        </td>
+       |      </tr>
+       |    </table>
+       |  </body>
+       |</html>""".stripMargin,
+      """|<!doctype html>
+       |<html>
+       |  <body style="margin:0;padding:20px;background:#f6f8fa;font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#15171c">
+       |    <table role="presentation" style="width:100%;border-collapse:collapse">
+       |      <tr>
+       |        <td align="center">
+       |          <table role="presentation" style="width:100%;max-width:540px;background:#fff;border:1px solid #e3e6eb;border-radius:24px">
+       |            <tr>
+       |              <td style="padding:48px 44px;text-align:center">
+       |                <div style="font-size:20px;font-weight:700;margin-bottom:28px">Versola</div>
+       |                <h1 style="font-size:26px;font-weight:600;margin:0 0 14px">Подтвердите личность</h1>
+       |                <p style="font-size:16px;line-height:1.6;color:#6b7280;margin:0 0 24px">Ваш код подтверждения:</p>
+       |                <div style="display:inline-block;padding:15px 24px;background:#f6f7f9;border:1px solid #e3e6eb;border-radius:14px;font-size:28px;font-weight:700;letter-spacing:8px;color:#15171c">{{code}}</div>
+       |              </td>
+       |            </tr>
+       |          </table>
+       |        </td>
+       |      </tr>
+       |    </table>
+       |  </body>
+       |</html>""".stripMargin,
+    )
 
-  /** Required per-tenant template used to deliver an admin-issued temporary password. */
-  private val passwordTemplateId = "password"
-  private val defaultPasswordTemplate: Map[String, String] =
+  /** Default per-tenant template used to deliver an admin-issued temporary password. */
+  private val passwordTemplateId = defaultOtpTemplateId
+  private val defaultPasswordSmsTemplate: Map[String, String] =
     localized(
       "Your temporary password is {{password}}. It expires in {{expiresHours}} hours.",
       "Ваш временный пароль: {{password}}. Он истекает через {{expiresHours}} часов.",
+    )
+  private val defaultPasswordTemplate: Map[String, String] =
+    localized(
+      """|<!doctype html>
+       |<html>
+       |  <body style="margin:0;padding:20px;background:#f6f8fa;font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#15171c">
+       |    <table role="presentation" style="width:100%;border-collapse:collapse">
+       |      <tr>
+       |        <td align="center">
+       |          <table role="presentation" style="width:100%;max-width:540px;background:#fff;border:1px solid #e3e6eb;border-radius:24px">
+       |            <tr>
+       |              <td style="padding:48px 44px;text-align:center">
+       |                <div style="font-size:20px;font-weight:700;margin-bottom:28px">Versola</div>
+       |                <h1 style="font-size:26px;font-weight:600;margin:0 0 14px">Your temporary password</h1>
+       |                <p style="font-size:16px;line-height:1.6;color:#6b7280;margin:0 0 24px">Use this password to sign in:</p>
+       |                <div style="display:inline-block;padding:15px 24px;background:#f6f7f9;border:1px solid #e3e6eb;border-radius:14px;font-size:20px;font-weight:700;color:#15171c">{{password}}</div>
+       |                <p style="font-size:14px;line-height:1.6;color:#6b7280;margin:24px 0 0">It expires in {{expiresHours}} hours.</p>
+       |              </td>
+       |            </tr>
+       |          </table>
+       |        </td>
+       |      </tr>
+       |    </table>
+       |  </body>
+       |</html>""".stripMargin,
+      """|<!doctype html>
+       |<html>
+       |  <body style="margin:0;padding:20px;background:#f6f8fa;font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#15171c">
+       |    <table role="presentation" style="width:100%;border-collapse:collapse">
+       |      <tr>
+       |        <td align="center">
+       |          <table role="presentation" style="width:100%;max-width:540px;background:#fff;border:1px solid #e3e6eb;border-radius:24px">
+       |            <tr>
+       |              <td style="padding:48px 44px;text-align:center">
+       |                <div style="font-size:20px;font-weight:700;margin-bottom:28px">Versola</div>
+       |                <h1 style="font-size:26px;font-weight:600;margin:0 0 14px">Ваш временный пароль</h1>
+       |                <p style="font-size:16px;line-height:1.6;color:#6b7280;margin:0 0 24px">Используйте этот пароль для входа:</p>
+       |                <div style="display:inline-block;padding:15px 24px;background:#f6f7f9;border:1px solid #e3e6eb;border-radius:14px;font-size:20px;font-weight:700;color:#15171c">{{password}}</div>
+       |                <p style="font-size:14px;line-height:1.6;color:#6b7280;margin:24px 0 0">Он истекает через {{expiresHours}} часов.</p>
+       |              </td>
+       |            </tr>
+       |          </table>
+       |        </td>
+       |      </tr>
+       |    </table>
+       |  </body>
+       |</html>""".stripMargin,
     )
 
   /** Default authentication challenge settings seeded for the default tenant. */
@@ -464,7 +557,7 @@ object BootstrapService:
           _ <- seedPermissions(tenantId)
           _ <- seedScopes(tenantId)
           _ <- seedRoles(tenantId)
-          _ <- seedOtpTemplate(tenantId)
+          _ <- seedOtpTemplates(tenantId)
           _ <- seedPasswordTemplate(tenantId)
           _ <- seedChallengeSettings(tenantId)
           _ <- seedSystemSettings()
@@ -496,18 +589,30 @@ object BootstrapService:
       ZIO.foreachDiscard(roleCatalog): (roleId, desc, perms) =>
         roleRepo.upsertRole(tenantId, roleId, desc, perms)
 
-    private def seedOtpTemplate(tenantId: TenantId): Task[Unit] =
-      otpTemplateRepo.find(defaultOtpTemplateId, tenantId).flatMap:
-        case Some(_) => ZIO.unit
-        case None    => otpTemplateRepo.upsertTemplate(OtpTemplateRecord(defaultOtpTemplateId, tenantId, defaultOtpTemplate, purpose = "otp"))
+    private def seedOtpTemplates(tenantId: TenantId): Task[Unit] =
+      ZIO.foreachDiscard(
+        List(
+          (defaultOtpTemplateId, defaultOtpTemplate, OtpTemplateChannel.sms),
+          (defaultEmailOtpTemplateId, defaultEmailOtpTemplate, OtpTemplateChannel.email),
+        ),
+      ): (id, localizations, channel) =>
+        otpTemplateRepo.find(id, tenantId, OtpTemplatePurpose.otp, channel).flatMap:
+          case Some(_) => ZIO.unit
+          case None    => otpTemplateRepo.upsertTemplate(OtpTemplateRecord(id, tenantId, localizations, purpose = OtpTemplatePurpose.otp, channel = channel))
 
     private def seedPasswordTemplate(tenantId: TenantId): Task[Unit] =
-      otpTemplateRepo.find(passwordTemplateId, tenantId).flatMap:
-        case Some(_) => ZIO.unit
-        case None =>
-          otpTemplateRepo.upsertTemplate(
-            OtpTemplateRecord(passwordTemplateId, tenantId, defaultPasswordTemplate, purpose = "password"),
-          )
+      ZIO.foreachDiscard(
+        List(
+          (defaultPasswordSmsTemplate, OtpTemplateChannel.sms),
+          (defaultPasswordTemplate, OtpTemplateChannel.email),
+        ),
+      ): (localizations, channel) =>
+        otpTemplateRepo.find(passwordTemplateId, tenantId, OtpTemplatePurpose.password, channel).flatMap:
+          case Some(_) => ZIO.unit
+          case None =>
+            otpTemplateRepo.upsertTemplate(
+              OtpTemplateRecord(passwordTemplateId, tenantId, localizations, purpose = OtpTemplatePurpose.password, channel = channel),
+            )
 
     private def seedChallengeSettings(tenantId: TenantId): Task[Unit] =
       challengeSettingsRepo.findByTenant(tenantId).flatMap:
@@ -577,6 +682,7 @@ object BootstrapService:
         ),
         passkey = None,
         equivalents = Map.empty,
+        otpType = OtpType.sms,
       )
       val request = CreateClientRequest(
         tenantId       = CentralConfig.defaultTenantId,

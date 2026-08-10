@@ -99,6 +99,7 @@ type BackendAuthFlow = {
   primary: { credentials: string[]; inlinePassword: boolean; factors: BackendAuthFactor[] };
   passkey?: { factors: BackendAuthFactor[] } | null;
   equivalents?: Record<string, string[]>;
+  otpType: 'sms' | 'email';
 };
 type ClientsResponse = {
   clients: Array<{
@@ -144,6 +145,7 @@ function authFlowToBackend(flow: AuthFlow | null | undefined): BackendAuthFlow |
     },
     passkey: flow.passkey ? { factors: flow.passkeyFactors ?? [] } : null,
     equivalents: flow.equivalents,
+    otpType: flow.otpType,
   };
 }
 
@@ -151,6 +153,7 @@ function authFlowFromBackend(flow: BackendAuthFlow | null | undefined): AuthFlow
   if (!flow) return null;
   return {
     primaryCredentials: flow.primary.credentials as AuthFlow['primaryCredentials'],
+    otpType: flow.otpType,
     inlinePassword: flow.primary.inlinePassword,
     factors: flow.primary.factors as AuthFlow['factors'],
     passkey: flow.passkey != null,
@@ -587,7 +590,7 @@ export async function fetchClients(tenantId: string, offset = 0, limit = DEFAULT
         permissions: [...client.permissions],
         theme: client.theme ?? 'default',
         otpTemplateId: client.otpTemplateId ?? null,
-        authFlow: authFlowFromBackend(client.authFlow) ?? createDefaultAuthFlow(),
+        authFlow: authFlowFromBackend(client.authFlow),
         frontChannelLogoutUri: client.frontChannelLogoutUri ?? null,
         frontChannelLogoutSessionRequired: client.frontChannelLogoutSessionRequired,
         backChannelLogoutUri: client.backChannelLogoutUri ?? null,
@@ -1110,17 +1113,23 @@ export async function fetchOtpTemplates(tenantId: string): Promise<OtpTemplateRe
   return response.templates;
 }
 
-export async function upsertOtpTemplate(id: string, tenantId: string, localizations: Record<string, string>, purpose: string): Promise<void> {
+export async function upsertOtpTemplate(
+  id: string,
+  tenantId: string,
+  localizations: Record<string, string>,
+  purpose: string,
+  channel: 'sms' | 'email',
+): Promise<void> {
   await requestVoid('/configuration/challenges/otp-templates', {
     method: 'PUT',
-    body: { id, tenantId, localizations, purpose },
+    body: { id, tenantId, localizations, purpose, channel },
   });
 }
 
-export async function deleteOtpTemplate(id: string, tenantId: string): Promise<void> {
+export async function deleteOtpTemplate(id: string, tenantId: string, purpose: string, channel: 'sms' | 'email'): Promise<void> {
   await requestVoid('/configuration/challenges/otp-templates', {
     method: 'DELETE',
-    body: { id, tenantId },
+    body: { id, tenantId, purpose, channel },
   });
 }
 

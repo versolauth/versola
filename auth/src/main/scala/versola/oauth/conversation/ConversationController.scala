@@ -74,6 +74,12 @@ object ConversationController extends Controller:
 
   /** GET /challenge/passkey/options — starts a discoverable assertion and returns the
     * PublicKeyCredentialRequestOptions JSON for `navigator.credentials.get()`.
+    *
+    * This route is only ever called via `fetch` by the credential form's JS, never as a
+    * top-level navigation. On expiry/unavailability we must not return the HTML terminal
+    * page with a 200 status — the caller would try to JSON-parse it as the options payload.
+    * Instead we signal these conditions with distinct non-2xx statuses so the client can
+    * navigate to `/challenge` itself and let the server render the proper terminal screen.
     */
   val getPasskeyOptionsRoute =
     Method.GET / "challenge" / "passkey" / "options" -> handler { (request: Request) =>
@@ -83,8 +89,8 @@ object ConversationController extends Controller:
         options <- router.startPasskeyOptions(cookie.authId).someOrFail(Error.BadRequest)
       yield Response.json(options),
       ).catchAll {
-        case Error.ConversationExpired => expiredResponse(request)
-        case Error.ServiceUnavailable => serviceUnavailableResponse(request)
+        case Error.ConversationExpired => ZIO.succeed(Response.status(Status.Gone))
+        case Error.ServiceUnavailable => ZIO.succeed(Response.status(Status.InternalServerError))
         case _: Error => ZIO.succeed(Response.badRequest)
         case ex: Throwable => ZIO.fail(ex)
       }

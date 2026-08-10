@@ -8,6 +8,7 @@ import versola.central.configuration.permissions.Permission
 import versola.central.configuration.resources.ResourceId
 import versola.central.configuration.roles.RoleId
 import versola.central.configuration.scopes.ScopeToken
+import versola.central.configuration.challenges.{OtpTemplateChannel, OtpTemplatePurpose}
 import versola.central.configuration.sync.{CacheSyncRepository, SyncEvent}
 import versola.central.configuration.tenants.TenantId
 import zio.json.JsonDecoder
@@ -70,6 +71,8 @@ object PostgresCacheSyncRepository:
   private case class ChangePayload(
       tenantId: Option[String],
       id: String,
+      purpose: Option[String],
+      channel: Option[String],
       version: Option[Int],
       op: String,
   ) derives JsonDecoder
@@ -142,7 +145,11 @@ object PostgresCacheSyncRepository:
 
       case "otp_template_change" =>
         parseTenantOpEvent(rawPayload): (payload, tenantId, op) =>
-          SyncEvent.OtpTemplatesUpdated(tenantId = tenantId, id = payload.id, op = op)
+          (for
+            purpose <- payload.purpose.flatMap(value => OtpTemplatePurpose.values.find(_.toString == value))
+            channel <- payload.channel.flatMap(value => OtpTemplateChannel.values.find(_.toString == value))
+          yield SyncEvent.OtpTemplatesUpdated(tenantId = tenantId, id = payload.id, purpose = purpose, channel = channel, op = op))
+            .getOrElse(SyncEvent.Unknown)
 
       case "challenge_settings_change" =>
         parseTenantOpEvent(rawPayload): (_, tenantId, op) =>

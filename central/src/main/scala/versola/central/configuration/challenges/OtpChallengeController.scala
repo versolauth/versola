@@ -47,7 +47,7 @@ object OtpChallengeController extends Controller:
         _       <- authorizeBasic(request)
         service <- ZIO.service[OtpChallengeService]
         body    <- request.body.asJson[UpsertOtpTemplateRequest]
-        _       <- service.upsertTemplate(OtpTemplateRecord(body.id, body.tenantId, body.localizations, body.purpose))
+        _       <- service.upsertTemplate(OtpTemplateRecord(body.id, body.tenantId, body.localizations, body.purpose, body.channel))
       yield Response.status(Status.NoContent)
     }
 
@@ -57,7 +57,7 @@ object OtpChallengeController extends Controller:
         _        <- authorizeBasic(request)
         service  <- ZIO.service[OtpChallengeService]
         body     <- request.body.asJson[DeleteOtpTemplateRequest]
-        _        <- service.deleteTemplate(body.id, body.tenantId)
+        _        <- service.deleteTemplate(body.id, body.tenantId, body.purpose, body.channel)
       yield Response.status(Status.NoContent)
     }
 

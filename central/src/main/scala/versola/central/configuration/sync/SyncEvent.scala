@@ -1,6 +1,6 @@
 package versola.central.configuration.sync
 
-import versola.central.configuration.challenges.{ChallengeSettingsRecord, OtpTemplateRecord}
+import versola.central.configuration.challenges.{ChallengeSettingsRecord, OtpTemplateChannel, OtpTemplatePurpose, OtpTemplateRecord}
 import versola.central.configuration.clients.{AuthorizationPreset, ClientId, OAuthClientRecord, PresetId}
 import versola.central.configuration.forms.{FormId, FormRecord}
 import versola.central.configuration.permissions.{Permission, PermissionRecord}
@@ -129,15 +129,17 @@ object SyncEvent:
   case class OtpTemplatesUpdated(
       tenantId: TenantId,
       id: String,
+      purpose: OtpTemplatePurpose,
+      channel: OtpTemplateChannel,
       op: Op,
   ) extends ModifyCache:
     type Record = OtpTemplateRecord
 
     def matches(record: OtpTemplateRecord): Boolean =
-      tenantId == record.tenantId && id == record.id
+      tenantId == record.tenantId && id == record.id && purpose == record.purpose && channel == record.channel
 
     def sort(records: Vector[OtpTemplateRecord]): Vector[OtpTemplateRecord] =
-      records.sortBy(r => (r.tenantId, r.id))
+      records.sortBy(r => (r.tenantId, r.id, r.purpose.toString, r.channel.toString))
 
   case object ThemesUpdated extends SyncEvent
   case object SystemSettingsUpdated extends SyncEvent

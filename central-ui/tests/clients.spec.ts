@@ -10,6 +10,15 @@ const alphaClient = {
   scope: ['openid'],
   permissions: ['alpha.read'],
   secretRotation: false,
+  authFlow: {
+    primary: {
+      credentials: ['phone'],
+      inlinePassword: false,
+      factors: [{ type: 'otp', required: true }],
+    },
+    passkey: null,
+    otpType: 'sms',
+  },
 };
 
 const serviceClient = {
@@ -46,6 +55,11 @@ test('renders client details and filters by client id', async ({ page }) => {
   await expect(alpha).toContainText('openid');
   await expect(alpha).toContainText('alpha.read');
   await expect(alpha).toContainText('1h');
+  await expect(alpha.locator('.flow-section')).toBeVisible();
+  await expect(alpha.locator('.auth-flow-settings')).toContainText('Forms Theme');
+  await expect(alpha.locator('.auth-flow-settings')).toContainText('Redirect URIs');
+  await expect(alpha.locator('.auth-flow-settings')).toContainText('OTP Settings');
+  await expect(alpha.locator('.auth-flow-settings')).toContainText('Logout Settings');
 
   const search = page.getByLabel('Search clients');
   await search.fill('service-client');
@@ -107,9 +121,90 @@ test('creates a client and shows the generated secret banner', async ({ page }) 
       },
       passkey: null,
       equivalents: {},
+      otpType: 'sms',
     },
-    otpTemplateId: null,
+    otpTemplateId: 'default',
     theme: 'default',
+    frontChannelLogoutUri: null,
+    frontChannelLogoutSessionRequired: false,
+    backChannelLogoutUri: null,
+  });
+});
+
+test('shows OTP settings for OTP factors and locks channel for phone credentials', async ({ page }) => {
+  await loadAdminApp(page, {
+    path: clientsPath,
+    state: {
+      clients: { 'tenant-alpha': [alphaClient] },
+      otpTemplates: {
+        'tenant-alpha': [
+          { id: 'otp-template', tenantId: 'tenant-alpha', localizations: {}, purpose: 'otp', channel: 'sms' },
+          { id: 'email-template', tenantId: 'tenant-alpha', localizations: {}, purpose: 'otp', channel: 'email' },
+          { id: 'password-template', tenantId: 'tenant-alpha', localizations: {}, purpose: 'password', channel: 'email' },
+        ],
+      },
+    },
+  });
+
+  await page.getByRole('button', { name: '+ Create Client', exact: true }).click();
+  await expect(page.getByText('OTP Settings', { exact: true })).toBeVisible();
+  await expect(page.getByLabel('OTP Template')).toBeVisible();
+  await expect(page.getByLabel('OTP Template').locator('option')).toHaveCount(1);
+  await expect(page.getByLabel('OTP Template').locator('option')).toHaveText('otp-template');
+  await expect(page.getByLabel('OTP channel')).toBeDisabled();
+  await expect(page.getByLabel('OTP channel')).toHaveValue('sms');
+
+  await page.getByRole('button', { name: 'email', exact: true }).click();
+  await expect(page.getByLabel('OTP channel')).toHaveValue('email');
+  await expect(page.getByLabel('OTP Template').locator('option')).toHaveCount(1);
+  await expect(page.getByLabel('OTP Template').locator('option')).toHaveText('email-template');
+
+  await page.getByRole('button', { name: 'login + password', exact: true }).click();
+  await expect(page.getByLabel('OTP channel')).toBeEnabled();
+
+  const secondFactor = page.getByText('Second factor', { exact: true }).locator('..').getByRole('combobox');
+  await secondFactor.selectOption('none');
+  await expect(page.getByText('OTP Settings', { exact: true })).toHaveCount(0);
+
+  await page.getByText('passkey', { exact: true }).first().click();
+  await expect(page.getByText('OTP Settings', { exact: true })).toHaveCount(0);
+
+  const passkeyFactor = page.getByText('Passkey next factor', { exact: true }).locator('..');
+  await passkeyFactor.getByRole('combobox').selectOption('otp');
+  await expect(page.getByText('OTP Settings', { exact: true })).toBeVisible();
+});
+
+test('hides logout settings and clears logout values when auth flow is disabled', async ({ page }) => {
+  const api = await loadAdminApp(page, {
+    path: clientsPath,
+    state: {
+      clients: { 'tenant-alpha': [alphaClient] },
+      scopes: { 'tenant-alpha': [{ scope: 'openid', description: { en: 'OpenID scope' }, claims: [] }] },
+    },
+  });
+
+  await page.getByRole('button', { name: '+ Create Client', exact: true }).click();
+  await page.getByLabel('Client ID').fill('no-auth-flow-client');
+  await page.getByLabel('Client Name').fill('No Auth Flow Client');
+  await page.getByPlaceholder('https://app.example.com/callback').fill('https://no-auth-flow.example/callback');
+  await page.getByPlaceholder('https://app.example.com/callback').press('Enter');
+
+  const authFlowRow = page.getByText('Authorization Flow', { exact: true }).locator('..');
+  await authFlowRow.locator('label.toggle').click();
+  await expect(page.getByText('OTP Settings', { exact: true })).toHaveCount(0);
+  await expect(page.getByRole('checkbox', { name: 'openid', exact: true })).toBeDisabled();
+  await expect(page.getByRole('checkbox', { name: 'openid', exact: true })).not.toBeChecked();
+  await expect(page.getByLabel('Forms Theme', { exact: true })).toHaveCount(0);
+  await expect(page.getByText('Redirect URIs', { exact: true })).toHaveCount(0);
+  await expect(page.getByText('Logout Settings', { exact: true })).toHaveCount(0);
+
+  await page.getByRole('button', { name: 'Create Client', exact: true }).click();
+
+  expect(findRequest(api.requests, 'POST', '/configuration/clients').body).toMatchObject({
+    authFlow: null,
+    theme: 'default',
+    redirectUris: [],
+    otpTemplateId: 'default',
     frontChannelLogoutUri: null,
     frontChannelLogoutSessionRequired: false,
     backChannelLogoutUri: null,
@@ -163,6 +258,22 @@ test('rejects logout notification URIs with a non-http(s) scheme', async ({ page
 
   await expect(page.getByText('Logout URI must use https://', { exact: true })).toBeVisible();
   expect(api.requests.some(request => request.method === 'POST' && request.pathname === '/configuration/clients')).toBeFalsy();
+});
+
+test('preserves the front-channel URI when switching logout modes', async ({ page }) => {
+  await loadAdminApp(page, {
+    path: clientsPath,
+    state: { clients: { 'tenant-alpha': [alphaClient] } },
+  });
+
+  await page.getByRole('button', { name: '+ Create Client', exact: true }).click();
+  await page.getByRole('button', { name: 'front-channel', exact: true }).click();
+  const frontUri = page.getByPlaceholder('https://app.example.com/logout/frontchannel');
+  await frontUri.fill('https://good.example/logout/frontchannel');
+
+  await page.getByRole('button', { name: 'back-channel', exact: true }).click();
+  await page.getByRole('button', { name: 'front-channel', exact: true }).click();
+  await expect(frontUri).toHaveValue('https://good.example/logout/frontchannel');
 });
 
 test('shows redirect URI validation with a red input border', async ({ page }) => {
@@ -285,6 +396,7 @@ test('updates a client and sends patch-style changes', async ({ page }) => {
   expect(findRequest(api.requests, 'PUT', '/configuration/clients').body).toEqual({
     clientId: 'alpha-web',
     clientName: 'Alpha Console',
+    otpTemplateId: 'default',
     redirectUris: { add: ['https://alpha.example/admin/callback'], remove: ['https://alpha.example/callback'] },
     scope: { add: ['email'], remove: ['openid'] },
     permissions: { add: ['alpha.write'], remove: ['alpha.read'] },
@@ -297,6 +409,7 @@ test('updates a client and sends patch-style changes', async ({ page }) => {
       },
       passkey: null,
       equivalents: {},
+      otpType: 'sms',
     },
     frontChannelLogoutSessionRequired: false,
   });
@@ -399,8 +512,9 @@ test('shows error alert when creating a client with duplicate ID', async ({ page
       },
       passkey: null,
       equivalents: {},
+      otpType: 'sms',
     },
-    otpTemplateId: null,
+    otpTemplateId: 'default',
     theme: 'default',
     frontChannelLogoutUri: null,
     frontChannelLogoutSessionRequired: false,

@@ -4,7 +4,7 @@ import versola.auth.TestEnvConfig
 import versola.oauth.authorize.model.{AuthorizeRequest, AuthorizeResponse, Error, Prompt, ResponseTypeEntry}
 import versola.oauth.jwks.JwksService
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{Acr, AuthFactor, AuthFactorType, AuthFlow, AuthMethodRef, ClientId, OAuthClientRecord, PassedAuthFactor, PassedFactorRecord, PrimaryAuthFlow, PrimaryCredential, ScopeToken, TenantId}
+import versola.oauth.client.model.{Acr, AuthFactor, AuthFactorType, AuthFlow, AuthMethodRef, ClientId, OAuthClientRecord, OtpType, PassedAuthFactor, PassedFactorRecord, PrimaryAuthFlow, PrimaryCredential, ScopeToken, TenantId}
 import versola.oauth.conversation.{ConversationRepository, ConversationResult, ConversationRouter, EmailSubmission, PhoneSubmission}
 import versola.oauth.model.{AccessToken, AuthorizationCode, CodeChallenge, CodeChallengeMethod, State}
 import versola.oauth.session.SessionService
@@ -42,6 +42,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
     ),
     passkey = None,
     equivalents = Map.empty,
+    otpType = OtpType.sms,
   )
 
   val clientWithOtpFlow = OAuthClientRecord(
@@ -139,10 +140,14 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
     ),
     passkey = None,
     equivalents = Map.empty,
+    otpType = OtpType.email,
   )
 
   val clientWithPasswordFlow = clientWithOtpFlow.copy(authFlow = Some(passwordFlow))
-  val emailOtpFlow = otpFlow.copy(primary = otpFlow.primary.copy(credentials = List(PrimaryCredential.email)))
+  val emailOtpFlow = otpFlow.copy(
+    primary = otpFlow.primary.copy(credentials = List(PrimaryCredential.email)),
+    otpType = OtpType.email,
+  )
   val clientWithEmailOtpFlow = clientWithOtpFlow.copy(authFlow = Some(emailOtpFlow))
 
   val dummyConversation = versola.oauth.conversation.model.ConversationRecord(

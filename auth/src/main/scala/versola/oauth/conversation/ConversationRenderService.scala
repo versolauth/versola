@@ -185,6 +185,7 @@ object ConversationRenderService:
             version = form.version,
           )
           htmlResponse(solidPage(info, css))
+            .addHeader(Header.Custom("Cache-Control", "private, no-cache"))
 
     private def etagFor(body: String): String =
       val digest = MessageDigest.getInstance("SHA-256")

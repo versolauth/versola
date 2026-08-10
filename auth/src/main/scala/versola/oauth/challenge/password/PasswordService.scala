@@ -3,6 +3,7 @@ package versola.oauth.challenge.password
 import versola.auth.model.{Password, PasswordRecord}
 import versola.oauth.challenge.password.model.{CheckPassword, DeliveryChannel, PasswordDeliveryUnavailable, PasswordReuseError, TemporaryPasswordGenerationFailed}
 import versola.oauth.client.OAuthConfigurationService
+import versola.oauth.client.model.OtpTemplateChannel
 import versola.oauth.conversation.otp.model.OtpTemplate
 import versola.oauth.conversation.otp.{EmailOtpProvider, SmsOtpProvider}
 import versola.user.UserRepository
@@ -143,7 +144,10 @@ object PasswordService:
         case None => ZIO.unit
         case Some(contact) =>
           for
-            template <- configuration.getPasswordTemplate(None)
+            template <- configuration.getPasswordTemplate(
+              contact.fold(_ => OtpTemplateChannel.email, _ => OtpTemplateChannel.sms),
+              None,
+            )
             message   = renderPasswordTemplate(template, password, ttlSeconds)
             _ <- contact match
               case Left(email)  => emailOtpProvider.send(email, message)

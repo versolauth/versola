@@ -1,6 +1,6 @@
 package versola.oauth.client
 
-import versola.oauth.client.model.{Acr, ChallengeSettingsRecord, Claim, ClaimRecord, ClientId, FormRecord, Locales, OAuthClientRecord, OtpTemplateRecord, PassedAuthFactor, PasskeySettings, RateLimit, ScopeRecord, ScopeToken, SubmissionLimits, SystemSettingsRecord, TenantId, ThemeRecord}
+import versola.oauth.client.model.{Acr, ChallengeSettingsRecord, Claim, ClaimRecord, ClientId, FormRecord, Locales, OAuthClientRecord, OtpTemplateChannel, OtpTemplatePurpose, OtpTemplateRecord, OtpType, PassedAuthFactor, PasskeySettings, RateLimit, ScopeRecord, ScopeToken, SubmissionLimits, SystemSettingsRecord, TenantId, ThemeRecord}
 import versola.oauth.conversation.otp.model.OtpTemplate
 import versola.oauth.metadata.MetadataSyncClient
 import versola.util.*
@@ -205,29 +205,55 @@ object OAuthClientServiceSpec extends UnitSpecBase:
           "default",
           TenantId("default"),
           Map("en" -> "Your code is {{code}}", "ru" -> "Ваш код {{code}}"),
-          purpose = "otp",
+          purpose = OtpTemplatePurpose.otp,
+          channel = OtpTemplateChannel.sms,
         )
         for
           env <- makeEnv(
             otpTemplates = Vector(template),
             locales = Locales(Vector.empty, "en"),
           )
-          result <- env.service.getClientTemplate(clientId1, Some(List("ru")))
+          result <- env.service.getClientTemplate(clientId1, OtpType.sms, Some(List("ru")))
         yield assertTrue(result == OtpTemplate("Ваш код {{code}}"))
+      },
+      test("selects only OTP templates matching the requested channel") {
+        val emailTemplate = OtpTemplateRecord(
+          "default",
+          TenantId("default"),
+          Map("en" -> "Email code: {{code}}"),
+          purpose = OtpTemplatePurpose.otp,
+          channel = OtpTemplateChannel.email,
+        )
+        val passwordTemplate = emailTemplate.copy(
+          purpose = OtpTemplatePurpose.password,
+          localizations = Map("en" -> "Password: {{password}}"),
+        )
+        for
+          env <- makeEnv(
+            otpTemplates = Vector(emailTemplate, passwordTemplate),
+            locales = Locales(Vector.empty, "en"),
+          )
+          emailResult <- env.service.getClientTemplate(clientId1, OtpType.email, None)
+          smsResult <- env.service.getClientTemplate(clientId1, OtpType.sms, None)
+        yield assertTrue(
+          emailResult == OtpTemplate("Email code: {{code}}"),
+          smsResult == OtpTemplate("{{code}}"),
+        )
       },
       test("falls back to default locale when preferred locale is not in template") {
         val template = OtpTemplateRecord(
           "default",
           TenantId("default"),
           Map("en" -> "Your code is {{code}}"),
-          purpose = "otp",
+          purpose = OtpTemplatePurpose.otp,
+          channel = OtpTemplateChannel.sms,
         )
         for
           env <- makeEnv(
             otpTemplates = Vector(template),
             locales = Locales(Vector.empty, "en"),
           )
-          result <- env.service.getClientTemplate(clientId1, Some(List("ru")))
+          result <- env.service.getClientTemplate(clientId1, OtpType.sms, Some(List("ru")))
         yield assertTrue(result == OtpTemplate("Your code is {{code}}"))
       },
       test("falls back to first available locale when no preferred or default matches") {
@@ -235,26 +261,27 @@ object OAuthClientServiceSpec extends UnitSpecBase:
           "default",
           TenantId("default"),
           Map("fr" -> "Votre code {{code}}"),
-          purpose = "otp",
+          purpose = OtpTemplatePurpose.otp,
+          channel = OtpTemplateChannel.sms,
         )
         for
           env <- makeEnv(
             otpTemplates = Vector(template),
             locales = Locales(Vector.empty, "en"),
           )
-          result <- env.service.getClientTemplate(clientId1, None)
+          result <- env.service.getClientTemplate(clientId1, OtpType.sms, None)
         yield assertTrue(result == OtpTemplate("Votre code {{code}}"))
       },
       test("returns illegal state template when client is not found") {
         for
           env <- makeEnv(clients = Map.empty)
-          result <- env.service.getClientTemplate(ClientId("missing"), None)
+          result <- env.service.getClientTemplate(ClientId("missing"), OtpType.sms, None)
         yield assertTrue(result == OtpTemplate("{{code}}"))
       },
       test("returns illegal state template when no template found for client") {
         for
           env <- makeEnv(otpTemplates = Vector.empty)
-          result <- env.service.getClientTemplate(clientId1, None)
+          result <- env.service.getClientTemplate(clientId1, OtpType.sms, None)
         yield assertTrue(result == OtpTemplate("{{code}}"))
       },
     ),
@@ -264,20 +291,45 @@ object OAuthClientServiceSpec extends UnitSpecBase:
           "password-template",
           TenantId("default"),
           Map("en" -> "Password reset: {{code}}", "ru" -> "Сброс пароля: {{code}}"),
-          purpose = "password",
+          purpose = OtpTemplatePurpose.password,
+          channel = OtpTemplateChannel.email,
         )
         for
           env <- makeEnv(
             otpTemplates = Vector(template),
             locales = Locales(Vector.empty, "en"),
           )
-          result <- env.service.getPasswordTemplate(Some(List("ru")))
+          result <- env.service.getPasswordTemplate(OtpTemplateChannel.email, Some(List("ru")))
         yield assertTrue(result == OtpTemplate("Сброс пароля: {{code}}"))
+      },
+      test("selects password template by requested channel") {
+        val emailTemplate = OtpTemplateRecord(
+          "default",
+          TenantId("default"),
+          Map("en" -> "Email password: {{password}}"),
+          purpose = OtpTemplatePurpose.password,
+          channel = OtpTemplateChannel.email,
+        )
+        val smsTemplate = emailTemplate.copy(
+          localizations = Map("en" -> "SMS password: {{password}}"),
+          channel = OtpTemplateChannel.sms,
+        )
+        for
+          env <- makeEnv(
+            otpTemplates = Vector(emailTemplate, smsTemplate),
+            locales = Locales(Vector.empty, "en"),
+          )
+          emailResult <- env.service.getPasswordTemplate(OtpTemplateChannel.email, None)
+          smsResult <- env.service.getPasswordTemplate(OtpTemplateChannel.sms, None)
+        yield assertTrue(
+          emailResult == OtpTemplate("Email password: {{password}}"),
+          smsResult == OtpTemplate("SMS password: {{password}}"),
+        )
       },
       test("fails when no password template found") {
         for
           env <- makeEnv(otpTemplates = Vector.empty)
-          result <- env.service.getPasswordTemplate(None).exit
+          result <- env.service.getPasswordTemplate(OtpTemplateChannel.email, None).exit
         yield assert(result)(fails(isSubtype[RuntimeException](hasMessage(equalTo("No global password template configured")))))
       }
     ),
