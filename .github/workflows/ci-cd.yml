@@ -7,6 +7,18 @@ on:
     branches: [main]
   release:
     types: [published]
+  # Manual escape hatch to validate the docker-* jobs (build + push) without
+  # cutting a real release -- e.g. after changing a Dockerfile or this
+  # workflow itself. Requires test_tag specifically (not reusing a real
+  # version) so a manual run can never collide with an actual release tag,
+  # and never pushes `:latest` (see each job's "Compute image tags" step)
+  # so it can't clobber what a real release published there either.
+  workflow_dispatch:
+    inputs:
+      test_tag:
+        description: 'Tag to publish test images under (e.g. "test-jlink") -- never "latest" or a real version number'
+        required: true
+        type: string
 
 env:
   REGISTRY: ghcr.io
@@ -34,10 +46,67 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up JDK 21
+      # test_tag's own description says it must never be "latest" or a real
+      # version number, but a text input on the manual-run form doesn't
+      # enforce that by itself -- someone could still type "latest" or an
+      # existing release tag and silently overwrite it. Fails the whole
+      # build (and therefore every downstream docker-* job, via needs:
+      # build) before anything gets staged or pushed.
+      #
+      # Checked against actual git tags, not a version-number-shaped regex
+      # (e.g. `^[0-9]+\.[0-9]+\.[0-9]+$`) -- deploy.md's "Tag naming"
+      # section is explicit that the published image tag is the git tag
+      # *verbatim*, with no enforced format (`v0.1.0` vs `0.1.0`, or a
+      # `-rc.1` suffix, are both valid depending on what a release was
+      # actually tagged). A shape-based guess would let a real tag like
+      # `v1.2.3` or `1.2.3-rc.1` through and silently overwrite it.
+      - name: Validate test_tag
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          # Passed via env instead of interpolating ${{ inputs.test_tag }}
+          # directly into the script below: `run:` bodies are text-spliced
+          # by GitHub Actions *before* the shell ever sees them, so a
+          # workflow_dispatch input containing shell metacharacters (e.g.
+          # `$(...)`, backticks, quotes) would execute as part of this
+          # script with the job's packages:write / GITHUB_TOKEN access.
+          # Going through env: makes the value reach the shell as inert
+          # data in a variable, not as spliced-in script text.
+          TEST_TAG: ${{ inputs.test_tag }}
+        run: |
+          # A workflow_dispatch text input can contain newlines even though
+          # the trigger form looks like a single line -- it's just free
+          # text. That matters here specifically because every downstream
+          # docker-* job's "Extract version from tag" step writes this
+          # value with `echo "version=$TEST_TAG" >> "$GITHUB_OUTPUT"`, and
+          # $GITHUB_OUTPUT is parsed one `key=value` per line: a value like
+          # "latest\nx=y" would silently split into two separate outputs
+          # (version=latest, x=y) instead of one. That "version" would then
+          # be "latest" -- a value the checks below never actually see,
+          # since they're comparing against the whole, still-multi-line
+          # $TEST_TAG, not the post-split result. Rejecting anything that
+          # isn't a legal git ref name closes that off before it reaches
+          # any of that: git's own ref-format rules already disallow
+          # control characters (including newline), spaces, and the other
+          # characters that would misbehave in a shell or in
+          # $GITHUB_OUTPUT, so this piggybacks on that instead of hand-
+          # rolling a character allowlist.
+          if ! git check-ref-format "refs/tags/$TEST_TAG" >/dev/null 2>&1; then
+            echo "::error::test_tag '$TEST_TAG' is not a legal git ref name (git check-ref-format rejected it) -- release image tags are the git tag verbatim, so this needs to at least look like one. This also catches newlines/control characters, which could otherwise corrupt \$GITHUB_OUTPUT parsing in a later step."
+            exit 1
+          fi
+          if [ "$TEST_TAG" = "latest" ]; then
+            echo "::error::test_tag cannot be 'latest' -- that's the floating tag every unpinned pull resolves to, this would overwrite it."
+            exit 1
+          fi
+          if git ls-remote --tags origin | awk '{print $2}' | grep -qFx "refs/tags/$TEST_TAG"; then
+            echo "::error::test_tag '$TEST_TAG' matches an existing git tag -- release image tags are the git tag verbatim (see deploy.md's Tag naming section), so this would overwrite that release's published images. Pick something that isn't a real tag, e.g. 'test-jlink'."
+            exit 1
+          fi
+
+      - name: Set up JDK 25
         uses: actions/setup-java@v4
         with:
-          java-version: '21'
+          java-version: '25'
           distribution: 'temurin'
           cache: 'sbt'
       - uses: sbt/setup-sbt@v1
@@ -85,8 +154,20 @@ jobs:
 
           echo "OK: no unmeasured .connect/.transact found in src/main."
 
+      # tools (build.sbt's gen-env.scala sub-project) is deliberately not
+      # part of root's aggregate -- see its comment in build.sbt -- so
+      # plain `sbt compile` above wouldn't touch it. Without this, the
+      # *only* place it ever got compiled was `tools/stage` in "Stage
+      # services for release images" below, which only runs on release/
+      # workflow_dispatch -- meaning a normal PR or push to main could
+      # merge a change that breaks the sbt tools project (wrong
+      # scalacOptions, a dependency only tools pulls in, etc.) and nobody
+      # would find out until an actual release was cut. Compiling it here
+      # too closes that gap without pulling it into root's aggregate --
+      # it's still not part of the default `compile`/`test` loop for
+      # everyone else, just guaranteed to be checked on every run.
       - name: Compile
-        run: sbt compile
+        run: sbt compile "tools/compile"
 
       - name: Run tests
         if: github.event_name != 'push'
@@ -112,14 +193,19 @@ jobs:
         if: github.event_name != 'release'
         run: echo "local" | scala-cli run scripts/gen-env.scala
 
+      # No `if: != release` guard here (unlike the steps above/below it) --
+      # central-postgres-impl/stage packages whatever's under
+      # central/src/main/resources at stage time, and this is what
+      # populates that with the built forms. Needed on release too now
+      # that central is staged here instead of inside Dockerfile.central
+      # (which used to run its own npm build:forms before its own `sbt
+      # stage`, see docker-central job below).
       - name: Set up Node.js
-        if: github.event_name != 'release'
         uses: actions/setup-node@v4
         with:
           node-version: '22.12'
 
       - name: Build forms
-        if: github.event_name != 'release'
         working-directory: central-ui
         run: |
           npm ci
@@ -128,6 +214,48 @@ jobs:
       - name: Stage services for e2e tests
         if: github.event_name != 'release'
         run: sbt "central-postgres-impl/stage" "auth-postgres-impl/stage"
+
+      # The e2e staging step above is skipped on release (see its `if:`),
+      # so a separate stage is needed here to produce the artifacts
+      # docker-auth/docker-central/docker-edge/docker-tools download --
+      # this is what lets Dockerfile.auth/.central/.edge/.tools copy a
+      # pre-built application instead of installing sbt (or, for tools,
+      # scala-cli) and rebuilding it inside the image.
+      - name: Stage services for release images
+        if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+        run: sbt "auth-postgres-impl/stage" "central-postgres-impl/stage" "edge-postgres-impl/stage" "tools/stage"
+
+      - name: Upload auth stage artifact
+        if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: auth-stage
+          path: auth/implementations/postgres/target/universal/stage
+          retention-days: 1
+
+      - name: Upload central stage artifact
+        if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: central-stage
+          path: central/implementations/postgres/target/universal/stage
+          retention-days: 1
+
+      - name: Upload edge stage artifact
+        if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: edge-stage
+          path: edge/implementations/postgres/target/universal/stage
+          retention-days: 1
+
+      - name: Upload tools stage artifact
+        if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: tools-stage
+          path: scripts/target/universal/stage
+          retention-days: 1
 
       - name: Start central service
         if: github.event_name != 'release'
@@ -191,7 +319,7 @@ jobs:
 
   docker-auth:
     needs: build
-    if: github.event_name == 'release'
+    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -200,6 +328,16 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@v4
+
+      # Downloads the sbt-native-packager output that "Stage auth for
+      # release image" (in the build job) already produced and uploaded --
+      # Dockerfile.auth copies straight from this instead of installing
+      # sbt and rebuilding auth-postgres-impl again inside the image.
+      - name: Download auth stage artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: auth-stage
+          path: auth/implementations/postgres/target/universal/stage
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -211,9 +349,55 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # workflow_dispatch has no github.event.release.tag_name (there is no
+      # release) -- uses the required test_tag input instead, which can
+      # never collide with a real version since it's a separate, always-
+      # required field on the manual run form (see the workflow_dispatch
+      # trigger at the top of this file).
       - name: Extract version from tag
         id: version
-        run: echo "version=${{ github.event.release.tag_name }}" >> $GITHUB_OUTPUT
+        env:
+          # Same reasoning as the "Validate test_tag" step above: values
+          # go through env: instead of being spliced into the script text
+          # via ${{ }}, so a crafted test_tag (or, defensively, a release
+          # tag name) can't inject shell commands that run with this job's
+          # packages:write / GITHUB_TOKEN access.
+          RELEASE_TAG_NAME: ${{ github.event.release.tag_name }}
+          TEST_TAG: ${{ inputs.test_tag }}
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            echo "version=$RELEASE_TAG_NAME" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=$TEST_TAG" >> "$GITHUB_OUTPUT"
+          fi
+
+      # :latest only on a real release -- a manual workflow_dispatch run
+      # must never overwrite what :latest currently points to, that tag is
+      # what "versola bootstrap local" (see versola-cli) and anyone not
+      # pinning a version pull.
+      - name: Compute image tags
+        id: tags
+        env:
+          # steps.version.outputs.version comes from inputs.test_tag on a
+          # workflow_dispatch run (see "Extract version from tag" above).
+          # Same reasoning as that step and "Validate test_tag": route it
+          # through env: instead of splicing it into this run: body via
+          # ${{ }}. git check-ref-format (used to validate test_tag)
+          # rejects control characters/spaces/`~^:?*[\`, but still allows
+          # `$`, `(`, `)` -- a value like "$(id)" is a legal git ref name
+          # but would execute as a command substitution if it were
+          # text-spliced into this double-quoted shell string, with this
+          # job's packages:write / GITHUB_TOKEN access.
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          {
+            echo "tags<<EOF"
+            echo "${{ env.REGISTRY }}/${{ github.repository_owner }}/versola-auth:$VERSION"
+            if [ "${{ github.event_name }}" = "release" ]; then
+              echo "${{ env.REGISTRY }}/${{ github.repository_owner }}/versola-auth:latest"
+            fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Build and push auth image
         uses: docker/build-push-action@v6
@@ -221,15 +405,13 @@ jobs:
           context: .
           file: docker/Dockerfile.auth
           push: true
-          tags: |
-            ${{ env.REGISTRY }}/${{ github.repository_owner }}/versola-auth:${{ steps.version.outputs.version }}
-            ${{ env.REGISTRY }}/${{ github.repository_owner }}/versola-auth:latest
+          tags: ${{ steps.tags.outputs.tags }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
   docker-central:
     needs: build
-    if: github.event_name == 'release'
+    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -238,6 +420,20 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@v4
+
+      # Downloads the sbt-native-packager output that "Stage services for
+      # release images" (in the build job) already produced and uploaded
+      # -- that stage step already includes central-ui's built forms
+      # (built earlier in the same job, see its "Build forms" step) since
+      # they're packaged as resources inside this staged output.
+      # Dockerfile.central copies straight from this instead of installing
+      # sbt and rebuilding central-postgres-impl (and central-ui's forms)
+      # again inside the image.
+      - name: Download central stage artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: central-stage
+          path: central/implementations/postgres/target/universal/stage
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -251,18 +447,36 @@ jobs:
 
       - name: Extract version from tag
         id: version
-        run: echo "version=${{ github.event.release.tag_name }}" >> $GITHUB_OUTPUT
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22.12'
-
-      - name: Build central admin forms
-        working-directory: central-ui
+        env:
+          # Same reasoning as the "Validate test_tag" step above: values
+          # go through env: instead of being spliced into the script text
+          # via ${{ }}, so a crafted test_tag (or, defensively, a release
+          # tag name) can't inject shell commands that run with this job's
+          # packages:write / GITHUB_TOKEN access.
+          RELEASE_TAG_NAME: ${{ github.event.release.tag_name }}
+          TEST_TAG: ${{ inputs.test_tag }}
         run: |
-          npm ci
-          npm run build:forms
+          if [ "${{ github.event_name }}" = "release" ]; then
+            echo "version=$RELEASE_TAG_NAME" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=$TEST_TAG" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Compute image tags
+        id: tags
+        env:
+          # See the identical comment in docker-auth's "Compute image
+          # tags" step -- same reasoning, same fix.
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          {
+            echo "tags<<EOF"
+            echo "${{ env.REGISTRY }}/${{ github.repository_owner }}/versola-central:$VERSION"
+            if [ "${{ github.event_name }}" = "release" ]; then
+              echo "${{ env.REGISTRY }}/${{ github.repository_owner }}/versola-central:latest"
+            fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Build and push central image
         uses: docker/build-push-action@v6
@@ -270,15 +484,13 @@ jobs:
           context: .
           file: docker/Dockerfile.central
           push: true
-          tags: |
-            ${{ env.REGISTRY }}/${{ github.repository_owner }}/versola-central:${{ steps.version.outputs.version }}
-            ${{ env.REGISTRY }}/${{ github.repository_owner }}/versola-central:latest
+          tags: ${{ steps.tags.outputs.tags }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
   docker-edge:
     needs: build
-    if: github.event_name == 'release'
+    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -287,6 +499,16 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@v4
+
+      # Downloads the sbt-native-packager output that "Stage services for
+      # release images" (in the build job) already produced and uploaded --
+      # Dockerfile.edge copies straight from this instead of installing
+      # sbt and rebuilding edge-postgres-impl again inside the image.
+      - name: Download edge stage artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: edge-stage
+          path: edge/implementations/postgres/target/universal/stage
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -300,7 +522,36 @@ jobs:
 
       - name: Extract version from tag
         id: version
-        run: echo "version=${{ github.event.release.tag_name }}" >> $GITHUB_OUTPUT
+        env:
+          # Same reasoning as the "Validate test_tag" step above: values
+          # go through env: instead of being spliced into the script text
+          # via ${{ }}, so a crafted test_tag (or, defensively, a release
+          # tag name) can't inject shell commands that run with this job's
+          # packages:write / GITHUB_TOKEN access.
+          RELEASE_TAG_NAME: ${{ github.event.release.tag_name }}
+          TEST_TAG: ${{ inputs.test_tag }}
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            echo "version=$RELEASE_TAG_NAME" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=$TEST_TAG" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Compute image tags
+        id: tags
+        env:
+          # See the identical comment in docker-auth's "Compute image
+          # tags" step -- same reasoning, same fix.
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          {
+            echo "tags<<EOF"
+            echo "${{ env.REGISTRY }}/${{ github.repository_owner }}/versola-edge:$VERSION"
+            if [ "${{ github.event_name }}" = "release" ]; then
+              echo "${{ env.REGISTRY }}/${{ github.repository_owner }}/versola-edge:latest"
+            fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Build and push edge image
         uses: docker/build-push-action@v6
@@ -308,9 +559,7 @@ jobs:
           context: .
           file: docker/Dockerfile.edge
           push: true
-          tags: |
-            ${{ env.REGISTRY }}/${{ github.repository_owner }}/versola-edge:${{ steps.version.outputs.version }}
-            ${{ env.REGISTRY }}/${{ github.repository_owner }}/versola-edge:latest
+          tags: ${{ steps.tags.outputs.tags }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -324,7 +573,7 @@ jobs:
   # auth story on top).
   docker-gateway:
     needs: build
-    if: github.event_name == 'release'
+    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -346,7 +595,20 @@ jobs:
 
       - name: Extract version from tag
         id: version
-        run: echo "version=${{ github.event.release.tag_name }}" >> $GITHUB_OUTPUT
+        env:
+          # Same reasoning as the "Validate test_tag" step above: values
+          # go through env: instead of being spliced into the script text
+          # via ${{ }}, so a crafted test_tag (or, defensively, a release
+          # tag name) can't inject shell commands that run with this job's
+          # packages:write / GITHUB_TOKEN access.
+          RELEASE_TAG_NAME: ${{ github.event.release.tag_name }}
+          TEST_TAG: ${{ inputs.test_tag }}
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            echo "version=$RELEASE_TAG_NAME" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=$TEST_TAG" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -359,15 +621,29 @@ jobs:
           npm ci
           npm run build
 
+      - name: Compute image tags
+        id: tags
+        env:
+          # See the identical comment in docker-auth's "Compute image
+          # tags" step -- same reasoning, same fix.
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          {
+            echo "tags<<EOF"
+            echo "${{ env.REGISTRY }}/${{ github.repository_owner }}/versola-gateway:$VERSION"
+            if [ "${{ github.event_name }}" = "release" ]; then
+              echo "${{ env.REGISTRY }}/${{ github.repository_owner }}/versola-gateway:latest"
+            fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Build and push gateway image
         uses: docker/build-push-action@v6
         with:
           context: .
           file: docker/Dockerfile.gateway
           push: true
-          tags: |
-            ${{ env.REGISTRY }}/${{ github.repository_owner }}/versola-gateway:${{ steps.version.outputs.version }}
-            ${{ env.REGISTRY }}/${{ github.repository_owner }}/versola-gateway:latest
+          tags: ${{ steps.tags.outputs.tags }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -380,7 +656,7 @@ jobs:
   # risk, not a hypothetical one).
   docker-tools:
     needs: build
-    if: github.event_name == 'release'
+    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -389,6 +665,16 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@v4
+
+      # Downloads the sbt-native-packager output that "Stage services for
+      # release images" (in the build job) already produced and uploaded --
+      # Dockerfile.tools compiles gen-env.scala ahead of time via this
+      # instead of shipping scala-cli and compiling it inside the image.
+      - name: Download tools stage artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: tools-stage
+          path: scripts/target/universal/stage
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -402,7 +688,36 @@ jobs:
 
       - name: Extract version from tag
         id: version
-        run: echo "version=${{ github.event.release.tag_name }}" >> $GITHUB_OUTPUT
+        env:
+          # Same reasoning as the "Validate test_tag" step above: values
+          # go through env: instead of being spliced into the script text
+          # via ${{ }}, so a crafted test_tag (or, defensively, a release
+          # tag name) can't inject shell commands that run with this job's
+          # packages:write / GITHUB_TOKEN access.
+          RELEASE_TAG_NAME: ${{ github.event.release.tag_name }}
+          TEST_TAG: ${{ inputs.test_tag }}
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            echo "version=$RELEASE_TAG_NAME" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=$TEST_TAG" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Compute image tags
+        id: tags
+        env:
+          # See the identical comment in docker-auth's "Compute image
+          # tags" step -- same reasoning, same fix.
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          {
+            echo "tags<<EOF"
+            echo "${{ env.REGISTRY }}/${{ github.repository_owner }}/versola-tools:$VERSION"
+            if [ "${{ github.event_name }}" = "release" ]; then
+              echo "${{ env.REGISTRY }}/${{ github.repository_owner }}/versola-tools:latest"
+            fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Build and push tools image
         uses: docker/build-push-action@v6
@@ -414,12 +729,14 @@ jobs:
           # compose.fragment.yml it generates at bootstrap time (confirmed
           # by hand: pulls versola-central:dev instead of the real tag,
           # which doesn't exist, and bootstrap fails on "manifest unknown").
+          # For a workflow_dispatch test run this is the test_tag input,
+          # not a real version -- fine, since versola-tools built off a
+          # test run is only ever pulled manually for validation, never by
+          # a real "versola bootstrap local".
           build-args: |
             VERSION=${{ steps.version.outputs.version }}
           push: true
-          tags: |
-            ${{ env.REGISTRY }}/${{ github.repository_owner }}/versola-tools:${{ steps.version.outputs.version }}
-            ${{ env.REGISTRY }}/${{ github.repository_owner }}/versola-tools:latest
+          tags: ${{ steps.tags.outputs.tags }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 

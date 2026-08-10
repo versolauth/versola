@@ -1,6 +1,13 @@
-#!/usr/bin/env -S scala-cli shebang
-//> using scala 3.6.3
-//> using jvm 21
+//> using scala 3.8.1
+//> using jvm 25
+
+// Run with `scala-cli run scripts/gen-env.scala` for local dev (see
+// develop.md), or as part of the `tools` sbt project (see build.sbt) for
+// the versola-tools image (see docker/Dockerfile.tools) -- both compile
+// this exact file, not a copy. No shebang here: nothing in this repo
+// executes it directly (`./gen-env.scala`), every caller goes through
+// `scala-cli run <path>` or the sbt-packaged launcher, and a shebang line
+// isn't valid Scala syntax for plain scalac/sbt to compile.
 
 import java.io.{File, PrintWriter}
 import java.security.{KeyPairGenerator, SecureRandom}

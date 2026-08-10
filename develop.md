@@ -68,8 +68,13 @@ The script first asks for the environment **Name** (default `local`):
 
 ### Build Locally
 
-Build the Docker image locally:
+The runtime images no longer bundle sbt -- `docker build` copies an already
+built application from `<module>/target/universal/stage` (same as CI, see
+`ci-cd.yml`'s "Stage services for release images" step), it doesn't build it.
+Stage the module first, then build:
+
 ```bash
+sbt "auth-postgres-impl/stage"
 docker build -t versola-auth -f docker/Dockerfile.auth .
 ```
 
@@ -82,9 +87,16 @@ docker run -p 8080:8080 -p 9345:9345 \
 
 To build central or edge locally:
 ```bash
+sbt "central-postgres-impl/stage"
 docker build -t versola-central -f docker/Dockerfile.central .
+
+sbt "edge-postgres-impl/stage"
 docker build -t versola-edge -f docker/Dockerfile.edge .
 ```
+
+(`central` additionally expects `central-ui`'s forms already built into
+`central/src/main/resources` -- see the `npm run build:forms` step above --
+before staging, same as CI's `build` job.)
 
 You can override the config path via `CONFIG_PATH` environment variable:
 ```bash
