@@ -1,8 +1,10 @@
 package versola.oauth.conversation.limit
 
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{ClientId, RateLimit, SubmissionLimits}
+import versola.oauth.client.model.{ClientId, RateLimit, SubmissionLimits, TenantId}
 import zio.{Clock, NonEmptyChunk, Task, ZIO, ZLayer}
+
+import java.time.Instant
 
 enum LimitStatus:
   case Allowed
@@ -23,8 +25,25 @@ trait SubmissionLimiter:
     */
   def statusForSubjects(clientId: ClientId, subjects: List[String], challengeType: ChallengeType): Task[LimitStatus]
 
-  /** Records an attempt against the configured limits and returns the resulting limit status. */
+  /** Records an attempt against the configured limits and returns the resulting limit status.
+    *
+    * Charges the attempt unconditionally, so the returned status reflects the state *including* it.
+    * That suits recording a failure that has already happened; to gate an action that must not run
+    * once the limit is reached, use [[tryAcquire]] instead.
+    */
   def recordLimit(clientId: ClientId, subject: String, challengeType: ChallengeType): Task[LimitStatus]
+
+  /** Claims one attempt: returns the status as of *before* this attempt, and only records it when
+    * that status is `Allowed`.
+    *
+    * This is the gate for actions where the request itself is the thing being limited (sending an
+    * OTP, say) rather than a failure being punished. [[recordLimit]] would charge — and count —
+    * every request in a flood even after the subject is already over the limit; this checks first
+    * and only calls through to [[ChallengeThrottleRepository.recordAttempt]] when that check finds
+    * the subject `Allowed`, so a flood against someone else's credential stops adding attempts once
+    * denied rather than padding their counter for as long as it lasts.
+    */
+  def tryAcquire(clientId: ClientId, subject: String, challengeType: ChallengeType): Task[LimitStatus]
 
   /** Records an attempt for each subject via its own atomic read-modify-write, and returns the worst status. */
   def recordLimitAll(clientId: ClientId, subjects: List[String], challengeType: ChallengeType): Task[LimitStatus]
@@ -33,6 +52,7 @@ trait SubmissionLimiter:
   def reset(clientId: ClientId, subject: String, challengeType: ChallengeType): Task[Unit]
 
 object SubmissionLimiter:
+
   def live = ZLayer.fromFunction(Impl(_, _))
 
   class Impl(
@@ -133,12 +153,14 @@ object SubmissionLimiter:
         case None => ZIO.unit
         case Some(client) => throttleRepo.delete(client.tenantId, subject, challengeType)
 
-    /** Records a single failed attempt for the subject and returns the resulting status. The
-      * prune/append/ban decision itself lives in [[ThrottlePolicy.nextState]], applied by the
-      * repository's implementation inside its own atomic read-modify-write so it can't lose
-      * concurrent attempts against the same key (issue #91).
+    /** Shared preamble for the write paths: resolves the windows configured for the challenge type,
+      * the owning tenant, and the current instant, and hands them to `f`. Short-circuits to
+      * `Allowed` when no windows are configured or the client is unknown, matching the read-only
+      * checks above.
       */
-    override def recordLimit(clientId: ClientId, subject: String, challengeType: ChallengeType): Task[LimitStatus] =
+    private def withWindows(clientId: ClientId, challengeType: ChallengeType)(
+        f: (TenantId, SubmissionLimits, NonEmptyChunk[RateLimit], Instant) => Task[LimitStatus],
+    ): Task[LimitStatus] =
       configService.getSubmissionLimits(clientId).flatMap: limits =>
         windowLimits(limits, challengeType) match
           case None => ZIO.succeed(LimitStatus.Allowed)
@@ -146,8 +168,31 @@ object SubmissionLimiter:
             configService.find(clientId).flatMap:
               case None => ZIO.succeed(LimitStatus.Allowed)
               case Some(client) =>
-                Clock.instant.flatMap: now =>
-                  throttleRepo.recordAttempt(client.tenantId, subject, challengeType, now, wLimits, limits.banDurationSeconds)
+                Clock.instant.flatMap(now => f(client.tenantId, limits, wLimits, now))
+
+    override def recordLimit(clientId: ClientId, subject: String, challengeType: ChallengeType): Task[LimitStatus] =
+      withWindows(clientId, challengeType): (tenantId, limits, wLimits, now) =>
+        throttleRepo.recordAttempt(tenantId, subject, challengeType, now, wLimits, limits.banDurationSeconds)
+
+    /** Claims one attempt: returns the status as of *before* this attempt, and only records it when
+      * that status is `Allowed`.
+      *
+      * This is the gate for actions where the request itself is the thing being limited (sending an
+      * OTP, say) rather than a failure being punished. [[recordLimit]] would charge — and count —
+      * every request in a flood even after the subject is already over the limit; this checks first
+      * and only calls through to [[ChallengeThrottleRepository.recordAttempt]] when that check finds
+      * the subject `Allowed`, so a flood against someone else's credential stops adding attempts
+      * once denied rather than padding their counter for as long as it lasts.
+      */
+    override def tryAcquire(clientId: ClientId, subject: String, challengeType: ChallengeType): Task[LimitStatus] =
+      withWindows(clientId, challengeType): (tenantId, limits, wLimits, now) =>
+        throttleRepo.find(tenantId, subject, challengeType).flatMap: existing =>
+          existing.fold(LimitStatus.Allowed)(ThrottlePolicy.evaluate(_, wLimits, now)) match
+            case LimitStatus.Allowed =>
+              throttleRepo.recordAttempt(tenantId, subject, challengeType, now, wLimits, limits.banDurationSeconds)
+            // Уже превышен лимит — сообщаем без записи, чтобы флуд по чужому credential
+            // не мог держать счётчик над порогом бесконечно.
+            case denied => ZIO.succeed(denied)
 
     /** Batch variant of [[recordLimit]]: records a failed attempt for every subject via its own
       * atomic [[ChallengeThrottleRepository.recordAttempt]] call. Used to charge related subjects
@@ -158,14 +203,7 @@ object SubmissionLimiter:
       * row, so running them in parallel can't deadlock.
       */
     override def recordLimitAll(clientId: ClientId, subjects: List[String], challengeType: ChallengeType): Task[LimitStatus] =
-      configService.getSubmissionLimits(clientId).flatMap: limits =>
-        windowLimits(limits, challengeType) match
-          case None => ZIO.succeed(LimitStatus.Allowed)
-          case Some(wLimits) =>
-            configService.find(clientId).flatMap:
-              case None => ZIO.succeed(LimitStatus.Allowed)
-              case Some(client) =>
-                Clock.instant.flatMap: now =>
-                  ZIO.foreachPar(subjects) { subject =>
-                    throttleRepo.recordAttempt(client.tenantId, subject, challengeType, now, wLimits, limits.banDurationSeconds)
-                  }.map(_.foldLeft(LimitStatus.Allowed)(worstStatus))
+      withWindows(clientId, challengeType): (tenantId, limits, wLimits, now) =>
+        ZIO
+          .foreachPar(subjects)(throttleRepo.recordAttempt(tenantId, _, challengeType, now, wLimits, limits.banDurationSeconds))
+          .map(_.foldLeft(LimitStatus.Allowed)(worstStatus))
