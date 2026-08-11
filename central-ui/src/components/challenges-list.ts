@@ -1099,7 +1099,7 @@ export class VersolaChallengesList extends LitElement {
       <div class="card template-card">
         <div class="template-header">
           <div class="template-id-group">
-            <span class="template-id">${selectedTemplate.id}</span>
+            <span class="template-id">${displayTemplate.id}</span>
           </div>
           ${this.canManage && showActions ? html`
           <div class="template-actions">

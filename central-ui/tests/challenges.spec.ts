@@ -88,6 +88,27 @@ test('selects SMS by default and switches the default template type', async ({ p
   await expect(reloadedCard.getByLabel('Channel')).toHaveValue('sms');
 });
 
+test('renders an empty state when a default template purpose is missing', async ({ page }) => {
+  const defaultOtpSms = { ...otpTemplate, id: 'default' };
+  const defaultOtpEmail = {
+    ...defaultOtpSms,
+    localizations: { en: '<html><body>Code: {{code}}</body></html>' },
+    channel: 'email' as const,
+  };
+  await loadAdminApp(page, {
+    path: challengesPath,
+    state: {
+      ...baseState,
+      otpTemplates: { 'tenant-alpha': [defaultOtpEmail, defaultOtpSms] },
+    },
+  });
+
+  const card = page.locator('.template-card').filter({ hasText: 'default' });
+  await card.getByLabel('Type').selectOption('password');
+  await expect(card.locator('.empty-state')).toContainText('No password template exists');
+  await expect(card.locator('.template-id')).toHaveText('default');
+});
+
 test('shows passkeys as not configured when absent', async ({ page }) => {
   await loadAdminApp(page, { path: challengesPath, state: baseState });
 
