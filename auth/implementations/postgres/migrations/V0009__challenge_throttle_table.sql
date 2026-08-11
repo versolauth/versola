@@ -5,12 +5,6 @@ CREATE TABLE challenge_throttle (
     attempts       JSONB NOT NULL,
     banned_until   TIMESTAMP WITH TIME ZONE,
     expires_at     TIMESTAMP WITH TIME ZONE NOT NULL,
-    -- Bumped on every write. Writers pass the version they read and their update only
-    -- lands if it still matches, so two concurrent attempts cannot both be recorded on
-    -- top of the same state (which would let one of them go uncounted). No DEFAULT: every
-    -- writer must state the version explicitly rather than silently landing on 0, which
-    -- would collide with "no row yet" for a first insert that forgot to set it.
-    version        BIGINT NOT NULL,
     PRIMARY KEY (subject, tenant_id, challenge_type)
 );
 

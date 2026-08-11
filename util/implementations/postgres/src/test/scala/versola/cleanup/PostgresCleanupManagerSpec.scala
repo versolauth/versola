@@ -79,11 +79,11 @@ object PostgresCleanupManagerSpec extends PostgresSpec:
           manager <- makeManager(xa)
           _ <- xa.connect:
             sql"""
-              INSERT INTO challenge_throttle (subject, tenant_id, challenge_type, attempts, expires_at, version)
+              INSERT INTO challenge_throttle (subject, tenant_id, challenge_type, attempts, expires_at)
               VALUES
-                ('u1', 't1', 'otp', '[]'::jsonb, NOW() - INTERVAL '1 minute', 0),
-                ('u2', 't1', 'otp', '[]'::jsonb, NOW() - INTERVAL '2 minutes', 0),
-                ('u3', 't1', 'otp', '[]'::jsonb, NOW() + INTERVAL '5 minutes', 0)
+                ('u1', 't1', 'otp', '[]'::jsonb, NOW() - INTERVAL '1 minute'),
+                ('u2', 't1', 'otp', '[]'::jsonb, NOW() - INTERVAL '2 minutes'),
+                ('u3', 't1', 'otp', '[]'::jsonb, NOW() + INTERVAL '5 minutes')
             """.update.run()
           deleted   <- manager.runBatch("challenge_throttle", 1000, "ctid")
           remaining <- xa.connect(sql"SELECT COUNT(*) FROM challenge_throttle".query[Long].run().head)
@@ -96,11 +96,11 @@ object PostgresCleanupManagerSpec extends PostgresSpec:
           manager <- makeManager(xa)
           _ <- xa.connect:
             sql"""
-              INSERT INTO challenge_throttle (subject, tenant_id, challenge_type, attempts, expires_at, version)
+              INSERT INTO challenge_throttle (subject, tenant_id, challenge_type, attempts, expires_at)
               VALUES
-                ('u1', 't1', 'otp', '[]'::jsonb, NOW() - INTERVAL '3 minutes', 0),
-                ('u2', 't1', 'otp', '[]'::jsonb, NOW() - INTERVAL '2 minutes', 0),
-                ('u3', 't1', 'otp', '[]'::jsonb, NOW() - INTERVAL '1 minute', 0)
+                ('u1', 't1', 'otp', '[]'::jsonb, NOW() - INTERVAL '3 minutes'),
+                ('u2', 't1', 'otp', '[]'::jsonb, NOW() - INTERVAL '2 minutes'),
+                ('u3', 't1', 'otp', '[]'::jsonb, NOW() - INTERVAL '1 minute')
             """.update.run()
           deleted   <- manager.runBatch("challenge_throttle", 2, "ctid")
           remaining <- xa.connect(sql"SELECT COUNT(*) FROM challenge_throttle".query[Long].run().head)
