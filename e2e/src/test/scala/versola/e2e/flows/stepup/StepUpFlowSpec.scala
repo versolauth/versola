@@ -86,7 +86,7 @@ object StepUpFlowSpec extends E2ESpec:
         yield assertCompletes
       },
 
-      test("known email user advances directly to OTP on prompt=login") {
+      test("prompt=login requires email credential before OTP") {
         for
           (s, auth) <- setup(Flows.Id.EmailOtp)
           sessionCookie <- completeOtpAuth(s, auth)
@@ -96,13 +96,15 @@ object StepUpFlowSpec extends E2ESpec:
             sessionCookie = Some(sessionCookie),
             prompt = Some("login"),
           ).assertChallengeRedirect
-          challenge <- auth.getChallenge(authorize.conversationCookie.get).assertStep(ConversationStep.Otp)
-          code <- auth.submitOtp(authorize.conversationCookie.get, fixedOtp, challenge.csrf)
+          credentialChallenge <- auth.getChallenge(authorize.conversationCookie.get).assertStep(ConversationStep.Credential)
+          _ <- auth.submitEmail(authorize.conversationCookie.get, s.email.get, credentialChallenge.csrf)
+          otpChallenge <- auth.getChallenge(authorize.conversationCookie.get).assertStep(ConversationStep.Otp)
+          code <- auth.submitOtp(authorize.conversationCookie.get, fixedOtp, otpChallenge.csrf)
             .assertRedirect(auth, authorize.conversationCookie.get)
         yield assertTrue(code.nonEmpty).label("code must not be empty")
       },
 
-      test("known phone user advances directly to OTP on prompt=login") {
+      test("prompt=login requires phone credential before OTP") {
         for
           (s, auth) <- setup(Flows.Id.PhoneOtp)
           sessionCookie <- completePhoneOtpAuth(s, auth)
@@ -112,8 +114,10 @@ object StepUpFlowSpec extends E2ESpec:
             sessionCookie = Some(sessionCookie),
             prompt = Some("login"),
           ).assertChallengeRedirect
-          challenge <- auth.getChallenge(authorize.conversationCookie.get).assertStep(ConversationStep.Otp)
-          code <- auth.submitOtp(authorize.conversationCookie.get, fixedOtp, challenge.csrf)
+          credentialChallenge <- auth.getChallenge(authorize.conversationCookie.get).assertStep(ConversationStep.Credential)
+          _ <- auth.submitPhone(authorize.conversationCookie.get, s.phone.get, credentialChallenge.csrf)
+          otpChallenge <- auth.getChallenge(authorize.conversationCookie.get).assertStep(ConversationStep.Otp)
+          code <- auth.submitOtp(authorize.conversationCookie.get, fixedOtp, otpChallenge.csrf)
             .assertRedirect(auth, authorize.conversationCookie.get)
         yield assertTrue(code.nonEmpty).label("code must not be empty")
       },
