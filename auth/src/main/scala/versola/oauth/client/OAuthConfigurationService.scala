@@ -1,12 +1,34 @@
 package versola.oauth.client
 
-import versola.oauth.client.model.{Acr, ChallengeSettingsRecord, ClientId, ClientSecret, FormRecord, Locales, OAuthClientRecord, OtpSettings, OtpTemplateRecord, PassedAuthFactor, PasskeySettings, PasswordHistorySettings, ScopeRecord, ScopeToken, SubmissionLimits, SystemSettingsRecord, TenantId, ThemeRecord}
+import versola.oauth.client.model.{
+  Acr,
+  ChallengeSettingsRecord,
+  ClientId,
+  ClientSecret,
+  FormRecord,
+  Locales,
+  OAuthClientRecord,
+  OtpType,
+  OtpSettings,
+  OtpTemplateChannel,
+  OtpTemplatePurpose,
+  OtpTemplateRecord,
+  PassedAuthFactor,
+  PasskeySettings,
+  PasswordHistorySettings,
+  ScopeRecord,
+  ScopeToken,
+  SubmissionLimits,
+  SystemSettingsRecord,
+  TenantId,
+  ThemeRecord,
+}
 import versola.oauth.conversation.otp.model.OtpTemplate
 import versola.oauth.metadata.{MetadataSyncClient, ServerMetadataRecord}
 import versola.util.{CoreConfig, ReloadingCache, Secret, SecureRandom, SecurityService}
 import zio.*
-import zio.json.ast.Json
 import zio.http.{Client, URL}
+import zio.json.ast.Json
 import zio.prelude.{EqualOps, NonEmptyList, NonEmptySet}
 
 trait OAuthConfigurationService:
@@ -25,9 +47,9 @@ trait OAuthConfigurationService:
 
   def getTheme(id: String): UIO[Option[ThemeRecord]]
 
-  def getClientTemplate(id: ClientId, uiLocales: Option[List[String]]): UIO[OtpTemplate]
+  def getClientTemplate(id: ClientId, otpType: OtpType, uiLocales: Option[List[String]]): UIO[OtpTemplate]
 
-  def getPasswordTemplate(uiLocales: Option[List[String]]): Task[OtpTemplate]
+  def getPasswordTemplate(channel: OtpTemplateChannel, uiLocales: Option[List[String]]): Task[OtpTemplate]
 
   def getLocales: UIO[Locales]
 
@@ -118,7 +140,7 @@ object OAuthConfigurationService:
       ZIO.succeed:
         stored match
           case Some(stored) => java.security.MessageDigest.isEqual(secret, stored)
-          case None         => false
+          case None => false
 
     override def verifySecret(clientId: ClientId, secret: Option[Secret]): UIO[Option[OAuthClientRecord]] =
       find(clientId).some.foldZIO(
@@ -129,7 +151,7 @@ object OAuthConfigurationService:
               verifyOneSecret(secret, client.secret)
                 .flatMap {
                   case false => verifyOneSecret(secret, client.previousSecret)
-                  case true  => ZIO.succeed(true)
+                  case true => ZIO.succeed(true)
                 }
                 .map(Option.when(_)(client))
 
@@ -152,18 +174,34 @@ object OAuthConfigurationService:
     override def getLocales: UIO[Locales] =
       localeCache.get
 
-    private def getOtpTemplates(tenantId: TenantId, otpTemplateId: String): UIO[Option[OtpTemplateRecord]] =
-      otpTemplateCache.get.map(_.find(it => it.tenantId == tenantId && it.id == otpTemplateId))
+    private def getOtpTemplates(
+        tenantId: TenantId,
+        otpTemplateId: String,
+        otpType: OtpType,
+    ): UIO[Option[OtpTemplateRecord]] =
+      val channel = otpType match
+        case OtpType.sms   => OtpTemplateChannel.sms
+        case OtpType.email => OtpTemplateChannel.email
+      otpTemplateCache.get.map(_.find: template =>
+        template.tenantId == tenantId
+          && template.id == otpTemplateId
+          && template.purpose == OtpTemplatePurpose.otp
+          && template.channel == channel
+      )
 
-    override def getClientTemplate(id: ClientId, uiLocales: Option[List[String]]): UIO[OtpTemplate] =
+    override def getClientTemplate(
+        id: ClientId,
+        otpType: OtpType,
+        uiLocales: Option[List[String]],
+    ): UIO[OtpTemplate] =
       val templateOpt = find(id).flatMap:
         case None => ZIO.none
         case Some(client) =>
-          getOtpTemplates(client.tenantId, client.otpTemplateId)
+          getOtpTemplates(client.tenantId, client.otpTemplateId, otpType)
 
       for
         template <- templateOpt
-        locales  <- getLocales
+        locales <- getLocales
       yield template match
         case None => IllegalStateTemplate
         case Some(t) =>
@@ -174,12 +212,14 @@ object OAuthConfigurationService:
             .getOrElse(IllegalStateTemplate)
           OtpTemplate(body)
 
-    override def getPasswordTemplate(uiLocales: Option[List[String]]): Task[OtpTemplate] =
+    override def getPasswordTemplate(channel: OtpTemplateChannel, uiLocales: Option[List[String]]): Task[OtpTemplate] =
       for
         templates <- otpTemplateCache.get
         locales <- getLocales
         template <- ZIO
-          .fromOption(templates.find(_.purpose == "password"))
+          .fromOption(templates.find(template =>
+            template.purpose == OtpTemplatePurpose.password && template.channel == channel,
+          ))
           .orElseFail(RuntimeException("No global password template configured"))
         preferredLocales = uiLocales.getOrElse(Nil) :+ locales.default
         body <- ZIO
@@ -301,24 +341,24 @@ object OAuthConfigurationService:
 
     override def syncConfiguration: Task[Unit] =
       for
-        clients           <- clientRepository.getAll
-        _                 <- clientCache.set(clients)
-        scopes            <- scopeRepository.getAll
-        _                 <- scopeCache.set(scopes)
-        forms             <- formRepository.getAll
-        _                 <- formCache.set(forms)
-        themes            <- themeRepository.getAll
-        _                 <- themeCache.set(themes)
-        locales           <- localeRepository.getAll
-        _                 <- localeCache.set(locales)
-        otpTemplates      <- otpTemplateRepository.getAll
-        _                 <- otpTemplateCache.set(otpTemplates)
+        clients <- clientRepository.getAll
+        _ <- clientCache.set(clients)
+        scopes <- scopeRepository.getAll
+        _ <- scopeCache.set(scopes)
+        forms <- formRepository.getAll
+        _ <- formCache.set(forms)
+        themes <- themeRepository.getAll
+        _ <- themeCache.set(themes)
+        locales <- localeRepository.getAll
+        _ <- localeCache.set(locales)
+        otpTemplates <- otpTemplateRepository.getAll
+        _ <- otpTemplateCache.set(otpTemplates)
         challengeSettings <- challengeSettingsRepository.getAll
-        _                 <- challengeSettingsCache.set(challengeSettings)
-        systemSettings    <- systemSettingsRepository.getAll
-        _                 <- systemSettingsCache.set(systemSettings)
-        metadata          <- metadataRepository.getAll
-        _                 <- metadataCache.set(metadata)
+        _ <- challengeSettingsCache.set(challengeSettings)
+        systemSettings <- systemSettingsRepository.getAll
+        _ <- systemSettingsCache.set(systemSettings)
+        metadata <- metadataRepository.getAll
+        _ <- metadataCache.set(metadata)
       yield ()
 
     private val IllegalStateTemplate = OtpTemplate("{{code}}")

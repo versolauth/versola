@@ -1,6 +1,6 @@
 package versola.central.configuration.sync
 
-import versola.central.configuration.challenges.{ChallengeSettingsService, OtpChallengeService}
+import versola.central.configuration.challenges.{ChallengeSettingsService, OtpChallengeService, OtpTemplateChannel, OtpTemplatePurpose}
 import versola.central.configuration.clients.{AuthorizationPresetService, OAuthClientService, PresetId}
 import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.forms.{FormId, FormService}
@@ -161,7 +161,7 @@ object CacheSyncServiceSpec extends UnitSpecBase:
       yield assertTrue(env.formService.sync.calls.nonEmpty)
     },
     test("routes OtpTemplatesUpdated to OtpChallengeService.sync") {
-      val event = SyncEvent.OtpTemplatesUpdated(TenantId("t1"), "template-1", SyncEvent.Op.UPDATE)
+      val event = SyncEvent.OtpTemplatesUpdated(TenantId("t1"), "template-1", OtpTemplatePurpose.otp, OtpTemplateChannel.sms, SyncEvent.Op.UPDATE)
       val env = Env(event)
       for
         _ <- env.otpChallengeService.sync.succeedsWith(())

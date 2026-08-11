@@ -11,6 +11,7 @@ export class VersolaCodeEditor extends LitElement {
   @property({ type: Number }) rows = 10;
   @property({ type: Boolean }) disabled = false;
   @property({ type: Boolean }) invalid = false;
+  @property({ type: String }) placeholder = '';
 
   @query('textarea') private textarea!: HTMLTextAreaElement;
   @query('pre') private pre!: HTMLPreElement;
@@ -95,6 +96,7 @@ export class VersolaCodeEditor extends LitElement {
           autocomplete="off"
           autocorrect="off"
           autocapitalize="off"
+          placeholder=${this.placeholder}
           rows=${this.rows}
           style=${height}
           @input=${this.handleInput}

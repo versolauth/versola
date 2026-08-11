@@ -283,6 +283,32 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
           result <- service.complete(code, Fixtures.state).either
         yield assertTrue(result == Left(AuthConversationNotFound()))
       },
+      test("completes an OAuth error and returns the post-login URL") {
+        val env = new Env
+        for
+          _ <- env.withPresets(Fixtures.preset)
+          _ <- env.loginRepository.findByState.succeedsWith(Some(LoginRecord(
+            codeVerifier = CodeVerifier.fromBytes(Fixtures.codeVerifierBytes),
+            presetId = Fixtures.presetId,
+            state = Fixtures.state,
+          )))
+          _ <- env.loginRepository.deleteByState.succeedsWith(())
+          security <- ZIO.service[SecurityService]
+          client <- ZIO.service[Client]
+          service = env.buildService(client, security)
+          redirectUrl <- service.completeError(
+            Fixtures.state,
+            "access_denied",
+            Some("User cancelled"),
+            None,
+          )
+        yield assertTrue(
+          redirectUrl == URL.decode(Fixtures.postLoginUri).toOption.get.addQueryParams(
+            List("error" -> "access_denied", "error_description" -> "User cancelled"),
+          ),
+          env.loginRepository.deleteByState.calls == List(Fixtures.state),
+        )
+      },
       test("fails with AuthConversationNotFound when preset has been removed") {
         val env = new Env
         for

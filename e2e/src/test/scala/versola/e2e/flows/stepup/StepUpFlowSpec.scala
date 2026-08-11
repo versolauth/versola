@@ -39,6 +39,24 @@ object StepUpFlowSpec extends E2ESpec:
         .orElseFail(RuntimeException("No SSO_SESSION cookie in final submission response"))
     yield sessionCookie
 
+  /** Complete the phone+OTP flow and return the SSO_SESSION cookie value. */
+  private def completePhoneOtpAuth(s: Flows.Setup, auth: OAuthClient): Task[String] =
+    for
+      authorize <- auth.authorize(
+        scope = "openid",
+        clientId = Some(s.clientId),
+        redirectUri = Some(s.redirectUri),
+      ).assertChallengeRedirect
+      challenge1 <- auth.getChallenge(authorize.conversationCookie.get)
+      csrf1 = challenge1.csrf
+      _ <- auth.submitPhone(authorize.conversationCookie.get, s.phone.get, csrf1)
+      challenge2 <- auth.getChallenge(authorize.conversationCookie.get)
+      csrf2 = challenge2.csrf
+      submit <- auth.submitOtp(authorize.conversationCookie.get, fixedOtp, csrf2)
+      sessionCookie <- ZIO.fromOption(submit.sessionCookie)
+        .orElseFail(RuntimeException("No SSO_SESSION cookie in final submission response"))
+    yield sessionCookie
+
   def spec = suite("Step-up authorization")(
 
     suite("session re-auth")(
@@ -66,6 +84,42 @@ object StepUpFlowSpec extends E2ESpec:
             prompt = Some("login"),
           ).assertChallengeRedirect
         yield assertCompletes
+      },
+
+      test("prompt=login requires email credential before OTP") {
+        for
+          (s, auth) <- setup(Flows.Id.EmailOtp)
+          sessionCookie <- completeOtpAuth(s, auth)
+          authorize <- auth.authorizeRaw(
+            clientId = s.clientId,
+            redirectUri = s.redirectUri,
+            sessionCookie = Some(sessionCookie),
+            prompt = Some("login"),
+          ).assertChallengeRedirect
+          credentialChallenge <- auth.getChallenge(authorize.conversationCookie.get).assertStep(ConversationStep.Credential)
+          _ <- auth.submitEmail(authorize.conversationCookie.get, s.email.get, credentialChallenge.csrf)
+          otpChallenge <- auth.getChallenge(authorize.conversationCookie.get).assertStep(ConversationStep.Otp)
+          code <- auth.submitOtp(authorize.conversationCookie.get, fixedOtp, otpChallenge.csrf)
+            .assertRedirect(auth, authorize.conversationCookie.get)
+        yield assertTrue(code.nonEmpty).label("code must not be empty")
+      },
+
+      test("prompt=login requires phone credential before OTP") {
+        for
+          (s, auth) <- setup(Flows.Id.PhoneOtp)
+          sessionCookie <- completePhoneOtpAuth(s, auth)
+          authorize <- auth.authorizeRaw(
+            clientId = s.clientId,
+            redirectUri = s.redirectUri,
+            sessionCookie = Some(sessionCookie),
+            prompt = Some("login"),
+          ).assertChallengeRedirect
+          credentialChallenge <- auth.getChallenge(authorize.conversationCookie.get).assertStep(ConversationStep.Credential)
+          _ <- auth.submitPhone(authorize.conversationCookie.get, s.phone.get, credentialChallenge.csrf)
+          otpChallenge <- auth.getChallenge(authorize.conversationCookie.get).assertStep(ConversationStep.Otp)
+          code <- auth.submitOtp(authorize.conversationCookie.get, fixedOtp, otpChallenge.csrf)
+            .assertRedirect(auth, authorize.conversationCookie.get)
+        yield assertTrue(code.nonEmpty).label("code must not be empty")
       },
 
       test("max_age=0 with valid session forces new challenge") {

@@ -7,6 +7,9 @@ import zio.schema.*
 enum PrimaryCredential derives JsonCodec, Schema, Equal:
   case email, phone, login
 
+enum OtpType derives JsonCodec, Schema, Equal:
+  case sms, email
+
 enum AuthFactorType derives JsonCodec, Schema, Equal:
   case otp, password, passkeyEnroll
 
@@ -29,6 +32,7 @@ case class AuthFlow(
     primary: PrimaryAuthFlow,
     passkey: Option[PasskeyAuthFlow],
     equivalents: Map[PassedAuthFactor, Set[PassedAuthFactor]],
+    otpType: OtpType,
 ) derives JsonCodec, Schema, Equal
 
 object AuthFlow:
@@ -40,4 +44,5 @@ object AuthFlow:
     ),
     passkey = None,
     equivalents = Map.empty,
+    otpType = OtpType.sms,
   )

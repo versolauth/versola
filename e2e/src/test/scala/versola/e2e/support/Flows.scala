@@ -23,6 +23,7 @@ object Flows:
     ),
     "passkey"     -> Json.Null,
     "equivalents" -> Json.Obj(),
+    "otpType"     -> Json.Str("sms"),
   )
 
   /** Email credential with OTP factor, no inline password. */
@@ -34,6 +35,7 @@ object Flows:
     ),
     "passkey"     -> Json.Null,
     "equivalents" -> Json.Obj(),
+    "otpType"     -> Json.Str("email"),
   )
 
   /** Phone credential with OTP factor, no inline password. */
@@ -45,6 +47,7 @@ object Flows:
     ),
     "passkey"     -> Json.Null,
     "equivalents" -> Json.Obj(),
+    "otpType"     -> Json.Str("sms"),
   )
 
   // ── Setup result ────────────────────────────────────────────────────────

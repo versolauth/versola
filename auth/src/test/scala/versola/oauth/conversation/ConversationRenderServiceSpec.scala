@@ -185,6 +185,48 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           assertTrue(body.contains("\"resendAfter\":30"))
       },
     ),
+    suite("renderExpired")(
+      test("renders the expired page with an OAuth error return URI") {
+        val env = Env()
+        val expiredForm = formRecord.copy(
+          id = "conversation-expired",
+          localizations = Map("en" -> Map("page_title" -> "Conversation expired", "title" -> "Expired")),
+        )
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          _ <- env.configuration.getTheme.succeedsWith(Some(theme))
+          _ <- env.configuration.getForm.succeedsWith(Some(expiredForm))
+          _ <- env.configuration.getLocales.succeedsWith(locales)
+          response <- env.service.renderExpired(clientId, redirectUri.encode, Some("test-state"))
+          body <- response.body.asString
+        yield
+          assertTrue(response.status == Status.Ok) &&
+          assertTrue(body.contains("conversation-expired")) &&
+          assertTrue(body.contains("error=login_required")) &&
+          assertTrue(body.contains("state=test-state"))
+      },
+    ),
+    suite("renderServiceUnavailable")(
+      test("renders the unavailable page with an OAuth error return URI") {
+        val env = Env()
+        val unavailableForm = formRecord.copy(
+          id = "service-unavailable",
+          localizations = Map("en" -> Map("page_title" -> "Unavailable", "title" -> "Unavailable")),
+        )
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          _ <- env.configuration.getTheme.succeedsWith(Some(theme))
+          _ <- env.configuration.getForm.succeedsWith(Some(unavailableForm))
+          _ <- env.configuration.getLocales.succeedsWith(locales)
+          response <- env.service.renderServiceUnavailable(clientId, redirectUri.encode, Some("test-state"))
+          body <- response.body.asString
+        yield
+          assertTrue(response.status == Status.Ok) &&
+          assertTrue(body.contains("service-unavailable")) &&
+          assertTrue(body.contains("error=temporarily_unavailable")) &&
+          assertTrue(body.contains("state=test-state"))
+      },
+    ),
     suite("renderSubmit")(
       test("redirects to /challenge on RenderStep") {
         val env = Env()

@@ -39,11 +39,16 @@ object ConversationController extends Controller:
           router <- ZIO.service[ConversationRouter]
           formService <- ZIO.service[ConversationRenderService]
           cookie <- extractCookie(request)
-          record <- router.getConversation(cookie.authId).someOrFail(Error.BadRequest)
-          ifNoneMatch = request.headers.get(Header.IfNoneMatch)
-          response <- formService.renderStep(record, ifNoneMatch.map(_.renderedValue))
+          record <- router.getConversation(cookie.authId)
+          response <- record match
+            case None => formService.renderExpired(cookie.clientId, cookie.redirectUri, cookie.state)
+            case Some(record) =>
+              val ifNoneMatch = request.headers.get(Header.IfNoneMatch)
+              formService.renderStep(record, ifNoneMatch.map(_.renderedValue))
         yield response
       ).catchAll {
+        case Error.ConversationExpired => expiredResponse(request)
+        case Error.ServiceUnavailable => serviceUnavailableResponse(request)
         case _: Error => ZIO.succeed(Response.badRequest)
         case ex: Throwable => ZIO.fail(ex)
       }
@@ -69,6 +74,12 @@ object ConversationController extends Controller:
 
   /** GET /challenge/passkey/options — starts a discoverable assertion and returns the
     * PublicKeyCredentialRequestOptions JSON for `navigator.credentials.get()`.
+    *
+    * This route is only ever called via `fetch` by the credential form's JS, never as a
+    * top-level navigation. On expiry/unavailability we must not return the HTML terminal
+    * page with a 200 status — the caller would try to JSON-parse it as the options payload.
+    * Instead we signal these conditions with distinct non-2xx statuses so the client can
+    * navigate to `/challenge` itself and let the server render the proper terminal screen.
     */
   val getPasskeyOptionsRoute =
     Method.GET / "challenge" / "passkey" / "options" -> handler { (request: Request) =>
@@ -78,6 +89,8 @@ object ConversationController extends Controller:
         options <- router.startPasskeyOptions(cookie.authId).someOrFail(Error.BadRequest)
       yield Response.json(options),
       ).catchAll {
+        case Error.ConversationExpired => ZIO.succeed(Response.status(Status.Gone))
+        case Error.ServiceUnavailable => ZIO.succeed(Response.status(Status.InternalServerError))
         case _: Error => ZIO.succeed(Response.badRequest)
         case ex: Throwable => ZIO.fail(ex)
       }
@@ -111,6 +124,8 @@ object ConversationController extends Controller:
         response <- conversationRenderService.renderSubmit(result, record)
       yield response)
         .catchAll {
+          case Error.ConversationExpired => expiredResponse(request)
+          case Error.ServiceUnavailable => serviceUnavailableResponse(request)
           case _: Error => ZIO.succeed(Response.badRequest)
           case ex: Throwable => ZIO.fail(ex)
         }
@@ -149,6 +164,20 @@ object ConversationController extends Controller:
           ZIO.fromEither(ConversationCookie.parse(cookie.content, secret).left.map(_ => Error.BadRequest))
         case None =>
           ZIO.fail(Error.BadRequest)
+
+  private def expiredResponse(request: Request): ZIO[ConversationRenderService & CoreConfig, Throwable, Response] =
+    for
+      formService <- ZIO.service[ConversationRenderService]
+      cookie <- extractCookie(request)
+      response <- formService.renderExpired(cookie.clientId, cookie.redirectUri, cookie.state)
+    yield response
+
+  private def serviceUnavailableResponse(request: Request): ZIO[ConversationRenderService & CoreConfig, Throwable, Response] =
+    for
+      formService <- ZIO.service[ConversationRenderService]
+      cookie <- extractCookie(request)
+      response <- formService.renderServiceUnavailable(cookie.clientId, cookie.redirectUri, cookie.state)
+    yield response
 
   /** Extracts the client IP from the header configured in submission limits. Returns None when no
     * header is configured, causing IP-based throttling to be skipped entirely. For multi-value

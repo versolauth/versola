@@ -55,7 +55,12 @@ object AuthorizeEndpointController extends Controller:
           Response.seeOther(URL.root / "challenge")
             .addCookie(
               ConversationCookie.responseCookie(
-                ConversationCookie(authId, request.clientId),
+                ConversationCookie(
+                  authId,
+                  request.clientId,
+                  redirectUri = request.redirectUri.encode,
+                  state = request.state,
+                ),
                 authConversationTtl,
                 config.security.conversationCookieSecret,
               ),

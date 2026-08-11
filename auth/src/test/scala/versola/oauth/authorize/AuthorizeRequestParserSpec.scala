@@ -102,6 +102,28 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
           assertTrue(result.clientId == clientId)
       }
     ),
+    suite("state")(
+      test("accepts state at the maximum allowed length") {
+        val env = Env()
+        val state = "a" * 128
+        val request = Request.get(URL.root.addQueryParams(validParams ++ Map("state" -> state)))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request)
+        yield
+          assertTrue(result.state.contains(State(state)))
+      },
+      test("fails when state exceeds the maximum allowed length") {
+        val env = Env()
+        val state = "a" * 129
+        val request = Request.get(URL.root.addQueryParams(validParams ++ Map("state" -> state)))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request).either
+        yield
+          assertTrue(result == Left(Error.StateInvalid(redirectUri)))
+      }
+    ),
     suite("login_hint")(
       test("parses email login_hint") {
         val env = Env()

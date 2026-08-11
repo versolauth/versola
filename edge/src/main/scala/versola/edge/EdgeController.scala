@@ -77,35 +77,52 @@ object EdgeController extends Controller:
     Method.GET / "complete" -> handler { (request: Request) =>
       for
         edgeService <- ZIO.service[EdgeService]
-        config <- ZIO.service[EdgeConfig]
-
-        code <- request.queryZIO[Code]("code")
+        code <- request.queryZIO[Option[Code]]("code")
         state <- request.queryZIO[State]("state")
+        error <- request.queryZIO[Option[String]]("error")
+        errorDescription <- request.queryZIO[Option[String]]("error_description")
+        errorUri <- request.queryZIO[Option[String]]("error_uri")
 
-        response <- edgeService.complete(code, state)
-          .either.flatMap:
-            case Left(_: AuthConversationNotFound) =>
-              ZIO.succeed(Response.badRequest)
+        response <- (code, error) match
+          case (Some(code), None) =>
+            edgeService.complete(code, state)
+              .either.flatMap:
+                case Left(_: AuthConversationNotFound) =>
+                  ZIO.succeed(Response.badRequest)
 
-            case Left(ex: Throwable) =>
-              ZIO.fail(ex)
+                case Left(ex: Throwable) =>
+                  ZIO.fail(ex)
 
-            case Right(completion) =>
-              for
-                redirectUrl <- ZIO.fromEither(URL.decode(completion.postLoginRedirectUri))
-                now <- Clock.instant
-              yield Response
-                .seeOther(redirectUrl)
-                .addCookie(
-                  EdgeSessionCookie(
-                    presetId = completion.presetId,
-                    accessToken = completion.accessToken,
-                    ttl = completion.cookieTtl,
-                    domain = completion.cookieDomain,
-                    path = completion.cookiePath,
-                    now = now,
-                  ),
-                )
+                case Right(completion) =>
+                  for
+                    now <- Clock.instant
+                  yield Response
+                    .seeOther(completion.postLoginRedirectUri.toUrl)
+                    .addCookie(
+                      EdgeSessionCookie(
+                        presetId = completion.presetId,
+                        accessToken = completion.accessToken,
+                        ttl = completion.cookieTtl,
+                        domain = completion.cookieDomain,
+                        path = completion.cookiePath,
+                        now = now,
+                      ),
+                    )
+
+          case (None, Some(error)) =>
+            edgeService.completeError(state, error, errorDescription, errorUri)
+              .either.flatMap:
+                case Left(_: AuthConversationNotFound) =>
+                  ZIO.succeed(Response.badRequest)
+
+                case Left(ex: Throwable) =>
+                  ZIO.fail(ex)
+
+                case Right(redirectUrl) =>
+                  ZIO.succeed(Response.seeOther(redirectUrl))
+
+          case _ =>
+            ZIO.succeed(Response.badRequest)
       yield response
     }
 

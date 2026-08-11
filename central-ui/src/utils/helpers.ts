@@ -7,6 +7,7 @@ import { AuthFlow, PaginatedResponse, Permission, Resource, SortConfig } from '.
 export function createDefaultAuthFlow(): AuthFlow {
   return {
     primaryCredentials: ['phone'],
+    otpType: 'sms',
     inlinePassword: false,
     passkey: false,
     factors: [{ type: 'otp', required: true }],

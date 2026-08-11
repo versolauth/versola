@@ -5,7 +5,7 @@ import versola.auth.TestEnvConfig
 import versola.auth.model.{Password, PasswordRecord}
 import versola.oauth.challenge.password.model.*
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{PasswordHistorySettings, TenantId}
+import versola.oauth.client.model.{OtpTemplateChannel, PasswordHistorySettings, TenantId}
 import versola.oauth.conversation.otp.model.OtpTemplate
 import versola.oauth.conversation.otp.{EmailOtpProvider, SmsOtpProvider}
 import versola.user.UserRepository
@@ -204,6 +204,7 @@ object PasswordServiceSpec extends ZIOSpecDefault, ZIOStubs:
           sendCalls.length == 1,
           sendCalls.head._1 == email,
           sendCalls.head._2.contains("hours: 1"),
+          env.configuration.getPasswordTemplate.calls == List((OtpTemplateChannel.email, None)),
           env.smsProvider.send.calls.isEmpty,
         )
       },
@@ -222,6 +223,7 @@ object PasswordServiceSpec extends ZIOSpecDefault, ZIOStubs:
         yield assertTrue(
           sendCalls.length == 1,
           sendCalls.head._1 == phone,
+          env.configuration.getPasswordTemplate.calls == List((OtpTemplateChannel.sms, None)),
           env.emailProvider.send.calls.isEmpty,
         )
       },

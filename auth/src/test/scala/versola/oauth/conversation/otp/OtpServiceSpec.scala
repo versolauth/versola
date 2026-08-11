@@ -2,7 +2,7 @@ package versola.oauth.conversation.otp
 
 import versola.auth.model.OtpCode
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.ClientId
+import versola.oauth.client.model.{ClientId, OtpType}
 import versola.oauth.conversation.model.{AuthId, ConversationStep}
 import versola.oauth.client.model.OtpSettings
 import versola.oauth.conversation.otp.model.{OtpTemplate, SendOtpResult, SubmitOtpResult}
@@ -94,6 +94,7 @@ object OtpServiceSpec extends UnitSpecBase:
         yield assertTrue(
           env.emailOtpProvider.sendOtp.calls.isEmpty,
           env.otpClient.sendOtp.calls.isEmpty,
+          env.configService.getClientTemplate.calls.isEmpty,
         )
       },
       test("calls emailOtpProvider when credential is an email") {
@@ -105,6 +106,7 @@ object OtpServiceSpec extends UnitSpecBase:
           _ <- env.service.sendOtp(realOtp, Left(email), authId, clientId, None)
         yield assertTrue(
           env.emailOtpProvider.sendOtp.calls == List((email, otpCode, template)),
+          env.configService.getClientTemplate.calls == List((clientId, OtpType.email, None)),
         )
       },
       test("calls smsOtpProvider when credential is a phone") {
@@ -116,6 +118,7 @@ object OtpServiceSpec extends UnitSpecBase:
           _ <- env.service.sendOtp(realOtp, Right(phone), authId, clientId, None)
         yield assertTrue(
           env.otpClient.sendOtp.calls == List((phone, otpCode, template)),
+          env.configService.getClientTemplate.calls == List((clientId, OtpType.sms, None)),
         )
       },
     ),

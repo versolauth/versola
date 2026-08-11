@@ -1,0 +1,14 @@
+{
+  "en": {
+    "page_title": "Service temporarily unavailable",
+    "title": "Service temporarily unavailable",
+    "description": "An unexpected error occurred. Try again later.",
+    "return_button": "Return"
+  },
+  "ru": {
+    "page_title": "Сервис временно недоступен",
+    "title": "Сервис временно недоступен",
+    "description": "Возникла непредвиденная ошибка. Повторите попытку позже.",
+    "return_button": "Вернуться"
+  }
+}

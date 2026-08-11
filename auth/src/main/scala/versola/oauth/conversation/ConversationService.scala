@@ -8,7 +8,7 @@ import versola.oauth.challenge.passkey.{PasskeyRepository, WebAuthnError, WebAut
 import versola.oauth.challenge.password.PasswordService
 import versola.oauth.challenge.password.model.{CheckPassword, PasswordReuseError}
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{Acr, AuthFactor, AuthFactorType, AuthMethodRef, PassedAuthFactor, PassedFactorRecord, PasskeySettings, ScopeToken}
+import versola.oauth.client.model.{Acr, AuthFactor, AuthFactorType, AuthMethodRef, OtpType, PassedAuthFactor, PassedFactorRecord, PasskeySettings, ScopeToken}
 import versola.oauth.conversation.limit.{ChallengeType, LimitStatus, SubmissionLimiter}
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
 import versola.oauth.conversation.otp.OtpService
@@ -242,6 +242,7 @@ object ConversationService:
               sentStep = otp.copy(factorIndex = factorIndex, timesRequested = 1, lastSentAt = Some(now))
               updatedConversation = conversation.copy(
                 userId = effectiveUserId,
+                // Persist the credential once it has been entered or resolved from the selected flow for OTP dispatch.
                 credential = Some(credential),
                 step = sentStep,
                 userEmail = lookedUpUser.flatMap(_.email).orElse(conversation.userEmail),
@@ -326,7 +327,8 @@ object ConversationService:
 
             case SubmitOtpResult.Success =>
               Clock.instant.flatMap: now =>
-                val otpMethods = Set(AuthMethodRef.otp) ++ conversation.credential.collect { case Right(_) => AuthMethodRef.sms }
+                val otpType = conversation.authFlow.otpType
+                val otpMethods = Set(AuthMethodRef.otp) ++ Option.when(otpType == OtpType.sms)(AuthMethodRef.sms)
                 val updated = conversation.copy(amr = conversation.amr + (PassedAuthFactor.otp -> PassedFactorRecord(now, otpMethods)))
                 conversationRepository.overwrite(authId, updated)
                   .map:
@@ -489,6 +491,8 @@ object ConversationService:
                       Clock.instant.flatMap: now =>
                         val updated = conversation.copy(
                           userId = Some(user.id),
+                          userEmail = user.email,
+                          userPhone = user.phone,
                           userLogin = user.login,
                           userClaims = Some(user.claims),
                           amr = conversation.amr + (PassedAuthFactor.password -> PassedFactorRecord(now, Set(AuthMethodRef.pwd))),
@@ -503,6 +507,8 @@ object ConversationService:
                       Clock.instant.flatMap: now =>
                         val updated = conversation.copy(
                           userId = Some(user.id),
+                          userEmail = user.email,
+                          userPhone = user.phone,
                           userLogin = user.login,
                           userClaims = Some(user.claims),
                           amr = conversation.amr + (PassedAuthFactor.password -> PassedFactorRecord(now, Set(AuthMethodRef.pwd))),

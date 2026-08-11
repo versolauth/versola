@@ -14,16 +14,11 @@ object MetadataController extends Controller:
     oidcMetadataEndpoint,
   )
 
-  private val oauthMetadataEndpoint =
-    Method.GET / ".well-known" / "oauth-authorization-server" -> handler { (request: Request) =>
-      for
-        service <- ZIO.service[OAuthConfigurationService]
-        metadata <- service.getMetadata
-      yield Response.json(metadata.toJson)
-    }
+  private val oauthMetadataEndpoint = metadata("oauth-authorization-server")
+  private val oidcMetadataEndpoint = metadata("openid-configuration")
 
-  private val oidcMetadataEndpoint =
-    Method.GET / ".well-known" / "openid-configuration" -> handler { (request: Request) =>
+  private def metadata(name: String) =
+    Method.GET / ".well-known" / name -> handler { (request: Request) =>
       for
         service <- ZIO.service[OAuthConfigurationService]
         metadata <- service.getMetadata

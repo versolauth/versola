@@ -13,9 +13,9 @@ object OtpChallengeServiceSpec extends ZIOSpecDefault, ZIOStubs:
   private val tenantA = TenantId("tenant-a")
   private val tenantB = TenantId("tenant-b")
 
-  private val rec1 = OtpTemplateRecord("tmpl-1", tenantA, Map("en" -> "Code: {{code}}"), purpose = "otp")
-  private val rec2 = OtpTemplateRecord("tmpl-2", tenantB, Map("en" -> "Your code: {{code}}"), purpose = "otp")
-  private val rec3 = OtpTemplateRecord("tmpl-3", tenantA, Map("en" -> "Another: {{code}}"), purpose = "otp")
+  private val rec1 = OtpTemplateRecord("tmpl-1", tenantA, Map("en" -> "Code: {{code}}"), purpose = OtpTemplatePurpose.otp, channel = OtpTemplateChannel.sms)
+  private val rec2 = OtpTemplateRecord("tmpl-2", tenantB, Map("en" -> "Your code: {{code}}"), purpose = OtpTemplatePurpose.otp, channel = OtpTemplateChannel.sms)
+  private val rec3 = OtpTemplateRecord("tmpl-3", tenantA, Map("en" -> "Another: {{code}}"), purpose = OtpTemplatePurpose.otp, channel = OtpTemplateChannel.sms)
   private val rec1Updated = rec1.copy(localizations = Map("en" -> "Updated: {{code}}"))
 
   class Env(initial: Vector[OtpTemplateRecord] = Vector.empty):
@@ -48,20 +48,58 @@ object OtpChallengeServiceSpec extends ZIOSpecDefault, ZIOStubs:
         cached == Vector(rec1),
       )
     },
+    test("validates email templates before persisting them") {
+      val env = Env()
+      val valid = OtpTemplateRecord(
+        "email-template",
+        tenantA,
+        Map("en" -> "<html><body>Code: {{code}}</body></html>"),
+        purpose = OtpTemplatePurpose.otp,
+        channel = OtpTemplateChannel.email,
+      )
+      val invalid = valid.copy(localizations = Map("en" -> "Code: {{code}}"))
+      for
+        _ <- env.repository.upsertTemplate.succeedsWith(())
+        validResult <- env.service.upsertTemplate(valid).either
+        invalidResult <- env.service.upsertTemplate(invalid).either
+      yield assertTrue(validResult == Right(()), invalidResult.isLeft)
+    },
+    test("allows plain-text password SMS and requires HTML for password email") {
+      val passwordSms = OtpTemplateRecord(
+        "password-sms",
+        tenantA,
+        Map("en" -> "Password: {{password}}; expires in {{expiresHours}} hours"),
+        purpose = OtpTemplatePurpose.password,
+        channel = OtpTemplateChannel.sms,
+      )
+      val passwordEmail = passwordSms.copy(
+        id = "password-email",
+        localizations = Map("en" -> "<html><body>Password: {{password}}; expires in {{expiresHours}}</body></html>"),
+        channel = OtpTemplateChannel.email,
+      )
+      val invalidPasswordEmail = passwordEmail.copy(localizations = passwordSms.localizations)
+      for
+        env <- ZIO.succeed(Env())
+        _ <- env.repository.upsertTemplate.succeedsWith(())
+        smsResult <- env.service.upsertTemplate(passwordSms).either
+        emailResult <- env.service.upsertTemplate(passwordEmail).either
+        invalidResult <- env.service.upsertTemplate(invalidPasswordEmail).either
+      yield assertTrue(smsResult == Right(()), emailResult == Right(()), invalidResult.isLeft)
+    },
     test("deleteTemplate delegates to repository without touching cache") {
       val env = Env(Vector(rec1, rec2))
       for
         _ <- env.repository.deleteTemplate.succeedsWith(())
-        _ <- env.service.deleteTemplate("tmpl-1", tenantA)
+        _ <- env.service.deleteTemplate("tmpl-1", tenantA, OtpTemplatePurpose.otp, OtpTemplateChannel.sms)
         cached <- env.cache.get
       yield assertTrue(
-        env.repository.deleteTemplate.calls == List(("tmpl-1", tenantA)),
+        env.repository.deleteTemplate.calls == List(("tmpl-1", tenantA, OtpTemplatePurpose.otp, OtpTemplateChannel.sms)),
         cached == Vector(rec1, rec2),
       )
     },
     test("sync INSERT adds new record to cache") {
       val env = Env(Vector(rec1))
-      val event = SyncEvent.OtpTemplatesUpdated(tenantB, "tmpl-2", SyncEvent.Op.INSERT)
+      val event = SyncEvent.OtpTemplatesUpdated(tenantB, "tmpl-2", OtpTemplatePurpose.otp, OtpTemplateChannel.sms, SyncEvent.Op.INSERT)
       for
         _ <- env.repository.find.succeedsWith(Some(rec2))
         _ <- env.service.sync(event)
@@ -70,7 +108,7 @@ object OtpChallengeServiceSpec extends ZIOSpecDefault, ZIOStubs:
     },
     test("sync UPDATE replaces existing record in cache") {
       val env = Env(Vector(rec1, rec2))
-      val event = SyncEvent.OtpTemplatesUpdated(tenantA, "tmpl-1", SyncEvent.Op.UPDATE)
+      val event = SyncEvent.OtpTemplatesUpdated(tenantA, "tmpl-1", OtpTemplatePurpose.otp, OtpTemplateChannel.sms, SyncEvent.Op.UPDATE)
       for
         _ <- env.repository.find.succeedsWith(Some(rec1Updated))
         _ <- env.service.sync(event)
@@ -82,7 +120,7 @@ object OtpChallengeServiceSpec extends ZIOSpecDefault, ZIOStubs:
     },
     test("sync DELETE removes record from cache") {
       val env = Env(Vector(rec1, rec2))
-      val event = SyncEvent.OtpTemplatesUpdated(tenantA, "tmpl-1", SyncEvent.Op.DELETE)
+      val event = SyncEvent.OtpTemplatesUpdated(tenantA, "tmpl-1", OtpTemplatePurpose.otp, OtpTemplateChannel.sms, SyncEvent.Op.DELETE)
       for
         _ <- env.service.sync(event)
         cached <- env.cache.get
@@ -90,7 +128,7 @@ object OtpChallengeServiceSpec extends ZIOSpecDefault, ZIOStubs:
     },
     test("sync non-delete removes record when repository returns None") {
       val env = Env(Vector(rec1, rec2))
-      val event = SyncEvent.OtpTemplatesUpdated(tenantA, "tmpl-1", SyncEvent.Op.UPDATE)
+      val event = SyncEvent.OtpTemplatesUpdated(tenantA, "tmpl-1", OtpTemplatePurpose.otp, OtpTemplateChannel.sms, SyncEvent.Op.UPDATE)
       for
         _ <- env.repository.find.succeedsWith(None)
         _ <- env.service.sync(event)
@@ -99,7 +137,7 @@ object OtpChallengeServiceSpec extends ZIOSpecDefault, ZIOStubs:
     },
     test("getSyncTemplates strips localizations of inactive locales") {
       import versola.central.configuration.locales.LocaleRecord
-      val template = OtpTemplateRecord("tmpl-1", tenantA, Map("en" -> "Code: {{code}}", "fr" -> "Code: {{code}}"), purpose = "otp")
+      val template = OtpTemplateRecord("tmpl-1", tenantA, Map("en" -> "Code: {{code}}", "fr" -> "Code: {{code}}"), purpose = OtpTemplatePurpose.otp, channel = OtpTemplateChannel.sms)
       val env = Env(Vector(template))
       for
         _ <- env.localeService.getActive.succeedsWith(Vector(LocaleRecord("en", "English", isDefault = true, active = true)))

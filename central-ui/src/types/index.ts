@@ -23,6 +23,7 @@ export interface AuthorizationPreset {
 
 // Authentication flow (cards: credential -> factor -> factor)
 export type PrimaryCredential = 'email' | 'phone' | 'login';
+export type OtpType = 'sms' | 'email';
 export type AuthFactorType = 'otp' | 'password' | 'passkeyEnroll';
 
 // A challenge the user can pass; used as the key/value type of the equivalences map.
@@ -35,6 +36,7 @@ export interface AuthFactor {
 
 export interface AuthFlow {
   primaryCredentials: PrimaryCredential[];  // first card: one or more options the user can pick
+  otpType: OtpType;                          // OTP delivery channel; selected for login + password flows
   inlinePassword: boolean;                  // first card: ask for password inline
   passkey: boolean;                         // first card: offer passkey
   factors: AuthFactor[];                    // subsequent challenge cards for the primary flow (0-2)
@@ -68,6 +70,7 @@ export interface OtpTemplateRecord {
   tenantId: string;
   localizations: Record<string, string>;
   purpose: string;
+  channel: 'sms' | 'email';
 }
 
 export interface RateLimit {

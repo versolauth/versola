@@ -2,7 +2,7 @@ package versola.oauth.conversation
 
 import versola.auth.model.{OtpCode, Password}
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{AuthFactor, AuthFactorType, AuthFlow, AuthMethodRef, ClientId, PassedAuthFactor, PassedFactorRecord, PrimaryAuthFlow, PrimaryCredential, ScopeToken}
+import versola.oauth.client.model.{AuthFactor, AuthFactorType, AuthFlow, AuthMethodRef, ClientId, OtpType, PassedAuthFactor, PassedFactorRecord, PrimaryAuthFlow, PrimaryCredential, ScopeToken}
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep, Error}
 import zio.{ZIO, Exit}
 import versola.oauth.model.{AuthorizationCode, CodeChallenge, CodeChallengeMethod, State, UserAgentData}
@@ -50,6 +50,7 @@ object ConversationRouterSpec extends UnitSpecBase:
     ),
     passkey = None,
     equivalents = Map.empty,
+    otpType = OtpType.sms,
   )
 
   val initialRecord = ConversationRecord(
@@ -121,6 +122,7 @@ object ConversationRouterSpec extends UnitSpecBase:
     ),
     passkey = None,
     equivalents = Map.empty,
+    otpType = OtpType.sms,
   )
 
   val loginRecord = initialRecord.copy(authFlow = loginFlow)
@@ -153,14 +155,22 @@ object ConversationRouterSpec extends UnitSpecBase:
           result <- env.router.getConversation(authId)
         yield assertTrue(result.isEmpty)
       },
+      test("fail with ServiceUnavailable when conversation lookup fails") {
+        val env = Env()
+        val boom = new RuntimeException("db down")
+        for
+          _ <- env.otpConversationService.find.failsWith(boom)
+          exit <- env.router.getConversation(authId).exit
+        yield assertTrue(exit == Exit.fail(Error.ServiceUnavailable))
+      },
     ),
     suite("submit")(
-      test("fail with BadRequest when conversation does not exist") {
+      test("fail with ConversationExpired when conversation does not exist") {
         val env = Env()
         for
           _ <- env.otpConversationService.find.succeedsWith(None)
           exit <- env.router.submit(authId, EmailSubmission(email, "test-csrf"), None, None).exit
-        yield assertTrue(exit == Exit.fail(Error.BadRequest))
+        yield assertTrue(exit == Exit.fail(Error.ConversationExpired))
       },
       test("handle email submission") {
         val env = Env()
@@ -224,13 +234,13 @@ object ConversationRouterSpec extends UnitSpecBase:
           prepareTimes == 1,
         )
       },
-      test("propagate infrastructure failures from the conversation lookup") {
+      test("return ServiceUnavailable when conversation lookup fails") {
         val env = Env()
         val boom = new RuntimeException("db down")
         for
           _ <- env.otpConversationService.find.failsWith(boom)
           exit <- env.router.submit(authId, EmailSubmission(email, "test-csrf"), None, None).exit
-        yield assertTrue(exit == Exit.fail(boom))
+        yield assertTrue(exit == Exit.fail(Error.ServiceUnavailable))
       },
       test("handle OTP submission and complete conversation on success") {
         val env = Env()
@@ -272,6 +282,7 @@ object ConversationRouterSpec extends UnitSpecBase:
           ),
           passkey = None,
           equivalents = Map(PassedAuthFactor.passkey -> Set(PassedAuthFactor.otp)),
+          otpType = OtpType.sms,
         )
         val recordWithPasskeyAmr = initialRecord.copy(
           authFlow = flowWithEquivalents,
@@ -314,6 +325,32 @@ object ConversationRouterSpec extends UnitSpecBase:
           finishTimes == 1,
         )
       },
+      test("route to the configured email OTP after login-password authentication") {
+        val env = Env()
+        val loginOtpFlow = loginFlow.copy(
+          primary = loginFlow.primary.copy(
+            factors = List(AuthFactor(`type` = AuthFactorType.otp, required = true)),
+          ),
+          otpType = OtpType.email,
+        )
+        val loginOtpRecord = loginRecord.copy(
+          authFlow = loginOtpFlow,
+          userEmail = Some(email),
+          userPhone = Some(phone),
+        )
+        val successResult = ConversationResult.StepPassed(loginOtpRecord)
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(loginRecord))
+          _ <- env.otpConversationService.checkLoginPassword.succeedsWith(successResult)
+          _ <- env.configService.getAcrVocabulary.succeedsWith(Map.empty)
+          _ <- env.otpConversationService.prepareInitialOtp.succeedsWith(conversationResult)
+          _ <- env.router.submit(authId, LoginPasswordSubmission(login, password, "test-csrf"), None, None)
+          call = env.otpConversationService.prepareInitialOtp.calls.last
+        yield assertTrue(
+          call._3 == Left(email),
+          call._2.authFlow.otpType == OtpType.email,
+        )
+      },
       test("return the render result directly when login-password does not pass") {
         val env = Env()
         val submission = LoginPasswordSubmission(login, password, "test-csrf")
@@ -339,14 +376,70 @@ object ConversationRouterSpec extends UnitSpecBase:
       },
     ),
     suite("advance")(
-      test("routes to OTP step when credential is set and factor is not yet satisfied") {
+      test("routes to OTP step from the configured flow when factor is not yet satisfied") {
         val env = Env()
+        val recordWithoutCredential = otpRecord.copy(credential = None, userPhone = Some(phone))
         for
           _ <- env.configService.getAcrVocabulary.succeedsWith(Map.empty)
           _ <- env.otpConversationService.prepareInitialOtp.succeedsWith(conversationResult)
-          _ <- env.router.advance(authId, otpRecord)
+          _ <- env.router.advance(authId, recordWithoutCredential)
           prepareOtpTimes = env.otpConversationService.prepareInitialOtp.times
         yield assertTrue(prepareOtpTimes == 1)
+      },
+      test("routes to OTP using email from the configured email flow") {
+        val env = Env()
+        val emailFlow = otpAuthFlow.copy(
+          primary = otpAuthFlow.primary.copy(credentials = List(PrimaryCredential.email)),
+          otpType = OtpType.email,
+        )
+        val recordWithoutCredential = otpRecord.copy(
+          authFlow = emailFlow,
+          credential = None,
+          userEmail = Some(email),
+        )
+        for
+          _ <- env.configService.getAcrVocabulary.succeedsWith(Map.empty)
+          _ <- env.otpConversationService.prepareInitialOtp.succeedsWith(conversationResult)
+          _ <- env.router.advance(authId, recordWithoutCredential)
+          prepareOtpTimes = env.otpConversationService.prepareInitialOtp.times
+        yield assertTrue(prepareOtpTimes == 1)
+      },
+      test("returns AccessDenied when OTP is required but credential is missing") {
+        val env = Env()
+        val accessDeniedResult = ConversationResult.RenderStep(ConversationStep.AccessDenied)
+        val recordWithoutCredential = otpRecord.copy(credential = None)
+        for
+          _ <- env.configService.getAcrVocabulary.succeedsWith(Map.empty)
+          _ <- env.otpConversationService.accessDenied.succeedsWith(accessDeniedResult)
+          _ <- env.router.advance(authId, recordWithoutCredential)
+          accessDeniedTimes = env.otpConversationService.accessDenied.times
+          prepareOtpTimes = env.otpConversationService.prepareInitialOtp.times
+        yield assertTrue(
+          accessDeniedTimes == 1,
+          prepareOtpTimes == 0,
+        )
+      },
+      test("route to the configured SMS OTP for a known user with multiple credentials") {
+        val env = Env()
+        val multiCredentialFlow = otpAuthFlow.copy(
+          primary = otpAuthFlow.primary.copy(credentials = List(PrimaryCredential.email, PrimaryCredential.phone)),
+          otpType = OtpType.sms,
+        )
+        val recordWithoutCredential = otpRecord.copy(
+          authFlow = multiCredentialFlow,
+          credential = None,
+          userEmail = Some(email),
+          userPhone = Some(phone),
+        )
+        for
+          _ <- env.configService.getAcrVocabulary.succeedsWith(Map.empty)
+          _ <- env.otpConversationService.prepareInitialOtp.succeedsWith(conversationResult)
+          _ <- env.router.advance(authId, recordWithoutCredential)
+          call = env.otpConversationService.prepareInitialOtp.calls.last
+        yield assertTrue(
+          call._3 == Right(phone),
+          call._2.authFlow.otpType == OtpType.sms,
+        )
       },
       test("skips OTP factor already in amr and routes to password") {
         val env = Env()
@@ -362,6 +455,7 @@ object ConversationRouterSpec extends UnitSpecBase:
           ),
           passkey = None,
           equivalents = Map.empty,
+          otpType = OtpType.sms,
         )
         val record = otpRecord.copy(
           authFlow = twoFactorFlow,

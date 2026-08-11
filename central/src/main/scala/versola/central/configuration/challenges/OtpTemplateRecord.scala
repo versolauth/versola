@@ -8,5 +8,6 @@ case class OtpTemplateRecord(
     id: String,
     tenantId: TenantId,
     localizations: Map[String, String],
-    purpose: String,
+    purpose: OtpTemplatePurpose,
+    channel: OtpTemplateChannel,
 ) derives Schema, JsonCodec
