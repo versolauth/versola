@@ -129,18 +129,28 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
     yield ()
   }
     .catchAll { (ex: Throwable) =>
-      // The diagnostics server is forked above onto non-daemon Netty threads that keep the JVM
-      // alive even after startup fails. Merely returning ExitCode.failure here therefore leaves a
-      // "zombie": the process never exits, so `restart: unless-stopped` never fires and /readiness
-      // stays false forever (see deploy.md 8.5). Force-terminate so the orchestrator restarts us -
-      // by then the dependency this startup failed on (e.g. central sync) is typically available.
-      ZIO.logErrorCause("Could not start application", Cause.fail(ex)) *>
-        ZIO.succeed(java.lang.System.exit(1))
+      ZIO.logErrorCause("Could not start application", Cause.fail(ex)) *> terminate
     }
     .catchAllDefect { ex =>
-      ZIO.logErrorCause("Could not start application", Cause.die(ex)) *>
-        ZIO.succeed(java.lang.System.exit(1))
+      ZIO.logErrorCause("Could not start application", Cause.die(ex)) *> terminate
     }
+
+  /** Force-terminates the JVM after a failed startup, so the orchestrator restarts us - by then
+    * the dependency this startup failed on (e.g. central sync) is typically available.
+    *
+    * The diagnostics server is forked above onto non-daemon Netty threads that keep the JVM alive
+    * even after startup fails. Merely returning `ExitCode.failure` therefore leaves a "zombie": the
+    * process never exits, so `restart: unless-stopped` never fires and /readiness stays false
+    * forever (see deploy.md 9.5).
+    *
+    * `halt` rather than `System.exit`: `exit` runs shutdown hooks and waits for them, and `ZIOApp`
+    * installs one that waits for the ZIO runtime to drain. Called from inside a fiber - as it is
+    * here - that hook waits on the runtime while the runtime waits on this fiber, which is blocked
+    * in `exit`. The JVM then never terminates and the zombie above survives anyway. `halt` skips
+    * shutdown hooks entirely, so there is nothing to deadlock against.
+    */
+  private def terminate: UIO[Unit] =
+    ZIO.succeed(java.lang.Runtime.getRuntime.halt(1))
 
   def parseConfig[A: {DeriveConfig, Tag}] =
     ZLayer:
