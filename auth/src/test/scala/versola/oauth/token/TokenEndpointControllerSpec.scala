@@ -440,6 +440,93 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
           ),
       ),
       tokenEndpointTestCase(
+        description = "successfully authenticate with client_secret_post",
+        request = Request.post(
+          url = URL.empty / "token",
+          body = Body.fromURLEncodedForm(
+            Form.fromStrings(
+              "grant_type" -> "client_credentials",
+              "client_id" -> clientId1,
+              "client_secret" -> Base64.urlEncode(clientSecret1),
+            )
+          )
+        ),
+        expectedStatus = Status.Ok,
+        setup = services =>
+          services.oauthTokenService.clientCredentials.succeedsWith(
+            issuedTokens.copy(
+              userId = None,
+              refreshToken = None,
+            )
+          ),
+        verify = response =>
+          for
+            body <- response.body.asString
+            tokenResponse <- ZIO.fromEither(body.fromJson[TokenResponse]).mapError(new RuntimeException(_))
+          yield assertTrue(
+            tokenResponse.tokenType == "Bearer",
+          ),
+      ),
+      tokenEndpointTestCase(
+        description = "authenticate a public client with client_id only",
+        request = Request.post(
+          url = URL.empty / "token",
+          body = Body.fromURLEncodedForm(
+            Form.fromStrings(
+              "grant_type" -> "client_credentials",
+              "client_id" -> clientId1,
+            )
+          )
+        ),
+        expectedStatus = Status.Ok,
+        setup = services =>
+          services.oauthTokenService.clientCredentials.succeedsWith(
+            issuedTokens.copy(
+              userId = None,
+              refreshToken = None,
+            )
+          ),
+      ),
+      tokenEndpointTestCase(
+        description = "fail with InvalidClient when both Basic and post credentials are used",
+        request = Request.post(
+          url = URL.empty / "token",
+          body = Body.fromURLEncodedForm(
+            Form.fromStrings(
+              "grant_type" -> "client_credentials",
+              "client_id" -> clientId1,
+              "client_secret" -> Base64.urlEncode(clientSecret1),
+            )
+          )
+        ).addHeader(authHeader(clientId1, Some(clientSecret1))),
+        expectedStatus = Status.Unauthorized,
+        verify = response =>
+          for
+            body <- response.body.asString
+          yield assertTrue(
+            body.contains("invalid_client"),
+          ),
+      ),
+      tokenEndpointTestCase(
+        description = "fail with InvalidClient when client_secret is sent without client_id",
+        request = Request.post(
+          url = URL.empty / "token",
+          body = Body.fromURLEncodedForm(
+            Form.fromStrings(
+              "grant_type" -> "client_credentials",
+              "client_secret" -> Base64.urlEncode(clientSecret1),
+            )
+          )
+        ),
+        expectedStatus = Status.Unauthorized,
+        verify = response =>
+          for
+            body <- response.body.asString
+          yield assertTrue(
+            body.contains("invalid_client"),
+          ),
+      ),
+      tokenEndpointTestCase(
         description = "fail with InvalidScope when requested scope exceeds client scope",
         request = Request.post(
           url = URL.empty / "token",

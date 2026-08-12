@@ -156,5 +156,34 @@ object RevocationControllerSpec extends UnitSpecBase:
         ).addHeader(authHeader(clientId1, clientSecret1)),
         expectedStatus = Status.Ok,
       ),
+      controllerTestCase(
+        description = "return 200 OK when the client authenticates with client_secret_post",
+        request = Request.post(
+          url = URL.root / "revoke",
+          body = Body.fromURLEncodedForm(Form.fromStrings(
+            "token" -> Base64.urlEncode(refreshToken1),
+            "client_id" -> clientId1,
+            "client_secret" -> Base64.urlEncode(clientSecret1),
+          )),
+        ),
+        expectedStatus = Status.Ok,
+        setup = revocationService =>
+          revocationService.revokeRefreshToken.succeedsWith(()),
+      ),
+      controllerTestCase(
+        description = "return 401 invalid_client when Basic and post credentials are combined",
+        request = Request.post(
+          url = URL.root / "revoke",
+          body = Body.fromURLEncodedForm(Form.fromStrings(
+            "token" -> Base64.urlEncode(refreshToken1),
+            "client_id" -> clientId1,
+            "client_secret" -> Base64.urlEncode(clientSecret1),
+          )),
+        ).addHeader(authHeader(clientId1, clientSecret1)),
+        expectedStatus = Status.Unauthorized,
+        verify = response =>
+          for body <- response.body.asString
+          yield assertTrue(body.contains("invalid_client")),
+      ),
     ),
   )
