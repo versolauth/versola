@@ -129,18 +129,61 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
     yield ()
   }
     .catchAll { (ex: Throwable) =>
-      // The diagnostics server is forked above onto non-daemon Netty threads that keep the JVM
-      // alive even after startup fails. Merely returning ExitCode.failure here therefore leaves a
-      // "zombie": the process never exits, so `restart: unless-stopped` never fires and /readiness
-      // stays false forever (see deploy.md 8.5). Force-terminate so the orchestrator restarts us -
-      // by then the dependency this startup failed on (e.g. central sync) is typically available.
       ZIO.logErrorCause("Could not start application", Cause.fail(ex)) *>
-        ZIO.succeed(java.lang.System.exit(1))
+        armShutdownWatchdog *> ZIO.fail(ex)
     }
     .catchAllDefect { ex =>
       ZIO.logErrorCause("Could not start application", Cause.die(ex)) *>
-        ZIO.succeed(java.lang.System.exit(1))
+        armShutdownWatchdog *> ZIO.die(ex)
     }
+
+  /** How long `ZIOApp`'s shutdown hook waits for the runtime to drain on SIGTERM before giving up.
+    *
+    * ZIO's default is `Duration.Infinity`, which turns any wedged finalizer (a pool draining a dead
+    * socket, an OTel exporter flushing to an unreachable collector) into a container that never
+    * stops. A finite value bounds that: the hook logs a warning and returns, and the JVM finishes
+    * exiting.
+    */
+  override def gracefulShutdownTimeout: Duration = 15.seconds
+
+  /** Deadline for the failed-startup path, which `gracefulShutdownTimeout` does not cover. */
+  protected def startupFailureShutdownTimeout: Duration = 20.seconds
+
+  /** Arms a hard deadline on the shutdown that follows a failed startup.
+    *
+    * Startup failures re-fail rather than terminating the JVM directly, so that `ZIOApp` unwinds
+    * the scope and finalizers actually run - the Hikari pool gets closed, spans get flushed - and
+    * so that the exit code is `ZIOApp`'s own. Terminating in place (`System.exit`, `halt`, or
+    * `ZIOApp.exit`) skips all of that.
+    *
+    * The risk of unwinding is that a finalizer hangs. Nothing bounds it on this path:
+    * `gracefulShutdownTimeout` guards only the shutdown *hook*, and the JVM would not exit anyway
+    * because the diagnostics server forked above holds non-daemon Netty threads. The container
+    * would then never exit, `restart: unless-stopped` would never fire, and /readiness would stay
+    * false forever (see deploy.md 9.5).
+    *
+    * So: a plain daemon JVM thread that halts once the deadline passes. Not a forked fiber - the
+    * shutdown being guarded is precisely what interrupts fibers, so a fiber watchdog would be
+    * killed by the thing it is watching. Daemon, so a shutdown that completes in time simply takes
+    * it down with the JVM and the halt never happens.
+    */
+  private def armShutdownWatchdog: UIO[Unit] =
+    ZIO.succeed:
+      val timeout = startupFailureShutdownTimeout
+      val watchdog = new Thread(
+        () =>
+          try Thread.sleep(timeout.toMillis)
+          catch case _: InterruptedException => ()
+
+          java.lang.System.err.println(
+            s"Shutdown after failed startup did not complete within ${timeout.render}; halting.",
+          )
+          java.lang.Runtime.getRuntime.halt(1)
+        ,
+        s"$serviceName-shutdown-watchdog",
+      )
+      watchdog.setDaemon(true)
+      watchdog.start()
 
   def parseConfig[A: {DeriveConfig, Tag}] =
     ZLayer:

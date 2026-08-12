@@ -660,38 +660,49 @@ successfully reached `auth` and `auth` answered. Only 502/000 indicates a real p
 
 ### 9.5 `auth`/`edge` never become ready after restarting the whole stack together
 
-**Status: fixed at the application level** (`VersolaApp.run`'s failure handlers now call
-`System.exit(1)` instead of just returning `ExitCode.failure`), but the section below is kept
-because the *cause* is still worth understanding, and because it fully applies if you're ever
-running an older image that predates the fix.
+**Status: fixed at the application level**, in two places — `ReloadingCache.make` retries the
+initial load with exponential backoff, so the affected service waits for `central` instead of
+failing, and if startup does fail anyway `VersolaApp.run`'s failure handlers re-fail instead of
+terminating in place, so `ZIOApp` unwinds the scope and finalizers actually run (Hikari pool
+closed, spans flushed) before the process exits. A daemon watchdog thread bounds that unwind: if
+it hasn't finished within `startupFailureShutdownTimeout` (20s), the watchdog calls
+`Runtime.getRuntime.halt(1)` so a wedged finalizer can't leave the zombie behind again. The
+section below is kept because the *cause* is still worth understanding, and because it fully
+applies if you're ever running an older image.
 
 Both `auth` and `edge` read configuration from `central` once, synchronously, during their own
 startup — `auth` syncs OAuth clients, `edge` syncs OAuth clients *and* authorization presets. If
 `central` isn't listening yet at that exact moment (a real risk when all three come up together —
 observed in production: `central` became ready roughly 0.4s **after** `auth` had already given
-up), the failing service's startup effect fails and is logged as `Could not start application`.
+up), the initial cache load fails. It is now retried (7 attempts, 500ms doubling, jittered), which
+covers this window; only if `central` is still unreachable after that does startup fail and log
+`Could not start application`.
 
-Before the fix, the container did not exit and did not restart: each service's diagnostics server
-(`auth`: 8081, `edge`: 8096) starts *before* the failing part and kept running independently,
-holding the JVM alive on its own non-daemon threads, so `restart: unless-stopped` never fired.
-With the fix, a failed startup now force-terminates the process (`System.exit(1)`), which *does*
-trigger `restart: unless-stopped` — Docker's restart policy now provides the retry loop that the
-application previously lacked. This turns a permanent zombie into a bounded number of automatic
-restarts, which is normally enough once `central` is actually up, but is still a blunt retry (no
-backoff, no cap) rather than a graceful wait-and-retry inside the application.
+When startup does fail, the container must exit so `restart: unless-stopped` fires. It did not
+originally: each service's diagnostics server (`auth`: 8081, `edge`: 8096) starts *before* the
+failing part and keeps running independently, holding the JVM alive on its own non-daemon threads.
+Note that `System.exit(1)` does **not** fix this — `exit` runs shutdown hooks and waits for them,
+and `ZIOApp` installs one that waits for the ZIO runtime to drain; called from inside a fiber, that
+hook waits on the runtime while the runtime waits on the fiber blocked in `exit`, and the JVM never
+terminates. Calling `Runtime.getRuntime.halt(1)` directly avoids that deadlock but skips
+finalizers entirely, so the Hikari pool and OTel exporter never get a chance to close/flush.
+Instead, the failure handlers re-fail the effect so `ZIOApp` unwinds the scope normally, and a
+daemon watchdog thread halts the JVM only if that unwind hasn't completed within
+`startupFailureShutdownTimeout` (20s) — finalizers run on the common path, and the watchdog is
+purely a backstop against a wedged one.
 
-If you do see a container stuck (pre-fix image, or some other stall), confirm with:
+If you do see a container stuck (old image, or some other stall), confirm with:
 ```bash
 docker inspect versola-auth --format='{{json .State}}'    # or versola-edge
 ```
-`FinishedAt` at the zero timestamp with a `StartedAt` well in the past means the process has been
-running since the original failed attempt, with no restart at all — that specifically indicates
-the pre-fix behaviour. Recovery is the same either way: confirm `central` is ready, then
+`FinishedAt` at the zero timestamp with a `StartedAt` well in the past, and `RestartCount` of `0`,
+means the process has been running since the original failed attempt with no restart at all — the
+zombie described above. Recovery is the same either way: confirm `central` is ready, then
 ```bash
 docker compose -f docker-compose.prod.yml restart auth   # and/or edge
 ```
 
-**Practical rule, still true even with the fix:** never bring up all three services in one
+**Practical rule, still worth following:** never bring up all three services in one
 `docker compose -f docker-compose.prod.yml up -d`. Start `central` alone, wait for `curl 127.0.0.1:8091/readiness` to return
 200, *then* bring up `auth` and `edge`. The automated pipeline already does this for you by
 deploying `central` first and gating `auth`/`edge` on it.
