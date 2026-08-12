@@ -27,8 +27,9 @@ object IntrospectionController extends Controller:
         introspectionService <- ZIO.service[IntrospectionService]
         config <- ZIO.service[CoreConfig]
         publicKeys <- ZIO.serviceWithZIO[JwksService](_.getPublicKeys)
-        credentials <- request.extractCredentials.orElseFail(IntrospectionError.InvalidClient)
-        tokenEither <- request.formAs[Either[RefreshToken, String]].orElseFail(IntrospectionError.InvalidRequest)
+        form <- request.body.asURLEncodedForm.orElseFail(IntrospectionError.InvalidRequest)
+        credentials <- request.extractCredentials(form).orElseFail(IntrospectionError.InvalidClient)
+        tokenEither <- tokenDecoder.decode(form).orElseFail(IntrospectionError.InvalidRequest)
         response <- tokenEither match
           case Right(token) =>
             JWT.deserialize[AccessTokenPayload](token, publicKeys, JWT.Type.AccessToken)
@@ -57,7 +58,7 @@ object IntrospectionController extends Controller:
         }
     }
 
-  given FormDecoder[Either[RefreshToken, String]] = form =>
+  private given tokenDecoder: FormDecoder[Either[RefreshToken, String]] = form =>
     val parse = (s: String) =>
       if s.isJWT then
         Right(Right(s))

@@ -35,8 +35,9 @@ object TokenEndpointController extends Controller:
         oauthTokenService <- ZIO.service[OAuthTokenService]
         config <- ZIO.service[CoreConfig]
         signingKey <- ZIO.serviceWithZIO[JwksService](_.getPublicKeys).map(_.active)
-        tokenRequest <- parseRequest(request)
-        credentials <- request.extractCredentials.orElseFail(TokenEndpointError.InvalidClient)
+        form <- request.body.asURLEncodedForm.orElseFail(TokenEndpointError.InvalidRequest)
+        tokenRequest <- parseRequest(form)
+        credentials <- request.extractCredentials(form).orElseFail(TokenEndpointError.InvalidClient)
         issuedTokens <- tokenRequest match
           case codeExchangeRequest: CodeExchangeRequest =>
             oauthTokenService.exchangeAuthorizationCode(codeExchangeRequest, credentials)
@@ -154,19 +155,16 @@ object TokenEndpointController extends Controller:
       case _ =>
         ZIO.none
 
-  private def parseRequest(request: Request): IO[TokenEndpointError, TokenRequest] =
-    for
-      form <- request.body.asURLEncodedForm.orElseFail(TokenEndpointError.InvalidRequest)
-      request <- form.get("grant_type").flatMap(_.stringValue) match
-        case Some("authorization_code") =>
-          codeExchangeRequestDecoder.decode(form).orElseFail(TokenEndpointError.InvalidRequest)
-        case Some("refresh_token") =>
-          refreshTokenRequestDecoder.decode(form).orElseFail(TokenEndpointError.InvalidRequest)
-        case Some("client_credentials") =>
-          clientCredentialsRequestDecoder.decode(form).orElseFail(TokenEndpointError.InvalidRequest)
-        case _ =>
-          ZIO.fail(TokenEndpointError.UnsupportedGrantType)
-    yield request
+  private def parseRequest(form: Form): IO[TokenEndpointError, TokenRequest] =
+    form.get("grant_type").flatMap(_.stringValue) match
+      case Some("authorization_code") =>
+        codeExchangeRequestDecoder.decode(form).orElseFail(TokenEndpointError.InvalidRequest)
+      case Some("refresh_token") =>
+        refreshTokenRequestDecoder.decode(form).orElseFail(TokenEndpointError.InvalidRequest)
+      case Some("client_credentials") =>
+        clientCredentialsRequestDecoder.decode(form).orElseFail(TokenEndpointError.InvalidRequest)
+      case _ =>
+        ZIO.fail(TokenEndpointError.UnsupportedGrantType)
 
   val codeExchangeRequestDecoder: FormDecoder[CodeExchangeRequest] = (form: Form) =>
     for

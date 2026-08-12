@@ -27,10 +27,10 @@ object RevocationController extends Controller:
         revocationService <- ZIO.service[RevocationService]
         config <- ZIO.service[CoreConfig]
         publicKeys <- ZIO.serviceWithZIO[JwksService](_.getPublicKeys)
-        credentials <- request.extractCredentials.orElseFail(RevocationError.InvalidClient)
         form <- request.body.asURLEncodedForm.orElseFail(RevocationError.InvalidClient)
+        credentials <- request.extractCredentials(form).orElseFail(RevocationError.InvalidClient)
 
-        token <- request.formAs[Either[RefreshToken, String]]
+        token <- tokenDecoder.decode(form)
           .orElseFail(RevocationError.InvalidClient)
 
         _ <- token match
