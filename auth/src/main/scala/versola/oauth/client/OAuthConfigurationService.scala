@@ -16,6 +16,9 @@ import versola.oauth.client.model.{
   PassedAuthFactor,
   PasskeySettings,
   PasswordHistorySettings,
+  ResourceId,
+  ResourceRecord,
+  ResourceUri,
   ScopeRecord,
   ScopeToken,
   SubmissionLimits,
@@ -25,7 +28,7 @@ import versola.oauth.client.model.{
 }
 import versola.oauth.conversation.otp.model.OtpTemplate
 import versola.oauth.metadata.{MetadataSyncClient, ServerMetadataRecord}
-import versola.util.{CoreConfig, ReloadingCache, Secret, SecureRandom, SecurityService}
+import versola.util.{CacheSource, CoreConfig, ReloadingCache, Secret, SecureRandom, SecurityService}
 import zio.*
 import zio.http.{Client, URL}
 import zio.json.ast.Json
@@ -81,29 +84,44 @@ trait OAuthConfigurationService:
 
   def getMetadata: UIO[Json.Obj]
 
+  /** Resolves an RFC 8707 `resource` request parameter value to its registered resource,
+    * scoped to the requesting client's tenant. */
+  def findResource(tenantId: TenantId, resource: ResourceUri): UIO[Option[ResourceRecord]]
+
+  /** Resolves a `resource://{resourceId}` indicator within the requesting client's tenant. */
+  def findResourceById(tenantId: TenantId, resourceId: ResourceId): UIO[Option[ResourceRecord]]
+
+  def getResourcesForClient(tenantId: TenantId, clientId: ClientId): UIO[List[ResourceRecord]]
+
   def syncConfiguration: Task[Unit]
 
 object OAuthConfigurationService:
   /** Default TTL for a user-agent (device) record: 6 months. */
   val DefaultUserAgentTtl: Duration = Duration.fromSeconds(15552000L)
 
-  def live(schedule: Schedule[Any, Any, Any]): ZLayer[
+  def live: ZLayer[
     Client & SecurityService & Scope & CoreConfig,
     Throwable,
     OAuthConfigurationService,
   ] = {
+    def cacheLayer[A: Tag]: ZLayer[Scope & CoreConfig & CacheSource[A], Throwable, ReloadingCache[A]] =
+      ZLayer.fromZIO:
+        ZIO.serviceWithZIO[CoreConfig](config =>
+          ReloadingCache.make[A](Schedule.spaced(config.configurationCacheRefreshInterval)),
+        )
     val syncClients =
       CentralSyncTokenService.live >+>
-        ((OAuthClientSyncClient.live >+> ZLayer(ReloadingCache.make[Map[ClientId, OAuthClientRecord]](schedule)) >+>
-          (OAuthScopeSyncClient.live >+> ZLayer(ReloadingCache.make[Vector[ScopeRecord]](schedule))) >+>
-          (FormSyncClient.live >+> ZLayer(ReloadingCache.make[Vector[FormRecord]](schedule))) >+>
-          (ThemeSyncClient.live >+> ZLayer(ReloadingCache.make[Vector[ThemeRecord]](schedule))) >+>
-          (LocaleSyncClient.live >+> ZLayer(ReloadingCache.make[Locales](schedule))) >+>
-          (OtpTemplateSyncClient.live >+> ZLayer(ReloadingCache.make[Vector[OtpTemplateRecord]](schedule))) >+>
-          (ChallengeSettingsSyncClient.live >+> ZLayer(ReloadingCache.make[Vector[ChallengeSettingsRecord]](schedule))) >+>
-          (SystemSettingsSyncClient.live >+> ZLayer(ReloadingCache.make[SystemSettingsRecord](schedule))) >+>
-          (MetadataSyncClient.live >+> ZLayer(ReloadingCache.make[Json.Obj](schedule)))))
-    syncClients >>> ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _))
+        ((OAuthClientSyncClient.live >+> cacheLayer[Map[ClientId, OAuthClientRecord]]) >+>
+          (OAuthScopeSyncClient.live >+> cacheLayer[Vector[ScopeRecord]]) >+>
+          (FormSyncClient.live >+> cacheLayer[Vector[FormRecord]]) >+>
+          (ThemeSyncClient.live >+> cacheLayer[Vector[ThemeRecord]]) >+>
+          (LocaleSyncClient.live >+> cacheLayer[Locales]) >+>
+          (OtpTemplateSyncClient.live >+> cacheLayer[Vector[OtpTemplateRecord]]) >+>
+          (ChallengeSettingsSyncClient.live >+> cacheLayer[Vector[ChallengeSettingsRecord]]) >+>
+          (SystemSettingsSyncClient.live >+> cacheLayer[SystemSettingsRecord]) >+>
+          (MetadataSyncClient.live >+> cacheLayer[Json.Obj]) >+>
+          (ResourceSyncClient.live >+> cacheLayer[Vector[ResourceRecord]]))
+    syncClients >>> ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _))
   }
 
   case class Impl(
@@ -125,6 +143,8 @@ object OAuthConfigurationService:
       systemSettingsRepository: SystemSettingsSyncClient,
       metadataCache: ReloadingCache[Json.Obj],
       metadataRepository: MetadataSyncClient,
+      resourceCache: ReloadingCache[Vector[ResourceRecord]],
+      resourceRepository: ResourceSyncClient,
   ) extends OAuthConfigurationService:
 
     def find(id: ClientId): UIO[Option[OAuthClientRecord]] =
@@ -339,6 +359,15 @@ object OAuthConfigurationService:
     override def getMetadata: UIO[Json.Obj] =
       metadataCache.get
 
+    override def findResource(tenantId: TenantId, resource: ResourceUri): UIO[Option[ResourceRecord]] =
+      resourceCache.get.map(_.find(r => r.tenantId == tenantId && r.resource == resource))
+
+    override def findResourceById(tenantId: TenantId, resourceId: ResourceId): UIO[Option[ResourceRecord]] =
+      resourceCache.get.map(_.find(r => r.tenantId == tenantId && r.resourceId == resourceId))
+
+    override def getResourcesForClient(tenantId: TenantId, clientId: ClientId): UIO[List[ResourceRecord]] =
+      resourceCache.get.map(_.filter(r => r.tenantId == tenantId && r.audience.contains(clientId)).toList)
+
     override def syncConfiguration: Task[Unit] =
       for
         clients <- clientRepository.getAll
@@ -359,6 +388,8 @@ object OAuthConfigurationService:
         _ <- systemSettingsCache.set(systemSettings)
         metadata <- metadataRepository.getAll
         _ <- metadataCache.set(metadata)
+        resources <- resourceRepository.getAll
+        _ <- resourceCache.set(resources)
       yield ()
 
     private val IllegalStateTemplate = OtpTemplate("{{code}}")

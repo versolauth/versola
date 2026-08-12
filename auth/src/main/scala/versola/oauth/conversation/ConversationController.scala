@@ -116,8 +116,14 @@ object ConversationController extends Controller:
         router <- ZIO.service[ConversationRouter]
         conversationRenderService <- ZIO.service[ConversationRenderService]
         cookie <- extractCookie(request)
-        body <- request.formAs[Body].orElseFail(Error.BadRequest)
-        _ <- ZIO.fail(Error.BadRequest).unlessZIO(validate(cookie.clientId, body))
+        body <- request.formAs[Body]
+          .tapError(msg => ZIO.logWarning(s"Couldn't parse request body: $msg"))
+          .orElseFail(Error.BadRequest)
+
+        _ <- ZIO.fail(Error.BadRequest)
+          .unlessZIO(validate(cookie.clientId, body))
+          .tapError(msg => ZIO.logWarning(s"Request validation failed: $msg"))
+
         uiLocale <- request.queryZIO[Option[String]]("ui_locale")
         ipHeader <- ZIO.serviceWithZIO[OAuthConfigurationService](_.getIpHeader(cookie.clientId))
         (result, record) <- router.submit(cookie.authId, body, uiLocale, extractIp(request, ipHeader))
@@ -161,9 +167,12 @@ object ConversationController extends Controller:
     ZIO.serviceWith[CoreConfig](_.security.conversationCookieSecret).flatMap: secret =>
       request.cookie(ConversationCookie.name) match
         case Some(cookie) =>
-          ZIO.fromEither(ConversationCookie.parse(cookie.content, secret).left.map(_ => Error.BadRequest))
+          ZIO.fromEither(ConversationCookie.parse(cookie.content, secret))
+            .tapError(msg => ZIO.logWarning(s"Couldn't parse conversation cookie: $msg"))
+            .orElseFail(Error.BadRequest)
         case None =>
           ZIO.fail(Error.BadRequest)
+            .tapError(msg => ZIO.logWarning(s"Conversation cookie is missing"))
 
   private def expiredResponse(request: Request): ZIO[ConversationRenderService & CoreConfig, Throwable, Response] =
     for

@@ -1,7 +1,7 @@
 package versola.oauth.token
 
-import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{ClientCredentials, ClientId, ClientIdWithSecret, OAuthClientRecord, ScopeToken, TenantId}
+import versola.oauth.client.{OAuthConfigurationService, ResourceResolver}
+import versola.oauth.client.model.{ClientCredentials, ClientId, ClientIdWithSecret, OAuthClientRecord, ResourceUri, ScopeToken, TenantId}
 import versola.oauth.model.{AccessToken, AuthorizationCodeRecord, RefreshToken}
 import versola.oauth.revoke.AccessTokenRevocationService
 import versola.oauth.session.model.{RefreshAlreadyExchanged, RefreshTokenRecord, WithTtl}
@@ -90,7 +90,7 @@ object OAuthTokenService:
             accessToken = accessToken,
             userId = codeRecord.userId,
             clientId = codeRecord.clientId,
-            externalAudience = client.externalAudience,
+            audience = codeRecord.resources,
             scope = codeRecord.scope,
             issuedAt = now,
             expiresAt = now.plusSeconds(client.refreshTokenTtl.toSeconds),
@@ -102,6 +102,7 @@ object OAuthTokenService:
             authTime = codeRecord.authTime,
             acr = codeRecord.acr,
           ),
+          accessTokenAudience = codeRecord.resources,
         ).mapError {
           case ex: Throwable => ex
           case _ => TokenEndpointError.InvalidGrant // illegal state
@@ -115,7 +116,7 @@ object OAuthTokenService:
         refreshTokenRequest: RefreshTokenRequest,
         tokenCredentials: ClientCredentials,
     ): IO[Throwable | TokenEndpointError, IssuedTokens] =
-      import refreshTokenRequest.{refreshToken, scope}
+      import refreshTokenRequest.{refreshToken, resources, scope}
       for
         client <- tokenCredentials match
           case ClientIdWithSecret(clientId, clientSecret) =>
@@ -131,6 +132,8 @@ object OAuthTokenService:
         _ <- ZIO.fail(TokenEndpointError.InvalidScope)
           .when(scope.exists(!_.subsetOf(client.scope)))
 
+        audience <- resolveTokenAudience(client, tokenRecord.audience, resources)
+
         now <- zio.Clock.instant
 
         accessToken <- authPropertyGenerator.nextAccessToken
@@ -145,8 +148,37 @@ object OAuthTokenService:
             issuedAt = now,
             expiresAt = now.plusSeconds(client.refreshTokenTtl.toSeconds),
           ),
+          accessTokenAudience = audience,
         )
       yield issuedTokens
+
+    private def resolveTokenAudience(
+        client: OAuthClientRecord,
+        granted: List[ResourceUri],
+        requested: Option[List[ResourceUri]],
+    ): IO[TokenEndpointError, List[ResourceUri]] =
+      requested match
+        case None =>
+          ZIO.succeed(granted)
+        case Some(resources) if resources.isEmpty =>
+          ZIO.fail(TokenEndpointError.InvalidRequest)
+        case Some(resources) =>
+          val distinctResources = resources.distinct
+          val invalidResource = distinctResources.find: resource =>
+            !granted.contains(resource) &&
+              !(granted.contains(ResourceResolver.EdgeResource) && isInternalResource(resource))
+
+          invalidResource match
+            case Some(resource) =>
+              ZIO.fail(TokenEndpointError.InvalidTarget(resource))
+            case None if distinctResources.exists(isInternalResource) && granted.contains(ResourceResolver.EdgeResource) =>
+              ResourceResolver.resolve(oauthClientService, client, Some(distinctResources))
+                .mapError(TokenEndpointError.InvalidTarget.apply)
+            case None =>
+              ZIO.succeed(distinctResources)
+
+    private def isInternalResource(resource: ResourceUri): Boolean =
+      resource != ResourceResolver.EdgeResource && ResourceUri.internalResourceId(resource).isDefined
 
     override def clientCredentials(
         request: ClientCredentialsRequest,
@@ -164,11 +196,17 @@ object OAuthTokenService:
         _ <- ZIO.fail(TokenEndpointError.InvalidScope)
           .when(request.scope.exists(!_.subsetOf(client.scope)))
 
+        _ <- ZIO.fail(TokenEndpointError.InvalidRequest)
+          .when(request.resources.exists(_.isEmpty))
+
+        audience <- ResourceResolver.resolve(oauthClientService, client, request.resources)
+          .mapError(TokenEndpointError.InvalidTarget.apply)
+
         accessToken <- authPropertyGenerator.nextAccessToken
       yield IssuedTokens(
         accessToken = accessToken,
         clientId = client.id,
-        audience = client.audience,
+        audience = audience,
         accessTokenTtl = client.accessTokenTtl,
         userId = None,
         refreshToken = None,
@@ -192,6 +230,7 @@ object OAuthTokenService:
         accessToken: AccessToken,
         client: OAuthClientRecord,
         record: RefreshTokenRecord,
+        accessTokenAudience: List[ResourceUri],
     ): IO[Throwable | TokenEndpointError, IssuedTokens] =
       for
         refreshToken <- ZIO.when(record.scope.contains(ScopeToken.OfflineAccess))(
@@ -214,7 +253,7 @@ object OAuthTokenService:
       yield IssuedTokens(
         accessToken = accessToken,
         clientId = record.clientId,
-        audience = client.audience,
+        audience = accessTokenAudience,
         accessTokenTtl = client.accessTokenTtl,
         userId = Some(record.userId),
         refreshToken = refreshToken,

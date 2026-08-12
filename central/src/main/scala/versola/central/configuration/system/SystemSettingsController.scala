@@ -1,15 +1,15 @@
 package versola.central.configuration.system
 
 import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
-import versola.central.configuration.clients.OAuthClientService
 import versola.central.configuration.edges.EdgeService
+import versola.central.configuration.resources.ResourceService
 import versola.util.http.Controller
 import zio.ZIO
 import zio.http.{Method, Request, Response, Routes, Status, handler}
 import zio.json.EncoderOps
 
 object SystemSettingsController extends Controller:
-  type Env = Tracing & SystemSettingsService & CentralConfig & OAuthClientService & EdgeService
+  type Env = Tracing & SystemSettingsService & CentralConfig & ResourceService & EdgeService
 
   def routes: Routes[Env, Throwable] = Routes(
     getSystemSettingsEndpoint,

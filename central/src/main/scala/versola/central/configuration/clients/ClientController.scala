@@ -3,6 +3,7 @@ package versola.central.configuration.clients
 import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
 import versola.central.configuration.*
 import versola.central.configuration.edges.EdgeService
+import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.TenantId
 import versola.util.http.{Controller, Unauthorized}
 import versola.util.{Base64Url, Secret, SecurityService}
@@ -13,7 +14,7 @@ import zio.schema.*
 import zio.prelude.These
 
 object ClientController extends Controller:
-  type Env = Tracing & OAuthClientService & CentralConfig & SecurityService & EdgeService
+  type Env = Tracing & OAuthClientService & ResourceService & CentralConfig & SecurityService & EdgeService
 
   def routes: Routes[Env, Throwable] = Routes(
     getAllClientsEndpoint,
@@ -42,7 +43,6 @@ object ClientController extends Controller:
               clientName = client.clientName,
               redirectUris = client.redirectUris,
               scope = client.scope,
-              externalAudience = client.externalAudience,
               permissions = client.permissions,
               secretRotation = client.previousSecret.nonEmpty,
               theme = client.theme,
@@ -84,7 +84,6 @@ object ClientController extends Controller:
             clientName = client.clientName,
             redirectUris = client.redirectUris,
             scope = client.scope,
-            externalAudience = client.externalAudience,
             secret = secret,
             previousSecret = previousSecret,
             accessTokenTtl = client.accessTokenTtl,

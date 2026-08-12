@@ -4,7 +4,7 @@ import io.opentelemetry.api
 import org.scalamock.stubs.{Stub, ZIOStubs}
 import versola.central.{CentralConfig, TestAdminAuth, TestCentralConfig}
 import versola.central.configuration.*
-import versola.central.configuration.clients.OAuthClientService
+import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.TenantId
 import versola.util.http.Observability
 import versola.util.JWT
@@ -111,18 +111,18 @@ object ScopeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         client      <- ZIO.service[Client]
         service     =  stub[OAuthScopeService]
         edgeService =  stub[versola.central.configuration.edges.EdgeService]
-        oauthClientService = stub[OAuthClientService]
+        resourceService = stub[ResourceService]
         tracing     <- tracingLayer.build
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             ScopeController.routes.provideEnvironment(
-              ZEnvironment[OAuthScopeService](service) ++ ZEnvironment(config) ++ tracing ++
+              ZEnvironment[OAuthScopeService](service) ++ ZEnvironment[CentralConfig](config) ++ tracing ++
                 ZEnvironment[versola.central.configuration.edges.EdgeService](edgeService) ++
-                ZEnvironment[OAuthClientService](oauthClientService)
+                ZEnvironment[ResourceService](resourceService)
             )
           )
         )
-        _ <- oauthClientService.verifySecret.succeedsWith(true)
+        _ <- resourceService.verifySecret.succeedsWith(true)
         _ <- setup(service)
         // Only add the admin Basic auth header when the request does not already carry auth
         // (the sync-endpoint test sends an internal sync token instead).

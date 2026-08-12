@@ -63,10 +63,10 @@ object PostgresEdgeApp extends VersolaApp("edge"):
       RolesSyncClient.live >+>
       PermissionsSyncClient.live >+>
       JwksSyncClient.live >+>
-      OAuthClientService.live(zio.Schedule.spaced(5.minute)) >+>
-      ResourceService.live(zio.Schedule.spaced(5.minute)) >+>
-      PermissionService.live(zio.Schedule.spaced(5.minute)) >+>
-      JwksService.live(zio.Schedule.spaced(5.minute)) >+>
+      OAuthClientService.live >+>
+      ResourceService.live >+>
+      PermissionService.live >+>
+      JwksService.live >+>
       CelEvaluator.live >+>
       SSOClient.live >+>
       EdgeService.live

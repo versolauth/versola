@@ -1,9 +1,10 @@
 package versola.central.configuration.tenants
 
+import versola.central.CentralConfig
 import versola.central.configuration.{CreateTenantRequest, UpdateTenantRequest}
 import versola.central.configuration.edges.EdgeId
 import versola.util.ReloadingCache
-import zio.{Schedule, Scope, Task, ZLayer, durationInt}
+import zio.{Schedule, Scope, Task, ZIO, ZLayer, durationInt}
 
 trait TenantService:
   def getAllTenants: Task[Vector[TenantRecord]]
@@ -23,10 +24,12 @@ trait TenantService:
   def sync(): Task[Unit]
 
 object TenantService:
-  def live(
-      schedule: Schedule[Any, Any, Any],
-  ): ZLayer[TenantRepository & Scope, Throwable, TenantService] =
-    ZLayer(ReloadingCache.make[Vector[TenantRecord]](schedule))
+  def live: ZLayer[TenantRepository & Scope & CentralConfig, Throwable, TenantService] =
+    (ZLayer.fromZIO:
+      ZIO.serviceWithZIO[CentralConfig](config =>
+        ReloadingCache.make[Vector[TenantRecord]](Schedule.spaced(config.configurationCacheRefreshInterval)),
+      )
+    )
       >>> ZLayer.fromFunction(Impl(_, _))
 
   class Impl(

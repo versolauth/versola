@@ -290,6 +290,7 @@ object AuthorizeEndpointService:
           targetAcr = targetAcr,
           csrfToken = csrfToken,
           priorSessionId = priorSessionId,
+          resources = request.resources,
         )
         authConversationTtl <- configurationService.getAuthConversationTtl(request.clientId)
         _ <- conversationRepository.create(authId, conversation, authConversationTtl)
@@ -339,6 +340,7 @@ object AuthorizeEndpointService:
           amr = amr,
           authTime = session.createdAt,
           acr = acr,
+          resources = request.resources,
         )
         codeMac <- securityService.mac(Secret(code), config.security.authCodesSecret)
         _ <- authorizationCodeRepository.create(codeMac, codeRecord, zio.Duration.fromSeconds(60))

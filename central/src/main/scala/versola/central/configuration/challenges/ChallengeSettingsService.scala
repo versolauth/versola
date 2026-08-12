@@ -1,9 +1,10 @@
 package versola.central.configuration.challenges
 
+import versola.central.CentralConfig
 import versola.central.configuration.sync.{SyncEvent, SyncOps}
 import versola.central.configuration.tenants.TenantId
 import versola.util.ReloadingCache
-import zio.{Schedule, Scope, Task, ZLayer}
+import zio.{Schedule, Scope, Task, ZIO, ZLayer}
 
 trait ChallengeSettingsService:
   def getSettings(tenantId: TenantId): Task[Option[ChallengeSettingsRecord]]
@@ -12,10 +13,12 @@ trait ChallengeSettingsService:
   def sync(event: SyncEvent.ChallengeSettingsUpdated): Task[Unit]
 
 object ChallengeSettingsService:
-  def live(
-      schedule: Schedule[Any, Any, Any],
-  ): ZLayer[ChallengeSettingsRepository & Scope, Throwable, ChallengeSettingsService] =
-    ZLayer(ReloadingCache.make[Vector[ChallengeSettingsRecord]](schedule))
+  def live: ZLayer[ChallengeSettingsRepository & Scope & CentralConfig, Throwable, ChallengeSettingsService] =
+    (ZLayer.fromZIO:
+      ZIO.serviceWithZIO[CentralConfig](config =>
+        ReloadingCache.make[Vector[ChallengeSettingsRecord]](Schedule.spaced(config.configurationCacheRefreshInterval)),
+      )
+    )
       >>> ZLayer.fromFunction(Impl(_, _))
 
   class Impl(

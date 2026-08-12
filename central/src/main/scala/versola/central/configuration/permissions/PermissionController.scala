@@ -1,8 +1,8 @@
 package versola.central.configuration.permissions
 
 import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
-import versola.central.configuration.clients.OAuthClientService
 import versola.central.configuration.edges.EdgeService
+import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.TenantId
 import versola.central.configuration.{CreatePermissionRequest, GetAllPermissionsResponse, GetPermissionsSyncResponse, PermissionResponse, PermissionSyncResponse, UpdatePermissionRequest}
 import versola.util.http.Controller
@@ -13,7 +13,7 @@ import zio.telemetry.opentelemetry.tracing.Tracing
 import zio.{Cause, ZIO}
 
 object PermissionController extends Controller:
-  type Env = Tracing & PermissionService & OAuthClientService & CentralConfig & EdgeService
+  type Env = Tracing & PermissionService & ResourceService & CentralConfig & EdgeService
 
   def routes: Routes[Env, Throwable] = Routes(
     getAllPermissionsEndpoint,

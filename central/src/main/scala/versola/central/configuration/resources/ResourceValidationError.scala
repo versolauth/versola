@@ -4,6 +4,8 @@ import zio.json.JsonCodec
 import zio.schema.{Schema, derived}
 
 enum ResourceValidationError derives JsonCodec, Schema:
+  case InvalidResourceId
+  case ReservedResourceId
   case InvalidAllowExpression(endpointId: ResourceEndpointId, expression: String, message: String)
   case InvalidInjectExpression(endpointId: ResourceEndpointId, ruleName: String, expression: String, message: String)
   case InvalidStepUpConditionExpression(endpointId: ResourceEndpointId, expression: String, message: String)

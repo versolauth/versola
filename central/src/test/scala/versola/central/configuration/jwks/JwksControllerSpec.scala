@@ -2,9 +2,9 @@ package versola.central.configuration.jwks
 
 import io.opentelemetry.api
 import org.scalamock.stubs.{Stub, ZIOStubs}
-import versola.central.configuration.clients.OAuthClientService
 import versola.central.configuration.edges.EdgeService
-import versola.central.{TestAdminAuth, TestCentralConfig}
+import versola.central.configuration.resources.ResourceService
+import versola.central.{CentralConfig, TestAdminAuth, TestCentralConfig}
 import versola.util.JWT
 import versola.util.http.Observability
 import zio.*
@@ -59,17 +59,17 @@ object JwksControllerSpec extends ZIOSpecDefault, ZIOStubs:
         client             <- ZIO.service[Client]
         service            = stub[JwksService]
         edgeService        = stub[EdgeService]
-        oauthClientService = stub[OAuthClientService]
+        resourceService      = stub[ResourceService]
         tracing            <- tracingLayer.build
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             JwksController.routes.provideEnvironment(
-              ZEnvironment[JwksService](service) ++ tracing ++ ZEnvironment(config) ++
-                ZEnvironment[EdgeService](edgeService) ++ ZEnvironment[OAuthClientService](oauthClientService)
+              ZEnvironment[JwksService](service) ++ tracing ++ ZEnvironment[CentralConfig](config) ++
+                ZEnvironment[EdgeService](edgeService) ++ ZEnvironment[ResourceService](resourceService)
             )
           )
         )
-        _            <- oauthClientService.verifySecret.succeedsWith(true)
+        _            <- resourceService.verifySecret.succeedsWith(true)
         _            <- setup(service)
         response     <- client.batched(
           authHeader.foldLeft(request.addHeader(Header.Accept(MediaType.application.json)))(_.addHeader(_))

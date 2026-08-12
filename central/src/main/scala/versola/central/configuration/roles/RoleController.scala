@@ -2,8 +2,8 @@ package versola.central.configuration.roles
 
 import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
 import versola.central.configuration.{CreateRoleRequest, GetAllRolesResponse, GetRolesSyncResponse, RoleResponse, RoleSyncResponse, UpdateRoleRequest}
-import versola.central.configuration.clients.OAuthClientService
 import versola.central.configuration.edges.EdgeService
+import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.permissions.Permission
 import versola.central.configuration.tenants.TenantId
 import versola.util.http.Controller
@@ -14,7 +14,7 @@ import zio.telemetry.opentelemetry.tracing.Tracing
 import zio.{Cause, ZIO}
 
 object RoleController extends Controller:
-  type Env = Tracing & RoleService & OAuthClientService & CentralConfig & EdgeService
+  type Env = Tracing & RoleService & ResourceService & CentralConfig & EdgeService
 
   def routes: Routes[Env, Throwable] = Routes(
     createRoleEndpoint,

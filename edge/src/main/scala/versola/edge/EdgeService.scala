@@ -127,6 +127,7 @@ object EdgeService:
 
     private val loginTtl = 10.minutes
     private val encryptionKey = SecretKeySpec(config.security.tokenEncryption.key, "AES")
+    private val edgeAudience = "resource://edge"
 
     /** Extra time the edge_sessions row is kept alive past the cookie/token expiry,
       * so the session record is never deleted before the cookie has actually expired.
@@ -363,6 +364,7 @@ object EdgeService:
         endpoint <- findEndpoint(resource.endpoints, request.method.name, restPath)
         parsedBody <- readJsonBody(request)
         typedClaims <- checkPermissions(session.claims, endpoint, request, parsedBody)
+        _ <- checkAudience(resource, typedClaims)
         userInfo <- ssoClient.userInfo(session.accessToken)
           .when(endpoint.fetchUserInfo)
           .someOrElse(Json.Obj())
@@ -372,7 +374,7 @@ object EdgeService:
           }
         celContext <- checkRules(session.claims, userInfo, request, endpoint, restPath, parsedBody)
         _ <- checkStepUp(endpoint, typedClaims, now, celContext)
-        upstream <- buildUpstreamRequest(resource, endpoint, restPath, request, parsedBody, typedClaims.clientId, celContext)
+        upstream <- buildUpstreamRequest(resource, endpoint, restPath, request, parsedBody, session.accessToken, celContext)
         response <- ZIO.scoped(httpClient.request(upstream))
         stripped = response.removeHeader(Header.SetCookie)
       yield session.rotatedCookie.fold(stripped)(stripped.addCookie)
@@ -414,6 +416,20 @@ object EdgeService:
         _ <- ZIO.fail(Outcome.Forbidden)
           .unless(allowed.contains(endpoint.id))
       yield typed
+
+    private def checkAudience(
+        resource: Resource,
+        claims: AccessTokenClaims,
+    ): IO[Outcome, Unit] =
+      val expectedAudience =
+        resource.secret match
+          case Some(_) => s"resource://${resource.resourceId}"
+          case None => resource.resource.encode
+      val allowed = claims.audience.contains(expectedAudience) ||
+        resource.secret.isDefined && claims.audience.contains(edgeAudience)
+      ZIO.fail(Outcome.Forbidden)
+        .unless(allowed)
+        .unit
 
     /** RFC 9470 §2: verify the token satisfies every authentication requirement of the
       * endpoint. Runs after `checkRules` so that a request the client is not authorized to
@@ -571,13 +587,28 @@ object EdgeService:
         "request" -> requestData.asJava,
       )
 
+    /** Chooses the upstream `Authorization` header for a resource: internal resources
+      * (those with a secret) are proxied with edge's own `Basic(resourceId, secret)`
+      * so the resource never sees the caller's token; public resources (no secret)
+        * get the caller's own access token forwarded as-is.
+      */
+    private def resolveAuthHeader(
+        resource: Resource,
+        accessToken: AccessToken,
+    ): Header.Authorization =
+      resource.secret match
+        case Some(secret) =>
+          Header.Authorization.Basic(resource.resourceId, Base64.urlEncode(secret))
+        case None =>
+          Header.Authorization.Bearer(accessToken)
+
     private def buildUpstreamRequest(
         resource: Resource,
         endpoint: ResourceEndpoint,
         restPath: Path,
         request: Request,
         parsedBody: Option[Json],
-        clientId: ClientId,
+        accessToken: AccessToken,
         celContext: Map[String, AnyRef],
     ): IO[Throwable | Outcome, Request] =
       val grouped = endpoint.inject.groupBy(_.target)
@@ -606,10 +637,8 @@ object EdgeService:
         case Some(cookies) => baseHeaders.addHeader(Header.Cookie(cookies))
         case None => baseHeaders
 
+      val authHeader = resolveAuthHeader(resource, accessToken)
       for
-        authHeader <- clientService.findClient(clientId)
-          .someOrFail(Outcome.InternalServerError: Throwable | Outcome)
-          .map(client => Header.Authorization.Basic(client.id, Base64.urlEncode(client.secret)))
         injectedHeaders <- evaluateAll(headerInjects, celContext)
         injectedQuery <- evaluateAll(queryInjects, celContext)
         finalHeaders = injectedHeaders.foldLeft(headersWithCookies):

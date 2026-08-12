@@ -82,10 +82,6 @@ test('creates a client and shows the generated secret banner', async ({ page }) 
   await page.getByLabel('Client Name').fill('Dashboard Client');
   await page.getByPlaceholder('https://app.example.com/callback').fill('https://dashboard.example/callback');
   await page.getByPlaceholder('https://app.example.com/callback').press('Enter');
-  await page.getByLabel('External Audience').fill('alp');
-  await expect(page.getByRole('button', { name: 'Select audience alpha-web', exact: true })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Select audience service-client', exact: true })).toHaveCount(0);
-  await page.getByRole('button', { name: 'Select audience alpha-web', exact: true }).click();
   await page.getByLabel('Access Token TTL').fill('30');
   await page.locator('versola-client-form select.ttl-unit-select').selectOption('minutes');
   await page.getByRole('checkbox', { name: 'openid', exact: true }).check();
@@ -101,7 +97,6 @@ test('creates a client and shows the generated secret banner', async ({ page }) 
   expect((await secretValue.textContent())?.trim().length ?? 0).toBeGreaterThan(0);
   await expect(created).toContainText('dashboard-client');
   await expect(created).toContainText('https://dashboard.example/callback');
-  await expect(created).toContainText('alpha-web');
   await expect(created).toContainText('30m');
 
   expect(findRequest(api.requests, 'POST', '/configuration/clients').body).toEqual({
@@ -110,7 +105,6 @@ test('creates a client and shows the generated secret banner', async ({ page }) 
     clientName: 'Dashboard Client',
     redirectUris: ['https://dashboard.example/callback'],
     allowedScopes: ['openid'],
-    audience: ['alpha-web'],
     permissions: ['alpha.read'],
     accessTokenTtl: 1800,
     authFlow: {
@@ -290,76 +284,6 @@ test('shows redirect URI validation with a red input border', async ({ page }) =
   await expect(redirectUriField).toHaveCSS('border-top-color', 'rgb(248, 81, 73)');
 });
 
-test('requires external audience to reference an existing client', async ({ page }) => {
-  const api = await loadAdminApp(page, {
-    path: clientsPath,
-    state: { clients: { 'tenant-alpha': [alphaClient] } },
-  });
-
-  await page.getByRole('button', { name: '+ Create Client', exact: true }).click();
-  await page.getByLabel('Client ID').fill('service-client');
-  await page.getByLabel('Client Name').fill('Service Client');
-  await page.getByLabel('External Audience').fill('Alpha-Web');
-  await page.getByLabel('External Audience').press('Enter');
-
-  await expect(page.getByText('Lowercase letters, numbers, hyphen, start with letter', { exact: true })).toBeVisible();
-  await expect(page.locator('.tag-list .tag').filter({ hasText: 'Alpha-Web' })).toHaveCount(0);
-
-  await page.getByLabel('External Audience').fill('missing-client');
-  await page.getByLabel('External Audience').press('Enter');
-
-  await expect(page.getByText('Audience must reference an existing client in this tenant', { exact: true })).toBeVisible();
-  await expect(page.getByText('missing-client', { exact: true })).toHaveCount(0);
-  expect(api.requests.some(request => request.method === 'POST' && request.pathname === '/configuration/clients')).toBeFalsy();
-
-  await page.getByLabel('External Audience').fill('alpha-web');
-  await page.getByLabel('External Audience').press('Enter');
-  await expect(page.getByText('alpha-web', { exact: true })).toBeVisible();
-
-  await page.getByPlaceholder('https://app.example.com/callback').fill('https://service.example/callback');
-  await page.getByPlaceholder('https://app.example.com/callback').press('Enter');
-  await page.getByRole('button', { name: 'Create Client', exact: true }).click();
-
-  expect(findRequest(api.requests, 'POST', '/configuration/clients').body.audience).toEqual(['alpha-web']);
-});
-
-test('rejects duplicate external audiences', async ({ page }) => {
-  await loadAdminApp(page, {
-    path: clientsPath,
-    state: { clients: { 'tenant-alpha': [alphaClient] } },
-  });
-
-  await page.getByRole('button', { name: '+ Create Client', exact: true }).click();
-  await page.getByLabel('Client ID').fill('service-client');
-  await page.getByLabel('Client Name').fill('Service Client');
-  await page.getByLabel('External Audience').fill('alpha-web');
-  await page.getByLabel('External Audience').press('Enter');
-  await expect(page.locator('.tag-list .tag').filter({ hasText: 'alpha-web' })).toHaveCount(1);
-
-  await page.getByLabel('External Audience').fill('alpha-web');
-  await page.getByLabel('External Audience').press('Enter');
-
-  await expect(page.getByText('Audience has already been added', { exact: true })).toBeVisible();
-  await expect(page.locator('.tag-list .tag').filter({ hasText: 'alpha-web' })).toHaveCount(1);
-});
-
-test('rejects self as external audience', async ({ page }) => {
-  const api = await loadAdminApp(page, {
-    path: clientsPath,
-    state: { clients: { 'tenant-alpha': [alphaClient] } },
-  });
-
-  await page.getByRole('button', { name: '+ Create Client', exact: true }).click();
-  await page.getByLabel('Client ID').fill('alpha-web');
-  await page.getByLabel('Client Name').fill('Alpha Clone');
-  await page.getByLabel('External Audience').fill('alpha-web');
-  await page.getByLabel('External Audience').press('Enter');
-
-  await expect(page.getByText('Audience cannot reference the client itself', { exact: true })).toBeVisible();
-  await expect(page.locator('.tag-list .tag').filter({ hasText: 'alpha-web' })).toHaveCount(0);
-  expect(api.requests.some(request => request.method === 'POST' && request.pathname === '/configuration/clients')).toBeFalsy();
-});
-
 test('updates a client and sends patch-style changes', async ({ page }) => {
   const api = await loadAdminApp(page, {
     path: clientsPath,
@@ -380,10 +304,6 @@ test('updates a client and sends patch-style changes', async ({ page }) => {
   await page.getByRole('button', { name: 'Remove redirect URI https://alpha.example/callback', exact: true }).click();
   await page.getByPlaceholder('https://app.example.com/callback').fill('https://alpha.example/admin/callback');
   await page.getByPlaceholder('https://app.example.com/callback').press('Enter');
-  await page.getByLabel('External Audience').fill('serv');
-  await expect(page.getByRole('button', { name: 'Select audience service-client', exact: true })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Select audience alpha-web', exact: true })).toHaveCount(0);
-  await page.getByRole('button', { name: 'Select audience service-client', exact: true }).click();
   await page.locator('.checkbox-item', { hasText: 'openid' }).getByRole('checkbox').uncheck();
   await page.locator('.checkbox-item', { hasText: 'email' }).getByRole('checkbox').check();
   await page.locator('.checkbox-item', { hasText: 'alpha.read' }).getByRole('checkbox').uncheck();
@@ -501,7 +421,6 @@ test('shows error alert when creating a client with duplicate ID', async ({ page
     clientName: 'Duplicate Client',
     redirectUris: ['https://duplicate.example/callback'],
     allowedScopes: [],
-    audience: [],
     permissions: [],
     accessTokenTtl: 3600,
     authFlow: {

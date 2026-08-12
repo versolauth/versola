@@ -50,7 +50,6 @@ export interface OAuthClient {
   clientName: string;
   redirectUris: string[];
   scope: string[];
-  externalAudience: string[];
   hasPreviousSecret: boolean;
   accessTokenTtl: number;
   permissions: string[];
@@ -196,7 +195,12 @@ export interface ResourceEndpoint {
 export interface Resource {
   resourceId: string;
   resource: string;
+  audience: string[];
   endpoints: ResourceEndpoint[];
+  // Internal resources carry a secret edge authenticates with (Basic auth) instead
+  // of forwarding the caller's own access token. Public resources have neither.
+  hasSecret: boolean;
+  hasPreviousSecret: boolean;
 }
 
 // Pagination

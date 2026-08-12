@@ -80,6 +80,7 @@ object ConversationRouterSpec extends UnitSpecBase:
     targetAcr = None,
     csrfToken = "test-csrf",
     priorSessionId = None,
+    resources = Nil,
   )
 
   val otpRecord = ConversationRecord(
@@ -109,6 +110,7 @@ object ConversationRouterSpec extends UnitSpecBase:
     targetAcr = None,
     csrfToken = "test-csrf",
     priorSessionId = None,
+    resources = Nil,
   )
 
   val login = Login("testuser")
@@ -472,6 +474,29 @@ object ConversationRouterSpec extends UnitSpecBase:
           prepareOtpTimes == 0,
           preparePasswordTimes == 1,
         )
+      },
+      test("routes to set-password before passkey enrollment when a password change is required") {
+        val env = Env()
+        val flow = loginFlow.copy(
+          primary = loginFlow.primary.copy(
+            factors = List(AuthFactor(`type` = AuthFactorType.passkeyEnroll, required = true)),
+          ),
+        )
+        val record = loginRecord.copy(authFlow = flow, needsPasswordChange = true)
+        val expected = ConversationResult.RenderStep(
+          ConversationStep.SetPassword(
+            factorIndex = flow.primary.factors.length,
+            timesSubmitted = 0,
+            rateLimitExceeded = false,
+            passwordReused = false,
+          ),
+        )
+        for
+          _ <- env.configService.getAcrVocabulary.succeedsWith(Map.empty)
+          _ <- env.otpConversationService.offerSetPassword.succeedsWith(expected)
+          _ <- env.router.advance(authId, record)
+          calls = env.otpConversationService.offerSetPassword.calls
+        yield assertTrue(calls.length == 1, calls.head._2 == record)
       },
       test("calls finish when all factors are already satisfied") {
         val env = Env()

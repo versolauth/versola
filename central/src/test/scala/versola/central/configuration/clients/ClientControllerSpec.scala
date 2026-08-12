@@ -52,7 +52,6 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
     clientName = "Web App",
     redirectUris = Set(redirectUri1),
     allowedScopes = Set(readScope),
-    audience = List(ClientId("api")),
     permissions = Set(readPermission),
     accessTokenTtl = 300,
     refreshTokenTtl = Some(7776000),
@@ -96,7 +95,6 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       clientName = "Web App",
       redirectUris = Set(redirectUri1),
       scope = Set(readScope),
-      externalAudience = List(ClientId("api")),
       secret = Some(currentSecret),
       previousSecret = None,
       accessTokenTtl = 5.minutes,
@@ -115,7 +113,6 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       clientName = "Mobile App",
       redirectUris = Set(redirectUri2),
       scope = Set(writeScope),
-      externalAudience = List(ClientId("api")),
       secret = Some(currentSecret),
       previousSecret = Some(previousSecret),
       accessTokenTtl = 10.minutes,
@@ -159,6 +156,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       for
         client <- ZIO.service[Client]
         service = stub[OAuthClientService]
+        resourceService = stub[versola.central.configuration.resources.ResourceService]
         edgeService = stub[versola.central.configuration.edges.EdgeService]
         tracing <- tracingLayer.build
         security <- securityLayer.build
@@ -166,12 +164,13 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             ClientController.routes.provideEnvironment(
-              ZEnvironment[OAuthClientService](service) ++ ZEnvironment(config) ++ tracing ++ security ++
+              ZEnvironment[OAuthClientService](service) ++ ZEnvironment[versola.central.configuration.resources.ResourceService](resourceService) ++ ZEnvironment[CentralConfig](config) ++ tracing ++ security ++
                 ZEnvironment[versola.central.configuration.edges.EdgeService](edgeService),
             ),
           ),
         )
         _ <- service.verifySecret.succeedsWith(true)
+        _ <- resourceService.verifySecret.succeedsWith(true)
         _ <- setup(service)
         requestWithAuth = request.headers.header(Header.Authorization) match
           case None => request.addHeader(TestAdminAuth.basicAuthHeader)
@@ -192,7 +191,6 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       clientName: String,
       redirectUris: Set[RedirectUri],
       scope: Set[ScopeToken],
-      externalAudience: List[ClientId],
       secret: Option[Chunk[Byte]],
       previousSecret: Option[Chunk[Byte]],
       accessTokenTtl: Duration,
@@ -212,7 +210,6 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       clientName = client.clientName,
       redirectUris = client.redirectUris,
       scope = client.scope,
-      externalAudience = client.externalAudience,
       secret = secret.map(Chunk.fromArray),
       previousSecret = previousSecret.map(Chunk.fromArray),
       accessTokenTtl = client.accessTokenTtl,
@@ -243,7 +240,6 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
                 clientName = "Web App",
                 redirectUris = Set(redirectUri1),
                 scope = Set(readScope),
-                externalAudience = List(ClientId("api")),
                 permissions = Set(readPermission),
                 secretRotation = false,
                 theme = "",
@@ -258,7 +254,6 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
                 clientName = "Mobile App",
                 redirectUris = Set(redirectUri2),
                 scope = Set(writeScope),
-                externalAudience = List(ClientId("api")),
                 permissions = Set(writePermission),
                 secretRotation = true,
                 theme = "",
@@ -310,7 +305,6 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
               clientName = "Web App",
               redirectUris = Set(redirectUri1),
               scope = Set(readScope),
-              externalAudience = List(ClientId("api")),
               secret = Some(Chunk.fromArray(currentSecret)),
               previousSecret = None,
               accessTokenTtl = 5.minutes,
@@ -322,7 +316,6 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
               clientName = "Mobile App",
               redirectUris = Set(redirectUri2),
               scope = Set(writeScope),
-              externalAudience = List(ClientId("api")),
               secret = Some(Chunk.fromArray(currentSecret)),
               previousSecret = Some(Chunk.fromArray(previousSecret)),
               accessTokenTtl = 10.minutes,

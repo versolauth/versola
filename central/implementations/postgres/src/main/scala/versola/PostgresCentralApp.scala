@@ -138,34 +138,32 @@ object PostgresCentralApp extends VersolaApp("central"):
           PostgresUserRepository.live
       )
 
-  override val dependencies: ZLayer[Scope & EnvName & ConfigProvider & Tracing & Client, Throwable, Dependencies] = {
-    val schedule = Schedule.spaced(1.minute)
+  override val dependencies: ZLayer[Scope & EnvName & ConfigProvider & Tracing & Client, Throwable, Dependencies] =
     parseConfig[CentralConfig] >+>
       repositories >+>
       SecurityService.live >+>
       CelEvaluator.live >+>
-      TenantService.live(schedule) >+>
-      PermissionService.live(schedule) >+>
-      ResourceService.live(schedule) >+>
-      OAuthClientService.live(schedule) >+>
-      ChallengeSettingsService.live(schedule) >+>
-      AuthorizationPresetService.live(schedule) >+>
-      OAuthScopeService.live(schedule) >+>
-      RoleService.live(schedule) >+>
-      EdgeService.live(schedule) >+>
+      TenantService.live >+>
+      PermissionService.live >+>
+      ResourceService.live >+>
+      OAuthClientService.live >+>
+      ChallengeSettingsService.live >+>
+      AuthorizationPresetService.live >+>
+      OAuthScopeService.live >+>
+      RoleService.live >+>
+      EdgeService.live >+>
       LocaleService.live >+>
-      JwksService.live(schedule) >+>
-      ServerMetadataService.live(schedule) >+>
+      JwksService.live >+>
+      ServerMetadataService.live >+>
       BootstrapService.live >+>
-      FormService.live(schedule) >+>
-      ThemeService.live(schedule) >+>
-      OtpChallengeService.live(schedule) >+>
-      SystemSettingsService.live(schedule) >+>
+      FormService.live >+>
+      ThemeService.live >+>
+      OtpChallengeService.live >+>
+      SystemSettingsService.live >+>
       CacheSyncService.live >+>
       AuthClient.live >+>
       UserService.live >+>
       UserOutboxProcessor.live
-  }
 
   given DeriveConfig[Secret] = DeriveConfig[String]
     .mapOrFail: str =>

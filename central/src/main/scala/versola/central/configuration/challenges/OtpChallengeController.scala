@@ -1,8 +1,8 @@
 package versola.central.configuration.challenges
 
 import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
-import versola.central.configuration.clients.OAuthClientService
 import versola.central.configuration.edges.EdgeService
+import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.TenantId
 import versola.util.http.Controller
 import zio.ZIO
@@ -10,7 +10,7 @@ import zio.http.{Method, Request, Response, Routes, Status, handler}
 import zio.json.EncoderOps
 
 object OtpChallengeController extends Controller:
-  type Env = Tracing & OtpChallengeService & ChallengeSettingsService & OAuthClientService & CentralConfig & EdgeService
+  type Env = Tracing & OtpChallengeService & ChallengeSettingsService & ResourceService & CentralConfig & EdgeService
 
   def routes: Routes[Env, Throwable] = Routes(
     getTemplatesEndpoint,

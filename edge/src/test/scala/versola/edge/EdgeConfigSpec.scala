@@ -73,6 +73,7 @@ object EdgeConfigSpec extends ZIOSpecDefault:
        |  url = "http://central:8090"
        |}
        |versola-url = "http://localhost:8080"
+       |configuration-cache-refresh-interval = 5 minutes
        |$internalLine
        |""".stripMargin
 

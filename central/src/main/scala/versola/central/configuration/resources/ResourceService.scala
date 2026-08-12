@@ -1,13 +1,18 @@
 package versola.central.configuration.resources
 
+import versola.central.CentralConfig
 import versola.central.configuration.edges.EdgeId
 import versola.central.configuration.sync.{SyncEvent, SyncOps}
 import versola.central.configuration.tenants.{TenantId, TenantRepository}
 import versola.central.configuration.{CreateResourceEndpointRequest, CreateResourceRequest, UpdateResourceRequest}
-import versola.util.ReloadingCache
+import versola.util.{CacheSource, ReloadingCache, Secret, SecureRandom, SecurityService}
 import versola.util.cel.CelEvaluator
 import dev.cel.common.types.{CelType, SimpleType}
-import zio.{Schedule, Scope, Task, ZIO, ZLayer}
+import zio.{Schedule, Scope, Task, URLayer, ZIO, ZLayer}
+import java.security.MessageDigest
+
+import javax.crypto.SecretKey
+import javax.crypto.spec.SecretKeySpec
 
 trait ResourceService:
   def getTenantResources(
@@ -18,28 +23,73 @@ trait ResourceService:
 
   def getResourcesForSync(edgeId: Option[EdgeId]): Task[Vector[ResourceRecord]]
 
-  def createResource(request: CreateResourceRequest): Task[Either[ResourceValidationError, ResourceId]]
+  def verifySecret(provided: Secret): Task[Boolean]
+
+  def createResource(request: CreateResourceRequest): Task[Either[ResourceValidationError, (ResourceId, Option[Secret])]]
 
   def updateResource(request: UpdateResourceRequest): Task[Either[ResourceValidationError, Unit]]
+
+  def rotateSecret(resourceId: ResourceId): Task[Secret]
+
+  def deletePreviousSecret(resourceId: ResourceId): Task[Unit]
 
   def deleteResource(resourceId: ResourceId): Task[Unit]
 
   def sync(event: SyncEvent.ResourcesUpdated): Task[Unit]
 
 object ResourceService:
-  def live(
-      schedule: Schedule[Any, Any, Any],
-  ): ZLayer[ResourceRepository & TenantRepository & CelEvaluator & Scope, Throwable, ResourceService] =
-    ZLayer(ReloadingCache.make[Vector[ResourceRecord]](schedule))
-      >>> ZLayer.fromFunction(Impl(_, _, _, _))
+  case object SecretRotationInProgress extends RuntimeException("Resource secret rotation is already in progress")
+
+  def live: ZLayer[
+    ResourceRepository & TenantRepository & CelEvaluator & SecureRandom & SecurityService & CentralConfig & Scope,
+    Throwable,
+    ResourceService,
+  ] =
+    decryptingCacheSource >>>
+      (ZLayer.fromZIO:
+        ZIO.serviceWithZIO[CentralConfig](config =>
+          ReloadingCache.make[Vector[ResourceRecord]](Schedule.spaced(config.configurationCacheRefreshInterval)),
+        )
+      ) >>>
+      ZLayer.fromFunction(Impl(_, _, _, _, _, _, _))
+
+  /** A [[CacheSource]] that reads the resource records from the repository and decrypts
+    * their secrets, so the in-memory cache holds plaintext secrets and no
+    * decryption is needed on cache reads.
+    */
+  private val decryptingCacheSource
+      : URLayer[ResourceRepository & SecurityService & CentralConfig, CacheSource[Vector[ResourceRecord]]] =
+    ZLayer.fromFunction: (repository: ResourceRepository, securityService: SecurityService, config: CentralConfig) =>
+      new CacheSource[Vector[ResourceRecord]]:
+        override def getAll: Task[Vector[ResourceRecord]] =
+          repository.getAll.flatMap(ZIO.foreach(_)(decryptSecrets(_, securityService, resourceSecretsKey(config))))
+
+  private def resourceSecretsKey(config: CentralConfig): SecretKey =
+    SecretKeySpec(config.clientSecretsSecret, "AES")
+
+  /** Decrypts the at-rest encrypted `secret` and `previousSecret` of a resource record. */
+  private def decryptSecrets(
+      record: ResourceRecord,
+      securityService: SecurityService,
+      key: SecretKey,
+  ): Task[ResourceRecord] =
+    for
+      secret         <- ZIO.foreach(record.secret)(c => securityService.decryptAes256(c, key).map(Secret(_)))
+      previousSecret <- ZIO.foreach(record.previousSecret)(c => securityService.decryptAes256(c, key).map(Secret(_)))
+    yield record.copy(secret = secret, previousSecret = previousSecret)
 
   class Impl(
       cache: ReloadingCache[Vector[ResourceRecord]],
       resourceRepository: ResourceRepository,
       tenantRepository: TenantRepository,
       celEvaluator: CelEvaluator,
+      secureRandom: SecureRandom,
+      securityService: SecurityService,
+      config: CentralConfig,
   ) extends ResourceService:
     export resourceRepository.deleteResource
+
+    private val edgeResourceId = ResourceId("edge")
 
     override def getTenantResources(
         tenantId: TenantId,
@@ -62,16 +112,31 @@ object ResourceService:
             allowedTenantIds = tenants.filter(_.edgeId.contains(id)).map(_.id).toSet
           yield resources.filter(r => allowedTenantIds.contains(r.tenantId))
 
-    override def createResource(request: CreateResourceRequest): Task[Either[ResourceValidationError, ResourceId]] =
-      validateEndpoints(request.endpoints).flatMap:
-        case Some(error) => ZIO.left(error)
-        case None =>
-          resourceRepository.createResource(
-            tenantId = request.tenantId,
-            resourceId = request.resourceId,
-            resource = request.resource,
-            endpoints = request.endpoints.map(asRecord),
-          ).as(Right(request.resourceId))
+    override def verifySecret(provided: Secret): Task[Boolean] =
+      cache.get.map: resources =>
+        resources.find(_.resourceId == ResourceId("central")).exists: resource =>
+          resource.secret.exists(MessageDigest.isEqual(provided, _)) ||
+            resource.previousSecret.exists(MessageDigest.isEqual(provided, _))
+
+    override def createResource(request: CreateResourceRequest): Task[Either[ResourceValidationError, (ResourceId, Option[Secret])]] =
+      if !ResourceId.isValid(request.resourceId) then ZIO.left(ResourceValidationError.InvalidResourceId)
+      else if request.resourceId == edgeResourceId then ZIO.left(ResourceValidationError.ReservedResourceId)
+      else
+        validateEndpoints(request.endpoints).flatMap:
+          case Some(error) => ZIO.left(error)
+          case None =>
+            for
+              secret <- if request.internal then generateSecret.map(Some(_)) else ZIO.none
+              encryptedSecret <- ZIO.foreach(secret)(encryptRawSecret)
+              _ <- resourceRepository.createResource(
+                tenantId = request.tenantId,
+                resourceId = request.resourceId,
+                resource = request.resource,
+                audience = request.audience,
+                endpoints = request.endpoints.map(asRecord),
+                secret = encryptedSecret,
+              )
+            yield Right((request.resourceId, secret))
 
     override def updateResource(request: UpdateResourceRequest): Task[Either[ResourceValidationError, Unit]] =
       validateEndpoints(request.createEndpoints).flatMap:
@@ -80,15 +145,35 @@ object ResourceService:
           resourceRepository.updateResource(
             resourceId = request.resourceId,
             resourcePatch = request.resource,
+            audiencePatch = request.audience,
             deleteEndpoints = request.deleteEndpoints,
             addEndpoints = request.createEndpoints.map(asRecord),
           ).map(Right(_))
 
+    override def rotateSecret(resourceId: ResourceId): Task[Secret] =
+      for
+        newSecret <- generateSecret
+        encryptedSecret <- encryptRawSecret(newSecret)
+        rotated <- resourceRepository.rotateSecret(resourceId, encryptedSecret)
+        _ <- ZIO.fail(SecretRotationInProgress).unless(rotated)
+      yield newSecret
+
+    override def deletePreviousSecret(resourceId: ResourceId): Task[Unit] =
+      resourceRepository.deletePreviousSecret(resourceId)
+
     override def sync(event: SyncEvent.ResourcesUpdated): Task[Unit] =
       SyncOps.syncCache(event)(
         cache,
-        resourceRepository.findResource(event.id),
+        resourceRepository.findResource(event.id).flatMap(ZIO.foreach(_)(decryptSecrets(_, securityService, secretsKey))),
       )
+
+    private val secretsKey: SecretKey = ResourceService.resourceSecretsKey(config)
+
+    private def generateSecret: Task[Secret] =
+      secureRandom.nextBytes(32).map(Secret(_))
+
+    private def encryptRawSecret(secret: Secret): Task[Array[Byte]] =
+      securityService.encryptAes256(secret, secretsKey)
 
     private def validateEndpoints(
         endpoints: Vector[CreateResourceEndpointRequest],

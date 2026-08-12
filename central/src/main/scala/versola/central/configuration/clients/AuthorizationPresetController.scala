@@ -3,13 +3,14 @@ package versola.central.configuration.clients
 import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
 import versola.central.configuration.*
 import versola.central.configuration.edges.EdgeService
+import versola.central.configuration.resources.ResourceService
 import versola.util.http.Controller
 import zio.*
 import zio.http.*
 import zio.json.*
 
 object AuthorizationPresetController extends Controller:
-  type Env = Tracing & AuthorizationPresetService & OAuthClientService & CentralConfig & EdgeService
+  type Env = Tracing & AuthorizationPresetService & ResourceService & CentralConfig & EdgeService
 
   def routes: Routes[Env, Throwable] = Routes(
     getPresetsEndpoint,

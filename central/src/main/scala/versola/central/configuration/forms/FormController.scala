@@ -1,7 +1,7 @@
 package versola.central.configuration.forms
 
-import versola.central.configuration.clients.OAuthClientService
 import versola.central.configuration.edges.EdgeService
+import versola.central.configuration.resources.ResourceService
 import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
 import versola.util.http.Controller
 import zio.ZIO
@@ -9,7 +9,7 @@ import zio.http.{Method, Request, Response, Routes, Status, handler}
 import zio.json.{EncoderOps, JsonCodec}
 
 object FormController extends Controller:
-  type Env = Tracing & FormService & OAuthClientService & CentralConfig & EdgeService
+  type Env = Tracing & FormService & ResourceService & CentralConfig & EdgeService
 
   def routes: Routes[Env, Throwable] = Routes(
     getAllFormsEndpoint,

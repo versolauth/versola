@@ -1,5 +1,6 @@
 package versola.central.configuration.challenges
 
+import versola.central.CentralConfig
 import versola.central.configuration.locales.LocaleService
 import versola.central.configuration.sync.{SyncEvent, SyncOps}
 import versola.central.configuration.tenants.TenantId
@@ -15,10 +16,12 @@ trait OtpChallengeService:
   def sync(event: SyncEvent.OtpTemplatesUpdated): Task[Unit]
 
 object OtpChallengeService:
-  def live(
-      schedule: Schedule[Any, Any, Any],
-  ): ZLayer[OtpChallengeRepository & Scope & LocaleService, Throwable, OtpChallengeService] =
-    ZLayer(ReloadingCache.make[Vector[OtpTemplateRecord]](schedule))
+  def live: ZLayer[OtpChallengeRepository & Scope & LocaleService & CentralConfig, Throwable, OtpChallengeService] =
+    (ZLayer.fromZIO:
+      ZIO.serviceWithZIO[CentralConfig](config =>
+        ReloadingCache.make[Vector[OtpTemplateRecord]](Schedule.spaced(config.configurationCacheRefreshInterval)),
+      )
+    )
       >>> ZLayer.fromFunction(Impl(_, _, _))
 
   class Impl(

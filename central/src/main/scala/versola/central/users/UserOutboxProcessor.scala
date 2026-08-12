@@ -39,12 +39,13 @@ object UserOutboxProcessor:
   ) extends UserOutboxProcessor:
 
     override def start(): URIO[Scope, Unit] =
-      ZIO.logInfo("Starting OutboxProcessor...") *>
-        processOnce
-          .repeat(Schedule.spaced(config.pollInterval))
-          .unit
-          .forkScoped
-          .flatMap(f => fiberRef.set(Some(f)))
+      (ZIO.logInfo("Starting OutboxProcessor...")
+        .delay(Duration.fromSeconds(20)) *>
+          processOnce
+            .repeat(Schedule.spaced(config.pollInterval))
+            .unit)
+        .forkScoped
+        .flatMap(f => fiberRef.set(Some(f)))
 
     override def stop(): UIO[Unit] =
       for

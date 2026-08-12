@@ -108,11 +108,11 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       parseConfig[CoreConfig] >+>
       SecureRandom.live >+>
       SecurityService.live >+>
-      OAuthConfigurationService.live(Schedule.spaced(1.minute)) >+>
+      OAuthConfigurationService.live >+>
       CentralSyncTokenService.live >+>
       JwksSyncClient.live >+>
       MetadataSyncClient.live >+>
-      JwksService.live(Schedule.spaced(1.minute)) >+>
+      JwksService.live >+>
       AuthPropertyGenerator.live >+>
       SessionService.live >+>
       AccessTokenRevocationService.noop >+>

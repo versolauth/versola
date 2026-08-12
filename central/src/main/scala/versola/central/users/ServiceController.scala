@@ -1,7 +1,7 @@
 package versola.central.users
 
 import versola.central.authorizeBasic
-import versola.central.configuration.clients.OAuthClientService
+import versola.central.configuration.resources.ResourceService
 import versola.util.EnvName
 import versola.util.http.Controller
 import zio.*
@@ -9,7 +9,7 @@ import zio.http.*
 import zio.telemetry.opentelemetry.tracing.Tracing
 
 object ServiceController extends Controller:
-  type Env = Tracing & UserOutboxProcessor & AuthClient & OAuthClientService & EnvName & UserService
+  type Env = Tracing & UserOutboxProcessor & AuthClient & ResourceService & EnvName & UserService
 
   def routes: Routes[Env, Throwable] = Routes(flushOutboxEndpoint, syncConfigurationEndpoint, deleteUserEndpoint)
 

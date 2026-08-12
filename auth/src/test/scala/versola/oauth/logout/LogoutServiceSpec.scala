@@ -42,7 +42,6 @@ object LogoutServiceSpec extends UnitSpecBase:
     clientName = "Client 1",
     redirectUris = NonEmptySet("https://example.com/callback"),
     scope = Set(ScopeToken("read")),
-    externalAudience = Nil,
     secret = None,
     previousSecret = None,
     accessTokenTtl = 10.minutes,

@@ -1,11 +1,12 @@
 package versola.central.configuration.scopes
 
+import versola.central.CentralConfig
 import versola.central.configuration.sync.{SyncEvent, SyncOps}
 import versola.central.configuration.tenants.TenantId
 import versola.central.configuration.{CreateScopeRequest, UpdateScopeRequest}
 import versola.util.ReloadingCache
 import zio.json.ast.Json
-import zio.{Schedule, Scope, Task, ZLayer, durationInt}
+import zio.{Schedule, Scope, Task, ZIO, ZLayer, durationInt}
 
 trait OAuthScopeService:
   def getAllScopes: Task[Vector[ScopeRecord]]
@@ -34,10 +35,12 @@ trait OAuthScopeService:
   ): Task[Unit]
 
 object OAuthScopeService:
-  def live(
-      schedule: Schedule[Any, Any, Any],
-  ): ZLayer[OAuthScopeRepository & Scope, Throwable, OAuthScopeService] =
-    ZLayer(ReloadingCache.make[Vector[ScopeRecord]](schedule))
+  def live: ZLayer[OAuthScopeRepository & Scope & CentralConfig, Throwable, OAuthScopeService] =
+    (ZLayer.fromZIO:
+      ZIO.serviceWithZIO[CentralConfig](config =>
+        ReloadingCache.make[Vector[ScopeRecord]](Schedule.spaced(config.configurationCacheRefreshInterval)),
+      )
+    )
       >>> ZLayer.fromFunction(Impl(_, _))
 
   class Impl(

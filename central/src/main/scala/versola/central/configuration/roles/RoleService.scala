@@ -1,5 +1,6 @@
 package versola.central.configuration.roles
 
+import versola.central.CentralConfig
 import versola.central.configuration.edges.EdgeId
 import versola.central.configuration.permissions.Permission
 import versola.central.configuration.sync.{SyncEvent, SyncOps}
@@ -7,7 +8,7 @@ import versola.central.configuration.tenants.{TenantId, TenantRepository}
 import versola.central.configuration.{CreateRoleRequest, RoleResponse, UpdateRoleRequest}
 import versola.util.ReloadingCache
 import zio.json.ast.Json
-import zio.{Schedule, Scope, Task, ZLayer, durationInt}
+import zio.{Schedule, Scope, Task, ZIO, ZLayer, durationInt}
 
 trait RoleService:
   def getTenantRoles(
@@ -35,10 +36,12 @@ trait RoleService:
   def sync(event: SyncEvent.RolesUpdated): Task[Unit]
 
 object RoleService:
-  def live(
-      schedule: Schedule[Any, Any, Any],
-  ): ZLayer[RoleRepository & TenantRepository & Scope, Throwable, RoleService] =
-    ZLayer(ReloadingCache.make[Vector[RoleRecord]](schedule))
+  def live: ZLayer[RoleRepository & TenantRepository & Scope & CentralConfig, Throwable, RoleService] =
+    (ZLayer.fromZIO:
+      ZIO.serviceWithZIO[CentralConfig](config =>
+        ReloadingCache.make[Vector[RoleRecord]](Schedule.spaced(config.configurationCacheRefreshInterval)),
+      )
+    )
       >>> ZLayer.fromFunction(Impl(_, _, _))
 
   class Impl(

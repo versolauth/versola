@@ -207,14 +207,17 @@ object ConversationRouter:
         case Some((AuthFactor(AuthFactorType.password, _), idx)) =>
           conversationService.preparePasswordStep(authId, conversation, idx)
 
+        case Some((AuthFactor(AuthFactorType.passkeyEnroll, _), _)) if conversation.needsPasswordChange =>
+          afterFactor(authId, conversation, nextFactorIndex + 1)
+
         case Some((AuthFactor(AuthFactorType.passkeyEnroll, _), _)) =>
           conversationService.offerPasskeyEnroll(authId, conversation)
 
+        case None if conversation.needsPasswordChange =>
+          conversationService.offerSetPassword(authId, conversation)
+
         case None =>
-          if conversation.needsPasswordChange then
-            conversationService.offerSetPassword(authId, conversation)
-          else
-            conversationService.finish(authId, conversation)
+          conversationService.finish(authId, conversation)
 
     private def nextNeededFactor(
         conversation: ConversationRecord,

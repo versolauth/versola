@@ -19,7 +19,6 @@ export class VersolaClientForm extends LitElement {
   @property({ attribute: false }) availableScopes: OAuthScope[] = [];
   @property({ attribute: false }) availablePermissions: Permission[] = [];
   @property({ attribute: false }) availableResources: Resource[] = [];
-  @property({ attribute: false }) availableClientIds: string[] = [];
   @property({ attribute: false }) availableThemes: ThemeRecord[] = [];
   @property({ attribute: false }) availableOtpTemplates: OtpTemplateRecord[] = [];
   @property({ type: Boolean }) canManageSecrets = false;
@@ -29,7 +28,6 @@ export class VersolaClientForm extends LitElement {
     clientName: '',
     redirectUris: [],
     scope: [],
-    externalAudience: [],
     accessTokenTtl: 3600,
     permissions: [],
     theme: 'default',
@@ -38,19 +36,15 @@ export class VersolaClientForm extends LitElement {
   };
 
   @state() private redirectUriInput = '';
-  @state() private audienceInput = '';
   @state() private ttlValue = 1;
   @state() private ttlUnit: 'minutes' | 'hours' = 'hours';
   @state() private redirectUriError = '';
-  @state() private audienceError = '';
   @state() private logoutMode: 'none' | 'front' | 'back' = 'none';
   @state() private frontChannelLogoutUriError = '';
   @state() private backChannelLogoutUriError = '';
   @state() private authFlowError = '';
-  @state() private audienceSuggestionsOpen = false;
   @state() private openInfoKey: string | null = null;
 
-  private audienceBlurTimeout: number | null = null;
   private handleDocumentClick = () => {
     this.openInfoKey = null;
   };
@@ -646,7 +640,6 @@ export class VersolaClientForm extends LitElement {
 
   disconnectedCallback() {
     document.removeEventListener('click', this.handleDocumentClick);
-    this.clearAudienceBlurTimeout();
     super.disconnectedCallback();
   }
 
@@ -659,14 +652,6 @@ export class VersolaClientForm extends LitElement {
         return;
       }
     }
-
-    const audienceError = this.getAudienceValidationError(this.formData.externalAudience || []);
-    if (audienceError) {
-      this.audienceError = audienceError;
-      return;
-    }
-
-    this.audienceError = '';
 
     const authFlow = this.formData.authFlow ?? null;
     if (authFlow) {
@@ -714,7 +699,6 @@ export class VersolaClientForm extends LitElement {
       clientName: this.formData.clientName!,
       redirectUris: authFlowRedirectUris,
       scope: this.formData.scope || [],
-      externalAudience: this.formData.externalAudience || [],
       hasPreviousSecret: false,
       accessTokenTtl: ttlToSeconds(this.ttlValue, this.ttlUnit),
       permissions: this.formData.permissions || [],
@@ -956,134 +940,6 @@ export class VersolaClientForm extends LitElement {
     this.formData = {
       ...this.formData,
       redirectUris: (this.formData.redirectUris || []).filter(u => u !== uri),
-    };
-  }
-
-  private addAudience() {
-    this.addAudienceValue(this.audienceInput);
-  }
-
-  private addAudienceValue(value: string) {
-    const aud = value.trim();
-    if (!aud) return;
-
-    const audienceError = this.getAudienceEntryValidationError(aud);
-    if (audienceError) {
-      this.audienceError = audienceError;
-      return;
-    }
-
-    this.formData = {
-      ...this.formData,
-      externalAudience: [...(this.formData.externalAudience || []), aud],
-    };
-    this.audienceInput = '';
-    this.audienceError = '';
-    this.audienceSuggestionsOpen = false;
-  }
-
-  private isExistingAudience(audience: string) {
-    return this.availableClientIds.includes(audience);
-  }
-
-  private getAudienceValidationError(audiences: string[]) {
-    const seen = new Set<string>();
-
-    for (const audience of audiences) {
-      const error = this.getAudienceReferenceValidationError(audience);
-      if (error) {
-        return error;
-      }
-
-      if (seen.has(audience)) {
-        return 'Audience has already been added';
-      }
-
-      seen.add(audience);
-    }
-
-    return '';
-  }
-
-  private getAudienceEntryValidationError(audience: string) {
-    const referenceError = this.getAudienceReferenceValidationError(audience);
-    if (referenceError) {
-      return referenceError;
-    }
-
-    if ((this.formData.externalAudience || []).includes(audience)) {
-      return 'Audience has already been added';
-    }
-
-    return '';
-  }
-
-  private getAudienceReferenceValidationError(audience: string) {
-    if (audience === this.formData.id?.trim()) {
-      return 'Audience cannot reference the client itself';
-    }
-
-    if (!this.isExistingAudience(audience)) {
-      return 'Audience must reference an existing client in this tenant';
-    }
-
-    return '';
-  }
-
-  private handleAudienceInput(e: Event) {
-    this.audienceInput = (e.target as HTMLInputElement).value;
-    this.clearAudienceBlurTimeout();
-    this.audienceSuggestionsOpen = true;
-    if (this.audienceError) {
-      this.audienceError = '';
-    }
-  }
-
-  private handleAudienceFocus() {
-    this.clearAudienceBlurTimeout();
-    this.audienceSuggestionsOpen = true;
-  }
-
-  private handleAudienceBlur() {
-    this.clearAudienceBlurTimeout();
-    this.audienceBlurTimeout = window.setTimeout(() => {
-      this.audienceSuggestionsOpen = false;
-      this.audienceBlurTimeout = null;
-    }, 120);
-  }
-
-  private clearAudienceBlurTimeout() {
-    if (this.audienceBlurTimeout !== null) {
-      window.clearTimeout(this.audienceBlurTimeout);
-      this.audienceBlurTimeout = null;
-    }
-  }
-
-  private selectAudience(audience: string) {
-    this.clearAudienceBlurTimeout();
-    this.addAudienceValue(audience);
-  }
-
-  private get filteredAudienceOptions() {
-    const selectedAudiences = new Set(this.formData.externalAudience || []);
-    const currentClientId = this.formData.id?.trim() || '';
-    const query = this.audienceInput.trim().toLowerCase();
-
-    return this.availableClientIds
-      .filter(audience => {
-        if (selectedAudiences.has(audience) || audience === currentClientId) {
-          return false;
-        }
-
-        return !query || audience.toLowerCase().includes(query);
-      })
-      .sort((a, b) => a.localeCompare(b));
-  }
-
-  private removeAudience(aud: string) {
-    this.formData = {
-      ...this.formData,
-      externalAudience: (this.formData.externalAudience || []).filter(a => a !== aud),
     };
   }
 
@@ -1430,9 +1286,6 @@ export class VersolaClientForm extends LitElement {
   }
 
   render() {
-    const filteredAudienceOptions = this.filteredAudienceOptions;
-    const showAudienceSuggestions = this.audienceSuggestionsOpen && (!!this.audienceInput.trim() || filteredAudienceOptions.length > 0);
-
     return html`
       <div class="form-header">
         <div class="form-header-lead">
@@ -1476,64 +1329,6 @@ export class VersolaClientForm extends LitElement {
                 required
                 placeholder="e.g., My Web Application"
               />
-            </div>
-
-            <div class="form-group">
-              <label for="external-audience">External Audience</label>
-              <div class="autocomplete-wrapper compact-input">
-                <input
-                  type="text"
-                  id="external-audience"
-                  class="${this.audienceError ? 'input-error' : ''}"
-                  .value=${this.audienceInput}
-                  @input=${this.handleAudienceInput}
-                  @focus=${this.handleAudienceFocus}
-                  @blur=${this.handleAudienceBlur}
-                  @keydown=${(e: KeyboardEvent) => {
-                    if (e.key === 'Enter') {
-                      e.preventDefault();
-                      this.addAudience();
-                    }
-
-                    if (e.key === 'Escape') {
-                      this.audienceSuggestionsOpen = false;
-                    }
-                  }}
-                  aria-haspopup="listbox"
-                  aria-expanded=${showAudienceSuggestions ? 'true' : 'false'}
-                  aria-controls="external-audience-options"
-                  placeholder="api-service"
-                  autocomplete="off"
-                />
-              </div>
-              ${showAudienceSuggestions ? html`
-                <div class="autocomplete-dropdown compact-autocomplete-dropdown" id="external-audience-options" role="listbox" aria-label="Available client audiences">
-                  ${filteredAudienceOptions.length > 0 ? filteredAudienceOptions.map(audience => html`
-                    <button
-                      type="button"
-                      class="autocomplete-option"
-                      @mousedown=${(e: MouseEvent) => e.preventDefault()}
-                      @click=${() => this.selectAudience(audience)}
-                      aria-label=${`Select audience ${audience}`}
-                    >${audience}</button>
-                  `) : html`
-                    <div class="autocomplete-empty">No matching clients</div>
-                  `}
-                </div>
-              ` : ''}
-              ${this.audienceError ? html`
-                <div class="error-message" style="margin-top: 0.5rem;">${this.audienceError}</div>
-              ` : ''}
-              ${(this.formData.externalAudience || []).length > 0 ? html`
-                <div class="tag-list">
-                  ${this.formData.externalAudience!.map(aud => html`
-                    <div class="tag">
-                      <span>${aud}</span>
-                      <button type="button" class="icon-action danger tag-remove" @click=${() => this.removeAudience(aud)} title="Remove audience" aria-label=${`Remove audience ${aud}`}>✕</button>
-                    </div>
-                  `)}
-                </div>
-              ` : ''}
             </div>
 
             <div class="form-group">

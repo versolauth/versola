@@ -5,7 +5,7 @@ import versola.oauth.client.model.TenantId
 import versola.role.model.RoleId
 import versola.user.model.{Login, UserId}
 import versola.user.{UserRepository, UserRolesRepository}
-import versola.util.{CoreConfig, Salt, Secret, SecureRandom, SecurityService}
+import versola.util.{CoreConfig, EnvName, Phone, Salt, Secret, SecureRandom, SecurityService}
 import zio.{Clock, Task, ZIO, ZLayer}
 
 import java.util.UUID
@@ -19,13 +19,17 @@ object AuthBootstrapService:
     * first login, a subsequent bootstrap run re-creates it.
     */
   private val BootstrapPasswordTtlSeconds = 24L * 60 * 60
+  private val NonProdAdminPhone = Phone("+12025551234")
+
+  private[versola] def adminPhone(envName: EnvName): Option[Phone] =
+    Option.when(envName.isTest)(NonProdAdminPhone)
 
   val live: ZLayer[
-    UserRepository & UserRolesRepository & PasswordRepository & SecurityService & SecureRandom & CoreConfig,
+    UserRepository & UserRolesRepository & PasswordRepository & SecurityService & SecureRandom & CoreConfig & EnvName,
     Throwable,
     AuthBootstrapService,
   ] =
-    ZLayer.fromFunction(Impl(_, _, _, _, _, _)) >+>
+    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _)) >+>
       ZLayer(ZIO.serviceWithZIO[AuthBootstrapService](_.bootstrap))
 
   private class Impl(
@@ -35,6 +39,7 @@ object AuthBootstrapService:
       securityService: SecurityService,
       secureRandom: SecureRandom,
       config: CoreConfig,
+      envName: EnvName,
   ) extends AuthBootstrapService:
 
     def bootstrap: Task[Unit] =
@@ -44,13 +49,16 @@ object AuthBootstrapService:
           existing <- userRepo.findByLogin(Login(cfg.login))
           userId <- existing match
             case Some(record) =>
-              ZIO.logInfo(s"Admin user '${cfg.login}' already exists, skipping creation") *>
+              ZIO.when(record.phone.isEmpty && adminPhone(envName).isDefined):
+                secureRandom.nextUUIDv7.flatMap: version =>
+                  userRepo.upsert(record.id, version, record.email, adminPhone(envName), record.login)
+              *> ZIO.logInfo(s"Admin user '${cfg.login}' already exists, skipping creation") *>
                 ZIO.succeed(record.id)
             case None =>
               val adminUserId = UserId(cfg.adminUserId)
               for
                 version <- secureRandom.nextUUIDv7
-                _ <- userRepo.upsert(adminUserId, version, email = None, phone = None, login = Some(Login(cfg.login)))
+                _ <- userRepo.upsert(adminUserId, version, email = None, phone = adminPhone(envName), login = Some(Login(cfg.login)))
                 _ <- ZIO.logInfo(s"Created admin user '${cfg.login}' with id $adminUserId")
               yield adminUserId
           _ <- userRolesRepo.updateRoles(

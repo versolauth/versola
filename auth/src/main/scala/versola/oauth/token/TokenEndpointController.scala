@@ -4,7 +4,7 @@ import com.nimbusds.jose.crypto.RSASSASigner
 import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm, JWSHeader}
 import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{AuthMethodRef, ScopeToken}
+import versola.oauth.client.model.{AuthMethodRef, ResourceUri, ScopeToken}
 import versola.oauth.jwks.JwksService
 import versola.oauth.model.{AccessToken, AuthorizationCode, CodeVerifier, RefreshToken}
 import versola.oauth.token.model.{ClientCredentialsRequest, CodeExchangeRequest, IssuedTokens, RefreshTokenRequest, TokenEndpointError, TokenErrorResponse, TokenRequest, TokenResponse}
@@ -179,9 +179,18 @@ object TokenEndpointController extends Controller:
     for
       refreshToken <- FormDecoder.single(form, "refresh_token", RefreshToken.fromBase64Url)
       scope <- FormDecoder.optional(form, "scope", scope => Right(ScopeToken.parseTokens(scope)))
-    yield RefreshTokenRequest(refreshToken, scope)
+      resources <- resourceRequestDecoder(form)
+    yield RefreshTokenRequest(refreshToken, scope, resources)
 
   val clientCredentialsRequestDecoder: FormDecoder[ClientCredentialsRequest] = (form: Form) =>
     for
       scope <- FormDecoder.optional(form, "scope", scope => Right(ScopeToken.parseTokens(scope)))
-    yield ClientCredentialsRequest(scope)
+      resources <- resourceRequestDecoder(form)
+    yield ClientCredentialsRequest(scope, resources)
+
+  private def resourceRequestDecoder(form: Form): IO[String, Option[List[ResourceUri]]] =
+    val resourceFields = form.formData.filter(_.name == "resource")
+    val resourceValues = resourceFields.flatMap: field =>
+      field.stringValue.toList.flatMap(ResourceUri.splitFormValue).filter(_.nonEmpty)
+    ZIO.foreach(resourceValues)(value => ZIO.fromEither(ResourceUri.parse(value)))
+      .map(resources => Option.when(resourceFields.nonEmpty)(resources.toList))

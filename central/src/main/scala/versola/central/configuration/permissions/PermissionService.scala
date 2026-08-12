@@ -1,5 +1,6 @@
 package versola.central.configuration.permissions
 
+import versola.central.CentralConfig
 import versola.central.configuration.{CreatePermissionRequest, UpdatePermissionRequest}
 import versola.central.configuration.edges.EdgeId
 import versola.central.configuration.sync.{SyncEvent, SyncOps}
@@ -35,10 +36,12 @@ trait PermissionService:
   ): Task[Unit]
 
 object PermissionService:
-  def live(
-      schedule: Schedule[Any, Any, Any],
-  ): ZLayer[PermissionRepository & TenantRepository & Scope, Throwable, PermissionService] =
-    ZLayer(ReloadingCache.make[Vector[PermissionRecord]](schedule))
+  def live: ZLayer[PermissionRepository & TenantRepository & Scope & CentralConfig, Throwable, PermissionService] =
+    (ZLayer.fromZIO:
+      ZIO.serviceWithZIO[CentralConfig](config =>
+        ReloadingCache.make[Vector[PermissionRecord]](Schedule.spaced(config.configurationCacheRefreshInterval)),
+      )
+    )
       >>> ZLayer.fromFunction(Impl(_, _, _))
 
   class Impl(

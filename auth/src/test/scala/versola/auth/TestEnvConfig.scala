@@ -102,4 +102,5 @@ object TestEnvConfig:
         startTls = true,
       )
     ),
+    configurationCacheRefreshInterval = 5.minutes,
   )

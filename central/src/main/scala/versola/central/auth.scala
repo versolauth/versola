@@ -1,25 +1,21 @@
 package versola.central
 
-import versola.central.configuration.clients.OAuthClientService
 import versola.central.configuration.edges.{EdgeId, EdgeService}
+import versola.central.configuration.resources.ResourceService
 import versola.util.{JWT, Secret}
 import versola.util.http.Unauthorized
 import zio.ZIO
 import zio.http.{Header, Request}
 import zio.json.{JsonCodec, jsonField}
 
-/** Verifies that a request carries the central secret via HTTP Basic.
-  *
-  * The secret is loaded from the `central-admin` OAuth client record (current or
-  * previous, for rotation support). This means it never needs to be stored in env.
-  */
-def authorizeBasic(request: Request): ZIO[OAuthClientService, Unauthorized.type, Unit] =
+/** Verifies the central resource secret via HTTP Basic. */
+def authorizeBasic(request: Request): ZIO[ResourceService, Unauthorized.type, Unit] =
   request.header(Header.Authorization) match
-    case Some(Header.Authorization.Basic(_, password)) =>
+    case Some(Header.Authorization.Basic(username, password)) if username == "central" =>
       for
         provided <- ZIO.fromEither(Secret.fromBase64Url(password.stringValue)).orElseFail(Unauthorized)
-        service  <- ZIO.service[OAuthClientService]
-        valid    <- service.verifySecret(provided).orElseFail(Unauthorized)
+        resourceService <- ZIO.service[ResourceService]
+        valid <- resourceService.verifySecret(provided).orElseFail(Unauthorized)
         _        <- ZIO.unless(valid)(ZIO.fail(Unauthorized))
       yield ()
 

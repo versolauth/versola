@@ -52,11 +52,13 @@ trait OAuthClientService:
   def verifySecret(provided: Secret): Task[Boolean]
 
 object OAuthClientService:
-  def live(
-      schedule: Schedule[Any, Any, Any],
-  ): ZLayer[Scope & OAuthClientRepository & TenantRepository & SecureRandom & SecurityService & CentralConfig, Throwable, OAuthClientService] =
+  def live: ZLayer[Scope & OAuthClientRepository & TenantRepository & SecureRandom & SecurityService & CentralConfig, Throwable, OAuthClientService] =
     decryptingCacheSource >>>
-      ZLayer(ReloadingCache.make[Vector[OAuthClientRecord]](schedule)) >>>
+      (ZLayer.fromZIO:
+        ZIO.serviceWithZIO[CentralConfig](config =>
+          ReloadingCache.make[Vector[OAuthClientRecord]](Schedule.spaced(config.configurationCacheRefreshInterval)),
+        )
+      ) >>>
       ZLayer.fromFunction(Impl(_, _, _, _, _, _))
 
   /** A [[CacheSource]] that reads the client records from the
@@ -130,7 +132,6 @@ object OAuthClientService:
           clientName = request.clientName,
           redirectUris = request.redirectUris,
           scope = request.allowedScopes,
-          externalAudience = request.audience,
           secret = Some(encryptedSecret),
           previousSecret = None,
           accessTokenTtl = Duration.fromSeconds(request.accessTokenTtl),
