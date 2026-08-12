@@ -662,9 +662,13 @@ successfully reached `auth` and `auth` answered. Only 502/000 indicates a real p
 
 **Status: fixed at the application level**, in two places — `ReloadingCache.make` retries the
 initial load with exponential backoff, so the affected service waits for `central` instead of
-failing, and if startup does fail anyway `VersolaApp.run`'s failure handlers force-terminate the
-JVM with `Runtime.getRuntime.halt(1)`. The section below is kept because the *cause* is still
-worth understanding, and because it fully applies if you're ever running an older image.
+failing, and if startup does fail anyway `VersolaApp.run`'s failure handlers re-fail instead of
+terminating in place, so `ZIOApp` unwinds the scope and finalizers actually run (Hikari pool
+closed, spans flushed) before the process exits. A daemon watchdog thread bounds that unwind: if
+it hasn't finished within `startupFailureShutdownTimeout` (20s), the watchdog calls
+`Runtime.getRuntime.halt(1)` so a wedged finalizer can't leave the zombie behind again. The
+section below is kept because the *cause* is still worth understanding, and because it fully
+applies if you're ever running an older image.
 
 Both `auth` and `edge` read configuration from `central` once, synchronously, during their own
 startup — `auth` syncs OAuth clients, `edge` syncs OAuth clients *and* authorization presets. If
@@ -680,7 +684,12 @@ failing part and keeps running independently, holding the JVM alive on its own n
 Note that `System.exit(1)` does **not** fix this — `exit` runs shutdown hooks and waits for them,
 and `ZIOApp` installs one that waits for the ZIO runtime to drain; called from inside a fiber, that
 hook waits on the runtime while the runtime waits on the fiber blocked in `exit`, and the JVM never
-terminates. `halt(1)` skips shutdown hooks entirely and is what actually terminates the process.
+terminates. Calling `Runtime.getRuntime.halt(1)` directly avoids that deadlock but skips
+finalizers entirely, so the Hikari pool and OTel exporter never get a chance to close/flush.
+Instead, the failure handlers re-fail the effect so `ZIOApp` unwinds the scope normally, and a
+daemon watchdog thread halts the JVM only if that unwind hasn't completed within
+`startupFailureShutdownTimeout` (20s) — finalizers run on the common path, and the watchdog is
+purely a backstop against a wedged one.
 
 If you do see a container stuck (old image, or some other stall), confirm with:
 ```bash
