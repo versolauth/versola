@@ -3,13 +3,13 @@ package versola.oauth.authorize
 import versola.oauth.authorize.model.{AuthorizeRequest, Error, Prompt, ResponseTypeEntry}
 import versola.oauth.client.{OAuthConfigurationService, ResourceResolver}
 import versola.oauth.client.model.{Acr, ClientId, OAuthClientRecord, PrimaryCredential, ResourceUri, ScopeToken}
-import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, Nonce, State}
+import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, Nonce, RequestUri, RequestUriReference, State}
 import versola.oauth.model.{SessionCookie, UserAgentCookie}
 import versola.oauth.session.model.SessionId
 import versola.oauth.userinfo.model.RequestedClaims
 import versola.util.CoreConfig
-import versola.util.{Base64, Email, Phone}
-import zio.http.{Header, Method, Request, URL}
+import versola.util.{Base64, Email, Phone, Secret, SecurityService}
+import zio.http.{Form, Header, Method, Request, URL}
 import zio.json.*
 import zio.prelude.{NonEmptyList, NonEmptySet}
 import zio.{Chunk, IO, Task, ZIO, ZLayer}
@@ -19,8 +19,16 @@ trait AuthorizeRequestParser:
       request: Request,
   ): IO[Error, AuthorizeRequest]
 
+  /** Validates an already extracted parameter set, as the `/par` endpoint does before the
+    * request is ever seen by a user agent (RFC 9126 §2.1).
+    */
+  def validate(
+      params: Map[String, Chunk[String]],
+      request: Request,
+  ): IO[Error, AuthorizeRequest]
+
 object AuthorizeRequestParser:
-  def live = ZLayer.fromFunction(Impl(_, _))
+  def live = ZLayer.fromFunction(Impl(_, _, _, _))
 
   /** Keeps `state` (echoed into the ConversationCookie alongside the redirect URI) small
     * enough that it can't push that cookie past the ~4 KiB per-cookie limit browsers
@@ -28,13 +36,62 @@ object AuthorizeRequestParser:
     */
   private val MaxStateLength = 128
 
-  class Impl(config: CoreConfig, oauthClientService: OAuthConfigurationService) extends AuthorizeRequestParser:
+  /** Flattens a form into the same shape query parameters have, splitting the repeatable
+    * `resource` parameter the same way `/authorize` does for POST bodies.
+    */
+  def paramsFromForm(form: Form): Map[String, Chunk[String]] =
+    form.formData
+      .flatMap { field =>
+        field.stringValue.toList.flatMap { value =>
+          val values =
+            if field.name == "resource" then ResourceUri.splitFormValue(value)
+            else List(value)
+          values.map(field.name -> _)
+        }
+      }
+      .groupMap(_._1)(_._2).view.mapValues(Chunk.fromIterable).toMap
+
+  class Impl(
+      config: CoreConfig,
+      oauthClientService: OAuthConfigurationService,
+      pushedAuthorizationRepository: PushedAuthorizationRepository,
+      securityService: SecurityService,
+  ) extends AuthorizeRequestParser:
 
     def parse(
         request: Request,
     ): IO[Error, AuthorizeRequest] =
       for
-        params <- extractRequestParams(request).orElseFail(Error.BadRequest)
+        rawParams <- extractRequestParams(request).orElseFail(Error.BadRequest)
+        params <- resolvePushedRequest(rawParams)
+        authorizeRequest <- validate(params, request)
+      yield authorizeRequest
+
+    /** RFC 9126 §4: a `request_uri` obtained from `/par` replaces the authorization request
+      * payload entirely, is bound to the client that pushed it, and is single-use.
+      */
+    private def resolvePushedRequest(
+        params: Map[String, Chunk[String]],
+    ): IO[Error, Map[String, Chunk[String]]] =
+      getParam(params, "request_uri").orElseFail(Error.BadRequest).flatMap:
+        case None => ZIO.succeed(params)
+        case Some(requestUri) =>
+          for
+            reference <- ZIO.fromEither(RequestUri.parse(requestUri)).orElseFail(Error.BadRequest)
+            referenceMac <- securityService.mac(Secret(reference), config.security.parRequestsSecret)
+              .orElseFail(Error.BadRequest)
+            record <- pushedAuthorizationRepository.consume(referenceMac)
+              .orElseFail(Error.BadRequest)
+              .someOrFail(Error.BadRequest)
+            clientId <- getParam(params, "client_id").orElseFail(Error.BadRequest)
+            _ <- ZIO.fail(Error.BadRequest).unless(clientId.forall(_ == record.clientId))
+          yield record.params.view.mapValues(Chunk.fromIterable).toMap
+
+    def validate(
+        params: Map[String, Chunk[String]],
+        request: Request,
+    ): IO[Error, AuthorizeRequest] =
+      for
         (redirectUri, redirectUriString) <- parseRedirectUri(params)
 
         clientId <- getParam(params, "client_id")

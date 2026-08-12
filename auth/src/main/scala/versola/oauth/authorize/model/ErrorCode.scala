@@ -8,6 +8,7 @@ object ErrorCode:
   opaque type Type <: String = String
 
   val InvalidRequest: ErrorCode = "invalid_request"
+  val InvalidClient: ErrorCode = "invalid_client"
   val UnsupportedResponseType: ErrorCode = "unsupported_response_type"
   val UnauthorizedClient: ErrorCode = "unauthorized_client"
   val InvalidScope: ErrorCode = "invalid_scope"

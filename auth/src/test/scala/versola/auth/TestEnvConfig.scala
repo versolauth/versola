@@ -75,6 +75,7 @@ object TestEnvConfig:
       conversationCookieSecret = Secret.Bytes32(Array.fill(32)(0.toByte)),
       sessionCookieSecret      = Secret.Bytes32(Array.fill(32)(0.toByte)),
       userAgentCookieSecret    = Secret.Bytes32(Array.fill(32)(0.toByte)),
+      parRequestsSecret        = Secret.Bytes32(Array.fill(32)(0.toByte)),
     ),
     jwt = jwtConfig,
     central = CoreConfig.CentralSyncConfig(
@@ -103,4 +104,5 @@ object TestEnvConfig:
       )
     ),
     configurationCacheRefreshInterval = 5.minutes,
+    par = None,
   )

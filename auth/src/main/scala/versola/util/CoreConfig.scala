@@ -14,7 +14,9 @@ case class CoreConfig(
     otpProvider: Option[CoreConfig.OtpProvider],
     smtp: Option[CoreConfig.SmtpConfig],
     configurationCacheRefreshInterval: Duration,
-)
+    par: Option[CoreConfig.ParConfig],
+):
+  def parOrDefault: CoreConfig.ParConfig = par.getOrElse(CoreConfig.ParConfig.default)
 
 object CoreConfig:
   case class BootstrapConfig(
@@ -60,4 +62,15 @@ object CoreConfig:
     conversationCookieSecret: Secret.Bytes32,
     sessionCookieSecret: Secret.Bytes32,
     userAgentCookieSecret: Secret.Bytes32,
+    parRequestsSecret: Secret.Bytes32,
 )
+
+  /** RFC 9126 pushed authorization request endpoint settings. */
+  case class ParConfig(
+      requestUriTtl: Duration,
+      maxRequestSize: Int,
+  )
+
+  object ParConfig:
+    /** RFC 9126 §2.2 suggests a short lifetime, typically between 5 and 600 seconds. */
+    val default: ParConfig = ParConfig(requestUriTtl = Duration.fromSeconds(60), maxRequestSize = 8192)

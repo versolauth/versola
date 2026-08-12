@@ -2,8 +2,8 @@ package versola
 
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.cleanup.PostgresCleanupManager
-import versola.oauth.PostgresAuthorizationCodeRepository
-import versola.oauth.authorize.{AcrResolutionService, AuthorizeEndpointController, AuthorizeEndpointService, AuthorizeRequestParser}
+import versola.oauth.{PostgresAuthorizationCodeRepository, PostgresPushedAuthorizationRepository}
+import versola.oauth.authorize.{AcrResolutionService, AuthorizeEndpointController, AuthorizeEndpointService, AuthorizeRequestParser, PushedAuthorizationController, PushedAuthorizationRepository, PushedAuthorizationService}
 import versola.oauth.challenge.passkey.{PasskeyRepository, PostgresPasskeyRepository, WebAuthnService}
 import versola.oauth.challenge.password.{PasswordRepository, PasswordService, PostgresPasswordRepository}
 import versola.oauth.client.{ServiceController, OAuthClientSyncClient, OAuthConfigurationService, OAuthScopeSyncClient}
@@ -46,6 +46,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       OAuthConfigurationService &
       ConversationRepository &
       AuthorizationCodeRepository &
+      PushedAuthorizationRepository &
       SessionRepository &
       UserAgentRepository &
       PasswordRepository &
@@ -60,6 +61,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       RevocationService &
       AccessTokenRevocationService &
       AuthorizeRequestParser &
+      PushedAuthorizationService &
       AuthorizeEndpointService &
       ConversationRouter &
       ConversationService &
@@ -78,6 +80,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
   override def routes: Routes[Dependencies & Tracing & EnvName, Throwable] =
     List(
       AuthorizeEndpointController.routes,
+      PushedAuthorizationController.routes,
       TokenEndpointController.routes,
       IntrospectionController.routes,
       RevocationController.routes,
@@ -95,6 +98,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       PostgresUserRolesRepository.live >+>
       PostgresConversationRepository.live >+>
       PostgresAuthorizationCodeRepository.live >+>
+      PostgresPushedAuthorizationRepository.live >+>
       PostgresSessionRepository.live >+>
       PostgresUserAgentRepository.live >+>
       PostgresPasswordRepository.live >+>
@@ -120,6 +124,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       IntrospectionService.live >+>
       RevocationService.live >+>
       AuthorizeRequestParser.live >+>
+      PushedAuthorizationService.live >+>
       OtpGenerationService.live >+>
       ZLayer.succeed(versola.oauth.conversation.otp.OtpDecisionService.Impl()) >+>
       EmailOtpProvider.live >+>

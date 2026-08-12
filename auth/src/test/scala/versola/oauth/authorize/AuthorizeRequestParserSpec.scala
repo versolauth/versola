@@ -4,7 +4,7 @@ import versola.auth.TestEnvConfig
 import versola.oauth.authorize.model.*
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.*
-import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, State}
+import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, RequestUri, RequestUriReference, State}
 import versola.util.*
 import zio.*
 import zio.http.*
@@ -38,7 +38,14 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
   class Env:
     val configuration = stub[OAuthConfigurationService]
     configuration.getResourcesForClient.returnsWith(ZIO.succeed(Nil))
-    val parser = AuthorizeRequestParser.Impl(TestEnvConfig.coreConfig, configuration)
+    val pushedAuthorizationRepository = stub[PushedAuthorizationRepository]
+    val securityService = stub[SecurityService]
+    val parser = AuthorizeRequestParser.Impl(
+      TestEnvConfig.coreConfig,
+      configuration,
+      pushedAuthorizationRepository,
+      securityService,
+    )
 
   def validParams = Map(
     "client_id" -> clientId.toString,
@@ -49,6 +56,11 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
     "code_challenge" -> "a" * 43,
     "code_challenge_method" -> "S256"
   )
+
+  private val requestUriReference = RequestUriReference(Array.fill(32)(6.toByte))
+  private val requestUri = RequestUri(requestUriReference)
+  private val requestUriMac = MAC(Array.fill(32)(7.toByte))
+  private val pushedRecord = PushedAuthorizationRecord(clientId, validParams.view.mapValues(List(_)).toMap)
 
   def spec = suite("AuthorizeRequestParser")(
     suite("parse GET")(
@@ -240,5 +252,76 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
         yield
           assertTrue(result.loginHint == Some(Right(Phone("+12025551234"))))
       }
-    )
+    ),
+    suite("request_uri")(
+      test("replaces the request payload with the pushed one") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(Map(
+          "client_id" -> clientId.toString,
+          "request_uri" -> requestUri,
+        )))
+        for
+          _ <- env.securityService.mac.succeedsWith(requestUriMac)
+          _ <- env.pushedAuthorizationRepository.consume.succeedsWith(Some(pushedRecord))
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request)
+        yield assertTrue(
+          result.clientId == clientId,
+          result.redirectUri == redirectUri,
+          result.state == Some(State("test-state")),
+          env.pushedAuthorizationRepository.consume.calls.map(_.toSeq) == List(requestUriMac.toSeq),
+        )
+      },
+      test("ignores parameters sent alongside the request_uri") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(Map(
+          "client_id" -> clientId.toString,
+          "request_uri" -> requestUri,
+          "scope" -> "openid profile email",
+        )))
+        for
+          _ <- env.securityService.mac.succeedsWith(requestUriMac)
+          _ <- env.pushedAuthorizationRepository.consume.succeedsWith(Some(pushedRecord))
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request)
+        yield assertTrue(result.scope == Set(ScopeToken("openid"), ScopeToken("profile")))
+      },
+      test("fails when the request_uri is unknown or expired") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(Map(
+          "client_id" -> clientId.toString,
+          "request_uri" -> requestUri,
+        )))
+        for
+          _ <- env.securityService.mac.succeedsWith(requestUriMac)
+          _ <- env.pushedAuthorizationRepository.consume.succeedsWith(None)
+          result <- env.parser.parse(request).either
+        yield assertTrue(result == Left(Error.BadRequest))
+      },
+      test("fails when the request_uri is not a pushed request reference") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(Map(
+          "client_id" -> clientId.toString,
+          "request_uri" -> "https://client.example.org/request.jwt",
+        )))
+        for
+          result <- env.parser.parse(request).either
+        yield assertTrue(
+          result == Left(Error.BadRequest),
+          env.pushedAuthorizationRepository.consume.calls.isEmpty,
+        )
+      },
+      test("fails when the request_uri was pushed by another client") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(Map(
+          "client_id" -> "other-client",
+          "request_uri" -> requestUri,
+        )))
+        for
+          _ <- env.securityService.mac.succeedsWith(requestUriMac)
+          _ <- env.pushedAuthorizationRepository.consume.succeedsWith(Some(pushedRecord))
+          result <- env.parser.parse(request).either
+        yield assertTrue(result == Left(Error.BadRequest))
+      },
+    ),
   )
