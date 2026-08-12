@@ -46,17 +46,21 @@ object PushedAuthorizationController extends Controller:
       else ZIO.succeed(errorResponse(PushedAuthorizationError.MethodNotAllowed))
     }
 
-  /** RFC 9126 §2.3: an oversized pushed request is rejected with 413 before it is parsed. */
+  /** RFC 9126 §2.3: an oversized pushed request is rejected with 413 before it is parsed.
+    * The body is read as a stream bounded by the limit, so a request that understates or
+    * omits its length (chunked transfer encoding) cannot be buffered in full.
+    */
   private def readForm(request: Request, maxRequestSize: Int): IO[PushedAuthorizationError, Form] =
     val declaredSize = request.header(Header.ContentLength).map(_.length)
     for
       _ <- ZIO.fail(PushedAuthorizationError.RequestTooLarge)
         .when(declaredSize.exists(_ > maxRequestSize))
-      body <- request.body.asChunk.orElseFail(PushedAuthorizationError.Validation(
-        error = "invalid_request",
-        errorDescription = Some("The pushed authorization request body could not be read"),
-        errorUri = None,
-      ))
+      body <- request.body.asStream.take(maxRequestSize.toLong + 1).runCollect
+        .orElseFail(PushedAuthorizationError.Validation(
+          error = "invalid_request",
+          errorDescription = Some("The pushed authorization request body could not be read"),
+          errorUri = None,
+        ))
       _ <- ZIO.fail(PushedAuthorizationError.RequestTooLarge).when(body.length > maxRequestSize)
       form <- ZIO.fromEither(Form.fromURLEncoded(String(body.toArray, Charsets.Utf8), Charsets.Utf8))
         .orElseFail(PushedAuthorizationError.Validation(

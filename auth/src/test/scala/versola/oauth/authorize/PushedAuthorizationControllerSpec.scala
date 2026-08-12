@@ -41,6 +41,10 @@ object PushedAuthorizationControllerSpec extends UnitSpecBase:
       case ClientIdWithSecret(id, secret) =>
         id == clientId && secret.exists(java.util.Arrays.equals(_, clientSecret))
 
+  /** Chunked, so the request carries no Content-Length the size check could rely on. */
+  private val oversizedStream =
+    zio.stream.ZStream.fromChunk(Chunk.fill(config.parOrDefault.maxRequestSize * 4)('a'.toByte))
+
   private def parRequest(form: Form, withAuth: Boolean = true): Request =
     val request = Request.post(URL.empty / "par", Body.fromURLEncodedForm(form))
     if withAuth then request.addHeader(Header.Authorization.Basic(clientId, Base64.urlEncode(clientSecret)))
@@ -129,6 +133,15 @@ object PushedAuthorizationControllerSpec extends UnitSpecBase:
       controllerTestCase(
         description = "rejects a body larger than the configured maximum",
         request = parRequest(validForm("state" -> "a".repeat(config.parOrDefault.maxRequestSize + 1))),
+        expectedStatus = Status.RequestEntityTooLarge,
+        verify = response =>
+          response.body.asString.map(body => assertTrue(body.contains("invalid_request"))),
+      ),
+      controllerTestCase(
+        description = "rejects an oversized body that does not declare its length",
+        request = Request
+          .post(URL.empty / "par", Body.fromStreamChunked(oversizedStream))
+          .addHeader(Header.Authorization.Basic(clientId, Base64.urlEncode(clientSecret))),
         expectedStatus = Status.RequestEntityTooLarge,
         verify = response =>
           response.body.asString.map(body => assertTrue(body.contains("invalid_request"))),

@@ -30,6 +30,11 @@ object PushedAuthorizationService:
   /** RFC 9126 §7.1 defers to JAR §10.2(d), which requires at least 128 bits of entropy. */
   private val ReferenceLength = 32
 
+  /** Client authentication parameters are not part of the authorization request (RFC 9126 §2.1),
+    * so they are dropped before the request is validated and persisted.
+    */
+  private val CredentialParams = Set("client_secret")
+
   class Impl(
       config: CoreConfig,
       parser: AuthorizeRequestParser,
@@ -55,11 +60,12 @@ object PushedAuthorizationService:
         // credentials are extracted, so only its absence is left to check here.
         _ <- ZIO.fail(PushedAuthorizationError.ClientIdMissing).unless(params.contains("client_id"))
 
-        _ <- parser.validate(params, request).mapError(PushedAuthorizationError.from)
+        authorizationParams = params -- CredentialParams
+        _ <- parser.validate(authorizationParams, request).mapError(PushedAuthorizationError.from)
 
         reference <- secureRandom.nextBytes(ReferenceLength).map(RequestUriReference(_))
         referenceMac <- securityService.mac(Secret(reference), config.security.parRequestsSecret)
         ttl = config.parOrDefault.requestUriTtl
-        record = PushedAuthorizationRecord(client.id, params.view.mapValues(_.toList).toMap)
+        record = PushedAuthorizationRecord(client.id, authorizationParams.view.mapValues(_.toList).toMap)
         _ <- repository.create(referenceMac, record, ttl)
       yield PushedAuthorizationResponse(RequestUri(reference), ttl.toSeconds)

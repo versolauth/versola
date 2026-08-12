@@ -123,6 +123,23 @@ object PushedAuthorizationServiceSpec extends UnitSpecBase:
         created.head._3 == config.parOrDefault.requestUriTtl,
       )
     },
+    test("never persists the client authentication parameters") {
+      val env = Env()
+      for
+        _ <- env.happyPath
+        service <- env.service
+        _ <- service.push(
+          validParams("client_secret" -> Chunk("super-secret")),
+          credentials,
+          request,
+        )
+        created = env.repository.create.calls.head._2
+        validated = env.parser.validate.calls.head._1
+      yield assertTrue(
+        !created.params.contains("client_secret"),
+        !validated.contains("client_secret"),
+      )
+    },
     test("stores the request_uri as a MAC rather than the reference handed to the client") {
       val env = Env()
       for
