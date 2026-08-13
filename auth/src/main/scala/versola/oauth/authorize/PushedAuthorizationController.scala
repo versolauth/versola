@@ -71,7 +71,14 @@ object PushedAuthorizationController extends Controller:
     yield form
 
   private def errorResponse(error: PushedAuthorizationError): Response =
-    Response
+    val response = Response
       .json(PushedAuthorizationErrorResponse.from(error).toJson)
       .status(error.status)
       .addHeader(Header.CacheControl.NoStore)
+    // RFC 6749 §5.2: a 401 response to a client-authenticated endpoint must include the
+    // WWW-Authenticate challenge for the scheme the client is expected to use.
+    error match
+      case PushedAuthorizationError.InvalidClient =>
+        response.addHeader(Header.WWWAuthenticate.Basic(realm = None))
+      case _ =>
+        response

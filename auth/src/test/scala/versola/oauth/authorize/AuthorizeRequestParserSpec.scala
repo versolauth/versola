@@ -323,5 +323,16 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
           result <- env.parser.parse(request).either
         yield assertTrue(result == Left(Error.BadRequest))
       },
+      test("fails when client_id is missing alongside a request_uri") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(Map(
+          "request_uri" -> requestUri,
+        )))
+        for
+          _ <- env.securityService.mac.succeedsWith(requestUriMac)
+          _ <- env.pushedAuthorizationRepository.consume.succeedsWith(Some(pushedRecord))
+          result <- env.parser.parse(request).either
+        yield assertTrue(result == Left(Error.BadRequest))
+      },
     ),
   )

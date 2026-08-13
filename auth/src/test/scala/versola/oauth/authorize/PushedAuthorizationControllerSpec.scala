@@ -131,6 +131,14 @@ object PushedAuthorizationControllerSpec extends UnitSpecBase:
           ),
       ),
       controllerTestCase(
+        description = "includes a WWW-Authenticate challenge on invalid_client",
+        request = parRequest(validForm()),
+        expectedStatus = Status.Unauthorized,
+        setup = _.push.failsWith(PushedAuthorizationError.InvalidClient),
+        verify = response =>
+          ZIO.succeed(assertTrue(response.header(Header.WWWAuthenticate).isDefined)),
+      ),
+      controllerTestCase(
         description = "rejects a body larger than the configured maximum",
         request = parRequest(validForm("state" -> "a".repeat(config.parOrDefault.maxRequestSize + 1))),
         expectedStatus = Status.RequestEntityTooLarge,

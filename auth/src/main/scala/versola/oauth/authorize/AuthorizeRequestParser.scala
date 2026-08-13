@@ -83,8 +83,10 @@ object AuthorizeRequestParser:
             record <- pushedAuthorizationRepository.consume(referenceMac)
               .orElseFail(Error.BadRequest)
               .someOrFail(Error.BadRequest)
-            clientId <- getParam(params, "client_id").orElseFail(Error.BadRequest)
-            _ <- ZIO.fail(Error.BadRequest).unless(clientId.forall(_ == record.clientId))
+            // RFC 9126 §4 (via JAR §6.3): the outer client_id is required and must match the
+            // client bound to the pushed request, not merely absent-or-matching.
+            clientId <- getParam(params, "client_id").orElseFail(Error.BadRequest).someOrFail(Error.BadRequest)
+            _ <- ZIO.fail(Error.BadRequest).unless(ClientId(clientId) == record.clientId)
           yield record.params.view.mapValues(Chunk.fromIterable).toMap
 
     def validate(
