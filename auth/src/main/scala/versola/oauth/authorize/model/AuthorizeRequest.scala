@@ -30,6 +30,7 @@ private[authorize] case class AuthorizeRequest(
     idTokenHint: Option[String],
     /** RFC 8707 `resource` parameter(s), canonicalized for the access-token `aud` claim. */
     resources: List[ResourceUri],
+    ip: Option[String] = None,
 ):
   def promptNone: Boolean = prompt.contains(Prompt.none)
   def promptLogin: Boolean = prompt.contains(Prompt.login)

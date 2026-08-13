@@ -7,6 +7,7 @@ import versola.oauth.authorize.model.ResponseTypeEntry
 import versola.oauth.challenge.passkey.{PasskeyRepository, WebAuthnError, WebAuthnService}
 import versola.oauth.challenge.password.PasswordService
 import versola.oauth.challenge.password.model.{CheckPassword, PasswordReuseError}
+import versola.oauth.AuthMetrics
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{Acr, AuthFactor, AuthFactorType, AuthMethodRef, OtpType, PassedAuthFactor, PassedFactorRecord, PasskeySettings, ScopeToken}
 import versola.oauth.conversation.limit.{ChallengeType, LimitStatus, SubmissionLimiter}
@@ -20,6 +21,7 @@ import versola.oauth.token.AuthorizationCodeRepository
 import versola.oauth.userinfo.UserInfoService
 import versola.user.UserRepository
 import versola.user.model.{Login, UserId, UserRecord}
+import versola.util.http.Observability
 import versola.util.{AuthPropertyGenerator, Base64, CoreConfig, Email, MAC, Phone, Secret, SecureRandom, SecurityService}
 import zio.*
 import zio.json.ast.Json
@@ -172,9 +174,9 @@ object ConversationService:
 
     private def renderStep(authId: AuthId, conversation: ConversationRecord, step: ConversationStep): Task[ConversationResult.Render] =
       conversationRepository.overwrite(authId, conversation.copy(step = step))
-        .map:
-          case true => ConversationResult.RenderStep(step)
-          case false => ConversationResult.IllegalState
+        .flatMap:
+          case true => ZIO.succeed(ConversationResult.RenderStep(step))
+          case false => Observability.setError("write_conflict").as(ConversationResult.WriteConflict)
 
     /** Records a failed attempt, then renders the step the failure produced — denying access on a
       * persistent ban, flagging the rate limit (with the seconds until input reopens) on a
@@ -237,6 +239,7 @@ object ConversationService:
                 if conversation.userId.isDefined then ZIO.none
                 else userRepository.findByCredential(credential)
               effectiveUserId = conversation.userId.orElse(lookedUpUser.map(_.id))
+              _ <- ZIO.foreachDiscard(effectiveUserId)(uid => Observability.setUserId(uid.toString))
               otp <- otpService.prepareOtp(previous = None, userId = effectiveUserId, clientId = conversation.clientId)
               now <- Clock.instant
               sentStep = otp.copy(factorIndex = factorIndex, timesRequested = 1, lastSentAt = Some(now))
@@ -255,7 +258,7 @@ object ConversationService:
                 otpService.sendOtp(sentStep, credential, authId, conversation.clientId, conversation.uiLocales)
                   .as(ConversationResult.RenderStep(sentStep): ConversationResult.Render)
               else
-                ZIO.succeed(ConversationResult.IllegalState)
+                Observability.setError("write_conflict").as(ConversationResult.WriteConflict)
             yield result2
       yield result
 
@@ -271,6 +274,7 @@ object ConversationService:
         lookedUpUser <- if conversation.userId.isDefined then ZIO.none
         else userRepository.findByCredential(credential)
         effectiveUserId = conversation.userId.orElse(lookedUpUser.map(_.id))
+        _ <- ZIO.foreachDiscard(effectiveUserId)(uid => Observability.setUserId(uid.toString))
         status <- lookedUpUser.fold[Task[LimitStatus]](ZIO.succeed(LimitStatus.Allowed)): user =>
           submissionLimiter.statusForSubjects(
             conversation.clientId,
@@ -298,9 +302,9 @@ object ConversationService:
               userClaims = lookedUpUser.map(_.claims).orElse(conversation.userClaims),
             )
             conversationRepository.overwrite(authId, updatedConversation)
-              .map:
-                case true => ConversationResult.RenderStep(passwordStep)
-                case false => ConversationResult.IllegalState
+              .flatMap:
+                case true => ZIO.succeed(ConversationResult.RenderStep(passwordStep))
+                case false => Observability.setError("write_conflict").as(ConversationResult.WriteConflict)
       yield result
 
     override def checkOtp(
@@ -331,9 +335,9 @@ object ConversationService:
                 val otpMethods = Set(AuthMethodRef.otp) ++ Option.when(otpType == OtpType.sms)(AuthMethodRef.sms)
                 val updated = conversation.copy(amr = conversation.amr + (PassedAuthFactor.otp -> PassedFactorRecord(now, otpMethods)))
                 conversationRepository.overwrite(authId, updated)
-                  .map:
-                    case true => ConversationResult.StepPassed(updated.copy(version = updated.version + 1))
-                    case false => ConversationResult.IllegalState
+                  .flatMap:
+                    case true => ZIO.succeed(ConversationResult.StepPassed(updated.copy(version = updated.version + 1)))
+                    case false => Observability.setError("write_conflict").as(ConversationResult.WriteConflict)
 
     override def preparePasswordStep(
         authId: AuthId,
@@ -347,9 +351,9 @@ object ConversationService:
         rateLimitExceeded = false,
       )
       conversationRepository.overwrite(authId, conversation.copy(step = passwordStep))
-        .map:
-          case true => ConversationResult.RenderStep(passwordStep)
-          case false => ConversationResult.IllegalState
+        .flatMap:
+          case true => ZIO.succeed(ConversationResult.RenderStep(passwordStep))
+          case false => Observability.setError("write_conflict").as(ConversationResult.WriteConflict)
 
     override def checkPassword(
         conversation: ConversationRecord,
@@ -359,13 +363,16 @@ object ConversationService:
     ): Task[ConversationResult] =
       conversation.userId match
         case None =>
-          ZIO.succeed(ConversationResult.IllegalState)
+          // Reached the password step without a resolved user -- an invariant this flow should
+          // guarantee. Not a client-facing error, but not safe to continue either.
+          Observability.setError("illegal_state", Some("missing user id")) *> accessDenied(authId, conversation)
 
         case Some(userId) =>
           val userSubject = userId.toString
           val credSubjectOpt = conversation.credential.map(_.merge)
           val subjects = credSubjectOpt.fold(List(userSubject))(s => List(userSubject, s))
           for
+            _ <- Observability.setUserId(userSubject)
             ban <- submissionLimiter.statusForSubjects(conversation.clientId, subjects, ChallengeType.PasswordSubmit)
             result <- ban match
               case LimitStatus.Banned =>
@@ -379,9 +386,9 @@ object ConversationService:
                       val updated =
                         conversation.copy(amr = conversation.amr + (PassedAuthFactor.password -> PassedFactorRecord(now, Set(AuthMethodRef.pwd))))
                       conversationRepository.overwrite(authId, updated)
-                        .map:
-                          case true => ConversationResult.StepPassed(updated.copy(version = updated.version + 1))
-                          case false => ConversationResult.IllegalState
+                        .flatMap:
+                          case true => ZIO.succeed(ConversationResult.StepPassed(updated.copy(version = updated.version + 1)))
+                          case false => Observability.setError("write_conflict").as(ConversationResult.WriteConflict)
 
                   case CheckPassword.Temporary =>
                     // Temporary password accepted – mark password factor as passed and flag that the user
@@ -392,9 +399,9 @@ object ConversationService:
                         needsPasswordChange = true,
                       )
                       conversationRepository.overwrite(authId, updated)
-                        .map:
-                          case true => ConversationResult.StepPassed(updated.copy(version = updated.version + 1))
-                          case false => ConversationResult.IllegalState
+                        .flatMap:
+                          case true => ZIO.succeed(ConversationResult.StepPassed(updated.copy(version = updated.version + 1)))
+                          case false => Observability.setError("write_conflict").as(ConversationResult.WriteConflict)
 
                   case CheckPassword.TemporaryExpired =>
                     submissionLimiter.recordLimitAll(conversation.clientId, subjects, ChallengeType.PasswordSubmit).flatMap:
@@ -480,6 +487,7 @@ object ConversationService:
                 cred.copy(loginFailed = true)
             case Some(user) =>
               val userSubject = user.id.toString
+              Observability.setUserId(userSubject) *>
               submissionLimiter.statusForSubjects(conversation.clientId, List(login, userSubject), ChallengeType.PasswordSubmit).flatMap:
                 case LimitStatus.Banned =>
                   accessDenied(authId, conversation)
@@ -497,9 +505,9 @@ object ConversationService:
                           userClaims = Some(user.claims),
                           amr = conversation.amr + (PassedAuthFactor.password -> PassedFactorRecord(now, Set(AuthMethodRef.pwd))),
                         )
-                        conversationRepository.overwrite(authId, updated).map:
-                          case true => ConversationResult.StepPassed(updated.copy(version = updated.version + 1))
-                          case false => ConversationResult.IllegalState
+                        conversationRepository.overwrite(authId, updated).flatMap:
+                          case true => ZIO.succeed(ConversationResult.StepPassed(updated.copy(version = updated.version + 1)))
+                          case false => Observability.setError("write_conflict").as(ConversationResult.WriteConflict)
 
                     case CheckPassword.Temporary =>
                       // Temporary password accepted – set user context, mark password as passed,
@@ -514,16 +522,18 @@ object ConversationService:
                           amr = conversation.amr + (PassedAuthFactor.password -> PassedFactorRecord(now, Set(AuthMethodRef.pwd))),
                           needsPasswordChange = true,
                         )
-                        conversationRepository.overwrite(authId, updated).map:
-                          case true => ConversationResult.StepPassed(updated.copy(version = updated.version + 1))
-                          case false => ConversationResult.IllegalState
+                        conversationRepository.overwrite(authId, updated).flatMap:
+                          case true => ZIO.succeed(ConversationResult.StepPassed(updated.copy(version = updated.version + 1)))
+                          case false => Observability.setError("write_conflict").as(ConversationResult.WriteConflict)
 
                     case _ =>
                       submissionLimiter.recordLimitAll(conversation.clientId, List(login, userSubject), ChallengeType.PasswordSubmit).flatMap:
                         case LimitStatus.Banned => accessDenied(authId, conversation)
                         case _ => renderStep(authId, conversation, cred.copy(loginFailed = true))
         case _ =>
-          ZIO.succeed(ConversationResult.IllegalState)
+          // A login+password submission arrived while the conversation isn't on the credential
+          // step, e.g. a stale form or a tampered request.
+          Observability.setError("step_mismatch").as(ConversationResult.BadRequest)
 
     override def offerSetPassword(authId: AuthId, conversation: ConversationRecord): Task[ConversationResult.Render] =
       val setPasswordStep = ConversationStep.SetPassword(
@@ -601,6 +611,8 @@ object ConversationService:
             claimed <- conversationRepository.delete(authId, conversation.version)
             result <- if claimed then
               for
+                _ <- Observability.setSessionId(publicSessionId)
+                _ <- Observability.setUserAgentId(userAgentId.toString)
                 _ <- authorizationCodeRepository.create(codeMac, record, 1.minute)
                 // Always create a new session (rotates the ID, issues a fresh cookie with full TTL).
                 // For step-up the accumulated AMR is already in conversation.amr.
@@ -617,6 +629,7 @@ object ConversationService:
                   generateIdTokenData(userId, conversation, amr, now, conversation.targetAcr, publicSessionId)
                 else
                   ZIO.none
+                _ <- AuthMetrics.conversationCompleted(conversation)
               yield ConversationResult.Complete(
                 redirectUri = conversation.redirectUri,
                 state = conversation.state,
@@ -625,9 +638,9 @@ object ConversationService:
                 idTokenData = idTokenData,
                 userAgentId = userAgentId,
                 userAgentData = userAgentData,
-              )
+              ): ConversationResult.Render
             else
-              ZIO.succeed(ConversationResult.IllegalState)
+              Observability.setError("write_conflict").as(ConversationResult.WriteConflict)
           yield result
 
     override def startPasskeyAssertion(
@@ -657,7 +670,8 @@ object ConversationService:
         case cred: ConversationStep.Credential if conversation.authFlow.passkey.isDefined =>
           cred.passkeyRequest match
             case None =>
-              ZIO.succeed(ConversationResult.IllegalState)
+              // No ceremony is pending — a duplicate or replayed assertion submission.
+              Observability.setError("step_mismatch").as(ConversationResult.BadRequest)
             case Some(request) =>
               // The credential id is client-chosen and can be rotated to dodge throttling, so we
               // also throttle a server-controlled IP subject when available. The credential subject
@@ -693,7 +707,10 @@ object ConversationService:
                     case LimitStatus.Allowed =>
                       configService.getPasskeySettings(conversation.clientId).flatMap:
                         case None =>
-                          ZIO.succeed(ConversationResult.IllegalState)
+                          // Passkey settings vanished mid-ceremony (e.g. disabled for the tenant
+                          // after the assertion started) -- a server-side invariant violation.
+                          Observability.setError("illegal_state", Some("passkey settings missing")) *>
+                            accessDenied(authId, conversation)
                         case Some(settings) =>
                           webAuthnService.finishAssertion(settings, request, response).foldZIO(
                             { _ =>
@@ -701,17 +718,22 @@ object ConversationService:
                                 renderStep(authId, conversation, cred.copy(passkeyRequest = None, passkeyFailed = true))
                             },
                             outcome =>
-                              (resetIp.zipPar(submissionLimiter.reset(conversation.clientId, credSubject, ChallengeType.PasskeyAssertion))) *>
+                              Observability.setUserId(outcome.userId.toString) *>
+                                (resetIp.zipPar(submissionLimiter.reset(conversation.clientId, credSubject, ChallengeType.PasskeyAssertion))) *>
                                 userRepository.find(outcome.userId).zipPar(
                                   passkeyRepository.findByCredentialIdAndUser(outcome.credentialId, outcome.userId),
                                 ).flatMap:
                                   case (None, _) =>
-                                    ZIO.succeed(ConversationResult.IllegalState)
+                                    // The passkey ceremony resolved to a user record that no longer
+                                    // exists -- an invariant violation, not a client error.
+                                    Observability.setError("illegal_state", Some("orphaned user")) *>
+                                      accessDenied(authId, conversation)
                                   case (Some(user), passkeyOpt) =>
                                     // If the conversation already has a verified userId (from session/hint),
                                     // reject a passkey that belongs to a different user.
                                     if conversation.userId.exists(_ != outcome.userId) then
-                                      ZIO.succeed(ConversationResult.IllegalState)
+                                      Observability.setError("identity_mismatch") *>
+                                        accessDenied(authId, conversation)
                                     else
                                       Clock.instant.flatMap: now =>
                                         val keyType = passkeyOpt.fold(AuthMethodRef.swk)(pk =>
@@ -729,15 +751,19 @@ object ConversationService:
                                         )
                                         conversationRepository.overwrite(authId, updated).flatMap:
                                           case true => offerPasskeyEnroll(authId, updated.copy(version = updated.version + 1))
-                                          case false => ZIO.succeed(ConversationResult.IllegalState),
+                                          case false => Observability.setError("write_conflict").as(ConversationResult.WriteConflict),
                           )
         case _ =>
-          ZIO.succeed(ConversationResult.IllegalState)
+          // Passkey assertion submitted while the conversation isn't on a passkey-enabled
+          // credential step, e.g. a stale form or a tampered request.
+          Observability.setError("step_mismatch").as(ConversationResult.BadRequest)
 
     override def offerPasskeyEnroll(authId: AuthId, conversation: ConversationRecord): Task[ConversationResult.Render] =
       conversation.userId match
         case None =>
-          ZIO.succeed(ConversationResult.IllegalState)
+          // Reached the passkey-enrollment offer without a resolved user -- an invariant this
+          // flow should guarantee.
+          Observability.setError("illegal_state", Some("missing user id")) *> accessDenied(authId, conversation)
         case Some(userId) =>
           configService.getPasskeySettings(conversation.clientId).flatMap:
             case None =>
@@ -772,7 +798,9 @@ object ConversationService:
     ): Task[ConversationResult.Render] =
       conversation.userId match
         case None =>
-          ZIO.succeed(ConversationResult.IllegalState)
+          // Reached passkey-enrollment completion without a resolved user -- an invariant this
+          // flow should guarantee.
+          Observability.setError("illegal_state", Some("missing user id")) *> accessDenied(authId, conversation)
         case Some(userId) =>
           configService.getPasskeySettings(conversation.clientId).flatMap:
             case None =>
@@ -796,7 +824,9 @@ object ConversationService:
     ): Task[ConversationResult] =
       conversation.userId match
         case None =>
-          ZIO.succeed(ConversationResult.IllegalState)
+          // Reached the set-password step without a resolved user -- an invariant this flow
+          // should guarantee.
+          Observability.setError("illegal_state", Some("missing user id")) *> accessDenied(authId, conversation)
 
         case Some(userId) =>
           val subjects = List(userId.toString) ++ conversation.credential.map(_.merge)
@@ -838,9 +868,9 @@ object ConversationService:
                       amr = conversation.amr + (PassedAuthFactor.password -> PassedFactorRecord(now, Set(AuthMethodRef.pwd))),
                       needsPasswordChange = false,
                     )
-                    conversationRepository.overwrite(authId, updated).map:
-                      case true => ConversationResult.StepPassed(updated.copy(version = updated.version + 1))
-                      case false => ConversationResult.IllegalState,
+                    conversationRepository.overwrite(authId, updated).flatMap:
+                      case true => ZIO.succeed(ConversationResult.StepPassed(updated.copy(version = updated.version + 1)))
+                      case false => Observability.setError("write_conflict").as(ConversationResult.WriteConflict),
               )
 
     private def generateIdTokenData(

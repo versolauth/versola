@@ -14,4 +14,5 @@ case class AccessTokenClaims(
     roles: List[RoleId],
     acr: Option[String],
     @jsonField("auth_time") authTime: Option[Long],
+    @jsonField("sid") sid: Option[SessionId] = None,
 ) derives JsonCodec

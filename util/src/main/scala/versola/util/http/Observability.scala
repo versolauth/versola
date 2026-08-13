@@ -4,7 +4,7 @@ import io.opentelemetry.api.trace.{SpanKind, StatusCode}
 import zio.*
 import zio.http.*
 import zio.json.*
-import zio.logging.LogAnnotation
+import zio.logging.{LogAnnotation, logContext}
 import zio.metrics.MetricKeyType.Histogram.Boundaries
 import zio.metrics.{Metric, MetricLabel}
 import zio.telemetry.opentelemetry.context.{IncomingContextCarrier, OutgoingContextCarrier}
@@ -18,9 +18,72 @@ object Observability:
   val receiveHttp = LogAnnotation[ReceiveHttpLog]("http", (_, r) => r, _.toJson)
   val sendHttp = LogAnnotation[SendHttpLog]("http", (_, r) => r, _.toJson)
 
+  /** Authentication context of the request being handled, rendered under the `auth` key of
+    * every log line emitted after it is filled in. Defined generically here since `util` is
+    * shared by services that don't know about the `auth` module's own model types.
+    */
+  val auth = LogAnnotation[AuthDetails]("auth", (_, r) => r, _.toJson)
+
+  /** Outcome of a request that ended in a user-facing or server error, rendered under the
+    * `error` key of the log line that surfaces it (e.g. the `receive-http` line of the
+    * request/redirect that carried the failure). */
+  val error = LogAnnotation[ErrorDetails]("error", (_, r) => r, _.toJson)
+
   val cause = zio.Unsafe.unsafe { case given zio.Unsafe =>
     FiberRef.unsafe.make(Option.empty[Cause[Any]])
   }
+
+  /** Fills in the auth context of the request currently being handled. Details are discovered
+    * mid-flow (e.g. only once a conversation is created or an existing one is looked up), hence
+    * an imperative update of the annotation from deep in the call stack rather than a scoped
+    * `@@` annotation. [[middleware]] restores the context once the request completes, so the
+    * details never leak into a subsequent request.
+    */
+  def updateAuth(f: AuthDetails => AuthDetails): UIO[Unit] =
+    logContext.update(context => context.annotate(auth, f(context.get(auth).getOrElse(AuthDetails.empty))))
+
+  def setAuthId(id: String): UIO[Unit] = updateAuth(_.copy(id = Some(id)))
+
+  /** Sets `auth.id` and `auth.client_id` together, since every place that discovers one
+    * (a fresh authId or a signed conversation cookie) already has the other at hand. */
+  def setAuth(authId: String, clientId: String): UIO[Unit] =
+    updateAuth(_.copy(id = Some(authId), clientId = Some(clientId)))
+
+  def setPriorSessionId(id: String): UIO[Unit] = updateAuth(_.copy(priorSessionId = Some(id)))
+
+  def setSessionId(id: String): UIO[Unit] = updateAuth(_.copy(sessionId = Some(id)))
+
+  def setClientId(id: String): UIO[Unit] = updateAuth(_.copy(clientId = Some(id)))
+
+  /** Conversation step (`credential`, `otp`, `password`, ...) the request is currently on. */
+  def setStep(step: String): UIO[Unit] = updateAuth(_.copy(step = Some(step)))
+
+  def setUserId(id: String): UIO[Unit] = updateAuth(_.copy(userId = Some(id)))
+
+  def setUserAgentId(id: String): UIO[Unit] = updateAuth(_.copy(userAgentId = Some(id)))
+
+  def setIp(ip: String): UIO[Unit] = updateAuth(_.copy(ip = Some(ip)))
+
+  /** `jti` of the access token issued by the request. */
+  def setToken(jti: String): UIO[Unit] = updateAuth(_.copy(token = Some(jti)))
+
+  /** Refresh tokens are bearer credentials, so only a prefix long enough to correlate log
+    * lines is kept. */
+  def setRefreshToken(refreshToken: String): UIO[Unit] =
+    updateAuth(_.copy(refreshToken = Some(refreshToken.take(RefreshTokenPrefixLength))))
+
+  private val RefreshTokenPrefixLength = 9
+
+  /** Refresh token consumed by a `refresh_token` grant, i.e. the raw value exchanged for a
+    * new one. A bearer credential like [[setRefreshToken]], so only a prefix is kept. */
+  def setPreviousRefreshToken(refreshToken: String): UIO[Unit] =
+    updateAuth(_.copy(previousRefreshToken = Some(refreshToken.take(RefreshTokenPrefixLength))))
+
+  /** Records the outcome of a request that ended in an error, under the `error` key. `code`
+    * should come from a stable, closed vocabulary (e.g. `stepErrorKey`, `ErrorCode`) so it can
+    * be used for alerting/metrics without risking unbounded cardinality. */
+  def setError(code: String, description: Option[String] = None): UIO[Unit] =
+    logContext.update(_.annotate(error, ErrorDetails(code, description)))
 
   val clientLogging: FiberRef[HttpObservabilityConfig.Client] = zio.Unsafe.unsafe { case given zio.Unsafe =>
     FiberRef.unsafe.make(HttpObservabilityConfig.Client.default)
@@ -32,6 +95,21 @@ object Observability:
 
   def withClientRoute[R, E, A](route: String)(zio: ZIO[R, E, A]): ZIO[R, E, A] =
     clientRoute.locally(Some(route))(zio)
+
+  /** Query-string-shaped suffix appended to the `route` label of the current request's
+    * `http_server_requests_total`/`http_server_request_duration_seconds` metrics, e.g.
+    * `grant_type=client_credentials` turns the `POST /token` route into
+    * `POST /token?grant_type=client_credentials` so grant types are distinguishable in metrics
+    * despite sharing a single route. Discovered mid-flight (e.g. once the request body is
+    * parsed), hence an imperative update rather than a scoped `@@` annotation. [[middleware]]
+    * resets it per request so it never leaks into a subsequent request.
+    */
+  val routeLabel: FiberRef[Option[String]] = zio.Unsafe.unsafe { case given zio.Unsafe =>
+    FiberRef.unsafe.make(Option.empty[String])
+  }
+
+  def setRouteLabel(key: String, value: String): UIO[Unit] =
+    routeLabel.set(Some(s"$key=$value"))
 
   val serverLogging: FiberRef[HttpObservabilityConfig.Server] = zio.Unsafe.unsafe { case given zio.Unsafe =>
     FiberRef.unsafe.make(HttpObservabilityConfig.Server.default)
@@ -112,7 +190,7 @@ object Observability:
       )
     yield log
   }
-  
+
   private def toLog(request: Request, response: Response, masking: HttpObservabilityConfig.Server): UIO[HttpResponseLog] = {
     for
       body <-
@@ -139,14 +217,17 @@ object Observability:
           Handler.scoped[Env1]:
             Handler.fromFunctionZIO[Request]: request =>
               ZIO.serviceWithZIO[Tracing]: tracing =>
-                (
+                // the log context is restored once the request completes, so auth details set
+                // mid-flow annotate every log line of this request and no other
+                logContext.locallyWith(identity)(
+                  routeLabel.locally(None)(
                   for
                     startTime <- Clock.instant
                     now <- Clock.nanoTime
-                    route = request.path.encode
+                    basePath = request.path.encode
                     baseTags = Set(
                       MetricLabel("method", request.method.name),
-                      MetricLabel("route", route),
+                      MetricLabel("route", basePath),
                     )
                     response <- activeRequests.tagged(baseTags).increment
                       .zipRight(handler(request))
@@ -156,11 +237,17 @@ object Observability:
                     after <- Clock.nanoTime
                     status = response.status.code
                     statusClass = s"${status / 100}xx"
+                    label <- routeLabel.get
+                    route = label.fold(basePath)(l => s"$basePath?$l")
+                    tags = Set(
+                      MetricLabel("method", request.method.name),
+                      MetricLabel("route", route),
+                    )
                     _ <- requestsCount
-                      .tagged(baseTags + MetricLabel("status", status.toString) + MetricLabel("status_class", statusClass))
+                      .tagged(tags + MetricLabel("status", status.toString) + MetricLabel("status_class", statusClass))
                       .increment
                     _ <- requestDuration
-                      .tagged(baseTags + MetricLabel("status_class", statusClass))
+                      .tagged(tags + MetricLabel("status_class", statusClass))
                       .update((after - now) / 1e9)
                     log = receiveHttp(
                       ReceiveHttpLog(
@@ -178,7 +265,8 @@ object Observability:
                       case None =>
                         ZIO.logInfo("receive-http") @@ log @@ loggerName
                     _ <- Observability.cause.set(None)
-                  yield response
+                  yield response,
+                  ),
                 ) @@ tracing.aspects.extractSpan(
                   TraceContextPropagator.default,
                   IncomingContextCarrier.default(
@@ -328,6 +416,7 @@ object Observability:
               )
     }
 
+  @jsonMemberNames(SnakeCase)
   case class HttpClientRequestLog(
       method: String,
       baseUri: String,
@@ -337,12 +426,14 @@ object Observability:
       headers: Seq[String],
   ) derives JsonEncoder
 
+  @jsonMemberNames(SnakeCase)
   case class HttpClientResponseLog(
       code: Int,
       body: Option[String],
       headers: Seq[String],
   ) derives JsonEncoder
 
+  @jsonMemberNames(SnakeCase)
   case class HttpRequestLog(
       method: String,
       baseUri: String,
@@ -353,12 +444,14 @@ object Observability:
       cookies: Seq[String],
   ) derives JsonEncoder
 
+  @jsonMemberNames(SnakeCase)
   case class HttpResponseLog(
       code: Int,
       body: Option[String],
       headers: Seq[String],
   ) derives JsonEncoder
 
+  @jsonMemberNames(SnakeCase)
   case class ReceiveHttpLog(
       request: HttpRequestLog,
       response: HttpResponseLog,
@@ -366,11 +459,46 @@ object Observability:
       elapsedMillis: Long,
   ) derives JsonEncoder
 
+  @jsonMemberNames(SnakeCase)
   case class SendHttpLog(
       request: HttpClientRequestLog,
       response: HttpClientResponseLog,
       startTime: Instant,
       elapsedMillis: Long,
+  ) derives JsonEncoder
+
+  @jsonMemberNames(SnakeCase)
+  case class AuthDetails(
+      id: Option[String] = None,
+      /** `sid` of the session the request arrived with. */
+      priorSessionId: Option[String] = None,
+      /** `sid` of the session issued by the request, when it establishes a new one. */
+      sessionId: Option[String] = None,
+      clientId: Option[String] = None,
+      /** Conversation step (`credential`, `otp`, `password`, ...) the request is currently on. */
+      step: Option[String] = None,
+      userId: Option[String] = None,
+      /** Id of the device/browser (`SSO_USER_AGENT_ID` cookie), stable across sessions. */
+      userAgentId: Option[String] = None,
+      ip: Option[String] = None,
+      /** `jti` of the access token issued by the request. */
+      token: Option[String] = None,
+      /** Prefix of the refresh token issued by the request. */
+      refreshToken: Option[String] = None,
+      /** Prefix of the refresh token consumed by a `refresh_token` grant. */
+      previousRefreshToken: Option[String] = None,
+  ) derives JsonEncoder
+
+  object AuthDetails:
+    val empty: AuthDetails = AuthDetails()
+
+  /** Outcome of a request that ended in an error. `code` is a stable machine-readable key
+    * (e.g. `otp_wrong`, `rate_limit_exceeded`, `service_unavailable`); `description` is
+    * optional free text for context that isn't captured by the code alone. */
+  @jsonMemberNames(SnakeCase)
+  case class ErrorDetails(
+      code: String,
+      description: Option[String] = None,
   ) derives JsonEncoder
 
   val logCause = zio.logging.LogAnnotation[Throwable](

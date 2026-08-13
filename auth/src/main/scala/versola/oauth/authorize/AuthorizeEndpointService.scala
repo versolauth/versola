@@ -1,6 +1,7 @@
 package versola.oauth.authorize
 
 import versola.oauth.authorize.model.{AuthorizeRequest, AuthorizeResponse, Error, ResponseTypeEntry}
+import versola.oauth.AuthMetrics
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.*
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
@@ -14,6 +15,7 @@ import versola.oauth.userinfo.UserInfoService
 import versola.user.UserRepository
 import versola.user.model.UserId
 import versola.util.MAC
+import versola.util.http.Observability
 import versola.util.{AuthPropertyGenerator, Base64Url, CoreConfig, JWT, Secret, SecureRandom, SecurityService}
 import zio.json.ast.Json
 import zio.json.{JsonDecoder, ast}
@@ -61,6 +63,12 @@ object AuthorizeEndpointService:
         request: AuthorizeRequest,
     ): Task[AuthorizeResponse] =
       for
+        // Generated upfront so every log line for this request carries auth.id, and so the same
+        // id is used throughout (conversation record, cookie) rather than one being minted later
+        // deep inside createConversation.
+        authId <- AuthId.wrapAll(secureRandom.nextUUIDv7)
+        _ <- Observability.setAuth(authId.toString, request.clientId)
+        _ <- ZIO.foreachDiscard(request.userAgentCookie)(cookie => Observability.setUserAgentId(cookie.id.toString))
         client <- configurationService.find(request.clientId)
         authFlow = client.flatMap(_.authFlow)
         flow <- ZIO
@@ -76,7 +84,7 @@ object AuthorizeEndpointService:
         sessionInfo <- request.sessionId match
           case None => ZIO.none
           case Some(rawId) => sessionService.find(rawId)
-
+        _ <- ZIO.foreachDiscard(sessionInfo)(info => Observability.setPriorSessionId(info.record.publicId))
         now <- Clock.instant
 
         response <- (sessionInfo, idTokenUserId) match
@@ -91,6 +99,7 @@ object AuthorizeEndpointService:
                     ZIO.fail(Error.UnmetAuthenticationRequirements(request.redirectUri, request.state))
                   case Some(targetAcr) =>
                     createConversation(
+                      authId,
                       request,
                       flow,
                       uiLocales,
@@ -102,6 +111,7 @@ object AuthorizeEndpointService:
                     )
               case None =>
                 createConversation(
+                  authId,
                   request,
                   flow,
                   uiLocales,
@@ -113,7 +123,7 @@ object AuthorizeEndpointService:
           case (None, None) =>
             // ACR is voluntary (OIDC Core §3.1.2.1): without a known user we cannot verify
             // achievability, so we proceed with normal auth and omit the acr claim.
-            createConversation(request, flow, uiLocales, Map.empty)
+            createConversation(authId, request, flow, uiLocales, Map.empty)
 
           case (Some(SessionInfo(id, session)), _) =>
             for
@@ -154,6 +164,7 @@ object AuthorizeEndpointService:
                           ZIO.fail(Error.UnmetAuthenticationRequirements(request.redirectUri, request.state))
                         case Some(targetAcr) =>
                           createConversation(
+                            authId,
                             request,
                             flow,
                             uiLocales,
@@ -166,6 +177,7 @@ object AuthorizeEndpointService:
                           )
                     case _ =>
                       createConversation(
+                        authId,
                         request,
                         flow,
                         uiLocales,
@@ -192,6 +204,7 @@ object AuthorizeEndpointService:
                           ZIO.fail(Error.UnmetAuthenticationRequirements(request.redirectUri, request.state))
                         case Some(targetAcr) =>
                           createConversation(
+                            authId,
                             request,
                             flow,
                             uiLocales,
@@ -204,6 +217,7 @@ object AuthorizeEndpointService:
                           )
                 else if !factorsSatisfied then
                   createConversation(
+                    authId,
                     request,
                     flow,
                     uiLocales,
@@ -228,6 +242,7 @@ object AuthorizeEndpointService:
         case _ => ZIO.succeed(response)
 
     private def createConversation(
+        authId: AuthId,
         request: AuthorizeRequest,
         flow: AuthFlow,
         uiLocales: Option[List[String]],
@@ -239,7 +254,6 @@ object AuthorizeEndpointService:
         priorSessionId: Option[MAC.Of[SessionId]] = None,
     ): Task[AuthorizeResponse] =
       for
-        authId <- AuthId.wrapAll(secureRandom.nextUUIDv7)
         userOpt <- knownUserId match
           case Some(uid) => userRepository.find(uid)
           case None => ZIO.none
@@ -254,6 +268,7 @@ object AuthorizeEndpointService:
               case MissingUserBehavior.Deny => ZIO.fail(Error.AccessDenied(request.redirectUri, request.state))
               case _ => ZIO.none
           case _ => ZIO.succeed(knownUserId)
+        _ <- ZIO.foreachDiscard(effectiveUserId)(uid => Observability.setUserId(uid.toString))
         // When a verified userId is available (from session or id_token_hint), always populate all
         // user fields so the credential step can be skipped and challenges are asked directly.
         // If no userId is known, userOpt is None and fields remain empty for normal credential entry.
@@ -294,6 +309,7 @@ object AuthorizeEndpointService:
         )
         authConversationTtl <- configurationService.getAuthConversationTtl(request.clientId)
         _ <- conversationRepository.create(authId, conversation, authConversationTtl)
+        _ <- AuthMetrics.conversationStarted(conversation)
         r = AuthorizeResponse.Initialize(authId)
         result <-
           // If userId is already established (from a session or id_token_hint), skip the credential
@@ -317,6 +333,7 @@ object AuthorizeEndpointService:
         request.responseType.contains(ResponseTypeEntry.IdToken) &&
           request.scope.contains(ScopeToken.OpenId)
       for
+        _ <- Observability.setUserId(session.userId.toString)
         idleTtl <- ZIO.unless(request.scope.contains(ScopeToken.OfflineAccess))(
           configurationService.getSessionIdleTtl(request.clientId),
         )

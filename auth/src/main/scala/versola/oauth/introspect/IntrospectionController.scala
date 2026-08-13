@@ -4,7 +4,7 @@ import versola.oauth.introspect.model.{IntrospectionError, IntrospectionErrorRes
 import versola.oauth.jwks.JwksService
 import versola.oauth.model.{AccessTokenPayload, RefreshToken}
 import versola.util.{Base64, Base64Url, CoreConfig, FormDecoder, JWT}
-import versola.util.http.{Controller, extractCredentials}
+import versola.util.http.{Controller, Observability, extractCredentials}
 import zio.*
 import zio.http.*
 import zio.json.*
@@ -39,12 +39,13 @@ object IntrospectionController extends Controller:
           case Left(refreshToken) =>
             introspectionService.introspectRefreshToken(refreshToken, credentials)
 
+        _ <- Observability.setError("inactive").unless(response.active)
       yield Response.json(response.toJson)
         .addHeader(Header.CacheControl.NoStore)
         .addHeader(Header.Pragma.NoCache))
         .catchAll {
           case _: JWT.Error =>
-            ZIO.succeed(Response.json(IntrospectionResponse.Inactive.toJson))
+            Observability.setError("inactive") *> ZIO.succeed(Response.json(IntrospectionResponse.Inactive.toJson))
 
           case error: IntrospectionError =>
             ZIO.succeed:
