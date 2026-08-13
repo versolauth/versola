@@ -115,6 +115,7 @@ def writeFile(dir: File, name: String, content: String): Unit =
   val userAgentCookieSecret     = rand(rng, 32) // auth only: signs the SSO_USER_AGENT_ID cookie
   val edgeTokenEncKey           = rand(rng, 32)
   val edgeSessionsSecret        = rand(rng, 32)
+  val parRequestsSecret         = rand(rng, 32) // auth only: keys the stored request_uri references
 
   // ── Environment ───────────────────────────────────────────────────────────────
   println("\n── Environment ───────────────────────────────────────────────────────")
@@ -231,6 +232,7 @@ def writeFile(dir: File, name: String, content: String): Unit =
        |  "jwks_uri": "$authUrl/.well-known/jwks.json",
        |  "introspection_endpoint": "$authUrl/introspect",
        |  "revocation_endpoint": "$authUrl/revoke",
+       |  "pushed_authorization_request_endpoint": "$authUrl/par",
        |  "end_session_endpoint": "$authUrl/logout",
        |  "scopes_supported": ["openid", "profile", "email", "phone", "offline_access"],
        |  "response_types_supported": ["code", "code id_token"],
@@ -363,6 +365,12 @@ def writeFile(dir: File, name: String, content: String): Unit =
        |  conversation-cookie-secret   = "$conversationCookieSecret"
        |  session-cookie-secret        = "$sessionCookieSecret"
        |  user-agent-cookie-secret     = "$userAgentCookieSecret"
+       |  par-requests-secret          = "$parRequestsSecret"
+       |}
+       |
+       |par {
+       |  request-uri-ttl  = "60 seconds"
+       |  max-request-size = 8192
        |}
        |
        |jwt {
@@ -399,6 +407,12 @@ def writeFile(dir: File, name: String, content: String): Unit =
        |      batch-size = 1000
        |      interval   = "5 minutes"
        |      key-column = "code"
+       |    }
+       |    {
+       |      table-name = "pushed_authorization_requests"
+       |      batch-size = 1000
+       |      interval   = "5 minutes"
+       |      key-column = "request_uri"
        |    }
        |    {
        |      table-name = "refresh_tokens"

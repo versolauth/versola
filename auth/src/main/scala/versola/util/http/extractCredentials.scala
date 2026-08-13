@@ -16,9 +16,14 @@ extension (request: Request)
   def extractCredentials(form: Form): IO[Option[Nothing], ClientCredentials] =
     ZIO.fromOption:
       (request.header(Header.Authorization), postCredentials(form)) match
-        case (Some(Header.Authorization.Basic(username, password)), None) =>
+        case (Some(Header.Authorization.Basic(username, password)), postCredentials)
+            if postCredentials.forall(_.exists(_.clientSecret.isEmpty)) =>
           val (secret, clientId) = (password.stringValue, ClientId(username))
-          if secret.isEmpty then
+          // `client_id` alone is not an authentication method, but when it accompanies Basic
+          // (as RFC 9126 §2.1 requires at /par) it must identify the authenticated client.
+          if postCredentials.exists(_.exists(_.clientId != clientId)) then
+            None
+          else if secret.isEmpty then
             Some(ClientIdWithSecret(clientId, None))
           else
             Secret.fromBase64Url(secret).toOption
