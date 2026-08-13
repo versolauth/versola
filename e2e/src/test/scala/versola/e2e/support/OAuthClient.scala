@@ -67,6 +67,32 @@ case class ChallengeResult(response: Response, html: String):
 extension (task: Task[ChallengeResult])
   def assertStep(expected: ConversationStep): Task[ChallengeResult] = task.flatMap(_.assertStep(expected))
 
+sealed trait PushedAuthorizationResult:
+  def response: Response
+  def success: Task[PushedAuthorizationResult.Success] = this match
+    case s: PushedAuthorizationResult.Success => ZIO.succeed(s)
+    case PushedAuthorizationResult.Failure(resp, body) =>
+      ZIO.fail(RuntimeException(s"Expected PAR success but got: status=${resp.status} body=$body"))
+
+object PushedAuthorizationResult:
+  case class Success(response: Response, requestUri: String, expiresIn: Long) extends PushedAuthorizationResult
+  case class Failure(response: Response, body: String) extends PushedAuthorizationResult
+
+  private case class Raw(request_uri: String, expires_in: Long) derives JsonDecoder
+
+  def parse(response: Response): Task[PushedAuthorizationResult] =
+    response.body.asString.map: body =>
+      if response.status.isSuccess then
+        body.fromJson[Raw].fold(
+          err => Failure(response, s"JSON parse error [$err] body=$body"),
+          raw => Success(response, raw.request_uri, raw.expires_in),
+        )
+      else Failure(response, body)
+
+extension (task: Task[PushedAuthorizationResult])
+  @targetName("pushedAuthorizationSuccess")
+  def success: Task[PushedAuthorizationResult.Success] = task.flatMap(_.success)
+
 sealed trait TokenResult:
   def response: Response
   def success: Task[TokenResult.Success] = this match
@@ -305,6 +331,8 @@ final class OAuthClient(client: Client, config: E2EConfig):
   /** GET /authorize — raw variant with full control over which parameters are sent.
     * Generates PKCE and state internally; use the returned [[AuthorizeResult]] to access the verifier and cookie.
     * Pass `omitCodeChallenge = true` to omit `code_challenge` from the request (e.g. to test missing-challenge errors).
+    * Pass `requestUri` to redeem a pushed authorization request (RFC 9126) instead of sending
+    * the authorization parameters directly; only `client_id` and `request_uri` are then sent.
     */
   def authorizeRaw(
       clientId: String,
@@ -317,23 +345,32 @@ final class OAuthClient(client: Client, config: E2EConfig):
       sessionCookie: Option[String] = None,
       acrValues: Option[String] = None,
       idTokenHint: Option[String] = None,
+      requestUri: Option[String] = None,
+      omitClientId: Boolean = false,
   ): Task[AuthorizeResult] =
     val (verifier, challenge) = PkceHelper.generate()
     val state = java.util.UUID.randomUUID().toString
     for
       base <- ZIO.fromEither(URL.decode(s"${config.authUrl}/authorize")).mapError(new RuntimeException(_))
-      params = List(
-        "client_id"            -> Some(clientId),
-        "redirect_uri"         -> Some(redirectUri),
-        "scope"                -> scope,
-        "response_type"        -> responseType,
-        "code_challenge"       -> (if omitCodeChallenge then None else Some(challenge)),
-        "code_challenge_method"-> (if omitCodeChallenge then None else Some("S256")),
-        "state"                -> Some(state),
-        "prompt"               -> prompt,
-        "max_age"              -> maxAge.map(_.toString),
-        "acr_values"           -> acrValues,
-        "id_token_hint"        -> idTokenHint,
+      params = requestUri.fold(
+        List(
+          "client_id"            -> Some(clientId),
+          "redirect_uri"         -> Some(redirectUri),
+          "scope"                -> scope,
+          "response_type"        -> responseType,
+          "code_challenge"       -> (if omitCodeChallenge then None else Some(challenge)),
+          "code_challenge_method"-> (if omitCodeChallenge then None else Some("S256")),
+          "state"                -> Some(state),
+          "prompt"               -> prompt,
+          "max_age"              -> maxAge.map(_.toString),
+          "acr_values"           -> acrValues,
+          "id_token_hint"        -> idTokenHint,
+        ),
+      )(uri =>
+        List(
+          "client_id"    -> (if omitClientId then None else Some(clientId)),
+          "request_uri"  -> Some(uri),
+        ),
       ).collect { case (k, Some(v)) => k -> v }
       req = Request.get(base.addQueryParams(params))
       reqWithSession = sessionCookie.fold(req)(sc =>
@@ -341,6 +378,37 @@ final class OAuthClient(client: Client, config: E2EConfig):
       )
       response <- Client.batched(reqWithSession).provide(ZLayer.succeed(client))
     yield AuthorizeResult(response, verifier, state, OAuthClient.extractConversationCookie(response))
+
+  /** POST /par — pushes an authorization request per RFC 9126, returning a `request_uri`
+    * reference for redemption at `/authorize`. Authenticates with HTTP Basic.
+    */
+  def pushAuthorization(
+      clientId: String,
+      clientSecret: String,
+      redirectUri: String,
+      scope: String = "openid",
+      responseType: String = "code",
+      extraParams: Map[String, String] = Map.empty,
+  ): Task[PushedAuthorizationResult] =
+    val (_, challenge) = PkceHelper.generate()
+    val state = java.util.UUID.randomUUID().toString
+    val body = formBody(Map(
+      "response_type"         -> responseType,
+      "redirect_uri"          -> redirectUri,
+      "scope"                 -> scope,
+      "state"                 -> state,
+      "code_challenge"        -> challenge,
+      "code_challenge_method" -> "S256",
+    ) ++ extraParams)
+    val req = Request.post(s"${config.authUrl}/par", body)
+      .addHeader(Authorization.Basic(clientId, clientSecret))
+      .addHeader(Header.ContentType(MediaType.application.`x-www-form-urlencoded`))
+    Client.batched(req).provide(ZLayer.succeed(client)).flatMap(PushedAuthorizationResult.parse)
+
+  /** Issues an arbitrary HTTP method against /par — used to test method-not-allowed handling. */
+  def parRaw(method: Method): Task[Response] =
+    val req = Request(method = method, url = URL.decode(s"${config.authUrl}/par").toOption.get)
+    Client.batched(req).provide(ZLayer.succeed(client))
 
   /** GET /challenge — fetches the current challenge form HTML and parses the step meta tag. */
   def getChallenge(cookie: String): Task[ChallengeResult] =
