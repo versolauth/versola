@@ -824,7 +824,6 @@ export class VersolaResourcesList extends LitElement {
         <li><span class="option-tooltip-code">user</span> — userinfo claims (only when "Fetch userinfo" is enabled).</li>
         <li><span class="option-tooltip-code">request</span> — incoming request data:
           <ul class="option-tooltip-list">
-            <li><span class="option-tooltip-code">request.path</span> — map of path parameters from <span class="option-tooltip-code">{name}</span> placeholders.</li>
             <li><span class="option-tooltip-code">request.query</span> — map of query parameters (first value per key).</li>
             <li><span class="option-tooltip-code">request.queryAll</span> — map of query parameters (all values per key as a list).</li>
             <li><span class="option-tooltip-code">request.headers</span> — map of request headers (first value per key).</li>
