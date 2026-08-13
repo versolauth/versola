@@ -25,7 +25,7 @@ const permissions = [
 
 const ordersApi = {
   resourceId: 'orders-api',
-  resource: 'https://orders.example.com',
+  resource: 'http://orders-api.orders.svc.cluster.local:8080',
   audience: ['storefront-web'],
   endpoints: [
     { id: 301, method: 'GET', path: '/orders', fetchUserInfo: false, allow: 'true', inject: [] },
@@ -135,7 +135,7 @@ test('resources list', async ({ page }) => {
   await expect(page.locator('.resource-shell')).toHaveCount(1);
   await shot(page, 'resources-list');
 
-  await page.locator('.resource-shell').filter({ hasText: 'orders.example.com' }).first().locator('.resource-header').click();
+  await page.locator('.resource-shell').filter({ hasText: 'orders-api.orders.svc.cluster.local' }).first().locator('.resource-header').click();
   await expect(page.locator('.audience-view-item')).toHaveText(['storefront-web']);
   await expect(page.locator('.endpoint-card')).toHaveCount(2);
   await shot(page, 'resources-list-expanded');
@@ -149,7 +149,7 @@ test('resource create form', async ({ page }) => {
   await shot(page, 'resource-form-empty');
 
   await page.getByRole('textbox', { name: 'Resource ID' }).fill('invoices-api');
-  await page.getByLabel('Absolute resource URI').fill('https://invoices.example.com');
+  await page.getByLabel('Absolute resource URI').fill('http://invoices-api.billing.svc.cluster.local:8080');
   await page.getByRole('button', { name: 'internal', exact: true }).click();
   await page.getByRole('textbox', { name: 'Audience client' }).fill('storefront-web');
   await page.getByRole('option', { name: 'storefront-web', exact: true }).click();
