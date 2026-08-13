@@ -15,11 +15,13 @@ object ObservabilitySpec extends ZIOSpecDefault:
   private case class LoggedRequest(path: String) derives JsonDecoder
   private case class LoggedResponse(code: Int) derives JsonDecoder
   private case class LoggedHttp(request: LoggedRequest, response: LoggedResponse) derives JsonDecoder
+  private case class LoggedError(code: String, description: Option[String]) derives JsonDecoder
   private case class LoggedEntry(
       level: String,
       message: String,
       http: LoggedHttp,
       stack_trace: Option[String] = None,
+      error: Option[LoggedError] = None,
   ) derives JsonDecoder
 
   @jsonMemberNames(SnakeCase)
@@ -45,6 +47,7 @@ object ObservabilitySpec extends ZIOSpecDefault:
       label("message", quoted(line)),
       (space + label("stack_trace", cause)).filter(LogFilter.causeNonEmpty),
       logAnnotation(Observability.receiveHttp),
+      logAnnotation(Observability.error),
     ).reduce(_ |-| _)
 
   private val clientLogFormat =
@@ -81,6 +84,9 @@ object ObservabilitySpec extends ZIOSpecDefault:
           Method.GET / "boom" -> Handler.fromFunctionZIO[Request](_ => ZIO.fail(new RuntimeException("boom"))),
           Method.GET / "auth" -> Handler.fromFunctionZIO[Request] { _ =>
             Observability.setAuthId("auth-1") *> ZIO.logInfo("in-handler").as(Response.text("ok"))
+          },
+          Method.GET / "error" -> Handler.fromFunctionZIO[Request] { _ =>
+            Observability.setError("invalid_request", Some("Invalid request")).as(Response.badRequest)
           },
           Method.GET / "labeled" -> Handler.fromFunctionZIO[Request] { _ =>
             Observability.setRouteLabel("grant_type", "client_credentials").as(Response.text("ok"))
@@ -134,6 +140,22 @@ object ObservabilitySpec extends ZIOSpecDefault:
         ),
       )
     }.provideSomeLayer[Scope](testLayer) @@ TestAspect.silentLogging,
+      test("renders request error details in the receive log") {
+        for
+          env <- tracingLayer.build
+          _ <- TestClient.addRoutes(routes.provideEnvironment(env))
+          client <- ZIO.service[Client]
+          response <- client.batched(Request.get(URL.empty / "error"))
+          logs <- ZTestLogger.logOutput
+          rawLog <- ZIO.fromOption(logs.find(_.message() == "receive-http"))
+            .orElseFail(new RuntimeException("Missing receive-http log"))
+          rendered <- ZIO.fromEither(rawLog.call(renderedLogFormat.toJsonLogger).fromJson[LoggedEntry])
+            .mapError(new RuntimeException(_))
+        yield assertTrue(
+          response.status == Status.BadRequest,
+          rendered.error.contains(LoggedError("invalid_request", Some("Invalid request"))),
+        )
+      }.provideSomeLayer[Scope](testLayer) @@ TestAspect.silentLogging,
     test("returns 500 and logs a single error entry for failed requests") {
       for
         env <- tracingLayer.build

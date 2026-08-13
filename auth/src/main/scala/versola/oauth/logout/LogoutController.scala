@@ -47,7 +47,6 @@ object LogoutController extends Controller:
           case (None, Some(_))    => "hint"
           case (None, None)       => "anonymous"
         )
-        _ <- ZIO.foreachDiscard(sessionId)(id => Observability.setSessionId(Base64.urlEncode(id)))
         renderService <- ZIO.service[ConversationRenderService]
         hint <- resolveHint(idTokenHint)
         // Without either identifier there is no session to terminate and no client to validate
@@ -57,11 +56,9 @@ object LogoutController extends Controller:
           case (Some(rawId), None) =>
             ZIO.serviceWithZIO[SessionService](_.find(rawId)).flatMap {
               case Some(info) =>
-                val setAuth = Observability.setSessionId(info.record.publicId) *>
-                  Observability.setUserId(info.record.userId.toString) *>
-                  Observability.setUserAgentId(info.record.userAgentId.toString)
                 val redirect = postLogoutRedirectUri.map(_.encode)
-                setAuth *> renderService.renderLogoutConfirm(info, csrfToken(rawId, redirect, state, config), redirect, state, None)
+                  setSessionAuth(info) *>
+                    renderService.renderLogoutConfirm(info, csrfToken(rawId, redirect, state, config), redirect, state, None)
               case None => Observability.setError("session_not_found") *> renderService.renderLogout(List.empty, None, state)
             }
           case (Some(rawId), Some(hintId)) =>
@@ -92,7 +89,6 @@ object LogoutController extends Controller:
           case (None, Some(_))    => "hint"
           case (None, None)       => "anonymous"
         )
-        _ <- ZIO.foreachDiscard(sessionId)(id => Observability.setSessionId(Base64.urlEncode(id)))
         renderService <- ZIO.service[ConversationRenderService]
         hint <- resolveHint(idTokenHint)
         response <- (sessionId, hint) match
@@ -105,7 +101,13 @@ object LogoutController extends Controller:
               submission =>
                 val expected = csrfToken(rawId, submission.postLogoutRedirectUri, submission.state, config)
                 if matches(submission.csrfToken, expected) then
-                  performLogout(Right(rawId), submission.postLogoutRedirectUri.flatMap(URL.decode(_).toOption), submission.state, renderService)
+                    ZIO.serviceWithZIO[SessionService](_.find(rawId)).flatMap {
+                      case Some(info) =>
+                        setSessionAuth(info) *>
+                          performLogout(Right(rawId), submission.postLogoutRedirectUri.flatMap(URL.decode(_).toOption), submission.state, renderService)
+                      case None =>
+                        performLogout(Right(rawId), submission.postLogoutRedirectUri.flatMap(URL.decode(_).toOption), submission.state, renderService)
+                    }
                 else
                   Observability.setError("csrf_mismatch").as(Response.forbidden),
             )

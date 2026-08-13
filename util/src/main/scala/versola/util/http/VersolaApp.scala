@@ -248,6 +248,7 @@ object VersolaApp:
               logAnnotation(Observability.receiveHttp),
               logAnnotation(Observability.sendHttp),
               logAnnotation(Observability.auth),
+              logAnnotation(Observability.error),
               label("logger", LoggerNameExtractor.loggerNameAnnotationOrTrace.toLogFormat()),
             ).reduce(_ |-| _),
         )
