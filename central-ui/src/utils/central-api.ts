@@ -97,7 +97,7 @@ type PermissionsResponse = { permissions: Array<{ permission: string; descriptio
 type ScopesResponse = { scopes: Array<{ scope: string; description: LocalizedDescription; claims: Array<{ claim: string; description: LocalizedDescription }> }> };
 type BackendAuthFactor = { type: string; required: boolean };
 type BackendRegistrationStep = { type: string };
-type BackendRegistrationFlow = { steps: BackendRegistrationStep[]; roleId: string };
+type BackendRegistrationFlow = { credential: string; steps: BackendRegistrationStep[]; roleIds: string[] };
 type BackendAuthFlow = {
   primary: { credentials: string[]; inlinePassword: boolean; factors: BackendAuthFactor[] };
   passkey?: { factors: BackendAuthFactor[] } | null;
@@ -167,14 +167,19 @@ function authFlowFromBackend(flow: BackendAuthFlow | null | undefined): AuthFlow
 
 function registrationFlowToBackend(flow: RegistrationFlow | null | undefined): BackendRegistrationFlow | null {
   if (!flow) return null;
-  return { steps: flow.steps.map(step => ({ type: step.type })), roleId: flow.roleId };
+  return {
+    credential: flow.credential,
+    steps: flow.steps.map(step => ({ type: step.type })),
+    roleIds: unique(flow.roleIds),
+  };
 }
 
 function registrationFlowFromBackend(flow: BackendRegistrationFlow | null | undefined): RegistrationFlow | null {
   if (!flow) return null;
   return {
+    credential: flow.credential as RegistrationFlow['credential'],
     steps: flow.steps.map(step => ({ type: step.type as RegistrationFlow['steps'][number]['type'] })),
-    roleId: flow.roleId,
+    roleIds: unique(flow.roleIds),
   };
 }
 
@@ -1003,7 +1008,9 @@ export async function updateClient(tenantId: string, existing: OAuthClient, clie
 
 function sameRegistrationFlow(a: RegistrationFlow | null | undefined, b: RegistrationFlow | null | undefined): boolean {
   if (!a || !b) return !a && !b;
-  return a.roleId === b.roleId
+  return a.credential === b.credential
+    && a.roleIds.length === b.roleIds.length
+    && a.roleIds.every(roleId => b.roleIds.includes(roleId))
     && a.steps.length === b.steps.length
     && a.steps.every((step, index) => step.type === b.steps[index]?.type);
 }

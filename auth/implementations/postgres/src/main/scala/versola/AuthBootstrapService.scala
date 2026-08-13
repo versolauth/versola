@@ -4,7 +4,7 @@ import versola.oauth.challenge.password.PasswordRepository
 import versola.oauth.client.model.TenantId
 import versola.role.model.RoleId
 import versola.user.model.{Login, UserId}
-import versola.user.{UserRepository, UserRolesRepository}
+import versola.user.UserRepository
 import versola.util.{CoreConfig, EnvName, Phone, Salt, Secret, SecureRandom, SecurityService}
 import zio.{Clock, Task, ZIO, ZLayer}
 
@@ -25,16 +25,15 @@ object AuthBootstrapService:
     Option.when(envName.isTest)(NonProdAdminPhone)
 
   val live: ZLayer[
-    UserRepository & UserRolesRepository & PasswordRepository & SecurityService & SecureRandom & CoreConfig & EnvName,
+    UserRepository & PasswordRepository & SecurityService & SecureRandom & CoreConfig & EnvName,
     Throwable,
     AuthBootstrapService,
   ] =
-    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _)) >+>
+    ZLayer.fromFunction(Impl(_, _, _, _, _, _)) >+>
       ZLayer(ZIO.serviceWithZIO[AuthBootstrapService](_.bootstrap))
 
   private class Impl(
       userRepo: UserRepository,
-      userRolesRepo: UserRolesRepository,
       passwordRepo: PasswordRepository,
       securityService: SecurityService,
       secureRandom: SecureRandom,
@@ -61,7 +60,7 @@ object AuthBootstrapService:
                 _ <- userRepo.upsert(adminUserId, version, email = None, phone = adminPhone(envName), login = Some(Login(cfg.login)))
                 _ <- ZIO.logInfo(s"Created admin user '${cfg.login}' with id $adminUserId")
               yield adminUserId
-          _ <- userRolesRepo.updateRoles(
+          _ <- userRepo.updateRoles(
             userId = userId,
             tenantId = TenantId.default,
             add = Set(RoleId("oauth-admin")),

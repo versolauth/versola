@@ -7,7 +7,7 @@ import versola.oauth.revoke.AccessTokenRevocationService
 import versola.oauth.session.model.{RefreshAlreadyExchanged, RefreshTokenRecord, WithTtl}
 import versola.oauth.session.SessionRepository
 import versola.oauth.token.model.{ClientCredentialsRequest, CodeExchangeRequest, IssuedTokens, RefreshTokenRequest, TokenEndpointError}
-import versola.user.{UserRepository, UserRolesRepository}
+import versola.user.UserRepository
 import versola.util.{AuthPropertyGenerator, Base64, CoreConfig, MAC, Secret, SecurityService}
 import versola.util.http.Observability
 import zio.prelude.These
@@ -34,7 +34,7 @@ object OAuthTokenService:
   /** Admin-console client; admin roles are only embedded in tokens issued for it. */
   val centralAdminClientId: ClientId = ClientId("central-admin")
 
-  def live = ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _))
+  def live = ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _))
 
   class Impl(
       authorizationCodeRepository: AuthorizationCodeRepository,
@@ -44,7 +44,6 @@ object OAuthTokenService:
       securityService: SecurityService,
       authPropertyGenerator: AuthPropertyGenerator,
       userRepository: UserRepository,
-      userRolesRepository: UserRolesRepository,
       config: CoreConfig,
   ) extends OAuthTokenService:
 
@@ -265,7 +264,7 @@ object OAuthTokenService:
           userRepository.find(record.userId),
         )
 
-        roles <- userRolesRepository.findRolesByUserAndTenant(record.userId, client.tenantId)
+        roles <- userRepository.findRolesByUserAndTenant(record.userId, client.tenantId)
       yield IssuedTokens(
         accessToken = accessToken,
         clientId = record.clientId,

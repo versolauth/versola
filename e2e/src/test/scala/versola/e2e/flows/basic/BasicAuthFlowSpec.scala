@@ -4,6 +4,8 @@ import versola.e2e.support.{*, given}
 import zio.*
 import zio.test.*
 
+import java.util.UUID
+
 /** Happy-path authorization code + PKCE flows. */
 object BasicAuthFlowSpec extends E2ESpec:
 
@@ -56,5 +58,20 @@ object BasicAuthFlowSpec extends E2ESpec:
         .label(s"userinfo 'sub' must equal registered userId ${s.userId}, got ${userinfo.sub}") &&
         assertTrue(userinfo.email.contains(s.email.get))
           .label(s"userinfo 'email' must be ${s.email.get}")
+    },
+    test("unknown credential without registration rejects the fake OTP") {
+      val unknownEmail = s"unknown-${UUID.randomUUID()}@example.test"
+      for
+        (s, auth) <- setup(Flows.Id.EmailOtp)
+        authorize <- auth.authorize(scope = "openid email", clientId = Some(s.clientId), redirectUri = Some(s.redirectUri))
+          .assertChallengeRedirect
+        cookie = authorize.conversationCookie.get
+        challenge1 <- auth.getChallenge(cookie).assertStep(ConversationStep.Credential)
+        _ <- auth.submitEmail(cookie, unknownEmail, challenge1.csrf)
+        challenge2 <- auth.getChallenge(cookie).assertStep(ConversationStep.Otp)
+        _ <- auth.submitOtp(cookie, fixedOtp, challenge2.csrf)
+        challenge3 <- auth.getChallenge(cookie).assertStep(ConversationStep.Otp)
+      yield assertTrue(challenge3.html.contains("Invalid verification code"))
+        .label("an unknown credential must reject the fake OTP")
     },
   ) @@ TestAspect.sequential @@ TestAspect.timeout(60.seconds)

@@ -105,5 +105,4 @@ object TestEnvConfig:
     ),
     configurationCacheRefreshInterval = 5.minutes,
     par = None,
-    userRegistrationOutbox = None,
   )

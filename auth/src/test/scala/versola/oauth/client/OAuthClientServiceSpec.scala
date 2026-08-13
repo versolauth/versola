@@ -179,6 +179,12 @@ object OAuthClientServiceSpec extends UnitSpecBase:
         result <- env.service.find(ClientId("missing"))
       yield assertTrue(result.isEmpty)
     },
+    test("get returns existing client") {
+      for
+        env <- makeEnv()
+        result <- env.service.get(clientId1)
+      yield assertTrue(result == privateClient1)
+    },
     test("verifySecret accepts public client only without secret") {
       for
         env <- makeEnv()

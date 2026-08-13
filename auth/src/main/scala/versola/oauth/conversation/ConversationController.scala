@@ -21,8 +21,6 @@ object ConversationController extends Controller:
     getFormRoute,
     submitEmailRoute,
     submitPhoneRoute,
-    submitRegisterEmailRoute,
-    submitRegisterPhoneRoute,
     submitPasswordRoute,
     submitLoginPasswordRoute,
     submitOtpRoute,
@@ -62,12 +60,6 @@ object ConversationController extends Controller:
 
   val submitPhoneRoute =
     submit[PhoneSubmission](Method.POST / "challenge" / "phone")
-
-  val submitRegisterEmailRoute =
-    submit[RegisterEmailSubmission](Method.POST / "challenge" / "register" / "email")
-
-  val submitRegisterPhoneRoute =
-    submit[RegisterPhoneSubmission](Method.POST / "challenge" / "register" / "phone")
 
   val submitPasswordRoute =
     submit[PasswordSubmission](Method.POST / "challenge" / "password")
@@ -160,10 +152,6 @@ object ConversationController extends Controller:
         ZIO.serviceWithZIO[OAuthConfigurationService](_.getAllowedPhonePrefixes(clientId))
           .map(prefixes => prefixes.isEmpty || prefixes.exists(submitted.phone.startsWith))
 
-      case submitted: RegisterPhoneSubmission =>
-        ZIO.serviceWithZIO[OAuthConfigurationService](_.getAllowedPhonePrefixes(clientId))
-          .map(prefixes => prefixes.isEmpty || prefixes.exists(submitted.phone.startsWith))
-
       case submitted: PasswordSubmission =>
         ZIO.serviceWithZIO[OAuthConfigurationService](_.getPasswordRegex)
           .map(regex => scala.util.Try(submitted.password.matches(regex)).getOrElse(true))
@@ -227,18 +215,6 @@ object ConversationController extends Controller:
 
   given FormDecoder[OtpResendSubmission] = (form: Form) =>
     FormDecoder.single[String](form, "csrf", Right(_)).map(OtpResendSubmission(_))
-
-  given FormDecoder[RegisterEmailSubmission] = (form: Form) =>
-    for
-      email <- FormDecoder.single[Email](form, "email", Email.from)
-      csrf  <- FormDecoder.single[String](form, "csrf", Right(_))
-    yield RegisterEmailSubmission(email, csrf)
-
-  given FormDecoder[RegisterPhoneSubmission] = (form: Form) =>
-    for
-      phone <- FormDecoder.single[Phone](form, "phone", Phone.parse)
-      csrf  <- FormDecoder.single[String](form, "csrf", Right(_))
-    yield RegisterPhoneSubmission(phone, csrf)
 
   given FormDecoder[OtpSubmission] = (form: Form) =>
     for

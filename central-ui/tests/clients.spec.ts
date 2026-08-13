@@ -192,20 +192,57 @@ test('configures a registration flow and sends it when creating a client', async
   const registrationRow = page.getByText('Registration', { exact: true }).locator('..');
   await registrationRow.locator('label.toggle').click();
 
-  const challenge = page.getByText('Challenge', { exact: true }).locator('..').getByRole('combobox');
+  await expect(page.locator('[aria-label="Registration credential (locked)"]')).toContainText('phone');
+  await expect(page.getByText('New users prove ownership of their phone with an OTP.', { exact: true })).toBeVisible();
+  await expect(page.getByText('Granted once, when the account is created.', { exact: true })).toBeVisible();
+
+  const challenge = page.getByLabel('Challenge', { exact: true });
+  await expect(challenge).toHaveValue('none');
   await challenge.selectOption('setPassword');
 
-  const role = page.getByText('Assigned role *', { exact: true }).locator('..').getByRole('combobox');
-  await expect(role).toHaveValue('user');
-  await role.selectOption('alpha-admin');
+  const roles = page.getByRole('group', { name: 'Assigned roles' });
+  await expect(roles.getByRole('checkbox', { name: 'user', exact: true })).toBeChecked();
+  await roles.getByRole('checkbox', { name: 'alpha-admin', exact: true }).check();
 
   await page.getByRole('button', { name: 'Create Client', exact: true }).click();
 
   expect(findRequest(api.requests, 'POST', '/configuration/clients').body).toMatchObject({
     registrationFlow: {
+      credential: 'phone',
       steps: [{ type: 'otp' }, { type: 'setPassword' }],
-      roleId: 'alpha-admin',
+      roleIds: ['user', 'alpha-admin'],
     },
+  });
+});
+
+test('hides registration settings when inline password is enabled', async ({ page }) => {
+  const api = await loadAdminApp(page, {
+    path: clientsPath,
+    state: { clients: { 'tenant-alpha': [alphaClient] } },
+  });
+
+  await page.getByRole('button', { name: '+ Create Client', exact: true }).click();
+  await page.getByLabel('Client ID').fill('inline-password-client');
+  await page.getByLabel('Client Name').fill('Inline Password Client');
+  await page.getByPlaceholder('https://app.example.com/callback').fill('https://inline-password.example/callback');
+  await page.getByPlaceholder('https://app.example.com/callback').press('Enter');
+
+  const registrationRow = page.getByText('Registration', { exact: true }).locator('..');
+  await registrationRow.locator('label.toggle').click();
+  await expect(page.getByText('Assigned roles *', { exact: true })).toBeVisible();
+
+  await page.getByRole('checkbox', { name: 'inline password', exact: true }).check();
+  await expect(page.getByText('Registration', { exact: true })).toHaveCount(0);
+
+  await page.getByRole('button', { name: 'Create Client', exact: true }).click();
+
+  expect(findRequest(api.requests, 'POST', '/configuration/clients').body).toMatchObject({
+    authFlow: {
+      primary: {
+        inlinePassword: true,
+      },
+    },
+    registrationFlow: null,
   });
 });
 
@@ -223,7 +260,7 @@ test('hides registration settings for a login+password flow', async ({ page }) =
 
   const registrationRow = page.getByText('Registration', { exact: true }).locator('..');
   await registrationRow.locator('label.toggle').click();
-  await expect(page.getByText('Assigned role *', { exact: true })).toBeVisible();
+  await expect(page.getByText('Assigned roles *', { exact: true })).toBeVisible();
 
   await page.getByRole('button', { name: 'login + password', exact: true }).click();
   await expect(page.getByText('Registration', { exact: true })).toHaveCount(0);

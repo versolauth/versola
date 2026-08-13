@@ -51,6 +51,14 @@ object UserServiceSpec extends UnitSpecBase:
         result <- env.service.create(CreateUserRequest(Some(email), None, None))
       yield assertTrue(result == UserId(newId))
     },
+    test("indexRegistered returns the canonical repository id") {
+      val env = Env()
+      val request = RegisteredUserRequest(Some(email), None, None)
+      for
+        _ <- env.userRepository.indexFromAuth.succeedsWith(userId)
+        result <- env.service.indexRegistered(request)
+      yield assertTrue(result == userId)
+    },
     test("getRoles delegates to authClient") {
       val env = Env()
       for

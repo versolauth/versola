@@ -171,8 +171,9 @@ trait OAuthClientRepositorySpec extends DatabaseSpecBase[OAuthClientRepositorySp
       },
       test("update client should replace the registration flow when the patch carries one") {
         val updated = RegistrationFlow(
+            credential = RegistrationCredential.phone,
           steps = List(RegistrationStep.Otp(), RegistrationStep.SetPassword()),
-          roleId = RegistrationFlow.defaultRoleId,
+            roleIds = Set(RegistrationFlow.defaultRoleId),
         )
 
         for

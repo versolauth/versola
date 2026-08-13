@@ -52,11 +52,22 @@ object Flows:
 
   /** Registration entered from the phone credential card: prove the number, then pick a password. */
   val otpPasswordRegistrationFlow: Json = Json.Obj(
+      "credential" -> Json.Str("phone"),
     "steps" -> Json.Arr(
       Json.Obj("type" -> Json.Str("otp")),
       Json.Obj("type" -> Json.Str("setPassword")),
     ),
-    "roleId" -> Json.Str("user"),
+      "roleIds" -> Json.Arr(Json.Str("user")),
+  )
+
+  /** Registration entered from the email credential card: prove the address, then pick a password. */
+  val emailOtpPasswordRegistrationFlow: Json = Json.Obj(
+    "credential" -> Json.Str("email"),
+    "steps" -> Json.Arr(
+      Json.Obj("type" -> Json.Str("otp")),
+      Json.Obj("type" -> Json.Str("setPassword")),
+    ),
+    "roleIds" -> Json.Arr(Json.Str("user")),
   )
 
   // ── Setup result ────────────────────────────────────────────────────────
@@ -93,6 +104,7 @@ object Flows:
         authFlow = Some(loginPasswordAuthFlow),
       ).success
       userId <- oauthClient.registerUser(login = Some(login))
+      _      <- oauthClient.flushUserOutbox()
       _      <- oauthClient.setUserPassword(userId, password)
     yield Setup(clientId, clientResult.secret, redirectUri, userId, Some(login), None, None, password)
 
@@ -112,6 +124,7 @@ object Flows:
         authFlow = Some(emailOtpAuthFlow),
       ).success
       userId <- oauthClient.registerUser(email = Some(email))
+      _      <- oauthClient.flushUserOutbox()
       _      <- oauthClient.setUserPassword(userId, password)
     yield Setup(clientId, clientResult.secret, redirectUri, userId, None, Some(email), None, password)
 
@@ -131,6 +144,7 @@ object Flows:
         authFlow = Some(phoneOtpAuthFlow),
       ).success
       userId <- oauthClient.registerUser(phone = Some(phone))
+      _      <- oauthClient.flushUserOutbox()
       _      <- oauthClient.setUserPassword(userId, password)
     yield Setup(clientId, clientResult.secret, redirectUri, userId, None, None, Some(phone), password)
 
@@ -156,11 +170,28 @@ object Flows:
       ).success
     yield Setup(clientId, clientResult.secret, redirectUri, new UUID(0L, 0L), None, None, Some(phone), password)
 
+  /** Register a client that offers self-service registration next to email + OTP sign-in. */
+  def setupEmailRegistration(redirectUri: String = "http://localhost:3000"): RIO[OAuthClient, Setup] =
+    val uid = UUID.randomUUID().toString.replace("-", "")
+    val email = s"registration-${uid.take(12)}@example.test"
+    val password = s"Pass-${uid.take(8)}-1!"
+    val clientId = s"email-registration-client-${uid.take(8)}"
+    for
+      oauthClient <- ZIO.service[OAuthClient]
+      clientResult <- oauthClient.registerClient(
+        clientId,
+        "Email Registration Test Client",
+        Set(redirectUri),
+        authFlow = Some(emailOtpAuthFlow),
+        registrationFlow = Some(emailOtpPasswordRegistrationFlow),
+      ).success
+    yield Setup(clientId, clientResult.secret, redirectUri, new UUID(0L, 0L), None, Some(email), None, password)
+
   // ── Multi-setup helpers ─────────────────────────────────────────────────
 
   /** Identifies a registered auth flow variant in the shared bootstrap data. */
   enum Id:
-    case LoginPassword, EmailOtp, PhoneOtp, PhoneRegistration
+    case LoginPassword, EmailOtp, PhoneOtp, PhoneRegistration, EmailRegistration
 
   /** All shared test data for the e2e suite. */
   case class Setups(setups: Map[Id, Setup], client: OAuthClient):
@@ -178,6 +209,7 @@ object Flows:
         otp     <- setupEmailOtp()
         phoneOtp <- setupPhoneOtp()
         registration <- setupPhoneRegistration()
+        emailRegistration <- setupEmailRegistration()
         _       <- client.flushUserOutbox()
         _       <- client.upsertChallengeSettings(
           acrVocabulary = Map(Acr.OtpLevel -> List("otp"), Acr.PasswordLevel -> List("password"), Acr.PasskeyLevel -> List("passkey")),
@@ -189,6 +221,7 @@ object Flows:
           Id.EmailOtp -> otp,
           Id.PhoneOtp -> phoneOtp,
           Id.PhoneRegistration -> registration,
+          Id.EmailRegistration -> emailRegistration,
         ),
         client,
       )

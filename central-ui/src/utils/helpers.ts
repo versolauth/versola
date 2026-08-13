@@ -20,13 +20,13 @@ export function createDefaultAuthFlow(): AuthFlow {
 export const DEFAULT_REGISTRATION_ROLE_ID = 'user';
 
 /**
- * Default registration flow: prove ownership of the entry credential with an OTP.
- * The entry credential itself comes from the auth flow's primary credentials.
+ * Default registration flow: prove ownership of the phone entry credential with an OTP.
  */
 export function createDefaultRegistrationFlow(): RegistrationFlow {
   return {
+    credential: 'phone',
     steps: [{ type: 'otp' }],
-    roleId: DEFAULT_REGISTRATION_ROLE_ID,
+    roleIds: [DEFAULT_REGISTRATION_ROLE_ID],
   };
 }
 

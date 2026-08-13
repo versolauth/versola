@@ -1,14 +1,15 @@
 package versola.user
 
 import versola.oauth.client.CentralSyncTokenService
+import versola.user.model.UserId
 import versola.util.CoreConfig
 import zio.http.{Body, Header, MediaType, Method, Request, Status}
 import zio.json.*
 import zio.{Task, URLayer, ZIO, ZLayer}
 
-/** Reports self-service registrations to central so its user index stays complete. */
+/** Claims self-service registration credentials in central, returning the canonical user ID. */
 trait UserRegistrationSyncClient:
-  def reportRegistration(event: UserRegisteredEvent): Task[Unit]
+  def claimRegistration(event: UserRegisteredEvent): Task[UserId]
 
 object UserRegistrationSyncClient:
   val live: URLayer[CoreConfig & CentralSyncTokenService, UserRegistrationSyncClient] =
@@ -18,17 +19,17 @@ object UserRegistrationSyncClient:
       config: CoreConfig,
       centralSyncTokenService: CentralSyncTokenService,
   ) extends UserRegistrationSyncClient:
-    private val RegistrationsUrl = config.central.url / "service" / "users" / "registrations"
+    private val RegistrationsUrl = config.central.url / "users" / "registrations"
 
-    override def reportRegistration(event: UserRegisteredEvent): Task[Unit] =
+    override def claimRegistration(event: UserRegisteredEvent): Task[UserId] =
       ZIO.scoped:
         for
           response <- centralSyncTokenService.syncRequest(
-                        Request
-                          .post(RegistrationsUrl, Body.fromString(event.toJson))
-                          .addHeader(Header.ContentType(MediaType.application.json)),
-                      )
+            Request
+              .post(RegistrationsUrl, Body.fromString(event.toJson))
+              .addHeader(Header.ContentType(MediaType.application.json)),
+          )
           _ <- ZIO.unless(response.status.isSuccess):
-                 // Retried by the outbox: failing here leaves the row queued with a bumped attempt.
-                 ZIO.fail(new Exception(s"Reporting registration failed with ${response.status}"))
-        yield ()
+            ZIO.fail(new Exception(s"Claiming registration failed with ${response.status}"))
+          claim <- response.body.asJsonFromCodec[RegistrationClaimResponse]
+        yield claim.userId

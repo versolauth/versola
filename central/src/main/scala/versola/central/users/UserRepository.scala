@@ -23,19 +23,18 @@ trait UserRepository:
       login: Option[Login],
   ): IO[UserConflict | Throwable, Unit]
 
-  /** Records a user auth created by self-service registration.
+  /** Claims credentials for a user being created through self-service registration.
     *
-    * Deliberately does not enqueue an outbox event: auth is already the source of this change,
-    * so echoing it back would have central and auth notifying each other in a loop. Existing
-    * rows are left untouched, since auth only reports accounts it has just created and a
-    * retried delivery must not clobber edits central has made since.
+    * Returns the canonical user ID already owning any supplied credential, or mints a new one
+    * and queues an auth upsert for recovery. Existing rows are left untouched so retries cannot
+    * clobber later central edits. Fails with [[UserIndexConflict]] when the supplied credentials
+    * already resolve to more than one existing user.
     */
   def indexFromAuth(
-      id: UserId,
       email: Option[Email],
       phone: Option[Phone],
       login: Option[Login],
-  ): Task[Unit]
+  ): IO[UserIndexConflict | Throwable, UserId]
 
   /** Atomically patches index columns and enqueues a UpsertUser outbox event.
     * Each `Option[Patch[A]]` follows three-state semantics: `None` keeps the column,

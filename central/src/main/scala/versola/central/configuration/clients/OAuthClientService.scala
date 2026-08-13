@@ -206,7 +206,7 @@ object OAuthClientService:
             client.previousSecret.exists(MessageDigest.isEqual(provided, _))
 
     /** Rejects a registration flow the auth service could not run: one without a usable
-      * entry credential, or one granting a role that does not exist in the client's tenant.
+      * entry credential, or one granting roles that do not exist in the client's tenant.
       */
     private def validateRegistration(
         clientId: ClientId,
@@ -217,8 +217,9 @@ object OAuthClientService:
       for
         _ <- ZIO.foreachDiscard(InvalidRegistrationConfiguration.validate(clientId, authFlow, registrationFlow))(ZIO.fail(_))
         _ <- ZIO.foreachDiscard(registrationFlow): flow =>
-          roleRepository.findRole(tenantId, flow.roleId).someOrFail:
-            InvalidRegistrationConfiguration(clientId, s"role '${flow.roleId}' does not exist in tenant '$tenantId'")
+          ZIO.foreachDiscard(flow.roleIds): roleId =>
+            roleRepository.findRole(tenantId, roleId).someOrFail:
+              InvalidRegistrationConfiguration(clientId, s"role '$roleId' does not exist in tenant '$tenantId'")
       yield ()
 
     /** An unparsable URI clears the column, matching how create drops undecodable URIs. */

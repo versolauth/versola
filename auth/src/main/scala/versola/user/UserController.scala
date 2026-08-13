@@ -21,7 +21,7 @@ import zio.json.JsonCodec
 import zio.telemetry.opentelemetry.tracing.Tracing
 
 object UserController extends Controller:
-  type Env = Tracing & UserRepository & UserRolesRepository & CoreConfig & SessionRepository & SessionService & ChallengeThrottleRepository & PasskeyRepository & PasswordService
+  type Env = Tracing & UserRepository & CoreConfig & SessionRepository & SessionService & ChallengeThrottleRepository & PasskeyRepository & PasswordService
 
   def routes: Routes[Env, Throwable] = Routes(
     upsertUserEndpoint,
@@ -63,7 +63,7 @@ object UserController extends Controller:
     Method.PATCH / "users" / "roles" -> handler { (request: Request) =>
       for
         _ <- authorizeInternal(request)
-        repo <- ZIO.service[UserRolesRepository]
+        repo <- ZIO.service[UserRepository]
         body <- request.body.asJsonFromCodec[UpdateUserRolesPayload]
         _ <- repo.updateRoles(body.userId, body.tenantId, body.add, body.remove)
       yield Response.status(Status.NoContent)
@@ -85,7 +85,7 @@ object UserController extends Controller:
     Method.GET / "users" / "roles" -> handler { (request: Request) =>
       for
         _ <- authorizeInternal(request)
-        repo <- ZIO.service[UserRolesRepository]
+        repo <- ZIO.service[UserRepository]
         id <- request.url.queryZIO[UserId]("id")
         tenantId <- request.url.queryZIO[TenantId]("tenantId")
         roles <- repo.findRolesByUserAndTenant(id, tenantId)

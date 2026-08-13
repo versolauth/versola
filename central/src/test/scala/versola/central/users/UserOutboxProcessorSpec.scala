@@ -7,7 +7,7 @@ import versola.central.configuration.tenants.TenantId
 import versola.util.{Email, Patch, Phone}
 import zio.json.ast.Json
 import zio.test.*
-import zio.{Cause, Duration, Fiber, IO, Ref, Task, ZIO}
+import zio.{Cause, Duration, Exit, Fiber, IO, Ref, Semaphore, Task, ZIO}
 
 import java.util.UUID
 
@@ -31,6 +31,20 @@ object UserOutboxProcessorSpec extends ZIOSpecDefault, ZIOStubs:
     attempts = 0,
   )
 
+  private def runFlush(processor: UserOutboxProcessor): Task[Unit] =
+    for
+      fiber <- processor.flush().fork
+      _ <- ZIO.foreachDiscard(1 to 8)(_ => TestClock.adjust(Duration.fromSeconds(1)))
+      _ <- fiber.join
+    yield ()
+
+  private def runFlushExit(processor: UserOutboxProcessor): Task[Exit[Throwable, Unit]] =
+    for
+      fiber <- processor.flush().exit.fork
+      _ <- ZIO.foreachDiscard(1 to 8)(_ => TestClock.adjust(Duration.fromSeconds(1)))
+      exit <- fiber.join
+    yield exit
+
   def spec = suite("UserOutboxProcessor")(
     test("logs a warning and reschedules when dispatch fails") {
       val repo = stub[UserRepository]
@@ -42,7 +56,8 @@ object UserOutboxProcessorSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- repo.rescheduleEvent.succeedsWith(())
 
         fiberRef <- Ref.make(Option.empty[Fiber.Runtime[Nothing, Unit]])
-        processor = UserOutboxProcessor.Live(config, repo, client, fiberRef)
+        semaphore <- Semaphore.make(1)
+        processor = UserOutboxProcessor.Live(config, repo, client, fiberRef, semaphore)
         _ <- processor.processOnce
         logs <- ZTestLogger.logOutput
       yield
@@ -66,7 +81,8 @@ object UserOutboxProcessorSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- repo.deleteEvent.succeedsWith(())
 
         fiberRef <- Ref.make(Option.empty[Fiber.Runtime[Nothing, Unit]])
-        processor = UserOutboxProcessor.Live(config, repo, client, fiberRef)
+        semaphore <- Semaphore.make(1)
+        processor = UserOutboxProcessor.Live(config, repo, client, fiberRef, semaphore)
         _ <- processor.processOnce
         logs <- ZTestLogger.logOutput
       yield assertTrue(
@@ -76,6 +92,67 @@ object UserOutboxProcessorSpec extends ZIOSpecDefault, ZIOStubs:
         !logs.exists(_.logLevel == zio.LogLevel.Warning),
       )
     },
+    test("flush drains all due batches before returning") {
+      val repo = stub[UserRepository]
+      val client = stub[AuthClient]
+
+      for
+        _ <- repo.claimDueEvents.returnsZIOOnCall:
+          case 1 => ZIO.succeed(Vector(record))
+          case 2 => ZIO.succeed(Vector.empty)
+        _ <- client.upsertUser.succeedsWith(())
+        _ <- repo.deleteEvent.succeedsWith(())
+        fiberRef <- Ref.make(Option.empty[Fiber.Runtime[Nothing, Unit]])
+        semaphore <- Semaphore.make(1)
+        processor = UserOutboxProcessor.Live(config, repo, client, fiberRef, semaphore)
+        _ <- runFlush(processor)
+      yield assertTrue(
+        repo.claimDueEvents.calls.length == 2,
+        repo.deleteEvent.calls == List(eventId),
+      )
+    },
+      test("flush retries a transient dispatch failure") {
+        val repo = stub[UserRepository]
+        val client = stub[AuthClient]
+
+        for
+          _ <- repo.claimDueEvents.returnsZIOOnCall:
+            case 1 => ZIO.succeed(Vector(record))
+            case 2 => ZIO.succeed(Vector.empty)
+          _ <- client.upsertUser.returnsZIOOnCall:
+            case 1 => ZIO.fail(new RuntimeException("temporary failure"))
+            case 2 => ZIO.succeed(())
+          _ <- repo.deleteEvent.succeedsWith(())
+
+          fiberRef <- Ref.make(Option.empty[Fiber.Runtime[Nothing, Unit]])
+          semaphore <- Semaphore.make(1)
+          processor = UserOutboxProcessor.Live(config, repo, client, fiberRef, semaphore)
+          _ <- runFlush(processor)
+        yield assertTrue(
+          client.upsertUser.calls.length == 2,
+          repo.deleteEvent.calls == List(eventId),
+        )
+      },
+      test("flush fails when dispatch cannot be completed") {
+        val repo = stub[UserRepository]
+        val client = stub[AuthClient]
+
+        for
+          _ <- repo.claimDueEvents.succeedsWith(Vector(record))
+          _ <- client.upsertUser.failsWith(new RuntimeException("Auth unavailable"))
+          _ <- repo.rescheduleEvent.succeedsWith(())
+
+          fiberRef <- Ref.make(Option.empty[Fiber.Runtime[Nothing, Unit]])
+          semaphore <- Semaphore.make(1)
+          processor = UserOutboxProcessor.Live(config, repo, client, fiberRef, semaphore)
+          exit <- runFlushExit(processor)
+        yield assertTrue(
+          exit.isFailure,
+          client.upsertUser.calls.length > 1,
+          repo.rescheduleEvent.calls == List((eventId, Duration.fromSeconds(2))),
+          repo.deleteEvent.calls.isEmpty,
+        )
+      },
     test("moves event to dead letter when max attempts exceeded") {
       val failedRecord = record.copy(attempts = config.maxAttempts - 1)
       val repo = stub[UserRepository]
@@ -87,7 +164,8 @@ object UserOutboxProcessorSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- repo.moveToDeadLetter.succeedsWith(())
 
         fiberRef <- Ref.make(Option.empty[Fiber.Runtime[Nothing, Unit]])
-        processor = UserOutboxProcessor.Live(config, repo, client, fiberRef)
+        semaphore <- Semaphore.make(1)
+        processor = UserOutboxProcessor.Live(config, repo, client, fiberRef, semaphore)
         _ <- processor.processOnce
         logs <- ZTestLogger.logOutput
       yield

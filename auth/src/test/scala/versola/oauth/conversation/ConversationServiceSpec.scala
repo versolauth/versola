@@ -20,7 +20,7 @@ import versola.oauth.session.model.PriorSession
 import versola.oauth.session.model.*
 import versola.oauth.token.AuthorizationCodeRepository
 import versola.oauth.userinfo.UserInfoService
-import versola.user.UserRepository
+import versola.user.{UserRepository, UserService}
 import versola.user.model.*
 import versola.util.*
 import zio.*
@@ -37,6 +37,7 @@ object ConversationServiceSpec extends UnitSpecBase:
   private val clientId = ClientId("client-1")
   private val userId = UserId(UUID.randomUUID())
   private val email = Email("test@example.com")
+  private val phone = Phone("+12025551234")
   private val redirectUri = zio.http.URL.decode("https://example.com/callback").toOption.get
 
   private val userRecord = UserRecord(
@@ -97,7 +98,7 @@ object ConversationServiceSpec extends UnitSpecBase:
     val acrResolver = stub[AcrResolutionService]
     val userAgentRepository = stub[UserAgentRepository]
     val secureRandom = stub[SecureRandom]
-    val userRolesRepository = stub[versola.user.UserRolesRepository]
+    val userService = stub[UserService]
 
     val service = ConversationService.Impl(
       otpService,
@@ -117,13 +118,18 @@ object ConversationServiceSpec extends UnitSpecBase:
       acrResolver,
       userAgentRepository,
       secureRandom,
-      userRolesRepository,
+      userService,
     )
 
   private val roleId = versola.role.model.RoleId("user")
+  private val roleIds = Set(roleId, versola.role.model.RoleId("member"))
 
   private val registrationFlow =
-    RegistrationFlow(steps = List(RegistrationStep.Otp(), RegistrationStep.SetPassword()), roleId = roleId)
+    RegistrationFlow(
+      credential = RegistrationCredential.email,
+      steps = List(RegistrationStep.Otp(), RegistrationStep.SetPassword()),
+      roleIds = roleIds,
+    )
 
   private val registrationConversation = conversationRecord.copy(registrationFlow = Some(registrationFlow))
 
@@ -156,12 +162,22 @@ object ConversationServiceSpec extends UnitSpecBase:
         for
           _ <- TestClock.setTime(now)
           _ <- env.submissionLimiter.statusFor.succeedsWith(LimitStatus.Allowed)
-          _ <- env.userRepository.findByCredential.succeedsWith(Some(userRecord))
           _ <- env.otpService.prepareOtp.succeedsWith(otpStep)
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
           _ <- env.otpService.sendOtp.succeedsWith(())
           _ <- env.submissionLimiter.tryAcquire.succeedsWith(LimitStatus.Allowed)
-          result <- env.service.prepareInitialOtp(authId, conversationRecord, Left(email), 0)
+          result <- env.service.prepareInitialOtp(
+            authId,
+            conversationRecord.copy(
+              userId = Some(userRecord.id),
+              userEmail = userRecord.email,
+              userPhone = userRecord.phone,
+              userLogin = userRecord.login,
+              userClaims = Some(userRecord.claims),
+            ),
+            Left(email),
+            0,
+          )
         yield
           assertTrue(result == ConversationResult.RenderStep(otpStep))
       },
@@ -176,56 +192,90 @@ object ConversationServiceSpec extends UnitSpecBase:
       }
     ),
     suite("startRegistration")(
-      test("creates the account, grants the configured role, and enters the flow") {
+      test("enters the flow without creating or reserving an account") {
         val env = Env()
-        val newUser = UserRecord(userId, Some(email), None, None, Json.Obj(), None)
         for
-          _ <- env.secureRandom.nextUUIDv7.succeedsWith(UUID.randomUUID())
-          _ <- env.userRepository.findOrCreateForRegistration.succeedsWith((newUser, WasCreated(true)))
-          _ <- env.configService.find.succeedsWith(Some(registrationClient))
-          _ <- env.userRolesRepository.updateRoles.succeedsWith(())
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
-          result <- env.service.startRegistration(authId, registrationConversation, Left(email))
-          roleCalls = env.userRolesRepository.updateRoles.times
+          result <- env.service.startRegistration(authId, registrationConversation, registrationFlow, Left(email))
+          registerTimes = env.userService.register.times
         yield assertTrue(
           result == RegistrationEntry.Registering(
             registrationConversation.copy(
-              userId = Some(userId),
+              userId = None,
               credential = Some(Left(email)),
-              userEmail = Some(email),
-              userClaims = Some(Json.Obj()),
+              userEmail = None,
+              userPhone = None,
+              userLogin = None,
+              userClaims = None,
               registrationStep = Some(0),
               version = registrationConversation.version + 1,
             ),
           ),
-          roleCalls == 1,
+          registerTimes == 0,
         )
       },
-      test("an existing credential neither creates an account nor enters the flow") {
+      test("stores a pending phone credential and clears existing profile fields") {
         val env = Env()
+        val existingPhone = Phone("+12025550000")
+        val conversation = registrationConversation.copy(
+          userEmail = Some(email),
+          userPhone = Some(existingPhone),
+          userLogin = Some(Login("old-login")),
+          userClaims = Some(Json.Obj("old" -> Json.Str("claim"))),
+        )
         for
-          _ <- env.secureRandom.nextUUIDv7.succeedsWith(UUID.randomUUID())
-          // findOrCreate resolved to the existing account rather than creating one.
-          _ <- env.userRepository.findOrCreateForRegistration.succeedsWith((userRecord, WasCreated(false)))
-          _ <- env.configService.find.succeedsWith(Some(registrationClient))
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
-          result <- env.service.startRegistration(authId, registrationConversation, Left(email))
-          roleCalls = env.userRolesRepository.updateRoles.times
+          result <- env.service.startRegistration(authId, conversation, registrationFlow, Right(phone))
         yield assertTrue(
-          result.isInstanceOf[RegistrationEntry.AlreadyRegistered],
-          // No role granted and no registration step: the conversation is an ordinary sign-in.
-          roleCalls == 0,
-          result.asInstanceOf[RegistrationEntry.AlreadyRegistered].conversation.registrationStep.isEmpty,
+          result == RegistrationEntry.Registering(
+            conversation.copy(
+              userId = None,
+              credential = Some(Right(phone)),
+              userEmail = None,
+              userPhone = None,
+              userLogin = None,
+              userClaims = None,
+              registrationStep = Some(0),
+              version = conversation.version + 1,
+            ),
+          ),
         )
       },
-      test("a client without a registration flow cannot register") {
+      test("returns a write conflict when registration conversation cannot be overwritten") {
         val env = Env()
         for
-          result <- env.service.startRegistration(authId, conversationRecord, Left(email))
-          createCalls = env.userRepository.findOrCreateForRegistration.times
+          _ <- env.conversationRepository.overwrite.succeedsWith(false)
+          result <- env.service.startRegistration(authId, registrationConversation, registrationFlow, Left(email))
+          registerTimes = env.userService.register.times
         yield assertTrue(
-          result == RegistrationEntry.Unavailable,
-          createCalls == 0,
+          result == ConversationResult.WriteConflict,
+          registerTimes == 0,
+        )
+      },
+    ),
+    suite("registerVerifiedUser")(
+      test("creates the verified account, grants roles, and updates the conversation") {
+        val env = Env()
+        val pending = registrationConversation.copy(
+          credential = Some(Left(email)),
+          registrationStep = Some(1),
+        )
+        val newUser = UserRecord(userId, Some(email), None, None, Json.Obj(), None)
+        for
+          _ <- env.configService.get.succeedsWith(registrationClient)
+          _ <- env.userService.register.succeedsWith(newUser)
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          result <- env.service.registerVerifiedUser(authId, pending, registrationFlow, Left(email))
+        yield assertTrue(
+          result == RegistrationEntry.Registering(
+            pending.copy(
+              userId = Some(userId),
+              userEmail = Some(email),
+              userClaims = Some(Json.Obj()),
+              version = pending.version + 1,
+            ),
+          ),
+          env.userService.register.calls.map(_._3) == List(roleIds),
         )
       },
     ),

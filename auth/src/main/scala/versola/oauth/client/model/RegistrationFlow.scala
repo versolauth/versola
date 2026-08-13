@@ -35,10 +35,13 @@ object RegistrationStep:
   * whose primary credentials are phone/email; the entry credential is the one the user
   * already typed on the credential card, so it is not configured separately here.
   *
-  * @param steps ordered steps the user passes before the account is created
-  * @param roleId role granted to the account on creation
+  * @param credential entry credential whose ownership the user proves during registration
+  * @param steps ordered verification and account-setup steps; OTP must come first, and the account
+  *              is created after OTP succeeds but before password or passkey enrollment
+  * @param roleIds roles granted to the account on creation
   */
 case class RegistrationFlow(
+    credential: RegistrationCredential,
     steps: List[RegistrationStep],
-    roleId: RoleId,
+    roleIds: Set[RoleId],
 ) derives Schema, JsonCodec, Equal

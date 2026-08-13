@@ -470,6 +470,7 @@ def writeFile(dir: File, name: String, content: String): Unit =
        |      description = "Central Admin Login"
        |      redirect-uri = "$edgeCompleteUrl"
        |      post-login-redirect-uri = "$postLoginRedirectUri"
+       |      post-logout-redirect-uri = "$postLoginRedirectUri"
        |    }
        |  ]
        |  central-url = "$centralUrl"

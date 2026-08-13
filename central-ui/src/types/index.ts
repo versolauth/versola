@@ -23,6 +23,7 @@ export interface AuthorizationPreset {
 
 // Authentication flow (cards: credential -> factor -> factor)
 export type PrimaryCredential = 'email' | 'phone' | 'login';
+export type RegistrationCredential = 'email' | 'phone';
 export type OtpType = 'sms' | 'email';
 export type AuthFactorType = 'otp' | 'password' | 'passkeyEnroll';
 
@@ -52,8 +53,9 @@ export interface RegistrationStep {
 }
 
 export interface RegistrationFlow {
+  credential: RegistrationCredential;     // entry credential whose ownership is verified
   steps: RegistrationStep[];  // ordered steps the user passes before the account is created
-  roleId: string;             // role granted to the account on creation
+  roleIds: string[];          // roles granted to the account on creation
 }
 
 // OAuth Client

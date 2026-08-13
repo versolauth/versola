@@ -444,16 +444,6 @@ final class OAuthClient(client: Client, config: E2EConfig):
     formPost(s"${config.authUrl}/challenge/set-password", Map("password" -> password, "csrf" -> csrf), cookie)
       .map(SubmitResult(_))
 
-  /** POST /challenge/register/email — enters the registration flow with an email address. */
-  def submitRegisterEmail(cookie: String, email: String, csrf: String): Task[SubmitResult] =
-    formPost(s"${config.authUrl}/challenge/register/email", Map("email" -> email, "csrf" -> csrf), cookie)
-      .map(SubmitResult(_))
-
-  /** POST /challenge/register/phone — enters the registration flow with a phone number. */
-  def submitRegisterPhone(cookie: String, phone: String, csrf: String): Task[SubmitResult] =
-    formPost(s"${config.authUrl}/challenge/register/phone", Map("phone" -> phone, "csrf" -> csrf), cookie)
-      .map(SubmitResult(_))
-
   /** POST /challenge/login-password — submits login + password in a single step. */
   def submitLoginPassword(cookie: String, login: String, password: String, csrf: String): Task[SubmitResult] =
     formPost(
@@ -539,6 +529,43 @@ final class OAuthClient(client: Client, config: E2EConfig):
             )
         else
           ZIO.fail(RuntimeException(s"registerUser failed: status=${resp.status} body=$bodyStr"))
+
+  /** GET /users?phone=... — checks the Central user index for a phone credential. */
+  def userExistsByPhone(phone: String): Task[Boolean] =
+    findUsers("phone", phone).map(_.nonEmpty)
+
+  /** GET /users?email=... — checks the Central user index for an email credential. */
+  def userExistsByEmail(email: String): Task[Boolean] =
+    findUsers("email", email).map(_.nonEmpty)
+
+  /** GET /users?phone=... — resolves the canonical Central user id for a phone credential. */
+  def findUserIdByPhone(phone: String): Task[Option[java.util.UUID]] =
+    findUsers("phone", phone).map(_.headOption.map(u => java.util.UUID.fromString(u.id)))
+
+  /** Waits for an auth-created registration to reach the Central user index. */
+  def awaitUserByPhone(phone: String): Task[Boolean] =
+    awaitUser(userExistsByPhone(phone), s"phone=$phone")
+
+  private def findUsers(queryName: String, value: String): Task[Vector[OAuthClient.UserSearchRecordBody]] =
+    for
+      base <- ZIO.fromEither(URL.decode(s"${config.centralUrl}/users"))
+        .mapError(error => RuntimeException(s"Invalid Central users URL: $error"))
+      response <- Client.batched(
+        Request.get(base.addQueryParam(queryName, value)).addHeader(centralAuthorization),
+      ).provide(ZLayer.succeed(client))
+      body <- response.body.asString
+      users <- if response.status.isSuccess then
+        ZIO.fromEither(body.fromJson[OAuthClient.UserSearchResponseBody])
+          .mapError(error => RuntimeException(s"Failed to parse Central user search response [$error]"))
+      else
+        ZIO.fail(RuntimeException(s"Central user search failed: status=${response.status}"))
+    yield users.users
+
+  private def awaitUser(exists: Task[Boolean], credential: String): Task[Boolean] =
+    exists.flatMap: found =>
+      if found then ZIO.succeed(true)
+      else ZIO.fail(RuntimeException(s"User with $credential is not yet present in Central"))
+    .retry(Schedule.spaced(100.millis) && Schedule.recurs(100))
 
   /** DELETE /service/users — deletes a user via the Central service API (non-prod only). */
   def deleteUser(userId: java.util.UUID): Task[Unit] =
@@ -692,6 +719,18 @@ object OAuthClient:
       .collectFirst { case h if h.value.name == "SSO_CONVERSATION" => h.value.content }
 
   private[support] case class CreateUserResponseBody(id: String) derives JsonDecoder
+
+  private[support] case class UserSearchResponseBody(
+      users: Vector[UserSearchRecordBody],
+  ) derives JsonDecoder
+
+  private[support] case class UserSearchRecordBody(
+      id: String,
+      email: Option[String],
+      phone: Option[String],
+      login: Option[String],
+      claims: zio.json.ast.Json.Obj,
+  ) derives JsonDecoder
 
   /** Minimal mirror of `CreateClientRequest` for e2e JSON serialisation. */
   private[support] case class RegisterClientBody(

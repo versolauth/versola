@@ -3,7 +3,7 @@ package versola.central.users
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.util.{DatabaseSpecBase, Email, Phone, SecureRandom}
 import zio.test.*
-import zio.{ZIO, ZLayer}
+import zio.{Duration, ZIO, ZLayer}
 
 import java.util.UUID
 
@@ -54,6 +54,46 @@ trait UserRepositorySpec extends DatabaseSpecBase[UserRepositorySpec.Env]:
           _ <- env.repository.create(userId1, Some(email), Some(phone), None)
           found <- env.repository.findById(userId1)
         yield assertTrue(found.contains(UserIndexRecord(userId1, Some(email), Some(phone), None)))
+      },
+      test("registration claim mints a new id and queues a recovery upsert") {
+        for
+          owner <- env.repository.indexFromAuth(Some(email), None, None)
+          events <- env.repository.claimDueEvents(10, Duration.fromSeconds(60))
+          upsertUserIds = events.map(_.event).collect { case event: OutboxEvent.UpsertUser => event.userId }
+        yield assertTrue(upsertUserIds == Vector(owner))
+      },
+      test("registration claim returns the existing credential owner") {
+        for
+          first <- env.repository.indexFromAuth(Some(email), None, None)
+          second <- env.repository.indexFromAuth(Some(email), None, None)
+          events <- env.repository.claimDueEvents(10, Duration.fromSeconds(60))
+        yield assertTrue(
+          first == second,
+          events.size == 1,
+        )
+      },
+      test("concurrent registration claims converge on one user id") {
+        for
+          owners <- ZIO.collectAllPar(
+                      List(
+                        env.repository.indexFromAuth(Some(email), None, None),
+                        env.repository.indexFromAuth(Some(email), None, None),
+                      ),
+                    )
+          indexed <- env.repository.findByEmail(email)
+          events <- env.repository.claimDueEvents(10, Duration.fromSeconds(60))
+        yield assertTrue(
+          owners.toSet.size == 1,
+          indexed.map(_.id).contains(owners.head),
+          events.size == 1,
+        )
+      },
+      test("registration claim fails with UserIndexConflict when credentials resolve to different users") {
+        for
+          _ <- env.repository.indexFromAuth(Some(email), None, None)
+          _ <- env.repository.indexFromAuth(None, Some(phone), None)
+          result <- env.repository.indexFromAuth(Some(email), Some(phone), None).either
+        yield assertTrue(result == Left(UserIndexConflict))
       },
     )
 

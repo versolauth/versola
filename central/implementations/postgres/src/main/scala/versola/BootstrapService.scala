@@ -908,8 +908,5 @@ object BootstrapService:
 
     private def seedMetadata(config: CentralConfig.BootstrapConfig): Task[Unit] =
       ZIO.foreachDiscard(config.metadata): metadata =>
-        metadataRepo.get.flatMap:
-          case Some(_) => ZIO.unit
-          case None    =>
-            ZIO.logInfo("Seeding server metadata from bootstrap config...") *>
-              metadataRepo.upsert(metadata)
+        ZIO.logInfo("Seeding server metadata from bootstrap config...") *>
+          metadataRepo.upsert(metadata)

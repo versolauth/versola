@@ -14,7 +14,7 @@ import versola.oauth.model.{CodeChallenge, CodeChallengeMethod}
 import versola.oauth.session.{SessionRepository, UserAgentRepository}
 import versola.oauth.token.AuthorizationCodeRepository
 import versola.oauth.userinfo.UserInfoService
-import versola.user.UserRepository
+import versola.user.{UserRepository, UserService}
 import versola.user.model.{UserId, UserRecord}
 import versola.util.{AuthPropertyGenerator, SecureRandom, SecurityService, UnitSpecBase}
 import zio.http.URL
@@ -61,7 +61,7 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
     val config = TestEnvConfig.coreConfig
     val userAgentRepository = stub[UserAgentRepository]
     val secureRandom = stub[SecureRandom]
-    val userRolesRepository = stub[versola.user.UserRolesRepository]
+    val userService = stub[UserService]
 
     val service = ConversationService.Impl(
       otpService,
@@ -81,7 +81,7 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
       acrResolver,
       userAgentRepository,
       secureRandom,
-      userRolesRepository,
+      userService,
     )
 
   val credentialStep = ConversationStep.Credential(
