@@ -50,6 +50,15 @@ object Flows:
     "otpType"     -> Json.Str("sms"),
   )
 
+  /** Registration entered from the phone credential card: prove the number, then pick a password. */
+  val otpPasswordRegistrationFlow: Json = Json.Obj(
+    "steps" -> Json.Arr(
+      Json.Obj("type" -> Json.Str("otp")),
+      Json.Obj("type" -> Json.Str("setPassword")),
+    ),
+    "roleId" -> Json.Str("user"),
+  )
+
   // ── Setup result ────────────────────────────────────────────────────────
 
   /** Everything a test needs to run a flow against a freshly-created client and user. */
@@ -125,11 +134,33 @@ object Flows:
       _      <- oauthClient.setUserPassword(userId, password)
     yield Setup(clientId, clientResult.secret, redirectUri, userId, None, None, Some(phone), password)
 
+  /** Register a client that offers self-service registration next to phone + OTP sign-in.
+    *
+    * No user is created: registration tests create their own account through the flow, and
+    * `Setup.phone` carries an unused number they can claim.
+    */
+  def setupPhoneRegistration(redirectUri: String = "http://localhost:3000"): RIO[OAuthClient, Setup] =
+    val uid = UUID.randomUUID()
+    val uidStr = uid.toString.replace("-", "")
+    val phone = f"+49152${uid.getLeastSignificantBits.abs % 100_000_000L}%08d"
+    val password = s"Pass-${uidStr.take(8)}-1!"
+    val clientId = s"registration-client-${uidStr.take(8)}"
+    for
+      oauthClient <- ZIO.service[OAuthClient]
+      clientResult <- oauthClient.registerClient(
+        clientId,
+        "Registration Test Client",
+        Set(redirectUri),
+        authFlow = Some(phoneOtpAuthFlow),
+        registrationFlow = Some(otpPasswordRegistrationFlow),
+      ).success
+    yield Setup(clientId, clientResult.secret, redirectUri, new UUID(0L, 0L), None, None, Some(phone), password)
+
   // ── Multi-setup helpers ─────────────────────────────────────────────────
 
   /** Identifies a registered auth flow variant in the shared bootstrap data. */
   enum Id:
-    case LoginPassword, EmailOtp, PhoneOtp
+    case LoginPassword, EmailOtp, PhoneOtp, PhoneRegistration
 
   /** All shared test data for the e2e suite. */
   case class Setups(setups: Map[Id, Setup], client: OAuthClient):
@@ -146,9 +177,18 @@ object Flows:
         lp      <- setupLoginPassword()
         otp     <- setupEmailOtp()
         phoneOtp <- setupPhoneOtp()
+        registration <- setupPhoneRegistration()
         _       <- client.flushUserOutbox()
         _       <- client.upsertChallengeSettings(
           acrVocabulary = Map(Acr.OtpLevel -> List("otp"), Acr.PasswordLevel -> List("password"), Acr.PasskeyLevel -> List("passkey")),
         )
         _       <- client.syncConfiguration()
-      yield Setups(Map(Id.LoginPassword -> lp, Id.EmailOtp -> otp, Id.PhoneOtp -> phoneOtp), client)
+      yield Setups(
+        Map(
+          Id.LoginPassword -> lp,
+          Id.EmailOtp -> otp,
+          Id.PhoneOtp -> phoneOtp,
+          Id.PhoneRegistration -> registration,
+        ),
+        client,
+      )

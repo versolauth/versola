@@ -76,6 +76,8 @@ object ConversationControllerSpec extends UnitSpecBase:
     userLogin = None,
     userClaims = None,
     authFlow = AuthFlow.default,
+    registrationFlow = None,
+    registrationStep = None,
     userAgent = None,
     userAgentCookie = None,
     version = 0,

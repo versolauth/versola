@@ -8,7 +8,7 @@ import versola.central.configuration.scopes.{OAuthScopeRepository, ScopeToken}
 import versola.central.configuration.sync.{SyncEvent, SyncOps}
 import versola.central.configuration.tenants.{TenantId, TenantRepository}
 import versola.central.configuration.{CreateClientRequest, UpdateClientRequest}
-import versola.util.{CacheSource, ReloadingCache, Secret, SecureRandom, SecurityService}
+import versola.util.{CacheSource, Patch, ReloadingCache, Secret, SecureRandom, SecurityService}
 import zio.*
 import zio.http.URL
 
@@ -31,11 +31,11 @@ trait OAuthClientService:
   def registerClient(
       request: CreateClientRequest,
       presetSecret: Option[Secret] = None,
-  ): IO[ClientAlreadyExists | Throwable, Secret]
+  ): IO[ClientAlreadyExists | InvalidRegistrationConfiguration | Throwable, Secret]
 
   def updateClient(
       request: UpdateClientRequest,
-  ): Task[Unit]
+  ): IO[InvalidRegistrationConfiguration | Throwable, Unit]
 
   def rotateClientSecret(clientId: ClientId): Task[Secret]
 
@@ -52,14 +52,14 @@ trait OAuthClientService:
   def verifySecret(provided: Secret): Task[Boolean]
 
 object OAuthClientService:
-  def live: ZLayer[Scope & OAuthClientRepository & TenantRepository & SecureRandom & SecurityService & CentralConfig, Throwable, OAuthClientService] =
+  def live: ZLayer[Scope & OAuthClientRepository & TenantRepository & RoleRepository & SecureRandom & SecurityService & CentralConfig, Throwable, OAuthClientService] =
     decryptingCacheSource >>>
       (ZLayer.fromZIO:
         ZIO.serviceWithZIO[CentralConfig](config =>
           ReloadingCache.make[Vector[OAuthClientRecord]](Schedule.spaced(config.configurationCacheRefreshInterval)),
         )
       ) >>>
-      ZLayer.fromFunction(Impl(_, _, _, _, _, _))
+      ZLayer.fromFunction(Impl(_, _, _, _, _, _, _))
 
   /** A [[CacheSource]] that reads the client records from the
     * repository and decrypts their secrets, so the in-memory cache holds plaintext
@@ -90,6 +90,7 @@ object OAuthClientService:
       cache: ReloadingCache[Vector[OAuthClientRecord]],
       clientRepository: OAuthClientRepository,
       tenantRepository: TenantRepository,
+      roleRepository: RoleRepository,
       secureRandom: SecureRandom,
       securityService: SecurityService,
       config: CentralConfig,
@@ -122,8 +123,9 @@ object OAuthClientService:
     override def registerClient(
         request: CreateClientRequest,
         presetSecret: Option[Secret] = None,
-    ): IO[ClientAlreadyExists | Throwable, Secret] =
+    ): IO[ClientAlreadyExists | InvalidRegistrationConfiguration | Throwable, Secret] =
       for
+        _ <- validateRegistration(request.id, request.tenantId, request.authFlow, request.registrationFlow)
         secret <- presetSecret.fold(generateSecret)(ZIO.succeed(_))
         encryptedSecret <- encryptRawSecret(secret)
         client = OAuthClientRecord(
@@ -139,6 +141,7 @@ object OAuthClientService:
           permissions = request.permissions,
           theme = request.theme,
           authFlow = request.authFlow,
+          registrationFlow = request.registrationFlow,
           otpTemplateId = request.otpTemplateId,
           frontChannelLogoutUri = request.frontChannelLogoutUri.flatMap(URL.decode(_).toOption),
           frontChannelLogoutSessionRequired = request.frontChannelLogoutSessionRequired,
@@ -149,8 +152,16 @@ object OAuthClientService:
 
     override def updateClient(
         request: UpdateClientRequest,
-    ): Task[Unit] =
+    ): IO[InvalidRegistrationConfiguration | Throwable, Unit] =
       for
+        current <- cache.get.map(_.find(_.id == request.clientId))
+        _ <- ZIO.foreachDiscard(current): client =>
+          validateRegistration(
+            clientId = request.clientId,
+            tenantId = client.tenantId,
+            authFlow = request.authFlow.applyTo(client.authFlow),
+            registrationFlow = request.registrationFlow.applyTo(client.registrationFlow),
+          )
         _ <- clientRepository.updateClient(
           clientId = request.clientId,
           clientName = request.clientName,
@@ -161,10 +172,11 @@ object OAuthClientService:
           refreshTokenTtl = request.refreshTokenTtl.map(Duration.fromSeconds),
           theme = request.theme,
           authFlow = request.authFlow,
+          registrationFlow = request.registrationFlow,
           otpTemplateId = request.otpTemplateId,
-          frontChannelLogoutUri = request.frontChannelLogoutUri.map(_.flatMap(URL.decode(_).toOption)),
+          frontChannelLogoutUri = request.frontChannelLogoutUri.map(decodeUrlPatch),
           frontChannelLogoutSessionRequired = request.frontChannelLogoutSessionRequired,
-          backChannelLogoutUri = request.backChannelLogoutUri.map(_.flatMap(URL.decode(_).toOption)),
+          backChannelLogoutUri = request.backChannelLogoutUri.map(decodeUrlPatch),
         )
       yield ()
 
@@ -192,6 +204,27 @@ object OAuthClientService:
         clients.find(_.id == CentralConfig.centralClientId).exists: client =>
           client.secret.exists(MessageDigest.isEqual(provided, _)) ||
             client.previousSecret.exists(MessageDigest.isEqual(provided, _))
+
+    /** Rejects a registration flow the auth service could not run: one without a usable
+      * entry credential, or one granting a role that does not exist in the client's tenant.
+      */
+    private def validateRegistration(
+        clientId: ClientId,
+        tenantId: TenantId,
+        authFlow: Option[AuthFlow],
+        registrationFlow: Option[RegistrationFlow],
+    ): IO[InvalidRegistrationConfiguration | Throwable, Unit] =
+      for
+        _ <- ZIO.foreachDiscard(InvalidRegistrationConfiguration.validate(clientId, authFlow, registrationFlow))(ZIO.fail(_))
+        _ <- ZIO.foreachDiscard(registrationFlow): flow =>
+          roleRepository.findRole(tenantId, flow.roleId).someOrFail:
+            InvalidRegistrationConfiguration(clientId, s"role '${flow.roleId}' does not exist in tenant '$tenantId'")
+      yield ()
+
+    /** An unparsable URI clears the column, matching how create drops undecodable URIs. */
+    private def decodeUrlPatch(patch: Patch[String]): Patch[URL] = patch match
+      case Patch.Deleted     => Patch.Deleted
+      case Patch.Modified(v) => URL.decode(v).toOption.fold(Patch.Deleted)(Patch.Modified(_))
 
     private val clientSecretsKey: SecretKey = OAuthClientService.clientSecretsKey(config)
 

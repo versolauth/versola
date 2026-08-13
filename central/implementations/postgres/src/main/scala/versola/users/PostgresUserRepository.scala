@@ -92,6 +92,18 @@ class PostgresUserRepository(xa: TransactorZIO, secureRandom: SecureRandom) exte
       case e if PostgresUserRepository.isUniqueViolation(e) => UserConflict
       case e                                                => e
 
+  override def indexFromAuth(
+      id: UserId,
+      email: Option[Email],
+      phone: Option[Phone],
+      login: Option[Login],
+  ): Task[Unit] =
+    xa.connectMeasured("index-user-from-auth"):
+      sql"""INSERT INTO user_index (id, email, phone, login)
+            VALUES ($id, $email, $phone, $login)
+            ON CONFLICT (id) DO NOTHING""".update.run()
+    .unit
+
   override def patch(
       id: UserId,
       email: Option[Patch[Email]],

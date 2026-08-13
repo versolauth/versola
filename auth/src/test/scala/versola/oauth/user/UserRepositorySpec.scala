@@ -43,8 +43,40 @@ trait UserRepositorySpec extends DatabaseSpecBase[UserRepositorySpec.Env]:
   override def testCases(env: UserRepositorySpec.Env) =
     List(
       findOrCreateTests(env),
+      findOrCreateForRegistrationTests(env),
       findTests(env),
       findByCredentialTests(env),
+    )
+
+  def findOrCreateForRegistrationTests(env: UserRepositorySpec.Env) =
+    suite("findOrCreateForRegistration")(
+      test("create the account when the credential is new") {
+        for
+          now <- Clock.instant
+          (user, wasCreated) <- env.userRepository
+                                  .findOrCreateForRegistration(userId1, Left(email1), UUID.randomUUID(), now)
+          found <- env.userRepository.find(user.id)
+        yield assertTrue(
+          wasCreated,
+          user.email.contains(email1),
+          found.contains(user),
+        )
+      },
+      test("return the existing account when the credential is taken") {
+        for
+          now <- Clock.instant
+          (first, wasCreatedFirst) <- env.userRepository
+                                        .findOrCreateForRegistration(userId1, Left(email1), UUID.randomUUID(), now)
+          // A second person registering an address that is already taken supplies a different
+          // candidate id but must resolve to the same account rather than create a duplicate.
+          (second, wasCreatedSecond) <- env.userRepository
+                                          .findOrCreateForRegistration(userId2, Left(email1), UUID.randomUUID(), now)
+        yield assertTrue(
+          wasCreatedFirst,
+          !wasCreatedSecond,
+          second.id == first.id,
+        )
+      },
     )
 
   def findOrCreateTests(env: UserRepositorySpec.Env) =

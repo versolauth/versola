@@ -63,6 +63,7 @@ object AuthorizeEndpointService:
       for
         client <- configurationService.find(request.clientId)
         authFlow = client.flatMap(_.authFlow)
+        registrationFlow = client.flatMap(_.registrationFlow)
         flow <- ZIO
           .fromOption(authFlow)
           .orElseFail(Error.AuthFlowMissing(request.redirectUri, request.state))
@@ -93,6 +94,7 @@ object AuthorizeEndpointService:
                     createConversation(
                       request,
                       flow,
+                      registrationFlow,
                       uiLocales,
                       Map.empty,
                       applyHint = false,
@@ -104,6 +106,7 @@ object AuthorizeEndpointService:
                 createConversation(
                   request,
                   flow,
+                  registrationFlow,
                   uiLocales,
                   Map.empty,
                   knownUserId = Some(userId),
@@ -113,7 +116,7 @@ object AuthorizeEndpointService:
           case (None, None) =>
             // ACR is voluntary (OIDC Core §3.1.2.1): without a known user we cannot verify
             // achievability, so we proceed with normal auth and omit the acr claim.
-            createConversation(request, flow, uiLocales, Map.empty)
+            createConversation(request, flow, registrationFlow, uiLocales, Map.empty)
 
           case (Some(SessionInfo(id, session)), _) =>
             for
@@ -156,6 +159,7 @@ object AuthorizeEndpointService:
                           createConversation(
                             request,
                             flow,
+                            registrationFlow,
                             uiLocales,
                             Map.empty,
                             applyHint = false,
@@ -168,6 +172,7 @@ object AuthorizeEndpointService:
                       createConversation(
                         request,
                         flow,
+                        registrationFlow,
                         uiLocales,
                         Map.empty,
                         knownUserId = targetUserId,
@@ -194,6 +199,7 @@ object AuthorizeEndpointService:
                           createConversation(
                             request,
                             flow,
+                            registrationFlow,
                             uiLocales,
                             session.amr,
                             applyHint = false,
@@ -206,6 +212,7 @@ object AuthorizeEndpointService:
                   createConversation(
                     request,
                     flow,
+                    registrationFlow,
                     uiLocales,
                     session.amr,
                     applyHint = false,
@@ -230,6 +237,7 @@ object AuthorizeEndpointService:
     private def createConversation(
         request: AuthorizeRequest,
         flow: AuthFlow,
+        registrationFlow: Option[RegistrationFlow],
         uiLocales: Option[List[String]],
         amr: Map[PassedAuthFactor, PassedFactorRecord],
         applyHint: Boolean = true,
@@ -271,6 +279,9 @@ object AuthorizeEndpointService:
             primaryCredentials = flow.primary.credentials,
             inlinePassword = flow.primary.inlinePassword,
             passkey = flow.passkey.isDefined,
+            // Offering registration on a card that already knows the user would let them create a
+            // second account for an identity they are in the middle of proving.
+            registration = registrationFlow.isDefined && effectiveUserId.isEmpty,
           ),
           requestedClaims = request.requestedClaims,
           uiLocales = uiLocales,
@@ -281,6 +292,8 @@ object AuthorizeEndpointService:
           userLogin = userOpt.flatMap(_.login),
           userClaims = userOpt.map(_.claims),
           authFlow = flow,
+          registrationFlow = registrationFlow,
+          registrationStep = None,
           // Strip non-printable ASCII (0x20–0x7E); does not escape HTML — always escape at render time
           userAgent = request.userAgent.map(_.filter(c => c >= ' ' && c <= '~')),
           userAgentCookie = request.userAgentCookie,

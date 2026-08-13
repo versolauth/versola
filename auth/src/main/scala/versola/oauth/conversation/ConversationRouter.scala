@@ -1,7 +1,7 @@
 package versola.oauth.conversation
 
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{AuthFactor, AuthFactorType, OtpType, PassedAuthFactor}
+import versola.oauth.client.model.{AuthFactor, AuthFactorType, OtpType, PassedAuthFactor, RegistrationStep}
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep, Error}
 import versola.util.{Email, Phone, SecureRandom}
 import zio.{Task, ZIO, ZLayer}
@@ -96,8 +96,19 @@ object ConversationRouter:
         case (submitted: PhoneSubmission, _) =>
           afterCredential(authId, conversation, Right(submitted.phone))
 
+        case (_: RegisterEmailSubmission | _: RegisterPhoneSubmission, _) if conversation.userId.isDefined =>
+          conversationService.accessDenied(authId, conversation)
+
+        case (submitted: RegisterEmailSubmission, _) =>
+          register(authId, conversation, Left(submitted.email))
+
+        case (submitted: RegisterPhoneSubmission, _) =>
+          register(authId, conversation, Right(submitted.phone))
+
         case (submitted: OtpSubmission, ConversationRecord.Otp(otp, _)) =>
           conversationService.checkOtp(conversation, otp, submitted.code, authId).flatMap:
+            case ConversationResult.StepPassed(updated) if updated.isRegistering =>
+              afterRegistrationStep(authId, updated)
             case ConversationResult.StepPassed(updated) =>
               afterFactor(authId, updated, otp.factorIndex + 1)
             case other: ConversationResult.Render =>
@@ -126,19 +137,33 @@ object ConversationRouter:
         case (submitted: PasskeyEnrollSubmission, _) =>
           conversation.step match
             case enroll: ConversationStep.PasskeyEnroll =>
-              conversationService.finishPasskeyEnroll(authId, conversation, enroll, submitted.response, submitted.name)
+              conversationService.finishPasskeyEnroll(authId, conversation, enroll, submitted.response, submitted.name).flatMap:
+                case ConversationResult.StepPassed(updated) if updated.isRegistering =>
+                  afterRegistrationStep(authId, updated)
+                case ConversationResult.StepPassed(updated) =>
+                  conversationService.finish(authId, updated)
+                case other: ConversationResult.Render =>
+                  ZIO.succeed(other)
             case _ =>
               ZIO.succeed(ConversationResult.NotFound)
 
         case (_: PasskeySkipSubmission, _) =>
           conversation.step match
             case _: ConversationStep.PasskeyEnroll =>
-              conversationService.skipPasskey(authId, conversation)
+              conversationService.skipPasskey(authId, conversation).flatMap:
+                case ConversationResult.StepPassed(updated) if updated.isRegistering =>
+                  afterRegistrationStep(authId, updated)
+                case ConversationResult.StepPassed(updated) =>
+                  conversationService.finish(authId, updated)
+                case other: ConversationResult.Render =>
+                  ZIO.succeed(other)
             case _ =>
               ZIO.succeed(ConversationResult.NotFound)
 
         case (submitted: SetPasswordSubmission, ConversationRecord.SetPassword(setPasswordStep)) =>
           conversationService.setNewPassword(conversation, setPasswordStep, submitted.password, authId).flatMap:
+            case ConversationResult.StepPassed(updated) if updated.isRegistering =>
+              afterRegistrationStep(authId, updated)
             case ConversationResult.StepPassed(updated) =>
               afterFactor(authId, updated, setPasswordStep.factorIndex + 1)
             case other: ConversationResult.Render =>
@@ -161,6 +186,62 @@ object ConversationRouter:
     private def isSatisfied(conversation: ConversationRecord, factor: AuthFactor): Boolean =
       PassedAuthFactor.fromFactorType(factor.`type`)
         .exists(required => conversation.amr.keySet.exists(_.satisfies(required, conversation.authFlow.equivalents)))
+
+    /** Enter the registration flow with the credential typed on the credential card.
+      *
+      * A credential that already has an account is not rejected: the conversation falls through
+      * to the ordinary sign-in path, so registering an existing phone or email looks exactly
+      * like signing in with it and the screen never reveals which of the two happened.
+      */
+    private def register(
+        authId: AuthId,
+        conversation: ConversationRecord,
+        credential: Either[Email, Phone],
+    ): Task[ConversationResult.Render] =
+      conversationService.startRegistration(authId, conversation, credential).flatMap:
+        case RegistrationEntry.Registering(updated) =>
+          runRegistrationStep(authId, updated)
+
+        case RegistrationEntry.AlreadyRegistered(updated) =>
+          afterCredential(authId, updated, credential)
+
+        case RegistrationEntry.Unavailable =>
+          conversationService.accessDenied(authId, conversation)
+
+    /** Advance past the registration step that just passed and run the next one. */
+    private def afterRegistrationStep(
+        authId: AuthId,
+        conversation: ConversationRecord,
+    ): Task[ConversationResult.Render] =
+      runRegistrationStep(authId, conversation.copy(registrationStep = conversation.registrationStep.map(_ + 1)))
+
+    /** Render the pending registration step, or finish once the flow is exhausted.
+      *
+      * Registration steps stand in for the authentication factors rather than running in
+      * addition to them: the user has just proven the same credential the auth flow would ask
+      * about, so on completion the conversation finishes instead of falling back into
+      * `afterFactor`.
+      */
+    private def runRegistrationStep(
+        authId: AuthId,
+        conversation: ConversationRecord,
+    ): Task[ConversationResult.Render] =
+      conversation.currentRegistrationStep match
+        case Some(_: RegistrationStep.Otp) =>
+          conversation.credential match
+            case Some(credential) =>
+              conversationService.prepareInitialOtp(authId, conversation, credential, factorIndex = 0)
+            case None =>
+              conversationService.accessDenied(authId, conversation)
+
+        case Some(_: RegistrationStep.SetPassword) =>
+          conversationService.offerRegistrationSetPassword(authId, conversation)
+
+        case Some(_: RegistrationStep.PasskeyEnroll) =>
+          conversationService.offerPasskeyEnroll(authId, conversation)
+
+        case None =>
+          conversationService.finish(authId, conversation)
 
     /** Determine the first factor step after the user submits their credential,
       * skipping any factor types already recorded in `conversation.amr`.

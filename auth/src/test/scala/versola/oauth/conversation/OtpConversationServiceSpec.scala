@@ -69,6 +69,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
     val config = TestEnvConfig.coreConfig
     val userAgentRepository = stub[UserAgentRepository]
     val secureRandom = stub[SecureRandom]
+    val userRolesRepository = stub[versola.user.UserRolesRepository]
     val service = ConversationService.Impl(
       otpService,
       passwordService,
@@ -87,6 +88,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
       acrResolver,
       userAgentRepository,
       secureRandom,
+      userRolesRepository,
     )
 
   val initialConversation = ConversationRecord(
@@ -108,6 +110,8 @@ object OtpConversationServiceSpec extends UnitSpecBase:
     userLogin = None,
     userClaims = None,
     authFlow = AuthFlow.default,
+    registrationFlow = None,
+    registrationStep = None,
     userAgent = None,
     userAgentCookie = None,
     version = 0,
@@ -301,6 +305,8 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           userLogin = None,
           userClaims = Some(zio.json.ast.Json.Obj()),
           authFlow = AuthFlow.default,
+          registrationFlow = None,
+          registrationStep = None,
           userAgent = None,
           userAgentCookie = None,
                     version = 0,
@@ -340,6 +346,8 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           userLogin = None,
           userClaims = Some(zio.json.ast.Json.Obj()),
           authFlow = AuthFlow.default,
+          registrationFlow = None,
+          registrationStep = None,
           userAgent = None,
           userAgentCookie = None,
                     version = 0,

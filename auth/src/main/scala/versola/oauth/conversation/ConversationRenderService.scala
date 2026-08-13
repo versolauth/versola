@@ -58,6 +58,7 @@ object ConversationRenderService:
         passkey: Boolean,
         allowedPhonePrefixes: Option[List[String]],
         passwordRegex: Option[String],
+        registration: Boolean,
     ) extends StepView
     @jsonHint("password")
     case class Password(passwordRegex: String) extends StepView
@@ -414,7 +415,7 @@ object ConversationRenderService:
         state: Option[State],
     ): UIO[StepView] =
       step match
-        case ConversationStep.Credential(primaryCredentials, inlinePassword, passkey, _, _, _) =>
+        case ConversationStep.Credential(primaryCredentials, inlinePassword, passkey, registration, _, _, _) =>
           for
             allowedPhonePrefixes <-
               if primaryCredentials.contains(PrimaryCredential.phone) then
@@ -424,7 +425,7 @@ object ConversationRenderService:
             passwordRegex <-
               if inlinePassword then configuration.getPasswordRegex.map(Some(_))
               else ZIO.none
-          yield StepView.Credential(primaryCredentials, inlinePassword, passkey, allowedPhonePrefixes, passwordRegex)
+          yield StepView.Credential(primaryCredentials, inlinePassword, passkey, allowedPhonePrefixes, passwordRegex, registration)
 
         case _: ConversationStep.Password =>
           configuration.getPasswordRegex.map(StepView.Password(_))

@@ -2,8 +2,8 @@ import { LitElement, html, css } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
 import { buttonStyles, cardStyles, formStyles, iconActionStyles } from '../styles/components';
-import { AuthFactorType, AuthFlow, OAuthClient, OAuthScope, OtpTemplateRecord, Permission, Resource, ThemeRecord } from '../types';
-import { createDefaultAuthFlow, getLocalizedDescription, resolvePermissionEndpointGroups } from '../utils/helpers';
+import { AuthFactorType, AuthFlow, OAuthClient, OAuthScope, OtpTemplateRecord, Permission, RegistrationFlow, RegistrationStepType, Resource, Role, ThemeRecord } from '../types';
+import { createDefaultAuthFlow, createDefaultRegistrationFlow, getLocalizedDescription, resolvePermissionEndpointGroups } from '../utils/helpers';
 import './nav-toggle';
 import {
   validateClientId,
@@ -21,6 +21,7 @@ export class VersolaClientForm extends LitElement {
   @property({ attribute: false }) availableResources: Resource[] = [];
   @property({ attribute: false }) availableThemes: ThemeRecord[] = [];
   @property({ attribute: false }) availableOtpTemplates: OtpTemplateRecord[] = [];
+  @property({ attribute: false }) availableRoles: Role[] = [];
   @property({ type: Boolean }) canManageSecrets = false;
 
   @state() private formData: Partial<OAuthClient> = {
@@ -32,6 +33,7 @@ export class VersolaClientForm extends LitElement {
     permissions: [],
     theme: 'default',
     authFlow: createDefaultAuthFlow(),
+    registrationFlow: null,
     frontChannelLogoutSessionRequired: true,
   };
 
@@ -705,6 +707,7 @@ export class VersolaClientForm extends LitElement {
       theme: authFlowTheme,
       otpTemplateId: authFlowOtpTemplateId,
       authFlow,
+      registrationFlow: this.registrationSupported ? (this.formData.registrationFlow ?? null) : null,
       frontChannelLogoutUri: frontChannelLogoutUri || null,
       frontChannelLogoutSessionRequired: frontChannelLogoutUri
         ? !!this.formData.frontChannelLogoutSessionRequired
@@ -1058,6 +1061,7 @@ export class VersolaClientForm extends LitElement {
     this.formData = {
       ...this.formData,
       authFlow: enablingAuthFlow ? createDefaultAuthFlow() : null,
+      registrationFlow: enablingAuthFlow ? this.formData.registrationFlow ?? null : null,
       scope: enablingAuthFlow
         ? (this.formData.scope || [])
         : (this.formData.scope || []).filter(scope => scope !== 'openid'),
@@ -1105,6 +1109,49 @@ export class VersolaClientForm extends LitElement {
     return '';
   }
 
+  /** Registration needs a phone/email entry credential to prove ownership of. */
+  private get registrationSupported(): boolean {
+    return this.hasAuthFlow && this.credentialMode === 'phone-email';
+  }
+
+  private get hasRegistrationFlow(): boolean {
+    return this.formData.registrationFlow != null;
+  }
+
+  private get registrationFlow(): RegistrationFlow {
+    return this.formData.registrationFlow ?? createDefaultRegistrationFlow();
+  }
+
+  private setRegistrationFlow(patch: Partial<RegistrationFlow>) {
+    this.formData = {
+      ...this.formData,
+      registrationFlow: { ...this.registrationFlow, ...patch },
+    };
+  }
+
+  private toggleRegistrationEnabled() {
+    this.formData = {
+      ...this.formData,
+      registrationFlow: this.hasRegistrationFlow ? null : createDefaultRegistrationFlow(),
+    };
+  }
+
+  /** The optional challenge that follows OTP; the admin picks at most one. */
+  private get registrationChallenge(): 'none' | 'setPassword' | 'passkeyEnroll' {
+    const challenge = this.registrationFlow.steps.find(step => step.type !== 'otp');
+    return (challenge?.type as 'setPassword' | 'passkeyEnroll') ?? 'none';
+  }
+
+  private setRegistrationChallenge(challenge: 'none' | 'setPassword' | 'passkeyEnroll') {
+    const steps: { type: RegistrationStepType }[] = [{ type: 'otp' }];
+    if (challenge !== 'none') steps.push({ type: challenge });
+    this.setRegistrationFlow({ steps });
+  }
+
+  private get registrationRoleId(): string {
+    return this.registrationFlow.roleId;
+  }
+
   private get credentialMode(): 'phone-email' | 'login-password' {
     if (this.authFlow.primaryCredentials.includes('login')) return 'login-password';
     return 'phone-email';
@@ -1137,6 +1184,8 @@ export class VersolaClientForm extends LitElement {
       inlinePassword: true,
       factors: this.withPasskeyEnroll(otp ? [otp] : []),
     });
+    // Registration has no credential to verify in a login+password flow.
+    this.formData = { ...this.formData, registrationFlow: null };
   }
 
   private setOtpType(otpType: 'sms' | 'email') {
@@ -1600,6 +1649,60 @@ export class VersolaClientForm extends LitElement {
 
               ${this.authFlowError ? html`<div class="error-message" style="margin-top: 0.5rem;">${this.authFlowError}</div>` : ''}
             </div>
+
+            ${this.registrationSupported ? html`
+              <div class="form-group">
+                <div class="flow-toggle-row">
+                  <label style="margin: 0; line-height: 18px;">Registration</label>
+                  <label class="toggle">
+                    <input
+                      type="checkbox"
+                      .checked=${this.hasRegistrationFlow}
+                      @change=${() => this.toggleRegistrationEnabled()}
+                    />
+                  </label>
+                </div>
+
+                ${this.hasRegistrationFlow ? html`
+                  <div class="flow-subsection">
+                    <div class="flow-subtitle">Verification</div>
+                    <div class="helper-text">
+                      New users prove ownership of their ${this.authFlow.primaryCredentials.join(' / ')} with an OTP.
+                    </div>
+                  </div>
+
+                  <div class="flow-subsection">
+                    <div class="flow-subtitle">Challenge</div>
+                    <select
+                      class="compact-input"
+                      .value=${this.registrationChallenge}
+                      @change=${(e: Event) =>
+                        this.setRegistrationChallenge((e.target as HTMLSelectElement).value as 'none' | 'setPassword' | 'passkeyEnroll')}
+                    >
+                      <option value="none" ?selected=${this.registrationChallenge === 'none'}>none</option>
+                      <option value="setPassword" ?selected=${this.registrationChallenge === 'setPassword'}>set password</option>
+                      <option value="passkeyEnroll" ?selected=${this.registrationChallenge === 'passkeyEnroll'}>enroll passkey</option>
+                    </select>
+                  </div>
+
+                  <div class="flow-subsection">
+                    <div class="flow-subtitle">Assigned role *</div>
+                    <select
+                      class="compact-input"
+                      .value=${this.registrationRoleId}
+                      @change=${(e: Event) => this.setRegistrationFlow({ roleId: (e.target as HTMLSelectElement).value })}
+                    >
+                      ${this.availableRoles.length === 0 ? html`
+                        <option value=${this.registrationRoleId} selected>${this.registrationRoleId}</option>
+                      ` : this.availableRoles.map(role => html`
+                        <option value=${role.id} ?selected=${this.registrationRoleId === role.id}>${role.id}</option>
+                      `)}
+                    </select>
+                    <div class="helper-text">Granted once, when the account is created.</div>
+                  </div>
+                ` : ''}
+              </div>
+            ` : ''}
 
             ${this.otpSettingsVisible ? html`
               <div class="form-group">

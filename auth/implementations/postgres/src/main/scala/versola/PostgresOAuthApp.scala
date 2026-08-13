@@ -19,7 +19,7 @@ import versola.oauth.session.{PostgresSessionRepository, PostgresUserAgentReposi
 import versola.oauth.token.{AuthorizationCodeRepository, OAuthTokenService, TokenEndpointController}
 import versola.oauth.userinfo.{UserInfoController, UserInfoService}
 import versola.oauth.metadata.{MetadataController, MetadataSyncClient}
-import versola.user.{PostgresUserRepository, PostgresUserRolesRepository, UserController, UserRepository, UserRolesRepository}
+import versola.user.{PostgresUserRegistrationOutboxRepository, PostgresUserRepository, PostgresUserRolesRepository, UserController, UserRegistrationOutboxProcessor, UserRegistrationOutboxRepository, UserRegistrationSyncClient, UserRepository, UserRolesRepository}
 import versola.util.*
 import versola.util.http.VersolaApp
 import versola.util.postgres.{PostgresConfig, PostgresHikariDataSource}
@@ -75,7 +75,10 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       SubmissionLimiter &
       ChallengeThrottleRepository &
       LogoutService &
-      SessionService
+      SessionService &
+      UserRegistrationOutboxRepository &
+      UserRegistrationSyncClient &
+      UserRegistrationOutboxProcessor
 
   override def routes: Routes[Dependencies & Tracing & EnvName, Throwable] =
     List(
@@ -96,6 +99,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
   val repositories = PostgresHikariDataSource.transactor(serviceName = Some("auth"), migrate = runMigrations) >+> (
     PostgresUserRepository.live >+>
       PostgresUserRolesRepository.live >+>
+      PostgresUserRegistrationOutboxRepository.live >+>
       PostgresConversationRepository.live >+>
       PostgresAuthorizationCodeRepository.live >+>
       PostgresPushedAuthorizationRepository.live >+>
@@ -140,7 +144,9 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       ConversationRouter.live >+>
       AuthorizeEndpointService.live >+>
       ConversationRenderService.live >+>
-      LogoutService.live
+      LogoutService.live >+>
+      UserRegistrationSyncClient.live >+>
+      UserRegistrationOutboxProcessor.live
 
   given DeriveConfig[Secret.Bytes16] = DeriveConfig[String]
     .mapOrFail(parseBase64UrlSecret(Secret.Bytes16))

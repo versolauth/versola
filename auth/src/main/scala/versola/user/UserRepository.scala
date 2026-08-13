@@ -5,10 +5,21 @@ import versola.util.{Email, Patch, Phone}
 import zio.Task
 import zio.json.ast.Json
 
+import java.time.Instant
 import java.util.UUID
 
 trait UserRepository:
   def findOrCreate(userId: UserId, credential: Either[Email, Phone]): Task[(UserRecord, WasCreated)]
+
+  /** Like [[findOrCreate]], but when the account is new its registration is queued for central
+    * in the same transaction, so an account cannot exist that central will never hear about.
+    */
+  def findOrCreateForRegistration(
+      userId: UserId,
+      credential: Either[Email, Phone],
+      eventId: UUID,
+      now: Instant,
+  ): Task[(UserRecord, WasCreated)]
 
   def create(id: UserId): Task[UserRecord]
 

@@ -17,6 +17,13 @@ case class EmailSubmission(email: Email, csrf: String)
 case class OtpResendSubmission(csrf: String)
   extends Submission derives Schema
 
+/** Entering the registration flow from the credential card with the entry credential. */
+case class RegisterEmailSubmission(email: Email, csrf: String)
+  extends Submission derives Schema
+
+case class RegisterPhoneSubmission(phone: Phone, csrf: String)
+  extends Submission derives Schema
+
 case class OtpSubmission(code: OtpCode, csrf: String)
   extends Submission derives Schema
 

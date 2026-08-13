@@ -44,6 +44,18 @@ export interface AuthFlow {
   equivalents: Record<string, string[]>;    // challenge equivalences: a passed key-factor satisfies each listed value-factor
 }
 
+// Registration flow (self-service account creation)
+export type RegistrationStepType = 'otp' | 'setPassword' | 'passkeyEnroll';
+
+export interface RegistrationStep {
+  type: RegistrationStepType;
+}
+
+export interface RegistrationFlow {
+  steps: RegistrationStep[];  // ordered steps the user passes before the account is created
+  roleId: string;             // role granted to the account on creation
+}
+
 // OAuth Client
 export interface OAuthClient {
   id: string;
@@ -56,6 +68,7 @@ export interface OAuthClient {
   theme: string;
   otpTemplateId?: string | null;
   authFlow: AuthFlow | null;
+  registrationFlow: RegistrationFlow | null;
   frontChannelLogoutUri?: string | null;
   frontChannelLogoutSessionRequired: boolean;
   backChannelLogoutUri?: string | null;

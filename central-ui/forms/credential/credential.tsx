@@ -42,6 +42,7 @@ type CredentialStep = {
   passkey: boolean;
   allowedPhonePrefixes?: string[];
   passwordRegex?: string;
+  registration?: boolean;
 };
 
 interface FormConfig {
@@ -88,6 +89,13 @@ function CredentialForm(props: { config: FormConfig }) {
 
   const formAction = () =>
     `${showPassword() ? `/challenge/${challengeKind}-password` : `/challenge/${challengeKind}`}?ui_locale=${currentLocale()}`;
+
+  // Registration is offered only for a single phone/email card, matching the flows the server
+  // accepts a registration submission for.
+  const showRegister = () =>
+    !!step.registration && !showPassword() && (single === 'email' || single === 'phone');
+
+  const registerAction = () => `/challenge/register/${challengeKind}?ui_locale=${currentLocale()}`;
 
   const [phoneNotAllowed, setPhoneNotAllowed] = createSignal(false);
   const [passwordNotAllowed, setPasswordNotAllowed] = createSignal(false);
@@ -214,6 +222,15 @@ function CredentialForm(props: { config: FormConfig }) {
         <button type="submit" formAction={formAction()} class="btn btn-primary">
           {t().continue}
         </button>
+
+        <Show when={showRegister()}>
+          <div class="credential-option" data-credential="register">
+            <div class="divider"><span>{t().divider}</span></div>
+            <button type="submit" formAction={registerAction()} class="btn btn-secondary">
+              {t().register_button}
+            </button>
+          </div>
+        </Show>
 
         <Show when={showPasskey()}>
           <div class="credential-option" data-credential="passkey">

@@ -11,7 +11,7 @@ import zio.{Task, ZIO, ZLayer}
 import zio.json.*
 import zio.json.ast.Json
 
-import java.time.LocalDate
+import java.time.{Instant, LocalDate}
 import java.util.UUID
 
 class PostgresUserRepository(
@@ -24,6 +24,23 @@ class PostgresUserRepository(
         case Left(email) => createByEmailQuery(userId, email).run().head
         case Right(phone) => createByPhoneQuery(userId, phone).run().head
     .map((user, wasCreated) => (user, WasCreated(wasCreated)))
+
+  override def findOrCreateForRegistration(
+      userId: UserId,
+      credential: Either[Email, Phone],
+      eventId: UUID,
+      now: Instant,
+  ): Task[(UserRecord, WasCreated)] =
+    xa.transactMeasured("find-or-create-user-for-registration"):
+      val (user, created) = credential match
+        case Left(email) => createByEmailQuery(userId, email).run().head
+        case Right(phone) => createByPhoneQuery(userId, phone).run().head
+      if created then
+        val event = UserRegisteredEvent(user.id, user.email, user.phone, user.login)
+        sql"""insert into user_registration_outbox (id, user_id, payload, attempts, next_attempt_at)
+              values ($eventId, ${user.id}, ${event.toJson}::jsonb, 0, $now)"""
+          .update.run()
+      (user, WasCreated(created))
 
   override def create(id: UserId): Task[UserRecord] =
     xa.connectMeasured("create-user"):

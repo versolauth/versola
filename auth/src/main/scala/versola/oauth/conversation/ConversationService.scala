@@ -18,7 +18,7 @@ import versola.oauth.session.model.{ClientEntry, PriorSession, PublicSessionId, 
 import versola.oauth.session.{SessionRepository, UserAgentRepository}
 import versola.oauth.token.AuthorizationCodeRepository
 import versola.oauth.userinfo.UserInfoService
-import versola.user.UserRepository
+import versola.user.{UserRepository, UserRolesRepository}
 import versola.user.model.{Login, UserId, UserRecord}
 import versola.util.{AuthPropertyGenerator, Base64, CoreConfig, Email, MAC, Phone, Secret, SecureRandom, SecurityService}
 import zio.*
@@ -126,24 +126,57 @@ trait ConversationService:
     */
   def offerPasskeyEnroll(authId: AuthId, conversation: ConversationRecord): Task[ConversationResult.Render]
 
-  /** Finish a passkey enrollment ceremony and complete the conversation. */
+  /** Finish a passkey enrollment ceremony. Returns `StepPassed` so the caller decides what
+    * follows; a failed ceremony re-renders the enrollment step instead.
+    */
   def finishPasskeyEnroll(
       authId: AuthId,
       conversation: ConversationRecord,
       enrollStep: ConversationStep.PasskeyEnroll,
       response: String,
       name: String,
-  ): Task[ConversationResult.Render]
+  ): Task[ConversationResult]
 
-  /** Skip passkey enrollment and complete the conversation. */
-  def skipPasskey(authId: AuthId, conversation: ConversationRecord): Task[ConversationResult.Render]
+  /** Skip passkey enrollment. Returns `StepPassed` so the caller decides what follows. */
+  def skipPasskey(authId: AuthId, conversation: ConversationRecord): Task[ConversationResult]
+
+  /** Enter the registration flow with the credential typed on the credential card.
+    *
+    * The account is created up front so that the steps which follow have a user to attach a
+    * password or a passkey to, and so the OTP is a real one rather than the decoy sent for
+    * unknown users. When the credential already belongs to someone, no account is created and
+    * the conversation continues as an ordinary sign-in — registering an existing credential is
+    * indistinguishable from signing in with it, which is what keeps the endpoint from
+    * confirming whether an account exists.
+    */
+  def startRegistration(
+      authId: AuthId,
+      conversation: ConversationRecord,
+      credential: Either[Email, Phone],
+  ): Task[RegistrationEntry]
+
+  /** Renders the SetPassword step for a registering user. */
+  def offerRegistrationSetPassword(authId: AuthId, conversation: ConversationRecord): Task[ConversationResult.Render]
 
   /** Overwrite the conversation step to AccessDenied and return the render result. */
   def accessDenied(authId: AuthId, conversation: ConversationRecord): Task[ConversationResult.Render]
 
+/** Outcome of entering the registration flow. */
+sealed trait RegistrationEntry
+
+object RegistrationEntry:
+  /** A new account was created; the conversation is positioned on the first registration step. */
+  case class Registering(conversation: ConversationRecord) extends RegistrationEntry
+
+  /** The credential already existed, so the conversation continues as a normal sign-in. */
+  case class AlreadyRegistered(conversation: ConversationRecord) extends RegistrationEntry
+
+  /** The client has no registration flow, or it cannot be entered with this credential. */
+  case object Unavailable extends RegistrationEntry
+
 object ConversationService:
   def live =
-    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _))
+    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _))
 
   class Impl(
       otpService: OtpService,
@@ -163,6 +196,7 @@ object ConversationService:
       acrResolutionService: AcrResolutionService,
       userAgentRepository: UserAgentRepository,
       secureRandom: SecureRandom,
+      userRolesRepository: UserRolesRepository,
   ) extends ConversationService:
     export conversationRepository.find
 
@@ -769,24 +803,74 @@ object ConversationService:
         enrollStep: ConversationStep.PasskeyEnroll,
         response: String,
         name: String,
-    ): Task[ConversationResult.Render] =
+    ): Task[ConversationResult] =
       conversation.userId match
         case None =>
           ZIO.succeed(ConversationResult.IllegalState)
         case Some(userId) =>
           configService.getPasskeySettings(conversation.clientId).flatMap:
             case None =>
-              finish(authId, conversation)
+              ZIO.succeed(ConversationResult.StepPassed(conversation))
             case Some(settings) =>
               webAuthnService.finishRegistration(settings, userId, enrollStep.request, response, Some(name)).foldZIO(
                 error =>
                   ZIO.logWarning(s"Passkey enrollment failed for user $userId: ${error.getMessage}") *>
                     renderStep(authId, conversation, enrollStep.copy(enrollFailed = true)),
-                _ => finish(authId, conversation),
+                _ => ZIO.succeed(ConversationResult.StepPassed(conversation)),
               )
 
-    override def skipPasskey(authId: AuthId, conversation: ConversationRecord): Task[ConversationResult.Render] =
-      finish(authId, conversation)
+    override def skipPasskey(authId: AuthId, conversation: ConversationRecord): Task[ConversationResult] =
+      ZIO.succeed(ConversationResult.StepPassed(conversation))
+
+    override def offerRegistrationSetPassword(authId: AuthId, conversation: ConversationRecord): Task[ConversationResult.Render] =
+      renderStep(
+        authId,
+        conversation,
+        ConversationStep.SetPassword(
+          factorIndex = conversation.authFlow.primary.factors.length,
+          timesSubmitted = 0,
+          rateLimitExceeded = false,
+          passwordReused = false,
+        ),
+      )
+
+    override def startRegistration(
+        authId: AuthId,
+        conversation: ConversationRecord,
+        credential: Either[Email, Phone],
+    ): Task[RegistrationEntry] =
+      conversation.registrationFlow match
+        case None =>
+          ZIO.succeed(RegistrationEntry.Unavailable)
+
+        case Some(flow) =>
+          for
+            newUserId <- UserId.wrapAll(secureRandom.nextUUIDv7)
+            eventId <- secureRandom.nextUUIDv7
+            now <- Clock.instant
+            // The account and its central-bound outbox row are written in one transaction, so a
+            // registration cannot survive without central eventually learning about it.
+            (user, wasCreated) <- userRepository.findOrCreateForRegistration(newUserId, credential, eventId, now)
+            client <- configService.find(conversation.clientId)
+            // Roles are per-tenant, so an unknown client leaves the account role-less rather
+            // than guessing a tenant; the account itself is still usable.
+            _ <- ZIO.foreachDiscard(client.filter(_ => wasCreated)): record =>
+                   userRolesRepository.updateRoles(user.id, record.tenantId, Set(flow.roleId), Set.empty)
+            updated = conversation.copy(
+              userId = Some(user.id),
+              credential = Some(credential),
+              userEmail = user.email.orElse(conversation.userEmail),
+              userPhone = user.phone.orElse(conversation.userPhone),
+              userLogin = user.login.orElse(conversation.userLogin),
+              userClaims = Some(user.claims),
+              registrationStep = Option.when(wasCreated)(0),
+            )
+            written <- conversationRepository.overwrite(authId, updated)
+            bumped = updated.copy(version = updated.version + 1)
+          yield
+            if !written then RegistrationEntry.Unavailable
+            else if wasCreated then RegistrationEntry.Registering(bumped)
+            else RegistrationEntry.AlreadyRegistered(bumped)
 
     override def setNewPassword(
         conversation: ConversationRecord,

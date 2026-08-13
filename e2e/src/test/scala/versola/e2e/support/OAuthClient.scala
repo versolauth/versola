@@ -370,6 +370,16 @@ final class OAuthClient(client: Client, config: E2EConfig):
     formPost(s"${config.authUrl}/challenge/set-password", Map("password" -> password, "csrf" -> csrf), cookie)
       .map(SubmitResult(_))
 
+  /** POST /challenge/register/email — enters the registration flow with an email address. */
+  def submitRegisterEmail(cookie: String, email: String, csrf: String): Task[SubmitResult] =
+    formPost(s"${config.authUrl}/challenge/register/email", Map("email" -> email, "csrf" -> csrf), cookie)
+      .map(SubmitResult(_))
+
+  /** POST /challenge/register/phone — enters the registration flow with a phone number. */
+  def submitRegisterPhone(cookie: String, phone: String, csrf: String): Task[SubmitResult] =
+    formPost(s"${config.authUrl}/challenge/register/phone", Map("phone" -> phone, "csrf" -> csrf), cookie)
+      .map(SubmitResult(_))
+
   /** POST /challenge/login-password — submits login + password in a single step. */
   def submitLoginPassword(cookie: String, login: String, password: String, csrf: String): Task[SubmitResult] =
     formPost(
@@ -491,6 +501,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
       tenantId: String = "default",
       allowedScopes: Set[String] = Set("openid"),
       authFlow: Option[zio.json.ast.Json] = None,
+      registrationFlow: Option[zio.json.ast.Json] = None,
   ): Task[RegisterClientResult] =
     val body = Body.fromString(OAuthClient.RegisterClientBody(
       tenantId = tenantId,
@@ -504,6 +515,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
       refreshTokenTtl = None,
       theme = "default",
       authFlow = authFlow,
+      registrationFlow = registrationFlow,
       otpTemplateId = "default",
       frontChannelLogoutUri = None,
       frontChannelLogoutSessionRequired = false,
@@ -620,6 +632,7 @@ object OAuthClient:
       refreshTokenTtl: Option[Int],
       theme: String,
       authFlow: Option[zio.json.ast.Json],
+      registrationFlow: Option[zio.json.ast.Json],
       otpTemplateId: String,
       frontChannelLogoutUri: Option[String],
       frontChannelLogoutSessionRequired: Boolean,

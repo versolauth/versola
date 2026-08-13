@@ -23,6 +23,20 @@ trait UserRepository:
       login: Option[Login],
   ): IO[UserConflict | Throwable, Unit]
 
+  /** Records a user auth created by self-service registration.
+    *
+    * Deliberately does not enqueue an outbox event: auth is already the source of this change,
+    * so echoing it back would have central and auth notifying each other in a loop. Existing
+    * rows are left untouched, since auth only reports accounts it has just created and a
+    * retried delivery must not clobber edits central has made since.
+    */
+  def indexFromAuth(
+      id: UserId,
+      email: Option[Email],
+      phone: Option[Phone],
+      login: Option[Login],
+  ): Task[Unit]
+
   /** Atomically patches index columns and enqueues a UpsertUser outbox event.
     * Each `Option[Patch[A]]` follows three-state semantics: `None` keeps the column,
     * `Some(Patch.Deleted)` sets it to NULL, `Some(Patch.Modified(v))` sets it to `v`.

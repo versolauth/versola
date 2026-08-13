@@ -29,6 +29,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
     refreshTokenTtl = 30.days,
     theme = "default",
     authFlow = Some(AuthFlow.default.copy(primary = AuthFlow.default.primary.copy(credentials = List(PrimaryCredential.email, PrimaryCredential.phone)))),
+    registrationFlow = None,
     otpTemplateId = "default",
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,

@@ -18,6 +18,14 @@ case class CreateUserRequest(
 
 case class CreateUserResponse(id: UserId) derives JsonCodec, Schema
 
+/** An account auth created through self-service registration. */
+case class RegisteredUserRequest(
+    userId: UserId,
+    email: Option[Email],
+    phone: Option[Phone],
+    login: Option[Login],
+) derives JsonCodec, Schema
+
 case class PatchUserRequest(
     id: UserId,
     email: Option[Patch[Email]],

@@ -15,8 +15,12 @@ case class CoreConfig(
     smtp: Option[CoreConfig.SmtpConfig],
     configurationCacheRefreshInterval: Duration,
     par: Option[CoreConfig.ParConfig],
+    userRegistrationOutbox: Option[CoreConfig.UserRegistrationOutboxConfig],
 ):
   def parOrDefault: CoreConfig.ParConfig = par.getOrElse(CoreConfig.ParConfig.default)
+
+  def userRegistrationOutboxOrDefault: CoreConfig.UserRegistrationOutboxConfig =
+    userRegistrationOutbox.getOrElse(CoreConfig.UserRegistrationOutboxConfig.default)
 
 object CoreConfig:
   case class BootstrapConfig(
@@ -74,3 +78,21 @@ object CoreConfig:
   object ParConfig:
     /** RFC 9126 §2.2 suggests a short lifetime, typically between 5 and 600 seconds. */
     val default: ParConfig = ParConfig(requestUriTtl = Duration.fromSeconds(60), maxRequestSize = 8192)
+
+  /** Delivery of self-service registrations to central. Mirrors central's own outbox settings. */
+  case class UserRegistrationOutboxConfig(
+      pollInterval: Duration,
+      batchSize: Int,
+      lease: Duration,
+      maxBackoff: Duration,
+      maxAttempts: Int,
+  )
+
+  object UserRegistrationOutboxConfig:
+    val default: UserRegistrationOutboxConfig = UserRegistrationOutboxConfig(
+      pollInterval = Duration.fromSeconds(5),
+      batchSize = 100,
+      lease = Duration.fromSeconds(30),
+      maxBackoff = Duration.fromSeconds(300),
+      maxAttempts = 5,
+    )

@@ -8,7 +8,7 @@ import versola.central.configuration.permissions.Permission
 import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.tenants.TenantId
 import versola.util.http.Observability
-import versola.util.{Base64, Base64Url, JWT, RedirectUri, Secret, SecurityService}
+import versola.util.{Base64, Base64Url, JWT, Patch, RedirectUri, Secret, SecurityService}
 import zio.*
 import zio.http.*
 import zio.json.*
@@ -57,6 +57,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
     refreshTokenTtl = Some(7776000),
     theme = "default",
     authFlow = Some(AuthFlow.default),
+    registrationFlow = None,
     otpTemplateId = "default",
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
@@ -82,6 +83,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
     refreshTokenTtl = None,
     theme = None,
     authFlow = None,
+    registrationFlow = None,
     otpTemplateId = None,
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = None,
@@ -102,6 +104,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       permissions = Set(readPermission),
       theme = "",
       authFlow = Some(AuthFlow.default),
+      registrationFlow = None,
       otpTemplateId = "default",
       frontChannelLogoutUri = None,
       frontChannelLogoutSessionRequired = false,
@@ -120,6 +123,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       permissions = Set(writePermission),
       theme = "",
       authFlow = Some(AuthFlow.default),
+      registrationFlow = None,
       otpTemplateId = "default",
       frontChannelLogoutUri = None,
       frontChannelLogoutSessionRequired = false,
@@ -244,6 +248,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
                 secretRotation = false,
                 theme = "",
                 authFlow = Some(AuthFlow.default),
+                registrationFlow = None,
                 otpTemplateId = "default",
                 frontChannelLogoutUri = None,
                 frontChannelLogoutSessionRequired = false,
@@ -258,6 +263,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
                 secretRotation = true,
                 theme = "",
                 authFlow = Some(AuthFlow.default),
+                registrationFlow = None,
                 otpTemplateId = "default",
                 frontChannelLogoutUri = None,
                 frontChannelLogoutSessionRequired = false,
@@ -390,8 +396,8 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
         method = Method.PUT,
         url = URL.empty / "configuration" / "clients",
         body = Body.fromString(updateRequest.copy(
-          frontChannelLogoutUri = Some(Some("https://example.com/front-logout")),
-          backChannelLogoutUri = Some(Some("https://example.com/back-logout")),
+          frontChannelLogoutUri = Some(Patch.Modified("https://example.com/front-logout")),
+          backChannelLogoutUri = Some(Patch.Modified("https://example.com/back-logout")),
         ).toJson),
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.BadRequest,
@@ -406,7 +412,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
         method = Method.PUT,
         url = URL.empty / "configuration" / "clients",
         body = Body.fromString(updateRequest.copy(
-          frontChannelLogoutUri = Some(Some("https://example.com/front-logout")),
+          frontChannelLogoutUri = Some(Patch.Modified("https://example.com/front-logout")),
         ).toJson),
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.NoContent,

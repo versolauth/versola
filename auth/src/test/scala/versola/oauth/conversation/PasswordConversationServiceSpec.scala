@@ -63,6 +63,7 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
     val config = TestEnvConfig.coreConfig
     val userAgentRepository = stub[UserAgentRepository]
     val secureRandom = stub[SecureRandom]
+    val userRolesRepository = stub[versola.user.UserRolesRepository]
     val service = ConversationService.Impl(
       otpService,
       passwordService,
@@ -81,6 +82,7 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
       acrResolver,
       userAgentRepository,
       secureRandom,
+      userRolesRepository,
     )
 
   val baseRecord = ConversationRecord(
@@ -102,6 +104,8 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
     userLogin = None,
     userClaims = None,
     authFlow = AuthFlow.default,
+    registrationFlow = None,
+    registrationStep = None,
     userAgent = None,
     userAgentCookie = None,
     version = 0,

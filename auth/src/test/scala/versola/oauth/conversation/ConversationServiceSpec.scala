@@ -67,6 +67,8 @@ object ConversationServiceSpec extends UnitSpecBase:
     userLogin = None,
     userClaims = None,
     authFlow = AuthFlow.default,
+    registrationFlow = None,
+    registrationStep = None,
     userAgent = None,
     userAgentCookie = None,
         version = 1,
@@ -95,6 +97,7 @@ object ConversationServiceSpec extends UnitSpecBase:
     val acrResolver = stub[AcrResolutionService]
     val userAgentRepository = stub[UserAgentRepository]
     val secureRandom = stub[SecureRandom]
+    val userRolesRepository = stub[versola.user.UserRolesRepository]
 
     val service = ConversationService.Impl(
       otpService,
@@ -114,7 +117,34 @@ object ConversationServiceSpec extends UnitSpecBase:
       acrResolver,
       userAgentRepository,
       secureRandom,
+      userRolesRepository,
     )
+
+  private val roleId = versola.role.model.RoleId("user")
+
+  private val registrationFlow =
+    RegistrationFlow(steps = List(RegistrationStep.Otp(), RegistrationStep.SetPassword()), roleId = roleId)
+
+  private val registrationConversation = conversationRecord.copy(registrationFlow = Some(registrationFlow))
+
+  private val registrationClient = OAuthClientRecord(
+    id = clientId,
+    tenantId = tenantId,
+    clientName = "Registering client",
+    redirectUris = zio.prelude.NonEmptySet("https://example.com/callback"),
+    scope = Set(ScopeToken("read")),
+    secret = None,
+    previousSecret = None,
+    accessTokenTtl = 10.minutes,
+    refreshTokenTtl = 7776000.seconds,
+    theme = "default",
+    authFlow = None,
+    registrationFlow = Some(registrationFlow),
+    otpTemplateId = "default",
+    frontChannelLogoutUri = None,
+    frontChannelLogoutSessionRequired = false,
+    backChannelLogoutUri = None,
+  )
 
   def spec = suite("ConversationService")(
     suite("prepareInitialOtp")(
@@ -144,6 +174,60 @@ object ConversationServiceSpec extends UnitSpecBase:
         yield
           assertTrue(result == ConversationResult.RenderStep(ConversationStep.AccessDenied))
       }
+    ),
+    suite("startRegistration")(
+      test("creates the account, grants the configured role, and enters the flow") {
+        val env = Env()
+        val newUser = UserRecord(userId, Some(email), None, None, Json.Obj(), None)
+        for
+          _ <- env.secureRandom.nextUUIDv7.succeedsWith(UUID.randomUUID())
+          _ <- env.userRepository.findOrCreateForRegistration.succeedsWith((newUser, WasCreated(true)))
+          _ <- env.configService.find.succeedsWith(Some(registrationClient))
+          _ <- env.userRolesRepository.updateRoles.succeedsWith(())
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          result <- env.service.startRegistration(authId, registrationConversation, Left(email))
+          roleCalls = env.userRolesRepository.updateRoles.times
+        yield assertTrue(
+          result == RegistrationEntry.Registering(
+            registrationConversation.copy(
+              userId = Some(userId),
+              credential = Some(Left(email)),
+              userEmail = Some(email),
+              userClaims = Some(Json.Obj()),
+              registrationStep = Some(0),
+              version = registrationConversation.version + 1,
+            ),
+          ),
+          roleCalls == 1,
+        )
+      },
+      test("an existing credential neither creates an account nor enters the flow") {
+        val env = Env()
+        for
+          _ <- env.secureRandom.nextUUIDv7.succeedsWith(UUID.randomUUID())
+          // findOrCreate resolved to the existing account rather than creating one.
+          _ <- env.userRepository.findOrCreateForRegistration.succeedsWith((userRecord, WasCreated(false)))
+          _ <- env.configService.find.succeedsWith(Some(registrationClient))
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          result <- env.service.startRegistration(authId, registrationConversation, Left(email))
+          roleCalls = env.userRolesRepository.updateRoles.times
+        yield assertTrue(
+          result.isInstanceOf[RegistrationEntry.AlreadyRegistered],
+          // No role granted and no registration step: the conversation is an ordinary sign-in.
+          roleCalls == 0,
+          result.asInstanceOf[RegistrationEntry.AlreadyRegistered].conversation.registrationStep.isEmpty,
+        )
+      },
+      test("a client without a registration flow cannot register") {
+        val env = Env()
+        for
+          result <- env.service.startRegistration(authId, conversationRecord, Left(email))
+          createCalls = env.userRepository.findOrCreateForRegistration.times
+        yield assertTrue(
+          result == RegistrationEntry.Unavailable,
+          createCalls == 0,
+        )
+      },
     ),
     suite("checkOtp")(
       test("returns StepPassed on successful OTP check") {

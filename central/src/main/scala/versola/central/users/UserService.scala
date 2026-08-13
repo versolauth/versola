@@ -24,6 +24,9 @@ trait UserService:
 
   def create(request: CreateUserRequest): IO[UserConflict | Throwable, UserId]
 
+  /** Index a user auth created through self-service registration. */
+  def indexRegistered(request: RegisteredUserRequest): Task[Unit]
+
   def patch(request: PatchUserRequest): Task[Unit]
 
   def patchClaims(id: UserId, patch: Json.Obj): Task[Unit]
@@ -114,6 +117,9 @@ object UserService:
         id <- secureRandom.nextUUIDv7.map(UserId(_))
         _ <- userRepository.create(id, request.email, request.phone, request.login)
       yield id
+
+    override def indexRegistered(request: RegisteredUserRequest): Task[Unit] =
+      userRepository.indexFromAuth(request.userId, request.email, request.phone, request.login)
 
     override def patch(request: PatchUserRequest): Task[Unit] =
       userRepository.patch(request.id, request.email, request.phone, request.login)
