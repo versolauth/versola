@@ -38,6 +38,15 @@ export function validateScopeId(scopeId: string): boolean {
 }
 
 /**
+ * Validates an RFC 9396 authorization detail type: same as resource/action
+ * Lowercase letters, numbers, underscore, starting with letter
+ * Examples: payment_initiation, account_information
+ */
+export function validateAuthorizationDetailType(type: string): boolean {
+  return validateResourceAction(type);
+}
+
+/**
  * Validates client ID format: lowercase letters, numbers, hyphen, starting with letter
  * Examples: web-app, mobile-client, admin-dashboard-v2
  */

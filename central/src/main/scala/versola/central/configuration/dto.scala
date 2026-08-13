@@ -1,6 +1,7 @@
 package versola.central.configuration
 
 import versola.central.configuration.clients.{AuthFlow, ClientId, PresetId, ResponseType}
+import versola.central.configuration.details.AuthorizationDetailType
 import versola.central.configuration.permissions.Permission
 import versola.central.configuration.resources.{ResourceEndpointId, ResourceId}
 import versola.central.configuration.roles.RoleId
@@ -8,6 +9,7 @@ import versola.central.configuration.scopes.{Claim, ClaimRecord, ScopeToken}
 import versola.central.configuration.tenants.TenantId
 import versola.util.RedirectUri
 import zio.http.{Scheme, URL}
+import zio.json.ast.Json
 import zio.json.{DeriveJsonCodec, JsonCodec, JsonDecoder, JsonEncoder}
 import zio.prelude.Equal
 import zio.schema.*
@@ -240,6 +242,30 @@ case class UpdateScopeRequest(
     patch: PatchScope,
 ) derives Schema, JsonCodec
 
+case class AuthorizationDetailTypeResponse(
+    `type`: AuthorizationDetailType,
+    description: Map[String, String],
+    schema: Json.Obj,
+) derives Schema, JsonCodec
+
+case class GetAllAuthorizationDetailTypesResponse(
+    types: Vector[AuthorizationDetailTypeResponse],
+) derives Schema, JsonCodec
+
+case class CreateAuthorizationDetailTypeRequest(
+    tenantId: TenantId,
+    `type`: AuthorizationDetailType,
+    description: Map[String, String],
+    schema: Json.Obj,
+) derives Schema, JsonCodec
+
+case class UpdateAuthorizationDetailTypeRequest(
+    tenantId: TenantId,
+    `type`: AuthorizationDetailType,
+    description: Map[String, String],
+    schema: Json.Obj,
+) derives Schema, JsonCodec
+
 case class TenantResponse(
     id: TenantId,
     description: String,
@@ -413,6 +439,16 @@ case class ResourceRegistryEntry(
 
 case class GetResourcesRegistryResponse(
     resources: Vector[ResourceRegistryEntry],
+) derives Schema, JsonCodec
+
+case class AuthorizationDetailTypeSyncResponse(
+    tenantId: TenantId,
+    `type`: AuthorizationDetailType,
+    schema: Json.Obj,
+) derives Schema, JsonCodec
+
+case class GetAuthorizationDetailTypesSyncResponse(
+    types: Vector[AuthorizationDetailTypeSyncResponse],
 ) derives Schema, JsonCodec
 
 type ResourceUri = ResourceUri.Type

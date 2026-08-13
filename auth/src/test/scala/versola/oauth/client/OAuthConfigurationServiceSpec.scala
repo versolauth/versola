@@ -83,6 +83,7 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
       sysSettings: SystemSettingsRecord = systemSettings,
       metadata: Json.Obj = Json.Obj(),
       resources: Vector[ResourceRecord] = Vector.empty,
+      authorizationDetailTypes: Vector[AuthorizationDetailTypeRecord] = Vector.empty,
   ) =
     for
       clientRef         <- Ref.make(clients)
@@ -95,6 +96,7 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
       sysRef            <- Ref.make(sysSettings)
       metadataRef       <- Ref.make(metadata)
       resourceRef       <- Ref.make(resources)
+      authDetailTypeRef <- Ref.make(authorizationDetailTypes)
     yield OAuthConfigurationService.Impl(
       clientCache = ReloadingCache(clientRef),
       clientRepository = stub[OAuthClientSyncClient],
@@ -116,6 +118,8 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
       metadataRepository = stub[MetadataSyncClient],
       resourceCache = ReloadingCache(resourceRef),
       resourceRepository = stub[ResourceSyncClient],
+      authorizationDetailTypeCache = ReloadingCache(authDetailTypeRef),
+      authorizationDetailTypeRepository = stub[AuthorizationDetailTypeSyncClient],
     )
 
   val spec = suite("OAuthConfigurationService")(

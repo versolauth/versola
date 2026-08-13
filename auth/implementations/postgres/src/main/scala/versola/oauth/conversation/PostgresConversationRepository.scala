@@ -2,10 +2,11 @@ package versola.oauth.conversation
 
 import com.augustnagro.magnum.*
 import com.augustnagro.magnum.magzio.TransactorZIO
+import com.augustnagro.magnum.pg.json.JsonBDbCodec
 import com.augustnagro.magnum.pg.{PgCodec, SqlArrayCodec}
 import versola.auth.model.OtpCode
 import versola.oauth.authorize.model.ResponseTypeEntry
-import versola.oauth.client.model.{Acr, AuthFlow, ClientId, PassedAuthFactor, PassedFactorRecord, ResourceUri, ScopeToken}
+import versola.oauth.client.model.{Acr, AuthFlow, AuthorizationDetail, ClientId, PassedAuthFactor, PassedFactorRecord, ResourceUri, ScopeToken}
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, Nonce, State}
 import versola.oauth.model.UserAgentCookiePayload
@@ -64,12 +65,17 @@ class PostgresConversationRepository(xa: TransactorZIO) extends ConversationRepo
   )
   given DbCodec[Acr] = DbCodec.StringCodec.biMap(Acr(_), identity[String])
   given DbCodec[MAC] = DbCodec.ByteArrayCodec.biMap(MAC(_), identity[Array[Byte]])
+  given JsonBDbCodec[AuthorizationDetail] = jsonBCodec
+  // The column is a nullable array; the model's `Option[List[...]]` maps onto it directly via
+  // the generic `DbCodec.OptionCodec` (NULL <-> None) wrapping this element codec.
+  given listAuthorizationDetailDbCodec: DbCodec[List[AuthorizationDetail]] =
+    PgCodec.SeqCodec[AuthorizationDetail].biMap(_.toList, _.toSeq)
   given DbCodec[ConversationRecord] = DbCodec.derived[ConversationRecord]
 
   override def find(authId: AuthId): Task[Option[ConversationRecord]] =
     Clock.instant.flatMap: now =>
       xa.connectMeasured("find-conversation") {
-        sql"""select client_id, redirect_uri, scope, code_challenge, code_challenge_method, state, user_id, credential, step, requested_claims, ui_locales, nonce, response_type, user_email, user_phone, user_login, user_claims, auth_flow, user_agent, user_agent_cookie, version, amr, needs_password_change, target_acr, csrf_token, prior_session_id, resources
+        sql"""select client_id, redirect_uri, scope, code_challenge, code_challenge_method, state, user_id, credential, step, requested_claims, ui_locales, nonce, response_type, user_email, user_phone, user_login, user_claims, auth_flow, user_agent, user_agent_cookie, version, amr, needs_password_change, target_acr, csrf_token, prior_session_id, resources, authorization_details
               from auth_conversations
               where id = $authId AND expires_at > $now"""
           .query[ConversationRecord]
@@ -108,6 +114,7 @@ class PostgresConversationRepository(xa: TransactorZIO) extends ConversationRepo
                 csrf_token,
                 prior_session_id,
                 resources,
+                authorization_details,
                 expires_at
             ) values (
                 $authId,
@@ -138,6 +145,7 @@ class PostgresConversationRepository(xa: TransactorZIO) extends ConversationRepo
                 ${record.csrfToken},
                 ${record.priorSessionId},
                 ${record.resources},
+                ${record.authorizationDetails},
                 ${authId.createdAt.plusSeconds(ttl.toSeconds)})
          """
         .update.run()

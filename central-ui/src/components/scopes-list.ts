@@ -7,6 +7,7 @@ import { createScope, deleteScope, getScopes, updateScope } from '../utils/centr
 import { confirmDestructiveAction } from '../utils/confirm-dialog';
 import { getLocalizedDescription } from '../utils/helpers';
 import './scope-form';
+import './authorization-detail-types-list';
 import './content-header';
 import './error-card';
 import './loading-cards';
@@ -23,6 +24,7 @@ export class VersolaScopesList extends LitElement {
   @state() private showCreateForm = false;
   @state() private editingScope: OAuthScope | null = null;
   @state() private expandedScopes: Set<string> = new Set();
+  @state() private activeTab: 'scopes' | 'authorization-detail-types' = 'scopes';
   private loadRequestId = 0;
 
   updated(changedProperties: Map<string, unknown>) {
@@ -74,6 +76,30 @@ export class VersolaScopesList extends LitElement {
       .search-bar {
         margin-bottom: var(--spacing-lg);
         max-width: 28rem;
+      }
+
+      .tabs {
+        display: flex;
+        gap: 0.5rem;
+        margin-bottom: var(--spacing-lg);
+        flex-wrap: wrap;
+      }
+
+      .tab {
+        padding: 0.375rem 0.875rem;
+        border-radius: var(--radius-md);
+        border: 1px solid var(--border-dark);
+        background: transparent;
+        color: var(--text-secondary);
+        font-size: 0.875rem;
+        cursor: pointer;
+        transition: all var(--transition-fast);
+      }
+
+      .tab.active {
+        background: rgba(88, 166, 255, 0.15);
+        border-color: var(--accent);
+        color: var(--accent);
       }
 
       .header {
@@ -326,14 +352,38 @@ export class VersolaScopesList extends LitElement {
       <content-header
         title="OAuth Scopes"
       >
-        ${this.scopes.length > 0 && this.canManage ? html`
+        ${this.activeTab === 'scopes' && this.scopes.length > 0 && this.canManage ? html`
           <button slot="actions" class="btn btn-primary" @click=${this.handleCreateClick}>
             + Create Scope
           </button>
         ` : ''}
       </content-header>
 
-      ${this.isLoading ? html`
+      <div class="tabs" role="tablist">
+        <button
+          class="tab ${this.activeTab === 'scopes' ? 'active' : ''}"
+          role="tab"
+          aria-selected=${this.activeTab === 'scopes'}
+          @click=${() => this.activeTab = 'scopes'}
+        >
+          Scopes
+        </button>
+        <button
+          class="tab ${this.activeTab === 'authorization-detail-types' ? 'active' : ''}"
+          role="tab"
+          aria-selected=${this.activeTab === 'authorization-detail-types'}
+          @click=${() => this.activeTab = 'authorization-detail-types'}
+        >
+          Authorization Detail Types
+        </button>
+      </div>
+
+      ${this.activeTab === 'authorization-detail-types' ? html`
+        <versola-authorization-detail-types-list
+          .tenantId=${this.tenantId}
+          .canManage=${this.canManage}
+        ></versola-authorization-detail-types-list>
+      ` : this.isLoading ? html`
         <versola-loading-cards .count=${3}></versola-loading-cards>
       ` : this.errorMessage ? html`
         <versola-error-card heading="Could not load OAuth scopes" .message=${this.errorMessage} @retry=${() => this.loadData()}></versola-error-card>

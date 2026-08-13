@@ -572,6 +572,7 @@ object ConversationService:
               authTime = now,
               acr = conversation.targetAcr,
               resources = conversation.resources,
+              authorizationDetails = conversation.authorizationDetails,
             )
             userAgentTtl <- configService.getUserAgentTtl(conversation.clientId)
             userAgentData = UserAgentData(

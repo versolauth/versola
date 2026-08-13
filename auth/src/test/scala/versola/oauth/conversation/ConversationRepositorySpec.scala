@@ -2,13 +2,15 @@ package versola.oauth.conversation
 
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.auth.model.OtpCode
-import versola.oauth.client.model.{AuthFlow, ClientId, PrimaryCredential, ScopeToken}
+import versola.oauth.client.model.{AuthFlow, AuthorizationDetail, ClientId, PrimaryCredential, ScopeToken}
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, State}
 import versola.user.model.UserId
 import versola.util.{DatabaseSpecBase, Email, Phone}
 import zio.*
 import zio.http.URL
+import zio.json.*
+import zio.json.ast.Json
 import zio.test.*
 
 import java.util.UUID
@@ -74,6 +76,7 @@ trait ConversationRepositorySpec extends DatabaseSpecBase[ConversationRepository
     csrfToken = "test-csrf",
     priorSessionId = None,
     resources = Nil,
+    authorizationDetails = None,
   )
 
   val record2 = record1.copy(
@@ -111,6 +114,7 @@ trait ConversationRepositorySpec extends DatabaseSpecBase[ConversationRepository
     csrfToken = "test-csrf",
     priorSessionId = None,
     resources = Nil,
+    authorizationDetails = None,
   )
 
   def testCases(env: ConversationRepositorySpec.Env): List[Spec[ConversationRepositorySpec.Env & zio.Scope, Any]] =
@@ -127,6 +131,16 @@ trait ConversationRepositorySpec extends DatabaseSpecBase[ConversationRepository
           found2.contains(record2),
           notFound.isEmpty,
         )
+      },
+      test("persist and retrieve authorization details verbatim") {
+        val detail = AuthorizationDetail.parse(
+          """{"type":"payment_initiation","instructedAmount":{"currency":"EUR","amount":"1.00"}}"""
+            .fromJson[Json].toOption.get,
+        ).toOption.get
+        for
+          _ <- env.repository.create(authId1, record1.copy(authorizationDetails = Some(List(detail))), ttl)
+          found <- env.repository.find(authId1)
+        yield assertTrue(found.map(_.authorizationDetails) == Some(Some(List(detail))))
       },
       test("delete conversation by auth ID") {
         for

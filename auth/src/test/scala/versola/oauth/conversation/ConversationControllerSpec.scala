@@ -85,6 +85,7 @@ object ConversationControllerSpec extends UnitSpecBase:
     csrfToken = "test-csrf",
     priorSessionId = None,
     resources = Nil,
+    authorizationDetails = None,
   )
 
   def successfulSubmitTestCase(

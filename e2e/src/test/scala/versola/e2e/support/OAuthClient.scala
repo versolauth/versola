@@ -4,6 +4,7 @@ import zio.*
 import zio.http.*
 import zio.http.Header.Authorization
 import zio.json.*
+import zio.json.ast.Json
 
 import scala.annotation.targetName
 
@@ -81,6 +82,8 @@ object TokenResult:
       expiresIn: Long,
       refreshToken: Option[String],
       idToken: Option[String],
+      /** RFC 9396 §7: the authorization details granted, echoed back when the grant carries any. */
+      authorizationDetails: Option[Json.Arr],
   ) extends TokenResult
 
   case class Failure(response: Response, body: String) extends TokenResult
@@ -91,6 +94,7 @@ object TokenResult:
       expires_in: Long,
       refresh_token: Option[String],
       id_token: Option[String],
+      authorization_details: Option[Json.Arr],
   ) derives JsonDecoder
 
   def parse(response: Response): Task[TokenResult] =
@@ -98,7 +102,15 @@ object TokenResult:
       if response.status.isSuccess then
         body.fromJson[Raw].fold(
           err => Failure(response, s"JSON parse error [$err] body=$body"),
-          raw => Success(response, raw.access_token, raw.token_type, raw.expires_in, raw.refresh_token, raw.id_token),
+          raw => Success(
+            response,
+            raw.access_token,
+            raw.token_type,
+            raw.expires_in,
+            raw.refresh_token,
+            raw.id_token,
+            raw.authorization_details,
+          ),
         )
       else Failure(response, body)
 
@@ -202,6 +214,60 @@ extension (task: Task[RegisterClientResult])
   @targetName("registerClientSuccess")
   def success: Task[RegisterClientResult.Success] = task.flatMap(_.success)
 
+/** Result of [[OAuthClient.registerAuthorizationDetailType]] — a `Failure` carries the raw
+  * JSON body (e.g. an `InvalidSchema` validation error) for tests that assert on rejection.
+  */
+sealed trait RegisterAuthorizationDetailTypeResult:
+  def response: Response
+  def success: Task[Unit] = this match
+    case RegisterAuthorizationDetailTypeResult.Success(_) => ZIO.unit
+    case RegisterAuthorizationDetailTypeResult.Failure(resp, body) =>
+      ZIO.fail(RuntimeException(s"Expected registerAuthorizationDetailType success but got: status=${resp.status} body=$body"))
+
+object RegisterAuthorizationDetailTypeResult:
+  case class Success(response: Response) extends RegisterAuthorizationDetailTypeResult
+  case class Failure(response: Response, body: String) extends RegisterAuthorizationDetailTypeResult
+
+  def parse(response: Response): Task[RegisterAuthorizationDetailTypeResult] =
+    if response.status.isSuccess then ZIO.succeed(Success(response))
+    else response.body.asString.map(Failure(response, _))
+
+extension (task: Task[RegisterAuthorizationDetailTypeResult])
+  @targetName("registerAuthorizationDetailTypeSuccess")
+  def success: Task[Unit] = task.flatMap(_.success)
+
+/** Result of [[OAuthClient.pushAuthorizationRequest]] (RFC 9126). A `Failure` keeps the parsed
+  * `error` code, since `/par` reports validation failures to the client directly rather than
+  * redirecting them back to the redirect URI.
+  */
+sealed trait PushedAuthorizationResult:
+  def response: Response
+  def success: Task[PushedAuthorizationResult.Success] = this match
+    case s: PushedAuthorizationResult.Success => ZIO.succeed(s)
+    case PushedAuthorizationResult.Failure(resp, body, _) =>
+      ZIO.fail(RuntimeException(s"Expected /par success but got: status=${resp.status} body=$body"))
+
+object PushedAuthorizationResult:
+  case class Success(response: Response, requestUri: String, expiresIn: Long, verifier: String, state: String)
+      extends PushedAuthorizationResult
+  case class Failure(response: Response, body: String, error: Option[String]) extends PushedAuthorizationResult
+
+  private case class RawSuccess(request_uri: String, expires_in: Long) derives JsonDecoder
+  private case class RawError(error: String) derives JsonDecoder
+
+  def parse(response: Response, verifier: String, state: String): Task[PushedAuthorizationResult] =
+    response.body.asString.map: body =>
+      if response.status.isSuccess then
+        body.fromJson[RawSuccess].fold(
+          err => Failure(response, s"JSON parse error [$err] body=$body", None),
+          raw => Success(response, raw.request_uri, raw.expires_in, verifier, state),
+        )
+      else Failure(response, body, body.fromJson[RawError].toOption.map(_.error))
+
+extension (task: Task[PushedAuthorizationResult])
+  @targetName("pushedAuthorizationSuccess")
+  def success: Task[PushedAuthorizationResult.Success] = task.flatMap(_.success)
+
 case class SubmitResult(response: Response):
   val location: String = response.location
   /** `SSO_SESSION` cookie set by the server when an auth conversation finishes. */
@@ -279,6 +345,8 @@ final class OAuthClient(client: Client, config: E2EConfig):
       scope: String = "openid",
       clientId: Option[String] = None,
       redirectUri: Option[String] = None,
+      /** RFC 9396 §2: the raw JSON value of the `authorization_details` request parameter. */
+      authorizationDetails: Option[String] = None,
   ): Task[AuthorizeResult] =
     val effectiveClientId = clientId.getOrElse(config.clientId)
     val effectiveRedirectUri = redirectUri.getOrElse(config.redirectUri)
@@ -294,7 +362,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
         "state" -> state,
         "code_challenge" -> challenge,
         "code_challenge_method" -> "S256",
-      ))
+      ) ++ authorizationDetails.map("authorization_details" -> _))
       response <- Client.batched(Request.get(url)).provide(ZLayer.succeed(client))
       cookie <- ZIO.fromOption(OAuthClient.extractConversationCookie(response))
         .orElseFail(new RuntimeException(
@@ -317,6 +385,8 @@ final class OAuthClient(client: Client, config: E2EConfig):
       sessionCookie: Option[String] = None,
       acrValues: Option[String] = None,
       idTokenHint: Option[String] = None,
+      /** RFC 9396 §2: the raw JSON value of the `authorization_details` request parameter. */
+      authorizationDetails: Option[String] = None,
   ): Task[AuthorizeResult] =
     val (verifier, challenge) = PkceHelper.generate()
     val state = java.util.UUID.randomUUID().toString
@@ -334,6 +404,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
         "max_age"              -> maxAge.map(_.toString),
         "acr_values"           -> acrValues,
         "id_token_hint"        -> idTokenHint,
+        "authorization_details" -> authorizationDetails,
       ).collect { case (k, Some(v)) => k -> v }
       req = Request.get(base.addQueryParams(params))
       reqWithSession = sessionCookie.fold(req)(sc =>
@@ -432,9 +503,49 @@ final class OAuthClient(client: Client, config: E2EConfig):
       .addHeader(Header.ContentType(MediaType.application.`x-www-form-urlencoded`))
     Client.batched(req).provide(ZLayer.succeed(client)).flatMap(IntrospectResult.parse)
 
+  /** POST /par — pushes an authorization request (RFC 9126). Generates PKCE + state internally
+    * and authenticates the client with HTTP Basic, as `/token` does.
+    */
+  def pushAuthorizationRequest(
+      clientId: String,
+      clientSecret: String,
+      redirectUri: String,
+      scope: String = "openid",
+      responseType: String = "code",
+      authorizationDetails: Option[String] = None,
+  ): Task[PushedAuthorizationResult] =
+    val (verifier, challenge) = PkceHelper.generate()
+    val state = java.util.UUID.randomUUID().toString
+    val fields = Map(
+      "client_id" -> clientId,
+      "redirect_uri" -> redirectUri,
+      "response_type" -> responseType,
+      "scope" -> scope,
+      "state" -> state,
+      "code_challenge" -> challenge,
+      "code_challenge_method" -> "S256",
+    ) ++ authorizationDetails.map("authorization_details" -> _)
+    val req = Request.post(s"${config.authUrl}/par", formBody(fields))
+      .addHeader(Authorization.Basic(clientId, clientSecret))
+      .addHeader(Header.ContentType(MediaType.application.`x-www-form-urlencoded`))
+    Client.batched(req).provide(ZLayer.succeed(client))
+      .flatMap(PushedAuthorizationResult.parse(_, verifier, state))
+
+  /** GET /authorize?request_uri=… — redeems a pushed request (RFC 9126 §4). The `client_id` is
+    * sent alongside the `request_uri`, which is the only other parameter the AS accepts here.
+    */
+  def authorizePushed(
+      clientId: String,
+      pushed: PushedAuthorizationResult.Success,
+  ): Task[AuthorizeResult] =
+    for
+      base <- ZIO.fromEither(URL.decode(s"${config.authUrl}/authorize")).mapError(new RuntimeException(_))
+      url = base.addQueryParams(List("client_id" -> clientId, "request_uri" -> pushed.requestUri))
+      response <- Client.batched(Request.get(url)).provide(ZLayer.succeed(client))
+    yield AuthorizeResult(response, pushed.verifier, pushed.state, OAuthClient.extractConversationCookie(response))
+
   /** POST /users — registers a new user via the Central API, returns the generated user ID. */
   def registerUser(email: Option[String] = None, login: Option[String] = None, phone: Option[String] = None): Task[java.util.UUID] =
-    import zio.json.ast.Json
     val fields = List(
       email.map("email" -> Json.Str(_)),
       login.map("login" -> Json.Str(_)),
@@ -468,7 +579,6 @@ final class OAuthClient(client: Client, config: E2EConfig):
 
   /** POST /users/password/set — sets a permanent password for a user (non-prod only). */
   def setUserPassword(userId: java.util.UUID, password: String): Task[Unit] =
-    import zio.json.ast.Json
     val body = Body.fromString(
       Json.Obj("userId" -> Json.Str(userId.toString), "password" -> Json.Str(password)).toJson,
     )
@@ -512,6 +622,25 @@ final class OAuthClient(client: Client, config: E2EConfig):
       .addHeader(centralAuthorization)
       .addHeader(Header.ContentType(MediaType.application.json))
     Client.batched(req).provide(ZLayer.succeed(client)).flatMap(RegisterClientResult.parse)
+
+  /** POST /configuration/authorization-detail-types — registers an RFC 9396 authorization detail
+    * type via the Central API. `schema` is the raw JSON Schema (as a JSON string) that requested
+    * `authorization_details` entries of this `typeName` must validate against.
+    */
+  def registerAuthorizationDetailType(
+      typeName: String,
+      schema: String,
+      tenantId: String = "default",
+  ): Task[RegisterAuthorizationDetailTypeResult] =
+    val body = Body.fromString(
+      // Field names/shape mirror central's CreateAuthorizationDetailTypeRequest DTO.
+      // `schema` is inlined verbatim so an invalid-JSON-Schema fixture round-trips as-is.
+      s"""{"tenantId":"$tenantId","type":"$typeName","description":{},"schema":$schema}""",
+    )
+    val req = Request.post(s"${config.centralUrl}/configuration/authorization-detail-types", body)
+      .addHeader(centralAuthorization)
+      .addHeader(Header.ContentType(MediaType.application.json))
+    Client.batched(req).provide(ZLayer.succeed(client)).flatMap(RegisterAuthorizationDetailTypeResult.parse)
 
   /** POST /service/users/outbox/flush — forces central to dispatch all pending user-outbox events to auth (non-prod only). */
   def flushUserOutbox(): Task[Unit] =

@@ -83,6 +83,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
     loginHint = None,
     idTokenHint = None,
     resources = Nil,
+    authorizationDetails = None,
   )
 
   val rawSessionId = SessionId(Array.fill(32)(5.toByte))
@@ -182,6 +183,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
     csrfToken = "test-csrf",
     priorSessionId = None,
     resources = Nil,
+    authorizationDetails = None,
   )
 
   val spec = suite("AuthorizeEndpointService")(

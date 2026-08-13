@@ -6,6 +6,7 @@ import versola.central.CentralConfig
 import versola.central.configuration.challenges.{ChallengeSettingsRepository, ChallengeSettingsService, OtpChallengeController, OtpChallengeRepository, OtpChallengeService}
 import versola.central.configuration.system.{SystemSettingsController, SystemSettingsRepository, SystemSettingsService}
 import versola.central.configuration.clients.{AuthorizationPresetController, AuthorizationPresetRepository, AuthorizationPresetService, ClientController, OAuthClientRepository, OAuthClientService}
+import versola.central.configuration.details.{AuthorizationDetailTypeController, AuthorizationDetailTypeRepository, AuthorizationDetailTypeService}
 import versola.central.configuration.edges.{EdgeController, EdgeRepository, EdgeService}
 import versola.central.configuration.forms.{FormController, FormRepository, FormService}
 import versola.central.configuration.jwks.{JwksController, JwksService}
@@ -21,6 +22,7 @@ import versola.central.configuration.sync.{CacheSyncRepository, CacheSyncService
 import versola.central.configuration.tenants.{TenantController, TenantRepository, TenantService}
 import versola.central.users.{AuthClient, ServiceController, UserOutboxProcessor, UserController, UserRepository, UserService}
 import versola.configuration.clients.{PostgresAuthorizationPresetRepository, PostgresOAuthClientRepository}
+import versola.configuration.details.PostgresAuthorizationDetailTypeRepository
 import versola.configuration.challenges.{PostgresChallengeSettingsRepository, PostgresOtpChallengeRepository}
 import versola.configuration.system.PostgresSystemSettingsRepository
 import versola.configuration.forms.PostgresFormRepository
@@ -67,6 +69,8 @@ object PostgresCentralApp extends VersolaApp("central"):
       AuthorizationPresetService &
       OAuthScopeRepository &
       OAuthScopeService &
+      AuthorizationDetailTypeRepository &
+      AuthorizationDetailTypeService &
       RoleRepository &
       RoleService &
       EdgeRepository &
@@ -102,6 +106,7 @@ object PostgresCentralApp extends VersolaApp("central"):
       ClientController.routes,
       AuthorizationPresetController.routes,
       ScopeController.routes,
+      AuthorizationDetailTypeController.routes,
       RoleController.routes,
       EdgeController.routes,
       FormController.routes,
@@ -124,6 +129,7 @@ object PostgresCentralApp extends VersolaApp("central"):
           PostgresOAuthClientRepository.live >+>
           PostgresAuthorizationPresetRepository.live >+>
           PostgresOAuthScopeRepository.live >+>
+          PostgresAuthorizationDetailTypeRepository.live >+>
           PostgresRoleRepository.live >+>
           PostgresEdgeRepository.live >+>
           PostgresFormRepository.live >+>
@@ -143,6 +149,7 @@ object PostgresCentralApp extends VersolaApp("central"):
       repositories >+>
       SecurityService.live >+>
       CelEvaluator.live >+>
+      JsonSchemaValidator.live >+>
       TenantService.live >+>
       PermissionService.live >+>
       ResourceService.live >+>
@@ -150,6 +157,7 @@ object PostgresCentralApp extends VersolaApp("central"):
       ChallengeSettingsService.live >+>
       AuthorizationPresetService.live >+>
       OAuthScopeService.live >+>
+      AuthorizationDetailTypeService.live >+>
       RoleService.live >+>
       EdgeService.live >+>
       LocaleService.live >+>

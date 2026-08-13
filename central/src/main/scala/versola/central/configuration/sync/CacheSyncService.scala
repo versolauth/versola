@@ -2,6 +2,7 @@ package versola.central.configuration.sync
 
 import versola.central.configuration.challenges.{ChallengeSettingsService, OtpChallengeService}
 import versola.central.configuration.clients.{AuthorizationPresetService, OAuthClientService}
+import versola.central.configuration.details.AuthorizationDetailTypeService
 import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.forms.FormService
 import versola.central.configuration.jwks.JwksService
@@ -20,8 +21,8 @@ trait CacheSyncService:
   def sync(): Task[Unit]
 
 object CacheSyncService:
-  def live: ZLayer[CacheSyncRepository & TenantService & PermissionService & ResourceService & OAuthClientService & OAuthScopeService & RoleService & AuthorizationPresetService & EdgeService & FormService & OtpChallengeService & ChallengeSettingsService & SystemSettingsService & JwksService & ThemeService & ServerMetadataService & Scope, Nothing, CacheSyncService] =
-    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _)) >>>
+  def live: ZLayer[CacheSyncRepository & TenantService & PermissionService & ResourceService & OAuthClientService & OAuthScopeService & AuthorizationDetailTypeService & RoleService & AuthorizationPresetService & EdgeService & FormService & OtpChallengeService & ChallengeSettingsService & SystemSettingsService & JwksService & ThemeService & ServerMetadataService & Scope, Nothing, CacheSyncService] =
+    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _)) >>>
       ZLayer(ZIO.serviceWithZIO[CacheSyncService.Impl](service => service.sync().forkScoped.as(service)))
 
   class Impl(
@@ -31,6 +32,7 @@ object CacheSyncService:
       resourceService: ResourceService,
       clientService: OAuthClientService,
       scopeService: OAuthScopeService,
+      authorizationDetailTypeService: AuthorizationDetailTypeService,
       roleService: RoleService,
       presetService: AuthorizationPresetService,
       edgeService: EdgeService,
@@ -63,6 +65,9 @@ object CacheSyncService:
 
           case event: SyncEvent.ScopesUpdated =>
             scopeService.sync(event).either
+
+          case event: SyncEvent.AuthorizationDetailTypesUpdated =>
+            authorizationDetailTypeService.sync(event).either
 
           case event: SyncEvent.PermissionsUpdated =>
             permissionService.sync(event).either

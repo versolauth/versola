@@ -2,6 +2,7 @@ package versola.configuration.sync
 
 import versola.central.configuration.clients.{ClientId, PresetId}
 import versola.central.configuration.challenges.{OtpTemplateChannel, OtpTemplatePurpose}
+import versola.central.configuration.details.AuthorizationDetailType
 import versola.central.configuration.forms.FormId
 import versola.central.configuration.permissions.Permission
 import versola.central.configuration.resources.ResourceId
@@ -104,6 +105,21 @@ object PostgresCacheSyncRepositorySpec extends ZIOSpecDefault:
       test("scope_change falls back to Unknown when tenantId is empty") {
         val payload = """{"tenantId":"","id":"read","op":"DELETE"}"""
         assertTrue(parseNotification("scope_change", payload) == SyncEvent.Unknown)
+      },
+      test("authorization_detail_type_change parses a well-formed payload") {
+        val payload = """{"tenantId":"t1","id":"payment_initiation","op":"UPDATE"}"""
+        assertTrue(
+          parseNotification("authorization_detail_type_change", payload) ==
+            SyncEvent.AuthorizationDetailTypesUpdated(
+              tenantId = TenantId("t1"),
+              id = AuthorizationDetailType("payment_initiation"),
+              op = SyncEvent.Op.UPDATE,
+            ),
+        )
+      },
+      test("authorization_detail_type_change falls back to Unknown when tenantId is missing") {
+        val payload = """{"id":"payment_initiation","op":"UPDATE"}"""
+        assertTrue(parseNotification("authorization_detail_type_change", payload) == SyncEvent.Unknown)
       },
       test("permission_change parses a well-formed payload") {
         val payload = """{"tenantId":"t1","id":"p1","op":"UPDATE"}"""

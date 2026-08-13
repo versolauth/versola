@@ -1,6 +1,6 @@
 package versola.oauth.client
 
-import versola.oauth.client.model.{Acr, ChallengeSettingsRecord, Claim, ClaimRecord, ClientId, FormRecord, Locales, OAuthClientRecord, OtpTemplateChannel, OtpTemplatePurpose, OtpTemplateRecord, OtpType, PassedAuthFactor, PasskeySettings, RateLimit, ResourceRecord, ScopeRecord, ScopeToken, SubmissionLimits, SystemSettingsRecord, TenantId, ThemeRecord}
+import versola.oauth.client.model.{Acr, AuthorizationDetailType, AuthorizationDetailTypeRecord, ChallengeSettingsRecord, Claim, ClaimRecord, ClientId, FormRecord, Locales, OAuthClientRecord, OtpTemplateChannel, OtpTemplatePurpose, OtpTemplateRecord, OtpType, PassedAuthFactor, PasskeySettings, RateLimit, ResourceRecord, ScopeRecord, ScopeToken, SubmissionLimits, SystemSettingsRecord, TenantId, ThemeRecord}
 import versola.oauth.conversation.otp.model.OtpTemplate
 import versola.oauth.metadata.MetadataSyncClient
 import versola.util.*
@@ -93,6 +93,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
       val systemSettingsCache: ReloadingCache[SystemSettingsRecord],
       val metadataCache: ReloadingCache[Json.Obj],
       val resourceCache: ReloadingCache[Vector[ResourceRecord]],
+      val authorizationDetailTypeCache: ReloadingCache[Vector[AuthorizationDetailTypeRecord]],
   ):
     val clientSync = stub[OAuthClientSyncClient]
     val scopeSync = stub[OAuthScopeSyncClient]
@@ -104,6 +105,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
     val systemSettingsSync = stub[SystemSettingsSyncClient]
     val metadataSync = stub[MetadataSyncClient]
     val resourceSync = stub[ResourceSyncClient]
+    val authorizationDetailTypeSync = stub[AuthorizationDetailTypeSyncClient]
     val service: OAuthConfigurationService =
       OAuthConfigurationService.Impl(
         clientCache,
@@ -126,6 +128,8 @@ object OAuthClientServiceSpec extends UnitSpecBase:
         metadataSync,
         resourceCache,
         resourceSync,
+        authorizationDetailTypeCache,
+        authorizationDetailTypeSync,
       )
 
   private def makeEnv(
@@ -138,6 +142,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
       challengeSettings: Vector[ChallengeSettingsRecord] = Vector.empty,
       systemSettings: SystemSettingsRecord = SystemSettingsRecord.default,
       resources: Vector[ResourceRecord] = Vector.empty,
+      authorizationDetailTypes: Vector[AuthorizationDetailTypeRecord] = Vector.empty,
   ) =
     for
       clientRef <- Ref.make(clients)
@@ -150,6 +155,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
       systemSettingsRef <- Ref.make(systemSettings)
       metadataRef <- Ref.make(Json.Obj())
       resourceRef <- Ref.make(resources)
+      authorizationDetailTypeRef <- Ref.make(authorizationDetailTypes)
     yield Env(
       clientCache = ReloadingCache(clientRef),
       scopeCache = ReloadingCache(scopeRef),
@@ -161,6 +167,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
       systemSettingsCache = ReloadingCache(systemSettingsRef),
       metadataCache = ReloadingCache(metadataRef),
       resourceCache = ReloadingCache(resourceRef),
+      authorizationDetailTypeCache = ReloadingCache(authorizationDetailTypeRef),
     )
 
   val spec = suite("OAuthConfigurationService")(
@@ -417,6 +424,35 @@ object OAuthClientServiceSpec extends UnitSpecBase:
         result <- env.service.getMetadata
       yield assertTrue(result == metadata)
     },
+    test("getMetadata advertises the registered authorization detail types") {
+      val paymentType = AuthorizationDetailTypeRecord(
+        tenantId = TenantId("default"),
+        `type` = AuthorizationDetailType("payment_initiation"),
+        schema = Json.Obj("type" -> Json.Str("object")),
+      )
+      for
+        env <- makeEnv()
+        _ <- env.metadataCache.set(Json.Obj("issuer" -> Json.Str("https://issuer.com")))
+        _ <- env.authorizationDetailTypeCache.set(Vector(paymentType))
+        result <- env.service.getMetadata
+      yield assertTrue(
+        result.get("authorization_details_types_supported") ==
+          Some(Json.Arr(Json.Str("payment_initiation"))),
+      )
+    },
+    test("findAuthorizationDetailType resolves a type within the tenant only") {
+      val paymentType = AuthorizationDetailTypeRecord(
+        tenantId = TenantId("default"),
+        `type` = AuthorizationDetailType("payment_initiation"),
+        schema = Json.Obj("type" -> Json.Str("object")),
+      )
+      for
+        env <- makeEnv()
+        _ <- env.authorizationDetailTypeCache.set(Vector(paymentType))
+        found <- env.service.findAuthorizationDetailType(TenantId("default"), paymentType.`type`)
+        otherTenant <- env.service.findAuthorizationDetailType(TenantId("other"), paymentType.`type`)
+      yield assertTrue(found == Some(paymentType), otherTenant.isEmpty)
+    },
     test("syncConfiguration fetches and updates all caches") {
       for
         env <- makeEnv(clients = Map.empty, scopes = Vector.empty)
@@ -430,6 +466,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
         _ <- env.systemSettingsSync.getAll.succeedsWith(SystemSettingsRecord.default)
         _ <- env.metadataSync.getAll.succeedsWith(Json.Obj("a" -> Json.Num(1)))
         _ <- env.resourceSync.getAll.succeedsWith(Vector.empty)
+        _ <- env.authorizationDetailTypeSync.getAll.succeedsWith(Vector.empty)
 
         _ <- env.service.syncConfiguration
 
