@@ -33,16 +33,16 @@ object PushedAuthorizationSpec extends E2ESpec:
         assertTrue(code.nonEmpty).label("code must not be empty")
     },
 
-    test("redemption succeeds even when client_secret was sent alongside the pushed parameters") {
-      // client_secret_post authentication must not block redemption once it is stripped
-      // from the persisted authorization parameters server-side.
+    test("push + redeem via client_secret_post authentication") {
+      // client_secret must be accepted as an authentication credential (RFC 6749 §2.3.1)
+      // and stripped from the persisted authorization parameters afterward.
       for
         (s, auth) <- setup(Flows.Id.LoginPassword)
         pushed <- auth.pushAuthorization(
           clientId = s.clientId,
           clientSecret = s.clientSecret,
           redirectUri = s.redirectUri,
-          extraParams = Map("client_secret" -> s.clientSecret),
+          useBasicAuth = false,
         ).success
         authorize <- auth.authorizeRaw(
           clientId = s.clientId,

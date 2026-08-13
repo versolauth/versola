@@ -389,20 +389,26 @@ final class OAuthClient(client: Client, config: E2EConfig):
       scope: String = "openid",
       responseType: String = "code",
       extraParams: Map[String, String] = Map.empty,
+      useBasicAuth: Boolean = true,
   ): Task[PushedAuthorizationResult] =
     val (_, challenge) = PkceHelper.generate()
     val state = java.util.UUID.randomUUID().toString
-    val body = formBody(Map(
+    // `client_id` is always required in the pushed body per RFC 9126 §2.1, even when the
+    // client authenticates with HTTP Basic. When authenticating with client_secret_post
+    // instead, `client_secret` must travel in the same body — a client must not combine
+    // both authentication methods in a single request.
+    val formParams = Map(
+      "client_id"             -> clientId,
       "response_type"         -> responseType,
       "redirect_uri"          -> redirectUri,
       "scope"                 -> scope,
       "state"                 -> state,
       "code_challenge"        -> challenge,
       "code_challenge_method" -> "S256",
-    ) ++ extraParams)
-    val req = Request.post(s"${config.authUrl}/par", body)
-      .addHeader(Authorization.Basic(clientId, clientSecret))
+    ) ++ (if useBasicAuth then Map.empty else Map("client_secret" -> clientSecret)) ++ extraParams
+    val req0 = Request.post(s"${config.authUrl}/par", formBody(formParams))
       .addHeader(Header.ContentType(MediaType.application.`x-www-form-urlencoded`))
+    val req = if useBasicAuth then req0.addHeader(Authorization.Basic(clientId, clientSecret)) else req0
     Client.batched(req).provide(ZLayer.succeed(client)).flatMap(PushedAuthorizationResult.parse)
 
   /** Issues an arbitrary HTTP method against /par — used to test method-not-allowed handling. */
