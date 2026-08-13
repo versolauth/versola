@@ -240,19 +240,13 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           assertTrue(response.status == Status.SeeOther) &&
           assertTrue(response.header(Header.Location).exists(_.url.path.encode == "/challenge"))
       },
-      test("returns 400 on IllegalState") {
+      test("redirects to /challenge on BadRequest") {
         val env = Env()
         for
-          response <- env.service.renderSubmit(ConversationResult.IllegalState, conversationRecord)
+          response <- env.service.renderSubmit(ConversationResult.BadRequest, conversationRecord)
         yield
-          assertTrue(response.status == Status.BadRequest)
-      },
-      test("returns 404 on NotFound") {
-        val env = Env()
-        for
-          response <- env.service.renderSubmit(ConversationResult.NotFound, conversationRecord)
-        yield
-          assertTrue(response.status == Status.NotFound)
+          assertTrue(response.status == Status.SeeOther) &&
+          assertTrue(response.header(Header.Location).exists(_.url.path.encode == "/challenge"))
       },
       test("renders step with error on ServiceUnavailable") {
         val env = Env()
@@ -282,7 +276,8 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
         yield
           assertTrue(response.status == Status.SeeOther) &&
           assertTrue(response.header(Header.Location).exists(_.url.encode.contains("code=" + versola.util.Base64Url.encode(code)))) &&
-          assertTrue(response.headers.get(Header.SetCookie).exists(_.renderedValue.contains("SSO_SESSION")))
+          assertTrue(response.headers.get(Header.SetCookie).exists(_.renderedValue.contains("SSO_SESSION"))) &&
+          assertTrue(response.headers.getAll(Header.SetCookie).exists(c => c.value.name == "SSO_CONVERSATION" && c.value.maxAge.contains(Duration.Zero)))
       },
       test("includes id_token if provided in Complete") {
         val env = Env()

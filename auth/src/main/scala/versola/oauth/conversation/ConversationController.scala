@@ -6,7 +6,7 @@ import versola.oauth.client.model.ClientId
 import versola.oauth.conversation.model.Error
 import versola.oauth.model.ConversationCookie
 import versola.user.model.Login
-import versola.util.http.Controller
+import versola.util.http.{Controller, Observability}
 import versola.util.{CoreConfig, Email, FormDecoder, Phone}
 import zio.*
 import zio.http.*
@@ -41,6 +41,7 @@ object ConversationController extends Controller:
           router <- ZIO.service[ConversationRouter]
           formService <- ZIO.service[ConversationRenderService]
           cookie <- extractCookie(request)
+          _ <- Observability.setAuth(cookie.authId.toString, cookie.clientId)
           record <- router.getConversation(cookie.authId)
           response <- record match
             case None => formService.renderExpired(cookie.clientId, cookie.redirectUri, cookie.state)
@@ -94,6 +95,7 @@ object ConversationController extends Controller:
       (for
         router  <- ZIO.service[ConversationRouter]
         cookie  <- extractCookie(request)
+        _       <- Observability.setAuth(cookie.authId.toString, cookie.clientId)
         options <- router.startPasskeyOptions(cookie.authId).someOrFail(Error.BadRequest)
       yield Response.json(options),
       ).catchAll {
@@ -124,6 +126,11 @@ object ConversationController extends Controller:
         router <- ZIO.service[ConversationRouter]
         conversationRenderService <- ZIO.service[ConversationRenderService]
         cookie <- extractCookie(request)
+        _ <- Observability.setAuth(cookie.authId.toString, cookie.clientId)
+        ipHeader <- ZIO.serviceWithZIO[OAuthConfigurationService](_.getIpHeader(cookie.clientId))
+        ip = extractIp(request, ipHeader)
+        _ <- ZIO.foreachDiscard(ip)(Observability.setIp)
+
         body <- request.formAs[Body]
           .tapError(msg => ZIO.logWarning(s"Couldn't parse request body: $msg"))
           .orElseFail(Error.BadRequest)
@@ -133,8 +140,7 @@ object ConversationController extends Controller:
           .tapError(msg => ZIO.logWarning(s"Request validation failed: $msg"))
 
         uiLocale <- request.queryZIO[Option[String]]("ui_locale")
-        ipHeader <- ZIO.serviceWithZIO[OAuthConfigurationService](_.getIpHeader(cookie.clientId))
-        (result, record) <- router.submit(cookie.authId, body, uiLocale, extractIp(request, ipHeader))
+        (result, record) <- router.submit(cookie.authId, body, uiLocale, ip)
         response <- conversationRenderService.renderSubmit(result, record)
       yield response)
         .catchAll {

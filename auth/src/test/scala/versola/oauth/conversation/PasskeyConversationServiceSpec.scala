@@ -303,7 +303,7 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
           env.webAuthnService.finishAssertion.calls.isEmpty,
         )
       },
-      test("return IllegalState when passkey login is not enabled for the client") {
+      test("return BadRequest when passkey login is not enabled for the client") {
         val env = Env()
         val record = baseRecord.copy(
           authFlow = AuthFlow.default,
@@ -311,7 +311,7 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
         )
         for
           result <- env.service.finishPasskeyAssertion(authId, record, "response-json", None)
-        yield assertTrue(result == ConversationResult.IllegalState)
+        yield assertTrue(result == ConversationResult.BadRequest)
       }
     ),
     suite("offerPasskeyEnroll")(

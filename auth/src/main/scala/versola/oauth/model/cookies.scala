@@ -41,6 +41,19 @@ object ConversationCookie:
       sameSite = Some(Cookie.SameSite.Lax),
     )
 
+  /** Cookie that instructs the browser to drop the current conversation cookie. */
+  def expired: Cookie.Response =
+    Cookie.Response(
+      name = name,
+      content = "",
+      domain = None,
+      path = Some(Path.root / "challenge"),
+      isSecure = true,
+      isHttpOnly = true,
+      maxAge = Some(Duration.Zero),
+      sameSite = Some(Cookie.SameSite.Lax),
+    )
+
   /** Parses and HMAC-verifies a cookie produced by [[responseCookie]].
    *  Returns [[Left]] if the content is malformed or the signature does not match.
    */

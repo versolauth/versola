@@ -207,11 +207,12 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
       },
     ),
     suite("checkPassword")(
-      test("return IllegalState when record has no userId") {
+      test("return AccessDenied when record has no userId") {
         val env = Env()
         for
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
           result <- env.service.checkPassword(baseRecord, passwordStep, password, authId)
-        yield assertTrue(result == ConversationResult.IllegalState)
+        yield assertTrue(result == ConversationResult.RenderStep(ConversationStep.AccessDenied))
       },
       test("return AccessDenied when banned") {
         val env = Env()
@@ -324,11 +325,11 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
       },
     ),
     suite("checkLoginPassword")(
-      test("return IllegalState when step is not Credential") {
+      test("return BadRequest when step is not Credential") {
         val env = Env()
         for
           result <- env.service.checkLoginPassword(authId, passwordRecord, login, password)
-        yield assertTrue(result == ConversationResult.IllegalState)
+        yield assertTrue(result == ConversationResult.BadRequest)
       },
       test("record failure against login and re-render loginFailed when user not found") {
         val env = Env()

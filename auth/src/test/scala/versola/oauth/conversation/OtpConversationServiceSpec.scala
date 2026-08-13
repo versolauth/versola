@@ -270,7 +270,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           env.otpService.sendOtp.calls.isEmpty,
         )
       },
-      test("return IllegalState when overwrite fails due to optimistic concurrency conflict") {
+      test("return WriteConflict when overwrite fails due to optimistic concurrency conflict") {
         val env = Env()
         for
           _ <- env.submissionLimiter.statusFor.succeedsWith(LimitStatus.Allowed)
@@ -279,7 +279,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           _ <- env.otpService.prepareOtp.succeedsWith(realOtp)
           _ <- env.conversationRepository.overwrite.succeedsWith(false)
           result <- env.service.prepareInitialOtp(authId, initialConversation, Left(email), factorIndex = 0)
-        yield assertTrue(result == ConversationResult.IllegalState)
+        yield assertTrue(result == ConversationResult.WriteConflict)
       },
     ),
     suite("checkOtp")(

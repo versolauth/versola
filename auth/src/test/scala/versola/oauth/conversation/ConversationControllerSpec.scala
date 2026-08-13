@@ -175,6 +175,7 @@ object ConversationControllerSpec extends UnitSpecBase:
           )
         )
         _ <- configuration.getPasswordRegex.succeedsWith(passwordRegex)
+        _ <- configuration.getIpHeader.succeedsWith("X-Real-IP")
 
         response <- client.batched(request)
         submitCalls = router.submit.calls

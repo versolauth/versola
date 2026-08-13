@@ -1,10 +1,11 @@
 package versola.oauth.revoke
 
+import versola.oauth.client.model.ClientIdWithSecret
 import versola.oauth.jwks.JwksService
 import versola.oauth.model.{AccessTokenPayload, RefreshToken}
 import versola.oauth.revoke.model.{RevocationError, RevocationErrorResponse}
-import versola.util.http.{Controller, extractCredentials}
-import versola.util.{CoreConfig, FormDecoder, JWT}
+import versola.util.http.{Controller, Observability, extractCredentials}
+import versola.util.{Base64, CoreConfig, FormDecoder, JWT}
 import zio.*
 import zio.http.*
 import zio.json.*
@@ -29,28 +30,45 @@ object RevocationController extends Controller:
         publicKeys <- ZIO.serviceWithZIO[JwksService](_.getPublicKeys)
         form <- request.body.asURLEncodedForm.orElseFail(RevocationError.InvalidClient)
         credentials <- request.extractCredentials(form).orElseFail(RevocationError.InvalidClient)
+        _ <- credentials match
+          case ClientIdWithSecret(clientId, _) => Observability.setClientId(clientId)
 
         token <- tokenDecoder.decode(form)
           .orElseFail(RevocationError.InvalidClient)
 
         _ <- token match
           case Right(accessToken) =>
-            JWT.deserialize[AccessTokenPayload](accessToken, publicKeys, JWT.Type.AccessToken)
-              .flatMap(revocationService.revokeAccessToken(_, credentials))
-              .catchSome {
-                case _: RevocationError => ZIO.unit
-                case _: JWT.Error => ZIO.unit
-              }
+            Observability.setRouteLabel("token_type", "access") *>
+              JWT.deserialize[AccessTokenPayload](accessToken, publicKeys, JWT.Type.AccessToken)
+                .tap(payload =>
+                  Observability.setToken(payload.id.encoded) *>
+                    ZIO.foreachDiscard(payload.userId)(uid => Observability.setUserId(uid.toString)),
+                )
+                .flatMap(revocationService.revokeAccessToken(_, credentials))
+                .catchSome {
+                  case error: RevocationError =>
+                    val response = RevocationErrorResponse.fromError(error)
+                    Observability.setError(response.error, response.errorDescription)
+                  case _: JWT.Error =>
+                    Observability.setError("invalid_token", Some("The presented access token could not be verified"))
+                }
 
           case Left(refreshToken) =>
-            revocationService.revokeRefreshToken(refreshToken, credentials)
-              .catchSome { case _: RevocationError => ZIO.unit }
+            Observability.setRouteLabel("token_type", "refresh") *>
+              Observability.setRefreshToken(Base64.urlEncode(refreshToken)) *>
+              revocationService.revokeRefreshToken(refreshToken, credentials)
+                .catchSome {
+                  case error: RevocationError =>
+                    val response = RevocationErrorResponse.fromError(error)
+                    Observability.setError(response.error, response.errorDescription)
+                }
       yield Response.ok)
         .catchAll {
           case error: RevocationError =>
-            ZIO.succeed:
+            val response = RevocationErrorResponse.fromError(error)
+            Observability.setError(response.error, response.errorDescription).as:
               Response
-                .json(RevocationErrorResponse.fromError(error).toJson)
+                .json(response.toJson)
                 .status(error.status)
           case _: JWT.Error =>
             ZIO.succeed(Response.ok)

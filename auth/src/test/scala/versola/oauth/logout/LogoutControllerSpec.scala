@@ -169,11 +169,13 @@ object LogoutControllerSpec extends UnitSpecBase:
       description = "POST /logout with a valid csrf_token logs out the session and clears the cookie",
       request = postWithCsrf(csrfToken(rawSessionId)),
       expectedStatus = Status.Ok,
-      setup = (logoutService, renderService, _) =>
-        logoutService.logout.succeedsWith(logoutResult) *>
+        setup = (logoutService, renderService, sessionService) =>
+          sessionService.find.succeedsWith(Some(sessionInfo)) *>
+            logoutService.logout.succeedsWith(logoutResult) *>
           renderService.renderLogout.succeedsWith(Response.text("<html>logout</html>")),
-      verify = (response, logoutService, _, _) =>
+        verify = (response, logoutService, _, sessionService) =>
         ZIO.succeed(assertTrue(
+            sessionService.find.calls === List(rawSessionId),
           logoutService.logout.calls === List((Right(rawSessionId), None, None)),
           response.headers.get(Header.SetCookie).exists { h =>
             h.renderedValue.contains(SessionCookie.name) && h.renderedValue.contains("Max-Age=0")
@@ -224,8 +226,8 @@ object LogoutControllerSpec extends UnitSpecBase:
       description = "resolves identifier from id_token_hint when no session cookie is present",
       request = Request.get((URL.root / "logout").addQueryParam("id_token_hint", idTokenHint())),
       expectedStatus = Status.Ok,
-      setup = (logoutService, renderService, _) =>
-        logoutService.logout.succeedsWith(logoutResult) *>
+        setup = (logoutService, renderService, _) =>
+          logoutService.logout.succeedsWith(logoutResult) *>
           renderService.renderLogout.succeedsWith(Response.text("<html>logout</html>")),
       verify = (_, logoutService, _, _) =>
         ZIO.succeed(assertTrue(logoutService.logout.calls === List((Left(publicSessionId), None, None)))),
@@ -288,8 +290,8 @@ object LogoutControllerSpec extends UnitSpecBase:
       request = Request.get((URL.root / "logout").addQueryParam("id_token_hint", idTokenHint()))
         .addHeader(malformedSessionCookieHeader),
       expectedStatus = Status.Ok,
-      setup = (logoutService, renderService, _) =>
-        logoutService.logout.succeedsWith(logoutResult) *>
+        setup = (logoutService, renderService, _) =>
+          logoutService.logout.succeedsWith(logoutResult) *>
           renderService.renderLogout.succeedsWith(Response.text("<html>logout</html>")),
       verify = (_, logoutService, _, sessionService) =>
         ZIO.succeed(assertTrue(
@@ -338,8 +340,9 @@ object LogoutControllerSpec extends UnitSpecBase:
         )),
       ).addHeader(sessionCookieHeader()),
       expectedStatus = Status.Ok,
-      setup = (logoutService, renderService, _) =>
-        logoutService.logout.succeedsWith(logoutResult) *>
+        setup = (logoutService, renderService, sessionService) =>
+          sessionService.find.succeedsWith(Some(sessionInfo)) *>
+            logoutService.logout.succeedsWith(logoutResult) *>
           renderService.renderLogout.succeedsWith(Response.text("<html>logout</html>")),
       verify = (_, logoutService, _, _) =>
         ZIO.succeed(assertTrue(
@@ -353,8 +356,9 @@ object LogoutControllerSpec extends UnitSpecBase:
         Body.fromURLEncodedForm(Form.fromStrings("csrf_token" -> csrfToken(rawSessionId))),
       ).addHeader(sessionCookieHeader()),
       expectedStatus = Status.Ok,
-      setup = (logoutService, renderService, _) =>
-        logoutService.logout.succeedsWith(logoutResult) *>
+        setup = (logoutService, renderService, sessionService) =>
+          sessionService.find.succeedsWith(Some(sessionInfo)) *>
+            logoutService.logout.succeedsWith(logoutResult) *>
           renderService.renderLogout.succeedsWith(Response.text("<html>logout</html>")),
       verify = (_, logoutService, _, _) =>
         ZIO.succeed(assertTrue(

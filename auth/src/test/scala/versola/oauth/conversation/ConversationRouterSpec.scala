@@ -277,13 +277,13 @@ object ConversationRouterSpec extends UnitSpecBase:
           finishTimes == 1,
         )
       },
-      test("return NotFound when the submission does not match the current step") {
+      test("return BadRequest when the submission does not match the current step") {
         val env = Env()
         val submission = OtpSubmission(otpCode, "test-csrf")
         for
           _ <- env.otpConversationService.find.succeedsWith(Some(initialRecord))
           (result, _) <- env.router.submit(authId, submission, None, None)
-        yield assertTrue(result == ConversationResult.NotFound)
+        yield assertTrue(result == ConversationResult.BadRequest)
       },
       test("skip OTP factor and finish when passkey satisfies it via equivalents") {
         val env = Env()
