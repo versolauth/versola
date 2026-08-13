@@ -247,6 +247,7 @@ object VersolaApp:
               formats.traceIdLabel,
               logAnnotation(Observability.receiveHttp),
               logAnnotation(Observability.sendHttp),
+              logAnnotation(Observability.auth),
               label("logger", LoggerNameExtractor.loggerNameAnnotationOrTrace.toLogFormat()),
             ).reduce(_ |-| _),
         )

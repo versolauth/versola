@@ -22,6 +22,7 @@ object ObservabilitySpec extends ZIOSpecDefault:
       stack_trace: Option[String] = None,
   ) derives JsonDecoder
 
+  @jsonMemberNames(SnakeCase)
   private case class ClientLoggedRequest(
       path: String,
       queryParams: List[String],
@@ -53,6 +54,15 @@ object ObservabilitySpec extends ZIOSpecDefault:
       logAnnotation(Observability.sendHttp),
     ).reduce(_ |-| _)
 
+  private case class LoggedAuth(id: Option[String] = None) derives JsonDecoder
+  private case class AuthLoggedEntry(message: String, auth: Option[LoggedAuth] = None) derives JsonDecoder
+
+  private val authLogFormat =
+    List(
+      label("message", quoted(line)),
+      logAnnotation(Observability.auth),
+    ).reduce(_ |-| _)
+
   private val tracingLayer: ULayer[Tracing] =
     ZLayer.make[Tracing](
       Tracing.live(logAnnotated = false),
@@ -69,6 +79,12 @@ object ObservabilitySpec extends ZIOSpecDefault:
         Routes(
           Method.GET / "ok" -> Handler.fromResponse(Response.text("ok")),
           Method.GET / "boom" -> Handler.fromFunctionZIO[Request](_ => ZIO.fail(new RuntimeException("boom"))),
+          Method.GET / "auth" -> Handler.fromFunctionZIO[Request] { _ =>
+            Observability.setAuthId("auth-1") *> ZIO.logInfo("in-handler").as(Response.text("ok"))
+          },
+          Method.GET / "labeled" -> Handler.fromFunctionZIO[Request] { _ =>
+            Observability.setRouteLabel("grant_type", "client_credentials").as(Response.text("ok"))
+          },
         ),
       ),
     )
@@ -138,6 +154,26 @@ object ObservabilitySpec extends ZIOSpecDefault:
         rendered.stack_trace.exists(_.contains("RuntimeException: boom")),
       )
     }.provideSomeLayer[Scope](testLayer) @@ TestAspect.silentLogging,
+    test("annotates every log line of a request with its auth details, without leaking into the next one") {
+      for
+        env <- tracingLayer.build
+        _ <- TestClient.addRoutes(routes.provideEnvironment(env))
+        client <- ZIO.service[Client]
+        _ <- client.batched(Request.get(URL.empty / "auth"))
+        _ <- client.batched(Request.get(URL.empty / "ok"))
+        logs <- ZTestLogger.logOutput
+        rendered <- ZIO.foreach(logs.filter(log => log.message() == "in-handler" || log.message() == "receive-http")) { rawLog =>
+          ZIO.fromEither(rawLog.call(authLogFormat.toJsonLogger).fromJson[AuthLoggedEntry])
+            .mapError(new RuntimeException(_))
+        }
+      yield assertTrue(
+        rendered.map(entry => entry.message -> entry.auth.flatMap(_.id)) == Chunk(
+          "in-handler" -> Some("auth-1"),
+          "receive-http" -> Some("auth-1"),
+          "receive-http" -> None,
+        ),
+      )
+    }.provideSomeLayer[Scope](testLayer) @@ TestAspect.silentLogging,
     suite("server metrics")(
       test("records counter and histogram for successful requests") {
         val counterTags = Set(
@@ -194,6 +230,24 @@ object ObservabilitySpec extends ZIOSpecDefault:
           _ <- TestClient.addRoutes(proxyRoutes.provideEnvironment(env))
           client <- ZIO.service[Client]
           response <- client.batched(Request.get(URL.empty / "resources" / "myalias" / "extra"))
+          requests <- counterCount(tags)
+        yield assertTrue(
+          response.status == Status.Ok,
+          requests >= 1.0,
+        )
+      }.provideSomeLayer[Scope](testLayer) @@ TestAspect.silentLogging,
+      test("appends the route label set mid-handler to the route metric label") {
+        val tags = Set(
+          MetricLabel("method", "GET"),
+          MetricLabel("route", "labeled?grant_type=client_credentials"),
+          MetricLabel("status", "200"),
+          MetricLabel("status_class", "2xx"),
+        )
+        for
+          env <- tracingLayer.build
+          _ <- TestClient.addRoutes(routes.provideEnvironment(env))
+          client <- ZIO.service[Client]
+          response <- client.batched(Request.get(URL.empty / "labeled"))
           requests <- counterCount(tags)
         yield assertTrue(
           response.status == Status.Ok,

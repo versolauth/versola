@@ -4,6 +4,7 @@ import versola.edge.login.{LoginRecord, LoginRepository}
 import versola.edge.model.{AccessToken, AccessTokenClaims, AccessTokenId, AuthConversationNotFound, AuthorizationPreset, ClientId, Code, CodeVerifier, InjectRule, InjectTarget, InvalidLogoutToken, PermissionId, PresetId, PresetNotFound, RefreshToken, Resource, ResourceEndpoint, ResourceEndpointId, ResourceId, RoleId, SessionId, State, TenantId, TokenResponse}
 import versola.edge.session.{EdgeSessionRecord, EdgeSessionRepository}
 import versola.util.cel.CelEvaluator
+import versola.util.http.Observability
 import versola.util.{Base64, Base64Url, JWT, JsonJava, RedirectUri, Secret, SecureRandom, SecurityService}
 import zio.http.{Body, Client, Cookie, Header, MediaType, Path, Request, Response, Status, URL}
 import zio.json.ast.Json
@@ -217,6 +218,7 @@ object EdgeService:
       for
         now <- Clock.instant
         ids <- extractTokenIds(tokens)
+        _ <- ZIO.foreachDiscard(tokens.refreshToken)(Observability.setRefreshToken)
         encryptedRefreshToken <- ZIO.foreach(tokens.refreshToken)(encryptRefreshToken)
         _ <- sessionRepository.create(
           EdgeSessionRecord(
@@ -359,6 +361,7 @@ object EdgeService:
             },
             claims => ZIO.succeed(ActiveSession(accessToken, claims, None)),
           )
+        _ <- logAccessTokenClaims(session.claims)
 
         resource <- resourceService.findByResourceId(resourceId).someOrFail(Outcome.NotFound)
         endpoint <- findEndpoint(resource.endpoints, request.method.name, restPath)
@@ -396,6 +399,21 @@ object EdgeService:
             },
           ),
       ).orElseFail(Outcome.Unauthorized)
+
+    /** Best-effort: annotates the request's `session_id`/`user_id`/`token` as soon as the
+      * access token's claims are known, so every subsequent log line (including one from
+      * [[checkPermissions]] failing) carries them. Decode failures are swallowed here since
+      * [[checkPermissions]] re-validates the same claims and turns a failure into
+      * `Outcome.Unauthorized`.
+      */
+    private def logAccessTokenClaims(claims: Json.Obj): UIO[Unit] =
+      claims.as[AccessTokenClaims].fold(
+        _ => ZIO.unit,
+        typed =>
+          Observability.setToken(typed.jti) *>
+            Observability.setUserId(typed.subject) *>
+            ZIO.foreachDiscard(typed.sid)(Observability.setSessionId),
+      )
 
     private def checkPermissions(
         claims: Json.Obj,
@@ -516,6 +534,7 @@ object EdgeService:
     ): IO[Throwable | Outcome, ActiveSession] =
       val refreshed =
         for
+          _ <- Observability.setPreviousRefreshToken(refreshToken)
           client <- clientService.findClient(preset.clientId).someOrFail(ClientNotFound(preset.clientId))
           tokens <- ssoClient.exchangeRefreshToken(refreshToken, client.id, client.secret)
           cookieTtl = Duration.fromSeconds(tokens.refreshTokenExpiresIn.getOrElse(tokens.expiresIn))

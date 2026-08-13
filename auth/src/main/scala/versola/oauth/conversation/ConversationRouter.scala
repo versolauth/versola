@@ -1,10 +1,12 @@
 package versola.oauth.conversation
 
+import versola.oauth.AuthMetrics
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{AuthFactor, AuthFactorType, OtpType, PassedAuthFactor}
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep, Error}
+import versola.util.http.Observability
 import versola.util.{Email, Phone, SecureRandom}
-import zio.{Task, ZIO, ZLayer}
+import zio.{Task, UIO, ZIO, ZLayer}
 
 trait ConversationRouter:
   def getConversation(authId: AuthId): Task[Option[ConversationRecord]]
@@ -38,8 +40,17 @@ object ConversationRouter:
       secureRandom: SecureRandom,
   ) extends ConversationRouter:
 
+    /** Sets `auth.user_id` and `auth.user_agent_id` as soon as an already-identified conversation
+      * is fetched, so every log line for the rest of this request carries them — even when this
+      * request's own processing (e.g. an OTP check) never itself discovers them. Both are set at
+      * `/authorize`, but each `/challenge` request starts from a fresh annotation context. */
+    private def setIdentifiersFromRecord(record: Option[ConversationRecord]): UIO[Unit] =
+      ZIO.foreachDiscard(record.flatMap(_.userId))(uid => Observability.setUserId(uid.toString)) *>
+        ZIO.foreachDiscard(record.flatMap(_.userAgentCookie))(cookie => Observability.setUserAgentId(cookie.id.toString))
+
     override def getConversation(authId: AuthId): Task[Option[ConversationRecord]] =
       conversationService.find(authId).orElseFail(Error.ServiceUnavailable)
+        .tap(setIdentifiersFromRecord)
 
     override def advance(authId: AuthId, conversation: ConversationRecord): Task[Unit] =
       afterFactor(authId, conversation, nextFactorIndex = 0).unit
@@ -47,6 +58,7 @@ object ConversationRouter:
     override def startPasskeyOptions(authId: AuthId): Task[Option[String]] =
       conversationService.find(authId)
         .orElseFail(Error.ServiceUnavailable)
+        .tap(setIdentifiersFromRecord)
         .flatMap:
           case None => ZIO.fail(Error.ConversationExpired)
           case Some(record) =>
@@ -68,17 +80,19 @@ object ConversationRouter:
         uiLocale: Option[String],
         ipAddress: Option[String],
     ): Task[(ConversationResult.Render, ConversationRecord)] =
-      conversationService.find(authId).orElseFail(Error.ServiceUnavailable).flatMap:
-        case None => ZIO.fail(Error.ConversationExpired)
-        case Some(conversation) =>
-          if submission.csrf != conversation.csrfToken then
-            ZIO.fail(Error.BadRequest)
-          else
-            val updated = withUiLocale(conversation, uiLocale)
-            dispatch(authId, updated, submission, ipAddress)
-              .tapErrorCause(cause => ZIO.logErrorCause("Couldn't submit auth step", cause))
-              .orElseSucceed(ConversationResult.ServiceUnavailable)
-              .map(_ -> updated)
+      conversationService.find(authId).orElseFail(Error.ServiceUnavailable)
+        .tap(setIdentifiersFromRecord)
+        .flatMap:
+          case None => ZIO.fail(Error.ConversationExpired)
+          case Some(conversation) =>
+            if submission.csrf != conversation.csrfToken then
+              ZIO.fail(Error.BadRequest)
+            else
+              val updated = withUiLocale(conversation, uiLocale)
+              dispatch(authId, updated, submission, ipAddress)
+                .tapErrorCause(cause => ZIO.logErrorCause("Couldn't submit auth step", cause))
+                .orElseSucceed(ConversationResult.ServiceUnavailable)
+                .map(_ -> updated)
 
     private def dispatch(
         authId: AuthId,
@@ -88,16 +102,18 @@ object ConversationRouter:
     ): Task[ConversationResult.Render] =
       (submission, conversation) match
         case (_: EmailSubmission | _: PhoneSubmission, _) if conversation.userId.isDefined =>
-          conversationService.accessDenied(authId, conversation)
+          conversationService.accessDenied(authId, conversation).zipLeft(AuthMetrics.stepFailed("credential"))
 
         case (submitted: EmailSubmission, _) =>
-          afterCredential(authId, conversation, Left(submitted.email))
+          afterCredential(authId, conversation, Left(submitted.email)).tap(observeCredential)
 
         case (submitted: PhoneSubmission, _) =>
-          afterCredential(authId, conversation, Right(submitted.phone))
+          afterCredential(authId, conversation, Right(submitted.phone)).tap(observeCredential)
 
         case (submitted: OtpSubmission, ConversationRecord.Otp(otp, _)) =>
-          conversationService.checkOtp(conversation, otp, submitted.code, authId).flatMap:
+          conversationService.checkOtp(conversation, otp, submitted.code, authId)
+            .tap(observeDecision("otp"))
+            .flatMap:
             case ConversationResult.StepPassed(updated) =>
               afterFactor(authId, updated, otp.factorIndex + 1)
             case other: ConversationResult.Render =>
@@ -107,14 +123,18 @@ object ConversationRouter:
           conversationService.prepareInitialOtp(authId, conversation, credential, otp.factorIndex)
 
         case (submitted: PasswordSubmission, ConversationRecord.Password(password)) =>
-          conversationService.checkPassword(conversation, password, submitted.password, authId).flatMap:
+          conversationService.checkPassword(conversation, password, submitted.password, authId)
+            .tap(observeDecision("password"))
+            .flatMap:
             case ConversationResult.StepPassed(updated) =>
               afterFactor(authId, updated, password.factorIndex + 1)
             case other: ConversationResult.Render =>
               ZIO.succeed(other)
 
         case (submitted: LoginPasswordSubmission, _) =>
-          conversationService.checkLoginPassword(authId, conversation, submitted.login, submitted.password).flatMap:
+          conversationService.checkLoginPassword(authId, conversation, submitted.login, submitted.password)
+            .tap(observeDecision("credential"))
+            .flatMap:
             case ConversationResult.StepPassed(updated) =>
               afterFactor(authId, updated, nextFactorIndex = 0)
             case other: ConversationResult.Render =>
@@ -122,30 +142,30 @@ object ConversationRouter:
 
         case (submitted: PasskeyAssertionSubmission, _) =>
           conversationService.finishPasskeyAssertion(authId, conversation, submitted.response, ipAddress)
+            .tap(observePasskeyAssertion)
 
-        case (submitted: PasskeyEnrollSubmission, _) =>
-          conversation.step match
-            case enroll: ConversationStep.PasskeyEnroll =>
-              conversationService.finishPasskeyEnroll(authId, conversation, enroll, submitted.response, submitted.name)
-            case _ =>
-              ZIO.succeed(ConversationResult.NotFound)
+        case (submitted: PasskeyEnrollSubmission, ConversationRecord.PasskeyEnroll(enroll)) =>
+          conversationService.finishPasskeyEnroll(authId, conversation, enroll, submitted.response, submitted.name)
+            .tap(observePasskeyEnrollment)
 
-        case (_: PasskeySkipSubmission, _) =>
-          conversation.step match
-            case _: ConversationStep.PasskeyEnroll =>
-              conversationService.skipPasskey(authId, conversation)
-            case _ =>
-              ZIO.succeed(ConversationResult.NotFound)
+        case (_: PasskeySkipSubmission, ConversationRecord.PasskeyEnroll(enroll)) =>
+          conversationService.skipPasskey(authId, conversation)
 
         case (submitted: SetPasswordSubmission, ConversationRecord.SetPassword(setPasswordStep)) =>
-          conversationService.setNewPassword(conversation, setPasswordStep, submitted.password, authId).flatMap:
+          conversationService.setNewPassword(conversation, setPasswordStep, submitted.password, authId)
+            .tap(observeDecision("set_password"))
+            .flatMap:
             case ConversationResult.StepPassed(updated) =>
               afterFactor(authId, updated, setPasswordStep.factorIndex + 1)
             case other: ConversationResult.Render =>
               ZIO.succeed(other)
 
         case _ =>
-          ZIO.succeed(ConversationResult.NotFound)
+          // Submission doesn't match the conversation's current step, e.g. a stale form
+          // (browser back/forward, double submit) or a tampered request.
+          (Observability.setError("step_mismatch") *>
+            AuthMetrics.stepFailed(stepName(conversation.step)))
+            .as(ConversationResult.BadRequest)
 
     /** Promote the locale the user picked in the form to the front of the conversation's preferred
       * locales, so every subsequent render keeps it. Applied in-memory before dispatch — it is
@@ -178,7 +198,10 @@ object ConversationRouter:
           conversationService.prepareInitialPassword(authId, conversation, credential, factorIndex = idx)
 
         case Some((AuthFactor(AuthFactorType.passkeyEnroll, _), _)) =>
-          ZIO.succeed(ConversationResult.IllegalState)
+          // passkeyEnroll configured as a primary factor is a tenant configuration bug -- it's
+          // only ever offered after all primary factors pass, never as one itself.
+          Observability.setError("illegal_state", Some("passkeyEnroll configured as primary factor")) *>
+            conversationService.accessDenied(authId, conversation)
 
         case None =>
           conversationService.finish(authId, conversation)
@@ -231,3 +254,41 @@ object ConversationRouter:
         val needed = factor.required || PassedAuthFactor.fromFactorType(factor.`type`).exists(reqFactors.contains)
         !passed && needed
       }
+
+    private def observeCredential(result: ConversationResult.Render): UIO[Unit] =
+      result match
+        case ConversationResult.BadRequest | ConversationResult.WriteConflict | ConversationResult.ServiceUnavailable |
+            ConversationResult.RenderStep(ConversationStep.AccessDenied) =>
+          AuthMetrics.stepFailed("credential")
+        case _ =>
+          AuthMetrics.stepPassed("credential")
+
+    private def observeDecision(step: String)(result: ConversationResult): UIO[Unit] =
+      result match
+        case ConversationResult.StepPassed(_) => AuthMetrics.stepPassed(step)
+        case _ => AuthMetrics.stepFailed(step)
+
+    private def observePasskeyAssertion(result: ConversationResult.Render): UIO[Unit] =
+      result match
+        case ConversationResult.Complete(_, _, _, _, _, _, _) |
+            ConversationResult.RenderStep(_: ConversationStep.PasskeyEnroll) =>
+          AuthMetrics.stepPassed("passkey")
+        case _ =>
+          AuthMetrics.stepFailed("passkey")
+
+    private def observePasskeyEnrollment(result: ConversationResult.Render): UIO[Unit] =
+      result match
+        case ConversationResult.Complete(_, _, _, _, _, _, _) => AuthMetrics.stepPassed("passkey_enroll")
+        case ConversationResult.RenderStep(step: ConversationStep.PasskeyEnroll) if !step.enrollFailed =>
+          AuthMetrics.stepPassed("passkey_enroll")
+        case _ =>
+          AuthMetrics.stepFailed("passkey_enroll")
+
+    private def stepName(step: ConversationStep): String =
+      step match
+        case _: ConversationStep.Credential => "credential"
+        case _: ConversationStep.Otp => "otp"
+        case _: ConversationStep.Password => "password"
+        case _: ConversationStep.SetPassword => "set_password"
+        case _: ConversationStep.PasskeyEnroll => "passkey_enroll"
+        case ConversationStep.AccessDenied => "access_denied"

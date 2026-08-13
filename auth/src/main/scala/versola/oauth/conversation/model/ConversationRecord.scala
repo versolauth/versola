@@ -91,3 +91,9 @@ object ConversationRecord:
       record.step match
         case step: ConversationStep.SetPassword => Some(step)
         case _ => None
+
+  object PasskeyEnroll:
+    def unapply(record: ConversationRecord): Option[ConversationStep.PasskeyEnroll] =
+      record.step match
+        case step: ConversationStep.PasskeyEnroll => Some(step)
+        case _ => None
