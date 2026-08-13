@@ -43,7 +43,11 @@ object PushedAuthorizationController extends Controller:
   val parMethodNotAllowed =
     Method.ANY / "par" -> handler { (request: Request) =>
       if request.method == Method.POST then ZIO.succeed(Response.notFound)
-      else ZIO.succeed(errorResponse(PushedAuthorizationError.MethodNotAllowed))
+      else ZIO.succeed(
+        // RFC 9110 §15.5.6: a 405 response must list the methods the target resource supports.
+        errorResponse(PushedAuthorizationError.MethodNotAllowed)
+          .addHeader(Header.Allow(NonEmptyChunk(Method.POST)))
+      )
     }
 
   /** RFC 9126 §2.3: an oversized pushed request is rejected with 413 before it is parsed.

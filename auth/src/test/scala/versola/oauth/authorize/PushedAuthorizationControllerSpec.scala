@@ -168,5 +168,12 @@ object PushedAuthorizationControllerSpec extends UnitSpecBase:
         request = Request.put(URL.empty / "par", Body.empty),
         expectedStatus = Status.MethodNotAllowed,
       ),
+      controllerTestCase(
+        description = "includes an Allow: POST header on 405",
+        request = Request.get(URL.empty / "par"),
+        expectedStatus = Status.MethodNotAllowed,
+        verify = response =>
+          ZIO.succeed(assertTrue(response.header(Header.Allow).contains(Header.Allow(NonEmptyChunk(Method.POST))))),
+      ),
     ),
   )
