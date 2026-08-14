@@ -1,0 +1,287 @@
+openapi: 3.1.0
+info:
+  title: Versola Auth — Token Endpoint
+  version: 1.0.0
+  description: |
+    OAuth 2.1 token endpoint. Issues access tokens, and — for the `openid` scope — ID tokens.
+
+    Three grant types are supported: `authorization_code`, `refresh_token` and
+    `client_credentials`. The grant is selected by the `grant_type` field, which determines
+    which of the remaining fields are read.
+  license:
+    name: Business Source License 1.1
+    url: https://github.com/versolauth/versola/blob/main/LICENCE.md
+
+servers:
+  - url: https://auth.example.com
+    description: Auth service issuer origin
+
+paths:
+  /token:
+    post:
+      operationId: token
+      summary: Exchange a grant for tokens
+      description: |
+        Clients authenticate with `client_secret_basic` (HTTP Basic) or `client_secret_post`
+        (`client_id` / `client_secret` form fields). Only one method may be used per request.
+        A public client sends `client_id` with no secret.
+      tags: [Token]
+      security:
+        - clientSecretBasic: []
+        - clientSecretPost: []
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              oneOf:
+                - $ref: '#/components/schemas/AuthorizationCodeGrant'
+                - $ref: '#/components/schemas/RefreshTokenGrant'
+                - $ref: '#/components/schemas/ClientCredentialsGrant'
+              discriminator:
+                propertyName: grant_type
+                mapping:
+                  authorization_code: '#/components/schemas/AuthorizationCodeGrant'
+                  refresh_token: '#/components/schemas/RefreshTokenGrant'
+                  client_credentials: '#/components/schemas/ClientCredentialsGrant'
+            examples:
+              authorizationCode:
+                summary: Authorization code exchange
+                value:
+                  grant_type: authorization_code
+                  code: SplxlOBeZQQYbYS6WxSbIA
+                  redirect_uri: https://app.example.com/callback
+                  code_verifier: dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk
+              refreshToken:
+                summary: Refresh
+                value:
+                  grant_type: refresh_token
+                  refresh_token: tGzv3JOkF0XG5Qx2TlKWIA
+                  scope: openid profile
+              clientCredentials:
+                summary: Machine-to-machine
+                value:
+                  grant_type: client_credentials
+                  scope: api:read
+                  resource: [https://api.example.com]
+      responses:
+        '200':
+          $ref: '#/components/responses/Tokens'
+        '400':
+          $ref: '#/components/responses/TokenError'
+        '401':
+          $ref: '#/components/responses/InvalidClient'
+
+components:
+  securitySchemes:
+    clientSecretBasic:
+      type: http
+      scheme: basic
+      description: |
+        `client_secret_basic` — `client_id` as the username, `client_secret` as the password
+        (RFC 6749 §2.3.1). Takes precedence when both methods are present.
+    clientSecretPost:
+      type: apiKey
+      in: cookie
+      name: client_secret
+      description: |
+        `client_secret_post` — `client_id` and `client_secret` sent as form fields. Modelled
+        here as a scheme only because OpenAPI has no dedicated form-credential type; the
+        values belong in the request body.
+
+  schemas:
+    AuthorizationCodeGrant:
+      type: object
+      title: authorization_code
+      description: Exchanges the code returned by `/authorize` for tokens.
+      required: [grant_type, code, redirect_uri, code_verifier]
+      properties:
+        grant_type:
+          type: string
+          const: authorization_code
+        code:
+          type: string
+          description: Authorization code from the `/authorize` redirect. Single-use and short-lived.
+        redirect_uri:
+          type: string
+          format: uri
+          description: Must be identical to the `redirect_uri` of the authorization request.
+        code_verifier:
+          type: string
+          description: PKCE verifier matching the `code_challenge` of the authorization request.
+        client_id:
+          type: string
+          description: Required for `client_secret_post` and for public clients.
+        client_secret:
+          type: string
+          description: Confidential clients using `client_secret_post`.
+
+    RefreshTokenGrant:
+      type: object
+      title: refresh_token
+      description: |
+        Issues a fresh access token. Refresh tokens rotate: the presented token is
+        invalidated and a new one is returned.
+      required: [grant_type, refresh_token]
+      properties:
+        grant_type:
+          type: string
+          const: refresh_token
+        refresh_token:
+          type: string
+        scope:
+          type: string
+          description: |
+            Space-delimited subset of the originally granted scopes. Defaults to the full
+            granted set; requesting anything beyond it fails with `invalid_scope`.
+        resource:
+          type: array
+          items:
+            type: string
+            format: uri
+          description: RFC 8707 resource indicators narrowing the `aud` of the new access token. Repeatable.
+        client_id:
+          type: string
+        client_secret:
+          type: string
+
+    ClientCredentialsGrant:
+      type: object
+      title: client_credentials
+      description: |
+        Machine-to-machine grant. There is no user, so the access token's `sub` is the
+        `client_id`, no refresh token is issued and no ID token is produced.
+      required: [grant_type]
+      properties:
+        grant_type:
+          type: string
+          const: client_credentials
+        scope:
+          type: string
+        resource:
+          type: array
+          items:
+            type: string
+            format: uri
+          description: RFC 8707 resource indicators. Repeatable.
+        client_id:
+          type: string
+        client_secret:
+          type: string
+
+    TokenResponse:
+      type: object
+      required: [access_token, token_type, expires_in]
+      properties:
+        access_token:
+          type: string
+          description: |
+            Signed JWT. Beyond the registered claims it carries `client_id`, `scope`, `jti`,
+            `roles`, `tenant_id`, and — for user-bound tokens — `sid`, `amr`, `auth_time`
+            and `acr`.
+        token_type:
+          type: string
+          const: Bearer
+        expires_in:
+          type: integer
+          format: int64
+          description: Access token lifetime in seconds.
+        refresh_token:
+          type: string
+          description: Present for `authorization_code` and `refresh_token` when the client is allowed to refresh.
+        scope:
+          type: string
+          description: Space-delimited granted scopes. Omitted when empty.
+        id_token:
+          type: string
+          description: |
+            Signed JWT, returned only when the grant is bound to a user and the granted scope
+            contains `openid`. Includes `at_hash`, `sid`, and the claims selected by scope and
+            by the `claims` request parameter.
+
+    TokenErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+          enum:
+            - invalid_request
+            - invalid_client
+            - invalid_grant
+            - unsupported_grant_type
+            - invalid_scope
+            - invalid_target
+        error_description:
+          type: string
+        error_uri:
+          type: string
+          format: uri
+
+  responses:
+    Tokens:
+      description: Tokens issued.
+      headers:
+        Cache-Control:
+          schema:
+            type: string
+            const: no-store
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/TokenResponse'
+          example:
+            access_token: eyJhbGciOiJSUzI1NiIsInR5cCI6ImF0K2p3dCJ9...
+            token_type: Bearer
+            expires_in: 3600
+            refresh_token: tGzv3JOkF0XG5Qx2TlKWIA
+            scope: openid profile email
+            id_token: eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...
+
+    TokenError:
+      description: |
+        - `invalid_request` — a required field is missing or malformed.
+        - `invalid_grant` — the code or refresh token is unknown, expired, already used, bound
+          to a different client or redirect URI, or PKCE verification failed.
+        - `unsupported_grant_type` — `grant_type` is absent or not one of the three supported values.
+        - `invalid_scope` — the requested scope exceeds what was granted.
+        - `invalid_target` — a `resource` value is unknown for the client's tenant.
+      headers:
+        Cache-Control:
+          schema:
+            type: string
+            const: no-store
+        Pragma:
+          schema:
+            type: string
+            const: no-cache
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/TokenErrorResponse'
+          example:
+            error: invalid_grant
+            error_description: Authorization code not found or expired, client_id or redirect_uri not match or PKCE validation failed
+            error_uri: https://datatracker.ietf.org/doc/html/rfc6749#section-5.2
+
+    InvalidClient:
+      description: |
+        `invalid_client` — the client is unknown, credentials were not supplied, more than one
+        authentication method was used, or the secret does not verify.
+      headers:
+        Cache-Control:
+          schema:
+            type: string
+            const: no-store
+        Pragma:
+          schema:
+            type: string
+            const: no-cache
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/TokenErrorResponse'
+          example:
+            error: invalid_client
+            error_description: Client not exists, credentials not provided or otherwise invalid
+            error_uri: https://datatracker.ietf.org/doc/html/rfc6749#section-2.3.1

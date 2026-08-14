@@ -1,0 +1,156 @@
+openapi: 3.1.0
+info:
+  title: Versola Auth — UserInfo Endpoint
+  version: 1.0.0
+  description: |
+    OpenID Connect UserInfo endpoint (OpenID Connect Core §5.3). Returns claims about the user
+    the presented access token was issued for.
+
+    The access token must have been issued with the `openid` scope and must be bound to a
+    user — a `client_credentials` token has no subject and is rejected.
+
+    Which claims appear is determined by the scopes granted at authorization time and by the
+    `claims` request parameter, both of which are carried inside the access token.
+
+    `GET` and `POST` behave identically; `POST` exists for clients that would otherwise have to
+    put the token in a URL.
+  license:
+    name: Business Source License 1.1
+    url: https://github.com/versolauth/versola/blob/main/LICENCE.md
+
+servers:
+  - url: https://auth.example.com
+    description: Auth service issuer origin
+
+paths:
+  /userinfo:
+    get:
+      operationId: userInfoGet
+      summary: Retrieve claims about the authenticated user
+      tags: [UserInfo]
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/Accept'
+      responses:
+        '200':
+          $ref: '#/components/responses/UserInfo'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+    post:
+      operationId: userInfoPost
+      summary: Retrieve claims about the authenticated user
+      tags: [UserInfo]
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/Accept'
+      responses:
+        '200':
+          $ref: '#/components/responses/UserInfo'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        The access token from `/token`, sent as `Authorization: Bearer <token>`. This is the
+        only accepted way to present the token.
+
+  parameters:
+    Accept:
+      name: Accept
+      in: header
+      required: false
+      description: |
+        Send `application/jwt` to receive the claims as a signed JWT instead of a plain JSON
+        object. The signed form is issued for the requesting client and is valid for
+        5 minutes.
+      schema:
+        type: string
+        enum: [application/json, application/jwt]
+        default: application/json
+
+  schemas:
+    UserInfoResponse:
+      type: object
+      description: |
+        Claim set for the user. Only `sub` is always present; the rest depend on the granted
+        scopes (`profile`, `email`, `phone`, `address`) and on the requested claims.
+      required: [sub]
+      additionalProperties: true
+      properties:
+        sub:
+          type: string
+          description: Stable user identifier.
+        name:
+          type: string
+        given_name:
+          type: string
+        family_name:
+          type: string
+        preferred_username:
+          type: string
+        picture:
+          type: string
+          format: uri
+        locale:
+          type: string
+        email:
+          type: string
+          format: email
+        email_verified:
+          type: boolean
+        phone_number:
+          type: string
+        phone_number_verified:
+          type: boolean
+        updated_at:
+          type: integer
+          format: int64
+
+  responses:
+    UserInfo:
+      description: |
+        The user's claims, as a JSON object or — when `Accept: application/jwt` was sent — as a
+        signed JWT whose payload carries the same claims alongside `iss`, `aud`, `sub` and `exp`.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/UserInfoResponse'
+          example:
+            sub: 018f3c6e-5a2b-7c11-9d0e-4f8a2b6c1d33
+            name: Jane Doe
+            given_name: Jane
+            family_name: Doe
+            email: jane@example.com
+            email_verified: true
+        application/jwt:
+          schema:
+            type: string
+          example: eyJhbGciOiJSUzI1NiIsImtpZCI6ImtleS0xIn0...
+
+    Unauthorized:
+      description: |
+        The error is reported in the `WWW-Authenticate` header; the body is empty.
+
+        - `invalid_request` — no `Authorization: Bearer` header was sent.
+        - `invalid_token` — the token failed verification, expired, or is not bound to a user.
+        - `insufficient_scope` — the token was not granted the `openid` scope.
+      headers:
+        WWW-Authenticate:
+          required: true
+          schema:
+            type: string
+          examples:
+            invalidToken:
+              value: Bearer realm="UserInfo", error="invalid_token", error_description="The access token is invalid or expired"
+            insufficientScope:
+              value: Bearer realm="UserInfo", error="insufficient_scope", error_description="The access token does not have sufficient scope"
+            invalidRequest:
+              value: Bearer realm="UserInfo", error="invalid_request", error_description="The request is missing a required parameter or is otherwise malformed"

@@ -1,0 +1,95 @@
+openapi: 3.1.0
+info:
+  title: Versola Auth — JWKS Endpoint
+  version: 1.0.0
+  description: |
+    JSON Web Key Set endpoint (RFC 7517, OpenID Connect Discovery §3). Publishes the public
+    keys that verify the signatures on tokens issued by this server.
+
+    Resource servers fetch this document to validate access tokens and ID tokens offline. The
+    `kid` in a token's JOSE header selects the key to verify it with.
+
+    The set contains the currently active signing key plus any keys still needed to verify
+    tokens issued before the last rotation, so a resource server that caches the document
+    keeps working across a rotation. Only public key material is exposed.
+
+    The response is cacheable for 24 hours. On encountering an unknown `kid`, refetch rather
+    than waiting for the cache to expire.
+  license:
+    name: Business Source License 1.1
+    url: https://github.com/versolauth/versola/blob/main/LICENCE.md
+
+servers:
+  - url: https://auth.example.com
+    description: Auth service issuer origin
+
+paths:
+  /.well-known/jwks.json:
+    get:
+      operationId: jwks
+      summary: Retrieve the JSON Web Key Set
+      description: No authentication required.
+      tags: [Discovery]
+      security: []
+      responses:
+        '200':
+          $ref: '#/components/responses/Jwks'
+
+components:
+  schemas:
+    JsonWebKeySet:
+      type: object
+      required: [keys]
+      properties:
+        keys:
+          type: array
+          items:
+            $ref: '#/components/schemas/JsonWebKey'
+
+    JsonWebKey:
+      type: object
+      required: [kty, kid]
+      additionalProperties: true
+      properties:
+        kty:
+          type: string
+          description: Key type.
+          example: RSA
+        use:
+          type: string
+          description: Intended use; signature verification.
+          const: sig
+        kid:
+          type: string
+          description: Key identifier, matched against the `kid` in a token's JOSE header.
+        alg:
+          type: string
+          description: Signing algorithm the key is used with.
+          example: RS256
+        n:
+          type: string
+          description: RSA modulus, base64url-encoded.
+        e:
+          type: string
+          description: RSA public exponent, base64url-encoded.
+
+  responses:
+    Jwks:
+      description: The current key set.
+      headers:
+        Cache-Control:
+          schema:
+            type: string
+            const: public, max-age=86400
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/JsonWebKeySet'
+          example:
+            keys:
+              - kty: RSA
+                use: sig
+                kid: 2026-08-01
+                alg: RS256
+                n: 0vx7agoebGcQSuuPiLJXZptN9nndrQmbXEps2aiAFbWhM78LhWx4...
+                e: AQAB
