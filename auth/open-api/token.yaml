@@ -24,11 +24,12 @@ paths:
       description: |
         Clients authenticate with `client_secret_basic` (HTTP Basic) or `client_secret_post`
         (`client_id` / `client_secret` form fields). Only one method may be used per request.
-        A public client sends `client_id` with no secret.
+        A public client sends `client_id` with no secret. The empty security requirement below
+        stands for `client_secret_post`, which OpenAPI cannot express as a security scheme.
       tags: [Token]
       security:
         - clientSecretBasic: []
-        - clientSecretPost: []
+        - {}
       requestBody:
         required: true
         content:
@@ -80,14 +81,6 @@ components:
       description: |
         `client_secret_basic` — `client_id` as the username, `client_secret` as the password
         (RFC 6749 §2.3.1). Takes precedence when both methods are present.
-    clientSecretPost:
-      type: apiKey
-      in: cookie
-      name: client_secret
-      description: |
-        `client_secret_post` — `client_id` and `client_secret` sent as form fields. Modelled
-        here as a scheme only because OpenAPI has no dedicated form-credential type; the
-        values belong in the request body.
 
   schemas:
     AuthorizationCodeGrant:
@@ -221,11 +214,6 @@ components:
   responses:
     Tokens:
       description: Tokens issued.
-      headers:
-        Cache-Control:
-          schema:
-            type: string
-            const: no-store
       content:
         application/json:
           schema:

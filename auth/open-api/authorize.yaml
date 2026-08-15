@@ -94,10 +94,11 @@ components:
     RedirectUri:
       name: redirect_uri
       in: query
-      required: true
+      required: false
       description: |
         Absolute URI without a fragment, exactly matching one of the client's registered
-        redirect URIs.
+        redirect URIs. Required unless `request_uri` is used, in which case it comes from the
+        pushed payload.
       schema:
         type: string
         format: uri
@@ -106,10 +107,10 @@ components:
     ResponseType:
       name: response_type
       in: query
-      required: true
+      required: false
       description: |
         `code` for the plain authorization code flow, `code id_token` to additionally receive an
-        ID token in the redirect (OIDC hybrid).
+        ID token in the redirect (OIDC hybrid). Required unless `request_uri` is used.
       schema:
         type: string
         enum: [code, code id_token]
@@ -118,10 +119,10 @@ components:
     Scope:
       name: scope
       in: query
-      required: true
+      required: false
       description: |
         Space-delimited scope tokens. Include `openid` to obtain an ID token from `/token`
-        and to be allowed to call `/userinfo`.
+        and to be allowed to call `/userinfo`. Required unless `request_uri` is used.
       schema:
         type: string
       example: openid profile email
@@ -129,8 +130,10 @@ components:
     CodeChallenge:
       name: code_challenge
       in: query
-      required: true
-      description: PKCE code challenge (RFC 7636 §4.2). Always required.
+      required: false
+      description: |
+        PKCE code challenge (RFC 7636 §4.2). Required unless `request_uri` is used, in which
+        case it comes from the pushed payload.
       schema:
         type: string
         pattern: '^[A-Za-z0-9\-._~]{43,128}$'
@@ -174,10 +177,11 @@ components:
       in: query
       required: false
       description: |
-        Space-delimited list. `none` must not be combined with any other value.
+        Space-delimited list of `none`, `login`, `consent` and `select_account`. `none` must not
+        be combined with any other value; unrecognised values are ignored.
       schema:
         type: string
-        enum: [none, login, consent, select_account]
+      example: login consent
 
     MaxAge:
       name: max_age
@@ -302,7 +306,11 @@ components:
   schemas:
     AuthorizeRequest:
       type: object
-      required: [client_id, redirect_uri, response_type, scope, code_challenge]
+      description: |
+        Only `client_id` is unconditionally required. `redirect_uri`, `response_type`, `scope`
+        and `code_challenge` are required inline, but come from the pushed payload when
+        `request_uri` is used.
+      required: [client_id]
       properties:
         client_id:
           type: string
