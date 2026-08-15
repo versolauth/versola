@@ -71,8 +71,7 @@ trait FormRepositorySpec extends DatabaseSpecBase[FormRepositorySpec.Env]:
           all <- env.repository.getAll
           versions = all.filter(_.id == formId).map(_.version).sorted
         yield assertTrue(versions == Vector(1, 2, 3, 4, 5))
-      },
+      } @@ TestAspect.withLiveClock,
     )
-
 object FormRepositorySpec:
   case class Env(repository: FormRepository)
