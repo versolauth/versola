@@ -86,6 +86,7 @@ COPY docker/versola-tools/compose.fragment.yml.template .
 # gap, not something introduced here; fixed while this file was already
 # being touched.
 COPY docker/versola-tools/proxy_params.conf.template .
+COPY docker/versola-tools/openbao.hcl.template .
 COPY docker/versola-tools/entrypoint.sh .
 RUN chmod +x entrypoint.sh
 

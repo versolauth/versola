@@ -39,5 +39,6 @@ cp .local/env/docker-local/edge.conf    "$OUT_DIR"/edge.conf
 sed "s/\${VERSION}/$VERSION/g" compose.fragment.yml.template > "$OUT_DIR"/compose.fragment.yml
 cp nginx.conf.template "$OUT_DIR"/nginx.conf
 cp proxy_params.conf.template "$OUT_DIR"/proxy_params.conf
+cp openbao.hcl.template "$OUT_DIR"/openbao.hcl
 
-echo "versola-tools: wrote auth.conf, central.conf, edge.conf, compose.fragment.yml, nginx.conf, proxy_params.conf to $OUT_DIR"
+echo "versola-tools: wrote auth.conf, central.conf, edge.conf, compose.fragment.yml, nginx.conf, proxy_params.conf, openbao.hcl to $OUT_DIR"

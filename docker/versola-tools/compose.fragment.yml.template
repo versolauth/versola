@@ -15,6 +15,27 @@
 # so forcing amd64 there would only make it slower for no reason.
 
 services:
+  # Secrets store. Nothing else in this file reads from it yet -- `versola
+  # configure` writing generated secrets here (instead of into
+  # auth.conf/central.conf/edge.conf directly) and auth/central/edge
+  # reading them back via ${?VAR} substitution are separate, later changes.
+  # This container coming up healthy on its own is step one.
+  openbao:
+    image: openbao/openbao:2.5.4
+    container_name: versola-openbao
+    restart: unless-stopped
+    command: ["server"]
+    volumes:
+      - ./openbao.hcl:/openbao/config/openbao.hcl:ro
+      - versola-openbao-file:/openbao/file
+    ports:
+      # Published so the CLI (running on the host, not inside this Compose
+      # network) can reach OpenBao's HTTP API directly to read/write
+      # secrets -- everything else in this file only publishes a port
+      # something outside the network genuinely needs (see central's 8091
+      # comment below), same reasoning applies here.
+      - "8200:8200"
+
   postgres:
     image: postgres:18
     container_name: versola-postgres
@@ -119,3 +140,19 @@ services:
       - ./proxy_params.conf:/etc/nginx/proxy_params.conf:ro
     ports:
       - "2821:2821"
+
+# `external: true`, not a plain named volume: Compose namespaces ordinary
+# named volumes under the *project* name, which defaults to the compose
+# file's parent directory -- and that directory is a fresh "bundle-<N>"
+# every `configure` run (see state.Prepare in versola-cli), specifically so
+# repeated runs never collide on a reused host path. A plain named volume
+# would inherit a different project name each run and silently start
+# OpenBao from empty storage every time, exactly what this is meant to
+# avoid (see the comment on openbao.hcl.template). `external: true` opts
+# this one volume out of that namespacing -- it must already exist under
+# this exact name before `docker compose up` runs (`docker volume create
+# versola-openbao-file`, idempotent -- a no-op if it's already there; this
+# is versola-cli's job, not something this template can do itself).
+volumes:
+  versola-openbao-file:
+    external: true
