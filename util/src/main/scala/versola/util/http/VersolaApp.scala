@@ -55,6 +55,21 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
   def diagnosticsPort: Int =
     Option(java.lang.System.getenv("DPORT")).flatMap(_.toIntOption).getOrElse(8081)
 
+  // Defaults to every interface, same as zio-http's own Server.Config.default
+  // -- needed for docker-local, where this process's own 0.0.0.0 inside the
+  // container is what makes Compose's port-publish reach it at all (same
+  // reasoning as OpenBao's listener -- see openbao.hcl.template's comment).
+  // vps overrides this to "127.0.0.1": with `network_mode: host` there's no
+  // publish step to restrict exposure on the other side, so 0.0.0.0 there
+  // would put this service directly on the VPS's public interface, reachable
+  // from the whole internet and bypassing nginx's TLS/access control -- not
+  // just central and edge, which nothing outside this host should ever reach
+  // directly, but auth too: its actual public path is through the VPS's
+  // native nginx, which already reaches it via 127.0.0.1 (see deploy.md),
+  // not by connecting to auth's port directly from outside.
+  def bindHost: String =
+    Option(java.lang.System.getenv("BIND_HOST")).getOrElse("0.0.0.0")
+
   def runMigrations: Boolean =
     Option(java.lang.System.getenv("RUN_MIGRATIONS")) match
       case None        => true
@@ -65,10 +80,10 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
           )
 
   def serverConfig: Server.Config =
-    Server.Config.default.port(port)
+    Server.Config.default.binding(bindHost, port)
 
   def diagnosticsConfig: Server.Config =
-    Server.Config.default.port(diagnosticsPort)
+    Server.Config.default.binding(bindHost, diagnosticsPort)
 
   override def run: ZIO[Environment & ZIOAppArgs & zio.Scope, Any, Any] = {
     for

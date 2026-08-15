@@ -23,6 +23,13 @@
 # names. This also means no `ports:` mapping anywhere below -- with
 # network_mode: host a container's ports already ARE the host's ports,
 # and Compose rejects combining the two.
+#
+# `name:` is fixed for the same reason as compose.fragment.yml.template's
+# -- see the comment there. Different value (versola-vps, not
+# versola-local) so the two could never collide if this were ever run
+# against the same Docker daemon, though in practice they never are: vps
+# only ever runs on the one real VPS.
+name: versola-vps
 
 services:
   # Secrets store -- same role as in docker-local (see the comment there),
@@ -48,6 +55,14 @@ services:
       PORT: 8090
       DPORT: 8091
       CONFIG_PATH: /app/config/env.conf
+      # With `network_mode: host`, VersolaApp's own bind address IS the
+      # VPS's bind, directly -- there's no Compose port-publish step to
+      # restrict exposure the way docker-local's "127.0.0.1:PORT:PORT"
+      # does (see openbao.hcl.template's comment for the same reasoning
+      # applied to OpenBao). Without this, central -- which nothing
+      # outside this host should ever reach at all -- would be open on
+      # the VPS's public interface. See VersolaApp.bindHost's comment.
+      BIND_HOST: "127.0.0.1"
     # Resolved by versola-cli against OpenBao, same as docker-local -- see
     # the comment on central's env_file in compose.fragment.yml.template.
     env_file:
@@ -72,6 +87,12 @@ services:
       PORT: 8080
       DPORT: 8081
       CONFIG_PATH: /app/config/env.conf
+      # Same reasoning as central's BIND_HOST above. auth's actual public
+      # path is through the VPS's native nginx, which already reaches it
+      # via 127.0.0.1 (see deploy.md) -- not by connecting to auth's port
+      # directly from outside, which is what a 0.0.0.0 bind here would
+      # additionally allow, bypassing nginx's TLS/access control entirely.
+      BIND_HOST: "127.0.0.1"
     env_file:
       - ./auth.secrets.env
     volumes:
@@ -89,6 +110,10 @@ services:
       PORT: 8095
       DPORT: 8096
       CONFIG_PATH: /app/config/env.conf
+      # Same reasoning as central's BIND_HOST above -- edge has no
+      # separate public domain either (see gen-env.scala's vps branch:
+      # edgeUrl equals authUrl), it's reached through nginx too.
+      BIND_HOST: "127.0.0.1"
     env_file:
       - ./edge.secrets.env
     volumes:
