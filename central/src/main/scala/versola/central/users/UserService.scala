@@ -1,7 +1,6 @@
 package versola.central.users
 
 import versola.central.configuration.clients.{ClientId, OAuthClientService}
-import versola.central.configuration.challenges.{ChallengeSettingsRecord, ChallengeSettingsService}
 import versola.central.configuration.roles.RoleId
 import versola.central.configuration.tenants.TenantId
 import versola.util.{Email, Phone, SecureRandom}
@@ -49,14 +48,13 @@ trait UserService:
   def setPassword(userId: UserId, password: String): Task[Unit]
 
 object UserService:
-  val live: ZLayer[UserRepository & AuthClient & OAuthClientService & ChallengeSettingsService & SecureRandom, Nothing, UserService] =
-    ZLayer.fromFunction(Impl(_, _, _, _, _))
+  val live: ZLayer[UserRepository & AuthClient & OAuthClientService & SecureRandom, Nothing, UserService] =
+    ZLayer.fromFunction(Impl(_, _, _, _))
 
   class Impl(
       userRepository: UserRepository,
       authClient: AuthClient,
       oAuthClientService: OAuthClientService,
-      challengeSettingsService: ChallengeSettingsService,
       secureRandom: SecureRandom,
   ) extends UserService:
     override def findById(id: UserId): Task[Option[UserSearchRecord]] =
@@ -148,13 +146,7 @@ object UserService:
       authClient.deletePasskey(userId, credentialId)
 
     override def resetPassword(request: ResetPasswordRequest): Task[Option[String]] =
-      for
-        settings <- challengeSettingsService.getSettings(request.tenantId)
-        ttlSeconds = settings
-          .map(_.temporaryPasswordTtlSeconds.toLong)
-          .getOrElse(ChallengeSettingsRecord.DefaultTemporaryPasswordTtlSeconds.toLong)
-        password <- authClient.resetPassword(request.userId, ttlSeconds, request.channel)
-      yield password
+      authClient.resetPassword(request.userId, request.expiresInSeconds, request.channel)
 
     override def setPassword(userId: UserId, password: String): Task[Unit] =
       authClient.setPassword(userId, password)

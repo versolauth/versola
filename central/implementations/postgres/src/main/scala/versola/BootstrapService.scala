@@ -425,7 +425,6 @@ object BootstrapService:
       ),
       otpLength = 6,
       otpResendAfter = 60,
-        temporaryPasswordTtlSeconds = ChallengeSettingsRecord.DefaultTemporaryPasswordTtlSeconds,
       passkeySettings = PasskeySettings(
         rpId = passkeyConfig.rpId,
         rpName = "Versola",

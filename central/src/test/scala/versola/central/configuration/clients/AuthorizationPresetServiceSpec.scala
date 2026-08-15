@@ -82,7 +82,6 @@ object AuthorizationPresetServiceSpec extends ZIOSpecDefault, ZIOStubs:
     submissionLimits = SubmissionLimits.empty,
     otpLength = 6,
     otpResendAfter = 60,
-      temporaryPasswordTtlSeconds = ChallengeSettingsRecord.DefaultTemporaryPasswordTtlSeconds,
     passkeySettings = PasskeySettings("localhost", "Test", List("http://localhost"), "preferred"),
     authConversationTtlSeconds = 900,
     sessionTtlSeconds = 86400,

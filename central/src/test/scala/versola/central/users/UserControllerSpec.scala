@@ -260,7 +260,7 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
       request = Request(
         method = Method.POST,
         url = URL.empty / "users" / "password" / "reset",
-        body = Body.fromString(s"""{"userId":"$userId","expiresInSeconds":3600,"channel":"email"}"""),
+        body = Body.fromString(s"""{"userId":"$userId","expiresInSeconds":43200,"channel":"email"}"""),
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.NoContent,
       setup = service => service.resetPassword.succeedsWith(None),
@@ -272,7 +272,7 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
       request = Request(
         method = Method.POST,
         url = URL.empty / "users" / "password" / "reset",
-        body = Body.fromString(s"""{"userId":"$userId","expiresInSeconds":null,"channel":"show"}"""),
+        body = Body.fromString(s"""{"userId":"$userId","expiresInSeconds":43200,"channel":"show"}"""),
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.Ok,
       setup = service => service.resetPassword.succeedsWith(Some("Temp1234!")),
@@ -285,7 +285,7 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
       request = Request(
         method = Method.POST,
         url = URL.empty / "users" / "password" / "reset",
-        body = Body.fromString(s"""{"userId":"$userId","expiresInSeconds":null,"channel":"show"}"""),
+        body = Body.fromString(s"""{"userId":"$userId","expiresInSeconds":43200,"channel":"show"}"""),
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.NotFound,
       env = EnvName.Prod,

@@ -20,6 +20,7 @@ import {
   searchUsers,
   updateUser,
   updateUserRoles,
+  DEFAULT_TEMPORARY_PASSWORD_TTL_HOURS,
 } from '../utils/users-api';
 import './content-header';
 import './error-card';
@@ -60,7 +61,8 @@ export class VersolaUsersList extends LitElement {
   @state() private passwordResetDone = new Set<string>();
   @state() private pendingResetUser: User | null = null;
   @state() private pendingResetChannel: 'email' | 'sms' | 'show' | null = null;
-  @state() private revealedPassword: { userId: string; password: string } | null = null;
+  @state() private pendingResetTtlHours = DEFAULT_TEMPORARY_PASSWORD_TTL_HOURS;
+  @state() private revealedPassword: { userId: string; password: string; ttlHours: number } | null = null;
   @state() private copyFeedback = '';
   @state() private userPasskeys: Record<string, PasskeyInfo[]> = {};
   @state() private loadingPasskeys = new Set<string>();
@@ -165,6 +167,12 @@ export class VersolaUsersList extends LitElement {
         font-size: 0.875rem;
         line-height: 1.5;
         word-break: break-all;
+      }
+
+      .temporary-password-ttl {
+        width: 8rem !important;
+        max-width: 100%;
+        box-sizing: border-box;
       }
 
       .copy-feedback {
@@ -830,6 +838,7 @@ export class VersolaUsersList extends LitElement {
     }
     this.pendingResetUser = user;
     this.pendingResetChannel = user.email ? 'email' : user.phone ? 'sms' : this.canRevealPassword ? 'show' : null;
+    this.pendingResetTtlHours = DEFAULT_TEMPORARY_PASSWORD_TTL_HOURS;
     this.revealedPassword = null;
     this.copyFeedback = '';
   }
@@ -837,13 +846,15 @@ export class VersolaUsersList extends LitElement {
   private async confirmResetPassword() {
     const user = this.pendingResetUser;
     if (!user || !this.tenantId) return;
+    const ttlHours = this.pendingResetTtlHours;
+    if (!Number.isFinite(ttlHours) || ttlHours <= 0) return;
     this.pendingResetUser = null;
     this.resettingPassword = new Set([...this.resettingPassword, user.id]);
     try {
       const channel = this.pendingResetChannel ?? undefined;
-      const password = await resetPassword(user.id, channel);
+      const password = await resetPassword(user.id, channel, ttlHours * 60 * 60);
       this.passwordResetDone = new Set([...this.passwordResetDone, user.id]);
-      this.revealedPassword = password === null ? null : { userId: user.id, password };
+      this.revealedPassword = password === null ? null : { userId: user.id, password, ttlHours };
     } catch (error) {
       this.errorPopup = error instanceof Error ? error.message : 'Failed to reset password';
     } finally {
@@ -1184,10 +1195,15 @@ export class VersolaUsersList extends LitElement {
         z-index:1000;
       ">
         <p style="margin:0 0 var(--spacing-md);font-weight:600">Reset password</p>
-        <p style="margin:0 0 var(--spacing-lg);font-size:0.875rem;color:var(--text-secondary)">
-          A temporary password (12h) will be generated for
-          <strong>${user.email ?? user.phone ?? user.login ?? user.id}</strong>.
-        </p>
+        <div class="form-group" style="margin-bottom:var(--spacing-lg)">
+          <label for="temporary-password-ttl">Temporary password lifetime (hours)</label>
+          <input id="temporary-password-ttl" class="temporary-password-ttl" type="number" min="1" step="1"
+            .value=${String(this.pendingResetTtlHours)}
+            @input=${(e: Event) => {
+              const value = Number((e.target as HTMLInputElement).value);
+              this.pendingResetTtlHours = Number.isFinite(value) ? value : 0;
+            }} />
+        </div>
         ${user.email || user.phone || this.canRevealPassword ? html`
         <fieldset style="border:none;padding:0;margin:0 0 var(--spacing-lg)">
           <legend style="font-size:0.875rem;margin-bottom:var(--spacing-sm)">Deliver via</legend>
@@ -1218,7 +1234,11 @@ export class VersolaUsersList extends LitElement {
         </p>`}
         <div style="display:flex;justify-content:flex-end;gap:var(--spacing-sm)">
           <button class="btn btn-secondary" @click=${() => { this.pendingResetUser = null; }}>Cancel</button>
-          <button class="btn btn-primary" ?disabled=${this.pendingResetChannel === null} @click=${this.confirmResetPassword}>Confirm</button>
+          <button class="btn btn-primary"
+            ?disabled=${this.pendingResetChannel === null
+              || !Number.isInteger(this.pendingResetTtlHours)
+              || this.pendingResetTtlHours <= 0}
+            @click=${this.confirmResetPassword}>Confirm</button>
         </div>
       </dialog>
     `;
@@ -1241,7 +1261,7 @@ export class VersolaUsersList extends LitElement {
       ">
         <p style="margin:0 0 var(--spacing-md);font-weight:600">Temporary password</p>
         <p style="margin:0 0 var(--spacing-lg);font-size:0.875rem;color:var(--text-secondary)">
-          Valid for 12 hours. Copy it now — it is not shown again.
+          Valid for ${revealed.ttlHours} hour${revealed.ttlHours === 1 ? '' : 's'}. Copy it now — it is not shown again.
         </p>
         <pre class="password-value">${revealed.password}</pre>
         <div style="display:flex;align-items:center;gap:0.75rem;margin-top:var(--spacing-md)">

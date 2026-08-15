@@ -206,11 +206,29 @@ test('Reset Password offers the show channel outside production', async ({ page 
   expect(findRequest(api.requests, 'POST', '/users/password/reset').body).toMatchObject({
     userId: alice.id,
     channel: 'show',
+    expiresInSeconds: 12 * 60 * 60,
   });
 
   const value = page.locator('.password-value');
   await expect(value).toBeVisible();
   await expect(value).toHaveText('Temp1234!');
+});
+
+test('Reset Password sends the selected temporary password lifetime in seconds', async ({ page }) => {
+  const api = await loadAdminApp(page, { path: usersPath, state: { users: [alice] } });
+  await searchAlice(page);
+
+  const card = userCard(page, 'Alice Doe');
+  await card.getByRole('button', { name: 'Reset Password', exact: true }).click();
+  await page.getByLabel('Temporary password lifetime (hours)').fill('6');
+  await page.getByRole('button', { name: 'Confirm', exact: true }).click();
+  await page.waitForTimeout(300);
+
+  expect(findRequest(api.requests, 'POST', '/users/password/reset').body).toMatchObject({
+    userId: alice.id,
+    channel: 'email',
+    expiresInSeconds: 6 * 60 * 60,
+  });
 });
 
 test('Reset Password hides the show channel in production', async ({ page }) => {

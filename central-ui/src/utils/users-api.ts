@@ -12,6 +12,8 @@ type UserSearchResponseDto = { users: UserSearchRecordDto[] };
 type CreateUserResponseDto = { id: string };
 type UserRolesResponseDto = { roles: string[] };
 
+export const DEFAULT_TEMPORARY_PASSWORD_TTL_HOURS = 12;
+
 function toUser(record: UserSearchRecordDto): User {
   return {
     id: record.id,
@@ -254,7 +256,7 @@ export async function deletePasskey(userId: string, credentialId: string): Promi
 export async function resetPassword(
   userId: string,
   channel?: string,
-  expiresInSeconds?: number,
+  expiresInSeconds = DEFAULT_TEMPORARY_PASSWORD_TTL_HOURS * 60 * 60,
 ): Promise<string | null> {
   const response = await fetch(proxyUrl('/users/password/reset').toString(), {
     method: 'POST',
@@ -263,7 +265,7 @@ export async function resetPassword(
     body: JSON.stringify({
       userId,
       channel: channel ?? null,
-      expiresInSeconds: expiresInSeconds ?? null,
+      expiresInSeconds,
     }),
   });
 

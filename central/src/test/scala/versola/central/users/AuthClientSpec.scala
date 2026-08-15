@@ -52,7 +52,7 @@ object AuthClientSpec extends ZIOSpecDefault:
 
   private val resetRequest = ResetPasswordRequest(
       userId = userId,
-      tenantId = tenantId,
+        expiresInSeconds = 3600L,
       channel = Some(DeliveryChannel.email),
   )
 

@@ -37,7 +37,6 @@ case class UpsertChallengeSettingsRequest(
     submissionLimits: SubmissionLimits,
     otpLength: Int,
     otpResendAfter: Int,
-    temporaryPasswordTtlSeconds: Option[Int],
     passkeySettings: PasskeySettings,
     authConversationTtlSeconds: Option[Int],
     sessionTtlSeconds: Option[Int],

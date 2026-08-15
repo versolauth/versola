@@ -94,9 +94,6 @@ object OtpChallengeController extends Controller:
             body.submissionLimits,
             body.otpLength,
             body.otpResendAfter,
-              body.temporaryPasswordTtlSeconds
-                .orElse(existing.map(_.temporaryPasswordTtlSeconds))
-                .getOrElse(ChallengeSettingsRecord.DefaultTemporaryPasswordTtlSeconds),
             body.passkeySettings,
             body.authConversationTtlSeconds.orElse(existing.map(_.authConversationTtlSeconds)).getOrElse(900),
             body.sessionTtlSeconds.orElse(existing.map(_.sessionTtlSeconds)).getOrElse(86400),
