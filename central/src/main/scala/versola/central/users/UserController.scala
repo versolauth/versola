@@ -125,7 +125,7 @@ object UserController extends Controller:
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[UserService]
-        body <- request.body.asJson[UpdateUserRolesRequest]
+        body <- request.body.asJsonFromCodec[UpdateUserRolesRequest]
         _ <- service.updateRoles(body)
       yield Response.status(Status.Accepted)
     }
