@@ -8,6 +8,7 @@ import zio.json.*
 import zio.{Task, ZLayer, Schedule}
 import org.postgresql.util.PSQLException
 import com.augustnagro.magnum.SqlException
+import zio.durationInt
 
 class PostgresFormRepository(xa: TransactorZIO) extends FormRepository, BasicCodecs:
 
@@ -62,7 +63,7 @@ class PostgresFormRepository(xa: TransactorZIO) extends FormRepository, BasicCod
             case cause: PSQLException => cause.getSQLState == "23505"
             case _ => false
         case _ => false
-      } && Schedule.recurs(3)
+      } && Schedule.recurs(10) && Schedule.exponential(10.millis).jittered
     )
 
   override def setActiveVersion(id: FormId, version: Int): Task[Unit] =
