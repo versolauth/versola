@@ -1,6 +1,8 @@
 package versola.oauth.user
 
 import com.augustnagro.magnum.magzio.TransactorZIO
+import versola.oauth.client.model.TenantId
+import versola.role.model.RoleId
 import versola.user.UserRepository
 import versola.user.model.*
 import versola.util.{DatabaseSpecBase, Email, Phone}
@@ -42,124 +44,26 @@ trait UserRepositorySpec extends DatabaseSpecBase[UserRepositorySpec.Env]:
 
   override def testCases(env: UserRepositorySpec.Env) =
     List(
-      findOrCreateTests(env),
       findTests(env),
       findByCredentialTests(env),
+      roleTests(env),
     )
 
-  def findOrCreateTests(env: UserRepositorySpec.Env) =
-    suite("findOrCreate")(
-      test("create new user when email doesn't exist") {
-        for {
-          (user, wasCreated) <- env.userRepository.findOrCreate(userId1, Left(email1))
-          found <- env.userRepository.find(user.id)
-        } yield assertTrue(
-          wasCreated,
-          user.email.contains(email1),
-          found.contains(user),
-        )
-      },
-      test("return existing user when email already exists") {
-        for {
-          (user1, wasCreated1) <- env.userRepository.findOrCreate(userId1, Left(email1))
-          (user2, wasCreated2) <- env.userRepository.findOrCreate(userId2, Left(email1))
-        } yield assertTrue(
-          wasCreated1,
-          !wasCreated2,
-          user1.id == user2.id,
-          user1.email == user2.email,
-          user1 == user2,
-        )
-      },
-      test("create different users for different emails") {
-        for {
-          (user1, wasCreated1) <- env.userRepository.findOrCreate(userId1, Left(email1))
-          (user2, wasCreated2) <- env.userRepository.findOrCreate(userId2, Left(email2))
-        } yield assertTrue(
-          wasCreated1,
-          wasCreated2,
-          user1.id != user2.id,
-          user1.email.contains(email1),
-          user2.email.contains(email2),
-          user1.email != user2.email,
-        )
-      },
-      test("handle concurrent creation attempts gracefully for email") {
-        for {
-          // Simulate concurrent creation attempts for the same email
-          results <- ZIO.foreachPar(userIds)(env.userRepository.findOrCreate(_, Left(email1)))
-        } yield assertTrue(
-          results.map((_, wasCreated) => wasCreated).sorted == List(true, false, false, false, false).sorted,
-          results.flatMap((user, _) => user.email) == List.fill(5)(email1),
-        )
-      },
-      test("create new user when phone doesn't exist") {
-        for {
-          (user, wasCreated) <- env.userRepository.findOrCreate(userId1, Right(phone1))
-          found <- env.userRepository.find(user.id)
-        } yield assertTrue(
-          wasCreated,
-          user.phone.contains(phone1),
-          found.contains(user),
-        )
-      },
-      test("return existing user when phone already exists") {
-        for {
-          (user1, wasCreated1) <- env.userRepository.findOrCreate(userId1, Right(phone1))
-          (user2, wasCreated2) <- env.userRepository.findOrCreate(userId2, Right(phone1))
-        } yield assertTrue(
-          wasCreated1,
-          !wasCreated2,
-          user1.id == user2.id,
-          user1.phone == user2.phone,
-          user1 == user2,
-        )
-      },
-      test("create different users for different phones") {
-        for {
-          (user1, wasCreated1) <- env.userRepository.findOrCreate(userId1, Right(phone1))
-          (user2, wasCreated2) <- env.userRepository.findOrCreate(userId2, Right(phone2))
-        } yield assertTrue(
-          wasCreated1,
-          wasCreated2,
-          user1.id != user2.id,
-          user1.phone.contains(phone1),
-          user2.phone.contains(phone2),
-          user1.phone != user2.phone,
-        )
-      },
-      test("handle concurrent creation attempts gracefully for phone") {
-        for {
-          // Simulate concurrent creation attempts for the same email
-          results <- ZIO.foreachPar(userIds)(env.userRepository.findOrCreate(_, Right(phone1)))
-        } yield assertTrue(
-          results.map((_, wasCreated) => wasCreated).sorted == List(true, false, false, false, false).sorted,
-          results.flatMap((user, _) => user.phone) == List.fill(5)(phone1),
-        )
-      },
-      test("create different users for email and phone") {
-        for {
-          (user1, wasCreated1) <- env.userRepository.findOrCreate(userId1, Left(email1))
-          (user2, wasCreated2) <- env.userRepository.findOrCreate(userId2, Right(phone1))
-        } yield assertTrue(
-          wasCreated1,
-          wasCreated2,
-          user1.id != user2.id,
-          user1.email.contains(email1),
-          user1.phone.isEmpty,
-          user2.phone.contains(phone1),
-          user2.email.isEmpty,
-        )
-      },
-    )
+  private def seed(
+      env: UserRepositorySpec.Env,
+      id: UserId,
+      email: Option[Email] = None,
+      phone: Option[Phone] = None,
+  ) =
+    env.userRepository.upsert(id, UUID.randomUUID(), email, phone, None)
 
   def findTests(env: UserRepositorySpec.Env) =
     suite("find")(
       test("return Some when user exists") {
         for {
-          (user, _) <- env.userRepository.findOrCreate(userId1, Left(email1))
-          found <- env.userRepository.find(user.id)
-        } yield assertTrue(found.contains(user))
+          _ <- seed(env, userId1, email = Some(email1))
+          found <- env.userRepository.find(userId1)
+        } yield assertTrue(found.exists(_.email.contains(email1)))
       },
       test("return None when user does not exist") {
         for {
@@ -172,9 +76,9 @@ trait UserRepositorySpec extends DatabaseSpecBase[UserRepositorySpec.Env]:
     suite("findByCredential")(
       test("return Some when user with email exists") {
         for {
-          (user, _) <- env.userRepository.findOrCreate(userId1, Left(email1))
+          _ <- seed(env, userId1, email = Some(email1))
           found <- env.userRepository.findByCredential(Left(email1))
-        } yield assertTrue(found.contains(user))
+        } yield assertTrue(found.exists(_.id == userId1))
       },
       test("return None when user with email does not exist") {
         for {
@@ -183,14 +87,65 @@ trait UserRepositorySpec extends DatabaseSpecBase[UserRepositorySpec.Env]:
       },
       test("return Some when user with phone exists") {
         for {
-          (user, _) <- env.userRepository.findOrCreate(userId1, Right(phone1))
+          _ <- seed(env, userId1, phone = Some(phone1))
           found <- env.userRepository.findByCredential(Right(phone1))
-        } yield assertTrue(found.contains(user))
+        } yield assertTrue(found.exists(_.id == userId1))
       },
       test("return None when user with phone does not exist") {
         for {
           found <- env.userRepository.findByCredential(Right(phone1))
         } yield assertTrue(found.isEmpty)
+      },
+    )
+
+  def roleTests(env: UserRepositorySpec.Env) =
+    suite("roles")(
+      test("add roles to user") {
+        for
+          _ <- seed(env, userId1)
+          _ <- env.userRepository.updateRoles(userId1, TenantId("tenant-1"), Set(RoleId("role-a"), RoleId("role-b")), Set.empty)
+          roles <- env.userRepository.findRolesByUserAndTenant(userId1, TenantId("tenant-1"))
+        yield assertTrue(roles.toSet == Set(RoleId("role-a"), RoleId("role-b")))
+      },
+      test("remove roles from user") {
+        for
+          _ <- seed(env, userId1)
+          _ <- env.userRepository.updateRoles(userId1, TenantId("tenant-1"), Set(RoleId("role-a"), RoleId("role-b")), Set.empty)
+          _ <- env.userRepository.updateRoles(userId1, TenantId("tenant-1"), Set.empty, Set(RoleId("role-a")))
+          roles <- env.userRepository.findRolesByUserAndTenant(userId1, TenantId("tenant-1"))
+        yield assertTrue(roles == List(RoleId("role-b")))
+      },
+      test("add and remove roles in one call") {
+        for
+          _ <- seed(env, userId1)
+          _ <- env.userRepository.updateRoles(userId1, TenantId("tenant-1"), Set(RoleId("role-a"), RoleId("role-b")), Set.empty)
+          _ <- env.userRepository.updateRoles(userId1, TenantId("tenant-1"), Set(RoleId("role-c")), Set(RoleId("role-a")))
+          roles <- env.userRepository.findRolesByUserAndTenant(userId1, TenantId("tenant-1"))
+        yield assertTrue(roles.toSet == Set(RoleId("role-b"), RoleId("role-c")))
+      },
+      test("empty add and remove is a no-op") {
+        for
+          _ <- seed(env, userId1)
+          _ <- env.userRepository.updateRoles(userId1, TenantId("tenant-1"), Set(RoleId("role-a")), Set.empty)
+          _ <- env.userRepository.updateRoles(userId1, TenantId("tenant-1"), Set.empty, Set.empty)
+          roles <- env.userRepository.findRolesByUserAndTenant(userId1, TenantId("tenant-1"))
+        yield assertTrue(roles == List(RoleId("role-a")))
+      },
+      test("insert is idempotent via ON CONFLICT DO NOTHING") {
+        for
+          _ <- seed(env, userId1)
+          _ <- env.userRepository.updateRoles(userId1, TenantId("tenant-1"), Set(RoleId("role-a")), Set.empty)
+          _ <- env.userRepository.updateRoles(userId1, TenantId("tenant-1"), Set(RoleId("role-a")), Set.empty)
+          roles <- env.userRepository.findRolesByUserAndTenant(userId1, TenantId("tenant-1"))
+        yield assertTrue(roles == List(RoleId("role-a")))
+      },
+      test("remove non-existing role is a no-op") {
+        for
+          _ <- seed(env, userId1)
+          _ <- env.userRepository.updateRoles(userId1, TenantId("tenant-1"), Set(RoleId("role-a")), Set.empty)
+          _ <- env.userRepository.updateRoles(userId1, TenantId("tenant-1"), Set.empty, Set(RoleId("role-b")))
+          roles <- env.userRepository.findRolesByUserAndTenant(userId1, TenantId("tenant-1"))
+        yield assertTrue(roles == List(RoleId("role-a")))
       },
     )
 

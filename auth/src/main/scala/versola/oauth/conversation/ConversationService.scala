@@ -2,14 +2,25 @@ package versola.oauth.conversation
 
 import versola.auth.model.CredentialDeviceType
 import versola.auth.model.{OtpCode, Password}
+import versola.oauth.AuthMetrics
 import versola.oauth.authorize.AcrResolutionService
 import versola.oauth.authorize.model.ResponseTypeEntry
 import versola.oauth.challenge.passkey.{PasskeyRepository, WebAuthnError, WebAuthnService}
 import versola.oauth.challenge.password.PasswordService
 import versola.oauth.challenge.password.model.{CheckPassword, PasswordReuseError}
-import versola.oauth.AuthMetrics
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{Acr, AuthFactor, AuthFactorType, AuthMethodRef, OtpType, PassedAuthFactor, PassedFactorRecord, PasskeySettings, ScopeToken}
+import versola.oauth.client.model.{
+  Acr,
+  AuthFactor,
+  AuthFactorType,
+  AuthMethodRef,
+  OtpType,
+  PassedAuthFactor,
+  PassedFactorRecord,
+  PasskeySettings,
+  RegistrationFlow,
+  ScopeToken,
+}
 import versola.oauth.conversation.limit.{ChallengeType, LimitStatus, SubmissionLimiter}
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
 import versola.oauth.conversation.otp.OtpService
@@ -19,8 +30,8 @@ import versola.oauth.session.model.{ClientEntry, PriorSession, PublicSessionId, 
 import versola.oauth.session.{SessionRepository, UserAgentRepository}
 import versola.oauth.token.AuthorizationCodeRepository
 import versola.oauth.userinfo.UserInfoService
-import versola.user.UserRepository
 import versola.user.model.{Login, UserId, UserRecord}
+import versola.user.{UserRepository, UserService}
 import versola.util.http.Observability
 import versola.util.{AuthPropertyGenerator, Base64, CoreConfig, Email, MAC, Phone, Secret, SecureRandom, SecurityService}
 import zio.*
@@ -89,7 +100,8 @@ trait ConversationService:
   ): Task[ConversationResult]
 
   /** Renders the SetPassword step after all primary auth factors have been satisfied.
-    * Called by the router when `conversation.needsPasswordChange` is true and no more factors remain.
+    * Called by the router when `conversation.needsPasswordChange` is true and no more factors
+    * remain, and when a registration flow reaches its SetPassword step.
     */
   def offerSetPassword(authId: AuthId, conversation: ConversationRecord): Task[ConversationResult.Render]
 
@@ -128,24 +140,53 @@ trait ConversationService:
     */
   def offerPasskeyEnroll(authId: AuthId, conversation: ConversationRecord): Task[ConversationResult.Render]
 
-  /** Finish a passkey enrollment ceremony and complete the conversation. */
+  /** Finish a passkey enrollment ceremony. Returns `StepPassed` so the caller decides what
+    * follows; a failed ceremony re-renders the enrollment step instead.
+    */
   def finishPasskeyEnroll(
       authId: AuthId,
       conversation: ConversationRecord,
       enrollStep: ConversationStep.PasskeyEnroll,
       response: String,
       name: String,
-  ): Task[ConversationResult.Render]
+  ): Task[ConversationResult]
 
-  /** Skip passkey enrollment and complete the conversation. */
-  def skipPasskey(authId: AuthId, conversation: ConversationRecord): Task[ConversationResult.Render]
+  /** Skip passkey enrollment. Returns `StepPassed` so the caller decides what follows. */
+  def skipPasskey(authId: AuthId, conversation: ConversationRecord): Task[ConversationResult]
+
+  /** Enter the registration flow without creating an account. The credential remains pending
+    * until its OTP challenge passes.
+    */
+  def startRegistration(
+      authId: AuthId,
+      conversation: ConversationRecord,
+      flow: RegistrationFlow,
+      credential: Either[Email, Phone],
+  ): Task[RegistrationEntry | ConversationResult.WriteConflict.type]
+
+  /** Create the account after the entry credential has been verified and before account-bound
+    * setup such as password or passkey enrollment.
+    */
+  def registerVerifiedUser(
+      authId: AuthId,
+      conversation: ConversationRecord,
+      flow: RegistrationFlow,
+      credential: Either[Email, Phone],
+  ): Task[RegistrationEntry | ConversationResult.WriteConflict.type]
 
   /** Overwrite the conversation step to AccessDenied and return the render result. */
   def accessDenied(authId: AuthId, conversation: ConversationRecord): Task[ConversationResult.Render]
 
+/** Outcome of entering the registration flow. */
+sealed trait RegistrationEntry
+
+object RegistrationEntry:
+  /** The user is positioned on the first registration step. */
+  case class Registering(conversation: ConversationRecord) extends RegistrationEntry
+
 object ConversationService:
   def live =
-    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _))
+    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _))
 
   class Impl(
       otpService: OtpService,
@@ -165,6 +206,7 @@ object ConversationService:
       acrResolutionService: AcrResolutionService,
       userAgentRepository: UserAgentRepository,
       secureRandom: SecureRandom,
+      userService: UserService,
   ) extends ConversationService:
     export conversationRepository.find
 
@@ -233,14 +275,14 @@ object ConversationService:
             accessDenied(authId, conversation)
           case LimitStatus.Allowed =>
             for
-              // If userId is already established (from session/hint), use stored user data and skip
-              // the DB lookup — a fresh lookup could overwrite the verified identity.
-              lookedUpUser <-
-                if conversation.userId.isDefined then ZIO.none
-                else userRepository.findByCredential(credential)
-              effectiveUserId = conversation.userId.orElse(lookedUpUser.map(_.id))
+              effectiveUserId = conversation.userId
               _ <- ZIO.foreachDiscard(effectiveUserId)(uid => Observability.setUserId(uid.toString))
-              otp <- otpService.prepareOtp(previous = None, userId = effectiveUserId, clientId = conversation.clientId)
+              otp <- otpService.prepareOtp(
+                previous = None,
+                userId = effectiveUserId,
+                clientId = conversation.clientId,
+                isRegistering = conversation.isRegistering,
+              )
               now <- Clock.instant
               sentStep = otp.copy(factorIndex = factorIndex, timesRequested = 1, lastSentAt = Some(now))
               updatedConversation = conversation.copy(
@@ -248,10 +290,10 @@ object ConversationService:
                 // Persist the credential once it has been entered or resolved from the selected flow for OTP dispatch.
                 credential = Some(credential),
                 step = sentStep,
-                userEmail = lookedUpUser.flatMap(_.email).orElse(conversation.userEmail),
-                userPhone = lookedUpUser.flatMap(_.phone).orElse(conversation.userPhone),
-                userLogin = lookedUpUser.flatMap(_.login).orElse(conversation.userLogin),
-                userClaims = lookedUpUser.map(_.claims).orElse(conversation.userClaims),
+                userEmail = conversation.userEmail,
+                userPhone = conversation.userPhone,
+                userLogin = conversation.userLogin,
+                userClaims = conversation.userClaims,
               )
               written <- conversationRepository.overwrite(authId, updatedConversation)
               result2 <- if written then
@@ -269,18 +311,17 @@ object ConversationService:
         factorIndex: Int,
     ): Task[ConversationResult.Render] =
       for
-        // If userId is already established (from session/hint), use stored user data and skip
-        // the DB lookup — a fresh lookup could overwrite the verified identity.
-        lookedUpUser <- if conversation.userId.isDefined then ZIO.none
-        else userRepository.findByCredential(credential)
-        effectiveUserId = conversation.userId.orElse(lookedUpUser.map(_.id))
+        effectiveUserId = conversation.userId
         _ <- ZIO.foreachDiscard(effectiveUserId)(uid => Observability.setUserId(uid.toString))
-        status <- lookedUpUser.fold[Task[LimitStatus]](ZIO.succeed(LimitStatus.Allowed)): user =>
-          submissionLimiter.statusForSubjects(
-            conversation.clientId,
-            List(user.id.toString, credential.merge),
-            ChallengeType.PasswordSubmit,
-          )
+        status <- effectiveUserId match
+          case Some(userId) =>
+            submissionLimiter.statusForSubjects(
+              conversation.clientId,
+              List(userId.toString, credential.merge),
+              ChallengeType.PasswordSubmit,
+            )
+          case None =>
+            ZIO.succeed(LimitStatus.Allowed)
 
         result <- status match
           case LimitStatus.Banned | LimitStatus.RateLimited(_) =>
@@ -296,10 +337,10 @@ object ConversationService:
               userId = effectiveUserId,
               credential = Some(credential),
               step = passwordStep,
-              userEmail = lookedUpUser.flatMap(_.email).orElse(conversation.userEmail),
-              userPhone = lookedUpUser.flatMap(_.phone).orElse(conversation.userPhone),
-              userLogin = lookedUpUser.flatMap(_.login).orElse(conversation.userLogin),
-              userClaims = lookedUpUser.map(_.claims).orElse(conversation.userClaims),
+              userEmail = conversation.userEmail,
+              userPhone = conversation.userPhone,
+              userLogin = conversation.userLogin,
+              userClaims = conversation.userClaims,
             )
             conversationRepository.overwrite(authId, updatedConversation)
               .flatMap:
@@ -488,48 +529,48 @@ object ConversationService:
             case Some(user) =>
               val userSubject = user.id.toString
               Observability.setUserId(userSubject) *>
-              submissionLimiter.statusForSubjects(conversation.clientId, List(login, userSubject), ChallengeType.PasswordSubmit).flatMap:
-                case LimitStatus.Banned =>
-                  accessDenied(authId, conversation)
-                case LimitStatus.RateLimited(_) =>
-                  renderStep(authId, conversation, cred.copy(loginFailed = true))
-                case LimitStatus.Allowed =>
-                  passwordService.verifyPassword(user.id, password).flatMap:
-                    case CheckPassword.Success =>
-                      Clock.instant.flatMap: now =>
-                        val updated = conversation.copy(
-                          userId = Some(user.id),
-                          userEmail = user.email,
-                          userPhone = user.phone,
-                          userLogin = user.login,
-                          userClaims = Some(user.claims),
-                          amr = conversation.amr + (PassedAuthFactor.password -> PassedFactorRecord(now, Set(AuthMethodRef.pwd))),
-                        )
-                        conversationRepository.overwrite(authId, updated).flatMap:
-                          case true => ZIO.succeed(ConversationResult.StepPassed(updated.copy(version = updated.version + 1)))
-                          case false => Observability.setError("write_conflict").as(ConversationResult.WriteConflict)
+                submissionLimiter.statusForSubjects(conversation.clientId, List(login, userSubject), ChallengeType.PasswordSubmit).flatMap:
+                  case LimitStatus.Banned =>
+                    accessDenied(authId, conversation)
+                  case LimitStatus.RateLimited(_) =>
+                    renderStep(authId, conversation, cred.copy(loginFailed = true))
+                  case LimitStatus.Allowed =>
+                    passwordService.verifyPassword(user.id, password).flatMap:
+                      case CheckPassword.Success =>
+                        Clock.instant.flatMap: now =>
+                          val updated = conversation.copy(
+                            userId = Some(user.id),
+                            userEmail = user.email,
+                            userPhone = user.phone,
+                            userLogin = user.login,
+                            userClaims = Some(user.claims),
+                            amr = conversation.amr + (PassedAuthFactor.password -> PassedFactorRecord(now, Set(AuthMethodRef.pwd))),
+                          )
+                          conversationRepository.overwrite(authId, updated).flatMap:
+                            case true => ZIO.succeed(ConversationResult.StepPassed(updated.copy(version = updated.version + 1)))
+                            case false => Observability.setError("write_conflict").as(ConversationResult.WriteConflict)
 
-                    case CheckPassword.Temporary =>
-                      // Temporary password accepted – set user context, mark password as passed,
-                      // and flag that the user must set a new password after all remaining factors.
-                      Clock.instant.flatMap: now =>
-                        val updated = conversation.copy(
-                          userId = Some(user.id),
-                          userEmail = user.email,
-                          userPhone = user.phone,
-                          userLogin = user.login,
-                          userClaims = Some(user.claims),
-                          amr = conversation.amr + (PassedAuthFactor.password -> PassedFactorRecord(now, Set(AuthMethodRef.pwd))),
-                          needsPasswordChange = true,
-                        )
-                        conversationRepository.overwrite(authId, updated).flatMap:
-                          case true => ZIO.succeed(ConversationResult.StepPassed(updated.copy(version = updated.version + 1)))
-                          case false => Observability.setError("write_conflict").as(ConversationResult.WriteConflict)
+                      case CheckPassword.Temporary =>
+                        // Temporary password accepted – set user context, mark password as passed,
+                        // and flag that the user must set a new password after all remaining factors.
+                        Clock.instant.flatMap: now =>
+                          val updated = conversation.copy(
+                            userId = Some(user.id),
+                            userEmail = user.email,
+                            userPhone = user.phone,
+                            userLogin = user.login,
+                            userClaims = Some(user.claims),
+                            amr = conversation.amr + (PassedAuthFactor.password -> PassedFactorRecord(now, Set(AuthMethodRef.pwd))),
+                            needsPasswordChange = true,
+                          )
+                          conversationRepository.overwrite(authId, updated).flatMap:
+                            case true => ZIO.succeed(ConversationResult.StepPassed(updated.copy(version = updated.version + 1)))
+                            case false => Observability.setError("write_conflict").as(ConversationResult.WriteConflict)
 
-                    case _ =>
-                      submissionLimiter.recordLimitAll(conversation.clientId, List(login, userSubject), ChallengeType.PasswordSubmit).flatMap:
-                        case LimitStatus.Banned => accessDenied(authId, conversation)
-                        case _ => renderStep(authId, conversation, cred.copy(loginFailed = true))
+                      case _ =>
+                        submissionLimiter.recordLimitAll(conversation.clientId, List(login, userSubject), ChallengeType.PasswordSubmit).flatMap:
+                          case LimitStatus.Banned => accessDenied(authId, conversation)
+                          case _ => renderStep(authId, conversation, cred.copy(loginFailed = true))
         case _ =>
           // A login+password submission arrived while the conversation isn't on the credential
           // step, e.g. a stale form or a tampered request.
@@ -795,7 +836,7 @@ object ConversationService:
         enrollStep: ConversationStep.PasskeyEnroll,
         response: String,
         name: String,
-    ): Task[ConversationResult.Render] =
+    ): Task[ConversationResult] =
       conversation.userId match
         case None =>
           // Reached passkey-enrollment completion without a resolved user -- an invariant this
@@ -804,17 +845,60 @@ object ConversationService:
         case Some(userId) =>
           configService.getPasskeySettings(conversation.clientId).flatMap:
             case None =>
-              finish(authId, conversation)
+              ZIO.succeed(ConversationResult.StepPassed(conversation))
             case Some(settings) =>
               webAuthnService.finishRegistration(settings, userId, enrollStep.request, response, Some(name)).foldZIO(
                 error =>
                   ZIO.logWarning(s"Passkey enrollment failed for user $userId: ${error.getMessage}") *>
                     renderStep(authId, conversation, enrollStep.copy(enrollFailed = true)),
-                _ => finish(authId, conversation),
+                _ => ZIO.succeed(ConversationResult.StepPassed(conversation)),
               )
 
-    override def skipPasskey(authId: AuthId, conversation: ConversationRecord): Task[ConversationResult.Render] =
-      finish(authId, conversation)
+    override def skipPasskey(authId: AuthId, conversation: ConversationRecord): Task[ConversationResult] =
+      ZIO.succeed(ConversationResult.StepPassed(conversation))
+
+    override def startRegistration(
+        authId: AuthId,
+        conversation: ConversationRecord,
+        flow: RegistrationFlow,
+        credential: Either[Email, Phone],
+    ): Task[RegistrationEntry | ConversationResult.WriteConflict.type] =
+      val updated = conversation.copy(
+        userId = None,
+        credential = Some(credential),
+        userEmail = None,
+        userPhone = None,
+        userLogin = None,
+        userClaims = None,
+        amr = Map.empty,
+        needsPasswordChange = false,
+        registrationFlow = Some(flow),
+        registrationStep = Some(0),
+      )
+      conversationRepository.overwrite(authId, updated).map:
+        case true => RegistrationEntry.Registering(updated.copy(version = updated.version + 1))
+        case false => ConversationResult.WriteConflict
+
+    override def registerVerifiedUser(
+        authId: AuthId,
+        conversation: ConversationRecord,
+        flow: RegistrationFlow,
+        credential: Either[Email, Phone],
+    ): Task[RegistrationEntry | ConversationResult.WriteConflict.type] =
+      for
+        client <- configService.get(conversation.clientId)
+        user <- userService.register(credential, client.tenantId, flow.roleIds)
+        updated = conversation.copy(
+          userId = Some(user.id),
+          userEmail = user.email,
+          userPhone = user.phone,
+          userLogin = user.login,
+          userClaims = Some(user.claims),
+        )
+        written <- conversationRepository.overwrite(authId, updated)
+      yield
+        if written then RegistrationEntry.Registering(updated.copy(version = updated.version + 1))
+        else ConversationResult.WriteConflict
 
     override def setNewPassword(
         conversation: ConversationRecord,

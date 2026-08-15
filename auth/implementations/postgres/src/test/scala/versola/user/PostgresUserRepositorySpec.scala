@@ -19,5 +19,3 @@ object PostgresUserRepositorySpec extends PostgresSpec, UserRepositorySpec:
       xa <- ZIO.service[TransactorZIO]
       _ <- xa.connect(sql"TRUNCATE TABLE users CASCADE".update.run())
     yield ()
-
-

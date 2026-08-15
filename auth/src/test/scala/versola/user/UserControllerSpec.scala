@@ -30,7 +30,6 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
   private val wrongKey = SecretKeySpec(Array.fill(32)(99.toByte), "AES")
 
   private val userRepo             = stub[UserRepository]
-  private val rolesRepo            = stub[UserRolesRepository]
   private val sessionRepo          = stub[SessionRepository]
   private val sessionService       = stub[SessionService]
   private val noopThrottle         = stub[ChallengeThrottleRepository]
@@ -70,7 +69,6 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
   private def routes(
       tracing: ZEnvironment[zio.telemetry.opentelemetry.tracing.Tracing],
       users: UserRepository = userRepo,
-      roles: UserRolesRepository = rolesRepo,
       sessions: SessionRepository = sessionRepo,
       throttle: ChallengeThrottleRepository = noopThrottle,
       passkey: PasskeyRepository = noopPasskeyRepo,
@@ -79,7 +77,7 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
     Observability.handleErrors(
       UserController.routes
         .provideEnvironment(
-          ZEnvironment(users) ++ ZEnvironment(roles) ++ ZEnvironment(config) ++
+          ZEnvironment(users) ++ ZEnvironment(config) ++
             ZEnvironment(sessions) ++ ZEnvironment(sessionsService) ++ ZEnvironment(throttle) ++ ZEnvironment(passkey) ++
             ZEnvironment(noopPasswordSvc) ++ tracing,
         ),
@@ -135,7 +133,7 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
         client <- ZIO.service[Client]
         tracing <- NoopTracing.layer.build
         token <- validToken(secretKey)
-        _ <- rolesRepo.updateRoles.succeedsWith(())
+        _ <- userRepo.updateRoles.succeedsWith(())
         _ <- TestClient.addRoutes(routes(tracing))
         body = """{"userId":"00000000-0000-0000-0000-000000000001","tenantId":"t1","add":["r1"],"remove":[]}"""
         resp <- client.batched(
@@ -228,14 +226,14 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
       yield assertTrue(resp.status == Status.Unauthorized)
     },
     test("GET /users/roles with valid token returns the user's roles for the tenant") {
-      val repo = stub[UserRolesRepository]
+      val repo = stub[UserRepository]
       val userId = UserId(UUID.fromString("00000000-0000-0000-0000-000000000001"))
       for
         client  <- ZIO.service[Client]
         tracing <- NoopTracing.layer.build
         token   <- validToken(secretKey)
         _       <- repo.findRolesByUserAndTenant.succeedsWith(List(RoleId("admin"), RoleId("viewer")))
-        _       <- TestClient.addRoutes(routes(tracing, roles = repo))
+        _       <- TestClient.addRoutes(routes(tracing, users = repo))
         resp    <- client.batched(
           Request.get(
             (URL.empty / "users" / "roles")
@@ -449,7 +447,7 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
           Observability.handleErrors(
             UserController.routes
               .provideEnvironment(
-                ZEnvironment(userRepo) ++ ZEnvironment(rolesRepo) ++ ZEnvironment(config) ++
+                ZEnvironment(userRepo) ++ ZEnvironment(config) ++
                   ZEnvironment(sessionRepo) ++
                   ZEnvironment(noopThrottle) ++ ZEnvironment(noopPasskeyRepo) ++
                   ZEnvironment(sessionService) ++
@@ -484,7 +482,7 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
           Observability.handleErrors(
             UserController.routes
               .provideEnvironment(
-                ZEnvironment(userRepo) ++ ZEnvironment(rolesRepo) ++ ZEnvironment(config) ++
+                ZEnvironment(userRepo) ++ ZEnvironment(config) ++
                   ZEnvironment(sessionRepo) ++
                   ZEnvironment(noopThrottle) ++ ZEnvironment(noopPasskeyRepo) ++
                   ZEnvironment(sessionService) ++

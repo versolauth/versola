@@ -117,6 +117,7 @@ test('creates a client and shows the generated secret banner', async ({ page }) 
       equivalents: {},
       otpType: 'sms',
     },
+    registrationFlow: null,
     otpTemplateId: 'default',
     theme: 'default',
     frontChannelLogoutUri: null,
@@ -166,6 +167,109 @@ test('shows OTP settings for OTP factors and locks channel for phone credentials
   const passkeyFactor = page.getByText('Passkey next factor', { exact: true }).locator('..');
   await passkeyFactor.getByRole('combobox').selectOption('otp');
   await expect(page.getByText('OTP Settings', { exact: true })).toBeVisible();
+});
+
+test('configures a registration flow and sends it when creating a client', async ({ page }) => {
+  const api = await loadAdminApp(page, {
+    path: clientsPath,
+    state: {
+      clients: { 'tenant-alpha': [alphaClient] },
+      roles: {
+        'tenant-alpha': [
+          { id: 'user', description: { en: 'User' }, permissions: [], active: true },
+          { id: 'alpha-admin', description: { en: 'Alpha admin' }, permissions: ['alpha.read'], active: true },
+        ],
+      },
+    },
+  });
+
+  await page.getByRole('button', { name: '+ Create Client', exact: true }).click();
+  await page.getByLabel('Client ID').fill('registering-client');
+  await page.getByLabel('Client Name').fill('Registering Client');
+  await page.getByPlaceholder('https://app.example.com/callback').fill('https://registering.example/callback');
+  await page.getByPlaceholder('https://app.example.com/callback').press('Enter');
+
+  const registrationRow = page.getByText('Registration', { exact: true }).locator('..');
+  await registrationRow.locator('label.toggle').click();
+
+  await expect(page.locator('[aria-label="Registration credential (locked)"]')).toContainText('phone');
+  await expect(page.getByText('New users prove ownership of their phone with an OTP.', { exact: true })).toBeVisible();
+  await expect(page.getByText('Granted once, when the account is created.', { exact: true })).toBeVisible();
+
+  const challenge = page.getByLabel('Challenge', { exact: true });
+  await expect(challenge).toHaveValue('none');
+  await challenge.selectOption('setPassword');
+
+  const roles = page.getByRole('group', { name: 'Assigned roles' });
+  await expect(roles.getByRole('checkbox', { name: 'user', exact: true })).toBeChecked();
+  await roles.getByRole('checkbox', { name: 'alpha-admin', exact: true }).check();
+
+  await page.getByRole('button', { name: 'Create Client', exact: true }).click();
+
+  expect(findRequest(api.requests, 'POST', '/configuration/clients').body).toMatchObject({
+    registrationFlow: {
+      credential: 'phone',
+      steps: [{ type: 'otp' }, { type: 'setPassword' }],
+      roleIds: ['user', 'alpha-admin'],
+    },
+  });
+});
+
+test('hides registration settings when inline password is enabled', async ({ page }) => {
+  const api = await loadAdminApp(page, {
+    path: clientsPath,
+    state: { clients: { 'tenant-alpha': [alphaClient] } },
+  });
+
+  await page.getByRole('button', { name: '+ Create Client', exact: true }).click();
+  await page.getByLabel('Client ID').fill('inline-password-client');
+  await page.getByLabel('Client Name').fill('Inline Password Client');
+  await page.getByPlaceholder('https://app.example.com/callback').fill('https://inline-password.example/callback');
+  await page.getByPlaceholder('https://app.example.com/callback').press('Enter');
+
+  const registrationRow = page.getByText('Registration', { exact: true }).locator('..');
+  await registrationRow.locator('label.toggle').click();
+  await expect(page.getByText('Assigned roles *', { exact: true })).toBeVisible();
+
+  await page.getByRole('checkbox', { name: 'inline password', exact: true }).check();
+  await expect(page.getByText('Registration', { exact: true })).toHaveCount(0);
+
+  await page.getByRole('button', { name: 'Create Client', exact: true }).click();
+
+  expect(findRequest(api.requests, 'POST', '/configuration/clients').body).toMatchObject({
+    authFlow: {
+      primary: {
+        inlinePassword: true,
+      },
+    },
+    registrationFlow: null,
+  });
+});
+
+test('hides registration settings for a login+password flow', async ({ page }) => {
+  const api = await loadAdminApp(page, {
+    path: clientsPath,
+    state: { clients: { 'tenant-alpha': [alphaClient] } },
+  });
+
+  await page.getByRole('button', { name: '+ Create Client', exact: true }).click();
+  await page.getByLabel('Client ID').fill('login-password-client');
+  await page.getByLabel('Client Name').fill('Login Password Client');
+  await page.getByPlaceholder('https://app.example.com/callback').fill('https://login-password.example/callback');
+  await page.getByPlaceholder('https://app.example.com/callback').press('Enter');
+
+  const registrationRow = page.getByText('Registration', { exact: true }).locator('..');
+  await registrationRow.locator('label.toggle').click();
+  await expect(page.getByText('Assigned roles *', { exact: true })).toBeVisible();
+
+  await page.getByRole('button', { name: 'login + password', exact: true }).click();
+  await expect(page.getByText('Registration', { exact: true })).toHaveCount(0);
+
+  await page.getByRole('button', { name: 'Create Client', exact: true }).click();
+
+  expect(findRequest(api.requests, 'POST', '/configuration/clients').body).toMatchObject({
+    registrationFlow: null,
+  });
 });
 
 test('hides logout settings and clears logout values when auth flow is disabled', async ({ page }) => {
@@ -335,6 +439,29 @@ test('updates a client and sends patch-style changes', async ({ page }) => {
   });
 });
 
+test('clears the auth flow on an existing client by sending an explicit null', async ({ page }) => {
+  const api = await loadAdminApp(page, {
+    path: clientsPath,
+    state: {
+      clients: { 'tenant-alpha': [alphaClient] },
+      scopes: { 'tenant-alpha': [{ scope: 'openid', description: { en: 'OpenID scope' }, claims: [] }] },
+    },
+  });
+
+  await clientCard(page, 'Alpha Web').getByRole('button', { name: 'Edit client alpha-web' }).click();
+
+  const authFlowRow = page.getByText('Authorization Flow', { exact: true }).locator('..');
+  await authFlowRow.locator('label.toggle').click();
+
+  await page.getByRole('button', { name: 'Update Client', exact: true }).click();
+
+  // An explicit null is required: an omitted key would leave the stored flow in place.
+  expect(findRequest(api.requests, 'PUT', '/configuration/clients').body).toMatchObject({
+    clientId: 'alpha-web',
+    authFlow: null,
+  });
+});
+
 test('rotates a client secret and deletes the previous secret', async ({ page }) => {
   const api = await loadAdminApp(page, { path: clientsPath });
 
@@ -433,6 +560,7 @@ test('shows error alert when creating a client with duplicate ID', async ({ page
       equivalents: {},
       otpType: 'sms',
     },
+    registrationFlow: null,
     otpTemplateId: 'default',
     theme: 'default',
     frontChannelLogoutUri: null,

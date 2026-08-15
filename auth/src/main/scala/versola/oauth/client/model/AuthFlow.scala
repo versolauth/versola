@@ -1,11 +1,22 @@
 package versola.oauth.client.model
 
+import versola.util.{Email, Phone}
 import zio.json.JsonCodec
 import zio.prelude.Equal
 import zio.schema.*
 
 enum PrimaryCredential derives JsonCodec, Schema, Equal:
   case email, phone, login
+
+enum RegistrationCredential derives JsonCodec, Schema, Equal:
+  case email, phone
+
+object RegistrationCredential:
+  def from(credential: Either[Email, Phone]): RegistrationCredential =
+    credential.fold(
+      _ => RegistrationCredential.email,
+      _ => RegistrationCredential.phone,
+    )
 
 enum OtpType derives JsonCodec, Schema, Equal:
   case sms, email

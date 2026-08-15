@@ -2,7 +2,7 @@ import { LitElement, html, css } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
 import { badgeStyles, buttonStyles, cardStyles, formStyles } from '../styles/components';
-import {AuthFlow, AuthorizationPreset, OAuthClient, OAuthScope, OtpTemplateRecord, Permission, Resource, ThemeRecord} from '../types';
+import {AuthFlow, AuthorizationPreset, OAuthClient, OAuthScope, OtpTemplateRecord, Permission, Resource, Role, ThemeRecord} from '../types';
 import {
   createClient,
   deleteClient,
@@ -14,6 +14,7 @@ import {
   fetchThemes,
   getPermissions,
   getResources,
+  getRoles,
   getScopes,
   rotateClientSecret,
   saveClientPresets,
@@ -49,6 +50,7 @@ export class VersolaClientsList extends LitElement {
   @state() private availableResources: Resource[] = [];
   @state() private availableThemes: ThemeRecord[] = [];
   @state() private availableOtpTemplates: OtpTemplateRecord[] = [];
+  @state() private availableRoles: Role[] = [];
   @state() private availablePostLogoutRedirectUris: string[] = [];
   @state() private isPreparingForm = false;
   @state() private createdSecret: { clientName: string; secret: string; action: 'created' | 'rotated' } | null = null;
@@ -68,6 +70,7 @@ export class VersolaClientsList extends LitElement {
       this.availableScopes = [];
       this.availablePermissions = [];
       this.availableResources = [];
+      this.availableRoles = [];
       this.availablePostLogoutRedirectUris = [];
       this.createdSecret = null;
       this.copyFeedback = '';
@@ -688,13 +691,14 @@ export class VersolaClientsList extends LitElement {
       return;
     }
 
-    const [scopes, permissions, resources, themes, otpTemplates, challengeSettings] = await Promise.all([
+    const [scopes, permissions, resources, themes, otpTemplates, challengeSettings, roles] = await Promise.all([
       getScopes(tenantId),
       getPermissions(tenantId),
       getResources(tenantId),
       fetchThemes(tenantId),
       fetchOtpTemplates(tenantId),
       fetchChallengeSettings(tenantId),
+      getRoles(tenantId),
     ]);
 
     if (this.tenantId === tenantId) {
@@ -703,6 +707,7 @@ export class VersolaClientsList extends LitElement {
       this.availableResources = resources;
       this.availableThemes = themes;
       this.availableOtpTemplates = otpTemplates;
+      this.availableRoles = roles;
       this.availablePostLogoutRedirectUris = challengeSettings?.postLogoutRedirectUris ?? [];
       this.formOptionsTenantId = tenantId;
     }
@@ -998,6 +1003,7 @@ export class VersolaClientsList extends LitElement {
           .availableResources=${this.availableResources}
           .availableThemes=${this.availableThemes}
           .availableOtpTemplates=${this.availableOtpTemplates}
+          .availableRoles=${this.availableRoles}
           .canManageSecrets=${this.canManageSecrets}
           @close=${this.handleFormClose}
           @delete-previous-secret=${this.handleDeletePreviousSecret}

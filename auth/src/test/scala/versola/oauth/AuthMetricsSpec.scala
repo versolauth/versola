@@ -39,6 +39,8 @@ object AuthMetricsSpec extends ZIOSpecDefault:
       equivalents = Map.empty,
       otpType = versola.oauth.client.model.OtpType.email,
     ),
+    registrationFlow = None,
+    registrationStep = None,
     userAgent = None,
     userAgentCookie = None,
     version = 0,

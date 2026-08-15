@@ -12,6 +12,8 @@ object ConversationStep:
       primaryCredentials: List[PrimaryCredential],
       inlinePassword: Boolean,
       passkey: Boolean,
+      /** Whether the card offers a register button alongside sign-in. */
+      registration: Boolean = false,
       passkeyRequest: Option[String] = None, // serialized assertion ceremony state, set by GET options
       passkeyFailed: Boolean = false, // set when a submitted assertion fails verification
       loginFailed: Boolean = false, // set when login+password submission fails authentication

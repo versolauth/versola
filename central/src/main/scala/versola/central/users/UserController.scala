@@ -1,8 +1,9 @@
 package versola.central.users
 
+import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
+import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.TenantId
-import versola.central.authorizeBasic
 import versola.util.http.Controller
 import versola.util.{Email, EnvName, Phone}
 import zio.ZIO
@@ -11,13 +12,14 @@ import zio.json.EncoderOps
 import zio.telemetry.opentelemetry.tracing.Tracing
 
 object UserController extends Controller:
-  type Env = Tracing & UserService & ResourceService & EnvName
+  type Env = Tracing & CentralConfig & EdgeService & UserService & ResourceService & EnvName
 
   def routes: Routes[Env, Throwable] = Routes(
     findUsersEndpoint,
     getUserRolesEndpoint,
     getUserSessionsEndpoint,
     createUserEndpoint,
+    registeredUserEndpoint,
     patchUserEndpoint,
     patchUserClaimsEndpoint,
     patchRolesEndpoint,
@@ -83,6 +85,19 @@ object UserController extends Controller:
         .catchAll:
           case UserConflict => ZIO.succeed(Response.status(Status.Conflict))
           case error: Throwable => ZIO.fail(error)
+    }
+
+  val registeredUserEndpoint =
+    Method.POST / "users" / "registrations" -> handler { (request: Request) =>
+      (for
+        _ <- authorizeInternal(request)
+        service <- ZIO.service[UserService]
+        body <- request.body.asJsonFromCodec[RegisteredUserRequest]
+        userId <- service.indexRegistered(body)
+      yield Response.json(RegisteredUserResponse(userId).toJson))
+        .catchAll:
+          case UserIndexConflict => ZIO.succeed(Response.status(Status.Conflict))
+          case error: Throwable  => ZIO.fail(error)
     }
 
   val patchUserEndpoint =

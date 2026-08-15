@@ -15,6 +15,7 @@ import type {
   OAuthClient,
   OAuthScope,
   Permission,
+  RegistrationFlow,
   Resource,
   ResourceEndpoint,
   ResourceEndpointId,
@@ -95,6 +96,8 @@ type TenantsResponse = { tenants: Array<{ id: string; description: string; edgeI
 type PermissionsResponse = { permissions: Array<{ permission: string; description: LocalizedDescription; endpointIds: ResourceEndpointId[] }> };
 type ScopesResponse = { scopes: Array<{ scope: string; description: LocalizedDescription; claims: Array<{ claim: string; description: LocalizedDescription }> }> };
 type BackendAuthFactor = { type: string; required: boolean };
+type BackendRegistrationStep = { type: string };
+type BackendRegistrationFlow = { credential: string; steps: BackendRegistrationStep[]; roleIds: string[] };
 type BackendAuthFlow = {
   primary: { credentials: string[]; inlinePassword: boolean; factors: BackendAuthFactor[] };
   passkey?: { factors: BackendAuthFactor[] } | null;
@@ -112,6 +115,7 @@ type ClientsResponse = {
     theme: string;
     otpTemplateId: string;
     authFlow?: BackendAuthFlow | null;
+    registrationFlow?: BackendRegistrationFlow | null;
     frontChannelLogoutUri?: string | null;
     frontChannelLogoutSessionRequired: boolean;
     backChannelLogoutUri?: string | null;
@@ -158,6 +162,24 @@ function authFlowFromBackend(flow: BackendAuthFlow | null | undefined): AuthFlow
     passkey: flow.passkey != null,
     passkeyFactors: (flow.passkey?.factors ?? []) as AuthFlow['passkeyFactors'],
     equivalents: flow.equivalents ?? {},
+  };
+}
+
+function registrationFlowToBackend(flow: RegistrationFlow | null | undefined): BackendRegistrationFlow | null {
+  if (!flow) return null;
+  return {
+    credential: flow.credential,
+    steps: flow.steps.map(step => ({ type: step.type })),
+    roleIds: unique(flow.roleIds),
+  };
+}
+
+function registrationFlowFromBackend(flow: BackendRegistrationFlow | null | undefined): RegistrationFlow | null {
+  if (!flow) return null;
+  return {
+    credential: flow.credential as RegistrationFlow['credential'],
+    steps: flow.steps.map(step => ({ type: step.type as RegistrationFlow['steps'][number]['type'] })),
+    roleIds: unique(flow.roleIds),
   };
 }
 
@@ -592,6 +614,7 @@ export async function fetchClients(tenantId: string, offset = 0, limit = DEFAULT
         theme: client.theme ?? 'default',
         otpTemplateId: client.otpTemplateId ?? null,
         authFlow: authFlowFromBackend(client.authFlow),
+        registrationFlow: registrationFlowFromBackend(client.registrationFlow),
         frontChannelLogoutUri: client.frontChannelLogoutUri ?? null,
         frontChannelLogoutSessionRequired: client.frontChannelLogoutSessionRequired,
         backChannelLogoutUri: client.backChannelLogoutUri ?? null,
@@ -911,6 +934,7 @@ export async function createClient(tenantId: string, client: OAuthClient): Promi
       theme: client.theme ?? 'default',
       otpTemplateId: client.otpTemplateId ?? null,
       authFlow: authFlowToBackend(client.authFlow),
+      registrationFlow: registrationFlowToBackend(client.registrationFlow),
       frontChannelLogoutUri: client.frontChannelLogoutUri ?? null,
       frontChannelLogoutSessionRequired: client.frontChannelLogoutSessionRequired,
       backChannelLogoutUri: client.backChannelLogoutUri ?? null,
@@ -966,6 +990,10 @@ export async function updateClient(tenantId: string, existing: OAuthClient, clie
       theme: existing.theme !== client.theme ? client.theme : undefined,
       otpTemplateId: existing.otpTemplateId !== client.otpTemplateId ? (client.otpTemplateId ?? null) : undefined,
       authFlow: authFlowToBackend(client.authFlow),
+      // Patch semantics: omitted leaves the stored flow alone, null clears it.
+      registrationFlow: sameRegistrationFlow(existing.registrationFlow, client.registrationFlow)
+        ? undefined
+        : registrationFlowToBackend(client.registrationFlow),
       frontChannelLogoutUri: existing.frontChannelLogoutUri !== client.frontChannelLogoutUri ? (client.frontChannelLogoutUri ?? null) : undefined,
       frontChannelLogoutSessionRequired: existing.frontChannelLogoutSessionRequired !== client.frontChannelLogoutSessionRequired ? client.frontChannelLogoutSessionRequired : undefined,
       backChannelLogoutUri: existing.backChannelLogoutUri !== client.backChannelLogoutUri ? (client.backChannelLogoutUri ?? null) : undefined,
@@ -976,6 +1004,15 @@ export async function updateClient(tenantId: string, existing: OAuthClient, clie
     accessTokenTtl: client.accessTokenTtl,
     hasPreviousSecret: client.hasPreviousSecret,
   });
+}
+
+function sameRegistrationFlow(a: RegistrationFlow | null | undefined, b: RegistrationFlow | null | undefined): boolean {
+  if (!a || !b) return !a && !b;
+  return a.credential === b.credential
+    && a.roleIds.length === b.roleIds.length
+    && a.roleIds.every(roleId => b.roleIds.includes(roleId))
+    && a.steps.length === b.steps.length
+    && a.steps.every((step, index) => step.type === b.steps[index]?.type);
 }
 
 export async function deleteClient(tenantId: string, clientId: string): Promise<void> {

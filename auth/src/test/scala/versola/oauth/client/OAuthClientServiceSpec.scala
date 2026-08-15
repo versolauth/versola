@@ -31,6 +31,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
     refreshTokenTtl = 7776000.seconds,
     theme = "default",
     authFlow = None,
+    registrationFlow = None,
     otpTemplateId = "default",
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
@@ -48,6 +49,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
     refreshTokenTtl = 7776000.seconds,
     theme = "default",
     authFlow = None,
+    registrationFlow = None,
     otpTemplateId = "default",
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
@@ -65,6 +67,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
     refreshTokenTtl = 7776000.seconds,
     theme = "default",
     authFlow = None,
+    registrationFlow = None,
     otpTemplateId = "default",
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
@@ -175,6 +178,12 @@ object OAuthClientServiceSpec extends UnitSpecBase:
         env <- makeEnv()
         result <- env.service.find(ClientId("missing"))
       yield assertTrue(result.isEmpty)
+    },
+    test("get returns existing client") {
+      for
+        env <- makeEnv()
+        result <- env.service.get(clientId1)
+      yield assertTrue(result == privateClient1)
     },
     test("verifySecret accepts public client only without secret") {
       for

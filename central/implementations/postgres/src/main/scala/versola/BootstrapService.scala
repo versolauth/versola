@@ -3,7 +3,7 @@ package versola
 import versola.central.CentralConfig
 import versola.central.configuration.challenges.{ChallengeSettingsRecord, ChallengeSettingsRepository, OtpChallengeRepository, OtpTemplateChannel, OtpTemplatePurpose, OtpTemplateRecord, PasskeySettings, RateLimit, SubmissionLimits}
 import versola.central.configuration.system.{SystemSettingsRecord, SystemSettingsRepository}
-import versola.central.configuration.clients.{AuthFactor, AuthFactorType, AuthFlow, AuthorizationPreset, AuthorizationPresetRepository, ClientAlreadyExists, ClientId, OAuthClientService, OtpType, PasskeyAuthFlow, PresetId, PrimaryAuthFlow, PrimaryCredential, ResponseType}
+import versola.central.configuration.clients.{AuthFactor, AuthFactorType, AuthFlow, AuthorizationPreset, AuthorizationPresetRepository, ClientAlreadyExists, ClientId, InvalidRegistrationConfiguration, OAuthClientService, OtpType, PasskeyAuthFlow, PresetId, PrimaryAuthFlow, PrimaryCredential, RegistrationFlow, ResponseType}
 import versola.central.configuration.edges.{EdgeId, EdgeRepository}
 import versola.central.configuration.forms.{BackendProperty, BooleanProperty, FormId, FormRepository, NumberProperty, StringArrayProperty}
 import versola.central.configuration.jwks.JwksRepository
@@ -17,7 +17,7 @@ import versola.central.configuration.themes.{ThemeRecord, ThemeRepository}
 import versola.central.configuration.{CreateClaim, CreateClientRequest, PatchClientRedirectUris, PatchClientScope, PatchPermissions, ResourceUri, UpdateClientRequest}
 import versola.central.configuration.metadata.ServerMetadataRepository
 import versola.central.users.{Login, UserConflict, UserId, UserRepository}
-import versola.util.{EnvName, Phone, RedirectUri, Secret, SecureRandom, SecurityService}
+import versola.util.{EnvName, Patch, Phone, RedirectUri, Secret, SecureRandom, SecurityService}
 import zio.json.DecoderOps
 import zio.json.ast.Json
 import zio.{Task, UIO, ZIO, ZLayer}
@@ -598,6 +598,7 @@ object BootstrapService:
           _ <- seedPermissions(tenantId)
           _ <- seedScopes(tenantId)
           _ <- seedRoles(tenantId)
+          _ <- seedRegistrationRole(tenantId)
           _ <- seedOtpTemplates(tenantId)
           _ <- seedPasswordTemplate(tenantId)
           _ <- seedChallengeSettings(tenantId, config.passkey)
@@ -629,6 +630,20 @@ object BootstrapService:
     private def seedRoles(tenantId: TenantId): Task[Unit] =
       ZIO.foreachDiscard(roleCatalog): (roleId, desc, perms) =>
         roleRepo.upsertRole(tenantId, roleId, desc, perms)
+
+    /** The role granted to self-registered users. Seeded without permissions and never
+      * overwritten, so permissions an administrator grants it later survive a restart.
+      */
+    private def seedRegistrationRole(tenantId: TenantId): Task[Unit] =
+      roleRepo.findRole(tenantId, RegistrationFlow.defaultRoleId).flatMap:
+        case Some(_) => ZIO.unit
+        case None =>
+          roleRepo.upsertRole(
+            tenantId,
+            RegistrationFlow.defaultRoleId,
+            localized("User", "Пользователь"),
+            List.empty,
+          )
 
     private def seedOtpTemplates(tenantId: TenantId): Task[Unit] =
       ZIO.foreachDiscard(
@@ -727,6 +742,7 @@ object BootstrapService:
         refreshTokenTtl = None,
         theme          = "default",
         authFlow       = Some(authFlow),
+        registrationFlow = None,
         otpTemplateId  = "default",
         frontChannelLogoutUri = config.frontChannelLogoutUri,
         frontChannelLogoutSessionRequired = true,
@@ -745,17 +761,25 @@ object BootstrapService:
                 accessTokenTtl = None,
                 refreshTokenTtl = None,
                 theme = None,
-                authFlow = Some(authFlow),
+                authFlow = Some(Patch.Modified(authFlow)),
+                registrationFlow = None,
                 otpTemplateId = None,
                 frontChannelLogoutUri = None,
                 frontChannelLogoutSessionRequired = None,
                 backChannelLogoutUri = None,
               ),
-            )
+            ).mapError(registrationConfigurationError)
+          case e: InvalidRegistrationConfiguration => ZIO.fail(registrationConfigurationError(e))
           case e: Throwable           => ZIO.fail(e)
         },
         _ => ZIO.unit,
       )
+
+    private def registrationConfigurationError(error: InvalidRegistrationConfiguration | Throwable): Throwable =
+      error match
+        case e: InvalidRegistrationConfiguration =>
+          new RuntimeException(s"Invalid registration configuration for central client: ${e.reason}")
+        case e: Throwable => e
 
     private def seedPresets(config: CentralConfig.BootstrapConfig): Task[Unit] =
       ZIO.foreachDiscard(config.presets.getOrElse(Nil)): seed =>
@@ -884,8 +908,5 @@ object BootstrapService:
 
     private def seedMetadata(config: CentralConfig.BootstrapConfig): Task[Unit] =
       ZIO.foreachDiscard(config.metadata): metadata =>
-        metadataRepo.get.flatMap:
-          case Some(_) => ZIO.unit
-          case None    =>
-            ZIO.logInfo("Seeding server metadata from bootstrap config...") *>
-              metadataRepo.upsert(metadata)
+        ZIO.logInfo("Seeding server metadata from bootstrap config...") *>
+          metadataRepo.upsert(metadata)

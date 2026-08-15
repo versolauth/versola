@@ -1,4 +1,4 @@
-import { AuthFlow, PaginatedResponse, Permission, Resource, SortConfig } from '../types';
+import { AuthFlow, PaginatedResponse, Permission, RegistrationFlow, Resource, SortConfig } from '../types';
 
 /**
  * Default authentication flow: phone primary credential + required OTP.
@@ -13,6 +13,20 @@ export function createDefaultAuthFlow(): AuthFlow {
     factors: [{ type: 'otp', required: true }],
     passkeyFactors: [],
     equivalents: {},
+  };
+}
+
+/** Role granted to self-registered users; seeded without permissions by central's bootstrap. */
+export const DEFAULT_REGISTRATION_ROLE_ID = 'user';
+
+/**
+ * Default registration flow: prove ownership of the phone entry credential with an OTP.
+ */
+export function createDefaultRegistrationFlow(): RegistrationFlow {
+  return {
+    credential: 'phone',
+    steps: [{ type: 'otp' }],
+    roleIds: [DEFAULT_REGISTRATION_ROLE_ID],
   };
 }
 
