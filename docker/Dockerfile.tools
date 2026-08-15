@@ -81,6 +81,7 @@ WORKDIR /opt/versola-tools
 COPY scripts/target/universal/stage .
 COPY docker/versola-tools/nginx.conf.template .
 COPY docker/versola-tools/compose.fragment.yml.template .
+COPY docker/versola-tools/compose.fragment.vps.yml.template .
 # Was missing from this Dockerfile before this rewrite, even though
 # entrypoint.sh has always copied it through to $OUT_DIR -- a pre-existing
 # gap, not something introduced here; fixed while this file was already
@@ -95,10 +96,15 @@ RUN chmod +x entrypoint.sh
 # broken build (e.g. jlink's --add-modules list missing something
 # gen-env.scala/its dependencies need, which jdeps' static analysis can
 # miss for reflective/internal-API usage) fails loudly here instead of
-# only surfacing the first time someone runs "versola bootstrap local".
+# only surfacing the first time someone runs "versola bootstrap local" or
+# "versola configure vps". Both non-interactive targets are exercised,
+# not just docker-local, since vps's branch of gen-env.scala (Postgres
+# password/admin bootstrap password placeholders, host-network URL
+# defaults) is new code this same build could just as easily break.
 # Output discarded -- gen-env.scala generates fresh random secrets/keys
 # every run, and every real deployment needs its own, not whatever got
 # baked in here.
 RUN printf 'docker-local\n' | java -cp 'lib/*' genEnv && rm -rf .local
+RUN printf 'vps\n' | java -cp 'lib/*' genEnv && rm -rf .local
 
 ENTRYPOINT ["./entrypoint.sh"]
