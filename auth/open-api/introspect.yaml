@@ -116,6 +116,13 @@ components:
           type: string
         jti:
           type: string
+        authorization_details:
+          type: array
+          items:
+            type: object
+          description: |
+            RFC 9396 §9: the authorization details associated with the token, unchanged from
+            how they were granted. Absent when the token carries none.
 
     ErrorResponse:
       type: object

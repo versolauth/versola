@@ -127,7 +127,19 @@ components:
           items:
             type: string
             format: uri
-          description: Repeatable, or a single space-delimited value.
+          description: |
+            RFC 8707 resource indicator. Repeatable, or a single space-delimited value. Public
+            resources may be requested directly by URI; internal resources (addressed as
+            `resource://{resourceId}`) may be requested only alongside the edge indicator
+            `resource://edge`, since the client never contacts an internal resource itself.
+        authorization_details:
+          type: string
+          contentMediaType: application/json
+          description: |
+            RFC 9396 fine-grained authorization request: a JSON array of objects, each
+            validated against the JSON Schema registered for its `type` in the client's
+            tenant. An object's `locations`, when present, follow the same public/internal
+            rule as `resource`.
 
     PushedAuthorizationResponse:
       type: object
@@ -178,7 +190,8 @@ components:
         `invalid_request` when `request_uri` was supplied, `client_id` is missing, or the body
         is not a readable form. Otherwise the authorization-request validation error, reported
         with the same `error` code `/authorize` would have redirected — for example
-        `unsupported_response_type`, `invalid_scope` or `invalid_target`.
+        `unsupported_response_type`, `invalid_scope`, `invalid_target` or
+        `invalid_authorization_details`.
       headers:
         Cache-Control:
           schema:

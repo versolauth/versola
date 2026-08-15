@@ -46,6 +46,7 @@ paths:
         - $ref: '#/components/parameters/LoginHint'
         - $ref: '#/components/parameters/IdTokenHint'
         - $ref: '#/components/parameters/Resource'
+        - $ref: '#/components/parameters/AuthorizationDetails'
         - $ref: '#/components/parameters/RequestUri'
         - $ref: '#/components/parameters/UserAgent'
         - $ref: '#/components/parameters/SessionCookie'
@@ -253,7 +254,15 @@ components:
       description: |
         RFC 8707 resource indicator. Repeatable; each value must resolve to a resource
         registered for the client's tenant, and determines the `aud` of the issued access
-        token. When omitted, the client's public resources plus the edge indicator are used.
+        token. When omitted, the client's public resources plus the edge indicator
+        (`resource://edge`) are used.
+
+        Resources are either public or internal. A public resource's own URI may be requested
+        directly; the issued token is meant to be presented to it. An internal resource is
+        addressed as `resource://{resourceId}` and may be requested only alongside
+        `resource://edge` — internal resources are never contacted directly by the client,
+        only reached through the edge service, which holds the credentials to call them and
+        strips the caller's token before forwarding.
       schema:
         type: array
         items:
@@ -262,6 +271,28 @@ components:
       style: form
       explode: true
       example: [https://api.example.com]
+
+    AuthorizationDetails:
+      name: authorization_details
+      in: query
+      required: false
+      description: |
+        RFC 9396 fine-grained authorization request: a JSON array of objects, each with a
+        `type` member (required) selecting one of the authorization detail types registered
+        for the client's tenant, plus whatever type-specific members that type's schema
+        defines. An object may also carry `locations`, validated exactly like the `resource`
+        parameter above (including the internal-resource / edge-indicator rule).
+
+        Every object must validate against its type's registered JSON Schema; an unknown
+        `type`, a schema violation, or an unregistered `locations` value fails the whole
+        request with `invalid_authorization_details`. The granted details are echoed back
+        unchanged in the token response's `authorization_details` member and carried in the
+        access token, for the resource server to act on.
+      schema:
+        type: string
+        contentMediaType: application/json
+      example: |
+        [{"type": "payment_initiation", "actions": ["initiate"], "locations": ["https://api.example.com"]}]
 
     RequestUri:
       name: request_uri
@@ -354,6 +385,9 @@ components:
           items:
             type: string
             format: uri
+        authorization_details:
+          type: string
+          contentMediaType: application/json
         request_uri:
           type: string
 
@@ -374,7 +408,7 @@ components:
 
         Error codes returned on the redirect: `invalid_request`, `unsupported_response_type`,
         `invalid_scope`, `login_required`, `access_denied`, `invalid_target`,
-        `unmet_authentication_requirements`.
+        `invalid_authorization_details`, `unmet_authentication_requirements`.
       headers:
         Location:
           required: true

@@ -132,7 +132,19 @@ components:
           items:
             type: string
             format: uri
-          description: RFC 8707 resource indicators narrowing the `aud` of the new access token. Repeatable.
+          description: |
+            RFC 8707 resource indicators narrowing the `aud` of the new access token.
+            Repeatable. Each value must already be part of the token's granted audience;
+            internal resources (`resource://{resourceId}`) may only be requested alongside the
+            edge indicator `resource://edge`, which the original grant must also have covered.
+        authorization_details:
+          type: string
+          contentMediaType: application/json
+          description: |
+            RFC 9396 §6: narrows the granted authorization details to the JSON array given
+            here. Every object must exactly match one that was granted — dropping a detail is
+            allowed, altering one is not; an empty array or a value not found in the grant
+            fails the request.
         client_id:
           type: string
         client_secret:
@@ -156,7 +168,18 @@ components:
           items:
             type: string
             format: uri
-          description: RFC 8707 resource indicators. Repeatable.
+          description: |
+            RFC 8707 resource indicators. Repeatable. Public resources registered for the
+            client's tenant may be requested directly; internal resources
+            (`resource://{resourceId}`) may only be requested alongside the edge indicator
+            `resource://edge`.
+        authorization_details:
+          type: string
+          contentMediaType: application/json
+          description: |
+            RFC 9396 fine-grained authorization request. There is no underlying grant for
+            `client_credentials`, so each object is validated only against the JSON Schema
+            registered for its `type` in the client's tenant.
         client_id:
           type: string
         client_secret:
@@ -191,6 +214,14 @@ components:
             Signed JWT, returned only when the grant is bound to a user and the granted scope
             contains `openid`. Includes `at_hash`, `sid`, and the claims selected by scope and
             by the `claims` request parameter.
+        authorization_details:
+          type: array
+          items:
+            type: object
+          description: |
+            RFC 9396 §7: the authorization details granted, echoed back unchanged from how they
+            were requested and granted. Omitted when the grant carries none. The same value is
+            carried as a claim in the access token.
 
     TokenErrorResponse:
       type: object
@@ -205,6 +236,7 @@ components:
             - unsupported_grant_type
             - invalid_scope
             - invalid_target
+            - invalid_authorization_details
         error_description:
           type: string
         error_uri:
@@ -233,7 +265,12 @@ components:
           to a different client or redirect URI, or PKCE verification failed.
         - `unsupported_grant_type` — `grant_type` is absent or not one of the three supported values.
         - `invalid_scope` — the requested scope exceeds what was granted.
-        - `invalid_target` — a `resource` value is unknown for the client's tenant.
+        - `invalid_target` — a `resource` value is unknown for the client's tenant, or is not
+          part of (or, for internal resources, not accompanied by the edge indicator within)
+          the underlying grant.
+        - `invalid_authorization_details` — an `authorization_details` object is unknown for
+          the client's tenant, fails its type's schema, or (for `refresh_token`) does not
+          exactly match one already granted.
       headers:
         Cache-Control:
           schema:

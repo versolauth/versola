@@ -121,6 +121,13 @@ components:
           type: array
           items:
             type: string
+        authorization_details_types_supported:
+          type: array
+          items:
+            type: string
+          description: |
+            RFC 9396 §18: the `type` values registered for the tenant, each usable in the
+            `authorization_details` parameter of `/authorize`, `/par` and `/token`.
 
   responses:
     Metadata:
