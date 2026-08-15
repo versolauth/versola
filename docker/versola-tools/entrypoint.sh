@@ -32,6 +32,18 @@ cp .local/env/docker-local/auth.conf    "$OUT_DIR"/auth.conf
 cp .local/env/docker-local/central.conf "$OUT_DIR"/central.conf
 cp .local/env/docker-local/edge.conf    "$OUT_DIR"/edge.conf
 
+# auth.conf/central.conf/edge.conf above reference these as ${?VAR} HOCON
+# placeholders instead of literal values (see gen-env.scala's secretField)
+# -- versola-cli reads the freshly generated candidates here, resolves
+# each against OpenBao (an existing value wins over regenerating one), and
+# writes the result as <service>.secrets.env for Compose to load into the
+# container. These *.generated-secrets.env files are the untrusted-until-
+# resolved candidates, not the final values -- versola-cli, not this
+# image, decides which of these actually get used.
+cp .local/env/docker-local/auth.generated-secrets.env    "$OUT_DIR"/auth.generated-secrets.env
+cp .local/env/docker-local/central.generated-secrets.env "$OUT_DIR"/central.generated-secrets.env
+cp .local/env/docker-local/edge.generated-secrets.env    "$OUT_DIR"/edge.generated-secrets.env
+
 # Bake this image's own version into the compose fragment so it pulls the
 # matching auth/central/edge/gateway images. sed instead of envsubst: fewer
 # assumptions about what's installed in the base image, and there are no
@@ -41,4 +53,4 @@ cp nginx.conf.template "$OUT_DIR"/nginx.conf
 cp proxy_params.conf.template "$OUT_DIR"/proxy_params.conf
 cp openbao.hcl.template "$OUT_DIR"/openbao.hcl
 
-echo "versola-tools: wrote auth.conf, central.conf, edge.conf, compose.fragment.yml, nginx.conf, proxy_params.conf, openbao.hcl to $OUT_DIR"
+echo "versola-tools: wrote auth.conf, central.conf, edge.conf, *.generated-secrets.env, compose.fragment.yml, nginx.conf, proxy_params.conf, openbao.hcl to $OUT_DIR"

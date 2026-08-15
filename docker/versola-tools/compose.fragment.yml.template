@@ -66,6 +66,12 @@ services:
       PORT: 8090
       DPORT: 8091
       CONFIG_PATH: /app/config/env.conf
+    # Resolved by versola-cli against OpenBao, not written by this image --
+    # central.conf's secret fields are ${?VAR} placeholders (see
+    # gen-env.scala's secretField) that only resolve if the matching
+    # variable actually exists in this container's environment.
+    env_file:
+      - ./central.secrets.env
     volumes:
       - ./central.conf:/app/config/env.conf:ro
     ports:
@@ -100,6 +106,8 @@ services:
       PORT: 8080
       DPORT: 8081
       CONFIG_PATH: /app/config/env.conf
+    env_file:
+      - ./auth.secrets.env
     volumes:
       - ./auth.conf:/app/config/env.conf:ro
     ports:
@@ -116,6 +124,8 @@ services:
       PORT: 8095
       DPORT: 8096
       CONFIG_PATH: /app/config/env.conf
+    env_file:
+      - ./edge.secrets.env
     volumes:
       - ./edge.conf:/app/config/env.conf:ro
     ports:

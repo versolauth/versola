@@ -71,6 +71,42 @@ def writeFile(dir: File, name: String, content: String): Unit =
   finally pw.close()
   println(s"  Written: ${f.getPath}")
 
+// ── Secret placeholders (docker-local only) ──────────────────────────────
+// In docker-local mode, every secret field this script generates becomes a
+// `${?VAR}` HOCON substitution placeholder instead of a literal value.
+// versola-cli resolves the real value -- reading it back from OpenBao if a
+// previous `configure` already generated one, or storing this run's
+// freshly generated value there if not -- and supplies it as a real
+// environment variable when it starts each container (see
+// writeGeneratedSecrets below, and versola-cli's openbao package). Every
+// other env (isLocal, and real interactive deployments) keeps writing the
+// value directly: only the docker-local path versola-tools' entrypoint.sh
+// drives is wired through OpenBao so far.
+//
+// isDockerLocal is a parameter, not a closed-over var like `interactive`
+// below: it's decided from a local val inside genEnv(), not top-level
+// mutable state, so there's nothing for a top-level def to close over.
+def secretField(isDockerLocal: Boolean, value: String, envVar: String): String =
+  if isDockerLocal then s"$${?$envVar}" else "\"" + value + "\""
+
+// Same idea as secretField, but for values the non-docker-local branches
+// wrap in HOCON triple-quotes (the RSA private keys) rather than a plain
+// quoted string -- preserves that exactly on every path this doesn't
+// change.
+def secretKeyField(isDockerLocal: Boolean, value: String, envVar: String): String =
+  if isDockerLocal then s"$${?$envVar}" else "\"\"\"" + value + "\"\"\""
+
+// Writes the values secretField/secretKeyField placeholdered out, as
+// plain KEY=value lines -- not JSON: this script has no JSON dependency,
+// and a dotenv-shaped file is what versola-cli ends up producing anyway
+// (after resolving each value against OpenBao) for Compose's `env_file:`
+// to load straight into the container. Only called when isDockerLocal;
+// every other env has nothing to write here since it never placeholdered
+// anything out in the first place.
+def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)]): Unit =
+  val content = secrets.map((k, v) => s"$k=$v").mkString("\n") + "\n"
+  writeFile(dir, name, content)
+
 @main def genEnv(): Unit =
   val rng = SecureRandom()
 
@@ -356,16 +392,16 @@ def writeFile(dir: File, name: String, content: String): Unit =
        |}
        |
        |security {
-       |  access-tokens-secret         = "$accessTokensSecret"
-       |  client-secrets-secret        = "$clientSecretsSecret"
-       |  refresh-tokens-secret        = "$refreshTokensSecret"
-       |  auth-codes-secret            = "$authCodesSecret"
-       |  sessions-secret              = "$sessionsSecret"
-       |  passwords-secret             = "$passwordsSecret"
-       |  conversation-cookie-secret   = "$conversationCookieSecret"
-       |  session-cookie-secret        = "$sessionCookieSecret"
-       |  user-agent-cookie-secret     = "$userAgentCookieSecret"
-       |  par-requests-secret          = "$parRequestsSecret"
+       |  access-tokens-secret         = ${secretField(isDockerLocal, accessTokensSecret, "ACCESS_TOKENS_SECRET")}
+       |  client-secrets-secret        = ${secretField(isDockerLocal, clientSecretsSecret, "CLIENT_SECRETS_SECRET")}
+       |  refresh-tokens-secret        = ${secretField(isDockerLocal, refreshTokensSecret, "REFRESH_TOKENS_SECRET")}
+       |  auth-codes-secret            = ${secretField(isDockerLocal, authCodesSecret, "AUTH_CODES_SECRET")}
+       |  sessions-secret              = ${secretField(isDockerLocal, sessionsSecret, "SESSIONS_SECRET")}
+       |  passwords-secret             = ${secretField(isDockerLocal, passwordsSecret, "PASSWORDS_SECRET")}
+       |  conversation-cookie-secret   = ${secretField(isDockerLocal, conversationCookieSecret, "CONVERSATION_COOKIE_SECRET")}
+       |  session-cookie-secret        = ${secretField(isDockerLocal, sessionCookieSecret, "SESSION_COOKIE_SECRET")}
+       |  user-agent-cookie-secret     = ${secretField(isDockerLocal, userAgentCookieSecret, "USER_AGENT_COOKIE_SECRET")}
+       |  par-requests-secret          = ${secretField(isDockerLocal, parRequestsSecret, "PAR_REQUESTS_SECRET")}
        |}
        |
        |par {
@@ -375,12 +411,12 @@ def writeFile(dir: File, name: String, content: String): Unit =
        |
        |jwt {
        |  issuer = "$authUrl"
-       |  private-key = \"\"\"${jwtKey.privateB64}\"\"\"
+       |  private-key = ${secretKeyField(isDockerLocal, jwtKey.privateB64, "JWT_PRIVATE_KEY")}
        |}
        |
        |central {
        |  url = "$centralUrl"
-       |  secret-key = "$centralSecretKey"
+       |  secret-key = ${secretField(isDockerLocal, centralSecretKey, "CENTRAL_SECRET_KEY")}
        |}
        |$otpBlock$smtpBlock
        |postgres {
@@ -458,11 +494,18 @@ def writeFile(dir: File, name: String, content: String): Unit =
        |  edges = [
        |    {
        |      id = "edge-default"
-       |      public-key-jwk = \"\"\"${edgeKey.jwk}\"\"\"
+       |      public-key-jwk = ${secretKeyField(isDockerLocal, edgeKey.jwk, "EDGE_PUBLIC_JWK")}
        |    }
        |  ]
-       |  # Matches the JWT signing key in auth (jwt.private-key).
-       |  jwks = \"\"\"$jwks\"\"\"
+       |  # Matches the JWT signing key in auth (jwt.private-key). Placeholdered
+       |  # together with EDGE_PUBLIC_JWK above, not just JWT_PRIVATE_KEY in
+       |  # auth.conf: this is the *public* half of that same key pair, and it
+       |  # has to come from the same resolved-or-generated source as the
+       |  # private half, or a second `configure` would reuse auth's old
+       |  # private key from OpenBao while writing a freshly generated public
+       |  # key here -- a pair that no longer matches, which is exactly what
+       |  # broke edge's sync calls to central (401s) before this existed.
+       |  jwks = ${secretKeyField(isDockerLocal, jwks, "JWKS_JSON")}
        |  metadata = \"\"\"$metadata\"\"\"
        |  presets = [
        |    {
@@ -480,8 +523,8 @@ def writeFile(dir: File, name: String, content: String): Unit =
        |  }
        |${bootstrapResourceSecretLine}|}
        |
-       |secret-key = "$centralSecretKey"
-       |client-secrets-secret = "$clientSecretsSecret"
+       |secret-key = ${secretField(isDockerLocal, centralSecretKey, "CENTRAL_SECRET_KEY")}
+       |client-secrets-secret = ${secretField(isDockerLocal, clientSecretsSecret, "CLIENT_SECRETS_SECRET")}
        |
        |auth {
        |  url = "$authInternalUrl"
@@ -517,15 +560,15 @@ def writeFile(dir: File, name: String, content: String): Unit =
        |id = "edge-default"
        |
        |key-id = "${edgeKey.kid}"
-       |private-key = \"\"\"${edgeKey.privateB64}\"\"\"
+       |private-key = ${secretKeyField(isDockerLocal, edgeKey.privateB64, "EDGE_PRIVATE_KEY")}
        |
        |security {
        |  token-encryption {
-       |    key = "$edgeTokenEncKey"
+       |    key = ${secretField(isDockerLocal, edgeTokenEncKey, "EDGE_TOKEN_ENC_KEY")}
        |  }
        |
        |  edge-sessions {
-       |    secret = "$edgeSessionsSecret"
+       |    secret = ${secretField(isDockerLocal, edgeSessionsSecret, "EDGE_SESSIONS_SECRET")}
        |    ttl = 30 days
        |  }
        |}
@@ -586,6 +629,45 @@ def writeFile(dir: File, name: String, content: String): Unit =
     writeFile(dir, "auth.conf",    authConf)
     writeFile(dir, "central.conf", centralConf)
     writeFile(dir, "edge.conf",    edgeConf)
+
+    // versola-cli resolves each of these against OpenBao (existing value
+    // wins; a first-time value gets stored there) before starting any
+    // container -- see the comment on secretField above. auth.conf and
+    // central.conf both reference CENTRAL_SECRET_KEY/CLIENT_SECRETS_SECRET,
+    // so both files carry them; versola-cli only needs to resolve each
+    // shared value once; writing it into both is harmless.
+    if isDockerLocal then
+      writeGeneratedSecrets(dir, "auth.generated-secrets.env", Seq(
+        "ACCESS_TOKENS_SECRET"       -> accessTokensSecret,
+        "CLIENT_SECRETS_SECRET"      -> clientSecretsSecret,
+        "REFRESH_TOKENS_SECRET"      -> refreshTokensSecret,
+        "AUTH_CODES_SECRET"          -> authCodesSecret,
+        "SESSIONS_SECRET"            -> sessionsSecret,
+        "PASSWORDS_SECRET"           -> passwordsSecret,
+        "CONVERSATION_COOKIE_SECRET" -> conversationCookieSecret,
+        "SESSION_COOKIE_SECRET"      -> sessionCookieSecret,
+        "USER_AGENT_COOKIE_SECRET"   -> userAgentCookieSecret,
+        "PAR_REQUESTS_SECRET"        -> parRequestsSecret,
+        "JWT_PRIVATE_KEY"            -> jwtKey.privateB64,
+        "CENTRAL_SECRET_KEY"         -> centralSecretKey,
+      ))
+      writeGeneratedSecrets(dir, "central.generated-secrets.env", Seq(
+        "CENTRAL_SECRET_KEY"    -> centralSecretKey,
+        "CLIENT_SECRETS_SECRET" -> clientSecretsSecret,
+        // Not secret in the confidentiality sense (these are public keys),
+        // but resolved through OpenBao the same as everything else here
+        // regardless -- see the comment on jwks/public-key-jwk above for
+        // why they have to travel with JWT_PRIVATE_KEY/EDGE_PRIVATE_KEY's
+        // resolution rather than being written fresh every run.
+        "JWKS_JSON"        -> jwks,
+        "EDGE_PUBLIC_JWK"  -> edgeKey.jwk,
+      ))
+      writeGeneratedSecrets(dir, "edge.generated-secrets.env", Seq(
+        "EDGE_PRIVATE_KEY"     -> edgeKey.privateB64,
+        "EDGE_TOKEN_ENC_KEY"   -> edgeTokenEncKey,
+        "EDGE_SESSIONS_SECRET" -> edgeSessionsSecret,
+      ))
+
     println(
       s"""
          |Done! Files written to .local/env/$env/
