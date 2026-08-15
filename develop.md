@@ -223,35 +223,83 @@ versola secrets login <target> http://127.0.0.1:8200 <role-id> <secret-id>
 
 (`http://localhost:8200` for `docker-local`.)
 
-### vps-specific: seeding the real Postgres password
+### vps-specific: seeding real values from the already-running VPS
 
-`docker-local`'s Postgres is a throwaway container this same `configure` run
-also creates, so there's nothing for a freshly generated password to
-disagree with. `vps`'s Postgres role (`versola_app`) already exists on the
-VPS with its own real password this script has no way to know — left alone,
-gen-env.scala's placeholder pipeline will generate and store a WRONG one the
-first time it runs against an empty OpenBao, and every service will then
-fail to start with a plain Postgres authentication error.
+`docker-local`'s Postgres, and every key/secret gen-env.scala generates for
+it, belong to a throwaway container this same `configure` run also creates
+-- there's nothing already in place for a freshly generated value to
+disagree with. `vps` is different: it's onboarding an *already-running*
+deployment onto OpenBao-managed secrets, and several values gen-env.scala
+would otherwise happily generate fresh already have real, in-use
+counterparts elsewhere that a fresh one won't match:
 
-Before the very first `versola configure vps <version>`, seed the real
-password by hand into all three of vps's per-service paths — auth, central,
-and edge each read the `POSTGRES_PASSWORD` key independently (see
-`resolveServiceSecrets` in `versola-cli`), so it has to be written to all
-three, not just one:
+- **`POSTGRES_PASSWORD`** -- the VPS's Postgres role (`versola_app`)
+  already exists with its own real password this script has no way to
+  know.
+- **`JWT_PRIVATE_KEY`** -- auth keeps its own persisted table of signing
+  keys and looks up whichever one is currently marked active to decide the
+  `kid` it puts on new tokens, independent of gen-env.scala entirely. A
+  freshly generated key signs with something that doesn't match that
+  active `kid`, so every token auth issues gets rejected by anything that
+  looks the `kid` up in the JWKS.
+- **`CLIENT_SECRETS_SECRET`** -- central already has OAuth client secrets
+  persisted (including edge-default's own resource secret), encrypted with
+  whatever this secret was when they were written. A freshly generated one
+  can't decrypt any of it.
+- **`EDGE_PRIVATE_KEY` / `EDGE_KEY_ID` / `EDGE_PUBLIC_JWK` / `JWKS_JSON`**
+  -- central's `bootstrap.edges` block only ever seeds edge-default's
+  public key into central's own DB if that row doesn't already exist; on
+  an already-running VPS it does, with the real edge's real public key. A
+  freshly generated edge key pair leaves edge signing with a private key
+  whose public half central never agreed to trust, so every sync call from
+  edge to central 401s. `JWKS_JSON` is auth's own public key wrapped the
+  same way gen-env.scala's `jwks` value is (`{"keys":[<jwk>]}`) -- its
+  `kid` has to match the `JWT_PRIVATE_KEY` seeded above, for the same
+  reason that key has to match auth's active-key table.
+
+Left alone, the first `configure vps` against an empty OpenBao generates
+and stores WRONG values for all of these -- and each fails differently and
+confusingly once actually exercised (wrong Postgres password → connection
+refused at startup; wrong JWT key or edge key → tokens/sync calls rejected
+downstream, not at startup, so it looks like everything came up fine).
+Pull the real current values from wherever the VPS's pre-migration
+auth.conf/central.conf/edge.conf (or equivalent) already keeps them, and
+seed all of them by hand before the very first
+`versola configure vps <version>` -- one combined `kv put` per path, since
+a second `kv put` to the same path would silently wipe out whatever the
+first one just wrote (`kv put` replaces the whole path, it doesn't merge):
 
 ```bash
 docker exec -it -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=<root token> versola-openbao \
-  bao kv put -mount=secret versola/vps/auth    POSTGRES_PASSWORD=<real password>
+  bao kv put -mount=secret versola/vps/auth \
+    POSTGRES_PASSWORD=<real password> \
+    JWT_PRIVATE_KEY=<real private key, base64> \
+    CLIENT_SECRETS_SECRET=<real value>
+
 docker exec -it -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=<root token> versola-openbao \
-  bao kv put -mount=secret versola/vps/central POSTGRES_PASSWORD=<real password>
+  bao kv put -mount=secret versola/vps/central \
+    POSTGRES_PASSWORD=<real password> \
+    CLIENT_SECRETS_SECRET=<real value> \
+    EDGE_PUBLIC_JWK=<real public JWK, as a single-line JSON string> \
+    JWKS_JSON='{"keys":[<real auth JWT public JWK>]}'
+
 docker exec -it -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=<root token> versola-openbao \
-  bao kv put -mount=secret versola/vps/edge    POSTGRES_PASSWORD=<real password>
+  bao kv put -mount=secret versola/vps/edge \
+    POSTGRES_PASSWORD=<real password> \
+    EDGE_PRIVATE_KEY=<real private key, base64> \
+    EDGE_KEY_ID=<real kid>
 ```
 
-Only safe as a plain `kv put` (which replaces everything already at that path)
-because nothing else has been written there yet. If any of these paths
-already holds other resolved secrets (i.e. this isn't the first `configure
-vps` run), use `bao kv patch` instead, which merges rather than replaces.
+`ADMIN_BOOTSTRAP_PASSWORD` is deliberately not in this list -- nothing
+outside this script already owns that value (see `bootstrapPasswordDefault`
+in gen-env.scala), so there's no real one to seed; letting OpenBao generate
+and keep the first one it sees is correct as-is.
+
+Each `kv put` above is safe as a single combined write because nothing else
+has been written to that path yet. Running any of these again later, once
+values already exist there (i.e. this isn't the first `configure vps`
+run), would wipe out whatever's already resolved -- use `bao kv patch`
+instead in that case, which merges rather than replaces.
 
 ## CI/CD Pipeline
 

@@ -594,7 +594,16 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
        |
        |id = "edge-default"
        |
-       |key-id = "${edgeKey.kid}"
+       |# Placeholdered together with EDGE_PRIVATE_KEY below, not left as a
+       |# plain literal: edgeKey.kid is derived from *today's* date (see
+       |# genRsaKey's caller above), so a literal here would silently drift to
+       |# a new kid on every later run even when EDGE_PRIVATE_KEY itself
+       |# resolves back to an older, already-stored key from OpenBao -- signing
+       |# with an old key but claiming a fresh kid is exactly the mismatch that
+       |# makes central reject edge's sync calls. Resolving both through
+       |# OpenBao together keeps them the same pair on every run, not just the
+       |# first.
+       |key-id = ${secretField(useOpenBao, edgeKey.kid, "EDGE_KEY_ID")}
        |private-key = ${secretKeyField(useOpenBao, edgeKey.privateB64, "EDGE_PRIVATE_KEY")}
        |
        |security {
@@ -713,6 +722,11 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
       val edgeExtras = if isVps then Seq("POSTGRES_PASSWORD" -> edgePgPass) else Seq.empty
       writeGeneratedSecrets(dir, "edge.generated-secrets.env", Seq(
         "EDGE_PRIVATE_KEY"     -> edgeKey.privateB64,
+        // Travels with EDGE_PRIVATE_KEY, not written separately -- see the
+        // comment on edgeConf's key-id line for why a bare literal here
+        // would drift out of sync with whichever private key actually ends
+        // up resolved.
+        "EDGE_KEY_ID"          -> edgeKey.kid,
         "EDGE_TOKEN_ENC_KEY"   -> edgeTokenEncKey,
         "EDGE_SESSIONS_SECRET" -> edgeSessionsSecret,
       ) ++ edgeExtras)
