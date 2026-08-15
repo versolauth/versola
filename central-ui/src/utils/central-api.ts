@@ -1188,6 +1188,9 @@ export async function deleteOtpTemplate(id: string, tenantId: string, purpose: s
 
 export type MyPermissionsResponse = {
   resources: Record<string, { permissions: string[] }>;
+  // Lets the console hide affordances that only exist outside production,
+  // such as revealing a generated temporary password.
+  isProd: boolean;
 };
 
 export async function fetchMyPermissions(): Promise<MyPermissionsResponse> {

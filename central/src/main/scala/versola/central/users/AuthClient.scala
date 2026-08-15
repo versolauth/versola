@@ -54,7 +54,10 @@ trait AuthClient:
 
   def deletePasskey(userId: UserId, credentialId: String): Task[Unit]
 
-  def resetPassword(request: ResetPasswordRequest): Task[Unit]
+  /** Returns the plaintext temporary password when the reset asked for it to be
+    * shown rather than delivered (non-prod only); `None` otherwise.
+    */
+  def resetPassword(request: ResetPasswordRequest): Task[Option[String]]
 
   def setPassword(userId: UserId, password: String): Task[Unit]
 
@@ -240,14 +243,14 @@ object AuthClient:
         ),
       )
 
-    override def resetPassword(request: ResetPasswordRequest): Task[Unit] =
-      send(
+    override def resetPassword(request: ResetPasswordRequest): Task[Option[String]] =
+      sendReceiveOptional[ResetPasswordResponse](
         Request(
           method = Method.POST,
           url = passwordResetUrl,
           body = Body.from(request),
         ),
-      )
+      ).map(_.map(_.password))
 
     override def setPassword(userId: UserId, password: String): Task[Unit] =
       send(

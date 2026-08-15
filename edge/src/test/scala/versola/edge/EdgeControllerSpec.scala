@@ -110,6 +110,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       ResourceId("central") -> EdgeService.ResourcePermissions(Set(PermissionId("oauth:read"))),
       ResourceId("orders") -> EdgeService.ResourcePermissions(Set(PermissionId("orders:read"))),
     ),
+    isProd = false,
   )
 
   private val permissionsSuite = suite("GET /permissions/me")(

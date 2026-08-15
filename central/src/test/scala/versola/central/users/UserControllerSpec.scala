@@ -263,9 +263,34 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
         body = Body.fromString(s"""{"userId":"$userId","expiresInSeconds":3600,"channel":"email"}"""),
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.NoContent,
-      setup = service => service.resetPassword.succeedsWith(()),
+      setup = service => service.resetPassword.succeedsWith(None),
       verify = (_, service) =>
         ZIO.succeed(assertTrue(service.resetPassword.calls.nonEmpty))
+    ),
+    controllerTestCase(
+      description = "reset password with the show channel returns the plaintext in non-prod",
+      request = Request(
+        method = Method.POST,
+        url = URL.empty / "users" / "password" / "reset",
+        body = Body.fromString(s"""{"userId":"$userId","expiresInSeconds":null,"channel":"show"}"""),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.Ok,
+      setup = service => service.resetPassword.succeedsWith(Some("Temp1234!")),
+      verify = (response, service) =>
+        for body <- response.body.asJson[ResetPasswordResponse]
+        yield assertTrue(body.password == "Temp1234!", service.resetPassword.calls.nonEmpty)
+    ),
+    controllerTestCase(
+      description = "reset password with the show channel returns 404 Not Found in prod",
+      request = Request(
+        method = Method.POST,
+        url = URL.empty / "users" / "password" / "reset",
+        body = Body.fromString(s"""{"userId":"$userId","expiresInSeconds":null,"channel":"show"}"""),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.NotFound,
+      env = EnvName.Prod,
+      verify = (_, service) =>
+        ZIO.succeed(assertTrue(service.resetPassword.calls.isEmpty)),
     ),
     controllerTestCase(
       description = "set password returns 204 No Content in non-prod",

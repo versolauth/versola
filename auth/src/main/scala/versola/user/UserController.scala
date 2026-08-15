@@ -174,8 +174,10 @@ object UserController extends Controller:
         _ <- authorizeInternal(request)
         body <- request.body.asJsonFromCodec[ResetPasswordPayload]
         passwordService <- ZIO.service[PasswordService]
-        _ <- passwordService.resetPassword(body.userId, body.expiresInSeconds, body.channel)
-      yield Response.status(Status.NoContent)
+        password <- passwordService.resetPassword(body.userId, body.expiresInSeconds, body.channel)
+      yield password match
+        case Some(plaintext) => Response.json(ResetPasswordResponse(plaintext).toJson)
+        case None            => Response.status(Status.NoContent)
     }
 
   val setPasswordEndpoint =

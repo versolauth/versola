@@ -1,7 +1,7 @@
 package versola.oauth.challenge.password
 
 import versola.auth.model.{Password, PasswordRecord}
-import versola.oauth.challenge.password.model.{CheckPassword, DeliveryChannel, PasswordDeliveryUnavailable, PasswordReuseError, TemporaryPasswordGenerationFailed}
+import versola.oauth.challenge.password.model.{CheckPassword, DeliveryChannel, PasswordDeliveryUnavailable, PasswordRevealForbidden, PasswordReuseError, TemporaryPasswordGenerationFailed}
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.OtpTemplateChannel
 import versola.oauth.conversation.otp.model.OtpTemplate
@@ -24,11 +24,15 @@ trait PasswordService:
 
   def setTemporaryPassword(userId: UserId, password: Password, expiresAt: Instant): Task[Unit]
 
+  /** Issues a temporary password and delivers it over the requested channel.
+    * Returns the plaintext only for [[DeliveryChannel.show]], which is rejected
+    * with [[PasswordRevealForbidden]] in production.
+    */
   def resetPassword(
       userId: UserId,
       expiresInSeconds: Option[Long],
       channel: Option[DeliveryChannel],
-  ): Task[Unit]
+  ): Task[Option[Password]]
 
 object PasswordService:
   def live = ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _))
@@ -100,8 +104,10 @@ object PasswordService:
         userId: UserId,
         expiresInSeconds: Option[Long],
         channel: Option[DeliveryChannel],
-    ): Task[Unit] =
+    ): Task[Option[Password]] =
+      val reveal = channel.contains(DeliveryChannel.show)
       for
+        _ <- ZIO.fail(PasswordRevealForbidden(userId)).when(reveal && env.isProd)
         passwordRegex <- configuration.getPasswordRegex
         // Resolve the recipient before storing anything: if the requested channel has no matching
         // contact we must fail fast, otherwise we would leave an active-but-undisclosed temporary
@@ -115,7 +121,7 @@ object PasswordService:
         _ <- deliverPassword(plaintext, ttlSeconds, recipient)
           .tapError(_ => passwordRepository.deleteTemporary(userId).ignore)
           .when(env.isProd)
-      yield ()
+      yield Option.when(reveal)(plaintext)
 
     /** Resolves the concrete contact for the requested delivery channel, failing with
       * [[PasswordDeliveryUnavailable]] when the user has no matching contact on record.
@@ -126,11 +132,13 @@ object PasswordService:
     ): Task[Option[Either[Email, Phone]]] =
       channel match
         case None => ZIO.none
+        case Some(DeliveryChannel.show) => ZIO.none
         case Some(deliveryChannel) =>
           userRepository.find(userId).flatMap: userOpt =>
             val contact = deliveryChannel match
               case DeliveryChannel.email => userOpt.flatMap(_.email).map(Left(_))
               case DeliveryChannel.sms   => userOpt.flatMap(_.phone).map(Right(_))
+              case DeliveryChannel.show  => None
             contact match
               case Some(value) => ZIO.some(value)
               case None        => ZIO.fail(PasswordDeliveryUnavailable(userId, deliveryChannel))

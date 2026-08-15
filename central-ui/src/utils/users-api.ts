@@ -250,11 +250,12 @@ export async function deletePasskey(userId: string, credentialId: string): Promi
   }
 }
 
+/** Returns the plaintext temporary password for the `show` channel (non-prod only), null otherwise. */
 export async function resetPassword(
   userId: string,
   channel?: string,
   expiresInSeconds?: number,
-): Promise<void> {
+): Promise<string | null> {
   const response = await fetch(proxyUrl('/users/password/reset').toString(), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -270,6 +271,10 @@ export async function resetPassword(
     const text = await response.text();
     throw new Error(text.trim() || `Reset password failed (${response.status})`);
   }
+
+  if (response.status === 204) return null;
+  const body = await response.json() as { password: string };
+  return body.password;
 }
 
 export async function resetUserLimits(

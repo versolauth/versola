@@ -202,6 +202,7 @@ const defaultChallengeSettings = (tenantId: string): ChallengeSettingsDto => ({
 
 type MyPermissionsDto = {
   resources: Record<string, { permissions: string[] }>;
+  isProd: boolean;
 };
 
 export type MockConfigState = {
@@ -228,29 +229,32 @@ export type MockConfigHarness = {
   requests: RequestLog[];
 };
 
+export const defaultMyPermissions: MyPermissionsDto = {
+  resources: {
+    central: {
+      permissions: [
+        'oauth:read', 'oauth:manage', 'oauth:secrets',
+        'access:read', 'access:manage',
+        'security:read', 'security:manage',
+        'users:read', 'users:manage',
+        'resources:read', 'resources:manage',
+        'forms:read', 'forms:manage',
+        'locales:read', 'locales:manage',
+        'tenants:read', 'tenants:manage',
+        'edges:read', 'edges:manage',
+        'jwks:read', 'jwks:manage'
+      ]
+    }
+  },
+  isProd: false
+};
+
 const defaultState: MockConfigState = {
   tenants: [
     { id: 'tenant-alpha', description: 'Alpha Workspace', edgeId: null },
     { id: 'tenant-bravo', description: 'Bravo Workspace', edgeId: null },
   ],
-  myPermissions: {
-    resources: {
-      central: {
-        permissions: [
-          'oauth:read', 'oauth:manage', 'oauth:secrets',
-          'access:read', 'access:manage',
-          'security:read', 'security:manage',
-          'users:read', 'users:manage',
-          'resources:read', 'resources:manage',
-          'forms:read', 'forms:manage',
-          'locales:read', 'locales:manage',
-          'tenants:read', 'tenants:manage',
-          'edges:read', 'edges:manage',
-          'jwks:read', 'jwks:manage'
-        ]
-      }
-    }
-  },
+  myPermissions: defaultMyPermissions,
   clients: {
     'tenant-alpha': [{ id: 'alpha-web', clientName: 'Alpha Web', redirectUris: ['https://alpha.example/callback'], scope: ['openid'], permissions: ['alpha.read'], secretRotation: false }],
     'tenant-bravo': [{ id: 'bravo-web', clientName: 'Bravo Web', redirectUris: ['https://bravo.example/callback'], scope: ['email'], permissions: ['bravo.read'], secretRotation: false }],
@@ -1261,6 +1265,26 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
         await route.fulfill({ status: 202, body: '' });
         return;
       }
+    }
+
+    if (pathname === '/users/password/reset' && method === 'POST') {
+      const payload = body as { userId: string; channel: string | null };
+      const user = state.users.find(candidate => candidate.id === payload.userId);
+      if (!user) {
+        await route.fulfill(json({ message: `User ${payload.userId} not found` }, 404));
+        return;
+      }
+      // `show` is rejected in prod, mirroring central; otherwise it returns the plaintext.
+      if (payload.channel === 'show') {
+        if (state.myPermissions.isProd) {
+          await route.fulfill(json({ message: 'Not Found' }, 404));
+          return;
+        }
+        await route.fulfill(json({ password: 'Temp1234!' }));
+        return;
+      }
+      await route.fulfill({ status: 204, body: '' });
+      return;
     }
 
     if (pathname === '/users/limits/reset' && method === 'POST') {

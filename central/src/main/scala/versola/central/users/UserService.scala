@@ -43,7 +43,7 @@ trait UserService:
 
   def deletePasskey(userId: UserId, credentialId: String): Task[Unit]
 
-  def resetPassword(request: ResetPasswordRequest): Task[Unit]
+  def resetPassword(request: ResetPasswordRequest): Task[Option[String]]
 
   def setPassword(userId: UserId, password: String): Task[Unit]
 
@@ -145,7 +145,7 @@ object UserService:
     override def deletePasskey(userId: UserId, credentialId: String): Task[Unit] =
       authClient.deletePasskey(userId, credentialId)
 
-    override def resetPassword(request: ResetPasswordRequest): Task[Unit] =
+    override def resetPassword(request: ResetPasswordRequest): Task[Option[String]] =
       authClient.resetPassword(request)
 
     override def setPassword(userId: UserId, password: String): Task[Unit] =

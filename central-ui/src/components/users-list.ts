@@ -5,6 +5,7 @@ import { buttonStyles, cardStyles, formStyles } from '../styles/components';
 import { PasskeyInfo, Resource, Role, User, UserRoleAssignment, UserSearchField, UserSession } from '../types';
 import { getPermissions, getResources, getRoles } from '../utils/central-api';
 import { confirmDestructiveAction } from '../utils/confirm-dialog';
+import { copyToClipboard } from '../utils/helpers';
 import {
   createUser,
   deletePasskey,
@@ -30,6 +31,8 @@ import './claim-edit';
 export class VersolaUsersList extends LitElement {
   @property({ type: String }) tenantId: string | null = null;
   @property({ type: Boolean }) canManage = false;
+  /** Whether the generated password may be shown instead of delivered — non-prod only. */
+  @property({ type: Boolean }) canRevealPassword = false;
 
   @state() private users: User[] = [];
   @state() private searchField: UserSearchField = 'login';
@@ -56,7 +59,10 @@ export class VersolaUsersList extends LitElement {
   @state() private resettingPassword = new Set<string>();
   @state() private passwordResetDone = new Set<string>();
   @state() private pendingResetUser: User | null = null;
-  @state() private pendingResetChannel: 'email' | 'sms' | null = null;
+  @state() private pendingResetChannel: 'email' | 'sms' | 'show' | null = null;
+  @state() private revealedPassword: { userId: string; password: string } | null = null;
+  @state() private passwordVisible = false;
+  @state() private copyFeedback = '';
   @state() private userPasskeys: Record<string, PasskeyInfo[]> = {};
   @state() private loadingPasskeys = new Set<string>();
   @state() private errorPopup = '';
@@ -148,6 +154,24 @@ export class VersolaUsersList extends LitElement {
 
       .icon-action:hover { color: var(--accent); transform: scale(1.15); }
       .icon-action.danger:hover { color: var(--danger); }
+
+      .password-value {
+        margin: 0;
+        padding: 0.875rem 1rem;
+        background: rgba(0, 0, 0, 0.25);
+        border: 1px solid var(--border-dark);
+        border-radius: var(--radius-md);
+        color: var(--text-primary);
+        font-family: var(--font-mono);
+        font-size: 0.875rem;
+        line-height: 1.5;
+        word-break: break-all;
+      }
+
+      .copy-feedback {
+        font-size: 0.8125rem;
+        color: var(--success, #3fb950);
+      }
 
       .user-body {
         border-top: 1px solid var(--border-dark);
@@ -806,7 +830,10 @@ export class VersolaUsersList extends LitElement {
       return;
     }
     this.pendingResetUser = user;
-    this.pendingResetChannel = user.email ? 'email' : user.phone ? 'sms' : null;
+    this.pendingResetChannel = user.email ? 'email' : user.phone ? 'sms' : this.canRevealPassword ? 'show' : null;
+    this.revealedPassword = null;
+    this.passwordVisible = false;
+    this.copyFeedback = '';
   }
 
   private async confirmResetPassword() {
@@ -816,13 +843,26 @@ export class VersolaUsersList extends LitElement {
     this.resettingPassword = new Set([...this.resettingPassword, user.id]);
     try {
       const channel = this.pendingResetChannel ?? undefined;
-      await resetPassword(user.id, channel);
+      const password = await resetPassword(user.id, channel);
       this.passwordResetDone = new Set([...this.passwordResetDone, user.id]);
+      this.revealedPassword = password === null ? null : { userId: user.id, password };
     } catch (error) {
       this.errorPopup = error instanceof Error ? error.message : 'Failed to reset password';
     } finally {
       this.resettingPassword = new Set([...this.resettingPassword].filter(id => id !== user.id));
     }
+  }
+
+  private async handleCopyPassword() {
+    if (!this.revealedPassword) return;
+    const copied = await copyToClipboard(this.revealedPassword.password);
+    this.copyFeedback = copied ? 'Password copied to clipboard.' : 'Could not copy password.';
+  }
+
+  private dismissRevealedPassword() {
+    this.revealedPassword = null;
+    this.passwordVisible = false;
+    this.copyFeedback = '';
   }
 
   private async toggleUserPasskeys(userId: string) {
@@ -1151,7 +1191,7 @@ export class VersolaUsersList extends LitElement {
           A temporary password (12h) will be generated for
           <strong>${user.email ?? user.phone ?? user.login ?? user.id}</strong>.
         </p>
-        ${user.email || user.phone ? html`
+        ${user.email || user.phone || this.canRevealPassword ? html`
         <fieldset style="border:none;padding:0;margin:0 0 var(--spacing-lg)">
           <legend style="font-size:0.875rem;margin-bottom:var(--spacing-sm)">Deliver via</legend>
           ${user.email ? html`
@@ -1162,11 +1202,18 @@ export class VersolaUsersList extends LitElement {
               Email — ${user.email}
             </label>` : ''}
           ${user.phone ? html`
-            <label style="display:flex;align-items:center;gap:var(--spacing-sm)">
+            <label style="display:flex;align-items:center;gap:var(--spacing-sm);margin-bottom:var(--spacing-xs)">
               <input type="radio" name="channel" value="sms"
                 ?checked=${this.pendingResetChannel === 'sms'}
                 @change=${() => { this.pendingResetChannel = 'sms'; }}>
               SMS — ${user.phone}
+            </label>` : ''}
+          ${this.canRevealPassword ? html`
+            <label style="display:flex;align-items:center;gap:var(--spacing-sm)">
+              <input type="radio" name="channel" value="show"
+                ?checked=${this.pendingResetChannel === 'show'}
+                @change=${() => { this.pendingResetChannel = 'show'; }}>
+              Show — display it here
             </label>` : ''}
         </fieldset>` : html`
         <p style="margin:0 0 var(--spacing-lg);font-size:0.875rem;color:var(--text-secondary)">
@@ -1174,7 +1221,43 @@ export class VersolaUsersList extends LitElement {
         </p>`}
         <div style="display:flex;justify-content:flex-end;gap:var(--spacing-sm)">
           <button class="btn btn-secondary" @click=${() => { this.pendingResetUser = null; }}>Cancel</button>
-          <button class="btn btn-primary" ?disabled=${!user.email && !user.phone} @click=${this.confirmResetPassword}>Confirm</button>
+          <button class="btn btn-primary" ?disabled=${this.pendingResetChannel === null} @click=${this.confirmResetPassword}>Confirm</button>
+        </div>
+      </dialog>
+    `;
+  }
+
+  private renderRevealedPasswordDialog() {
+    const revealed = this.revealedPassword;
+    if (!revealed) return '';
+    return html`
+      <dialog open style="
+        position:fixed;inset:0;margin:auto;
+        border:1px solid var(--border-dark);
+        border-radius:var(--radius-lg);
+        background:var(--bg-dark-card);
+        color:var(--text-primary);
+        padding:var(--spacing-xl);
+        max-width:28rem;width:90%;
+        box-shadow:0 8px 32px rgba(0,0,0,0.5);
+        z-index:1000;
+      ">
+        <p style="margin:0 0 var(--spacing-md);font-weight:600">Temporary password</p>
+        <p style="margin:0 0 var(--spacing-lg);font-size:0.875rem;color:var(--text-secondary)">
+          Valid for 12 hours. Copy it now — it is not shown again.
+        </p>
+        <pre class="password-value">${this.passwordVisible ? revealed.password : '\u2022'.repeat(revealed.password.length)}</pre>
+        <label style="display:flex;align-items:center;gap:var(--spacing-sm);margin-top:var(--spacing-md);font-size:0.875rem">
+          <input type="checkbox" ?checked=${this.passwordVisible}
+            @change=${(e: Event) => { this.passwordVisible = (e.target as HTMLInputElement).checked; }}>
+          Show password
+        </label>
+        <div style="display:flex;align-items:center;gap:0.75rem;margin-top:var(--spacing-md)">
+          <button class="btn btn-primary btn-sm" @click=${this.handleCopyPassword}>Copy password</button>
+          ${this.copyFeedback ? html`<span class="copy-feedback">${this.copyFeedback}</span>` : ''}
+        </div>
+        <div style="display:flex;justify-content:flex-end;margin-top:var(--spacing-lg)">
+          <button class="btn btn-secondary" @click=${this.dismissRevealedPassword}>Close</button>
         </div>
       </dialog>
     `;
@@ -1185,6 +1268,7 @@ export class VersolaUsersList extends LitElement {
       return html`
         ${this.renderErrorPopup()}
         ${this.renderResetPasswordConfirmDialog()}
+        ${this.renderRevealedPasswordDialog()}
         ${this.formError ? html`
           <dialog open style="
             position:fixed;inset:0;margin:auto;
@@ -1231,6 +1315,7 @@ export class VersolaUsersList extends LitElement {
     return html`
       ${this.renderErrorPopup()}
       ${this.renderResetPasswordConfirmDialog()}
+      ${this.renderRevealedPasswordDialog()}
       <content-header title="Users" description="Search, create, and assign roles to users">
         ${this.canManage ? html`<button slot="actions" class="btn btn-primary" ?disabled=${this.isPreparingForm}
           @click=${this.handleCreateClick}>+ Create User</button>` : ''}
