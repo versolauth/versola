@@ -143,6 +143,25 @@ silently. Do it once per target.
 
 ### One-time setup
 
+**Before the very first `configure vps` on a VPS that already has auth/
+central/edge running from before this compose file existed:** this file
+now sets `name: versola-vps` explicitly (see the comment on it in
+compose.fragment.vps.yml.template) so redeploys land on the same Compose
+project every time. A pre-existing stack that was never brought up under
+that name doesn't get "adopted" by it -- Compose refuses to create a
+container under a fixed `container_name` that already exists under a
+*different* project, so the first `configure`/`up` under this build would
+fail with a container-name conflict against whatever's already running.
+Check what's actually running first (`docker ps`, `docker compose ls`),
+and if central/auth/edge are up under a different project, stop and
+remove those specific containers by name before running this build's
+`configure vps` for the first time -- safe to do on vps specifically
+because nothing stateful lives in them: Postgres is native (not a
+container -- see compose.fragment.vps.yml.template's own comment) and
+OpenBao's volume is `external: true` (survives independent of any
+project). They come back on the next `up`, built fresh from the same
+images.
+
 `versola configure <target> <version>` starts the `versola-openbao` container
 automatically (the rest of that run will keep failing until the steps below
 are done, but that's expected — run it once first just to get the container
