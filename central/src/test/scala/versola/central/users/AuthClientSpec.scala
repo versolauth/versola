@@ -221,7 +221,7 @@ object AuthClientSpec extends ZIOSpecDefault:
         client <- ZIO.service[AuthClient]
         result <- client.resetPassword(resetRequest)
       yield assertTrue(result.isEmpty)
-    },
+      }.provide(TestClient.layer, ZLayer.succeed(TestCentralConfig.config), tokenServiceLayer, authClientLayer),
 
     test("resetPassword returns the plaintext when server responds 200") {
       for
@@ -231,7 +231,7 @@ object AuthClientSpec extends ZIOSpecDefault:
         client <- ZIO.service[AuthClient]
         result <- client.resetPassword(resetRequest)
       yield assertTrue(result.contains("Temp1234!"))
-    },
+      }.provide(TestClient.layer, ZLayer.succeed(TestCentralConfig.config), tokenServiceLayer, authClientLayer),
 
     test("getUserClaims returns Some when server responds 200 with claims") {
       val json = """{"claims":{"role":"admin"}}"""

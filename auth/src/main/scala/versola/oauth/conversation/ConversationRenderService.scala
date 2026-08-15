@@ -9,7 +9,7 @@ import versola.oauth.model.State
 import versola.oauth.model.{ConversationCookie, SessionCookie, UserAgentCookie}
 import versola.oauth.session.model.SessionInfo
 import versola.util.http.Observability
-import versola.util.{Base64, Base64Url, CoreConfig, JWT}
+import versola.util.{Base64, Base64Url, CoreConfig, Email, JWT, Phone}
 import zio.http.{Body, Header, Headers, MediaType, Path, Response, Status, URL}
 import zio.json.*
 import zio.json.ast.Json
@@ -66,7 +66,7 @@ object ConversationRenderService:
     @jsonHint("set-password")
     case class SetPassword(passwordRegex: String) extends StepView
     @jsonHint("otp")
-    case class Otp(length: Int, resendAfter: Int, lockedSeconds: Option[Int]) extends StepView
+    case class Otp(length: Int, resendAfter: Int, lockedSeconds: Option[Int], destination: Option[String]) extends StepView
     @jsonHint("passkey-enroll")
     case class PasskeyEnroll(publicKeyOptions: String) extends StepView
     @jsonHint("access-denied")
@@ -120,7 +120,7 @@ object ConversationRenderService:
         themeId = client.map(_.theme).getOrElse(ThemeDefault)
         css <- themeCss(themeId)
         maybeInfo <-
-          formFor(record.step, record.clientId, record.uiLocales, record.redirectUri, record.state, record.csrfToken, errorOverride = errorKey)
+          formFor(record.step, record.credential, record.clientId, record.uiLocales, record.redirectUri, record.state, record.csrfToken, errorOverride = errorKey)
         response <- maybeInfo match
           case None =>
             ZIO.succeed(htmlResponse(notFoundPage(css), Status.NotFound))
@@ -333,6 +333,7 @@ object ConversationRenderService:
 
     private def formFor(
         step: ConversationStep,
+        credential: Option[Either[Email, Phone]],
         clientId: ClientId,
         locale: Option[List[String]],
         redirectUri: URL,
@@ -348,7 +349,7 @@ object ConversationRenderService:
         case _: ConversationStep.PasskeyEnroll => "passkey-enroll"
         case ConversationStep.AccessDenied => "access-denied"
       for
-        view <- stepView(step, clientId, redirectUri, state)
+        view <- stepView(step, credential, clientId, redirectUri, state)
         formOpt <- configuration.getForm(formId)
         locales <- configuration.getLocales
         errorMessage = errorOverride.orElse(stepErrorKey(step))
@@ -411,6 +412,7 @@ object ConversationRenderService:
 
     private def stepView(
         step: ConversationStep,
+        credential: Option[Either[Email, Phone]],
         clientId: ClientId,
         redirectUri: URL,
         state: Option[State],
@@ -444,6 +446,8 @@ object ConversationRenderService:
             length = otp.length,
             resendAfter = resendRemaining,
             lockedSeconds = Option.when(s.lockedSeconds > 0)(s.lockedSeconds),
+            // Masked here so the unmasked credential never reaches window.__VERSOLA_FORM__.
+              destination = credential.map(_.fold(Email.mask, Phone.mask)),
           )
 
         case s: ConversationStep.PasskeyEnroll =>

@@ -187,6 +187,44 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
         yield
           assertTrue(body.contains("\"resendAfter\":30"))
       },
+      test("renders a masked destination for the OTP recipient") {
+        val env = Env()
+        val now = Instant.parse("2026-07-13T10:00:00Z")
+        val otpStep = ConversationStep.Otp(None, 1, 0, 0, false, 0, None)
+        val record = conversationRecord.copy(step = otpStep, credential = Some(Left(Email("john@example.com"))))
+        val otpSettings = OtpSettings(6, 60)
+
+        for
+          _ <- TestClock.setTime(now)
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          _ <- env.configuration.getTheme.succeedsWith(Some(theme))
+          _ <- env.configuration.getForm.succeedsWith(Some(formRecord.copy(id = "otp")))
+          _ <- env.configuration.getLocales.succeedsWith(locales)
+          _ <- env.configuration.getOtpSettings.succeedsWith(otpSettings)
+          response <- env.service.renderStep(record, None)
+          body <- response.body.asString
+        yield
+          assertTrue(body.contains("\"destination\":\"j***n@example.com\""))
+      },
+      test("omits the destination when no credential is on the conversation") {
+        val env = Env()
+        val now = Instant.parse("2026-07-13T10:00:00Z")
+        val otpStep = ConversationStep.Otp(None, 1, 0, 0, false, 0, None)
+        val record = conversationRecord.copy(step = otpStep, credential = None)
+        val otpSettings = OtpSettings(6, 60)
+
+        for
+          _ <- TestClock.setTime(now)
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          _ <- env.configuration.getTheme.succeedsWith(Some(theme))
+          _ <- env.configuration.getForm.succeedsWith(Some(formRecord.copy(id = "otp")))
+          _ <- env.configuration.getLocales.succeedsWith(locales)
+          _ <- env.configuration.getOtpSettings.succeedsWith(otpSettings)
+          response <- env.service.renderStep(record, None)
+          body <- response.body.asString
+        yield
+          assertTrue(!body.contains("\"destination\""))
+      },
     ),
     suite("renderExpired")(
       test("renders the expired page with an OAuth error return URI") {

@@ -8,7 +8,19 @@ object Email:
   opaque type Type <: String = String
   
   inline def apply(string: String): Email = string
-  
+
+  /** Keeps the first and last character of a local part longer than two characters,
+    * replacing everything else with a fixed-width mask while preserving the domain.
+    */
+  def mask(value: Email): String =
+    value.split("@", 2) match
+      case Array(local, domain) if local.length > 2 =>
+        s"${local.head}***${local.last}@$domain"
+      case Array(_, domain) =>
+        s"***@$domain"
+      case _ =>
+        "***"
+
   def from(string: String): Either[String, Email] =
     if isValidEmail(string) then Right(string)
     else Left(s"$string is invalid email")

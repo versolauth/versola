@@ -699,9 +699,11 @@ object BootstrapService:
 
     private def seedForms(): Task[Unit] =
       for
-        _           <- ZIO.logInfo("Seeding default forms from resources...")
-        existingIds <- formRepo.getAll.map(_.map(_.id).toSet)
-        _ <- ZIO.foreachDiscard(defaultForms.filterNot((formId, _) => existingIds.contains(FormId(formId)))): (formId, properties) =>
+        _      <- ZIO.logInfo("Seeding default forms from resources...")
+        all    <- formRepo.getAll
+        active = all.filter(_.active).map(form => form.id -> form).toMap
+        _ <- ZIO.foreachDiscard(defaultForms): (formId, properties) =>
+          val current = active.get(FormId(formId))
           (for
             jsSource   <- readResource(s"forms/$formId.tsx")
             jsCompiled <- readResource(s"forms/$formId.js")
@@ -709,7 +711,11 @@ object BootstrapService:
             i18nJson   <- readResource(s"forms/$formId.i18n.json")
             localizations <- ZIO.fromEither(i18nJson.fromJson[Map[String, Map[String, String]]])
               .mapError(message => new RuntimeException(s"Invalid i18n for form $formId: $message"))
-            _ <- formRepo.upsertForm(FormId(formId), style, Some(jsSource), Some(jsCompiled), localizations, properties, activate = true)
+            unchanged = current.exists(form =>
+              form.style == style && form.jsSource.contains(jsSource) && form.localizations == localizations && form.properties == properties,
+            )
+            _ <- ZIO.unless(unchanged):
+              formRepo.upsertForm(FormId(formId), style, Some(jsSource), Some(jsCompiled), localizations, properties, activate = true)
           yield ()).catchAll(error => ZIO.logError(s"Failed to seed form $formId: ${error.getMessage}"))
       yield ()
 

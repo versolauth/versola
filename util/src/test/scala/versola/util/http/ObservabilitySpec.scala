@@ -12,7 +12,7 @@ import zio.telemetry.opentelemetry.tracing.Tracing
 import zio.test.*
 
 object ObservabilitySpec extends ZIOSpecDefault:
-  private case class LoggedRequest(path: String) derives JsonDecoder
+  private case class LoggedRequest(path: String, cookies: List[String] = Nil) derives JsonDecoder
   private case class LoggedResponse(code: Int) derives JsonDecoder
   private case class LoggedHttp(request: LoggedRequest, response: LoggedResponse) derives JsonDecoder
   private case class LoggedError(code: String, description: Option[String]) derives JsonDecoder
@@ -140,6 +140,25 @@ object ObservabilitySpec extends ZIOSpecDefault:
         ),
       )
     }.provideSomeLayer[Scope](testLayer) @@ TestAspect.silentLogging,
+      test("logs cookie names without their values") {
+        for
+          env <- tracingLayer.build
+          _ <- TestClient.addRoutes(routes.provideEnvironment(env))
+          client <- ZIO.service[Client]
+          _ <- client.batched(
+            Request.get(URL.empty / "ok")
+              .addCookie(Cookie.Request("session", "secret-value")),
+          )
+          logs <- ZTestLogger.logOutput
+          rawLog <- ZIO.fromOption(logs.find(_.message() == "receive-http"))
+            .orElseFail(new RuntimeException("Missing receive-http log"))
+          rendered <- ZIO.fromEither(rawLog.call(renderedLogFormat.toJsonLogger).fromJson[LoggedEntry])
+            .mapError(new RuntimeException(_))
+        yield assertTrue(
+          rendered.http.request.cookies == List("session"),
+          !rawLog.call(renderedLogFormat.toJsonLogger).contains("secret-value"),
+        )
+      }.provideSomeLayer[Scope](testLayer) @@ TestAspect.silentLogging,
       test("renders request error details in the receive log") {
         for
           env <- tracingLayer.build
