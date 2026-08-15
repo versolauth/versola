@@ -71,38 +71,39 @@ def writeFile(dir: File, name: String, content: String): Unit =
   finally pw.close()
   println(s"  Written: ${f.getPath}")
 
-// ── Secret placeholders (docker-local only) ──────────────────────────────
-// In docker-local mode, every secret field this script generates becomes a
-// `${?VAR}` HOCON substitution placeholder instead of a literal value.
-// versola-cli resolves the real value -- reading it back from OpenBao if a
-// previous `configure` already generated one, or storing this run's
-// freshly generated value there if not -- and supplies it as a real
+// ── Secret placeholders (docker-local and vps) ───────────────────────────
+// In docker-local and vps modes, every secret field this script generates
+// becomes a `${?VAR}` HOCON substitution placeholder instead of a literal
+// value. versola-cli resolves the real value -- reading it back from
+// OpenBao if a previous `configure` already generated one, or storing this
+// run's freshly generated value there if not -- and supplies it as a real
 // environment variable when it starts each container (see
 // writeGeneratedSecrets below, and versola-cli's openbao package). Every
 // other env (isLocal, and real interactive deployments) keeps writing the
-// value directly: only the docker-local path versola-tools' entrypoint.sh
-// drives is wired through OpenBao so far.
+// value directly: only the two envs versola-tools' entrypoint.sh drives
+// non-interactively are wired through OpenBao so far -- a person running
+// this interactively can just type the real value in.
 //
-// isDockerLocal is a parameter, not a closed-over var like `interactive`
-// below: it's decided from a local val inside genEnv(), not top-level
-// mutable state, so there's nothing for a top-level def to close over.
-def secretField(isDockerLocal: Boolean, value: String, envVar: String): String =
-  if isDockerLocal then s"$${?$envVar}" else "\"" + value + "\""
+// usePlaceholder is a parameter, not a closed-over var like `interactive`
+// below: it's decided from local vals inside genEnv() (isDockerLocal,
+// isVps), not top-level mutable state, so there's nothing for a top-level
+// def to close over.
+def secretField(usePlaceholder: Boolean, value: String, envVar: String): String =
+  if usePlaceholder then s"$${?$envVar}" else "\"" + value + "\""
 
-// Same idea as secretField, but for values the non-docker-local branches
-// wrap in HOCON triple-quotes (the RSA private keys) rather than a plain
-// quoted string -- preserves that exactly on every path this doesn't
-// change.
-def secretKeyField(isDockerLocal: Boolean, value: String, envVar: String): String =
-  if isDockerLocal then s"$${?$envVar}" else "\"\"\"" + value + "\"\"\""
+// Same idea as secretField, but for values the interactive branches wrap
+// in HOCON triple-quotes (the RSA private keys) rather than a plain quoted
+// string -- preserves that exactly on every path this doesn't change.
+def secretKeyField(usePlaceholder: Boolean, value: String, envVar: String): String =
+  if usePlaceholder then s"$${?$envVar}" else "\"\"\"" + value + "\"\"\""
 
 // Writes the values secretField/secretKeyField placeholdered out, as
 // plain KEY=value lines -- not JSON: this script has no JSON dependency,
 // and a dotenv-shaped file is what versola-cli ends up producing anyway
 // (after resolving each value against OpenBao) for Compose's `env_file:`
-// to load straight into the container. Only called when isDockerLocal;
-// every other env has nothing to write here since it never placeholdered
-// anything out in the first place.
+// to load straight into the container. Only called when isDockerLocal or
+// isVps; every other env has nothing to write here since it never
+// placeholdered anything out in the first place.
 def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)]): Unit =
   val content = secrets.map((k, v) => s"$k=$v").mkString("\n") + "\n"
   writeFile(dir, name, content)
@@ -168,16 +169,43 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
   // manual-test/README.md for how these values were worked out by hand
   // before being made the default here.
   val isDockerLocal = env == "docker-local"
+  // vps is for "versola configure vps": auth/central/edge run as Docker
+  // containers with `network_mode: host` on the one real VPS (see
+  // deploy.md) -- no bridge network, no Compose service-name addressing,
+  // so internal calls go through 127.0.0.1 instead. Non-interactive like
+  // docker-local, for the same reason: this is driven by the CLI calling
+  // versola-tools non-interactively, not a person typing at a prompt.
+  // Unlike docker-local's throwaway Postgres container, the VPS's Postgres
+  // role already exists outside this script's control -- see the comment
+  // on pgPassDefault below.
+  val isVps = env == "vps"
+  // Every secret field this script generates becomes a `${?VAR}` HOCON
+  // placeholder (resolved via OpenBao by versola-cli) in both
+  // non-interactive Docker envs, not just docker-local -- see
+  // secretField's own comment.
+  val useOpenBao = isDockerLocal || isVps
   val configurationCacheRefreshInterval = if isLocal || isDockerLocal then "1 minute" else "5 minutes"
   // Postgres user/password are the same across all three services either
   // way; computed once here so the Auth/Central/Edge sections below don't
-  // each repeat the isDockerLocal check.
-  val pgUserDefault = if isDockerLocal then "versola" else "dev"
-  val pgPassDefault = if isDockerLocal then "versola" else "1234"
-  // Both isLocal and docker-local are non-interactive; only the values differ.
-  interactive = !(isLocal || isDockerLocal)
+  // each repeat the isDockerLocal/isVps check.
+  //
+  // vps's password looks random-per-run below (rand(rng, 24) does run
+  // every time), but what actually reaches the config is whatever
+  // secretField placeholders it into -- versola-cli resolves that against
+  // OpenBao the same as any other secret, and an existing value there wins
+  // over this freshly generated one. The first time this ever runs against
+  // a fresh OpenBao, it WILL store this random value and it WILL be wrong:
+  // the VPS's `versola_app` Postgres role already has a real password this
+  // script has no way to know. That first run needs the real password
+  // seeded into OpenBao by hand first (see develop.md's OpenBao section).
+  // After that, every run reuses it.
+  val pgUserDefault = if isDockerLocal then "versola" else if isVps then "versola_app" else "dev"
+  val pgPassDefault = if isDockerLocal then "versola" else if isVps then rand(rng, 24) else "1234"
+  // isLocal, docker-local and vps are all non-interactive; only the values differ.
+  interactive = !(isLocal || isDockerLocal || isVps)
   if isLocal then println("  local env — using defaults, skipping prompts")
   if isDockerLocal then println("  docker-local env — using bridge-network defaults, skipping prompts")
+  if isVps then println("  vps env — using host-network defaults, skipping prompts")
 
   // Pin a known resource secret in local dev so e2e tests can rely on a stable value.
   // Other environments let central bootstrap generate and persist one.
@@ -198,7 +226,7 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
   // authUrl is a public-facing string (JWT issuer, browser redirects) — it
   // never needs to be a Docker service name, even in docker-local, since
   // browsers/JWT verifiers reach it via the host's published port either way.
-  val authUrlDefault      = if isDockerLocal then "http://localhost:2821" else "http://localhost:9003"
+  val authUrlDefault      = if isDockerLocal then "http://localhost:2821" else if isVps then "https://id.versola.kz" else "http://localhost:9003"
   val authUrl              = prompt(s"  Auth public URL [$authUrlDefault]: ", authUrlDefault)
   val passkeyRpId         = URI.create(authUrl).getHost
   // authInternalUrl, unlike authUrl, IS a real network call — central uses it
@@ -211,7 +239,7 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
   val authInternalUrl     = prompt(s"  Auth internal URL [$authInternalDefault]: ", authInternalDefault)
   // centralUrl IS a real network call from both auth and edge, so it needs
   // the same treatment.
-  val centralUrlDefault   = if isDockerLocal then "http://central:8090" else "http://localhost:9001"
+  val centralUrlDefault   = if isDockerLocal then "http://central:8090" else if isVps then "http://127.0.0.1:8090" else "http://localhost:9001"
   val centralUrl           = prompt(s"  Central URL [$centralUrlDefault]: ", centralUrlDefault)
   // edgeUrl is public-facing only, same reasoning as authUrl above — BUT
   // in docker-local, nginx (not edge's own port) is the actual public
@@ -223,21 +251,28 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
   // this at 8095 sent the post-login redirect straight to a closed port
   // and the browser got ERR_CONNECTION_REFUSED right after a real login
   // succeeded.
-  val edgeUrlDefault      = if isDockerLocal then "http://localhost:2821" else "http://localhost:9005"
+  val edgeUrlDefault      = if isDockerLocal then "http://localhost:2821" else if isVps then authUrl else "http://localhost:9005"
   val edgeUrl              = prompt(s"  Edge URL [$edgeUrlDefault]: ", edgeUrlDefault)
   section("\n── Auth service ──────────────────────────────────────────────────────")
   // Postgres is its own container in docker-local (compose service name
   // "postgres"), and all three services share one database via
   // ?currentSchema=, same as prod (see deploy.md) rather than each getting
   // its own database.
-  val authPgUrlDefault = if isDockerLocal then "jdbc:postgresql://postgres:5432/auth?currentSchema=auth" else "jdbc:postgresql://localhost:5432/auth"
+  val authPgUrlDefault = if isDockerLocal then "jdbc:postgresql://postgres:5432/auth?currentSchema=auth" else if isVps then "jdbc:postgresql://127.0.0.1:5432/auth?currentSchema=auth" else "jdbc:postgresql://localhost:5432/auth"
   val authPgUrl        = prompt(s"  Postgres URL [$authPgUrlDefault]: ", authPgUrlDefault)
   val authPgUser       = prompt(s"  Postgres user [$pgUserDefault]: ", pgUserDefault)
   val authPgPass       = prompt(s"  Postgres password [$pgPassDefault]: ", pgPassDefault)
 
   section("\n── Auth bootstrap admin user ──────────────────────────────────────────────")
   val bootstrapLogin    = prompt("  Admin login [admin]: ", "admin")
-  val bootstrapPassword = prompt("  Admin bootstrap password [Admin1234!]: ", "Admin1234!")
+  // vps's default here is a freshly random value, not the fixed
+  // "Admin1234!" the other envs use -- unlike Postgres's password (see
+  // pgPassDefault above), nothing outside this script already owns this
+  // value, so there's no real password to match: OpenBao generating and
+  // keeping the first one it sees is exactly right here, no manual
+  // seeding needed.
+  val bootstrapPasswordDefault = if isVps then rand(rng, 16) else "Admin1234!"
+  val bootstrapPassword = prompt("  Admin bootstrap password [Admin1234!]: ", bootstrapPasswordDefault)
 
   section("\n── Central service ───────────────────────────────────────────────────")
   // edgeCompleteUrl (edgeUrl + "/complete") is always appended to this list
@@ -251,9 +286,9 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
   // bootstrap" wires up central-ui, see versola-cli) or 404s cleanly, not a
   // crash loop. Still not localhost:3000 -- nothing runs there in
   // docker-local.
-  val redirectUriDefault  = if isDockerLocal then s"$edgeUrl/central/admin/" else "http://localhost:3000"
+  val redirectUriDefault  = if isDockerLocal then s"$edgeUrl/central/admin/" else if isVps then s"$authUrl/central/admin/" else "http://localhost:3000"
   val centralRedirectUris = prompt(s"  Admin panel bootstrap redirect URIs (comma-separated) [$redirectUriDefault]: ", redirectUriDefault)
-  val centralPgUrlDefault = if isDockerLocal then "jdbc:postgresql://postgres:5432/auth?currentSchema=central" else "jdbc:postgresql://localhost:5432/auth"
+  val centralPgUrlDefault = if isDockerLocal then "jdbc:postgresql://postgres:5432/auth?currentSchema=central" else if isVps then "jdbc:postgresql://127.0.0.1:5432/auth?currentSchema=central" else "jdbc:postgresql://localhost:5432/auth"
   val centralPgUrl        = prompt(s"  Postgres URL [$centralPgUrlDefault]: ", centralPgUrlDefault)
   val centralPgUser       = prompt(s"  Postgres user [$pgUserDefault]: ", pgUserDefault)
   val centralPgPass       = prompt(s"  Postgres password [$pgPassDefault]: ", pgPassDefault)
@@ -284,7 +319,7 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
        |}""".stripMargin
 
   section("\n── Edge service ──────────────────────────────────────────────────────")
-  val edgePgUrlDefault = if isDockerLocal then "jdbc:postgresql://postgres:5432/auth?currentSchema=edge" else "jdbc:postgresql://localhost:5432/auth"
+  val edgePgUrlDefault = if isDockerLocal then "jdbc:postgresql://postgres:5432/auth?currentSchema=edge" else if isVps then "jdbc:postgresql://127.0.0.1:5432/auth?currentSchema=edge" else "jdbc:postgresql://localhost:5432/auth"
   val edgePgUrl        = prompt(s"  Postgres URL [$edgePgUrlDefault]: ", edgePgUrlDefault)
   val edgePgUser       = prompt(s"  Postgres user [$pgUserDefault]: ", pgUserDefault)
   val edgePgPass       = prompt(s"  Postgres password [$pgPassDefault]: ", pgPassDefault)
@@ -387,21 +422,21 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
        |
        |bootstrap {
        |  login = "$bootstrapLogin"
-       |  password = "$bootstrapPassword"
+       |  password = ${secretField(isVps, bootstrapPassword, "ADMIN_BOOTSTRAP_PASSWORD")}
        |  admin-user-id = "$adminUserId"
        |}
        |
        |security {
-       |  access-tokens-secret         = ${secretField(isDockerLocal, accessTokensSecret, "ACCESS_TOKENS_SECRET")}
-       |  client-secrets-secret        = ${secretField(isDockerLocal, clientSecretsSecret, "CLIENT_SECRETS_SECRET")}
-       |  refresh-tokens-secret        = ${secretField(isDockerLocal, refreshTokensSecret, "REFRESH_TOKENS_SECRET")}
-       |  auth-codes-secret            = ${secretField(isDockerLocal, authCodesSecret, "AUTH_CODES_SECRET")}
-       |  sessions-secret              = ${secretField(isDockerLocal, sessionsSecret, "SESSIONS_SECRET")}
-       |  passwords-secret             = ${secretField(isDockerLocal, passwordsSecret, "PASSWORDS_SECRET")}
-       |  conversation-cookie-secret   = ${secretField(isDockerLocal, conversationCookieSecret, "CONVERSATION_COOKIE_SECRET")}
-       |  session-cookie-secret        = ${secretField(isDockerLocal, sessionCookieSecret, "SESSION_COOKIE_SECRET")}
-       |  user-agent-cookie-secret     = ${secretField(isDockerLocal, userAgentCookieSecret, "USER_AGENT_COOKIE_SECRET")}
-       |  par-requests-secret          = ${secretField(isDockerLocal, parRequestsSecret, "PAR_REQUESTS_SECRET")}
+       |  access-tokens-secret         = ${secretField(useOpenBao, accessTokensSecret, "ACCESS_TOKENS_SECRET")}
+       |  client-secrets-secret        = ${secretField(useOpenBao, clientSecretsSecret, "CLIENT_SECRETS_SECRET")}
+       |  refresh-tokens-secret        = ${secretField(useOpenBao, refreshTokensSecret, "REFRESH_TOKENS_SECRET")}
+       |  auth-codes-secret            = ${secretField(useOpenBao, authCodesSecret, "AUTH_CODES_SECRET")}
+       |  sessions-secret              = ${secretField(useOpenBao, sessionsSecret, "SESSIONS_SECRET")}
+       |  passwords-secret             = ${secretField(useOpenBao, passwordsSecret, "PASSWORDS_SECRET")}
+       |  conversation-cookie-secret   = ${secretField(useOpenBao, conversationCookieSecret, "CONVERSATION_COOKIE_SECRET")}
+       |  session-cookie-secret        = ${secretField(useOpenBao, sessionCookieSecret, "SESSION_COOKIE_SECRET")}
+       |  user-agent-cookie-secret     = ${secretField(useOpenBao, userAgentCookieSecret, "USER_AGENT_COOKIE_SECRET")}
+       |  par-requests-secret          = ${secretField(useOpenBao, parRequestsSecret, "PAR_REQUESTS_SECRET")}
        |}
        |
        |par {
@@ -411,18 +446,18 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
        |
        |jwt {
        |  issuer = "$authUrl"
-       |  private-key = ${secretKeyField(isDockerLocal, jwtKey.privateB64, "JWT_PRIVATE_KEY")}
+       |  private-key = ${secretKeyField(useOpenBao, jwtKey.privateB64, "JWT_PRIVATE_KEY")}
        |}
        |
        |central {
        |  url = "$centralUrl"
-       |  secret-key = ${secretField(isDockerLocal, centralSecretKey, "CENTRAL_SECRET_KEY")}
+       |  secret-key = ${secretField(useOpenBao, centralSecretKey, "CENTRAL_SECRET_KEY")}
        |}
        |$otpBlock$smtpBlock
        |postgres {
        |  url = "$authPgUrl"
        |  user = "$authPgUser"
-       |  password = "$authPgPass"
+       |  password = ${secretField(isVps, authPgPass, "POSTGRES_PASSWORD")}
        |  maximum-pool-size = 10
        |  minimum-idle = 10
        |  connection-timeout = "30 seconds"
@@ -494,7 +529,7 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
        |  edges = [
        |    {
        |      id = "edge-default"
-       |      public-key-jwk = ${secretKeyField(isDockerLocal, edgeKey.jwk, "EDGE_PUBLIC_JWK")}
+       |      public-key-jwk = ${secretKeyField(useOpenBao, edgeKey.jwk, "EDGE_PUBLIC_JWK")}
        |    }
        |  ]
        |  # Matches the JWT signing key in auth (jwt.private-key). Placeholdered
@@ -505,7 +540,7 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
        |  # private key from OpenBao while writing a freshly generated public
        |  # key here -- a pair that no longer matches, which is exactly what
        |  # broke edge's sync calls to central (401s) before this existed.
-       |  jwks = ${secretKeyField(isDockerLocal, jwks, "JWKS_JSON")}
+       |  jwks = ${secretKeyField(useOpenBao, jwks, "JWKS_JSON")}
        |  metadata = \"\"\"$metadata\"\"\"
        |  presets = [
        |    {
@@ -523,8 +558,8 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
        |  }
        |${bootstrapResourceSecretLine}|}
        |
-       |secret-key = ${secretField(isDockerLocal, centralSecretKey, "CENTRAL_SECRET_KEY")}
-       |client-secrets-secret = ${secretField(isDockerLocal, clientSecretsSecret, "CLIENT_SECRETS_SECRET")}
+       |secret-key = ${secretField(useOpenBao, centralSecretKey, "CENTRAL_SECRET_KEY")}
+       |client-secrets-secret = ${secretField(useOpenBao, clientSecretsSecret, "CLIENT_SECRETS_SECRET")}
        |
        |auth {
        |  url = "$authInternalUrl"
@@ -541,7 +576,7 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
        |postgres {
        |  url = "$centralPgUrl"
        |  user = "$centralPgUser"
-       |  password = "$centralPgPass"
+       |  password = ${secretField(isVps, centralPgPass, "POSTGRES_PASSWORD")}
        |  maximum-pool-size = 15
        |  minimum-idle = 15
        |  connection-timeout = "30 seconds"
@@ -560,15 +595,15 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
        |id = "edge-default"
        |
        |key-id = "${edgeKey.kid}"
-       |private-key = ${secretKeyField(isDockerLocal, edgeKey.privateB64, "EDGE_PRIVATE_KEY")}
+       |private-key = ${secretKeyField(useOpenBao, edgeKey.privateB64, "EDGE_PRIVATE_KEY")}
        |
        |security {
        |  token-encryption {
-       |    key = ${secretField(isDockerLocal, edgeTokenEncKey, "EDGE_TOKEN_ENC_KEY")}
+       |    key = ${secretField(useOpenBao, edgeTokenEncKey, "EDGE_TOKEN_ENC_KEY")}
        |  }
        |
        |  edge-sessions {
-       |    secret = ${secretField(isDockerLocal, edgeSessionsSecret, "EDGE_SESSIONS_SECRET")}
+       |    secret = ${secretField(useOpenBao, edgeSessionsSecret, "EDGE_SESSIONS_SECRET")}
        |    ttl = 30 days
        |  }
        |}
@@ -576,7 +611,7 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
        |postgres {
        |  url = "$edgePgUrl"
        |  user = "$edgePgUser"
-       |  password = "$edgePgPass"
+       |  password = ${secretField(isVps, edgePgPass, "POSTGRES_PASSWORD")}
        |  maximum-pool-size = 10
        |  minimum-idle = 10
        |  connection-timeout = "30 seconds"
@@ -636,7 +671,17 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
     // central.conf both reference CENTRAL_SECRET_KEY/CLIENT_SECRETS_SECRET,
     // so both files carry them; versola-cli only needs to resolve each
     // shared value once; writing it into both is harmless.
-    if isDockerLocal then
+    if useOpenBao then
+      // vps additionally placeholders out Postgres's password and the
+      // admin bootstrap password -- see pgPassDefault and
+      // bootstrapPasswordDefault above for why those two, specifically,
+      // aren't part of the docker-local set. Postgres's *user* isn't
+      // here: "versola_app" isn't secret, so it stays a literal value in
+      // the .conf files instead (see pgUserDefault).
+      val authExtras = if isVps then Seq(
+        "POSTGRES_PASSWORD"        -> authPgPass,
+        "ADMIN_BOOTSTRAP_PASSWORD" -> bootstrapPassword,
+      ) else Seq.empty
       writeGeneratedSecrets(dir, "auth.generated-secrets.env", Seq(
         "ACCESS_TOKENS_SECRET"       -> accessTokensSecret,
         "CLIENT_SECRETS_SECRET"      -> clientSecretsSecret,
@@ -650,7 +695,9 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
         "PAR_REQUESTS_SECRET"        -> parRequestsSecret,
         "JWT_PRIVATE_KEY"            -> jwtKey.privateB64,
         "CENTRAL_SECRET_KEY"         -> centralSecretKey,
-      ))
+      ) ++ authExtras)
+
+      val centralExtras = if isVps then Seq("POSTGRES_PASSWORD" -> centralPgPass) else Seq.empty
       writeGeneratedSecrets(dir, "central.generated-secrets.env", Seq(
         "CENTRAL_SECRET_KEY"    -> centralSecretKey,
         "CLIENT_SECRETS_SECRET" -> clientSecretsSecret,
@@ -661,12 +708,14 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
         // resolution rather than being written fresh every run.
         "JWKS_JSON"        -> jwks,
         "EDGE_PUBLIC_JWK"  -> edgeKey.jwk,
-      ))
+      ) ++ centralExtras)
+
+      val edgeExtras = if isVps then Seq("POSTGRES_PASSWORD" -> edgePgPass) else Seq.empty
       writeGeneratedSecrets(dir, "edge.generated-secrets.env", Seq(
         "EDGE_PRIVATE_KEY"     -> edgeKey.privateB64,
         "EDGE_TOKEN_ENC_KEY"   -> edgeTokenEncKey,
         "EDGE_SESSIONS_SECRET" -> edgeSessionsSecret,
-      ))
+      ) ++ edgeExtras)
 
     println(
       s"""
