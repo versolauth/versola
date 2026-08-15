@@ -71,6 +71,15 @@ export class VersolaAuthorizationDetailTypesList extends LitElement {
     css`
       :host {
         display: block;
+        --challenge-button-width: 12rem;
+        --challenge-button-height: 2.75rem;
+      }
+
+      .btn {
+        box-sizing: border-box;
+        flex: 0 0 var(--challenge-button-width);
+        width: var(--challenge-button-width);
+        min-height: var(--challenge-button-height);
       }
 
       .type-card {
@@ -164,7 +173,7 @@ export class VersolaAuthorizationDetailTypesList extends LitElement {
     this.expandedTypes = expanded;
   }
 
-  private handleCreateClick() {
+  public startCreate() {
     this.editingType = null;
     this.showForm = true;
   }
@@ -259,22 +268,12 @@ export class VersolaAuthorizationDetailTypesList extends LitElement {
           <div class="empty-state">
             <h3>No authorization detail types yet</h3>
             <p>Register a type before clients can use it in <code>authorization_details</code></p>
-            ${this.canManage ? html`
-              <button class="btn btn-primary" @click=${this.handleCreateClick} style="margin-top: 1rem;">
-                + Create Type
-              </button>` : ''}
           </div>
         </div>
       `;
     }
 
     return html`
-      ${this.canManage ? html`
-        <div style="display: flex; justify-content: flex-end; margin-bottom: var(--spacing-md);">
-          <button class="btn btn-primary" @click=${this.handleCreateClick}>+ Create Type</button>
-        </div>
-      ` : ''}
-
       ${this.types.map(detailType => html`
         <div class="type-card">
           <div class="type-header" @click=${() => this.toggleExpand(detailType.type)}>

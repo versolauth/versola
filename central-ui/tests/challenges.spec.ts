@@ -14,6 +14,12 @@ const otpTemplate = {
   channel: 'sms' as const,
 };
 
+const authorizationDetailType = {
+  type: 'payment_initiation',
+  description: { en: 'Payment initiation' },
+  schema: { type: 'object', required: ['type'] },
+};
+
 const settingsWithoutPasskey = {
   tenantId: 'tenant-alpha',
   allowedPrefixes: ['+77'],
@@ -43,6 +49,82 @@ test('renders OTP templates and challenge settings sections', async ({ page }) =
   await expect(page.getByRole('heading', { name: 'Challenge Settings', exact: true })).toBeVisible();
   await expect(page.locator('.template-text').filter({ hasText: '6 digits' })).toBeVisible();
   await expect(page.locator('.prefix-tag').filter({ hasText: '+77' })).toBeVisible();
+
+  const headerButtonSizes = await page.locator('.section-header .btn').evaluateAll(buttons =>
+    buttons.map(button => {
+      const rect = button.getBoundingClientRect();
+      return {
+        width: rect.width,
+        height: rect.height,
+      };
+    }),
+  );
+  expect(new Set(headerButtonSizes.map(size => size.width)).size).toBe(1);
+  expect(new Set(headerButtonSizes.map(size => size.height)).size).toBe(1);
+});
+
+test('renders authorization details in Challenges & Security', async ({ page }) => {
+  await loadAdminApp(page, {
+    path: challengesPath,
+    state: { ...baseState, authorizationDetailTypes: { 'tenant-alpha': [authorizationDetailType] } },
+  });
+
+  await expect(page.getByRole('heading', { name: 'Authorization Details', exact: true })).toBeVisible();
+  await expect(page.locator('.settings-section').filter({ hasText: 'Authorization Details' }).getByRole('button', { name: 'Create Type', exact: true })).toBeVisible();
+  const typeCard = page.locator('.type-card').filter({ hasText: 'payment_initiation' });
+  await expect(typeCard).toBeVisible();
+  await typeCard.locator('.type-header').click();
+  await expect(typeCard.locator('.schema-preview')).toContainText('required');
+});
+
+test('creates an authorization detail type from Challenges & Security', async ({ page }) => {
+  const api = await loadAdminApp(page, {
+    path: challengesPath,
+    state: { ...baseState, authorizationDetailTypes: { 'tenant-alpha': [] } },
+  });
+
+  await page.getByRole('button', { name: 'Create Type', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Create Authorization Detail Type', exact: true })).toBeVisible();
+  await page.getByLabel('Type *').fill('payment_initiation');
+  await page.getByLabel('Description *').fill('Payment initiation');
+  await page.locator('form').getByRole('button', { name: 'Create Type', exact: true }).click();
+
+  await expect(page.locator('.type-card').filter({ hasText: 'payment_initiation' })).toBeVisible();
+  expect(findRequest(api.requests, 'POST', '/configuration/authorization-detail-types').body).toEqual({
+    tenantId: 'tenant-alpha',
+    type: 'payment_initiation',
+    description: { en: 'Payment initiation' },
+    schema: {
+      '$schema': 'https://json-schema.org/draft/2020-12/schema',
+      type: 'object',
+      properties: {
+        type: { type: 'string' },
+        locations: { type: 'array', items: { type: 'string' } },
+        actions: { type: 'array', items: { type: 'string' } },
+      },
+      required: ['type'],
+      unevaluatedProperties: false,
+    },
+  });
+});
+
+test('validates authorization detail JSON inline', async ({ page }) => {
+  await loadAdminApp(page, {
+    path: challengesPath,
+    state: { ...baseState, authorizationDetailTypes: { 'tenant-alpha': [] } },
+  });
+
+  await page.getByRole('button', { name: 'Create Type', exact: true }).click();
+  const editor = page.locator('versola-code-editor');
+  const schemaInput = editor.locator('textarea');
+
+  await schemaInput.fill('{"type":');
+  await expect(editor.locator('.wrapper')).toHaveClass(/invalid/);
+  await expect(page.getByRole('alert')).toBeVisible();
+
+  await schemaInput.fill('{"type":"object"}');
+  await expect(editor.locator('.wrapper')).not.toHaveClass(/invalid/);
+  await expect(page.getByRole('alert')).toHaveCount(0);
 });
 
 test('selects SMS by default and switches the default template type', async ({ page }) => {

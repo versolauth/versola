@@ -1,5 +1,5 @@
 import { LitElement, html, css, nothing } from 'lit';
-import { customElement, property, state } from 'lit/decorators.js';
+import { customElement, property, query, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
 import { buttonStyles, cardStyles, formStyles, iconActionStyles } from '../styles/components';
 import type { OtpTemplateRecord, Locale, SubmissionLimits, RateLimit, PasskeySettings } from '../types';
@@ -15,9 +15,11 @@ import { confirmDestructiveAction } from '../utils/confirm-dialog';
 import { validateRedirectUri } from '../utils/validators';
 import './content-header';
 import './code-editor';
+import './authorization-detail-types-list';
 import './error-card';
 import './loading-cards';
 import './nav-toggle';
+import { VersolaAuthorizationDetailTypesList } from './authorization-detail-types-list';
 
 const CODE_PLACEHOLDER = '{{code}}';
 const PASSWORD_PLACEHOLDER = '{{password}}';
@@ -30,6 +32,7 @@ type TemplateViewSelection = { purpose: TemplatePurpose; channel: TemplateChanne
 export class VersolaChallengesList extends LitElement {
   @property({ type: String }) tenantId: string | null = null;
   @property({ type: Boolean }) canManage = false;
+  @query('versola-authorization-detail-types-list') private authorizationDetailTypesList?: VersolaAuthorizationDetailTypesList;
 
   @state() private templates: OtpTemplateRecord[] = [];
   @state() private availableLocales: Locale[] = [];
@@ -109,7 +112,22 @@ export class VersolaChallengesList extends LitElement {
     formStyles,
     iconActionStyles,
     css`
-      :host { display: block; }
+      :host {
+        display: block;
+        --challenge-button-width: 12rem;
+        --challenge-button-height: 2.75rem;
+      }
+
+      .btn {
+        box-sizing: border-box;
+        flex: 0 0 var(--challenge-button-width);
+        width: var(--challenge-button-width);
+        min-height: var(--challenge-button-height);
+      }
+
+      .section-header > .btn {
+        width: var(--challenge-button-width) !important;
+      }
       .form-header {
         display: flex;
         justify-content: space-between;
@@ -1175,6 +1193,26 @@ export class VersolaChallengesList extends LitElement {
     `;
   }
 
+  private renderAuthorizationDetailTypes() {
+    return html`
+      <section class="settings-section">
+        <div class="section-header">
+          <div>
+            <h2 class="section-title">Authorization Details</h2>
+            <div class="section-desc">Register the RFC 9396 authorization detail types and JSON Schemas that clients may request.</div>
+          </div>
+          ${this.canManage ? html`
+            <button class="btn btn-primary" @click=${() => this.authorizationDetailTypesList?.startCreate()}>Create Type</button>
+          ` : nothing}
+        </div>
+        <versola-authorization-detail-types-list
+          .tenantId=${this.tenantId}
+          .canManage=${this.canManage}
+        ></versola-authorization-detail-types-list>
+      </section>
+    `;
+  }
+
   private renderChallengeSettings() {
     return html`
       <section class="settings-section">
@@ -1597,6 +1635,7 @@ export class VersolaChallengesList extends LitElement {
         `
         : html`
           ${this.renderOtpSettings()}
+          ${this.renderAuthorizationDetailTypes()}
           ${this.renderChallengeSettings()}
         `}
     `;

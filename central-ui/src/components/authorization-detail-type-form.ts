@@ -37,6 +37,15 @@ export class VersolaAuthorizationDetailTypeForm extends LitElement {
       :host {
         display: block;
         --compact-field-max-width: 22.8rem;
+        --challenge-button-width: 12rem;
+        --challenge-button-height: 2.75rem;
+      }
+
+      .btn {
+        box-sizing: border-box;
+        flex: 0 0 var(--challenge-button-width);
+        width: var(--challenge-button-width);
+        min-height: var(--challenge-button-height);
       }
 
       .form-header {
@@ -79,6 +88,17 @@ export class VersolaAuthorizationDetailTypeForm extends LitElement {
     return this.type.length > 0 && !validateAuthorizationDetailType(this.type);
   }
 
+  private schemaValidationError(text: string): string {
+    try {
+      const parsed: unknown = JSON.parse(text);
+      return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
+        ? ''
+        : 'Schema must be a JSON object';
+    } catch (error) {
+      return error instanceof Error ? error.message : 'Schema must be valid JSON';
+    }
+  }
+
   private handleClose() {
     this.dispatchEvent(new CustomEvent('close', { bubbles: true, composed: true }));
   }
@@ -86,20 +106,9 @@ export class VersolaAuthorizationDetailTypeForm extends LitElement {
   private handleSubmit(e: Event) {
     e.preventDefault();
 
-    let schema: Record<string, unknown>;
-    try {
-      const parsed: unknown = JSON.parse(this.schemaText);
-      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-        this.schemaError = 'Schema must be a JSON object';
-        return;
-      }
-      schema = parsed as Record<string, unknown>;
-    } catch (error) {
-      this.schemaError = error instanceof Error ? error.message : 'Schema must be valid JSON';
-      return;
-    }
-
-    this.schemaError = '';
+    this.schemaError = this.schemaValidationError(this.schemaText);
+    if (this.schemaError) return;
+    const schema = JSON.parse(this.schemaText) as Record<string, unknown>;
 
     this.dispatchEvent(new CustomEvent('save-authorization-detail-type', {
       detail: {
@@ -168,13 +177,16 @@ export class VersolaAuthorizationDetailTypeForm extends LitElement {
                 .rows=${20}
                 .value=${this.schemaText}
                 .invalid=${this.schemaError.length > 0}
-                @code-input=${(e: CustomEvent<{ value: string }>) => this.schemaText = e.detail.value}
+                @code-input=${(e: CustomEvent<{ value: string }>) => {
+                  this.schemaText = e.detail.value;
+                  this.schemaError = this.schemaValidationError(this.schemaText);
+                }}
               ></versola-code-editor>
               <div class="hint">
                 JSON Schema 2020-12. Detail objects of this type are rejected unless they validate against it —
                 use <code>unevaluatedProperties: false</code> to reject unknown members.
               </div>
-              ${this.schemaError ? html`<div class="schema-error">${this.schemaError}</div>` : ''}
+              ${this.schemaError ? html`<div class="schema-error" role="alert">${this.schemaError}</div>` : ''}
             </div>
           </div>
 
