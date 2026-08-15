@@ -50,6 +50,7 @@ const storefrontClient = {
 };
 
 const alphaAdmin = { id: 'alpha_admin', description: { en: 'Alpha admin' }, permissions: ['orders.read', 'orders.write'], active: true };
+const userRole = { id: 'user', description: { en: 'Self-registered user' }, permissions: [], active: true };
 
 const dana = {
   id: '00000000-0000-0000-0000-000000000042',
@@ -65,7 +66,7 @@ const state = {
   permissions: { [tenant]: permissions },
   resources: { [tenant]: [ordersApi] },
   clients: { [tenant]: [storefrontClient] },
-  roles: { [tenant]: [alphaAdmin] },
+  roles: { [tenant]: [alphaAdmin, userRole] },
   users: [dana],
 };
 
@@ -126,6 +127,24 @@ test('client create form', async ({ page }) => {
   await expect(page.locator('.secret-banner .secret-value')).toBeVisible();
   await page.locator('.secret-banner').scrollIntoViewIfNeeded();
   await shot(page, 'client-created-secret');
+});
+
+test('client registration flow form', async ({ page }) => {
+  await loadAdminApp(page, { path: `/?view=clients&tenant=${tenant}`, state });
+
+  await page.getByRole('button', { name: '+ Create Client', exact: true }).click();
+  await page.getByLabel('Client ID').fill('checkout-web');
+  await page.getByLabel('Client Name').fill('Checkout Web');
+  await page.getByPlaceholder('https://app.example.com/callback').fill('https://checkout.example.com/callback');
+  await page.getByPlaceholder('https://app.example.com/callback').press('Enter');
+
+  const registrationRow = page.getByText('Registration', { exact: true }).locator('..');
+  await registrationRow.locator('label.toggle').click();
+  await expect(page.locator('[aria-label="Registration credential (locked)"]')).toContainText('phone');
+
+  await page.getByLabel('Challenge', { exact: true }).selectOption('setPassword');
+  await page.getByRole('group', { name: 'Assigned roles' }).getByRole('checkbox', { name: 'alpha_admin', exact: true }).check();
+  await shot(page, 'client-form-registration', true);
 });
 
 test('resources list', async ({ page }) => {
