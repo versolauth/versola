@@ -1,6 +1,6 @@
 package versola.oauth.client
 
-import versola.oauth.client.model.{AuthFlow, ClientId, OAuthClientRecord, ScopeToken, TenantId}
+import versola.oauth.client.model.{AuthFlow, ClientId, OAuthClientRecord, RegistrationFlow, ScopeToken, TenantId}
 import versola.util.{Base64, CacheSource, CoreConfig, Secret, SecurityService}
 import zio.http.{Request, URL}
 import zio.json.JsonCodec
@@ -42,6 +42,7 @@ object OAuthClientSyncClient:
             refreshTokenTtl = client.refreshTokenTtl,
             theme = client.theme,
             authFlow = client.authFlow,
+            registrationFlow = client.registrationFlow,
             otpTemplateId = client.otpTemplateId,
             frontChannelLogoutUri = client.frontChannelLogoutUri.flatMap(URL.decode(_).toOption),
             frontChannelLogoutSessionRequired = client.frontChannelLogoutSessionRequired,
@@ -71,6 +72,7 @@ object OAuthClientSyncClient:
         refreshTokenTtl: Duration,
         theme: String,
         authFlow: Option[AuthFlow],
+        registrationFlow: Option[RegistrationFlow],
         otpTemplateId: String,
         frontChannelLogoutUri: Option[String],
         frontChannelLogoutSessionRequired: Boolean,

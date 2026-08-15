@@ -15,7 +15,7 @@ import versola.oauth.model.{CodeChallenge, CodeChallengeMethod}
 import versola.oauth.session.{SessionRepository, UserAgentRepository}
 import versola.oauth.token.AuthorizationCodeRepository
 import versola.oauth.userinfo.UserInfoService
-import versola.user.UserRepository
+import versola.user.{UserRepository, UserService}
 import versola.user.model.{Login, UserId, UserRecord}
 import versola.util.{AuthPropertyGenerator, Email, Phone, SecureRandom, SecurityService, UnitSpecBase}
 import zio.http.URL
@@ -63,6 +63,7 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
     val config = TestEnvConfig.coreConfig
     val userAgentRepository = stub[UserAgentRepository]
     val secureRandom = stub[SecureRandom]
+    val userService = stub[UserService]
     val service = ConversationService.Impl(
       otpService,
       passwordService,
@@ -81,6 +82,7 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
       acrResolver,
       userAgentRepository,
       secureRandom,
+      userService,
     )
 
   val baseRecord = ConversationRecord(
@@ -102,6 +104,8 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
     userLogin = None,
     userClaims = None,
     authFlow = AuthFlow.default,
+    registrationFlow = None,
+    registrationStep = None,
     userAgent = None,
     userAgentCookie = None,
     version = 0,
@@ -140,11 +144,17 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
         val userLogin = Login("testuser")
         val userClaims = ast.Json.Obj("name" -> ast.Json.Str("Test User"))
         val user = UserRecord(userId, Some(userEmail), Some(userPhone), Some(userLogin), userClaims, None)
+        val resolvedRecord = baseRecord.copy(
+          userId = Some(user.id),
+          userEmail = user.email,
+          userPhone = user.phone,
+          userLogin = user.login,
+          userClaims = Some(user.claims),
+        )
         for
-          _ <- env.userRepository.findByCredential.succeedsWith(Some(user))
           _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.Allowed)
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
-          result <- env.service.prepareInitialPassword(authId, baseRecord, Left(email), factorIndex = 0)
+          result <- env.service.prepareInitialPassword(authId, resolvedRecord, Left(email), factorIndex = 0)
           overwriteCalls = env.conversationRepository.overwrite.calls
         yield assertTrue(
           result == ConversationResult.RenderStep(passwordStep),
@@ -157,25 +167,22 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
       test("return AccessDenied when banned") {
         val env = Env()
         for
-          _ <- env.userRepository.findByCredential.succeedsWith(Some(UserRecord.empty(userId)))
           _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.Banned)
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
-          result <- env.service.prepareInitialPassword(authId, baseRecord, Left(email), factorIndex = 0)
+          result <- env.service.prepareInitialPassword(authId, baseRecord.copy(userId = Some(userId)), Left(email), factorIndex = 0)
         yield assertTrue(result == ConversationResult.RenderStep(ConversationStep.AccessDenied))
       },
       test("return AccessDenied when rate limited") {
         val env = Env()
         for
-          _ <- env.userRepository.findByCredential.succeedsWith(Some(UserRecord.empty(userId)))
           _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.RateLimited(30L))
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
-          result <- env.service.prepareInitialPassword(authId, baseRecord, Left(email), factorIndex = 0)
+          result <- env.service.prepareInitialPassword(authId, baseRecord.copy(userId = Some(userId)), Left(email), factorIndex = 0)
         yield assertTrue(result == ConversationResult.RenderStep(ConversationStep.AccessDenied))
       },
       test("create password step when user not found") {
         val env = Env()
         for
-          _ <- env.userRepository.findByCredential.succeedsWith(None)
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
           result <- env.service.prepareInitialPassword(authId, baseRecord, Left(email), factorIndex = 0)
         yield assertTrue(result == ConversationResult.RenderStep(passwordStep))
@@ -183,10 +190,9 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
       test("deny access when only the credential subject is banned") {
         val env = Env()
         for
-          _ <- env.userRepository.findByCredential.succeedsWith(Some(UserRecord.empty(userId)))
           _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.Banned)
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
-          result <- env.service.prepareInitialPassword(authId, baseRecord, Left(email), factorIndex = 0)
+          result <- env.service.prepareInitialPassword(authId, baseRecord.copy(userId = Some(userId)), Left(email), factorIndex = 0)
           checkedSubjects = env.submissionLimiter.statusForSubjects.calls.head._2.toSet
         yield assertTrue(
           result == ConversationResult.RenderStep(ConversationStep.AccessDenied),
@@ -204,11 +210,12 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
       },
     ),
     suite("checkPassword")(
-      test("return IllegalState when record has no userId") {
+      test("return AccessDenied when record has no userId") {
         val env = Env()
         for
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
           result <- env.service.checkPassword(baseRecord, passwordStep, password, authId)
-        yield assertTrue(result == ConversationResult.IllegalState)
+        yield assertTrue(result == ConversationResult.RenderStep(ConversationStep.AccessDenied))
       },
       test("return AccessDenied when banned") {
         val env = Env()
@@ -321,11 +328,11 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
       },
     ),
     suite("checkLoginPassword")(
-      test("return IllegalState when step is not Credential") {
+      test("return BadRequest when step is not Credential") {
         val env = Env()
         for
           result <- env.service.checkLoginPassword(authId, passwordRecord, login, password)
-        yield assertTrue(result == ConversationResult.IllegalState)
+        yield assertTrue(result == ConversationResult.BadRequest)
       },
       test("record failure against login and re-render loginFailed when user not found") {
         val env = Env()

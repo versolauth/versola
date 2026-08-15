@@ -6,7 +6,7 @@ import com.augustnagro.magnum.pg.json.JsonBDbCodec
 import com.augustnagro.magnum.pg.{PgCodec, SqlArrayCodec}
 import versola.auth.model.OtpCode
 import versola.oauth.authorize.model.ResponseTypeEntry
-import versola.oauth.client.model.{Acr, AuthFlow, AuthorizationDetail, ClientId, PassedAuthFactor, PassedFactorRecord, ResourceUri, ScopeToken}
+import versola.oauth.client.model.{Acr, AuthFlow, AuthorizationDetail, ClientId, PassedAuthFactor, PassedFactorRecord, RegistrationFlow, ResourceUri, ScopeToken}
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, Nonce, State}
 import versola.oauth.model.UserAgentCookiePayload
@@ -58,6 +58,7 @@ class PostgresConversationRepository(xa: TransactorZIO) extends ConversationRepo
   given DbCodec[RequestedClaims] = jsonCodec[RequestedClaims]
   given DbCodec[Json.Obj] = jsonCodec[Json.Obj]
   given DbCodec[AuthFlow] = jsonBCodec[AuthFlow]
+  given DbCodec[RegistrationFlow] = jsonBCodec[RegistrationFlow]
   given DbCodec[ResponseTypeEntry] = DbCodec.StringCodec.biMap(ResponseTypeEntry.valueOf, _.toString)
   given DbCodec[NonEmptySet[ResponseTypeEntry]] = DbCodec.StringCodec.biMap(
     str => NonEmptySet.fromIterableOption(str.split(" ").map(ResponseTypeEntry.valueOf)).getOrElse(NonEmptySet(ResponseTypeEntry.Code)),
@@ -75,7 +76,7 @@ class PostgresConversationRepository(xa: TransactorZIO) extends ConversationRepo
   override def find(authId: AuthId): Task[Option[ConversationRecord]] =
     Clock.instant.flatMap: now =>
       xa.connectMeasured("find-conversation") {
-        sql"""select client_id, redirect_uri, scope, code_challenge, code_challenge_method, state, user_id, credential, step, requested_claims, ui_locales, nonce, response_type, user_email, user_phone, user_login, user_claims, auth_flow, user_agent, user_agent_cookie, version, amr, needs_password_change, target_acr, csrf_token, prior_session_id, resources, authorization_details
+        sql"""select client_id, redirect_uri, scope, code_challenge, code_challenge_method, state, user_id, credential, step, requested_claims, ui_locales, nonce, response_type, user_email, user_phone, user_login, user_claims, auth_flow, registration_flow, registration_step, user_agent, user_agent_cookie, version, amr, needs_password_change, target_acr, csrf_token, prior_session_id, resources, authorization_details
               from auth_conversations
               where id = $authId AND expires_at > $now"""
           .query[ConversationRecord]
@@ -105,6 +106,8 @@ class PostgresConversationRepository(xa: TransactorZIO) extends ConversationRepo
                 user_login,
                 user_claims,
                 auth_flow,
+                registration_flow,
+                registration_step,
                 user_agent,
                 user_agent_cookie,
                 version,
@@ -136,6 +139,8 @@ class PostgresConversationRepository(xa: TransactorZIO) extends ConversationRepo
                 ${record.userLogin},
                 ${record.userClaims},
                 ${record.authFlow},
+                ${record.registrationFlow},
+                ${record.registrationStep},
                 ${record.userAgent},
                 ${record.userAgentCookie},
                 ${record.version},
@@ -162,6 +167,8 @@ class PostgresConversationRepository(xa: TransactorZIO) extends ConversationRepo
               user_login = ${record.userLogin},
               user_claims = ${record.userClaims},
               auth_flow = ${record.authFlow},
+              registration_flow = ${record.registrationFlow},
+              registration_step = ${record.registrationStep},
               amr = ${record.amr},
               needs_password_change = ${record.needsPasswordChange},
               target_acr = ${record.targetAcr},

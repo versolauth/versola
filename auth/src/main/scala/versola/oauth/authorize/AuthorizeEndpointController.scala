@@ -1,10 +1,11 @@
 package versola.oauth.authorize
 
 import versola.oauth.authorize.model.{AuthorizeRequest, AuthorizeResponse, Error, ResponseTypeEntry}
+import versola.oauth.AuthMetrics
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.model.ConversationCookie
 import versola.util.{Base64Url, CoreConfig}
-import versola.util.http.Controller
+import versola.util.http.{Controller, Observability}
 import zio.*
 import zio.http.*
 import zio.prelude.NonEmptySet
@@ -32,10 +33,14 @@ object AuthorizeEndpointController extends Controller:
       result
         .catchSome {
           case Error.BadRequest =>
-            ZIO.succeed(Response.badRequest(Error.BadRequest.description))
+            AuthMetrics.authorizeError("invalid_request") *>
+              (Observability.setError("invalid_request", Some(Error.BadRequest.description))
+                .as(Response.badRequest(Error.BadRequest.description)))
 
           case error: Error.RedirectError =>
-            ZIO.succeed(Response.seeOther(error.redirectUriWithErrorParams))
+            AuthMetrics.authorizeError(error.error.toString) *>
+              (Observability.setError(error.error, Some(error.errorDescription))
+                .as(Response.seeOther(error.redirectUriWithErrorParams)))
         }
     }
 
@@ -45,7 +50,7 @@ object AuthorizeEndpointController extends Controller:
       configService <- ZIO.service[OAuthConfigurationService]
       config <- ZIO.service[CoreConfig]
       authConversationTtl <- configService.getAuthConversationTtl(request.clientId)
-      response <- authService.authorize(request).map:
+      response <- authService.authorize(request).tap(AuthMetrics.authorizeOutcome).map:
         case AuthorizeResponse.Authorized(code, idToken) =>
           Response.seeOther(
             AuthorizeRedirect.responseUrl(request.redirectUri, Base64Url.encode(code), request.state, idToken),

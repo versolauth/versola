@@ -1,0 +1,401 @@
+openapi: 3.1.0
+info:
+  title: Versola Auth — Authorization Endpoint
+  version: 1.0.0
+  description: |
+    OAuth 2.1 authorization endpoint. Starts the Authorization Code flow with PKCE.
+
+    The endpoint accepts the same parameter set over `GET` (query string) and `POST`
+    (`application/x-www-form-urlencoded` body). A parameter supplied more than once is
+    rejected, except `resource`, which is repeatable.
+
+    Either the request carries its parameters inline, or it carries a single `request_uri`
+    obtained from `POST /par` alongside `client_id`; in the latter case the pushed payload
+    replaces every other parameter and is consumed on first use.
+  license:
+    name: Business Source License 1.1
+    url: https://github.com/versolauth/versola/blob/main/LICENCE.md
+
+servers:
+  - url: https://auth.example.com
+    description: Auth service issuer origin
+
+paths:
+  /authorize:
+    get:
+      operationId: authorizeGet
+      summary: Start an authorization request
+      description: |
+        Parameters are read from the query string.
+      tags: [Authorization]
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/ClientId'
+        - $ref: '#/components/parameters/RedirectUri'
+        - $ref: '#/components/parameters/ResponseType'
+        - $ref: '#/components/parameters/Scope'
+        - $ref: '#/components/parameters/CodeChallenge'
+        - $ref: '#/components/parameters/CodeChallengeMethod'
+        - $ref: '#/components/parameters/State'
+        - $ref: '#/components/parameters/Nonce'
+        - $ref: '#/components/parameters/Prompt'
+        - $ref: '#/components/parameters/MaxAge'
+        - $ref: '#/components/parameters/AcrValues'
+        - $ref: '#/components/parameters/UiLocales'
+        - $ref: '#/components/parameters/Claims'
+        - $ref: '#/components/parameters/LoginHint'
+        - $ref: '#/components/parameters/IdTokenHint'
+        - $ref: '#/components/parameters/Resource'
+        - $ref: '#/components/parameters/RequestUri'
+        - $ref: '#/components/parameters/UserAgent'
+        - $ref: '#/components/parameters/SessionCookie'
+        - $ref: '#/components/parameters/UserAgentCookie'
+      responses:
+        '303':
+          $ref: '#/components/responses/SeeOther'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+    post:
+      operationId: authorizePost
+      summary: Start an authorization request
+      description: |
+        Parameters are read from the form body. The repeatable `resource` parameter may also be
+        sent as a single space-delimited field value.
+      tags: [Authorization]
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/UserAgent'
+        - $ref: '#/components/parameters/SessionCookie'
+        - $ref: '#/components/parameters/UserAgentCookie'
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/AuthorizeRequest'
+      responses:
+        '303':
+          $ref: '#/components/responses/SeeOther'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+components:
+  parameters:
+    ClientId:
+      name: client_id
+      in: query
+      required: true
+      description: Identifier of the registered client. Required even when `request_uri` is used.
+      schema:
+        type: string
+      example: web-app
+
+    RedirectUri:
+      name: redirect_uri
+      in: query
+      required: true
+      description: |
+        Absolute URI without a fragment, exactly matching one of the client's registered
+        redirect URIs.
+      schema:
+        type: string
+        format: uri
+      example: https://app.example.com/callback
+
+    ResponseType:
+      name: response_type
+      in: query
+      required: true
+      description: |
+        `code` for the plain authorization code flow, `code id_token` to additionally receive an
+        ID token in the redirect (OIDC hybrid).
+      schema:
+        type: string
+        enum: [code, code id_token]
+      example: code
+
+    Scope:
+      name: scope
+      in: query
+      required: true
+      description: |
+        Space-delimited scope tokens. Include `openid` to obtain an ID token from `/token`
+        and to be allowed to call `/userinfo`.
+      schema:
+        type: string
+      example: openid profile email
+
+    CodeChallenge:
+      name: code_challenge
+      in: query
+      required: true
+      description: PKCE code challenge (RFC 7636 §4.2). Always required.
+      schema:
+        type: string
+        pattern: '^[A-Za-z0-9\-._~]{43,128}$'
+      example: E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM
+
+    CodeChallengeMethod:
+      name: code_challenge_method
+      in: query
+      required: false
+      description: |
+        Transformation applied to the code verifier. Defaults to `plain` when omitted; `S256`
+        is strongly recommended and is the only method advertised in server metadata.
+      schema:
+        type: string
+        enum: [S256, plain]
+        default: plain
+      example: S256
+
+    State:
+      name: state
+      in: query
+      required: false
+      description: |
+        Opaque value echoed back on the redirect, used by the client for CSRF protection.
+        Limited to 128 characters, because it is also carried in the conversation cookie.
+      schema:
+        type: string
+        maxLength: 128
+      example: af0ifjsldkj
+
+    Nonce:
+      name: nonce
+      in: query
+      required: false
+      description: Value bound into the ID token to associate it with this client session.
+      schema:
+        type: string
+
+    Prompt:
+      name: prompt
+      in: query
+      required: false
+      description: |
+        Space-delimited list. `none` must not be combined with any other value.
+      schema:
+        type: string
+        enum: [none, login, consent, select_account]
+
+    MaxAge:
+      name: max_age
+      in: query
+      required: false
+      description: |
+        Maximum acceptable age of the existing authentication, in seconds. An older
+        authentication forces re-authentication. Non-numeric values are ignored.
+      schema:
+        type: integer
+        format: int64
+        minimum: 0
+
+    AcrValues:
+      name: acr_values
+      in: query
+      required: false
+      description: |
+        Space-delimited Authentication Context Class Reference values, in order of preference.
+        Present but empty is rejected.
+      schema:
+        type: string
+
+    UiLocales:
+      name: ui_locales
+      in: query
+      required: false
+      description: Space-delimited BCP 47 language tags, in order of preference.
+      schema:
+        type: string
+      example: ru en
+
+    Claims:
+      name: claims
+      in: query
+      required: false
+      description: |
+        OIDC claims request as a JSON object (OpenID Connect Core §5.5), selecting individual
+        claims for the ID token and the UserInfo response.
+      schema:
+        type: string
+        contentMediaType: application/json
+
+    LoginHint:
+      name: login_hint
+      in: query
+      required: false
+      description: |
+        Pre-fills the identifier on the login form. A value beginning with `+` followed by
+        digits is treated as a phone number, anything else as an email address. The hint is
+        rejected unless the client's auth flow accepts that credential type, and phone hints
+        must additionally match one of the configured phone prefixes.
+      schema:
+        type: string
+      example: user@example.com
+
+    IdTokenHint:
+      name: id_token_hint
+      in: query
+      required: false
+      description: Previously issued ID token identifying the user the client expects to authenticate.
+      schema:
+        type: string
+
+    Resource:
+      name: resource
+      in: query
+      required: false
+      description: |
+        RFC 8707 resource indicator. Repeatable; each value must resolve to a resource
+        registered for the client's tenant, and determines the `aud` of the issued access
+        token. When omitted, the client's public resources plus the edge indicator are used.
+      schema:
+        type: array
+        items:
+          type: string
+          format: uri
+      style: form
+      explode: true
+      example: [https://api.example.com]
+
+    RequestUri:
+      name: request_uri
+      in: query
+      required: false
+      description: |
+        Reference returned by `POST /par`. Replaces every other authorization parameter except
+        `client_id`, which must match the client that pushed the request. Single-use and
+        rejected once expired.
+      schema:
+        type: string
+        pattern: '^urn:ietf:params:oauth:request_uri:'
+      example: urn:ietf:params:oauth:request_uri:6esc_11ACC5bwc014ltc14eY22c
+
+    UserAgent:
+      name: User-Agent
+      in: header
+      required: false
+      description: Recorded with the authentication session for device recognition.
+      schema:
+        type: string
+
+    SessionCookie:
+      name: SSO_SESSION
+      in: cookie
+      required: false
+      description: |
+        Signed session cookie from an earlier authentication. When it resolves to a live
+        session that satisfies `prompt`, `max_age` and `acr_values`, the request is
+        authorized without showing the login form.
+      schema:
+        type: string
+
+    UserAgentCookie:
+      name: SSO_USER_AGENT_ID
+      in: cookie
+      required: false
+      description: Signed device identifier, used to recognise a returning browser.
+      schema:
+        type: string
+
+  schemas:
+    AuthorizeRequest:
+      type: object
+      required: [client_id, redirect_uri, response_type, scope, code_challenge]
+      properties:
+        client_id:
+          type: string
+        redirect_uri:
+          type: string
+          format: uri
+        response_type:
+          type: string
+          enum: [code, code id_token]
+        scope:
+          type: string
+        code_challenge:
+          type: string
+        code_challenge_method:
+          type: string
+          enum: [S256, plain]
+          default: plain
+        state:
+          type: string
+          maxLength: 128
+        nonce:
+          type: string
+        prompt:
+          type: string
+        max_age:
+          type: integer
+          format: int64
+        acr_values:
+          type: string
+        ui_locales:
+          type: string
+        claims:
+          type: string
+          contentMediaType: application/json
+        login_hint:
+          type: string
+        id_token_hint:
+          type: string
+        resource:
+          type: array
+          items:
+            type: string
+            format: uri
+        request_uri:
+          type: string
+
+  responses:
+    SeeOther:
+      description: |
+        Every outcome is a redirect. There are three shapes:
+
+        - **Authorized** — back to `redirect_uri` with `code` (and `state`, and `id_token`
+          when `response_type=code id_token`).
+        - **Authentication required** — to `/challenge`, setting the `SSO_CONVERSATION`
+          cookie that carries the pending authorization request.
+        - **Failed** — back to `redirect_uri` with `error`, `error_description`, `error_uri`
+          and `state`.
+
+        Failures that cannot be attributed to a registered redirect URI are answered with
+        `400` instead, since redirecting them would be an open redirect.
+
+        Error codes returned on the redirect: `invalid_request`, `unsupported_response_type`,
+        `invalid_scope`, `login_required`, `access_denied`, `invalid_target`,
+        `unmet_authentication_requirements`.
+      headers:
+        Location:
+          required: true
+          schema:
+            type: string
+            format: uri
+          examples:
+            authorized:
+              summary: Authorization code issued
+              value: https://app.example.com/callback?code=SplxlOBeZQQYbYS6WxSbIA&state=af0ifjsldkj
+            challenge:
+              summary: User must authenticate
+              value: /challenge
+            failed:
+              summary: Request rejected
+              value: https://app.example.com/callback?error=invalid_request&error_description=Missing+required+parameter+-+code_challenge&state=af0ifjsldkj
+        Set-Cookie:
+          description: |
+            `SSO_CONVERSATION`, set only when redirecting to `/challenge`. Holds the pending
+            authorization request and expires with the client's conversation TTL.
+          schema:
+            type: string
+
+    BadRequest:
+      description: |
+        `client_id` or `redirect_uri` is missing, malformed, supplied more than once, or not
+        registered for the client — so there is no verified URI to redirect the error to.
+      content:
+        text/plain:
+          schema:
+            type: string
+          example: Either client_id or redirect_uri is somehow missing, invalid, provided multiple times or not registered

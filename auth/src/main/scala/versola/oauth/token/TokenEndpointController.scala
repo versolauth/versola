@@ -11,7 +11,7 @@ import versola.oauth.token.model.{ClientCredentialsRequest, CodeExchangeRequest,
 import versola.oauth.userinfo.UserInfoService
 import versola.user.model.UserId
 import versola.util.CoreConfig.JwtConfig
-import versola.util.http.{Controller, extractCredentials}
+import versola.util.http.{Controller, Observability, extractCredentials}
 import versola.util.{Base64, Base64Url, CoreConfig, FormDecoder, JWT, Secret}
 import zio.*
 import zio.http.*
@@ -49,7 +49,7 @@ object TokenEndpointController extends Controller:
       yield Response.json(response.toJson))
         .catchAll {
           case error: TokenEndpointError =>
-            ZIO.succeed:
+            Observability.setError(error.error, error.errorDescription).as:
               val errorResponse = TokenErrorResponse.from(error)
               Response
                 .json(errorResponse.toJson)
@@ -166,12 +166,15 @@ object TokenEndpointController extends Controller:
 
   private def parseRequest(form: Form): IO[TokenEndpointError, TokenRequest] =
     form.get("grant_type").flatMap(_.stringValue) match
-      case Some("authorization_code") =>
-        codeExchangeRequestDecoder.decode(form).orElseFail(TokenEndpointError.InvalidRequest)
-      case Some("refresh_token") =>
-        refreshTokenRequestDecoder.decode(form).orElseFail(TokenEndpointError.InvalidRequest)
-      case Some("client_credentials") =>
-        clientCredentialsRequestDecoder.decode(form).orElseFail(TokenEndpointError.InvalidRequest)
+      case Some(grantType @ "authorization_code") =>
+        Observability.setRouteLabel("grant_type", grantType) *>
+          codeExchangeRequestDecoder.decode(form).orElseFail(TokenEndpointError.InvalidRequest)
+      case Some(grantType @ "refresh_token") =>
+        Observability.setRouteLabel("grant_type", grantType) *>
+          refreshTokenRequestDecoder.decode(form).orElseFail(TokenEndpointError.InvalidRequest)
+      case Some(grantType @ "client_credentials") =>
+        Observability.setRouteLabel("grant_type", grantType) *>
+          clientCredentialsRequestDecoder.decode(form).orElseFail(TokenEndpointError.InvalidRequest)
       case _ =>
         ZIO.fail(TokenEndpointError.UnsupportedGrantType)
 

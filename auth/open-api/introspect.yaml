@@ -1,0 +1,196 @@
+openapi: 3.1.0
+info:
+  title: Versola Auth — Token Introspection Endpoint
+  version: 1.0.0
+  description: |
+    OAuth 2.0 Token Introspection (RFC 7662). Lets an authenticated client or resource server
+    ask whether a token is currently active and retrieve its metadata.
+
+    Both access tokens (JWTs) and refresh tokens (opaque) are accepted; the token format is
+    detected automatically, so `token_type_hint` is unnecessary.
+
+    A token that cannot be verified, has expired, was revoked, or does not belong to the
+    calling client is reported as `{"active": false}` rather than as an error — the caller is
+    never told why a token is not active.
+  license:
+    name: Business Source License 1.1
+    url: https://github.com/versolauth/versola/blob/main/LICENCE.md
+
+servers:
+  - url: https://auth.example.com
+    description: Auth service issuer origin
+
+paths:
+  /introspect:
+    post:
+      operationId: introspect
+      summary: Introspect a token
+      tags: [Token]
+      security:
+        - clientSecretBasic: []
+        - clientSecretPost: []
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/IntrospectionRequest'
+            example:
+              token: eyJhbGciOiJSUzI1NiIsInR5cCI6ImF0K2p3dCJ9...
+      responses:
+        '200':
+          $ref: '#/components/responses/Introspection'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/InvalidClient'
+
+components:
+  securitySchemes:
+    clientSecretBasic:
+      type: http
+      scheme: basic
+      description: '`client_secret_basic` — `client_id` as the username, `client_secret` as the password.'
+    clientSecretPost:
+      type: apiKey
+      in: cookie
+      name: client_secret
+      description: |
+        `client_secret_post` — `client_id` and `client_secret` sent as form fields. Modelled
+        here as a scheme only because OpenAPI has no dedicated form-credential type.
+
+  schemas:
+    IntrospectionRequest:
+      type: object
+      required: [token]
+      properties:
+        token:
+          type: string
+          description: |
+            The token to introspect. A value in JWT form is treated as an access token,
+            anything else as an opaque refresh token.
+        client_id:
+          type: string
+          description: Required for `client_secret_post`.
+        client_secret:
+          type: string
+          description: Confidential clients using `client_secret_post`.
+
+    IntrospectionResponse:
+      type: object
+      required: [active]
+      description: |
+        Only `active` is guaranteed. When `active` is `false` every other member is absent.
+      properties:
+        active:
+          type: boolean
+        client_id:
+          type: string
+          description: Client the token was issued to.
+        scope:
+          type: string
+          description: Space-delimited granted scopes.
+        username:
+          type: string
+        token_type:
+          type: string
+          description: '`Bearer` for access tokens.'
+        exp:
+          type: integer
+          format: int64
+          description: Expiry, seconds since the epoch.
+        iat:
+          type: integer
+          format: int64
+          description: Issued at, seconds since the epoch.
+        nbf:
+          type: integer
+          format: int64
+          description: Not valid before, seconds since the epoch.
+        sub:
+          type: string
+          description: User id, or the `client_id` for a `client_credentials` token.
+        aud:
+          type: array
+          items:
+            type: string
+        iss:
+          type: string
+        jti:
+          type: string
+
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+          enum: [invalid_request, invalid_client]
+        error_description:
+          type: string
+
+  responses:
+    Introspection:
+      description: |
+        Introspection result. Returned with `200` whether or not the token is active.
+      headers:
+        Cache-Control:
+          schema:
+            type: string
+            const: no-store
+        Pragma:
+          schema:
+            type: string
+            const: no-cache
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/IntrospectionResponse'
+          examples:
+            active:
+              summary: Active access token
+              value:
+                active: true
+                client_id: web-app
+                scope: openid profile email
+                token_type: Bearer
+                exp: 1735689600
+                iat: 1735686000
+                sub: 018f3c6e-5a2b-7c11-9d0e-4f8a2b6c1d33
+                aud: [https://api.example.com]
+                iss: https://auth.example.com
+                jti: 9x8VJ0mQ0iKQxRZ8m6bTsw
+            inactive:
+              summary: Unknown, expired, revoked, or another client's token
+              value:
+                active: false
+
+    InvalidRequest:
+      description: The body is not a readable form, or the `token` field is missing.
+      headers:
+        Cache-Control:
+          schema:
+            type: string
+            const: no-store
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: invalid_request
+            error_description: Request is missing a required parameter or is otherwise malformed
+
+    InvalidClient:
+      description: Client authentication failed.
+      headers:
+        Cache-Control:
+          schema:
+            type: string
+            const: no-store
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: invalid_client
+            error_description: Client authentication failed

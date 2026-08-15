@@ -1,0 +1,178 @@
+openapi: 3.1.0
+info:
+  title: Versola Auth — Logout Endpoint
+  version: 1.0.0
+  description: |
+    RP-Initiated Logout (OpenID Connect RP-Initiated Logout 1.0) combined with Front-Channel
+    Logout. Terminates the user's authentication session and notifies the clients that share it.
+
+    The user is identified either by the `SSO_SESSION` cookie or by `id_token_hint`, and the
+    behaviour depends on which is present:
+
+    - **Cookie only** — `GET` renders a confirmation page, because a bare cookie could be
+      driven by a third-party page and logging the user out unasked would be a CSRF. `POST`
+      with the page's CSRF token then performs the logout.
+    - **`id_token_hint`** — the logout happens immediately on either method: the hint proves
+      the client already knows which session it is ending. With a cookie present, the hint
+      must identify that same session.
+    - **Neither** — there is no session to end; the signed-out page is rendered.
+
+    On success the session is deleted, `SSO_SESSION` is expired, and the returned page embeds
+    a hidden iframe per participating client so each can clear its own local session. Clients
+    that registered a back-channel logout URI are notified server-to-server instead.
+  license:
+    name: Business Source License 1.1
+    url: https://github.com/versolauth/versola/blob/main/LICENCE.md
+
+servers:
+  - url: https://auth.example.com
+    description: Auth service issuer origin
+
+paths:
+  /logout:
+    get:
+      operationId: logoutGet
+      summary: Start RP-initiated logout
+      description: |
+        Renders the confirmation page for a cookie-only session, or logs out immediately when
+        `id_token_hint` is supplied.
+      tags: [Logout]
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/PostLogoutRedirectUri'
+        - $ref: '#/components/parameters/State'
+        - $ref: '#/components/parameters/IdTokenHint'
+        - $ref: '#/components/parameters/SessionCookie'
+      responses:
+        '200':
+          $ref: '#/components/responses/LogoutPage'
+        '303':
+          $ref: '#/components/responses/PostLogoutRedirect'
+
+    post:
+      operationId: logoutPost
+      summary: Confirm logout, or log out directly
+      description: |
+        Submission target of the confirmation page. When the session comes from the cookie
+        alone, the logout parameters are read from the signed form body and the query string
+        is ignored; `id_token_hint` is still read from the query string for clients that POST
+        their logout request directly.
+      tags: [Logout]
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/PostLogoutRedirectUri'
+        - $ref: '#/components/parameters/State'
+        - $ref: '#/components/parameters/IdTokenHint'
+        - $ref: '#/components/parameters/SessionCookie'
+      requestBody:
+        required: false
+        description: Sent by the confirmation page. Not used when `id_token_hint` is supplied.
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/LogoutConfirmation'
+      responses:
+        '200':
+          $ref: '#/components/responses/LogoutPage'
+        '303':
+          $ref: '#/components/responses/PostLogoutRedirect'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+components:
+  parameters:
+    PostLogoutRedirectUri:
+      name: post_logout_redirect_uri
+      in: query
+      required: false
+      description: |
+        Where to send the user after logout. Must be registered as a post-logout redirect URI
+        for the client; an unvalidated or unregistered value is dropped and the signed-out
+        page is shown instead.
+      schema:
+        type: string
+        format: uri
+      example: https://app.example.com/goodbye
+
+    State:
+      name: state
+      in: query
+      required: false
+      description: Opaque value echoed back on the post-logout redirect.
+      schema:
+        type: string
+
+    IdTokenHint:
+      name: id_token_hint
+      in: query
+      required: false
+      description: |
+        ID token previously issued by this server, identifying the session to end. It is
+        accepted only if its signature verifies, its `iss` matches this server, and it has an
+        audience. Supplying it skips the confirmation page.
+      schema:
+        type: string
+
+    SessionCookie:
+      name: SSO_SESSION
+      in: cookie
+      required: false
+      description: Signed session cookie identifying the session to end.
+      schema:
+        type: string
+
+  schemas:
+    LogoutConfirmation:
+      type: object
+      required: [csrf_token]
+      properties:
+        csrf_token:
+          type: string
+          description: |
+            Token minted on `GET` and bound to the session together with
+            `post_logout_redirect_uri` and `state`; altering either value invalidates it.
+        post_logout_redirect_uri:
+          type: string
+          format: uri
+        state:
+          type: string
+
+  responses:
+    LogoutPage:
+      description: |
+        An HTML page. Either the confirmation prompt, or the signed-out page carrying one
+        hidden front-channel logout iframe per participating client.
+
+        Also returned — without iframes — when there is nothing to log out, when the session
+        no longer exists, or when `id_token_hint` does not match the cookie's session.
+      headers:
+        Set-Cookie:
+          description: '`SSO_SESSION`, expired, when a session was actually terminated.'
+          schema:
+            type: string
+      content:
+        text/html:
+          schema:
+            type: string
+
+    PostLogoutRedirect:
+      description: |
+        The session was terminated and a registered `post_logout_redirect_uri` was supplied,
+        so the user is sent there with `state` echoed back.
+      headers:
+        Location:
+          required: true
+          schema:
+            type: string
+            format: uri
+          example: https://app.example.com/goodbye?state=af0ifjsldkj
+        Set-Cookie:
+          description: '`SSO_SESSION`, expired.'
+          schema:
+            type: string
+
+    Forbidden:
+      description: |
+        The confirmation form was malformed or its CSRF token does not match. The session is
+        left intact — the signed-out page is deliberately not rendered, since that would tell
+        the user they are logged out while their session is still live.

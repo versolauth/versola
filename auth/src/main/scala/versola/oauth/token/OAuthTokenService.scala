@@ -7,8 +7,9 @@ import versola.oauth.revoke.AccessTokenRevocationService
 import versola.oauth.session.model.{RefreshAlreadyExchanged, RefreshTokenRecord, WithTtl}
 import versola.oauth.session.SessionRepository
 import versola.oauth.token.model.{ClientCredentialsRequest, CodeExchangeRequest, IssuedTokens, RefreshTokenRequest, TokenEndpointError}
-import versola.user.{UserRepository, UserRolesRepository}
-import versola.util.{AuthPropertyGenerator, CoreConfig, JsonSchemaValidator, MAC, Secret, SecurityService}
+import versola.user.UserRepository
+import versola.util.{AuthPropertyGenerator, Base64, CoreConfig, JsonSchemaValidator, MAC, Secret, SecurityService}
+import versola.util.http.Observability
 import zio.prelude.These
 import zio.{Duration, IO, Task, ZIO, ZLayer}
 
@@ -33,7 +34,7 @@ object OAuthTokenService:
   /** Admin-console client; admin roles are only embedded in tokens issued for it. */
   val centralAdminClientId: ClientId = ClientId("central-admin")
 
-  def live = ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _))
+  def live = ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _))
 
   class Impl(
       authorizationCodeRepository: AuthorizationCodeRepository,
@@ -43,7 +44,6 @@ object OAuthTokenService:
       securityService: SecurityService,
       authPropertyGenerator: AuthPropertyGenerator,
       userRepository: UserRepository,
-      userRolesRepository: UserRolesRepository,
       schemaValidator: JsonSchemaValidator,
       config: CoreConfig,
   ) extends OAuthTokenService:
@@ -59,8 +59,9 @@ object OAuthTokenService:
       for
         client <- tokenCredentials match
           case ClientIdWithSecret(clientId, clientSecret) =>
-            oauthClientService.verifySecret(clientId, clientSecret)
-              .someOrFail(TokenEndpointError.InvalidClient)
+            Observability.setClientId(clientId) *>
+              oauthClientService.verifySecret(clientId, clientSecret)
+                .someOrFail(TokenEndpointError.InvalidClient)
 
         codeMac <- securityService.mac(Secret(code), config.security.authCodesSecret)
 
@@ -69,6 +70,9 @@ object OAuthTokenService:
           .filterOrFail(_.clientId == client.id)(TokenEndpointError.InvalidGrant)
           .filterOrFail(_.redirectUri == redirectUri)(TokenEndpointError.InvalidGrant)
           .filterOrFail(_.verify(codeVerifier))(TokenEndpointError.InvalidGrant)
+
+        _ <- Observability.setSessionId(codeRecord.publicSessionId)
+        _ <- Observability.setUserId(codeRecord.userId.toString)
 
         _ <- authorizationCodeRepository.markAsUsed(codeMac).flatMap:
           case Left(at) =>
@@ -81,6 +85,7 @@ object OAuthTokenService:
 
         now <- zio.Clock.instant
         accessToken = codeRecord.accessToken
+        _ <- Observability.setToken(accessToken.encoded)
 
         issuedTokens <- issueTokens(
           accessToken = accessToken,
@@ -121,16 +126,22 @@ object OAuthTokenService:
     ): IO[Throwable | TokenEndpointError, IssuedTokens] =
       import refreshTokenRequest.{authorizationDetails, refreshToken, resources, scope}
       for
+        _ <- Observability.setPreviousRefreshToken(Base64.urlEncode(refreshToken))
+
         client <- tokenCredentials match
           case ClientIdWithSecret(clientId, clientSecret) =>
-            oauthClientService.verifySecret(clientId, clientSecret)
-              .someOrFail(TokenEndpointError.InvalidClient)
+            Observability.setClientId(clientId) *>
+              oauthClientService.verifySecret(clientId, clientSecret)
+                .someOrFail(TokenEndpointError.InvalidClient)
 
         refreshTokenMac <- securityService.mac(Secret(refreshToken), config.security.refreshTokensSecret)
 
         tokenRecord <- sessionRepository.findToken(refreshTokenMac)
           .someOrFail(TokenEndpointError.InvalidGrant)
           .filterOrFail(_.clientId == client.id)(TokenEndpointError.InvalidGrant)
+
+        _ <- Observability.setSessionId(tokenRecord.publicSessionId)
+        _ <- Observability.setUserId(tokenRecord.userId.toString)
 
         _ <- ZIO.fail(TokenEndpointError.InvalidScope)
           .when(scope.exists(!_.subsetOf(client.scope)))
@@ -142,6 +153,7 @@ object OAuthTokenService:
         now <- zio.Clock.instant
 
         accessToken <- authPropertyGenerator.nextAccessToken
+        _ <- Observability.setToken(accessToken.encoded)
 
         issuedTokens <- issueTokens(
           accessToken = accessToken,
@@ -222,8 +234,9 @@ object OAuthTokenService:
       for
         client <- tokenCredentials match
           case ClientIdWithSecret(clientId, clientSecret) =>
-            oauthClientService.verifySecret(clientId, clientSecret)
-              .someOrFail(TokenEndpointError.InvalidClient)
+            Observability.setClientId(clientId) *>
+              oauthClientService.verifySecret(clientId, clientSecret)
+                .someOrFail(TokenEndpointError.InvalidClient)
 
         _ <- ZIO.fail(TokenEndpointError.InvalidClient)
           .when(client.isPublic)
@@ -249,6 +262,7 @@ object OAuthTokenService:
           )
 
         accessToken <- authPropertyGenerator.nextAccessToken
+        _ <- Observability.setToken(accessToken.encoded)
       yield IssuedTokens(
         accessToken = accessToken,
         clientId = client.id,
@@ -284,6 +298,7 @@ object OAuthTokenService:
         refreshToken <- ZIO.when(record.scope.contains(ScopeToken.OfflineAccess))(
           for
             token <- authPropertyGenerator.nextRefreshToken
+            _ <- Observability.setRefreshToken(Base64.urlEncode(token))
             mac <- securityService.mac(Secret(token), config.security.refreshTokensSecret)
             _ <- sessionRepository.createRefreshToken(mac, record)
               .mapError:
@@ -297,7 +312,7 @@ object OAuthTokenService:
           userRepository.find(record.userId),
         )
 
-        roles <- userRolesRepository.findRolesByUserAndTenant(record.userId, client.tenantId)
+        roles <- userRepository.findRolesByUserAndTenant(record.userId, client.tenantId)
       yield IssuedTokens(
         accessToken = accessToken,
         clientId = record.clientId,

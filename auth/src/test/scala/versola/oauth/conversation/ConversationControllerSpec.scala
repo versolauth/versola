@@ -76,6 +76,8 @@ object ConversationControllerSpec extends UnitSpecBase:
     userLogin = None,
     userClaims = None,
     authFlow = AuthFlow.default,
+    registrationFlow = None,
+    registrationStep = None,
     userAgent = None,
     userAgentCookie = None,
     version = 0,
@@ -174,6 +176,7 @@ object ConversationControllerSpec extends UnitSpecBase:
           )
         )
         _ <- configuration.getPasswordRegex.succeedsWith(passwordRegex)
+        _ <- configuration.getIpHeader.succeedsWith("X-Real-IP")
 
         response <- client.batched(request)
         submitCalls = router.submit.calls

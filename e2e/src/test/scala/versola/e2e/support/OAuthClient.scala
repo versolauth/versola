@@ -373,6 +373,8 @@ final class OAuthClient(client: Client, config: E2EConfig):
   /** GET /authorize — raw variant with full control over which parameters are sent.
     * Generates PKCE and state internally; use the returned [[AuthorizeResult]] to access the verifier and cookie.
     * Pass `omitCodeChallenge = true` to omit `code_challenge` from the request (e.g. to test missing-challenge errors).
+    * Pass `requestUri` to redeem a pushed authorization request (RFC 9126) instead of sending
+    * the authorization parameters directly; only `client_id` and `request_uri` are then sent.
     */
   def authorizeRaw(
       clientId: String,
@@ -385,6 +387,8 @@ final class OAuthClient(client: Client, config: E2EConfig):
       sessionCookie: Option[String] = None,
       acrValues: Option[String] = None,
       idTokenHint: Option[String] = None,
+      requestUri: Option[String] = None,
+      omitClientId: Boolean = false,
       /** RFC 9396 §2: the raw JSON value of the `authorization_details` request parameter. */
       authorizationDetails: Option[String] = None,
   ): Task[AuthorizeResult] =
@@ -392,19 +396,26 @@ final class OAuthClient(client: Client, config: E2EConfig):
     val state = java.util.UUID.randomUUID().toString
     for
       base <- ZIO.fromEither(URL.decode(s"${config.authUrl}/authorize")).mapError(new RuntimeException(_))
-      params = List(
-        "client_id"            -> Some(clientId),
-        "redirect_uri"         -> Some(redirectUri),
-        "scope"                -> scope,
-        "response_type"        -> responseType,
-        "code_challenge"       -> (if omitCodeChallenge then None else Some(challenge)),
-        "code_challenge_method"-> (if omitCodeChallenge then None else Some("S256")),
-        "state"                -> Some(state),
-        "prompt"               -> prompt,
-        "max_age"              -> maxAge.map(_.toString),
-        "acr_values"           -> acrValues,
-        "id_token_hint"        -> idTokenHint,
-        "authorization_details" -> authorizationDetails,
+      params = requestUri.fold(
+        List(
+          "client_id"            -> Some(clientId),
+          "redirect_uri"         -> Some(redirectUri),
+          "scope"                -> scope,
+          "response_type"        -> responseType,
+          "code_challenge"       -> (if omitCodeChallenge then None else Some(challenge)),
+          "code_challenge_method"-> (if omitCodeChallenge then None else Some("S256")),
+          "state"                -> Some(state),
+          "prompt"               -> prompt,
+          "max_age"              -> maxAge.map(_.toString),
+          "acr_values"           -> acrValues,
+          "id_token_hint"        -> idTokenHint,
+          "authorization_details" -> authorizationDetails,
+        ),
+      )(uri =>
+        List(
+          "client_id"    -> (if omitClientId then None else Some(clientId)),
+          "request_uri"  -> Some(uri),
+        ),
       ).collect { case (k, Some(v)) => k -> v }
       req = Request.get(base.addQueryParams(params))
       reqWithSession = sessionCookie.fold(req)(sc =>
@@ -412,6 +423,43 @@ final class OAuthClient(client: Client, config: E2EConfig):
       )
       response <- Client.batched(reqWithSession).provide(ZLayer.succeed(client))
     yield AuthorizeResult(response, verifier, state, OAuthClient.extractConversationCookie(response))
+
+  /** POST /par — pushes an authorization request per RFC 9126, returning a `request_uri`
+    * reference for redemption at `/authorize`. Authenticates with HTTP Basic.
+    */
+  def pushAuthorization(
+      clientId: String,
+      clientSecret: String,
+      redirectUri: String,
+      scope: String = "openid",
+      responseType: String = "code",
+      extraParams: Map[String, String] = Map.empty,
+      useBasicAuth: Boolean = true,
+  ): Task[PushedAuthorizationResult] =
+    val (_, challenge) = PkceHelper.generate()
+    val state = java.util.UUID.randomUUID().toString
+    // `client_id` is always required in the pushed body per RFC 9126 §2.1, even when the
+    // client authenticates with HTTP Basic. When authenticating with client_secret_post
+    // instead, `client_secret` must travel in the same body — a client must not combine
+    // both authentication methods in a single request.
+    val formParams = Map(
+      "client_id"             -> clientId,
+      "response_type"         -> responseType,
+      "redirect_uri"          -> redirectUri,
+      "scope"                 -> scope,
+      "state"                 -> state,
+      "code_challenge"        -> challenge,
+      "code_challenge_method" -> "S256",
+    ) ++ (if useBasicAuth then Map.empty else Map("client_secret" -> clientSecret)) ++ extraParams
+    val req0 = Request.post(s"${config.authUrl}/par", formBody(formParams))
+      .addHeader(Header.ContentType(MediaType.application.`x-www-form-urlencoded`))
+    val req = if useBasicAuth then req0.addHeader(Authorization.Basic(clientId, clientSecret)) else req0
+    Client.batched(req).provide(ZLayer.succeed(client)).flatMap(PushedAuthorizationResult.parse)
+
+  /** Issues an arbitrary HTTP method against /par — used to test method-not-allowed handling. */
+  def parRaw(method: Method): Task[Response] =
+    val req = Request(method = method, url = URL.decode(s"${config.authUrl}/par").toOption.get)
+    Client.batched(req).provide(ZLayer.succeed(client))
 
   /** GET /challenge — fetches the current challenge form HTML and parses the step meta tag. */
   def getChallenge(cookie: String): Task[ChallengeResult] =
@@ -567,6 +615,43 @@ final class OAuthClient(client: Client, config: E2EConfig):
         else
           ZIO.fail(RuntimeException(s"registerUser failed: status=${resp.status} body=$bodyStr"))
 
+  /** GET /users?phone=... — checks the Central user index for a phone credential. */
+  def userExistsByPhone(phone: String): Task[Boolean] =
+    findUsers("phone", phone).map(_.nonEmpty)
+
+  /** GET /users?email=... — checks the Central user index for an email credential. */
+  def userExistsByEmail(email: String): Task[Boolean] =
+    findUsers("email", email).map(_.nonEmpty)
+
+  /** GET /users?phone=... — resolves the canonical Central user id for a phone credential. */
+  def findUserIdByPhone(phone: String): Task[Option[java.util.UUID]] =
+    findUsers("phone", phone).map(_.headOption.map(u => java.util.UUID.fromString(u.id)))
+
+  /** Waits for an auth-created registration to reach the Central user index. */
+  def awaitUserByPhone(phone: String): Task[Boolean] =
+    awaitUser(userExistsByPhone(phone), s"phone=$phone")
+
+  private def findUsers(queryName: String, value: String): Task[Vector[OAuthClient.UserSearchRecordBody]] =
+    for
+      base <- ZIO.fromEither(URL.decode(s"${config.centralUrl}/users"))
+        .mapError(error => RuntimeException(s"Invalid Central users URL: $error"))
+      response <- Client.batched(
+        Request.get(base.addQueryParam(queryName, value)).addHeader(centralAuthorization),
+      ).provide(ZLayer.succeed(client))
+      body <- response.body.asString
+      users <- if response.status.isSuccess then
+        ZIO.fromEither(body.fromJson[OAuthClient.UserSearchResponseBody])
+          .mapError(error => RuntimeException(s"Failed to parse Central user search response [$error]"))
+      else
+        ZIO.fail(RuntimeException(s"Central user search failed: status=${response.status}"))
+    yield users.users
+
+  private def awaitUser(exists: Task[Boolean], credential: String): Task[Boolean] =
+    exists.flatMap: found =>
+      if found then ZIO.succeed(true)
+      else ZIO.fail(RuntimeException(s"User with $credential is not yet present in Central"))
+    .retry(Schedule.spaced(100.millis) && Schedule.recurs(100))
+
   /** DELETE /service/users — deletes a user via the Central service API (non-prod only). */
   def deleteUser(userId: java.util.UUID): Task[Unit] =
     val req = Request.delete(s"${config.centralUrl}/service/users?id=$userId")
@@ -601,6 +686,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
       tenantId: String = "default",
       allowedScopes: Set[String] = Set("openid"),
       authFlow: Option[zio.json.ast.Json] = None,
+      registrationFlow: Option[zio.json.ast.Json] = None,
   ): Task[RegisterClientResult] =
     val body = Body.fromString(OAuthClient.RegisterClientBody(
       tenantId = tenantId,
@@ -614,6 +700,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
       refreshTokenTtl = None,
       theme = "default",
       authFlow = authFlow,
+      registrationFlow = registrationFlow,
       otpTemplateId = "default",
       frontChannelLogoutUri = None,
       frontChannelLogoutSessionRequired = false,
@@ -736,6 +823,18 @@ object OAuthClient:
 
   private[support] case class CreateUserResponseBody(id: String) derives JsonDecoder
 
+  private[support] case class UserSearchResponseBody(
+      users: Vector[UserSearchRecordBody],
+  ) derives JsonDecoder
+
+  private[support] case class UserSearchRecordBody(
+      id: String,
+      email: Option[String],
+      phone: Option[String],
+      login: Option[String],
+      claims: zio.json.ast.Json.Obj,
+  ) derives JsonDecoder
+
   /** Minimal mirror of `CreateClientRequest` for e2e JSON serialisation. */
   private[support] case class RegisterClientBody(
       tenantId: String,
@@ -749,6 +848,7 @@ object OAuthClient:
       refreshTokenTtl: Option[Int],
       theme: String,
       authFlow: Option[zio.json.ast.Json],
+      registrationFlow: Option[zio.json.ast.Json],
       otpTemplateId: String,
       frontChannelLogoutUri: Option[String],
       frontChannelLogoutSessionRequired: Boolean,

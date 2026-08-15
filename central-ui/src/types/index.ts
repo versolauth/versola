@@ -23,6 +23,7 @@ export interface AuthorizationPreset {
 
 // Authentication flow (cards: credential -> factor -> factor)
 export type PrimaryCredential = 'email' | 'phone' | 'login';
+export type RegistrationCredential = 'email' | 'phone';
 export type OtpType = 'sms' | 'email';
 export type AuthFactorType = 'otp' | 'password' | 'passkeyEnroll';
 
@@ -44,6 +45,19 @@ export interface AuthFlow {
   equivalents: Record<string, string[]>;    // challenge equivalences: a passed key-factor satisfies each listed value-factor
 }
 
+// Registration flow (self-service account creation)
+export type RegistrationStepType = 'otp' | 'setPassword' | 'passkeyEnroll';
+
+export interface RegistrationStep {
+  type: RegistrationStepType;
+}
+
+export interface RegistrationFlow {
+  credential: RegistrationCredential;     // entry credential whose ownership is verified
+  steps: RegistrationStep[];  // ordered steps the user passes before the account is created
+  roleIds: string[];          // roles granted to the account on creation
+}
+
 // OAuth Client
 export interface OAuthClient {
   id: string;
@@ -56,6 +70,7 @@ export interface OAuthClient {
   theme: string;
   otpTemplateId?: string | null;
   authFlow: AuthFlow | null;
+  registrationFlow: RegistrationFlow | null;
   frontChannelLogoutUri?: string | null;
   frontChannelLogoutSessionRequired: boolean;
   backChannelLogoutUri?: string | null;

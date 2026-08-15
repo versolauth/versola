@@ -19,7 +19,7 @@ import versola.oauth.session.{PostgresSessionRepository, PostgresUserAgentReposi
 import versola.oauth.token.{AuthorizationCodeRepository, OAuthTokenService, TokenEndpointController}
 import versola.oauth.userinfo.{UserInfoController, UserInfoService}
 import versola.oauth.metadata.{MetadataController, MetadataSyncClient}
-import versola.user.{PostgresUserRepository, PostgresUserRolesRepository, UserController, UserRepository, UserRolesRepository}
+import versola.user.{PostgresUserRepository, UserController, UserRegistrationSyncClient, UserRepository, UserService}
 import versola.util.*
 import versola.util.http.VersolaApp
 import versola.util.postgres.{PostgresConfig, PostgresHikariDataSource}
@@ -42,7 +42,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
   type Dependencies =
     CoreConfig &
       UserRepository &
-      UserRolesRepository &
+      UserService &
       OAuthConfigurationService &
       ConversationRepository &
       AuthorizationCodeRepository &
@@ -76,7 +76,8 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       SubmissionLimiter &
       ChallengeThrottleRepository &
       LogoutService &
-      SessionService
+      SessionService &
+      UserRegistrationSyncClient
 
   override def routes: Routes[Dependencies & Tracing & EnvName, Throwable] =
     List(
@@ -96,7 +97,6 @@ object PostgresOAuthApp extends VersolaApp("auth"):
 
   val repositories = PostgresHikariDataSource.transactor(serviceName = Some("auth"), migrate = runMigrations) >+> (
     PostgresUserRepository.live >+>
-      PostgresUserRolesRepository.live >+>
       PostgresConversationRepository.live >+>
       PostgresAuthorizationCodeRepository.live >+>
       PostgresPushedAuthorizationRepository.live >+>
@@ -138,6 +138,8 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       UserInfoService.live >+>
       SubmissionLimiter.live >+>
       AcrResolutionService.live >+>
+      UserRegistrationSyncClient.live >+>
+      UserService.live >+>
       ConversationService.live >+>
       ConversationRouter.live >+>
       AuthorizeEndpointService.live >+>

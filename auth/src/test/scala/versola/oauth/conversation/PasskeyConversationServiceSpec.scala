@@ -14,7 +14,7 @@ import versola.oauth.model.{CodeChallenge, CodeChallengeMethod}
 import versola.oauth.session.{SessionRepository, UserAgentRepository}
 import versola.oauth.token.AuthorizationCodeRepository
 import versola.oauth.userinfo.UserInfoService
-import versola.user.UserRepository
+import versola.user.{UserRepository, UserService}
 import versola.user.model.{UserId, UserRecord}
 import versola.util.{AuthPropertyGenerator, SecureRandom, SecurityService, UnitSpecBase}
 import zio.http.URL
@@ -61,6 +61,7 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
     val config = TestEnvConfig.coreConfig
     val userAgentRepository = stub[UserAgentRepository]
     val secureRandom = stub[SecureRandom]
+    val userService = stub[UserService]
 
     val service = ConversationService.Impl(
       otpService,
@@ -80,6 +81,7 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
       acrResolver,
       userAgentRepository,
       secureRandom,
+      userService,
     )
 
   val credentialStep = ConversationStep.Credential(
@@ -108,6 +110,8 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
     userLogin = None,
     userClaims = None,
     authFlow = passkeyAuthFlow,
+    registrationFlow = None,
+    registrationStep = None,
     userAgent = None,
     userAgentCookie = None,
     version = 0,
@@ -300,7 +304,7 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
           env.webAuthnService.finishAssertion.calls.isEmpty,
         )
       },
-      test("return IllegalState when passkey login is not enabled for the client") {
+      test("return BadRequest when passkey login is not enabled for the client") {
         val env = Env()
         val record = baseRecord.copy(
           authFlow = AuthFlow.default,
@@ -308,7 +312,7 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
         )
         for
           result <- env.service.finishPasskeyAssertion(authId, record, "response-json", None)
-        yield assertTrue(result == ConversationResult.IllegalState)
+        yield assertTrue(result == ConversationResult.BadRequest)
       }
     ),
     suite("offerPasskeyEnroll")(
@@ -371,7 +375,7 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
       }
     ),
     suite("finishPasskeyEnroll")(
-      test("finish conversation on success") {
+      test("pass the step on success so the caller decides what follows") {
         val env = Env()
         val recordWithUser = baseRecord.copy(userId = Some(userId))
         val enrollStep = ConversationStep.PasskeyEnroll("reg-req", "{}")
@@ -414,7 +418,7 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
           _ <- env.secureRandom.nextUUIDv7.succeedsWith(java.util.UUID.randomUUID())
           _ <- env.userAgentRepository.create.succeedsWith(())
           result <- env.service.finishPasskeyEnroll(authId, recordWithUser, enrollStep, "resp", "my-passkey")
-        yield assertTrue(result.isInstanceOf[ConversationResult.Complete])
+        yield assertTrue(result == ConversationResult.StepPassed(recordWithUser))
       },
       test("re-render enroll step with enrollFailed flag when registration fails") {
         val env = Env()
@@ -429,7 +433,7 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
       }
     ),
     suite("skipPasskey")(
-      test("finish conversation") {
+      test("pass the step so the caller decides what follows") {
         val env = Env()
         val recordWithUser = baseRecord.copy(userId = Some(userId))
         val testCode = versola.oauth.model.AuthorizationCode(Array.fill(32)(1.toByte))
@@ -452,7 +456,7 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
           _ <- env.secureRandom.nextUUIDv7.succeedsWith(java.util.UUID.randomUUID())
           _ <- env.userAgentRepository.create.succeedsWith(())
           result <- env.service.skipPasskey(authId, recordWithUser)
-        yield assertTrue(result.isInstanceOf[ConversationResult.Complete])
+        yield assertTrue(result == ConversationResult.StepPassed(recordWithUser))
       }
     )
   )

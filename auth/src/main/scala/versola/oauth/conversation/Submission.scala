@@ -1,7 +1,7 @@
 package versola.oauth.conversation
 import versola.auth.model.{OtpCode, Password}
 import versola.user.model.Login
-import versola.util.{Email, FormDecoder, Phone}
+import versola.util.{Email, Phone}
 import zio.http.Form
 import zio.schema.*
 

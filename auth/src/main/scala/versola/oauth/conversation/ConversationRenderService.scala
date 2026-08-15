@@ -6,10 +6,11 @@ import versola.oauth.client.model.{ClientId, FormRecord, PrimaryCredential}
 import versola.oauth.conversation.model.{ConversationRecord, ConversationStep}
 import versola.oauth.jwks.JwksService
 import versola.oauth.model.State
-import versola.oauth.model.{SessionCookie, UserAgentCookie}
+import versola.oauth.model.{ConversationCookie, SessionCookie, UserAgentCookie}
 import versola.oauth.session.model.SessionInfo
+import versola.util.http.Observability
 import versola.util.{Base64, Base64Url, CoreConfig, JWT}
-import zio.http.{Body, Header, Headers, MediaType, Response, Status, URL}
+import zio.http.{Body, Header, Headers, MediaType, Path, Response, Status, URL}
 import zio.json.*
 import zio.json.ast.Json
 import zio.json.{jsonDiscriminator, jsonHint}
@@ -58,6 +59,7 @@ object ConversationRenderService:
         passkey: Boolean,
         allowedPhonePrefixes: Option[List[String]],
         passwordRegex: Option[String],
+        registration: Boolean,
     ) extends StepView
     @jsonHint("password")
     case class Password(passwordRegex: String) extends StepView
@@ -198,16 +200,13 @@ object ConversationRenderService:
     ): Task[Response] =
       result match
         case ConversationResult.RenderStep(step) =>
-          ZIO.succeed(Response.seeOther(URL.root.copy(path = zio.http.Path.root / "challenge")))
+          ZIO.succeed(Response.seeOther(URL.root.copy(path = Path.root / "challenge")))
 
         case ConversationResult.ServiceUnavailable =>
           renderStep(record, ifNoneMatch = None, errorKey = Some("service_unavailable"))
 
-        case ConversationResult.NotFound =>
-          ZIO.succeed(Response.notFound)
-
-        case ConversationResult.IllegalState =>
-          ZIO.succeed(Response.badRequest)
+        case ConversationResult.BadRequest | ConversationResult.WriteConflict =>
+          ZIO.succeed(Response.seeOther(URL.root.copy(path = Path.root / "challenge")))
 
         case ConversationResult.Complete(redirectUri, state, code, sessionId, idTokenData, userAgentId, userAgentData) =>
           val encodedCode = Base64Url.encode(code)
@@ -240,6 +239,7 @@ object ConversationRenderService:
                 secret = config.security.userAgentCookieSecret,
               ),
             )
+            .addCookie(ConversationCookie.expired)
 
     override def renderLogout(
         logoutUris: List[URL],
@@ -351,11 +351,13 @@ object ConversationRenderService:
         view <- stepView(step, clientId, redirectUri, state)
         formOpt <- configuration.getForm(formId)
         locales <- configuration.getLocales
+        errorMessage = errorOverride.orElse(stepErrorKey(step))
+        _ <- Observability.setStep(formId)
+        _ <- ZIO.foreachDiscard(errorMessage)(Observability.setError(_))
       yield formOpt.map { form =>
         val activeCodes = locales.locales.map(_.code).toSet + locales.default
         val (chosenLocale, translations) = pickTranslations(form, locale, locales.default, activeCodes)
         val allLocales = (form.localizations.keySet & activeCodes).toList.sorted
-        val errorMessage = errorOverride.orElse(stepErrorKey(step))
         FormRenderInfo(
           title = pageTitle(translations),
           style = form.style,
@@ -414,7 +416,7 @@ object ConversationRenderService:
         state: Option[State],
     ): UIO[StepView] =
       step match
-        case ConversationStep.Credential(primaryCredentials, inlinePassword, passkey, _, _, _) =>
+        case ConversationStep.Credential(primaryCredentials, inlinePassword, passkey, registration, _, _, _) =>
           for
             allowedPhonePrefixes <-
               if primaryCredentials.contains(PrimaryCredential.phone) then
@@ -424,7 +426,7 @@ object ConversationRenderService:
             passwordRegex <-
               if inlinePassword then configuration.getPasswordRegex.map(Some(_))
               else ZIO.none
-          yield StepView.Credential(primaryCredentials, inlinePassword, passkey, allowedPhonePrefixes, passwordRegex)
+          yield StepView.Credential(primaryCredentials, inlinePassword, passkey, allowedPhonePrefixes, passwordRegex, registration)
 
         case _: ConversationStep.Password =>
           configuration.getPasswordRegex.map(StepView.Password(_))

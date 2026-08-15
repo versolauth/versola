@@ -54,7 +54,7 @@ object OtpServiceSpec extends UnitSpecBase:
           _ <- env.otpDecisionService.checkRequest.succeedsWith(SendOtpResult.Success(fake = false))
           _ <- env.configService.getOtpSettings.succeedsWith(OtpSettings.default)
           _ <- env.otpGenerationService.generateOtpCode.succeedsWith(otpCode)
-          result <- env.service.prepareOtp(None, None, clientId)
+          result <- env.service.prepareOtp(None, None, clientId, isRegistering = false)
         yield assertTrue(
           result == realOtp.copy(timesRequested = 0),
         )
@@ -63,7 +63,7 @@ object OtpServiceSpec extends UnitSpecBase:
         val env = Env()
         for
           _ <- env.otpDecisionService.checkRequest.succeedsWith(SendOtpResult.Success(fake = true))
-          result <- env.service.prepareOtp(None, None, clientId)
+          result <- env.service.prepareOtp(None, None, clientId, isRegistering = false)
         yield assertTrue(
           result == ConversationStep.Otp(
             real = None,

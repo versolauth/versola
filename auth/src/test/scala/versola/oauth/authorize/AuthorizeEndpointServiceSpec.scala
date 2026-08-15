@@ -57,6 +57,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
     refreshTokenTtl = zio.durationInt(7776000).seconds,
     theme = "default",
     authFlow = Some(otpFlow),
+    registrationFlow = None,
     otpTemplateId = "default",
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
@@ -174,6 +175,8 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
     userLogin = None,
     userClaims = None,
     authFlow = otpFlow,
+    registrationFlow = None,
+    registrationStep = None,
     userAgent = None,
     userAgentCookie = None,
     version = 0,
@@ -250,6 +253,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         _ <- env.authPropertyGenerator.nextAccessToken.succeedsWith(accessToken)
         _ <- env.securityService.mac.succeedsWith(codeMac)
         _ <- env.authorizationCodeRepository.create.succeedsWith(())
+        _ <- env.secureRandom.nextUUIDv7.succeedsWith(UUID.randomUUID())
         result <- env.service.authorize(baseRequest.copy(sessionId = Some(rawSessionId)))
         createCalls = env.authorizationCodeRepository.create.calls
       yield assertTrue(
@@ -279,6 +283,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         _ <- env.securityService.mac.succeedsWith(codeMac)
         _ <- env.authorizationCodeRepository.create.succeedsWith(())
         _ <- env.userRepository.find.succeedsWith(None)
+        _ <- env.secureRandom.nextUUIDv7.succeedsWith(UUID.randomUUID())
         result <- env.service.authorize(hybridRequest).flip
       yield assertTrue(result == Error.AccessDenied(redirectUri, baseRequest.state))
     },
@@ -300,6 +305,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         _ <- env.authPropertyGenerator.nextAccessToken.succeedsWith(accessToken)
         _ <- env.securityService.mac.succeedsWith(codeMac)
         _ <- env.authorizationCodeRepository.create.succeedsWith(())
+        _ <- env.secureRandom.nextUUIDv7.succeedsWith(UUID.randomUUID())
         result <- env.service.authorize(baseRequest.copy(sessionId = Some(rawSessionId)))
       yield assertTrue(result == AuthorizeResponse.Authorized(code, None))
     },
@@ -415,7 +421,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
         _ <- env.secureRandom.nextAlphanumeric.succeedsWith("testcsrf1")
         _ <- env.conversationRepository.create.succeedsWith(())
-        _ <- env.conversationRouter.submit.succeedsWith((ConversationResult.IllegalState, dummyConversation))
+        _ <- env.conversationRouter.submit.succeedsWith((ConversationResult.BadRequest, dummyConversation))
         result <- env.service.authorize(baseRequest.copy(loginHint = Some(Left(emailHint))))
         submitCalls = env.conversationRouter.submit.calls
       yield assertTrue(
@@ -433,7 +439,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
         _ <- env.secureRandom.nextAlphanumeric.succeedsWith("testcsrf1")
         _ <- env.conversationRepository.create.succeedsWith(())
-        _ <- env.conversationRouter.submit.succeedsWith((ConversationResult.IllegalState, dummyConversation))
+        _ <- env.conversationRouter.submit.succeedsWith((ConversationResult.BadRequest, dummyConversation))
         result <- env.service.authorize(baseRequest.copy(loginHint = Some(Right(phoneHint))))
         submitCalls = env.conversationRouter.submit.calls
       yield assertTrue(
@@ -515,6 +521,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         _ <- env.authPropertyGenerator.nextAccessToken.succeedsWith(accessToken)
         _ <- env.securityService.mac.succeedsWith(codeMac)
         _ <- env.authorizationCodeRepository.create.succeedsWith(())
+        _ <- env.secureRandom.nextUUIDv7.succeedsWith(UUID.randomUUID())
         result <- env.service.authorize(baseRequest.copy(sessionId = Some(rawSessionId), maxAge = Some(3600)))
       yield assertTrue(result == AuthorizeResponse.Authorized(code, None))
     },
@@ -571,6 +578,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         _ <- env.authPropertyGenerator.nextAccessToken.succeedsWith(accessToken)
         _ <- env.securityService.mac.succeedsWith(codeMac)
         _ <- env.authorizationCodeRepository.create.succeedsWith(())
+        _ <- env.secureRandom.nextUUIDv7.succeedsWith(UUID.randomUUID())
         result <- env.service.authorize(baseRequest.copy(sessionId = Some(rawSessionId), acrValues = Some(NonEmptyList(Acr("otp")))))
       yield assertTrue(result == AuthorizeResponse.Authorized(code, None))
     },
@@ -638,6 +646,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         _ <- env.authPropertyGenerator.nextAccessToken.succeedsWith(accessToken)
         _ <- env.securityService.mac.succeedsWith(codeMac)
         _ <- env.authorizationCodeRepository.create.succeedsWith(())
+        _ <- env.secureRandom.nextUUIDv7.succeedsWith(UUID.randomUUID())
         result <- env.service.authorize(baseRequest.copy(sessionId = Some(rawSessionId), acrValues = Some(NonEmptyList(Acr("company_otp")))))
       yield assertTrue(result == AuthorizeResponse.Authorized(code, None))
     },

@@ -3,11 +3,12 @@ package versola.oauth.authorize
 import versola.oauth.authorize.model.{AuthorizeRequest, Error, Prompt, ResponseTypeEntry}
 import versola.oauth.client.{AuthorizationDetailResolver, OAuthConfigurationService, ResourceResolver}
 import versola.oauth.client.model.{Acr, AuthorizationDetail, ClientId, OAuthClientRecord, PrimaryCredential, ResourceUri, ScopeToken}
-import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, Nonce, RequestUri, RequestUriReference, State}
+import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, Nonce, RequestUri, State}
 import versola.oauth.model.{SessionCookie, UserAgentCookie}
 import versola.oauth.session.model.SessionId
 import versola.oauth.userinfo.model.RequestedClaims
 import versola.util.CoreConfig
+import versola.util.http.Observability
 import versola.util.{Base64, Email, JsonSchemaValidator, Phone, Secret, SecurityService}
 import zio.http.{Form, Header, Method, Request, URL}
 import zio.json.*
@@ -105,6 +106,10 @@ object AuthorizeRequestParser:
         client <- oauthClientService.find(clientId)
           .someOrFail(Error.BadRequest)
           .filterOrFail(_.redirectUris.contains(redirectUriString))(Error.BadRequest)
+
+        ipHeader <- oauthClientService.getIpHeader(clientId)
+        ip = request.headers.get(ipHeader).map(_.split(',').head.trim).filter(_.nonEmpty)
+        _ <- ZIO.foreachDiscard(ip)(Observability.setIp)
 
         state <- getParam(params, "state")
           .mapBoth(
@@ -238,6 +243,7 @@ object AuthorizeRequestParser:
           idTokenHint = idTokenHint,
           resources = resources,
           authorizationDetails = authorizationDetails,
+          ip = ip,
         )
       yield authorizeRequest
 

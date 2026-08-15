@@ -34,6 +34,7 @@ private[authorize] case class AuthorizeRequest(
       * when the parameter was absent, distinct from an empty list (which the parameter itself
       * disallows). */
     authorizationDetails: Option[List[AuthorizationDetail]],
+    ip: Option[String] = None,
 ):
   def promptNone: Boolean = prompt.contains(Prompt.none)
   def promptLogin: Boolean = prompt.contains(Prompt.login)

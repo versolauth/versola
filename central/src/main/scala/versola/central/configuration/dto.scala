@@ -1,13 +1,13 @@
 package versola.central.configuration
 
-import versola.central.configuration.clients.{AuthFlow, ClientId, PresetId, ResponseType}
+import versola.central.configuration.clients.{AuthFlow, ClientId, PresetId, RegistrationFlow, ResponseType}
 import versola.central.configuration.details.AuthorizationDetailType
 import versola.central.configuration.permissions.Permission
 import versola.central.configuration.resources.{ResourceEndpointId, ResourceId}
 import versola.central.configuration.roles.RoleId
 import versola.central.configuration.scopes.{Claim, ClaimRecord, ScopeToken}
 import versola.central.configuration.tenants.TenantId
-import versola.util.RedirectUri
+import versola.util.{Patch, RedirectUri}
 import zio.http.{Scheme, URL}
 import zio.json.ast.Json
 import zio.json.{DeriveJsonCodec, JsonCodec, JsonDecoder, JsonEncoder}
@@ -297,6 +297,7 @@ case class OAuthClientResponse(
     secretRotation: Boolean,
     theme: String,
     authFlow: Option[AuthFlow],
+    registrationFlow: Option[RegistrationFlow],
     otpTemplateId: String,
     frontChannelLogoutUri: Option[String],
     frontChannelLogoutSessionRequired: Boolean,
@@ -318,6 +319,7 @@ case class CreateClientRequest(
     refreshTokenTtl: Option[Int],
     theme: String,
     authFlow: Option[AuthFlow],
+    registrationFlow: Option[RegistrationFlow],
     otpTemplateId: String,
     frontChannelLogoutUri: Option[String],
     frontChannelLogoutSessionRequired: Boolean,
@@ -341,11 +343,12 @@ case class UpdateClientRequest(
     accessTokenTtl: Option[Long],
     refreshTokenTtl: Option[Long],
     theme: Option[String],
-    authFlow: Option[AuthFlow],
+    authFlow: Option[Patch[AuthFlow]],
+    registrationFlow: Option[Patch[RegistrationFlow]],
     otpTemplateId: Option[String],
-    frontChannelLogoutUri: Option[Option[String]],
+    frontChannelLogoutUri: Option[Patch[String]],
     frontChannelLogoutSessionRequired: Option[Boolean],
-    backChannelLogoutUri: Option[Option[String]],
+    backChannelLogoutUri: Option[Patch[String]],
 ) derives Schema, JsonCodec
 
 case class AuthorizationPresetInput(
@@ -496,6 +499,7 @@ case class SyncOAuthClientRecord(
     permissions: Set[Permission],
     theme: String,
     authFlow: Option[AuthFlow],
+    registrationFlow: Option[RegistrationFlow],
     otpTemplateId: String,
     frontChannelLogoutUri: Option[String],
     frontChannelLogoutSessionRequired: Boolean,

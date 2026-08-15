@@ -4,11 +4,12 @@ import org.scalamock.stubs.{Stub, ZIOStubs}
 import versola.central.{CentralConfig, TestCentralConfig}
 import versola.central.configuration.edges.EdgeId
 import versola.central.configuration.permissions.Permission
+import versola.central.configuration.roles.{RoleRecord, RoleRepository}
 import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.sync.SyncEvent
 import versola.central.configuration.tenants.{TenantId, TenantRecord, TenantRepository}
 import versola.central.configuration.{CreateClientRequest, PatchClientRedirectUris, PatchClientScope, PatchPermissions, UpdateClientRequest}
-import versola.util.{RedirectUri, ReloadingCache, Secret, SecureRandom, SecurityService}
+import versola.util.{Patch, RedirectUri, ReloadingCache, Secret, SecureRandom, SecurityService}
 import zio.prelude.EqualOps
 import zio.*
 import zio.test.*
@@ -40,6 +41,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     permissions = Set(readPermission),
     theme = "default",
     authFlow = Some(AuthFlow.default),
+    registrationFlow = None,
     otpTemplateId = "default",
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
@@ -59,6 +61,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     permissions = Set(writePermission),
     theme = "default",
     authFlow = Some(AuthFlow.default),
+    registrationFlow = None,
     otpTemplateId = "default",
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
@@ -76,6 +79,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     refreshTokenTtl = Some(7776000),
     theme = "default",
     authFlow = Some(AuthFlow.default),
+    registrationFlow = None,
     otpTemplateId = "default",
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
@@ -92,6 +96,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     refreshTokenTtl = None,
     theme = None,
     authFlow = None,
+    registrationFlow = None,
     otpTemplateId = None,
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = None,
@@ -102,10 +107,11 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     val cache = ReloadingCache(Unsafe.unsafe(unsafe ?=> Ref.unsafe.make(initial)))
     val repository = stub[OAuthClientRepository]
     val tenantRepository = stub[TenantRepository]
+    val roleRepository = stub[RoleRepository]
     val secureRandom = stub[SecureRandom]
     val securityService = stub[SecurityService]
     val config = TestCentralConfig.config
-    val service = OAuthClientService.Impl(cache, repository, tenantRepository, secureRandom, securityService, config)
+    val service = OAuthClientService.Impl(cache, repository, tenantRepository, roleRepository, secureRandom, securityService, config)
 
   def spec = suite("OAuthClientService")(
     test("getTenantClients filters cache by tenant") {
@@ -160,6 +166,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         permissions = Set(readPermission),
         theme = "default",
         authFlow = Some(AuthFlow.default),
+        registrationFlow = None,
         otpTemplateId = "default",
         frontChannelLogoutUri = None,
         frontChannelLogoutSessionRequired = false,
@@ -201,9 +208,140 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
             None,
             None,
             None,
+            None,
           )
         )
       )
+    },
+    test("registerClient rejects a registration flow granting an unknown role") {
+      val env = new Env()
+
+      for
+        _ <- env.roleRepository.findRole.succeedsWith(None)
+        result <- env.service
+          .registerClient(createRequest.copy(registrationFlow = Some(RegistrationFlow.default)))
+          .either
+        createCalls = env.repository.createClient.times
+      yield assertTrue(
+        result.left.toOption.exists:
+          case error: InvalidRegistrationConfiguration => error.reason.contains("does not exist")
+          case _                                       => false,
+        createCalls == 0,
+      )
+    },
+    test("registerClient accepts a registration flow granting an existing role") {
+      val env = new Env()
+      val role = RoleRecord(
+        RegistrationFlow.defaultRoleId,
+        tenantId,
+        Map("en" -> "User"),
+        Set.empty,
+        active = true,
+      )
+
+      for
+        _ <- env.roleRepository.findRole.succeedsWith(Some(role))
+        _ <- env.secureRandom.nextBytes.succeedsWith(Array.fill(32)(11.toByte))
+        _ <- env.securityService.encryptAes256.succeedsWith(Array.fill(48)(17.toByte))
+        _ <- env.repository.createClient.succeedsWith(())
+        _ <- env.service.registerClient(createRequest.copy(registrationFlow = Some(RegistrationFlow.default)))
+        created = env.repository.createClient.calls.head
+      yield assertTrue(created.registrationFlow == Some(RegistrationFlow.default))
+    },
+    test("registerClient rejects registration for a login+password flow") {
+      val env = new Env()
+      val loginFlow = AuthFlow.default.copy(
+        primary = AuthFlow.default.primary.copy(credentials = List(PrimaryCredential.login), inlinePassword = true),
+      )
+
+      for
+        result <- env.service
+          .registerClient(createRequest.copy(authFlow = Some(loginFlow), registrationFlow = Some(RegistrationFlow.default)))
+          .either
+        createCalls = env.repository.createClient.times
+      yield assertTrue(
+        result.left.toOption.exists:
+          case error: InvalidRegistrationConfiguration => error.reason.contains("login+password")
+          case _                                       => false,
+        createCalls == 0,
+      )
+    },
+    test("registerClient rejects registration when the credential card asks for a password inline") {
+      val env = new Env()
+      val inlineFlow = AuthFlow.default.copy(
+        primary = AuthFlow.default.primary.copy(
+          credentials = List(PrimaryCredential.phone),
+          inlinePassword = true,
+        ),
+      )
+
+      for
+        result <- env.service
+          .registerClient(createRequest.copy(authFlow = Some(inlineFlow), registrationFlow = Some(RegistrationFlow.default)))
+          .either
+        createCalls = env.repository.createClient.times
+      yield assertTrue(
+        result.left.toOption.exists:
+          case error: InvalidRegistrationConfiguration => error.reason.contains("password inline")
+          case _                                       => false,
+        createCalls == 0,
+      )
+    },
+    test("registerClient rejects registration for a card offering several credentials") {
+      val env = new Env()
+      val multiFlow = AuthFlow.default.copy(
+        primary = AuthFlow.default.primary.copy(
+          credentials = List(PrimaryCredential.phone, PrimaryCredential.email),
+        ),
+      )
+
+      for
+        result <- env.service
+          .registerClient(createRequest.copy(authFlow = Some(multiFlow), registrationFlow = Some(RegistrationFlow.default)))
+          .either
+        createCalls = env.repository.createClient.times
+      yield assertTrue(
+        result.left.toOption.exists:
+          case error: InvalidRegistrationConfiguration => error.reason.contains("exactly one primary credential")
+          case _                                       => false,
+        createCalls == 0,
+      )
+    },
+    test("updateClient validates the registration flow against the stored auth flow") {
+      val loginFlow = AuthFlow.default.copy(
+        primary = AuthFlow.default.primary.copy(credentials = List(PrimaryCredential.login), inlinePassword = true),
+      )
+      val env = new Env(Vector(cachedClient.copy(authFlow = Some(loginFlow))))
+
+      for
+        _ <- env.repository.updateClient.succeedsWith(())
+        result <- env.service
+          .updateClient(updateRequest.copy(registrationFlow = Some(Patch.Modified(RegistrationFlow.default))))
+          .either
+        updateCalls = env.repository.updateClient.times
+      yield assertTrue(
+        result.left.toOption.exists:
+          case error: InvalidRegistrationConfiguration => error.reason.contains("login+password")
+          case _                                       => false,
+        updateCalls == 0,
+      )
+    },
+    test("updateClient clears the registration flow when the patch carries an explicit None") {
+      val role = RoleRecord(
+        RegistrationFlow.defaultRoleId,
+        tenantId,
+        Map("en" -> "User"),
+        Set.empty,
+        active = true,
+      )
+      val env = new Env(Vector(cachedClient.copy(registrationFlow = Some(RegistrationFlow.default))))
+
+      for
+        _ <- env.roleRepository.findRole.succeedsWith(Some(role))
+        _ <- env.repository.updateClient.succeedsWith(())
+        _ <- env.service.updateClient(updateRequest.copy(registrationFlow = Some(Patch.Deleted)))
+        patched = env.repository.updateClient.calls.head._10
+      yield assertTrue(patched == Some(Patch.Deleted))
     },
     test("rotateClientSecret returns new secret and stores encrypted secret") {
       val env = new Env()

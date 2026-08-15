@@ -23,6 +23,19 @@ trait UserRepository:
       login: Option[Login],
   ): IO[UserConflict | Throwable, Unit]
 
+  /** Claims credentials for a user being created through self-service registration.
+    *
+    * Returns the canonical user ID already owning any supplied credential, or mints a new one
+    * and queues an auth upsert for recovery. Existing rows are left untouched so retries cannot
+    * clobber later central edits. Fails with [[UserIndexConflict]] when the supplied credentials
+    * already resolve to more than one existing user.
+    */
+  def indexFromAuth(
+      email: Option[Email],
+      phone: Option[Phone],
+      login: Option[Login],
+  ): IO[UserIndexConflict | Throwable, UserId]
+
   /** Atomically patches index columns and enqueues a UpsertUser outbox event.
     * Each `Option[Patch[A]]` follows three-state semantics: `None` keeps the column,
     * `Some(Patch.Deleted)` sets it to NULL, `Some(Patch.Modified(v))` sets it to `v`.

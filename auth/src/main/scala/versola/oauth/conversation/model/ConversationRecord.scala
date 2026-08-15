@@ -1,7 +1,7 @@
 package versola.oauth.conversation.model
 
 import versola.oauth.authorize.model.ResponseTypeEntry
-import versola.oauth.client.model.{Acr, AuthFlow, AuthorizationDetail, ClientId, PassedAuthFactor, PassedFactorRecord, ResourceUri, ScopeToken}
+import versola.oauth.client.model.{Acr, AuthFlow, AuthorizationDetail, ClientId, PassedAuthFactor, PassedFactorRecord, RegistrationFlow, RegistrationStep, ResourceUri, ScopeToken}
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, Nonce, State}
 import versola.oauth.model.UserAgentCookiePayload
 import versola.oauth.session.model.SessionId
@@ -32,6 +32,10 @@ case class ConversationRecord(
     userLogin: Option[Login],
     userClaims: Option[Json.Obj],
     authFlow: AuthFlow,
+    /** Snapshot of the client's registration flow, absent when the client has none. */
+    registrationFlow: Option[RegistrationFlow],
+    /** Index into `registrationFlow.steps` while the user is registering; `None` while logging in. */
+    registrationStep: Option[Int],
     userAgent: Option[String],
     /** Full signed user-agent cookie payload persisted as one JSONB value. */
     userAgentCookie: Option[UserAgentCookiePayload],
@@ -50,6 +54,17 @@ case class ConversationRecord(
 ):
 
   def hasOfflineAccess = scope.contains(ScopeToken.OfflineAccess)
+
+  /** The user reached this conversation through the register button rather than sign-in. */
+  def isRegistering: Boolean = registrationStep.isDefined
+
+  /** The registration step awaiting the user, or `None` once the flow is exhausted. */
+  def currentRegistrationStep: Option[RegistrationStep] =
+    for
+      index <- registrationStep
+      flow <- registrationFlow
+      step <- flow.steps.lift(index)
+    yield step
 
   def patch(patch: ConversationRecord.Patch): ConversationRecord =
     this.copy(
@@ -93,4 +108,10 @@ object ConversationRecord:
     def unapply(record: ConversationRecord): Option[ConversationStep.SetPassword] =
       record.step match
         case step: ConversationStep.SetPassword => Some(step)
+        case _ => None
+
+  object PasskeyEnroll:
+    def unapply(record: ConversationRecord): Option[ConversationStep.PasskeyEnroll] =
+      record.step match
+        case step: ConversationStep.PasskeyEnroll => Some(step)
         case _ => None

@@ -21,6 +21,7 @@ case class OAuthClientRecord(
     refreshTokenTtl: Duration,
     theme: String,
     authFlow: Option[AuthFlow],
+    registrationFlow: Option[RegistrationFlow],
     otpTemplateId: String,
     frontChannelLogoutUri: Option[URL],
     frontChannelLogoutSessionRequired: Boolean,

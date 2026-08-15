@@ -14,6 +14,7 @@ trait OtpService:
       previous: Option[ConversationStep.Otp],
       userId: Option[UserId],
       clientId: ClientId,
+      isRegistering: Boolean,
   ): UIO[ConversationStep.Otp]
 
   def sendOtp(
@@ -42,8 +43,9 @@ object OtpService:
         previous: Option[ConversationStep.Otp],
         userId: Option[UserId],
         clientId: ClientId,
+        isRegistering: Boolean,
     ): UIO[ConversationStep.Otp] =
-      otpDecisionService.checkRequest(previous, userId).flatMap:
+      otpDecisionService.checkRequest(previous, userId, isRegistering).flatMap:
         case SendOtpResult.Success(fake) =>
           ZIO
             .unless(fake):

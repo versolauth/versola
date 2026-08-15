@@ -15,9 +15,14 @@ object ConversationResult:
   sealed trait Render extends ConversationResult
   sealed trait Decision extends ConversationResult
 
-  case object IllegalState extends Render
+  /** A submission didn't match the conversation's current step, e.g. a stale form (browser
+    * back/forward, double submit) or a tampered request. */
+  case object BadRequest extends Render
 
-  case object NotFound extends Render
+  /** Lost an optimistic-concurrency race writing the conversation, e.g. a double-clicked or
+    * duplicate-tab submission. Not a bug: the losing write is simply dropped in favor of
+    * whichever submission won. */
+  case object WriteConflict extends Render
 
   case object ServiceUnavailable extends Render
 

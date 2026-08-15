@@ -31,6 +31,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
     refreshTokenTtl = 30.days,
     theme = "default",
     authFlow = Some(AuthFlow.default.copy(primary = AuthFlow.default.primary.copy(credentials = List(PrimaryCredential.email, PrimaryCredential.phone)))),
+    registrationFlow = None,
     otpTemplateId = "default",
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
@@ -64,6 +65,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
   class Env:
     val configuration = stub[OAuthConfigurationService]
     configuration.getResourcesForClient.returnsWith(ZIO.succeed(Nil))
+    configuration.getIpHeader.returnsWith(ZIO.succeed("X-Real-IP"))
     val pushedAuthorizationRepository = stub[PushedAuthorizationRepository]
     val securityService = stub[SecurityService]
     val parser = AuthorizeRequestParser.Impl(
@@ -399,6 +401,36 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
         yield
           assertTrue(result == Left(Error.StateInvalid(redirectUri)))
       }
+    ),
+    suite("ip")(
+      test("extracts the ip from the tenant-configured header") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(validParams)).addHeader("X-Real-IP", "9.9.9.9")
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request)
+        yield
+          assertTrue(result.ip.contains("9.9.9.9"))
+      },
+      test("takes the first value for multi-value headers") {
+        val env = Env()
+        env.configuration.getIpHeader.returnsWith(ZIO.succeed("X-Forwarded-For"))
+        val request = Request.get(URL.root.addQueryParams(validParams)).addHeader("X-Forwarded-For", "7.7.7.7, 10.0.0.1")
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request)
+        yield
+          assertTrue(result.ip.contains("7.7.7.7"))
+      },
+      test("is None when the configured header is absent from the request") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(validParams))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request)
+        yield
+          assertTrue(result.ip.isEmpty)
+      },
     ),
     suite("login_hint")(
       test("parses email login_hint") {

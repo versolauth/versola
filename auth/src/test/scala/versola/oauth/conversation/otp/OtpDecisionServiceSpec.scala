@@ -28,28 +28,28 @@ object OtpDecisionServiceSpec extends UnitSpecBase:
     suite("checkRequest")(
       test("return fake OTP for first request when no user exists") {
         for
-          result <- service.checkRequest(None, None)
+          result <- service.checkRequest(None, None, isRegistering = false)
         yield assertTrue(
           result == SendOtpResult.Success(fake = true),
         )
       },
       test("allow first OTP request when user exists") {
         for
-          result <- service.checkRequest(None, Some(userId))
+          result <- service.checkRequest(None, Some(userId), isRegistering = false)
         yield assertTrue(
           result == SendOtpResult.Success(fake = false),
         )
       },
       test("allow second OTP request when previous exists and user exists") {
         for
-          result <- service.checkRequest(Some(previousOtp), Some(userId))
+          result <- service.checkRequest(Some(previousOtp), Some(userId), isRegistering = false)
         yield assertTrue(
           result == SendOtpResult.Success(fake = false),
         )
       },
       test("return fake OTP on resend when no user exists") {
         for
-          result <- service.checkRequest(Some(previousOtp), None)
+          result <- service.checkRequest(Some(previousOtp), None, isRegistering = false)
         yield assertTrue(
           result == SendOtpResult.Success(fake = true),
         )
@@ -65,7 +65,30 @@ object OtpDecisionServiceSpec extends UnitSpecBase:
           lastSentAt = None,
         )
         for
-          result <- service.checkRequest(Some(fakePrevious), None)
+          result <- service.checkRequest(Some(fakePrevious), None, isRegistering = false)
+        yield assertTrue(
+          result == SendOtpResult.Success(fake = true),
+        )
+      },
+      test("return real OTP for first request when no user exists but registering") {
+        for
+          result <- service.checkRequest(None, None, isRegistering = true)
+        yield assertTrue(
+          result == SendOtpResult.Success(fake = false),
+        )
+      },
+      test("return fake OTP when previous was fake even while registering") {
+        val fakePrevious = ConversationStep.Otp(
+          real = None,
+          timesRequested = 1,
+          timesSubmitted = 0,
+          factorIndex = 0,
+          rateLimitExceeded = false,
+          lockedSeconds = 0,
+          lastSentAt = None,
+        )
+        for
+          result <- service.checkRequest(Some(fakePrevious), None, isRegistering = true)
         yield assertTrue(
           result == SendOtpResult.Success(fake = true),
         )
