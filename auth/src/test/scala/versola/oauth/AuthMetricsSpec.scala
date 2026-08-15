@@ -50,6 +50,7 @@ object AuthMetricsSpec extends ZIOSpecDefault:
     csrfToken = "csrf",
     priorSessionId = None,
     resources = Nil,
+    authorizationDetails = None,
   )
 
   private def count(name: String, labels: Set[MetricLabel]): UIO[Double] =

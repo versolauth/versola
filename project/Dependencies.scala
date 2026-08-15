@@ -26,6 +26,7 @@ object Versions {
   val laminar = "17.2.0"
   val javamail = "2.0.1"
   val cel = "0.12.0"
+  val jsonSchemaValidator = "2.0.4"
 }
 
 object Dependencies {
@@ -84,5 +85,11 @@ object Dependencies {
 
   val cel = Seq(
     "dev.cel" % "cel" % Versions.cel,
+  )
+
+  // 2.x is the Jackson-2 line; 3.x requires Jackson 3 and would break the
+  // Jackson 2.22.0 pin in build.sbt's dependencyOverrides.
+  val jsonSchema = Seq(
+    "com.networknt" % "json-schema-validator" % Versions.jsonSchemaValidator,
   )
 }

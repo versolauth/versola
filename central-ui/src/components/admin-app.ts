@@ -142,7 +142,12 @@ export class VersolaAdmin extends LitElement {
         color: var(--text-primary);
       }
 
+      /* A flex row so versola-navigation's sticky sidebar — sized only by its
+         own content plus stretch, not by an explicit height — is given the
+         row's actual height (align-items defaults to stretch). See the
+         comment on versola-navigation's :host for why this matters. */
       .app-layout {
+        display: flex;
         min-height: 100vh;
       }
 
@@ -168,7 +173,7 @@ export class VersolaAdmin extends LitElement {
       }
 
       .main-content {
-        margin-left: 250px;
+        flex: 1 1 auto;
         padding: 2rem;
         max-width: 1400px;
         min-width: 0; /* let children shrink instead of overflowing */
@@ -212,8 +217,11 @@ export class VersolaAdmin extends LitElement {
       }
 
       @media (max-width: 768px) {
+        /* versola-navigation switches back to position: fixed below the
+           breakpoint (see its own styles), which takes it out of flow — so
+           .main-content, as the only remaining flex child, naturally takes
+           the full row width without an explicit margin-left override. */
         .main-content {
-          margin-left: 0;
           padding: 1rem;
         }
 

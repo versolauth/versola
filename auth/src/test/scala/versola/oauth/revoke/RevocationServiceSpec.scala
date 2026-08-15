@@ -59,6 +59,7 @@ object RevocationServiceSpec extends UnitSpecBase:
     userId = userId1,
     clientId = clientId1,
     audience = List.empty,
+    authorizationDetails = None,
     scope = scope1,
     issuedAt = now,
     expiresAt = now.plusSeconds(3600),
@@ -82,6 +83,7 @@ object RevocationServiceSpec extends UnitSpecBase:
     audience = Vector(ResourceUri("https://api.example.com")),
     issuer = "https://auth.example.com",
     id = accessToken1,
+    authorizationDetails = None,
   )
 
   class Env:

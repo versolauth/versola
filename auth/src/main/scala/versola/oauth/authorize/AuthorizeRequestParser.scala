@@ -1,15 +1,15 @@
 package versola.oauth.authorize
 
 import versola.oauth.authorize.model.{AuthorizeRequest, Error, Prompt, ResponseTypeEntry}
-import versola.oauth.client.{OAuthConfigurationService, ResourceResolver}
-import versola.oauth.client.model.{Acr, ClientId, OAuthClientRecord, PrimaryCredential, ResourceUri, ScopeToken}
+import versola.oauth.client.{AuthorizationDetailResolver, OAuthConfigurationService, ResourceResolver}
+import versola.oauth.client.model.{Acr, AuthorizationDetail, ClientId, OAuthClientRecord, PrimaryCredential, ResourceUri, ScopeToken}
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, Nonce, RequestUri, State}
 import versola.oauth.model.{SessionCookie, UserAgentCookie}
 import versola.oauth.session.model.SessionId
 import versola.oauth.userinfo.model.RequestedClaims
 import versola.util.CoreConfig
 import versola.util.http.Observability
-import versola.util.{Base64, Email, Phone, Secret, SecurityService}
+import versola.util.{Base64, Email, JsonSchemaValidator, Phone, Secret, SecurityService}
 import zio.http.{Form, Header, Method, Request, URL}
 import zio.json.*
 import zio.prelude.{NonEmptyList, NonEmptySet}
@@ -29,7 +29,7 @@ trait AuthorizeRequestParser:
   ): IO[Error, AuthorizeRequest]
 
 object AuthorizeRequestParser:
-  def live = ZLayer.fromFunction(Impl(_, _, _, _))
+  def live = ZLayer.fromFunction(Impl(_, _, _, _, _))
 
   /** Keeps `state` (echoed into the ConversationCookie alongside the redirect URI) small
     * enough that it can't push that cookie past the ~4 KiB per-cookie limit browsers
@@ -57,6 +57,7 @@ object AuthorizeRequestParser:
       oauthClientService: OAuthConfigurationService,
       pushedAuthorizationRepository: PushedAuthorizationRepository,
       securityService: SecurityService,
+      schemaValidator: JsonSchemaValidator,
   ) extends AuthorizeRequestParser:
 
     def parse(
@@ -219,6 +220,8 @@ object AuthorizeRequestParser:
 
         resources <- resolveResources(params, client, redirectUri, state)
 
+        authorizationDetails <- resolveAuthorizationDetails(params, client, redirectUri, state)
+
         authorizeRequest = AuthorizeRequest(
           clientId = clientId,
           redirectUri = redirectUri,
@@ -239,9 +242,35 @@ object AuthorizeRequestParser:
           loginHint = loginHint,
           idTokenHint = idTokenHint,
           resources = resources,
+          authorizationDetails = authorizationDetails,
           ip = ip,
         )
       yield authorizeRequest
+
+    /** RFC 9396 §2: parses `authorization_details` (a JSON array), then validates each object
+      * against the type registered for the client's tenant. An unknown type, an object that
+      * does not satisfy its type's schema, or a `locations` value that is not a resource
+      * registered for the client all fail the request with `invalid_authorization_details`.
+      */
+    private def resolveAuthorizationDetails(
+        params: Map[String, Chunk[String]],
+        client: OAuthClientRecord,
+        redirectUri: URL,
+        state: Option[State],
+    ): IO[Error, Option[List[AuthorizationDetail]]] =
+      getParam(params, AuthorizationDetail.Parameter)
+        .orElseFail(Error.MultipleValuesProvided(redirectUri, state, AuthorizationDetail.Parameter))
+        .flatMap:
+          case None => ZIO.none
+          case Some(raw) =>
+            ZIO.fromEither(AuthorizationDetail.parseAll(raw))
+              .mapError(reason => Error.InvalidAuthorizationDetails(redirectUri, state, reason))
+              .flatMap: details =>
+                AuthorizationDetailResolver.resolve(oauthClientService, schemaValidator, client, details)
+                  .mapError(rejected =>
+                    Error.InvalidAuthorizationDetails(redirectUri, state, s"${rejected.`type`} - ${rejected.reason}"),
+                  )
+                  .asSome
 
     /** RFC 8707 §2: parses all `resource` values (the parameter may be repeated), validates
       * each is a well-formed resource URI, and resolves it to a resource registered for the

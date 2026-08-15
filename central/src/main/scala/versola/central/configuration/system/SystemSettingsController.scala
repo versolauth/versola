@@ -40,7 +40,7 @@ object SystemSettingsController extends Controller:
       for
         _       <- authorizeBasic(request)
         service <- ZIO.service[SystemSettingsService]
-        body    <- request.body.asJson[SystemSettingsRecord]
+        body    <- request.body.asJsonFromCodec[SystemSettingsRecord]
         _       <- service.upsertSettings(body)
       yield Response.status(Status.NoContent)
     }

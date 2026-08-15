@@ -159,6 +159,14 @@ export interface OAuthClaim {
   description: Record<string, string>;
 }
 
+// RFC 9396 authorization detail type: a registered `type` value clients may request in
+// `authorization_details`, and the JSON Schema (2020-12) its objects are validated against.
+export interface AuthorizationDetailType {
+  type: string;
+  description: Record<string, string>;
+  schema: Record<string, unknown>;
+}
+
 // CEL-based authorization and request injection
 export type InjectTarget = 'header' | 'query' | 'body';
 

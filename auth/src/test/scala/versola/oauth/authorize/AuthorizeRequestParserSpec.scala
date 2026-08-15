@@ -8,6 +8,8 @@ import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, RequestUri, Requ
 import versola.util.*
 import zio.*
 import zio.http.*
+import zio.json.*
+import zio.json.ast.Json
 import zio.prelude.NonEmptySet
 import zio.test.*
 
@@ -36,6 +38,30 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
     backChannelLogoutUri = None,
   )
 
+  private val schemaValidator: JsonSchemaValidator = JsonSchemaValidator.Impl()
+
+  private val paymentType = AuthorizationDetailTypeRecord(
+    tenantId = tenantId,
+    `type` = AuthorizationDetailType("payment_initiation"),
+    schema = """
+      {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "type": { "type": "string" },
+          "locations": { "type": "array", "items": { "type": "string" } },
+          "instructedAmount": {
+            "type": "object",
+            "properties": { "currency": { "type": "string" }, "amount": { "type": "string" } },
+            "required": ["currency", "amount"]
+          }
+        },
+        "required": ["type", "instructedAmount"],
+        "unevaluatedProperties": false
+      }
+    """.fromJson[Json.Obj].toOption.get,
+  )
+
   class Env:
     val configuration = stub[OAuthConfigurationService]
     configuration.getResourcesForClient.returnsWith(ZIO.succeed(Nil))
@@ -47,6 +73,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
       configuration,
       pushedAuthorizationRepository,
       securityService,
+      schemaValidator,
     )
 
   def validParams = Map(
@@ -211,6 +238,147 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
             result <- env.parser.parse(request)
           yield assertTrue(result.resources == List(first, second))
         },
+        test("splits a single comma-joined resource field, as zio-http produces from a repeated form field") {
+          val env = Env()
+          val first = ResourceUri("https://api.example.com")
+          val second = ResourceUri("resource://internal-api")
+          val body = (validParams.toSeq ++ Seq("resource" -> s"$first,$second"))
+            .map((name, value) => s"$name=${java.net.URLEncoder.encode(value, java.nio.charset.StandardCharsets.UTF_8)}")
+            .mkString("&")
+          val request = Request.post(URL.root, Body.fromString(body))
+            .addHeader(Header.ContentType(MediaType.application.`x-www-form-urlencoded`))
+          for
+            _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+            _ <- env.configuration.findResource.succeedsWith(
+              Some(ResourceRecord(ResourceId("resource"), tenantId, first, List(clientId), internal = false)),
+            )
+            _ <- env.configuration.findResourceById.succeedsWith(
+              Some(ResourceRecord(ResourceId("internal-api"), tenantId, ResourceUri("https://internal.example.com"), List(clientId), internal = true)),
+            )
+            result <- env.parser.parse(request)
+          yield assertTrue(result.resources == List(first, second))
+        },
+    ),
+    suite("authorization_details")(
+      test("retains details that satisfy the registered type schema") {
+        val env = Env()
+        val details = """[{"type":"payment_initiation","instructedAmount":{"currency":"EUR","amount":"1.00"}}]"""
+        val request = Request.get(URL.root.addQueryParams(validParams + ("authorization_details" -> details)))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          _ <- env.configuration.findAuthorizationDetailType.succeedsWith(Some(paymentType))
+          result <- env.parser.parse(request)
+        yield assertTrue(
+          result.authorizationDetails.map(_.map(_.`type`)) == Some(List(AuthorizationDetailType("payment_initiation"))),
+        )
+      },
+      test("rejects an unregistered type") {
+        val env = Env()
+        val details = """[{"type":"unknown_type"}]"""
+        val request = Request.get(URL.root.addQueryParams(validParams + ("authorization_details" -> details)))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          _ <- env.configuration.findAuthorizationDetailType.succeedsWith(None)
+          result <- env.parser.parse(request).either
+        yield assertTrue(result == Left(Error.InvalidAuthorizationDetails(
+          redirectUri,
+          Some(State("test-state")),
+          "unknown_type - unknown authorization details type",
+        )))
+      },
+      test("rejects an unknown member of a registered type") {
+        val env = Env()
+        val details = """[{"type":"payment_initiation","instructedAmount":{"currency":"EUR","amount":"1.00"},"extra":1}]"""
+        val request = Request.get(URL.root.addQueryParams(validParams + ("authorization_details" -> details)))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          _ <- env.configuration.findAuthorizationDetailType.succeedsWith(Some(paymentType))
+          result <- env.parser.parse(request).either
+        yield assertTrue(result.left.exists {
+          case Error.InvalidAuthorizationDetails(_, _, reason) => reason.startsWith("payment_initiation - ")
+          case _ => false
+        })
+      },
+      test("rejects a detail without a type member") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(validParams + ("authorization_details" -> """[{"actions":["read"]}]""")))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request).either
+        yield assertTrue(result == Left(Error.InvalidAuthorizationDetails(
+          redirectUri,
+          Some(State("test-state")),
+          "Authorization detail is missing the required type member",
+        )))
+      },
+      test("rejects a value that is not a JSON array") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(validParams + ("authorization_details" -> """{"type":"payment_initiation"}""")))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request).either
+        yield assertTrue(result == Left(Error.InvalidAuthorizationDetails(
+          redirectUri,
+          Some(State("test-state")),
+          "authorization_details must be a JSON array",
+        )))
+      },
+      test("rejects a location that is not a registered resource") {
+        val env = Env()
+        val details = """[{"type":"payment_initiation","instructedAmount":{"currency":"EUR","amount":"1.00"},"locations":["https://unknown.example.com"]}]"""
+        val request = Request.get(URL.root.addQueryParams(validParams + ("authorization_details" -> details)))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          _ <- env.configuration.findAuthorizationDetailType.succeedsWith(Some(paymentType))
+          _ <- env.configuration.findResource.succeedsWith(None)
+          result <- env.parser.parse(request).either
+        yield assertTrue(result == Left(Error.InvalidAuthorizationDetails(
+          redirectUri,
+          Some(State("test-state")),
+          "payment_initiation - unknown location - https://unknown.example.com",
+        )))
+      },
+      test("accepts a location that is a registered resource") {
+        val env = Env()
+        val location = ResourceUri("https://api.example.com")
+        val details = s"""[{"type":"payment_initiation","instructedAmount":{"currency":"EUR","amount":"1.00"},"locations":["$location"]}]"""
+        val request = Request.get(URL.root.addQueryParams(validParams + ("authorization_details" -> details)))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          _ <- env.configuration.findAuthorizationDetailType.succeedsWith(Some(paymentType))
+          _ <- env.configuration.findResource.succeedsWith(
+            Some(ResourceRecord(ResourceId("api"), tenantId, location, List(clientId), internal = false)),
+          )
+          result <- env.parser.parse(request)
+        yield assertTrue(result.authorizationDetails.map(_.map(_.locations)) == Some(List(List(location))))
+      },
+      test("accepts the edge resource indicator as a location, like the resource parameter") {
+        val env = Env()
+        val edgeResource = ResourceUri("resource://edge")
+        val details = s"""[{"type":"payment_initiation","instructedAmount":{"currency":"EUR","amount":"1.00"},"locations":["$edgeResource"]}]"""
+        val request = Request.get(URL.root.addQueryParams(validParams + ("authorization_details" -> details)))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          _ <- env.configuration.findAuthorizationDetailType.succeedsWith(Some(paymentType))
+          result <- env.parser.parse(request)
+        yield assertTrue(result.authorizationDetails.map(_.map(_.locations)) == Some(List(List(edgeResource))))
+      },
+      test("rejects the edge resource indicator combined with an internal resource location") {
+        val env = Env()
+        val edgeResource = ResourceUri("resource://edge")
+        val internalResource = ResourceUri("resource://internal-api")
+        val details = s"""[{"type":"payment_initiation","instructedAmount":{"currency":"EUR","amount":"1.00"},"locations":["$edgeResource","$internalResource"]}]"""
+        val request = Request.get(URL.root.addQueryParams(validParams + ("authorization_details" -> details)))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          _ <- env.configuration.findAuthorizationDetailType.succeedsWith(Some(paymentType))
+          result <- env.parser.parse(request).either
+        yield assertTrue(result == Left(Error.InvalidAuthorizationDetails(
+          redirectUri,
+          Some(State("test-state")),
+          s"payment_initiation - unknown location - $edgeResource",
+        )))
+      },
     ),
     suite("state")(
       test("accepts state at the maximum allowed length") {

@@ -55,6 +55,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       WebAuthnService &
       SecureRandom &
       SecurityService &
+      JsonSchemaValidator &
       AuthPropertyGenerator &
       OAuthTokenService &
       IntrospectionService &
@@ -112,6 +113,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       parseConfig[CoreConfig] >+>
       SecureRandom.live >+>
       SecurityService.live >+>
+      JsonSchemaValidator.live >+>
       OAuthConfigurationService.live >+>
       CentralSyncTokenService.live >+>
       JwksSyncClient.live >+>

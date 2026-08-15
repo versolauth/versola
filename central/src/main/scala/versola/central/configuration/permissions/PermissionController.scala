@@ -46,7 +46,7 @@ object PermissionController extends Controller:
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[PermissionService]
-        body <- request.body.asJson[CreatePermissionRequest]
+        body <- request.body.asJsonFromCodec[CreatePermissionRequest]
         _ <- service.createPermission(body)
       yield Response.status(Status.Created)
     }
@@ -56,7 +56,7 @@ object PermissionController extends Controller:
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[PermissionService]
-        body <- request.body.asJson[UpdatePermissionRequest]
+        body <- request.body.asJsonFromCodec[UpdatePermissionRequest]
         _ <- service.updatePermission(body)
       yield Response.status(Status.NoContent)
     }

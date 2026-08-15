@@ -109,7 +109,7 @@ object ClientController extends Controller:
       (for
         _ <- authorizeBasic(request)
         service <- ZIO.service[OAuthClientService]
-        body <- request.body.asJson[CreateClientRequest]
+        body <- request.body.asJsonFromCodec[CreateClientRequest]
         _ <- ZIO.when(body.frontChannelLogoutUri.isDefined && body.backChannelLogoutUri.isDefined):
           ZIO.fail(InvalidClientLogoutConfiguration(body.id))
         secret <- service.registerClient(body)
@@ -136,7 +136,7 @@ object ClientController extends Controller:
       (for
         _ <- authorizeBasic(request)
         service <- ZIO.service[OAuthClientService]
-        body <- request.body.asJson[UpdateClientRequest]
+        body <- request.body.asJsonFromCodec[UpdateClientRequest]
         _ <- ZIO.when(hasInvalidLogoutConfiguration(body)):
           ZIO.fail(InvalidClientLogoutConfiguration(body.clientId))
         _ <- service.updateClient(body)

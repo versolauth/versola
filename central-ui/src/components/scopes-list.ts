@@ -76,6 +76,30 @@ export class VersolaScopesList extends LitElement {
         max-width: 28rem;
       }
 
+      .tabs {
+        display: flex;
+        gap: 0.5rem;
+        margin-bottom: var(--spacing-lg);
+        flex-wrap: wrap;
+      }
+
+      .tab {
+        padding: 0.375rem 0.875rem;
+        border-radius: var(--radius-md);
+        border: 1px solid var(--border-dark);
+        background: transparent;
+        color: var(--text-secondary);
+        font-size: 0.875rem;
+        cursor: pointer;
+        transition: all var(--transition-fast);
+      }
+
+      .tab.active {
+        background: rgba(88, 166, 255, 0.15);
+        border-color: var(--accent);
+        color: var(--accent);
+      }
+
       .header {
         display: flex;
         justify-content: space-between;
@@ -323,9 +347,7 @@ export class VersolaScopesList extends LitElement {
     }
 
     return html`
-      <content-header
-        title="OAuth Scopes"
-      >
+      <content-header title="OAuth Scopes">
         ${this.scopes.length > 0 && this.canManage ? html`
           <button slot="actions" class="btn btn-primary" @click=${this.handleCreateClick}>
             + Create Scope

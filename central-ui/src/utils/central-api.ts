@@ -1,5 +1,6 @@
 import type {
   AuthFlow,
+  AuthorizationDetailType,
   AuthorizationPreset,
   BackendProperty,
   Edge,
@@ -125,6 +126,9 @@ type ClientsResponse = {
 };
 type RolesResponse = { roles: Array<{ id: string; description: LocalizedDescription; permissions: string[]; active: boolean }> };
 type ResourcesResponse = { resources: ResourceResponseDto[] };
+type AuthorizationDetailTypesResponse = {
+  types: Array<{ type: string; description: LocalizedDescription; schema: Record<string, unknown> }>;
+};
 
 const apiConfig: CentralApiConfig = { baseUrl: null, loginUrl: DEFAULT_LOGIN_URL };
 const permissionStore = new Map<string, Permission>();
@@ -870,6 +874,46 @@ export async function deleteScope(tenantId: string, scopeId: string): Promise<vo
   });
 
   invalidateRefData(scopesStore, tenantId);
+}
+
+export async function fetchAuthorizationDetailTypes(tenantId: string): Promise<AuthorizationDetailType[]> {
+  const response = await request<AuthorizationDetailTypesResponse>('/configuration/authorization-detail-types', {
+    query: { tenantId },
+  });
+  return response.types
+    .map(type => ({ type: type.type, description: type.description, schema: type.schema }))
+    .sort((a, b) => a.type.localeCompare(b.type, undefined, { numeric: true }));
+}
+
+export async function createAuthorizationDetailType(tenantId: string, detailType: AuthorizationDetailType): Promise<void> {
+  await requestVoid('/configuration/authorization-detail-types', {
+    method: 'POST',
+    body: {
+      tenantId,
+      type: detailType.type,
+      description: detailType.description,
+      schema: detailType.schema,
+    },
+  });
+}
+
+export async function updateAuthorizationDetailType(tenantId: string, detailType: AuthorizationDetailType): Promise<void> {
+  await requestVoid('/configuration/authorization-detail-types', {
+    method: 'PUT',
+    body: {
+      tenantId,
+      type: detailType.type,
+      description: detailType.description,
+      schema: detailType.schema,
+    },
+  });
+}
+
+export async function deleteAuthorizationDetailType(tenantId: string, type: string): Promise<void> {
+  await requestVoid('/configuration/authorization-detail-types', {
+    method: 'DELETE',
+    query: { tenantId, type },
+  });
 }
 
 export async function createRole(tenantId: string, role: Role): Promise<void> {

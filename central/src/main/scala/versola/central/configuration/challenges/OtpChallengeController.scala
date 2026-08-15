@@ -46,7 +46,7 @@ object OtpChallengeController extends Controller:
       for
         _       <- authorizeBasic(request)
         service <- ZIO.service[OtpChallengeService]
-        body    <- request.body.asJson[UpsertOtpTemplateRequest]
+        body    <- request.body.asJsonFromCodec[UpsertOtpTemplateRequest]
         _       <- service.upsertTemplate(OtpTemplateRecord(body.id, body.tenantId, body.localizations, body.purpose, body.channel))
       yield Response.status(Status.NoContent)
     }
@@ -56,7 +56,7 @@ object OtpChallengeController extends Controller:
       for
         _        <- authorizeBasic(request)
         service  <- ZIO.service[OtpChallengeService]
-        body     <- request.body.asJson[DeleteOtpTemplateRequest]
+        body     <- request.body.asJsonFromCodec[DeleteOtpTemplateRequest]
         _        <- service.deleteTemplate(body.id, body.tenantId, body.purpose, body.channel)
       yield Response.status(Status.NoContent)
     }
@@ -85,7 +85,7 @@ object OtpChallengeController extends Controller:
       for
         _        <- authorizeBasic(request)
         service  <- ZIO.service[ChallengeSettingsService]
-        body     <- request.body.asJson[UpsertChallengeSettingsRequest]
+        body     <- request.body.asJsonFromCodec[UpsertChallengeSettingsRequest]
         existing <- service.getSettings(body.tenantId)
         _ <- service.upsertSettings(
           ChallengeSettingsRecord(

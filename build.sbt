@@ -23,6 +23,7 @@ lazy val util = project
     libraryDependencies ++= Dependencies.core,
     libraryDependencies ++= Dependencies.http,
     libraryDependencies ++= Dependencies.cel,
+    libraryDependencies ++= Dependencies.jsonSchema,
   )
 
 lazy val utilImplementations = file("util/implementations")
