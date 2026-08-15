@@ -15,11 +15,10 @@
 # so forcing amd64 there would only make it slower for no reason.
 
 services:
-  # Secrets store. Nothing else in this file reads from it yet -- `versola
-  # configure` writing generated secrets here (instead of into
-  # auth.conf/central.conf/edge.conf directly) and auth/central/edge
-  # reading them back via ${?VAR} substitution are separate, later changes.
-  # This container coming up healthy on its own is step one.
+  # Secrets store. `versola configure` writes generated secrets here
+  # (instead of into auth.conf/central.conf/edge.conf directly) and
+  # auth/central/edge read them back via ${?VAR} substitution -- see
+  # gen-env.scala's secretField and versola-cli's internal/deploy/secrets.go.
   openbao:
     image: openbao/openbao:2.5.4
     container_name: versola-openbao
@@ -34,7 +33,17 @@ services:
       # secrets -- everything else in this file only publishes a port
       # something outside the network genuinely needs (see central's 8091
       # comment below), same reasoning applies here.
-      - "8200:8200"
+      #
+      # "127.0.0.1:8200:8200", not a bare "8200:8200": this listener has no
+      # authentication on every endpoint (tls_disable, see
+      # openbao.hcl.template) and no reason to ever be reached by anything
+      # other than the CLI running on this same machine. A bare "8200:8200"
+      # publishes it on every one of the host's network interfaces, not
+      # just loopback -- reachable from the LAN, or the internet, on a
+      # machine with a public IP. This is the host-side half of that fix;
+      # openbao.hcl.template's listener itself still has to bind 0.0.0.0
+      # for this publish to reach it at all -- see the comment there.
+      - "127.0.0.1:8200:8200"
 
   postgres:
     image: postgres:18

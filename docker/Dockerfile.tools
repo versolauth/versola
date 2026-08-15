@@ -88,6 +88,7 @@ COPY docker/versola-tools/compose.fragment.vps.yml.template .
 # being touched.
 COPY docker/versola-tools/proxy_params.conf.template .
 COPY docker/versola-tools/openbao.hcl.template .
+COPY docker/versola-tools/openbao.hcl.vps.template .
 COPY docker/versola-tools/entrypoint.sh .
 RUN chmod +x entrypoint.sh
 

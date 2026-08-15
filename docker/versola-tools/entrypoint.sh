@@ -69,7 +69,17 @@ else
   COMPOSE_TEMPLATE=compose.fragment.yml.template
 fi
 sed "s/\${VERSION}/$VERSION/g" "$COMPOSE_TEMPLATE" > "$OUT_DIR"/compose.fragment.yml
-cp openbao.hcl.template "$OUT_DIR"/openbao.hcl
+
+# Same split as the compose template just above, same reason: vps's
+# listener binds 127.0.0.1 instead of 0.0.0.0, since network_mode: host
+# (see compose.fragment.vps.yml.template) has no Docker port-publish step
+# to restrict exposure on the other side the way docker-local's
+# "127.0.0.1:8200:8200" does -- see openbao.hcl.vps.template's own comment.
+if [ "$TARGET" = "vps" ]; then
+  cp openbao.hcl.vps.template "$OUT_DIR"/openbao.hcl
+else
+  cp openbao.hcl.template "$OUT_DIR"/openbao.hcl
+fi
 
 # nginx.conf/proxy_params.conf are docker-local only -- vps's nginx is a
 # native install on the VPS, deployed by a separate pipeline (see the
