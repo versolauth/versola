@@ -241,4 +241,19 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
         result <- env.getUserAgentTtl(ClientId("unknown"))
       yield assertTrue(result == OAuthConfigurationService.DefaultUserAgentTtl)
     },
+    test("getMetadata returns stored metadata without deriving authorization detail types") {
+      val stored = Json.Obj(
+        "authorization_details_types_supported" -> Json.Arr(Json.Str("stored")),
+      )
+      val registered = AuthorizationDetailTypeRecord(
+        tenantId,
+        AuthorizationDetailType("payment"),
+        Json.Obj(),
+      )
+
+      for
+        env <- makeEnv(metadata = stored, authorizationDetailTypes = Vector(registered))
+        result <- env.getMetadata
+      yield assertTrue(result == stored)
+    },
   )

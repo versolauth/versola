@@ -4,6 +4,7 @@ import versola.central.CentralConfig
 import versola.central.configuration.sync.{SyncEvent, SyncOps}
 import versola.central.configuration.tenants.TenantId
 import versola.central.configuration.{CreateAuthorizationDetailTypeRequest, UpdateAuthorizationDetailTypeRequest}
+import versola.central.configuration.metadata.ServerMetadataService
 import versola.util.{JsonSchemaValidator, ReloadingCache}
 import zio.json.JsonCodec
 import zio.json.ast.Json
@@ -41,7 +42,7 @@ trait AuthorizationDetailTypeService:
 
 object AuthorizationDetailTypeService:
   def live: ZLayer[
-    AuthorizationDetailTypeRepository & JsonSchemaValidator & Scope & CentralConfig,
+    AuthorizationDetailTypeRepository & JsonSchemaValidator & ServerMetadataService & Scope & CentralConfig,
     Throwable,
     AuthorizationDetailTypeService,
   ] =
@@ -52,12 +53,13 @@ object AuthorizationDetailTypeService:
         ),
       )
     )
-      >>> ZLayer.fromFunction(Impl(_, _, _))
+      >>> ZLayer.fromFunction(Impl(_, _, _, _))
 
   class Impl(
       cache: ReloadingCache[Vector[AuthorizationDetailTypeRecord]],
       repository: AuthorizationDetailTypeRepository,
       schemaValidator: JsonSchemaValidator,
+      serverMetadataService: ServerMetadataService,
   ) extends AuthorizationDetailTypeService:
 
     override def getAllTypes: Task[Vector[AuthorizationDetailTypeRecord]] =
@@ -77,7 +79,10 @@ object AuthorizationDetailTypeService:
         request: CreateAuthorizationDetailTypeRequest,
     ): Task[Either[AuthorizationDetailTypeValidationError, Unit]] =
       validated(request.schema):
-        repository.createType(request.tenantId, request.`type`, request.description, request.schema)
+        for
+          _ <- repository.createType(request.tenantId, request.`type`, request.description, request.schema)
+          _ <- updateMetadata(request.`type`, SyncEvent.Op.INSERT)
+        yield ()
 
     override def updateType(
         request: UpdateAuthorizationDetailTypeRequest,
@@ -89,7 +94,10 @@ object AuthorizationDetailTypeService:
         tenantId: TenantId,
         `type`: AuthorizationDetailType,
     ): Task[Unit] =
-      repository.deleteType(tenantId, `type`)
+      for
+        _ <- repository.deleteType(tenantId, `type`)
+        _ <- updateMetadata(`type`, SyncEvent.Op.DELETE)
+      yield ()
 
     override def sync(
         event: SyncEvent.AuthorizationDetailTypesUpdated,
@@ -107,3 +115,6 @@ object AuthorizationDetailTypeService:
       schemaValidator.validateSchema(schema).flatMap:
         case Nil => write.as(Right(()))
         case errors => ZIO.left(AuthorizationDetailTypeValidationError.InvalidSchema(errors))
+
+    private def updateMetadata(`type`: AuthorizationDetailType, op: SyncEvent.Op): Task[Unit] =
+      serverMetadataService.updateAuthorizationDetailType(`type`, op)

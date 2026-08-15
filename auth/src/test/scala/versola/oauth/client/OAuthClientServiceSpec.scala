@@ -433,21 +433,16 @@ object OAuthClientServiceSpec extends UnitSpecBase:
         result <- env.service.getMetadata
       yield assertTrue(result == metadata)
     },
-    test("getMetadata advertises the registered authorization detail types") {
-      val paymentType = AuthorizationDetailTypeRecord(
-        tenantId = TenantId("default"),
-        `type` = AuthorizationDetailType("payment_initiation"),
-        schema = Json.Obj("type" -> Json.Str("object")),
+    test("getMetadata returns cached authorization detail metadata") {
+      val metadata = Json.Obj(
+        "issuer" -> Json.Str("https://issuer.com"),
+        "authorization_details_types_supported" -> Json.Arr(Json.Str("payment_initiation")),
       )
       for
         env <- makeEnv()
-        _ <- env.metadataCache.set(Json.Obj("issuer" -> Json.Str("https://issuer.com")))
-        _ <- env.authorizationDetailTypeCache.set(Vector(paymentType))
+        _ <- env.metadataCache.set(metadata)
         result <- env.service.getMetadata
-      yield assertTrue(
-        result.get("authorization_details_types_supported") ==
-          Some(Json.Arr(Json.Str("payment_initiation"))),
-      )
+      yield assertTrue(result == metadata)
     },
     test("findAuthorizationDetailType resolves a type within the tenant only") {
       val paymentType = AuthorizationDetailTypeRecord(

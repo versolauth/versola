@@ -157,12 +157,12 @@ object PostgresCentralApp extends VersolaApp("central"):
       ChallengeSettingsService.live >+>
       AuthorizationPresetService.live >+>
       OAuthScopeService.live >+>
+      ServerMetadataService.live >+>
       AuthorizationDetailTypeService.live >+>
       RoleService.live >+>
       EdgeService.live >+>
       LocaleService.live >+>
       JwksService.live >+>
-      ServerMetadataService.live >+>
       BootstrapService.live >+>
       FormService.live >+>
       ThemeService.live >+>

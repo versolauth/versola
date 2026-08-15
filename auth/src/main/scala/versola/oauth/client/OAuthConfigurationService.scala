@@ -374,20 +374,8 @@ object OAuthConfigurationService:
           .fold(List.empty[URL])(_.postLogoutRedirectUris.flatMap(URL.decode(_).toOption)),
       )
 
-    /** RFC 9396 §11 requires the AS to advertise the authorization detail types it supports;
-      * they are derived from the registry rather than stored in the metadata document. */
     override def getMetadata: UIO[Json.Obj] =
-      for
-        metadata <- metadataCache.get
-        types <- authorizationDetailTypeCache.get
-      yield
-        val supported = types.map(_.`type`).distinct.sorted
-        if supported.isEmpty then metadata
-        else
-          Json.Obj(
-            metadata.fields.filterNot(_._1 == "authorization_details_types_supported") :+
-              ("authorization_details_types_supported" -> Json.Arr(supported.map(Json.Str(_))*)),
-          )
+      metadataCache.get
 
     override def findAuthorizationDetailType(
         tenantId: TenantId,

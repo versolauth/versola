@@ -729,6 +729,47 @@ final class OAuthClient(client: Client, config: E2EConfig):
       .addHeader(Header.ContentType(MediaType.application.json))
     Client.batched(req).provide(ZLayer.succeed(client)).flatMap(RegisterAuthorizationDetailTypeResult.parse)
 
+  /** DELETE /configuration/authorization-detail-types — removes an RFC 9396 authorization detail type. */
+  def deleteAuthorizationDetailType(
+      typeName: String,
+      tenantId: String = "default",
+  ): Task[Unit] =
+    val req = Request.delete(
+      s"${config.centralUrl}/configuration/authorization-detail-types?tenantId=$tenantId&type=$typeName",
+    ).addHeader(centralAuthorization)
+    Client.batched(req).provide(ZLayer.succeed(client)).flatMap: resp =>
+      if resp.status.isSuccess then ZIO.unit
+      else
+        resp.body.asString.flatMap: body =>
+          ZIO.fail(RuntimeException(s"deleteAuthorizationDetailType failed: status=${resp.status} body=$body"))
+
+  /** GET /configuration/server-metadata — reads the current Central server metadata document. */
+  def serverMetadata: Task[Json.Obj] =
+    val req = Request.get(s"${config.centralUrl}/configuration/server-metadata")
+      .addHeader(centralAuthorization)
+    Client.batched(req).provide(ZLayer.succeed(client)).flatMap: resp =>
+      resp.body.asString.flatMap: body =>
+        if resp.status.isSuccess then
+          ZIO.fromEither(body.fromJson[Json.Obj])
+            .mapError(error => RuntimeException(s"Failed to parse server metadata [$error]: $body"))
+        else
+          ZIO.fail(RuntimeException(s"serverMetadata failed: status=${resp.status} body=$body"))
+
+  /** Waits for the metadata cache to reflect an authorization-detail type write. */
+  def awaitAuthorizationDetailTypeInMetadata(typeName: String, expected: Boolean): Task[Unit] =
+    def check: Task[Unit] =
+      serverMetadata.flatMap: metadata =>
+        val supportedTypes = metadata.get("authorization_details_types_supported")
+          .flatMap(_.as[Set[String]].toOption)
+          .getOrElse(Set.empty)
+        val actual = supportedTypes.contains(typeName)
+        if actual == expected then ZIO.unit
+        else
+          ZIO.fail(RuntimeException(
+            s"Expected authorization detail type '$typeName' metadata presence=$expected, got $actual",
+          ))
+    check.retry(Schedule.spaced(100.millis) && Schedule.recurs(100))
+
   /** POST /service/users/outbox/flush — forces central to dispatch all pending user-outbox events to auth (non-prod only). */
   def flushUserOutbox(): Task[Unit] =
     val req = Request.post(s"${config.centralUrl}/service/users/outbox/flush", Body.empty)

@@ -4,6 +4,7 @@ import org.scalamock.stubs.ZIOStubs
 import versola.central.configuration.sync.SyncEvent
 import versola.central.configuration.tenants.TenantId
 import versola.central.configuration.{CreateAuthorizationDetailTypeRequest, UpdateAuthorizationDetailTypeRequest}
+import versola.central.configuration.metadata.ServerMetadataService
 import versola.util.{JsonSchemaValidator, ReloadingCache}
 import zio.*
 import zio.json.*
@@ -60,7 +61,8 @@ object AuthorizationDetailTypeServiceSpec extends ZIOSpecDefault, ZIOStubs:
   class Env(initial: Vector[AuthorizationDetailTypeRecord] = Vector.empty):
     val cache = ReloadingCache(Unsafe.unsafe(unsafe ?=> Ref.unsafe.make(initial)))
     val repository = stub[AuthorizationDetailTypeRepository]
-    val service = AuthorizationDetailTypeService.Impl(cache, repository, JsonSchemaValidator.Impl())
+    val serverMetadataService = stub[ServerMetadataService]
+    val service = AuthorizationDetailTypeService.Impl(cache, repository, JsonSchemaValidator.Impl(), serverMetadataService)
 
   def spec = suite("AuthorizationDetailTypeService")(
     test("getTenantTypes filters cache by tenant") {
@@ -82,10 +84,12 @@ object AuthorizationDetailTypeServiceSpec extends ZIOSpecDefault, ZIOStubs:
 
       for
         _ <- env.repository.createType.succeedsWith(())
+        _ <- env.serverMetadataService.updateAuthorizationDetailType.succeedsWith(())
         result <- env.service.createType(createRequest)
       yield assertTrue(
         result == Right(()),
         env.repository.createType.calls == List((tenantId, paymentType, createRequest.description, schema)),
+        env.serverMetadataService.updateAuthorizationDetailType.calls == List(("payment_initiation", SyncEvent.Op.INSERT)),
       )
     },
     test("createType rejects a schema that is not a valid JSON Schema") {
@@ -123,8 +127,12 @@ object AuthorizationDetailTypeServiceSpec extends ZIOSpecDefault, ZIOStubs:
 
       for
         _ <- env.repository.deleteType.succeedsWith(())
+        _ <- env.serverMetadataService.updateAuthorizationDetailType.succeedsWith(())
         _ <- env.service.deleteType(tenantId, paymentType)
-      yield assertTrue(env.repository.deleteType.calls == List((tenantId, paymentType)))
+      yield assertTrue(
+        env.repository.deleteType.calls == List((tenantId, paymentType)),
+        env.serverMetadataService.updateAuthorizationDetailType.calls == List(("payment_initiation", SyncEvent.Op.DELETE)),
+      )
     },
     test("sync removes cached type on delete event") {
       val env = new Env(Vector(paymentRecord, otherTenantRecord))
