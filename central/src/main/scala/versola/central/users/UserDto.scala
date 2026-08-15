@@ -93,7 +93,7 @@ enum DeliveryChannel derives JsonCodec, Schema:
 
 case class ResetPasswordRequest(
     userId: UserId,
-    expiresInSeconds: Option[Long],
+    tenantId: TenantId,
     channel: Option[DeliveryChannel],
 ) derives JsonCodec, Schema
 

@@ -15,6 +15,7 @@ case class ChallengeSettingsRecord(
     submissionLimits: SubmissionLimits,
     otpLength: Int,
     otpResendAfter: Int,
+      temporaryPasswordTtlSeconds: Int,
     passkeySettings: PasskeySettings,
     authConversationTtlSeconds: Int,
     sessionTtlSeconds: Int,

@@ -51,9 +51,9 @@ object AuthClientSpec extends ZIOSpecDefault:
   )
 
   private val resetRequest = ResetPasswordRequest(
-    userId = userId,
-    expiresInSeconds = Some(3600L),
-    channel = Some(DeliveryChannel.email),
+      userId = userId,
+      tenantId = tenantId,
+      channel = Some(DeliveryChannel.email),
   )
 
   /** Captures the Authorization header from the first captured request. */
@@ -194,8 +194,8 @@ object AuthClientSpec extends ZIOSpecDefault:
       _.renamePasskey(userId, credId, Some("New Name"))),
     mkTest("deletePasskey",
       _.deletePasskey(userId, credId)),
-    mkTest("resetPassword",
-      _.resetPassword(resetRequest).unit),
+      mkTest("resetPassword",
+        _.resetPassword(resetRequest.userId, 3600L, resetRequest.channel).unit),
     mkJsonTest("getUserClaims",
       """{"claims":{}}""",
       _.getUserClaims(userId).unit),
@@ -218,8 +218,8 @@ object AuthClientSpec extends ZIOSpecDefault:
         _ <- TestClient.addRoutes(
           Handler.fromFunctionZIO[Request](_ => ZIO.succeed(Response.status(Status.NoContent))).toRoutes
         )
-        client <- ZIO.service[AuthClient]
-        result <- client.resetPassword(resetRequest)
+          client <- ZIO.service[AuthClient]
+          result <- client.resetPassword(resetRequest.userId, 3600L, resetRequest.channel)
       yield assertTrue(result.isEmpty)
       }.provide(TestClient.layer, ZLayer.succeed(TestCentralConfig.config), tokenServiceLayer, authClientLayer),
 
@@ -228,8 +228,8 @@ object AuthClientSpec extends ZIOSpecDefault:
         _ <- TestClient.addRoutes(
           Handler.fromFunctionZIO[Request](_ => ZIO.succeed(Response.json("""{"password":"Temp1234!"}"""))).toRoutes
         )
-        client <- ZIO.service[AuthClient]
-        result <- client.resetPassword(resetRequest)
+          client <- ZIO.service[AuthClient]
+          result <- client.resetPassword(resetRequest.userId, 3600L, resetRequest.channel)
       yield assertTrue(result.contains("Temp1234!"))
       }.provide(TestClient.layer, ZLayer.succeed(TestCentralConfig.config), tokenServiceLayer, authClientLayer),
 

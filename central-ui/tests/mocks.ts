@@ -22,7 +22,7 @@ function backendPath(pathname: string): string {
 type TenantDto = { id: string; description: string; edgeId?: string | null };
 type BackendAuthFactor = { type: string; required: boolean };
 type BackendAuthFlow = { primary: { credentials: string[]; inlinePassword: boolean; factors: BackendAuthFactor[] }; passkey?: { factors: BackendAuthFactor[] } | null; otpType: 'sms' | 'email' };
-type ClientDto = { id: string; clientName: string; redirectUris: string[]; scope: string[]; permissions: string[]; secretRotation: boolean; edgeId?: string; authFlow?: BackendAuthFlow | null };
+type ClientDto = { id: string; clientName: string; redirectUris: string[]; scope: string[]; permissions: string[]; secretRotation: boolean; refreshTokenTtl?: number; edgeId?: string; authFlow?: BackendAuthFlow | null };
 type ScopeDto = { scope: string; description: Record<string, string>; claims: Array<{ claim: string; description: Record<string, string> }> };
 type PermissionDto = { permission: string; description: Record<string, string>; endpointIds: ResourceEndpointId[] };
 type InjectTargetDto = 'header' | 'query' | 'body';
@@ -70,6 +70,7 @@ type CreateClientRequest = {
   audience: string[];
   permissions: string[];
   accessTokenTtl: number;
+  refreshTokenTtl?: number;
   authFlow?: BackendAuthFlow | null;
 };
 type UpdateClientRequest = {
@@ -79,6 +80,7 @@ type UpdateClientRequest = {
   scope?: SetPatch<string>;
   permissions?: SetPatch<string>;
   accessTokenTtl?: number;
+  refreshTokenTtl?: number;
   authFlow?: BackendAuthFlow | null;
 };
 type CreateScopeRequest = {
@@ -453,6 +455,7 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
           scope: [...payload.allowedScopes],
           permissions: [...payload.permissions],
           secretRotation: false,
+          refreshTokenTtl: payload.refreshTokenTtl ?? 90 * 24 * 60 * 60,
           authFlow: payload.authFlow ?? null,
         };
 
@@ -478,6 +481,9 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
         client.redirectUris = applyPatchSet(client.redirectUris, payload.redirectUris);
         client.scope = applyPatchSet(client.scope, payload.scope);
         client.permissions = applyPatchSet(client.permissions, payload.permissions);
+        if (payload.refreshTokenTtl !== undefined) {
+          client.refreshTokenTtl = payload.refreshTokenTtl;
+        }
         if ('authFlow' in payload) {
           client.authFlow = payload.authFlow ?? null;
         }

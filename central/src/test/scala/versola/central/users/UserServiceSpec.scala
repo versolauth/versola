@@ -1,5 +1,6 @@
 package versola.central.users
 
+import versola.central.configuration.challenges.ChallengeSettingsService
 import versola.central.configuration.clients.{AuthFlow, ClientId, OAuthClientRecord, OAuthClientService}
 import versola.central.configuration.roles.RoleId
 import versola.central.configuration.tenants.TenantId
@@ -23,8 +24,9 @@ object UserServiceSpec extends UnitSpecBase:
     val userRepository     = stub[UserRepository]
     val authClient         = stub[AuthClient]
     val oAuthClientService = stub[OAuthClientService]
+      val challengeSettingsService = stub[ChallengeSettingsService]
     val secureRandom       = stub[SecureRandom]
-    val service            = UserService.Impl(userRepository, authClient, oAuthClientService, secureRandom)
+      val service            = UserService.Impl(userRepository, authClient, oAuthClientService, challengeSettingsService, secureRandom)
 
   def spec = suite("UserService")(
     test("findById returns enriched record when user found") {

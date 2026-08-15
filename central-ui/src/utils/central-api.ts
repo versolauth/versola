@@ -27,6 +27,7 @@ import type {
 
 export const DEFAULT_PAGE_SIZE = 30;
 const READ_CACHE_TTL_MS = 60_000;
+const DEFAULT_REFRESH_TOKEN_TTL_SECONDS = 90 * 24 * 60 * 60;
 
 // Where to send the browser when a request comes back 401 without a Location
 // header — i.e. there is no session for the edge to reauthenticate, so it can't
@@ -119,6 +120,7 @@ type ClientsResponse = {
     frontChannelLogoutUri?: string | null;
     frontChannelLogoutSessionRequired: boolean;
     backChannelLogoutUri?: string | null;
+    refreshTokenTtl?: number;
   }>;
 };
 type RolesResponse = { roles: Array<{ id: string; description: LocalizedDescription; permissions: string[]; active: boolean }> };
@@ -126,7 +128,7 @@ type ResourcesResponse = { resources: ResourceResponseDto[] };
 
 const apiConfig: CentralApiConfig = { baseUrl: null, loginUrl: DEFAULT_LOGIN_URL };
 const permissionStore = new Map<string, Permission>();
-const clientSupplementStore = new Map<string, { accessTokenTtl: number; hasPreviousSecret: boolean }>();
+const clientSupplementStore = new Map<string, { accessTokenTtl: number; refreshTokenTtl: number; hasPreviousSecret: boolean }>();
 const roleSupplementStore = new Map<string, { active: boolean; createdAt: string; updatedAt: string }>();
 const readCache = new Map<string, { expiresAt: number; value: unknown }>();
 const inFlightReads = new Map<string, Promise<unknown>>();
@@ -610,6 +612,7 @@ export async function fetchClients(tenantId: string, offset = 0, limit = DEFAULT
         scope: [...client.scope],
         hasPreviousSecret: supplement?.hasPreviousSecret ?? client.secretRotation,
         accessTokenTtl: supplement?.accessTokenTtl ?? 3600,
+        refreshTokenTtl: supplement?.refreshTokenTtl ?? client.refreshTokenTtl ?? DEFAULT_REFRESH_TOKEN_TTL_SECONDS,
         permissions: [...client.permissions],
         theme: client.theme ?? 'default',
         otpTemplateId: client.otpTemplateId ?? null,
@@ -938,11 +941,13 @@ export async function createClient(tenantId: string, client: OAuthClient): Promi
       frontChannelLogoutUri: client.frontChannelLogoutUri ?? null,
       frontChannelLogoutSessionRequired: client.frontChannelLogoutSessionRequired,
       backChannelLogoutUri: client.backChannelLogoutUri ?? null,
+      refreshTokenTtl: client.refreshTokenTtl,
     },
   });
 
   clientSupplementStore.set(entityKey(tenantId, client.id), {
     accessTokenTtl: client.accessTokenTtl,
+    refreshTokenTtl: client.refreshTokenTtl ?? DEFAULT_REFRESH_TOKEN_TTL_SECONDS,
     hasPreviousSecret: client.hasPreviousSecret,
   });
 
@@ -958,6 +963,7 @@ export async function rotateClientSecret(tenantId: string, clientId: string): Pr
   const existing = clientSupplementStore.get(entityKey(tenantId, clientId));
   clientSupplementStore.set(entityKey(tenantId, clientId), {
     accessTokenTtl: existing?.accessTokenTtl ?? 3600,
+    refreshTokenTtl: existing?.refreshTokenTtl ?? DEFAULT_REFRESH_TOKEN_TTL_SECONDS,
     hasPreviousSecret: true,
   });
 
@@ -973,6 +979,7 @@ export async function deletePreviousClientSecret(tenantId: string, clientId: str
   const existing = clientSupplementStore.get(entityKey(tenantId, clientId));
   clientSupplementStore.set(entityKey(tenantId, clientId), {
     accessTokenTtl: existing?.accessTokenTtl ?? 3600,
+    refreshTokenTtl: existing?.refreshTokenTtl ?? DEFAULT_REFRESH_TOKEN_TTL_SECONDS,
     hasPreviousSecret: false,
   });
 }
@@ -987,6 +994,7 @@ export async function updateClient(tenantId: string, existing: OAuthClient, clie
       scope: patchSet(existing.scope, client.scope),
       permissions: patchSet(existing.permissions, client.permissions),
       accessTokenTtl: existing.accessTokenTtl !== client.accessTokenTtl ? client.accessTokenTtl : undefined,
+      refreshTokenTtl: existing.refreshTokenTtl !== client.refreshTokenTtl ? client.refreshTokenTtl : undefined,
       theme: existing.theme !== client.theme ? client.theme : undefined,
       otpTemplateId: existing.otpTemplateId !== client.otpTemplateId ? (client.otpTemplateId ?? null) : undefined,
       authFlow: authFlowToBackend(client.authFlow),
@@ -1002,6 +1010,7 @@ export async function updateClient(tenantId: string, existing: OAuthClient, clie
 
   clientSupplementStore.set(entityKey(tenantId, client.id), {
     accessTokenTtl: client.accessTokenTtl,
+    refreshTokenTtl: client.refreshTokenTtl ?? existing.refreshTokenTtl ?? DEFAULT_REFRESH_TOKEN_TTL_SECONDS,
     hasPreviousSecret: client.hasPreviousSecret,
   });
 }

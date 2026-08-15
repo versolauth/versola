@@ -208,11 +208,8 @@ test('Reset Password offers the show channel outside production', async ({ page 
     channel: 'show',
   });
 
-  // Masked until the checkbox is ticked.
   const value = page.locator('.password-value');
   await expect(value).toBeVisible();
-  await expect(value).not.toHaveText('Temp1234!');
-  await page.getByText('Show password').click();
   await expect(value).toHaveText('Temp1234!');
 });
 

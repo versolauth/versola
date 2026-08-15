@@ -1,7 +1,7 @@
 package versola.cleanup
 
 import com.augustnagro.magnum.magzio.TransactorZIO
-import com.augustnagro.magnum.sql
+import com.augustnagro.magnum.{SqlLiteral, sql}
 import versola.util.postgres.PostgresSpec
 import zio.*
 import zio.test.*
@@ -18,6 +18,25 @@ object PostgresCleanupManagerSpec extends PostgresSpec:
 
   private def makeManager(xa: TransactorZIO): UIO[TestableCleanupManager] =
     Ref.make(List.empty[Fiber.Runtime[Throwable, Long]]).map(TestableCleanupManager(xa, _))
+
+  private def withChallengeThrottleTable[R, A](xa: TransactorZIO)(
+      run: (String, SqlLiteral) => ZIO[R, Throwable, A],
+  ): ZIO[R, Throwable, A] =
+    val tableName = s"cleanup_ct_${java.util.UUID.randomUUID().toString.replace("-", "")}"
+    val table     = SqlLiteral(tableName)
+    val create = xa.connect:
+      sql"""
+        CREATE TABLE $table (
+          subject TEXT NOT NULL,
+          tenant_id TEXT NOT NULL,
+          challenge_type TEXT NOT NULL,
+          attempts JSONB NOT NULL,
+          expires_at TIMESTAMPTZ NOT NULL,
+          PRIMARY KEY (subject, tenant_id, challenge_type)
+        )
+      """.update.run()
+    create.unit *> run(tableName, table)
+      .ensuring(xa.connect(sql"DROP TABLE IF EXISTS $table".update.run()).ignore)
 
   override val spec: Spec[TransactorZIO & TestEnvironment & Scope, Any] =
     suite("PostgresCleanupManagerSpec")(
@@ -75,35 +94,39 @@ object PostgresCleanupManagerSpec extends PostgresSpec:
       test("deletes expired challenge_throttle rows (keyColumn=ctid, composite PK)") {
         for
           xa      <- ZIO.service[TransactorZIO]
-          _       <- xa.connect(sql"TRUNCATE TABLE challenge_throttle".update.run())
           manager <- makeManager(xa)
-          _ <- xa.connect:
-            sql"""
-              INSERT INTO challenge_throttle (subject, tenant_id, challenge_type, attempts, expires_at)
-              VALUES
-                ('u1', 't1', 'otp', '[]'::jsonb, NOW() - INTERVAL '1 minute'),
-                ('u2', 't1', 'otp', '[]'::jsonb, NOW() - INTERVAL '2 minutes'),
-                ('u3', 't1', 'otp', '[]'::jsonb, NOW() + INTERVAL '5 minutes')
-            """.update.run()
-          deleted   <- manager.runBatch("challenge_throttle", 1000, "ctid")
-          remaining <- xa.connect(sql"SELECT COUNT(*) FROM challenge_throttle".query[Long].run().head)
-        yield assertTrue(deleted == 2, remaining == 1L)
+          result <- withChallengeThrottleTable(xa): (tableName, table) =>
+            for
+              _ <- xa.connect:
+                sql"""
+                  INSERT INTO $table (subject, tenant_id, challenge_type, attempts, expires_at)
+                  VALUES
+                    ('u1', 't1', 'otp', '[]'::jsonb, NOW() - INTERVAL '1 minute'),
+                    ('u2', 't1', 'otp', '[]'::jsonb, NOW() - INTERVAL '2 minutes'),
+                    ('u3', 't1', 'otp', '[]'::jsonb, NOW() + INTERVAL '5 minutes')
+                """.update.run()
+              deleted   <- manager.runBatch(tableName, 1000, "ctid")
+              remaining <- xa.connect(sql"SELECT COUNT(*) FROM $table".query[Long].run().head)
+            yield assertTrue(deleted == 2, remaining == 1L)
+        yield result
       },
       test("respects batch size limit") {
         for
           xa      <- ZIO.service[TransactorZIO]
-          _       <- xa.connect(sql"TRUNCATE TABLE challenge_throttle".update.run())
           manager <- makeManager(xa)
-          _ <- xa.connect:
-            sql"""
-              INSERT INTO challenge_throttle (subject, tenant_id, challenge_type, attempts, expires_at)
-              VALUES
-                ('u1', 't1', 'otp', '[]'::jsonb, NOW() - INTERVAL '3 minutes'),
-                ('u2', 't1', 'otp', '[]'::jsonb, NOW() - INTERVAL '2 minutes'),
-                ('u3', 't1', 'otp', '[]'::jsonb, NOW() - INTERVAL '1 minute')
-            """.update.run()
-          deleted   <- manager.runBatch("challenge_throttle", 2, "ctid")
-          remaining <- xa.connect(sql"SELECT COUNT(*) FROM challenge_throttle".query[Long].run().head)
-        yield assertTrue(deleted == 2, remaining == 1L)
+          result <- withChallengeThrottleTable(xa): (tableName, table) =>
+            for
+              _ <- xa.connect:
+                sql"""
+                  INSERT INTO $table (subject, tenant_id, challenge_type, attempts, expires_at)
+                  VALUES
+                    ('u1', 't1', 'otp', '[]'::jsonb, NOW() - INTERVAL '3 minutes'),
+                    ('u2', 't1', 'otp', '[]'::jsonb, NOW() - INTERVAL '2 minutes'),
+                    ('u3', 't1', 'otp', '[]'::jsonb, NOW() - INTERVAL '1 minute')
+                """.update.run()
+              deleted   <- manager.runBatch(tableName, 2, "ctid")
+              remaining <- xa.connect(sql"SELECT COUNT(*) FROM $table".query[Long].run().head)
+            yield assertTrue(deleted == 2, remaining == 1L)
+        yield result
       },
     ) @@ TestAspect.sequential

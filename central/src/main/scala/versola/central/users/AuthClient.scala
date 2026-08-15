@@ -57,7 +57,11 @@ trait AuthClient:
   /** Returns the plaintext temporary password when the reset asked for it to be
     * shown rather than delivered (non-prod only); `None` otherwise.
     */
-  def resetPassword(request: ResetPasswordRequest): Task[Option[String]]
+  def resetPassword(
+      userId: UserId,
+      expiresInSeconds: Long,
+      channel: Option[DeliveryChannel],
+  ): Task[Option[String]]
 
   def setPassword(userId: UserId, password: String): Task[Unit]
 
@@ -121,6 +125,12 @@ object AuthClient:
       userId: UserId,
       credentialId: String,
       name: Option[String],
+  ) derives JsonCodec
+
+  private case class ResetPasswordPayload(
+      userId: UserId,
+      expiresInSeconds: Long,
+      channel: Option[DeliveryChannel],
   ) derives JsonCodec
 
   private case class SetPasswordPayload(
@@ -243,12 +253,16 @@ object AuthClient:
         ),
       )
 
-    override def resetPassword(request: ResetPasswordRequest): Task[Option[String]] =
+    override def resetPassword(
+        userId: UserId,
+        expiresInSeconds: Long,
+        channel: Option[DeliveryChannel],
+    ): Task[Option[String]] =
       sendReceiveOptional[ResetPasswordResponse](
         Request(
           method = Method.POST,
           url = passwordResetUrl,
-          body = Body.from(request),
+          body = Body.from(ResetPasswordPayload(userId, expiresInSeconds, channel)),
         ),
       ).map(_.map(_.password))
 

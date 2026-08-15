@@ -17,6 +17,7 @@ case class ChallengeSettingsRecord(
     submissionLimits: SubmissionLimits,
     otpLength: Int,
     otpResendAfter: Int,
+    temporaryPasswordTtlSeconds: Int,
     passkeySettings: PasskeySettings,
     authConversationTtlSeconds: Int,
     sessionTtlSeconds: Int,
@@ -26,3 +27,6 @@ case class ChallengeSettingsRecord(
     acrVocabulary: Option[Map[String, List[String]]],
     postLogoutRedirectUris: List[String],
 ) derives Schema, JsonCodec
+
+object ChallengeSettingsRecord:
+  val DefaultTemporaryPasswordTtlSeconds: Int = 12 * 60 * 60

@@ -30,6 +30,12 @@ const serviceClient = {
   secretRotation: false,
 };
 
+const offlineClient = {
+  ...alphaClient,
+  scope: ['openid', 'offline_access'],
+  refreshTokenTtl: 180 * 24 * 60 * 60,
+};
+
 function clientCard(page: Page, text: string) {
   return page.locator('.client-card').filter({ hasText: text }).first();
 }
@@ -68,6 +74,64 @@ test('renders client details and filters by client id', async ({ page }) => {
 
   await search.fill('missing-client');
   await expect(page.getByRole('heading', { name: 'No clients match your search', exact: true })).toBeVisible();
+});
+
+test('shows and updates refresh token TTL in days for offline clients', async ({ page }) => {
+  const api = await loadAdminApp(page, {
+    path: clientsPath,
+    state: {
+      clients: { 'tenant-alpha': [offlineClient] },
+      scopes: {
+        'tenant-alpha': [
+          { scope: 'openid', description: { en: 'OpenID scope' }, claims: [] },
+          { scope: 'offline_access', description: { en: 'Offline access scope' }, claims: [] },
+        ],
+      },
+    },
+  });
+
+  const client = clientCard(page, 'Alpha Web');
+  await client.locator('.client-header').click();
+  await expect(client).toContainText('Refresh Token TTL');
+  await expect(client).toContainText('180d');
+
+  await client.getByRole('button', { name: 'Edit client alpha-web' }).click();
+  await expect(page.getByLabel('Refresh Token TTL (days) *')).toHaveValue('180');
+  await page.getByLabel('Refresh Token TTL (days) *').fill('120');
+  await page.getByRole('button', { name: 'Update Client', exact: true }).click();
+
+  expect(findRequest(api.requests, 'PUT', '/configuration/clients').body).toMatchObject({
+    refreshTokenTtl: 120 * 24 * 60 * 60,
+  });
+});
+
+test('shows refresh token TTL only after selecting offline_access when creating a client', async ({ page }) => {
+  const api = await loadAdminApp(page, {
+    path: clientsPath,
+    state: {
+      clients: { 'tenant-alpha': [] },
+      scopes: {
+        'tenant-alpha': [
+          { scope: 'openid', description: { en: 'OpenID scope' }, claims: [] },
+          { scope: 'offline_access', description: { en: 'Offline access scope' }, claims: [] },
+        ],
+      },
+    },
+  });
+
+  await page.getByRole('button', { name: '+ Create Client', exact: true }).click();
+  await expect(page.getByLabel('Refresh Token TTL (days) *')).toHaveCount(0);
+  await page.getByLabel('Client ID').fill('offline-client');
+  await page.getByLabel('Client Name').fill('Offline Client');
+  await page.getByRole('checkbox', { name: 'offline_access', exact: true }).check();
+  await expect(page.getByLabel('Refresh Token TTL (days) *')).toHaveValue('90');
+  await page.getByLabel('Refresh Token TTL (days) *').fill('45');
+  await page.getByRole('button', { name: 'Create Client', exact: true }).click();
+
+  expect(findRequest(api.requests, 'POST', '/configuration/clients').body).toMatchObject({
+    refreshTokenTtl: 45 * 24 * 60 * 60,
+  });
+  await expect(clientCard(page, 'Offline Client')).toContainText('45d');
 });
 
 test('creates a client and shows the generated secret banner', async ({ page }) => {

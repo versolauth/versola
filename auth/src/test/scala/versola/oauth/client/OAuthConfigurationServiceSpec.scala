@@ -63,6 +63,7 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
     submissionLimits = SubmissionLimits.empty,
     otpLength = 6,
     otpResendAfter = 60,
+    temporaryPasswordTtlSeconds = 43200,
     passkeySettings = PasskeySettings("rp.example.com", "RP", List("https://rp.example.com"), "required"),
     authConversationTtlSeconds = 900,
     sessionTtlSeconds = 86400,

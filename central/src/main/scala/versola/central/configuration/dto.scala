@@ -269,6 +269,7 @@ case class OAuthClientResponse(
     scope: Set[ScopeToken],
     permissions: Set[Permission],
     secretRotation: Boolean,
+      refreshTokenTtl: Long,
     theme: String,
     authFlow: Option[AuthFlow],
     registrationFlow: Option[RegistrationFlow],

@@ -61,7 +61,6 @@ export class VersolaUsersList extends LitElement {
   @state() private pendingResetUser: User | null = null;
   @state() private pendingResetChannel: 'email' | 'sms' | 'show' | null = null;
   @state() private revealedPassword: { userId: string; password: string } | null = null;
-  @state() private passwordVisible = false;
   @state() private copyFeedback = '';
   @state() private userPasskeys: Record<string, PasskeyInfo[]> = {};
   @state() private loadingPasskeys = new Set<string>();
@@ -832,7 +831,6 @@ export class VersolaUsersList extends LitElement {
     this.pendingResetUser = user;
     this.pendingResetChannel = user.email ? 'email' : user.phone ? 'sms' : this.canRevealPassword ? 'show' : null;
     this.revealedPassword = null;
-    this.passwordVisible = false;
     this.copyFeedback = '';
   }
 
@@ -861,7 +859,6 @@ export class VersolaUsersList extends LitElement {
 
   private dismissRevealedPassword() {
     this.revealedPassword = null;
-    this.passwordVisible = false;
     this.copyFeedback = '';
   }
 
@@ -1246,12 +1243,7 @@ export class VersolaUsersList extends LitElement {
         <p style="margin:0 0 var(--spacing-lg);font-size:0.875rem;color:var(--text-secondary)">
           Valid for 12 hours. Copy it now — it is not shown again.
         </p>
-        <pre class="password-value">${this.passwordVisible ? revealed.password : '\u2022'.repeat(revealed.password.length)}</pre>
-        <label style="display:flex;align-items:center;gap:var(--spacing-sm);margin-top:var(--spacing-md);font-size:0.875rem">
-          <input type="checkbox" ?checked=${this.passwordVisible}
-            @change=${(e: Event) => { this.passwordVisible = (e.target as HTMLInputElement).checked; }}>
-          Show password
-        </label>
+        <pre class="password-value">${revealed.password}</pre>
         <div style="display:flex;align-items:center;gap:0.75rem;margin-top:var(--spacing-md)">
           <button class="btn btn-primary btn-sm" @click=${this.handleCopyPassword}>Copy password</button>
           ${this.copyFeedback ? html`<span class="copy-feedback">${this.copyFeedback}</span>` : ''}
