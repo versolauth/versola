@@ -86,6 +86,7 @@ object ConversationRouterSpec extends UnitSpecBase:
     csrfToken = "test-csrf",
     priorSessionId = None,
     resources = Nil,
+    authorizationDetails = None,
   )
 
   val otpRecord = ConversationRecord(
@@ -118,6 +119,7 @@ object ConversationRouterSpec extends UnitSpecBase:
     csrfToken = "test-csrf",
     priorSessionId = None,
     resources = Nil,
+    authorizationDetails = None,
   )
 
   val login = Login("testuser")

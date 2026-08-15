@@ -2,6 +2,7 @@ package versola.central.configuration.sync
 
 import versola.central.configuration.challenges.{ChallengeSettingsRecord, OtpTemplateChannel, OtpTemplatePurpose, OtpTemplateRecord}
 import versola.central.configuration.clients.{AuthorizationPreset, ClientId, OAuthClientRecord, PresetId}
+import versola.central.configuration.details.{AuthorizationDetailType, AuthorizationDetailTypeRecord}
 import versola.central.configuration.forms.{FormId, FormRecord}
 import versola.central.configuration.permissions.{Permission, PermissionRecord}
 import versola.central.configuration.resources.{ResourceId, ResourceRecord}
@@ -54,6 +55,20 @@ object SyncEvent:
 
     def sort(records: Vector[ScopeRecord]): Vector[ScopeRecord] =
       records.sortBy(x => (x.tenantId, x.id))
+
+  case class AuthorizationDetailTypesUpdated(
+      tenantId: TenantId,
+      id: AuthorizationDetailType,
+      op: Op,
+  ) extends ModifyCache:
+    type ID = AuthorizationDetailType
+    type Record = AuthorizationDetailTypeRecord
+
+    def matches(record: AuthorizationDetailTypeRecord): Boolean =
+      tenantId == record.tenantId && id == record.`type`
+
+    def sort(records: Vector[AuthorizationDetailTypeRecord]): Vector[AuthorizationDetailTypeRecord] =
+      records.sortBy(x => (x.tenantId, x.`type`))
 
   case class RolesUpdated(
       tenantId: TenantId,

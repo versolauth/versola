@@ -2,6 +2,8 @@ package versola.oauth.client
 
 import versola.oauth.client.model.{
   Acr,
+  AuthorizationDetailType,
+  AuthorizationDetailTypeRecord,
   ChallengeSettingsRecord,
   ClientId,
   ClientSecret,
@@ -87,6 +89,13 @@ trait OAuthConfigurationService:
 
   def getMetadata: UIO[Json.Obj]
 
+  /** Resolves an RFC 9396 `authorization_details` type to its registered schema, scoped to
+    * the requesting client's tenant. */
+  def findAuthorizationDetailType(
+      tenantId: TenantId,
+      `type`: AuthorizationDetailType,
+  ): UIO[Option[AuthorizationDetailTypeRecord]]
+
   /** Resolves an RFC 8707 `resource` request parameter value to its registered resource,
     * scoped to the requesting client's tenant. */
   def findResource(tenantId: TenantId, resource: ResourceUri): UIO[Option[ResourceRecord]]
@@ -123,8 +132,9 @@ object OAuthConfigurationService:
           (ChallengeSettingsSyncClient.live >+> cacheLayer[Vector[ChallengeSettingsRecord]]) >+>
           (SystemSettingsSyncClient.live >+> cacheLayer[SystemSettingsRecord]) >+>
           (MetadataSyncClient.live >+> cacheLayer[Json.Obj]) >+>
-          (ResourceSyncClient.live >+> cacheLayer[Vector[ResourceRecord]]))
-    syncClients >>> ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _))
+          (ResourceSyncClient.live >+> cacheLayer[Vector[ResourceRecord]]) >+>
+          (AuthorizationDetailTypeSyncClient.live >+> cacheLayer[Vector[AuthorizationDetailTypeRecord]]))
+    syncClients >>> ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _))
   }
 
   case class Impl(
@@ -148,6 +158,8 @@ object OAuthConfigurationService:
       metadataRepository: MetadataSyncClient,
       resourceCache: ReloadingCache[Vector[ResourceRecord]],
       resourceRepository: ResourceSyncClient,
+      authorizationDetailTypeCache: ReloadingCache[Vector[AuthorizationDetailTypeRecord]],
+      authorizationDetailTypeRepository: AuthorizationDetailTypeSyncClient,
   ) extends OAuthConfigurationService:
 
     def find(id: ClientId): UIO[Option[OAuthClientRecord]] =
@@ -365,6 +377,12 @@ object OAuthConfigurationService:
     override def getMetadata: UIO[Json.Obj] =
       metadataCache.get
 
+    override def findAuthorizationDetailType(
+        tenantId: TenantId,
+        `type`: AuthorizationDetailType,
+    ): UIO[Option[AuthorizationDetailTypeRecord]] =
+      authorizationDetailTypeCache.get.map(_.find(r => r.tenantId == tenantId && r.`type` == `type`))
+
     override def findResource(tenantId: TenantId, resource: ResourceUri): UIO[Option[ResourceRecord]] =
       resourceCache.get.map(_.find(r => r.tenantId == tenantId && r.resource == resource))
 
@@ -396,6 +414,8 @@ object OAuthConfigurationService:
         _ <- metadataCache.set(metadata)
         resources <- resourceRepository.getAll
         _ <- resourceCache.set(resources)
+        authorizationDetailTypes <- authorizationDetailTypeRepository.getAll
+        _ <- authorizationDetailTypeCache.set(authorizationDetailTypes)
       yield ()
 
     private val IllegalStateTemplate = OtpTemplate("{{code}}")

@@ -1,12 +1,13 @@
 package versola.oauth.introspect
 
 import versola.oauth.client.{OAuthConfigurationService, ResourceResolver}
-import versola.oauth.client.model.{ClientCredentials, ClientIdWithSecret, OAuthClientRecord, ResourceRecord, ResourceUri}
+import versola.oauth.client.model.{AuthorizationDetail, ClientCredentials, ClientIdWithSecret, OAuthClientRecord, ResourceRecord, ResourceUri}
 import versola.oauth.introspect.model.{IntrospectionError, IntrospectionResponse}
 import versola.oauth.model.{AccessTokenPayload, RefreshToken}
 import versola.oauth.session.SessionRepository
 import versola.oauth.session.model.RefreshTokenRecord
 import versola.util.{CoreConfig, Secret, SecurityService}
+import zio.json.ast.Json
 import zio.{IO, UIO, ZIO, ZLayer}
 
 trait IntrospectionService:
@@ -87,7 +88,11 @@ object IntrospectionService:
         aud = Some(audience),
         iss = Some(token.issuer),
         jti = Some(token.id.encoded),
+        authorizationDetails = authorizationDetailsOf(token.authorizationDetails.getOrElse(Nil)),
       )
+
+    private def authorizationDetailsOf(details: List[AuthorizationDetail]): Option[Json.Arr] =
+      Option.when(details.nonEmpty)(Json.Arr(details.map(_.value)*))
 
     override def introspectRefreshToken(
         token: RefreshToken,
@@ -126,6 +131,7 @@ object IntrospectionService:
             iat = Some(record.issuedAt.getEpochSecond),
             aud = Some(record.audience.toVector),
             jti = None,
+            authorizationDetails = authorizationDetailsOf(record.authorizationDetails.getOrElse(Nil)),
           )
         case None =>
           IntrospectionResponse.Inactive

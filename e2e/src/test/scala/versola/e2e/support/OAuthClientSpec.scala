@@ -24,10 +24,10 @@ object OAuthClientSpec extends ZIOSpecDefault:
     test("authenticates Central requests with the central resource secret") {
       for
         seen <- Ref.make(Option.empty[Request])
-        _ <- TestClient.addRoutes(
-          Handler.fromFunctionZIO[Request] { request =>
+        _ <- TestClient.addRoute(
+          Method.POST / "users" -> Handler.fromFunctionZIO[Request] { request =>
             seen.set(Some(request)).as(Response.json(s"""{"id":"$userId"}"""))
-          }.toRoutes
+          },
         )
         client <- ZIO.service[Client]
         result <- OAuthClient(client, config).registerUser(email = Some("user@example.com"))

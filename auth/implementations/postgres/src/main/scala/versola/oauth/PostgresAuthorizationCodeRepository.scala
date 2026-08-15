@@ -2,8 +2,9 @@ package versola.oauth
 
 import com.augustnagro.magnum.*
 import com.augustnagro.magnum.magzio.TransactorZIO
+import com.augustnagro.magnum.pg.json.JsonBDbCodec
 import com.augustnagro.magnum.pg.{PgCodec, SqlArrayCodec}
-import versola.oauth.client.model.{Acr, AuthMethodRef, Claim, ClientId, ResourceUri, ScopeToken}
+import versola.oauth.client.model.{Acr, AuthMethodRef, AuthorizationDetail, Claim, ClientId, ResourceUri, ScopeToken}
 import versola.oauth.model.*
 import versola.oauth.session.model.{PublicSessionId, SessionId}
 import versola.oauth.token.AuthorizationCodeRepository
@@ -48,6 +49,11 @@ class PostgresAuthorizationCodeRepository(
   private given DbCodec[Set[AuthMethodRef]] = jsonBCodec[Set[AuthMethodRef]]
   private given DbCodec[Acr] = DbCodec.StringCodec.biMap(Acr(_), identity[String])
   private given DbCodec[PublicSessionId] = DbCodec.StringCodec.biMap(PublicSessionId(_), identity[String])
+  private given JsonBDbCodec[AuthorizationDetail] = jsonBCodec
+  // The column is a nullable array; the model's `Option[List[...]]` maps onto it directly via
+  // the generic `DbCodec.OptionCodec` (NULL <-> None) wrapping this element codec.
+  private given listAuthorizationDetailDbCodec: DbCodec[List[AuthorizationDetail]] =
+    PgCodec.SeqCodec[AuthorizationDetail].biMap(_.toList, _.toSeq)
   private given DbCodec[AuthorizationCodeRecord] = DbCodec.derived[AuthorizationCodeRecord]
 
   override def find(code: MAC.Of[AuthorizationCode]): Task[Option[AuthorizationCodeRecord]] =
@@ -58,7 +64,7 @@ class PostgresAuthorizationCodeRepository(
           SELECT session_id, public_session_id, client_id, user_id, redirect_uri,
                  scope, code_challenge, code_challenge_method,
                  requested_claims, ui_locales, nonce, access_token,
-                 amr, auth_time, acr, resources
+                 amr, auth_time, acr, resources, authorization_details
           FROM authorization_codes
           WHERE code = $code AND expires_at > $now"""
           .query[AuthorizationCodeRecord].run()
@@ -91,6 +97,7 @@ class PostgresAuthorizationCodeRepository(
             auth_time,
             acr,
             resources,
+            authorization_details,
             used,
             expires_at
           )
@@ -112,6 +119,7 @@ class PostgresAuthorizationCodeRepository(
             ${record.authTime},
             ${record.acr},
             ${record.resources},
+            ${record.authorizationDetails},
             ${false},
             ${now.plusSeconds(ttl.toSeconds)}
           )

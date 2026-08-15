@@ -1,7 +1,7 @@
 package versola.oauth.model
 
 import com.nimbusds.jose.jwk.JWKSet
-import versola.oauth.client.model.{ClientId, ResourceUri, ScopeToken}
+import versola.oauth.client.model.{AuthorizationDetail, ClientId, ResourceUri, ScopeToken}
 import versola.oauth.userinfo.model.RequestedClaims
 import versola.user.model.UserId
 import versola.util.{CoreConfig, JWT}
@@ -21,6 +21,8 @@ case class AccessTokenPayload(
     @jsonField("aud") audience: Vector[ResourceUri],
     @jsonField("iss") issuer: String,
     @jsonField("jti") id: AccessToken,
+    /** RFC 9396 authorization details granted for this token, absent when the grant has none. */
+    @jsonField("authorization_details") authorizationDetails: Option[List[AuthorizationDetail]],
 ):
   /** Parse userId from subject if it's a valid UUID, otherwise None (for client_credentials tokens) */
   def userId: Option[UserId] = UserId.parse(subject).toOption

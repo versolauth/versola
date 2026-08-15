@@ -1,6 +1,6 @@
 package versola.oauth.model
 
-import versola.oauth.client.model.{Acr, AuthMethodRef, ClientId, ResourceUri, ScopeToken}
+import versola.oauth.client.model.{Acr, AuthMethodRef, AuthorizationDetail, ClientId, ResourceUri, ScopeToken}
 import versola.oauth.session.model.{PublicSessionId, RefreshTokenRecord, SessionId}
 import versola.oauth.userinfo.model.RequestedClaims
 import versola.user.model.UserId
@@ -32,6 +32,10 @@ case class AuthorizationCodeRecord(
     /** RFC 8707 `resource` parameter(s) requested at `/authorize`; carried forward into the
       * issued access token's `aud` claim. */
     resources: List[ResourceUri],
+    /** RFC 9396 `authorization_details` granted at `/authorize`; carried forward into the
+      * issued access token and echoed in the token response. `None` when the parameter was
+      * absent, distinct from an empty list (which the parameter itself disallows). */
+    authorizationDetails: Option[List[AuthorizationDetail]],
 ) derives CanEqual, Equal:
 
   def verify(verifier: CodeVerifier): Boolean =

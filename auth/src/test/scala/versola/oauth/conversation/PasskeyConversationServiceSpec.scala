@@ -121,6 +121,7 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
     csrfToken = "test-csrf",
     priorSessionId = None,
     resources = Nil,
+    authorizationDetails = None,
   )
 
   // A minimal assertion response carrying a credential id, used as the throttle subject.

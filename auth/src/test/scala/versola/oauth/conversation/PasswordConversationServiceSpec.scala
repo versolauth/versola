@@ -115,6 +115,7 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
     csrfToken = "test-csrf",
     priorSessionId = None,
     resources = Nil,
+    authorizationDetails = None,
   )
 
   val passwordRecord = baseRecord.copy(

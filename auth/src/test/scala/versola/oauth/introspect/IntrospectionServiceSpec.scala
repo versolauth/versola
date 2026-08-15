@@ -3,7 +3,7 @@ package versola.oauth.introspect
 import org.scalamock.stubs.ZIOStubs
 import versola.auth.TestEnvConfig
 import versola.oauth.client.{OAuthConfigurationService, ResourceResolver}
-import versola.oauth.client.model.{AuthMethodRef, ClientId, ClientIdWithSecret, OAuthClientRecord, ResourceId, ResourceRecord, ResourceUri, ScopeToken, TenantId}
+import versola.oauth.client.model.{AuthMethodRef, AuthorizationDetail, ClientId, ClientIdWithSecret, OAuthClientRecord, ResourceId, ResourceRecord, ResourceUri, ScopeToken, TenantId}
 import versola.oauth.introspect.model.{IntrospectionError, IntrospectionResponse}
 import versola.oauth.model.{AccessToken, AccessTokenPayload, RefreshToken}
 import versola.oauth.session.SessionRepository
@@ -11,6 +11,8 @@ import versola.oauth.session.model.{PublicSessionId, RefreshTokenRecord, Session
 import versola.user.model.UserId
 import versola.util.{CoreConfig, MAC, Secret, SecurityService, UnitSpecBase}
 import zio.*
+import zio.json.*
+import zio.json.ast.Json
 import zio.prelude.NonEmptySet
 import zio.test.*
 
@@ -59,6 +61,7 @@ object IntrospectionServiceSpec extends UnitSpecBase:
     userId = userId1,
     clientId = clientId1,
     audience = List.empty,
+    authorizationDetails = None,
     scope = scope1,
     issuedAt = now,
     expiresAt = now.plusSeconds(3600),
@@ -82,7 +85,13 @@ object IntrospectionServiceSpec extends UnitSpecBase:
     audience = audience,
     issuer = "https://auth.example.com",
     id = accessToken1,
+    authorizationDetails = None,
   )
+
+  val paymentDetail = AuthorizationDetail.parse(
+    """{"type":"payment_initiation","instructedAmount":{"currency":"EUR","amount":"1.00"}}"""
+      .fromJson[Json].toOption.get,
+  ).toOption.get
 
   class Env:
     val oauthClientService = stub[OAuthConfigurationService]
@@ -97,6 +106,29 @@ object IntrospectionServiceSpec extends UnitSpecBase:
 
   val spec = suite("IntrospectionService")(
     suite("introspectAccessToken")(
+      test("returns the authorization details carried by the access token") {
+        val env = Env()
+        (for
+          now <- Clock.instant
+          credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
+          payload = accessTokenPayload(now, audience = Vector(ResourceUri("https://api.example.com")))
+            .copy(authorizationDetails = Some(List(paymentDetail)))
+
+          _ <- env.oauthClientService.verifySecret.succeedsWith(Some(testClient))
+          _ <- env.oauthClientService.getResourcesForClient.succeedsWith(List(ResourceRecord(
+            ResourceId("api"),
+            testClient.tenantId,
+            ResourceUri("https://api.example.com"),
+            List(testClient.id),
+            internal = false,
+          )))
+
+          service <- ZIO.service[IntrospectionService]
+          result <- service.introspectAccessToken(payload, credentials)
+        yield assertTrue(
+          result.authorizationDetails == Some(Json.Arr(paymentDetail.value)),
+        )).provide(env.layer)
+      },
       test("successfully introspect active access token") {
         val env = Env()
         val publicResource = ResourceUri("https://api.example.com")
@@ -297,6 +329,23 @@ object IntrospectionServiceSpec extends UnitSpecBase:
           result.iat == Some(now.getEpochSecond),
           result.iss == Some(env.config.jwt.issuer),
           result.aud == Some(Vector.empty),
+        )).provide(env.layer)
+      },
+      test("returns the authorization details granted by the refresh token") {
+        val env = Env()
+        (for
+          now <- Clock.instant
+          credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
+          record = tokenRecord(now).copy(authorizationDetails = Some(List(paymentDetail)))
+
+          _ <- env.oauthClientService.verifySecret.succeedsWith(Some(testClient))
+          _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
+          _ <- env.tokenRepository.findToken.succeedsWith(Some(record))
+
+          service <- ZIO.service[IntrospectionService]
+          result <- service.introspectRefreshToken(refreshToken1, credentials)
+        yield assertTrue(
+          result.authorizationDetails == Some(Json.Arr(paymentDetail.value)),
         )).provide(env.layer)
       },
       test("return inactive when token not found") {

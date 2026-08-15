@@ -16,4 +16,5 @@ object ErrorCode:
   val AccessDenied: ErrorCode = "access_denied"
   val UnmetAuthenticationRequirements: ErrorCode = "unmet_authentication_requirements"
   val InvalidTarget: ErrorCode = "invalid_target"
+  val InvalidAuthorizationDetails: ErrorCode = "invalid_authorization_details"
 

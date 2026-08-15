@@ -1,6 +1,7 @@
 package versola.oauth.token.model
 
 import zio.json.*
+import zio.json.ast.Json
 import zio.schema.*
 
 /**
@@ -8,6 +9,8 @@ import zio.schema.*
  * RFC 6749 Section 5.1: https://datatracker.ietf.org/doc/html/rfc6749#section-5.1
  *
  * OpenID Connect Core 1.0 Section 3.1.3.3: https://openid.net/specs/openid-connect-core-1_0.html#TokenResponse
+ *
+ * RFC 9396 Section 7: https://datatracker.ietf.org/doc/html/rfc9396#section-7
  */
 case class TokenResponse(
     @jsonField("access_token") accessToken: String,
@@ -16,5 +19,7 @@ case class TokenResponse(
     @jsonField("refresh_token") refreshToken: Option[String],
     scope: Option[String],
     @jsonField("id_token") idToken: Option[String],
+    /** The authorization details granted, echoed back when the grant carries any. */
+    @jsonField("authorization_details") authorizationDetails: Option[Json.Arr],
 ) derives Schema, JsonCodec
 

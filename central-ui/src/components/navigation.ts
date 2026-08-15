@@ -34,15 +34,33 @@ export class VersolaNavigation extends LitElement {
   static styles = [
     theme,
     css`
+      /* :host is a plain sizer: width fixed, height left to the flex row
+         (admin-app's .app-layout stretches it to the row's full height). The
+         panel actually pinned to the viewport is .nav-panel below — splitting
+         them matters because a single element can't both size itself to an
+         arbitrarily tall document *and* cap its own height at 100vh to stay
+         on-screen while scrolling. Collapsing the two (e.g. position: fixed
+         with height: 100vh directly on :host, as this used to be) forces that
+         same element to size to the viewport regardless of the document's
+         actual height: correct for interactive scrolling, but a tool that
+         captures the full scrollable page (a full-page screenshot, print/PDF)
+         then renders one viewport's worth of sidebar and flat background for
+         the rest of a taller document — wrong the moment any screen (e.g.
+         resources' endpoint editor) grows past the fold. */
       :host {
+        display: block;
+        width: 250px;
+        flex: none;
+        align-self: stretch;
+      }
+
+      .nav-panel {
         display: flex;
         flex-direction: column;
         background: var(--bg-dark);
         border-right: 1px solid var(--border-dark);
         height: 100vh;
-        width: 250px;
-        position: fixed;
-        left: 0;
+        position: sticky;
         top: 0;
         overflow: hidden;
       }
@@ -53,11 +71,13 @@ export class VersolaNavigation extends LitElement {
         min-height: 0;
       }
 
-      /* On narrow screens the sidebar becomes an off-canvas drawer: it stays
-         fixed (so it scrolls with nothing) but sits translated out of view
-         until opened, instead of permanently covering 250px of a ~390px wide
-         screen. Above this breakpoint it's the normal always-visible sidebar,
-         so no transform applies. */
+      /* On narrow screens the sidebar becomes an off-canvas drawer: fixed to
+         the viewport and translated out of view until opened, rather than
+         sized into the document flow. There's no taller-than-viewport concern
+         to design around here — an overlay drawer is *meant* to be exactly
+         one viewport tall — so :host reverts to owning position/size directly
+         instead of deferring to .nav-panel, same as before this component had
+         a document-height sizer to worry about. */
       @media (max-width: 768px) {
         :host {
           /* Local duration so the visibility delay below can reference exactly
@@ -65,6 +85,11 @@ export class VersolaNavigation extends LitElement {
              and so can't be reused as a delay. */
           --drawer-duration: 0.15s;
 
+          position: fixed;
+          top: 0;
+          left: 0;
+          width: 250px;
+          height: 100vh;
           z-index: 200;
           transform: translateX(-100%);
           /* visibility (not just the transform) so the closed drawer leaves the
@@ -81,6 +106,15 @@ export class VersolaNavigation extends LitElement {
           box-shadow: 2px 0 12px rgba(0, 0, 0, 0.4);
         }
 
+        /* .nav-panel's own position: sticky (set unconditionally above, for
+           the desktop layout) would otherwise fight with :host's position:
+           fixed for what's actually pinned to the viewport here; static
+           hands full control back to :host, and the panel simply fills it. */
+        .nav-panel {
+          position: static;
+          height: 100%;
+        }
+
         :host([open]) {
           transform: translateX(0);
           /* Opening is the mirror image: become visible immediately (no delay)
@@ -94,7 +128,8 @@ export class VersolaNavigation extends LitElement {
 
       /* Users who prefer reduced motion get the same states without sliding.
          Both selectors are listed because :host([open]) is more specific than
-         :host — overriding only the latter would leave the open state animating. */
+         the base :host rule — overriding only the latter would leave the open
+         state animating. */
       @media (prefers-reduced-motion: reduce) {
         :host,
         :host([open]) {
@@ -283,53 +318,55 @@ export class VersolaNavigation extends LitElement {
 
   render() {
     return html`
-      <div class="nav-scroll">
-        <div class="brand">
-          <div class="brand-logo">
-            <versola-logo size="40"></versola-logo>
+      <div class="nav-panel">
+        <div class="nav-scroll">
+          <div class="brand">
+            <div class="brand-logo">
+              <versola-logo size="40"></versola-logo>
+            </div>
+            <div class="brand-name">Versola</div>
+            <button
+              type="button"
+              class="brand-close"
+              @click=${this.handleCloseClick}
+              aria-label="Close navigation menu"
+            >✕</button>
           </div>
-          <div class="brand-name">Versola</div>
-          <button
-            type="button"
-            class="brand-close"
-            @click=${this.handleCloseClick}
-            aria-label="Close navigation menu"
-          >✕</button>
+
+          <div class="tenant-section">
+            <tenant-selector
+              .selectedTenantId=${this.tenantId}
+              .allowedTenantIds=${this.allowedTenantIds}
+            ></tenant-selector>
+          </div>
+
+          <nav class="nav">
+            <div class="nav-section">
+              <div class="nav-section-title">Tenant Scoped</div>
+              ${this.navItem('challenges', 'Challenges & Security')}
+              ${this.navItem('clients', 'Clients')}
+              ${this.navItem('permissions', 'Permissions')}
+              ${this.navItem('resources', 'Resources')}
+              ${this.navItem('roles', 'Roles')}
+              ${this.navItem('scopes', 'Scopes')}
+            </div>
+
+            <div class="nav-section">
+              <div class="nav-section-title">Global</div>
+              ${this.navItem('edges', 'Edges')}
+              ${this.navItem('forms', 'Forms')}
+              ${this.navItem('locales', 'Locales')}
+              ${this.navItem('system-settings', 'System Settings')}
+              ${this.navItem('tenants', 'Tenants')}
+              ${this.navItem('users', 'Users')}
+              ${this.navItem('well-known', 'Well Known')}
+            </div>
+          </nav>
         </div>
 
-        <div class="tenant-section">
-          <tenant-selector
-            .selectedTenantId=${this.tenantId}
-            .allowedTenantIds=${this.allowedTenantIds}
-          ></tenant-selector>
+        <div class="nav-footer">
+          <a class="nav-item" href=${this.logoutUrl}>Log out</a>
         </div>
-
-        <nav class="nav">
-          <div class="nav-section">
-            <div class="nav-section-title">Tenant Scoped</div>
-            ${this.navItem('challenges', 'Challenges & Security')}
-            ${this.navItem('clients', 'Clients')}
-            ${this.navItem('permissions', 'Permissions')}
-            ${this.navItem('resources', 'Resources')}
-            ${this.navItem('roles', 'Roles')}
-            ${this.navItem('scopes', 'Scopes')}
-          </div>
-
-          <div class="nav-section">
-            <div class="nav-section-title">Global</div>
-            ${this.navItem('edges', 'Edges')}
-            ${this.navItem('forms', 'Forms')}
-            ${this.navItem('locales', 'Locales')}
-            ${this.navItem('system-settings', 'System Settings')}
-            ${this.navItem('tenants', 'Tenants')}
-            ${this.navItem('users', 'Users')}
-            ${this.navItem('well-known', 'Well Known')}
-          </div>
-        </nav>
-      </div>
-
-      <div class="nav-footer">
-        <a class="nav-item" href=${this.logoutUrl}>Log out</a>
       </div>
     `;
   }

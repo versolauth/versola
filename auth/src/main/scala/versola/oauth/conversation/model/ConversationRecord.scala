@@ -1,7 +1,7 @@
 package versola.oauth.conversation.model
 
 import versola.oauth.authorize.model.ResponseTypeEntry
-import versola.oauth.client.model.{Acr, AuthFlow, ClientId, PassedAuthFactor, PassedFactorRecord, RegistrationFlow, RegistrationStep, ResourceUri, ScopeToken}
+import versola.oauth.client.model.{Acr, AuthFlow, AuthorizationDetail, ClientId, PassedAuthFactor, PassedFactorRecord, RegistrationFlow, RegistrationStep, ResourceUri, ScopeToken}
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, Nonce, State}
 import versola.oauth.model.UserAgentCookiePayload
 import versola.oauth.session.model.SessionId
@@ -48,6 +48,9 @@ case class ConversationRecord(
     priorSessionId: Option[MAC.Of[SessionId]],
     /** RFC 8707 `resource` parameter(s) requested at `/authorize`. */
     resources: List[ResourceUri],
+    /** RFC 9396 `authorization_details` requested at `/authorize`; `None` when the parameter
+      * was absent, distinct from an empty list (which the parameter itself disallows). */
+    authorizationDetails: Option[List[AuthorizationDetail]],
 ):
 
   def hasOfflineAccess = scope.contains(ScopeToken.OfflineAccess)

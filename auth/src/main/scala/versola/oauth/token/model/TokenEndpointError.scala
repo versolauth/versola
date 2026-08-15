@@ -47,3 +47,9 @@ object TokenEndpointError:
     val error = ErrorCode.InvalidTarget
     val errorDescription = Some(s"The requested resource target is invalid or unknown: $resource")
     val errorUri = Some("https://datatracker.ietf.org/doc/html/rfc8707#section-2.2")
+
+  case class InvalidAuthorizationDetails(reason: String) extends TokenEndpointError:
+    val status = Status.BadRequest
+    val error = ErrorCode.InvalidAuthorizationDetails
+    val errorDescription = Some(s"The requested authorization details are invalid or exceed the grant: $reason")
+    val errorUri = Some("https://datatracker.ietf.org/doc/html/rfc9396#section-6")

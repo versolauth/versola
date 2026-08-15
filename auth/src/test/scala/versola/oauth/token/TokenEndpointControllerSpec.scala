@@ -36,6 +36,7 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
     accessToken = accessToken1,
     clientId = clientId1,
     audience = List(ResourceUri("https://api.example.com")),
+    authorizationDetails = Nil,
     accessTokenTtl = 10.minutes,
     userId = Some(userId1),
     refreshToken = Some(refreshToken1),
@@ -328,17 +329,29 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
           )
           for
             result <- TokenEndpointController.clientCredentialsRequestDecoder.decode(form)
-          yield assertTrue(result == ClientCredentialsRequest(scope = None, resources = Some(resources)))
+          yield assertTrue(result == ClientCredentialsRequest(scope = None, resources = Some(resources), authorizationDetails = None))
+        },
+        test("decodes a single comma-joined resource field, as zio-http produces from a repeated form field") {
+          val resources = List(
+            ResourceUri("https://api.example.com"),
+            ResourceUri("resource://internal-api"),
+          )
+          val form = Form.fromStrings(
+            "resource" -> resources.mkString(","),
+          )
+          for
+            result <- TokenEndpointController.clientCredentialsRequestDecoder.decode(form)
+          yield assertTrue(result == ClientCredentialsRequest(scope = None, resources = Some(resources), authorizationDetails = None))
         },
         test("preserves an omitted resource parameter") {
           for
             result <- TokenEndpointController.clientCredentialsRequestDecoder.decode(Form.empty)
-          yield assertTrue(result == ClientCredentialsRequest(scope = None, resources = None))
+          yield assertTrue(result == ClientCredentialsRequest(scope = None, resources = None, authorizationDetails = None))
         },
         test("preserves an explicitly empty resource list") {
           for
             result <- TokenEndpointController.clientCredentialsRequestDecoder.decode(Form.fromStrings("resource" -> ""))
-          yield assertTrue(result == ClientCredentialsRequest(scope = None, resources = Some(Nil)))
+          yield assertTrue(result == ClientCredentialsRequest(scope = None, resources = Some(Nil), authorizationDetails = None))
         },
         tokenEndpointTestCase(
           description = "fail with InvalidRequest when the resource list is explicitly empty",

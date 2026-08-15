@@ -3,6 +3,7 @@ package versola.configuration.sync
 import com.zaxxer.hikari.HikariDataSource
 import org.postgresql.PGConnection
 import versola.central.configuration.clients.{ClientId, PresetId}
+import versola.central.configuration.details.AuthorizationDetailType
 import versola.central.configuration.forms.FormId
 import versola.central.configuration.permissions.Permission
 import versola.central.configuration.resources.ResourceId
@@ -48,6 +49,7 @@ object PostgresCacheSyncRepository:
     "jwks_change",
     "client_change",
     "scope_change",
+    "authorization_detail_type_change",
     "role_change",
     "permission_change",
     "resource_change",
@@ -123,6 +125,14 @@ object PostgresCacheSyncRepository:
       case "scope_change" =>
         parseTenantOpEvent(rawPayload): (payload, tenantId, op) =>
           SyncEvent.ScopesUpdated(tenantId = tenantId, id = ScopeToken(payload.id), op = op)
+
+      case "authorization_detail_type_change" =>
+        parseTenantOpEvent(rawPayload): (payload, tenantId, op) =>
+          SyncEvent.AuthorizationDetailTypesUpdated(
+            tenantId = tenantId,
+            id = AuthorizationDetailType(payload.id),
+            op = op,
+          )
 
       case "permission_change" =>
         parseTenantOpEvent(rawPayload): (payload, tenantId, op) =>

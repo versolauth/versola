@@ -85,6 +85,7 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
       sysSettings: SystemSettingsRecord = systemSettings,
       metadata: Json.Obj = Json.Obj(),
       resources: Vector[ResourceRecord] = Vector.empty,
+      authorizationDetailTypes: Vector[AuthorizationDetailTypeRecord] = Vector.empty,
   ) =
     for
       clientRef         <- Ref.make(clients)
@@ -97,6 +98,7 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
       sysRef            <- Ref.make(sysSettings)
       metadataRef       <- Ref.make(metadata)
       resourceRef       <- Ref.make(resources)
+      authDetailTypeRef <- Ref.make(authorizationDetailTypes)
     yield OAuthConfigurationService.Impl(
       clientCache = ReloadingCache(clientRef),
       clientRepository = stub[OAuthClientSyncClient],
@@ -118,6 +120,8 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
       metadataRepository = stub[MetadataSyncClient],
       resourceCache = ReloadingCache(resourceRef),
       resourceRepository = stub[ResourceSyncClient],
+      authorizationDetailTypeCache = ReloadingCache(authDetailTypeRef),
+      authorizationDetailTypeRepository = stub[AuthorizationDetailTypeSyncClient],
     )
 
   val spec = suite("OAuthConfigurationService")(
@@ -236,5 +240,20 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
         env <- makeEnv()
         result <- env.getUserAgentTtl(ClientId("unknown"))
       yield assertTrue(result == OAuthConfigurationService.DefaultUserAgentTtl)
+    },
+    test("getMetadata returns stored metadata without deriving authorization detail types") {
+      val stored = Json.Obj(
+        "authorization_details_types_supported" -> Json.Arr(Json.Str("stored")),
+      )
+      val registered = AuthorizationDetailTypeRecord(
+        tenantId,
+        AuthorizationDetailType("payment"),
+        Json.Obj(),
+      )
+
+      for
+        env <- makeEnv(metadata = stored, authorizationDetailTypes = Vector(registered))
+        result <- env.getMetadata
+      yield assertTrue(result == stored)
     },
   )

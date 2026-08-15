@@ -150,3 +150,9 @@ private[authorize] object Error:
       errorDescription = s"The requested resource is invalid, malformed, or unknown - $value",
       errorUri = Some("https://datatracker.ietf.org/doc/html/rfc8707#section-2"),
     )
+
+  case class InvalidAuthorizationDetails(uri: URL, state: Option[State], value: String) extends RedirectError(
+      error = ErrorCode.InvalidAuthorizationDetails,
+      errorDescription = s"The authorization_details parameter is invalid, malformed, or unknown - $value",
+      errorUri = Some("https://datatracker.ietf.org/doc/html/rfc9396#section-5"),
+    )

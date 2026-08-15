@@ -9,6 +9,8 @@ export { VersolaNavigation } from './components/navigation';
 export { VersolaClientsList } from './components/clients-list';
 export { VersolaClientForm } from './components/client-form';
 export { VersolaScopesList } from './components/scopes-list';
+export { VersolaAuthorizationDetailTypesList } from './components/authorization-detail-types-list';
+export { VersolaAuthorizationDetailTypeForm } from './components/authorization-detail-type-form';
 export { VersolaScopeForm } from './components/scope-form';
 export { VersolaPermissionsList } from './components/permissions-list';
 export { VersolaPermissionForm } from './components/permission-form';

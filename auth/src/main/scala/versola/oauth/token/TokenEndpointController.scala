@@ -4,7 +4,7 @@ import com.nimbusds.jose.crypto.RSASSASigner
 import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm, JWSHeader}
 import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{AuthMethodRef, ResourceUri, ScopeToken}
+import versola.oauth.client.model.{AuthMethodRef, AuthorizationDetail, ResourceUri, ScopeToken}
 import versola.oauth.jwks.JwksService
 import versola.oauth.model.{AccessToken, AuthorizationCode, CodeVerifier, RefreshToken}
 import versola.oauth.token.model.{ClientCredentialsRequest, CodeExchangeRequest, IssuedTokens, RefreshTokenRequest, TokenEndpointError, TokenErrorResponse, TokenRequest, TokenResponse}
@@ -80,6 +80,7 @@ object TokenEndpointController extends Controller:
       ) ++
         tokens.sessionId.map(sid => "sid" -> Json.Str(sid)) ++
         tokens.requestedClaims.map(rc => "requested_claims" -> rc.toJsonAST.toOption.get) ++
+        authorizationDetailsClaim(tokens).map("authorization_details" -> _) ++
         AuthMethodRef.idTokenClaims(tokens.amr, tokens.authTime, tokens.acr)
 
 
@@ -109,6 +110,14 @@ object TokenEndpointController extends Controller:
       refreshToken = tokens.refreshToken.map(Base64.urlEncode),
       scope = Option.when(tokens.scope.nonEmpty)(tokens.scope.mkString(" ")),
       idToken = idToken,
+      authorizationDetails = authorizationDetailsClaim(tokens),
+    )
+
+  /** RFC 9396 §7: the granted authorization details are returned in the token response and
+    * carried in the access token, unchanged from how they were granted. */
+  private def authorizationDetailsClaim(tokens: IssuedTokens): Option[Json.Arr] =
+    Option.when(tokens.authorizationDetails.nonEmpty)(
+      Json.Arr(tokens.authorizationDetails.map(_.value)*),
     )
 
   private def generateIdToken(
@@ -181,13 +190,18 @@ object TokenEndpointController extends Controller:
       refreshToken <- FormDecoder.single(form, "refresh_token", RefreshToken.fromBase64Url)
       scope <- FormDecoder.optional(form, "scope", scope => Right(ScopeToken.parseTokens(scope)))
       resources <- resourceRequestDecoder(form)
-    yield RefreshTokenRequest(refreshToken, scope, resources)
+      authorizationDetails <- authorizationDetailsRequestDecoder(form)
+    yield RefreshTokenRequest(refreshToken, scope, resources, authorizationDetails)
 
   val clientCredentialsRequestDecoder: FormDecoder[ClientCredentialsRequest] = (form: Form) =>
     for
       scope <- FormDecoder.optional(form, "scope", scope => Right(ScopeToken.parseTokens(scope)))
       resources <- resourceRequestDecoder(form)
-    yield ClientCredentialsRequest(scope, resources)
+      authorizationDetails <- authorizationDetailsRequestDecoder(form)
+    yield ClientCredentialsRequest(scope, resources, authorizationDetails)
+
+  private def authorizationDetailsRequestDecoder(form: Form): IO[String, Option[List[AuthorizationDetail]]] =
+    FormDecoder.optional(form, AuthorizationDetail.Parameter, AuthorizationDetail.parseAll)
 
   private def resourceRequestDecoder(form: Form): IO[String, Option[List[ResourceUri]]] =
     val resourceFields = form.formData.filter(_.name == "resource")

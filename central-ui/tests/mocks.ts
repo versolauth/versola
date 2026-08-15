@@ -31,6 +31,7 @@ type ResourceEndpointId = string | number;
 type ResourceEndpointDto = { id: ResourceEndpointId; method: string; path: string; fetchUserInfo: boolean; allow?: string | null; inject: InjectRuleDto[] };
 type ResourceDto = { resourceId: string; resource: string; endpoints: ResourceEndpointDto[]; internal?: boolean; secretRotation?: boolean };
 type RoleDto = { id: string; description: Record<string, string>; permissions: string[]; active: boolean };
+type AuthorizationDetailTypeDto = { type: string; description: Record<string, string>; schema: Record<string, unknown> };
 type EdgeDto = { id: string; hasOldKey?: boolean; tenants?: string[]; clients?: EdgeClientLinkDto[] };
 type EdgeClientLinkDto = { tenantId: string; clientId: string };
 type AuthorizationPresetDto = {
@@ -219,6 +220,7 @@ export type MockConfigState = {
   themes: ThemeDto[];
   otpTemplates: Record<string, OtpTemplateDto[]>; // keyed by tenantId
   challengeSettings: Record<string, ChallengeSettingsDto>; // keyed by tenantId
+  authorizationDetailTypes: Record<string, AuthorizationDetailTypeDto[]>; // keyed by tenantId
   locales: LocaleDto[];
   myPermissions: MyPermissionsDto;
 };
@@ -279,6 +281,7 @@ const defaultState: MockConfigState = {
   themes: [],
   otpTemplates: {},
   challengeSettings: {},
+  authorizationDetailTypes: {},
   locales: [],
 };
 
@@ -302,6 +305,7 @@ function mergeState(overrides: Partial<MockConfigState> = {}): MockConfigState {
     themes: clone(overrides.themes ?? defaultState.themes),
     otpTemplates: clone({ ...defaultState.otpTemplates, ...overrides.otpTemplates }),
     challengeSettings: clone({ ...defaultState.challengeSettings, ...overrides.challengeSettings }),
+    authorizationDetailTypes: clone({ ...defaultState.authorizationDetailTypes, ...overrides.authorizationDetailTypes }),
     locales: clone(overrides.locales ?? defaultState.locales),
     myPermissions: clone(overrides.myPermissions ?? defaultState.myPermissions),
   };
@@ -549,6 +553,50 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
         if (clientId && presetId) {
           state.authorizationPresets[clientId] = (state.authorizationPresets[clientId] ?? []).filter(p => p.id !== presetId);
         }
+        await route.fulfill({ status: 204, body: '' });
+        return;
+      }
+    }
+
+    if (pathname === '/configuration/authorization-detail-types') {
+      const tenantTypes = state.authorizationDetailTypes[tenantId] ?? [];
+
+      if (method === 'GET') {
+        await route.fulfill(json({ types: pageSlice(tenantTypes, url) }));
+        return;
+      }
+
+      if (method === 'POST') {
+        const payload = body as { tenantId: string; type: string; description: Record<string, string>; schema: Record<string, unknown> };
+        const types = state.authorizationDetailTypes[payload.tenantId] ?? [];
+        if (types.some(detailType => detailType.type === payload.type)) {
+          await route.fulfill(json({ message: `Authorization detail type ${payload.type} already exists` }, 409));
+          return;
+        }
+        state.authorizationDetailTypes[payload.tenantId] = [
+          { type: payload.type, description: { ...payload.description }, schema: { ...payload.schema } },
+          ...types,
+        ];
+        await route.fulfill({ status: 201, body: '' });
+        return;
+      }
+
+      if (method === 'PUT') {
+        const payload = body as { tenantId: string; type: string; description: Record<string, string>; schema: Record<string, unknown> };
+        const detailType = tenantTypes.find(candidate => candidate.type === payload.type);
+        if (!detailType) {
+          await route.fulfill(json({ message: `Authorization detail type ${payload.type} was not found` }, 404));
+          return;
+        }
+        detailType.description = { ...payload.description };
+        detailType.schema = { ...payload.schema };
+        await route.fulfill({ status: 204, body: '' });
+        return;
+      }
+
+      if (method === 'DELETE') {
+        const type = url.searchParams.get('type');
+        state.authorizationDetailTypes[tenantId] = tenantTypes.filter(detailType => detailType.type !== type);
         await route.fulfill({ status: 204, body: '' });
         return;
       }

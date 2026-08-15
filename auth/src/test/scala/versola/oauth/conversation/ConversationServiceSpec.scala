@@ -79,6 +79,7 @@ object ConversationServiceSpec extends UnitSpecBase:
     csrfToken = "test-csrf",
     priorSessionId = None,
     resources = Nil,
+    authorizationDetails = None,
   )
 
   class Env:

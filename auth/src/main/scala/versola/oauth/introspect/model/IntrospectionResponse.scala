@@ -4,6 +4,7 @@ import versola.oauth.client.model.ClientId
 import versola.oauth.model.AccessToken
 import versola.user.model.UserId
 import zio.json.*
+import zio.json.ast.Json
 import zio.schema.*
 
 import java.util.UUID
@@ -21,6 +22,8 @@ case class IntrospectionResponse(
     aud: Option[Vector[String]],
     iss: Option[String],
     jti: Option[String],
+    /** RFC 9396 section 9: the authorization details associated with the token. */
+    @jsonField("authorization_details") authorizationDetails: Option[Json.Arr],
 ) derives JsonCodec, Schema
 
 object IntrospectionResponse:
@@ -38,4 +41,5 @@ object IntrospectionResponse:
       aud = None,
       iss = None,
       jti = None,
+      authorizationDetails = None,
     )
