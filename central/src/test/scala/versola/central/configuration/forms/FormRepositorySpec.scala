@@ -62,6 +62,16 @@ trait FormRepositorySpec extends DatabaseSpecBase[FormRepositorySpec.Env]:
           v2.map(_.active) == Some(true),
         )
       },
+      test("concurrent upsertForm calls create distinct versions without collision") {
+        val formId = FormId("credential")
+        for
+          _ <- ZIO.foreachParDiscard((1 to 5).toList)(_ =>
+            env.repository.upsertForm(formId, "", Some("src"), None, Map.empty, Vector.empty, activate = false)
+          )
+          all <- env.repository.getAll
+          versions = all.filter(_.id == formId).map(_.version).sorted
+        yield assertTrue(versions == Vector(1, 2, 3, 4, 5))
+      },
     )
 
 object FormRepositorySpec:
