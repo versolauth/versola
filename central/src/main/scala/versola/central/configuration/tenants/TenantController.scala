@@ -34,7 +34,7 @@ object TenantController extends Controller:
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[TenantService]
-        body <- request.body.asJson[CreateTenantRequest]
+        body <- request.body.asJsonFromCodec[CreateTenantRequest]
         _ <- service.createTenant(body)
       yield Response.status(Status.Created)
     }
@@ -44,7 +44,7 @@ object TenantController extends Controller:
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[TenantService]
-        body <- request.body.asJson[UpdateTenantRequest]
+        body <- request.body.asJsonFromCodec[UpdateTenantRequest]
         _ <- service.updateTenant(body)
       yield Response.status(Status.NoContent)
     }

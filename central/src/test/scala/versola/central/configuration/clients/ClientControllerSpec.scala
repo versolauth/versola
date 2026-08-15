@@ -391,6 +391,33 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
         ),
     ),
     controllerTestCase(
+      description = "clear registration flow while leaving auth flow unchanged",
+      request = Request(
+        method = Method.PUT,
+        url = URL.empty / "configuration" / "clients",
+        body = Body.fromString(
+          """{
+            |  "clientId": "web-app",
+            |  "clientName": "Updated Web App",
+            |  "redirectUris": {"add": ["https://example.com/alt-callback"], "remove": ["https://example.com/callback"]},
+            |  "scope": {"add": ["write"], "remove": ["read"]},
+            |  "permissions": {"add": ["users:write"], "remove": ["users:read"]},
+            |  "accessTokenTtl": 900,
+            |  "registrationFlow": null
+            |}""".stripMargin,
+        ),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.NoContent,
+      setup = service =>
+        service.updateClient.succeedsWith(()),
+      verify = (_, service, _) =>
+        ZIO.succeed(
+          assertTrue(
+            service.updateClient.calls == List(updateRequest.copy(registrationFlow = Some(Patch.Deleted))),
+          ),
+        ),
+    ),
+    controllerTestCase(
       description = "update client returns 400 when both logout URIs are configured",
       request = Request(
         method = Method.PUT,

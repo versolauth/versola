@@ -41,7 +41,7 @@ object FormController extends Controller:
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[FormService]
-        body <- request.body.asJson[UpdateFormRequest]
+        body <- request.body.asJsonFromCodec[UpdateFormRequest]
         _ <- service.updateForm(body.id, body.style, body.jsSource, body.jsCompiled, body.localizations, body.properties, activate = false)
       yield Response.status(Status.NoContent)
     }
@@ -51,7 +51,7 @@ object FormController extends Controller:
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[FormService]
-        body <- request.body.asJson[SetActiveVersionRequest]
+        body <- request.body.asJsonFromCodec[SetActiveVersionRequest]
         _ <- service.setActiveVersion(body.id, body.version)
       yield Response.status(Status.NoContent)
     }

@@ -44,7 +44,7 @@ object EdgeController extends Controller:
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[EdgeService]
-        body <- request.body.asJson[RegisterEdgeRequest]
+        body <- request.body.asJsonFromCodec[RegisterEdgeRequest]
         keyPair <- service.registerEdge(body.id)
         privateKeyEncoded = Base64Url.encode(keyPair.privateKey.getEncoded)
         response = ServiceKeyResponse(keyId = keyPair.keyId, privateKey = privateKeyEncoded)

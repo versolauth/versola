@@ -44,7 +44,7 @@ object ThemeController extends Controller:
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[ThemeService]
-        body <- request.body.asJson[CreateThemeRequest]
+        body <- request.body.asJsonFromCodec[CreateThemeRequest]
         _ <- service.createTheme(ThemeRecord(body.id, body.css, body.tenantId))
       yield Response.status(Status.Created)
     }
@@ -54,7 +54,7 @@ object ThemeController extends Controller:
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[ThemeService]
-        body <- request.body.asJson[UpdateThemeRequest]
+        body <- request.body.asJsonFromCodec[UpdateThemeRequest]
         _ <- service.updateTheme(ThemeRecord(body.id, body.css, None))
       yield Response.status(Status.NoContent)
     }
