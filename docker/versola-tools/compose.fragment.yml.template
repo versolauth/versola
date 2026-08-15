@@ -13,6 +13,22 @@
 # deferred (this only runs locally; not worth the added CI complexity).
 # postgres is left alone -- its official image already publishes arm64,
 # so forcing amd64 there would only make it slower for no reason.
+#
+# `name:` is set explicitly rather than left to Compose's default (derived
+# from this file's parent directory) -- that directory is a fresh
+# "bundle-<N>" every `configure` run (see state.Prepare in versola-cli), so
+# leaving it implicit would make every run a *different* Compose project as
+# far as Docker is concerned, even though it's the same deployment. Docker
+# refuses to create a container under a fixed container_name (every service
+# below has one) that already exists under a *different* project, so a
+# second `configure`/`up` while the first run's containers are still up
+# would fail on container-name conflicts instead of updating them in
+# place -- and once the first run's bundle directory is gone (state.Prepare
+# wipes it), nothing would even know those old containers exist anymore to
+# stop them. A stable name fixes both: Compose looks containers up by
+# project+service, not by which file path happened to describe them this
+# time, so any bundle directory's compose file manages the same stack.
+name: versola-local
 
 services:
   # Secrets store. `versola configure` writes generated secrets here

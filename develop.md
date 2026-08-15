@@ -236,12 +236,22 @@ counterparts elsewhere that a fresh one won't match:
 - **`POSTGRES_PASSWORD`** -- the VPS's Postgres role (`versola_app`)
   already exists with its own real password this script has no way to
   know.
-- **`JWT_PRIVATE_KEY`** -- auth keeps its own persisted table of signing
-  keys and looks up whichever one is currently marked active to decide the
-  `kid` it puts on new tokens, independent of gen-env.scala entirely. A
-  freshly generated key signs with something that doesn't match that
-  active `kid`, so every token auth issues gets rejected by anything that
-  looks the `kid` up in the JWKS.
+- **`JWT_PRIVATE_KEY`** -- central, not auth, is the actual source of
+  truth for signing keys: they're persisted in central's own `JwksRepository`,
+  and auth only caches a synced copy via `/configuration/jwks/sync` (see
+  `JwksSyncClient.scala`: "Central is the single source of truth"). Central's
+  bootstrap seeding (`BootstrapService.seedJwks`) looks up an existing key
+  by `kid`, not "does the newest one replace the old one" -- so an
+  un-seeded first `configure vps` doesn't overwrite the real key, it
+  *adds* a second one alongside it, keyed by whatever `kid` gen-env.scala
+  happened to generate today. Which of the two central then treats as
+  active for new tokens comes down to `JWT.PublicKeys.active`
+  (`util/JWT.scala`): literally the first key in an unordered list, no
+  explicit flag. That makes this failure mode a coin flip rather than a
+  guaranteed one -- it can appear to work today and start rejecting tokens
+  after a later restart reorders that list, which is a worse trap than a
+  failure that shows up immediately and consistently. Seed the real key so
+  there's only ever one `kid` in play, and this ambiguity never comes up.
 - **`CLIENT_SECRETS_SECRET`** -- central already has OAuth client secrets
   persisted (including edge-default's own resource secret), encrypted with
   whatever this secret was when they were written. A freshly generated one

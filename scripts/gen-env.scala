@@ -179,6 +179,22 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
   // role already exists outside this script's control -- see the comment
   // on pgPassDefault below.
   val isVps = env == "vps"
+  // The literal string written into the generated config's own `env`
+  // field below -- NOT the same question as `env`/isVps above, which only
+  // pick which of THIS script's branches to run (URL/network defaults).
+  // VersolaApp.envName (see util/http/VersolaApp.scala) treats exactly
+  // one string, "prod", as EnvName.Prod; every other value -- "vps"
+  // included -- becomes EnvName.Test(value), which gates test-only
+  // behavior (e.g. deterministic OTP codes instead of real delivery, per
+  // BootstrapService.adminAuthFactors/adminPhone) that must never run
+  // against a deployment serving real users. vps IS that real deployment
+  // -- unlike docker-local and interactive "local", which are genuinely
+  // throwaway and are fine staying EnvName.Test. Before vps existed as a
+  // non-interactive target, whoever configured the real production
+  // deployment typed "prod" by hand at this same prompt; automating that
+  // prompt's answer to literally "vps" (see entrypoint.sh) silently
+  // dropped that without anything failing loudly.
+  val envConfigValue = if isVps then "prod" else env
   // Every secret field this script generates becomes a `${?VAR}` HOCON
   // placeholder (resolved via OpenBao by versola-cli) in both
   // non-interactive Docker envs, not just docker-local -- see
@@ -414,7 +430,7 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
   // ── Build config files ────────────────────────────────────────────────────────
 
   val authConf =
-    s"""env = $env
+    s"""env = $envConfigValue
        |
        |configuration-cache-refresh-interval = "$configurationCacheRefreshInterval"
        |
@@ -516,7 +532,7 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
        |""".stripMargin
 
   val centralConf =
-    s"""env = $env
+    s"""env = $envConfigValue
        |
        |configuration-cache-refresh-interval = "$configurationCacheRefreshInterval"
        |
@@ -586,7 +602,7 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
        |""".stripMargin
 
   val edgeConf =
-    s"""env = $env
+    s"""env = $envConfigValue
        |
        |configuration-cache-refresh-interval = "$configurationCacheRefreshInterval"
        |
