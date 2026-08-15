@@ -436,7 +436,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
       extraParams: Map[String, String] = Map.empty,
       useBasicAuth: Boolean = true,
   ): Task[PushedAuthorizationResult] =
-    val (_, challenge) = PkceHelper.generate()
+    val (verifier, challenge) = PkceHelper.generate()
     val state = java.util.UUID.randomUUID().toString
     // `client_id` is always required in the pushed body per RFC 9126 §2.1, even when the
     // client authenticates with HTTP Basic. When authenticating with client_secret_post
@@ -454,7 +454,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
     val req0 = Request.post(s"${config.authUrl}/par", formBody(formParams))
       .addHeader(Header.ContentType(MediaType.application.`x-www-form-urlencoded`))
     val req = if useBasicAuth then req0.addHeader(Authorization.Basic(clientId, clientSecret)) else req0
-    Client.batched(req).provide(ZLayer.succeed(client)).flatMap(PushedAuthorizationResult.parse)
+    Client.batched(req).provide(ZLayer.succeed(client)).flatMap(PushedAuthorizationResult.parse(_, verifier, state))
 
   /** Issues an arbitrary HTTP method against /par — used to test method-not-allowed handling. */
   def parRaw(method: Method): Task[Response] =
