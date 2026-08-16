@@ -215,6 +215,14 @@ export function secondsToTtl(seconds: number): { value: number; unit: 'minutes' 
   return { value: seconds / 60, unit: 'minutes' };
 }
 
+export function daysToSeconds(days: number): number {
+  return Math.round(days * 24 * 60 * 60);
+}
+
+export function secondsToDays(seconds: number): number {
+  return Math.max(1, Math.round(seconds / (24 * 60 * 60)));
+}
+
 /**
  * Get error message for validation type
  */

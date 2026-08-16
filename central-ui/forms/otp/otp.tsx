@@ -33,7 +33,7 @@ function LocaleDropdown(props: { locales: string[]; current: string; onChange: (
   );
 }
 
-type OtpStep = { type: 'otp'; length?: number; resendAfter?: number; lockedSeconds?: number };
+type OtpStep = { type: 'otp'; length?: number; resendAfter?: number; lockedSeconds?: number; destination: string };
 
 interface FormConfig {
   step: OtpStep;
@@ -69,6 +69,10 @@ function OtpForm(props: { config: FormConfig }) {
   };
   const locales = props.config.locales ?? [];
   const otpLength = props.config.step.length ?? 6;
+  const description = () => {
+    const destination = props.config.step.destination;
+    return t().description.replace('{destination}', destination);
+  };
   const [otp, setOtp] = createSignal('');
   let inputRef!: HTMLInputElement;
   let submitRef!: HTMLButtonElement;
@@ -101,7 +105,7 @@ function OtpForm(props: { config: FormConfig }) {
         </div>
       </Show>
       <h1>{t().title}</h1>
-      <p class="otp-description">{t().description}</p>
+      <p class="otp-description">{description()}</p>
       <Show when={lockRemaining() > 0}>
         <div class="error-text" style="margin-bottom: 8px;">
           {(t().locked_for ?? 'Input locked. Try again in {seconds}s.').replace('{seconds}', String(lockRemaining()))}

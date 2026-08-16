@@ -168,7 +168,7 @@ object Observability:
         case h if masking.logRequestHeaders.contains(h.headerName) => s"${h.headerName}=${h.renderedValue}"
       }.toSeq
 
-    val cookies = request.cookies.map(cookie => s"${cookie.name}=${cookie.content}").toSeq
+    val cookies = request.cookies.map(_.name).toSeq
     for
       body <-
         if masking.logRequestBody then

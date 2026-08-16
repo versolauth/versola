@@ -8,7 +8,7 @@ import org.scalamock.stubs.ZIOStubs
 import versola.edge.login.LoginRepository
 import versola.edge.model.*
 import versola.util.cel.CelEvaluator
-import versola.util.{JWT, ReloadingCache, Secret, SecureRandom, SecurityService}
+import versola.util.{EnvName, JWT, ReloadingCache, Secret, SecureRandom, SecurityService}
 import zio.*
 import zio.http.*
 import zio.json.{DecoderOps, EncoderOps}
@@ -143,7 +143,7 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
       EdgeService.Impl(
         clientService, resourceService, celEvaluator, secureRandom,
         loginRepository, ssoClient, security, httpClient, edgeConfig,
-        sessionRepository, jwksService, permissionService,
+          sessionRepository, jwksService, permissionService, EnvName.Test("test"),
       )
 
   private val securityServiceLayer: ULayer[SecurityService] =

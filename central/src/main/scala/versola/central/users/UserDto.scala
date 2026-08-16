@@ -84,14 +84,22 @@ case class RenamePasskeyRequest(
     name: Option[String],
 ) derives JsonCodec, Schema
 
-/** Channel used to deliver an admin-issued temporary password to the user. */
+/** Channel used to deliver an admin-issued temporary password to the user.
+  * `show` returns the plaintext to the calling admin instead of delivering it,
+  * and is rejected in production.
+  */
 enum DeliveryChannel derives JsonCodec, Schema:
-  case email, sms
+  case email, sms, show
 
 case class ResetPasswordRequest(
     userId: UserId,
-    expiresInSeconds: Option[Long],
+    expiresInSeconds: Long,
     channel: Option[DeliveryChannel],
+) derives JsonCodec, Schema
+
+/** Returned only for [[DeliveryChannel.show]] resets, which are non-prod only. */
+case class ResetPasswordResponse(
+    password: String,
 ) derives JsonCodec, Schema
 
 case class SetPasswordRequest(

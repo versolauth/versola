@@ -185,10 +185,19 @@ object UserController extends Controller:
     Method.POST / "users" / "password" / "reset" -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
+        env <- ZIO.service[EnvName]
         service <- ZIO.service[UserService]
         body <- request.body.asJsonFromCodec[ResetPasswordRequest]
-        _ <- service.resetPassword(body)
-      yield Response.status(Status.NoContent)
+        // Revealing the plaintext is a non-prod affordance; auth rejects it too,
+        // this guard keeps a tampered console from even reaching auth.
+        response <-
+          if body.channel.contains(DeliveryChannel.show) && env.isProd then
+            ZIO.succeed(Response.status(Status.NotFound))
+          else
+            service.resetPassword(body).map:
+              case Some(password) => Response.json(ResetPasswordResponse(password).toJson)
+              case None           => Response.status(Status.NoContent)
+      yield response
     }
 
   val setPasswordEndpoint =

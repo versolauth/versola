@@ -76,6 +76,11 @@ case class ResetPasswordPayload(
     channel: Option[DeliveryChannel],
 ) derives JsonCodec
 
+/** Returned only for [[DeliveryChannel.show]] resets, which are non-prod only. */
+case class ResetPasswordResponse(
+    password: String,
+) derives JsonCodec
+
 case class SetPasswordPayload(
     userId: UserId,
     password: String,

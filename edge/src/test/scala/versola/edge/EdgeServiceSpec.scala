@@ -10,7 +10,7 @@ import versola.edge.login.{LoginRecord, LoginRepository}
 import versola.edge.model.*
 import versola.edge.session.EdgeSessionRecord
 import versola.util.cel.CelEvaluator
-import versola.util.{JWT, RedirectUri, ReloadingCache, Secret, SecureRandom, SecurityService}
+import versola.util.{EnvName, JWT, RedirectUri, ReloadingCache, Secret, SecureRandom, SecurityService}
 import zio.*
 import zio.http.*
 import zio.test.*
@@ -167,7 +167,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
     def withResources(values: Resource*): UIO[Unit] =
       resourceCache.set(values.map(r => r.resourceId -> r).toMap)
 
-    def buildService(httpClient: Client, security: SecurityService): EdgeService =
+    def buildService(httpClient: Client, security: SecurityService, env: EnvName = EnvName.Test("dev")): EdgeService =
       EdgeService.Impl(
         clientService,
         resourceService,
@@ -181,6 +181,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
         sessionRepository,
         jwksService,
         permissionService,
+        env,
       )
 
   def spec = suite("EdgeService")(
@@ -710,6 +711,20 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
   private val billingResource   = simpleResource("billing", billingEndpointId)
 
   private val getMyPermissionsSuite = suite("getMyPermissions")(
+    test("reports the environment so the console can hide non-prod affordances") {
+      val env = new Env
+      for
+        security <- ZIO.service[SecurityService]
+        client <- ZIO.service[Client]
+        claims = PermissionsClaims(
+          clientId = Some(ClientId("central-admin")),
+          tenantId = Some(TenantId.default),
+          roles = Some(List(RoleId("oauth-admin"))),
+        )
+        prod <- env.buildService(client, security, EnvName.Prod).getMyPermissions(claims, Nil)
+        nonProd <- env.buildService(client, security).getMyPermissions(claims, Nil)
+      yield assertTrue(prod.isProd, !nonProd.isProd)
+    },
     test("central oauth-admin derives permissions from permission service") {
       val env = new Env
       val perm = PermissionId("users:read")

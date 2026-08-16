@@ -254,6 +254,41 @@ object PasswordServiceSpec extends ZIOSpecDefault, ZIOStubs:
           env.smsProvider.send.calls.isEmpty,
         )
       },
+      test("returns the stored plaintext without delivering it when the channel is show") {
+        for
+          secureRandom <- ZIO.service[SecureRandom]
+          env = Env(secureRandom)
+          _ <- env.configuration.getPasswordRegex.succeedsWith(".*")
+          _ <- env.securityService.hashPassword.succeedsWith(testHash)
+          _ <- env.passwordRepo.createTemporary.succeedsWith(())
+          result <- env.service.resetPassword(userId, None, Some(DeliveryChannel.show))
+        yield assertTrue(
+          result.exists(_.nonEmpty),
+          env.passwordRepo.createTemporary.calls.length == 1,
+          env.userRepo.find.calls.isEmpty,
+          env.emailProvider.send.calls.isEmpty,
+          env.smsProvider.send.calls.isEmpty,
+        )
+      },
+      test("returns no plaintext when the channel is not show") {
+        for
+          secureRandom <- ZIO.service[SecureRandom]
+          env = Env(secureRandom)
+          _ <- env.configuration.getPasswordRegex.succeedsWith(".*")
+          _ <- env.securityService.hashPassword.succeedsWith(testHash)
+          _ <- env.passwordRepo.createTemporary.succeedsWith(())
+          result <- env.service.resetPassword(userId, None, Some(DeliveryChannel.email))
+        yield assertTrue(result.isEmpty)
+      },
+      test("fails without storing a credential when show is requested in prod") {
+        for
+          secureRandom <- ZIO.service[SecureRandom]
+          env = Env(secureRandom, EnvName.Prod)
+          _ <- env.passwordRepo.createTemporary.succeedsWith(())
+          result <- env.service.resetPassword(userId, None, Some(DeliveryChannel.show)).exit
+        yield assert(result)(fails(equalTo(PasswordRevealForbidden(userId)))) &&
+          assertTrue(env.passwordRepo.createTemporary.calls.isEmpty)
+      },
       test("generates a password satisfying the tenant regex") {
         val regex = "^[A-Z].*"
         for

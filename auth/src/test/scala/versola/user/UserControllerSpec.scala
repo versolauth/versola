@@ -1,7 +1,7 @@
 package versola.user
 
 import versola.auth.TestEnvConfig
-import versola.auth.model.{AuthenticatorTransport, CredentialDeviceType, CredentialId, PasskeyRecord}
+import versola.auth.model.{AuthenticatorTransport, CredentialDeviceType, CredentialId, PasskeyRecord, Password}
 import versola.oauth.challenge.passkey.PasskeyRepository
 import versola.oauth.challenge.password.PasswordService
 import versola.oauth.client.model.TenantId
@@ -442,7 +442,7 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
         client  <- ZIO.service[Client]
         tracing <- NoopTracing.layer.build
         token   <- validToken(secretKey)
-        _       <- passwordSvc.resetPassword.succeedsWith(())
+        _       <- passwordSvc.resetPassword.succeedsWith(None)
         _       <- TestClient.addRoutes(
           Observability.handleErrors(
             UserController.routes
@@ -477,7 +477,7 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
         client  <- ZIO.service[Client]
         tracing <- NoopTracing.layer.build
         token   <- validToken(secretKey)
-        _       <- passwordSvc.resetPassword.succeedsWith(())
+        _       <- passwordSvc.resetPassword.succeedsWith(None)
         _       <- TestClient.addRoutes(
           Observability.handleErrors(
             UserController.routes
@@ -502,6 +502,40 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
         calls.size == 1,
         calls.head._2 == Some(3600L),
         calls.head._3 == None,
+      )
+    },
+    test("POST /users/password/reset returns 200 with the plaintext when the service reveals it") {
+      val passwordSvc = stub[PasswordService]
+      val targetUserId = UserId(UUID.fromString("00000000-0000-0000-0000-000000000004"))
+      for
+        client  <- ZIO.service[Client]
+        tracing <- NoopTracing.layer.build
+        token   <- validToken(secretKey)
+        _       <- passwordSvc.resetPassword.succeedsWith(Some(Password("Temp1234!")))
+        _       <- TestClient.addRoutes(
+          Observability.handleErrors(
+            UserController.routes
+              .provideEnvironment(
+                ZEnvironment(userRepo) ++ ZEnvironment(config) ++
+                  ZEnvironment(sessionRepo) ++
+                  ZEnvironment(noopThrottle) ++ ZEnvironment(noopPasskeyRepo) ++
+                  ZEnvironment(sessionService) ++
+                  ZEnvironment(passwordSvc) ++ tracing,
+              ),
+          ),
+        )
+        body = s"""{"userId":"${targetUserId}","expiresInSeconds":null,"channel":"show"}"""
+        resp <- client.batched(
+          Request(method = Method.POST, url = URL.empty / "users" / "password" / "reset", body = Body.fromString(body))
+            .addHeader(Header.Authorization.Bearer(token))
+            .addHeader(Header.ContentType(MediaType.application.json)),
+        )
+        respBody <- resp.body.asString
+      yield assertTrue(
+        resp.status == Status.Ok,
+        respBody.contains("Temp1234!"),
+        passwordSvc.resetPassword.calls.head._3
+          .contains(versola.oauth.challenge.password.model.DeliveryChannel.show),
       )
     },
   ).provideSome[Scope](TestClient.layer) @@ TestAspect.silentLogging

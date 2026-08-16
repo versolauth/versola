@@ -11,6 +11,8 @@ import {
   validateLogoutUri,
   ttlToSeconds,
   secondsToTtl,
+  daysToSeconds,
+  secondsToDays,
 } from '../utils/validators';
 
 @customElement('versola-client-form')
@@ -30,6 +32,7 @@ export class VersolaClientForm extends LitElement {
     redirectUris: [],
     scope: [],
     accessTokenTtl: 3600,
+    refreshTokenTtl: daysToSeconds(90),
     permissions: [],
     theme: 'default',
     authFlow: createDefaultAuthFlow(),
@@ -40,6 +43,7 @@ export class VersolaClientForm extends LitElement {
   @state() private redirectUriInput = '';
   @state() private ttlValue = 1;
   @state() private ttlUnit: 'minutes' | 'hours' = 'hours';
+  @state() private refreshTokenTtlDays = 90;
   @state() private redirectUriError = '';
   @state() private logoutMode: 'none' | 'front' | 'back' = 'none';
   @state() private frontChannelLogoutUriError = '';
@@ -704,6 +708,7 @@ export class VersolaClientForm extends LitElement {
       const { value, unit } = secondsToTtl(this.client.accessTokenTtl);
       this.ttlValue = value;
       this.ttlUnit = unit;
+      this.refreshTokenTtlDays = secondsToDays(this.client.refreshTokenTtl ?? daysToSeconds(90));
       this.logoutMode = this.client.frontChannelLogoutUri
         ? 'front'
         : this.client.backChannelLogoutUri
@@ -713,6 +718,7 @@ export class VersolaClientForm extends LitElement {
       // Defaults: 1 hour, pre-select first available OTP template
       this.ttlValue = 1;
       this.ttlUnit = 'hours';
+      this.refreshTokenTtlDays = 90;
       if (this.otpTemplateOptions.length > 0) {
         this.formData = { ...this.formData, otpTemplateId: this.otpTemplateOptions[0].id };
       }
@@ -755,6 +761,8 @@ export class VersolaClientForm extends LitElement {
     const registrationFlow = this.registrationSupported && this.formData.registrationFlow && registrationCredential
       ? { ...this.formData.registrationFlow, credential: registrationCredential }
       : null;
+    const scope = this.formData.scope || [];
+    const hasOfflineAccess = scope.includes('offline_access');
     const frontChannelLogoutUri = logoutEnabled && this.logoutMode === 'front'
       ? (this.formData.frontChannelLogoutUri || '').trim()
       : '';
@@ -785,9 +793,12 @@ export class VersolaClientForm extends LitElement {
       id: this.formData.id!,
       clientName: this.formData.clientName!,
       redirectUris: authFlowRedirectUris,
-      scope: this.formData.scope || [],
+      scope,
       hasPreviousSecret: false,
       accessTokenTtl: ttlToSeconds(this.ttlValue, this.ttlUnit),
+      refreshTokenTtl: hasOfflineAccess
+        ? daysToSeconds(this.refreshTokenTtlDays)
+        : this.client?.refreshTokenTtl,
       permissions: this.formData.permissions || [],
       theme: authFlowTheme,
       otpTemplateId: authFlowOtpTemplateId,
@@ -815,6 +826,14 @@ export class VersolaClientForm extends LitElement {
   private get isClientIdInvalid() {
     const clientId = (this.formData.id || '').trim();
     return !this.client && clientId.length > 0 && !validateClientId(clientId);
+  }
+
+  private get hasOfflineAccessScope(): boolean {
+    return (this.formData.scope || []).includes('offline_access');
+  }
+
+  private handleRefreshTokenTtlInput(e: Event) {
+    this.refreshTokenTtlDays = parseInt((e.target as HTMLInputElement).value, 10) || 1;
   }
 
   private get isRedirectUriInvalid() {
@@ -1506,6 +1525,23 @@ export class VersolaClientForm extends LitElement {
               </div>
               <div class="hint">${ttlToSeconds(this.ttlValue, this.ttlUnit)} seconds</div>
             </div>
+
+            ${this.hasOfflineAccessScope ? html`
+              <div class="form-group">
+                <label for="refresh-token-ttl">Refresh Token TTL (days) *</label>
+                <input
+                  type="number"
+                  id="refresh-token-ttl"
+                  class="compact-input"
+                  .value=${String(this.refreshTokenTtlDays)}
+                  @input=${this.handleRefreshTokenTtlInput}
+                  required
+                  min="1"
+                  step="1"
+                />
+                <div class="hint">${daysToSeconds(this.refreshTokenTtlDays)} seconds</div>
+              </div>
+            ` : ''}
 
             <div class="form-group">
               <label>OAuth Scopes</label>

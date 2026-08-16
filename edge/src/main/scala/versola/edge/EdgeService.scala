@@ -5,7 +5,7 @@ import versola.edge.model.{AccessToken, AccessTokenClaims, AccessTokenId, AuthCo
 import versola.edge.session.{EdgeSessionRecord, EdgeSessionRepository}
 import versola.util.cel.CelEvaluator
 import versola.util.http.Observability
-import versola.util.{Base64, Base64Url, JWT, JsonJava, RedirectUri, Secret, SecureRandom, SecurityService}
+import versola.util.{Base64, Base64Url, EnvName, JWT, JsonJava, RedirectUri, Secret, SecureRandom, SecurityService}
 import zio.http.{Body, Client, Cookie, Header, MediaType, Path, Request, Response, Status, URL}
 import zio.json.ast.Json
 import zio.json.{DecoderOps, EncoderOps, JsonCodec, JsonDecoder, jsonField}
@@ -102,14 +102,18 @@ object EdgeService:
 
   case class PermissionsResponse(
       resources: Map[ResourceId, ResourcePermissions],
+      /** Lets the console hide affordances that only exist outside production,
+        * such as revealing a generated temporary password.
+        */
+      isProd: Boolean,
   ) derives JsonCodec
 
   def live: ZLayer[
-    OAuthClientService & ResourceService & CelEvaluator & SecureRandom & LoginRepository & SSOClient & SecurityService & Client & EdgeConfig & session.EdgeSessionRepository & JwksService & PermissionService,
+    OAuthClientService & ResourceService & CelEvaluator & SecureRandom & LoginRepository & SSOClient & SecurityService & Client & EdgeConfig & session.EdgeSessionRepository & JwksService & PermissionService & EnvName,
     Nothing,
     EdgeService,
   ] =
-    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _))
+    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _))
 
   class Impl(
       clientService: OAuthClientService,
@@ -124,6 +128,7 @@ object EdgeService:
       sessionRepository: EdgeSessionRepository,
       jwksService: JwksService,
       permissionService: PermissionService,
+      env: EnvName,
   ) extends EdgeService:
 
     private val loginTtl = 10.minutes
@@ -292,7 +297,7 @@ object EdgeService:
           endpointIds = resource.fold(Set.empty[ResourceEndpointId])(_.endpoints.map(_.id).toSet)
           perms <- permissionService.getPermissionsForRoles(rolesMap, endpointIds)
         yield Some(resourceId -> ResourcePermissions(perms))
-      .map(entries => PermissionsResponse(entries.flatten.toMap))
+      .map(entries => PermissionsResponse(entries.flatten.toMap, env.isProd))
 
     override def frontChannelLogout(iss: String, sid: SessionId): Task[List[Cookie.Response]] =
       if !URL.decode(iss).toOption.exists(sameOrigin(_, config.versolaUrl)) then

@@ -66,6 +66,7 @@ export interface OAuthClient {
   scope: string[];
   hasPreviousSecret: boolean;
   accessTokenTtl: number;
+  refreshTokenTtl?: number;
   permissions: string[];
   theme: string;
   otpTemplateId?: string | null;

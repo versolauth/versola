@@ -110,6 +110,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       ResourceId("central") -> EdgeService.ResourcePermissions(Set(PermissionId("oauth:read"))),
       ResourceId("orders") -> EdgeService.ResourcePermissions(Set(PermissionId("orders:read"))),
     ),
+    isProd = false,
   )
 
   private val permissionsSuite = suite("GET /permissions/me")(
@@ -127,7 +128,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         request = Request
           .get(URL.decode("/permissions/me").toOption.get)
           .addCookie(Cookie.Request(EdgeSessionCookie.name, s"web-app:$accessToken"))
-        emptyResponse = EdgeService.PermissionsResponse(resources = Map.empty)
+          emptyResponse = EdgeService.PermissionsResponse(resources = Map.empty, isProd = false)
         (response, service, _) <- run(request, (s, _) => s.getMyPermissions.succeedsWith(emptyResponse))
       yield assertTrue(
         response.status == Status.Ok,

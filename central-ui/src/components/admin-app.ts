@@ -55,6 +55,9 @@ export class VersolaAdmin extends LitElement {
   @state() private permissionsLoaded = false;
   // Tenant IDs accessible to this admin (null = all tenants visible)
   @state() private allowedTenantIds: string[] | null = null;
+  /** Reported by /permissions/me. Defaults to true so a failed load hides
+    * non-prod-only affordances rather than exposing them. */
+  @state() private isProd = true;
 
   /** Mirrors the 768px breakpoint in navigation.ts's media query. Kept in sync
     * by hand — if that breakpoint moves, move this one too. */
@@ -239,9 +242,11 @@ export class VersolaAdmin extends LitElement {
       const central = response.resources['central'];
       this.adminPermissions = new Set(central?.permissions ?? []);
       this.allowedTenantIds = this.adminPermissions.size > 0 ? null : [];
+      this.isProd = response.isProd;
     } catch {
       this.adminPermissions = new Set();
       this.allowedTenantIds = [];
+      this.isProd = true;
     } finally {
       // Deliberately never runs on the unauthenticated path: a 401 hands off to
       // a top-level navigation and fetchMyPermissions' promise never settles,
@@ -494,7 +499,7 @@ export class VersolaAdmin extends LitElement {
       case 'edges':
         return html`<versola-edges-list .expandEdgeId=${this.edgeToExpandOnLoad} .canManage=${this.canManage('edges')} @navigate-to-client=${this.handleNavigateToClient}></versola-edges-list>`;
       case 'users':
-        return html`<versola-users-list .tenantId=${this.currentTenantId} .canManage=${this.canManage('users')}></versola-users-list>`;
+        return html`<versola-users-list .tenantId=${this.currentTenantId} .canManage=${this.canManage('users')} .canRevealPassword=${!this.isProd}></versola-users-list>`;
       case 'forms':
         return html`<versola-forms-list .tenantId=${this.currentTenantId} .canManage=${this.canManage('forms')}></versola-forms-list>`;
       case 'locales':
