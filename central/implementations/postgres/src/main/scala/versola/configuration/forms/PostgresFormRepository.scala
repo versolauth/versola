@@ -5,7 +5,10 @@ import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.central.configuration.forms.{BackendProperty, FormId, FormRecord, FormRepository}
 import versola.util.postgres.BasicCodecs
 import zio.json.*
-import zio.{Task, ZLayer}
+import zio.{Task, ZLayer, Schedule}
+import org.postgresql.util.PSQLException
+import com.augustnagro.magnum.SqlException
+import zio.durationInt
 
 class PostgresFormRepository(xa: TransactorZIO) extends FormRepository, BasicCodecs:
 
@@ -38,10 +41,13 @@ class PostgresFormRepository(xa: TransactorZIO) extends FormRepository, BasicCod
       properties: Vector[BackendProperty],
       activate: Boolean,
   ): Task[Unit] =
-    xa.repeatableRead.transactMeasured("upsert-form"):
-      val versions = sql"""SELECT version FROM forms WHERE id = $id ORDER BY version DESC""".query[Int].run()
-      val nextVersion = versions.maxOption.getOrElse(0) + 1
-      val makeActive = activate || versions.isEmpty
+    xa.transactMeasured("upsert-form"):
+      val (nextVersion, isEmpty) =
+        sql"""SELECT COALESCE(MAX(version), 0) + 1, COUNT(*) = 0 FROM forms WHERE id = $id"""
+          .query[(Int, Boolean)]
+          .run()
+          .head
+      val makeActive = activate || isEmpty
       if makeActive then
         sql"""UPDATE forms SET active = false WHERE id = $id""".update.run()
       sql"""INSERT INTO forms (id, version, active, style, js_source, js_compiled, localizations, properties)
@@ -50,6 +56,15 @@ class PostgresFormRepository(xa: TransactorZIO) extends FormRepository, BasicCod
               SELECT version FROM forms WHERE id = $id ORDER BY version DESC LIMIT $MaxVersions
             )""".update.run()
       ()
+    .retry(
+      Schedule.recurWhile[Throwable] {
+        case e: SqlException =>
+          e.getCause match
+            case cause: PSQLException => cause.getSQLState == "23505"
+            case _ => false
+        case _ => false
+      } && Schedule.recurs(10) && Schedule.exponential(10.millis).jittered
+    )
 
   override def setActiveVersion(id: FormId, version: Int): Task[Unit] =
     xa.transactMeasured("set-active-form-version"):
