@@ -13,8 +13,63 @@
 # deferred (this only runs locally; not worth the added CI complexity).
 # postgres is left alone -- its official image already publishes arm64,
 # so forcing amd64 there would only make it slower for no reason.
+#
+# `name:` is set explicitly rather than left to Compose's default (derived
+# from this file's parent directory) -- that directory is a fresh
+# "bundle-<N>" every `configure` run (see state.Prepare in versola-cli), so
+# leaving it implicit would make every run a *different* Compose project as
+# far as Docker is concerned, even though it's the same deployment. Docker
+# refuses to create a container under a fixed container_name (every service
+# below has one) that already exists under a *different* project, so a
+# second `configure`/`up` while the first run's containers are still up
+# would fail on container-name conflicts instead of updating them in
+# place -- and once the first run's bundle directory is gone (state.Prepare
+# wipes it), nothing would even know those old containers exist anymore to
+# stop them. A stable name fixes both: Compose looks containers up by
+# project+service, not by which file path happened to describe them this
+# time, so any bundle directory's compose file manages the same stack.
+name: versola-local
 
 services:
+  # Secrets store. `versola configure` writes generated secrets here
+  # (instead of into auth.conf/central.conf/edge.conf directly) and
+  # auth/central/edge read them back via ${?VAR} substitution -- see
+  # gen-env.scala's secretField and versola-cli's internal/deploy/secrets.go.
+  openbao:
+    image: openbao/openbao:2.5.4
+    # Suffixed "-local", same reasoning as this file's own
+    # versola-openbao-file-local volume just below: a shared name across
+    # this file and compose.fragment.vps.yml.template would let a
+    # container from one target mask the other's freshly created volume
+    # on a machine that's run both (e.g. local dev testing before a real
+    # vps deploy) -- switching targets would find "versola-openbao"
+    # already running, leave it alone (see versola-cli's Configure), and
+    # silently resolve secrets against the wrong target's OpenBao data
+    # (flagged in review on versolauth/versola-cli#7).
+    container_name: versola-openbao-local
+    restart: unless-stopped
+    command: ["server"]
+    volumes:
+      - ./openbao.hcl:/openbao/config/openbao.hcl:ro
+      - versola-openbao-file-local:/openbao/file
+    ports:
+      # Published so the CLI (running on the host, not inside this Compose
+      # network) can reach OpenBao's HTTP API directly to read/write
+      # secrets -- everything else in this file only publishes a port
+      # something outside the network genuinely needs (see central's 8091
+      # comment below), same reasoning applies here.
+      #
+      # "127.0.0.1:8200:8200", not a bare "8200:8200": this listener has no
+      # authentication on every endpoint (tls_disable, see
+      # openbao.hcl.template) and no reason to ever be reached by anything
+      # other than the CLI running on this same machine. A bare "8200:8200"
+      # publishes it on every one of the host's network interfaces, not
+      # just loopback -- reachable from the LAN, or the internet, on a
+      # machine with a public IP. This is the host-side half of that fix;
+      # openbao.hcl.template's listener itself still has to bind 0.0.0.0
+      # for this publish to reach it at all -- see the comment there.
+      - "127.0.0.1:8200:8200"
+
   postgres:
     image: postgres:18
     container_name: versola-postgres
@@ -45,6 +100,12 @@ services:
       PORT: 8090
       DPORT: 8091
       CONFIG_PATH: /app/config/env.conf
+    # Resolved by versola-cli against OpenBao, not written by this image --
+    # central.conf's secret fields are ${?VAR} placeholders (see
+    # gen-env.scala's secretField) that only resolve if the matching
+    # variable actually exists in this container's environment.
+    env_file:
+      - ./central.secrets.env
     volumes:
       - ./central.conf:/app/config/env.conf:ro
     ports:
@@ -79,6 +140,8 @@ services:
       PORT: 8080
       DPORT: 8081
       CONFIG_PATH: /app/config/env.conf
+    env_file:
+      - ./auth.secrets.env
     volumes:
       - ./auth.conf:/app/config/env.conf:ro
     ports:
@@ -95,6 +158,8 @@ services:
       PORT: 8095
       DPORT: 8096
       CONFIG_PATH: /app/config/env.conf
+    env_file:
+      - ./edge.secrets.env
     volumes:
       - ./edge.conf:/app/config/env.conf:ro
     ports:
@@ -119,3 +184,27 @@ services:
       - ./proxy_params.conf:/etc/nginx/proxy_params.conf:ro
     ports:
       - "2821:2821"
+
+# `external: true`, not a plain named volume: Compose namespaces ordinary
+# named volumes under the *project* name, which defaults to the compose
+# file's parent directory -- and that directory is a fresh "bundle-<N>"
+# every `configure` run (see state.Prepare in versola-cli), specifically so
+# repeated runs never collide on a reused host path. A plain named volume
+# would inherit a different project name each run and silently start
+# OpenBao from empty storage every time, exactly what this is meant to
+# avoid (see the comment on openbao.hcl.template). `external: true` opts
+# this one volume out of that namespacing -- it must already exist under
+# this exact name before `docker compose up` runs (`docker volume create
+# versola-openbao-file-local`, idempotent -- a no-op if it's already
+# there; this is versola-cli's job, not something this template can do
+# itself).
+#
+# Named "-local", not shared with compose.fragment.vps.yml.template's
+# volume: `external: true` volumes are identified by name only, host-wide
+# -- a shared name would mean a docker-local run and a real vps
+# deployment could collide on the same OpenBao storage if they ever ran
+# under the same Docker daemon (flagged in review; see versola-cli's
+# OpenbaoVolumeName).
+volumes:
+  versola-openbao-file-local:
+    external: true
