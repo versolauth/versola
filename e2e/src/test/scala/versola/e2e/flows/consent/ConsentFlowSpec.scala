@@ -7,6 +7,18 @@ import zio.test.*
 /** Consent gate between a satisfied authentication and the authorization code. */
 object ConsentFlowSpec extends E2ESpec:
 
+  /** Consent tests mutate a persisted grant, so each test needs an isolated client and user. */
+  private def freshConsentSetup(
+      partial: Boolean = false,
+  ): ZIO[Flows.Setups, Throwable, (Flows.Setup, OAuthClient)] =
+    ZIO.serviceWithZIO[Flows.Setups] { s =>
+      val consentFlow = if partial then Flows.partialConsentFlow else Flows.rememberedConsentFlow
+      Flows.setupConsent(consentFlow = consentFlow)
+        .provideEnvironment(ZEnvironment(s.client))
+        .tap(_ => s.client.syncConfiguration())
+        .map(_ -> s.client)
+    }
+
   /** Signs in, expecting to land on the consent step rather than a code. */
   private def authenticateToConsent(
       auth: OAuthClient,
@@ -27,10 +39,23 @@ object ConsentFlowSpec extends E2ESpec:
       consent <- auth.getChallenge(cookie).assertStep(ConversationStep.Consent)
     yield (authorize, cookie, submit, consent)
 
+  /** Authenticates through a client without consent so the resulting SSO session can be reused. */
+  private def authenticateWithoutConsent(auth: OAuthClient, s: Flows.Setup): Task[String] =
+    for
+      authorize <- auth.authorizeRaw(
+        clientId = s.clientId,
+        redirectUri = s.redirectUri,
+        scope = Some("openid"),
+      ).assertChallengeRedirect
+      cookie = authorize.conversationCookie.get
+      credential <- auth.getChallenge(cookie).assertStep(ConversationStep.Credential)
+      result <- auth.submitLoginPassword(cookie, s.login.get, s.password, credential.csrf)
+    yield result.sessionCookie.getOrElse(throw RuntimeException("Expected login to establish an SSO session"))
+
   def spec = suite("Consent Flow")(
     test("a first authorization stops on consent and completes once granted") {
       for
-        (s, auth) <- setup(Flows.Id.Consent)
+        (s, auth) <- freshConsentSetup()
         (authorize, cookie, _, consent) <- authenticateToConsent(auth, s)
         code <- auth.submitConsent(cookie, Set("openid", "email"), consent.csrf)
           .assertRedirect(auth, cookie)
@@ -46,7 +71,7 @@ object ConsentFlowSpec extends E2ESpec:
     },
     test("the consent screen names the client and the requested scopes") {
       for
-        (s, auth) <- setup(Flows.Id.Consent)
+        (s, auth) <- freshConsentSetup()
         (_, _, _, consent) <- authenticateToConsent(auth, s)
       yield assertTrue(consent.html.contains("Consent Test Client"))
         .label("the consent screen must name the requesting client") &&
@@ -59,7 +84,7 @@ object ConsentFlowSpec extends E2ESpec:
     },
     test("a remembered grant is reused on the next authorization") {
       for
-        (s, auth) <- setup(Flows.Id.Consent)
+        (s, auth) <- freshConsentSetup()
         (_, cookie, _, consent) <- authenticateToConsent(auth, s)
         granted <- auth.submitConsent(cookie, Set("openid", "email"), consent.csrf)
         session = granted.sessionCookie.get
@@ -76,7 +101,7 @@ object ConsentFlowSpec extends E2ESpec:
     },
     test("a remembered grant does not cover a newly requested scope") {
       for
-        (s, auth) <- setup(Flows.Id.Consent)
+        (s, auth) <- freshConsentSetup()
         (_, cookie, _, consent) <- authenticateToConsent(auth, s, scope = "openid")
         granted <- auth.submitConsent(cookie, Set("openid"), consent.csrf)
         session = granted.sessionCookie.get
@@ -92,7 +117,7 @@ object ConsentFlowSpec extends E2ESpec:
     },
     test("prompt=consent re-prompts even though the grant is remembered") {
       for
-        (s, auth) <- setup(Flows.Id.Consent)
+        (s, auth) <- freshConsentSetup()
         (_, cookie, _, consent) <- authenticateToConsent(auth, s)
         granted <- auth.submitConsent(cookie, Set("openid", "email"), consent.csrf)
         session = granted.sessionCookie.get
@@ -109,16 +134,24 @@ object ConsentFlowSpec extends E2ESpec:
     },
     test("prompt=none without a grant redirects with error=consent_required") {
       for
-        (s, auth) <- setup(Flows.Id.Consent)
-        // Authenticate elsewhere to obtain a session without granting consent for this client.
-        (_, cookie, _, consent) <- authenticateToConsent(auth, s)
-        denied <- auth.denyConsent(cookie, consent.csrf)
+        (s, auth) <- freshConsentSetup()
+        (loginSetup, _) <- setup(Flows.Id.LoginPassword)
+        session <- authenticateWithoutConsent(auth, loginSetup)
+        authorize <- auth.authorizeRaw(
+          clientId = s.clientId,
+          redirectUri = s.redirectUri,
+          scope = Some("openid email"),
+          sessionCookie = Some(session),
+        ).assertChallengeRedirect
+        cookie = authorize.conversationCookie.get
+        consent <- auth.getChallenge(cookie).assertStep(ConversationStep.Consent)
+        _ <- auth.denyConsent(cookie, consent.csrf)
         _ <- auth.authorizeRaw(
           clientId = s.clientId,
           redirectUri = s.redirectUri,
           scope = Some("openid email"),
           prompt = Some("none"),
-          sessionCookie = denied.sessionCookie,
+          sessionCookie = Some(session),
         ).assertErrorRedirect("consent_required")
       yield assertCompletes
     },
@@ -133,7 +166,7 @@ object ConsentFlowSpec extends E2ESpec:
     },
     test("a partial grant narrows the scope carried by the issued token") {
       for
-        (s, auth) <- setup(Flows.Id.ConsentPartial)
+        (s, auth) <- freshConsentSetup(partial = true)
         (authorize, cookie, _, consent) <- authenticateToConsent(auth, s)
         code <- auth.submitConsent(cookie, Set("openid"), consent.csrf)
           .assertRedirect(auth, cookie)
@@ -149,7 +182,7 @@ object ConsentFlowSpec extends E2ESpec:
     },
     test("a client that forbids partial grants rejects a narrowed submission") {
       for
-        (s, auth) <- setup(Flows.Id.Consent)
+        (s, auth) <- freshConsentSetup()
         (_, cookie, _, consent) <- authenticateToConsent(auth, s)
         _ <- auth.submitConsent(cookie, Set("openid"), consent.csrf)
         step <- auth.getChallenge(cookie)
@@ -158,7 +191,7 @@ object ConsentFlowSpec extends E2ESpec:
     },
     test("dropping openid is rejected even when partial grants are allowed") {
       for
-        (s, auth) <- setup(Flows.Id.ConsentPartial)
+        (s, auth) <- freshConsentSetup(partial = true)
         (_, cookie, _, consent) <- authenticateToConsent(auth, s)
         _ <- auth.submitConsent(cookie, Set("email"), consent.csrf)
         step <- auth.getChallenge(cookie)
@@ -167,7 +200,7 @@ object ConsentFlowSpec extends E2ESpec:
     },
     test("a consent submission carrying a stale csrf token is rejected") {
       for
-        (s, auth) <- setup(Flows.Id.Consent)
+        (s, auth) <- freshConsentSetup()
         (_, cookie, _, _) <- authenticateToConsent(auth, s)
         result <- auth.submitConsent(cookie, Set("openid", "email"), "stale-csrf")
         step <- auth.getChallenge(cookie)

@@ -709,7 +709,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
     val body = Body.fromString(OAuthClient.RegisterClientBody(
       tenantId = tenantId,
       id = clientId,
-      clientName = clientName,
+      clientName = Map("en" -> clientName),
       redirectUris = redirectUris,
       allowedScopes = allowedScopes,
       audience = List.empty,
@@ -899,7 +899,7 @@ object OAuthClient:
   private[support] case class RegisterClientBody(
       tenantId: String,
       id: String,
-      clientName: String,
+      clientName: Map[String, String],
       redirectUris: Set[String],
       allowedScopes: Set[String],
       audience: List[String],
