@@ -309,7 +309,7 @@ docker exec -it -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=<root token> vers
   bao kv put -mount=secret versola/vps/central \
     POSTGRES_PASSWORD=<real password> \
     CLIENT_SECRETS_SECRET=<real value> \
-    EDGE_PUBLIC_JWK=<real public JWK, as a single-line JSON string> \
+    EDGE_PUBLIC_JWK='<real public JWK, as a single-line JSON string>' \
     JWKS_JSON='{"keys":[<real auth JWT public JWK>]}'
 
 docker exec -it -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=<root token> versola-openbao \
