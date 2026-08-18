@@ -207,7 +207,7 @@ docker exec -it -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=<root token> vers
    able to. On Linux/macOS this can be piped in directly:
 
    ```bash
-   docker exec -it -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=<root token> versola-openbao-<target> \
+   docker exec -i -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=<root token> versola-openbao-<target> \
      bao policy write versola-<target> - <<'EOF'
    path "secret/data/versola/<target>/*" {
      capabilities = ["create", "read", "update"]
