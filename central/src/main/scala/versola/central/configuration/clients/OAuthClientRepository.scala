@@ -3,6 +3,7 @@ package versola.central.configuration.clients
 import versola.central.configuration.permissions.Permission
 import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.tenants.TenantId
+import versola.central.configuration.edges.EdgeId
 import versola.central.configuration.{PatchClientRedirectUris, PatchClientScope, PatchPermissions}
 import versola.util.{CacheSource, Patch}
 import zio.*
@@ -11,6 +12,9 @@ import zio.http.URL
 trait OAuthClientRepository extends CacheSource[Vector[OAuthClientRecord]]:
 
   def getAll: Task[Vector[OAuthClientRecord]]
+
+  /** Returns clients explicitly assigned to the edge. */
+  def getForEdge(edgeId: EdgeId): Task[Vector[OAuthClientRecord]]
 
   def find(clientId: ClientId): Task[Option[OAuthClientRecord]]
 

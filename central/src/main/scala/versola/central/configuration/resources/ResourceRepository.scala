@@ -3,12 +3,16 @@ package versola.central.configuration.resources
 import versola.central.configuration.ResourceUri
 import versola.central.configuration.clients.ClientId
 import versola.central.configuration.tenants.TenantId
+import versola.central.configuration.edges.EdgeId
 import versola.util.CacheSource
 import zio.Task
 
 trait ResourceRepository extends CacheSource[Vector[ResourceRecord]]:
 
   def getAll: Task[Vector[ResourceRecord]]
+
+  /** Returns resources explicitly assigned to the edge. */
+  def getForEdge(edgeId: EdgeId): Task[Vector[ResourceRecord]]
 
   def findResource(
       resourceId: ResourceId,

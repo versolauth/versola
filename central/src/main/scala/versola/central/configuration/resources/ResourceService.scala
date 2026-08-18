@@ -105,12 +105,7 @@ object ResourceService:
     override def getResourcesForSync(edgeId: Option[EdgeId]): Task[Vector[ResourceRecord]] =
       edgeId match
         case None => cache.get
-        case Some(id) =>
-          for
-            resources <- cache.get
-            tenants <- tenantRepository.getAll
-            allowedTenantIds = tenants.filter(_.edgeId.contains(id)).map(_.id).toSet
-          yield resources.filter(r => allowedTenantIds.contains(r.tenantId))
+        case Some(id) => resourceRepository.getForEdge(id).flatMap(ZIO.foreach(_)(decryptSecrets(_, securityService, secretsKey)))
 
     override def verifySecret(provided: Secret): Task[Boolean] =
       cache.get.map: resources =>
