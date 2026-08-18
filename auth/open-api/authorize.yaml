@@ -46,6 +46,7 @@ paths:
         - $ref: '#/components/parameters/LoginHint'
         - $ref: '#/components/parameters/IdTokenHint'
         - $ref: '#/components/parameters/Resource'
+        - $ref: '#/components/parameters/AuthorizationDetails'
         - $ref: '#/components/parameters/RequestUri'
         - $ref: '#/components/parameters/UserAgent'
         - $ref: '#/components/parameters/SessionCookie'
@@ -60,8 +61,9 @@ paths:
       operationId: authorizePost
       summary: Start an authorization request
       description: |
-        Parameters are read from the form body. The repeatable `resource` parameter may also be
-        sent as a single space-delimited field value.
+        Parameters are read from the form body. A repeated `resource` field is joined by
+        zio-http into one comma-separated value; the server splits it back apart only before
+        another absolute-URI scheme, so a comma that belongs to a resource URI is preserved.
       tags: [Authorization]
       security: []
       parameters:
@@ -94,10 +96,11 @@ components:
     RedirectUri:
       name: redirect_uri
       in: query
-      required: true
+      required: false
       description: |
         Absolute URI without a fragment, exactly matching one of the client's registered
-        redirect URIs.
+        redirect URIs. Required unless `request_uri` is used, in which case it comes from the
+        pushed payload.
       schema:
         type: string
         format: uri
@@ -106,10 +109,10 @@ components:
     ResponseType:
       name: response_type
       in: query
-      required: true
+      required: false
       description: |
         `code` for the plain authorization code flow, `code id_token` to additionally receive an
-        ID token in the redirect (OIDC hybrid).
+        ID token in the redirect (OIDC hybrid). Required unless `request_uri` is used.
       schema:
         type: string
         enum: [code, code id_token]
@@ -118,10 +121,10 @@ components:
     Scope:
       name: scope
       in: query
-      required: true
+      required: false
       description: |
         Space-delimited scope tokens. Include `openid` to obtain an ID token from `/token`
-        and to be allowed to call `/userinfo`.
+        and to be allowed to call `/userinfo`. Required unless `request_uri` is used.
       schema:
         type: string
       example: openid profile email
@@ -129,8 +132,10 @@ components:
     CodeChallenge:
       name: code_challenge
       in: query
-      required: true
-      description: PKCE code challenge (RFC 7636 §4.2). Always required.
+      required: false
+      description: |
+        PKCE code challenge (RFC 7636 §4.2). Required unless `request_uri` is used, in which
+        case it comes from the pushed payload.
       schema:
         type: string
         pattern: '^[A-Za-z0-9\-._~]{43,128}$'
@@ -174,10 +179,11 @@ components:
       in: query
       required: false
       description: |
-        Space-delimited list. `none` must not be combined with any other value.
+        Space-delimited list of `none`, `login`, `consent` and `select_account`. `none` must not
+        be combined with any other value; unrecognised values are ignored.
       schema:
         type: string
-        enum: [none, login, consent, select_account]
+      example: login consent
 
     MaxAge:
       name: max_age
@@ -249,7 +255,15 @@ components:
       description: |
         RFC 8707 resource indicator. Repeatable; each value must resolve to a resource
         registered for the client's tenant, and determines the `aud` of the issued access
-        token. When omitted, the client's public resources plus the edge indicator are used.
+        token. When omitted, the client's public resources plus the edge indicator
+        (`resource://edge`) are used.
+
+        Resources are either public or internal. A public resource's own URI may be requested
+        directly; the issued token is meant to be presented to it. An internal resource is
+        addressed as `resource://{resourceId}` and may be requested on its own — the token is
+        then presented to the edge service, which holds the credentials to call the resource
+        and strips the caller's token before forwarding — but not together with the explicit
+        edge indicator `resource://edge` in the same request; that combination is rejected.
       schema:
         type: array
         items:
@@ -258,6 +272,28 @@ components:
       style: form
       explode: true
       example: [https://api.example.com]
+
+    AuthorizationDetails:
+      name: authorization_details
+      in: query
+      required: false
+      description: |
+        RFC 9396 fine-grained authorization request: a JSON array of objects, each with a
+        `type` member (required) selecting one of the authorization detail types registered
+        for the client's tenant, plus whatever type-specific members that type's schema
+        defines. An object may also carry `locations`, validated exactly like the `resource`
+        parameter above (including the internal-resource / edge-indicator rule).
+
+        Every object must validate against its type's registered JSON Schema; an unknown
+        `type`, a schema violation, or a `locations` value that fails the same validation as
+        `resource` fails the whole request with `invalid_authorization_details`. The granted
+        details are echoed back unchanged in the token response's `authorization_details`
+        member and carried in the access token, for the resource server to act on.
+      schema:
+        type: string
+        contentMediaType: application/json
+      example: |
+        [{"type": "payment_initiation", "actions": ["initiate"], "locations": ["https://api.example.com"]}]
 
     RequestUri:
       name: request_uri
@@ -302,7 +338,11 @@ components:
   schemas:
     AuthorizeRequest:
       type: object
-      required: [client_id, redirect_uri, response_type, scope, code_challenge]
+      description: |
+        Only `client_id` is unconditionally required. `redirect_uri`, `response_type`, `scope`
+        and `code_challenge` are required inline, but come from the pushed payload when
+        `request_uri` is used.
+      required: [client_id]
       properties:
         client_id:
           type: string
@@ -346,6 +386,9 @@ components:
           items:
             type: string
             format: uri
+        authorization_details:
+          type: string
+          contentMediaType: application/json
         request_uri:
           type: string
 
@@ -366,7 +409,7 @@ components:
 
         Error codes returned on the redirect: `invalid_request`, `unsupported_response_type`,
         `invalid_scope`, `login_required`, `access_denied`, `invalid_target`,
-        `unmet_authentication_requirements`.
+        `invalid_authorization_details`, `unmet_authentication_requirements`.
       headers:
         Location:
           required: true
