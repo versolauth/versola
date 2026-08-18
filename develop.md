@@ -305,22 +305,22 @@ first one just wrote (`kv put` replaces the whole path, it doesn't merge):
 ```bash
 docker exec -it -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=<root token> versola-openbao-vps \
   bao kv put -mount=secret versola/vps/auth \
-    POSTGRES_PASSWORD=<real password> \
-    JWT_PRIVATE_KEY=<real private key, base64> \
-    CLIENT_SECRETS_SECRET=<real value>
+    POSTGRES_PASSWORD='<real password>' \
+    JWT_PRIVATE_KEY='<real private key, base64>' \
+    CLIENT_SECRETS_SECRET='<real value>'
 
 docker exec -it -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=<root token> versola-openbao-vps \
   bao kv put -mount=secret versola/vps/central \
-    POSTGRES_PASSWORD=<real password> \
-    CLIENT_SECRETS_SECRET=<real value> \
+    POSTGRES_PASSWORD='<real password>' \
+    CLIENT_SECRETS_SECRET='<real value>' \
     EDGE_PUBLIC_JWK='<real public JWK, as a single-line JSON string>' \
     JWKS_JSON='{"keys":[<real auth JWT public JWK>]}'
 
 docker exec -it -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=<root token> versola-openbao-vps \
   bao kv put -mount=secret versola/vps/edge \
-    POSTGRES_PASSWORD=<real password> \
-    EDGE_PRIVATE_KEY=<real private key, base64> \
-    EDGE_KEY_ID=<real kid>
+    POSTGRES_PASSWORD='<real password>' \
+    EDGE_PRIVATE_KEY='<real private key, base64>' \
+    EDGE_KEY_ID='<real kid>'
 ```
 
 `ADMIN_BOOTSTRAP_PASSWORD` is deliberately not in this list -- nothing
