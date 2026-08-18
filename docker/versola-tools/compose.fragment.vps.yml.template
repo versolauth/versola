@@ -37,13 +37,15 @@ services:
   # published Docker Desktop port.
   openbao:
     image: openbao/openbao:2.5.4
-    container_name: versola-openbao
+    # Suffixed "-vps", same reasoning as compose.fragment.yml.template's
+    # own container_name comment.
+    container_name: versola-openbao-vps
     restart: unless-stopped
     network_mode: host
     command: ["server"]
     volumes:
       - ./openbao.hcl:/openbao/config/openbao.hcl:ro
-      - versola-openbao-file:/openbao/file
+      - versola-openbao-file-vps:/openbao/file
 
   central:
     image: ghcr.io/versolauth/versola-central:${VERSION}
@@ -120,7 +122,10 @@ services:
       - ./edge.conf:/app/config/env.conf:ro
 
 # Same external-volume reasoning as compose.fragment.yml.template -- see
-# the comment there.
+# the comment there. Named "-vps", not shared with that file's own
+# "-local" volume, for the same reason spelled out there: a shared name
+# would let a docker-local run and this real deployment collide on the
+# same OpenBao storage if they ever ran under the same Docker daemon.
 volumes:
-  versola-openbao-file:
+  versola-openbao-file-vps:
     external: true

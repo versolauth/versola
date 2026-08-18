@@ -37,12 +37,21 @@ services:
   # gen-env.scala's secretField and versola-cli's internal/deploy/secrets.go.
   openbao:
     image: openbao/openbao:2.5.4
-    container_name: versola-openbao
+    # Suffixed "-local", same reasoning as this file's own
+    # versola-openbao-file-local volume just below: a shared name across
+    # this file and compose.fragment.vps.yml.template would let a
+    # container from one target mask the other's freshly created volume
+    # on a machine that's run both (e.g. local dev testing before a real
+    # vps deploy) -- switching targets would find "versola-openbao"
+    # already running, leave it alone (see versola-cli's Configure), and
+    # silently resolve secrets against the wrong target's OpenBao data
+    # (flagged in review on versolauth/versola-cli#7).
+    container_name: versola-openbao-local
     restart: unless-stopped
     command: ["server"]
     volumes:
       - ./openbao.hcl:/openbao/config/openbao.hcl:ro
-      - versola-openbao-file:/openbao/file
+      - versola-openbao-file-local:/openbao/file
     ports:
       # Published so the CLI (running on the host, not inside this Compose
       # network) can reach OpenBao's HTTP API directly to read/write
@@ -186,8 +195,16 @@ services:
 # avoid (see the comment on openbao.hcl.template). `external: true` opts
 # this one volume out of that namespacing -- it must already exist under
 # this exact name before `docker compose up` runs (`docker volume create
-# versola-openbao-file`, idempotent -- a no-op if it's already there; this
-# is versola-cli's job, not something this template can do itself).
+# versola-openbao-file-local`, idempotent -- a no-op if it's already
+# there; this is versola-cli's job, not something this template can do
+# itself).
+#
+# Named "-local", not shared with compose.fragment.vps.yml.template's
+# volume: `external: true` volumes are identified by name only, host-wide
+# -- a shared name would mean a docker-local run and a real vps
+# deployment could collide on the same OpenBao storage if they ever ran
+# under the same Docker daemon (flagged in review; see versola-cli's
+# OpenbaoVolumeName).
 volumes:
-  versola-openbao-file:
+  versola-openbao-file-local:
     external: true

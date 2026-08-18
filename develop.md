@@ -162,12 +162,16 @@ OpenBao's volume is `external: true` (survives independent of any
 project). They come back on the next `up`, built fresh from the same
 images.
 
-`versola configure <target> <version>` starts the `versola-openbao` container
-automatically (the rest of that run will keep failing until the steps below
-are done, but that's expected — run it once first just to get the container
-up). The steps below are identical for `docker-local` and `vps`; only the
-address differs — `localhost:8200` (published to the host by
-`compose.fragment.yml.template`) for `docker-local`, `127.0.0.1:8200` for
+`versola configure <target> <version>` starts the `versola-openbao-<target>`
+container automatically (the rest of that run will keep failing until the
+steps below are done, but that's expected — run it once first just to get the
+container up). `<target>` here is `local` or `vps` (versola-cli's own target
+names, not `docker-local`) — the container, like the OpenBao data volume it
+mounts, is named per-target so a machine that's run both (e.g. local dev
+testing before a real vps deploy) can never have one target's leftover
+container mask the other's fresh volume. The steps below are otherwise
+identical for both; only the address differs — `localhost:8200` (published to
+the host by `compose.fragment.yml.template`) for `local`, `127.0.0.1:8200` for
 `vps` (via `network_mode: host`, running these directly on the VPS itself).
 
 TLS is disabled (see `openbao.hcl.template`), but `bao`'s own default is
@@ -180,21 +184,21 @@ with "server gave HTTP response to HTTPS client".
 #    tool, not a system that needs to survive one key-holder disappearing.
 #    Save BOTH the unseal key and the root token this prints; neither is
 #    recoverable if lost.
-docker exec -it -e BAO_ADDR=http://127.0.0.1:8200 versola-openbao \
+docker exec -it -e BAO_ADDR=http://127.0.0.1:8200 versola-openbao-<target> \
   bao operator init -key-shares=1 -key-threshold=1
 
 # 2. Unseal. Needed again after every fresh container start/recreation —
 #    seal state does NOT persist on the storage volume, even though the
 #    data itself does. There's no auto-unseal configured, so this is a
 #    standing manual step, not just a first-run thing.
-docker exec -it -e BAO_ADDR=http://127.0.0.1:8200 versola-openbao \
+docker exec -it -e BAO_ADDR=http://127.0.0.1:8200 versola-openbao-<target> \
   bao operator unseal <unseal key from step 1>
 
 # Steps 3-7 need the root token from step 1 as well:
-docker exec -it -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=<root token> versola-openbao \
+docker exec -it -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=<root token> versola-openbao-<target> \
   bao secrets enable -path=secret kv-v2        # 3. KV v2 -- `server` mode doesn't
                                                 #    enable this by default (unlike -dev)
-docker exec -it -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=<root token> versola-openbao \
+docker exec -it -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=<root token> versola-openbao-<target> \
   bao auth enable approle                      # 4. AppRole auth method
 ```
 
@@ -203,7 +207,7 @@ docker exec -it -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=<root token> vers
    able to. On Linux/macOS this can be piped in directly:
 
    ```bash
-   docker exec -it -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=<root token> versola-openbao \
+   docker exec -it -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=<root token> versola-openbao-<target> \
      bao policy write versola-<target> - <<'EOF'
    path "secret/data/versola/<target>/*" {
      capabilities = ["create", "read", "update"]
@@ -220,16 +224,16 @@ docker exec -it -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=<root token> vers
 # 6. An AppRole role bound to that policy. secret_id_ttl=0/token_num_uses=0:
 #    no expiry -- this is a long-lived credential for an unattended deploy
 #    tool, not a human's short-lived session.
-docker exec -it -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=<root token> versola-openbao \
+docker exec -it -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=<root token> versola-openbao-<target> \
   bao write auth/approle/role/versola-<target> \
     token_policies="versola-<target>" \
     token_ttl=1h token_max_ttl=4h \
     secret_id_ttl=0 token_num_uses=0
 
 # 7. Get the credentials versola-cli needs.
-docker exec -it -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=<root token> versola-openbao \
+docker exec -it -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=<root token> versola-openbao-<target> \
   bao read auth/approle/role/versola-<target>/role-id
-docker exec -it -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=<root token> versola-openbao \
+docker exec -it -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=<root token> versola-openbao-<target> \
   bao write -f auth/approle/role/versola-<target>/secret-id
 ```
 
@@ -299,20 +303,20 @@ a second `kv put` to the same path would silently wipe out whatever the
 first one just wrote (`kv put` replaces the whole path, it doesn't merge):
 
 ```bash
-docker exec -it -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=<root token> versola-openbao \
+docker exec -it -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=<root token> versola-openbao-vps \
   bao kv put -mount=secret versola/vps/auth \
     POSTGRES_PASSWORD=<real password> \
     JWT_PRIVATE_KEY=<real private key, base64> \
     CLIENT_SECRETS_SECRET=<real value>
 
-docker exec -it -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=<root token> versola-openbao \
+docker exec -it -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=<root token> versola-openbao-vps \
   bao kv put -mount=secret versola/vps/central \
     POSTGRES_PASSWORD=<real password> \
     CLIENT_SECRETS_SECRET=<real value> \
     EDGE_PUBLIC_JWK='<real public JWK, as a single-line JSON string>' \
     JWKS_JSON='{"keys":[<real auth JWT public JWK>]}'
 
-docker exec -it -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=<root token> versola-openbao \
+docker exec -it -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=<root token> versola-openbao-vps \
   bao kv put -mount=secret versola/vps/edge \
     POSTGRES_PASSWORD=<real password> \
     EDGE_PRIVATE_KEY=<real private key, base64> \
