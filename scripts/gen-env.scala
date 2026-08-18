@@ -285,7 +285,16 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
   val authInternalUrl     = prompt(s"  Auth internal URL [$authInternalDefault]: ", authInternalDefault)
   // centralUrl IS a real network call from both auth and edge, so it needs
   // the same treatment.
-  val centralUrlDefault   = if isDockerLocal then "http://central:8090" else if isVps then "http://127.0.0.1:8090" else "http://localhost:8090"
+  // Reverted to 9001 (not 8090, which every other branch here uses) --
+  // ci-cd.yml's e2e job hardcodes `PORT=9001` when it starts central
+  // directly (not through Docker) for this exact "local" branch, so this
+  // default has to keep matching that or auth can't reach it at all
+  // (confirmed by hand: unifying this to 8090 broke that job outright --
+  // auth retried against the wrong port until it OOM'd). goshacodes'
+  // port-consistency comment on #176 was about the interactive-vs-docker
+  // discrepancy in general; this one specific value turned out to be
+  // load-bearing for CI, not just a cosmetic mismatch.
+  val centralUrlDefault   = if isDockerLocal then "http://central:8090" else if isVps then "http://127.0.0.1:8090" else "http://localhost:9001"
   val centralUrl           = prompt(s"  Central URL [$centralUrlDefault]: ", centralUrlDefault)
   // edgeUrl is public-facing only, same reasoning as authUrl above — BUT
   // in docker-local, nginx (not edge's own port) is the actual public
