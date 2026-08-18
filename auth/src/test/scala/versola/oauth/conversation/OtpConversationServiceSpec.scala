@@ -70,6 +70,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
     val userAgentRepository = stub[UserAgentRepository]
     val secureRandom = stub[SecureRandom]
     val userService = stub[UserService]
+    val consentService = stub[versola.oauth.consent.ConsentService]
     val service = ConversationService.Impl(
       otpService,
       passwordService,
@@ -89,6 +90,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
       userAgentRepository,
       secureRandom,
       userService,
+      consentService,
     )
 
   val initialConversation = ConversationRecord(
@@ -122,6 +124,8 @@ object OtpConversationServiceSpec extends UnitSpecBase:
     priorSessionId = None,
     resources = Nil,
     authorizationDetails = None,
+    grantedScope = None,
+    promptConsent = false,
   )
 
   val otpRecord = initialConversation.copy(
@@ -320,6 +324,8 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           priorSessionId = None,
           resources = Nil,
           authorizationDetails = None,
+          grantedScope = None,
+          promptConsent = false,
         )
         for
           _ <- env.submissionLimiter.isBanned.succeedsWith(LimitStatus.Allowed)
@@ -362,6 +368,8 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           priorSessionId = None,
           resources = Nil,
           authorizationDetails = None,
+          grantedScope = None,
+          promptConsent = false,
         )
         for
           _ <- env.submissionLimiter.isBanned.succeedsWith(LimitStatus.Banned)
@@ -425,6 +433,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
         val conversation = initialConversation.copy(
           userId = Some(userId),
           scope = Set(ScopeToken.OpenId, ScopeToken("profile")),
+          grantedScope = Some(Set(ScopeToken.OpenId, ScopeToken("profile"))),
           responseType = zio.prelude.NonEmptySet(
             versola.oauth.authorize.model.ResponseTypeEntry.Code,
             versola.oauth.authorize.model.ResponseTypeEntry.IdToken,
@@ -482,6 +491,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
         val conversation = initialConversation.copy(
           userId = Some(userId),
           scope = Set(ScopeToken("profile")),
+          grantedScope = Some(Set(ScopeToken("profile"))),
           responseType = zio.prelude.NonEmptySet(
             versola.oauth.authorize.model.ResponseTypeEntry.Code,
             versola.oauth.authorize.model.ResponseTypeEntry.IdToken,
@@ -520,6 +530,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
         val conversation = initialConversation.copy(
           userId = Some(userId),
           scope = Set(ScopeToken.OpenId, ScopeToken("profile")),
+          grantedScope = Some(Set(ScopeToken.OpenId, ScopeToken("profile"))),
           responseType = zio.prelude.NonEmptySet(versola.oauth.authorize.model.ResponseTypeEntry.Code),
         )
         val testCode = versola.oauth.model.AuthorizationCode(Array.fill(32)(1.toByte))

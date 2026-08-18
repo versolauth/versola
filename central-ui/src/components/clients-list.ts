@@ -2,7 +2,7 @@ import { LitElement, html, css } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
 import { badgeStyles, buttonStyles, cardStyles, formStyles } from '../styles/components';
-import {AuthFlow, AuthorizationPreset, OAuthClient, OAuthScope, OtpTemplateRecord, Permission, Resource, Role, ThemeRecord} from '../types';
+import {AuthFlow, AuthorizationPreset, Locale, OAuthClient, OAuthScope, OtpTemplateRecord, Permission, Resource, Role, ThemeRecord} from '../types';
 import {
   createClient,
   deleteClient,
@@ -10,6 +10,7 @@ import {
   fetchAllClients,
   fetchClientPresets,
   fetchChallengeSettings,
+  fetchLocales,
   fetchOtpTemplates,
   fetchThemes,
   getPermissions,
@@ -21,7 +22,7 @@ import {
   updateClient,
 } from '../utils/central-api';
 import { confirmDestructiveAction } from '../utils/confirm-dialog';
-import { copyToClipboard, formatDuration } from '../utils/helpers';
+import { copyToClipboard, formatDuration, getLocalizedDescription } from '../utils/helpers';
 import './client-form';
 import './content-header';
 import './error-card';
@@ -51,6 +52,7 @@ export class VersolaClientsList extends LitElement {
   @state() private availableThemes: ThemeRecord[] = [];
   @state() private availableOtpTemplates: OtpTemplateRecord[] = [];
   @state() private availableRoles: Role[] = [];
+  @state() private availableLocales: Locale[] = [];
   @state() private availablePostLogoutRedirectUris: string[] = [];
   @state() private isPreparingForm = false;
   @state() private createdSecret: { clientName: string; secret: string; action: 'created' | 'rotated' } | null = null;
@@ -71,6 +73,7 @@ export class VersolaClientsList extends LitElement {
       this.availablePermissions = [];
       this.availableResources = [];
       this.availableRoles = [];
+      this.availableLocales = [];
       this.availablePostLogoutRedirectUris = [];
       this.createdSecret = null;
       this.copyFeedback = '';
@@ -691,7 +694,7 @@ export class VersolaClientsList extends LitElement {
       return;
     }
 
-    const [scopes, permissions, resources, themes, otpTemplates, challengeSettings, roles] = await Promise.all([
+    const [scopes, permissions, resources, themes, otpTemplates, challengeSettings, roles, locales] = await Promise.all([
       getScopes(tenantId),
       getPermissions(tenantId),
       getResources(tenantId),
@@ -699,6 +702,7 @@ export class VersolaClientsList extends LitElement {
       fetchOtpTemplates(tenantId),
       fetchChallengeSettings(tenantId),
       getRoles(tenantId),
+      fetchLocales(),
     ]);
 
     if (this.tenantId === tenantId) {
@@ -708,6 +712,7 @@ export class VersolaClientsList extends LitElement {
       this.availableThemes = themes;
       this.availableOtpTemplates = otpTemplates;
       this.availableRoles = roles;
+      this.availableLocales = locales;
       this.availablePostLogoutRedirectUris = challengeSettings?.postLogoutRedirectUris ?? [];
       this.formOptionsTenantId = tenantId;
     }
@@ -913,7 +918,7 @@ export class VersolaClientsList extends LitElement {
 
       if (generatedSecret) {
         this.createdSecret = {
-          clientName: client.clientName,
+          clientName: getLocalizedDescription(client.clientName),
           secret: generatedSecret,
           action: 'created',
         };
@@ -1004,6 +1009,7 @@ export class VersolaClientsList extends LitElement {
           .availableThemes=${this.availableThemes}
           .availableOtpTemplates=${this.availableOtpTemplates}
           .availableRoles=${this.availableRoles}
+          .locales=${this.availableLocales}
           .canManageSecrets=${this.canManageSecrets}
           @close=${this.handleFormClose}
           @delete-previous-secret=${this.handleDeletePreviousSecret}
@@ -1079,7 +1085,7 @@ export class VersolaClientsList extends LitElement {
                 <div class="client-header" @click=${() => this.toggleExpand(client.id)}>
                   <div class="client-info">
                     <div class="client-name">
-                      ${client.clientName}
+                      ${getLocalizedDescription(client.clientName)}
                       ${client.hasPreviousSecret ? html`
                         <span class="badge badge-warning">Secret Rotation</span>
                       ` : ''}
@@ -1231,7 +1237,7 @@ export class VersolaClientsList extends LitElement {
       <div class="card">
         <h2>Edit Authorization Presets</h2>
         <p style="color: var(--text-secondary); margin-bottom: 1.5rem;">
-          Manage authorization presets for ${this.editingPresetsForClient.clientName}
+          Manage authorization presets for ${getLocalizedDescription(this.editingPresetsForClient.clientName)}
         </p>
 
         ${this.presetDrafts.length === 0 ? html`

@@ -25,7 +25,8 @@ object UserInfoServiceSpec extends UnitSpecBase, ZIOStubs:
     None,
   )
 
-  private def scope(id: ScopeToken, claims: Claim*) = ScopeRecord(id, claims.toVector.map(ClaimRecord(_)))
+  private def scope(id: ScopeToken, claims: Claim*) =
+    ScopeRecord(id, Map.empty, claims.toVector.map(ClaimRecord(_, Map.empty)))
   val openIdScope = scope(ScopeToken.OpenId)
   val profileScope = scope(ScopeToken("profile"), Claim("name"), Claim("given_name"), Claim("family_name"))
   val emailScope = scope(ScopeToken("email"), Claim("email"))

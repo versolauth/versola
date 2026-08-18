@@ -3,7 +3,8 @@ package versola.oauth.conversation
 import versola.auth.TestEnvConfig
 import versola.auth.model.{CredentialId, CredentialDeviceType, OtpCode, PasskeyRecord, Password}
 import versola.oauth.authorize.AcrResolutionService
-import versola.oauth.authorize.model.ResponseTypeEntry
+import versola.oauth.authorize.model.{Prompt, ResponseTypeEntry}
+import versola.oauth.consent.ConsentDecision
 import zio.prelude.NonEmptyList
 import versola.oauth.challenge.passkey.PasskeyRepository
 import versola.oauth.challenge.password.PasswordService
@@ -80,7 +81,12 @@ object ConversationServiceSpec extends UnitSpecBase:
     priorSessionId = None,
     resources = Nil,
     authorizationDetails = None,
+    grantedScope = None,
+    promptConsent = false,
   )
+
+  /** Consent already decided, so `finish` proceeds straight to issuing the code. */
+  private val consentedRecord = conversationRecord.copy(grantedScope = Some(conversationRecord.scope))
 
   class Env:
     val otpService = stub[OtpService]
@@ -100,6 +106,7 @@ object ConversationServiceSpec extends UnitSpecBase:
     val userAgentRepository = stub[UserAgentRepository]
     val secureRandom = stub[SecureRandom]
     val userService = stub[UserService]
+    val consentService = stub[versola.oauth.consent.ConsentService]
 
     val service = ConversationService.Impl(
       otpService,
@@ -120,6 +127,7 @@ object ConversationServiceSpec extends UnitSpecBase:
       userAgentRepository,
       secureRandom,
       userService,
+      consentService,
     )
 
   private val roleId = versola.role.model.RoleId("user")
@@ -137,7 +145,7 @@ object ConversationServiceSpec extends UnitSpecBase:
   private val registrationClient = OAuthClientRecord(
     id = clientId,
     tenantId = tenantId,
-    clientName = "Registering client",
+    clientName = Map("en" -> "Registering client"),
     redirectUris = zio.prelude.NonEmptySet("https://example.com/callback"),
     scope = Set(ScopeToken("read")),
     secret = None,
@@ -151,7 +159,42 @@ object ConversationServiceSpec extends UnitSpecBase:
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
     backChannelLogoutUri = None,
+    logoUri = None,
+    policyUri = None,
+    tosUri = None,
+    consentFlow = None,
   )
+
+  private val consentingClient = registrationClient.copy(
+    registrationFlow = None,
+    consentFlow = Some(ConsentFlow(allowPartial = false, rememberDuration = None)),
+  )
+
+  private val partialConsentingClient = consentingClient.copy(
+    consentFlow = Some(ConsentFlow(allowPartial = true, rememberDuration = None)),
+  )
+
+  private val requestedScope = conversationRecord.scope
+
+  /** Everything `issueCode` reaches for, so consent tests can assert on what it was handed. */
+  private def issueCodeStubs(env: Env) =
+    for
+      _ <- env.authPropertyGenerator.nextAuthorizationCode.succeedsWith(AuthorizationCode.fromString("code"))
+      _ <- env.authPropertyGenerator.nextSessionId.succeedsWith(SessionId.fromString("session"))
+      _ <- env.authPropertyGenerator.nextPublicSessionId.succeedsWith(
+        versola.oauth.session.model.PublicSessionId("public-session"),
+      )
+      _ <- env.authPropertyGenerator.nextAccessToken.succeedsWith(AccessToken.fromString("token"))
+      _ <- env.securityService.mac.succeedsWith(MAC(Array.fill(32)(1.toByte)))
+      _ <- env.configService.getSessionTtl.succeedsWith(1.hour)
+      _ <- env.configService.getUserAgentTtl.succeedsWith(180.days)
+      _ <- env.configService.getSessionIdleTtl.succeedsWith(Some(30.minutes))
+      _ <- env.conversationRepository.delete.succeedsWith(true)
+      _ <- env.authorizationCodeRepository.create.succeedsWith(())
+      _ <- env.sessionRepository.create.succeedsWith(())
+      _ <- env.secureRandom.nextUUIDv7.succeedsWith(UUID.randomUUID())
+      _ <- env.userAgentRepository.create.succeedsWith(())
+    yield ()
 
   def spec = suite("ConversationService")(
     suite("prepareInitialOtp")(
@@ -341,7 +384,7 @@ object ConversationServiceSpec extends UnitSpecBase:
       test("completes conversation and creates session/code") {
         val env = Env()
         val now = Instant.parse("2026-07-13T10:00:00Z")
-        val record = conversationRecord.copy(userId = Some(userId))
+        val record = consentedRecord.copy(userId = Some(userId))
         val code = AuthorizationCode.fromString("code")
         val sessionId = SessionId.fromString("session")
         val testPublicSessionId = versola.oauth.session.model.PublicSessionId("public-session")
@@ -376,7 +419,7 @@ object ConversationServiceSpec extends UnitSpecBase:
         val env = Env()
         val now = Instant.parse("2026-07-13T10:00:00Z")
         val priorSessionIdMac = MAC(Array.fill(32)(2.toByte))
-        val record = conversationRecord.copy(
+        val record = consentedRecord.copy(
           userId = Some(userId),
           priorSessionId = Some(priorSessionIdMac),
         )
@@ -419,7 +462,7 @@ object ConversationServiceSpec extends UnitSpecBase:
         val env = Env()
         val now = Instant.parse("2026-07-13T10:00:00Z")
         val priorSessionIdMac = MAC(Array.fill(32)(2.toByte))
-        val record = conversationRecord.copy(
+        val record = consentedRecord.copy(
           userId = Some(userId),
           priorSessionId = Some(priorSessionIdMac),
         )
@@ -462,7 +505,7 @@ object ConversationServiceSpec extends UnitSpecBase:
         val env = Env()
         val now = Instant.parse("2026-07-13T10:00:00Z")
         val cookieUserAgentId = UserAgentId(UUID.randomUUID())
-        val record = conversationRecord.copy(
+        val record = consentedRecord.copy(
           userId = Some(userId),
           userAgent = Some("ua"),
           userAgentCookie = Some(UserAgentCookiePayload(
@@ -506,7 +549,7 @@ object ConversationServiceSpec extends UnitSpecBase:
         val now = Instant.parse("2026-07-13T10:00:00Z")
         val cookieUserAgentId = UserAgentId(UUID.randomUUID())
         val freshUserAgentId = UUID.randomUUID()
-        val record = conversationRecord.copy(
+        val record = consentedRecord.copy(
           userId = Some(userId),
           userAgent = Some("ua"),
           userAgentCookie = Some(UserAgentCookiePayload(
@@ -546,6 +589,134 @@ object ConversationServiceSpec extends UnitSpecBase:
               assertTrue(createCalls.map(_._1) == List(UserAgentId(freshUserAgentId))) &&
               assertTrue(sessionCalls.head._2.userAgentId == UserAgentId(freshUserAgentId))
             case _ => assertTrue(false)
+      },
+    ),
+
+    suite("consent")(
+      test("finish renders the consent step when a grant is still needed") {
+        val env = Env()
+        val record = conversationRecord.copy(userId = Some(userId))
+        for
+          _ <- env.configService.get.succeedsWith(consentingClient)
+          _ <- env.consentService.decide.succeedsWith(ConsentDecision.Required(requestedScope))
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          result <- env.service.finish(authId, record)
+        yield assertTrue(
+          result == ConversationResult.RenderStep(
+            ConversationStep.Consent(requestedScope = requestedScope, allowPartial = false),
+          ),
+        )
+      },
+      test("finish offers deselectable scopes when the client allows partial grants") {
+        val env = Env()
+        val record = conversationRecord.copy(userId = Some(userId))
+        for
+          _ <- env.configService.get.succeedsWith(partialConsentingClient)
+          _ <- env.consentService.decide.succeedsWith(ConsentDecision.Required(requestedScope))
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          result <- env.service.finish(authId, record)
+        yield assertTrue(
+          result == ConversationResult.RenderStep(
+            ConversationStep.Consent(requestedScope = requestedScope, allowPartial = true),
+          ),
+        )
+      },
+      test("finish issues a code without prompting when the decision is satisfied") {
+        val env = Env()
+        val record = conversationRecord.copy(userId = Some(userId))
+        for
+          _ <- env.configService.get.succeedsWith(consentingClient)
+          _ <- env.consentService.decide.succeedsWith(ConsentDecision.Satisfied(requestedScope))
+          _ <- issueCodeStubs(env)
+          result <- env.service.finish(authId, record)
+          codeCalls = env.authorizationCodeRepository.create.calls
+        yield assertTrue(
+          result.isInstanceOf[ConversationResult.Complete],
+          codeCalls.head._2.scope == requestedScope,
+        )
+      },
+      test("finish forwards prompt=consent from the conversation to the decision") {
+        val env = Env()
+        val record = conversationRecord.copy(userId = Some(userId), promptConsent = true)
+        for
+          _ <- env.configService.get.succeedsWith(consentingClient)
+          _ <- env.consentService.decide.succeedsWith(ConsentDecision.Required(requestedScope))
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          _ <- env.service.finish(authId, record)
+          decideCalls = env.consentService.decide.calls
+        yield assertTrue(decideCalls.map(_._4) == List(Set(Prompt.consent)))
+      },
+      test("finish skips the gate once consent has been decided") {
+        val env = Env()
+        val record = consentedRecord.copy(userId = Some(userId))
+        for
+          _ <- issueCodeStubs(env)
+          result <- env.service.finish(authId, record)
+          decideTimes = env.consentService.decide.times
+        yield assertTrue(result.isInstanceOf[ConversationResult.Complete], decideTimes == 0)
+      },
+      test("allowConsent stores the grant and issues a code for the granted scope") {
+        val env = Env()
+        val record = conversationRecord.copy(userId = Some(userId))
+        val step = ConversationStep.Consent(requestedScope = requestedScope, allowPartial = false)
+        for
+          _ <- env.configService.get.succeedsWith(consentingClient)
+          _ = env.consentService.validateSubmission.returnsWith(Right(requestedScope))
+          _ <- env.consentService.grant.succeedsWith(())
+          _ <- issueCodeStubs(env)
+          result <- env.service.allowConsent(authId, record, step, requestedScope)
+          grantCalls = env.consentService.grant.calls
+          codeCalls = env.authorizationCodeRepository.create.calls
+        yield assertTrue(
+          result.isInstanceOf[ConversationResult.Complete],
+          grantCalls.map(_._3) == List(requestedScope),
+          codeCalls.head._2.scope == requestedScope,
+        )
+      },
+      test("allowConsent re-renders the step with invalidGrant on a rejected submission") {
+        val env = Env()
+        val record = conversationRecord.copy(userId = Some(userId))
+        val step = ConversationStep.Consent(requestedScope = requestedScope, allowPartial = false)
+        for
+          _ <- env.configService.get.succeedsWith(consentingClient)
+          _ = env.consentService.validateSubmission.returnsWith(Left("nope"))
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          result <- env.service.allowConsent(authId, record, step, Set.empty)
+          grantTimes = env.consentService.grant.times
+        yield assertTrue(
+          result == ConversationResult.RenderStep(step.copy(invalidGrant = true)),
+          grantTimes == 0,
+        )
+      },
+      test("allowConsent denies access when the conversation has no user") {
+        val env = Env()
+        val step = ConversationStep.Consent(requestedScope = requestedScope, allowPartial = false)
+        for
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          result <- env.service.allowConsent(authId, conversationRecord, step, requestedScope)
+          grantTimes = env.consentService.grant.times
+        yield assertTrue(
+          result == ConversationResult.RenderStep(ConversationStep.AccessDenied),
+          grantTimes == 0,
+        )
+      },
+      test("allowConsent carries a narrowed grant into the code") {
+        val env = Env()
+        val narrowed = Set(ScopeToken.OpenId)
+        val widerScope = Set(ScopeToken.OpenId, ScopeToken("profile"))
+        val record = conversationRecord.copy(userId = Some(userId), scope = widerScope)
+        val step = ConversationStep.Consent(requestedScope = widerScope, allowPartial = true)
+        for
+          _ <- env.configService.get.succeedsWith(partialConsentingClient)
+          _ = env.consentService.validateSubmission.returnsWith(Right(narrowed))
+          _ <- env.consentService.grant.succeedsWith(())
+          _ <- issueCodeStubs(env)
+          _ <- env.service.allowConsent(authId, record, step, narrowed)
+          codeCalls = env.authorizationCodeRepository.create.calls
+        yield assertTrue(
+          // The code must carry the narrowed grant, not the wider requested scope.
+          codeCalls.head._2.scope == narrowed,
+        )
       },
     ),
 
@@ -591,7 +762,7 @@ object ConversationServiceSpec extends UnitSpecBase:
       },
       test("skips enrollment if user already has passkeys") {
         val env = Env()
-        val record = conversationRecord.copy(userId = Some(userId))
+        val record = consentedRecord.copy(userId = Some(userId))
         val passkeySettings = PasskeySettings("rpId", "rpName", List("origin"), "required")
         val code = AuthorizationCode.fromString("code")
         val sessionId = SessionId.fromString("session")

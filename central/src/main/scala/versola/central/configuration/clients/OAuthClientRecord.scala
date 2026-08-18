@@ -18,7 +18,7 @@ given Equal[URL] = (a, b) => a == b
 case class OAuthClientRecord(
     id: ClientId,
     tenantId: TenantId,
-    clientName: String,
+    clientName: Map[String, String],
     redirectUris: Set[RedirectUri],
     scope: Set[ScopeToken],
     secret: Option[Secret],
@@ -33,6 +33,10 @@ case class OAuthClientRecord(
     frontChannelLogoutUri: Option[URL],
     frontChannelLogoutSessionRequired: Boolean,
     backChannelLogoutUri: Option[URL],
+    logoUri: Option[String],
+    policyUri: Option[String],
+    tosUri: Option[String],
+    consentFlow: Option[ConsentFlow],
 ) derives Schema, CanEqual, Equal:
 
   def isConfidential: Boolean = secret.nonEmpty

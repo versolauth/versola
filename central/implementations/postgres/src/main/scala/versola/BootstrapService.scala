@@ -468,6 +468,7 @@ object BootstrapService:
     "passkey-enroll" -> Vector.empty,
     "confirm-logout" -> Vector.empty,
     "signed-out" -> Vector.empty,
+    "consent" -> Vector.empty,
   )
 
   /** Hard-coded resourceId for the edge-facing resource that proxies central's admin API. */
@@ -748,7 +749,7 @@ object BootstrapService:
       val request = CreateClientRequest(
         tenantId       = CentralConfig.defaultTenantId,
         id             = CentralConfig.centralClientId,
-        clientName     = "Central Admin",
+        clientName     = localized("Central Admin", "Central Admin"),
         redirectUris   = redirectUris,
         allowedScopes  = clientScopes,
         permissions    = Set.empty,

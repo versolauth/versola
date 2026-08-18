@@ -10,7 +10,7 @@ import versola.central.configuration.tenants.{TenantId, TenantRepository}
 import versola.central.configuration.{CreateClientRequest, UpdateClientRequest}
 import versola.util.{CacheSource, Patch, ReloadingCache, Secret, SecureRandom, SecurityService}
 import zio.*
-import zio.http.URL
+import zio.http.{Scheme, URL}
 
 import java.security.MessageDigest
 import javax.crypto.SecretKey
@@ -125,6 +125,11 @@ object OAuthClientService:
         presetSecret: Option[Secret] = None,
     ): IO[ClientAlreadyExists | InvalidRegistrationConfiguration | Throwable, Secret] =
       for
+        _ <- validateConsentUris(
+          "logoUri" -> request.logoUri,
+          "policyUri" -> request.policyUri,
+          "tosUri" -> request.tosUri,
+        )
         _ <- validateRegistration(request.id, request.tenantId, request.authFlow, request.registrationFlow)
         secret <- presetSecret.fold(generateSecret)(ZIO.succeed(_))
         encryptedSecret <- encryptRawSecret(secret)
@@ -146,6 +151,10 @@ object OAuthClientService:
           frontChannelLogoutUri = request.frontChannelLogoutUri.flatMap(URL.decode(_).toOption),
           frontChannelLogoutSessionRequired = request.frontChannelLogoutSessionRequired,
           backChannelLogoutUri = request.backChannelLogoutUri.flatMap(URL.decode(_).toOption),
+          logoUri = request.logoUri,
+          policyUri = request.policyUri,
+          tosUri = request.tosUri,
+          consentFlow = request.consentFlow,
         )
         _ <- clientRepository.createClient(client)
       yield secret
@@ -154,6 +163,11 @@ object OAuthClientService:
         request: UpdateClientRequest,
     ): IO[InvalidRegistrationConfiguration | Throwable, Unit] =
       for
+        _ <- validateConsentUris(
+          "logoUri" -> request.logoUri.flatMap(patchValue),
+          "policyUri" -> request.policyUri.flatMap(patchValue),
+          "tosUri" -> request.tosUri.flatMap(patchValue),
+        )
         current <- cache.get.map(_.find(_.id == request.clientId))
         _ <- ZIO.foreachDiscard(current): client =>
           validateRegistration(
@@ -177,6 +191,10 @@ object OAuthClientService:
           frontChannelLogoutUri = request.frontChannelLogoutUri.map(decodeUrlPatch),
           frontChannelLogoutSessionRequired = request.frontChannelLogoutSessionRequired,
           backChannelLogoutUri = request.backChannelLogoutUri.map(decodeUrlPatch),
+          logoUri = request.logoUri,
+          policyUri = request.policyUri,
+          tosUri = request.tosUri,
+          consentFlow = request.consentFlow,
         )
       yield ()
 
@@ -226,6 +244,23 @@ object OAuthClientService:
     private def decodeUrlPatch(patch: Patch[String]): Patch[URL] = patch match
       case Patch.Deleted     => Patch.Deleted
       case Patch.Modified(v) => URL.decode(v).toOption.fold(Patch.Deleted)(Patch.Modified(_))
+
+    private def patchValue(patch: Patch[String]): Option[String] = patch match
+      case Patch.Deleted     => None
+      case Patch.Modified(v) => Some(v)
+
+    private def validateConsentUris(
+        values: (String, Option[String])*,
+    ): IO[InvalidConsentUri | Throwable, Unit] =
+      ZIO.foreachDiscard(values): (field, value) =>
+        value.fold[IO[InvalidConsentUri | Throwable, Unit]](ZIO.unit): uri =>
+          URL.decode(uri.trim) match
+            case Left(_) =>
+              ZIO.fail(InvalidConsentUri(field, "must be an absolute HTTPS URL"))
+            case Right(url)
+                if !url.isAbsolute || url.scheme != Some(Scheme.HTTPS) || url.host.isEmpty =>
+              ZIO.fail(InvalidConsentUri(field, "must be an absolute HTTPS URL"))
+            case Right(_) => ZIO.unit
 
     private val clientSecretsKey: SecretKey = OAuthClientService.clientSecretsKey(config)
 

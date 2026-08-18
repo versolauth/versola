@@ -5,7 +5,7 @@ const clientsPath = '/?view=clients&tenant=tenant-alpha';
 
 const alphaClient = {
   id: 'alpha-web',
-  clientName: 'Alpha Web',
+  clientName: { en: 'Alpha Web' },
   redirectUris: ['https://alpha.example/callback'],
   scope: ['openid'],
   permissions: ['alpha.read'],
@@ -23,7 +23,7 @@ const alphaClient = {
 
 const serviceClient = {
   id: 'service-client',
-  clientName: 'Service Client',
+  clientName: { en: 'Service Client' },
   redirectUris: ['https://service.example/callback'],
   scope: ['email'],
   permissions: ['alpha.write'],
@@ -166,7 +166,7 @@ test('creates a client and shows the generated secret banner', async ({ page }) 
   expect(findRequest(api.requests, 'POST', '/configuration/clients').body).toEqual({
     tenantId: 'tenant-alpha',
     id: 'dashboard-client',
-    clientName: 'Dashboard Client',
+    clientName: { en: 'Dashboard Client' },
     redirectUris: ['https://dashboard.example/callback'],
     allowedScopes: ['openid'],
     permissions: ['alpha.read'],
@@ -187,6 +187,35 @@ test('creates a client and shows the generated secret banner', async ({ page }) 
     frontChannelLogoutUri: null,
     frontChannelLogoutSessionRequired: false,
     backChannelLogoutUri: null,
+    logoUri: null,
+    policyUri: null,
+    tosUri: null,
+    consentFlow: null,
+  });
+});
+
+test('creates a client with localized consent name', async ({ page }) => {
+  const api = await loadAdminApp(page, {
+    path: clientsPath,
+    state: {
+      clients: { 'tenant-alpha': [] },
+      locales: [
+        { code: 'en', name: 'English', isDefault: true, active: true },
+        { code: 'ru', name: 'Русский', isDefault: false, active: true },
+      ],
+    },
+  });
+
+  await page.getByRole('button', { name: '+ Create Client', exact: true }).click();
+  await page.getByLabel('Client ID').fill('localized-client');
+  const nameEditor = page.locator('versola-client-form versola-localized-text-editor');
+  await page.getByLabel('Client Name').fill('Localized Client');
+  await page.getByRole('tab', { name: 'ru', exact: true }).click();
+  await nameEditor.locator('input').fill('Локализованный клиент');
+  await page.getByRole('button', { name: 'Create Client', exact: true }).click();
+
+  expect(findRequest(api.requests, 'POST', '/configuration/clients').body).toMatchObject({
+    clientName: { en: 'Localized Client', ru: 'Локализованный клиент' },
   });
 });
 
@@ -277,6 +306,119 @@ test('configures a registration flow and sends it when creating a client', async
       roleIds: ['user', 'alpha-admin'],
     },
   });
+});
+
+test('configures a consent flow and sends it when creating a client', async ({ page }) => {
+  const api = await loadAdminApp(page, {
+    path: clientsPath,
+    state: { clients: { 'tenant-alpha': [alphaClient] } },
+  });
+
+  await page.getByRole('button', { name: '+ Create Client', exact: true }).click();
+  await page.getByLabel('Client ID').fill('consenting-client');
+  await page.getByLabel('Client Name').fill('Consenting Client');
+  await page.getByPlaceholder('https://app.example.com/callback').fill('https://consenting.example/callback');
+  await page.getByPlaceholder('https://app.example.com/callback').press('Enter');
+
+  // Off by default: a client without a consent flow never prompts.
+  await expect(page.getByLabel('Remember', { exact: true })).toHaveCount(0);
+
+  const consentRow = page.getByText('Consent', { exact: true }).locator('..');
+  await consentRow.locator('label.toggle').click();
+
+  await page.getByRole('checkbox', { name: 'Let the user deselect optional scopes' }).check();
+
+  const remember = page.getByLabel('Remember', { exact: true });
+  await expect(remember).toHaveValue('forever');
+  await remember.selectOption('days');
+  await page.getByLabel('Remember duration in days').fill('14');
+
+  await page.getByRole('textbox', { name: 'Logo URI', exact: true }).fill('https://consenting.example/logo.png');
+  await page.getByRole('textbox', { name: 'Privacy policy', exact: true }).fill('https://consenting.example/privacy');
+  await page.getByRole('textbox', { name: 'Terms of service', exact: true }).fill('https://consenting.example/terms');
+
+  await page.getByRole('button', { name: 'Create Client', exact: true }).click();
+
+  const body = findRequest(api.requests, 'POST', '/configuration/clients').body;
+  expect(body).toMatchObject({
+    logoUri: 'https://consenting.example/logo.png',
+    policyUri: 'https://consenting.example/privacy',
+    tosUri: 'https://consenting.example/terms',
+  });
+  expect(body.consentFlow).toEqual({ allowPartial: true, rememberDuration: 14 * 86400 });
+});
+
+test('explains consent settings with info buttons', async ({ page }) => {
+  await loadAdminApp(page, {
+    path: clientsPath,
+    state: { clients: { 'tenant-alpha': [alphaClient] } },
+  });
+
+  await page.getByRole('button', { name: '+ Create Client', exact: true }).click();
+
+  await page.getByRole('button', { name: 'Consent settings info' }).click();
+  await expect(page.getByText('Shows the user which scopes the client is requesting before an authorization code is issued.', { exact: true })).toBeVisible();
+
+  const consentRow = page.getByText('Consent', { exact: true }).locator('..');
+  await consentRow.locator('label.toggle').click();
+
+  const explanations = [
+    ['Partial grants consent info', 'Allows the user to deselect optional scopes and approve only a subset of the requested access.'],
+    ['Remember consent info', 'Controls how long a previously approved grant can be reused without showing the consent screen again. A grant is always re-requested if the requested scopes grow.'],
+    ['Consent logo URI info', 'An image URL displayed on the consent screen next to the client name.'],
+    ['Privacy policy consent info', 'A link to the privacy policy that the user can open from the consent screen.'],
+    ['Terms of service consent info', 'A link to the terms of service that the user can open from the consent screen.'],
+  ] as const;
+
+  for (const [buttonName, explanation] of explanations) {
+    await page.getByRole('button', { name: buttonName }).click();
+    await expect(page.getByText(explanation, { exact: true })).toBeVisible();
+  }
+});
+
+test('explains which client fields are shown on the consent screen', async ({ page }) => {
+  await loadAdminApp(page, {
+    path: clientsPath,
+    state: { clients: { 'tenant-alpha': [alphaClient] } },
+  });
+
+  await page.getByRole('button', { name: '+ Create Client', exact: true }).click();
+  await page.getByRole('button', { name: 'Consent display info', exact: true }).click();
+  await expect(page.getByText('Shown to the user on the consent screen. Each locale can have its own name.', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'OAuth scopes consent info', exact: true }).click();
+  await expect(page.getByText('Scope descriptions and their claim descriptions are shown to the user before the authorization code is issued.', { exact: true })).toBeVisible();
+});
+
+test('uses sentence case for consent property labels', async ({ page }) => {
+  await loadAdminApp(page, {
+    path: clientsPath,
+    state: { clients: { 'tenant-alpha': [alphaClient] } },
+  });
+
+  await page.getByRole('button', { name: '+ Create Client', exact: true }).click();
+  const consentRow = page.getByText('Consent', { exact: true }).locator('..');
+  await consentRow.locator('label.toggle').click();
+
+  for (const id of ['consent-remember', 'consent-logo-uri', 'consent-policy-uri', 'consent-tos-uri']) {
+    const label = page.locator(`label[for="${id}"]`);
+    await expect(label).toHaveCSS('text-transform', 'none');
+    await expect(label).toHaveCSS('letter-spacing', 'normal');
+  }
+});
+
+test('hides consent settings when the auth flow is disabled', async ({ page }) => {
+  await loadAdminApp(page, {
+    path: clientsPath,
+    state: { clients: { 'tenant-alpha': [alphaClient] } },
+  });
+
+  await page.getByRole('button', { name: '+ Create Client', exact: true }).click();
+  await expect(page.getByText('Consent', { exact: true })).toBeVisible();
+
+  const authFlowRow = page.getByText('Authorization Flow', { exact: true }).locator('..');
+  await authFlowRow.locator('label.toggle').click();
+
+  await expect(page.getByText('Consent', { exact: true })).toHaveCount(0);
 });
 
 test('hides registration settings when inline password is enabled', async ({ page }) => {
@@ -370,6 +512,10 @@ test('hides logout settings and clears logout values when auth flow is disabled'
     frontChannelLogoutUri: null,
     frontChannelLogoutSessionRequired: false,
     backChannelLogoutUri: null,
+    logoUri: null,
+    policyUri: null,
+    tosUri: null,
+    consentFlow: null,
   });
 });
 
@@ -483,7 +629,7 @@ test('updates a client and sends patch-style changes', async ({ page }) => {
   // Verify the API request was made correctly
   expect(findRequest(api.requests, 'PUT', '/configuration/clients').body).toEqual({
     clientId: 'alpha-web',
-    clientName: 'Alpha Console',
+    clientName: { en: 'Alpha Console' },
     otpTemplateId: 'default',
     redirectUris: { add: ['https://alpha.example/admin/callback'], remove: ['https://alpha.example/callback'] },
     scope: { add: ['email'], remove: ['openid'] },
@@ -609,7 +755,7 @@ test('shows error alert when creating a client with duplicate ID', async ({ page
   expect(findRequest(api.requests, 'POST', '/configuration/clients').body).toEqual({
     tenantId: 'tenant-alpha',
     id: 'alpha-web',
-    clientName: 'Duplicate Client',
+    clientName: { en: 'Duplicate Client' },
     redirectUris: ['https://duplicate.example/callback'],
     allowedScopes: [],
     permissions: [],
@@ -630,6 +776,10 @@ test('shows error alert when creating a client with duplicate ID', async ({ page
     frontChannelLogoutUri: null,
     frontChannelLogoutSessionRequired: false,
     backChannelLogoutUri: null,
+    logoUri: null,
+    policyUri: null,
+    tosUri: null,
+    consentFlow: null,
   });
 
   // The client should NOT be added to the list

@@ -38,3 +38,4 @@ private[authorize] case class AuthorizeRequest(
 ):
   def promptNone: Boolean = prompt.contains(Prompt.none)
   def promptLogin: Boolean = prompt.contains(Prompt.login)
+  def promptConsent: Boolean = prompt.contains(Prompt.consent)

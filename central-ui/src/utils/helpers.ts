@@ -1,4 +1,4 @@
-import { AuthFlow, PaginatedResponse, Permission, RegistrationFlow, Resource, SortConfig } from '../types';
+import { AuthFlow, ConsentFlow, PaginatedResponse, Permission, RegistrationFlow, Resource, SortConfig } from '../types';
 
 /**
  * Default authentication flow: phone primary credential + required OTP.
@@ -27,6 +27,17 @@ export function createDefaultRegistrationFlow(): RegistrationFlow {
     credential: 'phone',
     steps: [{ type: 'otp' }],
     roleIds: [DEFAULT_REGISTRATION_ROLE_ID],
+  };
+}
+
+/**
+ * Default consent flow: ask once, remember the grant until it is revoked, and require the
+ * whole requested scope to be granted at once.
+ */
+export function createDefaultConsentFlow(): ConsentFlow {
+  return {
+    allowPartial: false,
+    rememberDurationDays: 180,
   };
 }
 

@@ -62,6 +62,7 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
     val userAgentRepository = stub[UserAgentRepository]
     val secureRandom = stub[SecureRandom]
     val userService = stub[UserService]
+    val consentService = stub[versola.oauth.consent.ConsentService]
 
     val service = ConversationService.Impl(
       otpService,
@@ -82,6 +83,7 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
       userAgentRepository,
       secureRandom,
       userService,
+      consentService,
     )
 
   val credentialStep = ConversationStep.Credential(
@@ -122,6 +124,8 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
     priorSessionId = None,
     resources = Nil,
     authorizationDetails = None,
+    grantedScope = None,
+    promptConsent = false,
   )
 
   // A minimal assertion response carrying a credential id, used as the throttle subject.
@@ -331,7 +335,7 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
       },
       test("finish conversation if user already has passkeys") {
         val env = Env()
-        val recordWithUser = baseRecord.copy(userId = Some(userId))
+        val recordWithUser = baseRecord.copy(userId = Some(userId), grantedScope = Some(baseRecord.scope))
         val existingPasskey = PasskeyRecord(
            id = CredentialId(Array.empty),
            userId = userId,

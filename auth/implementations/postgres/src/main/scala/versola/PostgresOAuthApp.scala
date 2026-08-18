@@ -7,6 +7,7 @@ import versola.oauth.authorize.{AcrResolutionService, AuthorizeEndpointControlle
 import versola.oauth.challenge.passkey.{PasskeyRepository, PostgresPasskeyRepository, WebAuthnService}
 import versola.oauth.challenge.password.{PasswordRepository, PasswordService, PostgresPasswordRepository}
 import versola.oauth.client.{ServiceController, OAuthClientSyncClient, OAuthConfigurationService, OAuthScopeSyncClient}
+import versola.oauth.consent.{ConsentRepository, ConsentService, PostgresConsentRepository}
 import versola.oauth.conversation.otp.{EmailOtpProvider, SmsOtpProvider, OtpGenerationService, OtpService}
 import versola.oauth.conversation.limit.{ChallengeThrottleRepository, PostgresChallengeThrottleRepository, SubmissionLimiter}
 import versola.oauth.conversation.{ConversationController, ConversationRenderService, ConversationRepository, ConversationRouter, ConversationService, PostgresConversationRepository}
@@ -45,6 +46,8 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       UserService &
       OAuthConfigurationService &
       ConversationRepository &
+      ConsentRepository &
+      ConsentService &
       AuthorizationCodeRepository &
       PushedAuthorizationRepository &
       SessionRepository &
@@ -98,6 +101,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
   val repositories = PostgresHikariDataSource.transactor(serviceName = Some("auth"), migrate = runMigrations) >+> (
     PostgresUserRepository.live >+>
       PostgresConversationRepository.live >+>
+      PostgresConsentRepository.live >+>
       PostgresAuthorizationCodeRepository.live >+>
       PostgresPushedAuthorizationRepository.live >+>
       PostgresSessionRepository.live >+>
@@ -140,6 +144,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       AcrResolutionService.live >+>
       UserRegistrationSyncClient.live >+>
       UserService.live >+>
+      ConsentService.live >+>
       ConversationService.live >+>
       ConversationRouter.live >+>
       AuthorizeEndpointService.live >+>

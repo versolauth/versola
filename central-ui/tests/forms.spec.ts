@@ -135,6 +135,54 @@ test('edits locales: removes an existing locale', async ({ page }) => {
   expect(body.delete).toEqual(['ru']);
 });
 
+test('activates a locale through the locales update endpoint', async ({ page }) => {
+  const api = await loadAdminApp(page, {
+    path: localesPath,
+    state: {
+      locales: [
+        { code: 'en', name: 'English', isDefault: true, active: true },
+        { code: 'ru', name: 'Russian', isDefault: false, active: false },
+      ],
+    },
+  });
+
+  await page.getByRole('button', { name: 'Edit', exact: true }).click();
+  await page.getByRole('button', { name: 'Inactive', exact: true }).click();
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await page.waitForTimeout(300);
+
+  const body = findRequest(api.requests, 'PUT', '/configuration/locales').body as {
+    add: Array<{ code: string; active: boolean }>;
+  };
+  expect(body.add.find(locale => locale.code === 'ru')).toMatchObject({ code: 'ru', active: true });
+});
+
+test('shows missing localized fields when locale activation is rejected', async ({ page }) => {
+  const api = await loadAdminApp(page, {
+    path: localesPath,
+    state: {
+      locales: [
+        { code: 'en', name: 'English', isDefault: true, active: true },
+        { code: 'ru', name: 'Russian', isDefault: false, active: false },
+      ],
+      localeActivationMissing: {
+        ru: ["client 'web' name", "scope 'profile' description"],
+      },
+    },
+  });
+
+  await page.getByRole('button', { name: 'Edit', exact: true }).click();
+  await page.getByRole('button', { name: 'Inactive', exact: true }).click();
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+
+  await expect(page.getByRole('heading', { name: 'Edit Locales', exact: true })).toBeVisible();
+  await expect(page.getByText("Missing: client 'web' name, scope 'profile' description", { exact: false })).toBeVisible();
+  const body = findRequest(api.requests, 'PUT', '/configuration/locales').body as {
+    add: Array<{ code: string; active: boolean }>;
+  };
+  expect(body.add.find(locale => locale.code === 'ru')).toMatchObject({ code: 'ru', active: true });
+});
+
 test('creates a global theme', async ({ page }) => {
   const api = await loadAdminApp(page, { path: formsPath, state: fullState });
 

@@ -64,6 +64,7 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
     val userAgentRepository = stub[UserAgentRepository]
     val secureRandom = stub[SecureRandom]
     val userService = stub[UserService]
+    val consentService = stub[versola.oauth.consent.ConsentService]
     val service = ConversationService.Impl(
       otpService,
       passwordService,
@@ -83,6 +84,7 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
       userAgentRepository,
       secureRandom,
       userService,
+      consentService,
     )
 
   val baseRecord = ConversationRecord(
@@ -116,6 +118,8 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
     priorSessionId = None,
     resources = Nil,
     authorizationDetails = None,
+    grantedScope = None,
+    promptConsent = false,
   )
 
   val passwordRecord = baseRecord.copy(

@@ -74,7 +74,7 @@ object UserServiceSpec extends UnitSpecBase:
       val client = OAuthClientRecord(
         id = clientId,
         tenantId = tenantId,
-        clientName = "Web App",
+        clientName = Map("en" -> "Web App"),
         redirectUris = Set(RedirectUri("https://example.com/callback")),
         scope = Set.empty,
         secret = None,
@@ -89,6 +89,10 @@ object UserServiceSpec extends UnitSpecBase:
         frontChannelLogoutUri = None,
         frontChannelLogoutSessionRequired = false,
         backChannelLogoutUri = None,
+        logoUri = None,
+        policyUri = None,
+        tosUri = None,
+        consentFlow = None,
       )
       val sessionDto = AuthClient.SessionDto(
         publicId = "public-session-1",
@@ -120,7 +124,7 @@ object UserServiceSpec extends UnitSpecBase:
       def client(id: ClientId) = OAuthClientRecord(
         id = id,
         tenantId = tenantId,
-        clientName = "Web App",
+        clientName = Map("en" -> "Web App"),
         redirectUris = Set(RedirectUri("https://example.com/callback")),
         scope = Set.empty,
         secret = None,
@@ -135,6 +139,10 @@ object UserServiceSpec extends UnitSpecBase:
         frontChannelLogoutUri = None,
         frontChannelLogoutSessionRequired = false,
         backChannelLogoutUri = None,
+        logoUri = None,
+        policyUri = None,
+        tosUri = None,
+        consentFlow = None,
       )
       val sessionDto = AuthClient.SessionDto(
         publicId = "public-session-1",

@@ -35,7 +35,14 @@ object OAuthScopeSyncClientSpec extends ZIOSpecDefault:
   def spec = suite("OAuthScopesClient")(
     test("fetch synced scopes with bearer token and map claims") {
       val expectedScopes = Vector(
-        ScopeRecord(ScopeToken("profile"), Vector(ClaimRecord(Claim("email")), ClaimRecord(Claim("name"))))
+        ScopeRecord(
+          ScopeToken("profile"),
+          Map("en" -> "Profile"),
+          Vector(
+            ClaimRecord(Claim("email"), Map("en" -> "Email address")),
+            ClaimRecord(Claim("name"), Map("en" -> "Full name")),
+          ),
+        )
       )
       // Wrap in the response object that matches what the client expects
       val responseBody = s"""{"scopes":${expectedScopes.toJson}}"""

@@ -14,12 +14,13 @@ enum ConversationStep(val value: String):
   case SetPassword  extends ConversationStep("set-password")
   case Otp          extends ConversationStep("otp")
   case PasskeyEnroll extends ConversationStep("passkey-enroll")
+  case Consent      extends ConversationStep("consent")
   case AccessDenied extends ConversationStep("access-denied")
   case Unknown(override val value: String) extends ConversationStep(value)
 
 object ConversationStep:
   private val known: List[ConversationStep] =
-    List(Credential, Password, SetPassword, Otp, PasskeyEnroll, AccessDenied)
+    List(Credential, Password, SetPassword, Otp, PasskeyEnroll, Consent, AccessDenied)
 
   def fromString(s: String): ConversationStep =
     known.find(_.value == s).getOrElse(Unknown(s))

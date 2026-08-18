@@ -59,7 +59,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
   val testClient = OAuthClientRecord(
     id = clientId1,
     tenantId = TenantId("default"),
-    clientName = "Test Client",
+    clientName = Map("en" -> "Test Client"),
     redirectUris = NonEmptySet("https://example.com/callback"),
     scope = scope1,
     secret = Some(clientSecret1),
@@ -73,13 +73,17 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
     backChannelLogoutUri = None,
+    logoUri = None,
+    policyUri = None,
+    tosUri = None,
+    consentFlow = None,
   )
 
   val publicClientId = ClientId("public-client-1")
   val publicClient = OAuthClientRecord(
     id = publicClientId,
     tenantId = TenantId("default"),
-    clientName = "Public Client",
+    clientName = Map("en" -> "Public Client"),
     redirectUris = NonEmptySet("https://example.com/callback"),
     scope = scope2,
     secret = None,
@@ -93,6 +97,10 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
     backChannelLogoutUri = None,
+    logoUri = None,
+    policyUri = None,
+    tosUri = None,
+    consentFlow = None,
   )
 
   val adminClient = testClient.copy(id = OAuthTokenService.centralAdminClientId)

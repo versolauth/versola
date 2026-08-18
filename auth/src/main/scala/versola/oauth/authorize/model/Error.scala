@@ -110,6 +110,18 @@ private[authorize] object Error:
       errorUri = Some("https://openid.net/specs/openid-connect-core-1_0.html#AuthRequest"),
     )
 
+  case class ConsentRequired(uri: URL, state: Option[State]) extends RedirectError(
+      error = ErrorCode.ConsentRequired,
+      errorDescription = "Consent is required but prompt=none was requested",
+      errorUri = Some("https://openid.net/specs/openid-connect-core-1_0.html#AuthRequest"),
+    )
+
+  case class InteractionRequired(uri: URL, state: Option[State]) extends RedirectError(
+      error = ErrorCode.InteractionRequired,
+      errorDescription = "End-user interaction is required but prompt=none was requested",
+      errorUri = Some("https://openid.net/specs/openid-connect-core-1_0.html#AuthRequest"),
+    )
+
   case class AccessDenied(uri: URL, state: Option[State]) extends RedirectError(
       error = ErrorCode.AccessDenied,
       errorDescription = "The resource owner could not be resolved for the existing session",

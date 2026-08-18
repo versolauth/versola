@@ -4,7 +4,7 @@ import versola.auth.model.CredentialDeviceType
 import versola.auth.model.{OtpCode, Password}
 import versola.oauth.AuthMetrics
 import versola.oauth.authorize.AcrResolutionService
-import versola.oauth.authorize.model.ResponseTypeEntry
+import versola.oauth.authorize.model.{Prompt, ResponseTypeEntry}
 import versola.oauth.challenge.passkey.{PasskeyRepository, WebAuthnError, WebAuthnService}
 import versola.oauth.challenge.password.PasswordService
 import versola.oauth.challenge.password.model.{CheckPassword, PasswordReuseError}
@@ -21,6 +21,7 @@ import versola.oauth.client.model.{
   RegistrationFlow,
   ScopeToken,
 }
+import versola.oauth.consent.{ConsentDecision, ConsentService}
 import versola.oauth.conversation.limit.{ChallengeType, LimitStatus, SubmissionLimiter}
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
 import versola.oauth.conversation.otp.OtpService
@@ -105,9 +106,23 @@ trait ConversationService:
     */
   def offerSetPassword(authId: AuthId, conversation: ConversationRecord): Task[ConversationResult.Render]
 
+  /** Completes the conversation, first gating on consent: when the client requires a grant the
+    * user has not given for the requested scope, the Consent step is rendered instead and no
+    * authorization code is issued yet.
+    */
   def finish(
       authId: AuthId,
       conversation: ConversationRecord,
+  ): Task[ConversationResult.Render]
+
+  /** Records the scope the user allowed on the consent screen and finishes the conversation.
+    * Re-renders the step flagged invalid when the submitted grant is not acceptable.
+    */
+  def allowConsent(
+      authId: AuthId,
+      conversation: ConversationRecord,
+      consentStep: ConversationStep.Consent,
+      submittedScope: Set[ScopeToken],
   ): Task[ConversationResult.Render]
 
   /** Begin a discoverable assertion ceremony; stores the request state on the Credential step.
@@ -186,7 +201,7 @@ object RegistrationEntry:
 
 object ConversationService:
   def live =
-    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _))
+    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _))
 
   class Impl(
       otpService: OtpService,
@@ -207,6 +222,7 @@ object ConversationService:
       userAgentRepository: UserAgentRepository,
       secureRandom: SecureRandom,
       userService: UserService,
+      consentService: ConsentService,
   ) extends ConversationService:
     export conversationRepository.find
 
@@ -595,95 +611,153 @@ object ConversationService:
       conversation.userId match
         case None =>
           accessDenied(authId, conversation)
+        case Some(_) if conversation.grantedScope.isEmpty =>
+          // Consent has not been decided for this conversation yet. Once it has, grantedScope is
+          // set and this gate is skipped, so allowConsent's own call to finish issues the code.
+          decideConsent(authId, conversation)
         case Some(userId) =>
+          issueCode(authId, conversation, userId)
+
+    /** Renders the Consent step when a grant is still needed, otherwise records the reused grant
+      * on the conversation and completes it.
+      */
+    private def decideConsent(authId: AuthId, conversation: ConversationRecord): Task[ConversationResult.Render] =
+      conversation.userId match
+        case None =>
+          accessDenied(authId, conversation)
+        case Some(userId) =>
+          val prompt = Option.when(conversation.promptConsent)(Prompt.consent).toSet
           for
-            code <- authPropertyGenerator.nextAuthorizationCode
-            sessionId <- authPropertyGenerator.nextSessionId
-            publicSessionId <- authPropertyGenerator.nextPublicSessionId
-            sessionIdMac <- securityService.mac(Secret(sessionId), config.security.sessionsSecret)
-            accessToken <- authPropertyGenerator.nextAccessToken
-            sessionTtl <- configService.getSessionTtl(conversation.clientId)
-            sessionIdleTtl <- configService.getSessionIdleTtl(conversation.clientId)
-            now <- Clock.instant
-            amr = AuthMethodRef.amrClaim(conversation.amr)
-            record = AuthorizationCodeRecord(
-              sessionId = sessionIdMac,
-              publicSessionId = publicSessionId,
-              clientId = conversation.clientId,
-              userId = userId,
-              redirectUri = conversation.redirectUri,
-              scope = conversation.scope,
-              codeChallenge = conversation.codeChallenge,
-              codeChallengeMethod = conversation.codeChallengeMethod,
-              requestedClaims = conversation.requestedClaims,
-              uiLocales = conversation.uiLocales,
-              nonce = conversation.nonce,
-              accessToken = accessToken,
-              amr = amr,
-              authTime = now,
-              acr = conversation.targetAcr,
-              resources = conversation.resources,
-              authorizationDetails = conversation.authorizationDetails,
-            )
-            userAgentTtl <- configService.getUserAgentTtl(conversation.clientId)
-            userAgentData = UserAgentData(
-              userAgent = conversation.userAgent,
-              userId = userId,
-              details = UserAgentDetails.parse(conversation.userAgent),
-            )
-            // If the cookie's user-agent row is gone (e.g. expired and swept by the cleanup
-            // job), touch returns false: fall back to creating a fresh row instead of
-            // referencing a dangling id, which would violate sso_sessions' FK on user_agents.
-            userAgentId <- conversation.userAgentCookie match
-              case Some(cookie) =>
-                userAgentRepository.touch(cookie.id, userAgentData, userAgentTtl).flatMap:
-                  case true => ZIO.succeed(cookie.id)
-                  case false => createUserAgent(userAgentData, userAgentTtl)
-              case None =>
-                createUserAgent(userAgentData, userAgentTtl)
-            session = SessionRecord(
-              userId = userId,
-              clients = List(ClientEntry(conversation.clientId, now)),
-              userAgentId = userAgentId,
-              createdAt = now,
-              amr = conversation.amr,
-              publicId = publicSessionId,
-            )
-            codeMac <- securityService.mac(Secret(code), config.security.authCodesSecret)
-            claimed <- conversationRepository.delete(authId, conversation.version)
-            result <- if claimed then
-              for
-                _ <- Observability.setSessionId(publicSessionId)
-                _ <- Observability.setUserAgentId(userAgentId.toString)
-                _ <- authorizationCodeRepository.create(codeMac, record, 1.minute)
-                // Always create a new session (rotates the ID, issues a fresh cookie with full TTL).
-                // For step-up the accumulated AMR is already in conversation.amr.
-                // When offline_access is in scope the client holds a refresh token on-device:
-                // migrate prior session's tokens to the new session so the device RT stays valid.
-                // Otherwise (web/BFF) expire the prior session's tokens outright.
-                priorSession = conversation.priorSessionId.map: prior =>
-                  if conversation.hasOfflineAccess then
-                    PriorSession.MigrateTokens(prior, amr, now, conversation.targetAcr)
-                  else
-                    PriorSession.Invalidate(prior)
-                _ <- sessionRepository.create(sessionIdMac, session, sessionTtl, sessionIdleTtl, priorSession)
-                idTokenData <- if conversation.responseType.contains(ResponseTypeEntry.IdToken) && conversation.scope.contains(ScopeToken.OpenId) then
-                  generateIdTokenData(userId, conversation, amr, now, conversation.targetAcr, publicSessionId)
-                else
-                  ZIO.none
-                _ <- AuthMetrics.conversationCompleted(conversation)
-              yield ConversationResult.Complete(
-                redirectUri = conversation.redirectUri,
-                state = conversation.state,
-                code = code,
-                sessionId = sessionId,
-                idTokenData = idTokenData,
-                userAgentId = userAgentId,
-                userAgentData = userAgentData,
-              ): ConversationResult.Render
-            else
-              Observability.setError("write_conflict").as(ConversationResult.WriteConflict)
+            client <- configService.get(conversation.clientId)
+            decision <- consentService.decide(userId, client, conversation.scope, prompt)
+            result <- decision match
+              case ConsentDecision.Required(requestedScope) =>
+                renderStep(
+                  authId,
+                  conversation,
+                  ConversationStep.Consent(
+                    requestedScope = requestedScope,
+                    allowPartial = client.consentFlow.exists(_.allowPartial),
+                  ),
+                )
+              case ConsentDecision.Satisfied(grantedScope) =>
+                issueCode(authId, conversation.copy(grantedScope = Some(grantedScope)), userId)
           yield result
+
+    override def allowConsent(
+        authId: AuthId,
+        conversation: ConversationRecord,
+        consentStep: ConversationStep.Consent,
+        submittedScope: Set[ScopeToken],
+    ): Task[ConversationResult.Render] =
+      conversation.userId match
+        case None =>
+          Observability.setError("illegal_state", Some("missing user id")) *> accessDenied(authId, conversation)
+        case Some(userId) =>
+          configService.get(conversation.clientId).flatMap: client =>
+            consentService.validateSubmission(client, consentStep.requestedScope, submittedScope) match
+              case Left(reason) =>
+                Observability.setError("invalid_consent", Some(reason)) *>
+                  renderStep(authId, conversation, consentStep.copy(invalidGrant = true))
+              case Right(grantedScope) =>
+                consentService.grant(userId, client, grantedScope) *>
+                  issueCode(authId, conversation.copy(grantedScope = Some(grantedScope)), userId)
+
+    private def issueCode(
+        authId: AuthId,
+        conversation: ConversationRecord,
+        userId: UserId,
+    ): Task[ConversationResult.Render] =
+      for
+        code <- authPropertyGenerator.nextAuthorizationCode
+        sessionId <- authPropertyGenerator.nextSessionId
+        publicSessionId <- authPropertyGenerator.nextPublicSessionId
+        sessionIdMac <- securityService.mac(Secret(sessionId), config.security.sessionsSecret)
+        accessToken <- authPropertyGenerator.nextAccessToken
+        sessionTtl <- configService.getSessionTtl(conversation.clientId)
+        sessionIdleTtl <- configService.getSessionIdleTtl(conversation.clientId)
+        now <- Clock.instant
+        amr = AuthMethodRef.amrClaim(conversation.amr)
+        record = AuthorizationCodeRecord(
+          sessionId = sessionIdMac,
+          publicSessionId = publicSessionId,
+          clientId = conversation.clientId,
+          userId = userId,
+          redirectUri = conversation.redirectUri,
+          // The granted subset, not the requested set, is what the issued tokens carry.
+          scope = conversation.effectiveScope,
+          codeChallenge = conversation.codeChallenge,
+          codeChallengeMethod = conversation.codeChallengeMethod,
+          requestedClaims = conversation.requestedClaims,
+          uiLocales = conversation.uiLocales,
+          nonce = conversation.nonce,
+          accessToken = accessToken,
+          amr = amr,
+          authTime = now,
+          acr = conversation.targetAcr,
+          resources = conversation.resources,
+          authorizationDetails = conversation.authorizationDetails,
+        )
+        userAgentTtl <- configService.getUserAgentTtl(conversation.clientId)
+        userAgentData = UserAgentData(
+          userAgent = conversation.userAgent,
+          userId = userId,
+          details = UserAgentDetails.parse(conversation.userAgent),
+        )
+        // If the cookie's user-agent row is gone (e.g. expired and swept by the cleanup
+        // job), touch returns false: fall back to creating a fresh row instead of
+        // referencing a dangling id, which would violate sso_sessions' FK on user_agents.
+        userAgentId <- conversation.userAgentCookie match
+          case Some(cookie) =>
+            userAgentRepository.touch(cookie.id, userAgentData, userAgentTtl).flatMap:
+              case true => ZIO.succeed(cookie.id)
+              case false => createUserAgent(userAgentData, userAgentTtl)
+          case None =>
+            createUserAgent(userAgentData, userAgentTtl)
+        session = SessionRecord(
+          userId = userId,
+          clients = List(ClientEntry(conversation.clientId, now)),
+          userAgentId = userAgentId,
+          createdAt = now,
+          amr = conversation.amr,
+          publicId = publicSessionId,
+        )
+        codeMac <- securityService.mac(Secret(code), config.security.authCodesSecret)
+        claimed <- conversationRepository.delete(authId, conversation.version)
+        result <- if claimed then
+          for
+            _ <- Observability.setSessionId(publicSessionId)
+            _ <- Observability.setUserAgentId(userAgentId.toString)
+            _ <- authorizationCodeRepository.create(codeMac, record, 1.minute)
+            // Always create a new session (rotates the ID, issues a fresh cookie with full TTL).
+            // For step-up the accumulated AMR is already in conversation.amr.
+            // When offline_access is in scope the client holds a refresh token on-device:
+            // migrate prior session's tokens to the new session so the device RT stays valid.
+            // Otherwise (web/BFF) expire the prior session's tokens outright.
+            priorSession = conversation.priorSessionId.map: prior =>
+              if conversation.hasOfflineAccess then
+                PriorSession.MigrateTokens(prior, amr, now, conversation.targetAcr)
+              else
+                PriorSession.Invalidate(prior)
+            _ <- sessionRepository.create(sessionIdMac, session, sessionTtl, sessionIdleTtl, priorSession)
+            idTokenData <-
+              if conversation.responseType.contains(ResponseTypeEntry.IdToken) && conversation.effectiveScope.contains(ScopeToken.OpenId) then
+                generateIdTokenData(userId, conversation, amr, now, conversation.targetAcr, publicSessionId)
+              else
+                ZIO.none
+            _ <- AuthMetrics.conversationCompleted(conversation)
+          yield ConversationResult.Complete(
+            redirectUri = conversation.redirectUri,
+            state = conversation.state,
+            code = code,
+            sessionId = sessionId,
+            idTokenData = idTokenData,
+            userAgentId = userAgentId,
+            userAgentData = userAgentData,
+          ): ConversationResult.Render
+        else
+          Observability.setError("write_conflict").as(ConversationResult.WriteConflict)
+      yield result
 
     override def startPasskeyAssertion(
         authId: AuthId,
@@ -977,7 +1051,7 @@ object ConversationService:
       for
         userInfo <- userInfoService.getUserInfoForIdToken(
           user = user,
-          scope = conversation.scope,
+          scope = conversation.effectiveScope,
           requestedClaims = conversation.requestedClaims,
           uiLocales = conversation.uiLocales,
           nonce = conversation.nonce,

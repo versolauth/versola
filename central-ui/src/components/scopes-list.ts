@@ -2,8 +2,8 @@ import { LitElement, html, css } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
 import { buttonStyles, cardStyles, formStyles } from '../styles/components';
-import { OAuthScope } from '../types';
-import { createScope, deleteScope, getScopes, updateScope } from '../utils/central-api';
+import { Locale, OAuthScope } from '../types';
+import { createScope, deleteScope, fetchLocales, getScopes, updateScope } from '../utils/central-api';
 import { confirmDestructiveAction } from '../utils/confirm-dialog';
 import { getLocalizedDescription } from '../utils/helpers';
 import './scope-form';
@@ -23,6 +23,7 @@ export class VersolaScopesList extends LitElement {
   @state() private showCreateForm = false;
   @state() private editingScope: OAuthScope | null = null;
   @state() private expandedScopes: Set<string> = new Set();
+  @state() private locales: Locale[] = [];
   private loadRequestId = 0;
 
   updated(changedProperties: Map<string, unknown>) {
@@ -47,9 +48,10 @@ export class VersolaScopesList extends LitElement {
     this.errorMessage = '';
 
     try {
-      const result = await getScopes(this.tenantId);
+      const [result, locales] = await Promise.all([getScopes(this.tenantId), fetchLocales()]);
       if (requestId !== this.loadRequestId) return;
       this.scopes = result;
+      this.locales = locales;
     } catch (error) {
       if (requestId !== this.loadRequestId) return;
       this.scopes = [];
@@ -340,6 +342,7 @@ export class VersolaScopesList extends LitElement {
       return html`
         <versola-scope-form
           .scope=${this.editingScope}
+          .locales=${this.locales}
           @close=${this.handleFormClose}
           @save-scope=${this.handleFormSubmit}
         ></versola-scope-form>

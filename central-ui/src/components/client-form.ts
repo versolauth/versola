@@ -2,13 +2,15 @@ import { LitElement, html, css } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
 import { buttonStyles, cardStyles, formStyles, iconActionStyles } from '../styles/components';
-import { AuthFactorType, AuthFlow, OAuthClient, OAuthScope, OtpTemplateRecord, Permission, RegistrationCredential, RegistrationFlow, RegistrationStepType, Resource, Role, ThemeRecord } from '../types';
-import { createDefaultAuthFlow, createDefaultRegistrationFlow, getLocalizedDescription, resolvePermissionEndpointGroups } from '../utils/helpers';
+import { AuthFactorType, AuthFlow, ConsentFlow, Locale, OAuthClient, OAuthScope, OtpTemplateRecord, Permission, RegistrationCredential, RegistrationFlow, RegistrationStepType, Resource, Role, ThemeRecord } from '../types';
+import { createDefaultAuthFlow, createDefaultConsentFlow, createDefaultRegistrationFlow, getLocalizedDescription, resolvePermissionEndpointGroups } from '../utils/helpers';
 import './nav-toggle';
+import './localized-text-editor';
 import {
   validateClientId,
   validateRedirectUri,
   validateLogoutUri,
+  validateConsentUri,
   ttlToSeconds,
   secondsToTtl,
   daysToSeconds,
@@ -24,11 +26,12 @@ export class VersolaClientForm extends LitElement {
   @property({ attribute: false }) availableThemes: ThemeRecord[] = [];
   @property({ attribute: false }) availableOtpTemplates: OtpTemplateRecord[] = [];
   @property({ attribute: false }) availableRoles: Role[] = [];
+  @property({ attribute: false }) locales: Locale[] = [];
   @property({ type: Boolean }) canManageSecrets = false;
 
   @state() private formData: Partial<OAuthClient> = {
     id: '',
-    clientName: '',
+    clientName: { en: '' },
     redirectUris: [],
     scope: [],
     accessTokenTtl: 3600,
@@ -37,6 +40,7 @@ export class VersolaClientForm extends LitElement {
     theme: 'default',
     authFlow: createDefaultAuthFlow(),
     registrationFlow: null,
+    consentFlow: null,
     frontChannelLogoutSessionRequired: true,
   };
 
@@ -48,6 +52,9 @@ export class VersolaClientForm extends LitElement {
   @state() private logoutMode: 'none' | 'front' | 'back' = 'none';
   @state() private frontChannelLogoutUriError = '';
   @state() private backChannelLogoutUriError = '';
+  @state() private logoUriError = '';
+  @state() private policyUriError = '';
+  @state() private tosUriError = '';
   @state() private authFlowError = '';
   @state() private openInfoKey: string | null = null;
 
@@ -596,6 +603,21 @@ export class VersolaClientForm extends LitElement {
         letter-spacing: normal;
       }
 
+      .consent-property-label {
+        display: flex;
+        align-items: center;
+        gap: 0.4rem;
+      }
+
+      .consent-property-label > label {
+        text-transform: none;
+        letter-spacing: normal;
+      }
+
+      .consent-property-label .option-tooltip {
+        pointer-events: none;
+      }
+
       .registration-value {
         display: flex;
         align-items: center;
@@ -637,6 +659,24 @@ export class VersolaClientForm extends LitElement {
         color: var(--text-secondary);
         font-size: 0.75rem;
         line-height: 1.4;
+      }
+
+      .consent-remember-row {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+      }
+
+      .consent-remember-row input[type='number'] {
+        width: 5rem;
+      }
+
+      .consent-remember-row .registration-hint {
+        margin-top: 0;
+      }
+
+      .consent-uri-input {
+        width: 100%;
       }
 
       @media (max-width: 560px) {
@@ -789,6 +829,22 @@ export class VersolaClientForm extends LitElement {
 
     this.backChannelLogoutUriError = '';
 
+    const consentUris = [
+      ['logoUri', (this.formData.logoUri || '').trim(), 'logoUriError'],
+      ['policyUri', (this.formData.policyUri || '').trim(), 'policyUriError'],
+      ['tosUri', (this.formData.tosUri || '').trim(), 'tosUriError'],
+    ] as const;
+    for (const [, value, errorKey] of consentUris) {
+      const validation = validateConsentUri(value);
+      if (!validation.valid) {
+        this[errorKey] = validation.error || 'Invalid consent URI';
+        return;
+      }
+    }
+    this.logoUriError = '';
+    this.policyUriError = '';
+    this.tosUriError = '';
+
     const client: OAuthClient = {
       id: this.formData.id!,
       clientName: this.formData.clientName!,
@@ -809,6 +865,10 @@ export class VersolaClientForm extends LitElement {
         ? !!this.formData.frontChannelLogoutSessionRequired
         : false,
       backChannelLogoutUri: backChannelLogoutUri || null,
+      logoUri: (this.formData.logoUri || '').trim() || null,
+      policyUri: (this.formData.policyUri || '').trim() || null,
+      tosUri: (this.formData.tosUri || '').trim() || null,
+      consentFlow: authFlow ? this.formData.consentFlow ?? null : null,
     };
 
     this.dispatchEvent(new CustomEvent('submit', {
@@ -867,7 +927,7 @@ export class VersolaClientForm extends LitElement {
     this.dispatchEvent(new CustomEvent('rotate-secret', {
       detail: {
         clientId: this.client.id,
-        clientName: this.formData.clientName || this.client.clientName,
+        clientName: getLocalizedDescription(this.formData.clientName ?? this.client.clientName),
       },
       bubbles: true,
       composed: true,
@@ -882,7 +942,7 @@ export class VersolaClientForm extends LitElement {
     this.dispatchEvent(new CustomEvent('delete-previous-secret', {
       detail: {
         clientId: this.client.id,
-        clientName: this.formData.clientName || this.client.clientName,
+        clientName: getLocalizedDescription(this.formData.clientName ?? this.client.clientName),
       },
       bubbles: true,
       composed: true,
@@ -1271,6 +1331,37 @@ export class VersolaClientForm extends LitElement {
     });
   }
 
+  private get hasConsentFlow(): boolean {
+    return this.formData.consentFlow != null;
+  }
+
+  private get consentFlow(): ConsentFlow {
+    return this.formData.consentFlow ?? createDefaultConsentFlow();
+  }
+
+  private setConsentFlow(patch: Partial<ConsentFlow>) {
+    this.formData = {
+      ...this.formData,
+      consentFlow: { ...this.consentFlow, ...patch },
+    };
+  }
+
+  private toggleConsentEnabled() {
+    this.formData = {
+      ...this.formData,
+      consentFlow: this.hasConsentFlow ? null : createDefaultConsentFlow(),
+    };
+  }
+
+  /** `null` remembers the grant until it is revoked; a number expires it after that many days. */
+  private get consentRemember(): 'forever' | 'days' {
+    return this.consentFlow.rememberDurationDays == null ? 'forever' : 'days';
+  }
+
+  private setConsentRemember(mode: 'forever' | 'days') {
+    this.setConsentFlow({ rememberDurationDays: mode === 'forever' ? null : 180 });
+  }
+
   private get credentialMode(): 'phone-email' | 'login-password' {
     if (this.authFlow.primaryCredentials.includes('login')) return 'login-password';
     return 'phone-email';
@@ -1487,16 +1578,28 @@ export class VersolaClientForm extends LitElement {
             ` : ''}
 
             <div class="form-group">
-              <label for="client-name">Client Name *</label>
-              <input
-                type="text"
-                id="client-name"
-                class="compact-input"
-                .value=${this.formData.clientName || ''}
-                @input=${(e: Event) => this.formData = { ...this.formData, clientName: (e.target as HTMLInputElement).value }}
-                required
-                placeholder="e.g., My Web Application"
-              />
+              <div style="display: flex; align-items: center; gap: 0.4rem;">
+                <label style="margin-bottom: 0;" for="client-name">Client Name *</label>
+                ${this.renderOptionInfo(
+                  'client-name-consent',
+                  'Consent screen client name',
+                  html`<div class="option-tooltip-item">Shown to the user on the consent screen. Each locale can have its own name.</div>`,
+                  'Consent display info',
+                )}
+              </div>
+              <versola-localized-text-editor
+                .value=${this.formData.clientName || { en: '' }}
+                .locales=${this.locales}
+                fieldId="client-name"
+                label="Client Name"
+                .required=${true}
+                .showLabel=${false}
+                .showRequiredIndicator=${true}
+                @localized-change=${(e: CustomEvent<{ value: Record<string, string> }>) => this.formData = {
+                  ...this.formData,
+                  clientName: e.detail.value,
+                }}
+              ></versola-localized-text-editor>
             </div>
 
             <div class="form-group">
@@ -1544,7 +1647,15 @@ export class VersolaClientForm extends LitElement {
             ` : ''}
 
             <div class="form-group">
-              <label>OAuth Scopes</label>
+              <div style="display: flex; align-items: center; gap: 0.4rem;">
+                <label style="margin-bottom: 0;">OAuth Scopes</label>
+                ${this.renderOptionInfo(
+                  'scopes-consent',
+                  'Consent screen scopes',
+                  html`<div class="option-tooltip-item">Scope descriptions and their claim descriptions are shown to the user before the authorization code is issued.</div>`,
+                  'OAuth scopes consent info',
+                )}
+              </div>
               <div class="checkbox-group">
                 ${this.availableScopes.map(scope => html`
                   <div class="checkbox-item" @click=${() => this.toggleScope(scope.id)}>
@@ -1856,6 +1967,163 @@ export class VersolaClientForm extends LitElement {
                             })}
                         </div>
                         <div class="registration-hint">Granted once, when the account is created.</div>
+                      </div>
+                    </div>
+                  </div>
+                ` : ''}
+              </div>
+            ` : ''}
+
+            ${this.hasAuthFlow ? html`
+              <div class="form-group">
+                <div class="flow-toggle-row">
+                  <label style="margin: 0; line-height: 18px;">Consent</label>
+                  ${this.renderOptionInfo(
+                    'consent',
+                    'Consent screen',
+                    html`<div class="option-tooltip-item">Shows the user which scopes the client is requesting before an authorization code is issued.</div>`,
+                    'Consent settings info',
+                  )}
+                  <label class="toggle">
+                    <input
+                      type="checkbox"
+                      .checked=${this.hasConsentFlow}
+                      @change=${() => this.toggleConsentEnabled()}
+                    />
+                  </label>
+                </div>
+
+                ${this.hasConsentFlow ? html`
+                  <div class="registration-settings">
+                    <div class="registration-row">
+                      <div class="registration-label consent-property-label">
+                        <span>Partial grants</span>
+                        ${this.renderOptionInfo(
+                          'consent-allow-partial',
+                          'Partial grants',
+                          html`<div class="option-tooltip-item">Allows the user to deselect optional scopes and approve only a subset of the requested access.</div>`,
+                          'Partial grants consent info',
+                        )}
+                      </div>
+                      <div>
+                        <label class="plain-checkbox-label">
+                          <input
+                            type="checkbox"
+                            .checked=${this.consentFlow.allowPartial}
+                            @change=${(e: Event) => this.setConsentFlow({ allowPartial: (e.target as HTMLInputElement).checked })}
+                          />
+                          Let the user deselect optional scopes
+                        </label>
+                        <div class="registration-hint"><code>openid</code> and <code>offline_access</code> can never be deselected.</div>
+                      </div>
+                    </div>
+
+                    <div class="registration-row">
+                      <div class="registration-label consent-property-label">
+                        <label for="consent-remember">Remember</label>
+                        ${this.renderOptionInfo(
+                          'consent-remember',
+                          'Remember grant',
+                          html`<div class="option-tooltip-item">Controls how long a previously approved grant can be reused without showing the consent screen again. A grant is always re-requested if the requested scopes grow.</div>`,
+                          'Remember consent info',
+                        )}
+                      </div>
+                      <div>
+                        <div class="consent-remember-row">
+                          <select
+                            id="consent-remember"
+                            class="compact-input"
+                            .value=${this.consentRemember}
+                            @change=${(e: Event) => this.setConsentRemember((e.target as HTMLSelectElement).value as 'forever' | 'days')}
+                          >
+                            <option value="forever" ?selected=${this.consentRemember === 'forever'}>until revoked</option>
+                            <option value="days" ?selected=${this.consentRemember === 'days'}>for a period</option>
+                          </select>
+                          ${this.consentRemember === 'days' ? html`
+                            <input
+                              class="compact-input"
+                              type="number"
+                              min="1"
+                              aria-label="Remember duration in days"
+                              .value=${String(this.consentFlow.rememberDurationDays ?? 30)}
+                              @input=${(e: Event) => this.setConsentFlow({
+                                rememberDurationDays: parseInt((e.target as HTMLInputElement).value, 10) || 1,
+                              })}
+                            />
+                            <span class="registration-hint">days</span>
+                          ` : ''}
+                        </div>
+                        <div class="registration-hint">A widened scope always re-asks, however long the grant is remembered.</div>
+                      </div>
+                    </div>
+
+                    <div class="registration-row">
+                      <div class="registration-label consent-property-label">
+                        <label for="consent-logo-uri">Logo URI</label>
+                        ${this.renderOptionInfo(
+                          'consent-logo-uri',
+                          'Logo URI',
+                          html`<div class="option-tooltip-item">An image URL displayed on the consent screen next to the client name.</div>`,
+                          'Consent logo URI info',
+                        )}
+                      </div>
+                      <div>
+                        <input
+                          id="consent-logo-uri"
+                          class=${`compact-input consent-uri-input ${this.logoUriError ? 'input-error' : ''}`}
+                          type="url"
+                          placeholder="https://example.com/logo.png"
+                          .value=${this.formData.logoUri || ''}
+                          @input=${(e: Event) => { this.formData = { ...this.formData, logoUri: (e.target as HTMLInputElement).value }; this.logoUriError = ''; }}
+                        />
+                        ${this.logoUriError ? html`<div class="error-message">${this.logoUriError}</div>` : ''}
+                        <div class="registration-hint">Shown on the consent screen next to the client name.</div>
+                      </div>
+                    </div>
+
+                    <div class="registration-row">
+                      <div class="registration-label consent-property-label">
+                        <label for="consent-policy-uri">Privacy policy</label>
+                        ${this.renderOptionInfo(
+                          'consent-policy-uri',
+                          'Privacy policy',
+                          html`<div class="option-tooltip-item">A link to the privacy policy that the user can open from the consent screen.</div>`,
+                          'Privacy policy consent info',
+                        )}
+                      </div>
+                      <div>
+                        <input
+                          id="consent-policy-uri"
+                          class=${`compact-input consent-uri-input ${this.policyUriError ? 'input-error' : ''}`}
+                          type="url"
+                          placeholder="https://example.com/privacy"
+                          .value=${this.formData.policyUri || ''}
+                          @input=${(e: Event) => { this.formData = { ...this.formData, policyUri: (e.target as HTMLInputElement).value }; this.policyUriError = ''; }}
+                        />
+                        ${this.policyUriError ? html`<div class="error-message">${this.policyUriError}</div>` : ''}
+                      </div>
+                    </div>
+
+                    <div class="registration-row">
+                      <div class="registration-label consent-property-label">
+                        <label for="consent-tos-uri">Terms of service</label>
+                        ${this.renderOptionInfo(
+                          'consent-tos-uri',
+                          'Terms of service',
+                          html`<div class="option-tooltip-item">A link to the terms of service that the user can open from the consent screen.</div>`,
+                          'Terms of service consent info',
+                        )}
+                      </div>
+                      <div>
+                        <input
+                          id="consent-tos-uri"
+                          class=${`compact-input consent-uri-input ${this.tosUriError ? 'input-error' : ''}`}
+                          type="url"
+                          placeholder="https://example.com/terms"
+                          .value=${this.formData.tosUri || ''}
+                          @input=${(e: Event) => { this.formData = { ...this.formData, tosUri: (e.target as HTMLInputElement).value }; this.tosUriError = ''; }}
+                        />
+                        ${this.tosUriError ? html`<div class="error-message">${this.tosUriError}</div>` : ''}
                       </div>
                     </div>
                   </div>

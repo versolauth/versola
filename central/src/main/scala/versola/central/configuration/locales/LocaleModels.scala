@@ -16,6 +16,12 @@ case class SetDefaultLocaleRequest(
     code: String,
 ) derives Schema, JsonCodec
 
+case class LocaleActivationError(
+    locale: String,
+    missing: Vector[String],
+) extends IllegalArgumentException(s"Locale '$locale' has incomplete localized content")
+    derives Schema, JsonCodec
+
 case class SyncLocaleRecord(
     code: String,
     name: String,

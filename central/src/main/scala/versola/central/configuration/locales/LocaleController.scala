@@ -29,12 +29,15 @@ object LocaleController extends Controller:
 
   val updateLocalesEndpoint =
     Method.PUT / "configuration" / "locales" -> handler { (request: Request) =>
-      for
+      (for
         _       <- authorizeBasic(request)
         service <- ZIO.service[LocaleService]
         body    <- request.body.asJsonFromCodec[UpdateLocalesRequest]
         _       <- service.update(body.add, body.delete)
-      yield Response.status(Status.NoContent)
+      yield Response.status(Status.NoContent)).catchAll:
+        case error: LocaleActivationError =>
+          ZIO.succeed(Response.json(LocaleActivationError(error.locale, error.missing).toJson).status(Status.BadRequest))
+        case error: Throwable => ZIO.fail(error)
     }
 
   val setDefaultLocaleEndpoint =

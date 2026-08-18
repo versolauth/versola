@@ -38,7 +38,7 @@ object IntrospectionServiceSpec extends UnitSpecBase:
   val testClient = OAuthClientRecord(
     id = clientId1,
     tenantId = TenantId("default"),
-    clientName = "Test Client",
+    clientName = Map("en" -> "Test Client"),
     redirectUris = NonEmptySet("https://example.com/callback"),
     scope = scope1,
     secret = Some(clientSecret1),
@@ -52,6 +52,10 @@ object IntrospectionServiceSpec extends UnitSpecBase:
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
     backChannelLogoutUri = None,
+    logoUri = None,
+    policyUri = None,
+    tosUri = None,
+    consentFlow = None,
   )
 
   def tokenRecord(now: Instant) = RefreshTokenRecord(

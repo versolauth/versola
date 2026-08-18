@@ -4,6 +4,7 @@ import versola.oauth.authorize.model.{AuthorizeRequest, AuthorizeResponse, Error
 import versola.oauth.AuthMetrics
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.*
+import versola.oauth.consent.{ConsentDecision, ConsentService}
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
 import versola.oauth.conversation.{ConversationRepository, ConversationRouter, EmailSubmission, PhoneSubmission}
 import versola.oauth.jwks.JwksService
@@ -41,7 +42,7 @@ object AuthorizeEndpointService:
     case Ignore
 
   def live =
-    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _))
+    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _))
 
   class Impl(
       conversationRepository: ConversationRepository,
@@ -57,6 +58,7 @@ object AuthorizeEndpointService:
       jwksService: JwksService,
       conversationRouter: ConversationRouter,
       acrResolutionService: AcrResolutionService,
+      consentService: ConsentService,
   ) extends AuthorizeEndpointService:
 
     override def authorize(
@@ -74,6 +76,10 @@ object AuthorizeEndpointService:
         registrationFlow = client.flatMap(_.registrationFlow)
         flow <- ZIO
           .fromOption(authFlow)
+          .orElseFail(Error.AuthFlowMissing(request.redirectUri, request.state))
+        // Unreachable when authFlow resolved: the flow came off this very record.
+        clientRecord <- ZIO
+          .fromOption(client)
           .orElseFail(Error.AuthFlowMissing(request.redirectUri, request.state))
 
         _ <- ZIO.fail(Error.ConflictingHints(request.redirectUri, request.state))
@@ -234,8 +240,36 @@ object AuthorizeEndpointService:
                     missingUser = MissingUserBehavior.Deny,
                     priorSessionId = Some(id),
                   )
+                else if clientRecord.consentFlow.isEmpty then
+                  // No consent flow configured for this client: skip the decision entirely,
+                  // matching pre-consent behavior (and avoiding a consent lookup on every
+                  // silent authorization for clients that never prompt).
+                  silentAuthorize(request, uiLocales, SessionInfo(id, session), satisfiedAcr, request.scope)
                 else
-                  silentAuthorize(request, uiLocales, SessionInfo(id, session), satisfiedAcr)
+                  // Authentication is settled; consent may still be outstanding. `prompt=none`
+                  // must fail rather than render, and consent_required is the specific reason
+                  // for it, taking precedence over the generic interaction_required.
+                  consentService.decide(session.userId, clientRecord, request.scope, request.prompt).flatMap:
+                    case ConsentDecision.Required(_) if request.promptNone =>
+                      ZIO.fail(Error.ConsentRequired(request.redirectUri, request.state))
+                    case ConsentDecision.Required(_) =>
+                      // The conversation's factors are all satisfied, so advancing it lands
+                      // directly on the consent step.
+                      createConversation(
+                        authId,
+                        request,
+                        flow,
+                        registrationFlow,
+                        uiLocales,
+                        session.amr,
+                        applyHint = false,
+                        knownUserId = Some(session.userId),
+                        targetAcr = satisfiedAcr,
+                        missingUser = MissingUserBehavior.Deny,
+                        priorSessionId = Some(id),
+                      )
+                    case ConsentDecision.Satisfied(grantedScope) =>
+                      silentAuthorize(request, uiLocales, SessionInfo(id, session), satisfiedAcr, grantedScope)
             yield result
       yield response
 
@@ -320,6 +354,8 @@ object AuthorizeEndpointService:
           priorSessionId = priorSessionId,
           resources = request.resources,
           authorizationDetails = request.authorizationDetails,
+          grantedScope = None,
+          promptConsent = request.promptConsent,
         )
         authConversationTtl <- configurationService.getAuthConversationTtl(request.clientId)
         _ <- conversationRepository.create(authId, conversation, authConversationTtl)
@@ -339,16 +375,17 @@ object AuthorizeEndpointService:
         uiLocales: Option[List[String]],
         sessionInfo: SessionInfo,
         satisfiedAcr: Option[Acr],
+        grantedScope: Set[ScopeToken],
     ): Task[AuthorizeResponse] =
       val session = sessionInfo.record
       val amr = AuthMethodRef.amrClaim(session.amr)
       val acr = satisfiedAcr
       val isHybrid =
         request.responseType.contains(ResponseTypeEntry.IdToken) &&
-          request.scope.contains(ScopeToken.OpenId)
+          grantedScope.contains(ScopeToken.OpenId)
       for
         _ <- Observability.setUserId(session.userId.toString)
-        idleTtl <- ZIO.unless(request.scope.contains(ScopeToken.OfflineAccess))(
+        idleTtl <- ZIO.unless(grantedScope.contains(ScopeToken.OfflineAccess))(
           configurationService.getSessionIdleTtl(request.clientId),
         )
         _ <- ZIO.foreachDiscard(idleTtl.flatten)(sessionService.prolongIdle(sessionInfo.id, _))
@@ -361,7 +398,8 @@ object AuthorizeEndpointService:
           clientId = request.clientId,
           userId = session.userId,
           redirectUri = request.redirectUri,
-          scope = request.scope,
+          // The granted subset, not the requested set, is what the issued tokens carry.
+          scope = grantedScope,
           codeChallenge = request.codeChallenge,
           codeChallengeMethod = request.codeChallengeMethod,
           requestedClaims = request.requestedClaims,
@@ -376,7 +414,7 @@ object AuthorizeEndpointService:
         )
         codeMac <- securityService.mac(Secret(code), config.security.authCodesSecret)
         _ <- authorizationCodeRepository.create(codeMac, codeRecord, zio.Duration.fromSeconds(60))
-        idToken <- if isHybrid then silentIdToken(request, session, code, amr, uiLocales, acr)
+        idToken <- if isHybrid then silentIdToken(request, session, code, amr, uiLocales, acr, grantedScope)
         else ZIO.none
       yield AuthorizeResponse.Authorized(code, idToken)
 
@@ -387,6 +425,7 @@ object AuthorizeEndpointService:
         amr: Set[AuthMethodRef],
         uiLocales: Option[List[String]],
         acr: Option[Acr],
+        grantedScope: Set[ScopeToken],
     ): Task[Option[String]] =
       for
         userOpt <- userRepository.find(session.userId)
@@ -395,7 +434,7 @@ object AuthorizeEndpointService:
           .orElseFail(Error.AccessDenied(request.redirectUri, request.state))
         userInfo <- userInfoService.getUserInfoForIdToken(
           user = user,
-          scope = request.scope,
+          scope = grantedScope,
           requestedClaims = request.requestedClaims,
           uiLocales = uiLocales,
           nonce = request.nonce,

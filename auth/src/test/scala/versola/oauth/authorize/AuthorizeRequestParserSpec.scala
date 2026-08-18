@@ -22,7 +22,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
   private val clientRecord = OAuthClientRecord(
     id = clientId,
     tenantId = tenantId,
-    clientName = "Test Client",
+    clientName = Map("en" -> "Test Client"),
     redirectUris = NonEmptySet("https://example.com/callback"),
     scope = Set(ScopeToken("openid"), ScopeToken("profile"), ScopeToken("email")),
     secret = None,
@@ -36,6 +36,10 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
     backChannelLogoutUri = None,
+    logoUri = None,
+    policyUri = None,
+    tosUri = None,
+    consentFlow = None,
   )
 
   private val schemaValidator: JsonSchemaValidator = JsonSchemaValidator.Impl()

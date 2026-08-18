@@ -39,7 +39,7 @@ object LogoutServiceSpec extends UnitSpecBase:
   private val baseClient = OAuthClientRecord(
     id = clientId1,
     tenantId = tenantId,
-    clientName = "Client 1",
+    clientName = Map("en" -> "Client 1"),
     redirectUris = NonEmptySet("https://example.com/callback"),
     scope = Set(ScopeToken("read")),
     secret = None,
@@ -53,6 +53,10 @@ object LogoutServiceSpec extends UnitSpecBase:
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
     backChannelLogoutUri = None,
+    logoUri = None,
+    policyUri = None,
+    tosUri = None,
+    consentFlow = None,
   )
 
   /** A Client whose driver dies if invoked; no test in this spec exercises a

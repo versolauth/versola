@@ -37,7 +37,7 @@ const ordersApi = {
 
 const storefrontClient = {
   id: 'storefront-web',
-  clientName: 'Storefront Web',
+  clientName: { en: 'Storefront Web' },
   redirectUris: ['https://storefront.example.com/callback'],
   scope: ['openid', 'profile'],
   permissions: ['orders.read', 'orders.write'],

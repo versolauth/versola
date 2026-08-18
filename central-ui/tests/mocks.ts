@@ -22,7 +22,7 @@ function backendPath(pathname: string): string {
 type TenantDto = { id: string; description: string; edgeId?: string | null };
 type BackendAuthFactor = { type: string; required: boolean };
 type BackendAuthFlow = { primary: { credentials: string[]; inlinePassword: boolean; factors: BackendAuthFactor[] }; passkey?: { factors: BackendAuthFactor[] } | null; otpType: 'sms' | 'email' };
-type ClientDto = { id: string; clientName: string; redirectUris: string[]; scope: string[]; permissions: string[]; secretRotation: boolean; refreshTokenTtl?: number; edgeId?: string; authFlow?: BackendAuthFlow | null };
+type ClientDto = { id: string; clientName: Record<string, string>; redirectUris: string[]; scope: string[]; permissions: string[]; secretRotation: boolean; refreshTokenTtl?: number; edgeId?: string; authFlow?: BackendAuthFlow | null };
 type ScopeDto = { scope: string; description: Record<string, string>; claims: Array<{ claim: string; description: Record<string, string> }> };
 type PermissionDto = { permission: string; description: Record<string, string>; endpointIds: ResourceEndpointId[] };
 type InjectTargetDto = 'header' | 'query' | 'body';
@@ -65,7 +65,7 @@ type DescriptionPatch = { add?: Record<string, string>; delete?: string[] };
 type CreateClientRequest = {
   tenantId: string;
   id: string;
-  clientName: string;
+  clientName: Record<string, string>;
   redirectUris: string[];
   allowedScopes: string[];
   audience: string[];
@@ -76,7 +76,7 @@ type CreateClientRequest = {
 };
 type UpdateClientRequest = {
   clientId: string;
-  clientName?: string;
+  clientName?: Record<string, string>;
   redirectUris?: SetPatch<string>;
   scope?: SetPatch<string>;
   permissions?: SetPatch<string>;
@@ -225,6 +225,7 @@ export type MockConfigState = {
   challengeSettings: Record<string, ChallengeSettingsDto>; // keyed by tenantId
   authorizationDetailTypes: Record<string, AuthorizationDetailTypeDto[]>; // keyed by tenantId
   locales: LocaleDto[];
+  localeActivationMissing: Record<string, string[]>;
   myPermissions: MyPermissionsDto;
 };
 
@@ -260,8 +261,8 @@ const defaultState: MockConfigState = {
   ],
   myPermissions: defaultMyPermissions,
   clients: {
-    'tenant-alpha': [{ id: 'alpha-web', clientName: 'Alpha Web', redirectUris: ['https://alpha.example/callback'], scope: ['openid'], permissions: ['alpha.read'], secretRotation: false }],
-    'tenant-bravo': [{ id: 'bravo-web', clientName: 'Bravo Web', redirectUris: ['https://bravo.example/callback'], scope: ['email'], permissions: ['bravo.read'], secretRotation: false }],
+    'tenant-alpha': [{ id: 'alpha-web', clientName: { en: 'Alpha Web' }, redirectUris: ['https://alpha.example/callback'], scope: ['openid'], permissions: ['alpha.read'], secretRotation: false }],
+    'tenant-bravo': [{ id: 'bravo-web', clientName: { en: 'Bravo Web' }, redirectUris: ['https://bravo.example/callback'], scope: ['email'], permissions: ['bravo.read'], secretRotation: false }],
   },
   scopes: {
     'tenant-alpha': [{ scope: 'openid', description: { en: 'OpenID scope' }, claims: [{ claim: 'sub', description: { en: 'Subject' } }] }],
@@ -289,6 +290,7 @@ const defaultState: MockConfigState = {
   challengeSettings: {},
   authorizationDetailTypes: {},
   locales: [],
+  localeActivationMissing: {},
 };
 
 function clone<T>(value: T): T {
@@ -313,6 +315,7 @@ function mergeState(overrides: Partial<MockConfigState> = {}): MockConfigState {
     challengeSettings: clone({ ...defaultState.challengeSettings, ...overrides.challengeSettings }),
     authorizationDetailTypes: clone({ ...defaultState.authorizationDetailTypes, ...overrides.authorizationDetailTypes }),
     locales: clone(overrides.locales ?? defaultState.locales),
+    localeActivationMissing: clone(overrides.localeActivationMissing ?? defaultState.localeActivationMissing),
     myPermissions: clone(overrides.myPermissions ?? defaultState.myPermissions),
   };
 }
@@ -1062,6 +1065,14 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
 
       if (method === 'PUT') {
         const payload = body as { add?: LocaleDto[]; delete?: string[] };
+        const currentLocales = new Map(state.locales.map(locale => [locale.code, locale]));
+        for (const locale of payload.add ?? []) {
+          const missing = state.localeActivationMissing[locale.code] ?? [];
+          if (locale.active && !currentLocales.get(locale.code)?.active && missing.length > 0) {
+            await route.fulfill(json({ locale: locale.code, missing }, 400));
+            return;
+          }
+        }
         const removed = new Set(payload.delete ?? []);
         state.locales = state.locales.filter(locale => !removed.has(locale.code));
         for (const locale of payload.add ?? []) {

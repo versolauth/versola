@@ -100,6 +100,22 @@ object LocaleControllerSpec extends ZIOSpecDefault, ZIOStubs:
       verify = (_, service) =>
         ZIO.succeed(assertTrue(service.update.calls == List((Vector(ru), Vector("fr"))))),
     ),
+      controllerTestCase(
+        description = "PUT locales returns missing localized fields when activation is incomplete",
+        request = Request(
+          method = Method.PUT,
+          url = URL.empty / "configuration" / "locales",
+          body = Body.fromString(UpdateLocalesRequest(add = Vector(ru.copy(active = true)), delete = Vector.empty).toJson),
+        ).addHeader(Header.ContentType(MediaType.application.json)),
+        expectedStatus = Status.BadRequest,
+        setup = service => service.update.failsWith(LocaleActivationError("ru", Vector("client 'app' name"))),
+        verify = (response, service) =>
+          for payload <- response.body.asJson[LocaleActivationError]
+          yield assertTrue(
+            service.update.calls == List((Vector(ru.copy(active = true)), Vector.empty)),
+            payload == LocaleActivationError("ru", Vector("client 'app' name")),
+          ),
+      ),
     controllerTestCase(
       description = "PUT locales/default sets default locale and returns no content",
       request = Request(

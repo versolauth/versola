@@ -87,6 +87,8 @@ object ConversationRouterSpec extends UnitSpecBase:
     priorSessionId = None,
     resources = Nil,
     authorizationDetails = None,
+    grantedScope = None,
+    promptConsent = false,
   )
 
   val otpRecord = ConversationRecord(
@@ -120,6 +122,8 @@ object ConversationRouterSpec extends UnitSpecBase:
     priorSessionId = None,
     resources = Nil,
     authorizationDetails = None,
+    grantedScope = None,
+    promptConsent = false,
   )
 
   val login = Login("testuser")
@@ -762,6 +766,65 @@ object ConversationRouterSpec extends UnitSpecBase:
           finishTimes == 1,
           prepareOtpTimes == 0,
         )
+      },
+    ),
+
+    suite("consent submissions")(
+      test("routes an allow submission to allowConsent with the submitted scope") {
+        val env = Env()
+        val consentStep = ConversationStep.Consent(requestedScope = Set(ScopeToken.OpenId), allowPartial = true)
+        val record = otpRecord.copy(step = consentStep)
+        val completeResult = ConversationResult.Complete(
+          redirectUri,
+          Some(State("test-state")),
+          AuthorizationCode(Array.fill(32)(1.toByte)),
+          SessionId(Array.fill(32)(2.toByte)),
+          None,
+          testUserAgentId,
+          UserAgentData(None, testUserId, UserAgentDetails.parse(None)),
+        )
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(record))
+          _ <- env.otpConversationService.allowConsent.succeedsWith(completeResult)
+          (result, _) <- env.router.submit(authId, ConsentAllowSubmission(Set(ScopeToken.OpenId), "test-csrf"), None, None)
+          calls = env.otpConversationService.allowConsent.calls
+        yield assertTrue(
+          result == completeResult,
+          calls.map(_._3) == List(consentStep),
+          calls.map(_._4) == List(Set(ScopeToken.OpenId)),
+        )
+      },
+      test("routes a deny submission to accessDenied") {
+        val env = Env()
+        val record = otpRecord.copy(
+          step = ConversationStep.Consent(requestedScope = Set(ScopeToken.OpenId), allowPartial = false),
+        )
+        val accessDeniedResult = ConversationResult.RenderStep(ConversationStep.AccessDenied)
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(record))
+          _ <- env.otpConversationService.accessDenied.succeedsWith(accessDeniedResult)
+          (result, _) <- env.router.submit(authId, ConsentDenySubmission("test-csrf"), None, None)
+          allowTimes = env.otpConversationService.allowConsent.times
+        yield assertTrue(result == accessDeniedResult, allowTimes == 0)
+      },
+      test("rejects a consent submission when the conversation is on another step") {
+        val env = Env()
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(otpRecord))
+          (result, _) <- env.router.submit(authId, ConsentAllowSubmission(Set(ScopeToken.OpenId), "test-csrf"), None, None)
+          allowTimes = env.otpConversationService.allowConsent.times
+        yield assertTrue(result == ConversationResult.BadRequest, allowTimes == 0)
+      },
+      test("rejects a consent submission carrying the wrong csrf token") {
+        val env = Env()
+        val record = otpRecord.copy(
+          step = ConversationStep.Consent(requestedScope = Set(ScopeToken.OpenId), allowPartial = false),
+        )
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(record))
+          exit <- env.router.submit(authId, ConsentAllowSubmission(Set(ScopeToken.OpenId), "wrong"), None, None).exit
+          allowTimes = env.otpConversationService.allowConsent.times
+        yield assertTrue(exit == Exit.fail(Error.BadRequest), allowTimes == 0)
       },
     ),
   )

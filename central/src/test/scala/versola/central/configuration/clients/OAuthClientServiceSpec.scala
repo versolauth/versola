@@ -31,7 +31,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
   private val cachedClient = OAuthClientRecord(
     id = clientId,
     tenantId = tenantId,
-    clientName = "Web App",
+    clientName = Map("en" -> "Web App"),
     redirectUris = Set(redirectUri1),
     scope = Set(readScope),
     secret = Some(Secret(Array.fill(48)(1.toByte))),
@@ -46,12 +46,16 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
     backChannelLogoutUri = None,
+    logoUri = None,
+    policyUri = None,
+    tosUri = None,
+    consentFlow = None,
   )
 
   private val otherTenantClient = OAuthClientRecord(
     id = otherClientId,
     tenantId = otherTenantId,
-    clientName = "Mobile App",
+    clientName = Map("en" -> "Mobile App"),
     redirectUris = Set(redirectUri2),
     scope = Set(writeScope),
     secret = Some(Secret(Array.fill(48)(2.toByte))),
@@ -66,12 +70,16 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
     backChannelLogoutUri = None,
+    logoUri = None,
+    policyUri = None,
+    tosUri = None,
+    consentFlow = None,
   )
 
   private val createRequest = CreateClientRequest(
     tenantId = tenantId,
     id = clientId,
-    clientName = "Web App",
+    clientName = Map("en" -> "Web App"),
     redirectUris = Set(redirectUri1),
     allowedScopes = Set(readScope),
     permissions = Set(readPermission),
@@ -88,7 +96,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
 
   private val updateRequest = UpdateClientRequest(
     clientId = clientId,
-    clientName = Some("Updated Web App"),
+    clientName = Some(Map("en" -> "Updated Web App")),
     redirectUris = PatchClientRedirectUris(add = Set(redirectUri2), remove = Set(redirectUri1)),
     scope = PatchClientScope(add = Set(writeScope), remove = Set(readScope)),
     permissions = PatchPermissions(add = Set(writePermission), remove = Set(readPermission)),
@@ -141,8 +149,8 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
       yield assertTrue(result === Vector(cachedClient))
     },
     test("getTenantClients applies pagination after filtering") {
-      val env = new Env(Vector(cachedClient, cachedClient.copy(id = ClientId("spa-app"), clientName = "SPA App"), otherTenantClient))
-      val secondClient = cachedClient.copy(id = ClientId("spa-app"), clientName = "SPA App")
+      val env = new Env(Vector(cachedClient, cachedClient.copy(id = ClientId("spa-app"), clientName = Map("en" -> "SPA App")), otherTenantClient))
+      val secondClient = cachedClient.copy(id = ClientId("spa-app"), clientName = Map("en" -> "SPA App"))
 
       for
         result <- env.service.getTenantClients(tenantId, offset = 1, limit = Some(1))
@@ -156,7 +164,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val expectedClient = OAuthClientRecord(
         id = clientId,
         tenantId = tenantId,
-        clientName = "Web App",
+        clientName = Map("en" -> "Web App"),
         redirectUris = Set(redirectUri1),
         scope = Set(readScope),
         secret = Some(storedSecret),
@@ -171,6 +179,10 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         frontChannelLogoutUri = None,
         frontChannelLogoutSessionRequired = false,
         backChannelLogoutUri = None,
+        logoUri = None,
+        policyUri = None,
+        tosUri = None,
+        consentFlow = None,
       )
 
       for
@@ -196,11 +208,15 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         env.repository.updateClient.calls == List(
           (
             clientId,
-            Some("Updated Web App"),
+            Some(Map("en" -> "Updated Web App")),
             updateRequest.redirectUris,
             updateRequest.scope,
             updateRequest.permissions,
             Some(900.seconds),
+            None,
+            None,
+            None,
+            None,
             None,
             None,
             None,
@@ -387,7 +403,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     test("sync upserts fetched client with decrypted secret for non-delete event") {
       val env = new Env(Vector(cachedClient, otherTenantClient))
       val decryptedBytes = Array.fill(32)(9.toByte)
-      val updatedClient = cachedClient.copy(clientName = "Updated Web App", permissions = Set(readPermission, writePermission))
+      val updatedClient = cachedClient.copy(clientName = Map("en" -> "Updated Web App"), permissions = Set(readPermission, writePermission))
       val decryptedClient = updatedClient.copy(secret = Some(Secret(decryptedBytes)))
 
       for

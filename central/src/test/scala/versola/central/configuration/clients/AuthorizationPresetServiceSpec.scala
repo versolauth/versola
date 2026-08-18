@@ -27,7 +27,7 @@ object AuthorizationPresetServiceSpec extends ZIOSpecDefault, ZIOStubs:
   private val client = OAuthClientRecord(
     id = clientId,
     tenantId = tenantId,
-    clientName = "Web App",
+    clientName = Map("en" -> "Web App"),
     redirectUris = Set(RedirectUri("https://example.com/callback")),
     scope = Set(ScopeToken("openid"), ScopeToken("profile")),
     secret = None,
@@ -42,6 +42,10 @@ object AuthorizationPresetServiceSpec extends ZIOSpecDefault, ZIOStubs:
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
     backChannelLogoutUri = None,
+    logoUri = None,
+    policyUri = None,
+    tosUri = None,
+    consentFlow = None,
   )
 
   private val validRequest = SaveAuthorizationPresetsRequest(
