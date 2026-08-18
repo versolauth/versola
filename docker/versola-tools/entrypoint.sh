@@ -9,6 +9,26 @@ OUT_DIR="${OUT_DIR:-/out}"
 # vps" is what will start passing TARGET=vps here (a later change, in
 # versola-cli, not this image).
 TARGET="${TARGET:-docker-local}"
+# ENV_NAME is the literal environment name gen-env.scala writes into each
+# service's config (its own `env` value) -- deliberately separate from
+# TARGET above, which only picks network defaults. TARGET=vps is not
+# itself an environment: the same VPS could run "prod" today and "qa"
+# tomorrow (see gen-env.scala's own comment, and goshacodes' review on
+# versolauth/versola#176). docker-local ignores this -- its env is always
+# fixed to "docker-local" regardless. gen-env.scala reads it via
+# sys.env, so it has to actually be in this process's environment, not
+# just a shell-local variable -- hence the explicit export below, needed
+# whenever this wasn't already set via `docker run -e ENV_NAME=...`.
+ENV_NAME="${ENV_NAME:-prod}"
+export ENV_NAME
+# AUTH_URL, unlike ENV_NAME, has no sensible default: it's the public
+# domain this deployment is actually reachable at, which is specific to
+# whoever's deploying (see goshacodes' review on versolauth/versola#176:
+# "this is our domain, users of cli will have other domains"). Required
+# for vps, checked here (fails fast, before wasting time generating RSA
+# key pairs) and again inside gen-env.scala itself (see its requiredEnv)
+# for anyone invoking this image directly instead of through versola-cli.
+export AUTH_URL="${AUTH_URL:-}"
 mkdir -p "$OUT_DIR"
 
 case "$TARGET" in
@@ -19,9 +39,14 @@ case "$TARGET" in
     ;;
 esac
 
+if [ "$TARGET" = "vps" ] && [ -z "$AUTH_URL" ]; then
+  echo "versola-tools: AUTH_URL is required when TARGET=vps (e.g. https://auth.example.com)" >&2
+  exit 1
+fi
+
 echo "versola-tools ${VERSION}: generating configs for $TARGET..."
 
-# gen-env.scala's "Name" prompt is the only input it ever reads from
+# gen-env.scala's "Target" prompt is the only input it ever reads from
 # stdin -- answering "$TARGET" is what makes it skip every other prompt
 # and use that target's non-interactive defaults (docker-local's
 # bridge-network ones, or vps's host-network ones -- see gen-env.scala).

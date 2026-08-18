@@ -106,6 +106,11 @@ RUN chmod +x entrypoint.sh
 # every run, and every real deployment needs its own, not whatever got
 # baked in here.
 RUN printf 'docker-local\n' | java -cp 'lib/*' genEnv && rm -rf .local
-RUN printf 'vps\n' | java -cp 'lib/*' genEnv && rm -rf .local
+# AUTH_URL has no sensible default (it's the deploying party's own
+# domain -- see gen-env.scala's requiredEnv), so vps's branch now
+# requires it to even run. A placeholder is fine here: this is a smoke
+# test of the jlinked runtime, not a real deployment, and its output is
+# discarded either way (see the comment above).
+RUN printf 'vps\n' | AUTH_URL=https://smoke-test.invalid java -cp 'lib/*' genEnv && rm -rf .local
 
 ENTRYPOINT ["./entrypoint.sh"]

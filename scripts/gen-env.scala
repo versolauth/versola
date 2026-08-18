@@ -52,6 +52,18 @@ def prompt(msg: String, default: String = ""): String =
   val line = scala.io.StdIn.readLine()
   if line == null || line.trim.isEmpty then default else line.trim
 
+// For values that have no sensible default at all -- unlike vps's other
+// non-interactive defaults (network addresses, ports), a public domain
+// is specific to whichever deployment this is (see goshacodes' review on
+// versolauth/versola#176: "this is our domain, users of cli will have
+// other domains"). Reading it from the environment rather than hardcoding
+// anything here means this script stays the same across every
+// deployment; only versola-cli's own invocation (see its --auth-url
+// flag) differs. Fails loudly and immediately instead of silently
+// writing an empty or wrong URL into the generated config.
+def requiredEnv(name: String): String =
+  sys.env.getOrElse(name, throw RuntimeException(s"$name environment variable is required when TARGET=vps"))
+
 def promptYN(msg: String, defaultYes: Boolean = false): Boolean =
   if !interactive then return defaultYes
   val hint = if defaultYes then "[Y/n]" else "[y/N]"
@@ -156,8 +168,12 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
 
   // ── Environment ───────────────────────────────────────────────────────────────
   println("\n── Environment ───────────────────────────────────────────────────────")
-  val env     = prompt("  Name [local]: ", "local")
-  val isLocal = env == "local"
+  // target picks which of this script's own branches to run (network
+  // defaults, interactive vs non-interactive) -- see `env` below for why
+  // this is deliberately a different question from "what environment name
+  // gets written into the config".
+  val target  = prompt("  Target [local]: ", "local")
+  val isLocal = target == "local"
   // docker-local is for "versola bootstrap local": auth/central/edge each run
   // in their own container on one Docker Compose bridge network, instead of
   // sharing the host's network the way "local" (above) and prod both assume.
@@ -168,7 +184,7 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
   // other container's Compose service name instead. See versola-cli's
   // manual-test/README.md for how these values were worked out by hand
   // before being made the default here.
-  val isDockerLocal = env == "docker-local"
+  val isDockerLocal = target == "docker-local"
   // vps is for "versola configure vps": auth/central/edge run as Docker
   // containers with `network_mode: host` on the one real VPS (see
   // deploy.md) -- no bridge network, no Compose service-name addressing,
@@ -178,23 +194,37 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
   // Unlike docker-local's throwaway Postgres container, the VPS's Postgres
   // role already exists outside this script's control -- see the comment
   // on pgPassDefault below.
-  val isVps = env == "vps"
+  val isVps = target == "vps"
   // The literal string written into the generated config's own `env`
-  // field below -- NOT the same question as `env`/isVps above, which only
-  // pick which of THIS script's branches to run (URL/network defaults).
+  // field below -- deliberately a different variable from `target` above,
+  // which only picks which of THIS script's own branches to run (network
+  // defaults, interactive vs not). "vps" is a target, not an environment:
+  // the same VPS could run "prod" today and "qa" tomorrow, so target
+  // alone can't answer what belongs in this field (goshacodes' review on
+  // versolauth/versola#176: "vps is not an env ... if you need
+  // customization, you need a separate param").
+  //
   // VersolaApp.envName (see util/http/VersolaApp.scala) treats exactly
-  // one string, "prod", as EnvName.Prod; every other value -- "vps"
-  // included -- becomes EnvName.Test(value), which gates test-only
-  // behavior (e.g. deterministic OTP codes instead of real delivery, per
+  // one string, "prod", as EnvName.Prod; every other value becomes
+  // EnvName.Test(value), which gates test-only behavior (e.g.
+  // deterministic OTP codes instead of real delivery, per
   // BootstrapService.adminAuthFactors/adminPhone) that must never run
-  // against a deployment serving real users. vps IS that real deployment
-  // -- unlike docker-local and interactive "local", which are genuinely
-  // throwaway and are fine staying EnvName.Test. Before vps existed as a
-  // non-interactive target, whoever configured the real production
-  // deployment typed "prod" by hand at this same prompt; automating that
-  // prompt's answer to literally "vps" (see entrypoint.sh) silently
-  // dropped that without anything failing loudly.
-  val envConfigValue = if isVps then "prod" else env
+  // against a deployment serving real users.
+  //
+  // docker-local's throwaway stack has no such ambiguity -- it's always a
+  // test env, fixed here rather than asked about. vps reads it from
+  // ENV_NAME instead of hardcoding "prod": entrypoint.sh's caller
+  // (versola-cli, non-interactively) sets that explicitly, so it's a
+  // param this script is handed, not one it guesses from target -- see
+  // versola-cli's pullAndRunTools for where that's set. Everything else
+  // (isLocal, and real interactive deployments where a human just types
+  // the name at the prompt above) keeps using target verbatim, same as
+  // always -- typing "prod" here still works exactly like it did before
+  // vps existed as a non-interactive target.
+  val env =
+    if isDockerLocal then "docker-local"
+    else if isVps then sys.env.getOrElse("ENV_NAME", "prod")
+    else target
   // Every secret field this script generates becomes a `${?VAR}` HOCON
   // placeholder (resolved via OpenBao by versola-cli) in both
   // non-interactive Docker envs, not just docker-local -- see
@@ -242,7 +272,7 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
   // authUrl is a public-facing string (JWT issuer, browser redirects) — it
   // never needs to be a Docker service name, even in docker-local, since
   // browsers/JWT verifiers reach it via the host's published port either way.
-  val authUrlDefault      = if isDockerLocal then "http://localhost:2821" else if isVps then "https://id.versola.kz" else "http://localhost:9003"
+  val authUrlDefault      = if isDockerLocal then "http://localhost:2821" else if isVps then requiredEnv("AUTH_URL") else "http://localhost:9003"
   val authUrl              = prompt(s"  Auth public URL [$authUrlDefault]: ", authUrlDefault)
   val passkeyRpId         = URI.create(authUrl).getHost
   // authInternalUrl, unlike authUrl, IS a real network call — central uses it
@@ -255,7 +285,7 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
   val authInternalUrl     = prompt(s"  Auth internal URL [$authInternalDefault]: ", authInternalDefault)
   // centralUrl IS a real network call from both auth and edge, so it needs
   // the same treatment.
-  val centralUrlDefault   = if isDockerLocal then "http://central:8090" else if isVps then "http://127.0.0.1:8090" else "http://localhost:9001"
+  val centralUrlDefault   = if isDockerLocal then "http://central:8090" else if isVps then "http://127.0.0.1:8090" else "http://localhost:8090"
   val centralUrl           = prompt(s"  Central URL [$centralUrlDefault]: ", centralUrlDefault)
   // edgeUrl is public-facing only, same reasoning as authUrl above — BUT
   // in docker-local, nginx (not edge's own port) is the actual public
@@ -430,7 +460,7 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
   // ── Build config files ────────────────────────────────────────────────────────
 
   val authConf =
-    s"""env = $envConfigValue
+    s"""env = $env
        |
        |configuration-cache-refresh-interval = "$configurationCacheRefreshInterval"
        |
@@ -532,7 +562,7 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
        |""".stripMargin
 
   val centralConf =
-    s"""env = $envConfigValue
+    s"""env = $env
        |
        |configuration-cache-refresh-interval = "$configurationCacheRefreshInterval"
        |
@@ -602,7 +632,7 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
        |""".stripMargin
 
   val edgeConf =
-    s"""env = $envConfigValue
+    s"""env = $env
        |
        |configuration-cache-refresh-interval = "$configurationCacheRefreshInterval"
        |
@@ -685,7 +715,11 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
          |""".stripMargin,
     )
   else
-    val dir = File(s".local/env/$env")
+    // Keyed by target, not env: entrypoint.sh looks these files up at
+    // .local/env/"$TARGET"/... (docker-local or vps), and has no way to
+    // know what env value this run happened to resolve to (ENV_NAME,
+    // for vps, isn't necessarily "prod" -- see env's own comment above).
+    val dir = File(s".local/env/$target")
     writeFile(dir, "auth.conf",    authConf)
     writeFile(dir, "central.conf", centralConf)
     writeFile(dir, "edge.conf",    edgeConf)
@@ -749,7 +783,7 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
 
     println(
       s"""
-         |Done! Files written to .local/env/$env/
+         |Done! Files written to .local/env/$target/
          |  - auth.conf     (auth service)
          |  - central.conf  (central service)
          |  - edge.conf     (edge service)
