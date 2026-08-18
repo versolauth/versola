@@ -304,7 +304,18 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
   // "postgres"), and all three services share one database via
   // ?currentSchema=, same as prod (see deploy.md) rather than each getting
   // its own database.
-  val authPgUrlDefault = if isDockerLocal then "jdbc:postgresql://postgres:5432/auth?currentSchema=auth" else if isVps then "jdbc:postgresql://127.0.0.1:5432/auth?currentSchema=auth" else "jdbc:postgresql://localhost:5432/auth"
+  //
+  // pgHostDefault (host:port) is vps-only and, like AUTH_URL, has no
+  // sensible default here: whether Postgres runs on the same box
+  // (127.0.0.1, this deployment's current setup) or somewhere else
+  // entirely (managed Postgres, a separate DB server) is specific to
+  // whoever's deploying, not something this script should assume for
+  // every future target (goshacodes' review on versolauth/versola#176:
+  // "user should provide this URL, we should not set defaults"). One
+  // value, not three -- all three services share the same host, just a
+  // different ?currentSchema=.
+  val pgHostDefault = if isVps then requiredEnv("POSTGRES_HOST") else ""
+  val authPgUrlDefault = if isDockerLocal then "jdbc:postgresql://postgres:5432/auth?currentSchema=auth" else if isVps then s"jdbc:postgresql://$pgHostDefault/auth?currentSchema=auth" else "jdbc:postgresql://localhost:5432/auth"
   val authPgUrl        = prompt(s"  Postgres URL [$authPgUrlDefault]: ", authPgUrlDefault)
   val authPgUser       = prompt(s"  Postgres user [$pgUserDefault]: ", pgUserDefault)
   val authPgPass       = prompt(s"  Postgres password [$pgPassDefault]: ", pgPassDefault)
@@ -334,7 +345,7 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
   // docker-local.
   val redirectUriDefault  = if isDockerLocal then s"$edgeUrl/central/admin/" else if isVps then s"$authUrl/central/admin/" else "http://localhost:3000"
   val centralRedirectUris = prompt(s"  Admin panel bootstrap redirect URIs (comma-separated) [$redirectUriDefault]: ", redirectUriDefault)
-  val centralPgUrlDefault = if isDockerLocal then "jdbc:postgresql://postgres:5432/auth?currentSchema=central" else if isVps then "jdbc:postgresql://127.0.0.1:5432/auth?currentSchema=central" else "jdbc:postgresql://localhost:5432/auth"
+  val centralPgUrlDefault = if isDockerLocal then "jdbc:postgresql://postgres:5432/auth?currentSchema=central" else if isVps then s"jdbc:postgresql://$pgHostDefault/auth?currentSchema=central" else "jdbc:postgresql://localhost:5432/auth"
   val centralPgUrl        = prompt(s"  Postgres URL [$centralPgUrlDefault]: ", centralPgUrlDefault)
   val centralPgUser       = prompt(s"  Postgres user [$pgUserDefault]: ", pgUserDefault)
   val centralPgPass       = prompt(s"  Postgres password [$pgPassDefault]: ", pgPassDefault)
@@ -365,7 +376,7 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
        |}""".stripMargin
 
   section("\n── Edge service ──────────────────────────────────────────────────────")
-  val edgePgUrlDefault = if isDockerLocal then "jdbc:postgresql://postgres:5432/auth?currentSchema=edge" else if isVps then "jdbc:postgresql://127.0.0.1:5432/auth?currentSchema=edge" else "jdbc:postgresql://localhost:5432/auth"
+  val edgePgUrlDefault = if isDockerLocal then "jdbc:postgresql://postgres:5432/auth?currentSchema=edge" else if isVps then s"jdbc:postgresql://$pgHostDefault/auth?currentSchema=edge" else "jdbc:postgresql://localhost:5432/auth"
   val edgePgUrl        = prompt(s"  Postgres URL [$edgePgUrlDefault]: ", edgePgUrlDefault)
   val edgePgUser       = prompt(s"  Postgres user [$pgUserDefault]: ", pgUserDefault)
   val edgePgPass       = prompt(s"  Postgres password [$pgPassDefault]: ", pgPassDefault)

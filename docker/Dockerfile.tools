@@ -111,6 +111,6 @@ RUN printf 'docker-local\n' | java -cp 'lib/*' genEnv && rm -rf .local
 # requires it to even run. A placeholder is fine here: this is a smoke
 # test of the jlinked runtime, not a real deployment, and its output is
 # discarded either way (see the comment above).
-RUN printf 'vps\n' | AUTH_URL=https://smoke-test.invalid java -cp 'lib/*' genEnv && rm -rf .local
+RUN printf 'vps\n' | AUTH_URL=https://smoke-test.invalid POSTGRES_HOST=127.0.0.1:5432 java -cp 'lib/*' genEnv && rm -rf .local
 
 ENTRYPOINT ["./entrypoint.sh"]

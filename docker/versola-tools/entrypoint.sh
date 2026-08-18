@@ -29,6 +29,11 @@ export ENV_NAME
 # key pairs) and again inside gen-env.scala itself (see its requiredEnv)
 # for anyone invoking this image directly instead of through versola-cli.
 export AUTH_URL="${AUTH_URL:-}"
+# POSTGRES_HOST (host:port), same reasoning as AUTH_URL -- whether
+# Postgres runs on this box or somewhere else entirely is specific to
+# whoever's deploying (goshacodes' review on versolauth/versola#176:
+# "user should provide this URL, we should not set defaults").
+export POSTGRES_HOST="${POSTGRES_HOST:-}"
 mkdir -p "$OUT_DIR"
 
 case "$TARGET" in
@@ -41,6 +46,10 @@ esac
 
 if [ "$TARGET" = "vps" ] && [ -z "$AUTH_URL" ]; then
   echo "versola-tools: AUTH_URL is required when TARGET=vps (e.g. https://auth.example.com)" >&2
+  exit 1
+fi
+if [ "$TARGET" = "vps" ] && [ -z "$POSTGRES_HOST" ]; then
+  echo "versola-tools: POSTGRES_HOST is required when TARGET=vps (e.g. 127.0.0.1:5432)" >&2
   exit 1
 fi
 
