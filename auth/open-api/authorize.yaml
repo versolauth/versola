@@ -61,8 +61,9 @@ paths:
       operationId: authorizePost
       summary: Start an authorization request
       description: |
-        Parameters are read from the form body. The repeatable `resource` parameter may also be
-        sent as a single space-delimited field value.
+        Parameters are read from the form body. A repeated `resource` field is joined by
+        zio-http into one comma-separated value; the server splits it back apart only before
+        another absolute-URI scheme, so a comma that belongs to a resource URI is preserved.
       tags: [Authorization]
       security: []
       parameters:
@@ -259,10 +260,10 @@ components:
 
         Resources are either public or internal. A public resource's own URI may be requested
         directly; the issued token is meant to be presented to it. An internal resource is
-        addressed as `resource://{resourceId}` and may be requested only alongside
-        `resource://edge` — internal resources are never contacted directly by the client,
-        only reached through the edge service, which holds the credentials to call them and
-        strips the caller's token before forwarding.
+        addressed as `resource://{resourceId}` and may be requested on its own — the token is
+        then presented to the edge service, which holds the credentials to call the resource
+        and strips the caller's token before forwarding — but not together with the explicit
+        edge indicator `resource://edge` in the same request; that combination is rejected.
       schema:
         type: array
         items:
@@ -284,10 +285,10 @@ components:
         parameter above (including the internal-resource / edge-indicator rule).
 
         Every object must validate against its type's registered JSON Schema; an unknown
-        `type`, a schema violation, or an unregistered `locations` value fails the whole
-        request with `invalid_authorization_details`. The granted details are echoed back
-        unchanged in the token response's `authorization_details` member and carried in the
-        access token, for the resource server to act on.
+        `type`, a schema violation, or a `locations` value that fails the same validation as
+        `resource` fails the whole request with `invalid_authorization_details`. The granted
+        details are echoed back unchanged in the token response's `authorization_details`
+        member and carried in the access token, for the resource server to act on.
       schema:
         type: string
         contentMediaType: application/json

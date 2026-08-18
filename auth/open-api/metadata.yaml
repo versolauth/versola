@@ -126,8 +126,11 @@ components:
           items:
             type: string
           description: |
-            RFC 9396 §18: the `type` values registered for the tenant, each usable in the
-            `authorization_details` parameter of `/authorize`, `/par` and `/token`.
+            RFC 9396 §18: the union of `type` values registered across all tenants of this
+            deployment. A type listed here is usable in the `authorization_details` parameter
+            of `/authorize`, `/par` and `/token` only if it is also registered for the
+            requesting client's own tenant; otherwise the request fails with
+            `invalid_authorization_details`.
 
   responses:
     Metadata:

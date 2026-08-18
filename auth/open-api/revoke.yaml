@@ -27,10 +27,12 @@ paths:
       operationId: revoke
       summary: Revoke a token
       description: |
-        Client authentication uses either `client_secret_basic` (the `Authorization` header) or
-        `client_secret_post` (the `client_id` and `client_secret` form fields of the request
-        body). Exactly one of the two must be used. The empty security requirement below stands
-        for `client_secret_post`, which OpenAPI cannot express as a security scheme.
+        Client authentication is `client_secret_basic` (the `Authorization` header),
+        `client_secret_post` (`client_id` and `client_secret` as form fields of the request
+        body), or, for a public client, `client_id` alone with no secret at all. At most one
+        of the two credentialed methods may be used per request. The empty security
+        requirement below stands for the form-field cases, which OpenAPI cannot express as a
+        security scheme.
       tags: [Token]
       security:
         - clientSecretBasic: []
@@ -68,7 +70,7 @@ components:
             else as an opaque refresh token.
         client_id:
           type: string
-          description: Required for `client_secret_post`.
+          description: Required for `client_secret_post` and for public clients.
         client_secret:
           type: string
           description: Confidential clients using `client_secret_post`.
