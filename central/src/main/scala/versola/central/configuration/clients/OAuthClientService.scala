@@ -102,12 +102,7 @@ object OAuthClientService:
     override def getClientsForSync(edgeId: Option[EdgeId]): Task[Vector[OAuthClientRecord]] =
       edgeId match
         case None => cache.get
-        case Some(id) =>
-          for
-            clients <- cache.get
-            tenants <- tenantRepository.getAll
-            allowedTenantIds = tenants.filter(_.edgeId.contains(id)).map(_.id).toSet
-          yield clients.filter(c => allowedTenantIds.contains(c.tenantId))
+        case Some(id) => clientRepository.getForEdge(id).flatMap(ZIO.foreach(_)(decryptSecrets(_, securityService, clientSecretsKey)))
 
     override def getTenantClients(
         tenantId: TenantId,

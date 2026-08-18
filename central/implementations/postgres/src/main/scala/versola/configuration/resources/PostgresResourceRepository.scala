@@ -6,6 +6,7 @@ import com.augustnagro.magnum.pg.PgCodec
 import com.augustnagro.magnum.pg.json.JsonBDbCodec
 import versola.central.configuration.ResourceUri
 import versola.central.configuration.clients.ClientId
+import versola.central.configuration.edges.EdgeId
 import versola.central.configuration.resources.{
   ResourceEndpointId,
   ResourceEndpointRecord,
@@ -23,6 +24,7 @@ class PostgresResourceRepository(xa: TransactorZIO) extends ResourceRepository, 
   given DbCodec[ResourceId] = DbCodec.StringCodec.biMap(ResourceId(_), identity[String])
   given DbCodec[ResourceUri] = DbCodec.StringCodec.biMap(ResourceUri(_), identity[String])
   given DbCodec[TenantId] = DbCodec.StringCodec.biMap(TenantId(_), identity[String])
+  given DbCodec[EdgeId] = DbCodec.StringCodec.biMap(EdgeId(_), identity[String])
   given DbCodec[ClientId] = DbCodec.StringCodec.biMap(ClientId(_), identity[String])
   given DbCodec[List[ClientId]] =
     PgCodec.SeqCodec[String].biMap(_.map(ClientId(_)).toList, _.map(identity[String]))
@@ -39,10 +41,23 @@ class PostgresResourceRepository(xa: TransactorZIO) extends ResourceRepository, 
       WHERE resource_id = $resourceId
     """.query[ResourceRecord]
 
+  private val resourceColumns =
+    "tenant_id, resource_id, resource, audience, endpoints, secret, previous_secret"
+
   override def getAll: Task[Vector[ResourceRecord]] =
     xa.connectMeasured("get-all-resources"):
       sql"""
         SELECT tenant_id, resource_id, resource, audience, endpoints, secret, previous_secret FROM resources
+      """.query[ResourceRecord].run()
+
+  override def getForEdge(edgeId: EdgeId): Task[Vector[ResourceRecord]] =
+    xa.connectMeasured("get-edge-resources"):
+      sql"""
+        SELECT r.tenant_id, r.resource_id, r.resource, r.audience, r.endpoints, r.secret, r.previous_secret
+        FROM resources r
+        INNER JOIN edge_resources er ON er.resource_id = r.resource_id
+        WHERE er.edge_id = $edgeId
+        ORDER BY r.resource_id
       """.query[ResourceRecord].run()
 
   override def findResource(

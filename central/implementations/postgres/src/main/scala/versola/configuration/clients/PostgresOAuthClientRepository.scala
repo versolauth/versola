@@ -3,6 +3,7 @@ package versola.configuration.clients
 import com.augustnagro.magnum.*
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.central.configuration.clients.{AuthFlow, ClientAlreadyExists, ClientId, OAuthClientRecord, OAuthClientRepository, RegistrationFlow}
+import versola.central.configuration.edges.EdgeId
 import versola.central.configuration.permissions.Permission
 import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.tenants.TenantId
@@ -19,6 +20,7 @@ class PostgresOAuthClientRepository(
 ) extends OAuthClientRepository, BasicCodecs:
 
   given DbCodec[ClientId] = DbCodec.StringCodec.biMap(ClientId(_), identity[String])
+  given DbCodec[EdgeId] = DbCodec.StringCodec.biMap(EdgeId(_), identity[String])
   given DbCodec[TenantId] = DbCodec.StringCodec.biMap(TenantId(_), identity[String])
   given DbCodec[ScopeToken] = DbCodec.StringCodec.biMap(ScopeToken(_), identity[String])
   given DbCodec[Permission] = DbCodec.StringCodec.biMap(Permission(_), identity[String])
@@ -47,6 +49,19 @@ class PostgresOAuthClientRepository(
   override def find(clientId: ClientId): Task[Option[OAuthClientRecord]] =
     xa.connectMeasured("find-client"):
       findClient(clientId).query[OAuthClientRecord].run().headOption
+
+  override def getForEdge(edgeId: EdgeId): Task[Vector[OAuthClientRecord]] =
+    xa.connectMeasured("get-edge-clients"):
+      sql"""
+        SELECT c.id, c.tenant_id, c.client_name, c.redirect_uris, c.scope, c.secret, c.previous_secret,
+               c.access_token_ttl, c.refresh_token_ttl, c.permissions, c.theme, c.auth_flow, c.registration_flow,
+               c.otp_template_id, c.front_channel_logout_uri, c.front_channel_logout_session_required,
+               c.back_channel_logout_uri
+        FROM oauth_clients c
+        INNER JOIN edge_clients ec ON ec.client_id = c.id
+        WHERE ec.edge_id = $edgeId
+        ORDER BY c.id
+      """.query[OAuthClientRecord].run()
 
   override def createClient(client: OAuthClientRecord): IO[ClientAlreadyExists | Throwable, Unit] =
     xa.connectMeasured("create-client"):
