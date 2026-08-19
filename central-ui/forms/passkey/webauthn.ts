@@ -101,3 +101,11 @@ export function submitViaForm(action: string, fields: Record<string, string>): v
   document.body.appendChild(form);
   form.submit();
 }
+
+// Browsers report a user-cancelled passkey prompt as NotAllowedError. Some
+// implementations use AbortError instead, so both are treated as a normal
+// way to leave the passkey flow rather than as an authentication failure.
+export function isPasskeyCancellation(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null || !('name' in error)) return false;
+  return error.name === 'NotAllowedError' || error.name === 'AbortError';
+}
