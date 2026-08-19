@@ -4,7 +4,6 @@ import zio.json.JsonCodec
 import zio.prelude.Equal
 import zio.schema.*
 import zio.Duration
-import zio.durationInt
 
 /** Governs whether and how a client's users are shown an OAuth/OIDC consent screen
   * before an authorization code or token is issued.
@@ -17,5 +16,5 @@ import zio.durationInt
   */
 case class ConsentFlow(
     allowPartial: Boolean,
-    rememberDuration: Option[Duration] = Some(180.days),
+    rememberDuration: Option[Duration],
 ) derives Schema, JsonCodec, Equal

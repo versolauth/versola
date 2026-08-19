@@ -228,6 +228,12 @@ function clientNameFromBackend(name: LocalizedDescription | string | null | unde
   return { ...name };
 }
 
+function sameLocalizedDescription(a: LocalizedDescription, b: LocalizedDescription): boolean {
+  const keys = Object.keys(a);
+  return keys.length === Object.keys(b).length
+    && keys.every(key => a[key] === b[key]);
+}
+
 function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
 }
@@ -1084,7 +1090,9 @@ export async function updateClient(tenantId: string, existing: OAuthClient, clie
     method: 'PUT',
     body: {
       clientId: client.id,
-      clientName: existing.clientName !== client.clientName ? clientNameToBackend(client.clientName) : undefined,
+      clientName: sameLocalizedDescription(existing.clientName, client.clientName)
+        ? undefined
+        : clientNameToBackend(client.clientName),
       redirectUris: patchSet(existing.redirectUris, client.redirectUris),
       scope: patchSet(existing.scope, client.scope),
       permissions: patchSet(existing.permissions, client.permissions),

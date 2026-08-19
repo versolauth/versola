@@ -295,7 +295,7 @@ case class OAuthClientResponse(
     scope: Set[ScopeToken],
     permissions: Set[Permission],
     secretRotation: Boolean,
-      refreshTokenTtl: Long,
+    refreshTokenTtl: Long,
     theme: String,
     authFlow: Option[AuthFlow],
     registrationFlow: Option[RegistrationFlow],
@@ -306,8 +306,25 @@ case class OAuthClientResponse(
     logoUri: Option[String],
     policyUri: Option[String],
     tosUri: Option[String],
-    consentFlow: Option[ConsentFlow],
+    consentFlow: Option[ConsentFlowDto],
 ) derives Schema, JsonCodec
+
+case class ConsentFlowDto(
+    allowPartial: Boolean,
+    rememberDuration: Option[Long],
+) derives Schema, JsonCodec:
+  def toDomain: ConsentFlow =
+    ConsentFlow(
+      allowPartial = allowPartial,
+      rememberDuration = rememberDuration.map(Duration.fromSeconds),
+    )
+
+object ConsentFlowDto:
+  def fromDomain(flow: ConsentFlow): ConsentFlowDto =
+    ConsentFlowDto(
+      allowPartial = flow.allowPartial,
+      rememberDuration = flow.rememberDuration.map(_.toSeconds),
+    )
 
 case class GetAllClientsResponse(
     clients: List[OAuthClientResponse],
@@ -332,7 +349,7 @@ case class CreateClientRequest(
     logoUri: Option[String] = None,
     policyUri: Option[String] = None,
     tosUri: Option[String] = None,
-    consentFlow: Option[ConsentFlow] = None,
+    consentFlow: Option[ConsentFlowDto] = None,
 ) derives Schema, JsonCodec
 
 case class CreateClientResponse(
@@ -361,7 +378,7 @@ case class UpdateClientRequest(
     logoUri: Option[Patch[String]] = None,
     policyUri: Option[Patch[String]] = None,
     tosUri: Option[Patch[String]] = None,
-    consentFlow: Option[Patch[ConsentFlow]] = None,
+    consentFlow: Option[Patch[ConsentFlowDto]] = None,
 ) derives Schema, JsonCodec
 
 case class AuthorizationPresetInput(

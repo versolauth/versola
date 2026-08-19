@@ -244,7 +244,7 @@ object VersolaApp:
               label("message", quoted(line)) +
                 (space + label("stack_trace", cause)).filter(LogFilter.causeNonEmpty),
               label("span_id", formats.spanId),
-              label("traceId_id", formats.traceId),
+              label("trace_id", formats.traceId),
               logAnnotation(Observability.receiveHttp),
               logAnnotation(Observability.sendHttp),
               logAnnotation(Observability.auth),

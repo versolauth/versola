@@ -38,6 +38,16 @@ object dtoSpec extends ZIOSpecDefault:
           set.map(_.registrationFlow) == Right(Some(Patch.Modified(RegistrationFlow.default))),
         )
       },
+      test("a finite consent duration is decoded from seconds") {
+        val decoded = decodeUpdate(
+          ""","consentFlow":{"allowPartial":true,"rememberDuration":1209600}""",
+        )
+        assertTrue(
+          decoded.map(_.consentFlow) == Right(
+            Some(Patch.Modified(ConsentFlowDto(allowPartial = true, rememberDuration = Some(1209600L))))
+          )
+        )
+      },
       test("an absent logout URI means no change, an explicit null clears it") {
         val absent = decodeUpdate("")
         val cleared = decodeUpdate(""","frontChannelLogoutUri":null""")
@@ -49,6 +59,13 @@ object dtoSpec extends ZIOSpecDefault:
         )
       },
     ),
+    test("ConsentFlowDto encodes a finite duration as seconds") {
+      val json = ConsentFlowDto(allowPartial = false, rememberDuration = Some(1209600L)).toJson
+      assertTrue(
+        json.contains("\"rememberDuration\":1209600"),
+        !json.contains("PT"),
+      )
+    },
     test("PatchDescription encodes and decodes correctly") {
       val desc = PatchDescription(add = Map("en" -> "Hello"), delete = Set("fr"))
       val json = desc.toJson

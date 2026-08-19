@@ -7,7 +7,7 @@ import versola.central.configuration.roles.RoleRepository
 import versola.central.configuration.scopes.{OAuthScopeRepository, ScopeToken}
 import versola.central.configuration.sync.{SyncEvent, SyncOps}
 import versola.central.configuration.tenants.{TenantId, TenantRepository}
-import versola.central.configuration.{CreateClientRequest, UpdateClientRequest}
+import versola.central.configuration.{ConsentFlowDto, CreateClientRequest, UpdateClientRequest}
 import versola.util.{CacheSource, Patch, ReloadingCache, Secret, SecureRandom, SecurityService}
 import zio.*
 import zio.http.{Scheme, URL}
@@ -154,7 +154,7 @@ object OAuthClientService:
           logoUri = request.logoUri,
           policyUri = request.policyUri,
           tosUri = request.tosUri,
-          consentFlow = request.consentFlow,
+          consentFlow = request.consentFlow.map(_.toDomain),
         )
         _ <- clientRepository.createClient(client)
       yield secret
@@ -194,7 +194,7 @@ object OAuthClientService:
           logoUri = request.logoUri,
           policyUri = request.policyUri,
           tosUri = request.tosUri,
-          consentFlow = request.consentFlow,
+          consentFlow = request.consentFlow.map(toConsentFlowPatch),
         )
       yield ()
 
@@ -244,6 +244,10 @@ object OAuthClientService:
     private def decodeUrlPatch(patch: Patch[String]): Patch[URL] = patch match
       case Patch.Deleted     => Patch.Deleted
       case Patch.Modified(v) => URL.decode(v).toOption.fold(Patch.Deleted)(Patch.Modified(_))
+
+    private def toConsentFlowPatch(patch: Patch[ConsentFlowDto]): Patch[ConsentFlow] = patch match
+      case Patch.Deleted        => Patch.Deleted
+      case Patch.Modified(flow) => Patch.Modified(flow.toDomain)
 
     private def patchValue(patch: Patch[String]): Option[String] = patch match
       case Patch.Deleted     => None

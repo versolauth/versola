@@ -112,7 +112,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       logoUri = None,
       policyUri = None,
       tosUri = None,
-      consentFlow = None,
+      consentFlow = Some(ConsentFlow(allowPartial = true, rememberDuration = Some(14.days))),
     ),
     OAuthClientRecord(
       id = ClientId("mobile-app"),
@@ -254,7 +254,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
                 scope = Set(readScope),
                 permissions = Set(readPermission),
                 secretRotation = false,
-                  refreshTokenTtl = 7776000L,
+                refreshTokenTtl = 7776000L,
                 theme = "",
                 authFlow = Some(AuthFlow.default),
                 registrationFlow = None,
@@ -265,7 +265,9 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
                 logoUri = None,
                 policyUri = None,
                 tosUri = None,
-                consentFlow = None,
+                consentFlow = Some(
+                  ConsentFlowDto(allowPartial = true, rememberDuration = Some(14.days.toSeconds))
+                ),
               ),
               OAuthClientResponse(
                 id = ClientId("mobile-app"),
@@ -274,7 +276,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
                 scope = Set(writeScope),
                 permissions = Set(writePermission),
                 secretRotation = true,
-                  refreshTokenTtl = 7776000L,
+                refreshTokenTtl = 7776000L,
                 theme = "",
                 authFlow = Some(AuthFlow.default),
                 registrationFlow = None,

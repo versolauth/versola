@@ -56,7 +56,7 @@ object ClientController extends Controller:
               logoUri = client.logoUri,
               policyUri = client.policyUri,
               tosUri = client.tosUri,
-              consentFlow = client.consentFlow,
+              consentFlow = client.consentFlow.map(ConsentFlowDto.fromDomain),
             )
           })
       yield Response.json(GetAllClientsResponse(clients.toList).toJson)

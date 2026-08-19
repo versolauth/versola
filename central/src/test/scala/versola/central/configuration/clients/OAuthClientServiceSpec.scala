@@ -8,7 +8,7 @@ import versola.central.configuration.roles.{RoleRecord, RoleRepository}
 import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.sync.SyncEvent
 import versola.central.configuration.tenants.{TenantId, TenantRecord, TenantRepository}
-import versola.central.configuration.{CreateClientRequest, PatchClientRedirectUris, PatchClientScope, PatchPermissions, UpdateClientRequest}
+import versola.central.configuration.{ConsentFlowDto, CreateClientRequest, PatchClientRedirectUris, PatchClientScope, PatchPermissions, UpdateClientRequest}
 import versola.util.{Patch, RedirectUri, ReloadingCache, Secret, SecureRandom, SecurityService}
 import zio.prelude.EqualOps
 import zio.*
@@ -161,6 +161,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val secretBytes = Array.fill(32)(11.toByte)
       val encryptedBytes = Array.fill(48)(17.toByte)
       val storedSecret = Secret(encryptedBytes)
+      val consentFlow = ConsentFlowDto(allowPartial = true, rememberDuration = Some(14.days.toSeconds))
       val expectedClient = OAuthClientRecord(
         id = clientId,
         tenantId = tenantId,
@@ -182,14 +183,14 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         logoUri = None,
         policyUri = None,
         tosUri = None,
-        consentFlow = None,
+        consentFlow = Some(ConsentFlow(allowPartial = true, rememberDuration = Some(14.days))),
       )
 
       for
         _ <- env.secureRandom.nextBytes.succeedsWith(secretBytes)
         _ <- env.securityService.encryptAes256.succeedsWith(encryptedBytes)
         _ <- env.repository.createClient.succeedsWith(())
-        result <- env.service.registerClient(createRequest)
+        result <- env.service.registerClient(createRequest.copy(consentFlow = Some(consentFlow)))
         created = env.repository.createClient.calls.head
         encryptCall = env.securityService.encryptAes256.calls.head
       yield assertTrue(
@@ -200,10 +201,13 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     },
     test("updateClient maps request to repository call") {
       val env = new Env()
+      val consentFlow = ConsentFlowDto(allowPartial = false, rememberDuration = Some(30.days.toSeconds))
 
       for
         _ <- env.repository.updateClient.succeedsWith(())
-        _ <- env.service.updateClient(updateRequest)
+        _ <- env.service.updateClient(
+          updateRequest.copy(consentFlow = Some(Patch.Modified(consentFlow)))
+        )
       yield assertTrue(
         env.repository.updateClient.calls == List(
           (
@@ -224,7 +228,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
             None,
             None,
             None,
-            None,
+            Some(Patch.Modified(ConsentFlow(allowPartial = false, rememberDuration = Some(30.days)))),
           )
         )
       )

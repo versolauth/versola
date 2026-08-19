@@ -329,8 +329,8 @@ test('configures a consent flow and sends it when creating a client', async ({ p
   await page.getByRole('checkbox', { name: 'Let the user deselect optional scopes' }).check();
 
   const remember = page.getByLabel('Remember', { exact: true });
-  await expect(remember).toHaveValue('forever');
-  await remember.selectOption('days');
+  await expect(remember).toHaveValue('days');
+  await expect(page.getByLabel('Remember duration in days')).toHaveValue('180');
   await page.getByLabel('Remember duration in days').fill('14');
 
   await page.getByRole('textbox', { name: 'Logo URI', exact: true }).fill('https://consenting.example/logo.png');
@@ -346,6 +346,30 @@ test('configures a consent flow and sends it when creating a client', async ({ p
     tosUri: 'https://consenting.example/terms',
   });
   expect(body.consentFlow).toEqual({ allowPartial: true, rememberDuration: 14 * 86400 });
+});
+
+test('reads and updates a finite consent duration as seconds', async ({ page }) => {
+  const api = await loadAdminApp(page, {
+    path: clientsPath,
+    state: {
+      clients: {
+        'tenant-alpha': [{
+          ...alphaClient,
+          consentFlow: { allowPartial: true, rememberDuration: 14 * 86400 },
+        }],
+      },
+    },
+  });
+
+  await clientCard(page, 'Alpha Web').getByRole('button', { name: 'Edit client alpha-web' }).click();
+  await expect(page.getByLabel('Remember', { exact: true })).toHaveValue('days');
+  await expect(page.getByLabel('Remember duration in days')).toHaveValue('14');
+
+  await page.getByLabel('Remember duration in days').fill('30');
+  await page.getByRole('button', { name: 'Update Client', exact: true }).click();
+
+  expect(findRequest(api.requests, 'PUT', '/configuration/clients').body.consentFlow)
+    .toEqual({ allowPartial: true, rememberDuration: 30 * 86400 });
 });
 
 test('explains consent settings with info buttons', async ({ page }) => {
@@ -647,6 +671,21 @@ test('updates a client and sends patch-style changes', async ({ page }) => {
     },
     frontChannelLogoutSessionRequired: false,
   });
+});
+
+test('does not patch a localized client name after reverting an edit', async ({ page }) => {
+  const api = await loadAdminApp(page, {
+    path: clientsPath,
+    state: { clients: { 'tenant-alpha': [alphaClient] } },
+  });
+
+  await clientCard(page, 'Alpha Web').getByRole('button', { name: 'Edit client alpha-web' }).click();
+  const clientName = page.getByLabel('Client Name');
+  await clientName.fill('Temporary name');
+  await clientName.fill('Alpha Web');
+  await page.getByRole('button', { name: 'Update Client', exact: true }).click();
+
+  expect(findRequest(api.requests, 'PUT', '/configuration/clients').body).not.toHaveProperty('clientName');
 });
 
 test('clears the auth flow on an existing client by sending an explicit null', async ({ page }) => {

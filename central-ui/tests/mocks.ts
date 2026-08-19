@@ -22,7 +22,8 @@ function backendPath(pathname: string): string {
 type TenantDto = { id: string; description: string; edgeId?: string | null };
 type BackendAuthFactor = { type: string; required: boolean };
 type BackendAuthFlow = { primary: { credentials: string[]; inlinePassword: boolean; factors: BackendAuthFactor[] }; passkey?: { factors: BackendAuthFactor[] } | null; otpType: 'sms' | 'email' };
-type ClientDto = { id: string; clientName: Record<string, string>; redirectUris: string[]; scope: string[]; permissions: string[]; secretRotation: boolean; refreshTokenTtl?: number; edgeId?: string; authFlow?: BackendAuthFlow | null };
+type BackendConsentFlow = { allowPartial: boolean; rememberDuration: number | null };
+type ClientDto = { id: string; clientName: Record<string, string>; redirectUris: string[]; scope: string[]; permissions: string[]; secretRotation: boolean; refreshTokenTtl?: number; edgeId?: string; authFlow?: BackendAuthFlow | null; consentFlow?: BackendConsentFlow | null };
 type ScopeDto = { scope: string; description: Record<string, string>; claims: Array<{ claim: string; description: Record<string, string> }> };
 type PermissionDto = { permission: string; description: Record<string, string>; endpointIds: ResourceEndpointId[] };
 type InjectTargetDto = 'header' | 'query' | 'body';
@@ -73,6 +74,7 @@ type CreateClientRequest = {
   accessTokenTtl: number;
   refreshTokenTtl?: number;
   authFlow?: BackendAuthFlow | null;
+  consentFlow?: BackendConsentFlow | null;
 };
 type UpdateClientRequest = {
   clientId: string;
@@ -83,6 +85,7 @@ type UpdateClientRequest = {
   accessTokenTtl?: number;
   refreshTokenTtl?: number;
   authFlow?: BackendAuthFlow | null;
+  consentFlow?: BackendConsentFlow | null;
 };
 type CreateScopeRequest = {
   tenantId: string;
@@ -464,6 +467,7 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
           secretRotation: false,
           refreshTokenTtl: payload.refreshTokenTtl ?? 90 * 24 * 60 * 60,
           authFlow: payload.authFlow ?? null,
+          consentFlow: payload.consentFlow ?? null,
         };
 
         state.clients[payload.tenantId] = [createdClient, ...tenantClients];
@@ -493,6 +497,9 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
         }
         if ('authFlow' in payload) {
           client.authFlow = payload.authFlow ?? null;
+        }
+        if ('consentFlow' in payload) {
+          client.consentFlow = payload.consentFlow ?? null;
         }
 
         await route.fulfill({ status: 204, body: '' });
