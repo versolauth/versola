@@ -96,7 +96,10 @@ object ConversationController extends Controller:
         case Error.ConversationExpired => ZIO.succeed(Response.status(Status.Gone))
         case Error.ServiceUnavailable => ZIO.succeed(Response.status(Status.InternalServerError))
         case _: Error => ZIO.succeed(Response.badRequest)
-        case ex: Throwable => ZIO.fail(ex)
+        // Handled locally (rather than re-failed to the global `Observability.handleErrors`
+        // error mapper) so the resulting 500 still carries `no-store` below — this route's
+        // response is never safe to cache, including on unexpected failure.
+        case ex: Throwable => Observability.cause.set(Some(Cause.fail(ex))).as(Response.internalServerError)
       }.map(_.addHeader(Header.CacheControl.NoStore))
     }
 

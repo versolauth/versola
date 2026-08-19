@@ -444,6 +444,29 @@ object ConversationControllerSpec extends UnitSpecBase:
         response.headers.get(Header.CacheControl).contains(Header.CacheControl.NoStore),
       )
     }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging,
+
+    test("GET /challenge/passkey/options returns 500 with no-store on unexpected failure") {
+      for
+        client <- ZIO.service[Client]
+        router = stub[ConversationRouter]
+        configuration = stub[OAuthConfigurationService]
+        renderService = stub[ConversationRenderService]
+        tracing <- NoopTracing.layer.build
+        _ <- TestClient.addRoutes(
+          Observability.handleErrors(
+            ConversationController.routes.provideEnvironment(
+              ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ ZEnvironment(renderService) ++ tracing
+            )
+          )
+        )
+        _ <- router.startPasskeyOptions.failsWith(new RuntimeException("boom"))
+
+        response <- client.batched(Request.get(URL.empty / "challenge" / "passkey" / "options").addHeader(conversationCookie))
+      yield assertTrue(
+        response.status == Status.InternalServerError,
+        response.headers.get(Header.CacheControl).contains(Header.CacheControl.NoStore),
+      )
+    }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging,
     rejectedSubmitTestCase(
       description = "reject login-password violating configured password regex",
       request = Request.post(
