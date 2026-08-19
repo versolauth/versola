@@ -68,6 +68,64 @@ test('creates a scope with claims and shows it in the list', async ({ page }) =>
   });
 });
 
+test('creates localized scope and claim descriptions', async ({ page }) => {
+  const api = await loadAdminApp(page, {
+    path: scopesPath,
+    state: {
+      scopes: { 'tenant-alpha': [] },
+      locales: [
+        { code: 'en', name: 'English', isDefault: true, active: true },
+        { code: 'ru', name: 'Русский', isDefault: false, active: true },
+      ],
+    },
+  });
+
+  await page.getByRole('button', { name: '+ Create Scope', exact: true }).click();
+  await page.getByLabel('Scope ID').fill('profile');
+  const editors = page.locator('versola-scope-form versola-localized-text-editor');
+  await editors.nth(0).locator('input').fill('Profile data');
+  await page.getByRole('tab', { name: 'ru', exact: true }).nth(0).click();
+  await editors.nth(0).locator('input').fill('Данные профиля');
+  await page.getByLabel('Claim ID').fill('name');
+  await editors.nth(1).locator('input').fill('Display name');
+  await page.getByRole('tab', { name: 'ru', exact: true }).nth(1).click();
+  await editors.nth(1).locator('input').fill('Отображаемое имя');
+  await page.getByRole('button', { name: 'Add Claim', exact: true }).click();
+  await page.getByRole('button', { name: 'Create Scope', exact: true }).click();
+
+  expect(findRequest(api.requests, 'POST', '/configuration/scopes').body).toEqual({
+    tenantId: 'tenant-alpha',
+    id: 'profile',
+    description: { en: 'Profile data', ru: 'Данные профиля' },
+    claims: [{ id: 'name', description: { en: 'Display name', ru: 'Отображаемое имя' } }],
+  });
+});
+
+test('edits a localization on an existing claim', async ({ page }) => {
+  const api = await loadAdminApp(page, {
+    path: scopesPath,
+    state: {
+      scopes: { 'tenant-alpha': [openidScope] },
+      locales: [
+        { code: 'en', name: 'English', isDefault: true, active: true },
+        { code: 'ru', name: 'Русский', isDefault: false, active: true },
+      ],
+    },
+  });
+
+  await scopeCard(page, 'openid').getByRole('button', { name: 'Edit scope openid' }).click();
+  const editors = page.locator('versola-scope-form versola-localized-text-editor');
+  await page.getByRole('tab', { name: 'ru', exact: true }).nth(1).click();
+  await editors.nth(1).locator('input').fill('Идентификатор субъекта');
+  await page.getByRole('button', { name: 'Update Scope', exact: true }).click();
+
+  expect(findRequest(api.requests, 'PUT', '/configuration/scopes').body).toMatchObject({
+    patch: {
+      update: [{ id: 'sub', description: { add: { ru: 'Идентификатор субъекта' }, delete: [] } }],
+    },
+  });
+});
+
 test('pressing Enter in claim fields adds the claim instead of submitting the scope form', async ({ page }) => {
   const api = await loadAdminApp(page, {
     path: scopesPath,

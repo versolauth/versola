@@ -1,5 +1,6 @@
 package versola.oauth.conversation
 import versola.auth.model.{OtpCode, Password}
+import versola.oauth.client.model.ScopeToken
 import versola.user.model.Login
 import versola.util.{Email, Phone}
 import zio.http.Form
@@ -36,4 +37,12 @@ case class PasskeySkipSubmission(csrf: String)
   extends Submission derives Schema
   
 case class SetPasswordSubmission(password: Password, csrf: String)
+  extends Submission derives Schema
+
+/** The scope the user left selected on the consent screen. Always carries the full granted set,
+  * including the non-deselectable tokens, so the server validates exactly what was displayed. */
+case class ConsentAllowSubmission(scope: Set[ScopeToken], csrf: String)
+  extends Submission derives Schema
+
+case class ConsentDenySubmission(csrf: String)
   extends Submission derives Schema

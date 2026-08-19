@@ -70,6 +70,18 @@ object Flows:
     "roleIds" -> Json.Arr(Json.Str("user")),
   )
 
+  /** Consent policy that prompts on the first authorization and remembers the grant. */
+  val rememberedConsentFlow: Json = Json.Obj(
+    "allowPartial"     -> Json.Bool(false),
+    "rememberDuration" -> Json.Null,
+  )
+
+  /** Consent policy that permits deselecting optional scopes. */
+  val partialConsentFlow: Json = Json.Obj(
+    "allowPartial"     -> Json.Bool(true),
+    "rememberDuration" -> Json.Null,
+  )
+
   // ── Setup result ────────────────────────────────────────────────────────
 
   /** Everything a test needs to run a flow against a freshly-created client and user. */
@@ -187,11 +199,36 @@ object Flows:
       ).success
     yield Setup(clientId, clientResult.secret, redirectUri, new UUID(0L, 0L), None, Some(email), None, password)
 
+  /** Register a login + inline password client that additionally requires consent. */
+  def setupConsent(
+      consentFlow: Json = rememberedConsentFlow,
+      allowedScopes: Set[String] = Set("openid", "email", "offline_access"),
+      redirectUri: String = "http://localhost:3000",
+  ): RIO[OAuthClient, Setup] =
+    val uid      = UUID.randomUUID().toString.replace("-", "").take(8)
+    val login    = s"consent-user-$uid"
+    val password = s"Pass-$uid-1!"
+    val clientId = s"consent-client-$uid"
+    for
+      oauthClient  <- ZIO.service[OAuthClient]
+      clientResult <- oauthClient.registerClient(
+        clientId,
+        "Consent Test Client",
+        Set(redirectUri),
+        allowedScopes = allowedScopes,
+        authFlow = Some(loginPasswordAuthFlow),
+        consentFlow = Some(consentFlow),
+      ).success
+      userId <- oauthClient.registerUser(login = Some(login))
+      _      <- oauthClient.flushUserOutbox()
+      _      <- oauthClient.setUserPassword(userId, password)
+    yield Setup(clientId, clientResult.secret, redirectUri, userId, Some(login), None, None, password)
+
   // ── Multi-setup helpers ─────────────────────────────────────────────────
 
   /** Identifies a registered auth flow variant in the shared bootstrap data. */
   enum Id:
-    case LoginPassword, EmailOtp, PhoneOtp, PhoneRegistration, EmailRegistration
+    case LoginPassword, EmailOtp, PhoneOtp, PhoneRegistration, EmailRegistration, Consent, ConsentPartial
 
   /** All shared test data for the e2e suite. */
   case class Setups(setups: Map[Id, Setup], client: OAuthClient):
@@ -210,6 +247,8 @@ object Flows:
         phoneOtp <- setupPhoneOtp()
         registration <- setupPhoneRegistration()
         emailRegistration <- setupEmailRegistration()
+        consent <- setupConsent()
+        consentPartial <- setupConsent(consentFlow = partialConsentFlow)
         _       <- client.flushUserOutbox()
         _       <- client.upsertChallengeSettings(
           acrVocabulary = Map(Acr.OtpLevel -> List("otp"), Acr.PasswordLevel -> List("password"), Acr.PasskeyLevel -> List("passkey")),
@@ -222,6 +261,8 @@ object Flows:
           Id.PhoneOtp -> phoneOtp,
           Id.PhoneRegistration -> registration,
           Id.EmailRegistration -> emailRegistration,
+          Id.Consent -> consent,
+          Id.ConsentPartial -> consentPartial,
         ),
         client,
       )

@@ -82,6 +82,8 @@ object TokenResult:
       expiresIn: Long,
       refreshToken: Option[String],
       idToken: Option[String],
+      /** RFC 6749 §5.1: the scope actually granted, present when it differs from the request. */
+      scope: Option[String],
       /** RFC 9396 §7: the authorization details granted, echoed back when the grant carries any. */
       authorizationDetails: Option[Json.Arr],
   ) extends TokenResult
@@ -94,6 +96,7 @@ object TokenResult:
       expires_in: Long,
       refresh_token: Option[String],
       id_token: Option[String],
+      scope: Option[String],
       authorization_details: Option[Json.Arr],
   ) derives JsonDecoder
 
@@ -109,6 +112,7 @@ object TokenResult:
             raw.expires_in,
             raw.refresh_token,
             raw.id_token,
+            raw.scope,
             raw.authorization_details,
           ),
         )
@@ -497,6 +501,19 @@ final class OAuthClient(client: Client, config: E2EConfig):
       cookie,
     ).map(SubmitResult(_))
 
+  /** POST /challenge/consent — grants `scope` (space-delimited, as everywhere else in OAuth). */
+  def submitConsent(cookie: String, scope: Set[String], csrf: String): Task[SubmitResult] =
+    formPost(
+      s"${config.authUrl}/challenge/consent",
+      Map("scope" -> scope.mkString(" "), "csrf" -> csrf),
+      cookie,
+    ).map(SubmitResult(_))
+
+  /** POST /challenge/consent/deny — refuses the grant. */
+  def denyConsent(cookie: String, csrf: String): Task[SubmitResult] =
+    formPost(s"${config.authUrl}/challenge/consent/deny", Map("csrf" -> csrf), cookie)
+      .map(SubmitResult(_))
+
   /** POST /token — exchanges authorization code for tokens. */
   def token(
       code: String,
@@ -687,11 +704,12 @@ final class OAuthClient(client: Client, config: E2EConfig):
       allowedScopes: Set[String] = Set("openid"),
       authFlow: Option[zio.json.ast.Json] = None,
       registrationFlow: Option[zio.json.ast.Json] = None,
+      consentFlow: Option[zio.json.ast.Json] = None,
   ): Task[RegisterClientResult] =
     val body = Body.fromString(OAuthClient.RegisterClientBody(
       tenantId = tenantId,
       id = clientId,
-      clientName = clientName,
+      clientName = Map("en" -> clientName),
       redirectUris = redirectUris,
       allowedScopes = allowedScopes,
       audience = List.empty,
@@ -701,6 +719,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
       theme = "default",
       authFlow = authFlow,
       registrationFlow = registrationFlow,
+      consentFlow = consentFlow,
       otpTemplateId = "default",
       frontChannelLogoutUri = None,
       frontChannelLogoutSessionRequired = false,
@@ -880,7 +899,7 @@ object OAuthClient:
   private[support] case class RegisterClientBody(
       tenantId: String,
       id: String,
-      clientName: String,
+      clientName: Map[String, String],
       redirectUris: Set[String],
       allowedScopes: Set[String],
       audience: List[String],
@@ -890,6 +909,7 @@ object OAuthClient:
       theme: String,
       authFlow: Option[zio.json.ast.Json],
       registrationFlow: Option[zio.json.ast.Json],
+      consentFlow: Option[zio.json.ast.Json],
       otpTemplateId: String,
       frontChannelLogoutUri: Option[String],
       frontChannelLogoutSessionRequired: Boolean,

@@ -2,7 +2,7 @@ package versola.oauth.conversation
 
 import versola.auth.model.{OtpCode, Password}
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.ClientId
+import versola.oauth.client.model.{ClientId, ScopeToken}
 import versola.oauth.conversation.model.Error
 import versola.oauth.model.ConversationCookie
 import versola.user.model.Login
@@ -30,6 +30,8 @@ object ConversationController extends Controller:
     submitPasskeyEnrollRoute,
     submitPasskeySkipRoute,
     submitSetPasswordRoute,
+    submitConsentRoute,
+    submitConsentDenyRoute,
   )
 
   val getFormRoute =
@@ -109,6 +111,12 @@ object ConversationController extends Controller:
 
   val submitSetPasswordRoute =
     submit[SetPasswordSubmission](Method.POST / "challenge" / "set-password")
+
+  val submitConsentRoute =
+    submit[ConsentAllowSubmission](Method.POST / "challenge" / "consent")
+
+  val submitConsentDenyRoute =
+    submit[ConsentDenySubmission](Method.POST / "challenge" / "consent" / "deny")
 
   private def submit[Body <: Submission: FormDecoder](
       pattern: RoutePattern[Unit],
@@ -261,3 +269,15 @@ object ConversationController extends Controller:
       password <- FormDecoder.single[String](form, "password", Right(_))
       csrf     <- FormDecoder.single[String](form, "csrf", Right(_))
     yield SetPasswordSubmission(Password(password), csrf)
+
+  given FormDecoder[ConsentAllowSubmission] = (form: Form) =>
+    for
+      // A space-delimited list, matching how scope travels everywhere else in OAuth. Empty is
+      // legitimate: the client may have requested only optional scopes and the user deselected
+      // all of them.
+      scope <- FormDecoder.optional[Set[ScopeToken]](form, "scope", value => Right(ScopeToken.parseTokens(value).filter(_.nonEmpty)))
+      csrf  <- FormDecoder.single[String](form, "csrf", Right(_))
+    yield ConsentAllowSubmission(scope.getOrElse(Set.empty), csrf)
+
+  given FormDecoder[ConsentDenySubmission] = (form: Form) =>
+    FormDecoder.single[String](form, "csrf", Right(_)).map(ConsentDenySubmission(_))

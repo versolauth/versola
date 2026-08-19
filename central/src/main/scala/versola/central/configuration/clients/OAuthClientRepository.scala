@@ -18,7 +18,7 @@ trait OAuthClientRepository extends CacheSource[Vector[OAuthClientRecord]]:
 
   def updateClient(
       clientId: ClientId,
-      clientName: Option[String],
+      clientName: Option[Map[String, String]],
       patchRedirectUris: PatchClientRedirectUris,
       patchScope: PatchClientScope,
       patchPermissions: PatchPermissions,
@@ -31,6 +31,10 @@ trait OAuthClientRepository extends CacheSource[Vector[OAuthClientRecord]]:
       frontChannelLogoutUri: Option[Patch[URL]],
       frontChannelLogoutSessionRequired: Option[Boolean],
       backChannelLogoutUri: Option[Patch[URL]],
+      logoUri: Option[Patch[String]] = None,
+      policyUri: Option[Patch[String]] = None,
+      tosUri: Option[Patch[String]] = None,
+      consentFlow: Option[Patch[ConsentFlow]] = None,
   ): Task[Unit]
 
   def rotateClientSecret(clientId: ClientId, newSecret: Array[Byte]): Task[Unit]

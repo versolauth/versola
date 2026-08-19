@@ -28,7 +28,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
   private val clientRecord = OAuthClientRecord(
     id = clientId,
     tenantId = tenantId,
-    clientName = "Test Client",
+    clientName = Map("en" -> "Test Client"),
     redirectUris = zio.prelude.NonEmptySet("https://example.com/callback"),
     scope = Set(ScopeToken("read")),
     secret = None,
@@ -42,6 +42,10 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
     backChannelLogoutUri = None,
+    logoUri = None,
+    policyUri = None,
+    tosUri = None,
+    consentFlow = None,
   )
 
   private val theme = ThemeRecord("custom-theme", ".body { color: red; }", Some(tenantId))
@@ -94,6 +98,25 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
     priorSessionId = None,
     resources = Nil,
     authorizationDetails = None,
+    grantedScope = None,
+    promptConsent = false,
+  )
+
+  private val consentScope = ScopeRecord(
+    scope = ScopeToken("profile"),
+    description = Map("en" -> "Profile", "fr" -> "Profil"),
+    claims = Vector(
+      ClaimRecord(Claim("email"), Map("en" -> "Email address", "fr" -> "Adresse e-mail")),
+    ),
+  )
+
+  private val consentRecord = conversationRecord.copy(
+    step = ConversationStep.Consent(Set(ScopeToken("profile")), allowPartial = false),
+  )
+
+  private val consentLocales = Locales(
+    default = "en",
+    locales = Vector(LocaleRecord("en", "English"), LocaleRecord("fr", "French")),
   )
 
   class Env:
@@ -225,6 +248,129 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           body <- response.body.asString
         yield
           assertTrue(!body.contains("\"destination\""))
+      },
+      test("includes all localized scope and claim labels in the consent payload") {
+        val env = Env()
+        val consentForm = formRecord.copy(
+          id = "consent",
+          localizations = Map("en" -> Map("page_title" -> "Authorize"), "fr" -> Map("page_title" -> "Autoriser")),
+        )
+
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          _ <- env.configuration.getTheme.succeedsWith(Some(theme))
+          _ <- env.configuration.getForm.succeedsWith(Some(consentForm))
+          _ <- env.configuration.getLocales.succeedsWith(consentLocales)
+          _ <- env.configuration.getScopes.succeedsWith(Vector(consentScope))
+          response <- env.service.renderStep(consentRecord.copy(userEmail = Some(Email("john@example.com"))), None)
+          body <- response.body.asString
+        yield
+          assertTrue(body.contains("descriptionLocalizations")) &&
+          assertTrue(body.contains("Profile")) &&
+          assertTrue(body.contains("Profil")) &&
+          assertTrue(body.contains("claimLocalizations")) &&
+          assertTrue(body.contains("Email address")) &&
+          assertTrue(body.contains("Adresse e-mail"))
+      },
+      test("puts the openid scope first in the consent payload") {
+        val env = Env()
+        val consentForm = formRecord.copy(
+          id = "consent",
+          localizations = Map("en" -> Map("page_title" -> "Authorize")),
+        )
+        val scopeRecords = Vector(
+          ScopeRecord(
+            scope = ScopeToken("email"),
+            description = Map("en" -> "Email access"),
+            claims = Vector.empty,
+          ),
+          ScopeRecord(
+            scope = ScopeToken("openid"),
+            description = Map("en" -> "OpenID Connect authentication"),
+            claims = Vector.empty,
+          ),
+          ScopeRecord(
+            scope = ScopeToken("offline_access"),
+            description = Map("en" -> "Long-term access"),
+            claims = Vector.empty,
+          ),
+        )
+        val record = consentRecord.copy(
+          step = ConversationStep.Consent(
+            Set(ScopeToken("email"), ScopeToken("openid"), ScopeToken("offline_access")),
+            allowPartial = false,
+          ),
+        )
+
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          _ <- env.configuration.getTheme.succeedsWith(Some(theme))
+          _ <- env.configuration.getForm.succeedsWith(Some(consentForm))
+          _ <- env.configuration.getLocales.succeedsWith(locales)
+          _ <- env.configuration.getScopes.succeedsWith(scopeRecords)
+          response <- env.service.renderStep(record, None)
+          body <- response.body.asString
+          openidIndex = body.indexOf("\"scope\":\"openid\"")
+          emailIndex = body.indexOf("\"scope\":\"email\"")
+          offlineIndex = body.indexOf("\"scope\":\"offline_access\"")
+        yield
+          assertTrue(openidIndex >= 0) &&
+            assertTrue(openidIndex < emailIndex) &&
+            assertTrue(openidIndex < offlineIndex)
+      },
+      test("includes only claims that are available for the authenticated user") {
+        val env = Env()
+        val consentForm = formRecord.copy(
+          id = "consent",
+          localizations = Map("en" -> Map("page_title" -> "Authorize")),
+        )
+        val scope = consentScope.copy(
+          claims = Vector(
+            ClaimRecord(Claim("email"), Map("en" -> "Email address")),
+            ClaimRecord(Claim("email_verified"), Map("en" -> "Email verification status")),
+          ),
+        )
+        val record = consentRecord.copy(userEmail = Some(Email("john@example.com")))
+
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          _ <- env.configuration.getTheme.succeedsWith(Some(theme))
+          _ <- env.configuration.getForm.succeedsWith(Some(consentForm))
+          _ <- env.configuration.getLocales.succeedsWith(locales)
+          _ <- env.configuration.getScopes.succeedsWith(Vector(scope))
+          response <- env.service.renderStep(record, None)
+          body <- response.body.asString
+        yield
+          assertTrue(body.contains("Email address")) &&
+          assertTrue(!body.contains("Email verification status"))
+      },
+      test("treats localized user claims as available and ignores empty values") {
+        val env = Env()
+        val consentForm = formRecord.copy(
+          id = "consent",
+          localizations = Map("en" -> Map("page_title" -> "Authorize")),
+        )
+        val scope = consentScope.copy(
+          claims = Vector(
+            ClaimRecord(Claim("name"), Map("en" -> "Name")),
+            ClaimRecord(Claim("email_verified"), Map("en" -> "Email verification status")),
+          ),
+        )
+        val record = consentRecord.copy(
+          userClaims = Some(Json.Obj("name#en" -> Json.Str("John Doe"), "email_verified" -> Json.Null)),
+        )
+
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          _ <- env.configuration.getTheme.succeedsWith(Some(theme))
+          _ <- env.configuration.getForm.succeedsWith(Some(consentForm))
+          _ <- env.configuration.getLocales.succeedsWith(locales)
+          _ <- env.configuration.getScopes.succeedsWith(Vector(scope))
+          response <- env.service.renderStep(record, None)
+          body <- response.body.asString
+        yield
+          assertTrue(body.contains("Name")) &&
+          assertTrue(!body.contains("Email verification status"))
       },
     ),
     suite("renderExpired")(

@@ -151,6 +151,23 @@ export function validateLogoutUri(uri: string): { valid: boolean; error?: string
   }
 }
 
+/** Consent-screen links are opened or loaded by a browser, so only absolute HTTPS
+ * URLs are accepted. Native-app custom schemes are not valid here. */
+export function validateConsentUri(uri: string): { valid: boolean; error?: string } {
+  const trimmed = uri.trim();
+  if (!trimmed) return { valid: true };
+
+  try {
+    const url = new URL(trimmed);
+    if (url.protocol !== 'https:' || !url.hostname) {
+      return { valid: false, error: 'Consent URI must use an absolute https:// URL' };
+    }
+    return { valid: true };
+  } catch {
+    return { valid: false, error: 'Invalid consent URI format' };
+  }
+}
+
 /**
  * Validates resource URI according to backend ResourceUri rules
  * - Must be absolute URI

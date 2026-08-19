@@ -19,7 +19,7 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
   val privateClient = OAuthClientRecord(
     id = clientId1,
     tenantId = tenantId,
-    clientName = "Private",
+    clientName = Map("en" -> "Private"),
     redirectUris = NonEmptySet("https://example.com/callback"),
     scope = Set(ScopeToken("read")),
     secret = Some(testSecret),
@@ -33,11 +33,15 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
     backChannelLogoutUri = None,
+    logoUri = None,
+    policyUri = None,
+    tosUri = None,
+    consentFlow = None,
   )
   val publicClient = OAuthClientRecord(
     id = publicClientId,
     tenantId = tenantId,
-    clientName = "Public",
+    clientName = Map("en" -> "Public"),
     redirectUris = NonEmptySet("https://public.example.com/callback"),
     scope = Set(ScopeToken("read")),
     secret = None,
@@ -51,9 +55,13 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
     backChannelLogoutUri = None,
+    logoUri = None,
+    policyUri = None,
+    tosUri = None,
+    consentFlow = None,
   )
 
-  val testScopes = Vector(ScopeRecord(ScopeToken("read"), Vector.empty))
+  val testScopes = Vector(ScopeRecord(ScopeToken("read"), Map("en" -> "Read access"), Vector.empty))
   val testForm = FormRecord("form-1", 1, true, "body{}", None, None, Map.empty, Vector.empty)
   val testTheme = ThemeRecord("default", "body{}", None)
   val testLocales = Locales(Vector(LocaleRecord("en", "English")), "en")

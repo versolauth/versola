@@ -22,7 +22,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
   val privateClient1 = OAuthClientRecord(
     id = clientId1,
     tenantId = TenantId("default"),
-    clientName = "Private 1",
+    clientName = Map("en" -> "Private 1"),
     redirectUris = NonEmptySet("https://example.com/callback"),
     scope = Set(ScopeToken("read"), ScopeToken("write")),
     secret = Some(testSecret),
@@ -36,11 +36,15 @@ object OAuthClientServiceSpec extends UnitSpecBase:
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
     backChannelLogoutUri = None,
+    logoUri = None,
+    policyUri = None,
+    tosUri = None,
+    consentFlow = None,
   )
   val privateClient2 = OAuthClientRecord(
     id = clientId2,
     tenantId = TenantId("default"),
-    clientName = "Private 2",
+    clientName = Map("en" -> "Private 2"),
     redirectUris = NonEmptySet("https://example2.com/callback"),
     scope = Set(ScopeToken("read")),
     secret = Some(testSecret),
@@ -54,11 +58,15 @@ object OAuthClientServiceSpec extends UnitSpecBase:
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
     backChannelLogoutUri = None,
+    logoUri = None,
+    policyUri = None,
+    tosUri = None,
+    consentFlow = None,
   )
   val publicClient = OAuthClientRecord(
     id = publicClientId,
     tenantId = TenantId("default"),
-    clientName = "Public",
+    clientName = Map("en" -> "Public"),
     redirectUris = NonEmptySet("https://public.example.com/callback"),
     scope = Set(ScopeToken("read")),
     secret = None,
@@ -72,16 +80,25 @@ object OAuthClientServiceSpec extends UnitSpecBase:
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
     backChannelLogoutUri = None,
+    logoUri = None,
+    policyUri = None,
+    tosUri = None,
+    consentFlow = None,
   )
   val testClients = Map(clientId1 -> privateClient1, clientId2 -> privateClient2, publicClientId -> publicClient)
   val testScopes = Vector(
     ScopeRecord(
       scope = ScopeToken("read"),
-      claims = Vector(ClaimRecord(claim = Claim("sub")), ClaimRecord(claim = Claim("name"))),
+      description = Map("en" -> "Read access"),
+      claims = Vector(
+        ClaimRecord(claim = Claim("sub"), description = Map("en" -> "Subject")),
+        ClaimRecord(claim = Claim("name"), description = Map("en" -> "Name")),
+      ),
     ),
     ScopeRecord(
       scope = ScopeToken("write"),
-      claims = Vector(ClaimRecord(claim = Claim("email"))),
+      description = Map("en" -> "Write access"),
+      claims = Vector(ClaimRecord(claim = Claim("email"), description = Map("en" -> "Email"))),
     ),
   )
 

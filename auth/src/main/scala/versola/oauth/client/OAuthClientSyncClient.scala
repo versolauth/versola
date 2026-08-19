@@ -1,6 +1,6 @@
 package versola.oauth.client
 
-import versola.oauth.client.model.{AuthFlow, ClientId, OAuthClientRecord, RegistrationFlow, ScopeToken, TenantId}
+import versola.oauth.client.model.{AuthFlow, ClientId, ConsentFlow, OAuthClientRecord, RegistrationFlow, ScopeToken, TenantId}
 import versola.util.{Base64, CacheSource, CoreConfig, Secret, SecurityService}
 import zio.http.{Request, URL}
 import zio.json.JsonCodec
@@ -47,6 +47,10 @@ object OAuthClientSyncClient:
             frontChannelLogoutUri = client.frontChannelLogoutUri.flatMap(URL.decode(_).toOption),
             frontChannelLogoutSessionRequired = client.frontChannelLogoutSessionRequired,
             backChannelLogoutUri = client.backChannelLogoutUri.flatMap(URL.decode(_).toOption),
+            logoUri = client.logoUri,
+            policyUri = client.policyUri,
+            tosUri = client.tosUri,
+            consentFlow = client.consentFlow,
           )
         }
       yield decryptedClients.map(it => it.id -> it).toMap
@@ -63,7 +67,7 @@ object OAuthClientSyncClient:
     private case class OAuthClientRecordWithEncryptedSecrets(
         id: ClientId,
         tenantId: TenantId,
-        clientName: String,
+        clientName: Map[String, String],
         redirectUris: NonEmptySet[String],
         scope: Set[ScopeToken],
         secret: Option[String],
@@ -77,6 +81,10 @@ object OAuthClientSyncClient:
         frontChannelLogoutUri: Option[String],
         frontChannelLogoutSessionRequired: Boolean,
         backChannelLogoutUri: Option[String],
+        logoUri: Option[String],
+        policyUri: Option[String],
+        tosUri: Option[String],
+        consentFlow: Option[ConsentFlow],
     ) derives JsonCodec
 
     private case class OAuthClientsSyncResponse(

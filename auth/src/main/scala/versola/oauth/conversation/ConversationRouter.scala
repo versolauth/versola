@@ -185,6 +185,13 @@ object ConversationRouter:
               case other: ConversationResult.Render =>
                 ZIO.succeed(other)
 
+        case (submitted: ConsentAllowSubmission, ConversationRecord.Consent(consentStep)) =>
+          conversationService.allowConsent(authId, conversation, consentStep, submitted.scope)
+            .tap(observeConsent)
+
+        case (_: ConsentDenySubmission, ConversationRecord.Consent(_)) =>
+          conversationService.accessDenied(authId, conversation).zipLeft(AuthMetrics.stepFailed("consent"))
+
         case _ =>
           // Submission doesn't match the conversation's current step, e.g. a stale form
           // (browser back/forward, double submit) or a tampered request.
@@ -393,6 +400,11 @@ object ConversationRouter:
         case _ =>
           AuthMetrics.stepFailed("passkey")
 
+    private def observeConsent(result: ConversationResult.Render): UIO[Unit] =
+      result match
+        case ConversationResult.Complete(_, _, _, _, _, _, _) => AuthMetrics.stepPassed("consent")
+        case _ => AuthMetrics.stepFailed("consent")
+
     private def observePasskeyEnrollment(result: ConversationResult): UIO[Unit] =
       result match
         case ConversationResult.Complete(_, _, _, _, _, _, _) | ConversationResult.StepPassed(_) =>
@@ -409,4 +421,5 @@ object ConversationRouter:
         case _: ConversationStep.Password => "password"
         case _: ConversationStep.SetPassword => "set_password"
         case _: ConversationStep.PasskeyEnroll => "passkey_enroll"
+        case _: ConversationStep.Consent => "consent"
         case ConversationStep.AccessDenied => "access_denied"

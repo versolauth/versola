@@ -5,6 +5,7 @@ import versola.oauth.authorize.model.{AuthorizeRequest, AuthorizeResponse, Error
 import versola.oauth.jwks.JwksService
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{Acr, AuthFactor, AuthFactorType, AuthFlow, AuthMethodRef, ClientId, OAuthClientRecord, OtpType, PassedAuthFactor, PassedFactorRecord, PrimaryAuthFlow, PrimaryCredential, ScopeToken, TenantId}
+import versola.oauth.consent.{ConsentDecision, ConsentService}
 import versola.oauth.conversation.{ConversationRepository, ConversationResult, ConversationRouter, EmailSubmission, PhoneSubmission}
 import versola.oauth.model.{AccessToken, AuthorizationCode, CodeChallenge, CodeChallengeMethod, State}
 import versola.oauth.session.SessionService
@@ -48,7 +49,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
   val clientWithOtpFlow = OAuthClientRecord(
     id = clientId,
     tenantId = TenantId("default"),
-    clientName = "Test Client",
+    clientName = Map("en" -> "Test Client"),
     redirectUris = NonEmptySet("https://example.com/callback"),
     scope = Set(ScopeToken("openid")),
     secret = None,
@@ -62,6 +63,10 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
     backChannelLogoutUri = None,
+    logoUri = None,
+    policyUri = None,
+    tosUri = None,
+    consentFlow = None,
   )
 
   val baseRequest = AuthorizeRequest(
@@ -115,6 +120,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
     val jwksService = TestEnvConfig.jwksService
     val conversationRouter = stub[ConversationRouter]
     val acrResolver = stub[AcrResolutionService]
+    val consentService = stub[ConsentService]
     val service = AuthorizeEndpointService.Impl(
       conversationRepository,
       configurationService,
@@ -129,6 +135,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
       jwksService,
       conversationRouter,
       acrResolver,
+      consentService,
     )
 
   val phoneHint = Phone("+12025551234")
@@ -143,6 +150,26 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
     passkey = None,
     equivalents = Map.empty,
     otpType = OtpType.email,
+  )
+
+  /** Everything the silent authorization path reaches for once consent is settled. */
+  def silentAuthorizeStubs(env: Env) =
+    for
+      _ <- env.configurationService.getAcrVocabulary.succeedsWith(Map.empty)
+      _ <- env.configurationService.getSessionIdleTtl.succeedsWith(Option.empty[zio.Duration])
+      _ <- env.sessionService.registerClient.succeedsWith(())
+      _ <- env.authPropertyGenerator.nextAuthorizationCode.succeedsWith(AuthorizationCode(Array.fill(16)(3.toByte)))
+      _ <- env.authPropertyGenerator.nextAccessToken.succeedsWith(AccessToken(Array.fill(16)(4.toByte)))
+      _ <- env.securityService.mac.succeedsWith(MAC(Array.fill(32)(2.toByte)))
+      _ <- env.authorizationCodeRepository.create.succeedsWith(())
+      _ <- env.secureRandom.nextUUIDv7.succeedsWith(UUID.randomUUID())
+    yield ()
+
+  val clientWithConsent = clientWithOtpFlow.copy(
+    consentFlow = Some(versola.oauth.client.model.ConsentFlow(
+      allowPartial = false,
+      rememberDuration = None,
+    )),
   )
 
   val clientWithPasswordFlow = clientWithOtpFlow.copy(authFlow = Some(passwordFlow))
@@ -187,6 +214,8 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
     priorSessionId = None,
     resources = Nil,
     authorizationDetails = None,
+    grantedScope = None,
+    promptConsent = false,
   )
 
   val spec = suite("AuthorizeEndpointService")(
@@ -1006,4 +1035,132 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
       )
     },
 
+    test("skip the consent decision entirely for a client without a consent flow") {
+      val env = Env()
+      val session = sessionWithAmr(Map(PassedAuthFactor.otp -> PassedFactorRecord(now, Set(AuthMethodRef.otp))))
+      for
+        _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
+        _ <- env.sessionService.find.succeedsWith(Some(SessionInfo(sessionMac, session)))
+        _ <- silentAuthorizeStubs(env)
+        result <- env.service.authorize(baseRequest.copy(sessionId = Some(rawSessionId)))
+        decideTimes = env.consentService.decide.times
+      yield assertTrue(result.isInstanceOf[AuthorizeResponse.Authorized], decideTimes == 0)
+    },
+    test("silently authorize with the granted scope when consent is already satisfied") {
+      val env = Env()
+      val session = sessionWithAmr(Map(PassedAuthFactor.otp -> PassedFactorRecord(now, Set(AuthMethodRef.otp))))
+      for
+        _ <- env.configurationService.find.succeedsWith(Some(clientWithConsent))
+        _ <- env.sessionService.find.succeedsWith(Some(SessionInfo(sessionMac, session)))
+        _ <- env.consentService.decide.succeedsWith(ConsentDecision.Satisfied(Set(ScopeToken.OpenId)))
+        _ <- silentAuthorizeStubs(env)
+        result <- env.service.authorize(baseRequest.copy(sessionId = Some(rawSessionId)))
+        createCalls = env.authorizationCodeRepository.create.calls
+      yield assertTrue(
+        result.isInstanceOf[AuthorizeResponse.Authorized],
+        createCalls.head._2.scope == Set(ScopeToken.OpenId),
+      )
+    },
+    test("issue a code for the narrowed grant rather than the requested scope") {
+      val env = Env()
+      val session = sessionWithAmr(Map(PassedAuthFactor.otp -> PassedFactorRecord(now, Set(AuthMethodRef.otp))))
+      val request = baseRequest.copy(
+        sessionId = Some(rawSessionId),
+        scope = Set(ScopeToken.OpenId, ScopeToken("profile")),
+      )
+      for
+        _ <- env.configurationService.find.succeedsWith(Some(clientWithConsent))
+        _ <- env.sessionService.find.succeedsWith(Some(SessionInfo(sessionMac, session)))
+        _ <- env.consentService.decide.succeedsWith(ConsentDecision.Satisfied(Set(ScopeToken.OpenId)))
+        _ <- silentAuthorizeStubs(env)
+        _ <- env.service.authorize(request)
+        createCalls = env.authorizationCodeRepository.create.calls
+      yield assertTrue(createCalls.head._2.scope == Set(ScopeToken.OpenId))
+    },
+    test("create a conversation that lands on consent when a grant is still required") {
+      val env = Env()
+      val uuid = UUID.randomUUID()
+      val session = sessionWithAmr(Map(PassedAuthFactor.otp -> PassedFactorRecord(now, Set(AuthMethodRef.otp))))
+      for
+        _ <- env.configurationService.find.succeedsWith(Some(clientWithConsent))
+        _ <- env.sessionService.find.succeedsWith(Some(SessionInfo(sessionMac, session)))
+        _ <- env.configurationService.getAcrVocabulary.succeedsWith(Map.empty)
+        _ <- env.configurationService.getSessionIdleTtl.succeedsWith(Option.empty[zio.Duration])
+        _ <- env.consentService.decide.succeedsWith(ConsentDecision.Required(Set(ScopeToken.OpenId)))
+        _ <- env.configurationService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
+        _ <- env.userRepository.find.succeedsWith(Some(UserRecord.empty(session.userId)))
+        _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
+        _ <- env.secureRandom.nextAlphanumeric.succeedsWith("testcsrf1")
+        _ <- env.conversationRepository.create.succeedsWith(())
+        _ <- env.conversationRouter.advance.succeedsWith(())
+        result <- env.service.authorize(baseRequest.copy(sessionId = Some(rawSessionId)))
+        createCalls = env.conversationRepository.create.calls
+        advanceCalls = env.conversationRouter.advance.calls
+      yield assertTrue(
+        result == AuthorizeResponse.Initialize(versola.oauth.conversation.model.AuthId(uuid)),
+        // The user is already known, so the conversation advances straight to consent.
+        createCalls.head._2.userId == Some(session.userId),
+        advanceCalls.nonEmpty,
+      )
+    },
+    test("fail with ConsentRequired when a grant is needed and prompt=none") {
+      val env = Env()
+      val session = sessionWithAmr(Map(PassedAuthFactor.otp -> PassedFactorRecord(now, Set(AuthMethodRef.otp))))
+      for
+        _ <- env.configurationService.find.succeedsWith(Some(clientWithConsent))
+        _ <- env.sessionService.find.succeedsWith(Some(SessionInfo(sessionMac, session)))
+        _ <- env.configurationService.getAcrVocabulary.succeedsWith(Map.empty)
+        _ <- env.configurationService.getSessionIdleTtl.succeedsWith(Option.empty[zio.Duration])
+        _ <- env.consentService.decide.succeedsWith(ConsentDecision.Required(Set(ScopeToken.OpenId)))
+        _ <- env.secureRandom.nextUUIDv7.succeedsWith(UUID.randomUUID())
+        result <- env.service.authorize(baseRequest.copy(sessionId = Some(rawSessionId), prompt = Set(Prompt.none))).flip
+        createTimes = env.conversationRepository.create.times
+      yield assertTrue(
+        result == Error.ConsentRequired(redirectUri, baseRequest.state),
+        createTimes == 0,
+      )
+    },
+    test("carry prompt=consent into the conversation and forward the prompt to the decision") {
+      val env = Env()
+      val uuid = UUID.randomUUID()
+      val session = sessionWithAmr(Map(PassedAuthFactor.otp -> PassedFactorRecord(now, Set(AuthMethodRef.otp))))
+      for
+        _ <- env.configurationService.find.succeedsWith(Some(clientWithConsent))
+        _ <- env.sessionService.find.succeedsWith(Some(SessionInfo(sessionMac, session)))
+        _ <- env.configurationService.getAcrVocabulary.succeedsWith(Map.empty)
+        _ <- env.configurationService.getSessionIdleTtl.succeedsWith(Option.empty[zio.Duration])
+        _ <- env.consentService.decide.succeedsWith(ConsentDecision.Required(Set(ScopeToken.OpenId)))
+        _ <- env.configurationService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
+        _ <- env.userRepository.find.succeedsWith(Some(UserRecord.empty(session.userId)))
+        _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
+        _ <- env.secureRandom.nextAlphanumeric.succeedsWith("testcsrf1")
+        _ <- env.conversationRepository.create.succeedsWith(())
+        _ <- env.conversationRouter.advance.succeedsWith(())
+        _ <- env.service.authorize(baseRequest.copy(sessionId = Some(rawSessionId), prompt = Set(Prompt.consent)))
+        createCalls = env.conversationRepository.create.calls
+        decideCalls = env.consentService.decide.calls
+      yield assertTrue(
+        createCalls.head._2.promptConsent,
+        decideCalls.map(_._4) == List(Set(Prompt.consent)),
+      )
+    },
+    test("resolve consent only after the authentication factors are satisfied") {
+      val env = Env()
+      val uuid = UUID.randomUUID()
+      val session = sessionWithAmr(Map.empty)
+      for
+        _ <- env.configurationService.find.succeedsWith(Some(clientWithConsent))
+        _ <- env.sessionService.find.succeedsWith(Some(SessionInfo(sessionMac, session)))
+        _ <- env.configurationService.getAcrVocabulary.succeedsWith(Map.empty)
+        _ <- env.configurationService.getSessionIdleTtl.succeedsWith(Option.empty[zio.Duration])
+        _ <- env.configurationService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
+        _ <- env.userRepository.find.succeedsWith(Some(UserRecord.empty(session.userId)))
+        _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
+        _ <- env.secureRandom.nextAlphanumeric.succeedsWith("testcsrf1")
+        _ <- env.conversationRepository.create.succeedsWith(())
+        _ <- env.conversationRouter.advance.succeedsWith(())
+        _ <- env.service.authorize(baseRequest.copy(sessionId = Some(rawSessionId)))
+        decideTimes = env.consentService.decide.times
+      yield assertTrue(decideTimes == 0)
+    },
   )

@@ -258,8 +258,8 @@ object VersolaApp:
               label("thread", fiberId),
               label("message", quoted(line)) +
                 (space + label("stack_trace", cause)).filter(LogFilter.causeNonEmpty),
-              formats.spanIdLabel,
-              formats.traceIdLabel,
+              label("span_id", formats.spanId),
+              label("trace_id", formats.traceId),
               logAnnotation(Observability.receiveHttp),
               logAnnotation(Observability.sendHttp),
               logAnnotation(Observability.auth),

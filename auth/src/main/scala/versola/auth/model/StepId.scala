@@ -8,4 +8,5 @@ object StepId:
   case object Password extends StepId
   case object SetPassword extends StepId
   case object PasskeyEnroll extends StepId
+  case object Consent extends StepId
   case object AccessDenied extends StepId

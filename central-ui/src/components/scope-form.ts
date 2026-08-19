@@ -2,13 +2,15 @@ import { LitElement, html, css } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
 import { buttonStyles, cardStyles, formStyles, iconActionStyles } from '../styles/components';
-import { OAuthScope, OAuthClaim } from '../types';
+import { Locale, OAuthScope, OAuthClaim } from '../types';
 import { validateScopeId } from '../utils/validators';
 import './nav-toggle';
+import './localized-text-editor';
 
 @customElement('versola-scope-form')
 export class VersolaScopeForm extends LitElement {
   @property({ type: Object }) scope: OAuthScope | null = null;
+  @property({ attribute: false }) locales: Locale[] = [];
   
   @state() private formData: Partial<OAuthScope> = {
     id: '',
@@ -17,7 +19,7 @@ export class VersolaScopeForm extends LitElement {
   };
 
   @state() private newClaimId = '';
-  @state() private newClaimDescEn = '';
+  @state() private newClaimDescription: Record<string, string> = { en: '' };
   static styles = [
     theme,
     buttonStyles,
@@ -168,6 +170,13 @@ export class VersolaScopeForm extends LitElement {
     this.formData = { ...this.formData, id: value };
   }
 
+  private updateClaimDescription(claimId: string, description: Record<string, string>) {
+    this.formData = {
+      ...this.formData,
+      claims: (this.formData.claims || []).map(claim => claim.id === claimId ? { ...claim, description } : claim),
+    };
+  }
+
   private get isScopeIdInvalid() {
     const scopeId = (this.formData.id || '').trim();
     return !this.scope && scopeId.length > 0 && !validateScopeId(scopeId);
@@ -181,11 +190,14 @@ export class VersolaScopeForm extends LitElement {
   }
 
   private addClaim() {
-    if (this.newClaimId.trim() && this.newClaimDescEn.trim()) {
+    const description = Object.fromEntries(
+      Object.entries(this.newClaimDescription).filter(([, value]) => value.trim()),
+    );
+    if (this.newClaimId.trim() && description.en) {
       const newClaim: OAuthClaim = {
         id: this.newClaimId.trim(),
         scopeId: this.formData.id || '',
-        description: { en: this.newClaimDescEn.trim() },
+        description,
       };
 
       this.formData = {
@@ -194,7 +206,7 @@ export class VersolaScopeForm extends LitElement {
       };
 
       this.newClaimId = '';
-      this.newClaimDescEn = '';
+      this.newClaimDescription = { en: '' };
     }
   }
 
@@ -245,19 +257,21 @@ export class VersolaScopeForm extends LitElement {
             ` : ''}
 
             <div class="form-group">
-              <label for="scope-description">Description *</label>
-              <input
-                type="text"
-                id="scope-description"
-                class="compact-input"
-                .value=${this.formData.description?.en || ''}
-                @input=${(e: Event) => this.formData = {
+              <label>Description *</label>
+              <versola-localized-text-editor
+                .value=${this.formData.description || { en: '' }}
+                .locales=${this.locales}
+                fieldId="scope-description"
+                label="Description"
+                .required=${true}
+                .showLabel=${false}
+                .showRequiredIndicator=${true}
+                .selectorBelowInput=${true}
+                @localized-change=${(e: CustomEvent<{ value: Record<string, string> }>) => this.formData = {
                   ...this.formData,
-                  description: { ...this.formData.description, en: (e.target as HTMLInputElement).value }
+                  description: e.detail.value,
                 }}
-                required
-                placeholder="e.g., User profile data"
-              />
+              ></versola-localized-text-editor>
             </div>
 
             <div class="claims-section">
@@ -267,7 +281,16 @@ export class VersolaScopeForm extends LitElement {
                 <div class="claim-item">
                   <div class="claim-content">
                     <div class="claim-name">${claim.id}</div>
-                    <div class="claim-description">${claim.description.en}</div>
+                    <versola-localized-text-editor
+                      .value=${claim.description}
+                      .locales=${this.locales}
+                      fieldId=${`claim-description-${claim.id}`}
+                      label=${`Description for claim ${claim.id}`}
+                      .required=${true}
+                      .showLabel=${false}
+                      .selectorBelowInput=${true}
+                      @localized-change=${(e: CustomEvent<{ value: Record<string, string> }>) => this.updateClaimDescription(claim.id, e.detail.value)}
+                    ></versola-localized-text-editor>
                   </div>
                   <button
                     type="button"
@@ -290,14 +313,17 @@ export class VersolaScopeForm extends LitElement {
                   @keydown=${this.handleClaimInputKeydown}
                   placeholder="Claim ID (e.g., name)"
                 />
-                <input
-                  type="text"
-                  aria-label="Claim Description"
-                  .value=${this.newClaimDescEn}
-                  @input=${(e: Event) => this.newClaimDescEn = (e.target as HTMLInputElement).value}
+                <versola-localized-text-editor
+                  .value=${this.newClaimDescription}
+                  .locales=${this.locales}
+                  fieldId="new-claim-description"
+                  label="Claim Description"
+                  .required=${true}
+                  .showLabel=${false}
+                  .selectorBelowInput=${true}
+                  @localized-change=${(e: CustomEvent<{ value: Record<string, string> }>) => this.newClaimDescription = e.detail.value}
                   @keydown=${this.handleClaimInputKeydown}
-                  placeholder="Description"
-                />
+                ></versola-localized-text-editor>
                 <button type="button" class="btn btn-secondary" @click=${this.addClaim}>
                   Add Claim
                 </button>

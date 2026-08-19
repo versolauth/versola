@@ -53,6 +53,10 @@ object ClientController extends Controller:
               frontChannelLogoutUri = client.frontChannelLogoutUri.map(_.encode),
               frontChannelLogoutSessionRequired = client.frontChannelLogoutSessionRequired,
               backChannelLogoutUri = client.backChannelLogoutUri.map(_.encode),
+              logoUri = client.logoUri,
+              policyUri = client.policyUri,
+              tosUri = client.tosUri,
+              consentFlow = client.consentFlow.map(ConsentFlowDto.fromDomain),
             )
           })
       yield Response.json(GetAllClientsResponse(clients.toList).toJson)
@@ -98,6 +102,10 @@ object ClientController extends Controller:
             frontChannelLogoutUri = client.frontChannelLogoutUri.map(_.encode),
             frontChannelLogoutSessionRequired = client.frontChannelLogoutSessionRequired,
             backChannelLogoutUri = client.backChannelLogoutUri.map(_.encode),
+            logoUri = client.logoUri,
+            policyUri = client.policyUri,
+            tosUri = client.tosUri,
+            consentFlow = client.consentFlow,
           )
         }
       yield Response.json(GetOAuthClientsSyncResponse(clients = encryptedClients).toJson)
@@ -123,6 +131,8 @@ object ClientController extends Controller:
             ZIO.succeed:
               Response.text("A client can only have one of frontChannelLogoutUri or backChannelLogoutUri configured")
                 .status(Status.BadRequest)
+          case error: InvalidConsentUri =>
+            ZIO.succeed(Response.text(error.getMessage).status(Status.BadRequest))
           case error: InvalidRegistrationConfiguration =>
             ZIO.succeed:
               Response.text(s"Invalid registration configuration: ${error.reason}").status(Status.BadRequest)
@@ -146,6 +156,8 @@ object ClientController extends Controller:
             ZIO.succeed:
               Response.text("A client can only have one of frontChannelLogoutUri or backChannelLogoutUri configured")
                 .status(Status.BadRequest)
+          case error: InvalidConsentUri =>
+            ZIO.succeed(Response.text(error.getMessage).status(Status.BadRequest))
           case error: InvalidRegistrationConfiguration =>
             ZIO.succeed:
               Response.text(s"Invalid registration configuration: ${error.reason}").status(Status.BadRequest)

@@ -2,8 +2,8 @@ import { LitElement, html, css, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
 import { badgeStyles, buttonStyles, cardStyles, formStyles, iconActionStyles } from '../styles/components';
-import type { FormRecord, Locale, OtpTemplateRecord } from '../types';
-import { fetchForms, fetchLocales, fetchOtpTemplates, updateLocales, setDefaultLocale } from '../utils/central-api';
+import type { Locale } from '../types';
+import { fetchLocales, updateLocales, setDefaultLocale } from '../utils/central-api';
 import './content-header';
 import './error-card';
 import './loading-cards';
@@ -44,8 +44,6 @@ export class VersolaLocalesList extends LitElement {
   @property({ type: Boolean }) canManage = false;
 
   @state() private locales: Locale[] = [];
-  @state() private forms: FormRecord[] = [];
-  @state() private otpTemplates: OtpTemplateRecord[] = [];
   @state() private isLoading = false;
   @state() private errorMessage = '';
   @state() private editing = false;
@@ -171,48 +169,18 @@ export class VersolaLocalesList extends LitElement {
     this.loadData();
   }
 
-  updated(changed: Map<string, unknown>) {
-    if (changed.has('tenantId')) {
-      void this.loadOtpTemplates();
-    }
-  }
-
   private async loadData() {
     this.isLoading = true;
     this.errorMessage = '';
     try {
-      const [locales, forms] = await Promise.all([fetchLocales(), fetchForms()]);
+      const locales = await fetchLocales();
       this.locales = locales;
-      this.forms = forms;
-      await this.loadOtpTemplates();
     } catch (e) {
       this.errorMessage = e instanceof Error ? e.message : 'Failed to load locales';
     } finally {
       this.isLoading = false;
     }
   }
-
-  private async loadOtpTemplates() {
-    if (!this.tenantId) {
-      this.otpTemplates = [];
-      this.errorMessage = '';
-      return;
-    }
-    this.errorMessage = '';
-    try {
-      this.otpTemplates = await fetchOtpTemplates(this.tenantId);
-    } catch (e) {
-      this.errorMessage = e instanceof Error ? e.message : 'Failed to load OTP templates';
-    }
-  }
-
-  /** Returns true when there is at least one form localization and one OTP template localization for the given locale code. */
-  private canActivateLocale(code: string): boolean {
-    const hasFormLocale = this.forms.some(form => code in form.localizations);
-    const hasOtpLocale = this.otpTemplates.some(template => code in template.localizations);
-    return hasFormLocale && hasOtpLocale;
-  }
-
 
   private startEdit() {
     this.draftLocales = this.locales.map(l => ({ ...l }));
@@ -271,7 +239,7 @@ export class VersolaLocalesList extends LitElement {
 
   private async confirmEdit() {
     const draftCodes = new Set(this.draftLocales.map(l => l.code));
-    // Send all draft locales (upsert): captures new locales + active-flag changes for existing ones.
+    // Activation is validated by the backend as part of this update.
     const add = this.draftLocales;
     const remove = this.locales.filter(l => !draftCodes.has(l.code)).map(l => l.code);
     this.saving = true;
@@ -322,15 +290,10 @@ export class VersolaLocalesList extends LitElement {
                           </button>`
                         : nothing}
                     ${(() => {
-                      const ready = loc.active || this.canActivateLocale(loc.code);
-                      const title = loc.active
-                        ? 'Click to deactivate'
-                        : ready
-                          ? 'Click to activate'
-                          : 'Add a form localization and an OTP template localization for this locale first';
+                      const title = loc.active ? 'Click to deactivate' : 'Click to activate; content is validated on activation';
                       return html`<button class="pill-btn toggle-active ${loc.active ? 'on' : 'off'}"
-                        @click=${() => ready && this.toggleDraftActive(loc.code)}
-                        ?disabled=${!ready}
+                        @click=${() => this.toggleDraftActive(loc.code)}
+                        ?disabled=${this.saving}
                         title=${title}>
                         ${loc.active ? 'Active' : 'Inactive'}
                       </button>`;

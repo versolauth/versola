@@ -49,7 +49,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
   private val createRequest = CreateClientRequest(
     tenantId = tenantId,
     id = clientId,
-    clientName = "Web App",
+    clientName = Map("en" -> "Web App"),
     redirectUris = Set(redirectUri1),
     allowedScopes = Set(readScope),
     permissions = Set(readPermission),
@@ -66,7 +66,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
 
   private val updateRequest = UpdateClientRequest(
     clientId = clientId,
-    clientName = Some("Updated Web App"),
+    clientName = Some(Map("en" -> "Updated Web App")),
     redirectUris = PatchClientRedirectUris(
       add = Set(redirectUri2),
       remove = Set(redirectUri1),
@@ -94,7 +94,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
     OAuthClientRecord(
       id = clientId,
       tenantId = tenantId,
-      clientName = "Web App",
+      clientName = Map("en" -> "Web App"),
       redirectUris = Set(redirectUri1),
       scope = Set(readScope),
       secret = Some(currentSecret),
@@ -109,11 +109,15 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       frontChannelLogoutUri = None,
       frontChannelLogoutSessionRequired = false,
       backChannelLogoutUri = None,
+      logoUri = None,
+      policyUri = None,
+      tosUri = None,
+      consentFlow = Some(ConsentFlow(allowPartial = true, rememberDuration = Some(14.days))),
     ),
     OAuthClientRecord(
       id = ClientId("mobile-app"),
       tenantId = tenantId,
-      clientName = "Mobile App",
+      clientName = Map("en" -> "Mobile App"),
       redirectUris = Set(redirectUri2),
       scope = Set(writeScope),
       secret = Some(currentSecret),
@@ -128,6 +132,10 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       frontChannelLogoutUri = None,
       frontChannelLogoutSessionRequired = false,
       backChannelLogoutUri = None,
+      logoUri = None,
+      policyUri = None,
+      tosUri = None,
+      consentFlow = None,
     ),
   )
 
@@ -192,7 +200,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
 
   private case class DecryptedSyncOAuthClientRecord(
       id: String,
-      clientName: String,
+      clientName: Map[String, String],
       redirectUris: Set[RedirectUri],
       scope: Set[ScopeToken],
       secret: Option[Chunk[Byte]],
@@ -241,12 +249,12 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
             List(
               OAuthClientResponse(
                 id = clientId,
-                clientName = "Web App",
+                clientName = Map("en" -> "Web App"),
                 redirectUris = Set(redirectUri1),
                 scope = Set(readScope),
                 permissions = Set(readPermission),
                 secretRotation = false,
-                  refreshTokenTtl = 7776000L,
+                refreshTokenTtl = 7776000L,
                 theme = "",
                 authFlow = Some(AuthFlow.default),
                 registrationFlow = None,
@@ -254,15 +262,21 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
                 frontChannelLogoutUri = None,
                 frontChannelLogoutSessionRequired = false,
                 backChannelLogoutUri = None,
+                logoUri = None,
+                policyUri = None,
+                tosUri = None,
+                consentFlow = Some(
+                  ConsentFlowDto(allowPartial = true, rememberDuration = Some(14.days.toSeconds))
+                ),
               ),
               OAuthClientResponse(
                 id = ClientId("mobile-app"),
-                clientName = "Mobile App",
+                clientName = Map("en" -> "Mobile App"),
                 redirectUris = Set(redirectUri2),
                 scope = Set(writeScope),
                 permissions = Set(writePermission),
                 secretRotation = true,
-                  refreshTokenTtl = 7776000L,
+                refreshTokenTtl = 7776000L,
                 theme = "",
                 authFlow = Some(AuthFlow.default),
                 registrationFlow = None,
@@ -270,6 +284,10 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
                 frontChannelLogoutUri = None,
                 frontChannelLogoutSessionRequired = false,
                 backChannelLogoutUri = None,
+                logoUri = None,
+                policyUri = None,
+                tosUri = None,
+                consentFlow = None,
               ),
             ),
           ),
@@ -310,7 +328,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
           decryptedClients == Vector(
             DecryptedSyncOAuthClientRecord(
               id = clientId.toString,
-              clientName = "Web App",
+              clientName = Map("en" -> "Web App"),
               redirectUris = Set(redirectUri1),
               scope = Set(readScope),
               secret = Some(Chunk.fromArray(currentSecret)),
@@ -321,7 +339,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
             ),
             DecryptedSyncOAuthClientRecord(
               id = "mobile-app",
-              clientName = "Mobile App",
+              clientName = Map("en" -> "Mobile App"),
               redirectUris = Set(redirectUri2),
               scope = Set(writeScope),
               secret = Some(Chunk.fromArray(currentSecret)),
@@ -400,7 +418,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
         body = Body.fromString(
           """{
             |  "clientId": "web-app",
-            |  "clientName": "Updated Web App",
+            |  "clientName": {"en": "Updated Web App"},
             |  "redirectUris": {"add": ["https://example.com/alt-callback"], "remove": ["https://example.com/callback"]},
             |  "scope": {"add": ["write"], "remove": ["read"]},
             |  "permissions": {"add": ["users:write"], "remove": ["users:read"]},

@@ -88,6 +88,8 @@ object ConversationControllerSpec extends UnitSpecBase:
     priorSessionId = None,
     resources = Nil,
     authorizationDetails = None,
+    grantedScope = None,
+    promptConsent = false,
   )
 
   def successfulSubmitTestCase(

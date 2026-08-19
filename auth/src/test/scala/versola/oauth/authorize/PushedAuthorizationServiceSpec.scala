@@ -21,7 +21,7 @@ object PushedAuthorizationServiceSpec extends UnitSpecBase:
   private val clientRecord = OAuthClientRecord(
     id = clientId,
     tenantId = TenantId("default"),
-    clientName = "Test Client",
+    clientName = Map("en" -> "Test Client"),
     redirectUris = NonEmptySet("https://example.com/callback"),
     scope = Set(ScopeToken("openid")),
     secret = Some(clientSecret),
@@ -35,6 +35,10 @@ object PushedAuthorizationServiceSpec extends UnitSpecBase:
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
     backChannelLogoutUri = None,
+    logoUri = None,
+    policyUri = None,
+    tosUri = None,
+    consentFlow = None,
   )
 
   private val parsedRequest: AuthorizeRequest = AuthorizeRequest(

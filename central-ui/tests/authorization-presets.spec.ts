@@ -5,7 +5,7 @@ const clientsPath = '/?view=clients&tenant=tenant-alpha';
 
 const alphaWebClient = {
   id: 'alpha-web',
-  clientName: 'Alpha Web App',
+  clientName: { en: 'Alpha Web App' },
   redirectUris: ['https://alpha.example.com/callback', 'https://alpha.example.com/silent'],
   scope: ['openid', 'profile', 'email'],
   permissions: [],

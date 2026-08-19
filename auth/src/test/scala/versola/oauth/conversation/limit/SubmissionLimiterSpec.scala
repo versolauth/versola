@@ -19,7 +19,7 @@ object SubmissionLimiterSpec extends UnitSpecBase:
   private val client = OAuthClientRecord(
     id = clientId,
     tenantId = tenantId,
-    clientName = "Test Client",
+    clientName = Map("en" -> "Test Client"),
     redirectUris = NonEmptySet("https://example.com/callback"),
     scope = Set(ScopeToken("openid")),
     secret = None,
@@ -33,6 +33,10 @@ object SubmissionLimiterSpec extends UnitSpecBase:
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
     backChannelLogoutUri = None,
+    logoUri = None,
+    policyUri = None,
+    tosUri = None,
+    consentFlow = None,
   )
 
   // Short window 3/min acts as an immediate rate limit; the broadest 9/hour window applies the ban.

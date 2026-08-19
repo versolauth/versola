@@ -1,6 +1,6 @@
 package versola.central.configuration
 
-import versola.central.configuration.clients.{AuthFlow, ClientId, PresetId, RegistrationFlow, ResponseType}
+import versola.central.configuration.clients.{AuthFlow, ClientId, ConsentFlow, PresetId, RegistrationFlow, ResponseType}
 import versola.central.configuration.details.AuthorizationDetailType
 import versola.central.configuration.permissions.Permission
 import versola.central.configuration.resources.{ResourceEndpointId, ResourceId}
@@ -290,12 +290,12 @@ case class UpdateTenantRequest(
 
 case class OAuthClientResponse(
     id: ClientId,
-    clientName: String,
+    clientName: Map[String, String],
     redirectUris: Set[RedirectUri],
     scope: Set[ScopeToken],
     permissions: Set[Permission],
     secretRotation: Boolean,
-      refreshTokenTtl: Long,
+    refreshTokenTtl: Long,
     theme: String,
     authFlow: Option[AuthFlow],
     registrationFlow: Option[RegistrationFlow],
@@ -303,7 +303,28 @@ case class OAuthClientResponse(
     frontChannelLogoutUri: Option[String],
     frontChannelLogoutSessionRequired: Boolean,
     backChannelLogoutUri: Option[String],
+    logoUri: Option[String],
+    policyUri: Option[String],
+    tosUri: Option[String],
+    consentFlow: Option[ConsentFlowDto],
 ) derives Schema, JsonCodec
+
+case class ConsentFlowDto(
+    allowPartial: Boolean,
+    rememberDuration: Option[Long],
+) derives Schema, JsonCodec:
+  def toDomain: ConsentFlow =
+    ConsentFlow(
+      allowPartial = allowPartial,
+      rememberDuration = rememberDuration.map(Duration.fromSeconds),
+    )
+
+object ConsentFlowDto:
+  def fromDomain(flow: ConsentFlow): ConsentFlowDto =
+    ConsentFlowDto(
+      allowPartial = flow.allowPartial,
+      rememberDuration = flow.rememberDuration.map(_.toSeconds),
+    )
 
 case class GetAllClientsResponse(
     clients: List[OAuthClientResponse],
@@ -312,7 +333,7 @@ case class GetAllClientsResponse(
 case class CreateClientRequest(
     tenantId: TenantId,
     id: ClientId,
-    clientName: String,
+    clientName: Map[String, String],
     redirectUris: Set[RedirectUri],
     allowedScopes: Set[ScopeToken],
     permissions: Set[Permission],
@@ -325,6 +346,10 @@ case class CreateClientRequest(
     frontChannelLogoutUri: Option[String],
     frontChannelLogoutSessionRequired: Boolean,
     backChannelLogoutUri: Option[String],
+    logoUri: Option[String] = None,
+    policyUri: Option[String] = None,
+    tosUri: Option[String] = None,
+    consentFlow: Option[ConsentFlowDto] = None,
 ) derives Schema, JsonCodec
 
 case class CreateClientResponse(
@@ -337,7 +362,7 @@ case class RotateSecretResponse(
 
 case class UpdateClientRequest(
     clientId: ClientId,
-    clientName: Option[String],
+    clientName: Option[Map[String, String]],
     redirectUris: PatchClientRedirectUris,
     scope: PatchClientScope,
     permissions: PatchPermissions,
@@ -350,6 +375,10 @@ case class UpdateClientRequest(
     frontChannelLogoutUri: Option[Patch[String]],
     frontChannelLogoutSessionRequired: Option[Boolean],
     backChannelLogoutUri: Option[Patch[String]],
+    logoUri: Option[Patch[String]] = None,
+    policyUri: Option[Patch[String]] = None,
+    tosUri: Option[Patch[String]] = None,
+    consentFlow: Option[Patch[ConsentFlowDto]] = None,
 ) derives Schema, JsonCodec
 
 case class AuthorizationPresetInput(
@@ -490,7 +519,7 @@ object ResourceUri:
 case class SyncOAuthClientRecord(
     id: String,
     tenantId: String,
-    clientName: String,
+    clientName: Map[String, String],
     redirectUris: Set[RedirectUri],
     scope: Set[ScopeToken],
     secret: Option[String],
@@ -505,6 +534,10 @@ case class SyncOAuthClientRecord(
     frontChannelLogoutUri: Option[String],
     frontChannelLogoutSessionRequired: Boolean,
     backChannelLogoutUri: Option[String],
+    logoUri: Option[String],
+    policyUri: Option[String],
+    tosUri: Option[String],
+    consentFlow: Option[ConsentFlow],
 ) derives JsonCodec, Schema
 
 case class GetOAuthClientsSyncResponse(

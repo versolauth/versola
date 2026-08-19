@@ -58,10 +58,17 @@ export interface RegistrationFlow {
   roleIds: string[];          // roles granted to the account on creation
 }
 
+// Consent screen shown before an authorization code is issued. Absent for first-party
+// clients, which never prompt.
+export interface ConsentFlow {
+  allowPartial: boolean;  // let the user deselect optional scopes and grant a subset
+  rememberDurationDays: number | null;  // how long a grant is reused; null = until revoked
+}
+
 // OAuth Client
 export interface OAuthClient {
   id: string;
-  clientName: string;
+  clientName: Record<string, string>;
   redirectUris: string[];
   scope: string[];
   hasPreviousSecret: boolean;
@@ -75,6 +82,10 @@ export interface OAuthClient {
   frontChannelLogoutUri?: string | null;
   frontChannelLogoutSessionRequired: boolean;
   backChannelLogoutUri?: string | null;
+  logoUri?: string | null;
+  policyUri?: string | null;
+  tosUri?: string | null;
+  consentFlow?: ConsentFlow | null;
   tenantId?: string;  // Tenant scope (clients inherit edge from their tenant)
   authorizationPresets?: AuthorizationPreset[];
 }

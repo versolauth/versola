@@ -51,9 +51,19 @@ case class ConversationRecord(
     /** RFC 9396 `authorization_details` requested at `/authorize`; `None` when the parameter
       * was absent, distinct from an empty list (which the parameter itself disallows). */
     authorizationDetails: Option[List[AuthorizationDetail]],
+    /** The scope the user granted on the consent step, which supersedes `scope` when the
+      * authorization code is issued. `None` until consent has been decided; the requested
+      * `scope` is kept alongside it so a later request can be compared against it. */
+    grantedScope: Option[Set[ScopeToken]],
+    /** `prompt=consent` was requested, so the consent screen is shown even when a matching grant
+      * is already on file. Persisted because the decision is taken long after `/authorize`. */
+    promptConsent: Boolean,
 ):
 
-  def hasOfflineAccess = scope.contains(ScopeToken.OfflineAccess)
+  /** The scope to issue on, i.e. the granted subset once consent has been decided. */
+  def effectiveScope: Set[ScopeToken] = grantedScope.getOrElse(scope)
+
+  def hasOfflineAccess = effectiveScope.contains(ScopeToken.OfflineAccess)
 
   /** The user reached this conversation through the register button rather than sign-in. */
   def isRegistering: Boolean = registrationStep.isDefined
@@ -114,4 +124,10 @@ object ConversationRecord:
     def unapply(record: ConversationRecord): Option[ConversationStep.PasskeyEnroll] =
       record.step match
         case step: ConversationStep.PasskeyEnroll => Some(step)
+        case _ => None
+
+  object Consent:
+    def unapply(record: ConversationRecord): Option[ConversationStep.Consent] =
+      record.step match
+        case step: ConversationStep.Consent => Some(step)
         case _ => None

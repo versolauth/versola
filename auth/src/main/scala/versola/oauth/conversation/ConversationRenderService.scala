@@ -2,7 +2,8 @@ package versola.oauth.conversation
 
 import versola.oauth.authorize.AuthorizeRedirect
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{ClientId, FormRecord, PrimaryCredential}
+import versola.oauth.client.model.{ClientId, FormRecord, PrimaryCredential, ScopeToken}
+import versola.oauth.consent.ConsentService
 import versola.oauth.conversation.model.{ConversationRecord, ConversationStep}
 import versola.oauth.jwks.JwksService
 import versola.oauth.model.State
@@ -69,6 +70,28 @@ object ConversationRenderService:
     case class Otp(length: Int, resendAfter: Int, lockedSeconds: Option[Int], destination: Option[String]) extends StepView
     @jsonHint("passkey-enroll")
     case class PasskeyEnroll(publicKeyOptions: String) extends StepView
+    /** One row on the consent card. `description` and `claims` preserve the initial server-side
+      * resolution, while the localization maps let the form react to a locale change in-place. */
+    case class ConsentScope(
+        scope: ScopeToken,
+        description: Option[String],
+        descriptionLocalizations: Map[String, String],
+        claims: List[String],
+        claimLocalizations: List[Map[String, String]],
+        deselectable: Boolean,
+    ) derives JsonCodec
+
+    @jsonHint("consent")
+    case class Consent(
+        clientName: Option[String],
+        logoUri: Option[String],
+        policyUri: Option[String],
+        tosUri: Option[String],
+        scopes: List[ConsentScope],
+        allowPartial: Boolean,
+        denyUri: String,
+    ) extends StepView
+
     @jsonHint("access-denied")
     case class AccessDenied(redirectUri: String) extends StepView
 
@@ -120,7 +143,17 @@ object ConversationRenderService:
         themeId = client.map(_.theme).getOrElse(ThemeDefault)
         css <- themeCss(themeId)
         maybeInfo <-
-          formFor(record.step, record.credential, record.clientId, record.uiLocales, record.redirectUri, record.state, record.csrfToken, errorOverride = errorKey)
+          formFor(
+            record.step,
+            record.credential,
+            record.clientId,
+            record.uiLocales,
+            record.redirectUri,
+            record.state,
+            record.csrfToken,
+            availableClaims = availableClaimNames(record),
+            errorOverride = errorKey,
+          )
         response <- maybeInfo match
           case None =>
             ZIO.succeed(htmlResponse(notFoundPage(css), Status.NotFound))
@@ -339,6 +372,7 @@ object ConversationRenderService:
         redirectUri: URL,
         state: Option[State],
         csrfToken: String,
+        availableClaims: Set[String],
         errorOverride: Option[String] = None,
     ): Task[Option[FormRenderInfo]] =
       val formId = step match
@@ -347,9 +381,10 @@ object ConversationRenderService:
         case _: ConversationStep.SetPassword => "set-password"
         case _: ConversationStep.Otp => "otp"
         case _: ConversationStep.PasskeyEnroll => "passkey-enroll"
+        case _: ConversationStep.Consent => "consent"
         case ConversationStep.AccessDenied => "access-denied"
       for
-        view <- stepView(step, credential, clientId, redirectUri, state)
+        view <- stepView(step, credential, clientId, locale, redirectUri, state, availableClaims)
         formOpt <- configuration.getForm(formId)
         locales <- configuration.getLocales
         errorMessage = errorOverride.orElse(stepErrorKey(step))
@@ -386,6 +421,7 @@ object ConversationRenderService:
       case s: ConversationStep.PasskeyEnroll if s.enrollFailed => Some("enroll_failed")
       case s: ConversationStep.SetPassword if s.rateLimitExceeded => Some("rate_limit_exceeded")
       case s: ConversationStep.SetPassword if s.passwordReused => Some("password_reused")
+      case s: ConversationStep.Consent if s.invalidGrant => Some("invalid_consent")
       case _ => None
 
     private def pageTitle(translations: Map[String, String]): String =
@@ -410,12 +446,28 @@ object ConversationRenderService:
         case _ => configuration.getTheme(ThemeDefault).map(_.map(_.css).getOrElse(""))
       }
 
+    /** Resolves one localized configuration string the same way form translations are resolved:
+      * the first requested locale that has a value, then the tenant default. Falls back to `None`
+      * so the form can render the raw token for a scope that has no description yet.
+      */
+    private def pickLocalized(
+        values: Map[String, String],
+        uiLocales: Option[List[String]],
+        default: String,
+    ): Option[String] =
+      uiLocales.getOrElse(Nil).iterator
+        .flatMap(values.get)
+        .find(_.nonEmpty)
+        .orElse(values.get(default).filter(_.nonEmpty))
+
     private def stepView(
         step: ConversationStep,
         credential: Option[Either[Email, Phone]],
         clientId: ClientId,
+        uiLocales: Option[List[String]],
         redirectUri: URL,
         state: Option[State],
+        availableClaims: Set[String],
     ): UIO[StepView] =
       step match
         case ConversationStep.Credential(primaryCredentials, inlinePassword, passkey, registration, _, _, _) =>
@@ -453,9 +505,64 @@ object ConversationRenderService:
         case s: ConversationStep.PasskeyEnroll =>
           ZIO.succeed(StepView.PasskeyEnroll(publicKeyOptions = s.publicKeyOptions))
 
+        case s: ConversationStep.Consent =>
+          for
+            client <- configuration.find(clientId)
+            scopes <- configuration.getScopes
+            locales <- configuration.getLocales
+            byToken = scopes.map(record => record.scope -> record).toMap
+            rows = s.requestedScope.toList.sortBy: token =>
+              (if token.toString == "openid" then 0 else 1, token.toString)
+            .map: token =>
+              val record = byToken.get(token)
+              val claims = record.toList
+                .flatMap(_.claims.toList)
+                .filter(claim => isAvailableClaim(claim.claim.toString, availableClaims))
+                .flatMap: claim =>
+                  pickLocalized(claim.description, uiLocales, locales.default).map: description =>
+                    description -> claim.description
+              val scopeDescriptionLocalizations = record.fold(Map.empty[String, String])(_.description)
+              StepView.ConsentScope(
+                scope = token,
+                description = record.flatMap(r => pickLocalized(r.description, uiLocales, locales.default)),
+                descriptionLocalizations = scopeDescriptionLocalizations,
+                claims = claims.map(_._1),
+                claimLocalizations = claims.map(_._2),
+                deselectable = s.allowPartial && !ConsentService.NonDeselectable.contains(token),
+              )
+          yield StepView.Consent(
+            clientName = client.flatMap(c => pickLocalized(c.clientName, uiLocales, locales.default)),
+            logoUri = client.flatMap(_.logoUri),
+            policyUri = client.flatMap(_.policyUri),
+            tosUri = client.flatMap(_.tosUri),
+            scopes = rows,
+            allowPartial = s.allowPartial,
+            denyUri = redirectUri.addQueryParams(List("error" -> "access_denied") ++ state.map("state" -> _)).encode,
+          )
+
         case ConversationStep.AccessDenied =>
           val params = List("error" -> "access_denied") ++ state.map("state" -> _)
           ZIO.succeed(StepView.AccessDenied(redirectUri = redirectUri.addQueryParams(params).encode))
+
+    private def availableClaimNames(record: ConversationRecord): Set[String] =
+      val customClaims = record.userClaims.toList
+        .flatMap(_.fields)
+        .collect { case (name, value) if hasUsableClaimValue(value) => name }
+        .toSet
+      customClaims ++
+        record.userId.map(_ => "sub") ++
+        record.userEmail.map(_ => "email") ++
+        record.userPhone.map(_ => "phone_number")
+
+    private def isAvailableClaim(claim: String, availableClaims: Set[String]): Boolean =
+      availableClaims.contains(claim) || availableClaims.exists(_.startsWith(s"$claim#"))
+
+    private def hasUsableClaimValue(value: Json): Boolean = value match
+      case Json.Null => false
+      case Json.Str(text) => text.nonEmpty
+      case Json.Arr(values) => values.nonEmpty
+      case Json.Obj(fields) => fields.nonEmpty
+      case _ => true
 
     private def stepName(step: StepView): String = step match
       case _: StepView.Credential => "credential"
@@ -463,6 +570,7 @@ object ConversationRenderService:
       case _: StepView.SetPassword => "set-password"
       case _: StepView.Otp => "otp"
       case _: StepView.PasskeyEnroll => "passkey-enroll"
+      case _: StepView.Consent => "consent"
       case _: StepView.AccessDenied => "access-denied"
       case _: StepView.ConversationExpired => "conversation-expired"
       case _: StepView.ServiceUnavailable => "service-unavailable"

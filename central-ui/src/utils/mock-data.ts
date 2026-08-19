@@ -72,7 +72,7 @@ export const mockTenants: Tenant[] = [
 const baseClients: Omit<OAuthClient, 'authFlow' | 'registrationFlow'>[] = [
   {
     id: 'web-app',
-    clientName: 'Web Application',
+    clientName: { en: 'Web Application' },
     redirectUris: ['https://app.example.com/callback', 'https://app.example.com/silent-renew', 'http://localhost:3000'],
     scope: ['openid', 'profile', 'email', 'offline_access'],
     hasPreviousSecret: false,
@@ -83,7 +83,7 @@ const baseClients: Omit<OAuthClient, 'authFlow' | 'registrationFlow'>[] = [
   },
   {
     id: 'mobile-app',
-    clientName: 'Mobile Application',
+    clientName: { en: 'Mobile Application' },
     redirectUris: ['com.example.app://callback', 'http://localhost:3000'],
     scope: ['openid', 'profile', 'offline_access'],
     hasPreviousSecret: true,
@@ -94,7 +94,7 @@ const baseClients: Omit<OAuthClient, 'authFlow' | 'registrationFlow'>[] = [
   },
   {
     id: 'admin-dashboard',
-    clientName: 'Admin Dashboard',
+    clientName: { en: 'Admin Dashboard' },
     redirectUris: ['https://admin.example.com/auth/callback', 'http://localhost:3000'],
     scope: ['openid', 'profile', 'email'],
     hasPreviousSecret: false,
@@ -105,7 +105,7 @@ const baseClients: Omit<OAuthClient, 'authFlow' | 'registrationFlow'>[] = [
   },
   {
     id: 'spa-frontend',
-    clientName: 'SPA Frontend',
+    clientName: { en: 'SPA Frontend' },
     redirectUris: ['https://spa.example.com/callback', 'http://localhost:3000'],
     scope: ['openid', 'profile', 'email'],
     hasPreviousSecret: false,
@@ -116,7 +116,7 @@ const baseClients: Omit<OAuthClient, 'authFlow' | 'registrationFlow'>[] = [
   },
   {
     id: 'ios-app',
-    clientName: 'iOS Application',
+    clientName: { en: 'iOS Application' },
     redirectUris: ['com.example.ios://callback', 'http://localhost:3000'],
     scope: ['openid', 'profile', 'offline_access'],
     hasPreviousSecret: false,
@@ -127,7 +127,7 @@ const baseClients: Omit<OAuthClient, 'authFlow' | 'registrationFlow'>[] = [
   },
   {
     id: 'android-app',
-    clientName: 'Android Application',
+    clientName: { en: 'Android Application' },
     redirectUris: ['com.example.android://callback', 'http://localhost:3000'],
     scope: ['openid', 'profile', 'offline_access'],
     hasPreviousSecret: false,
@@ -138,7 +138,7 @@ const baseClients: Omit<OAuthClient, 'authFlow' | 'registrationFlow'>[] = [
   },
   {
     id: 'api-gateway',
-    clientName: 'API Gateway',
+    clientName: { en: 'API Gateway' },
     redirectUris: ['https://gateway.example.com/callback', 'http://localhost:3000'],
     scope: ['openid'],
     hasPreviousSecret: true,
@@ -149,7 +149,7 @@ const baseClients: Omit<OAuthClient, 'authFlow' | 'registrationFlow'>[] = [
   },
   {
     id: 'monitoring-service',
-    clientName: 'Monitoring Service',
+    clientName: { en: 'Monitoring Service' },
     redirectUris: ['https://monitoring.example.com/callback', 'http://localhost:3000'],
     scope: ['openid'],
     hasPreviousSecret: false,
@@ -160,7 +160,7 @@ const baseClients: Omit<OAuthClient, 'authFlow' | 'registrationFlow'>[] = [
   },
   {
     id: 'test-client',
-    clientName: 'Test Client',
+    clientName: { en: 'Test Client' },
     redirectUris: ['http://localhost:3000/callback', 'http://localhost:3000'],
     scope: ['openid', 'profile', 'email', 'offline_access'],
     hasPreviousSecret: false,
@@ -171,7 +171,7 @@ const baseClients: Omit<OAuthClient, 'authFlow' | 'registrationFlow'>[] = [
   },
   {
     id: 'cli-tool',
-    clientName: 'CLI Tool',
+    clientName: { en: 'CLI Tool' },
     redirectUris: ['http://localhost:8080/callback', 'http://localhost:3000'],
     scope: ['openid', 'profile'],
     hasPreviousSecret: true,
@@ -182,7 +182,7 @@ const baseClients: Omit<OAuthClient, 'authFlow' | 'registrationFlow'>[] = [
   },
   {
     id: 'third-party-integration',
-    clientName: 'Third Party Integration',
+    clientName: { en: 'Third Party Integration' },
     redirectUris: ['https://partner.example.com/callback', 'http://localhost:3000'],
     scope: ['openid', 'email'],
     hasPreviousSecret: false,
@@ -193,7 +193,7 @@ const baseClients: Omit<OAuthClient, 'authFlow' | 'registrationFlow'>[] = [
   },
   {
     id: 'data-pipeline',
-    clientName: 'Data Pipeline Service',
+    clientName: { en: 'Data Pipeline Service' },
     redirectUris: ['https://pipeline.example.com/callback', 'http://localhost:3000'],
     scope: ['openid'],
     hasPreviousSecret: true,

@@ -6,4 +6,5 @@ import zio.schema.*
 
 case class ClaimRecord(
     claim: Claim,
+    description: Map[String, String],
 ) derives Schema, JsonCodec

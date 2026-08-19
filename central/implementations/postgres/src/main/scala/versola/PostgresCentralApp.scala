@@ -12,7 +12,7 @@ import versola.central.configuration.forms.{FormController, FormRepository, Form
 import versola.central.configuration.jwks.{JwksController, JwksService}
 import versola.central.configuration.metadata.{ServerMetadataController, ServerMetadataRepository, ServerMetadataService}
 import versola.configuration.metadata.PostgresServerMetadataRepository
-import versola.central.configuration.locales.{LocaleController, LocaleRepository, LocaleService}
+import versola.central.configuration.locales.{LocaleCompletenessValidator, LocaleController, LocaleRepository, LocaleService}
 import versola.central.configuration.themes.{ThemeController, ThemeRepository, ThemeService}
 import versola.central.configuration.permissions.{PermissionController, PermissionRepository, PermissionService}
 import versola.central.configuration.resources.{ResourceController, ResourceRepository, ResourceService}
@@ -78,6 +78,7 @@ object PostgresCentralApp extends VersolaApp("central"):
       FormRepository &
       FormService &
       LocaleRepository &
+      LocaleCompletenessValidator &
       LocaleService &
       ThemeRepository &
       ThemeService &
@@ -161,7 +162,7 @@ object PostgresCentralApp extends VersolaApp("central"):
       AuthorizationDetailTypeService.live >+>
       RoleService.live >+>
       EdgeService.live >+>
-      LocaleService.live >+>
+      LocaleCompletenessValidator.live >+> LocaleService.live >+>
       JwksService.live >+>
       BootstrapService.live >+>
       FormService.live >+>

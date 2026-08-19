@@ -30,7 +30,7 @@ trait OAuthClientRepositorySpec extends DatabaseSpecBase[OAuthClientRepositorySp
   val client = OAuthClientRecord(
     id = clientId,
     tenantId = tenantId,
-    clientName = "Web App",
+    clientName = Map("en" -> "Web App"),
     redirectUris = Set(redirectUri1),
     scope = Set(readScope),
     secret = Some(secret1),
@@ -45,6 +45,10 @@ trait OAuthClientRepositorySpec extends DatabaseSpecBase[OAuthClientRepositorySp
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
     backChannelLogoutUri = None,
+    logoUri = None,
+    policyUri = None,
+    tosUri = None,
+    consentFlow = None,
   )
 
   /** Applies a registration-flow patch, leaving every other field of the client alone. */
@@ -101,7 +105,7 @@ trait OAuthClientRepositorySpec extends DatabaseSpecBase[OAuthClientRepositorySp
           _ <- env.repository.createClient(client)
           _ <- env.repository.updateClient(
             clientId = clientId,
-            clientName = Some("new-name"),
+            clientName = Some(Map("en" -> "new-name")),
             patchRedirectUris = PatchClientRedirectUris(
               add = Set(redirectUri2),
               remove = Set(redirectUri1),
@@ -128,7 +132,7 @@ trait OAuthClientRepositorySpec extends DatabaseSpecBase[OAuthClientRepositorySp
         yield assertTrue(
           found === Some(
             client.copy(
-              clientName = "new-name",
+              clientName = Map("en" -> "new-name"),
               redirectUris = Set(redirectUri2),
               scope = Set(writeScope),
               permissions = Set(writePermission),

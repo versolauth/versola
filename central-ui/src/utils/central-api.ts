@@ -16,6 +16,7 @@ import type {
   OAuthClient,
   OAuthScope,
   Permission,
+  ConsentFlow,
   RegistrationFlow,
   Resource,
   ResourceEndpoint,
@@ -106,10 +107,11 @@ type BackendAuthFlow = {
   equivalents?: Record<string, string[]>;
   otpType: 'sms' | 'email';
 };
+type BackendConsentFlow = { allowPartial: boolean; rememberDuration?: number | null };
 type ClientsResponse = {
   clients: Array<{
     id: string;
-    clientName: string;
+    clientName: LocalizedDescription;
     redirectUris: string[];
     scope: string[];
     permissions: string[];
@@ -122,6 +124,10 @@ type ClientsResponse = {
     frontChannelLogoutSessionRequired: boolean;
     backChannelLogoutUri?: string | null;
     refreshTokenTtl?: number;
+    logoUri?: string | null;
+    policyUri?: string | null;
+    tosUri?: string | null;
+    consentFlow?: BackendConsentFlow | null;
   }>;
 };
 type RolesResponse = { roles: Array<{ id: string; description: LocalizedDescription; permissions: string[]; active: boolean }> };
@@ -187,6 +193,45 @@ function registrationFlowFromBackend(flow: BackendRegistrationFlow | null | unde
     steps: flow.steps.map(step => ({ type: step.type as RegistrationFlow['steps'][number]['type'] })),
     roleIds: unique(flow.roleIds),
   };
+}
+
+function consentFlowToBackend(flow: ConsentFlow | null | undefined): BackendConsentFlow | null {
+  if (!flow) return null;
+  return {
+    allowPartial: flow.allowPartial,
+    rememberDuration: flow.rememberDurationDays != null ? flow.rememberDurationDays * 86400 : null,
+  };
+}
+
+function consentFlowFromBackend(flow: BackendConsentFlow | null | undefined): ConsentFlow | null {
+  if (!flow) return null;
+  return {
+    allowPartial: flow.allowPartial,
+    rememberDurationDays: flow.rememberDuration != null ? Math.round(flow.rememberDuration / 86400) : null,
+  };
+}
+
+function sameConsentFlow(a: ConsentFlow | null | undefined, b: ConsentFlow | null | undefined): boolean {
+  if (!a || !b) return !a && !b;
+  return a.allowPartial === b.allowPartial
+    && a.rememberDurationDays === b.rememberDurationDays;
+}
+
+// Client names are displayed on the consent screen and are stored as locale-keyed objects.
+function clientNameToBackend(name: LocalizedDescription): LocalizedDescription {
+  return { ...name };
+}
+
+function clientNameFromBackend(name: LocalizedDescription | string | null | undefined): LocalizedDescription {
+  if (name == null) return {};
+  if (typeof name === 'string') return { en: name };
+  return { ...name };
+}
+
+function sameLocalizedDescription(a: LocalizedDescription, b: LocalizedDescription): boolean {
+  const keys = Object.keys(a);
+  return keys.length === Object.keys(b).length
+    && keys.every(key => a[key] === b[key]);
 }
 
 function clone<T>(value: T): T {
@@ -261,7 +306,11 @@ function buildErrorMessage(status: number, bodyText: string): string {
   }
 
   try {
-    const parsed = JSON.parse(trimmed) as { message?: string; error?: string };
+    const parsed = JSON.parse(trimmed) as { message?: string; error?: string; locale?: string; missing?: string[] };
+    if (parsed.missing?.length) {
+      const prefix = parsed.message || parsed.error || `Locale ${parsed.locale || ''} is incomplete`;
+      return `${prefix}. Missing: ${parsed.missing.join(', ')}`;
+    }
     return parsed.message || parsed.error || `Request failed (${status})`;
   } catch {
     return `${trimmed} (${status})`;
@@ -611,7 +660,7 @@ export async function fetchClients(tenantId: string, offset = 0, limit = DEFAULT
       const supplement = clientSupplementStore.get(entityKey(tenantId, client.id));
       return {
         id: client.id,
-        clientName: client.clientName,
+        clientName: clientNameFromBackend(client.clientName),
         redirectUris: [...client.redirectUris],
         scope: [...client.scope],
         hasPreviousSecret: supplement?.hasPreviousSecret ?? client.secretRotation,
@@ -625,6 +674,10 @@ export async function fetchClients(tenantId: string, offset = 0, limit = DEFAULT
         frontChannelLogoutUri: client.frontChannelLogoutUri ?? null,
         frontChannelLogoutSessionRequired: client.frontChannelLogoutSessionRequired,
         backChannelLogoutUri: client.backChannelLogoutUri ?? null,
+        logoUri: client.logoUri ?? null,
+        policyUri: client.policyUri ?? null,
+        tosUri: client.tosUri ?? null,
+        consentFlow: consentFlowFromBackend(client.consentFlow),
         tenantId,
       };
     }),
@@ -973,7 +1026,7 @@ export async function createClient(tenantId: string, client: OAuthClient): Promi
     body: {
       tenantId,
       id: client.id,
-      clientName: client.clientName,
+      clientName: clientNameToBackend(client.clientName),
       redirectUris: unique(client.redirectUris),
       allowedScopes: unique(client.scope),
       permissions: unique(client.permissions),
@@ -986,6 +1039,10 @@ export async function createClient(tenantId: string, client: OAuthClient): Promi
       frontChannelLogoutSessionRequired: client.frontChannelLogoutSessionRequired,
       backChannelLogoutUri: client.backChannelLogoutUri ?? null,
       refreshTokenTtl: client.refreshTokenTtl,
+      logoUri: client.logoUri ?? null,
+      policyUri: client.policyUri ?? null,
+      tosUri: client.tosUri ?? null,
+      consentFlow: consentFlowToBackend(client.consentFlow),
     },
   });
 
@@ -1033,7 +1090,9 @@ export async function updateClient(tenantId: string, existing: OAuthClient, clie
     method: 'PUT',
     body: {
       clientId: client.id,
-      clientName: existing.clientName !== client.clientName ? client.clientName : undefined,
+      clientName: sameLocalizedDescription(existing.clientName, client.clientName)
+        ? undefined
+        : clientNameToBackend(client.clientName),
       redirectUris: patchSet(existing.redirectUris, client.redirectUris),
       scope: patchSet(existing.scope, client.scope),
       permissions: patchSet(existing.permissions, client.permissions),
@@ -1049,6 +1108,13 @@ export async function updateClient(tenantId: string, existing: OAuthClient, clie
       frontChannelLogoutUri: existing.frontChannelLogoutUri !== client.frontChannelLogoutUri ? (client.frontChannelLogoutUri ?? null) : undefined,
       frontChannelLogoutSessionRequired: existing.frontChannelLogoutSessionRequired !== client.frontChannelLogoutSessionRequired ? client.frontChannelLogoutSessionRequired : undefined,
       backChannelLogoutUri: existing.backChannelLogoutUri !== client.backChannelLogoutUri ? (client.backChannelLogoutUri ?? null) : undefined,
+      logoUri: existing.logoUri !== client.logoUri ? (client.logoUri ?? null) : undefined,
+      policyUri: existing.policyUri !== client.policyUri ? (client.policyUri ?? null) : undefined,
+      tosUri: existing.tosUri !== client.tosUri ? (client.tosUri ?? null) : undefined,
+      // Patch semantics: omitted leaves the stored flow alone, null clears it.
+      consentFlow: sameConsentFlow(existing.consentFlow, client.consentFlow)
+        ? undefined
+        : consentFlowToBackend(client.consentFlow),
     },
   });
 
