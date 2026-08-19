@@ -1,6 +1,6 @@
 import { render } from 'solid-js/web';
 import { createSignal, Show } from 'solid-js';
-import { getAssertionResponse, submitViaForm, passkeysSupported } from '../passkey/webauthn';
+import { getAssertionResponse, isPasskeyCancellation, passkeysSupported, submitViaForm } from '../passkey/webauthn';
 
 function LocaleDropdown(props: { locales: string[]; current: string; onChange: (l: string) => void }) {
   const [open, setOpen] = createSignal(false);
@@ -132,7 +132,11 @@ function CredentialForm(props: { config: FormConfig }) {
       const optionsJson = await optionsResponse.text();
       const response = await getAssertionResponse(optionsJson);
       submitViaForm(`/challenge/passkey?ui_locale=${currentLocale()}`, { response, csrf: props.config.csrf ?? '' });
-    } catch (_) {
+    } catch (error) {
+      if (isPasskeyCancellation(error)) {
+        setPasskeyBusy(false);
+        return;
+      }
       setPasskeyErrorKey('passkey_failed');
       setPasskeyBusy(false);
     }
