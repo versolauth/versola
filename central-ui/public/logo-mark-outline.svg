@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- Outline variant of the Versola shield mark for light, client-facing auth
+       surfaces (sign-in, etc.) — no dark badge background and no gradient, so
+       it reads as a quiet accent rather than a heavy brand lockup. Color is
+       driven by the caller (default here matches --accent in common.css). -->
+  <path d="M32 6 C32 6 52 10 54 12 L54 30 Q54 48 32 58 Q10 48 10 30 L10 12 C12 10 32 6 32 6Z"
+        fill="#3a5cc4" fill-opacity="0.06"/>
+  <path d="M32 6 C32 6 52 10 54 12 L54 30 Q54 48 32 58 Q10 48 10 30 L10 12 C12 10 32 6 32 6Z"
+        fill="none" stroke="#3a5cc4" stroke-width="2.2"/>
+  <text x="32" y="41" font-family="-apple-system, Inter, sans-serif" font-weight="800"
+        font-size="26" fill="#3a5cc4" text-anchor="middle">V</text>
+</svg>
