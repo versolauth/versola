@@ -417,7 +417,31 @@ object ConversationControllerSpec extends UnitSpecBase:
         response <- client.batched(Request.get(URL.empty / "challenge" / "passkey" / "options").addHeader(conversationCookie))
       yield assertTrue(
         response.status == Status.Ok,
-        response.headers.get(Header.ContentType).exists(_.mediaType == MediaType.application.json)
+        response.headers.get(Header.ContentType).exists(_.mediaType == MediaType.application.json),
+        response.headers.get(Header.CacheControl).contains(Header.CacheControl.NoStore),
+      )
+    }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging,
+
+    test("GET /challenge/passkey/options returns 410 with no-store when conversation expired") {
+      for
+        client <- ZIO.service[Client]
+        router = stub[ConversationRouter]
+        configuration = stub[OAuthConfigurationService]
+        renderService = stub[ConversationRenderService]
+        tracing <- NoopTracing.layer.build
+        _ <- TestClient.addRoutes(
+          Observability.handleErrors(
+            ConversationController.routes.provideEnvironment(
+              ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ ZEnvironment(renderService) ++ tracing
+            )
+          )
+        )
+        _ <- router.startPasskeyOptions.failsWith(Error.ConversationExpired)
+
+        response <- client.batched(Request.get(URL.empty / "challenge" / "passkey" / "options").addHeader(conversationCookie))
+      yield assertTrue(
+        response.status == Status.Gone,
+        response.headers.get(Header.CacheControl).contains(Header.CacheControl.NoStore),
       )
     }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging,
     rejectedSubmitTestCase(

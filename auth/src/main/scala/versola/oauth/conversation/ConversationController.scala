@@ -97,7 +97,7 @@ object ConversationController extends Controller:
         case Error.ServiceUnavailable => ZIO.succeed(Response.status(Status.InternalServerError))
         case _: Error => ZIO.succeed(Response.badRequest)
         case ex: Throwable => ZIO.fail(ex)
-      }
+      }.map(_.addHeader(Header.CacheControl.NoStore))
     }
 
   val submitPasskeyAssertionRoute =
