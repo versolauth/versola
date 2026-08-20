@@ -104,8 +104,15 @@ services:
       # VersolaApp's MIGRATE_ONLY) -- this is NOT a duplicate safety net,
       # it's the whole point of splitting them: a schema change should
       # get its own explicit, reviewable step, not happen silently as a
-      # side effect of starting the app. If migrate was skipped, this
-      # fails loudly (schema out of date) instead of quietly applying it.
+      # side effect of starting the app.
+      #
+      # A skipped migrate still fails loudly at startup rather than
+      # silently: "false" here means Flyway *validates* the schema
+      # instead of applying to it (see PostgresHikariDataSource.layer's
+      # own comment on that branch), so a missing migration surfaces
+      # here, named, before this container ever passes readiness --
+      # not later, on real traffic, at the first query against a table
+      # that was never created.
       RUN_MIGRATIONS: "false"
     # Resolved by versola-cli against OpenBao, not written by this image --
     # central.conf's secret fields are ${?VAR} placeholders (see

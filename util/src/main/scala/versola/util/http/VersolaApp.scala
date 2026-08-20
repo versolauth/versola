@@ -91,29 +91,34 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
   def bindHost: String =
     Option(java.lang.System.getenv("BIND_HOST")).getOrElse("0.0.0.0")
 
-  def runMigrations: Boolean =
-    Option(java.lang.System.getenv("RUN_MIGRATIONS")) match
-      case None        => true
+  /** Reads a strictly-boolean environment variable, failing on anything that isn't exactly
+    * "true"/"false" rather than silently treating a typo ("True", "1", "yes") as the default. Both
+    * flags below gate whether this process touches the database at all, so guessing at a
+    * misspelled value is exactly the wrong thing to do.
+    */
+  private def boolEnv(name: String, default: Boolean): Boolean =
+    Option(java.lang.System.getenv(name)) match
+      case None        => default
       case Some(value) =>
         value.toBooleanOption.getOrElse:
           throw new IllegalArgumentException(
-            s"RUN_MIGRATIONS must be 'true' or 'false', got: '$value'",
+            s"$name must be 'true' or 'false', got: '$value'",
           )
 
-  /** Backs `versola migrate` (see versola-cli's internal/deploy/migrate.go): when set, `run`
-    * below builds `migrationLayer`, waits for it to finish, and exits -- it does not start either
-    * server. Defaults to false so the ordinary `RUN_MIGRATIONS`-gated in-process migration (or
-    * `versola up`'s own explicit step, once that split lands) stays the default path; this is an
-    * opt-in alternate mode, not a replacement for it.
+  /** Whether this process applies database migrations itself on startup.
+    *
+    * False does not mean "skip Flyway" -- it means the schema is validated instead of migrated
+    * (see `PostgresHikariDataSource.layer`), so a deployment whose separate `versola migrate` step
+    * was skipped fails at startup instead of at its first query.
     */
-  def migrateOnly: Boolean =
-    Option(java.lang.System.getenv("MIGRATE_ONLY")) match
-      case None        => false
-      case Some(value) =>
-        value.toBooleanOption.getOrElse:
-          throw new IllegalArgumentException(
-            s"MIGRATE_ONLY must be 'true' or 'false', got: '$value'",
-          )
+  def runMigrations: Boolean = boolEnv("RUN_MIGRATIONS", default = true)
+
+  /** Backs `versola migrate` (see versola-cli's internal/deploy/migrate.go): when set, `run` below
+    * builds `migrationLayer`, waits for it to finish, and exits -- it does not start either
+    * server. Defaults to false so ordinary startup stays the default path; this is an opt-in
+    * alternate mode for the one-shot containers `versola migrate` runs, not a replacement for it.
+    */
+  def migrateOnly: Boolean = boolEnv("MIGRATE_ONLY", default = false)
 
   def serverConfig: Server.Config =
     Server.Config.default.binding(bindHost, port)

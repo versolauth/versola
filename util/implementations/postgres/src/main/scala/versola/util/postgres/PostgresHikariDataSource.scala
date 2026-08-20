@@ -25,7 +25,9 @@ object PostgresHikariDataSource:
     * Auto-detects migration directories by scanning for `<service>/implementations/postgres/migrations` pattern.
     *
     * @param migrate
-    *   Whether to run Flyway migrations on startup
+    *   Whether to apply Flyway migrations on startup. When false, the schema is *validated* against
+    *   this build's migrations instead of being left unchecked -- see the comment on that branch
+    *   below for why "false" doesn't mean "skip Flyway entirely".
     * @param validateOnMigrate
     *   Whether to validate migrations on migrate. Should be true in production, false in tests/development
     * @return
@@ -59,21 +61,35 @@ object PostgresHikariDataSource:
             serviceName.foreach(config.setPoolName)
             config
           }
-          _ <- ZIO.when(migrate):
-            ZIO.attemptBlocking:
-              val locations = detectMigrationDirectories()
+          _ <- ZIO.attemptBlocking:
+            val locations = detectMigrationDirectories()
 
-              val flyway = Flyway.configure()
-                .locations(locations*)
-                .dataSource(dataSource)
-                .ignoreMigrationPatterns("*:missing")
-                .outOfOrder(true)
-                .cleanDisabled(true)
-                .validateMigrationNaming(false)
-                .validateOnMigrate(validateOnMigrate)
-                .load()
+            val flyway = Flyway.configure()
+              .locations(locations*)
+              .dataSource(dataSource)
+              .ignoreMigrationPatterns("*:missing")
+              .outOfOrder(true)
+              .cleanDisabled(true)
+              .validateMigrationNaming(false)
+              .validateOnMigrate(validateOnMigrate)
+              .load()
 
-              flyway.migrate()
+            // migrate = false does NOT mean "don't touch Flyway" -- it means "someone else is
+            // responsible for applying migrations" (`versola migrate`, via MIGRATE_ONLY -- see
+            // VersolaApp.migrationLayer, and the RUN_MIGRATIONS: "false" that versola-cli's
+            // compose fragments set on every service). Leaving it entirely unchecked in that case
+            // meant a skipped migrate step was invisible: the service started fine, passed its
+            // readiness check, and only failed later, at the first query against a table that
+            // was never created -- in production, on real traffic, long after the deploy looked
+            // successful.
+            //
+            // validate() closes that: a schema this build has migrations for but the database
+            // hasn't had applied fails here, at startup, with Flyway naming the exact migration.
+            // It deliberately does NOT fail the reverse case (database ahead of this build, e.g.
+            // deploying an older version back out) -- `ignoreMigrationPatterns("*:missing")`
+            // above already covers applied-but-not-resolved-locally, so a rollback deploy still
+            // starts.
+            if migrate then flyway.migrate() else flyway.validate()
 
         yield dataSource
       )(dataSource => ZIO.attemptBlocking(dataSource.close()).orDie)
