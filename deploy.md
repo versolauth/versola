@@ -472,23 +472,21 @@ has a `Plain` variant. Two consequences for an environment that already has data
 
 1. **In-flight rows.** A row written before the rollout with `code_challenge_method = 'Plain'`
    can no longer be decoded — the read throws instead of producing an OAuth error, so the
-   affected flow answers 500. Both tables expire within minutes, so the window is short, but
-   delete the rows before starting the new images to be certain:
+   affected flow answers 500. Both tables expire within minutes and are swept by the cleanup
+   manager, so the condition clears on its own; the statements below only shorten that window.
+
+   Run them **after the last old `auth` instance has stopped** — on the single-host compose
+   deploy (§4.2) that means once `docker compose ... up -d` reports the new containers up, since
+   compose recreates rather than rolls. Running them earlier closes nothing: an instance still
+   serving traffic can write a fresh `'Plain'` row after the delete.
 
 ```sql
    DELETE FROM auth_conversations  WHERE code_challenge_method <> 'S256';
    DELETE FROM authorization_codes WHERE code_challenge_method <> 'S256';
 ```
 
-   Affected users simply start the login over.
-
-2. **Server metadata.** `"code_challenge_methods_supported": ["S256"]` was added to the metadata
-   template in `scripts/gen-env.scala`, which only seeds *new* environments. An existing
-   environment keeps its stored object, and `/.well-known/*` serves it verbatim — so it has to be
-   updated by hand: `GET /configuration/server-metadata` on `central`, add the field, `POST` the
-   whole object back (the endpoint replaces, it does not patch). Until that is done the server
-   enforces S256 without advertising it: correct behaviour, understated discovery, which FAPI
-   conformance checks.
+   Affected users start the login over. Under any rollout where old and new instances overlap,
+   a single delete cannot close the window — wait out the expiry instead.
 
 ---
 
