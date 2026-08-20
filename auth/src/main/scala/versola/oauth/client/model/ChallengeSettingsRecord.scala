@@ -12,6 +12,7 @@ case class PasskeySettings(
 case class ChallengeSettingsRecord(
     tenantId: TenantId,
     allowedPrefixes: List[String],
+    defaultCountryPrefix: Option[String],
     submissionLimits: SubmissionLimits,
     otpLength: Int,
     otpResendAfter: Int,

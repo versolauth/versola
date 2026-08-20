@@ -56,9 +56,11 @@ export class VersolaChallengesList extends LitElement {
   @state() private editError = '';
 
   @state() private phonePrefixes: string[] = [];
+  @state() private defaultCountryPrefix: string | null = null;
   @state() private hasChallengeSettings = false;
   @state() private editingSettings = false;
   @state() private editPrefixes: Array<{ value: string }> = [];
+  @state() private editDefaultCountryPrefix: string | null = null;
   @state() private isSavingSettings = false;
   @state() private settingsError = '';
 
@@ -456,6 +458,7 @@ export class VersolaChallengesList extends LitElement {
       this.hasChallengeSettings = challengeSettings !== null;
       if (challengeSettings) {
         this.phonePrefixes = challengeSettings.allowedPrefixes;
+        this.defaultCountryPrefix = challengeSettings.defaultCountryPrefix ?? null;
         this.submissionLimits = challengeSettings.submissionLimits;
         this.otpLength = challengeSettings.otpLength;
         this.otpResendAfter = challengeSettings.otpResendAfter;
@@ -469,6 +472,7 @@ export class VersolaChallengesList extends LitElement {
         this.postLogoutRedirectUris = challengeSettings.postLogoutRedirectUris ?? [];
       } else {
         this.phonePrefixes = [];
+        this.defaultCountryPrefix = null;
         this.submissionLimits = { otpRequest: [], otpSubmit: [], passwordSubmit: [], passkeyAssertion: [], banDurationSeconds: 0 };
         this.otpLength = 6;
         this.otpResendAfter = 60;
@@ -834,6 +838,7 @@ export class VersolaChallengesList extends LitElement {
   private startEditSettings() {
     this.editingSettings = true;
     this.editPrefixes = this.phonePrefixes.map(value => ({ value }));
+    this.editDefaultCountryPrefix = this.defaultCountryPrefix;
     this.editSubmissionLimits = JSON.parse(JSON.stringify(this.submissionLimits));
     this.editOtpLength = this.otpLength;
     this.editOtpResendAfter = this.otpResendAfter;
@@ -906,6 +911,13 @@ export class VersolaChallengesList extends LitElement {
       this.settingsError = 'Each prefix must start with + followed by digits (e.g. +77).';
       return;
     }
+    const defaultCountryPrefix = prefixes.includes(this.editDefaultCountryPrefix ?? '')
+      ? this.editDefaultCountryPrefix
+      : null;
+    if (prefixes.length > 0 && this.editDefaultCountryPrefix && !defaultCountryPrefix) {
+      this.settingsError = 'Default country code must be one of the allowed phone prefixes.';
+      return;
+    }
     const rpId = this.editPasskeyRpId.trim();
     const rpName = this.editPasskeyRpName.trim();
     const origins = this.editPasskeyOrigins.map(o => o.value.trim()).filter(o => o.length > 0);
@@ -949,6 +961,7 @@ export class VersolaChallengesList extends LitElement {
       await upsertChallengeSettings(
         this.tenantId,
         prefixes,
+        defaultCountryPrefix,
         this.editSubmissionLimits,
         this.editOtpLength,
         this.editOtpResendAfter,
@@ -962,6 +975,7 @@ export class VersolaChallengesList extends LitElement {
         postLogoutRedirectUris,
       );
       this.phonePrefixes = prefixes;
+      this.defaultCountryPrefix = defaultCountryPrefix;
       this.submissionLimits = JSON.parse(JSON.stringify(this.editSubmissionLimits));
       this.otpLength = this.editOtpLength;
       this.otpResendAfter = this.editOtpResendAfter;
@@ -1264,6 +1278,8 @@ export class VersolaChallengesList extends LitElement {
               </div>
             `}
 
+          <label style="margin-top: var(--spacing-lg);">Default Country Code</label>
+          <div class="template-text">${this.defaultCountryPrefix ?? 'None (no prefix pre-selected)'}</div>
         </div>
 
         <div class="card" style="margin-bottom: var(--spacing-lg);">
@@ -1422,6 +1438,10 @@ export class VersolaChallengesList extends LitElement {
 
         <button class="btn btn-secondary" @click=${() => this.addPrefix()}>+ Add Prefix</button>
 
+        <label for="default-country-prefix" style="margin-top: var(--spacing-lg);">Default Country Code</label>
+        <div class="hint">Pre-selected in the sign-in country-code picker. Must be one of the allowed phone prefixes above.</div>
+        ${this.renderDefaultCountryPrefixEdit()}
+
         <h3 style="margin-top: var(--spacing-xl); margin-bottom: var(--spacing-md);">Sessions</h3>
 
         <label>Auth Conversation TTL (seconds)</label>
@@ -1568,6 +1588,20 @@ export class VersolaChallengesList extends LitElement {
         </div>
         ${this.settingsError ? html`<div class="error-msg">${this.settingsError}</div>` : nothing}
       </div>
+    `;
+  }
+
+  private renderDefaultCountryPrefixEdit() {
+    const availablePrefixes = this.editPrefixes.map(p => p.value.trim()).filter(p => p.length > 0);
+    if (availablePrefixes.length === 0) {
+      return html`<div class="hint">Add at least one allowed prefix to set a default.</div>`;
+    }
+    return html`
+      <select id="default-country-prefix" class="form-control compact-input" .value=${this.editDefaultCountryPrefix ?? ''}
+        @change=${(e: Event) => { this.editDefaultCountryPrefix = (e.target as HTMLSelectElement).value || null; }}>
+        <option value="">None</option>
+        ${availablePrefixes.map(prefix => html`<option value=${prefix} ?selected=${this.editDefaultCountryPrefix === prefix}>${prefix}</option>`)}
+      </select>
     `;
   }
 

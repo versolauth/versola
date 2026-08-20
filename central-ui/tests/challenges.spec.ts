@@ -256,6 +256,36 @@ test('validates that passkeys require a relying party id', async ({ page }) => {
   await expect(page.locator('.error-msg')).toHaveText('Passkey Relying Party ID is required.');
 });
 
+test('shows the configured default country code in view mode', async ({ page }) => {
+  await loadAdminApp(page, {
+    path: challengesPath,
+    state: { ...baseState, challengeSettings: { 'tenant-alpha': { ...settingsWithoutPasskey, defaultCountryPrefix: '+77' } } },
+  });
+
+  await expect(page.locator('.template-text').filter({ hasText: '+77' })).toBeVisible();
+});
+
+test('derives default country code options from allowed phone prefixes and sends the selection', async ({ page }) => {
+  const api = await loadAdminApp(page, { path: challengesPath, state: baseState });
+
+  await page.getByRole('button', { name: 'Edit', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Edit Challenge Settings', exact: true })).toBeVisible();
+
+  const defaultPrefixSelect = page.getByLabel('Default Country Code');
+  await expect(defaultPrefixSelect.locator('option')).toHaveText(['None', '+77']);
+  await defaultPrefixSelect.selectOption('+77');
+
+  await page.getByPlaceholder('example.com', { exact: true }).fill('example.com');
+  await page.getByPlaceholder('Example Inc.', { exact: true }).fill('Example Inc.');
+  await page.getByRole('button', { name: '+ Add Origin', exact: true }).click();
+  await page.getByPlaceholder('https://example.com', { exact: true }).fill('https://example.com');
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await page.waitForTimeout(300);
+
+  const body = findRequest(api.requests, 'PUT', '/configuration/challenges/challenge-settings').body as { defaultCountryPrefix: string | null };
+  expect(body.defaultCountryPrefix).toBe('+77');
+});
+
 test('adds a new OTP template', async ({ page }) => {
   const api = await loadAdminApp(page, {
     path: challengesPath,

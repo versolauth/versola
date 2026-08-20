@@ -416,6 +416,7 @@ object BootstrapService:
     ChallengeSettingsRecord(
       tenantId = tenantId,
       allowedPrefixes = List.empty,
+      defaultCountryPrefix = None,
       submissionLimits = SubmissionLimits(
         otpRequest = List(RateLimit(2, 60), RateLimit(5, 3600)),
         otpSubmit = List(RateLimit(3, 120), RateLimit(5, 3600)),

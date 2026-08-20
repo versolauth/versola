@@ -124,6 +124,9 @@ export interface PasskeySettings {
 export interface ChallengeSettingsRecord {
   tenantId: string;
   allowedPrefixes: string[];
+  // The prefix pre-selected in the sign-in country-code picker. Should be one of
+  // allowedPrefixes when that list is non-empty.
+  defaultCountryPrefix?: string | null;
   submissionLimits: SubmissionLimits;
   otpLength: number;
   otpResendAfter: number;

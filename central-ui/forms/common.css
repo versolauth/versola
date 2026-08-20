@@ -41,12 +41,12 @@ body {
   background: var(--card-bg);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
-  padding: 48px 44px;
+  padding: 44px 40px 36px;
   box-shadow:
     0 1px 1px rgba(16, 24, 40, 0.02),
     0 4px 10px rgba(16, 24, 40, 0.04),
     0 20px 48px rgba(16, 24, 40, 0.09);
-  width: min(540px, calc(100vw - 40px));
+  width: min(420px, calc(100vw - 40px));
 }
 .brand-mark {
   width: 46px;
@@ -62,20 +62,21 @@ body {
   display: block;
 }
 h1 {
-  font-size: 1.6rem;
+  font-size: 1.5rem;
   font-weight: 600;
+  letter-spacing: -0.01em;
   color: var(--text);
-  margin: 0 0 28px;
+  margin: 0 0 26px;
 }
 form {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 12px;
   margin-bottom: 4px;
 }
 .input-field {
-  padding: 15px 18px;
-  font-size: 1rem;
+  padding: 14px 16px;
+  font-size: 0.98rem;
   color: var(--text);
   background: var(--field-bg);
   border: 1px solid var(--border);
@@ -109,10 +110,10 @@ form {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 10px;
+  gap: 9px;
   width: 100%;
-  padding: 15px 24px;
-  font-size: 1rem;
+  padding: 14px 22px;
+  font-size: 0.98rem;
   font-weight: 600;
   border: none;
   border-radius: var(--radius);
@@ -150,9 +151,9 @@ form {
   display: flex;
   align-items: center;
   text-align: center;
-  margin: 6px 0;
+  margin: 4px 0;
   color: var(--text-muted);
-  font-size: 0.85rem;
+  font-size: 0.82rem;
 }
 .divider::before,
 .divider::after {
@@ -161,7 +162,7 @@ form {
   border-bottom: 1px solid var(--border);
 }
 .divider span {
-  padding: 0 14px;
+  padding: 0 12px;
 }
 .error-message {
   font-size: 1rem;

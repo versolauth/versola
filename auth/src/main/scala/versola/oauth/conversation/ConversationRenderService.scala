@@ -59,6 +59,7 @@ object ConversationRenderService:
         inlinePassword: Boolean,
         passkey: Boolean,
         allowedPhonePrefixes: Option[List[String]],
+        defaultCountryPrefix: Option[String],
         passwordRegex: Option[String],
         registration: Boolean,
     ) extends StepView
@@ -477,10 +478,23 @@ object ConversationRenderService:
                 configuration.getAllowedPhonePrefixes(clientId).map(Some(_))
               else
                 ZIO.none
+            defaultCountryPrefix <-
+              if primaryCredentials.contains(PrimaryCredential.phone) then
+                configuration.getDefaultCountryPrefix(clientId)
+              else
+                ZIO.none
             passwordRegex <-
               if inlinePassword then configuration.getPasswordRegex.map(Some(_))
               else ZIO.none
-          yield StepView.Credential(primaryCredentials, inlinePassword, passkey, allowedPhonePrefixes, passwordRegex, registration)
+          yield StepView.Credential(
+            primaryCredentials,
+            inlinePassword,
+            passkey,
+            allowedPhonePrefixes,
+            defaultCountryPrefix,
+            passwordRegex,
+            registration,
+          )
 
         case _: ConversationStep.Password =>
           configuration.getPasswordRegex.map(StepView.Password(_))
