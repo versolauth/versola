@@ -368,8 +368,8 @@ export class VersolaChallengesList extends LitElement {
         font-size: 0.8125rem;
         font-weight: 600;
         color: var(--accent);
-        background: rgba(88, 166, 255, 0.1);
-        border: 1px solid rgba(88, 166, 255, 0.2);
+        background: rgba(var(--accent-tint), 0.1);
+        border: 1px solid rgba(var(--accent-tint), 0.2);
         border-radius: var(--radius-md);
         padding: var(--spacing-xs) var(--spacing-md);
       }

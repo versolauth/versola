@@ -9,6 +9,113 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
   <style>
+    /*
+     * Theme color tokens, keyed by the same names components already consume
+     * (--bg-dark, --accent, etc.) so switching themes never touches any
+     * component file — only the values here change. Defined here rather than
+     * in a Lit `css` template because `:root` never matches inside a shadow
+     * root (see src/styles/theme.ts for the long version); custom properties
+     * do inherit through shadow boundaries, so every component's shadow root
+     * picks up whichever theme is current without redeclaring anything.
+     *
+     * Dark is the original/default console palette (unchanged). Light reuses
+     * the marketing site's warm palette (versola-website: style.css) and
+     * Petrol Blue accent, so the console and the site read as one product.
+     */
+    :root,
+    :root[data-theme='dark'] {
+      --bg-dark: #0d1117;
+      --bg-dark-card: #161b22;
+      --bg-light: #f6f8fa;
+      --bg-light-card: #ffffff;
+      --accent: #58a6ff;
+      --accent-gradient: linear-gradient(135deg, #58a6ff, #a371f7);
+      --text-primary: #e6edf3;
+      --text-secondary: #8b949e;
+      --border-dark: #30363d;
+      --border-light: #d0d7de;
+
+      --success: #3fb950;
+      --warning: #d29922;
+      --danger: #f85149;
+      --info: #58a6ff;
+
+      /* Tint used for accent-colored badges/hovers (rgba(var(--accent-tint), x)
+         throughout the component styles) — kept as a token so the light theme
+         can swap the base color without a repo-wide find/replace. */
+      --accent-tint: 88, 166, 255;
+      /* Tint for danger-colored badges/banners (rgba(var(--danger-tint), x)) —
+         same reasoning as --accent-tint. */
+      --danger-tint: 248, 81, 73;
+      /* Lighter/darker danger-red variants for text sitting directly on a
+         danger-tinted background (e.g. a "delete" secondary button) — the
+         base --danger red doesn't have enough contrast against its own tint
+         at these opacities. */
+      --danger-strong: #ffb4ad;
+      --danger-stronger: #ffd2cd;
+
+      /* Syntax-highlight token colors (GitHub Dark-derived), consumed by
+         src/styles/code-highlight.ts and cel-highlight.ts. Kept as tokens for
+         the same reason as --accent-tint: highlighted code needs genuinely
+         different colors per theme for readability/contrast, not just a hue
+         swap, so the light values below are GitHub Light's palette rather
+         than a filter applied to these. */
+      --ch-comment: #8b949e;
+      --ch-string: #a5d6ff;
+      --ch-number: #f2cc60;
+      --ch-keyword: #f47067;
+      --ch-tag: #7ee787;
+      --ch-attr-name: #79c0ff;
+      --ch-entity: #ffa657;
+      --ch-selector: #d2a8ff;
+      --ch-function: #d2a8ff;
+      --ch-builtin: #ffa657;
+      --ch-constant: #79c0ff;
+
+      --cel-keyword: #ff7b72;
+      --cel-ctxvar: #d2a8ff;
+    }
+
+    :root[data-theme='light'] {
+      --bg-dark: #faf9f7;
+      --bg-dark-card: #ffffff;
+      --bg-light: #f3f1ed;
+      --bg-light-card: #ffffff;
+      --accent: #155e75;
+      --accent-gradient: linear-gradient(135deg, #155e75, #0e4a5c);
+      --text-primary: #15171c;
+      --text-secondary: #6b7280;
+      --border-dark: rgba(21, 23, 28, 0.12);
+      --border-light: rgba(21, 23, 28, 0.08);
+
+      --success: #15803d;
+      --warning: #b45309;
+      --danger: #dc2626;
+      --info: #155e75;
+
+      --accent-tint: 21, 94, 117;
+      --danger-tint: 220, 38, 38;
+      --danger-strong: #b91c1c;
+      --danger-stronger: #991b1b;
+
+      /* GitHub Light-derived syntax-highlight tokens — see the comment on the
+         dark theme's --ch-*/--cel-* tokens above. */
+      --ch-comment: #6e7781;
+      --ch-string: #0a3069;
+      --ch-number: #0550ae;
+      --ch-keyword: #cf222e;
+      --ch-tag: #116329;
+      --ch-attr-name: #0550ae;
+      --ch-entity: #953800;
+      --ch-selector: #8250df;
+      --ch-function: #8250df;
+      --ch-builtin: #953800;
+      --ch-constant: #0550ae;
+
+      --cel-keyword: #cf222e;
+      --cel-ctxvar: #8250df;
+    }
+
     html {
       scrollbar-gutter: stable;
     }
@@ -16,11 +123,28 @@
       margin: 0;
       padding: 0;
       font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-      background: #0d1117;
-      color: #e6edf3;
+      background: var(--bg-dark);
+      color: var(--text-primary);
       -webkit-font-smoothing: antialiased;
     }
   </style>
+  <script>
+    // Applied before first paint so a visitor who previously chose light mode
+    // never sees a flash of the dark default. Deliberately plain, inline JS
+    // (not a module import) — module scripts execute after the parser has
+    // already built the render tree for everything above them, which is too
+    // late to avoid the flash this exists to prevent. Keep the fallback here
+    // in sync with DEFAULT_THEME in src/utils/theme.ts.
+    (function () {
+      try {
+        var stored = localStorage.getItem('versola-theme');
+        var theme = stored === 'light' ? 'light' : 'dark';
+        document.documentElement.setAttribute('data-theme', theme);
+      } catch (e) {
+        document.documentElement.setAttribute('data-theme', 'dark');
+      }
+    })();
+  </script>
 </head>
 <body>
   <versola-admin></versola-admin>

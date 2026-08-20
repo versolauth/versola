@@ -128,18 +128,18 @@ export class VersolaResourcesList extends LitElement {
     .resource-actions { display:flex; align-items:center; gap:.5rem; margin-left:var(--spacing-md); }
     .resource-label-card { max-width:min(32rem, 100%); padding:.15rem 0; display:flex; align-items:center; gap:.625rem; flex-wrap:wrap; }
     .resource-label { color:var(--accent); font-size:1rem; font-weight:600; line-height:1.35; word-break:break-all; }
-    .resource-id-badge { display:inline-flex; align-items:center; min-height:1.5rem; padding:0 .6rem; border-radius:999px; font-size:.75rem; font-weight:600; letter-spacing:.01em; background:rgba(88, 166, 255, .16); color:#7cc4ff; border:1px solid rgba(88, 166, 255, .28); flex:none; }
+    .resource-id-badge { display:inline-flex; align-items:center; min-height:1.5rem; padding:0 .6rem; border-radius:999px; font-size:.75rem; font-weight:600; letter-spacing:.01em; background:rgba(var(--accent-tint), .16); color:var(--accent); border:1px solid rgba(var(--accent-tint), .28); flex:none; }
     .input-with-info { display:flex; align-items:center; gap:.5rem; }
     .input-with-info > .form-input { flex:1; min-width:0; }
     .cred-mode-cards { display:grid; grid-template-columns:repeat(auto-fill, minmax(160px, 1fr)); gap:.75rem; margin-top:.5rem; }
     .cred-mode-card { display:flex; align-items:center; justify-content:center; text-align:center; padding:.625rem .75rem; border:1px solid var(--border-dark); border-radius:var(--radius-sm); background:transparent; color:var(--text-primary); font-size:.875rem; font-family:var(--font-mono); cursor:pointer; transition:all var(--transition-fast); }
-    .cred-mode-card:hover { border-color:var(--accent); background:rgba(88, 166, 255, .05); }
-    .cred-mode-card.selected { border-color:var(--accent); background:rgba(88, 166, 255, .12); }
+    .cred-mode-card:hover { border-color:var(--accent); background:rgba(var(--accent-tint), .05); }
+    .cred-mode-card.selected { border-color:var(--accent); background:rgba(var(--accent-tint), .12); }
     .audience-add-row { display:flex; align-items:center; gap:.75rem; flex-wrap:wrap; margin-top:.5rem; }
     .audience-input-wrap { position:relative; flex:1; min-width:16rem; }
     .audience-suggestions { position:absolute; top:calc(100% + .25rem); left:0; right:0; z-index:30; display:grid; max-height:12rem; overflow-y:auto; padding:.25rem; border:1px solid var(--border-dark); border-radius:var(--radius-sm); background:var(--bg-dark-card); box-shadow:0 8px 20px rgba(0,0,0,.35); }
     .audience-suggestion { width:100%; padding:.5rem .625rem; border:0; border-radius:var(--radius-sm); background:transparent; color:var(--text-primary); font-family:var(--font-mono); font-size:.875rem; text-align:left; cursor:pointer; }
-    .audience-suggestion:hover, .audience-suggestion:focus-visible { background:rgba(88,166,255,.12); color:var(--accent); outline:none; }
+    .audience-suggestion:hover, .audience-suggestion:focus-visible { background:rgba(var(--accent-tint),.12); color:var(--accent); outline:none; }
     .audience-list { display:grid; gap:.5rem; margin-top:.75rem; }
     .audience-item { display:flex; align-items:center; justify-content:space-between; gap:.75rem; min-height:2.25rem; padding:.375rem .5rem .375rem .75rem; border:1px solid var(--border-dark); border-radius:var(--radius-sm); background:rgba(255,255,255,.02); font-family:var(--font-mono); font-size:.875rem; }
     .audience-empty { margin-top:.75rem; }
@@ -148,7 +148,7 @@ export class VersolaResourcesList extends LitElement {
     .resource-section-trigger:hover { color:var(--accent); }
     .resource-section-chevron { color:var(--text-secondary); font-size:.7rem; }
     .audience-view-list { display:flex; flex-wrap:wrap; gap:.5rem; }
-    .audience-view-item { padding:.375rem .625rem; border:1px solid rgba(88,166,255,.3); border-radius:var(--radius-sm); background:rgba(88,166,255,.08); color:var(--text-primary); font-family:var(--font-mono); font-size:.8125rem; }
+    .audience-view-item { padding:.375rem .625rem; border:1px solid rgba(var(--accent-tint),.3); border-radius:var(--radius-sm); background:rgba(var(--accent-tint),.08); color:var(--text-primary); font-family:var(--font-mono); font-size:.8125rem; }
     .secret-banner { margin-bottom:var(--spacing-lg); border-color:rgba(63, 185, 80, .35); background:linear-gradient(180deg, rgba(63, 185, 80, .08), rgba(63, 185, 80, .04)); }
     .secret-banner-header { display:flex; justify-content:space-between; align-items:flex-start; gap:var(--spacing-md); margin-bottom:var(--spacing-md); }
     .secret-banner-title { margin:0; font-size:1rem; color:var(--text-primary); }
@@ -179,7 +179,7 @@ export class VersolaResourcesList extends LitElement {
     .rule-group-view, .rule-group-editor { display:grid; gap:.625rem; }
     .rule-group-view, .rule-group-editor {
       padding-left:.875rem;
-      border-left:2px solid rgba(88, 166, 255, .18);
+      border-left:2px solid rgba(var(--accent-tint), .18);
     }
     .rule-group-actions { display:flex; gap:.5rem; flex-wrap:wrap; }
     .rule-logic-separator {
@@ -190,7 +190,7 @@ export class VersolaResourcesList extends LitElement {
       text-transform:uppercase;
     }
     .rule-item, .header-item { display:grid; gap:.4rem; padding:.75rem; border:1px solid var(--border-dark); border-radius:var(--radius-sm); background:rgba(255,255,255,.03); }
-    .source-badge { display:inline-flex; align-items:center; min-height:1.5rem; padding:0 .6rem; border-radius:999px; font-size:.75rem; font-weight:600; letter-spacing:.01em; background:rgba(88, 166, 255, .16); color:#7cc4ff; border:1px solid rgba(88, 166, 255, .28); }
+    .source-badge { display:inline-flex; align-items:center; min-height:1.5rem; padding:0 .6rem; border-radius:999px; font-size:.75rem; font-weight:600; letter-spacing:.01em; background:rgba(var(--accent-tint), .16); color:var(--accent); border:1px solid rgba(var(--accent-tint), .28); }
     .rule-expression { display:flex; align-items:center; gap:.5rem; flex-wrap:wrap; }
     .rule-field, .rule-operator, .rule-value, .header-item-key, .header-item-value { font-size:.875rem; font-family:var(--font-mono, monospace); word-break:break-word; }
     .rule-field, .rule-value, .header-item-key, .header-item-value { color:var(--text-primary); }
@@ -203,7 +203,7 @@ export class VersolaResourcesList extends LitElement {
     .header-item-key { font-weight:600; }
     .fetch-indicator { display:inline-flex; align-items:center; gap:.625rem; }
     .fetch-indicator-box { width:1.1rem; height:1.1rem; border-radius:.3rem; border:1px solid var(--border-dark); display:inline-flex; align-items:center; justify-content:center; font-size:.8rem; font-weight:700; }
-    .fetch-indicator.fetch-enabled .fetch-indicator-box { background:rgba(88, 166, 255, .16); border-color:rgba(88, 166, 255, .32); color:#7cc4ff; }
+    .fetch-indicator.fetch-enabled .fetch-indicator-box { background:rgba(var(--accent-tint), .16); border-color:rgba(var(--accent-tint), .32); color:var(--accent); }
     .fetch-indicator.fetch-disabled .fetch-indicator-box { background:rgba(255,255,255,.03); color:transparent; }
     .section-header { display:flex; align-items:center; justify-content:space-between; gap:var(--spacing-md); margin:var(--spacing-xl) 0 var(--spacing-md); }
     .section-title { margin:0; font-size:1rem; font-weight:600; color:var(--text-primary); }
@@ -230,9 +230,9 @@ export class VersolaResourcesList extends LitElement {
     .editor-section-title { margin:0; font-size:.9rem; color:var(--text-primary); }
     .option-info-button {
       flex:none;
-      border:1px solid rgba(88, 166, 255, 0.4);
+      border:1px solid rgba(var(--accent-tint), 0.4);
       border-radius:999px;
-      background:rgba(88, 166, 255, 0.12);
+      background:rgba(var(--accent-tint), 0.12);
       color:var(--accent);
       font-size:.75rem;
       font-weight:700;
@@ -242,8 +242,8 @@ export class VersolaResourcesList extends LitElement {
       font-family:var(--font-family);
     }
     .option-info { position:relative; display:inline-flex; align-items:center; flex:none; }
-    .option-info-button:hover { background:rgba(88, 166, 255, 0.18); border-color:rgba(88, 166, 255, 0.55); }
-    .option-info-button:focus-visible { outline:none; box-shadow:0 0 0 2px rgba(88, 166, 255, 0.2); }
+    .option-info-button:hover { background:rgba(var(--accent-tint), 0.18); border-color:rgba(var(--accent-tint), 0.55); }
+    .option-info-button:focus-visible { outline:none; box-shadow:0 0 0 2px rgba(var(--accent-tint), 0.2); }
     .option-tooltip {
       position:absolute;
       right:0;
@@ -252,7 +252,7 @@ export class VersolaResourcesList extends LitElement {
       min-width:18rem;
       max-width:min(28rem, 75vw);
       padding:0.75rem;
-      border:1px solid rgba(88, 166, 255, 0.28);
+      border:1px solid rgba(var(--accent-tint), 0.28);
       border-radius:var(--radius-md);
       background:linear-gradient(180deg, rgba(22, 27, 34, 0.98), rgba(13, 17, 23, 0.98));
       box-shadow:0 10px 24px rgba(0, 0, 0, 0.35);
@@ -271,7 +271,7 @@ export class VersolaResourcesList extends LitElement {
     .option-tooltip-section-title { margin:.625rem 0 .25rem; color:var(--text-secondary); font-size:.7rem; font-weight:600; text-transform:uppercase; letter-spacing:.04em; }
     .option-tooltip-section-title:first-child { margin-top:0; }
     .option-tooltip-list { margin:0; padding-left:1rem; display:grid; gap:.2rem; }
-    .option-tooltip-code { font-family:var(--font-mono, monospace); font-size:.72rem; color:var(--accent); background:rgba(88, 166, 255, .1); padding:.05rem .3rem; border-radius:.25rem; }
+    .option-tooltip-code { font-family:var(--font-mono, monospace); font-size:.72rem; color:var(--accent); background:rgba(var(--accent-tint), .1); padding:.05rem .3rem; border-radius:.25rem; }
     .option-tooltip-pre { margin:.25rem 0 0; padding:.5rem .625rem; border-radius:var(--radius-sm); background:rgba(0,0,0,.35); border:1px solid rgba(139, 148, 158, .18); font-family:var(--font-mono, monospace); font-size:.72rem; color:var(--text-primary); white-space:pre-wrap; word-break:break-word; }
     .rule-group-editor-list, .rule-editor-list, .header-editor-list { display:grid; gap:.75rem; }
     .rule-group-editor:not(:first-child), .header-editor-list > :not(:first-child) { padding-top:.75rem; border-top:1px solid rgba(139, 148, 158, .16); }

@@ -269,7 +269,7 @@ export class VersolaClientsList extends LitElement {
 
       .tag {
         padding: 0.25rem 0.5rem;
-        background: rgba(88, 166, 255, 0.15);
+        background: rgba(var(--accent-tint), 0.15);
         color: var(--accent);
         border-radius: var(--radius-sm);
         font-size: 0.75rem;
@@ -338,7 +338,7 @@ export class VersolaClientsList extends LitElement {
       .logout-claim-key {
         padding: 0.1rem 0.3rem;
         border-radius: var(--radius-sm);
-        background: rgba(88, 166, 255, 0.15);
+        background: rgba(var(--accent-tint), 0.15);
         color: var(--accent);
         font-family: var(--font-mono);
         font-size: 0.75rem;
@@ -559,7 +559,7 @@ export class VersolaClientsList extends LitElement {
       }
 
       .preset-card-header:hover {
-        background: rgba(88, 166, 255, 0.05);
+        background: rgba(var(--accent-tint), 0.05);
       }
 
       .preset-info {

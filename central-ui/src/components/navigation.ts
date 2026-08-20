@@ -1,6 +1,7 @@
 import { LitElement, html, css } from 'lit';
-import { customElement, property, query } from 'lit/decorators.js';
+import { customElement, property, query, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
+import { getStoredTheme, toggleTheme, type ThemeName } from '../utils/theme';
 import './versola-logo';
 import './tenant-selector';
 
@@ -16,6 +17,10 @@ export class VersolaNavigation extends LitElement {
   @property({ type: Boolean, reflect: true }) open = false;
   @property({ type: String }) logoutUrl = '/logout/central-admin';
   @query('.brand-close') private closeButton?: HTMLButtonElement;
+  /** Mirrors whatever's currently applied to <html> (see src/utils/theme.ts).
+    * Read once at construction rather than derived on every render — the only
+    * other place that changes it is this component's own toggle handler. */
+  @state() private currentTheme: ThemeName = getStoredTheme();
 
   /** Called by admin-app right after opening the drawer.
     *
@@ -233,12 +238,12 @@ export class VersolaNavigation extends LitElement {
       }
 
       .nav-item:hover {
-        background: rgba(88, 166, 255, 0.1);
+        background: rgba(var(--accent-tint), 0.1);
         color: var(--accent);
       }
 
       .nav-item.active {
-        background: rgba(88, 166, 255, 0.15);
+        background: rgba(var(--accent-tint), 0.15);
         color: var(--accent);
       }
 
@@ -257,6 +262,57 @@ export class VersolaNavigation extends LitElement {
       .nav-footer .nav-item {
         margin-bottom: 0;
       }
+
+      .theme-toggle {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 0.5rem;
+        padding: 0.75rem;
+        border-radius: var(--radius-md);
+        margin-bottom: 0.25rem;
+        color: var(--text-secondary);
+        font-size: 0.875rem;
+        font-weight: 500;
+      }
+
+      /* A two-position switch rather than a single icon button: the icon
+         alone doesn't communicate which mode is *currently* active without
+         a label, and this sidebar already uses plain-language nav items over
+         icons elsewhere (see navItem above) — a switch with both states
+         visible keeps that same at-a-glance clarity for theme too. */
+      .theme-switch {
+        display: inline-flex;
+        border: 1px solid var(--border-dark);
+        border-radius: 9999px;
+        padding: 2px;
+        gap: 2px;
+      }
+
+      .theme-switch-option {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 1.75rem;
+        height: 1.5rem;
+        border: none;
+        border-radius: 9999px;
+        background: transparent;
+        color: var(--text-secondary);
+        cursor: pointer;
+        font-size: 0.9rem;
+        line-height: 1;
+        transition: all var(--transition-fast);
+      }
+
+      .theme-switch-option.active {
+        background: rgba(var(--accent-tint), 0.18);
+        color: var(--accent);
+      }
+
+      .theme-switch-option:hover:not(.active) {
+        color: var(--text-primary);
+      }
     `,
   ];
 
@@ -266,6 +322,10 @@ export class VersolaNavigation extends LitElement {
       composed: true,
     }));
   }
+
+  private handleThemeToggle = () => {
+    this.currentTheme = toggleTheme();
+  };
 
   private handleNavClick(item: NavItem) {
     this.dispatchEvent(new CustomEvent('nav-change', {
@@ -365,6 +425,29 @@ export class VersolaNavigation extends LitElement {
         </div>
 
         <div class="nav-footer">
+          <div class="theme-toggle">
+            <span>Theme</span>
+            <span class="theme-switch" role="radiogroup" aria-label="Color theme">
+              <button
+                type="button"
+                class="theme-switch-option ${this.currentTheme === 'light' ? 'active' : ''}"
+                role="radio"
+                aria-checked=${this.currentTheme === 'light'}
+                aria-label="Light theme"
+                title="Light theme"
+                @click=${() => { if (this.currentTheme !== 'light') this.handleThemeToggle(); }}
+              >☀️</button>
+              <button
+                type="button"
+                class="theme-switch-option ${this.currentTheme === 'dark' ? 'active' : ''}"
+                role="radio"
+                aria-checked=${this.currentTheme === 'dark'}
+                aria-label="Dark theme"
+                title="Dark theme"
+                @click=${() => { if (this.currentTheme !== 'dark') this.handleThemeToggle(); }}
+              >🌙</button>
+            </span>
+          </div>
           <a class="nav-item" href=${this.logoutUrl}>Log out</a>
         </div>
       </div>

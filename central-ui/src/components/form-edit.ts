@@ -78,7 +78,7 @@ export class VersolaFormEdit extends LitElement {
       .form-title { font-size: 1.625rem; font-weight: 700; letter-spacing: -0.025em; color: var(--text-primary); margin: 0; }
       .locale-tabs { display: flex; gap: 0.5rem; margin-bottom: var(--spacing-md); flex-wrap: wrap; }
       .locale-tab { padding: 0.375rem 0.875rem; border-radius: var(--radius-md); border: 1px solid var(--border-dark); background: transparent; color: var(--text-secondary); font-size: 0.875rem; cursor: pointer; transition: all var(--transition-fast); }
-      .locale-tab.active { background: rgba(88,166,255,0.15); border-color: var(--accent); color: var(--accent); }
+      .locale-tab.active { background: rgba(var(--accent-tint),0.15); border-color: var(--accent); color: var(--accent); }
       .field-label { font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-secondary); margin-bottom: 0.5rem; }
       .section-gap { margin-top: var(--spacing-xl); }
       .hint { font-size: 0.75rem; color: var(--text-secondary); margin-bottom: 0.5rem; }
@@ -96,7 +96,7 @@ export class VersolaFormEdit extends LitElement {
       .property-row { display: grid; grid-template-columns: 1fr 1fr auto; gap: var(--spacing-md); align-items: start; margin-bottom: var(--spacing-md); padding-bottom: var(--spacing-md); border-bottom: 1px solid var(--border-dark); }
       .property-row:last-child { border-bottom: none; }
       .allowed-values { margin-top: 0.5rem; display: flex; flex-wrap: wrap; gap: 0.5rem; }
-      .allowed-value-tag { display: flex; align-items: center; gap: 0.25rem; background: rgba(88,166,255,0.1); border: 1px solid var(--accent); border-radius: var(--radius-sm); padding: 0.125rem 0.5rem; font-size: 0.75rem; color: var(--accent); }
+      .allowed-value-tag { display: flex; align-items: center; gap: 0.25rem; background: rgba(var(--accent-tint),0.1); border: 1px solid var(--accent); border-radius: var(--radius-sm); padding: 0.125rem 0.5rem; font-size: 0.75rem; color: var(--accent); }
       .remove-tag { cursor: pointer; font-weight: bold; }
       .add-prop-actions { display: flex; gap: var(--spacing-md); margin-bottom: var(--spacing-lg); }
       .split-layout { display: grid; grid-template-columns: 1fr 1fr; gap: var(--spacing-xl); }
@@ -135,7 +135,7 @@ export class VersolaFormEdit extends LitElement {
       .preview-sizes { display: flex; gap: var(--spacing-sm); margin-bottom: var(--spacing-md); }
       .size-btn { padding: 0.25rem 0.75rem; background: transparent; border: 1px solid var(--border-dark); border-radius: var(--radius-md); color: var(--text-secondary); font-size: 0.75rem; font-weight: 500; cursor: pointer; transition: all var(--transition-fast); }
       .size-btn:hover { color: var(--text-primary); border-color: var(--accent); }
-      .size-btn.active { background: rgba(88,166,255,0.1); border-color: var(--accent); color: var(--accent); }
+      .size-btn.active { background: rgba(var(--accent-tint),0.1); border-color: var(--accent); color: var(--accent); }
       /* Preview area */
       .preview-area { padding: var(--spacing-md) 0 var(--spacing-lg); border-top: 1px solid var(--border-dark); }
       .preview-resizer { resize: horizontal; overflow: hidden; box-sizing: border-box; height: 600px; max-width: 100%; margin: 0 auto; border: 1px solid var(--border-dark); border-radius: var(--radius-md); background: #fff; }

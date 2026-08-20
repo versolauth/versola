@@ -303,7 +303,7 @@ export class VersolaFormsList extends LitElement {
       }
       .size-btn:hover { color: var(--text-primary); border-color: var(--accent); }
       .size-btn.active {
-        background: rgba(88, 166, 255, 0.1);
+        background: rgba(var(--accent-tint), 0.1);
         border-color: var(--accent);
         color: var(--accent);
       }
@@ -452,7 +452,7 @@ export class VersolaFormsList extends LitElement {
       .form-control:focus {
         outline: none;
         border-color: var(--accent);
-        box-shadow: 0 0 0 2px rgba(88, 166, 255, 0.15);
+        box-shadow: 0 0 0 2px rgba(var(--accent-tint), 0.15);
       }
       .locale-list {
         display: flex;

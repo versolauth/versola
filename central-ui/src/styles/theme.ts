@@ -1,26 +1,29 @@
 import { css } from 'lit';
 
+/**
+ * Theme color tokens (--bg-dark, --accent, etc.) are NOT defined here.
+ *
+ * `:root` never matches inside a shadow root (it's meant for the document
+ * element, and a ShadowRoot is a DocumentFragment, not a document) — a Lit
+ * `css` tagged template saying `:root { ... }`, attached to a component's
+ * shadow DOM the way the rest of this file's tokens are, would match
+ * nothing. Custom properties do inherit through shadow boundaries though, so
+ * the tokens are defined exactly once as plain `:root[data-theme=...]` rules
+ * in index.html (both to have them ready before first paint, alongside the
+ * pre-paint script that sets `data-theme`, and to keep one canonical copy
+ * rather than a string duplicated between here and there). Every component's
+ * shadow root inherits whichever theme's values are current without
+ * redeclaring them. See src/utils/theme.ts for the get/set/toggle API and
+ * index.html for the actual color values.
+ *
+ * Dark is the original/default palette (unchanged). Light reuses the
+ * marketing site's warm palette (versola-website: public/css/style.css) and
+ * Petrol Blue accent, so the console and the site read as one product.
+ */
+
 export const theme = css`
   /* Versola Theme Variables */
   :host {
-    /* Colors - from Versola website */
-    --bg-dark: #0d1117;
-    --bg-dark-card: #161b22;
-    --bg-light: #f6f8fa;
-    --bg-light-card: #ffffff;
-    --accent: #58a6ff;
-    --accent-gradient: linear-gradient(135deg, #58a6ff, #a371f7);
-    --text-primary: #e6edf3;
-    --text-secondary: #8b949e;
-    --border-dark: #30363d;
-    --border-light: #d0d7de;
-    
-    /* Status colors */
-    --success: #3fb950;
-    --warning: #d29922;
-    --danger: #f85149;
-    --info: #58a6ff;
-    
     /* Fonts - from Versola website */
     --font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
     --font-mono: 'JetBrains Mono', 'Fira Code', monospace;

@@ -83,7 +83,7 @@ export class VersolaEdgeForm extends LitElement {
       }
 
       .error-message {
-        color: var(--error);
+        color: var(--danger);
         font-size: 0.875rem;
         margin-top: 0.25rem;
       }

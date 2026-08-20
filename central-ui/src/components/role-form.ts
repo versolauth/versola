@@ -73,7 +73,7 @@ export class VersolaRoleForm extends LitElement {
 
       .checkbox-item:hover {
         border-color: var(--accent);
-        background: rgba(88, 166, 255, 0.05);
+        background: rgba(var(--accent-tint), 0.05);
       }
 
       .checkbox-item input[type="checkbox"] {
