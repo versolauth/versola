@@ -37,7 +37,7 @@ export class TenantSelector extends LitElement {
       .selector-button {
         width: 100%;
         padding: 0.75rem 1rem;
-        background: rgba(0, 0, 0, 0.3);
+        background: var(--bg-dark-card);
         border: 1px solid var(--border-dark);
         border-radius: var(--radius-md);
         color: var(--text-primary);

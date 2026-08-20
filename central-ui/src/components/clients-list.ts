@@ -212,7 +212,7 @@ export class VersolaClientsList extends LitElement {
       }
 
       .detail-section {
-        background: rgba(0, 0, 0, 0.2);
+        background: var(--bg-dark);
         border: 1px solid var(--border-dark);
         border-radius: var(--radius-md);
         padding: var(--spacing-md);
@@ -360,7 +360,7 @@ export class VersolaClientsList extends LitElement {
       }
 
       .flow-step {
-        background: rgba(0, 0, 0, 0.2);
+        background: var(--bg-dark);
         border: 1px solid var(--border-dark);
         border-radius: var(--radius-md);
         padding: var(--spacing-md);
@@ -431,7 +431,7 @@ export class VersolaClientsList extends LitElement {
       .secret-value {
         margin: 0;
         padding: 0.875rem 1rem;
-        background: rgba(0, 0, 0, 0.25);
+        background: var(--bg-dark);
         border: 1px solid var(--border-dark);
         border-radius: var(--radius-md);
         color: var(--text-primary);
@@ -527,7 +527,7 @@ export class VersolaClientsList extends LitElement {
         text-align: center;
         color: var(--text-secondary);
         font-size: 0.875rem;
-        background: rgba(0, 0, 0, 0.2);
+        background: var(--bg-dark);
         border-radius: var(--radius-md);
       }
 
@@ -537,7 +537,7 @@ export class VersolaClientsList extends LitElement {
       }
 
       .preset-card {
-        background: rgba(0, 0, 0, 0.2);
+        background: var(--bg-dark);
         border: 1px solid var(--border-dark);
         border-radius: var(--radius-md);
         transition: border-color var(--transition-fast);

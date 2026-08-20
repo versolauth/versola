@@ -5,7 +5,7 @@ import { theme } from '../styles/theme';
 import type { Permission, Resource, ResourceEndpointId } from '../types';
 import { createPermission, deletePermission, getPermissions, getResources, updatePermission } from '../utils/central-api';
 import { confirmDestructiveAction } from '../utils/confirm-dialog';
-import { formatResourceLabel, getLocalizedDescription } from '../utils/helpers';
+import { PERMISSIONS_UPDATED_EVENT, formatResourceLabel, getLocalizedDescription } from '../utils/helpers';
 import './content-header';
 import './error-card';
 import './loading-cards';
@@ -130,19 +130,32 @@ export class VersolaPermissionsList extends LitElement {
     });
   }
 
+  /**
+   * Tell other views (notably the resources list, which shows the reverse
+   * permission -> endpoint index) that this tenant's permissions changed.
+   */
+  private notifyPermissionsUpdated() {
+    window.dispatchEvent(new CustomEvent(PERMISSIONS_UPDATED_EVENT, {
+      detail: { tenantId: this.tenantId, permissions: this.permissions },
+    }));
+  }
+
   private upsertPermission(permission: Permission) {
     const existingIndex = this.permissions.findIndex(candidate => candidate.id === permission.id);
     if (existingIndex === -1) {
       this.permissions = [...this.permissions, permission];
+      this.notifyPermissionsUpdated();
       return;
     }
 
     this.permissions = this.permissions.map(candidate => candidate.id === permission.id ? permission : candidate);
+    this.notifyPermissionsUpdated();
   }
 
   private removePermissionFromState(permissionId: string) {
     this.permissions = this.permissions.filter(permission => permission.id !== permissionId);
     this.expandedPermissions = new Set([...this.expandedPermissions].filter(id => id !== permissionId));
+    this.notifyPermissionsUpdated();
   }
 
   private getResourceGroups(permission: Permission): PermissionResourceGroup[] {

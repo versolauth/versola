@@ -4,11 +4,11 @@ import { badgeStyles, buttonStyles, cardStyles, formStyles, methodBadgeStyles, t
 import { celHighlightStyles } from '../styles/cel-highlight';
 import { theme } from '../styles/theme';
 import type { InjectRule, InjectTarget, Resource, ResourceEndpoint, ResourceEndpointId } from '../types';
-import { createResource, deletePreviousResourceSecret, deleteResource, fetchAllClients, fetchChallengeSettings, getResources, rotateResourceSecret, updateResource } from '../utils/central-api';
+import { createResource, deletePreviousResourceSecret, deleteResource, fetchAllClients, fetchAllPermissions, fetchChallengeSettings, getResources, rotateResourceSecret, updateResource } from '../utils/central-api';
 import { renderHighlightedCel } from '../utils/cel-highlight';
 import { validateCel } from '../utils/cel-validator';
 import { confirmDestructiveAction } from '../utils/confirm-dialog';
-import { copyToClipboard, formatResourceLabel } from '../utils/helpers';
+import { PERMISSIONS_UPDATED_EVENT, type PermissionsUpdatedDetail, copyToClipboard, formatResourceLabel, indexPermissionsByEndpoint } from '../utils/helpers';
 import { validateResourceId, validateResourceUri } from '../utils/validators';
 import './cel-editor';
 import './content-header';
@@ -75,6 +75,8 @@ export class VersolaResourcesList extends LitElement {
   @state() private resources: Resource[] = [];
   @state() private clientIds: string[] = [];
   @state() private acrVocabulary: Record<string, string[]> = {};
+  /** Reverse index: endpoint id -> permission ids granting access to it. */
+  @state() private permissionsByEndpoint: Map<ResourceEndpointId, string[]> = new Map();
   @state() private expandedResources: Set<string> = new Set();
   @state() private expandedEndpoints: Set<ResourceEndpointId> = new Set();
   @state() private searchQuery = '';
@@ -298,6 +300,28 @@ export class VersolaResourcesList extends LitElement {
       border-radius: var(--radius-md);
       padding: var(--spacing-xs) var(--spacing-md);
     }
+    .permission-alternatives {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: var(--spacing-xs);
+      margin-top: var(--spacing-xs);
+    }
+    .permission-tag {
+      font-family: var(--font-mono);
+      font-weight: 600;
+      font-size: 0.75rem;
+      color: var(--accent);
+      background: rgba(var(--accent-tint), 0.12);
+      border: 1px solid rgba(var(--accent-tint), 0.32);
+      border-radius: var(--radius-sm);
+      padding: 0.125rem var(--spacing-sm);
+    }
+    .permission-or {
+      font-size: 0.6875rem;
+      font-style: italic;
+      color: var(--text-secondary);
+    }
     @media (max-width: 720px) {
       /* Same inherited-align-items trap as permissions-list: in a column,
          align-items:center centres the label horizontally instead of
@@ -326,12 +350,20 @@ export class VersolaResourcesList extends LitElement {
   connectedCallback() {
     super.connectedCallback();
     document.addEventListener('click', this.handleDocumentClick);
+    window.addEventListener(PERMISSIONS_UPDATED_EVENT, this.handlePermissionsUpdated);
   }
 
   disconnectedCallback() {
     document.removeEventListener('click', this.handleDocumentClick);
+    window.removeEventListener(PERMISSIONS_UPDATED_EVENT, this.handlePermissionsUpdated);
     super.disconnectedCallback();
   }
+
+  private handlePermissionsUpdated = (event: Event) => {
+    const detail = (event as CustomEvent<PermissionsUpdatedDetail>).detail;
+    if (!detail || detail.tenantId !== this.tenantId) return;
+    this.permissionsByEndpoint = indexPermissionsByEndpoint(detail.permissions);
+  };
 
   private resetForms() {
     this.formMode = 'none'; this.activeResourceId = null; this.resourceUri = ''; this.resourceId = '';
@@ -397,17 +429,19 @@ export class VersolaResourcesList extends LitElement {
   }
 
   private async loadData() {
-    if (!this.tenantId) { this.resources = []; this.error = ''; return; }
+    if (!this.tenantId) { this.resources = []; this.permissionsByEndpoint = new Map(); this.error = ''; return; }
     this.loading = true; this.error = '';
     try {
-      const [resources, challengeSettings, clients] = await Promise.all([
+      const [resources, challengeSettings, clients, permissions] = await Promise.all([
         getResources(this.tenantId),
         fetchChallengeSettings(this.tenantId),
         fetchAllClients(this.tenantId),
+        fetchAllPermissions(this.tenantId),
       ]);
       this.resources = resources;
       this.clientIds = clients.map(client => client.id);
       this.acrVocabulary = challengeSettings?.acrVocabulary ?? {};
+      this.permissionsByEndpoint = indexPermissionsByEndpoint(permissions);
       const validIds = new Set(resources.map(resource => resource.resourceId));
       const validEndpointIds = new Set(resources.flatMap(resource => resource.endpoints.map(endpoint => endpoint.id)));
       this.expandedResources = new Set([...this.expandedResources].filter(id => validIds.has(id)));
@@ -420,7 +454,7 @@ export class VersolaResourcesList extends LitElement {
         }
       }
     } catch (error) {
-      this.resources = []; this.error = error instanceof Error ? error.message : 'Failed to load resources';
+      this.resources = []; this.permissionsByEndpoint = new Map(); this.error = error instanceof Error ? error.message : 'Failed to load resources';
     } finally { this.loading = false; }
   }
 
@@ -902,11 +936,32 @@ export class VersolaResourcesList extends LitElement {
     this.requestUpdate();
   }
 
+  /**
+   * Permissions that grant access to this endpoint, from the reverse index.
+   * Multiple permissions are alternatives, so they read as "a or b".
+   */
+  private renderRequiredPermissionSection(endpointId: ResourceEndpointId) {
+    const permissionIds = this.permissionsByEndpoint.get(endpointId) ?? [];
+    return html`
+      <div class="endpoint-editor-section">
+        <div class="endpoint-detail-label">Required Permission</div>
+        ${permissionIds.length === 0
+          ? html`<div class="endpoint-empty">— (none)</div>`
+          : html`<div class="permission-alternatives">
+              ${permissionIds.map((permissionId, index) => html`
+                ${index > 0 ? html`<span class="permission-or">or</span>` : ''}
+                <span class="permission-tag">${permissionId}</span>
+              `)}
+            </div>`}
+      </div>
+    `;
+  }
+
   private renderAllowSection(allow: string | undefined) {
     const hasAllow = allow != null && allow.length > 0;
     return html`
       <div class="endpoint-editor-section">
-        <div class="endpoint-detail-label">Allow (CEL)</div>
+        <div class="endpoint-detail-label">Allow</div>
         ${hasAllow
           ? html`<div class="cel-inline">${renderHighlightedCel(allow)}</div>`
           : html`<div class="endpoint-empty">— (unrestricted)</div>`}
@@ -968,6 +1023,10 @@ export class VersolaResourcesList extends LitElement {
   }
 
   private renderEndpointDetails(endpoint: ResourceEndpoint) {
+    const hasStepUp = (endpoint.stepUpCondition != null && endpoint.stepUpCondition.length > 0)
+      || (endpoint.stepUpAcr != null && endpoint.stepUpAcr.length > 0);
+    const hasMaxAge = endpoint.maxAge != null;
+
     return html`
       <div class="endpoint-card-details">
         <div class="fetch-row">
@@ -977,9 +1036,10 @@ export class VersolaResourcesList extends LitElement {
           </span>
         </div>
         <div class="endpoint-detail-grid">
+          ${this.renderRequiredPermissionSection(endpoint.id)}
           ${this.renderAllowSection(endpoint.allow)}
-          ${this.renderStepUpSection(endpoint.stepUpCondition, endpoint.stepUpAcr)}
-          ${this.renderMaxAgeSection(endpoint.maxAge)}
+          ${hasStepUp ? this.renderStepUpSection(endpoint.stepUpCondition, endpoint.stepUpAcr) : ''}
+          ${hasMaxAge ? this.renderMaxAgeSection(endpoint.maxAge) : ''}
           ${this.renderInjectSection(endpoint.inject)}
         </div>
       </div>
