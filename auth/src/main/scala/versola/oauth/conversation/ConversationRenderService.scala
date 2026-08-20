@@ -59,7 +59,7 @@ object ConversationRenderService:
         inlinePassword: Boolean,
         passkey: Boolean,
         allowedPhonePrefixes: Option[List[String]],
-        defaultCountryPrefix: Option[String],
+        defaultPhonePrefix: Option[String],
         passwordRegex: Option[String],
         registration: Boolean,
     ) extends StepView
@@ -478,9 +478,9 @@ object ConversationRenderService:
                 configuration.getAllowedPhonePrefixes(clientId).map(Some(_))
               else
                 ZIO.none
-            defaultCountryPrefix <-
+            defaultPhonePrefix <-
               if primaryCredentials.contains(PrimaryCredential.phone) then
-                configuration.getDefaultCountryPrefix(clientId)
+                configuration.getDefaultPhonePrefix(clientId)
               else
                 ZIO.none
             passwordRegex <-
@@ -491,7 +491,7 @@ object ConversationRenderService:
             inlinePassword,
             passkey,
             allowedPhonePrefixes,
-            defaultCountryPrefix,
+            defaultPhonePrefix,
             passwordRegex,
             registration,
           )

@@ -13,7 +13,7 @@ object ChallengeSettingsServiceSpec extends UnitSpecBase:
   private val settings = ChallengeSettingsRecord(
     tenantId = tenantId,
     allowedPrefixes = List.empty,
-    defaultCountryPrefix = None,
+    defaultPhonePrefix = None,
     submissionLimits = SubmissionLimits.empty,
     otpLength = 6,
     otpResendAfter = 60,

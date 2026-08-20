@@ -14,10 +14,10 @@ case class PasskeySettings(
 case class ChallengeSettingsRecord(
     tenantId: TenantId,
     allowedPrefixes: List[String],
-    // The prefix pre-selected in the sign-in country-code picker. Must be one of
+    // The prefix pre-selected in the sign-in phone prefix picker. Must be one of
     // allowedPrefixes when that list is non-empty; None means no prefix is pre-selected
     // (falls back to the first allowed prefix, or no picker at all if the list is empty).
-    defaultCountryPrefix: Option[String],
+    defaultPhonePrefix: Option[String],
     submissionLimits: SubmissionLimits,
     otpLength: Int,
     otpResendAfter: Int,

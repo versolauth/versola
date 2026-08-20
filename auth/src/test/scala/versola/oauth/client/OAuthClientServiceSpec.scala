@@ -375,7 +375,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
       val settings = ChallengeSettingsRecord(
         tenantId = TenantId("default"),
         allowedPrefixes = Nil,
-        defaultCountryPrefix = None,
+        defaultPhonePrefix = None,
         submissionLimits = limits,
         otpLength = 6,
         otpResendAfter = 60,
@@ -397,7 +397,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
       val settings = ChallengeSettingsRecord(
         tenantId = TenantId("default"),
         allowedPrefixes = Nil,
-        defaultCountryPrefix = None,
+        defaultPhonePrefix = None,
         submissionLimits = SubmissionLimits.empty,
         otpLength = 6,
         otpResendAfter = 60,
@@ -420,7 +420,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
       val settings = ChallengeSettingsRecord(
         tenantId = TenantId("default"),
         allowedPrefixes = Nil,
-        defaultCountryPrefix = None,
+        defaultPhonePrefix = None,
         submissionLimits = SubmissionLimits.empty,
         otpLength = 6,
         otpResendAfter = 60,
@@ -508,7 +508,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
       val settings = ChallengeSettingsRecord(
         tenantId = TenantId("default"),
         allowedPrefixes = Nil,
-        defaultCountryPrefix = None,
+        defaultPhonePrefix = None,
         submissionLimits = SubmissionLimits.empty,
         otpLength = 6,
         otpResendAfter = 60,

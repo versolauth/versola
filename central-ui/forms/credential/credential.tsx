@@ -41,7 +41,8 @@ type CredentialStep = {
   inlinePassword: boolean;
   passkey: boolean;
   allowedPhonePrefixes?: string[];
-  defaultCountryPrefix?: string;
+  defaultPhonePrefix?: string;
+
   passwordRegex?: string;
 };
 
@@ -86,15 +87,17 @@ function CredentialForm(props: { config: FormConfig }) {
   // The picker is derived entirely from the tenant's configured phone prefixes: when
   // none are configured there's nothing to derive a list from, so the phone field falls
   // back to a single free-typed E.164 input (today's behavior, unrestricted).
-  const showCountryPrefixPicker = allowedPhonePrefixes.length > 0;
-  const [countryPrefix, setCountryPrefix] = createSignal(
-    (step.defaultCountryPrefix && allowedPhonePrefixes.includes(step.defaultCountryPrefix)
-      ? step.defaultCountryPrefix
+  // These are dialling prefixes, not country codes: one prefix can cover many countries
+  // (+1 is the whole NANP) and can be longer than a country code (operator ranges).
+  const showPhonePrefixPicker = allowedPhonePrefixes.length > 0;
+  const [phonePrefix, setPhonePrefix] = createSignal(
+    (step.defaultPhonePrefix && allowedPhonePrefixes.includes(step.defaultPhonePrefix)
+      ? step.defaultPhonePrefix
       : allowedPhonePrefixes[0]) ?? '',
   );
-  const [nationalNumber, setNationalNumber] = createSignal('');
+  const [phoneRest, setPhoneRest] = createSignal('');
   const fullPhone = () =>
-    showCountryPrefixPicker ? `${countryPrefix()}${nationalNumber()}` : nationalNumber();
+    showPhonePrefixPicker ? `${phonePrefix()}${phoneRest()}` : phoneRest();
 
   // login always carries a password; email/phone show it only when inlinePassword is set
   const showPassword = () => isLoginFlow || !!step.inlinePassword;
@@ -202,7 +205,7 @@ function CredentialForm(props: { config: FormConfig }) {
         <Show when={single === 'phone'}>
           <input type="hidden" name="phone" value={fullPhone()} />
           <Show
-            when={showCountryPrefixPicker}
+            when={showPhonePrefixPicker}
             fallback={
               <input
                 type="tel"
@@ -210,27 +213,27 @@ function CredentialForm(props: { config: FormConfig }) {
                 placeholder={t().phone_placeholder}
                 pattern="^\+[1-9]\d{6,14}$"
                 required
-                value={nationalNumber()}
-                onInput={(e) => { phoneNotAllowed() && setPhoneNotAllowed(false); setNationalNumber((e.currentTarget as HTMLInputElement).value); }}
+                value={phoneRest()}
+                onInput={(e) => { phoneNotAllowed() && setPhoneNotAllowed(false); setPhoneRest((e.currentTarget as HTMLInputElement).value); }}
               />
             }
           >
             <div class="phone-field-group">
               <select
-                class="input-field country-prefix-select"
-                aria-label={t().country_code_label ?? 'Country code'}
-                value={countryPrefix()}
-                onChange={(e) => setCountryPrefix((e.currentTarget as HTMLSelectElement).value)}
+                class="input-field phone-prefix-select"
+                aria-label={t().phone_prefix_label ?? 'Phone prefix'}
+                value={phonePrefix()}
+                onChange={(e) => setPhonePrefix((e.currentTarget as HTMLSelectElement).value)}
               >
                 {allowedPhonePrefixes.map((prefix) => <option value={prefix}>{prefix}</option>)}
               </select>
               <input
                 type="tel"
-                class="input-field national-number-input"
+                class="input-field phone-rest-input"
                 placeholder={t().phone_placeholder}
                 required
-                value={nationalNumber()}
-                onInput={(e) => { phoneNotAllowed() && setPhoneNotAllowed(false); setNationalNumber((e.currentTarget as HTMLInputElement).value); }}
+                value={phoneRest()}
+                onInput={(e) => { phoneNotAllowed() && setPhoneNotAllowed(false); setPhoneRest((e.currentTarget as HTMLInputElement).value); }}
               />
             </div>
           </Show>

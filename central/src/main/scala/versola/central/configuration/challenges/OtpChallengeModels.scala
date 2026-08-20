@@ -34,7 +34,7 @@ case class GetAllChallengeSettingsResponse(settings: Vector[ChallengeSettingsRec
 case class UpsertChallengeSettingsRequest(
     tenantId: TenantId,
     allowedPrefixes: List[String],
-    defaultCountryPrefix: Option[String],
+    defaultPhonePrefix: Option[String],
     submissionLimits: SubmissionLimits,
     otpLength: Int,
     otpResendAfter: Int,

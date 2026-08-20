@@ -68,7 +68,7 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
   val challengeSettings = ChallengeSettingsRecord(
     tenantId = tenantId,
     allowedPrefixes = List("+1"),
-    defaultCountryPrefix = Some("+1"),
+    defaultPhonePrefix = Some("+1"),
     submissionLimits = SubmissionLimits.empty,
     otpLength = 6,
     otpResendAfter = 60,
@@ -208,16 +208,16 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
         result <- env.getAllowedPhonePrefixes(ClientId("missing"))
       yield assertTrue(result.isEmpty)
     },
-    test("getDefaultCountryPrefix returns the configured default for known client") {
+    test("getDefaultPhonePrefix returns the configured default for known client") {
       for
         env <- makeEnv()
-        result <- env.getDefaultCountryPrefix(clientId1)
+        result <- env.getDefaultPhonePrefix(clientId1)
       yield assertTrue(result == Some("+1"))
     },
-    test("getDefaultCountryPrefix returns None for unknown client") {
+    test("getDefaultPhonePrefix returns None for unknown client") {
       for
         env <- makeEnv()
-        result <- env.getDefaultCountryPrefix(ClientId("missing"))
+        result <- env.getDefaultPhonePrefix(ClientId("missing"))
       yield assertTrue(result.isEmpty)
     },
     test("getPasswordRegex returns from system settings") {
