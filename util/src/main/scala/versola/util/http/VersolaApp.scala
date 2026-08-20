@@ -95,15 +95,22 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
     * "true"/"false" rather than silently treating a typo ("True", "1", "yes") as the default. Both
     * flags below gate whether this process touches the database at all, so guessing at a
     * misspelled value is exactly the wrong thing to do.
+    *
+    * Deliberately NOT `value.toBooleanOption` -- that delegates to a case-insensitive comparison
+    * (`equalsIgnoreCase`, confirmed by inspecting scala-library's compiled `StringOps`), so it
+    * would accept "True"/"TRUE"/"False" despite this method's doc comment promising it won't
+    * (flagged in review). An exact match against the two literal values is what "strictly
+    * true/false" actually requires.
     */
   private def boolEnv(name: String, default: Boolean): Boolean =
     Option(java.lang.System.getenv(name)) match
-      case None        => default
+      case None            => default
+      case Some("true")    => true
+      case Some("false")   => false
       case Some(value) =>
-        value.toBooleanOption.getOrElse:
-          throw new IllegalArgumentException(
-            s"$name must be 'true' or 'false', got: '$value'",
-          )
+        throw new IllegalArgumentException(
+          s"$name must be 'true' or 'false', got: '$value'",
+        )
 
   /** Whether this process applies database migrations itself on startup.
     *
