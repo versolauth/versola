@@ -460,6 +460,36 @@ deploying a hotfix and you want to be certain nothing touches the schema. In the
 pipeline this is the `run_migrations` input; manually, it's an exported shell variable before
 `docker compose -f docker-compose.prod.yml up`.
 
+### One-off upgrade steps
+
+Steps tied to a specific version bump rather than to the routine deploy above. Run them once,
+on each existing environment, when rolling out the version named.
+
+#### PKCE: S256 only (#190)
+
+From this version `code_challenge_method=plain` is rejected and `CodeChallengeMethod` no longer
+has a `Plain` variant. Two consequences for an environment that already has data:
+
+1. **In-flight rows.** A row written before the rollout with `code_challenge_method = 'Plain'`
+   can no longer be decoded — the read throws instead of producing an OAuth error, so the
+   affected flow answers 500. Both tables expire within minutes, so the window is short, but
+   delete the rows before starting the new images to be certain:
+
+```sql
+   DELETE FROM auth_conversations  WHERE code_challenge_method <> 'S256';
+   DELETE FROM authorization_codes WHERE code_challenge_method <> 'S256';
+```
+
+   Affected users simply start the login over.
+
+2. **Server metadata.** `"code_challenge_methods_supported": ["S256"]` was added to the metadata
+   template in `scripts/gen-env.scala`, which only seeds *new* environments. An existing
+   environment keeps its stored object, and `/.well-known/*` serves it verbatim — so it has to be
+   updated by hand: `GET /configuration/server-metadata` on `central`, add the field, `POST` the
+   whole object back (the endpoint replaces, it does not patch). Until that is done the server
+   enforces S256 without advertising it: correct behaviour, understated discovery, which FAPI
+   conformance checks.
+
 ---
 
 ## 5. The env-config repository
