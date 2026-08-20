@@ -65,6 +65,8 @@ services:
       # outside this host should ever reach at all -- would be open on
       # the VPS's public interface. See VersolaApp.bindHost's comment.
       BIND_HOST: "127.0.0.1"
+      # See compose.fragment.yml.template's own RUN_MIGRATIONS comment.
+      RUN_MIGRATIONS: "false"
     # Resolved by versola-cli against OpenBao, same as docker-local -- see
     # the comment on central's env_file in compose.fragment.yml.template.
     env_file:
@@ -95,6 +97,7 @@ services:
       # directly from outside, which is what a 0.0.0.0 bind here would
       # additionally allow, bypassing nginx's TLS/access control entirely.
       BIND_HOST: "127.0.0.1"
+      RUN_MIGRATIONS: "false"
     env_file:
       - ./auth.secrets.env
     volumes:
@@ -116,6 +119,7 @@ services:
       # separate public domain either (see gen-env.scala's vps branch:
       # edgeUrl equals authUrl), it's reached through nginx too.
       BIND_HOST: "127.0.0.1"
+      RUN_MIGRATIONS: "false"
     env_file:
       - ./edge.secrets.env
     volumes:
