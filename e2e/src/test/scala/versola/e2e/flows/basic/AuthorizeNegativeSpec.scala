@@ -51,6 +51,28 @@ object AuthorizeNegativeSpec extends E2ESpec:
       yield assertCompletes
     },
 
+    test("code_challenge_method=plain redirects with error=invalid_request") {
+      for
+        (s, auth) <- setup(Flows.Id.LoginPassword)
+        _ <- auth.authorizeRaw(
+          clientId = s.clientId,
+          redirectUri = s.redirectUri,
+          codeChallengeMethod = Some("plain"),
+        ).assertErrorRedirect("invalid_request")
+      yield assertCompletes
+    },
+
+    test("missing code_challenge_method redirects with error=invalid_request") {
+      for
+        (s, auth) <- setup(Flows.Id.LoginPassword)
+        _ <- auth.authorizeRaw(
+          clientId = s.clientId,
+          redirectUri = s.redirectUri,
+          codeChallengeMethod = None,
+        ).assertErrorRedirect("invalid_request")
+      yield assertCompletes
+    },
+
     test("prompt=none without session redirects with error=login_required") {
       for
         (s, auth) <- setup(Flows.Id.LoginPassword)
