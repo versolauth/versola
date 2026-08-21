@@ -10,10 +10,16 @@ case class SystemSettingsRecord(
     passwordRegex: String,
     passwordHistorySize: Int,
     passwordNumDifferent: Int,
+    identityProviderLogo: Option[String] = None,
 ) derives Schema, JsonCodec
 
 object SystemSettingsRecord:
   val DefaultPasswordRegex = "^(?=.*[A-Z])(?=.*[a-z])(?=.*\\d).{8,}$"
 
   val default: SystemSettingsRecord =
-    SystemSettingsRecord(passwordRegex = DefaultPasswordRegex, passwordHistorySize = 5, passwordNumDifferent = 3)
+    SystemSettingsRecord(
+      passwordRegex        = DefaultPasswordRegex,
+      passwordHistorySize  = 5,
+      passwordNumDifferent = 3,
+      identityProviderLogo = None,
+    )

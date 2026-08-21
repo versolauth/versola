@@ -6,6 +6,7 @@ type SignedOutStep = { type: 'signed-out'; logoutUris: string[]; redirectUri?: s
 interface FormConfig {
   step: SignedOutStep;
   t: Record<string, string>;
+  logo?: string;
 }
 
 declare global {

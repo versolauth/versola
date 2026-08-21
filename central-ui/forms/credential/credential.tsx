@@ -54,6 +54,7 @@ interface FormConfig {
   error?: string;
   previewId?: string;
   csrf?: string;
+  logo?: string;
 }
 
 declare global {
@@ -103,6 +104,7 @@ function CredentialForm(props: { config: FormConfig }) {
   const [phoneNotAllowed, setPhoneNotAllowed] = createSignal(false);
   const [passwordNotAllowed, setPasswordNotAllowed] = createSignal(false);
   const [passkeyBusy, setPasskeyBusy] = createSignal(false);
+  const [logoLoadFailed, setLogoLoadFailed] = createSignal(false);
 
   // All passkey-related errors (client failures and the server's passkey_failed /
   // passkey_orphaned) are surfaced through a dismissible popup rather than inline text.
@@ -176,16 +178,25 @@ function CredentialForm(props: { config: FormConfig }) {
           <LocaleDropdown locales={locales} current={currentLocale()} onChange={changeLocale} />
         </div>
       </Show>
-      <div class="brand-mark" aria-hidden="true">
-        <svg viewBox="0 0 64 64" fill="none">
-          <path d="M32 6 C32 6 52 10 54 12 L54 30 Q54 48 32 58 Q10 48 10 30 L10 12 C12 10 32 6 32 6Z"
-                fill="var(--accent)" fill-opacity="0.06"/>
-          <path d="M32 6 C32 6 52 10 54 12 L54 30 Q54 48 32 58 Q10 48 10 30 L10 12 C12 10 32 6 32 6Z"
-                fill="none" stroke="var(--accent)" stroke-width="2.2"/>
-          <text x="32" y="41" font-family="-apple-system, Inter, sans-serif" font-weight="800"
-                font-size="26" fill="var(--accent)" text-anchor="middle">V</text>
-        </svg>
-      </div>
+      <Show when={!props.config.logo || !logoLoadFailed()}>
+        <div class="brand-mark" aria-hidden="true">
+          <Show
+            when={props.config.logo}
+            fallback={
+              <svg viewBox="0 0 64 64" fill="none">
+                <path d="M32 6 C32 6 52 10 54 12 L54 30 Q54 48 32 58 Q10 48 10 30 L10 12 C12 10 32 6 32 6Z"
+                      fill="var(--accent)" fill-opacity="0.06"/>
+                <path d="M32 6 C32 6 52 10 54 12 L54 30 Q54 48 32 58 Q10 48 10 30 L10 12 C12 10 32 6 32 6Z"
+                      fill="none" stroke="var(--accent)" stroke-width="2.2"/>
+                <text x="32" y="41" font-family="-apple-system, Inter, sans-serif" font-weight="800"
+                      font-size="26" fill="var(--accent)" text-anchor="middle">V</text>
+              </svg>
+            }
+          >
+            <img src={props.config.logo} alt="" onError={() => setLogoLoadFailed(true)} />
+          </Show>
+        </div>
+      </Show>
       <h1>{t().title}</h1>
 
       <Show when={props.config.error && !isPasskeyError(props.config.error)}>

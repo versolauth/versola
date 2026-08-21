@@ -12,7 +12,7 @@ class PostgresSystemSettingsRepository(xa: TransactorZIO) extends SystemSettings
 
   override def getAll: Task[SystemSettingsRecord] =
     xa.connectMeasured("get-system-settings"):
-      sql"""SELECT password_regex, password_history_size, password_num_different FROM system_settings WHERE id = 1"""
+      sql"""SELECT password_regex, password_history_size, password_num_different, identity_provider_logo FROM system_settings WHERE id = 1"""
         .query[SystemSettingsRecord].run()
         .headOption
         .getOrElse(throw new NoSuchElementException("system_settings row not found"))
@@ -20,12 +20,13 @@ class PostgresSystemSettingsRepository(xa: TransactorZIO) extends SystemSettings
   override def upsert(record: SystemSettingsRecord): Task[Unit] =
     xa.connectMeasured("upsert-system-settings"):
       sql"""
-        INSERT INTO system_settings (id, password_regex, password_history_size, password_num_different)
-        VALUES (1, ${record.passwordRegex}, ${record.passwordHistorySize}, ${record.passwordNumDifferent})
+        INSERT INTO system_settings (id, password_regex, password_history_size, password_num_different, identity_provider_logo)
+        VALUES (1, ${record.passwordRegex}, ${record.passwordHistorySize}, ${record.passwordNumDifferent}, ${record.identityProviderLogo})
         ON CONFLICT (id) DO UPDATE SET
           password_regex = EXCLUDED.password_regex,
           password_history_size = EXCLUDED.password_history_size,
-          password_num_different = EXCLUDED.password_num_different
+          password_num_different = EXCLUDED.password_num_different,
+          identity_provider_logo = EXCLUDED.identity_provider_logo
       """.update.run()
     .unit
 

@@ -5,8 +5,9 @@ test('renders the app shell with the default clients view', async ({ page }) => 
   const api = await loadAdminApp(page);
 
   await expect(page.getByRole('heading', { name: 'OAuth Clients', exact: true })).toBeVisible();
-  await expect(page.locator('versola-navigation')).toBeVisible();
-  await expect(page.locator('tenant-selector').getByRole('button', { name: 'Manage' })).toBeVisible();
+  const navigation = page.locator('versola-navigation');
+  await expect(navigation).toBeVisible();
+  await expect(navigation.getByText('Tenants', { exact: true })).toBeVisible();
   await expect(tenantSelectorButton(page)).toContainText('tenant-alpha');
   expect(api.requests.some(request => request.method === 'GET' && request.pathname === '/configuration/tenants')).toBeTruthy();
 });
@@ -28,7 +29,7 @@ test('switches navigation views and keeps the url in sync', async ({ page }) => 
     await expect(page.getByRole('heading', { name: view.heading, exact: true })).toBeVisible();
   }
 
-  await page.locator('tenant-selector').getByRole('button', { name: 'Manage' }).click();
+  await navigation.getByText('Tenants', { exact: true }).click();
   await expect(page).toHaveURL(/view=tenants/);
   await expect(page.getByRole('heading', { name: 'Tenants', exact: true })).toBeVisible();
 });
