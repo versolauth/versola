@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
+import { readFile } from 'node:fs/promises';
 import { findRequest, loadAdminApp } from './fixtures';
 import type { MockConfigState } from './mocks';
 
@@ -231,4 +232,20 @@ test('renders a live preview iframe', async ({ page }) => {
   await page.getByRole('button', { name: 'Preview', exact: true }).click();
 
   await expect(page.locator('iframe.preview-iframe')).toHaveCount(1);
+});
+
+test('keeps authorization form cards vertical', async ({ page }) => {
+  const commonCss = await readFile(new URL('../forms/common.css', import.meta.url), 'utf8');
+  await page.setContent(`<style>${commonCss}</style><div class="container"></div>`);
+
+  const dimensions = await page.locator('.container').evaluate(element => ({
+    width: element.getBoundingClientRect().width,
+    height: element.getBoundingClientRect().height,
+    display: getComputedStyle(element).display,
+    justifyContent: getComputedStyle(element).justifyContent,
+  }));
+
+  expect(dimensions.height).toBeGreaterThan(dimensions.width);
+  expect(dimensions.display).toBe('flex');
+  expect(dimensions.justifyContent).toBe('center');
 });
