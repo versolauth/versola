@@ -7,8 +7,8 @@
   --border-hover: rgba(21, 23, 28, 0.16);
   --text: #15171c;
   --text-muted: #6b7280;
-  --accent: #3a5cc4;
-  --accent-hover: #32509f;
+  --accent: #155e75;
+  --accent-hover: #0e4a5c;
   --danger: #dc2626;
   --radius: 12px;
   --radius-lg: 20px;
@@ -94,7 +94,7 @@ form {
 .input-field:focus {
   background: #ffffff;
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(58, 92, 196, 0.14);
+  box-shadow: 0 0 0 3px rgba(21, 94, 117, 0.14);
 }
 .input-field:invalid:not(:placeholder-shown) {
   border-color: var(--danger);
@@ -135,7 +135,7 @@ form {
 .btn-primary:hover {
   background: var(--accent-hover);
   transform: translateY(-1px);
-  box-shadow: 0 6px 16px rgba(58, 92, 196, 0.28);
+  box-shadow: 0 6px 16px rgba(21, 94, 117, 0.28);
 }
 .btn-secondary {
   color: var(--text);

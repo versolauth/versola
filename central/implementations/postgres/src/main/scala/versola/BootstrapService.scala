@@ -691,11 +691,14 @@ object BootstrapService:
 
     private def seedTheme(): Task[Unit] =
       for
-        _      <- ZIO.logInfo("Seeding default theme from resources...")
-        themes <- themeRepo.getAll
-        _ <- ZIO.unless(themes.exists(_.id == defaultThemeId)):
-          readResource("forms/common.css").flatMap: css =>
-            themeRepo.create(ThemeRecord(defaultThemeId, css, None))
+        _       <- ZIO.logInfo("Seeding default theme from resources...")
+        themes  <- themeRepo.getAll
+        current  = themes.find(_.id == defaultThemeId)
+        css     <- readResource("forms/common.css")
+        _ <- current match
+          case None                            => themeRepo.create(ThemeRecord(defaultThemeId, css, None))
+          case Some(theme) if theme.css != css => themeRepo.update(ThemeRecord(defaultThemeId, css, theme.tenantId))
+          case Some(_)                         => ZIO.unit
       yield ()
 
     private def seedLocales(): Task[Unit] =
