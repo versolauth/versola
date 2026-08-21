@@ -1355,7 +1355,6 @@ export async function fetchChallengeSettings(tenantId: string): Promise<Challeng
 export async function upsertChallengeSettings(
   tenantId: string,
   allowedPrefixes: string[],
-  defaultPhonePrefix: string | null,
   submissionLimits: SubmissionLimits,
   otpLength: number,
   otpResendAfter: number,
@@ -1373,7 +1372,6 @@ export async function upsertChallengeSettings(
     body: {
       tenantId,
       allowedPrefixes,
-      defaultPhonePrefix,
       submissionLimits,
       otpLength,
       otpResendAfter,

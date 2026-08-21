@@ -91,7 +91,6 @@ object OtpChallengeController extends Controller:
           ChallengeSettingsRecord(
             body.tenantId,
             body.allowedPrefixes,
-            body.defaultPhonePrefix,
             body.submissionLimits,
             body.otpLength,
             body.otpResendAfter,

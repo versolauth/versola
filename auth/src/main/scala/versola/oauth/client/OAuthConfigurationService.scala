@@ -63,11 +63,6 @@ trait OAuthConfigurationService:
 
   def getAllowedPhonePrefixes(id: ClientId): UIO[List[String]]
 
-  /** The prefix pre-selected in the sign-in phone prefix picker for this client's
-    * tenant, when one is configured (see ChallengeSettingsRecord.defaultPhonePrefix).
-    */
-  def getDefaultPhonePrefix(id: ClientId): UIO[Option[String]]
-
   def getPasswordRegex: UIO[String]
 
   def getSubmissionLimits(id: ClientId): UIO[SubmissionLimits]
@@ -281,15 +276,6 @@ object OAuthConfigurationService:
           challengeSettingsCache.get.map(
             _.find(_.tenantId == client.tenantId)
               .fold(Nil)(_.allowedPrefixes),
-          )
-
-    override def getDefaultPhonePrefix(id: ClientId): UIO[Option[String]] =
-      find(id).flatMap:
-        case None => ZIO.none
-        case Some(client) =>
-          challengeSettingsCache.get.map(
-            _.find(_.tenantId == client.tenantId)
-              .flatMap(_.defaultPhonePrefix),
           )
 
     override def getPasswordRegex: UIO[String] =

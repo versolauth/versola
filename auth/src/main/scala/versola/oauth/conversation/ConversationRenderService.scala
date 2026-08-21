@@ -59,7 +59,6 @@ object ConversationRenderService:
         inlinePassword: Boolean,
         passkey: Boolean,
         allowedPhonePrefixes: Option[List[String]],
-        defaultPhonePrefix: Option[String],
         passwordRegex: Option[String],
         registration: Boolean,
     ) extends StepView
@@ -478,11 +477,6 @@ object ConversationRenderService:
                 configuration.getAllowedPhonePrefixes(clientId).map(Some(_))
               else
                 ZIO.none
-            defaultPhonePrefix <-
-              if primaryCredentials.contains(PrimaryCredential.phone) then
-                configuration.getDefaultPhonePrefix(clientId)
-              else
-                ZIO.none
             passwordRegex <-
               if inlinePassword then configuration.getPasswordRegex.map(Some(_))
               else ZIO.none
@@ -491,7 +485,6 @@ object ConversationRenderService:
             inlinePassword,
             passkey,
             allowedPhonePrefixes,
-            defaultPhonePrefix,
             passwordRegex,
             registration,
           )

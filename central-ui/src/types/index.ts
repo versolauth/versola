@@ -124,9 +124,6 @@ export interface PasskeySettings {
 export interface ChallengeSettingsRecord {
   tenantId: string;
   allowedPrefixes: string[];
-  // The prefix pre-selected in the sign-in phone prefix picker. Should be one of
-  // allowedPrefixes when that list is non-empty.
-  defaultPhonePrefix?: string | null;
   submissionLimits: SubmissionLimits;
   otpLength: number;
   otpResendAfter: number;

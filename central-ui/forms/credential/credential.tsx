@@ -41,7 +41,6 @@ type CredentialStep = {
   inlinePassword: boolean;
   passkey: boolean;
   allowedPhonePrefixes?: string[];
-  defaultPhonePrefix?: string;
 
   passwordRegex?: string;
 };
@@ -90,11 +89,7 @@ function CredentialForm(props: { config: FormConfig }) {
   // These are dialling prefixes, not country codes: one prefix can cover many countries
   // (+1 is the whole NANP) and can be longer than a country code (operator ranges).
   const showPhonePrefixPicker = allowedPhonePrefixes.length > 0;
-  const [phonePrefix, setPhonePrefix] = createSignal(
-    (step.defaultPhonePrefix && allowedPhonePrefixes.includes(step.defaultPhonePrefix)
-      ? step.defaultPhonePrefix
-      : allowedPhonePrefixes[0]) ?? '',
-  );
+  const [phonePrefix, setPhonePrefix] = createSignal(allowedPhonePrefixes[0] ?? '');
   const [phoneRest, setPhoneRest] = createSignal('');
   const fullPhone = () =>
     showPhonePrefixPicker ? `${phonePrefix()}${phoneRest()}` : phoneRest();
