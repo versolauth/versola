@@ -40,3 +40,19 @@ test('restores the tenant and current view from the url on first load', async ({
   await expect(page.getByRole('heading', { name: 'Permissions', exact: true })).toBeVisible();
   await expect(tenantSelectorButton(page)).toContainText('tenant-bravo');
 });
+
+test('switches themes for the session when localStorage is unavailable', async ({ page }) => {
+  await page.addInitScript(() => {
+    Storage.prototype.getItem = () => { throw new Error('localStorage unavailable'); };
+    Storage.prototype.setItem = () => { throw new Error('localStorage unavailable'); };
+  });
+
+  await loadAdminApp(page);
+  const navigation = page.locator('versola-navigation');
+
+  await navigation.getByRole('radio', { name: 'Light theme' }).click();
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
+
+  await navigation.getByRole('radio', { name: 'Dark theme' }).click();
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+});

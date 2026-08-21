@@ -13,6 +13,7 @@ export const THEME_CHANGE_EVENT = 'versola-theme-change';
   * hasn't made an explicit choice yet. Mirrors the fallback baked into
   * index.html's inline pre-paint script — keep both in sync if this changes. */
 const DEFAULT_THEME: ThemeName = 'dark';
+let sessionTheme: ThemeName = DEFAULT_THEME;
 
 function isThemeName(value: string | null): value is ThemeName {
   return value === 'dark' || value === 'light';
@@ -24,11 +25,12 @@ function isThemeName(value: string | null): value is ThemeName {
 export function getStoredTheme(): ThemeName {
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
-    return isThemeName(stored) ? stored : DEFAULT_THEME;
+    sessionTheme = isThemeName(stored) ? stored : DEFAULT_THEME;
+    return sessionTheme;
   } catch {
     // Private-browsing Safari throws on localStorage access rather than just
     // being unavailable; don't let a theming preference break the app.
-    return DEFAULT_THEME;
+    return sessionTheme;
   }
 }
 
@@ -52,6 +54,7 @@ export function applyTheme(theme: ThemeName): void {
 }
 
 export function setTheme(theme: ThemeName): void {
+  sessionTheme = theme;
   applyTheme(theme);
   persistTheme(theme);
 }
