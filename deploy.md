@@ -460,34 +460,6 @@ deploying a hotfix and you want to be certain nothing touches the schema. In the
 pipeline this is the `run_migrations` input; manually, it's an exported shell variable before
 `docker compose -f docker-compose.prod.yml up`.
 
-### One-off upgrade steps
-
-Steps tied to a specific version bump rather than to the routine deploy above. Run them once,
-on each existing environment, when rolling out the version named.
-
-#### PKCE: S256 only (#190)
-
-From this version `code_challenge_method=plain` is rejected and `CodeChallengeMethod` no longer
-has a `Plain` variant. Two consequences for an environment that already has data:
-
-1. **In-flight rows.** A row written before the rollout with `code_challenge_method = 'Plain'`
-   can no longer be decoded — the read throws instead of producing an OAuth error, so the
-   affected flow answers 500. Both tables expire within minutes and are swept by the cleanup
-   manager, so the condition clears on its own; the statements below only shorten that window.
-
-   Run them **after the last old `auth` instance has stopped** — on the single-host compose
-   deploy (§4.2) that means once `docker compose ... up -d` reports the new containers up, since
-   compose recreates rather than rolls. Running them earlier closes nothing: an instance still
-   serving traffic can write a fresh `'Plain'` row after the delete.
-
-```sql
-   DELETE FROM auth_conversations  WHERE code_challenge_method <> 'S256';
-   DELETE FROM authorization_codes WHERE code_challenge_method <> 'S256';
-```
-
-   Affected users start the login over. Under any rollout where old and new instances overlap,
-   a single delete cannot close the window — wait out the expiry instead.
-
 ---
 
 ## 5. The env-config repository
