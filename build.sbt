@@ -86,6 +86,7 @@ lazy val edge = project
     commonSettings,
     libraryDependencies ++= Dependencies.core,
     libraryDependencies ++= Dependencies.http,
+    libraryDependencies ++= Dependencies.cache,
   )
   .dependsOn(
     util % CompileTest

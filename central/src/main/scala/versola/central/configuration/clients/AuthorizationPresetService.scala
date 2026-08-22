@@ -27,7 +27,7 @@ object AuthorizationPresetService:
   ] =
     (ZLayer.fromZIO:
       ZIO.serviceWithZIO[CentralConfig](config =>
-        ReloadingCache.make[Vector[AuthorizationPreset]](Schedule.spaced(config.configurationCacheRefreshInterval)),
+        ReloadingCache.make[Vector[AuthorizationPreset]](config.configurationCacheRefreshInterval),
       )
     )
       >>> ZLayer.fromFunction(Impl(_, _, _, _))

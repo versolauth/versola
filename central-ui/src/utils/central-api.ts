@@ -30,6 +30,9 @@ import type {
 export const DEFAULT_PAGE_SIZE = 30;
 const READ_CACHE_TTL_MS = 60_000;
 const DEFAULT_REFRESH_TOKEN_TTL_SECONDS = 90 * 24 * 60 * 60;
+// Matches the column default in central, so an edge served by an older build
+// reads back the size it is actually running with.
+export const DEFAULT_REVOCATION_CACHE_SIZE = 10000;
 
 // Where to send the browser when a request comes back 401 without a Location
 // header — i.e. there is no session for the edge to reauthenticate, so it can't
@@ -91,7 +94,7 @@ type ResourceEndpointDto = {
 };
 type ResourceResponseDto = { resourceId: string; resource: string; audience: string[]; endpoints: Array<ResourceEndpointDto & { id: ResourceEndpointId }>; internal: boolean; secretRotation: boolean };
 
-type EdgeResponseDto = { id: string; hasOldKey?: boolean };
+type EdgeResponseDto = { id: string; hasOldKey?: boolean; revocationCacheSize?: number };
 type EdgesResponse = { edges: EdgeResponseDto[] };
 type ServiceKeyResponseDto = { keyId: string; privateKey: string };
 
@@ -1173,6 +1176,7 @@ export async function fetchEdges(): Promise<Edge[]> {
   return sortById(response.edges.map(edge => ({
     id: edge.id,
     hasOldKey: edge.hasOldKey ?? false,
+    revocationCacheSize: edge.revocationCacheSize ?? DEFAULT_REVOCATION_CACHE_SIZE,
   })));
 }
 
@@ -1182,6 +1186,13 @@ export async function registerEdge(id: string): Promise<ServiceKey> {
     body: { id },
   });
   return { keyId: response.keyId, privateKey: response.privateKey };
+}
+
+export async function updateEdge(id: string, revocationCacheSize: number): Promise<void> {
+  await requestVoid('/configuration/edges', {
+    method: 'PATCH',
+    body: { id, revocationCacheSize },
+  });
 }
 
 export async function rotateEdgeKey(edgeId: string): Promise<ServiceKey> {

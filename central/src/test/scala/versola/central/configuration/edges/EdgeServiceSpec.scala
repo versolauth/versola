@@ -83,8 +83,8 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
     },
     test("getAllEdges returns edges from cache") {
       val edges = Vector(
-        EdgeRecord(edge2Id, testJwk, None),
-        EdgeRecord(edgeId, testJwk, None),
+        EdgeRecord(edge2Id, testJwk, None, 10000),
+        EdgeRecord(edgeId, testJwk, None, 10000),
       )
       val env = Env(initial = edges)
       for all <- env.service.getAllEdges
@@ -94,7 +94,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
       )
     },
     test("find returns edge from cache") {
-      val edges = Vector(EdgeRecord(edgeId, testJwk, None))
+      val edges = Vector(EdgeRecord(edgeId, testJwk, None, 10000))
       val env = Env(initial = edges)
       for
         found <- env.service.find(edgeId)
@@ -105,7 +105,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
       )
     },
     test("sync reloads cache from repository") {
-      val edges = Vector(EdgeRecord(edgeId, testJwk, None))
+      val edges = Vector(EdgeRecord(edgeId, testJwk, None, 10000))
       val env = Env()
       for
         _ <- env.repository.getAll.succeedsWith(edges)

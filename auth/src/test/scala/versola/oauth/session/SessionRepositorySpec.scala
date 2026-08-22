@@ -150,17 +150,25 @@ trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
           results <- env.repository.findByUserId(userId1)
         yield assertTrue(results.isEmpty)
       },
-      test("invalidateByUserId removes all user sessions") {
+      test("invalidateByUserId removes all user sessions and returns the sessions it invalidated") {
         for
           _ <- env.repository.create(sessionId1, session1, ttl, None, None)
           _ <- env.repository.create(sessionId3, session1.copy(clients = List(ClientEntry(clientId2, Instant.EPOCH)), publicId = publicId3), ttl, None, None)
           before <- env.repository.findByUserId(userId1)
-          _ <- env.repository.invalidateByUserId(userId1)
+          invalidated <- env.repository.invalidateByUserId(userId1)
           after <- env.repository.findByUserId(userId1)
         yield assertTrue(
           before.size == 2,
           after.isEmpty,
+          invalidated.map(_.publicId).toSet == Set(publicId1, publicId3),
         )
+      },
+      test("invalidateByUserId does not return already-expired sessions") {
+        for
+          _ <- env.repository.create(sessionId1, session1, 0.seconds, None, None)
+          _ <- TestClock.adjust(1.second)
+          invalidated <- env.repository.invalidateByUserId(userId1)
+        yield assertTrue(invalidated.isEmpty)
       },
       test("invalidateByUserId does not affect other users") {
         for

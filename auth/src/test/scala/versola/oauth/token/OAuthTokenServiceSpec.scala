@@ -407,10 +407,14 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           request = CodeExchangeRequest(authCode1, redirectUri1, codeVerifier1)
           credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
 
+          now <- Clock.instant
           result <- env.service.exchangeAuthorizationCode(request, credentials).either
         yield assertTrue(
           result == Left(TokenEndpointError.InvalidGrant),
-          env.accessTokenRevocationService.revoke.calls == List(accessToken1),
+          // The replayed code's token is not in hand, so its lifetime is bounded by the
+          // client's access token TTL rather than read from the token itself.
+          env.accessTokenRevocationService.revoke.calls ==
+            List((testClient, accessToken1, userId1.toString, now.plus(testClient.accessTokenTtl))),
           env.tokenRepo.deleteByAccessToken.calls == List(accessToken1),
           env.tokenRepo.createRefreshToken.calls.isEmpty,
         )

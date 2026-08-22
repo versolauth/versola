@@ -25,7 +25,7 @@ object JwksService:
   def live: ZLayer[JwksRepository & Scope & CentralConfig, Throwable, JwksService] =
     (ZLayer.fromZIO:
       ZIO.serviceWithZIO[CentralConfig](config =>
-        ReloadingCache.make[Vector[JwksRecord]](Schedule.spaced(config.configurationCacheRefreshInterval)),
+        ReloadingCache.make[Vector[JwksRecord]](config.configurationCacheRefreshInterval),
       )
     )
       >>> ZLayer.fromFunction(Impl(_, _))

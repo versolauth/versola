@@ -56,7 +56,7 @@ object OAuthClientService:
     decryptingCacheSource >>>
       (ZLayer.fromZIO:
         ZIO.serviceWithZIO[CentralConfig](config =>
-          ReloadingCache.make[Vector[OAuthClientRecord]](Schedule.spaced(config.configurationCacheRefreshInterval)),
+          ReloadingCache.make[Vector[OAuthClientRecord]](config.configurationCacheRefreshInterval),
         )
       ) >>>
       ZLayer.fromFunction(Impl(_, _, _, _, _, _, _))

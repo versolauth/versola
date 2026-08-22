@@ -3,6 +3,7 @@ import { customElement, property, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
 import { buttonStyles, cardStyles, formStyles } from '../styles/components';
 import type { Edge } from '../types/index';
+import { DEFAULT_REVOCATION_CACHE_SIZE } from '../utils/central-api';
 import { validateEdgeId } from '../utils/validators';
 import './nav-toggle';
 
@@ -12,6 +13,7 @@ export class VersolaEdgeForm extends LitElement {
   @property({ attribute: false }) availableEdgeIds: string[] = [];
 
   @state() private edgeId = '';
+  @state() private revocationCacheSize = String(DEFAULT_REVOCATION_CACHE_SIZE);
 
   static styles = [
     theme,
@@ -53,13 +55,11 @@ export class VersolaEdgeForm extends LitElement {
         border-top: 1px solid var(--border-dark);
       }
 
-      /* In edit mode the only child of .form-grid is the action row itself —
-         the Edge ID field is create-only. The separator and the 2rem of space
-         above it exist to divide actions from fields that aren't there, which
-         read as a broken, half-empty card. Dropped when the row stands alone.
-         :only-child is exact here: it matches only when nothing else rendered.
-         Once this form grows real edit-mode content, the divider returns on
-         its own with no CSS change needed. */
+      /* When the only child of .form-grid is the action row itself, the separator
+         and the 2rem of space above it divide actions from fields that aren't
+         there, which reads as a broken, half-empty card. Dropped when the row
+         stands alone. :only-child is exact here: it matches only when nothing
+         else rendered. */
       .form-actions:only-child {
         margin-top: 0;
         padding-top: 0;
@@ -127,6 +127,7 @@ export class VersolaEdgeForm extends LitElement {
       this.edgeId = this.edge.id.startsWith('edge-')
         ? this.edge.id.substring(5)
         : this.edge.id;
+      this.revocationCacheSize = String(this.edge.revocationCacheSize);
     }
   }
 
@@ -134,8 +135,32 @@ export class VersolaEdgeForm extends LitElement {
     this.edgeId = (e.target as HTMLInputElement).value;
   }
 
+  private handleCacheSizeInput(e: Event) {
+    this.revocationCacheSize = (e.target as HTMLInputElement).value;
+  }
+
+  private parsedCacheSize(): number | null {
+    const value = Number(this.revocationCacheSize);
+    return Number.isInteger(value) && value > 0 ? value : null;
+  }
+
   private handleSubmit(e: Event) {
     e.preventDefault();
+
+    if (this.edge) {
+      const cacheSize = this.parsedCacheSize();
+      if (cacheSize === null) {
+        return;
+      }
+
+      this.dispatchEvent(new CustomEvent('submit', {
+        detail: { id: this.edge.id, revocationCacheSize: cacheSize },
+        bubbles: true,
+        composed: true,
+      }));
+      return;
+    }
+
     const suffix = this.edgeId.trim();
     const fullId = `edge-${suffix}`;
 
@@ -181,7 +206,11 @@ export class VersolaEdgeForm extends LitElement {
     const fullId = `edge-${suffix}`;
     const isValid = suffix && validateEdgeId(fullId);
     const isDuplicate = this.availableEdgeIds.includes(fullId);
-    const canSubmit = suffix && isValid && !isDuplicate;
+    const cacheSize = this.parsedCacheSize();
+    const isCacheSizeInvalid = this.revocationCacheSize.trim() !== '' && cacheSize === null;
+    const canSubmit = isEditMode
+      ? cacheSize !== null && cacheSize !== this.edge!.revocationCacheSize
+      : suffix && isValid && !isDuplicate;
     const isEdgeIdInvalid = suffix && (!isValid || isDuplicate);
 
     return html`
@@ -219,7 +248,26 @@ export class VersolaEdgeForm extends LitElement {
                 ${suffix && !isValid ? html`<div class="error-message">Invalid edge ID format</div>` : ''}
                 ${suffix && isDuplicate ? html`<div class="error-message">Edge ID already exists</div>` : ''}
               </div>
-            ` : ''}
+            ` : html`
+              <div class="form-group">
+                <label for="revocation-cache-size">Revocation cache size *</label>
+                <input
+                  type="number"
+                  id="revocation-cache-size"
+                  class="compact-input ${isCacheSizeInvalid ? 'input-error' : ''}"
+                  min="1"
+                  step="1"
+                  .value=${this.revocationCacheSize}
+                  @input=${this.handleCacheSizeInput}
+                  required
+                />
+                <div class="hint">
+                  Revoked tokens and sessions this edge keeps in memory. Going over it costs the
+                  edge a database lookup per miss, never a token it should have rejected.
+                </div>
+                ${isCacheSizeInvalid ? html`<div class="error-message">Must be a positive whole number</div>` : ''}
+              </div>
+            `}
 
             <div class="form-actions">
               ${isEditMode ? html`
@@ -242,11 +290,9 @@ export class VersolaEdgeForm extends LitElement {
               <button type="button" class="btn btn-secondary" @click=${this.handleCancel}>
                 ${isEditMode ? 'Close' : 'Cancel'}
               </button>
-              ${!isEditMode ? html`
-                <button type="submit" class="btn btn-primary" ?disabled=${!canSubmit}>
-                  Create Edge
-                </button>
-              ` : ''}
+              <button type="submit" class="btn btn-primary" ?disabled=${!canSubmit}>
+                ${isEditMode ? 'Save' : 'Create Edge'}
+              </button>
             </div>
           </div>
         </form>

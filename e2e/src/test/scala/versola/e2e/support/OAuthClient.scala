@@ -342,6 +342,11 @@ final class OAuthClient(client: Client, config: E2EConfig):
 
   private val centralAuthorization = Authorization.Basic("central", config.resourceSecret)
 
+  /** Where the edge receives security event tokens — what a client registers as its
+    * back-channel logout URI so that logouts and revocations reach it.
+    */
+  val edgeBackChannelLogoutUri: String = s"${config.edgeUrl}/logout/backchannel"
+
   /** GET /authorize — generates PKCE + state, starts a new conversation, extracts the
     * SSO_CONVERSATION cookie, and returns everything the caller needs for subsequent steps.
     */
@@ -570,6 +575,40 @@ final class OAuthClient(client: Client, config: E2EConfig):
       .addHeader(Header.ContentType(MediaType.application.`x-www-form-urlencoded`))
     Client.batched(req).provide(ZLayer.succeed(client)).flatMap(IntrospectResult.parse)
 
+  /** POST /revoke — revokes a token per RFC 7009. The endpoint answers 200 whether or not
+    * the token existed, so the response is returned for the caller to assert on.
+    */
+  def revoke(
+      token: String,
+      clientId: String,
+      clientSecret: String,
+      tokenTypeHint: Option[String] = None,
+  ): Task[Response] =
+    val body = formBody(Map("token" -> token) ++ tokenTypeHint.map("token_type_hint" -> _))
+    val req = Request.post(s"${config.authUrl}/revoke", body)
+      .addHeader(Authorization.Basic(clientId, clientSecret))
+      .addHeader(Header.ContentType(MediaType.application.`x-www-form-urlencoded`))
+    Client.batched(req).provide(ZLayer.succeed(client))
+
+  /** GET /logout?id_token_hint=… — ends the session the id token names (OIDC RP-Initiated
+    * Logout §2). No cookie is sent, so the hint alone identifies the session and auth logs it
+    * out without asking the user to confirm.
+    */
+  def logoutWithIdTokenHint(idToken: String): Task[Response] =
+    for
+      base <- ZIO.fromEither(URL.decode(s"${config.authUrl}/logout")).mapError(RuntimeException(_))
+      url = base.addQueryParam("id_token_hint", idToken)
+      response <- Client.batched(Request.get(url)).provide(ZLayer.succeed(client))
+    yield response
+
+  /** GET /permissions/me on the edge — an edge endpoint that authenticates the caller's
+    * access token, so it answers 401 for a token the edge has been told to reject.
+    */
+  def edgePermissions(accessToken: String): Task[Response] =
+    val req = Request.get(s"${config.edgeUrl}/permissions/me")
+      .addHeader(Authorization.Bearer(accessToken))
+    Client.batched(req).provide(ZLayer.succeed(client))
+
   /** POST /par — pushes an authorization request (RFC 9126). Generates PKCE + state internally
     * and authenticates the client with HTTP Basic, as `/token` does.
     */
@@ -681,6 +720,18 @@ final class OAuthClient(client: Client, config: E2EConfig):
         resp.body.asString.flatMap: body =>
           ZIO.fail(RuntimeException(s"deleteUser failed: status=${resp.status} body=$body"))
 
+  /** DELETE /users/sessions — ends every session a user has, the way an administrator does
+    * it from the console.
+    */
+  def invalidateUserSessions(userId: java.util.UUID): Task[Unit] =
+    val req = Request.delete(s"${config.centralUrl}/users/sessions?userId=$userId")
+      .addHeader(centralAuthorization)
+    Client.batched(req).provide(ZLayer.succeed(client)).flatMap: resp =>
+      if resp.status.isSuccess then ZIO.unit
+      else
+        resp.body.asString.flatMap: body =>
+          ZIO.fail(RuntimeException(s"invalidateUserSessions failed: status=${resp.status} body=$body"))
+
   /** POST /users/password/set — sets a permanent password for a user (non-prod only). */
   def setUserPassword(userId: java.util.UUID, password: String): Task[Unit] =
     val body = Body.fromString(
@@ -707,6 +758,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
       authFlow: Option[zio.json.ast.Json] = None,
       registrationFlow: Option[zio.json.ast.Json] = None,
       consentFlow: Option[zio.json.ast.Json] = None,
+      backChannelLogoutUri: Option[String] = None,
   ): Task[RegisterClientResult] =
     val body = Body.fromString(OAuthClient.RegisterClientBody(
       tenantId = tenantId,
@@ -725,6 +777,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
       otpTemplateId = "default",
       frontChannelLogoutUri = None,
       frontChannelLogoutSessionRequired = false,
+      backChannelLogoutUri = backChannelLogoutUri,
     ).toJson)
     val req = Request.post(s"${config.centralUrl}/configuration/clients", body)
       .addHeader(centralAuthorization)
@@ -915,4 +968,5 @@ object OAuthClient:
       otpTemplateId: String,
       frontChannelLogoutUri: Option[String],
       frontChannelLogoutSessionRequired: Boolean,
+      backChannelLogoutUri: Option[String],
   ) derives JsonEncoder

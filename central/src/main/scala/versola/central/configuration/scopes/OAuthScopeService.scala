@@ -38,7 +38,7 @@ object OAuthScopeService:
   def live: ZLayer[OAuthScopeRepository & Scope & CentralConfig, Throwable, OAuthScopeService] =
     (ZLayer.fromZIO:
       ZIO.serviceWithZIO[CentralConfig](config =>
-        ReloadingCache.make[Vector[ScopeRecord]](Schedule.spaced(config.configurationCacheRefreshInterval)),
+        ReloadingCache.make[Vector[ScopeRecord]](config.configurationCacheRefreshInterval),
       )
     )
       >>> ZLayer.fromFunction(Impl(_, _))

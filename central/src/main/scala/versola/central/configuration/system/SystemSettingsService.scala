@@ -16,7 +16,7 @@ object SystemSettingsService:
   def live: ZLayer[SystemSettingsRepository & Scope & CentralConfig, Throwable, SystemSettingsService] =
     (ZLayer.fromZIO:
       ZIO.serviceWithZIO[CentralConfig](config =>
-        ReloadingCache.make[SystemSettingsRecord](Schedule.spaced(config.configurationCacheRefreshInterval)),
+        ReloadingCache.make[SystemSettingsRecord](config.configurationCacheRefreshInterval),
       )
     )
       >>> ZLayer.fromFunction(Impl(_, _))

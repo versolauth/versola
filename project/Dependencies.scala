@@ -27,6 +27,7 @@ object Versions {
   val javamail = "2.0.1"
   val cel = "0.12.0"
   val jsonSchemaValidator = "2.0.4"
+  val caffeine = "3.2.2"
 }
 
 object Dependencies {
@@ -91,5 +92,11 @@ object Dependencies {
   // Jackson 2.22.0 pin in build.sbt's dependencyOverrides.
   val jsonSchema = Seq(
     "com.networknt" % "json-schema-validator" % Versions.jsonSchemaValidator,
+  )
+
+  // Size-bounded cache with a synchronous eviction listener — what the edge's revocation
+  // list needs to know when it can no longer answer from memory alone.
+  val cache = Seq(
+    "com.github.ben-manes.caffeine" % "caffeine" % Versions.caffeine,
   )
 }

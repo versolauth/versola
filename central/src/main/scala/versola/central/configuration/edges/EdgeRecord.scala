@@ -15,11 +15,16 @@ import java.security.interfaces.RSAPublicKey
  *
  * Edges are infrastructure units. Tenants declare which edge they use.
  * Clients inherit their edge from their tenant.
+ *
+ * `revocationCacheSize` is how many revocations that edge keeps in memory. It lives here
+ * rather than in the edge's own config because it is sized against the traffic an edge
+ * sees, which is visible from central and changes without a redeploy.
  */
 case class EdgeRecord(
     id: EdgeId,
     publicKey: Json.Obj,
     oldPublicKey: Option[Json.Obj],
+    revocationCacheSize: Int,
 ):
   def asPublicKeys: JWT.PublicKeys =
     val keys = Json.Arr((publicKey +: oldPublicKey.toVector)*)

@@ -11,6 +11,7 @@ object OAuthClientSpec extends ZIOSpecDefault:
   private val config = E2EConfig(
     authUrl = "http://auth.test",
     centralUrl = "http://central.test",
+    edgeUrl = "http://edge.test",
     adminLogin = "admin",
     adminPassword = "password",
     adminNewPassword = "new-password",
