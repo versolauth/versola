@@ -3,6 +3,7 @@ package versola.util.http
 import versola.util.{Base64Url, FormDecoder, Secret}
 import zio.{IO, ZIO}
 import zio.http.*
+import zio.json.JsonDecoder
 import zio.schema.Schema
 
 trait Controller:
@@ -15,6 +16,12 @@ trait Controller:
     def formAs[A: FormDecoder as decoder]: IO[String, A] =
       request.body.asURLEncodedForm.mapError(_.getMessage)
         .flatMap(decoder.decode)
+
+    /** Decodes the JSON body as `A`, failing with [[BadRequest]] (rather than the generic
+      * `RuntimeException` `asJsonFromCodec` raises) so a malformed body or an invalid field -
+      * e.g. an ID newtype's `mapOrFail` rejecting the value - surfaces as 400, not 500. */
+    def bodyAs[A: JsonDecoder]: IO[BadRequest, A] =
+      request.body.asJsonFromCodec[A].mapError(e => BadRequest(e.getMessage))
 
   extension (s: String)
     def isJWT = s.split("\\.").headOption

@@ -65,7 +65,7 @@ object ScopeController extends Controller:
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[OAuthScopeService]
-        body <- request.body.asJsonFromCodec[CreateScopeRequest]
+        body <- request.bodyAs[CreateScopeRequest]
         _ <- service.createScope(body)
       yield Response.status(Status.Created)
     }
@@ -75,7 +75,7 @@ object ScopeController extends Controller:
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[OAuthScopeService]
-        body <- request.body.asJsonFromCodec[UpdateScopeRequest]
+        body <- request.bodyAs[UpdateScopeRequest]
         _ <- service.updateScope(body)
       yield Response.status(Status.NoContent)
     }

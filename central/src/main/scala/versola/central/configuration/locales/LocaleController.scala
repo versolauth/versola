@@ -32,7 +32,7 @@ object LocaleController extends Controller:
       (for
         _       <- authorizeBasic(request)
         service <- ZIO.service[LocaleService]
-        body    <- request.body.asJsonFromCodec[UpdateLocalesRequest]
+        body    <- request.bodyAs[UpdateLocalesRequest]
         _       <- service.update(body.add, body.delete)
       yield Response.status(Status.NoContent)).catchAll:
         case error: LocaleActivationError =>
@@ -45,7 +45,7 @@ object LocaleController extends Controller:
       for
         _       <- authorizeBasic(request)
         service <- ZIO.service[LocaleService]
-        body    <- request.body.asJsonFromCodec[SetDefaultLocaleRequest]
+        body    <- request.bodyAs[SetDefaultLocaleRequest]
         result  <- service.setDefault(body.code)
       yield result match
         case Right(_)    => Response.status(Status.NoContent)

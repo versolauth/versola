@@ -12,6 +12,7 @@ import versola.central.configuration.{ConsentFlowDto, CreateClientRequest, Patch
 import versola.util.{Patch, RedirectUri, ReloadingCache, Secret, SecureRandom, SecurityService}
 import zio.prelude.EqualOps
 import zio.*
+import zio.http.URL
 import zio.test.*
 
 import javax.crypto.spec.SecretKeySpec
@@ -232,6 +233,84 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
           )
         )
       )
+    },
+    test("registerClient accepts an https frontChannelLogoutUri") {
+      val env = new Env()
+
+      for
+        _ <- env.secureRandom.nextBytes.succeedsWith(Array.fill(32)(11.toByte))
+        _ <- env.securityService.encryptAes256.succeedsWith(Array.fill(48)(17.toByte))
+        _ <- env.repository.createClient.succeedsWith(())
+        _ <- env.service.registerClient(createRequest.copy(frontChannelLogoutUri = Some("https://rp.example.com/front-logout")))
+        created = env.repository.createClient.calls.head
+      yield assertTrue(created.frontChannelLogoutUri.map(_.encode) == Some("https://rp.example.com/front-logout"))
+    },
+    test("registerClient accepts an http://localhost backChannelLogoutUri") {
+      val env = new Env()
+
+      for
+        _ <- env.secureRandom.nextBytes.succeedsWith(Array.fill(32)(11.toByte))
+        _ <- env.securityService.encryptAes256.succeedsWith(Array.fill(48)(17.toByte))
+        _ <- env.repository.createClient.succeedsWith(())
+        _ <- env.service.registerClient(createRequest.copy(backChannelLogoutUri = Some("http://localhost:3000/back-logout")))
+        created = env.repository.createClient.calls.head
+      yield assertTrue(created.backChannelLogoutUri.map(_.encode) == Some("http://localhost:3000/back-logout"))
+    },
+    test("registerClient rejects a non-HTTPS, non-localhost frontChannelLogoutUri instead of silently dropping it") {
+      val env = new Env()
+
+      for
+        result <- env.service
+          .registerClient(createRequest.copy(frontChannelLogoutUri = Some("http://rp.example.com/front-logout")))
+          .either
+        createCalls = env.repository.createClient.times
+      yield assertTrue(
+        result.left.toOption.exists:
+          case error: InvalidConsentUri => error.field == "frontChannelLogoutUri"
+          case _                        => false,
+        createCalls == 0,
+      )
+    },
+    test("registerClient rejects a malformed backChannelLogoutUri instead of silently dropping it") {
+      val env = new Env()
+
+      for
+        result <- env.service
+          .registerClient(createRequest.copy(backChannelLogoutUri = Some("not a url")))
+          .either
+        createCalls = env.repository.createClient.times
+      yield assertTrue(
+        result.left.toOption.exists:
+          case error: InvalidConsentUri => error.field == "backChannelLogoutUri"
+          case _                        => false,
+        createCalls == 0,
+      )
+    },
+    test("updateClient rejects a non-HTTPS, non-localhost frontChannelLogoutUri instead of silently dropping it") {
+      val env = new Env()
+
+      for
+        result <- env.service
+          .updateClient(updateRequest.copy(frontChannelLogoutUri = Some(Patch.Modified("http://rp.example.com/front-logout"))))
+          .either
+        updateCalls = env.repository.updateClient.times
+      yield assertTrue(
+        result.left.toOption.exists:
+          case error: InvalidConsentUri => error.field == "frontChannelLogoutUri"
+          case _                        => false,
+        updateCalls == 0,
+      )
+    },
+    test("updateClient stores a frontChannelLogoutUri with surrounding whitespace instead of clearing it") {
+      val env = new Env()
+
+      for
+        _ <- env.repository.updateClient.succeedsWith(())
+        _ <- env.service.updateClient(
+          updateRequest.copy(frontChannelLogoutUri = Some(Patch.Modified(" https://rp.example.com/front-logout ")))
+        )
+        patched = env.repository.updateClient.calls.head._12
+      yield assertTrue(patched == Some(Patch.Modified(URL.decode("https://rp.example.com/front-logout").toOption.get)))
     },
     test("registerClient rejects a registration flow granting an unknown role") {
       val env = new Env()
