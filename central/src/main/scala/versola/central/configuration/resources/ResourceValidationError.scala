@@ -10,3 +10,6 @@ enum ResourceValidationError derives JsonCodec, Schema:
   case InvalidInjectExpression(endpointId: ResourceEndpointId, ruleName: String, expression: String, message: String)
   case InvalidStepUpConditionExpression(endpointId: ResourceEndpointId, expression: String, message: String)
   case InvalidEndpointPath(endpointId: ResourceEndpointId)
+  /** Another endpoint with the same method matches exactly the same requests, differing
+    * only in its path parameter names. */
+  case AmbiguousEndpointPath(endpointId: ResourceEndpointId, path: String)

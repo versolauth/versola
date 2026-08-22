@@ -244,11 +244,17 @@ test('shows resource validation errors before saving', async ({ page }) => {
   await expect(relativePathField).toHaveClass(/input-error/);
   await expect(relativePathField).toHaveCSS('border-top-color', 'rgb(248, 81, 73)');
   await page.getByRole('button', { name: 'Create Resource', exact: true }).click();
-  await expect(page.getByText('Endpoint path must start with "/" and contain only latin letters, digits, and "-" per segment (no consecutive "/"): GET users', { exact: true })).toBeVisible();
+  await expect(page.getByText('Endpoint path must start with "/" and contain only latin letters, digits, "-", or a "{name}" parameter per segment (no consecutive "/", no repeated parameter names): GET users', { exact: true })).toBeVisible();
+
+  await relativePathField.fill('/users/{id}/orders/{id}');
+  await page.getByRole('button', { name: 'Create Resource', exact: true }).click();
+  await expect(page.getByText('Endpoint path must start with "/" and contain only latin letters, digits, "-", or a "{name}" parameter per segment (no consecutive "/", no repeated parameter names): GET /users/{id}/orders/{id}', { exact: true })).toBeVisible();
 
   await relativePathField.fill('/users/{id}');
+  await page.getByRole('button', { name: 'Add endpoint', exact: true }).click();
+  await page.locator('.endpoint-editor').last().getByPlaceholder('/users').fill('/users/{userId}');
   await page.getByRole('button', { name: 'Create Resource', exact: true }).click();
-  await expect(page.getByText('Endpoint path must start with "/" and contain only latin letters, digits, and "-" per segment (no consecutive "/"): GET /users/{id}', { exact: true })).toBeVisible();
+  await expect(page.getByText('Endpoint path differs from another endpoint of the same method only in its parameter names: GET /users/{userId}', { exact: true })).toBeVisible();
 
   expect(api.requests.some(request => request.method === 'POST' && request.pathname === '/configuration/resources')).toBeFalsy();
 });

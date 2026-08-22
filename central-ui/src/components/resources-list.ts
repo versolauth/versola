@@ -469,7 +469,12 @@ export class VersolaResourcesList extends LitElement {
     if (!validation.valid) { this.error = validation.error ?? 'Resource URI is invalid'; return; }
     const invalidEndpoint = this.endpointDrafts.find(endpoint => this.isEndpointPathInvalid(endpoint.path));
     if (invalidEndpoint) {
-      this.error = `Endpoint path must start with "/" and contain only latin letters, digits, and "-" per segment (no consecutive "/"): ${endpointLabel(invalidEndpoint)}`;
+      this.error = `Endpoint path must start with "/" and contain only latin letters, digits, "-", or a "{name}" parameter per segment (no consecutive "/", no repeated parameter names): ${endpointLabel(invalidEndpoint)}`;
+      return;
+    }
+    const ambiguousEndpoint = this.findAmbiguousEndpoint();
+    if (ambiguousEndpoint) {
+      this.error = `Endpoint path differs from another endpoint of the same method only in its parameter names: ${endpointLabel(ambiguousEndpoint)}`;
       return;
     }
     const celIssue = this.findCelIssue();
@@ -525,7 +530,20 @@ export class VersolaResourcesList extends LitElement {
   private isEndpointPathInvalid(path: string) {
     const trimmed = path.trim();
     if (trimmed.length === 0) return false;
-    return !/^\/([a-zA-Z0-9-]+(\/[a-zA-Z0-9-]+)*)?$/.test(trimmed);
+    const segment = '([a-zA-Z0-9-]+|\\{[a-zA-Z_][a-zA-Z0-9_]*\\})';
+    if (!new RegExp(`^\\/(${segment}(\\/${segment})*)?$`).test(trimmed)) return true;
+    const params = trimmed.split('/').filter(part => part.startsWith('{'));
+    return new Set(params).size !== params.length;
+  }
+
+  /** Two endpoints of the same method whose paths differ only in parameter names match
+   * exactly the same requests, so edge could never tell them apart. */
+  private findAmbiguousEndpoint() {
+    const shape = (path: string) => path.trim().split('/').map(part => (part.startsWith('{') ? '{}' : part)).join('/');
+    return this.endpointDrafts.find((endpoint, index) => this.endpointDrafts.slice(0, index).some(earlier =>
+      earlier.method === endpoint.method &&
+      shape(earlier.path) === shape(endpoint.path) &&
+      earlier.path.trim() !== endpoint.path.trim()));
   }
 
   private findCelIssue(): string | null {
@@ -858,6 +876,7 @@ export class VersolaResourcesList extends LitElement {
         <li><span class="option-tooltip-code">user</span> — userinfo claims (only when "Fetch userinfo" is enabled).</li>
         <li><span class="option-tooltip-code">request</span> — incoming request data:
           <ul class="option-tooltip-list">
+            <li><span class="option-tooltip-code">request.path.params</span> — map of path parameters matched by the endpoint's <span class="option-tooltip-code">{name}</span> segments.</li>
             <li><span class="option-tooltip-code">request.query</span> — map of query parameters (first value per key).</li>
             <li><span class="option-tooltip-code">request.queryAll</span> — map of query parameters (all values per key as a list).</li>
             <li><span class="option-tooltip-code">request.headers</span> — map of request headers (first value per key).</li>
