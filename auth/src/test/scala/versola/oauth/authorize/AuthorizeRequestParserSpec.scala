@@ -109,6 +109,14 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
           assertTrue(result.scope == Set(ScopeToken("openid"), ScopeToken("profile"))) &&
           assertTrue(result.state.contains(State("test-state")))
       },
+      test("uses all client scopes when scope is omitted") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(validParams - "scope"))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request)
+        yield assertTrue(result.scope == clientRecord.scope)
+      },
       test("fails when client_id is missing") {
         val env = Env()
         val request = Request.get(URL.root.addQueryParams(validParams - "client_id"))

@@ -1,7 +1,7 @@
 package versola.central.configuration.clients
 
 import versola.central.CentralConfig
-import versola.central.configuration.SaveAuthorizationPresetsRequest
+import versola.central.configuration.{AuthorizationPresetInput, SaveAuthorizationPresetsRequest}
 import versola.central.configuration.challenges.ChallengeSettingsService
 import versola.central.configuration.edges.EdgeId
 import versola.central.configuration.sync.{SyncEvent, SyncOps}
@@ -60,6 +60,8 @@ object AuthorizationPresetService:
             yield ()
         }
 
+        _ <- validatePresetIds(request.clientId, request.presets)
+
         presets = request.presets.map: presetRequest =>
           AuthorizationPreset(
             id = presetRequest.id,
@@ -81,10 +83,23 @@ object AuthorizationPresetService:
       yield ())
         .either
         .flatMap {
-          case Left(ex: Throwable) => ZIO.fail(ex)
           case Left(error: PresetValidationError) => ZIO.left(error)
+          case Left(ex: Throwable) => ZIO.fail(ex)
           case Right(_) => ZIO.right(())
         }
+
+    private def validatePresetIds(clientId: ClientId, presets: List[AuthorizationPresetInput]): Task[Unit] =
+      if presets.isEmpty then ZIO.unit
+      else
+        for
+          _ <- ZIO.fail(PresetValidationError.DuplicatePresetId).when(presets.map(_.id).distinct.size != presets.size)
+          existing <- repository.getAll
+          _ <- ZIO.fail(PresetValidationError.DuplicatePresetId).when(
+            presets.exists(preset => existing.exists(existingPreset =>
+              existingPreset.id == preset.id && existingPreset.clientId != clientId
+            )),
+          )
+        yield ()
 
     /** Ensures every `postLogoutRedirectUri` currently used by a preset of the tenant is present
       * in the tenant's `ChallengeSettingsRecord.postLogoutRedirectUris` allow-list, so the auth
@@ -132,6 +147,9 @@ object AuthorizationPresetService:
 sealed trait PresetValidationError
 
 object PresetValidationError:
+  case object DuplicatePresetId
+      extends RuntimeException("Authorization preset ID is already used by another client")
+      with PresetValidationError
   case object ClientNotFound extends PresetValidationError
   case object InvalidRedirectUri extends PresetValidationError
   case object InvalidPostLogoutRedirectUri extends PresetValidationError

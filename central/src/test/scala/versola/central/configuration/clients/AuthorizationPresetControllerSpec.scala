@@ -214,4 +214,19 @@ object AuthorizationPresetControllerSpec extends ZIOSpecDefault, ZIOStubs:
       setup = service =>
         service.savePresets.succeedsWith(Left(PresetValidationError.InvalidScope)),
     ),
+    controllerTestCase(
+      description = "return validation message when preset ID is already used",
+      request = Request(
+        method = Method.POST,
+        url = URL.empty / "configuration" / "auth-request-presets",
+        body = Body.fromString(saveRequest.toJson),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.BadRequest,
+      setup = service =>
+        service.savePresets.succeedsWith(Left(PresetValidationError.DuplicatePresetId)),
+      verify = (response, _) =>
+        response.body.asString.map(body =>
+          assertTrue(body == PresetValidationError.DuplicatePresetId.getMessage),
+        ),
+    ),
   )

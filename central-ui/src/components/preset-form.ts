@@ -380,26 +380,16 @@ export class VersolaPresetForm extends LitElement {
     }
   }
 
-  private generateUUID() {
-    // Generate a proper UUID v4
-    this.formData = {
-      ...this.formData,
-      id: crypto.randomUUID(),
-    };
-    this.validatePresetId();
-  }
-
   private validatePresetId() {
     const id = this.formData.id?.trim() || '';
     if (!id) {
       this.presetIdError = '';
       return true;
     }
-    // Only accept UUID format
-    const isUuidFormat = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
+    const isValidFormat = /^[a-z]+(?:-[a-z]+)*$/.test(id);
 
-    if (!isUuidFormat) {
-      this.presetIdError = 'Must be valid UUID format';
+    if (!isValidFormat) {
+      this.presetIdError = 'Use lowercase Latin letters separated by hyphens';
       return false;
     }
     this.presetIdError = '';
@@ -439,24 +429,16 @@ export class VersolaPresetForm extends LitElement {
   private handleSubmit(e: Event) {
     e.preventDefault();
 
-    // Auto-generate UUID if ID is empty
     const id = this.formData.id?.trim() || '';
-    let finalId = id;
+    const finalId = this.preset?.id || id;
 
-    if (!id) {
-      // Generate UUID v4
-      finalId = crypto.randomUUID();
-      this.formData = {
-        ...this.formData,
-        id: finalId,
-      };
+    const isValidFormat = /^[a-z]+(?:-[a-z]+)*$/.test(finalId);
+    if (!this.preset && !id) {
+      this.presetIdError = 'Preset ID is required';
+      return;
     }
-
-    // Validate the ID (either provided or generated)
-    const isUuidFormat = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(finalId);
-
-    if (!isUuidFormat) {
-      this.presetIdError = 'Must be valid UUID format';
+    if (!this.preset && !isValidFormat) {
+      this.presetIdError = 'Use lowercase Latin letters separated by hyphens';
       return;
     }
 
@@ -667,25 +649,22 @@ export class VersolaPresetForm extends LitElement {
           <div class="form-grid">
             ${!this.preset ? html`
               <div class="form-group">
-                <label for="preset-id">Preset ID</label>
-                <div class="array-input-group compact-inline-row">
-                  <input
-                    type="text"
-                    id="preset-id"
-                    class="${this.presetIdError ? 'input-error' : ''}"
-                    .value=${this.formData.id || ''}
-                    @input=${(e: Event) => {
-                      this.formData = { ...this.formData, id: (e.target as HTMLInputElement).value };
-                      this.validatePresetId();
-                    }}
-                    placeholder="Leave empty to auto-generate UUID"
-                  />
-                  <button type="button" class="btn btn-secondary inline-action-button" @click=${this.generateUUID} title="Generate UUID" aria-label="Generate UUID">
-                    ↻
-                  </button>
-                </div>
+                <label for="preset-id">Preset ID *</label>
+                <input
+                  type="text"
+                  id="preset-id"
+                  class="form-input compact-input ${this.presetIdError ? 'input-error' : ''}"
+                  .value=${this.formData.id || ''}
+                  @input=${(e: Event) => {
+                    this.formData = { ...this.formData, id: (e.target as HTMLInputElement).value };
+                    this.validatePresetId();
+                  }}
+                  placeholder="e.g. web-login"
+                  required
+                />
                 ${this.presetIdError ? html`<div class="error-text">${this.presetIdError}</div>` : html`
-                  <div class="hint">Leave empty to auto-generate UUID</div>
+                  <div class="hint">Use lowercase Latin letters separated by hyphens, e.g. web-login</div>
+                  <div class="hint">Used in the Edge login path: <code>/login/{presetId}</code></div>
                 `}
               </div>
             ` : ''}
