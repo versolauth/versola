@@ -181,14 +181,54 @@ object ResourceService:
       ZIO.foldLeft(endpoints)(Option.empty[ResourceValidationError]):
         case (Some(err), _) => ZIO.succeed(Some(err))
         case (None, endpoint) => validateEndpoint(endpoint)
+      .map(_.orElse(findAmbiguousEndpoint(endpoints)))
 
-    private val validPathRegex = "^/([a-zA-Z0-9-]+(/[a-zA-Z0-9-]+)*)?$".r
+    private val staticSegmentRegex = "[a-zA-Z0-9-]+".r
+    private val pathParamRegex = "\\{([a-zA-Z_][a-zA-Z0-9_]*)\\}".r
+
+    /** Two templates with the same method that differ only in their parameter names
+      * (e.g. `/users/{id}` and `/users/{userId}`) match exactly the same requests, so
+      * edge could never tell which one the caller meant. Identical templates are left
+      * to edge, which picks between them deterministically.
+      */
+    private def findAmbiguousEndpoint(
+        endpoints: Vector[CreateResourceEndpointRequest],
+    ): Option[ResourceValidationError] =
+      val shapes = endpoints.map: endpoint =>
+        (endpoint.method.toUpperCase, pathShape(endpoint.path.trim), endpoint.path.trim, endpoint.id)
+      shapes.zipWithIndex.collectFirst:
+        case ((method, shape, path, id), index)
+            if shapes.take(index).exists((m, s, p, _) => m == method && s == shape && p != path) =>
+          ResourceValidationError.AmbiguousEndpointPath(id, path)
+
+    /** Path with every parameter placeholder collapsed to a positional marker, so two
+      * templates that match the same requests share a shape. */
+    private def pathShape(path: String): Vector[String] =
+      pathSegments(path).map:
+        case pathParamRegex(_) => "{}"
+        case segment => segment
+
+    private def pathSegments(path: String): Vector[String] =
+      path.stripPrefix("/") match
+        case "" => Vector.empty
+        case rest => rest.split("/", -1).toVector
+
+    /** A registered path is a `/`-prefixed sequence of static segments and `{name}`
+      * placeholders, each matching exactly one request segment. Placeholder names must be
+      * identifiers, and unique within the path so no `request.path.params` entry is lost.
+      */
+    private def isValidEndpointPath(path: String): Boolean =
+      val segments = pathSegments(path)
+      val params = segments.collect { case pathParamRegex(name) => name }
+      path.startsWith("/") &&
+        segments.forall(segment => staticSegmentRegex.matches(segment) || pathParamRegex.matches(segment)) &&
+        params.distinct.size == params.size
 
     private def validateEndpoint(
         endpoint: CreateResourceEndpointRequest,
     ): Task[Option[ResourceValidationError]] =
       val trimmedPath = endpoint.path.trim
-      if !validPathRegex.matches(trimmedPath) then
+      if !isValidEndpointPath(trimmedPath) then
         return ZIO.some(ResourceValidationError.InvalidEndpointPath(endpoint.id))
       val allowCheck = endpoint.allow.filter(_.trim.nonEmpty) match
         case None => ZIO.none

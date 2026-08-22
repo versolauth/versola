@@ -178,17 +178,90 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
         env.repository.createResource.calls.isEmpty,
       )
     },
-    test("createResource returns error when endpoint path contains path parameters") {
+    test("createResource accepts endpoint paths with named path parameters") {
+      val env = new Env
+      val request = createRequest.copy(
+        endpoints = Vector(
+          CreateResourceEndpointRequest(existingEndpointId, "/tenants/{tenantId}/orders/{orderId}", "GET", false, None, Vector.empty, stepUpCondition = None, stepUpAcr = None, maxAge = None),
+        ),
+      )
+      for
+        _ <- env.repository.createResource.succeedsWith(())
+        result <- env.service.createResource(request)
+      yield assertTrue(
+        result == Right((resourceId, None)),
+        env.repository.createResource.calls.head._5 == Vector(
+          ResourceEndpointRecord(existingEndpointId, "/tenants/{tenantId}/orders/{orderId}", "GET", false, None, Vector.empty, None, None, None),
+        ),
+      )
+    },
+    test("createResource returns error when a path parameter is malformed") {
       val env = new Env
       val badRequest = createRequest.copy(
         endpoints = Vector(
-          CreateResourceEndpointRequest(existingEndpointId, "/users/{id}", "GET", false, None, Vector.empty, stepUpCondition = None, stepUpAcr = None, maxAge = None),
+          CreateResourceEndpointRequest(existingEndpointId, "/users/{}", "GET", false, None, Vector.empty, stepUpCondition = None, stepUpAcr = None, maxAge = None),
         ),
       )
       for result <- env.service.createResource(badRequest)
       yield assertTrue(
         result == Left(ResourceValidationError.InvalidEndpointPath(existingEndpointId)),
         env.repository.createResource.calls.isEmpty,
+      )
+    },
+    test("createResource returns error when a path parameter is not a complete segment") {
+      val env = new Env
+      val badRequest = createRequest.copy(
+        endpoints = Vector(
+          CreateResourceEndpointRequest(existingEndpointId, "/users/u-{id}", "GET", false, None, Vector.empty, stepUpCondition = None, stepUpAcr = None, maxAge = None),
+        ),
+      )
+      for result <- env.service.createResource(badRequest)
+      yield assertTrue(
+        result == Left(ResourceValidationError.InvalidEndpointPath(existingEndpointId)),
+        env.repository.createResource.calls.isEmpty,
+      )
+    },
+    test("createResource returns error when path parameter names repeat") {
+      val env = new Env
+      val badRequest = createRequest.copy(
+        endpoints = Vector(
+          CreateResourceEndpointRequest(existingEndpointId, "/users/{id}/orders/{id}", "GET", false, None, Vector.empty, stepUpCondition = None, stepUpAcr = None, maxAge = None),
+        ),
+      )
+      for result <- env.service.createResource(badRequest)
+      yield assertTrue(
+        result == Left(ResourceValidationError.InvalidEndpointPath(existingEndpointId)),
+        env.repository.createResource.calls.isEmpty,
+      )
+    },
+    test("createResource returns error when two endpoints of the same method have the same path shape") {
+      val env = new Env
+      val badRequest = createRequest.copy(
+        endpoints = Vector(
+          CreateResourceEndpointRequest(existingEndpointId, "/users/{id}", "GET", false, None, Vector.empty, stepUpCondition = None, stepUpAcr = None, maxAge = None),
+          CreateResourceEndpointRequest(createdEndpointId, "/users/{userId}", "GET", false, None, Vector.empty, stepUpCondition = None, stepUpAcr = None, maxAge = None),
+        ),
+      )
+      for result <- env.service.createResource(badRequest)
+      yield assertTrue(
+        result == Left(ResourceValidationError.AmbiguousEndpointPath(createdEndpointId, "/users/{userId}")),
+        env.repository.createResource.calls.isEmpty,
+      )
+    },
+    test("createResource accepts a static endpoint alongside a parameterized one of the same method") {
+      val env = new Env
+      val request = createRequest.copy(
+        endpoints = Vector(
+          CreateResourceEndpointRequest(existingEndpointId, "/users/me", "GET", false, None, Vector.empty, stepUpCondition = None, stepUpAcr = None, maxAge = None),
+          CreateResourceEndpointRequest(createdEndpointId, "/users/{userId}", "GET", false, None, Vector.empty, stepUpCondition = None, stepUpAcr = None, maxAge = None),
+        ),
+      )
+      for
+        _ <- env.repository.createResource.succeedsWith(())
+        result <- env.service.createResource(request)
+      yield assertTrue(
+        result == Right((resourceId, None)),
+        env.repository.createResource.calls.nonEmpty,
       )
     },
     test("createResource returns error when endpoint path contains consecutive slashes") {

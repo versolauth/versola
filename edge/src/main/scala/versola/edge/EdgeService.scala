@@ -370,6 +370,9 @@ object EdgeService:
 
         resource <- resourceService.findByResourceId(resourceId).someOrFail(Outcome.NotFound)
         endpoint <- findEndpoint(resource.endpoints, request.method.name, restPath)
+        // the registered template, not the concrete path: a parameterized endpoint would
+        // otherwise produce one metric time series per parameter value
+        _ <- Observability.setRoutePath(s"/resources/$resourceId${endpoint.path}")
         parsedBody <- readJsonBody(request)
         typedClaims <- checkPermissions(session.claims, endpoint, request, parsedBody)
         _ <- checkAudience(resource, typedClaims)
@@ -597,8 +600,9 @@ object EdgeService:
         case (k, values) => k -> values.map(_.renderedValue).asJava
 
       val pathParams = extractPathParams(endpoint.path, restPath)
+      val pathData = Map[String, AnyRef]("params" -> pathParams.asJava)
       val requestData = scala.collection.mutable.LinkedHashMap[String, AnyRef](
-        "path" -> pathParams.asJava,
+        "path" -> pathData.asJava,
         "query" -> queryMap.asJava,
         "queryAll" -> queriesMap.asJava,
         "headers" -> headerMap.asJava,
@@ -711,6 +715,12 @@ object EdgeService:
     private def isJsonRequest(request: Request): Boolean =
       request.header(Header.ContentType).exists(_.mediaType == MediaType.application.json)
 
+    /** Picks the most specific endpoint whose template matches the request: a static
+      * segment always wins over a `{name}` placeholder at the same position, so
+      * `/users/me` takes precedence over `/users/{userId}` whatever the registration
+      * order is. Templates that stay tied (they differ only in placeholder names, which
+      * central rejects on registration) are ordered by path so the choice is stable.
+      */
     private def findEndpoint(
         endpoints: Vector[ResourceEndpoint],
         method: String,
@@ -718,9 +728,20 @@ object EdgeService:
     ): IO[Outcome, ResourceEndpoint] =
       ZIO.fromOption {
         val pathSegments = normalizePath(restPath.encode)
-        endpoints.find: endpoint =>
-          endpoint.method.equalsIgnoreCase(method) && matchesSegments(normalizePath(endpoint.path), pathSegments)
+        endpoints
+          .filter: endpoint =>
+            endpoint.method.equalsIgnoreCase(method) && matchesSegments(normalizePath(endpoint.path), pathSegments)
+          .minByOption(endpoint => (specificity(normalizePath(endpoint.path)), endpoint.path))
       }.orElseFail(Outcome.NotFound)
+
+    /** Placeholder mask of a template, one character per segment: candidates all have the
+      * same segment count, so comparing masks lexicographically prefers the template whose
+      * leftmost differing segment is static. */
+    private def specificity(pattern: Vector[String]): String =
+      pattern.map:
+        case s"{$_}" => '1'
+        case _ => '0'
+      .mkString
 
     private def matchesSegments(pattern: Vector[String], path: Vector[String]): Boolean =
       pattern.size == path.size && pattern.zip(path).forall:

@@ -100,7 +100,11 @@ object ObservabilitySpec extends ZIOSpecDefault:
       Observability.handleErrors(
         Routes(
           Method.GET / "resources" / string("alias") / trailing ->
-            handler((_: String, _: Path, _: Request) => Response.text("proxied")),
+            handler((alias: String, rest: Path, _: Request) =>
+              Observability.setRoutePath(s"/resources/$alias/items/{itemId}")
+                .when(rest.segments.headOption.contains("items"))
+                .as(Response.text("proxied")),
+            ),
         ),
       ),
     )
@@ -219,13 +223,13 @@ object ObservabilitySpec extends ZIOSpecDefault:
       test("records counter and histogram for successful requests") {
         val counterTags = Set(
           MetricLabel("method", "GET"),
-          MetricLabel("route", "ok"),
+          MetricLabel("route", "/ok"),
           MetricLabel("status", "200"),
           MetricLabel("status_class", "2xx"),
         )
         val durationTags = Set(
           MetricLabel("method", "GET"),
-          MetricLabel("route", "ok"),
+          MetricLabel("route", "/ok"),
           MetricLabel("status_class", "2xx"),
         )
         for
@@ -244,7 +248,7 @@ object ObservabilitySpec extends ZIOSpecDefault:
       test("counts 5xx errors via status_class") {
         val counterTags = Set(
           MetricLabel("method", "GET"),
-          MetricLabel("route", "boom"),
+          MetricLabel("route", "/boom"),
           MetricLabel("status", "500"),
           MetricLabel("status_class", "5xx"),
         )
@@ -259,10 +263,10 @@ object ObservabilitySpec extends ZIOSpecDefault:
           requests >= 1.0,
         )
       }.provideSomeLayer[Scope](testLayer) @@ TestAspect.silentLogging,
-      test("uses the raw path as the route label for the resources proxy") {
+      test("falls back to the route pattern for an unresolved resources proxy path") {
         val tags = Set(
           MetricLabel("method", "GET"),
-          MetricLabel("route", "resources/myalias/extra"),
+          MetricLabel("route", "/resources/{alias}/..."),
           MetricLabel("status", "200"),
           MetricLabel("status_class", "2xx"),
         )
@@ -277,10 +281,36 @@ object ObservabilitySpec extends ZIOSpecDefault:
           requests >= 1.0,
         )
       }.provideSomeLayer[Scope](testLayer) @@ TestAspect.silentLogging,
+      test("keeps the route label bounded across distinct path parameter values") {
+        val tags = Set(
+          MetricLabel("method", "GET"),
+          MetricLabel("route", "/resources/myalias/items/{itemId}"),
+          MetricLabel("status", "200"),
+          MetricLabel("status_class", "2xx"),
+        )
+        val activeTags = Set(
+          MetricLabel("method", "GET"),
+          MetricLabel("route", "/resources/{alias}/..."),
+        )
+        for
+          env <- tracingLayer.build
+          _ <- TestClient.addRoutes(proxyRoutes.provideEnvironment(env))
+          client <- ZIO.service[Client]
+          _ <- ZIO.foreachDiscard(Chunk("1", "2", "3")): itemId =>
+            client.batched(Request.get(URL.empty / "resources" / "myalias" / "items" / itemId))
+          requests <- counterCount(tags)
+          concrete <- counterCount(tags - MetricLabel("route", "/resources/myalias/items/{itemId}") + MetricLabel("route", "/resources/myalias/items/1"))
+          active <- Metric.gauge("http_server_active_requests").tagged(activeTags).value.map(_.value)
+        yield assertTrue(
+          requests >= 3.0,
+          concrete == 0.0,
+          active == 0.0,
+        )
+      }.provideSomeLayer[Scope](testLayer) @@ TestAspect.silentLogging,
       test("appends the route label set mid-handler to the route metric label") {
         val tags = Set(
           MetricLabel("method", "GET"),
-          MetricLabel("route", "labeled?grant_type=client_credentials"),
+          MetricLabel("route", "/labeled?grant_type=client_credentials"),
           MetricLabel("status", "200"),
           MetricLabel("status_class", "2xx"),
         )

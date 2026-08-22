@@ -8,6 +8,7 @@ import org.scalamock.stubs.ZIOStubs
 import versola.edge.login.LoginRepository
 import versola.edge.model.*
 import versola.util.cel.CelEvaluator
+import versola.util.http.Observability
 import versola.util.{EnvName, JWT, ReloadingCache, Secret, SecureRandom, SecurityService}
 import zio.*
 import zio.http.*
@@ -156,10 +157,12 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
   private val usersEndpointId = ResourceEndpointId(java.util.UUID.fromString("018f0f2a-1c7b-7000-8000-000000000401"))
   private val userByIdEndpointId = ResourceEndpointId(java.util.UUID.fromString("018f0f2a-1c7b-7000-8000-000000000402"))
   private val createUserEndpointId = ResourceEndpointId(java.util.UUID.fromString("018f0f2a-1c7b-7000-8000-000000000403"))
+  private val currentUserEndpointId = ResourceEndpointId(java.util.UUID.fromString("018f0f2a-1c7b-7000-8000-000000000404"))
+  private val tenantOrderEndpointId = ResourceEndpointId(java.util.UUID.fromString("018f0f2a-1c7b-7000-8000-000000000405"))
 
   /** Endpoints granted by `setupDefaults` so proxy-behaviour scenarios are not gated by deny-by-default authorization. */
   private val scenarioEndpointIds: Set[ResourceEndpointId] =
-    Set(usersEndpointId, userByIdEndpointId, createUserEndpointId)
+    Set(usersEndpointId, userByIdEndpointId, createUserEndpointId, currentUserEndpointId, tenantOrderEndpointId)
 
   private def usersEndpoint(allow: Option[String] = None,
                              inject: Vector[InjectRule] = Vector.empty,
@@ -176,6 +179,18 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
     ResourceEndpoint(
       id = userByIdEndpointId,
       method = "GET", path = "/users/{id}", fetchUserInfo = false, allow = allow, inject = inject, stepUpCondition = None, stepUpAcr = None, maxAge = None,
+    )
+
+  private def currentUserEndpoint(inject: Vector[InjectRule] = Vector.empty) =
+    ResourceEndpoint(
+      id = currentUserEndpointId,
+      method = "GET", path = "/users/me", fetchUserInfo = false, allow = None, inject = inject, stepUpCondition = None, stepUpAcr = None, maxAge = None,
+    )
+
+  private def tenantOrderEndpoint(allow: Option[String] = None, inject: Vector[InjectRule] = Vector.empty) =
+    ResourceEndpoint(
+      id = tenantOrderEndpointId,
+      method = "GET", path = "/tenants/{tenantId}/orders/{orderId}", fetchUserInfo = false, allow = allow, inject = inject, stepUpCondition = None, stepUpAcr = None, maxAge = None,
     )
 
   private def createUserEndpoint(allow: Option[String] = None,
@@ -671,8 +686,8 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
     test("matches parameterized path and exposes path parameters in CEL context") {
       val env = new Env
       val endpoint = userByIdEndpoint(
-        allow = Some("request.path.id == token.sub"),
-        inject = Vector(InjectRule(InjectTarget.header, "x-resource-id", "request.path.id")),
+        allow = Some("request.path.params.id == token.sub"),
+        inject = Vector(InjectRule(InjectTarget.header, "x-resource-id", "request.path.params.id")),
       )
       for
         _ <- env.setupDefaults()
@@ -690,9 +705,95 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         upstream.exists(_.headers.get("x-resource-id").contains("user-1")),
       )
     },
+    test("exposes every parameter of a multi-segment template under request.path.params") {
+      val env = new Env
+      val endpoint = tenantOrderEndpoint(
+        allow = Some("request.path.params.tenantId == 'acme' && request.path.params.orderId == '123'"),
+        inject = Vector(
+          InjectRule(InjectTarget.header, "x-tenant", "request.path.params.tenantId"),
+          InjectRule(InjectTarget.header, "x-order", "request.path.params.orderId"),
+        ),
+      )
+      for
+        _ <- env.setupDefaults()
+        capture <- captureUpstream()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(endpoint))
+        token <- env.signToken()
+        request = Request.get(URL.empty / "tenants" / "acme" / "orders" / "123").addCookie(sessionCookie(token))
+        service = env.buildService(client, security)
+        response <- service.proxy(ResourceId("users-api"), Path.decode("/tenants/acme/orders/123"), request)
+        upstream <- capture.get
+      yield assertTrue(
+        response.status == Status.Ok,
+        upstream.exists(_.headers.get("x-tenant").contains("acme")),
+        upstream.exists(_.headers.get("x-order").contains("123")),
+      )
+    },
+    test("reports the registered template, not the concrete path, as the metric route") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        _ <- captureUpstream()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(tenantOrderEndpoint()))
+        token <- env.signToken()
+        request = Request.get(URL.empty / "tenants" / "acme" / "orders" / "123").addCookie(sessionCookie(token))
+        service = env.buildService(client, security)
+        response <- service.proxy(ResourceId("users-api"), Path.decode("/tenants/acme/orders/123"), request)
+        routePath <- Observability.routePath.get
+      yield assertTrue(
+        response.status == Status.Ok,
+        routePath.contains("/resources/users-api/tenants/{tenantId}/orders/{orderId}"),
+      )
+    },
+    test("leaves the metric route at its default when no endpoint matches") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(usersEndpoint()))
+        token <- env.signToken()
+        request = Request.get(URL.empty / "ghosts" / "42").addCookie(sessionCookie(token))
+        service = env.buildService(client, security)
+        (response, routePath) <- Observability.routePath.locally(None):
+          service.proxy(ResourceId("users-api"), Path.decode("/ghosts/42"), request) <*> Observability.routePath.get
+      yield assertTrue(
+        response.status == Status.NotFound,
+        routePath.isEmpty,
+      )
+    },
+    test("prefers a static endpoint over a parameterized one whatever the registration order") {
+      val env = new Env
+      val parameterized = userByIdEndpoint(inject = Vector(InjectRule(InjectTarget.header, "x-matched", "'by-id'")))
+      val static = currentUserEndpoint(inject = Vector(InjectRule(InjectTarget.header, "x-matched", "'me'")))
+      def matchedHeader(endpoints: ResourceEndpoint*) =
+        for
+          capture <- captureUpstream()
+          client <- ZIO.service[Client]
+          security <- ZIO.service[SecurityService]
+          _ <- env.withResources(usersResource(endpoints*))
+          token <- env.signToken()
+          request = Request.get(URL.empty / "users" / "me").addCookie(sessionCookie(token))
+          service = env.buildService(client, security)
+          _ <- service.proxy(ResourceId("users-api"), Path.decode("/users/me"), request)
+          upstream <- capture.get
+        yield upstream.flatMap(_.headers.get("x-matched"))
+      for
+        _ <- env.setupDefaults()
+        staticFirst <- matchedHeader(static, parameterized)
+        parameterizedFirst <- matchedHeader(parameterized, static)
+      yield assertTrue(
+        staticFirst.contains("me"),
+        parameterizedFirst.contains("me"),
+      )
+    },
     test("returns 403 when path parameter does not satisfy allow expression") {
       val env = new Env
-      val endpoint = userByIdEndpoint(allow = Some("request.path.id == token.sub"))
+      val endpoint = userByIdEndpoint(allow = Some("request.path.params.id == token.sub"))
       for
         _ <- env.setupDefaults()
         client <- ZIO.service[Client]
