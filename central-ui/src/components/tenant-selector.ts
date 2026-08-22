@@ -37,7 +37,7 @@ export class TenantSelector extends LitElement {
       .selector-button {
         width: 100%;
         padding: 0.75rem 1rem;
-        background: rgba(0, 0, 0, 0.3);
+        background: var(--bg-dark-card);
         border: 1px solid var(--border-dark);
         border-radius: var(--radius-md);
         color: var(--text-primary);
@@ -52,7 +52,7 @@ export class TenantSelector extends LitElement {
 
       .selector-button:hover {
         border-color: var(--accent);
-        background: rgba(88, 166, 255, 0.1);
+        background: rgba(var(--accent-tint), 0.1);
       }
 
       .selector-label {
@@ -89,7 +89,7 @@ export class TenantSelector extends LitElement {
         background: var(--bg-dark);
         border: 1px solid var(--border-dark);
         border-radius: var(--radius-lg);
-        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(88, 166, 255, 0.1);
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(var(--accent-tint), 0.1);
         max-height: 320px;
         overflow: hidden;
         z-index: 1000;
@@ -169,18 +169,18 @@ export class TenantSelector extends LitElement {
       }
 
       .tenant-item:hover {
-        background: rgba(88, 166, 255, 0.08);
-        border-color: rgba(88, 166, 255, 0.3);
+        background: rgba(var(--accent-tint), 0.08);
+        border-color: rgba(var(--accent-tint), 0.3);
         transform: translateX(2px);
       }
 
       .tenant-item.selected {
-        background: rgba(88, 166, 255, 0.15);
+        background: rgba(var(--accent-tint), 0.15);
         border-color: var(--accent);
       }
 
       .tenant-item.selected:hover {
-        background: rgba(88, 166, 255, 0.2);
+        background: rgba(var(--accent-tint), 0.2);
       }
 
       .no-results {

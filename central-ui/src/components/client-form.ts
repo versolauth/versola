@@ -153,7 +153,7 @@ export class VersolaClientForm extends LitElement {
         background: var(--bg-dark);
         border: 1px solid var(--border-dark);
         border-radius: var(--radius-md);
-        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35), 0 0 0 1px rgba(88, 166, 255, 0.08);
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35), 0 0 0 1px rgba(var(--accent-tint), 0.08);
         overflow: hidden;
         max-height: 220px;
         overflow-y: auto;
@@ -180,7 +180,7 @@ export class VersolaClientForm extends LitElement {
       }
 
       .autocomplete-option:hover {
-        background: rgba(88, 166, 255, 0.12);
+        background: rgba(var(--accent-tint), 0.12);
         color: var(--accent);
       }
 
@@ -202,7 +202,7 @@ export class VersolaClientForm extends LitElement {
         align-items: center;
         gap: 0.5rem;
         padding: 0.375rem 0.75rem;
-        background: rgba(88, 166, 255, 0.15);
+        background: rgba(var(--accent-tint), 0.15);
         border: 1px solid var(--border-dark);
         border-radius: var(--radius-md);
         color: var(--accent);
@@ -238,7 +238,7 @@ export class VersolaClientForm extends LitElement {
 
       .checkbox-item:hover {
         border-color: var(--accent);
-        background: rgba(88, 166, 255, 0.05);
+        background: rgba(var(--accent-tint), 0.05);
       }
 
       .checkbox-item input[type="checkbox"] {
@@ -272,9 +272,9 @@ export class VersolaClientForm extends LitElement {
 
       .option-info-button {
         flex: none;
-        border: 1px solid rgba(88, 166, 255, 0.4);
+        border: 1px solid rgba(var(--accent-tint), 0.4);
         border-radius: 999px;
-        background: rgba(88, 166, 255, 0.12);
+        background: rgba(var(--accent-tint), 0.12);
         color: var(--accent);
         font-size: 0.75rem;
         font-weight: 700;
@@ -292,13 +292,13 @@ export class VersolaClientForm extends LitElement {
       }
 
       .option-info-button:hover {
-        background: rgba(88, 166, 255, 0.18);
-        border-color: rgba(88, 166, 255, 0.55);
+        background: rgba(var(--accent-tint), 0.18);
+        border-color: rgba(var(--accent-tint), 0.55);
       }
 
       .option-info-button:focus-visible {
         outline: none;
-        box-shadow: 0 0 0 2px rgba(88, 166, 255, 0.2);
+        box-shadow: 0 0 0 2px rgba(var(--accent-tint), 0.2);
       }
 
       .option-tooltip {
@@ -311,7 +311,7 @@ export class VersolaClientForm extends LitElement {
         max-height: 18rem;
         overflow: auto;
         padding: 0.75rem;
-        border: 1px solid rgba(88, 166, 255, 0.28);
+        border: 1px solid rgba(var(--accent-tint), 0.28);
         border-radius: var(--radius-md);
         background: linear-gradient(180deg, rgba(22, 27, 34, 0.98), rgba(13, 17, 23, 0.98));
         box-shadow: 0 10px 24px rgba(0, 0, 0, 0.35);
@@ -418,7 +418,7 @@ export class VersolaClientForm extends LitElement {
       }
 
       .ttl-unit-select:hover {
-        background: rgba(88, 166, 255, 0.1);
+        background: rgba(var(--accent-tint), 0.1);
       }
 
       .ttl-unit-select:focus {
@@ -499,12 +499,12 @@ export class VersolaClientForm extends LitElement {
 
       .cred-mode-card:hover {
         border-color: var(--accent);
-        background: rgba(88, 166, 255, 0.05);
+        background: rgba(var(--accent-tint), 0.05);
       }
 
       .cred-mode-card.selected {
         border-color: var(--accent);
-        background: rgba(88, 166, 255, 0.12);
+        background: rgba(var(--accent-tint), 0.12);
       }
 
       .cred-options {

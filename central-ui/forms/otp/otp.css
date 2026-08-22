@@ -46,6 +46,9 @@
   background: var(--border);
   display: block;
 }
+.otp-cell-dot-filled {
+  background: var(--text);
+}
 .otp-hidden-input {
   position: absolute;
   top: 0;

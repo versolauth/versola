@@ -169,6 +169,16 @@ function CredentialForm(props: { config: FormConfig }) {
           <LocaleDropdown locales={locales} current={currentLocale()} onChange={changeLocale} />
         </div>
       </Show>
+      <div class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 64 64" fill="none">
+          <path d="M32 6 C32 6 52 10 54 12 L54 30 Q54 48 32 58 Q10 48 10 30 L10 12 C12 10 32 6 32 6Z"
+                fill="var(--accent)" fill-opacity="0.06"/>
+          <path d="M32 6 C32 6 52 10 54 12 L54 30 Q54 48 32 58 Q10 48 10 30 L10 12 C12 10 32 6 32 6Z"
+                fill="none" stroke="var(--accent)" stroke-width="2.2"/>
+          <text x="32" y="41" font-family="-apple-system, Inter, sans-serif" font-weight="800"
+                font-size="26" fill="var(--accent)" text-anchor="middle">V</text>
+        </svg>
+      </div>
       <h1>{t().title}</h1>
 
       <Show when={props.config.error && !isPasskeyError(props.config.error)}>

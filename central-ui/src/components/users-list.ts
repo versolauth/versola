@@ -466,9 +466,9 @@ export class VersolaUsersList extends LitElement {
 
       .option-info-button {
         flex: none;
-        border: 1px solid rgba(88, 166, 255, 0.4);
+        border: 1px solid rgba(var(--accent-tint), 0.4);
         border-radius: 999px;
-        background: rgba(88, 166, 255, 0.12);
+        background: rgba(var(--accent-tint), 0.12);
         color: var(--accent);
         font-size: 0.75rem;
         font-weight: 700;
@@ -483,13 +483,13 @@ export class VersolaUsersList extends LitElement {
       }
 
       .option-info-button:hover {
-        background: rgba(88, 166, 255, 0.18);
-        border-color: rgba(88, 166, 255, 0.55);
+        background: rgba(var(--accent-tint), 0.18);
+        border-color: rgba(var(--accent-tint), 0.55);
       }
 
       .option-info-button:focus-visible {
         outline: none;
-        box-shadow: 0 0 0 2px rgba(88, 166, 255, 0.2);
+        box-shadow: 0 0 0 2px rgba(var(--accent-tint), 0.2);
       }
 
       .option-tooltip {
@@ -502,7 +502,7 @@ export class VersolaUsersList extends LitElement {
         max-height: 22rem;
         overflow: auto;
         padding: 0.75rem;
-        border: 1px solid rgba(88, 166, 255, 0.28);
+        border: 1px solid rgba(var(--accent-tint), 0.28);
         border-radius: var(--radius-md);
         background: linear-gradient(180deg, rgba(22, 27, 34, 0.98), rgba(13, 17, 23, 0.98));
         box-shadow: 0 10px 24px rgba(0, 0, 0, 0.35);

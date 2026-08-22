@@ -1,17 +1,17 @@
 :root {
-  --bg: #ffffff;
+  --bg: #faf9f7;
   --card-bg: #ffffff;
-  --field-bg: #f6f7f9;
-  --field-bg-hover: #f0f1f4;
-  --border: #e3e6eb;
-  --border-hover: #c9cdd6;
+  --field-bg: #f6f5f3;
+  --field-bg-hover: #efeeeb;
+  --border: rgba(21, 23, 28, 0.08);
+  --border-hover: rgba(21, 23, 28, 0.16);
   --text: #15171c;
   --text-muted: #6b7280;
-  --accent: #2563eb;
-  --accent-hover: #1d4ed8;
+  --accent: #155e75;
+  --accent-hover: #0e4a5c;
   --danger: #dc2626;
-  --radius: 14px;
-  --radius-lg: 24px;
+  --radius: 12px;
+  --radius-lg: 20px;
 }
 * {
   box-sizing: border-box;
@@ -28,7 +28,7 @@ body {
   font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   font-size: 16px;
   color: var(--text);
-  background: #ffffff;
+  background: var(--bg);
   margin: 0;
   padding: 20px;
   box-sizing: border-box;
@@ -36,29 +36,51 @@ body {
   overflow-x: hidden;
 }
 .container {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
   text-align: center;
   background: var(--card-bg);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
-  padding: 48px 44px;
-  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04), 0 12px 40px rgba(16, 24, 40, 0.08);
-  width: min(540px, calc(100vw - 40px));
+  padding: 44px 40px 36px;
+  box-shadow:
+    0 1px 1px rgba(16, 24, 40, 0.02),
+    0 4px 10px rgba(16, 24, 40, 0.04),
+    0 20px 48px rgba(16, 24, 40, 0.09);
+  width: min(420px, calc(100vw - 40px));
+  min-height: max(460px, min(520px, calc(100dvh - 40px)));
+}
+.brand-mark {
+  width: 46px;
+  height: 46px;
+  margin: 0 auto 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.brand-mark svg {
+  width: 100%;
+  height: 100%;
+  display: block;
 }
 h1 {
-  font-size: 1.6rem;
+  font-size: 1.5rem;
   font-weight: 600;
+  letter-spacing: -0.01em;
   color: var(--text);
-  margin: 0 0 28px;
+  margin: 0 0 26px;
 }
 form {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 12px;
   margin-bottom: 4px;
 }
 .input-field {
-  padding: 15px 18px;
-  font-size: 1rem;
+  padding: 14px 16px;
+  font-size: 0.98rem;
   color: var(--text);
   background: var(--field-bg);
   border: 1px solid var(--border);
@@ -76,7 +98,7 @@ form {
 .input-field:focus {
   background: #ffffff;
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.15);
+  box-shadow: 0 0 0 3px rgba(21, 94, 117, 0.14);
 }
 .input-field:invalid:not(:placeholder-shown) {
   border-color: var(--danger);
@@ -92,10 +114,10 @@ form {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 10px;
+  gap: 9px;
   width: 100%;
-  padding: 15px 24px;
-  font-size: 1rem;
+  padding: 14px 22px;
+  font-size: 0.98rem;
   font-weight: 600;
   border: none;
   border-radius: var(--radius);
@@ -117,7 +139,7 @@ form {
 .btn-primary:hover {
   background: var(--accent-hover);
   transform: translateY(-1px);
-  box-shadow: 0 8px 20px rgba(37, 99, 235, 0.25);
+  box-shadow: 0 6px 16px rgba(21, 94, 117, 0.28);
 }
 .btn-secondary {
   color: var(--text);
@@ -133,9 +155,9 @@ form {
   display: flex;
   align-items: center;
   text-align: center;
-  margin: 6px 0;
+  margin: 4px 0;
   color: var(--text-muted);
-  font-size: 0.85rem;
+  font-size: 0.82rem;
 }
 .divider::before,
 .divider::after {
@@ -144,7 +166,7 @@ form {
   border-bottom: 1px solid var(--border);
 }
 .divider span {
-  padding: 0 14px;
+  padding: 0 12px;
 }
 .error-message {
   font-size: 1rem;
@@ -170,7 +192,7 @@ form {
   text-align: left;
 }
 .locale-selector {
-  position: fixed;
+  position: absolute;
   top: 16px;
   right: 16px;
   z-index: 100;
@@ -181,20 +203,21 @@ form {
 .locale-trigger {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 7px 12px;
-  border-radius: 10px;
-  border: 1px solid var(--border);
-  background: #ffffff;
-  font-size: 0.85rem;
+  gap: 5px;
+  padding: 5px 10px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  background: transparent;
+  font-size: 0.78rem;
   font-family: inherit;
-  color: var(--text);
+  color: var(--text-muted);
   cursor: pointer;
-  transition: border-color 0.15s, background 0.15s;
+  transition: border-color 0.15s, background 0.15s, color 0.15s;
 }
 .locale-trigger:hover {
   background: var(--field-bg);
-  border-color: var(--border-hover);
+  border-color: var(--border);
+  color: var(--text);
 }
 .locale-chevron {
   width: 10px;

@@ -212,7 +212,7 @@ export class VersolaClientsList extends LitElement {
       }
 
       .detail-section {
-        background: rgba(0, 0, 0, 0.2);
+        background: var(--bg-dark);
         border: 1px solid var(--border-dark);
         border-radius: var(--radius-md);
         padding: var(--spacing-md);
@@ -269,7 +269,7 @@ export class VersolaClientsList extends LitElement {
 
       .tag {
         padding: 0.25rem 0.5rem;
-        background: rgba(88, 166, 255, 0.15);
+        background: rgba(var(--accent-tint), 0.15);
         color: var(--accent);
         border-radius: var(--radius-sm);
         font-size: 0.75rem;
@@ -338,7 +338,7 @@ export class VersolaClientsList extends LitElement {
       .logout-claim-key {
         padding: 0.1rem 0.3rem;
         border-radius: var(--radius-sm);
-        background: rgba(88, 166, 255, 0.15);
+        background: rgba(var(--accent-tint), 0.15);
         color: var(--accent);
         font-family: var(--font-mono);
         font-size: 0.75rem;
@@ -360,7 +360,7 @@ export class VersolaClientsList extends LitElement {
       }
 
       .flow-step {
-        background: rgba(0, 0, 0, 0.2);
+        background: var(--bg-dark);
         border: 1px solid var(--border-dark);
         border-radius: var(--radius-md);
         padding: var(--spacing-md);
@@ -431,7 +431,7 @@ export class VersolaClientsList extends LitElement {
       .secret-value {
         margin: 0;
         padding: 0.875rem 1rem;
-        background: rgba(0, 0, 0, 0.25);
+        background: var(--bg-dark);
         border: 1px solid var(--border-dark);
         border-radius: var(--radius-md);
         color: var(--text-primary);
@@ -527,7 +527,7 @@ export class VersolaClientsList extends LitElement {
         text-align: center;
         color: var(--text-secondary);
         font-size: 0.875rem;
-        background: rgba(0, 0, 0, 0.2);
+        background: var(--bg-dark);
         border-radius: var(--radius-md);
       }
 
@@ -537,7 +537,7 @@ export class VersolaClientsList extends LitElement {
       }
 
       .preset-card {
-        background: rgba(0, 0, 0, 0.2);
+        background: var(--bg-dark);
         border: 1px solid var(--border-dark);
         border-radius: var(--radius-md);
         transition: border-color var(--transition-fast);
@@ -559,7 +559,7 @@ export class VersolaClientsList extends LitElement {
       }
 
       .preset-card-header:hover {
-        background: rgba(88, 166, 255, 0.05);
+        background: rgba(var(--accent-tint), 0.05);
       }
 
       .preset-info {

@@ -480,7 +480,14 @@ object ConversationRenderService:
             passwordRegex <-
               if inlinePassword then configuration.getPasswordRegex.map(Some(_))
               else ZIO.none
-          yield StepView.Credential(primaryCredentials, inlinePassword, passkey, allowedPhonePrefixes, passwordRegex, registration)
+          yield StepView.Credential(
+            primaryCredentials,
+            inlinePassword,
+            passkey,
+            allowedPhonePrefixes,
+            passwordRegex,
+            registration,
+          )
 
         case _: ConversationStep.Password =>
           configuration.getPasswordRegex.map(StepView.Password(_))

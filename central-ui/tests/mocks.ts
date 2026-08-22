@@ -23,7 +23,7 @@ type TenantDto = { id: string; description: string; edgeId?: string | null };
 type BackendAuthFactor = { type: string; required: boolean };
 type BackendAuthFlow = { primary: { credentials: string[]; inlinePassword: boolean; factors: BackendAuthFactor[] }; passkey?: { factors: BackendAuthFactor[] } | null; otpType: 'sms' | 'email' };
 type BackendConsentFlow = { allowPartial: boolean; rememberDuration: number | null };
-type ClientDto = { id: string; clientName: Record<string, string>; redirectUris: string[]; scope: string[]; permissions: string[]; secretRotation: boolean; refreshTokenTtl?: number; edgeId?: string; authFlow?: BackendAuthFlow | null; consentFlow?: BackendConsentFlow | null };
+type ClientDto = { id: string; clientName: Record<string, string>; redirectUris: string[]; scope: string[]; permissions: string[]; secretRotation: boolean; refreshTokenTtl?: number; edgeId?: string; authFlow?: BackendAuthFlow | null; consentFlow?: BackendConsentFlow | null; theme?: string; otpTemplateId?: string; registrationFlow?: { credential: string; steps: Array<{ type: string }>; roleIds: string[] } | null; frontChannelLogoutUri?: string | null; frontChannelLogoutSessionRequired?: boolean; backChannelLogoutUri?: string | null };
 type ScopeDto = { scope: string; description: Record<string, string>; claims: Array<{ claim: string; description: Record<string, string> }> };
 type PermissionDto = { permission: string; description: Record<string, string>; endpointIds: ResourceEndpointId[] };
 type InjectTargetDto = 'header' | 'query' | 'body';
@@ -44,7 +44,10 @@ type AuthorizationPresetDto = {
   postLogoutRedirectUri?: string;
   scope: string[];
   responseType: string;
-  uiLocales?: string[]
+  uiLocales?: string[];
+  customParameters?: Record<string, string[]>;
+  cookieDomain?: string;
+  cookiePath?: string;
 };
 type FormPropertyDto =
   | { type: 'BooleanProperty'; name: string }
@@ -159,6 +162,16 @@ type PasskeyInfoDto = {
   createdAt: string;
 };
 
+type SessionClientEntryDto = { clientId: string; enteredAt: string; expiresAt: string };
+type UserSessionDto = {
+  clients: SessionClientEntryDto[];
+  createdAt?: string;
+  platform?: 'ios' | 'android' | 'desktop';
+  os?: string;
+  browser?: string;
+  version?: string;
+};
+
 type UserDto = {
   id: string;
   email?: string;
@@ -167,6 +180,7 @@ type UserDto = {
   claims: Record<string, unknown>;
   rolesByTenant?: Record<string, string[]>;
   passkeys?: PasskeyInfoDto[];
+  sessions?: UserSessionDto[];
 };
 
 type RateLimitDto = { maxAttempts: number; windowSeconds: number };
@@ -1293,6 +1307,29 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
         for (const roleId of payload.remove) current.delete(roleId);
         for (const roleId of payload.add) current.add(roleId);
         user.rolesByTenant[payload.tenantId] = [...current];
+        await route.fulfill({ status: 202, body: '' });
+        return;
+      }
+    }
+
+    if (pathname === '/users/sessions') {
+      if (method === 'GET') {
+        const id = url.searchParams.get('id') ?? '';
+        const user = state.users.find(candidate => candidate.id === id);
+        if (!user) {
+          await route.fulfill(json({ message: `User ${id} not found` }, 404));
+          return;
+        }
+        await route.fulfill(json(user.sessions ?? []));
+        return;
+      }
+
+      if (method === 'DELETE') {
+        const userId = url.searchParams.get('userId') ?? '';
+        const user = state.users.find(candidate => candidate.id === userId);
+        if (user) {
+          user.sessions = [];
+        }
         await route.fulfill({ status: 202, body: '' });
         return;
       }

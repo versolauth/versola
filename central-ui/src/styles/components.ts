@@ -57,15 +57,15 @@ export const buttonStyles = css`
   }
 
   .btn-danger-secondary {
-    background: rgba(248, 81, 73, 0.12);
-    color: #ffb4ad;
-    border-color: rgba(248, 81, 73, 0.35);
+    background: rgba(var(--danger-tint), 0.12);
+    color: var(--danger-strong);
+    border-color: rgba(var(--danger-tint), 0.35);
   }
 
   .btn-danger-secondary:not(:disabled):hover {
-    background: rgba(248, 81, 73, 0.18);
+    background: rgba(var(--danger-tint), 0.18);
     border-color: var(--danger, #f85149);
-    color: #ffd2cd;
+    color: var(--danger-stronger);
   }
 
   .btn-sm {
@@ -168,7 +168,7 @@ export const tableStyles = css`
   }
 
   tbody tr:hover {
-    background: rgba(88, 166, 255, 0.05);
+    background: rgba(var(--accent-tint), 0.05);
   }
 
   .table-actions {
@@ -338,7 +338,7 @@ export const formStyles = css`
   select:focus {
     outline: none;
     border-color: var(--accent);
-    box-shadow: 0 0 0 2px rgba(88, 166, 255, 0.15);
+    box-shadow: 0 0 0 2px rgba(var(--accent-tint), 0.15);
   }
 
   textarea {
@@ -356,7 +356,7 @@ export const formStyles = css`
   textarea.input-error:focus,
   select.input-error:focus {
     border-color: var(--danger);
-    box-shadow: 0 0 0 2px rgba(248, 81, 73, 0.18);
+    box-shadow: 0 0 0 2px rgba(var(--danger-tint), 0.18);
   }
 
   .error-message {
@@ -426,8 +426,8 @@ export const methodBadgeStyles = css`
 
   .method-post {
     color: #58a6ff;
-    background: rgba(88, 166, 255, 0.12);
-    border-color: rgba(88, 166, 255, 0.35);
+    background: rgba(var(--accent-tint), 0.12);
+    border-color: rgba(var(--accent-tint), 0.35);
   }
 
   .method-put {
@@ -444,8 +444,8 @@ export const methodBadgeStyles = css`
 
   .method-delete {
     color: #f85149;
-    background: rgba(248, 81, 73, 0.14);
-    border-color: rgba(248, 81, 73, 0.35);
+    background: rgba(var(--danger-tint), 0.14);
+    border-color: rgba(var(--danger-tint), 0.35);
   }
 
   .method-unknown {

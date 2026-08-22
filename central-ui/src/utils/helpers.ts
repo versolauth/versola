@@ -1,4 +1,4 @@
-import { AuthFlow, ConsentFlow, PaginatedResponse, Permission, RegistrationFlow, Resource, SortConfig } from '../types';
+import { AuthFlow, ConsentFlow, PaginatedResponse, Permission, RegistrationFlow, Resource, ResourceEndpointId, SortConfig } from '../types';
 
 /**
  * Default authentication flow: phone primary credential + required OTP.
@@ -200,6 +200,40 @@ export function humanizeLabel(name: string): string {
     .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
     .replace(/[_-]+/g, ' ')
     .replace(/^./, c => c.toUpperCase());
+}
+
+/**
+ * Fired on `window` when a tenant's permissions change, so views holding a
+ * derived permission index (the resources list) can rebuild it without a reload.
+ */
+export const PERMISSIONS_UPDATED_EVENT = 'versola-permissions-updated';
+
+export type PermissionsUpdatedDetail = {
+  tenantId: string | null;
+  permissions: Permission[];
+};
+
+/**
+ * Reverse of `Permission.endpointIds`: endpoint id -> the permissions that grant
+ * access to it. A single endpoint may be reachable through several permissions,
+ * which the caller renders as an "or" list. Permission ids are sorted so the
+ * rendering is stable across reloads.
+ */
+export function indexPermissionsByEndpoint(permissions: Permission[]): Map<ResourceEndpointId, string[]> {
+  const index = new Map<ResourceEndpointId, string[]>();
+
+  for (const permission of permissions) {
+    for (const endpointId of permission.endpointIds ?? []) {
+      const existing = index.get(endpointId);
+      if (existing) existing.push(permission.id); else index.set(endpointId, [permission.id]);
+    }
+  }
+
+  for (const permissionIds of index.values()) {
+    permissionIds.sort((a, b) => a.localeCompare(b));
+  }
+
+  return index;
 }
 
 export function resolvePermissionEndpointLabels(permission: Permission, resources: Resource[]): string[] {

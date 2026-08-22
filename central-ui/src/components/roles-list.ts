@@ -176,7 +176,7 @@ export class VersolaRolesList extends LitElement {
       }
 
       .badge-danger {
-        background: rgba(248, 81, 73, 0.15);
+        background: rgba(var(--danger-tint), 0.15);
         color: var(--danger);
       }
 

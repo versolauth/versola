@@ -27,19 +27,39 @@ object Phone:
   }
 
   /** Keeps the leading `+` and country calling code plus the last two digits,
-    * masking everything in between. Falls back to a one-digit prefix for values
-    * that cannot be parsed, while valid Phone values use their actual calling code.
-    */
+    * masking everything in between with bullets. Valid phone values are formatted
+    * internationally with spaces; unparseable values use the raw representation.
+  */
   def mask(value: Phone): String =
     val digits = if value.startsWith("+") then value.tail else value
     val prefixLen = math.min(countryCodeLength(value), math.max(0, digits.length - MinMaskedSuffix))
     if digits.length <= prefixLen + MinMaskedSuffix then
-      "+" + "*" * digits.length
+      "+" + "•" * digits.length
     else
       val prefix = digits.take(prefixLen)
       val suffix = digits.takeRight(SuffixLen)
       val maskedLen = digits.length - prefixLen - SuffixLen
-      s"+$prefix${"*" * maskedLen}$suffix"
+      val rawMask = s"+$prefix${"•" * maskedLen}$suffix"
+      formatInternational(value)
+        .filter(_.count(_.isDigit) == digits.length)
+        .fold(rawMask)(maskFormatted(_, prefixLen))
+
+  private def formatInternational(value: Phone): Option[String] =
+    try
+      val parsed = util.parse(value, "ZZ")
+      Some(util.format(parsed, PhoneNumberUtil.PhoneNumberFormat.INTERNATIONAL).replaceAll("[^+0-9]+", " ").trim)
+    catch
+      case _: NumberParseException => None
+
+  private def maskFormatted(formatted: String, prefixLen: Int): String =
+    val totalDigits = formatted.count(_.isDigit)
+    var digitIndex = 0
+    formatted.map: char =>
+      if char.isDigit then
+        val visible = digitIndex < prefixLen || digitIndex >= totalDigits - SuffixLen
+        digitIndex += 1
+        if visible then char else '•'
+      else char
 
   private def countryCodeLength(value: Phone): Int =
     try
