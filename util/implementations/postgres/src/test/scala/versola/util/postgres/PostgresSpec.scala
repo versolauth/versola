@@ -18,6 +18,7 @@ object PostgresSpec:
         .someOrElse("localhost:5432").map: host =>
           PostgresConfig(
             url = s"jdbc:postgresql://$host/auth",
+            notificationsUrl = None,
             user = "dev",
             password = Secret.fromString("1234"),
             maximumPoolSize = 4,

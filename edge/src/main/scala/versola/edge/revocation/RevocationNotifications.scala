@@ -6,4 +6,13 @@ import zio.stream.Stream
   * what keeps the in-memory list of every replica current without polling.
   */
 trait RevocationNotifications:
-  def notifications: Stream[Throwable, Revocation]
+  def notifications: Stream[Throwable, RevocationEvent]
+
+enum RevocationEvent:
+  /** The feed (re)connected, so revocations written while it was down were never delivered.
+    * The cache has to be rebuilt from the table before it can be trusted again.
+    */
+  case Resubscribed
+
+  /** A revocation written by this or another replica. */
+  case Revoked(revocation: Revocation)
