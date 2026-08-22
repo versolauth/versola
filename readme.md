@@ -11,7 +11,7 @@ The name is inspired by the Italian word "verso", meaning the reverse (back) sid
 
 ## Architecture
 
-Three Scala services share one codebase and one Postgres database (isolated by schema), plus a static admin SPA:
+Three Scala services share one codebase, plus a static admin SPA:
 
 | Service | Role | Public-facing? |
 |---|---|---|
@@ -30,7 +30,8 @@ For the full request-routing picture and why things are split this way, see [`de
 - **Database:** PostgreSQL, migrated with Flyway
 - **Tracing:** OpenTelemetry
 - **Secrets:** [OpenBao](https://openbao.org/) for managing per-environment secrets
-- **Admin UI:** Solid.js, TypeScript, Vite (`central-ui`), tested with Playwright and Vitest
+- **Admin UI:** Lit, TypeScript, Vite (`central-ui`), tested with Playwright and Vitest
+- **Forms** - Solid.js, TypeScript
 - **Packaging:** `sbt-native-packager` (`JavaAppPackaging`), Docker images published to `ghcr.io/versolauth/`
 
 ## Getting started
