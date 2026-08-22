@@ -406,6 +406,35 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
           assertTrue(result == Left(Error.StateInvalid(redirectUri)))
       }
     ),
+    suite("code_challenge_method")(
+      test("accepts S256") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(validParams))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request)
+        yield
+          assertTrue(result.codeChallengeMethod == CodeChallengeMethod.S256)
+      },
+      test("rejects plain, which FAPI 2.0 and OAuth 2.1 forbid") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(validParams ++ Map("code_challenge_method" -> "plain")))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request).either
+        yield
+          assertTrue(result == Left(Error.CodeChallengeMethodInvalid(redirectUri, Some(State("test-state")), "plain")))
+      },
+      test("rejects a missing code_challenge_method instead of defaulting to plain") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(validParams - "code_challenge_method"))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request).either
+        yield
+          assertTrue(result == Left(Error.CodeChallengeMethodMissing(redirectUri, Some(State("test-state")))))
+      },
+    ),
     suite("ip")(
       test("extracts the ip from the tenant-configured header") {
         val env = Env()

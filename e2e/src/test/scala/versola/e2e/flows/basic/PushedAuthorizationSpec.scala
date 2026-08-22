@@ -146,6 +146,24 @@ object PushedAuthorizationSpec extends E2ESpec:
       yield assertTrue(pushed.response.status == Status.BadRequest)
     },
 
+    test("PAR endpoint rejects code_challenge_method=plain") {
+      for
+        (s, auth) <- setup(Flows.Id.LoginPassword)
+        pushed <- auth.pushAuthorization(
+          clientId = s.clientId,
+          clientSecret = s.clientSecret,
+          redirectUri = s.redirectUri,
+          extraParams = Map("code_challenge_method" -> "plain"),
+        )
+        error = pushed match
+          case PushedAuthorizationResult.Failure(_, _, code) => code
+          case _ => None
+      yield assertTrue(
+        pushed.response.status == Status.BadRequest,
+        error.contains("invalid_request"),
+      )
+    },
+
     test("non-POST /par returns 405 with an Allow header") {
       for
         (_, auth) <- setup(Flows.Id.LoginPassword)

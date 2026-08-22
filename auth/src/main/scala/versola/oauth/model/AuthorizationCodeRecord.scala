@@ -49,9 +49,6 @@ case class AuthorizationCodeRecord(
           .encodeToString(digest)
 
         encoded == codeChallenge
-
-      case CodeChallengeMethod.Plain =>
-        verifier == codeChallenge
     }
 
 object AuthorizationCodeRecord:
