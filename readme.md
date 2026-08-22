@@ -7,8 +7,6 @@ Versola is a platform that centralizes authentication, authorization, and accoun
 
 The name is inspired by the Italian word "verso", meaning the reverse (back) side. The suffix "la" was intentionally added to evoke flexibility and evolution. Secure authentication requires looking beyond the obvious.
 
-**We do what matters, you do what business needs.**
-
 - **License:** [Versola Community License v1.0](LICENCE.md) — free for Internal Authentication (an Organization's own employees/contractors) by organizations with fewer than 50 employees, and for evaluation use by any organization. Authenticating customers or end users, or offering the Software as a hosted/managed identity service, is not permitted under this free tier regardless of organization size. See the license file for full terms.
 
 ## Architecture
