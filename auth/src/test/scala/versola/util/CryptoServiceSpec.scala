@@ -12,7 +12,7 @@ object CryptoServiceSpec extends ZIOSpecDefault:
     suite("CryptoServiceSpec")(
       encryptDecryptTests,
       errorHandlingTests,
-    ).provide(SecureRandom.live >>> ZLayer.fromFunction(SecurityService.Impl(_)))
+    ).provide(SecureRandom.live >>> SecurityService.live)
 
   private def encryptDecryptTests =
     suite("encrypt/decrypt")(
