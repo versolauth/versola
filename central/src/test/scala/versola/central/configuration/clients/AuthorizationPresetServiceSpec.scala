@@ -239,6 +239,32 @@ object AuthorizationPresetServiceSpec extends ZIOSpecDefault, ZIOStubs:
         result.swap.exists(_ == PresetValidationError.InvalidScope),
       )
     },
+    test("return error when preset ID is already used by another client") {
+      val existingPreset = preset1.copy(clientId = ClientId("other-client"))
+      val env = Env()
+      for
+        _ <- env.clientService.getAllClients.succeedsWith(Vector(client))
+        _ <- env.presetRepo.getAll.succeedsWith(Vector(existingPreset))
+        result <- env.service.savePresets(validRequest)
+      yield assertTrue(
+        result.isLeft,
+        result.swap.exists(_ == PresetValidationError.DuplicatePresetId),
+        env.presetRepo.replace.calls.isEmpty,
+      )
+    },
+    test("return error when submitted presets contain duplicate IDs") {
+      val request = validRequest.copy(presets = validRequest.presets ++ validRequest.presets)
+      val env = Env()
+      for
+        _ <- env.clientService.getAllClients.succeedsWith(Vector(client))
+        result <- env.service.savePresets(request)
+      yield assertTrue(
+        result.isLeft,
+        result.swap.exists(_ == PresetValidationError.DuplicatePresetId),
+        env.presetRepo.getAll.calls.isEmpty,
+        env.presetRepo.replace.calls.isEmpty,
+      )
+    },
     test("get client presets from cache") {
       val env = Env(Vector(preset1))
       for
