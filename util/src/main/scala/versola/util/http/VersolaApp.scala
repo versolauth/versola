@@ -49,6 +49,27 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
 
   def routes: Routes[Dependencies & Tracing & EnvName, Throwable]
 
+  /** Builds and runs just this service's own database migrations, nothing else -- backs
+    * MIGRATE_ONLY (see below). Each concrete app overrides this with its own existing
+    * `PostgresHikariDataSource.transactor(serviceName = Some(...), migrate = true)` call, the same
+    * one already used inside its own `repositories`, just not composed with anything else.
+    *
+    * This can't be `dependencies` itself run partway: `dependencies` for auth in particular
+    * includes `OAuthConfigurationService`, which makes a blocking network call to central at
+    * layer-*construction* time (`ReloadingCache.make`) -- building the full layer and exiting
+    * before starting a server would still hang or OOM waiting on central being reachable, the
+    * same root cause diagnosed in the CI e2e OOM this was built to avoid repeating. A standalone
+    * migrate step needs to be independently reliable (e.g. runnable before anything else is even
+    * up), so this only ever touches the one layer migrations actually need --
+    * `PostgresHikariDataSource.transactor`, which needs nothing but `Scope & ConfigProvider`.
+    *
+    * Lives here as an abstract method rather than being called directly from `run` below because
+    * `util` (this trait's own module) cannot depend on `util-postgres` (the module
+    * `PostgresHikariDataSource` lives in) -- see `build.sbt`, the dependency only runs the other
+    * way.
+    */
+  def migrationLayer: ZLayer[Scope & ConfigProvider, Throwable, Any]
+
   def port: Int =
     Option(java.lang.System.getenv("PORT")).flatMap(_.toIntOption).getOrElse(8080)
 
@@ -70,14 +91,41 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
   def bindHost: String =
     Option(java.lang.System.getenv("BIND_HOST")).getOrElse("0.0.0.0")
 
-  def runMigrations: Boolean =
-    Option(java.lang.System.getenv("RUN_MIGRATIONS")) match
-      case None        => true
+  /** Reads a strictly-boolean environment variable, failing on anything that isn't exactly
+    * "true"/"false" rather than silently treating a typo ("True", "1", "yes") as the default. Both
+    * flags below gate whether this process touches the database at all, so guessing at a
+    * misspelled value is exactly the wrong thing to do.
+    *
+    * Deliberately NOT `value.toBooleanOption` -- that delegates to a case-insensitive comparison
+    * (`equalsIgnoreCase`, confirmed by inspecting scala-library's compiled `StringOps`), so it
+    * would accept "True"/"TRUE"/"False" despite this method's doc comment promising it won't
+    * (flagged in review). An exact match against the two literal values is what "strictly
+    * true/false" actually requires.
+    */
+  private def boolEnv(name: String, default: Boolean): Boolean =
+    Option(java.lang.System.getenv(name)) match
+      case None            => default
+      case Some("true")    => true
+      case Some("false")   => false
       case Some(value) =>
-        value.toBooleanOption.getOrElse:
-          throw new IllegalArgumentException(
-            s"RUN_MIGRATIONS must be 'true' or 'false', got: '$value'",
-          )
+        throw new IllegalArgumentException(
+          s"$name must be 'true' or 'false', got: '$value'",
+        )
+
+  /** Whether this process applies database migrations itself on startup.
+    *
+    * False does not mean "skip Flyway" -- it means the schema is validated instead of migrated
+    * (see `PostgresHikariDataSource.layer`), so a deployment whose separate `versola migrate` step
+    * was skipped fails at startup instead of at its first query.
+    */
+  def runMigrations: Boolean = boolEnv("RUN_MIGRATIONS", default = true)
+
+  /** Backs `versola migrate` (see versola-cli's internal/deploy/migrate.go): when set, `run` below
+    * builds `migrationLayer`, waits for it to finish, and exits -- it does not start either
+    * server. Defaults to false so ordinary startup stays the default path; this is an opt-in
+    * alternate mode for the one-shot containers `versola migrate` runs, not a replacement for it.
+    */
+  def migrateOnly: Boolean = boolEnv("MIGRATE_ONLY", default = false)
 
   def serverConfig: Server.Config =
     Server.Config.default.binding(bindHost, port)
@@ -86,6 +134,31 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
     Server.Config.default.binding(bindHost, diagnosticsPort)
 
   override def run: ZIO[Environment & ZIOAppArgs & zio.Scope, Any, Any] = {
+    if migrateOnly then runMigrationsOnly else runServer
+  }
+    .catchAll { (ex: Throwable) =>
+      ZIO.logErrorCause("Could not start application", Cause.fail(ex)) *>
+        armShutdownWatchdog *> ZIO.fail(ex)
+    }
+    .catchAllDefect { ex =>
+      ZIO.logErrorCause("Could not start application", Cause.die(ex)) *>
+        armShutdownWatchdog *> ZIO.die(ex)
+    }
+
+  /** The MIGRATE_ONLY path: build just `migrationLayer`, wait for the migration inside it to run
+    * (see `PostgresHikariDataSource.transactor`'s own `ZIO.acquireRelease`, where it actually
+    * happens), then return -- no server, diagnostics or otherwise, ever starts. `Environment`
+    * already includes `ConfigProvider`, which is all `migrationLayer` itself needs beyond the
+    * `Scope` this runs under.
+    */
+  private def runMigrationsOnly: ZIO[Environment & zio.Scope, Throwable, Any] =
+    for
+      _ <- ZIO.logInfo(s"$serviceName: MIGRATE_ONLY is set -- running migrations only, not starting a server")
+      _ <- ZIO.scoped(migrationLayer.build)
+      _ <- ZIO.logInfo(s"$serviceName: migrations complete")
+    yield ()
+
+  private def runServer: ZIO[Environment & ZIOAppArgs & zio.Scope, Throwable, Any] =
     for
       opentelemetry <- ZIO.service[api.OpenTelemetry]
       envConfig <- ZIO.service[ConfigProvider]
@@ -142,15 +215,6 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
         ZLayer.succeed(client),
       )
     yield ()
-  }
-    .catchAll { (ex: Throwable) =>
-      ZIO.logErrorCause("Could not start application", Cause.fail(ex)) *>
-        armShutdownWatchdog *> ZIO.fail(ex)
-    }
-    .catchAllDefect { ex =>
-      ZIO.logErrorCause("Could not start application", Cause.die(ex)) *>
-        armShutdownWatchdog *> ZIO.die(ex)
-    }
 
   /** How long `ZIOApp`'s shutdown hook waits for the runtime to drain on SIGTERM before giving up.
     *

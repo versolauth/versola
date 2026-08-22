@@ -100,6 +100,20 @@ services:
       PORT: 8090
       DPORT: 8091
       CONFIG_PATH: /app/config/env.conf
+      # `versola up` assumes `versola migrate` already ran (see
+      # VersolaApp's MIGRATE_ONLY) -- this is NOT a duplicate safety net,
+      # it's the whole point of splitting them: a schema change should
+      # get its own explicit, reviewable step, not happen silently as a
+      # side effect of starting the app.
+      #
+      # A skipped migrate still fails loudly at startup rather than
+      # silently: "false" here means Flyway *validates* the schema
+      # instead of applying to it (see PostgresHikariDataSource.layer's
+      # own comment on that branch), so a missing migration surfaces
+      # here, named, before this container ever passes readiness --
+      # not later, on real traffic, at the first query against a table
+      # that was never created.
+      RUN_MIGRATIONS: "false"
     # Resolved by versola-cli against OpenBao, not written by this image --
     # central.conf's secret fields are ${?VAR} placeholders (see
     # gen-env.scala's secretField) that only resolve if the matching
@@ -140,6 +154,8 @@ services:
       PORT: 8080
       DPORT: 8081
       CONFIG_PATH: /app/config/env.conf
+      # See central's own RUN_MIGRATIONS comment above.
+      RUN_MIGRATIONS: "false"
     env_file:
       - ./auth.secrets.env
     volumes:
@@ -158,6 +174,8 @@ services:
       PORT: 8095
       DPORT: 8096
       CONFIG_PATH: /app/config/env.conf
+      # See central's own RUN_MIGRATIONS comment above.
+      RUN_MIGRATIONS: "false"
     env_file:
       - ./edge.secrets.env
     volumes:

@@ -48,6 +48,11 @@ object PostgresEdgeApp extends VersolaApp("edge"):
       EdgeController.routes,
     ).reduce(_ ++ _)
 
+  // See VersolaApp.migrationLayer's own comment for why this exists separately from
+  // `dependencies` below, even though it's the same call.
+  override def migrationLayer: ZLayer[Scope & ConfigProvider, Throwable, Any] =
+    PostgresHikariDataSource.transactor(serviceName = Some("edge"), migrate = true)
+
   val dependencies: ZLayer[Scope & EnvName & ConfigProvider & Tracing & Client, Throwable, Dependencies] =
     parseConfig[EdgeConfig] >+>
       (PostgresHikariDataSource.transactor(serviceName = Some("edge"), migrate = runMigrations) >>>
