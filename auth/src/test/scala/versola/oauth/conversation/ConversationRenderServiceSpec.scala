@@ -186,6 +186,32 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
             body.contains("\\u003c/script\\u003e\\u003cscript\\u003ealert(1)"),
           )
       },
+      test("escapes injected markup so it cannot close the script or style blocks") {
+        val env = Env()
+        val hostileTheme = theme.copy(css = ".body { color: red; }</style><script>alert(1)</script>")
+        val hostileForm = formRecord.copy(
+          style = "#form { margin: 0; }</style>",
+          localizations = Map("en" -> Map("page_title" -> "</script><script>alert(2)</script>", "login_label" -> "Email")),
+        )
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          _ <- env.configuration.getTheme.succeedsWith(Some(hostileTheme))
+          _ <- env.configuration.getForm.succeedsWith(Some(hostileForm))
+          _ <- env.configuration.getLocales.succeedsWith(locales)
+          _ <- env.configuration.getPasswordRegex.succeedsWith(".*")
+          _ <- env.configuration.getAllowedPhonePrefixes.succeedsWith(List("+1"))
+          _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
+          response <- env.service.renderStep(conversationRecord, None)
+          body <- response.body.asString
+        yield
+          // The page owns exactly one <style> and two <script> blocks; any extra closing tag
+          // means injected text ended one of them early.
+          assertTrue(body.sliding("</style>".length).count(_ == "</style>") == 1) &&
+          assertTrue(body.sliding("</script>".length).count(_ == "</script>") == 2) &&
+          assertTrue(body.contains("\\3c /style>")) &&
+          assertTrue(body.contains("&lt;/script&gt;")) &&
+          assertTrue(body.contains("\\u003c/script\\u003e"))
+      },
       test("returns 304 if ETag matches") {
         val env = Env()
         for

@@ -208,6 +208,16 @@ object ResourceControllerSpec extends ZIOSpecDefault, ZIOStubs:
         ),
     ),
     controllerTestCase(
+      description = "reject malformed JSON body instead of forwarding it to the service",
+      request = Request(
+        method = Method.POST,
+        url = URL.empty / "configuration" / "resources",
+        body = Body.fromString("{not json"),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.BadRequest,
+      verify = (_, service) => ZIO.succeed(assertTrue(service.createResource.calls.isEmpty)),
+    ),
+    controllerTestCase(
       description = "reject edge resource id",
       request = Request(
         method = Method.POST,

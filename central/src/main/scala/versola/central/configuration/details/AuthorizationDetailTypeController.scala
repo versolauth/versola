@@ -52,7 +52,7 @@ object AuthorizationDetailTypeController extends Controller:
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[AuthorizationDetailTypeService]
-        body <- request.body.asJsonFromCodec[CreateAuthorizationDetailTypeRequest]
+        body <- request.bodyAs[CreateAuthorizationDetailTypeRequest]
         result <- service.createType(body)
       yield result match
         case Right(_) => Response.status(Status.Created)
@@ -64,7 +64,7 @@ object AuthorizationDetailTypeController extends Controller:
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[AuthorizationDetailTypeService]
-        body <- request.body.asJsonFromCodec[UpdateAuthorizationDetailTypeRequest]
+        body <- request.bodyAs[UpdateAuthorizationDetailTypeRequest]
         result <- service.updateType(body)
       yield result match
         case Right(_) => Response.status(Status.NoContent)

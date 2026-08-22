@@ -38,7 +38,7 @@ object AuthorizationDetailsFlowSpec extends E2ESpec:
     test("happy path: registered type + conforming detail is granted and echoed in the token") {
       for
         (s, auth) <- setup(Flows.Id.LoginPassword)
-        typeName = s"payment-${s.clientId}"
+        typeName = s"payment_${s.clientId.replace('-', '_')}"
         _ <- auth.registerAuthorizationDetailType(typeName, paymentSchema).success
         _ <- auth.syncConfiguration()
 
@@ -65,7 +65,7 @@ object AuthorizationDetailsFlowSpec extends E2ESpec:
     test("unregistered type redirects with error=invalid_authorization_details") {
       for
         (s, auth) <- setup(Flows.Id.LoginPassword)
-        requested = s"""[{"type":"no-such-type-${s.clientId}","amount":"10.00"}]"""
+        requested = s"""[{"type":"no_such_type_${s.clientId.replace('-', '_')}","amount":"10.00"}]"""
         _ <- auth.authorizeRaw(
           clientId = s.clientId,
           redirectUri = s.redirectUri,
@@ -77,7 +77,7 @@ object AuthorizationDetailsFlowSpec extends E2ESpec:
     test("registering a type with an invalid JSON Schema is rejected by central") {
       for
         (s, auth) <- setup(Flows.Id.LoginPassword)
-        typeName = s"invalid-schema-${s.clientId}"
+        typeName = s"invalid_schema_${s.clientId.replace('-', '_')}"
         // "type": 123 is not a valid JSON Schema "type" value (must be a string or array of strings).
         result <- auth.registerAuthorizationDetailType(typeName, """{"type": 123}""")
       yield assertTrue(result.response.status.isClientError)
@@ -87,7 +87,7 @@ object AuthorizationDetailsFlowSpec extends E2ESpec:
     test("pushed request carries authorization_details through to the token") {
       for
         (s, auth) <- setup(Flows.Id.LoginPassword)
-        typeName = s"par-payment-${s.clientId}"
+        typeName = s"par_payment_${s.clientId.replace('-', '_')}"
         _ <- auth.registerAuthorizationDetailType(typeName, paymentSchema).success
         _ <- auth.syncConfiguration()
 
@@ -117,7 +117,7 @@ object AuthorizationDetailsFlowSpec extends E2ESpec:
     test("/par rejects an unregistered type directly instead of redirecting") {
       for
         (s, auth) <- setup(Flows.Id.LoginPassword)
-        requested = s"""[{"type":"no-such-type-${s.clientId}","amount":"10.00"}]"""
+        requested = s"""[{"type":"no_such_type_${s.clientId.replace('-', '_')}","amount":"10.00"}]"""
         result <- auth.pushAuthorizationRequest(
           clientId = s.clientId,
           clientSecret = s.clientSecret,
@@ -134,7 +134,7 @@ object AuthorizationDetailsFlowSpec extends E2ESpec:
     test("/par rejects a detail that violates the registered schema") {
       for
         (s, auth) <- setup(Flows.Id.LoginPassword)
-        typeName = s"par-strict-${s.clientId}"
+        typeName = s"par_strict_${s.clientId.replace('-', '_')}"
         _ <- auth.registerAuthorizationDetailType(typeName, paymentSchema).success
         _ <- auth.syncConfiguration()
 

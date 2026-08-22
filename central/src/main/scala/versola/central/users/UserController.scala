@@ -79,7 +79,7 @@ object UserController extends Controller:
       (for
         _ <- authorizeBasic(request)
         service <- ZIO.service[UserService]
-        body <- request.body.asJsonFromCodec[CreateUserRequest]
+        body <- request.bodyAs[CreateUserRequest]
         id <- service.create(body)
       yield Response.json(CreateUserResponse(id).toJson).status(Status.Created))
         .catchAll:
@@ -92,7 +92,7 @@ object UserController extends Controller:
       (for
         _ <- authorizeInternal(request)
         service <- ZIO.service[UserService]
-        body <- request.body.asJsonFromCodec[RegisteredUserRequest]
+        body <- request.bodyAs[RegisteredUserRequest]
         userId <- service.indexRegistered(body)
       yield Response.json(RegisteredUserResponse(userId).toJson))
         .catchAll:
@@ -105,7 +105,7 @@ object UserController extends Controller:
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[UserService]
-        body <- request.body.asJsonFromCodec[PatchUserRequest]
+        body <- request.bodyAs[PatchUserRequest]
         _ <- service.patch(body)
       yield Response.status(Status.Accepted)
     }
@@ -115,7 +115,7 @@ object UserController extends Controller:
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[UserService]
-        body <- request.body.asJsonFromCodec[PatchUserClaimsRequest]
+        body <- request.bodyAs[PatchUserClaimsRequest]
         _ <- service.patchClaims(body.id, body.claims)
       yield Response.status(Status.Accepted)
     }
@@ -125,7 +125,7 @@ object UserController extends Controller:
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[UserService]
-        body <- request.body.asJsonFromCodec[UpdateUserRolesRequest]
+        body <- request.bodyAs[UpdateUserRolesRequest]
         _ <- service.updateRoles(body)
       yield Response.status(Status.Accepted)
     }
@@ -145,7 +145,7 @@ object UserController extends Controller:
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[UserService]
-        body <- request.body.asJsonFromCodec[ResetUserLimitsRequest]
+        body <- request.bodyAs[ResetUserLimitsRequest]
         _ <- service.resetLimits(body)
       yield Response.status(Status.Accepted)
     }
@@ -165,7 +165,7 @@ object UserController extends Controller:
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[UserService]
-        body <- request.body.asJsonFromCodec[RenamePasskeyRequest]
+        body <- request.bodyAs[RenamePasskeyRequest]
         _ <- service.renamePasskey(body)
       yield Response.status(Status.Accepted)
     }
@@ -187,7 +187,7 @@ object UserController extends Controller:
         _ <- authorizeBasic(request)
         env <- ZIO.service[EnvName]
         service <- ZIO.service[UserService]
-        body <- request.body.asJsonFromCodec[ResetPasswordRequest]
+        body <- request.bodyAs[ResetPasswordRequest]
         // Revealing the plaintext is a non-prod affordance; auth rejects it too,
         // this guard keeps a tampered console from even reaching auth.
         response <-
@@ -207,7 +207,7 @@ object UserController extends Controller:
         else for
           _ <- authorizeBasic(request)
           service <- ZIO.service[UserService]
-          body <- request.body.asJsonFromCodec[SetPasswordRequest]
+          body <- request.bodyAs[SetPasswordRequest]
           _ <- service.setPassword(body.userId, body.password)
         yield Response.status(Status.NoContent)
     }

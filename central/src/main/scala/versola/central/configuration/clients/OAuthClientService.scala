@@ -130,6 +130,8 @@ object OAuthClientService:
           "policyUri" -> request.policyUri,
           "tosUri" -> request.tosUri,
         )
+        frontChannelLogoutUrl <- validateLogoutUri("frontChannelLogoutUri", request.frontChannelLogoutUri)
+        backChannelLogoutUrl <- validateLogoutUri("backChannelLogoutUri", request.backChannelLogoutUri)
         _ <- validateRegistration(request.id, request.tenantId, request.authFlow, request.registrationFlow)
         secret <- presetSecret.fold(generateSecret)(ZIO.succeed(_))
         encryptedSecret <- encryptRawSecret(secret)
@@ -148,9 +150,9 @@ object OAuthClientService:
           authFlow = request.authFlow,
           registrationFlow = request.registrationFlow,
           otpTemplateId = request.otpTemplateId,
-          frontChannelLogoutUri = request.frontChannelLogoutUri.flatMap(URL.decode(_).toOption),
+          frontChannelLogoutUri = frontChannelLogoutUrl,
           frontChannelLogoutSessionRequired = request.frontChannelLogoutSessionRequired,
-          backChannelLogoutUri = request.backChannelLogoutUri.flatMap(URL.decode(_).toOption),
+          backChannelLogoutUri = backChannelLogoutUrl,
           logoUri = request.logoUri,
           policyUri = request.policyUri,
           tosUri = request.tosUri,
@@ -168,6 +170,8 @@ object OAuthClientService:
           "policyUri" -> request.policyUri.flatMap(patchValue),
           "tosUri" -> request.tosUri.flatMap(patchValue),
         )
+        _ <- validateLogoutUri("frontChannelLogoutUri", request.frontChannelLogoutUri.flatMap(patchValue))
+        _ <- validateLogoutUri("backChannelLogoutUri", request.backChannelLogoutUri.flatMap(patchValue))
         current <- cache.get.map(_.find(_.id == request.clientId))
         _ <- ZIO.foreachDiscard(current): client =>
           validateRegistration(
@@ -240,10 +244,15 @@ object OAuthClientService:
               InvalidRegistrationConfiguration(clientId, s"role '$roleId' does not exist in tenant '$tenantId'")
       yield ()
 
-    /** An unparsable URI clears the column, matching how create drops undecodable URIs. */
+    /** An unparsable URI clears the column, matching how create drops undecodable URIs.
+      * Trims before parsing so this agrees with `validateLogoutUri`, which validates the
+      * trimmed value - otherwise a value with leading/trailing whitespace could pass
+      * validation here yet fail to parse untrimmed, silently clearing the column instead of
+      * storing the validated URI.
+      */
     private def decodeUrlPatch(patch: Patch[String]): Patch[URL] = patch match
       case Patch.Deleted     => Patch.Deleted
-      case Patch.Modified(v) => URL.decode(v).toOption.fold(Patch.Deleted)(Patch.Modified(_))
+      case Patch.Modified(v) => URL.decode(v.trim).toOption.fold(Patch.Deleted)(Patch.Modified(_))
 
     private def toConsentFlowPatch(patch: Patch[ConsentFlowDto]): Patch[ConsentFlow] = patch match
       case Patch.Deleted        => Patch.Deleted
@@ -265,6 +274,22 @@ object OAuthClientService:
                 if !url.isAbsolute || url.scheme != Some(Scheme.HTTPS) || url.host.isEmpty =>
               ZIO.fail(InvalidConsentUri(field, "must be an absolute HTTPS URL"))
             case Right(_) => ZIO.unit
+
+    /** Unlike `logoUri`/`policyUri`/`tosUri` (browser-loaded consent links, HTTPS-only), a
+      * logout notification URI may target `http://localhost` for local development - matching
+      * the frontend's `validateLogoutUri`. A malformed or disallowed value is rejected outright
+      * rather than silently dropped, so an API caller cannot end up with a client that looks
+      * configured but has no working logout notification.
+      */
+    private def validateLogoutUri(field: String, value: Option[String]): IO[InvalidConsentUri | Throwable, Option[URL]] =
+      value.fold[IO[InvalidConsentUri | Throwable, Option[URL]]](ZIO.none): raw =>
+        val invalid = ZIO.fail(InvalidConsentUri(field, "must be an absolute https:// URL (or http://localhost for local development)"))
+        URL.decode(raw.trim) match
+          case Left(_) => invalid
+          case Right(url) if !url.isAbsolute || url.host.isEmpty || url.fragment.isDefined => invalid
+          case Right(url) if url.scheme == Some(Scheme.HTTPS) => ZIO.some(url)
+          case Right(url) if url.scheme == Some(Scheme.HTTP) && url.host.exists(h => h == "localhost" || h == "127.0.0.1") => ZIO.some(url)
+          case Right(_) => invalid
 
     private val clientSecretsKey: SecretKey = OAuthClientService.clientSecretsKey(config)
 

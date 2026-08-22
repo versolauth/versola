@@ -10,7 +10,7 @@ import versola.oauth.model.State
 import versola.oauth.model.{ConversationCookie, SessionCookie, UserAgentCookie}
 import versola.oauth.session.model.SessionInfo
 import versola.util.http.Observability
-import versola.util.{Base64, Base64Url, CoreConfig, Email, JWT, Phone}
+import versola.util.{Base64, Base64Url, CoreConfig, Email, JWT, Phone, escapeCssForStyle, escapeHtml}
 import zio.http.{Body, Header, Headers, MediaType, Path, Response, Status, URL}
 import zio.json.*
 import zio.json.ast.Json
@@ -591,9 +591,9 @@ object ConversationRenderService:
 
     private def logoutConfirmPage(info: FormRenderInfo, themeCss: String, logo: Option[String]): String =
       val config = inlineScriptJson(info.config.copy(logo = formLogo(info.config.step, logo)).toJson)
-      s"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>${info.title}</title>${faviconLink(
+      s"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>${escapeHtml(info.title)}</title>${faviconLink(
           logo,
-          )}<style>$themeCss ${info.style}</style><script>window.__VERSOLA_FORM__ = $config;</script></head><body><div id="versola-form-root"></div><script>${info.jsCompiled.getOrElse(
+          )}<style>${escapeCssForStyle(themeCss)} ${escapeCssForStyle(info.style)}</style><script>window.__VERSOLA_FORM__ = $config;</script></head><body><div id="versola-form-root"></div><script>${info.jsCompiled.getOrElse(
           "",
         )}</script></body></html>"""
 
@@ -629,11 +629,11 @@ object ConversationRenderService:
          |    <meta charset="UTF-8">
          |    <meta name="viewport" content="width=device-width, initial-scale=1.0">
          |    <meta name="versola-step" content="${stepName(info.config.step)}">
-         |    <title>${info.title}</title>
+         |    <title>${escapeHtml(info.title)}</title>
          |    ${faviconLink(logo)}
          |    <style>
-         |      $themeCss
-         |      ${info.style}
+         |      ${escapeCssForStyle(themeCss)}
+         |      ${escapeCssForStyle(info.style)}
          |    </style>
          |    <script>
          |      window.__VERSOLA_FORM__ = $config;
@@ -655,7 +655,7 @@ object ConversationRenderService:
          |    <meta name="viewport" content="width=device-width, initial-scale=1.0">
          |    <title>Page not found</title>
          |    <style>
-         |      $themeCss
+         |      ${escapeCssForStyle(themeCss)}
          |    </style>
          |  </head>
          |  <body>

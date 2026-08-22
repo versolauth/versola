@@ -7,7 +7,7 @@ import versola.central.configuration.{CreateResourceRequest, CreateResourceRespo
 import versola.util.http.{Controller, Unauthorized}
 import versola.util.{Base64Url, Secret, SecurityService}
 import zio.http.{Method, Request, Response, Routes, Status, handler}
-import zio.json.{DecoderOps, EncoderOps, JsonDecoder}
+import zio.json.EncoderOps
 import zio.{RIO, Task, ZIO}
 
 object ResourceController extends Controller:
@@ -41,7 +41,7 @@ object ResourceController extends Controller:
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[ResourceService]
-        body <- decodeJsonBody[CreateResourceRequest](request)
+        body <- request.bodyAs[CreateResourceRequest]
         result <- service.createResource(body)
       yield result match
         case Right((resourceId, secret)) =>
@@ -54,7 +54,7 @@ object ResourceController extends Controller:
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[ResourceService]
-        body <- decodeJsonBody[UpdateResourceRequest](request)
+        body <- request.bodyAs[UpdateResourceRequest]
         result <- service.updateResource(body)
       yield result match
         case Right(_) => Response.status(Status.NoContent)
@@ -137,12 +137,6 @@ object ResourceController extends Controller:
           )
         })
       yield Response.json(response.toJson)
-    }
-
-  private def decodeJsonBody[A: JsonDecoder](request: Request) =
-    request.body.asString.flatMap { body =>
-      ZIO.fromEither(body.fromJson[A])
-        .mapError(message => RuntimeException(s"Failed to decode JSON: $message"))
     }
 
   private def toResourceResponse(record: ResourceRecord): ResourceResponse =

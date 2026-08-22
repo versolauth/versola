@@ -20,12 +20,13 @@ export function validatePermission(permission: string): boolean {
 }
 
 /**
- * Validates role ID format: same as resource/action
- * Lowercase letters, numbers, underscore, starting with letter
- * Examples: admin, support_user, api_manager
+ * Validates role ID format: lowercase letters, numbers, hyphen, starting with letter
+ * (unlike scope/permission/detail-type IDs, role IDs allow hyphens - matching built-in
+ * roles like `oauth-admin` and `frontend-developer`)
+ * Examples: admin, oauth-admin, frontend-developer
  */
 export function validateRoleId(roleId: string): boolean {
-  return validateResourceAction(roleId);
+  return /^[a-z][a-z0-9-]*$/.test(roleId);
 }
 
 /**
@@ -246,7 +247,7 @@ export function secondsToDays(seconds: number): number {
 export function getValidationError(type: string): string {
   const errors: Record<string, string> = {
     permission: 'Lowercase letters, numbers, underscore, dot or colon separators, start each segment with letter',
-    role: 'Lowercase letters, numbers, underscore, start with letter',
+    role: 'Lowercase letters, numbers, hyphen, start with letter',
     scope: 'Lowercase letters, numbers, underscore, start with letter',
     clientId: 'Lowercase letters, numbers, hyphen, start with letter',
     tenantId: 'Lowercase letters, numbers, hyphen, start with letter',

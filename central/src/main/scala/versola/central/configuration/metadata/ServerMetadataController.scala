@@ -32,7 +32,7 @@ object ServerMetadataController extends Controller:
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[ServerMetadataService]
-        metadata <- request.body.asJsonFromCodec[Json.Obj]
+        metadata <- request.bodyAs[Json.Obj]
         _ <- service.upsertMetadata(metadata)
       yield Response.status(Status.NoContent)
     }

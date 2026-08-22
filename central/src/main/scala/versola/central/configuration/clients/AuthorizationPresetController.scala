@@ -48,7 +48,7 @@ object AuthorizationPresetController extends Controller:
       for
         _ <- authorizeBasic(req)
         service <- ZIO.service[AuthorizationPresetService]
-        body <- req.body.asJsonFromCodec[SaveAuthorizationPresetsRequest]
+        body <- req.bodyAs[SaveAuthorizationPresetsRequest]
         result <- service.savePresets(body)
       yield result match
         case Right(_) => Response.status(Status.NoContent)

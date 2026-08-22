@@ -3,6 +3,7 @@ package versola.util.http
 import io.opentelemetry.api.trace.{SpanKind, StatusCode}
 import zio.*
 import zio.http.*
+import zio.http.codec.HttpCodecError
 import zio.json.*
 import zio.logging.{LogAnnotation, logContext}
 import zio.metrics.MetricKeyType.Histogram.Boundaries
@@ -154,6 +155,8 @@ object Observability:
     routes.handleErrorZIO {
       case Unauthorized => ZIO.succeed(Response.unauthorized)
       case Forbidden => ZIO.succeed(Response.forbidden)
+      case ex: BadRequest => ZIO.succeed(Response.text(ex.message).status(Status.BadRequest))
+      case ex: HttpCodecError => ZIO.succeed(Response.text(ex.message).status(Status.BadRequest))
       case ex: Throwable => Observability.cause.set(Some(Cause.fail(ex))).as(Response.internalServerError)
     }
 
