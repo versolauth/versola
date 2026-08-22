@@ -15,6 +15,7 @@ import zio.json.*
 import zio.json.ast.Json
 import zio.test.*
 
+import java.nio.charset.StandardCharsets
 import java.time.Instant
 import java.util.UUID
 
@@ -138,6 +139,9 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getAllowedPhonePrefixes.succeedsWith(List("+1"))
           response <- env.service.renderStep(conversationRecord, None)
           body <- response.body.asString
+          faviconSvg = """<link rel="icon" href="data:image/svg\+xml;base64,([^"]+)">""".r
+            .findFirstMatchIn(body)
+            .map(matchValue => String(java.util.Base64.getDecoder.decode(matchValue.group(1)), StandardCharsets.UTF_8))
         yield
           assertTrue(response.status == Status.Ok) &&
           assertTrue(response.header(Header.ContentType).exists(_.mediaType == MediaType.text.html)) &&
@@ -146,7 +150,8 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           assertTrue(body.contains("#form { margin: 0; }")) &&
           assertTrue(body.contains("window.__VERSOLA_FORM__ =")) &&
           assertTrue(body.contains("console.log('init');")) &&
-          assertTrue(!body.contains("<link rel=\"icon\""))
+          assertTrue(body.contains("<link rel=\"icon\" href=\"data:image/svg+xml;base64,")) &&
+          assertTrue(faviconSvg.exists(_.contains("<rect width=\"64\" height=\"64\" rx=\"14\" fill=\"#faf9f7\"/>")))
       },
       test("renders the identity provider logo as the favicon and safely in the form config") {
         val env = Env()

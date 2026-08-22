@@ -9,6 +9,11 @@ const STORAGE_KEY = 'versola-theme';
   * consume the CSS custom properties this module keeps up to date. */
 export const THEME_CHANGE_EVENT = 'versola-theme-change';
 
+const FAVICON_PATHS: Record<ThemeName, string> = {
+  dark: 'logo-shield.svg',
+  light: 'logo-shield-light.svg',
+};
+
 /** Dark is the original console look and stays the default for anyone who
   * hasn't made an explicit choice yet. Mirrors the fallback baked into
   * index.html's inline pre-paint script — keep both in sync if this changes. */
@@ -42,6 +47,10 @@ function persistTheme(theme: ThemeName): void {
   }
 }
 
+function updateFavicon(theme: ThemeName): void {
+  document.querySelector<HTMLLinkElement>('link[rel="icon"]')?.setAttribute('href', FAVICON_PATHS[theme]);
+}
+
 /** Applies a theme by setting `data-theme` on <html> — every component's
   * shadow root inherits the resulting custom-property values (defined in
   * index.html) through normal CSS inheritance, so nothing else needs to be
@@ -50,6 +59,7 @@ function persistTheme(theme: ThemeName): void {
   * toggles call. */
 export function applyTheme(theme: ThemeName): void {
   document.documentElement.setAttribute('data-theme', theme);
+  updateFavicon(theme);
   window.dispatchEvent(new CustomEvent<ThemeName>(THEME_CHANGE_EVENT, { detail: theme }));
 }
 

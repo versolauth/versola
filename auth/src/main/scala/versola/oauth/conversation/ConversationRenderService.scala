@@ -599,7 +599,12 @@ object ConversationRenderService:
 
     /** The identity provider logo doubles as the favicon of the login pages. */
     private def faviconLink(logo: Option[String]): String =
-      logo.filter(_.nonEmpty).fold("")(url => s"""<link rel="icon" href="${escapeAttribute(url)}">""")
+      val href = logo.filter(_.nonEmpty).map(escapeAttribute).getOrElse(defaultFavicon)
+      s"""<link rel="icon" href="$href">"""
+
+    private val defaultFavicon =
+      val svg = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none"><rect width="64" height="64" rx="14" fill="#faf9f7"/><path d="M32 6 C32 6 52 10 54 12 L54 30 Q54 48 32 58 Q10 48 10 30 L10 12 C12 10 32 6 32 6Z" fill="#155e75" fill-opacity="0.06"/><path d="M32 6 C32 6 52 10 54 12 L54 30 Q54 48 32 58 Q10 48 10 30 L10 12 C12 10 32 6 32 6Z" fill="none" stroke="#155e75" stroke-width="2.2"/><text x="32" y="41" font-family="-apple-system, Inter, sans-serif" font-weight="800" font-size="26" fill="#155e75" text-anchor="middle">V</text></svg>"""
+      "data:image/svg+xml;base64," + java.util.Base64.getEncoder.encodeToString(svg.getBytes(StandardCharsets.UTF_8))
 
     private def escapeAttribute(value: String): String =
       value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;")

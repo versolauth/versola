@@ -50,10 +50,23 @@ test('switches themes for the session when localStorage is unavailable', async (
 
   await loadAdminApp(page);
   const navigation = page.locator('versola-navigation');
+  const favicon = page.locator('link[rel="icon"]');
+
+  await expect(favicon).toHaveAttribute('href', '/logo-shield.svg');
 
   await navigation.getByRole('radio', { name: 'Light theme' }).click();
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
+  await expect(favicon).toHaveAttribute('href', 'logo-shield-light.svg');
 
   await navigation.getByRole('radio', { name: 'Dark theme' }).click();
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+  await expect(favicon).toHaveAttribute('href', 'logo-shield.svg');
+});
+
+test('uses the light favicon for a persisted light theme on first load', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('versola-theme', 'light'));
+  await loadAdminApp(page);
+
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
+  await expect(page.locator('link[rel="icon"]')).toHaveAttribute('href', 'logo-shield-light.svg');
 });
