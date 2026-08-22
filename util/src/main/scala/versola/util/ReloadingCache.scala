@@ -27,8 +27,17 @@ object ReloadingCache:
   private val initialLoadRetry: Schedule[Any, Any, Any] =
     Schedule.exponential(500.millis, 2.0).jittered && Schedule.recurs(6)
 
+  /** Loads once now, then every `interval`.
+    *
+    * The interval is taken rather than a `Schedule` because it is also how long the first
+    * refresh waits: the load above has just happened, and `repeat` would otherwise fire a
+    * second one immediately. A fixed delay here instead would override the configured
+    * interval for as long as it lasted — a five-minute one used to, which meant a freshly
+    * registered client stayed invisible to an edge for five minutes no matter what the
+    * configuration said.
+    */
   def make[A: Tag](
-      schedule: Schedule[Any, Any, Any] = Schedule.spaced(5.minute),
+      interval: Duration = 5.minutes,
   ): ZIO[Scope & CacheSource[A], Throwable, ReloadingCache[A]] =
     for
       source <- ZIO.service[CacheSource[A]]
@@ -42,5 +51,5 @@ object ReloadingCache:
           error => ZIO.logErrorCause(Cause.fail(error)),
           data => ref.set(data),
         )
-      _ <- (ZIO.sleep(5.minutes) *> refresh.repeat(schedule)).forkScoped
+      _ <- (ZIO.sleep(interval) *> refresh.repeat(Schedule.spaced(interval))).forkScoped
     yield ref

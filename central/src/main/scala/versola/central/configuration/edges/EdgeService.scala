@@ -13,6 +13,8 @@ trait EdgeService:
 
   def rotateEdgeKey(id: EdgeId): Task[RsaKeyPair]
 
+  def updateRevocationCacheSize(id: EdgeId, cacheSize: Int): Task[Unit]
+
   def deleteOldEdgeKey(id: EdgeId): Task[Unit]
 
   def deleteEdge(id: EdgeId): Task[Unit]
@@ -23,7 +25,7 @@ object EdgeService:
   def live: ZLayer[EdgeRepository & SecurityService & Scope & CentralConfig, Throwable, EdgeService] =
     (ZLayer.fromZIO:
       ZIO.serviceWithZIO[CentralConfig](config =>
-        ReloadingCache.make[Vector[EdgeRecord]](Schedule.spaced(config.configurationCacheRefreshInterval)),
+        ReloadingCache.make[Vector[EdgeRecord]](config.configurationCacheRefreshInterval),
       )
     )
       >>> ZLayer.fromFunction(Impl(_, _, _))
@@ -51,6 +53,9 @@ object EdgeService:
         keyPair <- securityService.generateRsaKeyPair
         _ <- edgeRepository.rotateEdgeKey(id, keyPair.toPublicJwk)
       yield keyPair
+
+    override def updateRevocationCacheSize(id: EdgeId, cacheSize: Int): Task[Unit] =
+      edgeRepository.updateRevocationCacheSize(id, cacheSize)
 
     override def deleteOldEdgeKey(id: EdgeId): Task[Unit] =
       edgeRepository.deleteOldEdgeKey(id)

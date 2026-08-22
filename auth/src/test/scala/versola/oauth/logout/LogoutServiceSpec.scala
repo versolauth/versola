@@ -9,6 +9,7 @@ import versola.user.model.UserId
 import versola.util.{MAC, UnitSpecBase}
 import zio.*
 import zio.http.*
+import zio.json.ast.Json
 import zio.prelude.NonEmptySet
 import zio.test.*
 
@@ -59,29 +60,6 @@ object LogoutServiceSpec extends UnitSpecBase:
     consentFlow = None,
   )
 
-  /** A Client whose driver dies if invoked; no test in this spec exercises a
-    * back-channel delivery (none of the fixture clients set backChannelLogoutUri). */
-  private val unusedHttpClient: Client = ZClient.fromDriver(new ZClient.Driver[Any, Scope, Throwable]:
-    override def request(
-        version: Version,
-        method: Method,
-        url: URL,
-        headers: Headers,
-        body: Body,
-        sslConfig: Option[ClientSSLConfig],
-        proxy: Option[Proxy],
-    )(using trace: Trace): ZIO[Scope, Throwable, Response] =
-      ZIO.dieMessage("HTTP client should not be used in LogoutService tests")
-
-    override def socket[Env1 <: Any](
-        version: Version,
-        url: URL,
-        headers: Headers,
-        app: WebSocketApp[Env1],
-    )(using trace: Trace, ev: Scope =:= Scope): ZIO[Env1 & Scope, Throwable, Response] =
-      ZIO.dieMessage("WebSocket not used in LogoutService tests"),
-  )
-
   private val clientNoLogoutUri = baseClient
   private val clientA = baseClient.copy(
     id = ClientId("client-a"),
@@ -102,12 +80,12 @@ object LogoutServiceSpec extends UnitSpecBase:
   class Env:
     val sessionService = stub[SessionService]
     val configuration = stub[OAuthConfigurationService]
+    val dispatcher = stub[BackChannelDispatcher]
     val service: LogoutService = LogoutService.Impl(
       sessionService,
       configuration,
       TestEnvConfig.coreConfig,
-      TestEnvConfig.jwksService,
-      unusedHttpClient,
+      dispatcher,
     )
 
   def spec = suite("LogoutService")(
@@ -212,6 +190,82 @@ object LogoutServiceSpec extends UnitSpecBase:
           _      <- env.configuration.getPostLogoutRedirectUris.succeedsWith(Nil)
           result <- env.service.logout(Right(rawSessionId), Some(redirectUri), Some("st-6"))
         yield assertTrue(result.postLogoutRedirectUri == None)
+      },
+    ),
+    suite("back-channel logout")(
+      test("pushes a logout event naming the session to every participant that registered a URI") {
+        val env = Env()
+        val withBackChannel = clientA.copy(backChannelLogoutUri = Some(URL.decode("https://rp-a.example/backchannel").toOption.get))
+        for
+          _ <- env.sessionService.invalidate.succeedsWith(Some(sessionInfo1))
+          _ <- env.configuration.find.succeedsWith(Some(withBackChannel))
+          _ <- env.configuration.getPostLogoutRedirectUris.succeedsWith(Nil)
+          _ <- env.dispatcher.dispatch.succeedsWith(())
+          _ <- env.service.logout(Right(rawSessionId), None, None)
+          // Delivery is forked so a slow RP cannot hold up the user's own logout response.
+          calls <- ZIO.succeed(env.dispatcher.dispatch.calls).repeatUntil(_.nonEmpty)
+        yield assertTrue(
+          calls.map((client, uri, subject, _) => (client.id, uri.encode, subject)) ==
+            List((withBackChannel.id, "https://rp-a.example/backchannel", userId.toString)),
+          calls.head._4 == Json.Obj(
+            "sid" -> Json.Str(publicSessionId1),
+            "events" -> Json.Obj("http://schemas.openid.net/event/backchannel-logout" -> Json.Obj()),
+          ),
+        )
+      },
+      test("pushes nothing to a participant that registered no back-channel URI") {
+        val env = Env()
+        for
+          _ <- env.sessionService.invalidate.succeedsWith(Some(sessionInfo1))
+          _ <- env.configuration.find.succeedsWith(Some(clientNoLogoutUri))
+          _ <- env.configuration.getPostLogoutRedirectUris.succeedsWith(Nil)
+          _ <- env.service.logout(Right(rawSessionId), None, None)
+        yield assertTrue(env.dispatcher.dispatch.calls.isEmpty)
+      },
+    ),
+    suite("invalidateAllSessions")(
+      test("does nothing when the user has no active sessions") {
+        val env = Env()
+        for
+          _ <- env.sessionService.invalidateAllByUser.succeedsWith(Nil)
+          _ <- env.service.invalidateAllSessions(userId)
+        yield assertTrue(env.configuration.find.calls.isEmpty)
+      },
+      test("resolves participants for every session the user had, not just one") {
+        val env = Env()
+        val recordA = record1.copy(clients = List(ClientEntry(clientA.id, Instant.EPOCH)))
+        val recordB = record1.copy(clients = List(ClientEntry(clientB.id, Instant.EPOCH)), publicId = PublicSessionId("public-session-2"))
+        val participants = Map(clientA.id -> clientA, clientB.id -> clientB)
+        for
+          _ <- env.sessionService.invalidateAllByUser.succeedsWith(List(recordA, recordB))
+          _ <- env.configuration.find.returnsZIO(id => ZIO.succeed(participants.get(id)))
+          _ <- env.service.invalidateAllSessions(userId)
+        yield assertTrue(env.configuration.find.calls.toSet == Set(clientA.id, clientB.id))
+      },
+      test("pushes one event per client naming the user, not one per session") {
+        val env = Env()
+        val withBackChannel = clientA.copy(backChannelLogoutUri = Some(URL.decode("https://rp-a.example/backchannel").toOption.get))
+        val clients = List(ClientEntry(withBackChannel.id, Instant.EPOCH))
+        val sessions = List(
+          record1.copy(clients = clients),
+          record1.copy(clients = clients, publicId = PublicSessionId("public-session-2")),
+          record1.copy(clients = clients, publicId = PublicSessionId("public-session-3")),
+        )
+        for
+          _ <- env.sessionService.invalidateAllByUser.succeedsWith(sessions)
+          _ <- env.configuration.find.succeedsWith(Some(withBackChannel))
+          _ <- env.dispatcher.dispatch.succeedsWith(())
+          _ <- env.service.invalidateAllSessions(userId)
+          calls <- ZIO.succeed(env.dispatcher.dispatch.calls).repeatUntil(_.nonEmpty)
+        yield assertTrue(
+          // Three sessions, one client, one delivery: a logout token carrying a subject and
+          // no session asks the RP to end every session that user has with it.
+          calls.map((client, _, subject, _) => (client.id, subject)) ==
+            List((withBackChannel.id, userId.toString)),
+          calls.head._4 == Json.Obj(
+            "events" -> Json.Obj("http://schemas.openid.net/event/backchannel-logout" -> Json.Obj()),
+          ),
+        )
       },
     ),
   )

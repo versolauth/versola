@@ -14,7 +14,7 @@ object AuthTokenService:
   private val ReloadInterval = 9.minutes
 
   def live: ZLayer[Scope & CentralConfig, Throwable, AuthTokenService] =
-    val cacheLayer = TokenSource >>> ZLayer(ReloadingCache.make[String](Schedule.spaced(ReloadInterval)))
+    val cacheLayer = TokenSource >>> ZLayer(ReloadingCache.make[String](ReloadInterval))
     (cacheLayer ++ ZLayer.service[CentralConfig]) >>> ZLayer.fromFunction(Impl(_, _))
 
   private def generateToken(config: CentralConfig): Task[String] =

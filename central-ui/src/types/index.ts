@@ -256,6 +256,7 @@ export interface PaginatedResponse<T> {
 export interface Edge {
   id: string;
   hasOldKey?: boolean;  // True if old key exists during rotation
+  revocationCacheSize: number;  // Revocations the edge keeps in memory
 }
 
 export interface ServiceKey {

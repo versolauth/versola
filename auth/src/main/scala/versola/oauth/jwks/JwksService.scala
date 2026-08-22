@@ -13,7 +13,7 @@ object JwksService:
   def live: ZLayer[JwksSyncClient & Scope & CoreConfig, Throwable, JwksService] =
     (ZLayer.fromZIO:
       ZIO.serviceWithZIO[CoreConfig](config =>
-        ReloadingCache.make[JWT.PublicKeys](Schedule.spaced(config.configurationCacheRefreshInterval)),
+        ReloadingCache.make[JWT.PublicKeys](config.configurationCacheRefreshInterval),
       )
     ) >>>
       ZLayer.fromFunction(Impl(_))

@@ -17,7 +17,7 @@ object ServerMetadataService:
   def live: ZLayer[ServerMetadataRepository & Scope & CentralConfig, Throwable, ServerMetadataService] =
     (ZLayer.fromZIO:
       ZIO.serviceWithZIO[CentralConfig](config =>
-        ReloadingCache.make[Option[ServerMetadataRecord]](Schedule.spaced(config.configurationCacheRefreshInterval)),
+        ReloadingCache.make[Option[ServerMetadataRecord]](config.configurationCacheRefreshInterval),
       )
     )
       >>> ZLayer.fromFunction(Impl(_, _))

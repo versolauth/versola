@@ -230,7 +230,11 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
   // non-interactive Docker envs, not just docker-local -- see
   // secretField's own comment.
   val useOpenBao = isDockerLocal || isVps
-  val configurationCacheRefreshInterval = if isLocal || isDockerLocal then "1 minute" else "5 minutes"
+  // Plain local refreshes faster than docker-local because the e2e suite registers clients
+  // through central and then exercises them against the edge, which only learns of a client
+  // when this elapses -- a minute of that per test is most of the suite's runtime.
+  val configurationCacheRefreshInterval =
+    if isLocal then "5 seconds" else if isDockerLocal then "1 minute" else "5 minutes"
   // Postgres user/password are the same across all three services either
   // way; computed once here so the Auth/Central/Edge sections below don't
   // each repeat the isDockerLocal/isVps check.
@@ -721,6 +725,12 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
        |      batch-size = 500
        |      interval   = "1 hour"
        |      key-column = "ctid"
+       |    }
+       |    {
+       |      table-name = "revocations"
+       |      batch-size = 1000
+       |      interval   = "1 hour"
+       |      key-column = "revoked_key"
        |    }
        |  ]
        |}

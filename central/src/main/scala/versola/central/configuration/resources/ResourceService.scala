@@ -48,7 +48,7 @@ object ResourceService:
     decryptingCacheSource >>>
       (ZLayer.fromZIO:
         ZIO.serviceWithZIO[CentralConfig](config =>
-          ReloadingCache.make[Vector[ResourceRecord]](Schedule.spaced(config.configurationCacheRefreshInterval)),
+          ReloadingCache.make[Vector[ResourceRecord]](config.configurationCacheRefreshInterval),
         )
       ) >>>
       ZLayer.fromFunction(Impl(_, _, _, _, _, _, _))

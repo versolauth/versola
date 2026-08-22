@@ -19,17 +19,17 @@ object PermissionService:
     (
       (ZLayer.fromZIO:
         ZIO.serviceWithZIO[EdgeConfig](config =>
-          ReloadingCache.make[Map[(TenantId, RoleId), Set[PermissionId]]](Schedule.spaced(config.configurationCacheRefreshInterval)),
+          ReloadingCache.make[Map[(TenantId, RoleId), Set[PermissionId]]](config.configurationCacheRefreshInterval),
         )
       ) ++ // (tenantId, roleId) → permIds
       (ZLayer.fromZIO:
         ZIO.serviceWithZIO[EdgeConfig](config =>
-          ReloadingCache.make[Map[PermissionId, Set[ResourceEndpointId]]](Schedule.spaced(config.configurationCacheRefreshInterval)),
+          ReloadingCache.make[Map[PermissionId, Set[ResourceEndpointId]]](config.configurationCacheRefreshInterval),
         )
       ) ++ // permId → endpointIds
       (ZLayer.fromZIO:
         ZIO.serviceWithZIO[EdgeConfig](config =>
-          ReloadingCache.make[Map[ClientId, OAuthClient]](Schedule.spaced(config.configurationCacheRefreshInterval)),
+          ReloadingCache.make[Map[ClientId, OAuthClient]](config.configurationCacheRefreshInterval),
         )
       )           // clientId → OAuthClient
     ) >>> ZLayer.fromFunction(Impl(_, _, _))

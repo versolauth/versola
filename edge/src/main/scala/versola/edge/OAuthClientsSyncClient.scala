@@ -5,7 +5,7 @@ import versola.util.{Base64, CacheSource, Secret, SecurityService}
 import zio.http.{Client, Header, Request}
 import zio.json.JsonCodec
 import zio.schema.codec.JsonCodec.zioJsonBinaryCodec
-import zio.{Task, URLayer, ZIO, ZLayer}
+import zio.{Duration, Task, URLayer, ZIO, ZLayer}
 
 trait OAuthClientsSyncClient extends CacheSource[Map[ClientId, OAuthClient]]:
   def getAll: Task[Map[ClientId, OAuthClient]]
@@ -29,7 +29,9 @@ object OAuthClientsSyncClient:
         response <- ZIO.scoped(httpClient.request(request))
         response <- response.bodyAs[GetOAuthClientsSyncResponse]
         clients <- ZIO.foreach(response.clients) { client =>
-          ZIO.foreach(client.secret)(decryptSecret).map(_.map(OAuthClient(client.id, _, client.permissions.map(PermissionId(_)))))
+          ZIO
+            .foreach(client.secret)(decryptSecret)
+            .map(_.map(OAuthClient(client.id, _, client.permissions.map(PermissionId(_)), client.accessTokenTtl)))
         }
       yield clients.flatten.map(x => x.id -> x).toMap
 
@@ -42,6 +44,7 @@ object OAuthClientsSyncClient:
     private case class SyncOAuthClientRecord(
         id: ClientId,
         secret: Option[String],
+        accessTokenTtl: Duration,
         permissions: Set[String] = Set.empty,
     ) derives JsonCodec
 

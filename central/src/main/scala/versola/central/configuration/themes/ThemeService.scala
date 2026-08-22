@@ -24,7 +24,7 @@ object ThemeService:
   def live: ZLayer[ThemeRepository & Scope & CentralConfig, Throwable, ThemeService] =
     (ZLayer.fromZIO:
       ZIO.serviceWithZIO[CentralConfig](config =>
-        ReloadingCache.make[Vector[ThemeRecord]](Schedule.spaced(config.configurationCacheRefreshInterval)),
+        ReloadingCache.make[Vector[ThemeRecord]](config.configurationCacheRefreshInterval),
       )
     )
       >>> ZLayer.fromFunction(Impl(_, _))

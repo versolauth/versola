@@ -121,7 +121,7 @@ object OAuthConfigurationService:
     def cacheLayer[A: Tag]: ZLayer[Scope & CoreConfig & CacheSource[A], Throwable, ReloadingCache[A]] =
       ZLayer.fromZIO:
         ZIO.serviceWithZIO[CoreConfig](config =>
-          ReloadingCache.make[A](Schedule.spaced(config.configurationCacheRefreshInterval)),
+          ReloadingCache.make[A](config.configurationCacheRefreshInterval),
         )
     val syncClients =
       CentralSyncTokenService.live >+>

@@ -31,6 +31,7 @@ case class EdgeConfig(
     // in prod and plain local dev).
     versolaInternalUrl: Option[URL] = None,
     configurationCacheRefreshInterval: Duration,
+    revocation: EdgeConfig.Revocation = EdgeConfig.Revocation(),
 ):
   def internalUrl: URL = versolaInternalUrl.getOrElse(versolaUrl)
 
@@ -53,5 +54,15 @@ object EdgeConfig:
 
   case class CentralConfig(
       url: URL,
+  )
+
+  /** How many revocations are held in memory is central's to decide (it can see what an
+    * edge's traffic warrants), so it is not here.
+    *
+    * @param reloadInterval how often the in-memory list is rebuilt from the database, which
+    *                       is what drops expired entries and restores the in-memory-only path.
+    */
+  case class Revocation(
+      reloadInterval: Duration = Duration.fromSeconds(600),
   )
 

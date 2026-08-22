@@ -16,7 +16,7 @@ object ChallengeSettingsService:
   def live: ZLayer[ChallengeSettingsRepository & Scope & CentralConfig, Throwable, ChallengeSettingsService] =
     (ZLayer.fromZIO:
       ZIO.serviceWithZIO[CentralConfig](config =>
-        ReloadingCache.make[Vector[ChallengeSettingsRecord]](Schedule.spaced(config.configurationCacheRefreshInterval)),
+        ReloadingCache.make[Vector[ChallengeSettingsRecord]](config.configurationCacheRefreshInterval),
       )
     )
       >>> ZLayer.fromFunction(Impl(_, _))

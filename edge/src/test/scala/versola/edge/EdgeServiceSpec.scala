@@ -8,6 +8,7 @@ import org.scalamock.stubs.ZIOStubs
 import versola.edge.EdgeServiceSpec.Fixtures
 import versola.edge.login.{LoginRecord, LoginRepository}
 import versola.edge.model.*
+import versola.edge.revocation.{Revocation, RevocationKey, TokenRevocationService}
 import versola.edge.session.EdgeSessionRecord
 import versola.util.cel.CelEvaluator
 import versola.util.{EnvName, JWT, RedirectUri, ReloadingCache, Secret, SecureRandom, SecurityService}
@@ -49,7 +50,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
 
     val orphanPreset = preset.copy(id = otherPresetId, clientId = missingClientId)
 
-    val client = OAuthClient(id = clientId, secret = Secret(Array.fill(48)(1.toByte)), permissions = Set.empty)
+    val client = OAuthClient(id = clientId, secret = Secret(Array.fill(48)(1.toByte)), permissions = Set.empty, accessTokenTtl = 15.minutes)
 
     val codeVerifierBytes = Array.fill[Byte](32)(7)
     val stateBytes = Array.fill[Byte](16)(9)
@@ -72,6 +73,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
     val ssoClient = stub[SSOClient]
     val jwksService = stub[JwksService]
     val sessionRepository = stub[session.EdgeSessionRepository]
+    val revocationService = stub[TokenRevocationService]
     val permissionService = stub[PermissionService]
 
     val presetCache = ReloadingCache(Unsafe.unsafe(unsafe ?=> Ref.unsafe.make(Map.empty[PresetId, AuthorizationPreset])))
@@ -132,6 +134,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
         issuer: String = "https://idp.example",
         audience: String = "web-app",
         sid: Option[String] = Some("sso-session-1"),
+        subject: Option[String] = None,
         nonce: Option[String] = None,
         events: java.util.Map[String, ?] =
           Collections.singletonMap(backChannelLogoutEvent, Collections.emptyMap()),
@@ -151,7 +154,38 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
             .expirationTime(Date.from(now.plusSeconds(ttlSeconds)))
             .claim("events", events)
           sid.foreach(builder.claim("sid", _))
+          subject.foreach(builder.subject)
           nonce.foreach(builder.claim("nonce", _))
+          val jwt = SignedJWT(header, builder.build())
+          jwt.sign(RSASSASigner(edgeConfig.privateKey))
+          jwt.serialize()
+        }
+      }
+
+    /** An access token revocation event: same signing and transport as a logout token, but it
+      * names one token (`revoked_jti`/`revoked_exp`) instead of a session.
+      */
+    def signRevocationToken(
+        revokedJti: Option[String],
+        revokedExpiresAt: Instant,
+        events: java.util.Map[String, ?],
+        audience: String = "web-app",
+    ): Task[String] =
+      Clock.instant.flatMap { now =>
+        ZIO.attemptBlocking {
+          val header = JWSHeader.Builder(JWSAlgorithm.RS256)
+            .keyID(edgeConfig.keyId)
+            .`type`(JOSEObjectType.JWT)
+            .build()
+          val builder = JWTClaimsSet.Builder()
+            .issuer("https://idp.example")
+            .audience(Collections.singletonList(audience))
+            .jwtID(UUID.randomUUID().toString)
+            .issueTime(Date.from(now))
+            .expirationTime(Date.from(now.plusSeconds(120)))
+            .claim("events", events)
+            .claim("revoked_exp", revokedExpiresAt.getEpochSecond)
+          revokedJti.foreach(builder.claim("revoked_jti", _))
           val jwt = SignedJWT(header, builder.build())
           jwt.sign(RSASSASigner(edgeConfig.privateKey))
           jwt.serialize()
@@ -179,6 +213,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
         httpClient,
         edgeConfig,
         sessionRepository,
+        revocationService,
         jwksService,
         permissionService,
         env,
@@ -434,6 +469,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
       )
       for
         _ <- env.withPresets(Fixtures.preset)
+        _ <- env.revocationService.revoke.succeedsWith(())
         _ <- env.sessionRepository.deleteBySessionId.succeedsWith(List(record))
         security <- ZIO.service[SecurityService]
         client <- ZIO.service[Client]
@@ -456,6 +492,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
       )
       for
         _ <- env.withPresets(Fixtures.preset)
+        _ <- env.revocationService.revoke.succeedsWith(())
         _ <- env.sessionRepository.deleteBySessionId.succeedsWith(List(record))
         security <- ZIO.service[SecurityService]
         client <- ZIO.service[Client]
@@ -477,6 +514,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
       )
       for
         _ <- env.withPresets(Fixtures.preset)
+        _ <- env.revocationService.revoke.succeedsWith(())
         _ <- env.sessionRepository.deleteBySessionId.succeedsWith(
           List(record("jti-1"), record("jti-2")),
         )
@@ -490,6 +528,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val env = new Env
       val sid = SessionId("sso-session-empty")
       for
+        _ <- env.revocationService.revoke.succeedsWith(())
         _ <- env.sessionRepository.deleteBySessionId.succeedsWith(List.empty)
         security <- ZIO.service[SecurityService]
         client <- ZIO.service[Client]
@@ -498,6 +537,52 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
       yield assertTrue(
         cookies.isEmpty,
         env.sessionRepository.deleteBySessionId.calls == List(sid),
+      )
+    },
+    test("revokes the whole session with one entry, expiring at the client's access token TTL") {
+      val env = new Env
+      val sid = SessionId("sso-session-revoked")
+      val record = EdgeSessionRecord(
+        publicSessionId = sid,
+        presetId = Fixtures.presetId,
+        accessTokenId = AccessTokenId("jti-logout-3"),
+        encryptedRefreshToken = None,
+        expiresAt = Instant.parse("2024-01-01T00:00:00Z"),
+      )
+      for
+        _ <- env.withPresets(Fixtures.preset)
+        _ <- env.withClients(Fixtures.client)
+        _ <- env.revocationService.revoke.succeedsWith(())
+        _ <- env.sessionRepository.deleteBySessionId.succeedsWith(List(record, record.copy(accessTokenId = AccessTokenId("jti-logout-4"))))
+        security <- ZIO.service[SecurityService]
+        client <- ZIO.service[Client]
+        now <- Clock.instant
+        service = env.buildService(client, security)
+        _ <- service.frontChannelLogout(env.edgeConfig.versolaUrl.encode, sid)
+      yield assertTrue(
+        // One entry for the session, not one per deleted row: `sid` already covers them all.
+        env.revocationService.revoke.calls ==
+          List(List(Revocation(RevocationKey.Sid(sid), now.plusSeconds(Fixtures.client.accessTokenTtl.toSeconds)))),
+      )
+    },
+    test("revokes a session that matched no rows, using the widest access token TTL it knows") {
+      val env = new Env
+      val sid = SessionId("sso-session-bearer-only")
+      val longLivedClient = Fixtures.client.copy(id = ClientId("mobile"), accessTokenTtl = 1.hour)
+      for
+        _ <- env.withClients(Fixtures.client, longLivedClient)
+        _ <- env.revocationService.revoke.succeedsWith(())
+        _ <- env.sessionRepository.deleteBySessionId.succeedsWith(List.empty)
+        security <- ZIO.service[SecurityService]
+        client <- ZIO.service[Client]
+        now <- Clock.instant
+        service = env.buildService(client, security)
+        _ <- service.frontChannelLogout(env.edgeConfig.versolaUrl.encode, sid)
+      yield assertTrue(
+        // No rows means no presets to resolve clients from — exactly the bearer-token case,
+        // where a token of the session can still be in flight.
+        env.revocationService.revoke.calls ==
+          List(List(Revocation(RevocationKey.Sid(sid), now.plusSeconds(1.hour.toSeconds)))),
       )
     },
     test("returns no cookies and does not touch session rows when issuer is unknown") {
@@ -530,6 +615,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
         )
         for
           _ <- env.withPresets(Fixtures.preset)
+          _ <- env.revocationService.revoke.succeedsWith(())
           _ <- env.sessionRepository.deleteBySessionId.succeedsWith(List(record))
           security <- ZIO.service[SecurityService]
           client <- ZIO.service[Client]
@@ -561,6 +647,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
   )
 
   private val backChannelLogoutEvent = "http://schemas.openid.net/event/backchannel-logout"
+  private val accessTokenRevocationEvent = "versola:event:access-token-revocation"
 
   private def rejection(result: Either[Throwable | InvalidLogoutToken, Unit]): Option[String] =
     result.swap.toOption.collect { case invalid: InvalidLogoutToken => invalid.reason }
@@ -571,14 +658,105 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
       for
         _ <- env.withClients(Fixtures.client)
         _ <- env.jwksService.getPublicKeys.succeedsWith(env.publicKeys)
+        _ <- env.revocationService.revoke.succeedsWith(())
         _ <- env.sessionRepository.deleteBySessionId.succeedsWith(List.empty)
         security <- ZIO.service[SecurityService]
         client <- ZIO.service[Client]
         service = env.buildService(client, security)
+        now <- Clock.instant
         token <- env.signLogoutToken()
         _ <- service.backChannelLogout(token)
       yield assertTrue(
         env.sessionRepository.deleteBySessionId.calls == List(SessionId("sso-session-1")),
+        // The rows are gone, but tokens already issued under the session are not: without
+        // this entry a bearer token of that session would keep working until its own `exp`.
+        env.revocationService.revoke.calls ==
+          List(List(Revocation(
+            RevocationKey.Sid(SessionId("sso-session-1")),
+            now.plusSeconds(Fixtures.client.accessTokenTtl.toSeconds),
+          ))),
+      )
+    },
+    test("revokes every token of a user on a logout token naming only a subject") {
+      val env = new Env
+      for
+        _ <- env.withClients(Fixtures.client)
+        _ <- env.jwksService.getPublicKeys.succeedsWith(env.publicKeys)
+        _ <- env.revocationService.revoke.succeedsWith(())
+        security <- ZIO.service[SecurityService]
+        client <- ZIO.service[Client]
+        service = env.buildService(client, security)
+        now <- Clock.instant
+        token <- env.signLogoutToken(sid = None, subject = Some("user-1"))
+        _ <- service.backChannelLogout(token)
+      yield assertTrue(
+        // Session rows are keyed by session, so there are none to delete for a user; the
+        // entry is what stops the tokens they hold, cookie-borne ones included.
+        env.sessionRepository.deleteBySessionId.calls.isEmpty,
+        env.revocationService.revoke.calls ==
+          List(List(Revocation(
+            RevocationKey.Sub("user-1"),
+            now.plusSeconds(Fixtures.client.accessTokenTtl.toSeconds),
+            issuedBefore = Some(now),
+          ))),
+      )
+    },
+    test("leaves a user-wide revocation open to the user logging in again") {
+      val env = new Env
+      for
+        _ <- env.withClients(Fixtures.client)
+        _ <- env.jwksService.getPublicKeys.succeedsWith(env.publicKeys)
+        _ <- env.revocationService.revoke.succeedsWith(())
+        security <- ZIO.service[SecurityService]
+        client <- ZIO.service[Client]
+        service = env.buildService(client, security)
+        now <- Clock.instant
+        token <- env.signLogoutToken(sid = None, subject = Some("user-1"))
+        _ <- service.backChannelLogout(token)
+        revocation = env.revocationService.revoke.calls.head.head
+      yield assertTrue(
+        // Bounded at the event's own `iat`, so a token minted for a session started after
+        // the administrator acted is outside what the entry covers.
+        revocation.issuedBefore.contains(now),
+        revocation.expiresAt.isAfter(now),
+      )
+    },
+    test("revokes only the named token on an access token revocation event, leaving the session alone") {
+      val env = new Env
+      val revocationEvent = Collections.singletonMap(accessTokenRevocationEvent, Collections.emptyMap())
+      for
+        _ <- env.withClients(Fixtures.client)
+        _ <- env.jwksService.getPublicKeys.succeedsWith(env.publicKeys)
+        _ <- env.revocationService.revoke.succeedsWith(())
+        security <- ZIO.service[SecurityService]
+        client <- ZIO.service[Client]
+        service = env.buildService(client, security)
+        now <- Clock.instant
+        token <- env.signRevocationToken(revokedJti = Some("revoked-token"), revokedExpiresAt = now.plusSeconds(300), events = revocationEvent)
+        _ <- service.backChannelLogout(token)
+      yield assertTrue(
+        // A client revoking one of its own tokens must not log every other client of that
+        // SSO session out, which touching the session rows would do.
+        env.sessionRepository.deleteBySessionId.calls.isEmpty,
+        env.revocationService.revoke.calls ==
+          List(List(Revocation(RevocationKey.Jti(AccessTokenId("revoked-token")), now.plusSeconds(300)))),
+      )
+    },
+    test("rejects an access token revocation event that names no token") {
+      val env = new Env
+      val revocationEvent = Collections.singletonMap(accessTokenRevocationEvent, Collections.emptyMap())
+      for
+        _ <- env.withClients(Fixtures.client)
+        _ <- env.jwksService.getPublicKeys.succeedsWith(env.publicKeys)
+        security <- ZIO.service[SecurityService]
+        client <- ZIO.service[Client]
+        service = env.buildService(client, security)
+        now <- Clock.instant
+        token <- env.signRevocationToken(revokedJti = None, revokedExpiresAt = now.plusSeconds(300), events = revocationEvent)
+        result <- service.backChannelLogout(token).either
+      yield assertTrue(
+        rejection(result).contains("access token revocation carries no revoked_jti claim"),
+        env.revocationService.revoke.calls.isEmpty,
       )
     },
     test("rejects a token that is not a valid JWT") {
@@ -653,7 +831,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
         env.sessionRepository.deleteBySessionId.calls.isEmpty,
       )
     },
-    test("rejects a token without a sid claim") {
+    test("rejects a token naming neither a session nor a subject") {
       val env = new Env
       for
         _ <- env.withClients(Fixtures.client)
@@ -664,7 +842,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
         token <- env.signLogoutToken(sid = None)
         result <- service.backChannelLogout(token).either
       yield assertTrue(
-        rejection(result).contains("logout token carries no sid claim"),
+        rejection(result).contains("logout token carries neither a sid nor a sub claim"),
         env.sessionRepository.deleteBySessionId.calls.isEmpty,
       )
     },
@@ -717,6 +895,9 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
         security <- ZIO.service[SecurityService]
         client <- ZIO.service[Client]
         claims = PermissionsClaims(
+          jti = AccessTokenId("token-1"),
+          subject = "user-1",
+          issuedAt = 0,
           clientId = Some(ClientId("central-admin")),
           tenantId = Some(TenantId.default),
           roles = Some(List(RoleId("oauth-admin"))),
@@ -735,6 +916,9 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
         client <- ZIO.service[Client]
         service = env.buildService(client, security)
         claims = PermissionsClaims(
+          jti = AccessTokenId("token-1"),
+          subject = "user-1",
+          issuedAt = 0,
           clientId = Some(ClientId("central-admin")),
           tenantId = Some(TenantId.default),
           roles = Some(List(RoleId("oauth-admin"))),
@@ -756,6 +940,9 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
         client <- ZIO.service[Client]
         service = env.buildService(client, security)
         claims = PermissionsClaims(
+          jti = AccessTokenId("token-1"),
+          subject = "user-1",
+          issuedAt = 0,
           clientId = Some(ClientId("central-admin")),
           tenantId = Some(TenantId.default),
           roles = Some(List(RoleId("operator"))),
@@ -777,6 +964,9 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
         client <- ZIO.service[Client]
         service = env.buildService(client, security)
         claims = PermissionsClaims(
+          jti = AccessTokenId("token-1"),
+          subject = "user-1",
+          issuedAt = 0,
           clientId = Some(ClientId("web-app")),
           tenantId = Some(TenantId.default),
           roles = Some(List(RoleId("oauth-admin"))),
@@ -801,6 +991,9 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
         client <- ZIO.service[Client]
         service = env.buildService(client, security)
         claims = PermissionsClaims(
+          jti = AccessTokenId("token-1"),
+          subject = "user-1",
+          issuedAt = 0,
           clientId = Some(ClientId("web-app")),
           tenantId = Some(TenantId.default),
           roles = Some(List(RoleId("member"))),
@@ -827,6 +1020,9 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
         client <- ZIO.service[Client]
         service = env.buildService(client, security)
         claims = PermissionsClaims(
+          jti = AccessTokenId("token-1"),
+          subject = "user-1",
+          issuedAt = 0,
           clientId = Some(ClientId("central-admin")),
           tenantId = Some(TenantId.default),
           roles = Some(List(RoleId("operator"))),
@@ -847,6 +1043,9 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
         client <- ZIO.service[Client]
         service = env.buildService(client, security)
         claims = PermissionsClaims(
+          jti = AccessTokenId("token-1"),
+          subject = "user-1",
+          issuedAt = 0,
           clientId = Some(ClientId("central-admin")),
           tenantId = Some(TenantId.default),
           roles = Some(List(RoleId("oauth-admin"))),
@@ -866,6 +1065,9 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
         client <- ZIO.service[Client]
         service = env.buildService(client, security)
         claims = PermissionsClaims(
+          jti = AccessTokenId("token-1"),
+          subject = "user-1",
+          issuedAt = 0,
           clientId = None,
           tenantId = Some(TenantId.default),
           roles = Some(List(RoleId("member"))),
@@ -887,6 +1089,9 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
         client <- ZIO.service[Client]
         service = env.buildService(client, security)
         claims = PermissionsClaims(
+          jti = AccessTokenId("token-1"),
+          subject = "user-1",
+          issuedAt = 0,
           clientId = Some(ClientId("central-admin")),
           tenantId = Some(TenantId.default),
           roles = Some(List(RoleId("editor"))),
@@ -907,6 +1112,9 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
         client <- ZIO.service[Client]
         service = env.buildService(client, security)
         claims = PermissionsClaims(
+          jti = AccessTokenId("token-1"),
+          subject = "user-1",
+          issuedAt = 0,
           clientId = Some(ClientId("web-app")),
           tenantId = None,
           roles = None,

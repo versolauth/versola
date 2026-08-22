@@ -9,6 +9,12 @@ trait OAuthClientService:
   def listPresets(presetIds: List[PresetId]): UIO[List[AuthorizationPreset]]
   def findClient(clientId: ClientId): UIO[Option[OAuthClient]]
 
+  /** Every client this edge knows about. Used where no single client identifies the answer,
+    * such as bounding how long a revocation has to be remembered for a session whose
+    * participating clients are no longer known.
+    */
+  def listClients: UIO[List[OAuthClient]]
+
 object OAuthClientService:
   def live: ZLayer[
     AuthorizationPresetsSyncClient & OAuthClientsSyncClient & Scope & EdgeConfig,
@@ -18,12 +24,12 @@ object OAuthClientService:
     (
       (ZLayer.fromZIO:
         ZIO.serviceWithZIO[EdgeConfig](config =>
-          ReloadingCache.make[Map[PresetId, AuthorizationPreset]](Schedule.spaced(config.configurationCacheRefreshInterval)),
+          ReloadingCache.make[Map[PresetId, AuthorizationPreset]](config.configurationCacheRefreshInterval),
         )
       ) ++
       (ZLayer.fromZIO:
         ZIO.serviceWithZIO[EdgeConfig](config =>
-          ReloadingCache.make[Map[ClientId, OAuthClient]](Schedule.spaced(config.configurationCacheRefreshInterval)),
+          ReloadingCache.make[Map[ClientId, OAuthClient]](config.configurationCacheRefreshInterval),
         )
       )
     ) >>> ZLayer.fromFunction(Impl(_, _))
@@ -41,3 +47,6 @@ object OAuthClientService:
 
     override def findClient(clientId: ClientId): UIO[Option[OAuthClient]] =
       clientCache.get.map(_.get(clientId))
+
+    override def listClients: UIO[List[OAuthClient]] =
+      clientCache.get.map(_.values.toList)

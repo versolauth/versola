@@ -91,7 +91,7 @@ object PermissionServiceSpec extends ZIOSpecDefault:
     ),
     suite("getAllowedEndpointsForClient")(
       test("returns endpoints composed from the client's permissions") {
-        val client = OAuthClient(id = serviceClient, secret = Secret(Array.fill(8)(1.toByte)), permissions = Set(writePerm))
+        val client = OAuthClient(id = serviceClient, secret = Secret(Array.fill(8)(1.toByte)), permissions = Set(writePerm), accessTokenTtl = 15.minutes)
         val service = buildService(clients = Map(serviceClient -> client))
         for endpoints <- service.getAllowedEndpointsForClient(serviceClient)
         yield assertTrue(endpoints == Set(createUserEndpoint))
@@ -102,13 +102,13 @@ object PermissionServiceSpec extends ZIOSpecDefault:
         yield assertTrue(endpoints.isEmpty)
       },
       test("returns empty set when client has no permissions") {
-        val client = OAuthClient(id = serviceClient, secret = Secret(Array.fill(8)(1.toByte)), permissions = Set.empty)
+        val client = OAuthClient(id = serviceClient, secret = Secret(Array.fill(8)(1.toByte)), permissions = Set.empty, accessTokenTtl = 15.minutes)
         val service = buildService(clients = Map(serviceClient -> client))
         for endpoints <- service.getAllowedEndpointsForClient(serviceClient)
         yield assertTrue(endpoints.isEmpty)
       },
       test("ignores client permissions that map to no endpoints") {
-        val client = OAuthClient(id = serviceClient, secret = Secret(Array.fill(8)(1.toByte)), permissions = Set(PermissionId("unmapped")))
+        val client = OAuthClient(id = serviceClient, secret = Secret(Array.fill(8)(1.toByte)), permissions = Set(PermissionId("unmapped")), accessTokenTtl = 15.minutes)
         val service = buildService(clients = Map(serviceClient -> client))
         for endpoints <- service.getAllowedEndpointsForClient(serviceClient)
         yield assertTrue(endpoints.isEmpty)

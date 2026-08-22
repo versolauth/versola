@@ -2,12 +2,12 @@ package versola.oauth.logout
 
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{ClientId, OAuthClientRecord}
-import versola.oauth.jwks.JwksService
 import versola.oauth.session.SessionService
 import versola.oauth.session.model.{PublicSessionId, SessionId, SessionInfo, SessionRecord}
-import versola.util.{CoreConfig, JWT}
+import versola.user.model.UserId
+import versola.util.CoreConfig
 import zio.*
-import zio.http.{Body, Client, Form, Request, URL}
+import zio.http.URL
 import zio.json.ast.Json
 
 trait LogoutService:
@@ -16,6 +16,11 @@ trait LogoutService:
       postLogoutRedirectUri: Option[URL],
       state: Option[String],
   ): Task[LogoutService.LogoutResult]
+
+  /** Admin-panel force-logout: invalidates every active session of a user and notifies,
+    * via back-channel logout, every client that participated in each one. There is no
+    * browser to redirect here, so unlike [[logout]] this produces no front-channel URIs. */
+  def invalidateAllSessions(userId: UserId): Task[Unit]
 
 object LogoutService:
   case class LogoutResult(
@@ -26,21 +31,13 @@ object LogoutService:
 
   private val BackChannelLogoutEvent = "http://schemas.openid.net/event/backchannel-logout"
 
-  /** How long a back-channel logout token issued to an RP is valid for. */
-  private val TokenTtl = 2.minutes
-
-  /** How long the OP waits for an RP's back-channel logout endpoint to respond before
-    * giving up on that single, fire-and-forget delivery attempt (no retries). */
-  private val RequestTimeout = 5.seconds
-
-  val live = ZLayer.fromFunction(Impl(_, _, _, _, _))
+  val live = ZLayer.fromFunction(Impl(_, _, _, _))
 
   class Impl(
       sessionService: SessionService,
       configuration: OAuthConfigurationService,
       config: CoreConfig,
-      jwksService: JwksService,
-      httpClient: Client,
+      dispatcher: BackChannelDispatcher,
   ) extends LogoutService:
 
     override def logout(
@@ -66,6 +63,19 @@ object LogoutService:
               _ <- sendBackChannelLogouts(sessionParticipants, session.record)
             yield LogoutResult(logoutUris, redirect, state)
       yield result
+
+    /** Ending every session a user has is one event per client rather than one per session:
+      * a logout token carrying a `sub` and no `sid` asks the RP to end all of that user's
+      * sessions (OIDC Back-Channel Logout §2.4), so a user with five sessions across two
+      * clients costs two deliveries instead of ten — and the RP records one revocation
+      * instead of five.
+      */
+    override def invalidateAllSessions(userId: UserId): Task[Unit] =
+      for
+        sessions <- sessionService.invalidateAllByUser(userId)
+        participants <- sessionClients(sessions.flatMap(_.clients.map(_.clientId)).distinct)
+        _ <- ZIO.foreachDiscard(participants)(sendUserLogout(_, userId).forkDaemon)
+      yield ()
 
     /** Resolves the RPs that actually participated in this SSO session (tracked via
       * `SessionRecord.clients`, populated at issuance and on silent re-authorization),
@@ -96,48 +106,32 @@ object LogoutService:
             .map(_.contains(target))
 
     /** OIDC Back-Channel Logout (spec §2.4): each RP with a `backChannelLogoutUri` is
-      * notified on its own daemon fiber, bounded by `backChannelLogout.requestTimeout`
-      * and without retries, so a slow or unreachable RP never delays or fails the
-      * user's own logout response. */
+      * notified on its own daemon fiber, so a slow or unreachable RP never delays or fails
+      * the user's own logout response. */
     private def sendBackChannelLogouts(clients: List[OAuthClientRecord], session: SessionRecord): UIO[Unit] =
       ZIO.foreachDiscard(clients)(sendBackChannelLogout(_, session).forkDaemon)
 
     private def sendBackChannelLogout(client: OAuthClientRecord, session: SessionRecord): UIO[Unit] =
+      send(
+        client,
+        session.userId.toString,
+        Json.Obj(
+          "sid" -> Json.Str(session.publicId),
+          "events" -> Json.Obj(BackChannelLogoutEvent -> Json.Obj()),
+        ),
+      )
+
+    private def sendUserLogout(client: OAuthClientRecord, userId: UserId): UIO[Unit] =
+      send(
+        client,
+        userId.toString,
+        Json.Obj("events" -> Json.Obj(BackChannelLogoutEvent -> Json.Obj())),
+      )
+
+    private def send(client: OAuthClientRecord, subject: String, customClaims: Json.Obj): UIO[Unit] =
       client.backChannelLogoutUri match
         case None => ZIO.unit
         case Some(uri) =>
-          deliverLogoutToken(client, session, uri)
-            .timeoutFail(RuntimeException(s"back-channel logout to client '${client.id}' timed out"))(
-              RequestTimeout,
-            )
+          dispatcher
+            .dispatch(client = client, uri = uri, subject = subject, customClaims = customClaims)
             .catchAllCause(cause => ZIO.logWarningCause(s"Back-channel logout to client '${client.id}' failed", cause))
-
-    private def deliverLogoutToken(client: OAuthClientRecord, session: SessionRecord, uri: URL): Task[Unit] =
-      for
-        signingKey <- jwksService.getPublicKeys.map(_.active)
-        token <- logoutToken(client, session, signingKey)
-        request = Request.post(uri, Body.fromURLEncodedForm(Form.fromStrings("logout_token" -> token)))
-        response <- ZIO.scoped(httpClient.request(request))
-        _ <- ZIO
-          .fail(RuntimeException(s"back-channel logout endpoint responded with ${response.status.code}"))
-          .unless(response.status.isSuccess)
-      yield ()
-
-    private def logoutToken(client: OAuthClientRecord, session: SessionRecord, signingKey: JWT.PublicKey): Task[String] =
-      JWT.serialize(
-        claims = JWT.Claims(
-          issuer = config.jwt.issuer,
-          subject = session.userId.toString,
-          audience = List(client.id),
-          custom = Json.Obj(
-            "sid" -> Json.Str(session.publicId),
-            "events" -> Json.Obj(BackChannelLogoutEvent -> Json.Obj()),
-          ),
-        ),
-        ttl = TokenTtl,
-        signature = JWT.Signature.Asymmetric(
-          algorithm = signingKey.algorithm,
-          keyId = signingKey.id,
-          privateKey = config.jwt.privateKey,
-        ),
-      )

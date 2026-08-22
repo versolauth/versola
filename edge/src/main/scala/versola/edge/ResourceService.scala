@@ -11,7 +11,7 @@ object ResourceService:
   def live: ZLayer[ResourcesSyncClient & Scope & EdgeConfig, Throwable, ResourceService] =
     (ZLayer.fromZIO:
       ZIO.serviceWithZIO[EdgeConfig](config =>
-        ReloadingCache.make[Map[ResourceId, Resource]](Schedule.spaced(config.configurationCacheRefreshInterval)),
+        ReloadingCache.make[Map[ResourceId, Resource]](config.configurationCacheRefreshInterval),
       )
     ) >>>
       ZLayer.fromFunction(Impl(_))
