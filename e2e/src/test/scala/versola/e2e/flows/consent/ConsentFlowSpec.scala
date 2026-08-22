@@ -23,14 +23,14 @@ object ConsentFlowSpec extends E2ESpec:
   private def authenticateToConsent(
       auth: OAuthClient,
       s: Flows.Setup,
-      scope: String = "openid email",
+      scope: Option[String] = Some("openid email"),
       sessionCookie: Option[String] = None,
   ) =
     for
       authorize <- auth.authorizeRaw(
         clientId = s.clientId,
         redirectUri = s.redirectUri,
-        scope = Some(scope),
+        scope = scope,
         sessionCookie = sessionCookie,
       ).assertChallengeRedirect
       cookie = authorize.conversationCookie.get
@@ -82,6 +82,17 @@ object ConsentFlowSpec extends E2ESpec:
         assertTrue(consent.html.contains("overflow-y: auto"))
           .label("the scopes region must enable vertical scrolling when it overflows")
     },
+    test("the consent screen shows all client scopes when scope is omitted") {
+      for
+        (s, auth) <- freshConsentSetup()
+        (_, _, _, consent) <- authenticateToConsent(auth, s, scope = None)
+      yield assertTrue(consent.html.contains("\"scope\":\"openid\""))
+        .label("the consent screen must list the client's 'openid' scope") &&
+        assertTrue(consent.html.contains("\"scope\":\"email\""))
+          .label("the consent screen must list the client's 'email' scope") &&
+        assertTrue(consent.html.contains("\"scope\":\"offline_access\""))
+          .label("the consent screen must list the client's 'offline_access' scope")
+    },
     test("a remembered grant is reused on the next authorization") {
       for
         (s, auth) <- freshConsentSetup()
@@ -102,7 +113,7 @@ object ConsentFlowSpec extends E2ESpec:
     test("a remembered grant does not cover a newly requested scope") {
       for
         (s, auth) <- freshConsentSetup()
-        (_, cookie, _, consent) <- authenticateToConsent(auth, s, scope = "openid")
+        (_, cookie, _, consent) <- authenticateToConsent(auth, s, scope = Some("openid"))
         granted <- auth.submitConsent(cookie, Set("openid"), consent.csrf)
         session = granted.sessionCookie.get
         widened <- auth.authorizeRaw(

@@ -113,6 +113,7 @@ lazy val `central-postgres-impl` = project.in(centralImplementations / "postgres
     commonSettings,
     libraryDependencies ++= Dependencies.database.postgres,
     Compile / mainClass := Some("versola.PostgresCentralApp"),
+    Test / parallelExecution := false,
     sbtForkSettings,
   ).dependsOn(
     central % CompileTest,

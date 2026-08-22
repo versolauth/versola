@@ -11,6 +11,8 @@ import versola.util.postgres.BasicCodecs
 import zio.json.{JsonCodec, JsonDecoder, JsonEncoder}
 import zio.{Task, ZLayer}
 
+import java.sql.SQLException
+
 class PostgresAuthorizationPresetRepository(
     xa: TransactorZIO,
 ) extends AuthorizationPresetRepository, BasicCodecs:
@@ -56,6 +58,11 @@ class PostgresAuthorizationPresetRepository(
             )
           """.update
     .unit
+    .mapError {
+      case e if PostgresAuthorizationPresetRepository.isUniqueViolation(e) =>
+        versola.central.configuration.clients.PresetValidationError.DuplicatePresetId
+      case e => e
+    }
 
   override def getAll: Task[Vector[AuthorizationPreset]] =
     xa.connectMeasured("get-all-presets"):
@@ -67,5 +74,11 @@ class PostgresAuthorizationPresetRepository(
         .query[AuthorizationPreset].run()
 
 object PostgresAuthorizationPresetRepository:
+  private val UniqueViolationSqlState = "23505"
+
+  private[clients] def isUniqueViolation(t: Throwable): Boolean = t match
+    case sql: SQLException => sql.getSQLState == UniqueViolationSqlState
+    case _ => Option(t.getCause).exists(isUniqueViolation)
+
   def live: ZLayer[TransactorZIO, Throwable, AuthorizationPresetRepository] =
     ZLayer.fromFunction(PostgresAuthorizationPresetRepository(_))

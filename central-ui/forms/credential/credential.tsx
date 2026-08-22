@@ -1,6 +1,6 @@
 import { render } from 'solid-js/web';
 import { createSignal, Show } from 'solid-js';
-import { getAssertionResponse, submitViaForm, passkeysSupported } from '../passkey/webauthn';
+import { getAssertionResponse, isPasskeyCancellation, passkeysSupported, submitViaForm } from '../passkey/webauthn';
 
 function LocaleDropdown(props: { locales: string[]; current: string; onChange: (l: string) => void }) {
   const [open, setOpen] = createSignal(false);
@@ -41,7 +41,6 @@ type CredentialStep = {
   inlinePassword: boolean;
   passkey: boolean;
   allowedPhonePrefixes?: string[];
-
   passwordRegex?: string;
 };
 
@@ -84,16 +83,6 @@ function CredentialForm(props: { config: FormConfig }) {
   const challengeKind = single ?? 'credential';
   const combinedPlaceholder = () => primaries.map((p) => t()[`${p}_placeholder`] ?? p).join(' / ');
   const allowedPhonePrefixes = step.allowedPhonePrefixes ?? [];
-  // The picker is derived entirely from the tenant's configured phone prefixes: when
-  // none are configured there's nothing to derive a list from, so the phone field falls
-  // back to a single free-typed E.164 input (today's behavior, unrestricted).
-  // These are dialling prefixes, not country codes: one prefix can cover many countries
-  // (+1 is the whole NANP) and can be longer than a country code (operator ranges).
-  const showPhonePrefixPicker = allowedPhonePrefixes.length > 0;
-  const [phonePrefix, setPhonePrefix] = createSignal(allowedPhonePrefixes[0] ?? '');
-  const [phoneRest, setPhoneRest] = createSignal('');
-  const fullPhone = () =>
-    showPhonePrefixPicker ? `${phonePrefix()}${phoneRest()}` : phoneRest();
 
   // login always carries a password; email/phone show it only when inlinePassword is set
   const showPassword = () => isLoginFlow || !!step.inlinePassword;
@@ -145,7 +134,11 @@ function CredentialForm(props: { config: FormConfig }) {
       const optionsJson = await optionsResponse.text();
       const response = await getAssertionResponse(optionsJson);
       submitViaForm(`/challenge/passkey?ui_locale=${currentLocale()}`, { response, csrf: props.config.csrf ?? '' });
-    } catch (_) {
+    } catch (error) {
+      if (isPasskeyCancellation(error)) {
+        setPasskeyBusy(false);
+        return;
+      }
       setPasskeyErrorKey('passkey_failed');
       setPasskeyBusy(false);
     }
@@ -154,7 +147,7 @@ function CredentialForm(props: { config: FormConfig }) {
   const handleSubmit = (e: SubmitEvent) => {
     const form = e.currentTarget as HTMLFormElement;
     if (single === 'phone' && allowedPhonePrefixes.length > 0) {
-      const phone = fullPhone();
+      const phone = (form.elements.namedItem('phone') as HTMLInputElement | null)?.value ?? '';
       if (!allowedPhonePrefixes.some((prefix) => phone.startsWith(prefix))) {
         e.preventDefault();
         setPhoneNotAllowed(true);
@@ -209,40 +202,15 @@ function CredentialForm(props: { config: FormConfig }) {
           <input type="email" name="email" class="input-field" placeholder={t().email_placeholder} required />
         </Show>
         <Show when={single === 'phone'}>
-          <input type="hidden" name="phone" value={fullPhone()} />
-          <Show
-            when={showPhonePrefixPicker}
-            fallback={
-              <input
-                type="tel"
-                class="input-field"
-                placeholder={t().phone_placeholder}
-                pattern="^\+[1-9]\d{6,14}$"
-                required
-                value={phoneRest()}
-                onInput={(e) => { phoneNotAllowed() && setPhoneNotAllowed(false); setPhoneRest((e.currentTarget as HTMLInputElement).value); }}
-              />
-            }
-          >
-            <div class="phone-field-group">
-              <select
-                class="input-field phone-prefix-select"
-                aria-label={t().phone_prefix_label ?? 'Phone prefix'}
-                value={phonePrefix()}
-                onChange={(e) => setPhonePrefix((e.currentTarget as HTMLSelectElement).value)}
-              >
-                {allowedPhonePrefixes.map((prefix) => <option value={prefix}>{prefix}</option>)}
-              </select>
-              <input
-                type="tel"
-                class="input-field phone-rest-input"
-                placeholder={t().phone_placeholder}
-                required
-                value={phoneRest()}
-                onInput={(e) => { phoneNotAllowed() && setPhoneNotAllowed(false); setPhoneRest((e.currentTarget as HTMLInputElement).value); }}
-              />
-            </div>
-          </Show>
+          <input
+            type="tel"
+            name="phone"
+            class="input-field"
+            placeholder={t().phone_placeholder}
+            pattern="^\+[1-9]\d{6,14}$"
+            required
+            onInput={() => phoneNotAllowed() && setPhoneNotAllowed(false)}
+          />
           <Show when={phoneNotAllowed()}>
             <div class="phone-error-message error-text">{t().phone_not_allowed}</div>
           </Show>

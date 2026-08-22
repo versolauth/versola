@@ -268,7 +268,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           response <- env.service.renderStep(record, None)
           body <- response.body.asString
         yield
-          assertTrue(body.contains("\"destination\":\"j***n@example.com\""))
+          assertTrue(body.contains("\"destination\":\"j•••n@example.com\""))
       },
       test("omits the destination when no credential is on the conversation") {
         val env = Env()

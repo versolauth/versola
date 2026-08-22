@@ -379,6 +379,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
     * Pass `omitCodeChallenge = true` to omit `code_challenge` from the request (e.g. to test missing-challenge errors).
     * Pass `requestUri` to redeem a pushed authorization request (RFC 9126) instead of sending
     * the authorization parameters directly; only `client_id` and `request_uri` are then sent.
+    * Pass `codeChallengeMethod = None` or an unsupported value to test PKCE method errors.
     */
   def authorizeRaw(
       clientId: String,
@@ -386,6 +387,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
       scope: Option[String] = Some("openid"),
       responseType: Option[String] = Some("code"),
       omitCodeChallenge: Boolean = false,
+      codeChallengeMethod: Option[String] = Some("S256"),
       prompt: Option[String] = None,
       maxAge: Option[Long] = None,
       sessionCookie: Option[String] = None,
@@ -407,7 +409,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
           "scope"                -> scope,
           "response_type"        -> responseType,
           "code_challenge"       -> (if omitCodeChallenge then None else Some(challenge)),
-          "code_challenge_method"-> (if omitCodeChallenge then None else Some("S256")),
+          "code_challenge_method"-> (if omitCodeChallenge then None else codeChallengeMethod),
           "state"                -> Some(state),
           "prompt"               -> prompt,
           "max_age"              -> maxAge.map(_.toString),

@@ -139,16 +139,17 @@ object AuthorizeRequestParser:
 
         codeChallengeMethod <- getParam(params, "code_challenge_method")
           .orElseFail(Error.MultipleValuesProvided(redirectUri, state, "code_challenge_method"))
+          .someOrFail(Error.CodeChallengeMethodMissing(redirectUri, state))
           .flatMap {
-            case Some("S256") => ZIO.succeed(CodeChallengeMethod.S256)
-            case Some("plain") | None => ZIO.succeed(CodeChallengeMethod.Plain)
-            case Some(other) => ZIO.fail(Error.CodeChallengeMethodInvalid(redirectUri, state, other))
+            case "S256" => ZIO.succeed(CodeChallengeMethod.S256)
+            case other => ZIO.fail(Error.CodeChallengeMethodInvalid(redirectUri, state, other))
           }
 
         scope <- getParam(params, "scope")
           .orElseFail(Error.MultipleValuesProvided(redirectUri, state, "scope"))
-          .someOrFail(Error.ScopeMissing(redirectUri, state))
-          .map(_.split(' ').toSet.filter(_.nonEmpty).map(ScopeToken(_)))
+          .map:
+            case None => client.scope
+            case Some(value) => value.split(' ').toSet.filter(_.nonEmpty).map(ScopeToken(_))
 
         uiLocales <- getParam(params, "ui_locales")
           .orElseFail(Error.MultipleValuesProvided(redirectUri, state, "ui_locales"))

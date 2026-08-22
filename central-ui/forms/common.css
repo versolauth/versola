@@ -37,6 +37,9 @@ body {
 }
 .container {
   position: relative;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
   text-align: center;
   background: var(--card-bg);
   border: 1px solid var(--border);
@@ -47,6 +50,7 @@ body {
     0 4px 10px rgba(16, 24, 40, 0.04),
     0 20px 48px rgba(16, 24, 40, 0.09);
   width: min(420px, calc(100vw - 40px));
+  min-height: max(460px, min(520px, calc(100dvh - 40px)));
 }
 .brand-mark {
   width: 46px;

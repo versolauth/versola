@@ -1,7 +1,7 @@
 import { css } from 'lit';
 
 export const celHighlightStyles = css`
-  /* Colors come from --cel-*/--ch-* custom properties (defined per-theme in
+  /* Colors come from CEL and code-highlight custom properties (defined per-theme in
      index.html), same reasoning as code-highlight.ts. */
   .cel-tok { white-space: inherit; }
   .cel-keyword { color: var(--cel-keyword); }

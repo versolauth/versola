@@ -52,6 +52,8 @@ object AuthorizationPresetController extends Controller:
         result <- service.savePresets(body)
       yield result match
         case Right(_) => Response.status(Status.NoContent)
+        case Left(error: PresetValidationError.DuplicatePresetId.type) =>
+          Response.text(error.getMessage).status(Status.BadRequest)
         case Left(error) => Response.badRequest
     }
 
