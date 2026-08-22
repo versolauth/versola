@@ -363,6 +363,7 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val env = new Env
 
       for
+        _ <- env.repository.findResource.succeedsWith(Some(resource))
         _ <- env.repository.updateResource.succeedsWith(())
         result <- env.service.updateResource(updateRequest)
       yield assertTrue(
@@ -374,6 +375,52 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
           Vector(updatedEndpoint, createdEndpoint),
           Set(removedEndpointId),
         )),
+      )
+    },
+    test("updateResource returns error when a submitted endpoint is ambiguous with one retained from the existing resource") {
+      val env = new Env
+      val storedParameterized = ResourceEndpointRecord(existingEndpointId, "/users/{id}", "GET", false, None, Vector.empty, None, None, None)
+      val storedResource = ResourceRecord(tenantId, resourceId, originalUri, audience, Vector(storedParameterized), None, None)
+      val request = UpdateResourceRequest(
+        resourceId = resourceId,
+        resource = None,
+        audience = None,
+        deleteEndpoints = Set.empty,
+        createEndpoints = Vector(
+          CreateResourceEndpointRequest(createdEndpointId, "/users/{userId}", "GET", false, None, Vector.empty, stepUpCondition = None, stepUpAcr = None, maxAge = None),
+        ),
+      )
+
+      for
+        _ <- env.repository.findResource.succeedsWith(Some(storedResource))
+        _ <- env.repository.updateResource.succeedsWith(())
+        result <- env.service.updateResource(request)
+      yield assertTrue(
+        result == Left(ResourceValidationError.AmbiguousEndpointPath(createdEndpointId, "/users/{userId}")),
+        env.repository.updateResource.calls.isEmpty,
+      )
+    },
+    test("updateResource accepts a submitted endpoint ambiguous with one it also deletes") {
+      val env = new Env
+      val storedParameterized = ResourceEndpointRecord(existingEndpointId, "/users/{id}", "GET", false, None, Vector.empty, None, None, None)
+      val storedResource = ResourceRecord(tenantId, resourceId, originalUri, audience, Vector(storedParameterized), None, None)
+      val request = UpdateResourceRequest(
+        resourceId = resourceId,
+        resource = None,
+        audience = None,
+        deleteEndpoints = Set(existingEndpointId),
+        createEndpoints = Vector(
+          CreateResourceEndpointRequest(createdEndpointId, "/users/{userId}", "GET", false, None, Vector.empty, stepUpCondition = None, stepUpAcr = None, maxAge = None),
+        ),
+      )
+
+      for
+        _ <- env.repository.findResource.succeedsWith(Some(storedResource))
+        _ <- env.repository.updateResource.succeedsWith(())
+        result <- env.service.updateResource(request)
+      yield assertTrue(
+        result == Right(()),
+        env.repository.updateResource.calls.nonEmpty,
       )
     },
     test("deleteResource delegates id to repository") {
