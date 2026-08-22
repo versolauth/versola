@@ -147,8 +147,9 @@ object AuthorizeRequestParser:
 
         scope <- getParam(params, "scope")
           .orElseFail(Error.MultipleValuesProvided(redirectUri, state, "scope"))
-          .someOrFail(Error.ScopeMissing(redirectUri, state))
-          .map(_.split(' ').toSet.filter(_.nonEmpty).map(ScopeToken(_)))
+          .map:
+            case None => client.scope
+            case Some(value) => value.split(' ').toSet.filter(_.nonEmpty).map(ScopeToken(_))
 
         uiLocales <- getParam(params, "ui_locales")
           .orElseFail(Error.MultipleValuesProvided(redirectUri, state, "ui_locales"))
