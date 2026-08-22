@@ -6,7 +6,7 @@ import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm, JWSHeader, JWSSigner}
 import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 import zio.json.*
 import zio.json.ast.Json
-import zio.{Chunk, Clock, Duration, IO, Task, UIO, ZIO}
+import zio.{Chunk, Clock, Duration, IO, Task, ZIO}
 
 import java.nio.charset.StandardCharsets
 import java.security.PrivateKey

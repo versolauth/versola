@@ -12,10 +12,13 @@ case class SystemSettingsRecord(
 object SystemSettingsRecord:
   val DefaultPasswordRegex = "^(?=.*[A-Z])(?=.*[a-z])(?=.*\\d).{8,}$"
 
+  // CIAM default: minimal history check, mainly to stop "change it back immediately" resets.
+  // Deployments needing a stricter policy (e.g. internal employee auth) can override via
+  // SystemSettingsController's upsert endpoint.
   val default: SystemSettingsRecord =
     SystemSettingsRecord(
       passwordRegex        = DefaultPasswordRegex,
-      passwordHistorySize  = 5,
-      passwordNumDifferent = 3,
+      passwordHistorySize  = 2,
+      passwordNumDifferent = 1,
       identityProviderLogo = None,
     )

@@ -112,11 +112,19 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       PostgresCleanupManager.live
   )
 
+  /** Argon2id hashing runs on the unbounded blocking pool; this applies the configured
+    * concurrency cap (see `Argon2Config`).
+    */
+  private val securityService: URLayer[SecureRandom & CoreConfig, SecurityService] =
+    ZLayer.service[CoreConfig].flatMap { env =>
+      SecurityService.live(env.get[CoreConfig].argon2OrDefault)
+    }
+
   val dependencies: ZLayer[Scope & EnvName & ConfigProvider & Tracing & Client, Throwable, Dependencies] =
     repositories >+>
       parseConfig[CoreConfig] >+>
       SecureRandom.live >+>
-      SecurityService.live >+>
+      securityService >+>
       JsonSchemaValidator.live >+>
       OAuthConfigurationService.live >+>
       CentralSyncTokenService.live >+>

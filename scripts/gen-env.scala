@@ -511,6 +511,17 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
        |  max-request-size = 8192
        |}
        |
+       |# Admission control for Argon2id password hashing, which runs on ZIO's unbounded
+       |# blocking pool (see Argon2Config). max-concurrent bounds concurrent password hashes:
+       |# each holds ~19 MiB of heap for its duration, so worst-case hashing heap is roughly
+       |# max-concurrent * 19 MiB -- the default of 12 (~228 MiB) is sized for auth's 512m
+       |# mem_limit. Raise it only together with the container's memory limit, or logins
+       |# will OOM the pod. Overridable via ARGON2_MAX_CONCURRENCY without editing this file.
+       |argon2 {
+       |  max-concurrent = 12
+       |  max-concurrent = $${?ARGON2_MAX_CONCURRENCY}
+       |}
+       |
        |jwt {
        |  issuer = "$authUrl"
        |  private-key = ${secretKeyField(useOpenBao, jwtKey.privateB64, "JWT_PRIVATE_KEY")}
