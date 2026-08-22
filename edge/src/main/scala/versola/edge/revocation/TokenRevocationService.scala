@@ -46,7 +46,10 @@ object TokenRevocationService:
         // Loaded before the layer completes, so the first request is served from a warm
         // cache instead of falling back to the database for every miss.
         _ <- service.reload
-        _ <- service.reload.repeat(Schedule.spaced(config.revocation.reloadInterval)).forkScoped
+        // Jittered so replicas started together (a rolling deploy, or a host coming back up)
+        // don't stay in lockstep and scan the table at the same instant for the rest of their
+        // lives.
+        _ <- service.reload.repeat(Schedule.spaced(config.revocation.reloadInterval).jittered).forkScoped
         _ <- service.consume(notifications).forkScoped
         _ <- service.applySettings(settingsClient)
           .repeat(Schedule.spaced(config.configurationCacheRefreshInterval))
@@ -119,10 +122,19 @@ object TokenRevocationService:
       revocation.expiresAt.isAfter(now) &&
         revocation.issuedBefore.forall(!issuedAt.isAfter(_))
 
-    /** Applies revocations written by this or any other replica as they arrive. */
+    /** Applies revocations written by this or any other replica as they arrive.
+      *
+      * Reconnects arrive on the same stream, because a gap in the feed is not a no-op here:
+      * revocations published while it was down were never delivered and never will be, so the
+      * cache is rebuilt from the table before it is trusted again.
+      */
     private[revocation] def consume(notifications: RevocationNotifications): UIO[Unit] =
       notifications.notifications
-        .runForeach(revocation => ZIO.succeed(cache.put(revocation.key, revocation)))
+        .runForeach:
+          case RevocationEvent.Resubscribed =>
+            reload
+          case RevocationEvent.Revoked(revocation) =>
+            ZIO.succeed(cache.put(revocation.key, revocation))
         .catchAllCause(cause => ZIO.logErrorCause("Revocation notification stream failed", cause))
 
     /** Applies the size central holds for this edge. Resizing evicts on its own when the
@@ -155,6 +167,8 @@ object TokenRevocationService:
           cache.asMap().entrySet().asScala.filterInPlace(entry => entry.getValue.expiresAt.isAfter(now))
           active.take(limit).foreach(revocation => cache.put(revocation.key, revocation))
         _ <- ZIO.succeed(complete.set(active.sizeIs <= limit))
+        _ <- RevocationMetrics.cacheState(complete = active.sizeIs <= limit, entries = cache.estimatedSize())
       yield ()).catchAllCause: cause =>
         ZIO.succeed(complete.set(false)) *>
+          RevocationMetrics.cacheState(complete = false, entries = cache.estimatedSize()) *>
           ZIO.logWarningCause("Failed to reload the revocation list; falling back to per-miss lookups", cause)

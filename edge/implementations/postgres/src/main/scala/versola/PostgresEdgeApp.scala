@@ -55,8 +55,8 @@ object PostgresEdgeApp extends VersolaApp("edge"):
 
   val dependencies: ZLayer[Scope & EnvName & ConfigProvider & Tracing & Client, Throwable, Dependencies] =
     parseConfig[EdgeConfig] >+>
-      // `>+>` rather than `>>>`: PostgresRevocationNotifications needs the HikariDataSource
-      // itself, to park a connection of its own on LISTEN.
+      // `>+>` rather than `>>>`: PostgresRevocationNotifications needs the PostgresConfig the
+      // transactor loaded, to open a connection of its own to park on LISTEN.
       (PostgresHikariDataSource.transactor(serviceName = Some("edge"), migrate = runMigrations) >+>
         (ZLayer.fromFunction(PostgresLoginRepository(_)) ++
           ZLayer.fromFunction(PostgresEdgeSessionRepository(_)) ++

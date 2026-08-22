@@ -1,6 +1,5 @@
 package versola.configuration.sync
 
-import com.zaxxer.hikari.HikariDataSource
 import versola.central.configuration.clients.{ClientId, PresetId}
 import versola.central.configuration.details.AuthorizationDetailType
 import versola.central.configuration.forms.FormId
@@ -11,7 +10,7 @@ import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.challenges.{OtpTemplateChannel, OtpTemplatePurpose}
 import versola.central.configuration.sync.{CacheSyncRepository, SyncEvent}
 import versola.central.configuration.tenants.TenantId
-import versola.util.postgres.PostgresNotificationListener
+import versola.util.postgres.{NotificationEvent, PostgresConfig, PostgresNotificationListener}
 import zio.json.JsonDecoder
 import zio.json.DecoderOps
 import zio.*
@@ -20,8 +19,12 @@ import zio.stream.Stream
 class PostgresCacheSyncRepository(listener: PostgresNotificationListener) extends CacheSyncRepository:
 
   def getNotifications: Stream[Throwable, SyncEvent] =
-    listener.notifications
-      .map(notification => PostgresCacheSyncRepository.parseNotification(notification.getName, notification.getParameter))
+    listener.notifications.collect:
+      // A reconnect needs no event of its own: every cache fed from here also reloads on a
+      // timer, so a change missed while the feed was down is picked up by the next reload
+      // rather than being lost until the next edit of the same record.
+      case NotificationEvent.Received(notification) =>
+        PostgresCacheSyncRepository.parseNotification(notification.getName, notification.getParameter)
 
 object PostgresCacheSyncRepository:
   private val notificationChannels = List(
@@ -150,6 +153,6 @@ object PostgresCacheSyncRepository:
       case _ =>
         SyncEvent.Unknown
 
-  def live: ZLayer[HikariDataSource & Scope, Throwable, CacheSyncRepository] =
+  def live: ZLayer[PostgresConfig & Scope, Throwable, CacheSyncRepository] =
     ZLayer:
       PostgresNotificationListener.make(notificationChannels).map(PostgresCacheSyncRepository(_))

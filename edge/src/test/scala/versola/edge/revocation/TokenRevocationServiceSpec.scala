@@ -22,8 +22,11 @@ object TokenRevocationServiceSpec extends ZIOSpecDefault, ZIOStubs:
   private val issuedAt = Instant.EPOCH
 
   private def notificationsOf(revocations: Revocation*): RevocationNotifications =
+    eventsOf(revocations.map(RevocationEvent.Revoked(_))*)
+
+  private def eventsOf(events: RevocationEvent*): RevocationNotifications =
     new RevocationNotifications:
-      override def notifications = ZStream.fromIterable(revocations)
+      override def notifications = ZStream.fromIterable(events)
 
   def spec = suite("TokenRevocationService")(
     test("answers from memory once the list is loaded, without touching the database") {
@@ -226,6 +229,19 @@ object TokenRevocationServiceSpec extends ZIOSpecDefault, ZIOStubs:
         // one the administrator meant to end through; the tie goes to the revocation.
         revoked <- service.isRevoked(List(jti, sid, sub), issuedAt = revokedAt)
       yield assertTrue(revoked)
+    },
+    test("rebuilds the cache when the notification feed reconnects") {
+      val repository = stub[RevocationRepository]
+      val service = TokenRevocationService.Impl(repository, initialMaxSize = 10)
+      for
+        _ <- repository.listActive.succeedsWith(List(Revocation(jti, farFuture)))
+        _ <- repository.find.succeedsWith(None)
+        // Written while the feed was down, so its notification was never delivered: only a
+        // reload can find it, which is what the reconnect has to trigger.
+        before <- service.isRevoked(List(jti), issuedAt)
+        _ <- service.consume(eventsOf(RevocationEvent.Resubscribed))
+        after <- service.isRevoked(List(jti), issuedAt)
+      yield assertTrue(!before, after)
     },
     test("reloading drops expired entries and restores the in-memory-only path") {
       val repository = stub[RevocationRepository]

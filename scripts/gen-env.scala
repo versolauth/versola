@@ -664,7 +664,7 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
        |  minimum-idle = 15
        |  connection-timeout = "30 seconds"
        |  max-lifetime = "30 minutes"
-       |  leak-detection-threshold = "0 seconds"
+       |  leak-detection-threshold = "60 seconds"
        |}
        |""".stripMargin
 
