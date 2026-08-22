@@ -5,8 +5,9 @@ test('renders the app shell with the default clients view', async ({ page }) => 
   const api = await loadAdminApp(page);
 
   await expect(page.getByRole('heading', { name: 'OAuth Clients', exact: true })).toBeVisible();
-  await expect(page.locator('versola-navigation')).toBeVisible();
-  await expect(page.locator('tenant-selector').getByRole('button', { name: 'Manage' })).toBeVisible();
+  const navigation = page.locator('versola-navigation');
+  await expect(navigation).toBeVisible();
+  await expect(navigation.getByText('Tenants', { exact: true })).toBeVisible();
   await expect(tenantSelectorButton(page)).toContainText('tenant-alpha');
   expect(api.requests.some(request => request.method === 'GET' && request.pathname === '/configuration/tenants')).toBeTruthy();
 });
@@ -28,7 +29,7 @@ test('switches navigation views and keeps the url in sync', async ({ page }) => 
     await expect(page.getByRole('heading', { name: view.heading, exact: true })).toBeVisible();
   }
 
-  await page.locator('tenant-selector').getByRole('button', { name: 'Manage' }).click();
+  await navigation.getByText('Tenants', { exact: true }).click();
   await expect(page).toHaveURL(/view=tenants/);
   await expect(page.getByRole('heading', { name: 'Tenants', exact: true })).toBeVisible();
 });
@@ -49,10 +50,23 @@ test('switches themes for the session when localStorage is unavailable', async (
 
   await loadAdminApp(page);
   const navigation = page.locator('versola-navigation');
+  const favicon = page.locator('link[rel="icon"]');
+
+  await expect(favicon).toHaveAttribute('href', '/logo-shield.svg');
 
   await navigation.getByRole('radio', { name: 'Light theme' }).click();
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
+  await expect(favicon).toHaveAttribute('href', 'logo-shield-light.svg');
 
   await navigation.getByRole('radio', { name: 'Dark theme' }).click();
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+  await expect(favicon).toHaveAttribute('href', 'logo-shield.svg');
+});
+
+test('uses the light favicon for a persisted light theme on first load', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('versola-theme', 'light'));
+  await loadAdminApp(page);
+
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
+  await expect(page.locator('link[rel="icon"]')).toHaveAttribute('href', 'logo-shield-light.svg');
 });

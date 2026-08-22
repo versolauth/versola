@@ -64,6 +64,7 @@ type FormDto = {
 };
 type FormLocaleDto = { code: string; name: string };
 type ThemeDto = { id: string; css: string; tenantId: string | null };
+type SystemSettingsDto = { passwordRegex: string; passwordHistorySize: number; passwordNumDifferent: number; identityProviderLogo?: string | null };
 type SetPatch<T> = { add?: T[]; remove?: T[] };
 type DescriptionPatch = { add?: Record<string, string>; delete?: string[] };
 type CreateClientRequest = {
@@ -238,6 +239,7 @@ export type MockConfigState = {
   forms: FormDto[];
   formLocales: FormLocaleDto[];
   themes: ThemeDto[];
+  systemSettings: SystemSettingsDto;
   otpTemplates: Record<string, OtpTemplateDto[]>; // keyed by tenantId
   challengeSettings: Record<string, ChallengeSettingsDto>; // keyed by tenantId
   authorizationDetailTypes: Record<string, AuthorizationDetailTypeDto[]>; // keyed by tenantId
@@ -303,6 +305,12 @@ const defaultState: MockConfigState = {
   forms: [],
   formLocales: [],
   themes: [],
+  systemSettings: {
+    passwordRegex: '^(?=.*[A-Za-z])(?=.*\\d).{8,}$',
+    passwordHistorySize: 5,
+    passwordNumDifferent: 3,
+    identityProviderLogo: null,
+  },
   otpTemplates: {},
   challengeSettings: {},
   authorizationDetailTypes: {},
@@ -328,6 +336,7 @@ function mergeState(overrides: Partial<MockConfigState> = {}): MockConfigState {
     forms: clone(overrides.forms ?? defaultState.forms),
     formLocales: clone(overrides.formLocales ?? defaultState.formLocales),
     themes: clone(overrides.themes ?? defaultState.themes),
+    systemSettings: clone(overrides.systemSettings ?? defaultState.systemSettings),
     otpTemplates: clone({ ...defaultState.otpTemplates, ...overrides.otpTemplates }),
     challengeSettings: clone({ ...defaultState.challengeSettings, ...overrides.challengeSettings }),
     authorizationDetailTypes: clone({ ...defaultState.authorizationDetailTypes, ...overrides.authorizationDetailTypes }),
@@ -404,6 +413,19 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
       searchParams: Object.fromEntries(url.searchParams.entries()),
       body,
     });
+
+    if (pathname === '/configuration/system-settings') {
+      if (method === 'GET') {
+        await route.fulfill(json(state.systemSettings));
+        return;
+      }
+
+      if (method === 'PUT') {
+        state.systemSettings = clone(body as SystemSettingsDto);
+        await route.fulfill({ status: 204, body: '' });
+        return;
+      }
+    }
 
     if (pathname === '/configuration/tenants') {
       if (method === 'GET') {

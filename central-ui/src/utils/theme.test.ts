@@ -3,12 +3,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const getItem = vi.fn();
 const setItem = vi.fn();
 const setAttribute = vi.fn();
+const querySelector = vi.fn();
 const dispatchEvent = vi.fn();
 
 async function loadTheme() {
   vi.resetModules();
   vi.stubGlobal('localStorage', { getItem, setItem });
-  vi.stubGlobal('document', { documentElement: { setAttribute } });
+  vi.stubGlobal('document', { documentElement: { setAttribute }, querySelector });
   vi.stubGlobal('window', { dispatchEvent });
   vi.stubGlobal('CustomEvent', class { constructor(readonly type: string, readonly init: unknown) {} });
   return import('./theme');
@@ -18,6 +19,8 @@ beforeEach(() => {
   getItem.mockReset();
   setItem.mockReset();
   setAttribute.mockReset();
+  querySelector.mockReset();
+  querySelector.mockReturnValue(null);
   dispatchEvent.mockReset();
 });
 
@@ -42,5 +45,17 @@ describe('theme storage fallback', () => {
     const { getStoredTheme } = await loadTheme();
 
     expect(getStoredTheme()).toBe('light');
+  });
+
+  it('updates the favicon when the theme changes', async () => {
+    const favicon = { setAttribute: vi.fn() };
+    querySelector.mockReturnValue(favicon);
+    const { setTheme } = await loadTheme();
+
+    setTheme('light');
+    setTheme('dark');
+
+    expect(favicon.setAttribute).toHaveBeenNthCalledWith(1, 'href', 'logo-shield-light.svg');
+    expect(favicon.setAttribute).toHaveBeenNthCalledWith(2, 'href', 'logo-shield.svg');
   });
 });

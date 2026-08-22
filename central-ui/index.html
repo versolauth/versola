@@ -140,6 +140,8 @@
         var stored = localStorage.getItem('versola-theme');
         var theme = stored === 'light' ? 'light' : 'dark';
         document.documentElement.setAttribute('data-theme', theme);
+        var favicon = document.querySelector('link[rel="icon"]');
+        if (favicon && theme === 'light') favicon.setAttribute('href', 'logo-shield-light.svg');
       } catch (e) {
         document.documentElement.setAttribute('data-theme', 'dark');
       }
