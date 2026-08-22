@@ -2,6 +2,7 @@ package versola.edge
 
 import versola.edge.login.{LoginRecord, LoginRepository}
 import versola.edge.model.{AccessToken, AccessTokenClaims, AccessTokenId, AuthConversationNotFound, AuthorizationPreset, ClientId, Code, CodeVerifier, InjectRule, InjectTarget, InvalidLogoutToken, PermissionId, PresetId, PresetNotFound, RefreshToken, Resource, ResourceEndpoint, ResourceEndpointId, ResourceId, RoleId, SessionId, State, TenantId, TokenResponse}
+import versola.edge.revocation.{Revocation, RevocationKey, TokenRevocationService}
 import versola.edge.session.{EdgeSessionRecord, EdgeSessionRepository}
 import versola.util.cel.CelEvaluator
 import versola.util.http.Observability
@@ -84,14 +85,27 @@ object EdgeService:
 
   private val BackChannelLogoutEvent = "http://schemas.openid.net/event/backchannel-logout"
 
-  /** The claims of an OIDC Back-Channel Logout token (spec §2.4) the edge validates and
-    * acts on. `sid` is optional in the spec, but the edge indexes its sessions by it and
-    * so cannot act on a token without one.
+  /** Auth's own event for a single revoked access token. Deliberately not the OIDC logout
+    * event: that one ends the whole session for every client sharing it, which is not what
+    * one client revoking one of its tokens may trigger.
+    */
+  private val AccessTokenRevocationEvent = "versola:event:access-token-revocation"
+
+  /** The claims of a security event token the OP pushes to this edge — an OIDC Back-Channel
+    * Logout token (spec §2.4) or an access token revocation. Back-Channel Logout requires a
+    * `sub`, a `sid` or both, and reads a token without a `sid` as covering every session of
+    * that subject, which is what an administrator ending a user's access sends.
+    * `revoked_jti`/`revoked_exp` describe the token a revocation names; they are deliberately
+    * not `jti`/`exp`, which belong to the event token itself.
     */
   private case class LogoutTokenClaims(
       @jsonField("iss") issuer: String,
       @jsonField("aud") audience: List[ClientId],
+      @jsonField("sub") subject: Option[String],
       @jsonField("sid") sessionId: Option[SessionId],
+      @jsonField("iat") issuedAt: Long,
+      @jsonField("revoked_jti") revokedTokenId: Option[AccessTokenId],
+      @jsonField("revoked_exp") revokedTokenExpiresAt: Option[Long],
       nonce: Option[String],
       events: Map[String, Json],
   ) derives JsonDecoder
@@ -109,11 +123,11 @@ object EdgeService:
   ) derives JsonCodec
 
   def live: ZLayer[
-    OAuthClientService & ResourceService & CelEvaluator & SecureRandom & LoginRepository & SSOClient & SecurityService & Client & EdgeConfig & session.EdgeSessionRepository & JwksService & PermissionService & EnvName,
+    OAuthClientService & ResourceService & CelEvaluator & SecureRandom & LoginRepository & SSOClient & SecurityService & Client & EdgeConfig & session.EdgeSessionRepository & TokenRevocationService & JwksService & PermissionService & EnvName,
     Nothing,
     EdgeService,
   ] =
-    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _))
+    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _))
 
   class Impl(
       clientService: OAuthClientService,
@@ -126,6 +140,7 @@ object EdgeService:
       httpClient: Client,
       config: EdgeConfig,
       sessionRepository: EdgeSessionRepository,
+      revocationService: TokenRevocationService,
       jwksService: JwksService,
       permissionService: PermissionService,
       env: EnvName,
@@ -139,6 +154,12 @@ object EdgeService:
       * so the session record is never deleted before the cookie has actually expired.
       */
     private val sessionExpiryGracePeriod = 10.seconds
+
+    /** How long a session's revocation is kept when not a single client is known, which is
+      * the only case where its access token TTL cannot be looked up. Covers any plausible
+      * TTL: an edge with an empty client cache cannot resolve tokens to clients at all.
+      */
+    private val fallbackAccessTokenTtl = 1.hour
 
     override def authorize(
         presetId: PresetId,
@@ -306,6 +327,7 @@ object EdgeService:
         for
           records <- sessionRepository.deleteBySessionId(sid)
           presets <- clientService.listPresets(records.map(_.presetId).distinct)
+          _ <- revokeSession(sid, presets)
         yield presets.map(preset => EdgeSessionCookie.clear(preset.cookieDomain, preset.cookiePath))
 
     override def backChannelLogout(logoutToken: String): IO[Throwable | InvalidLogoutToken, Unit] =
@@ -314,9 +336,79 @@ object EdgeService:
         claims <- JWT.deserialize[EdgeService.LogoutTokenClaims](logoutToken, publicKeys, JWT.Type.JWT)
           .mapError(error => InvalidLogoutToken(s"logout token is not a valid JWT: $error"))
         _ <- validateLogoutToken(claims)
-        sid <- ZIO.fromOption(claims.sessionId)
-          .orElseFail(InvalidLogoutToken("logout token carries no sid claim"))
-        _ <- sessionRepository.deleteBySessionId(sid)
+        _ <-
+          if claims.events.contains(EdgeService.AccessTokenRevocationEvent) then revokeToken(claims)
+          else endSession(claims)
+      yield ()
+
+    /** A logout naming a session ends that session; one naming only a subject ends every
+      * session that user has here, which is how an administrator revokes their access.
+      */
+    private def endSession(claims: EdgeService.LogoutTokenClaims): IO[Throwable | InvalidLogoutToken, Unit] =
+      (claims.sessionId, claims.subject) match
+        case (Some(sid), _) =>
+          for
+            records <- sessionRepository.deleteBySessionId(sid)
+            presets <- clientService.listPresets(records.map(_.presetId).distinct)
+            _ <- revokeSession(sid, presets)
+          yield ()
+        case (None, Some(subject)) =>
+          revokeUser(subject, Instant.ofEpochSecond(claims.issuedAt))
+        case (None, None) =>
+          ZIO.fail(InvalidLogoutToken("logout token carries neither a sid nor a sub claim"))
+
+    /** The user's `edge_sessions` rows are left to expire on their own: they are keyed by
+      * session, not by user, and the revocation below already stops every token they hold
+      * from being accepted — including through the EDGE_SESSION cookie, which carries the
+      * access token this check reads. A refresh cannot revive one either, since the sessions
+      * behind them are gone at auth.
+      *
+      * `issuedBefore` is the event's own `iat`: the OP minted both it and the access tokens
+      * it invalidates, so the two timestamps come from the same clock and need no skew
+      * allowance. Without it the user could not log back in until the entry expired.
+      */
+    private def revokeUser(subject: String, revokedAt: Instant): Task[Unit] =
+      for
+        clients <- clientService.listClients
+        ttl = clients.map(_.accessTokenTtl).maxOption.getOrElse(fallbackAccessTokenTtl)
+        _ <- revocationService.revoke(List(Revocation(
+          key = RevocationKey.Sub(subject),
+          expiresAt = revokedAt.plusSeconds(ttl.toSeconds),
+          issuedBefore = Some(revokedAt),
+        )))
+      yield ()
+
+    /** One token dies, the session it belongs to does not: no session rows are touched, which
+      * is what keeps a client's `/revoke` from logging every other client of that SSO session
+      * out. The token's real `exp` travels in the event, since auth had it in hand.
+      */
+    private def revokeToken(claims: EdgeService.LogoutTokenClaims): IO[Throwable | InvalidLogoutToken, Unit] =
+      for
+        jti <- ZIO.fromOption(claims.revokedTokenId)
+          .orElseFail(InvalidLogoutToken("access token revocation carries no revoked_jti claim"))
+        expiresAt <- ZIO.fromOption(claims.revokedTokenExpiresAt)
+          .orElseFail(InvalidLogoutToken("access token revocation carries no revoked_exp claim"))
+        _ <- revocationService.revoke(List(Revocation(RevocationKey.Jti(jti), Instant.ofEpochSecond(expiresAt))))
+      yield ()
+
+    /** Deleting the session rows stops the EDGE_SESSION cookie from being honoured, but the
+      * access tokens already issued under the session stay signed and unexpired — including
+      * ones presented as bearer tokens, which the proxy accepts without consulting those rows
+      * at all. One `sid` revocation covers all of them.
+      *
+      * It only has to outlive the longest-lived token the session could have been issued.
+      * Edge never sees a token's `iat`, but `exp = iat + accessTokenTtl` and `iat <= now`, so
+      * `now + accessTokenTtl` is a safe upper bound. When the logout matched no rows — the
+      * bearer-only case, where the presets are unknown — the widest TTL across all known
+      * clients is used instead.
+      */
+    private def revokeSession(sid: SessionId, presets: List[AuthorizationPreset]): Task[Unit] =
+      for
+        clients <- ZIO.foreach(presets.map(_.clientId).distinct)(clientService.findClient).map(_.flatten)
+        candidates <- if clients.nonEmpty then ZIO.succeed(clients) else clientService.listClients
+        ttl = candidates.map(_.accessTokenTtl).maxOption.getOrElse(fallbackAccessTokenTtl)
+        now <- Clock.instant
+        _ <- revocationService.revoke(List(Revocation(RevocationKey.Sid(sid), now.plusSeconds(ttl.toSeconds))))
       yield ()
 
     /** OIDC Back-Channel Logout §2.6: the token must come from the configured OP, be
@@ -331,7 +423,10 @@ object EdgeService:
         _ <- ZIO.fail(InvalidLogoutToken("logout token is not addressed to a known client"))
           .unless(knownAudience)
         _ <- ZIO.fail(InvalidLogoutToken("logout token does not carry the back-channel logout event"))
-          .unless(claims.events.contains(EdgeService.BackChannelLogoutEvent))
+          .unless(
+            claims.events.contains(EdgeService.BackChannelLogoutEvent) ||
+              claims.events.contains(EdgeService.AccessTokenRevocationEvent),
+          )
         _ <- ZIO.fail(InvalidLogoutToken("logout token must not carry a nonce"))
           .when(claims.nonce.isDefined)
       yield ()
@@ -366,12 +461,14 @@ object EdgeService:
             },
             claims => ZIO.succeed(ActiveSession(accessToken, claims, None)),
           )
-        _ <- logAccessTokenClaims(session.claims)
+        typedClaims <- ZIO.fromEither(session.claims.as[AccessTokenClaims]).orElseFail(Outcome.Unauthorized)
+        _ <- logAccessTokenClaims(typedClaims)
+        _ <- checkRevoked(typedClaims)
 
         resource <- resourceService.findByResourceId(resourceId).someOrFail(Outcome.NotFound)
         endpoint <- findEndpoint(resource.endpoints, request.method.name, restPath)
         parsedBody <- readJsonBody(request)
-        typedClaims <- checkPermissions(session.claims, endpoint, request, parsedBody)
+        _ <- checkPermissions(typedClaims, endpoint)
         _ <- checkAudience(resource, typedClaims)
         userInfo <- ssoClient.userInfo(session.accessToken)
           .when(endpoint.fetchUserInfo)
@@ -405,40 +502,43 @@ object EdgeService:
           ),
       ).orElseFail(Outcome.Unauthorized)
 
-    /** Best-effort: annotates the request's `session_id`/`user_id`/`token` as soon as the
-      * access token's claims are known, so every subsequent log line (including one from
-      * [[checkPermissions]] failing) carries them. Decode failures are swallowed here since
-      * [[checkPermissions]] re-validates the same claims and turns a failure into
-      * `Outcome.Unauthorized`.
+    /** Annotates the request's `session_id`/`user_id`/`token` as soon as the access token's
+      * claims are known, so every subsequent log line (including one from a rejected
+      * permission check) carries them.
       */
-    private def logAccessTokenClaims(claims: Json.Obj): UIO[Unit] =
-      claims.as[AccessTokenClaims].fold(
-        _ => ZIO.unit,
-        typed =>
-          Observability.setToken(typed.jti) *>
-            Observability.setUserId(typed.subject) *>
-            ZIO.foreachDiscard(typed.sid)(Observability.setSessionId),
-      )
+    private def logAccessTokenClaims(claims: AccessTokenClaims): UIO[Unit] =
+      Observability.setToken(claims.jti) *>
+        Observability.setUserId(claims.subject) *>
+        ZIO.foreachDiscard(claims.sid)(Observability.setSessionId)
+
+    /** A signed, unexpired token is not necessarily still valid: it may have been revoked on
+      * its own, or its whole session logged out. Both are answered from memory, so this costs
+      * no I/O on the hot path.
+      */
+    private def checkRevoked(claims: AccessTokenClaims): IO[Outcome, Unit] =
+      revocationService
+        .isRevoked(
+          RevocationKey.of(claims.jti, claims.sid, claims.subject),
+          Instant.ofEpochSecond(claims.issuedAt),
+        )
+        .flatMap(revoked => ZIO.fail(Outcome.Unauthorized).when(revoked))
+        .unit
 
     private def checkPermissions(
-        claims: Json.Obj,
+        claims: AccessTokenClaims,
         endpoint: ResourceEndpoint,
-        request: Request,
-        parsedBody: Option[Json],
-    ): IO[Outcome, AccessTokenClaims] =
+    ): IO[Outcome, Unit] =
+      val isServiceToken = claims.subject == claims.clientId
       for
-        typed <- ZIO.fromEither(claims.as[AccessTokenClaims]).orElseFail(Outcome.Unauthorized)
-        isServiceToken = typed.subject == typed.clientId
-
         allowed <-
           if isServiceToken then
-            permissionService.getAllowedEndpointsForClient(typed.clientId)
+            permissionService.getAllowedEndpointsForClient(claims.clientId)
           else
-            permissionService.getAllowedEndpointsForRoles(typed.tenantId, typed.roles)
+            permissionService.getAllowedEndpointsForRoles(claims.tenantId, claims.roles)
 
         _ <- ZIO.fail(Outcome.Forbidden)
           .unless(allowed.contains(endpoint.id))
-      yield typed
+      yield ()
 
     private def checkAudience(
         resource: Resource,

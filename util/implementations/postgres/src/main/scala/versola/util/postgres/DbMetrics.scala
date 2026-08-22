@@ -10,6 +10,28 @@ object DbMetrics:
       Chunk(0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0, 5.0, 10.0),
     )
 
+  private val notificationsReceivedTotal =
+    Metric.counter("db_notifications_received_total").tagged(MetricLabel("db_system", "postgresql"))
+
+  private val notificationListenerReconnectsTotal =
+    Metric.counter("db_notification_listener_reconnects_total").tagged(MetricLabel("db_system", "postgresql"))
+
+  /** Whether the `LISTEN` connection is currently up. Notifications failing to arrive is
+    * otherwise indistinguishable from nothing having happened, so this is the only signal
+    * that propagation has stopped.
+    */
+  private val notificationListenerConnectedGauge =
+    Metric.gauge("db_notification_listener_connected").tagged(MetricLabel("db_system", "postgresql"))
+
+  def notificationReceived: UIO[Unit] =
+    notificationsReceivedTotal.increment
+
+  def notificationListenerReconnected: UIO[Unit] =
+    notificationListenerReconnectsTotal.increment
+
+  def notificationListenerConnected(connected: Boolean): UIO[Unit] =
+    notificationListenerConnectedGauge.set(if connected then 1 else 0)
+
   private def histogram(repository: String, operation: String, outcome: String) =
     Metric
       .histogram("db_client_operation_duration_seconds", boundaries)

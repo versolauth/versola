@@ -10,6 +10,8 @@ import {
   fetchTenants,
   registerEdge,
   rotateEdgeKey,
+  updateEdge,
+  DEFAULT_REVOCATION_CACHE_SIZE,
 } from '../utils/central-api';
 import { confirmDestructiveAction } from '../utils/confirm-dialog';
 import { copyToClipboard } from '../utils/helpers';
@@ -297,11 +299,23 @@ export class VersolaEdgesList extends LitElement {
 
   private async handleEdgeSubmit(e: CustomEvent) {
     this.errorMessage = '';
+    const { id, revocationCacheSize } = e.detail;
+
+    if (this.editingEdge) {
+      try {
+        await updateEdge(id, revocationCacheSize);
+        this.edges = this.edges.map(edge => edge.id === id ? { ...edge, revocationCacheSize } : edge);
+        this.handleCancelForm();
+      } catch (error) {
+        this.errorMessage = error instanceof Error ? error.message : 'Failed to update edge';
+      }
+      return;
+    }
+
     try {
-      const { id } = e.detail;
       const result = await registerEdge(id);
       this.generatedKey = { edgeId: id, keyId: result.keyId, privateKey: result.privateKey, action: 'created' };
-      this.edges = [...this.edges, { id, hasOldKey: false }];
+      this.edges = [...this.edges, { id, hasOldKey: false, revocationCacheSize: DEFAULT_REVOCATION_CACHE_SIZE }];
     } catch (error) {
       this.errorMessage = error instanceof Error ? error.message : 'Failed to register edge';
     }

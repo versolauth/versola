@@ -13,6 +13,8 @@ trait EdgeRepository extends CacheSource[Vector[EdgeRecord]]:
 
   def rotateEdgeKey(id: EdgeId, newPublicKeyJwk: Json.Obj): Task[Unit]
 
+  def updateRevocationCacheSize(id: EdgeId, cacheSize: Int): Task[Unit]
+
   def deleteOldEdgeKey(id: EdgeId): Task[Unit]
 
   def deleteEdge(id: EdgeId): Task[Unit]

@@ -1,6 +1,7 @@
 package versola.edge
 
 import versola.edge.model.{AuthConversationNotFound, Code, InvalidLogoutToken, PresetId, PresetNotFound, ResourceId, SessionId, State}
+import versola.edge.revocation.TokenRevocationService
 import versola.util.FormDecoder
 import versola.util.http.Controller
 import zio.*
@@ -8,7 +9,7 @@ import zio.http.*
 import zio.json.{EncoderOps, JsonEncoder, jsonField}
 
 object EdgeController extends Controller:
-  type Env = Tracing & EdgeService & EdgeConfig & JwksService & AuthorizationPresetsSyncClient
+  type Env = Tracing & EdgeService & EdgeConfig & JwksService & TokenRevocationService & AuthorizationPresetsSyncClient
 
   /** OIDC Back-Channel Logout §2.8 error response body. */
   private case class LogoutError(
