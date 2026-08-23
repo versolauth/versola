@@ -288,6 +288,52 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         env.sessionRepository.findByAccessTokenId.calls.isEmpty,
       )
     },
+    test("returns 401 for a token of a user an administrator has revoked") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        // Neither the token nor its session is named by the revocation — only the user is,
+        // which is the whole point of an administrator ending their access.
+        _ <- env.revocationService.isRevoked.returnsZIO((keys, _) => ZIO.succeed(keys.contains(RevocationKey.Sub("user-1"))))
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(usersEndpoint()))
+        token <- env.signToken(jti = "untouched-jti", sid = "sso-session-2")
+        request = Request.get(URL.empty / "users").addCookie(sessionCookie(token))
+        service = env.buildService(client, security)
+        response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
+      yield assertTrue(response.status == Status.Unauthorized)
+    },
+    test("checks a token against the revocation list by its own issue time, not by now") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        _ <- captureUpstream()
+        // A user-wide entry only covers tokens that predate it, so which token is spared
+        // turns entirely on the `iat` the check is given. Passing `now` instead would make
+        // every entry cover every token, locking a user out until it expired.
+        _ <- env.revocationService.isRevoked.succeedsWith(false)
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(usersEndpoint()))
+        _ <- TestClock.adjust(600.seconds)
+        issued <- Clock.instant
+        token <- env.signToken(jti = "fresh-jti", sid = "sso-session-3")
+        _ <- TestClock.adjust(60.seconds)
+        request = Request.get(URL.empty / "users").addCookie(sessionCookie(token))
+        service = env.buildService(client, security)
+        response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
+      yield assertTrue(
+        response.status == Status.Ok,
+        env.revocationService.isRevoked.calls.map(_._1) ==
+          List(List(
+            RevocationKey.Jti(AccessTokenId("fresh-jti")),
+            RevocationKey.Sid(SessionId("sso-session-3")),
+            RevocationKey.Sub("user-1"),
+          )),
+        env.revocationService.isRevoked.calls.map(_._2) == List(issued),
+      )
+    },
     test("returns 404 when resource alias is unknown") {
       val env = new Env
       for
