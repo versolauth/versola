@@ -8,57 +8,50 @@ import zio.{Clock, Task, ZIO, ZLayer}
 
 import java.time.Instant
 
+/** @param revokedKey the encoded key rather than [[RevocationKey]]: a row written by a newer
+  *                   version of this service can carry a prefix this one has no case for,
+  *                   and skipping that row is better than failing the whole load.
+  */
+private case class RevocationRow(revokedKey: String, expiresAt: Instant, issuedBefore: Option[Instant]):
+  def decoded: Option[Revocation] =
+    RevocationKey.decode(revokedKey).map(Revocation(_, expiresAt, issuedBefore))
+
 class PostgresRevocationRepository(xa: TransactorZIO) extends RevocationRepository, BasicCodecs:
 
+  private given DbCodec[RevocationRow] = DbCodec.derived
+
+  /** A key can be revoked more than once and the later one governs: a second administrative
+    * logout of the same user must not be swallowed as a duplicate of the first, which would
+    * leave the tokens issued in between live.
+    */
   override def revokeAll(revocations: List[Revocation]): Task[Unit] =
     if revocations.isEmpty then ZIO.unit
     else
-      xa.transactMeasured("revoke-tokens"):
-        revocations.foreach: revocation =>
-          sql"""
-            INSERT INTO revocations (revoked_key, expires_at, issued_before)
-            VALUES (${revocation.key.encoded}, ${revocation.expiresAt}, ${revocation.issuedBefore})
-            ON CONFLICT (revoked_key) DO UPDATE
-            SET expires_at    = EXCLUDED.expires_at,
-                issued_before = EXCLUDED.issued_before,
-                revoked_at    = NOW()
-            -- A key can be revoked more than once and the later one governs: a second
-            -- administrative logout of the same user must not be swallowed as a duplicate
-            -- of the first, which would leave the tokens of the session in between live.
-            WHERE revocations.expires_at < EXCLUDED.expires_at
-          """.update.run()
+      Clock.instant.flatMap: now =>
+        xa.transactMeasured("revoke-tokens"):
+          batchUpdate(revocations): revocation =>
+            sql"""
+              INSERT INTO revocations (revoked_key, revoked_at, expires_at, issued_before)
+              VALUES (${revocation.key.encoded}, $now, ${revocation.expiresAt}, ${revocation.issuedBefore})
+              ON CONFLICT (revoked_key) DO UPDATE
+              SET revoked_at    = EXCLUDED.revoked_at,
+                  expires_at    = EXCLUDED.expires_at,
+                  issued_before = EXCLUDED.issued_before
+              WHERE revocations.expires_at < EXCLUDED.expires_at
+            """.update
 
-  override def listActive(limit: Int): Task[List[Revocation]] =
+  override def listActive: Task[List[Revocation]] =
     Clock.instant.flatMap: now =>
       xa.connectMeasured("list-active-revocations"):
         sql"""
           SELECT revoked_key, expires_at, issued_before
           FROM revocations
           WHERE expires_at > $now
-          ORDER BY revoked_at DESC
-          LIMIT $limit
         """
-          .query[(String, Instant, Option[Instant])]
+          .query[RevocationRow]
           .run()
           .toList
-          // A key written by a newer version of this service, with a prefix this one does
-          // not understand, is skipped rather than failing the whole load.
-          .flatMap((key, expiresAt, issuedBefore) =>
-            RevocationKey.decode(key).map(Revocation(_, expiresAt, issuedBefore)),
-          )
-
-  override def find(key: RevocationKey): Task[Option[Revocation]] =
-    Clock.instant.flatMap: now =>
-      xa.connectMeasured("find-revocation"):
-        sql"""
-          SELECT expires_at, issued_before
-          FROM revocations
-          WHERE revoked_key = ${key.encoded} AND expires_at > $now
-        """
-          .query[(Instant, Option[Instant])]
-          .run()
-          .headOption
-          .map((expiresAt, issuedBefore) => Revocation(key, expiresAt, issuedBefore))
+          .flatMap(_.decoded)
 
 object PostgresRevocationRepository:
   def live: ZLayer[TransactorZIO, Nothing, RevocationRepository] =

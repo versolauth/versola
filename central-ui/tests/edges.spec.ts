@@ -6,13 +6,11 @@ const edgesPath = '/?view=edges';
 const alphaEdge = {
   id: 'edge-alpha',
   hasOldKey: false,
-  revocationCacheSize: 10000,
 };
 
 const bravoEdge = {
   id: 'edge-bravo',
   hasOldKey: false,
-  revocationCacheSize: 10000,
 };
 
 function edgeCard(page: Page, edgeId: string) {
@@ -55,48 +53,6 @@ test('creates a new edge and shows the generated private key banner', async ({ p
   await expect(created).toContainText('edge-new');
 
   expect(findRequest(api.requests, 'POST', '/configuration/edges').body).toEqual({ id: 'edge-new' });
-});
-
-test('changes the revocation cache size of an existing edge', async ({ page }) => {
-  const api = await loadAdminApp(page, {
-    path: edgesPath,
-    state: { edges: [alphaEdge] },
-  });
-
-  await edgeCard(page, 'edge-alpha').getByRole('button', { name: 'Edit edge edge-alpha' }).click();
-
-  const cacheSizeField = page.getByLabel('Revocation cache size');
-  await expect(cacheSizeField).toHaveValue('10000');
-
-  const saveButton = page.getByRole('button', { name: 'Save', exact: true });
-  // Nothing has changed yet, so there is nothing to save.
-  await expect(saveButton).toBeDisabled();
-
-  await cacheSizeField.fill('50000');
-  await saveButton.click();
-
-  expect(findRequest(api.requests, 'PATCH', '/configuration/edges').body)
-    .toEqual({ id: 'edge-alpha', revocationCacheSize: 50000 });
-
-  // Back to the list, with the new size kept for the next time the form opens.
-  await expect(page.locator('versola-edge-form')).toHaveCount(0);
-  await edgeCard(page, 'edge-alpha').getByRole('button', { name: 'Edit edge edge-alpha' }).click();
-  await expect(page.getByLabel('Revocation cache size')).toHaveValue('50000');
-});
-
-test('rejects a revocation cache size that is not a positive whole number', async ({ page }) => {
-  const api = await loadAdminApp(page, {
-    path: edgesPath,
-    state: { edges: [alphaEdge] },
-  });
-
-  await edgeCard(page, 'edge-alpha').getByRole('button', { name: 'Edit edge edge-alpha' }).click();
-  await page.getByLabel('Revocation cache size').fill('0');
-
-  await expect(page.getByText('Must be a positive whole number')).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Save', exact: true })).toBeDisabled();
-
-  expect(api.requests.some(request => request.method === 'PATCH' && request.pathname === '/configuration/edges')).toBeFalsy();
 });
 
 test('shows edge form validation for invalid edge ID', async ({ page }) => {

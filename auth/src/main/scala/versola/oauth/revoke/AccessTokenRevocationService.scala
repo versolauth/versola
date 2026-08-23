@@ -4,7 +4,7 @@ import versola.oauth.client.model.OAuthClientRecord
 import versola.oauth.logout.BackChannelDispatcher
 import versola.oauth.model.AccessToken
 import zio.json.ast.Json
-import zio.{Task, ZIO, ZLayer}
+import zio.{NonEmptyChunk, Task, ZIO, ZLayer}
 
 import java.time.Instant
 
@@ -46,7 +46,7 @@ object AccessTokenRevocationService:
       ZIO
         .foreachDiscard(client.backChannelLogoutUri): uri =>
           dispatcher.dispatch(
-            client = client,
+            audience = NonEmptyChunk(client.id),
             uri = uri,
             subject = subject,
             // Not `jti`/`exp`: those are the event token's own id and lifetime (two minutes),

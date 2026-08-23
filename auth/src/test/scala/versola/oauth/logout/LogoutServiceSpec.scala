@@ -205,8 +205,8 @@ object LogoutServiceSpec extends UnitSpecBase:
           // Delivery is forked so a slow RP cannot hold up the user's own logout response.
           calls <- ZIO.succeed(env.dispatcher.dispatch.calls).repeatUntil(_.nonEmpty)
         yield assertTrue(
-          calls.map((client, uri, subject, _) => (client.id, uri.encode, subject)) ==
-            List((withBackChannel.id, "https://rp-a.example/backchannel", userId.toString)),
+          calls.map((audience, uri, subject, _) => (audience.toList, uri.encode, subject)) ==
+            List((List(withBackChannel.id), "https://rp-a.example/backchannel", userId.toString)),
           calls.head._4 == Json.Obj(
             "sid" -> Json.Str(publicSessionId1),
             "events" -> Json.Obj("http://schemas.openid.net/event/backchannel-logout" -> Json.Obj()),
@@ -260,8 +260,8 @@ object LogoutServiceSpec extends UnitSpecBase:
         yield assertTrue(
           // Three sessions, one client, one delivery: a logout token carrying a subject and
           // no session asks the RP to end every session that user has with it.
-          calls.map((client, _, subject, _) => (client.id, subject)) ==
-            List((withBackChannel.id, userId.toString)),
+          calls.map((audience, _, subject, _) => (audience.toList, subject)) ==
+            List((List(withBackChannel.id), userId.toString)),
           calls.head._4 == Json.Obj(
             "events" -> Json.Obj("http://schemas.openid.net/event/backchannel-logout" -> Json.Obj()),
           ),

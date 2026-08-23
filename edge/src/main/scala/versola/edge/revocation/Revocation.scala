@@ -63,4 +63,4 @@ object RevocationKey:
   *                     [[RevocationKey.Sub]], where tokens the entry must not touch can
   *                     still be minted while it is live — the user logging in again.
   */
-case class Revocation(key: RevocationKey, expiresAt: Instant, issuedBefore: Option[Instant] = None)
+case class Revocation(key: RevocationKey, expiresAt: Instant, issuedBefore: Option[Instant])

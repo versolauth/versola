@@ -2,7 +2,7 @@ package versola.central.configuration.edges
 
 import io.opentelemetry.api
 import org.scalamock.stubs.{Stub, ZIOStubs}
-import versola.central.{CentralConfig, TestAdminAuth, TestCentralConfig}
+import versola.central.TestAdminAuth
 import versola.central.configuration.resources.ResourceService
 import versola.util.http.Observability
 import zio.*
@@ -40,7 +40,6 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
             EdgeController.routes.provideEnvironment(
               ZEnvironment[EdgeService](edgeService) ++
                 ZEnvironment[ResourceService](resourceService) ++
-                ZEnvironment[CentralConfig](TestCentralConfig.config) ++
                 tracing
             )
           )
@@ -57,14 +56,6 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       request = Request.get(URL.root / "configuration" / "edges"),
       expectedStatus = Status.Ok,
       setup = service => service.getAllEdges.succeedsWith(Vector.empty),
-    ),
-    controllerTestCase(
-      description = "update edge returns 204 No Content",
-      request = Request
-        .patch(URL.root / "configuration" / "edges", Body.fromString("""{"id":"edge-1","revocationCacheSize":50000}"""))
-        .addHeader(Header.ContentType(MediaType.application.json)),
-      expectedStatus = Status.NoContent,
-      setup = service => service.updateRevocationCacheSize.succeedsWith(()),
     ),
     controllerTestCase(
       description = "delete edge returns 204 No Content",

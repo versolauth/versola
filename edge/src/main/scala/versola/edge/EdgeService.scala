@@ -47,18 +47,18 @@ trait EdgeService:
       resourceIds: List[ResourceId],
   ): UIO[EdgeService.PermissionsResponse]
 
-  /** OP-initiated front-channel logout: drops the edge sessions tied to the SSO
-    * session and returns a clearing cookie for every preset whose EDGE_SESSION
-    * cookie may have been derived from it. `iss` is the only credential this
-    * unauthenticated endpoint has; when it doesn't match the configured OP, the
-    * request is silently ignored (no cookies cleared) rather than failing.
+  /** OP-initiated front-channel logout: revokes the SSO session and returns a clearing
+    * cookie for every preset whose EDGE_SESSION cookie may have been derived from it.
+    * `iss` is the only credential this unauthenticated endpoint has; when it doesn't
+    * match the configured OP, the request is silently ignored (no cookies cleared)
+    * rather than failing.
     */
   def frontChannelLogout(iss: String, sid: SessionId): Task[List[Cookie.Response]]
 
-  /** OP-initiated back-channel logout: validates the OP-signed `logout_token` and drops
-    * the edge sessions tied to the SSO session it names. Server-to-server, so no cookie
-    * can be cleared; dropping the session rows is what stops the EDGE_SESSION cookie
-    * from being honoured on the next request.
+  /** OP-initiated back-channel logout: validates the OP-signed `logout_token` and revokes
+    * the SSO session it names. Server-to-server, so no cookie can be cleared; the
+    * revocation is what stops the EDGE_SESSION cookie from being honoured on the next
+    * request.
     */
   def backChannelLogout(logoutToken: String): IO[Throwable | InvalidLogoutToken, Unit]
 
@@ -325,7 +325,7 @@ object EdgeService:
         ZIO.succeed(Nil)
       else
         for
-          records <- sessionRepository.deleteBySessionId(sid)
+          records <- sessionRepository.findBySessionId(sid)
           presets <- clientService.listPresets(records.map(_.presetId).distinct)
           _ <- revokeSession(sid, presets)
         yield presets.map(preset => EdgeSessionCookie.clear(preset.cookieDomain, preset.cookiePath))
@@ -348,7 +348,7 @@ object EdgeService:
       (claims.sessionId, claims.subject) match
         case (Some(sid), _) =>
           for
-            records <- sessionRepository.deleteBySessionId(sid)
+            records <- sessionRepository.findBySessionId(sid)
             presets <- clientService.listPresets(records.map(_.presetId).distinct)
             _ <- revokeSession(sid, presets)
           yield ()
@@ -357,13 +357,7 @@ object EdgeService:
         case (None, None) =>
           ZIO.fail(InvalidLogoutToken("logout token carries neither a sid nor a sub claim"))
 
-    /** The user's `edge_sessions` rows are left to expire on their own: they are keyed by
-      * session, not by user, and the revocation below already stops every token they hold
-      * from being accepted — including through the EDGE_SESSION cookie, which carries the
-      * access token this check reads. A refresh cannot revive one either, since the sessions
-      * behind them are gone at auth.
-      *
-      * `issuedBefore` is the event's own `iat`: the OP minted both it and the access tokens
+    /** `issuedBefore` is the event's own `iat`: the OP minted both it and the access tokens
       * it invalidates, so the two timestamps come from the same clock and need no skew
       * allowance. Without it the user could not log back in until the entry expired.
       */
@@ -378,9 +372,9 @@ object EdgeService:
         )))
       yield ()
 
-    /** One token dies, the session it belongs to does not: no session rows are touched, which
-      * is what keeps a client's `/revoke` from logging every other client of that SSO session
-      * out. The token's real `exp` travels in the event, since auth had it in hand.
+    /** One token dies and the session it belongs to does not, which is what keeps a client's
+      * `/revoke` from logging every other client of that SSO session out. The token's real
+      * `exp` travels in the event, since auth had it in hand.
       */
     private def revokeToken(claims: EdgeService.LogoutTokenClaims): IO[Throwable | InvalidLogoutToken, Unit] =
       for
@@ -388,15 +382,17 @@ object EdgeService:
           .orElseFail(InvalidLogoutToken("access token revocation carries no revoked_jti claim"))
         expiresAt <- ZIO.fromOption(claims.revokedTokenExpiresAt)
           .orElseFail(InvalidLogoutToken("access token revocation carries no revoked_exp claim"))
-        _ <- revocationService.revoke(List(Revocation(RevocationKey.Jti(jti), Instant.ofEpochSecond(expiresAt))))
+        _ <- revocationService.revoke(List(Revocation(RevocationKey.Jti(jti), Instant.ofEpochSecond(expiresAt), issuedBefore = None)))
       yield ()
 
-    /** Deleting the session rows stops the EDGE_SESSION cookie from being honoured, but the
-      * access tokens already issued under the session stay signed and unexpired — including
-      * ones presented as bearer tokens, which the proxy accepts without consulting those rows
-      * at all. One `sid` revocation covers all of them.
+    /** One `sid` revocation is the whole of what a logout does here. The `edge_sessions` rows
+      * are left alone: deleting them would stop the EDGE_SESSION cookie being honoured, but
+      * not the access tokens already issued under the session — which stay signed and
+      * unexpired, and which the proxy accepts as bearer tokens without consulting those rows
+      * at all. The revocation covers both, so the rows are left to expire on their own. A
+      * refresh cannot revive one either, since the session behind it is gone at auth.
       *
-      * It only has to outlive the longest-lived token the session could have been issued.
+      * The entry only has to outlive the longest-lived token the session could have been issued.
       * Edge never sees a token's `iat`, but `exp = iat + accessTokenTtl` and `iat <= now`, so
       * `now + accessTokenTtl` is a safe upper bound. When the logout matched no rows — the
       * bearer-only case, where the presets are unknown — the widest TTL across all known
@@ -408,7 +404,7 @@ object EdgeService:
         candidates <- if clients.nonEmpty then ZIO.succeed(clients) else clientService.listClients
         ttl = candidates.map(_.accessTokenTtl).maxOption.getOrElse(fallbackAccessTokenTtl)
         now <- Clock.instant
-        _ <- revocationService.revoke(List(Revocation(RevocationKey.Sid(sid), now.plusSeconds(ttl.toSeconds))))
+        _ <- revocationService.revoke(List(Revocation(RevocationKey.Sid(sid), now.plusSeconds(ttl.toSeconds), issuedBefore = None)))
       yield ()
 
     /** OIDC Back-Channel Logout §2.6: the token must come from the configured OP, be

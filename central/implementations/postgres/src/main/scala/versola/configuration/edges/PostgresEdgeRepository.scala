@@ -16,14 +16,14 @@ class PostgresEdgeRepository(xa: TransactorZIO) extends EdgeRepository, BasicCod
   override def getAll: Task[Vector[EdgeRecord]] =
     xa.connectMeasured("get-all-edges"):
       sql"""
-        SELECT id, public_key_jwk, old_public_key_jwk, revocation_cache_size
+        SELECT id, public_key_jwk, old_public_key_jwk
         FROM edges
       """.query[EdgeRecord].run()
 
   override def find(id: EdgeId): Task[Option[EdgeRecord]] =
     xa.connectMeasured("find-edge"):
       sql"""
-        SELECT id, public_key_jwk, old_public_key_jwk, revocation_cache_size
+        SELECT id, public_key_jwk, old_public_key_jwk
         FROM edges
         WHERE id = $id
       """.query[EdgeRecord].run().headOption
@@ -42,15 +42,6 @@ class PostgresEdgeRepository(xa: TransactorZIO) extends EdgeRepository, BasicCod
         UPDATE edges
         SET old_public_key_jwk = public_key_jwk,
             public_key_jwk = $newPublicKeyJwk
-        WHERE id = $id
-      """.update.run()
-    .unit
-
-  override def updateRevocationCacheSize(id: EdgeId, cacheSize: Int): Task[Unit] =
-    xa.connectMeasured("update-edge-revocation-cache-size"):
-      sql"""
-        UPDATE edges
-        SET revocation_cache_size = $cacheSize
         WHERE id = $id
       """.update.run()
     .unit

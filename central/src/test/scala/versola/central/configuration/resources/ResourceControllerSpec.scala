@@ -94,7 +94,7 @@ object ResourceControllerSpec extends ZIOSpecDefault, ZIOStubs:
       publicKey = pair.getPublic.asInstanceOf[RSAPublicKey],
       privateKey = pair.getPrivate.asInstanceOf[RSAPrivateKey],
     )
-  private val edgeRecord = EdgeRecord(edgeId, edgeKeyPair.toPublicJwk, None, 10000)
+  private val edgeRecord = EdgeRecord(edgeId, edgeKeyPair.toPublicJwk, None)
 
   private val config = TestCentralConfig.config
 

@@ -232,7 +232,7 @@ object RevocationServiceSpec extends UnitSpecBase:
           _ <- service.revoke(client, accessToken1, userId1.toString, now.plusSeconds(300))
           calls = dispatcher.dispatch.calls
         yield assertTrue(
-          calls.map((c, uri, subject, _) => (c.id, uri, subject)) == List((client.id, backChannelUri, userId1.toString)),
+          calls.map((audience, uri, subject, _) => (audience.toList, uri, subject)) == List((List(client.id), backChannelUri, userId1.toString)),
           // No `sid`: this must not end the SSO session the token belongs to.
           calls.head._4 == Json.Obj(
             "revoked_jti" -> Json.Str(accessToken1.encoded),

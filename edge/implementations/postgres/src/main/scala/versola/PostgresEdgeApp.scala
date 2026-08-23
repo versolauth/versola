@@ -6,7 +6,7 @@ import versola.cleanup.PostgresCleanupManager
 import versola.edge.login.LoginRepository
 import versola.edge.revocation.{RevocationNotifications, RevocationRepository, TokenRevocationService}
 import versola.edge.session.EdgeSessionRepository
-import versola.edge.{AuthorizationPresetsSyncClient, CentralSyncTokenService, EdgeConfig, EdgeController, EdgeService, EdgeSettingsSyncClient, JwksService, JwksSyncClient, OAuthClientService, OAuthClientsSyncClient, PermissionService, PermissionsSyncClient, PostgresEdgeSessionRepository, PostgresLoginRepository, PostgresRevocationNotifications, PostgresRevocationRepository, ResourceService, ResourcesSyncClient, RolesSyncClient, SSOClient}
+import versola.edge.{AuthorizationPresetsSyncClient, CentralSyncTokenService, EdgeConfig, EdgeController, EdgeService, JwksService, JwksSyncClient, OAuthClientService, OAuthClientsSyncClient, PermissionService, PermissionsSyncClient, PostgresEdgeSessionRepository, PostgresLoginRepository, PostgresRevocationNotifications, PostgresRevocationRepository, ResourceService, ResourcesSyncClient, RolesSyncClient, SSOClient}
 import versola.util.*
 import versola.util.cel.CelEvaluator
 import versola.util.http.VersolaApp
@@ -29,7 +29,6 @@ object PostgresEdgeApp extends VersolaApp("edge"):
     SecureRandom &
     SecurityService &
     CentralSyncTokenService &
-    EdgeSettingsSyncClient &
     AuthorizationPresetsSyncClient &
     OAuthClientsSyncClient &
     ResourcesSyncClient &
@@ -66,7 +65,6 @@ object PostgresEdgeApp extends VersolaApp("edge"):
       SecureRandom.live >+>
       SecurityService.live >+>
       CentralSyncTokenService.live >+>
-      EdgeSettingsSyncClient.live >+>
       AuthorizationPresetsSyncClient.live >+>
       OAuthClientsSyncClient.live >+>
       ResourcesSyncClient.live >+>

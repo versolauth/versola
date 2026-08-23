@@ -33,7 +33,7 @@ type ResourceEndpointDto = { id: ResourceEndpointId; method: string; path: strin
 type ResourceDto = { resourceId: string; resource: string; endpoints: ResourceEndpointDto[]; internal?: boolean; secretRotation?: boolean };
 type RoleDto = { id: string; description: Record<string, string>; permissions: string[]; active: boolean };
 type AuthorizationDetailTypeDto = { type: string; description: Record<string, string>; schema: Record<string, unknown> };
-type EdgeDto = { id: string; hasOldKey?: boolean; revocationCacheSize?: number; tenants?: string[]; clients?: EdgeClientLinkDto[] };
+type EdgeDto = { id: string; hasOldKey?: boolean; tenants?: string[]; clients?: EdgeClientLinkDto[] };
 type EdgeClientLinkDto = { tenantId: string; clientId: string };
 type AuthorizationPresetDto = {
   id: string;
@@ -937,7 +937,7 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
           return;
         }
 
-        state.edges = [{ id: payload.id, hasOldKey: false, revocationCacheSize: 10000, tenants: [], clients: [] }, ...state.edges];
+        state.edges = [{ id: payload.id, hasOldKey: false, tenants: [], clients: [] }, ...state.edges];
         const mockKeyId = `${new Date().toISOString().split('T')[0]}_12-00-00`;
         const mockPrivateKey = `mock-private-key-${payload.id}-${Date.now()}`;
         await route.fulfill(json({ keyId: mockKeyId, privateKey: mockPrivateKey }, 201));
@@ -954,19 +954,6 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
 
         edge.tenants = payload.tenants;
         edge.clients = payload.clients.map(c => ({ tenantId: c.tenantId, clientId: c.clientId }));
-        await route.fulfill({ status: 204, body: '' });
-        return;
-      }
-
-      if (method === 'PATCH') {
-        const payload = body as { id: string; revocationCacheSize: number };
-        const edge = state.edges.find(e => e.id === payload.id);
-        if (!edge) {
-          await route.fulfill(json({ message: `Edge ${payload.id} not found` }, 404));
-          return;
-        }
-
-        edge.revocationCacheSize = payload.revocationCacheSize;
         await route.fulfill({ status: 204, body: '' });
         return;
       }

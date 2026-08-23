@@ -5,16 +5,27 @@ import zio.metrics.Metric
 
 /** Visibility into the state the revocation check depends on.
   *
-  * An incomplete cache still answers correctly \u2014 it falls back to the database on a miss \u2014
-  * so the only thing that shows it happened is the cost: every unrevoked token starts paying
-  * for a query. These make that visible before it turns into a latency incident, and show how
-  * close the list is to outgrowing the size central holds for this edge.
+  * Nothing here changes an answer — a request is served from the cache whatever these say.
+  * They exist because the two ways this can go wrong are both silent: the list growing past
+  * what the replica should be holding in memory, and a replica quietly failing to catch up
+  * with the durable copy, which is the only way it can under-reject.
   */
 object RevocationMetrics:
 
-  private val cacheComplete = Metric.gauge("revocation_cache_complete")
-
   private val cacheEntries = Metric.gauge("revocation_cache_entries")
 
-  def cacheState(complete: Boolean, entries: Long): UIO[Unit] =
-    cacheComplete.set(if complete then 1 else 0) *> cacheEntries.set(entries.toDouble)
+  /** Seconds since this replica last agreed with the database. It rises while reloads are
+    * failing, which is the window in which a missed notification would go uncorrected.
+    */
+  private val staleness = Metric.gauge("revocation_cache_staleness_seconds")
+
+  private val reloadFailures = Metric.counter("revocation_cache_reload_failures_total")
+
+  def entries(count: Int): UIO[Unit] =
+    cacheEntries.set(count.toDouble)
+
+  def reloaded(entries: Int): UIO[Unit] =
+    cacheEntries.set(entries.toDouble) *> staleness.set(0)
+
+  def reloadFailed(secondsSinceReload: Long): UIO[Unit] =
+    reloadFailures.increment *> staleness.set(secondsSinceReload.toDouble)

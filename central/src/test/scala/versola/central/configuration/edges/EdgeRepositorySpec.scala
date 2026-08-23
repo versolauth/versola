@@ -46,21 +46,6 @@ trait EdgeRepositorySpec extends DatabaseSpecBase[EdgeRepositorySpec.Env]:
           found.get.oldPublicKey.isEmpty,
         )
       },
-      test("a new edge starts with the default revocation cache size, which updates independently of its keys") {
-        for
-          _ <- env.repository.createEdge(edgeId, sampleJwk)
-          created <- env.repository.find(edgeId)
-          _ <- env.repository.updateRevocationCacheSize(edgeId, 25000)
-          resized <- env.repository.find(edgeId)
-          _ <- env.repository.rotateEdgeKey(edgeId, newJwk)
-          afterRotation <- env.repository.find(edgeId)
-        yield assertTrue(
-          created.get.revocationCacheSize == 10000,
-          resized.get.revocationCacheSize == 25000,
-          resized.get.publicKey == sampleJwk,
-          afterRotation.get.revocationCacheSize == 25000,
-        )
-      },
       test("getAll returns all edges") {
         for
           _ <- env.repository.createEdge(edgeId, sampleJwk)

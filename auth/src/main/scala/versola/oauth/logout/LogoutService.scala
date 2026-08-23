@@ -64,17 +64,18 @@ object LogoutService:
             yield LogoutResult(logoutUris, redirect, state)
       yield result
 
-    /** Ending every session a user has is one event per client rather than one per session:
+    /** Ending every session a user has is one event per endpoint rather than one per session:
       * a logout token carrying a `sub` and no `sid` asks the RP to end all of that user's
       * sessions (OIDC Back-Channel Logout §2.4), so a user with five sessions across two
-      * clients costs two deliveries instead of ten — and the RP records one revocation
+      * clients costs one or two deliveries instead of ten — and the RP records one revocation
       * instead of five.
       */
     override def invalidateAllSessions(userId: UserId): Task[Unit] =
       for
         sessions <- sessionService.invalidateAllByUser(userId)
         participants <- sessionClients(sessions.flatMap(_.clients.map(_.clientId)).distinct)
-        _ <- ZIO.foreachDiscard(participants)(sendUserLogout(_, userId).forkDaemon)
+        _ <- ZIO.foreachDiscard(byEndpoint(participants)):
+          case (uri, audience) => sendUserLogout(uri, audience, userId).forkDaemon
       yield ()
 
     /** Resolves the RPs that actually participated in this SSO session (tracked via
@@ -105,15 +106,31 @@ object LogoutService:
           configuration.getPostLogoutRedirectUris(client.tenantId)
             .map(_.contains(target))
 
-    /** OIDC Back-Channel Logout (spec §2.4): each RP with a `backChannelLogoutUri` is
-      * notified on its own daemon fiber, so a slow or unreachable RP never delays or fails
-      * the user's own logout response. */
-    private def sendBackChannelLogouts(clients: List[OAuthClientRecord], session: SessionRecord): UIO[Unit] =
-      ZIO.foreachDiscard(clients)(sendBackChannelLogout(_, session).forkDaemon)
+    /** Groups the clients that registered a back-channel endpoint by that endpoint, dropping
+      * those that registered none.
+      *
+      * Clients sharing an endpoint are one delivery, not several: every client behind the
+      * same edge registers that edge's URI, and the edge would receive the same event once
+      * per client and act on it once. Which clients it covers travels in the token's `aud`.
+      */
+    private def byEndpoint(clients: List[OAuthClientRecord]): List[(URL, NonEmptyChunk[ClientId])] =
+      clients
+        .flatMap(client => client.backChannelLogoutUri.map(_ -> client.id))
+        .groupMap(_._1)(_._2)
+        .toList
+        .flatMap((uri, ids) => NonEmptyChunk.fromIterableOption(ids).map(uri -> _))
 
-    private def sendBackChannelLogout(client: OAuthClientRecord, session: SessionRecord): UIO[Unit] =
+    /** OIDC Back-Channel Logout (spec §2.4): each endpoint is notified on its own daemon
+      * fiber, so a slow or unreachable RP never delays or fails the user's own logout
+      * response. */
+    private def sendBackChannelLogouts(clients: List[OAuthClientRecord], session: SessionRecord): UIO[Unit] =
+      ZIO.foreachDiscard(byEndpoint(clients)):
+        case (uri, audience) => sendBackChannelLogout(uri, audience, session).forkDaemon
+
+    private def sendBackChannelLogout(uri: URL, audience: NonEmptyChunk[ClientId], session: SessionRecord): UIO[Unit] =
       send(
-        client,
+        uri,
+        audience,
         session.userId.toString,
         Json.Obj(
           "sid" -> Json.Str(session.publicId),
@@ -121,17 +138,15 @@ object LogoutService:
         ),
       )
 
-    private def sendUserLogout(client: OAuthClientRecord, userId: UserId): UIO[Unit] =
+    private def sendUserLogout(uri: URL, audience: NonEmptyChunk[ClientId], userId: UserId): UIO[Unit] =
       send(
-        client,
+        uri,
+        audience,
         userId.toString,
         Json.Obj("events" -> Json.Obj(BackChannelLogoutEvent -> Json.Obj())),
       )
 
-    private def send(client: OAuthClientRecord, subject: String, customClaims: Json.Obj): UIO[Unit] =
-      client.backChannelLogoutUri match
-        case None => ZIO.unit
-        case Some(uri) =>
-          dispatcher
-            .dispatch(client = client, uri = uri, subject = subject, customClaims = customClaims)
-            .catchAllCause(cause => ZIO.logWarningCause(s"Back-channel logout to client '${client.id}' failed", cause))
+    private def send(uri: URL, audience: NonEmptyChunk[ClientId], subject: String, customClaims: Json.Obj): UIO[Unit] =
+      dispatcher
+        .dispatch(audience = audience, uri = uri, subject = subject, customClaims = customClaims)
+        .catchAllCause(cause => ZIO.logWarningCause(s"Back-channel logout to '$uri' failed", cause))

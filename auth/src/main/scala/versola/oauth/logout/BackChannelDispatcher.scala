@@ -1,6 +1,6 @@
 package versola.oauth.logout
 
-import versola.oauth.client.model.OAuthClientRecord
+import versola.oauth.client.model.ClientId
 import versola.oauth.jwks.JwksService
 import versola.util.{CoreConfig, JWT}
 import zio.*
@@ -18,9 +18,14 @@ import zio.json.ast.Json
 trait BackChannelDispatcher:
   /** Signs and posts one event. One attempt, bounded by a timeout, no retries: the caller
     * decides whether to wait for it and what a failure means.
+    *
+    * @param audience the clients this event is about. Usually one, but several clients can
+    *                 register the same endpoint — every client behind one edge does — and
+    *                 that endpoint is told about all of them at once rather than once per
+    *                 client (OIDC Back-Channel Logout §2.4 allows an `aud` array).
     */
   def dispatch(
-      client: OAuthClientRecord,
+      audience: NonEmptyChunk[ClientId],
       uri: URL,
       subject: String,
       customClaims: Json.Obj,
@@ -44,23 +49,23 @@ object BackChannelDispatcher:
   ) extends BackChannelDispatcher:
 
     override def dispatch(
-        client: OAuthClientRecord,
+        audience: NonEmptyChunk[ClientId],
         uri: URL,
         subject: String,
         customClaims: Json.Obj,
     ): Task[Unit] =
-      deliver(client, uri, subject, customClaims)
-        .timeoutFail(RuntimeException(s"back-channel delivery to client '${client.id}' timed out"))(RequestTimeout)
+      deliver(audience, uri, subject, customClaims)
+        .timeoutFail(RuntimeException(s"back-channel delivery to '$uri' timed out"))(RequestTimeout)
 
     private def deliver(
-        client: OAuthClientRecord,
+        audience: NonEmptyChunk[ClientId],
         uri: URL,
         subject: String,
         customClaims: Json.Obj,
     ): Task[Unit] =
       for
         signingKey <- jwksService.getPublicKeys.map(_.active)
-        token <- sign(client, subject, customClaims, signingKey)
+        token <- sign(audience, subject, customClaims, signingKey)
         request = Request.post(uri, Body.fromURLEncodedForm(Form.fromStrings("logout_token" -> token)))
         _ <- ZIO.scoped:
           httpClient.request(request).flatMap: response =>
@@ -75,7 +80,7 @@ object BackChannelDispatcher:
       yield ()
 
     private def sign(
-        client: OAuthClientRecord,
+        audience: NonEmptyChunk[ClientId],
         subject: String,
         customClaims: Json.Obj,
         signingKey: JWT.PublicKey,
@@ -84,7 +89,7 @@ object BackChannelDispatcher:
         claims = JWT.Claims(
           issuer = config.jwt.issuer,
           subject = subject,
-          audience = List(client.id),
+          audience = audience.toList,
           custom = customClaims,
         ),
         ttl = TokenTtl,
