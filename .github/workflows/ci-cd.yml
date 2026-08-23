@@ -339,15 +339,6 @@ jobs:
           name: auth-stage
           path: auth/implementations/postgres/target/universal/stage
 
-      # This image is built for linux/amd64 and linux/arm64 (see the
-      # "Build and push auth image" step) on an amd64 runner, so the arm64
-      # half needs binfmt registered to execute anything -- here, the
-      # `chmod +x /app/bin/*` in docker/Dockerfile.auth. Without this the
-      # arm64 build fails with "exec format error". Only the COPY layers
-      # are architecture-independent; a RUN is not.
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -413,25 +404,6 @@ jobs:
         with:
           context: .
           file: docker/Dockerfile.auth
-          # Published as a manifest list covering both architectures, so
-          # `docker pull` on an arm64 node (Graviton/Ampere, and the
-          # default on managed k8s offerings more and more) resolves to a
-          # native image instead of failing to schedule. Safe for this
-          # image specifically: what gets copied in is sbt-native-packager
-          # output -- JVM bytecode, no architecture-specific build step --
-          # and the only native code on the runtime classpath is Netty's
-          # epoll transport, which zio-http already pulls in for both
-          # linux-x86_64 and linux-aarch_64 (checked in its POM, not
-          # assumed). Everything else that could have been native is pure
-          # Java: Argon2id is BouncyCastle's Argon2BytesGenerator, the
-          # WebAuthn libs are Yubico's pure-JVM ones, and the Postgres
-          # driver is the JDBC one.
-          #
-          # The eclipse-temurin digest pinned in docker/Dockerfile.auth is
-          # already the multi-arch index digest, not the amd64 child
-          # manifest, so it needs no change to serve both -- verified
-          # against the registry rather than assumed.
-          platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.tags.outputs.tags }}
           cache-from: type=gha
@@ -462,11 +434,6 @@ jobs:
         with:
           name: central-stage
           path: central/implementations/postgres/target/universal/stage
-
-      # See the identical comment in docker-auth's "Set up QEMU" step --
-      # same reasoning, same fix.
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -504,4 +471,273 @@ jobs:
         run: |
           {
             echo "tags<<EOF"
-            echo "${{ env.REGI
+            echo "${{ env.REGISTRY }}/${{ github.repository_owner }}/versola-central:$VERSION"
+            if [ "${{ github.event_name }}" = "release" ]; then
+              echo "${{ env.REGISTRY }}/${{ github.repository_owner }}/versola-central:latest"
+            fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build and push central image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.central
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  docker-edge:
+    needs: build
+    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      attestations: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # Downloads the sbt-native-packager output that "Stage services for
+      # release images" (in the build job) already produced and uploaded --
+      # Dockerfile.edge copies straight from this instead of installing
+      # sbt and rebuilding edge-postgres-impl again inside the image.
+      - name: Download edge stage artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: edge-stage
+          path: edge/implementations/postgres/target/universal/stage
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract version from tag
+        id: version
+        env:
+          # Same reasoning as the "Validate test_tag" step above: values
+          # go through env: instead of being spliced into the script text
+          # via ${{ }}, so a crafted test_tag (or, defensively, a release
+          # tag name) can't inject shell commands that run with this job's
+          # packages:write / GITHUB_TOKEN access.
+          RELEASE_TAG_NAME: ${{ github.event.release.tag_name }}
+          TEST_TAG: ${{ inputs.test_tag }}
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            echo "version=$RELEASE_TAG_NAME" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=$TEST_TAG" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Compute image tags
+        id: tags
+        env:
+          # See the identical comment in docker-auth's "Compute image
+          # tags" step -- same reasoning, same fix.
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          {
+            echo "tags<<EOF"
+            echo "${{ env.REGISTRY }}/${{ github.repository_owner }}/versola-edge:$VERSION"
+            if [ "${{ github.event_name }}" = "release" ]; then
+              echo "${{ env.REGISTRY }}/${{ github.repository_owner }}/versola-edge:latest"
+            fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build and push edge image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.edge
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # versola-gateway is nginx with central-ui's static build baked in (see
+  # docker/Dockerfile.gateway) -- not a JVM service like auth/central/edge,
+  # but published by version tag the same way so "versola bootstrap local
+  # <version>" (see versola-cli) can pull it consistently with the other
+  # three, through the same GHCR auth it already needs for those instead
+  # of a separate download step or new hosting for central-ui's files
+  # (this repo is private, so a GitHub Release asset would need its own
+  # auth story on top).
+  docker-gateway:
+    needs: build
+    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      attestations: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract version from tag
+        id: version
+        env:
+          # Same reasoning as the "Validate test_tag" step above: values
+          # go through env: instead of being spliced into the script text
+          # via ${{ }}, so a crafted test_tag (or, defensively, a release
+          # tag name) can't inject shell commands that run with this job's
+          # packages:write / GITHUB_TOKEN access.
+          RELEASE_TAG_NAME: ${{ github.event.release.tag_name }}
+          TEST_TAG: ${{ inputs.test_tag }}
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            echo "version=$RELEASE_TAG_NAME" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=$TEST_TAG" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.12'
+
+      - name: Build central-ui
+        working-directory: central-ui
+        run: |
+          npm ci
+          npm run build
+
+      - name: Compute image tags
+        id: tags
+        env:
+          # See the identical comment in docker-auth's "Compute image
+          # tags" step -- same reasoning, same fix.
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          {
+            echo "tags<<EOF"
+            echo "${{ env.REGISTRY }}/${{ github.repository_owner }}/versola-gateway:$VERSION"
+            if [ "${{ github.event_name }}" = "release" ]; then
+              echo "${{ env.REGISTRY }}/${{ github.repository_owner }}/versola-gateway:latest"
+            fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build and push gateway image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.gateway
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # versola-tools generates auth.conf/central.conf/edge.conf (via
+  # scripts/gen-env.scala) plus compose.fragment.yml and nginx.conf for
+  # "versola bootstrap local <version>" (see versola-cli). Lives in this
+  # repo (not a separate one) specifically so it's built from whatever
+  # gen-env.scala actually shipped with this release -- no manually synced
+  # copy to drift out of sync (confirmed by hand that this drift is a real
+  # risk, not a hypothetical one).
+  docker-tools:
+    needs: build
+    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      attestations: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # Downloads the sbt-native-packager output that "Stage services for
+      # release images" (in the build job) already produced and uploaded --
+      # Dockerfile.tools compiles gen-env.scala ahead of time via this
+      # instead of shipping scala-cli and compiling it inside the image.
+      - name: Download tools stage artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: tools-stage
+          path: scripts/target/universal/stage
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract version from tag
+        id: version
+        env:
+          # Same reasoning as the "Validate test_tag" step above: values
+          # go through env: instead of being spliced into the script text
+          # via ${{ }}, so a crafted test_tag (or, defensively, a release
+          # tag name) can't inject shell commands that run with this job's
+          # packages:write / GITHUB_TOKEN access.
+          RELEASE_TAG_NAME: ${{ github.event.release.tag_name }}
+          TEST_TAG: ${{ inputs.test_tag }}
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            echo "version=$RELEASE_TAG_NAME" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=$TEST_TAG" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Compute image tags
+        id: tags
+        env:
+          # See the identical comment in docker-auth's "Compute image
+          # tags" step -- same reasoning, same fix.
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          {
+            echo "tags<<EOF"
+            echo "${{ env.REGISTRY }}/${{ github.repository_owner }}/versola-tools:$VERSION"
+            if [ "${{ github.event_name }}" = "release" ]; then
+              echo "${{ env.REGISTRY }}/${{ github.repository_owner }}/versola-tools:latest"
+            fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build and push tools image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.tools
+          # Must be passed explicitly -- ARG VERSION defaults to "dev"
+          # otherwise, and the image bakes that default straight into the
+          # compose.fragment.yml it generates at bootstrap time (confirmed
+          # by hand: pulls versola-central:dev instead of the real tag,
+          # which doesn't exist, and bootstrap fails on "manifest unknown").
+          # For a workflow_dispatch test run this is the test_tag input,
+          # not a real version -- fine, since versola-tools built off a
+          # test run is only ever pulled manually for validation, never by
+          # a real "versola bootstrap local".
+          build-args: |
+            VERSION=${{ steps.version.outputs.version }}
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+
