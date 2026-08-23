@@ -11,10 +11,13 @@ import zio.test.*
 
 import java.time.Instant
 
-/** Joins the two halves that are otherwise only tested apart: the notification feed against a
-  * real database, and the cursor sync against a real table. What lives in the seam is the
-  * behaviour on a gap in the feed — a revocation nobody delivered has to be found by reading,
-  * and reading now starts from a cursor rather than at the beginning.
+/** The one part of this service that cannot be tested against an abstract `RevocationRepository`:
+  * delivery over a real `LISTEN`/`NOTIFY` connection, and recovery from a connection Postgres
+  * itself has torn down. Both are specific to how Postgres, not any database, delivers
+  * notifications, which is why this extends `PostgresSpec` directly instead of a contract spec
+  * — see `PostgresRevocationRepositorySpec` and `PostgresTokenRevocationServiceSyncSpec` for the
+  * parts of this same service that *are* abstracted, over `RevocationRepositoryContractSpec` and
+  * `TokenRevocationServiceSyncContractSpec`.
   */
 object PostgresTokenRevocationServiceSpec extends ZIOSpecDefault:
 
@@ -107,19 +110,6 @@ object PostgresTokenRevocationServiceSpec extends ZIOSpecDefault:
         _ <- eventually(isRevoked(service, "missed"), "missed revocation recovered")
       yield assertTrue(!unnoticed))
         .provideSome[TransactorZIO & PostgresConfig & Scope](PostgresRevocationNotifications.live)
-    },
-    test("a later sync picks up what was written after the last one without re-reading it") {
-      for
-        service <- service
-        _ <- revokeUnannounced("first")
-        _ <- service.sync
-        afterFirst <- service.entryCount
-        _ <- revokeUnannounced("second")
-        _ <- service.sync
-        afterSecond <- service.entryCount
-        first <- isRevoked(service, "first")
-        second <- isRevoked(service, "second")
-      yield assertTrue(afterFirst == 1, afterSecond == 2, first, second)
     },
   ) @@ TestAspect.before(clean) @@ TestAspect.after(clean)
     @@ TestAspect.withLiveClock @@ TestAspect.sequential)
