@@ -121,18 +121,20 @@ object TokenRevocationServiceSpec extends ZIOSpecDefault, ZIOStubs:
         revoked <- service.isRevoked(List(jti, sid), issuedAt)
       yield assertTrue(revoked)
     },
-    test("rejects a token from the moment it is revoked, without waiting to hear about it") {
+    test("a revoking replica learns of its own write the same way every other one does") {
       val repository = stub[RevocationRepository]
       for
         service <- TokenRevocationService.make(repository, clientService)
         _ <- repository.activeSince.succeedsWith(onePage())
         _ <- repository.revokeAll.succeedsWith(())
         _ <- service.sync
-        // No notification is delivered here: the replica that wrote the revocation must
-        // already honour it.
         _ <- service.revokeToken(AccessTokenId("token-1"), farFuture)
-        revoked <- service.isRevoked(List(jti), issuedAt)
-      yield assertTrue(revoked)
+        // Nothing has told this replica the write landed yet -- not a notification, not a
+        // catch-up -- so it answers no differently than one that never made the write.
+        beforeNotified <- service.isRevoked(List(jti), issuedAt)
+        _ <- service.consume(notificationsOf(revocation(jti)))
+        afterNotified <- service.isRevoked(List(jti), issuedAt)
+      yield assertTrue(!beforeNotified, afterNotified)
     },
     test("applies revocations announced by another replica") {
       val repository = stub[RevocationRepository]
@@ -157,20 +159,19 @@ object TokenRevocationServiceSpec extends ZIOSpecDefault, ZIOStubs:
         after <- service.isRevoked(List(jti), issuedAt)
       yield assertTrue(!before, after)
     },
-    test("keeps a revocation that arrived while a reload was in flight") {
+    test("keeps a revocation that arrived by notification while a reload was in flight") {
       val repository = stub[RevocationRepository]
       for
         service <- TokenRevocationService.make(repository, clientService)
-        _ <- repository.revokeAll.succeedsWith(())
-        // The revocation this replica has just written is not in what the database returns:
-        // a reload merges into what it holds rather than replacing it, because replacing
-        // would drop every revocation newer than the query.
+        // What the database returns does not include this one: a reload merges into what
+        // the replica already holds rather than replacing it, because replacing would drop
+        // every revocation newer than the query.
         _ <- repository.activeSince.succeedsWith(onePage(revocation(sid)))
-        _ <- service.revokeToken(AccessTokenId("token-1"), farFuture)
+        _ <- service.consume(notificationsOf(revocation(jti)))
         _ <- service.sync
-        written <- service.isRevoked(List(jti), issuedAt)
+        delivered <- service.isRevoked(List(jti), issuedAt)
         loaded <- service.isRevoked(List(sid), issuedAt)
-      yield assertTrue(written, loaded)
+      yield assertTrue(delivered, loaded)
     },
     test("reclaims expired entries without going near the database") {
       val repository = stub[RevocationRepository]

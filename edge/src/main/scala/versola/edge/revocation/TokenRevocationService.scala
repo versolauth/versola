@@ -151,12 +151,17 @@ object TokenRevocationService:
     private def widestAccessTokenTtl: UIO[Duration] =
       clientService.listClients.map(_.map(_.accessTokenTtl).maxOption.getOrElse(FallbackAccessTokenTtl))
 
+    /** Writes the revocation and returns — it is not also applied to this replica's own map
+      * here. The write's own notification comes back over the same feed as anyone else's, so
+      * the replica that revoked a token learns about it exactly like every other one, rather
+      * than by a special case that only fires for a write it made itself. That keeps every
+      * replica's view explainable by one rule (apply what the feed or a catch-up delivers)
+      * instead of two, and the asymmetry a local apply would add — this replica correct
+      * sooner than the rest, for tokens revoked through it — was never a guarantee callers
+      * were told to rely on: [[RevocationMetrics.staleness]] already prices this path in.
+      */
     private def revoke(revocation: Revocation): Task[Unit] =
-      repository.revokeAll(List(revocation)) *>
-        // The notification this write triggers comes back to this replica too, but not
-        // before the caller is answered: the client that asked for the revocation would
-        // otherwise be able to use the token again on the very next request.
-        put(List(revocation))
+      repository.revokeAll(List(revocation))
 
     /** The keys are read one at a time, and nothing holds the map still between them. Nothing
       * needs to: the entries carry no invariant relating one to another, so an answer assembled
