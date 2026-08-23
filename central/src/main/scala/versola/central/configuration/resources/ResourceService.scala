@@ -125,30 +125,49 @@ object ResourceService:
         validateEndpoints(request.endpoints).flatMap:
           case Some(error) => ZIO.left(error)
           case None =>
-            for
-              secret <- if request.internal then generateSecret.map(Some(_)) else ZIO.none
-              encryptedSecret <- ZIO.foreach(secret)(encryptRawSecret)
-              _ <- resourceRepository.createResource(
-                tenantId = request.tenantId,
-                resourceId = request.resourceId,
-                resource = request.resource,
-                audience = request.audience,
-                endpoints = request.endpoints.map(asRecord),
-                secret = encryptedSecret,
-              )
-            yield Right((request.resourceId, secret))
+            findAmbiguousEndpoint(request.endpoints.map(EndpointRef.from)) match
+              case Some(error) => ZIO.left(error)
+              case None =>
+                for
+                  secret <- if request.internal then generateSecret.map(Some(_)) else ZIO.none
+                  encryptedSecret <- ZIO.foreach(secret)(encryptRawSecret)
+                  _ <- resourceRepository.createResource(
+                    tenantId = request.tenantId,
+                    resourceId = request.resourceId,
+                    resource = request.resource,
+                    audience = request.audience,
+                    endpoints = request.endpoints.map(asRecord),
+                    secret = encryptedSecret,
+                  )
+                yield Right((request.resourceId, secret))
 
     override def updateResource(request: UpdateResourceRequest): Task[Either[ResourceValidationError, Unit]] =
       validateEndpoints(request.createEndpoints).flatMap:
         case Some(error) => ZIO.left(error)
         case None =>
-          resourceRepository.updateResource(
-            resourceId = request.resourceId,
-            resourcePatch = request.resource,
-            audiencePatch = request.audience,
-            deleteEndpoints = request.deleteEndpoints,
-            addEndpoints = request.createEndpoints.map(asRecord),
-          ).map(Right(_))
+          resourceRepository.findResource(request.resourceId).flatMap: existing =>
+            findAmbiguousEndpoint(finalEndpointRefs(existing, request)) match
+              case Some(error) => ZIO.left(error)
+              case None =>
+                resourceRepository.updateResource(
+                  resourceId = request.resourceId,
+                  resourcePatch = request.resource,
+                  audiencePatch = request.audience,
+                  deleteEndpoints = request.deleteEndpoints,
+                  addEndpoints = request.createEndpoints.map(asRecord),
+                ).map(Right(_))
+
+    /** The endpoint set the resource will have once `request` is applied: retained
+      * existing endpoints (neither deleted nor replaced) plus the submitted ones,
+      * mirroring the repository's own upsert-by-id semantics (see [[ResourceRepository.updateResource]]).
+      * Ambiguity must be checked against this final set, not just the submitted endpoints,
+      * since a PUT can add an ambiguous endpoint while silently retaining a conflicting
+      * one already stored (by omitting it from `deleteEndpoints`).
+      */
+    private def finalEndpointRefs(existing: Option[ResourceRecord], request: UpdateResourceRequest): Vector[EndpointRef] =
+      val overwrittenOrDeleted = request.deleteEndpoints ++ request.createEndpoints.map(_.id)
+      val retained = existing.fold(Vector.empty[ResourceEndpointRecord])(_.endpoints).filterNot(e => overwrittenOrDeleted.contains(e.id))
+      retained.map(EndpointRef.from) ++ request.createEndpoints.map(EndpointRef.from)
 
     override def rotateSecret(resourceId: ResourceId): Task[Secret] =
       for
@@ -182,13 +201,62 @@ object ResourceService:
         case (Some(err), _) => ZIO.succeed(Some(err))
         case (None, endpoint) => validateEndpoint(endpoint)
 
-    private val validPathRegex = "^/([a-zA-Z0-9-]+(/[a-zA-Z0-9-]+)*)?$".r
+    private val staticSegmentRegex = "[a-zA-Z0-9-]+".r
+    private val pathParamRegex = "\\{([a-zA-Z_][a-zA-Z0-9_]*)\\}".r
+
+    /** The (method, path, id) shape of an endpoint, regardless of whether it comes from
+      * a submitted request or an already-stored record; ambiguity depends on nothing else. */
+    private case class EndpointRef(id: ResourceEndpointId, method: String, path: String)
+
+    private object EndpointRef:
+      def from(request: CreateResourceEndpointRequest): EndpointRef =
+        EndpointRef(request.id, request.method, request.path)
+      def from(record: ResourceEndpointRecord): EndpointRef =
+        EndpointRef(record.id, record.method, record.path)
+
+    /** Two templates with the same method that differ only in their parameter names
+      * (e.g. `/users/{id}` and `/users/{userId}`) match exactly the same requests, so
+      * edge could never tell which one the caller meant. Identical templates are left
+      * to edge, which picks between them deterministically.
+      */
+    private def findAmbiguousEndpoint(
+        endpoints: Vector[EndpointRef],
+    ): Option[ResourceValidationError] =
+      val shapes = endpoints.map: endpoint =>
+        (endpoint.method.toUpperCase, pathShape(endpoint.path.trim), endpoint.path.trim, endpoint.id)
+      shapes.zipWithIndex.collectFirst:
+        case ((method, shape, path, id), index)
+            if shapes.take(index).exists((m, s, p, _) => m == method && s == shape && p != path) =>
+          ResourceValidationError.AmbiguousEndpointPath(id, path)
+
+    /** Path with every parameter placeholder collapsed to a positional marker, so two
+      * templates that match the same requests share a shape. */
+    private def pathShape(path: String): Vector[String] =
+      pathSegments(path).map:
+        case pathParamRegex(_) => "{}"
+        case segment => segment
+
+    private def pathSegments(path: String): Vector[String] =
+      path.stripPrefix("/") match
+        case "" => Vector.empty
+        case rest => rest.split("/", -1).toVector
+
+    /** A registered path is a `/`-prefixed sequence of static segments and `{name}`
+      * placeholders, each matching exactly one request segment. Placeholder names must be
+      * identifiers, and unique within the path so no `request.path.params` entry is lost.
+      */
+    private def isValidEndpointPath(path: String): Boolean =
+      val segments = pathSegments(path)
+      val params = segments.collect { case pathParamRegex(name) => name }
+      path.startsWith("/") &&
+        segments.forall(segment => staticSegmentRegex.matches(segment) || pathParamRegex.matches(segment)) &&
+        params.distinct.size == params.size
 
     private def validateEndpoint(
         endpoint: CreateResourceEndpointRequest,
     ): Task[Option[ResourceValidationError]] =
       val trimmedPath = endpoint.path.trim
-      if !validPathRegex.matches(trimmedPath) then
+      if !isValidEndpointPath(trimmedPath) then
         return ZIO.some(ResourceValidationError.InvalidEndpointPath(endpoint.id))
       val allowCheck = endpoint.allow.filter(_.trim.nonEmpty) match
         case None => ZIO.none
