@@ -1,0 +1,150 @@
+# Default values for the versola chart.
+#
+# Ground rules this chart follows (see #206 and deploy.md):
+#   - No bundled Postgres. Point `config.existingSecret` (per service, below)
+#     at an env.conf that already has an external connection URL.
+#   - No bundled secret backend. This chart consumes secret values/refs
+#     (native Secret, External Secrets Operator, Vault, ...), it never
+#     generates or mandates one.
+#   - Ingress/HPA/PDB/topology spread are separate issues (#210, #211) --
+#     out of scope here.
+
+nameOverride: ""
+fullnameOverride: ""
+
+global:
+  # Images are pulled as <imageRegistry>/<imageRepository>/<repository>:<tag>,
+  # e.g. ghcr.io/versolauth/versola-auth:0.4.0.
+  imageRegistry: ghcr.io
+  imageRepository: versolauth
+  imagePullPolicy: IfNotPresent
+  imagePullSecrets: []
+
+# terminationGracePeriodSeconds / preStopSleepSeconds for the JVM services
+# (auth, central, edge) below.
+#
+# VersolaApp.gracefulShutdownTimeout (see util/src/main/scala/versola/util/http/VersolaApp.scala)
+# is 15s: on SIGTERM the app itself waits up to that long for the HTTP
+# server to drain and finalizers (Hikari pool close, span flush) to run
+# before the JVM exits on its own.
+#
+# preStopSleepSeconds delays *sending* that SIGTERM by a few seconds --
+# kubelet only sends it once the preStop hook returns -- giving
+# kube-proxy/endpoint controllers time to stop routing new traffic to a
+# pod that's already Terminating. Without it, a pod can receive a new
+# request in the same instant it starts shutting down.
+#
+# terminationGracePeriodSeconds must cover both phases plus a margin for
+# the JVM to actually exit, or kubelet SIGKILLs before graceful shutdown
+# finishes: preStopSleepSeconds (5s) + gracefulShutdownTimeout (15s) + 10s
+# margin = 30s.
+preStopSleepSeconds: 5
+terminationGracePeriodSeconds: 30
+
+# auth, central, edge: the three JVM services described by VersolaApp.scala.
+# Keyed by name so templates/deployment.yaml and templates/service.yaml can
+# render one Deployment + Service per entry instead of repeating themselves.
+services:
+  auth:
+    enabled: true
+    image:
+      repository: versola-auth
+      tag: "" # defaults to .Chart.AppVersion
+    replicaCount: 1
+    port: 8080 # PORT -- application traffic
+    diagnosticsPort: 8081 # DPORT -- /metrics, /liveness, /readiness
+    resources:
+      requests:
+        cpu: 250m
+        memory: 512Mi
+      limits:
+        memory: 512Mi
+    config:
+      # Name of a Secret that already contains an env.conf key (HOCON --
+      # see deploy.md 3.2/3.3), mounted at CONFIG_PATH. Left empty by
+      # default -- this chart doesn't generate one.
+      existingSecret: ""
+      secretKey: env.conf
+    # Extra plain env vars: [{name: FOO, value: bar}, ...].
+    extraEnv: []
+    # Extra envFrom entries, e.g. for the ${?VAR} secret placeholders
+    # gen-env.scala writes into env.conf (JWT_PRIVATE_KEY,
+    # ACCESS_TOKENS_SECRET, POSTGRES_PASSWORD, ...): point this at
+    # whichever Secret your backend resolves them into.
+    #   extraEnvFrom:
+    #     - secretRef:
+    #         name: auth-secrets
+    extraEnvFrom: []
+  central:
+    enabled: true
+    image:
+      repository: versola-central
+      tag: ""
+    replicaCount: 1
+    port: 8090
+    diagnosticsPort: 8091
+    resources:
+      requests:
+        cpu: 250m
+        memory: 768Mi
+      limits:
+        memory: 768Mi
+    config:
+      existingSecret: ""
+      secretKey: env.conf
+    extraEnv: []
+    extraEnvFrom: []
+  edge:
+    enabled: true
+    image:
+      repository: versola-edge
+      tag: ""
+    replicaCount: 1
+    port: 8095
+    diagnosticsPort: 8096
+    resources:
+      requests:
+        cpu: 250m
+        memory: 384Mi
+      limits:
+        memory: 384Mi
+    config:
+      existingSecret: ""
+      secretKey: env.conf
+    extraEnv: []
+    extraEnvFrom: []
+
+# gateway: nginx with central-ui's static build baked in (see
+# docker/Dockerfile.gateway) -- not a VersolaApp service, so it has no
+# PORT/DPORT and no /liveness or /readiness to probe (see
+# templates/gateway-deployment.yaml for how it's probed instead).
+gateway:
+  enabled: true
+  image:
+    repository: versola-gateway
+    tag: ""
+  replicaCount: 1
+  port: 2821
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 128Mi
+  # nginx has no equivalent of gracefulShutdownTimeout -- these just need
+  # to give it enough room to stop receiving new connections and drain
+  # existing ones.
+  preStopSleepSeconds: 5
+  terminationGracePeriodSeconds: 20
+  nginxConfig:
+    # Name of a ConfigMap that already has an `nginx.conf` key (and,  if
+    # your routing still uses it, a `proxy_params.conf` key), if you'd
+    # rather manage gateway's routing outside this chart. Takes precedence
+    # over `content` below.
+    existingConfigMap: ""
+    # Inline override for the rendered nginx.conf. Leave empty to use the
+    # chart's own default (adapted from
+    # docker/versola-tools/nginx.conf.template for in-cluster Service DNS
+    # instead of Compose service names -- see templates/_helpers.tpl's
+    # "versola.defaultNginxConf").
+    content: ""
