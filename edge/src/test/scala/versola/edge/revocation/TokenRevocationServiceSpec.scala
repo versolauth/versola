@@ -2,12 +2,14 @@ package versola.edge.revocation
 
 import org.scalamock.stubs.ZIOStubs
 import versola.edge.{EdgeConfig, OAuthClientService}
-import versola.edge.model.{AccessTokenId, AuthorizationPreset, ClientId, OAuthClient, PresetId, SessionId}
+import versola.edge.model.{AccessTokenId, AuthorizationPreset, ClientId, EdgeId, OAuthClient, PresetId, SessionId}
 import versola.util.{ReloadingCache, Secret}
 import zio.*
+import zio.http.URL
 import zio.stream.ZStream
 import zio.test.*
 
+import java.security.KeyPairGenerator
 import java.time.Instant
 
 object TokenRevocationServiceSpec extends ZIOSpecDefault, ZIOStubs:
@@ -45,6 +47,23 @@ object TokenRevocationServiceSpec extends ZIOSpecDefault, ZIOStubs:
 
   private def client(id: String, accessTokenTtl: Duration): OAuthClient =
     OAuthClient(ClientId(id), Secret(Array.emptyByteArray), Set.empty, accessTokenTtl)
+
+  /** Only [[EdgeConfig.revocation]] matters here; the rest is what the case class demands. */
+  private lazy val edgeConfig = EdgeConfig(
+    id = EdgeId("edge-1"),
+    keyId = "kid-1",
+    privateKey =
+      val generator = KeyPairGenerator.getInstance("RSA").nn
+      generator.initialize(2048)
+      generator.generateKeyPair().nn.getPrivate.nn,
+    security = EdgeConfig.Security(
+      tokenEncryption = EdgeConfig.Security.TokenEncryption(Secret.Bytes32(Array.fill(32)(3.toByte))),
+      edgeSessions = EdgeConfig.Security.EdgeSessions(Secret.Bytes32(Array.fill(32)(5.toByte)), 1.hour),
+    ),
+    central = EdgeConfig.CentralConfig(url = URL.decode("https://central.example").toOption.get),
+    versolaUrl = URL.decode("https://idp.example").toOption.get,
+    configurationCacheRefreshInterval = 5.minutes,
+  )
 
   /** A fresh one per test: the cache behind it is mutable, and a leftover client from
     * another test would silently change the TTL under examination.
@@ -199,18 +218,69 @@ object TokenRevocationServiceSpec extends ZIOSpecDefault, ZIOStubs:
         requested == List(RevocationCursor.Beginning, RevocationCursor(writtenAt.minusSeconds(10), "")),
       )
     },
-    test("keeps serving the list it has when a reload fails") {
+    test("keeps serving the list it has when a background catch-up fails") {
       val repository = stub[RevocationRepository]
       for
         service <- TokenRevocationService.make(repository, clientService)
         _ <- repository.activeSince.succeedsWith(onePage(revocation(jti)))
         _ <- service.sync
         _ <- repository.activeSince.failsWith(RuntimeException("connection refused"))
-        _ <- service.sync
+        _ <- service.backgroundSync
         // A replica that cannot reach the database can be missing revocations written since
         // it last read, but is never wrong about the ones it already holds.
         stillRevoked <- service.isRevoked(List(jti), issuedAt)
       yield assertTrue(stillRevoked)
+    },
+    test("a catch-up that fails leaves the cursor where it was") {
+      val repository = stub[RevocationRepository]
+      for
+        service <- TokenRevocationService.make(repository, clientService, EdgeConfig.Revocation(overlap = 10.seconds))
+        _ <- repository.activeSince.succeedsWith(onePage(revocation(jti)))
+        _ <- service.sync
+        _ <- repository.activeSince.failsWith(RuntimeException("connection refused"))
+        _ <- service.backgroundSync
+        _ <- repository.activeSince.succeedsWith(onePage())
+        _ <- service.backgroundSync
+        requested = repository.activeSince.calls.map(_._1)
+        // The read after the failure asks for the same rows the failed one did, rather than
+        // resuming past revocations it never actually saw.
+        resumed = RevocationCursor(writtenAt.minusSeconds(10), "")
+      yield assertTrue(requested == List(RevocationCursor.Beginning, resumed, resumed))
+    },
+    test("the startup load propagates its failure rather than swallowing it") {
+      val repository = stub[RevocationRepository]
+      for
+        service <- TokenRevocationService.make(repository, clientService)
+        _ <- repository.activeSince.failsWith(RuntimeException("connection refused"))
+        outcome <- service.sync.exit
+      yield assertTrue(outcome.isFailure)
+    },
+    test("the layer refuses to come up when the list cannot be read, and comes up when it can") {
+      // The whole point of failing the load: an empty list is not a degraded list, it is one
+      // that accepts every revoked token presented to it. Asserted on the layer and not just
+      // on `sync`, because it is `live` swallowing the failure that would put a replica into
+      // service with nothing in it.
+      //
+      // Both directions, because a layer that fails whatever the database does would satisfy
+      // the first assertion for the wrong reason and prove nothing.
+      def buildWith(repository: RevocationRepository) =
+        ZIO.scoped:
+          TokenRevocationService.live.build.exit.provideSome[Scope](
+            ZLayer.succeed(repository),
+            ZLayer.succeed[RevocationNotifications](new RevocationNotifications:
+              override def notifications = ZStream.empty),
+            ZLayer.succeed(clientService),
+            ZLayer.succeed(edgeConfig),
+          )
+
+      val unreadable = stub[RevocationRepository]
+      val readable = stub[RevocationRepository]
+      for
+        _ <- unreadable.activeSince.failsWith(RuntimeException("connection refused"))
+        _ <- readable.activeSince.succeedsWith(onePage(revocation(jti)))
+        refused <- buildWith(unreadable)
+        started <- buildWith(readable)
+      yield assertTrue(refused.isFailure, started.isSuccess)
     },
     test("a user-wide revocation rejects the tokens that user already held") {
       val repository = stub[RevocationRepository]

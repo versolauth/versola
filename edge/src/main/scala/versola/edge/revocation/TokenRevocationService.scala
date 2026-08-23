@@ -39,7 +39,7 @@ object TokenRevocationService:
 
   def live: ZLayer[
     RevocationRepository & RevocationNotifications & OAuthClientService & EdgeConfig & Scope,
-    Nothing,
+    Throwable,
     TokenRevocationService,
   ] =
     ZLayer.fromZIO:
@@ -49,13 +49,16 @@ object TokenRevocationService:
         clientService <- ZIO.service[OAuthClientService]
         config <- ZIO.service[EdgeConfig]
         service <- make(repository, clientService, config.revocation)
-        // Loaded before the layer completes: a replica that started while a token was
-        // revoked would otherwise serve requests with an empty list and accept it.
+        // Loaded before the layer completes, and allowed to fail it. A replica that cannot
+        // read the list does not have a stale answer, it has no answer: an empty list accepts
+        // every revoked token presented to it, silently, for as long as the replica is up.
+        // Refusing to start is the only fail-closed option available here — it keeps the
+        // instance out of the load balancer instead of putting a hole behind it.
         _ <- service.sync
         // Jittered so replicas started together (a rolling deploy, or a host coming back up)
         // don't stay in lockstep and read the table at the same instant for the rest of their
         // lives.
-        _ <- service.sync.repeat(Schedule.spaced(config.revocation.reloadInterval).jittered).forkScoped
+        _ <- service.backgroundSync.repeat(Schedule.spaced(config.revocation.reloadInterval).jittered).forkScoped
         // On its own schedule rather than folded into the one above: reclaiming what has
         // expired is the only thing bounding what this replica holds, and it must not run at
         // the cadence of something that can be slowed down or stopped by the database.
@@ -209,7 +212,7 @@ object TokenRevocationService:
     private[revocation] def consume(notifications: RevocationNotifications): UIO[Unit] =
       notifications.notifications
         .runForeach:
-          case RevocationEvent.Resubscribed => sync
+          case RevocationEvent.Resubscribed => backgroundSync
           case RevocationEvent.Revoked(revocation) => put(List(revocation))
         .catchAllCause(cause => ZIO.logErrorCause("Revocation notification stream failed", cause))
 
@@ -221,19 +224,27 @@ object TokenRevocationService:
       * runs. Only the first one, on a replica whose cursor is still at the beginning, reads
       * the whole list, and it does that a page at a time.
       */
-    private[revocation] def sync: UIO[Unit] =
-      (for
+    private[revocation] def sync: Task[Unit] =
+      for
         now <- Clock.instant
         highWater <- cursor.get
         reached <- drain(rewound(highWater), highWater)
         _ <- cursor.set(reached)
         _ <- lastSync.set(now)
         _ <- RevocationMetrics.reloaded(entries.size)
-      yield ()).catchAllCause: cause =>
-        // Keeping what it already holds is the safe half of the failure: the list can only
-        // be missing revocations written since it was last read, never wrong about the ones
-        // it has. The cursor is left where it was, so the next attempt asks for the same rows
-        // rather than stepping over them.
+      yield ()
+
+    /** A catch-up whose failure is tolerated, which is every one after the first.
+      *
+      * The difference from [[sync]] is what a failure means, not what it does. At startup
+      * there is nothing to fall back to. Here the replica already holds a list, and that list
+      * can only be missing revocations written since it was last read — never wrong about the
+      * ones it has — so continuing to serve it is strictly better than dying and taking a
+      * working deny list down with it. The cursor is left where it was, so the next attempt
+      * asks for the same rows rather than stepping over them.
+      */
+    private[revocation] def backgroundSync: UIO[Unit] =
+      sync.catchAllCause: cause =>
         for
           now <- Clock.instant
           previous <- lastSync.get
