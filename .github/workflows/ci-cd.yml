@@ -1,443 +1,11 @@
-name: CI/CD
-
-on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
-  release:
-    types: [published]
-  # Manual escape hatch to validate the docker-* jobs (build + push) without
-  # cutting a real release -- e.g. after changing a Dockerfile or this
-  # workflow itself. Requires test_tag specifically (not reusing a real
-  # version) so a manual run can never collide with an actual release tag,
-  # and never pushes `:latest` (see each job's "Compute image tags" step)
-  # so it can't clobber what a real release published there either.
-  workflow_dispatch:
-    inputs:
-      test_tag:
-        description: 'Tag to publish test images under (e.g. "test-jlink") -- never "latest" or a real version number'
-        required: true
-        type: string
-
-env:
-  REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
-
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:18
-        env:
-          POSTGRES_DB: auth
-          POSTGRES_USER: dev
-          POSTGRES_PASSWORD: 1234
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd="pg_isready -U dev -d auth"
-          --health-interval=10s
-          --health-timeout=5s
-          --health-retries=10
-          --health-start-period=10s
-
-    steps:
-      - uses: actions/checkout@v4
-
-      # test_tag's own description says it must never be "latest" or a real
-      # version number, but a text input on the manual-run form doesn't
-      # enforce that by itself -- someone could still type "latest" or an
-      # existing release tag and silently overwrite it. Fails the whole
-      # build (and therefore every downstream docker-* job, via needs:
-      # build) before anything gets staged or pushed.
-      #
-      # Checked against actual git tags, not a version-number-shaped regex
-      # (e.g. `^[0-9]+\.[0-9]+\.[0-9]+$`) -- deploy.md's "Tag naming"
-      # section is explicit that the published image tag is the git tag
-      # *verbatim*, with no enforced format (`v0.1.0` vs `0.1.0`, or a
-      # `-rc.1` suffix, are both valid depending on what a release was
-      # actually tagged). A shape-based guess would let a real tag like
-      # `v1.2.3` or `1.2.3-rc.1` through and silently overwrite it.
-      - name: Validate test_tag
-        if: github.event_name == 'workflow_dispatch'
-        env:
-          # Passed via env instead of interpolating ${{ inputs.test_tag }}
-          # directly into the script below: `run:` bodies are text-spliced
-          # by GitHub Actions *before* the shell ever sees them, so a
-          # workflow_dispatch input containing shell metacharacters (e.g.
-          # `$(...)`, backticks, quotes) would execute as part of this
-          # script with the job's packages:write / GITHUB_TOKEN access.
-          # Going through env: makes the value reach the shell as inert
-          # data in a variable, not as spliced-in script text.
-          TEST_TAG: ${{ inputs.test_tag }}
-        run: |
-          # A workflow_dispatch text input can contain newlines even though
-          # the trigger form looks like a single line -- it's just free
-          # text. That matters here specifically because every downstream
-          # docker-* job's "Extract version from tag" step writes this
-          # value with `echo "version=$TEST_TAG" >> "$GITHUB_OUTPUT"`, and
-          # $GITHUB_OUTPUT is parsed one `key=value` per line: a value like
-          # "latest\nx=y" would silently split into two separate outputs
-          # (version=latest, x=y) instead of one. That "version" would then
-          # be "latest" -- a value the checks below never actually see,
-          # since they're comparing against the whole, still-multi-line
-          # $TEST_TAG, not the post-split result. Rejecting anything that
-          # isn't a legal git ref name closes that off before it reaches
-          # any of that: git's own ref-format rules already disallow
-          # control characters (including newline), spaces, and the other
-          # characters that would misbehave in a shell or in
-          # $GITHUB_OUTPUT, so this piggybacks on that instead of hand-
-          # rolling a character allowlist.
-          if ! git check-ref-format "refs/tags/$TEST_TAG" >/dev/null 2>&1; then
-            echo "::error::test_tag '$TEST_TAG' is not a legal git ref name (git check-ref-format rejected it) -- release image tags are the git tag verbatim, so this needs to at least look like one. This also catches newlines/control characters, which could otherwise corrupt \$GITHUB_OUTPUT parsing in a later step."
-            exit 1
-          fi
-          if [ "$TEST_TAG" = "latest" ]; then
-            echo "::error::test_tag cannot be 'latest' -- that's the floating tag every unpinned pull resolves to, this would overwrite it."
-            exit 1
-          fi
-          if git ls-remote --tags origin | awk '{print $2}' | grep -qFx "refs/tags/$TEST_TAG"; then
-            echo "::error::test_tag '$TEST_TAG' matches an existing git tag -- release image tags are the git tag verbatim (see deploy.md's Tag naming section), so this would overwrite that release's published images. Pick something that isn't a real tag, e.g. 'test-jlink'."
-            exit 1
-          fi
-
-      - name: Set up JDK 25
-        uses: actions/setup-java@v4
-        with:
-          java-version: '25'
-          distribution: 'temurin'
-          cache: 'sbt'
-      - uses: sbt/setup-sbt@v1
-      - name: Set up Scala CLI
-        if: github.event_name != 'release'
-        uses: VirtusLab/scala-cli-setup@v1
-      - name: Enforce measured DB access in production code
-        shell: bash
-        run: |
-          set -eo pipefail
-          # Fail the build if any src/main Scala file calls the raw .connect / .transact
-          # transactor methods instead of the measured wrappers .connectMeasured /
-          # .transactMeasured, so every query is recorded in the
-          # db_client_operation_duration_seconds metric.
-          #
-          # Uses git grep boolean AND NOT so the check catches any call regardless of
-          # what precedes the method — xa.connect, xa.repeatableRead.transact,
-          # xa.serializable.connect, etc. — without relying on the receiver being named `xa`.
-          #
-          # The [^a-zA-Z_] guard prevents false positives from longer names that share
-          # the prefix: .transactor, .connectionTimeout, .connectors, etc.
-          #
-          # Exit codes: 0 = violations found, 1 = clean, >1 = git error.
-          # BasicCodecs.scala (which contains `xa.connect(f)` inside the wrapper bodies)
-          # is excluded via pathspec so its own implementation lines are never flagged.
-          status=0
-          matches="$(git grep -nE \
-            -e '\.(connect|transact)[^a-zA-Z_]' \
-            --and --not -e '(connect|transact)Measured' \
-            -- '**/src/main/**/*.scala' \
-            ':(exclude)util/implementations/postgres/src/main/scala/versola/util/postgres/BasicCodecs.scala')" \
-            || status=$?
-
-          # git grep exit codes: 0 = matches found, 1 = no matches, >1 = error.
-          if [ "$status" -gt 1 ]; then
-            echo "::error::'git grep' failed with exit code $status while checking DB access; failing the build instead of passing silently."
-            exit 1
-          fi
-
-          if [ -n "$matches" ]; then
-            printf '%s\n' "$matches"
-            echo "::error::Use .connectMeasured(...) / .transactMeasured(...) instead of raw .connect / .transact in production code (src/main)."
-            exit 1
-          fi
-
-          echo "OK: no unmeasured .connect/.transact found in src/main."
-
-      # tools (build.sbt's gen-env.scala sub-project) is deliberately not
-      # part of root's aggregate -- see its comment in build.sbt -- so
-      # plain `sbt compile` above wouldn't touch it. Without this, the
-      # *only* place it ever got compiled was `tools/stage` in "Stage
-      # services for release images" below, which only runs on release/
-      # workflow_dispatch -- meaning a normal PR or push to main could
-      # merge a change that breaks the sbt tools project (wrong
-      # scalacOptions, a dependency only tools pulls in, etc.) and nobody
-      # would find out until an actual release was cut. Compiling it here
-      # too closes that gap without pulling it into root's aggregate --
-      # it's still not part of the default `compile`/`test` loop for
-      # everyone else, just guaranteed to be checked on every run.
-      - name: Compile
-        run: sbt compile "tools/compile"
-
-      - name: Run tests
-        if: github.event_name != 'push'
-        env:
-          POSTGRES_HOST: localhost:5432
-        run: sbt test
-
-      - name: Run tests with coverage
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        env:
-          POSTGRES_HOST: localhost:5432
-        run: sbt coverage test coverageReport coverageAggregate
-
-      - name: Publish coverage badge to gist
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        env:
-          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
-          GIST_ID: bd1fd5151f5190b2f8325a56610909ef
-          GIST_FILENAME: versola-coverage.json
-        run: scala-cli run .github/scripts/coverage-badge.scala
-
-      - name: Generate dev configs
-        if: github.event_name != 'release'
-        run: echo "local" | scala-cli run scripts/gen-env.scala
-
-      # No `if: != release` guard here (unlike the steps above/below it) --
-      # central-postgres-impl/stage packages whatever's under
-      # central/src/main/resources at stage time, and this is what
-      # populates that with the built forms. Needed on release too now
-      # that central is staged here instead of inside Dockerfile.central
-      # (which used to run its own npm build:forms before its own `sbt
-      # stage`, see docker-central job below).
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22.12'
-
-      - name: Build forms
-        working-directory: central-ui
-        run: |
-          npm ci
-          npm run build:forms
-
-      - name: Stage services for e2e tests
-        if: github.event_name != 'release'
-        run: sbt "central-postgres-impl/stage" "auth-postgres-impl/stage"
-
-      # The e2e staging step above is skipped on release (see its `if:`),
-      # so a separate stage is needed here to produce the artifacts
-      # docker-auth/docker-central/docker-edge/docker-tools download --
-      # this is what lets Dockerfile.auth/.central/.edge/.tools copy a
-      # pre-built application instead of installing sbt (or, for tools,
-      # scala-cli) and rebuilding it inside the image.
-      - name: Stage services for release images
-        if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
-        run: sbt "auth-postgres-impl/stage" "central-postgres-impl/stage" "edge-postgres-impl/stage" "tools/stage"
-
-      - name: Upload auth stage artifact
-        if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
-        uses: actions/upload-artifact@v4
-        with:
-          name: auth-stage
-          path: auth/implementations/postgres/target/universal/stage
-          retention-days: 1
-
-      - name: Upload central stage artifact
-        if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
-        uses: actions/upload-artifact@v4
-        with:
-          name: central-stage
-          path: central/implementations/postgres/target/universal/stage
-          retention-days: 1
-
-      - name: Upload edge stage artifact
-        if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
-        uses: actions/upload-artifact@v4
-        with:
-          name: edge-stage
-          path: edge/implementations/postgres/target/universal/stage
-          retention-days: 1
-
-      - name: Upload tools stage artifact
-        if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
-        uses: actions/upload-artifact@v4
-        with:
-          name: tools-stage
-          path: scripts/target/universal/stage
-          retention-days: 1
-
-      - name: Start central service
-        if: github.event_name != 'release'
-        run: |
-          PORT=9001 DPORT=9002 \
-            central/implementations/postgres/target/universal/stage/bin/central-postgres-impl \
-            -Denv.path=central/dev/env.conf > /tmp/central.log 2>&1 &
-          echo $! > /tmp/central.pid
-
-      - name: Wait for central to be ready
-        if: github.event_name != 'release'
-        run: |
-          echo "Waiting for central on port 9002..."
-          for i in $(seq 1 60); do
-            if curl -sf "http://localhost:9002/readiness" > /dev/null 2>&1; then
-              echo "central is ready after $(( (i - 1) * 2 ))s"
-              break
-            fi
-            if [ "$i" -eq 60 ]; then
-              echo "central did not become ready in 120s"
-              cat /tmp/central.log
-              exit 1
-            fi
-            sleep 2
-          done
-
-      - name: Start auth service
-        if: github.event_name != 'release'
-        run: |
-          PORT=9003 DPORT=9004 \
-            auth/implementations/postgres/target/universal/stage/bin/auth-postgres-impl \
-            -Denv.path=auth/dev/env.conf > /tmp/auth.log 2>&1 &
-          echo $! > /tmp/auth.pid
-
-      - name: Wait for auth to be ready
-        if: github.event_name != 'release'
-        run: |
-          echo "Waiting for auth on port 9004..."
-          for i in $(seq 1 60); do
-            if curl -sf "http://localhost:9004/readiness" > /dev/null 2>&1; then
-              echo "auth is ready after $(( (i - 1) * 2 ))s"
-              break
-            fi
-            if [ "$i" -eq 60 ]; then
-              echo "auth did not become ready in 120s"
-              cat /tmp/auth.log
-              exit 1
-            fi
-            sleep 2
-          done
-
-      - name: Run e2e tests
-        if: github.event_name != 'release'
-        run: sbt e2e/test
-
-      - name: Stop services
-        if: always()
-        run: |
-          [ -f /tmp/auth.pid ]    && kill "$(cat /tmp/auth.pid)"    2>/dev/null || true
-          [ -f /tmp/central.pid ] && kill "$(cat /tmp/central.pid)" 2>/dev/null || true
-
-  docker-auth:
-    needs: build
-    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-      attestations: write
-      id-token: write
-    steps:
-      - uses: actions/checkout@v4
-
-      # Downloads the sbt-native-packager output that "Stage auth for
-      # release image" (in the build job) already produced and uploaded --
-      # Dockerfile.auth copies straight from this instead of installing
-      # sbt and rebuilding auth-postgres-impl again inside the image.
-      - name: Download auth stage artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: auth-stage
-          path: auth/implementations/postgres/target/universal/stage
-
-      # This image is built for linux/amd64 and linux/arm64 (see the
-      # "Build and push auth image" step) on an amd64 runner, so the arm64
-      # half needs binfmt registered to execute anything -- here, the
-      # `chmod +x /app/bin/*` in docker/Dockerfile.auth. Without this the
-      # arm64 build fails with "exec format error". Only the COPY layers
-      # are architecture-independent; a RUN is not.
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Log in to Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      # workflow_dispatch has no github.event.release.tag_name (there is no
-      # release) -- uses the required test_tag input instead, which can
-      # never collide with a real version since it's a separate, always-
-      # required field on the manual run form (see the workflow_dispatch
-      # trigger at the top of this file).
-      - name: Extract version from tag
-        id: version
-        env:
-          # Same reasoning as the "Validate test_tag" step above: values
-          # go through env: instead of being spliced into the script text
-          # via ${{ }}, so a crafted test_tag (or, defensively, a release
-          # tag name) can't inject shell commands that run with this job's
-          # packages:write / GITHUB_TOKEN access.
-          RELEASE_TAG_NAME: ${{ github.event.release.tag_name }}
-          TEST_TAG: ${{ inputs.test_tag }}
-        run: |
-          if [ "${{ github.event_name }}" = "release" ]; then
-            echo "version=$RELEASE_TAG_NAME" >> "$GITHUB_OUTPUT"
-          else
-            echo "version=$TEST_TAG" >> "$GITHUB_OUTPUT"
-          fi
-
-      # :latest only on a real release -- a manual workflow_dispatch run
-      # must never overwrite what :latest currently points to, that tag is
-      # what "versola bootstrap local" (see versola-cli) and anyone not
-      # pinning a version pull.
-      - name: Compute image tags
-        id: tags
-        env:
-          # steps.version.outputs.version comes from inputs.test_tag on a
-          # workflow_dispatch run (see "Extract version from tag" above).
-          # Same reasoning as that step and "Validate test_tag": route it
-          # through env: instead of splicing it into this run: body via
-          # ${{ }}. git check-ref-format (used to validate test_tag)
-          # rejects control characters/spaces/`~^:?*[\`, but still allows
-          # `$`, `(`, `)` -- a value like "$(id)" is a legal git ref name
-          # but would execute as a command substitution if it were
-          # text-spliced into this double-quoted shell string, with this
-          # job's packages:write / GITHUB_TOKEN access.
-          VERSION: ${{ steps.version.outputs.version }}
-        run: |
-          {
-            echo "tags<<EOF"
-            echo "${{ env.REGISTRY }}/${{ github.repository_owner }}/versola-auth:$VERSION"
-            if [ "${{ github.event_name }}" = "release" ]; then
-              echo "${{ env.REGISTRY }}/${{ github.repository_owner }}/versola-auth:latest"
-            fi
-            echo "EOF"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Build and push auth image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: docker/Dockerfile.auth
-          # Published as a manifest list covering both architectures, so
-          # `docker pull` on an arm64 node (Graviton/Ampere, and the
-          # default on managed k8s offerings more and more) resolves to a
-          # native image instead of failing to schedule. Safe for this
-          # image specifically: what gets copied in is sbt-native-packager
-          # output -- JVM bytecode, no architecture-specific build step --
-          # and the only native code on the runtime classpath is Netty's
-          # epoll transport, which zio-http already pulls in for both
-          # linux-x86_64 and linux-aarch_64 (checked in its POM, not
-          # assumed). Everything else that could have been native is pure
-          # Java: Argon2id is BouncyCastle's Argon2BytesGenerator, the
-          # WebAuthn libs are Yubico's pure-JVM ones, and the Postgres
-          # driver is the JDBC one.
-          #
-          # The eclipse-temurin digest pinned in docker/Dockerfile.auth is
-          # already the multi-arch index digest, not the amd64 child
-          # manifest, so it needs no change to serve both -- verified
-          # against the registry rather than assumed.
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.tags.outputs.tags }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-  docker-central:
+rsola-tools generates auth.conf/central.conf/edge.conf (via
+  # scripts/gen-env.scala) plus compose.fragment.yml and nginx.conf for
+  # "versola bootstrap local <version>" (see versola-cli). Lives in this
+  # repo (not a separate one) specifically so it's built from whatever
+  # gen-env.scala actually shipped with this release -- no manually synced
+  # copy to drift out of sync (confirmed by hand that this drift is a real
+  # risk, not a hypothetical one).
+  docker-tools:
     needs: build
     if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
@@ -450,21 +18,22 @@ jobs:
       - uses: actions/checkout@v4
 
       # Downloads the sbt-native-packager output that "Stage services for
-      # release images" (in the build job) already produced and uploaded
-      # -- that stage step already includes central-ui's built forms
-      # (built earlier in the same job, see its "Build forms" step) since
-      # they're packaged as resources inside this staged output.
-      # Dockerfile.central copies straight from this instead of installing
-      # sbt and rebuilding central-postgres-impl (and central-ui's forms)
-      # again inside the image.
-      - name: Download central stage artifact
+      # release images" (in the build job) already produced and uploaded --
+      # Dockerfile.tools compiles gen-env.scala ahead of time via this
+      # instead of shipping scala-cli and compiling it inside the image.
+      - name: Download tools stage artifact
         uses: actions/download-artifact@v4
         with:
-          name: central-stage
-          path: central/implementations/postgres/target/universal/stage
+          name: tools-stage
+          path: scripts/target/universal/stage
 
-      # See the identical comment in docker-auth's "Set up QEMU" step --
-      # same reasoning, same fix.
+      # See the identical comment in docker-auth's "Set up QEMU" step.
+      # This image leans on emulation much harder than the others: its
+      # jlink stage runs jdeps/jlink and two gen-env smoke runs (see
+      # docker/Dockerfile.tools), all under QEMU for the arm64 half, so
+      # this job is the slowest of the five by a wide margin. Native arm64
+      # runners would fix that, but they aren't free for private repos --
+      # revisit if the wall time becomes a problem.
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
@@ -504,4 +73,40 @@ jobs:
         run: |
           {
             echo "tags<<EOF"
-            echo "${{ env.REGI
+            echo "${{ env.REGISTRY }}/${{ github.repository_owner }}/versola-tools:$VERSION"
+            if [ "${{ github.event_name }}" = "release" ]; then
+              echo "${{ env.REGISTRY }}/${{ github.repository_owner }}/versola-tools:latest"
+            fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build and push tools image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.tools
+          # Must be passed explicitly -- ARG VERSION defaults to "dev"
+          # otherwise, and the image bakes that default straight into the
+          # compose.fragment.yml it generates at bootstrap time (confirmed
+          # by hand: pulls versola-central:dev instead of the real tag,
+          # which doesn't exist, and bootstrap fails on "manifest unknown").
+          # For a workflow_dispatch test run this is the test_tag input,
+          # not a real version -- fine, since versola-tools built off a
+          # test run is only ever pulled manually for validation, never by
+          # a real "versola bootstrap local".
+          build-args: |
+            VERSION=${{ steps.version.outputs.version }}
+          # "versola bootstrap local" pulls this image onto whatever
+          # machine is running the CLI -- an Apple Silicon Mac as often as
+          # not -- so it needs arm64 for the same reason the services do.
+          # Unlike theirs, its jlink stage produces an architecture-
+          # specific runtime, so the emulated arm64 build is doing real
+          # work here, not just repacking the same bytes (see this job's
+          # "Set up QEMU" step).
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+
