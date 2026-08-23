@@ -3,9 +3,9 @@ package versola.edge.revocation
 import versola.edge.model.{AccessTokenId, SessionId}
 import versola.edge.{EdgeConfig, OAuthClientService}
 import zio.*
-import zio.stm.{TMap, ZSTM}
 
 import java.time.Instant
+import java.util.concurrent.ConcurrentHashMap
 
 trait TokenRevocationService:
   /** One token dies and the session it belongs to does not, which is what keeps a client's
@@ -48,23 +48,31 @@ object TokenRevocationService:
         notifications <- ZIO.service[RevocationNotifications]
         clientService <- ZIO.service[OAuthClientService]
         config <- ZIO.service[EdgeConfig]
-        service <- make(repository, clientService)
+        service <- make(repository, clientService, config.revocation)
         // Loaded before the layer completes: a replica that started while a token was
         // revoked would otherwise serve requests with an empty list and accept it.
-        _ <- service.reload
+        _ <- service.sync
         // Jittered so replicas started together (a rolling deploy, or a host coming back up)
-        // don't stay in lockstep and scan the table at the same instant for the rest of their
+        // don't stay in lockstep and read the table at the same instant for the rest of their
         // lives.
-        _ <- service.reload.repeat(Schedule.spaced(config.revocation.reloadInterval).jittered).forkScoped
+        _ <- service.sync.repeat(Schedule.spaced(config.revocation.reloadInterval).jittered).forkScoped
+        // On its own schedule rather than folded into the one above: reclaiming what has
+        // expired is the only thing bounding what this replica holds, and it must not run at
+        // the cadence of something that can be slowed down or stopped by the database.
+        _ <- service.purge.repeat(Schedule.spaced(config.revocation.purgeInterval)).forkScoped
         _ <- service.consume(notifications).forkScoped
       yield service
 
-  private[revocation] def make(repository: RevocationRepository, clientService: OAuthClientService): UIO[Impl] =
+  private[revocation] def make(
+      repository: RevocationRepository,
+      clientService: OAuthClientService,
+      config: EdgeConfig.Revocation = EdgeConfig.Revocation(),
+  ): UIO[Impl] =
     for
-      entries <- TMap.empty[RevocationKey, Revocation].commit
       now <- Clock.instant
-      lastReload <- Ref.make(now)
-    yield Impl(repository, clientService, entries, lastReload)
+      lastSync <- Ref.make(now)
+      cursor <- Ref.make(RevocationCursor.Beginning)
+    yield Impl(repository, clientService, config, ConcurrentHashMap(), cursor, lastSync)
 
   /** Holds every revocation that has not expired yet, in memory, and answers from it alone.
     *
@@ -73,10 +81,19 @@ object TokenRevocationService:
     * that Postgres is slow, and a check that sometimes costs a query is a check whose cost
     * an attacker can choose by presenting tokens that miss.
     *
-    * What makes that safe is that the list is small and stays small on its own. An entry is
-    * kept only until the last token it could cover would have expired anyway, which is one
-    * access token TTL — minutes. So the cache holds the revocations of the last few minutes,
-    * not a history, and there is no capacity to run out of and no eviction to reason about.
+    * What makes that affordable is that an entry is kept only until the last token it could
+    * cover would have expired anyway — one access token TTL, minutes. The list is therefore
+    * the revocations of the last few minutes rather than a history, and its size follows the
+    * rate they are written at. That rate is not bounded here: an administrator ending a large
+    * number of users' access puts all of it in the window at once, so the list is sized to be
+    * held rather than capped.
+    *
+    * Capping it is what is deliberately not done. Every eviction from a deny list is an
+    * authorisation decision: dropping a live entry does not degrade the cache, it accepts a
+    * revoked token, silently, and it would happen exactly when the list is longest — during
+    * the mass revocation. So the map has no maximum and no eviction policy, entries leave
+    * only by expiring, and the size is something [[RevocationMetrics.entries]] reports rather
+    * than something this enforces.
     *
     * The cost is that it is eventually consistent. A revocation reaches this replica when
     * its notification arrives (typically within a second), and if the feed was down when it
@@ -86,8 +103,17 @@ object TokenRevocationService:
   class Impl(
       repository: RevocationRepository,
       clientService: OAuthClientService,
-      entries: TMap[RevocationKey, Revocation],
-      lastReload: Ref[Instant],
+      config: EdgeConfig.Revocation,
+      // Plain and mutable, because every alternative pays for the read path to buy something
+      // this has no use for: an immutable map behind a `Ref` rebuilds the whole thing to drop
+      // what expired, and retries that rebuild whenever a revocation lands mid-flight — which
+      // is likeliest precisely when the map is largest. Here reads allocate nothing and
+      // reclamation happens in place, without blocking them.
+      entries: ConcurrentHashMap[RevocationKey, Revocation],
+      // How far through the durable list this replica has read. Its only job is to keep a
+      // catch-up proportional to what has been written since the last one.
+      cursor: Ref[RevocationCursor],
+      lastSync: Ref[Instant],
   ) extends TokenRevocationService:
 
     override def revokeToken(jti: AccessTokenId, expiresAt: Instant): Task[Unit] =
@@ -129,11 +155,14 @@ object TokenRevocationService:
         // otherwise be able to use the token again on the very next request.
         put(List(revocation))
 
+    /** The keys are read one at a time, and nothing holds the map still between them. Nothing
+      * needs to: the entries carry no invariant relating one to another, so an answer assembled
+      * across a concurrent write is one the same request would have got had it arrived a
+      * moment earlier or later.
+      */
     override def isRevoked(keys: List[RevocationKey], issuedAt: Instant): UIO[Boolean] =
-      Clock.instant.flatMap: now =>
-        // One transaction for all of a token's keys, so the answer describes a single state
-        // of the list rather than one that changed underneath the check.
-        ZSTM.exists(keys)(key => entries.get(key).map(_.exists(applies(_, issuedAt, now)))).commit
+      Clock.instant.map: now =>
+        keys.exists(key => Option(entries.get(key)).exists(applies(_, issuedAt, now)))
 
     /** A token issued after `issuedBefore` postdates what the entry was aimed at — the user
       * logged in again after an administrator ended their sessions — and is left alone.
@@ -147,50 +176,92 @@ object TokenRevocationService:
         revocation.issuedBefore.forall(!issuedAt.isAfter(_))
 
     private def put(revocations: List[Revocation]): UIO[Unit] =
-      ZSTM.foreachDiscard(revocations)(revocation => entries.put(revocation.key, revocation)).commit
+      ZIO.succeed(revocations.foreach(revocation => entries.put(revocation.key, revocation)))
 
     private[revocation] def entryCount: UIO[Int] =
-      entries.size.commit
+      ZIO.succeed(entries.size)
+
+    /** Drops entries whose tokens have expired, and reports what is left.
+      *
+      * Runs on its own schedule and touches no database, because it is the only thing that
+      * bounds what this replica holds: tying it to the catch-up would mean a database this
+      * replica cannot reach is also a replica that never reclaims anything. An expired entry
+      * left here in the meantime changes no answer — [[applies]] rejects it on the way past —
+      * so this is reclamation, not correctness.
+      *
+      * The scan is in place. It walks the whole map, which is the cost of not keeping a
+      * second structure ordered by expiry for the sake of a job that runs once a minute.
+      */
+    private[revocation] def purge: UIO[Unit] =
+      for
+        now <- Clock.instant
+        _ <- ZIO.succeed(entries.values.removeIf(revocation => !revocation.expiresAt.isAfter(now)))
+        _ <- RevocationMetrics.entries(entries.size)
+      yield ()
 
     /** Applies revocations written by this or any other replica as they arrive.
       *
       * Reconnects arrive on the same stream, because a gap in the feed is not a no-op here:
-      * revocations published while it was down were never delivered and never will be, so the
-      * list is rebuilt from the table before it is trusted again.
+      * revocations published while it was down were never delivered and never will be. What
+      * closes the gap is an ordinary catch-up — anything written during it sits past the
+      * cursor — so a reconnect costs what was missed rather than a rebuild of the whole list.
       */
     private[revocation] def consume(notifications: RevocationNotifications): UIO[Unit] =
       notifications.notifications
         .runForeach:
-          case RevocationEvent.Resubscribed => reload
+          case RevocationEvent.Resubscribed => sync
           case RevocationEvent.Revoked(revocation) => put(List(revocation))
         .catchAllCause(cause => ZIO.logErrorCause("Revocation notification stream failed", cause))
 
     /** Catches this replica up with the durable list: on startup, after the notification feed
       * reconnects, and periodically in case a notification was lost some other way.
+      *
+      * Reads forward from where the last one stopped rather than reading the list again, so
+      * what a catch-up costs follows what has been written since it — nothing, most times it
+      * runs. Only the first one, on a replica whose cursor is still at the beginning, reads
+      * the whole list, and it does that a page at a time.
       */
-    private[revocation] def reload: UIO[Unit] =
+    private[revocation] def sync: UIO[Unit] =
       (for
         now <- Clock.instant
-        // Dropping what has expired needs no database and happens before anything that
-        // could fail: it is the only thing bounding what this replica holds, so it must
-        // still run when the database is unreachable.
-        _ <- entries.retainIf((_, revocation) => revocation.expiresAt.isAfter(now)).commit
-        active <- repository.listActive
-        // Merged into what is already held rather than replacing it: a revocation that
-        // arrived by notification while the query was in flight is not in `active`, and
-        // replacing would drop it.
-        count <- ZSTM.foreachDiscard(active)(revocation => entries.put(revocation.key, revocation))
-          .zipRight(entries.size)
-          .commit
-        _ <- lastReload.set(now)
-        _ <- RevocationMetrics.reloaded(count)
+        highWater <- cursor.get
+        reached <- drain(rewound(highWater), highWater)
+        _ <- cursor.set(reached)
+        _ <- lastSync.set(now)
+        _ <- RevocationMetrics.reloaded(entries.size)
       yield ()).catchAllCause: cause =>
         // Keeping what it already holds is the safe half of the failure: the list can only
         // be missing revocations written since it was last read, never wrong about the ones
-        // it has.
+        // it has. The cursor is left where it was, so the next attempt asks for the same rows
+        // rather than stepping over them.
         for
           now <- Clock.instant
-          previous <- lastReload.get
+          previous <- lastSync.get
           _ <- RevocationMetrics.reloadFailed(now.getEpochSecond - previous.getEpochSecond)
           _ <- ZIO.logWarningCause("Failed to refresh the revocation list; serving from the last one loaded", cause)
         yield ()
+
+    /** Reads pages until one comes back short, merging each into what is already held.
+      *
+      * Merged rather than swapped in: a revocation that arrived by notification while a page
+      * was in flight is in neither that page nor the next, and replacing the map would drop
+      * it. Merging also makes a page cheap to apply twice, which is what lets the read start
+      * behind where the last one finished.
+      */
+    private def drain(from: RevocationCursor, highWater: RevocationCursor): Task[RevocationCursor] =
+      repository.activeSince(from, config.batchSize).flatMap: page =>
+        put(page.revocations) *> (page.last match
+          case Some(last) if page.hasMore => drain(last, Ordering[RevocationCursor].max(highWater, last))
+          case Some(last)                 => ZIO.succeed(Ordering[RevocationCursor].max(highWater, last))
+          // Nothing in range, so nothing has been written since the last catch-up and the
+          // cursor stays where it was. Moving it to `from` would walk it backwards.
+          case None => ZIO.succeed(highWater))
+
+    /** Starts the read a little behind the last row seen. `revoked_at` is stamped when a row
+      * is written but the row only appears when its transaction commits, so one that took
+      * longer to commit than its neighbours can land behind a cursor that has already passed
+      * it, and reading strictly forward would never see it.
+      */
+    private def rewound(highWater: RevocationCursor): RevocationCursor =
+      if highWater == RevocationCursor.Beginning then RevocationCursor.Beginning
+      else RevocationCursor(highWater.revokedAt.minusSeconds(config.overlap.toSeconds), "")

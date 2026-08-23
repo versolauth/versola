@@ -1,7 +1,7 @@
 package versola.edge.revocation
 
 import org.scalamock.stubs.ZIOStubs
-import versola.edge.OAuthClientService
+import versola.edge.{EdgeConfig, OAuthClientService}
 import versola.edge.model.{AccessTokenId, AuthorizationPreset, ClientId, OAuthClient, PresetId, SessionId}
 import versola.util.{ReloadingCache, Secret}
 import zio.*
@@ -21,6 +21,21 @@ object TokenRevocationServiceSpec extends ZIOSpecDefault, ZIOStubs:
 
   /** When the token under test was issued. Only entries carrying an `issuedBefore` care. */
   private val issuedAt = Instant.EPOCH
+
+  /** When the rows the repository hands back were written. Only the cursor cares. */
+  private val writtenAt = Instant.EPOCH.plusSeconds(100)
+
+  private def cursorOf(key: RevocationKey): RevocationCursor = RevocationCursor(writtenAt, key.encoded)
+
+  /** Everything asked for, in one read: what the repository returns when the list fits
+    * inside a single page.
+    */
+  private def onePage(revocations: Revocation*): RevocationPage =
+    RevocationPage(revocations.toList, revocations.lastOption.map(r => cursorOf(r.key)), hasMore = false)
+
+  /** A page that filled the limit it was given, so the reader has to come back for another. */
+  private def fullPage(revocations: Revocation*): RevocationPage =
+    onePage(revocations*).copy(hasMore = true)
 
   private def revocation(key: RevocationKey, expiresAt: Instant = farFuture): Revocation =
     Revocation(key, expiresAt, issuedBefore = None)
@@ -54,8 +69,8 @@ object TokenRevocationServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val repository = stub[RevocationRepository]
       for
         service <- TokenRevocationService.make(repository, clientService)
-        _ <- repository.listActive.succeedsWith(List(revocation(jti)))
-        _ <- service.reload
+        _ <- repository.activeSince.succeedsWith(onePage(revocation(jti)))
+        _ <- service.sync
         revoked <- service.isRevoked(List(jti), issuedAt)
         live <- service.isRevoked(List(otherJti), issuedAt)
       yield assertTrue(
@@ -64,15 +79,15 @@ object TokenRevocationServiceSpec extends ZIOSpecDefault, ZIOStubs:
         // One call, made by the load itself. Neither answer cost anything beyond it, and a
         // miss cost no more than a hit: what an unrevoked token pays is not a caller's to
         // influence by presenting one that misses.
-        repository.listActive.calls.size == 1,
+        repository.activeSince.calls.size == 1,
       )
     },
     test("stops honouring an entry once the token it names would have expired anyway") {
       val repository = stub[RevocationRepository]
       for
         service <- TokenRevocationService.make(repository, clientService)
-        _ <- repository.listActive.succeedsWith(List(revocation(jti, Instant.EPOCH.plusSeconds(60))))
-        _ <- service.reload
+        _ <- repository.activeSince.succeedsWith(onePage(revocation(jti, Instant.EPOCH.plusSeconds(60))))
+        _ <- service.sync
         beforeExpiry <- service.isRevoked(List(jti), issuedAt)
         _ <- TestClock.adjust(61.seconds)
         afterExpiry <- service.isRevoked(List(jti), issuedAt)
@@ -82,8 +97,8 @@ object TokenRevocationServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val repository = stub[RevocationRepository]
       for
         service <- TokenRevocationService.make(repository, clientService)
-        _ <- repository.listActive.succeedsWith(List(revocation(sid)))
-        _ <- service.reload
+        _ <- repository.activeSince.succeedsWith(onePage(revocation(sid)))
+        _ <- service.sync
         revoked <- service.isRevoked(List(jti, sid), issuedAt)
       yield assertTrue(revoked)
     },
@@ -91,9 +106,9 @@ object TokenRevocationServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val repository = stub[RevocationRepository]
       for
         service <- TokenRevocationService.make(repository, clientService)
-        _ <- repository.listActive.succeedsWith(Nil)
+        _ <- repository.activeSince.succeedsWith(onePage())
         _ <- repository.revokeAll.succeedsWith(())
-        _ <- service.reload
+        _ <- service.sync
         // No notification is delivered here: the replica that wrote the revocation must
         // already honour it.
         _ <- service.revokeToken(AccessTokenId("token-1"), farFuture)
@@ -104,18 +119,18 @@ object TokenRevocationServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val repository = stub[RevocationRepository]
       for
         service <- TokenRevocationService.make(repository, clientService)
-        _ <- repository.listActive.succeedsWith(Nil)
-        _ <- service.reload
+        _ <- repository.activeSince.succeedsWith(onePage())
+        _ <- service.sync
         before <- service.isRevoked(List(jti), issuedAt)
         _ <- service.consume(notificationsOf(revocation(jti)))
         after <- service.isRevoked(List(jti), issuedAt)
       yield assertTrue(!before, after)
     },
-    test("rebuilds the list when the notification feed reconnects") {
+    test("catches up when the notification feed reconnects") {
       val repository = stub[RevocationRepository]
       for
         service <- TokenRevocationService.make(repository, clientService)
-        _ <- repository.listActive.succeedsWith(List(revocation(jti)))
+        _ <- repository.activeSince.succeedsWith(onePage(revocation(jti)))
         // Written while the feed was down, so its notification was never delivered: only a
         // reload can find it, which is what the reconnect has to trigger.
         before <- service.isRevoked(List(jti), issuedAt)
@@ -131,35 +146,67 @@ object TokenRevocationServiceSpec extends ZIOSpecDefault, ZIOStubs:
         // The revocation this replica has just written is not in what the database returns:
         // a reload merges into what it holds rather than replacing it, because replacing
         // would drop every revocation newer than the query.
-        _ <- repository.listActive.succeedsWith(List(revocation(sid)))
+        _ <- repository.activeSince.succeedsWith(onePage(revocation(sid)))
         _ <- service.revokeToken(AccessTokenId("token-1"), farFuture)
-        _ <- service.reload
+        _ <- service.sync
         written <- service.isRevoked(List(jti), issuedAt)
         loaded <- service.isRevoked(List(sid), issuedAt)
       yield assertTrue(written, loaded)
     },
-    test("drops expired entries on reload even when the database cannot be reached") {
+    test("reclaims expired entries without going near the database") {
       val repository = stub[RevocationRepository]
       for
         service <- TokenRevocationService.make(repository, clientService)
-        _ <- repository.listActive.succeedsWith(List(revocation(jti, Instant.EPOCH.plusSeconds(60))))
-        _ <- service.reload
+        _ <- repository.activeSince.succeedsWith(onePage(revocation(jti, Instant.EPOCH.plusSeconds(60))))
+        _ <- service.sync
+        loaded <- service.entryCount
         _ <- TestClock.adjust(61.seconds)
-        // Reclaiming what has expired is the only thing bounding what this replica holds,
-        // so it cannot be something an unreachable database prevents.
-        _ <- repository.listActive.failsWith(RuntimeException("connection refused"))
-        _ <- service.reload
+        // Reclaiming what has expired is the only thing bounding what this replica holds, so
+        // it runs on its own and a database it cannot reach must not be able to stop it.
+        _ <- repository.activeSince.failsWith(RuntimeException("connection refused"))
+        _ <- service.purge
         held <- service.entryCount
-      yield assertTrue(held == 0)
+      yield assertTrue(loaded == 1, held == 0)
+    },
+    test("reads the list a page at a time") {
+      val repository = stub[RevocationRepository]
+      for
+        service <- TokenRevocationService.make(repository, clientService, EdgeConfig.Revocation(batchSize = 1))
+        // A page that came back full is the only evidence there is another, so the read has
+        // to continue past it rather than stop at what one query returned.
+        _ <- repository.activeSince.returnsZIO: (cursor, _) =>
+          ZIO.succeed:
+            if cursor == RevocationCursor.Beginning then fullPage(revocation(jti))
+            else if cursor == cursorOf(jti) then fullPage(revocation(sid))
+            else onePage()
+        _ <- service.sync
+        first <- service.isRevoked(List(jti), issuedAt)
+        second <- service.isRevoked(List(sid), issuedAt)
+      yield assertTrue(first, second, repository.activeSince.calls.size == 3)
+    },
+    test("asks only for what has been written since the last catch-up") {
+      val repository = stub[RevocationRepository]
+      for
+        service <- TokenRevocationService.make(repository, clientService, EdgeConfig.Revocation(overlap = 10.seconds))
+        _ <- repository.activeSince.succeedsWith(onePage(revocation(jti)))
+        _ <- service.sync
+        _ <- service.sync
+        requested = repository.activeSince.calls.map(_._1)
+      yield assertTrue(
+        // The first read is the whole list. The second resumes from where it finished, less
+        // the overlap that covers a row committed after its `revoked_at` had been passed:
+        // staying caught up must not cost what catching up did.
+        requested == List(RevocationCursor.Beginning, RevocationCursor(writtenAt.minusSeconds(10), "")),
+      )
     },
     test("keeps serving the list it has when a reload fails") {
       val repository = stub[RevocationRepository]
       for
         service <- TokenRevocationService.make(repository, clientService)
-        _ <- repository.listActive.succeedsWith(List(revocation(jti)))
-        _ <- service.reload
-        _ <- repository.listActive.failsWith(RuntimeException("connection refused"))
-        _ <- service.reload
+        _ <- repository.activeSince.succeedsWith(onePage(revocation(jti)))
+        _ <- service.sync
+        _ <- repository.activeSince.failsWith(RuntimeException("connection refused"))
+        _ <- service.sync
         // A replica that cannot reach the database can be missing revocations written since
         // it last read, but is never wrong about the ones it already holds.
         stillRevoked <- service.isRevoked(List(jti), issuedAt)
@@ -170,8 +217,8 @@ object TokenRevocationServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val revokedAt = Instant.EPOCH.plusSeconds(600)
       for
         service <- TokenRevocationService.make(repository, clientService)
-        _ <- repository.listActive.succeedsWith(List(userRevocation(revokedAt)))
-        _ <- service.reload
+        _ <- repository.activeSince.succeedsWith(onePage(userRevocation(revokedAt)))
+        _ <- service.sync
         revoked <- service.isRevoked(List(jti, sid, sub), issuedAt = revokedAt.minusSeconds(60))
       yield assertTrue(revoked)
     },
@@ -180,8 +227,8 @@ object TokenRevocationServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val revokedAt = Instant.EPOCH.plusSeconds(600)
       for
         service <- TokenRevocationService.make(repository, clientService)
-        _ <- repository.listActive.succeedsWith(List(userRevocation(revokedAt)))
-        _ <- service.reload
+        _ <- repository.activeSince.succeedsWith(onePage(userRevocation(revokedAt)))
+        _ <- service.sync
         // The user logged in again after the administrator ended their sessions. The entry
         // is still live, and must not lock them out of the session they just started.
         revoked <- service.isRevoked(List(jti, sid, sub), issuedAt = revokedAt.plusSeconds(1))
@@ -236,8 +283,8 @@ object TokenRevocationServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val revokedAt = Instant.EPOCH.plusSeconds(600)
       for
         service <- TokenRevocationService.make(repository, clientService)
-        _ <- repository.listActive.succeedsWith(List(userRevocation(revokedAt)))
-        _ <- service.reload
+        _ <- repository.activeSince.succeedsWith(onePage(userRevocation(revokedAt)))
+        _ <- service.sync
         // `iat` is whole seconds, so the two cannot be ordered. Sparing the token would let
         // one the administrator meant to end through; the tie goes to the revocation.
         revoked <- service.isRevoked(List(jti, sid, sub), issuedAt = revokedAt)

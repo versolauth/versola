@@ -59,10 +59,23 @@ object EdgeConfig:
   /** @param reloadInterval how often the in-memory revocation list is reconciled with the
     *                       database. Nothing depends on it in normal operation — revocations
     *                       arrive by notification — so it is the backstop for a notification
-    *                       lost some way a reconnect doesn't cover, and what drops entries
-    *                       that have expired.
+    *                       lost some way a reconnect doesn't cover.
+    * @param purgeInterval how often entries whose tokens have expired are dropped. Separate
+    *                      from `reloadInterval` because it is the only thing bounding what a
+    *                      replica holds and it needs no database, so it must not be tied to
+    *                      the cadence of something that talks to one.
+    * @param overlap how far back before the last row read a reconcile starts again.
+    *                `revoked_at` is set when a row is written but the row appears when its
+    *                transaction commits, so one that committed late would sit behind the
+    *                cursor and never be read. Re-reading the window costs nothing: applying
+    *                a revocation twice is applying it once.
+    * @param batchSize how many rows a single read returns. Bounds what one read holds, not
+    *                  what the replica ends up holding.
     */
   case class Revocation(
       reloadInterval: Duration = Duration.fromSeconds(600),
+      purgeInterval: Duration = Duration.fromSeconds(60),
+      overlap: Duration = Duration.fromSeconds(30),
+      batchSize: Int = 50000,
   )
 
