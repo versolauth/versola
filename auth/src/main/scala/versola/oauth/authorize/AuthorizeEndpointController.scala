@@ -38,9 +38,11 @@ object AuthorizeEndpointController extends Controller:
                 .as(Response.badRequest(Error.BadRequest.description)))
 
           case error: Error.RedirectError =>
-            AuthMetrics.authorizeError(error.error.toString) *>
-              (Observability.setError(error.error, Some(error.errorDescription))
-                .as(Response.seeOther(error.redirectUriWithErrorParams)))
+            for
+              config <- ZIO.service[CoreConfig]
+              _ <- AuthMetrics.authorizeError(error.error.toString)
+              _ <- Observability.setError(error.error, Some(error.errorDescription))
+            yield Response.seeOther(error.redirectUriWithErrorParams(config.jwt.issuer))
         }
     }
 
@@ -53,7 +55,7 @@ object AuthorizeEndpointController extends Controller:
       response <- authService.authorize(request).tap(AuthMetrics.authorizeOutcome).map:
         case AuthorizeResponse.Authorized(code, idToken) =>
           Response.seeOther(
-            AuthorizeRedirect.responseUrl(request.redirectUri, Base64Url.encode(code), request.state, idToken),
+            AuthorizeRedirect.responseUrl(request.redirectUri, Base64Url.encode(code), request.state, idToken, config.jwt.issuer),
           )
 
         case AuthorizeResponse.Initialize(authId) =>

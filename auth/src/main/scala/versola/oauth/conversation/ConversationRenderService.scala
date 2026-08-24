@@ -258,7 +258,7 @@ object ConversationRenderService:
                   token <- serializeIdToken(dataWithCHash, signingKey)
                 yield Some(token)
               case None => ZIO.none
-            redirectUrl = AuthorizeRedirect.responseUrl(redirectUri, encodedCode, state, idToken)
+            redirectUrl = AuthorizeRedirect.responseUrl(redirectUri, encodedCode, state, idToken, config.jwt.issuer)
           yield Response.seeOther(redirectUrl)
             .addCookie(
               SessionCookie(

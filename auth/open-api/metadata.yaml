@@ -131,6 +131,11 @@ components:
             of `/authorize`, `/par` and `/token` only if it is also registered for the
             requesting client's own tenant; otherwise the request fails with
             `invalid_authorization_details`.
+        authorization_response_iss_parameter_supported:
+          type: boolean
+          description: |
+            RFC 9207 — the iss parameter is included in every authorization response
+            (both successful and error redirects).
 
   responses:
     Metadata:
@@ -140,6 +145,7 @@ components:
           schema:
             $ref: '#/components/schemas/ServerMetadata'
           example:
+            authorization_response_iss_parameter_supported: true
             issuer: https://auth.example.com
             authorization_endpoint: https://auth.example.com/authorize
             token_endpoint: https://auth.example.com/token

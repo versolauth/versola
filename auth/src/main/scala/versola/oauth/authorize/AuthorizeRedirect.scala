@@ -14,9 +14,9 @@ object AuthorizeRedirect:
     * so all parameters are placed in the URL fragment. For the plain authorization-code
     * flow the parameters are placed in the query string.
     */
-  def responseUrl(redirectUri: URL, code: String, state: Option[State], idToken: Option[String]): URL =
+  def responseUrl(redirectUri: URL, code: String, state: Option[State], idToken: Option[String], iss: String): URL =
     val params: List[(String, String)] =
-      List("code" -> code) ++
+      List("code" -> code, "iss" -> iss) ++
         idToken.map("id_token" -> _) ++
         state.map("state" -> _)
     idToken match
