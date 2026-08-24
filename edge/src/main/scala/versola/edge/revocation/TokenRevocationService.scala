@@ -183,8 +183,37 @@ object TokenRevocationService:
       revocation.expiresAt.isAfter(now) &&
         revocation.issuedBefore.forall(!issuedAt.isAfter(_))
 
+    /** Merges rather than assigns, keeping whichever of the two revokes more.
+      *
+      * A plain assignment would let a stale row undo a newer one. The two sources are not
+      * ordered against each other: a catch-up's page is a snapshot taken when its query ran,
+      * and a notification for the same key can arrive and be applied while that page is still
+      * in flight. Re-revoking a `sub:` widens the entry (a later `issuedBefore`, a later
+      * expiry) by updating the row in place, so applying the page afterwards would put the
+      * earlier bound back and accept the tokens issued between the two invalidations until
+      * the next catch-up happened to read the row again.
+      *
+      * Widest-wins is the rule rather than newest-wins because neither source carries when
+      * its row was written — and it is the safe direction regardless: an entry that revokes
+      * too much expires on its own within a TTL, while one that revokes too little accepts a
+      * token that was meant to be dead. Nothing here ever narrows an entry, which is fine
+      * because nothing in the system un-revokes: a user logging back in is handled by
+      * `issuedBefore` against the new token's `iat`, not by shrinking the entry.
+      */
     private def put(revocations: List[Revocation]): UIO[Unit] =
-      ZIO.succeed(revocations.foreach(revocation => entries.put(revocation.key, revocation)))
+      ZIO.succeed(revocations.foreach(revocation => entries.merge(revocation.key, revocation, widest)))
+
+    private val widest: java.util.function.BiFunction[Revocation, Revocation, Revocation] =
+      (held, arriving) =>
+        Revocation(
+          key = held.key,
+          expiresAt = if arriving.expiresAt.isAfter(held.expiresAt) then arriving.expiresAt else held.expiresAt,
+          // Absent bounds nothing by issuance, so it covers every token the key names and
+          // beats any instant; between two instants the later one rejects more.
+          issuedBefore = (held.issuedBefore, arriving.issuedBefore) match
+            case (Some(current), Some(incoming)) => Some(if incoming.isAfter(current) then incoming else current)
+            case _                               => None,
+        )
 
     private[revocation] def entryCount: UIO[Int] =
       ZIO.succeed(entries.size)

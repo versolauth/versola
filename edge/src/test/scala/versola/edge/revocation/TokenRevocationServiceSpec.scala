@@ -173,6 +173,38 @@ object TokenRevocationServiceSpec extends ZIOSpecDefault, ZIOStubs:
         loaded <- service.isRevoked(List(sid), issuedAt)
       yield assertTrue(delivered, loaded)
     },
+    test("a stale page cannot undo a wider revocation that landed while it was in flight") {
+      val repository = stub[RevocationRepository]
+      val firstInvalidation = Instant.EPOCH.plusSeconds(600)
+      val secondInvalidation = firstInvalidation.plusSeconds(60)
+      for
+        service <- TokenRevocationService.make(repository, clientService)
+        // What the catch-up's query saw: the row as it stood before the user was invalidated
+        // a second time.
+        _ <- repository.activeSince.succeedsWith(onePage(userRevocation(firstInvalidation)))
+        // The second invalidation widens the row in place, and its notification gets there
+        // first. Applying the page afterwards must not put the earlier bound back.
+        _ <- service.consume(notificationsOf(userRevocation(secondInvalidation)))
+        _ <- service.sync
+        // Issued between the two invalidations: covered by the second, not by the first.
+        revoked <- service.isRevoked(List(sub), issuedAt = firstInvalidation.plusSeconds(30))
+      yield assertTrue(revoked)
+    },
+    test("a wider expiry wins over a narrower one whichever order they arrive in") {
+      val repository = stub[RevocationRepository]
+      val shortLived = revocation(jti, Instant.EPOCH.plusSeconds(60))
+      val longLived = revocation(jti, Instant.EPOCH.plusSeconds(600))
+      for
+        service <- TokenRevocationService.make(repository, clientService)
+        _ <- repository.activeSince.succeedsWith(onePage(shortLived))
+        _ <- service.consume(notificationsOf(longLived))
+        _ <- service.sync
+        _ <- TestClock.adjust(61.seconds)
+        // An entry that outlives its usefulness costs one map slot until it expires; one cut
+        // short accepts a token that was meant to be dead.
+        revoked <- service.isRevoked(List(jti), issuedAt)
+      yield assertTrue(revoked)
+    },
     test("reclaims expired entries without going near the database") {
       val repository = stub[RevocationRepository]
       for

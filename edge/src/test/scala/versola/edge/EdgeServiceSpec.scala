@@ -136,6 +136,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
         sid: Option[String] = Some("sso-session-1"),
         subject: Option[String] = None,
         nonce: Option[String] = None,
+        timeOfEvent: Option[Long] = None,
         events: java.util.Map[String, ?] =
           Collections.singletonMap(backChannelLogoutEvent, Collections.emptyMap()),
         ttlSeconds: Long = 120,
@@ -156,6 +157,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
           sid.foreach(builder.claim("sid", _))
           subject.foreach(builder.subject)
           nonce.foreach(builder.claim("nonce", _))
+          timeOfEvent.foreach(toe => builder.claim("toe", toe))
           val jwt = SignedJWT(header, builder.build())
           jwt.sign(RSASSASigner(edgeConfig.privateKey))
           jwt.serialize()
@@ -689,10 +691,27 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- service.backChannelLogout(token)
       yield assertTrue(
         env.sessionRepository.findBySessionId.calls.isEmpty,
-        // Bounded at the event's own `iat`, so a session the user starts after the
-        // administrator acted is outside what the revocation covers.
+        // No `toe`, so `iat` is the closest thing to the event's time on offer.
         env.revocationService.revokeUser.calls == List(("user-1", now)),
       )
+    },
+    test("bounds a user-wide revocation at the event's own time, not at the token's signing time") {
+      val env = new Env
+      for
+        _ <- env.withClients(Fixtures.client)
+        _ <- env.jwksService.getPublicKeys.succeedsWith(env.publicKeys)
+        _ <- env.stubRevocations
+        security <- ZIO.service[SecurityService]
+        client <- ZIO.service[Client]
+        service = env.buildService(client, security)
+        now <- Clock.instant
+        occurredAt = now.minusSeconds(45)
+        // A delivery that took a moment to be signed. Bounding at `iat` would put the
+        // boundary after a login the user made in between and lock them out of it for an
+        // access token's lifetime, so `toe` — when the administrator acted — wins.
+        token <- env.signLogoutToken(sid = None, subject = Some("user-1"), timeOfEvent = Some(occurredAt.getEpochSecond))
+        _ <- service.backChannelLogout(token)
+      yield assertTrue(env.revocationService.revokeUser.calls == List(("user-1", occurredAt)))
     },
     test("revokes only the named token on an access token revocation event, leaving the session alone") {
       val env = new Env

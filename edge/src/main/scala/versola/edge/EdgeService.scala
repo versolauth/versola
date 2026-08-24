@@ -104,6 +104,11 @@ object EdgeService:
       @jsonField("sub") subject: Option[String],
       @jsonField("sid") sessionId: Option[SessionId],
       @jsonField("iat") issuedAt: Long,
+      /** When the event happened, as against `iat`, when the token announcing it was signed
+        * (RFC 8417 §2.2). Optional: an OP that does not send it leaves `iat` as the closest
+        * thing to it available.
+        */
+      @jsonField("toe") timeOfEvent: Option[Long],
       @jsonField("revoked_jti") revokedTokenId: Option[AccessTokenId],
       @jsonField("revoked_exp") revokedTokenExpiresAt: Option[Long],
       nonce: Option[String],
@@ -351,7 +356,12 @@ object EdgeService:
     private def endSession(claims: EdgeService.LogoutTokenClaims): IO[Throwable | InvalidLogoutToken, Unit] =
       (claims.sessionId, claims.subject) match
         case (Some(sid), _) => revocationService.revokeSession(sid)
-        case (None, Some(subject)) => revocationService.revokeUser(subject, Instant.ofEpochSecond(claims.issuedAt))
+        // `toe` in preference to `iat`: the bound has to be when the administrator acted,
+        // not when the token telling us about it was signed. A delivery that took a moment
+        // to run would otherwise put the boundary after a login the user made in between,
+        // and lock them out of it for an access token's lifetime.
+        case (None, Some(subject)) =>
+          revocationService.revokeUser(subject, Instant.ofEpochSecond(claims.timeOfEvent.getOrElse(claims.issuedAt)))
         case (None, None) => ZIO.fail(InvalidLogoutToken("logout token carries neither a sid nor a sub claim"))
 
     private def revokeToken(claims: EdgeService.LogoutTokenClaims): IO[Throwable | InvalidLogoutToken, Unit] =

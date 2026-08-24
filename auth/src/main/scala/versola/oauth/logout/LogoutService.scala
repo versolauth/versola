@@ -10,6 +10,8 @@ import zio.*
 import zio.http.URL
 import zio.json.ast.Json
 
+import java.time.Instant
+
 trait LogoutService:
   def logout(
       identifier: Either[PublicSessionId, SessionId],
@@ -73,9 +75,16 @@ object LogoutService:
     override def invalidateAllSessions(userId: UserId): Task[Unit] =
       for
         sessions <- sessionService.invalidateAllByUser(userId)
+        // Stamped here, once, rather than left to each delivery: the RP bounds the
+        // revocation at this instant, so a token issued after it is one the user obtained by
+        // logging in again and must keep working. Deliveries are forked and sign their own
+        // `iat` whenever they get to run, which would put that boundary after a login that
+        // beat them to it and lock the user out for an access token's lifetime — and would
+        // give two endpoints two different boundaries for one administrative action.
+        occurredAt <- Clock.instant
         participants <- sessionClients(sessions.flatMap(_.clients.map(_.clientId)).distinct)
         _ <- ZIO.foreachDiscard(byEndpoint(participants)):
-          case (uri, audience) => sendUserLogout(uri, audience, userId).forkDaemon
+          case (uri, audience) => sendUserLogout(uri, audience, userId, occurredAt).forkDaemon
       yield ()
 
     /** Resolves the RPs that actually participated in this SSO session (tracked via
@@ -138,12 +147,24 @@ object LogoutService:
         ),
       )
 
-    private def sendUserLogout(uri: URL, audience: NonEmptyChunk[ClientId], userId: UserId): UIO[Unit] =
+    private def sendUserLogout(
+        uri: URL,
+        audience: NonEmptyChunk[ClientId],
+        userId: UserId,
+        occurredAt: Instant,
+    ): UIO[Unit] =
       send(
         uri,
         audience,
         userId.toString,
-        Json.Obj("events" -> Json.Obj(BackChannelLogoutEvent -> Json.Obj())),
+        Json.Obj(
+          // `toe`, the time the event occurred, as distinct from `iat`, the time this token
+          // was signed (RFC 8417 §2.2). Only a `sub`-wide event needs it: it is the boundary
+          // the RP bounds the revocation at, and the two instants differ by however long the
+          // delivery took to run.
+          "toe" -> Json.Num(occurredAt.getEpochSecond),
+          "events" -> Json.Obj(BackChannelLogoutEvent -> Json.Obj()),
+        ),
       )
 
     private def send(uri: URL, audience: NonEmptyChunk[ClientId], subject: String, customClaims: Json.Obj): UIO[Unit] =

@@ -9,7 +9,7 @@ import versola.user.model.UserId
 import versola.util.{MAC, UnitSpecBase}
 import zio.*
 import zio.http.*
-import zio.json.ast.Json
+import zio.json.ast.{Json, JsonCursor}
 import zio.prelude.NonEmptySet
 import zio.test.*
 
@@ -263,8 +263,30 @@ object LogoutServiceSpec extends UnitSpecBase:
           calls.map((audience, _, subject, _) => (audience.toList, subject)) ==
             List((List(withBackChannel.id), userId.toString)),
           calls.head._4 == Json.Obj(
+            "toe" -> Json.Num(0),
             "events" -> Json.Obj("http://schemas.openid.net/event/backchannel-logout" -> Json.Obj()),
           ),
+        )
+      },
+      test("gives every endpoint the same event time, stamped when the sessions were ended") {
+        val env = Env()
+        val rpA = clientA.copy(backChannelLogoutUri = Some(URL.decode("https://rp-a.example/backchannel").toOption.get))
+        val rpB = clientB.copy(backChannelLogoutUri = Some(URL.decode("https://rp-b.example/backchannel").toOption.get))
+        val participants = Map(rpA.id -> rpA, rpB.id -> rpB)
+        val sessions = List(record1.copy(clients = List(ClientEntry(rpA.id, Instant.EPOCH), ClientEntry(rpB.id, Instant.EPOCH))))
+        for
+          _ <- env.sessionService.invalidateAllByUser.succeedsWith(sessions)
+          _ <- env.configuration.find.returnsZIO(id => ZIO.succeed(participants.get(id)))
+          _ <- env.dispatcher.dispatch.succeedsWith(())
+          occurredAt <- Clock.instant
+          _ <- env.service.invalidateAllSessions(userId)
+          calls <- ZIO.succeed(env.dispatcher.dispatch.calls).repeatUntil(_.size == 2)
+          eventTimes = calls.map(_._4.get(JsonCursor.field("toe")))
+        yield assertTrue(
+          // One administrative action is one boundary. Signed per delivery instead, two
+          // endpoints would bound the same revocation at two different instants, and a
+          // delivery that took a moment to run would bound it past a login made in between.
+          eventTimes == List.fill(2)(Right(Json.Num(occurredAt.getEpochSecond))),
         )
       },
     ),
