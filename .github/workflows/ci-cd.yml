@@ -213,7 +213,7 @@ jobs:
 
       - name: Stage services for e2e tests
         if: github.event_name != 'release'
-        run: sbt "central-postgres-impl/stage" "auth-postgres-impl/stage"
+        run: sbt "central-postgres-impl/stage" "auth-postgres-impl/stage" "edge-postgres-impl/stage"
 
       # The e2e staging step above is skipped on release (see its `if:`),
       # so a separate stage is needed here to produce the artifacts
@@ -307,6 +307,31 @@ jobs:
             sleep 2
           done
 
+      - name: Start edge service
+        if: github.event_name != 'release'
+        run: |
+          PORT=9005 DPORT=9006 \
+            edge/implementations/postgres/target/universal/stage/bin/edge-postgres-impl \
+            -Denv.path=edge/dev/env.conf > /tmp/edge.log 2>&1 &
+          echo $! > /tmp/edge.pid
+
+      - name: Wait for edge to be ready
+        if: github.event_name != 'release'
+        run: |
+          echo "Waiting for edge on port 9006..."
+          for i in $(seq 1 60); do
+            if curl -sf "http://localhost:9006/readiness" > /dev/null 2>&1; then
+              echo "edge is ready after $(( (i - 1) * 2 ))s"
+              break
+            fi
+            if [ "$i" -eq 60 ]; then
+              echo "edge did not become ready in 120s"
+              cat /tmp/edge.log
+              exit 1
+            fi
+            sleep 2
+          done
+
       - name: Run e2e tests
         if: github.event_name != 'release'
         run: sbt e2e/test
@@ -316,6 +341,7 @@ jobs:
         run: |
           [ -f /tmp/auth.pid ]    && kill "$(cat /tmp/auth.pid)"    2>/dev/null || true
           [ -f /tmp/central.pid ] && kill "$(cat /tmp/central.pid)" 2>/dev/null || true
+          [ -f /tmp/edge.pid ]   && kill "$(cat /tmp/edge.pid)"   2>/dev/null || true
 
   docker-auth:
     needs: build
