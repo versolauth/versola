@@ -6,13 +6,15 @@ import versola.edge.PostgresRevocationRepository
 import versola.util.postgres.PostgresSpec
 import zio.*
 
-/** Binds `TokenRevocationServiceSyncContractSpec` to a real Postgres database. */
-object PostgresTokenRevocationServiceSyncSpec extends TokenRevocationServiceSyncContractSpec:
+/** Binds [[TokenRevocationServiceSyncSpec]] to a real Postgres database. */
+object PostgresTokenRevocationServiceSyncSpec extends PostgresSpec, TokenRevocationServiceSyncSpec:
 
-  override def repositoryLayer: ZLayer[Any, Throwable, RevocationRepository & RevocationRepositoryTestSupport] =
-    PostgresSpec.transactor >>> (
-      ZLayer.fromFunction((xa: TransactorZIO) => PostgresRevocationRepository(xa): RevocationRepository) ++
-        ZLayer.fromFunction: (xa: TransactorZIO) =>
-          new RevocationRepositoryTestSupport:
-            def reset = xa.connect(sql"DELETE FROM revocations".update.run())
-    )
+  override lazy val environment =
+    ZLayer:
+      for xa <- ZIO.service[TransactorZIO]
+      yield TokenRevocationServiceSyncSpec.Env(PostgresRevocationRepository(xa))
+
+  override def beforeEach(env: TokenRevocationServiceSyncSpec.Env) =
+    ZIO.serviceWithZIO[TransactorZIO] { xa =>
+      xa.connect(sql"TRUNCATE TABLE revocations".update.run())
+    }.unit

@@ -14,10 +14,10 @@ import java.time.Instant
 /** The one part of this service that cannot be tested against an abstract `RevocationRepository`:
   * delivery over a real `LISTEN`/`NOTIFY` connection, and recovery from a connection Postgres
   * itself has torn down. Both are specific to how Postgres, not any database, delivers
-  * notifications, which is why this extends `PostgresSpec` directly instead of a contract spec
-  * — see `PostgresRevocationRepositorySpec` and `PostgresTokenRevocationServiceSyncSpec` for the
-  * parts of this same service that *are* abstracted, over `RevocationRepositoryContractSpec` and
-  * `TokenRevocationServiceSyncContractSpec`.
+  * notifications, which is why this has no backend-agnostic counterpart — see
+  * `PostgresRevocationRepositorySpec` and `PostgresTokenRevocationServiceSyncSpec` for the
+  * parts of this same service that *are* abstracted, over `RevocationRepositorySpec` and
+  * `TokenRevocationServiceSyncSpec`.
   */
 object PostgresTokenRevocationServiceSpec extends ZIOSpecDefault:
 

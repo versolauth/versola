@@ -73,6 +73,9 @@ lazy val `edge-postgres-impl` = project.in(edgeImplementations / "postgres")
     commonSettings,
     libraryDependencies ++= Dependencies.database.postgres,
     Compile / mainClass := Some("versola.PostgresEdgeApp"),
+    // Every spec in here truncates the same `revocations` table between tests,
+    // so two of them running at once would clear each other's rows.
+    Test / parallelExecution := false,
     sbtForkSettings
   ).dependsOn(
     edge % CompileTest,
