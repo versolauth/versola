@@ -151,10 +151,11 @@ object PostgresCentralApp extends VersolaApp("central"):
       SecurityService.live >+>
       CelEvaluator.live >+>
       JsonSchemaValidator.live >+>
+      OAuthClientService.live >+>
+      BootstrapService.live >+>
       TenantService.live >+>
       PermissionService.live >+>
       ResourceService.live >+>
-      OAuthClientService.live >+>
       ChallengeSettingsService.live >+>
       AuthorizationPresetService.live >+>
       OAuthScopeService.live >+>

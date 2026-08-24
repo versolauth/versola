@@ -200,7 +200,7 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
       watchdog.setDaemon(true)
       watchdog.start()
 
-  def parseConfig[A: {DeriveConfig, Tag}] =
+  def parseConfig[A: {DeriveConfig, Tag}]: ZLayer[ConfigProvider, Config.Error, A] =
     ZLayer:
       ZIO.serviceWithZIO[ConfigProvider](_.load(deriveConfig[A]))
 
