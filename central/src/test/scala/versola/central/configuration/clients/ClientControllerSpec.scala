@@ -380,7 +380,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
         ),
     ),
     controllerTestCase(
-      description = "create client with both logout URIs, which serve different purposes",
+      description = "create client returns 400 when both logout URIs are configured",
       request = Request(
         method = Method.POST,
         url = URL.empty / "configuration" / "clients",
@@ -389,14 +389,10 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
           backChannelLogoutUri = Some("https://example.com/back-logout"),
         ).toJson),
       ).addHeader(Header.ContentType(MediaType.application.json)),
-      expectedStatus = Status.Created,
-      setup = service =>
-        service.registerClient.succeedsWith(rotatedSecret),
+      expectedStatus = Status.BadRequest,
       verify = (_, service, _) =>
         ZIO.succeed(
-          // The front channel clears browser cookies, the back channel carries the
-          // notification the browser cannot be trusted to deliver; a client may need both.
-          assertTrue(service.registerClient.calls.nonEmpty),
+          assertTrue(service.registerClient.calls.isEmpty),
         ),
     ),
     controllerTestCase(
@@ -442,7 +438,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
         ),
     ),
     controllerTestCase(
-      description = "update client with both logout URIs",
+      description = "update client returns 400 when both logout URIs are configured",
       request = Request(
         method = Method.PUT,
         url = URL.empty / "configuration" / "clients",
@@ -451,12 +447,10 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
           backChannelLogoutUri = Some(Patch.Modified("https://example.com/back-logout")),
         ).toJson),
       ).addHeader(Header.ContentType(MediaType.application.json)),
-      expectedStatus = Status.NoContent,
-      setup = service =>
-        service.updateClient.succeedsWith(()),
+      expectedStatus = Status.BadRequest,
       verify = (_, service, _) =>
         ZIO.succeed(
-          assertTrue(service.updateClient.calls.nonEmpty),
+          assertTrue(service.updateClient.calls.isEmpty),
         ),
     ),
     controllerTestCase(

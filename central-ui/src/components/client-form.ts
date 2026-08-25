@@ -49,8 +49,7 @@ export class VersolaClientForm extends LitElement {
   @state() private ttlUnit: 'minutes' | 'hours' = 'hours';
   @state() private refreshTokenTtlDays = 90;
   @state() private redirectUriError = '';
-  @state() private frontChannelLogoutEnabled = false;
-  @state() private backChannelLogoutEnabled = false;
+  @state() private logoutMode: 'none' | 'front' | 'back' = 'none';
   @state() private frontChannelLogoutUriError = '';
   @state() private backChannelLogoutUriError = '';
   @state() private logoUriError = '';
@@ -750,8 +749,11 @@ export class VersolaClientForm extends LitElement {
       this.ttlValue = value;
       this.ttlUnit = unit;
       this.refreshTokenTtlDays = secondsToDays(this.client.refreshTokenTtl ?? daysToSeconds(90));
-      this.frontChannelLogoutEnabled = !!this.client.frontChannelLogoutUri;
-      this.backChannelLogoutEnabled = !!this.client.backChannelLogoutUri;
+      this.logoutMode = this.client.frontChannelLogoutUri
+        ? 'front'
+        : this.client.backChannelLogoutUri
+          ? 'back'
+          : 'none';
     } else {
       // Defaults: 1 hour, pre-select first available OTP template
       this.ttlValue = 1;
@@ -801,7 +803,7 @@ export class VersolaClientForm extends LitElement {
       : null;
     const scope = this.formData.scope || [];
     const hasOfflineAccess = scope.includes('offline_access');
-    const frontChannelLogoutUri = logoutEnabled && this.frontChannelLogoutEnabled
+    const frontChannelLogoutUri = logoutEnabled && this.logoutMode === 'front'
       ? (this.formData.frontChannelLogoutUri || '').trim()
       : '';
     if (frontChannelLogoutUri) {
@@ -814,7 +816,7 @@ export class VersolaClientForm extends LitElement {
 
     this.frontChannelLogoutUriError = '';
 
-    const backChannelLogoutUri = logoutEnabled && this.backChannelLogoutEnabled
+    const backChannelLogoutUri = logoutEnabled && this.logoutMode === 'back'
       ? (this.formData.backChannelLogoutUri || '').trim()
       : '';
     if (backChannelLogoutUri) {
@@ -972,13 +974,10 @@ export class VersolaClientForm extends LitElement {
     }
   }
 
-  private toggleFrontChannelLogout() {
-    this.frontChannelLogoutEnabled = !this.frontChannelLogoutEnabled;
+  private setLogoutMode(mode: 'none' | 'front' | 'back') {
+    if (this.logoutMode === mode) return;
+    this.logoutMode = mode;
     this.frontChannelLogoutUriError = '';
-  }
-
-  private toggleBackChannelLogout() {
-    this.backChannelLogoutEnabled = !this.backChannelLogoutEnabled;
     this.backChannelLogoutUriError = '';
   }
 
@@ -1020,17 +1019,22 @@ export class VersolaClientForm extends LitElement {
         <div class="cred-mode-cards">
           <button
             type="button"
-            class=${`cred-mode-card ${this.frontChannelLogoutEnabled ? 'selected' : ''}`}
-            @click=${() => this.toggleFrontChannelLogout()}
+            class=${`cred-mode-card ${this.logoutMode === 'none' ? 'selected' : ''}`}
+            @click=${() => this.setLogoutMode('none')}
+          >none</button>
+          <button
+            type="button"
+            class=${`cred-mode-card ${this.logoutMode === 'front' ? 'selected' : ''}`}
+            @click=${() => this.setLogoutMode('front')}
           >front-channel</button>
           <button
             type="button"
-            class=${`cred-mode-card ${this.backChannelLogoutEnabled ? 'selected' : ''}`}
-            @click=${() => this.toggleBackChannelLogout()}
+            class=${`cred-mode-card ${this.logoutMode === 'back' ? 'selected' : ''}`}
+            @click=${() => this.setLogoutMode('back')}
           >back-channel</button>
         </div>
 
-        ${this.frontChannelLogoutEnabled ? html`
+        ${this.logoutMode === 'front' ? html`
           <div class="cred-options">
             <div style="display: flex; align-items: center; gap: 0.4rem; margin-bottom: var(--spacing-sm);">
               <label for="client-front-channel-logout-uri" style="margin-bottom: 0;">Front-Channel Logout URI</label>
@@ -1068,7 +1072,7 @@ export class VersolaClientForm extends LitElement {
           </div>
         ` : ''}
 
-        ${this.backChannelLogoutEnabled ? html`
+        ${this.logoutMode === 'back' ? html`
           <div class="cred-options">
             <div style="display: flex; align-items: center; gap: 0.4rem; margin-bottom: var(--spacing-sm);">
               <label for="client-back-channel-logout-uri" style="margin-bottom: 0;">Back-Channel Logout URI</label>
