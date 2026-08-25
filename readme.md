@@ -15,7 +15,7 @@ Three Scala services share one codebase, plus a static admin SPA:
 
 | Service | Role | Public-facing? |
 |---|---|---|
-| `auth` | OAuth 2.1 / OpenID Connect provider — authorization, token, introspection, JWKS, logout endpoints | Yes |
+| `auth` | OAuth 2.0 / OpenID Connect provider — authorization, token, introspection, JWKS, logout endpoints | Yes |
 | `central` | Configuration store: tenants, clients, scopes, roles, permissions, forms, JWKS. Admin API. Source of truth `auth` syncs from. | No — reached only through `edge` |
 | `edge` | Authenticating/authorizing reverse proxy that offloads authn/authz from resource servers and API backends; also the login entry point for the admin console | Yes |
 | `central-ui` | Admin dashboard SPA (not a Docker service — static assets served by nginx) | Yes |
