@@ -192,7 +192,7 @@ object ConversationRenderService:
         error: String,
     ): Option[String] =
       URL.decode(redirectUri).toOption.map: url =>
-        url.addQueryParams(List("error" -> error) ++ state.map("state" -> _)).encode
+        url.addQueryParams(List("error" -> error, "iss" -> config.jwt.issuer) ++ state.map("state" -> _)).encode
 
     private def renderTerminal(clientId: ClientId, formId: String, step: StepView): Task[Response] =
       for
@@ -549,11 +549,11 @@ object ConversationRenderService:
             tosUri = client.flatMap(_.tosUri),
             scopes = rows,
             allowPartial = s.allowPartial,
-            denyUri = redirectUri.addQueryParams(List("error" -> "access_denied") ++ state.map("state" -> _)).encode,
+            denyUri = redirectUri.addQueryParams(List("error" -> "access_denied", "iss" -> config.jwt.issuer) ++ state.map("state" -> _)).encode,
           )
 
         case ConversationStep.AccessDenied =>
-          val params = List("error" -> "access_denied") ++ state.map("state" -> _)
+          val params = List("error" -> "access_denied", "iss" -> config.jwt.issuer) ++ state.map("state" -> _)
           ZIO.succeed(StepView.AccessDenied(redirectUri = redirectUri.addQueryParams(params).encode))
 
     private def availableClaimNames(record: ConversationRecord): Set[String] =

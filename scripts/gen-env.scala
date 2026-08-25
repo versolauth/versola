@@ -382,7 +382,8 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
        |  "frontchannel_logout_supported": true,
        |  "frontchannel_logout_session_supported": true,
        |  "backchannel_logout_supported": true,
-       |  "backchannel_logout_session_supported": true
+       |  "backchannel_logout_session_supported": true,
+       |  "authorization_response_iss_parameter_supported": true
        |}""".stripMargin
 
   section("\n── Edge service ──────────────────────────────────────────────────────")
