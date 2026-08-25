@@ -2,16 +2,14 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { defineConfig, type Plugin } from 'vite';
 
-// The admin console is served at https://id.versola.kz/central/admin/ in
-// production (see deploy.md / nginx routing), so every asset URL baked into
-// the built index.html must be prefixed with this path — otherwise the browser
-// looks for them at the domain root and gets a 404.
-//
-// The /central segment isn't cosmetic: the EDGE_SESSION cookie is scoped to
-// that path so each app behind edge gets its own session, and a cookie is only
-// sent to URLs beneath its path. Both the console's assets and its API calls
-// therefore have to live under the same prefix — see central-api.ts.
-const BASE_PATH = '/central/admin/';
+// The admin console is mounted at different paths depending on the
+// deployment target -- /central/admin/ in local dev, docker-local, and
+// path-based prod (see deploy.md / nginx routing); the docroot itself for a
+// domain-hosted console (e.g. k8s, see #222). A relative base means the same
+// dist/ works unmodified at either mount point: asset URLs baked into
+// index.html resolve against wherever the HTML itself was served from,
+// instead of assuming a fixed absolute path.
+const BASE_PATH = './';
 
 function distIndexHtmlPlugin(): Plugin {
   return {
