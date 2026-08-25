@@ -319,7 +319,7 @@ object ConversationControllerSpec extends UnitSpecBase:
       yield assertTrue(
         response.status == Status.Ok,
         body == "<html>Unavailable</html>",
-        renderService.renderServiceUnavailable.calls == List((clientId, "https://example.com/callback", Some("test-state"))),
+        renderService.renderServiceUnavailable.calls == List((clientId, "https://example.com/callback", Some("test-state"), false)),
       )
     }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging,
     test("GET /challenge renders step") {
@@ -368,7 +368,7 @@ object ConversationControllerSpec extends UnitSpecBase:
       yield assertTrue(
         response.status == Status.Ok,
         body == "<html>Expired</html>",
-        renderService.renderExpired.calls == List((clientId, "https://example.com/callback", Some("test-state"))),
+        renderService.renderExpired.calls == List((clientId, "https://example.com/callback", Some("test-state"), false)),
       )
     }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging,
 
@@ -394,7 +394,7 @@ object ConversationControllerSpec extends UnitSpecBase:
       yield assertTrue(
         response.status == Status.Ok,
         body == "<html>Unavailable</html>",
-        renderService.renderServiceUnavailable.calls == List((clientId, "https://example.com/callback", Some("test-state"))),
+        renderService.renderServiceUnavailable.calls == List((clientId, "https://example.com/callback", Some("test-state"), false)),
       )
     }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging,
 

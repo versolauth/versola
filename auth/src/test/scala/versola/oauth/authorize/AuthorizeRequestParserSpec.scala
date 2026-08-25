@@ -227,7 +227,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
       for
         _ <- env.configuration.find.succeedsWith(Some(clientRecord))
         result <- env.parser.parse(request).either
-      yield assertTrue(result == Left(Error.InvalidTarget(redirectUri, Some(State("test-state")), edgeResource.toString)))
+      yield assertTrue(result == Left(Error.InvalidTarget(redirectUri, Some(State("test-state")), edgeResource.toString, useFragment = false)))
     },
     suite("parse POST")(
       test("successfully parses valid form-urlencoded request") {
@@ -304,6 +304,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
           redirectUri,
           Some(State("test-state")),
           "unknown_type - unknown authorization details type",
+          useFragment = false,
         )))
       },
       test("rejects an unknown member of a registered type") {
@@ -315,7 +316,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
           _ <- env.configuration.findAuthorizationDetailType.succeedsWith(Some(paymentType))
           result <- env.parser.parse(request).either
         yield assertTrue(result.left.exists {
-          case Error.InvalidAuthorizationDetails(_, _, reason) => reason.startsWith("payment_initiation - ")
+          case Error.InvalidAuthorizationDetails(_, _, reason, _) => reason.startsWith("payment_initiation - ")
           case _ => false
         })
       },
@@ -329,6 +330,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
           redirectUri,
           Some(State("test-state")),
           "Authorization detail is missing the required type member",
+          useFragment = false,
         )))
       },
       test("rejects a value that is not a JSON array") {
@@ -341,6 +343,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
           redirectUri,
           Some(State("test-state")),
           "authorization_details must be a JSON array",
+          useFragment = false,
         )))
       },
       test("rejects a location that is not a registered resource") {
@@ -357,6 +360,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
           redirectUri,
           Some(State("test-state")),
           "payment_initiation - unknown location - https://unknown.example.com",
+          useFragment = false,
         )))
       },
       test("accepts a location that is a registered resource") {
@@ -399,6 +403,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
           redirectUri,
           Some(State("test-state")),
           s"payment_initiation - unknown location - $edgeResource",
+          useFragment = false,
         )))
       },
     ),
@@ -419,7 +424,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
         for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
           result <- env.parser.parse(request).either
-        yield assertTrue(result == Left(Error.StateInvalid(redirectUri)))
+        yield assertTrue(result == Left(Error.StateInvalid(redirectUri, useFragment = false)))
       },
     ),
     suite("scope")(
@@ -437,7 +442,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
         for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
           result <- env.parser.parse(request).either
-        yield assertTrue(result == Left(Error.ScopeNotGranted(redirectUri, Some(State("test-state")), "phone")))
+        yield assertTrue(result == Left(Error.ScopeNotGranted(redirectUri, Some(State("test-state")), "phone", useFragment = false)))
       },
       test("names every unregistered scope, not only the first") {
         val env = Env()
@@ -445,7 +450,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
         for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
           result <- env.parser.parse(request).either
-        yield assertTrue(result == Left(Error.ScopeNotGranted(redirectUri, Some(State("test-state")), "address phone")))
+        yield assertTrue(result == Left(Error.ScopeNotGranted(redirectUri, Some(State("test-state")), "address phone", useFragment = false)))
       },
       test("rejects an unregistered scope pushed through /par too") {
         val env = Env()
@@ -453,7 +458,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
         for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
           result <- env.parser.validate(pushedParams.view.mapValues(Chunk.fromIterable).toMap, Request.get(URL.root)).either
-        yield assertTrue(result == Left(Error.ScopeNotGranted(redirectUri, Some(State("test-state")), "phone")))
+        yield assertTrue(result == Left(Error.ScopeNotGranted(redirectUri, Some(State("test-state")), "phone", useFragment = false)))
       },
     ),
     suite("code_challenge_method")(
@@ -471,7 +476,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
         for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
           result <- env.parser.parse(request).either
-        yield assertTrue(result == Left(Error.CodeChallengeMethodInvalid(redirectUri, Some(State("test-state")), "plain")))
+        yield assertTrue(result == Left(Error.CodeChallengeMethodInvalid(redirectUri, Some(State("test-state")), "plain", useFragment = false)))
       },
       test("rejects a missing code_challenge_method instead of defaulting to plain") {
         val env = Env()
@@ -479,7 +484,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
         for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
           result <- env.parser.parse(request).either
-        yield assertTrue(result == Left(Error.CodeChallengeMethodMissing(redirectUri, Some(State("test-state")))))
+        yield assertTrue(result == Left(Error.CodeChallengeMethodMissing(redirectUri, Some(State("test-state")), useFragment = false)))
       },
     ),
     suite("ip")(
