@@ -484,7 +484,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
         security <- ZIO.service[SecurityService]
         client <- ZIO.service[Client]
         service = env.buildService(client, security)
-        cookies <- service.frontChannelLogout(env.edgeConfig.versolaUrl.encode, sid)
+        cookies <- service.frontChannelLogout(Some(env.edgeConfig.versolaUrl.encode), Some(sid), None)
       yield assertTrue(
         cookies == List(EdgeSessionCookie.clear(Fixtures.preset.cookieDomain, Fixtures.preset.cookiePath)),
         env.sessionRepository.findBySessionId.calls == List(sid),
@@ -507,7 +507,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
         security <- ZIO.service[SecurityService]
         client <- ZIO.service[Client]
         service = env.buildService(client, security)
-        cookies <- service.frontChannelLogout(env.edgeConfig.versolaUrl.encode, sid)
+        cookies <- service.frontChannelLogout(Some(env.edgeConfig.versolaUrl.encode), Some(sid), None)
       yield assertTrue(
         cookies == List(EdgeSessionCookie.clear(Fixtures.preset.cookieDomain, Fixtures.preset.cookiePath)),
       )
@@ -531,7 +531,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
         security <- ZIO.service[SecurityService]
         client <- ZIO.service[Client]
         service = env.buildService(client, security)
-        cookies <- service.frontChannelLogout(env.edgeConfig.versolaUrl.encode, sid)
+        cookies <- service.frontChannelLogout(Some(env.edgeConfig.versolaUrl.encode), Some(sid), None)
       yield assertTrue(cookies.size == 1)
     },
     test("returns no cookies and skips presets no longer present when session has no known preset") {
@@ -543,7 +543,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
         security <- ZIO.service[SecurityService]
         client <- ZIO.service[Client]
         service = env.buildService(client, security)
-        cookies <- service.frontChannelLogout(env.edgeConfig.versolaUrl.encode, sid)
+        cookies <- service.frontChannelLogout(Some(env.edgeConfig.versolaUrl.encode), Some(sid), None)
       yield assertTrue(
         cookies.isEmpty,
         env.sessionRepository.findBySessionId.calls == List(sid),
@@ -564,10 +564,16 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- env.withClients(Fixtures.client)
         _ <- env.stubRevocations
         _ <- env.sessionRepository.findBySessionId.succeedsWith(List(record, record.copy(accessTokenId = AccessTokenId("jti-logout-4"))))
+        _ <- env.jwksService.getPublicKeys.succeedsWith(env.publicKeys)
+        token <- env.signToken(sid = sid)
         security <- ZIO.service[SecurityService]
         client <- ZIO.service[Client]
         service = env.buildService(client, security)
-        _ <- service.frontChannelLogout(env.edgeConfig.versolaUrl.encode, sid)
+        _ <- service.frontChannelLogout(
+          Some(env.edgeConfig.versolaUrl.encode),
+          Some(sid),
+          Some(s"${Fixtures.presetId}:$token"),
+        )
       yield assertTrue(
         // One entry for the session, not one per row: `sid` already covers them all.
         env.revocationService.revokeSession.calls == List(sid),
@@ -580,16 +586,130 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- env.withClients(Fixtures.client)
         _ <- env.stubRevocations
         _ <- env.sessionRepository.findBySessionId.succeedsWith(List.empty)
+        _ <- env.jwksService.getPublicKeys.succeedsWith(env.publicKeys)
+        token <- env.signToken(sid = sid)
         security <- ZIO.service[SecurityService]
         client <- ZIO.service[Client]
         service = env.buildService(client, security)
-        cookies <- service.frontChannelLogout(env.edgeConfig.versolaUrl.encode, sid)
+        cookies <- service.frontChannelLogout(
+          Some(env.edgeConfig.versolaUrl.encode),
+          Some(sid),
+          Some(s"${Fixtures.presetId}:$token"),
+        )
       yield assertTrue(
         // No rows means no cookie to clear, but a token of that session can still be in
         // flight as a bearer token, so the revocation is recorded regardless.
         cookies.isEmpty,
         env.revocationService.revokeSession.calls == List(sid),
       )
+    },
+    test("records no revocation for a sid the caller holds no session cookie for") {
+      val env = new Env
+      val sid = SessionId("sso-session-unbacked")
+      val record = EdgeSessionRecord(
+        publicSessionId = sid,
+        presetId = Fixtures.presetId,
+        accessTokenId = AccessTokenId("jti-unbacked"),
+        encryptedRefreshToken = None,
+        expiresAt = Instant.parse("2024-01-01T00:00:00Z"),
+      )
+      for
+        _ <- env.withPresets(Fixtures.preset)
+        _ <- env.stubRevocations
+        _ <- env.sessionRepository.findBySessionId.succeedsWith(List(record))
+        security <- ZIO.service[SecurityService]
+        client <- ZIO.service[Client]
+        service = env.buildService(client, security)
+        cookies <- service.frontChannelLogout(Some(env.edgeConfig.versolaUrl.encode), Some(sid), None)
+      yield assertTrue(
+        // Cookie clearing only touches the caller's own browser, so it still happens; the
+        // deny list does not, or any anonymous caller could revoke any session it named.
+        cookies == List(EdgeSessionCookie.clear(Fixtures.preset.cookieDomain, Fixtures.preset.cookiePath)),
+        env.revocationService.revokeSession.calls.isEmpty,
+      )
+    },
+    test("records no revocation when the session cookie names a different session") {
+      val env = new Env
+      val sid = SessionId("sso-session-claimed")
+      for
+        _ <- env.stubRevocations
+        _ <- env.sessionRepository.findBySessionId.succeedsWith(List.empty)
+        _ <- env.jwksService.getPublicKeys.succeedsWith(env.publicKeys)
+        token <- env.signToken(sid = "sso-session-held")
+        security <- ZIO.service[SecurityService]
+        client <- ZIO.service[Client]
+        service = env.buildService(client, security)
+        _ <- service.frontChannelLogout(
+          Some(env.edgeConfig.versolaUrl.encode),
+          Some(sid),
+          Some(s"${Fixtures.presetId}:$token"),
+        )
+      yield assertTrue(env.revocationService.revokeSession.calls.isEmpty)
+    },
+    test("revokes the session its cookie names when the request carries no parameters") {
+      val env = new Env
+      val sid = SessionId("sso-session-first-party")
+      val record = EdgeSessionRecord(
+        publicSessionId = sid,
+        presetId = Fixtures.presetId,
+        accessTokenId = AccessTokenId("jti-first-party"),
+        encryptedRefreshToken = None,
+        expiresAt = Instant.parse("2024-01-01T00:00:00Z"),
+      )
+      for
+        _ <- env.withPresets(Fixtures.preset)
+        _ <- env.stubRevocations
+        _ <- env.sessionRepository.findBySessionId.succeedsWith(List(record))
+        _ <- env.jwksService.getPublicKeys.succeedsWith(env.publicKeys)
+        token <- env.signToken(sid = sid)
+        security <- ZIO.service[SecurityService]
+        client <- ZIO.service[Client]
+        service = env.buildService(client, security)
+        cookies <- service.frontChannelLogout(None, None, Some(s"${Fixtures.presetId}:$token"))
+      yield assertTrue(
+        cookies == List(EdgeSessionCookie.clear(Fixtures.preset.cookieDomain, Fixtures.preset.cookiePath)),
+        env.revocationService.revokeSession.calls == List(sid),
+        env.sessionRepository.findBySessionId.calls == List(sid),
+      )
+    },
+    test("records no revocation when the session cookie has expired") {
+      val env = new Env
+      val sid = SessionId("sso-session-expired")
+      for
+        _ <- env.stubRevocations
+        _ <- env.sessionRepository.findBySessionId.succeedsWith(List.empty)
+        _ <- env.jwksService.getPublicKeys.succeedsWith(env.publicKeys)
+        token <- env.signToken(sid = sid, ttlSeconds = -60)
+        security <- ZIO.service[SecurityService]
+        client <- ZIO.service[Client]
+        service = env.buildService(client, security)
+        _ <- service.frontChannelLogout(
+          Some(env.edgeConfig.versolaUrl.encode),
+          Some(sid),
+          Some(s"${Fixtures.presetId}:$token"),
+        )
+      yield assertTrue(env.revocationService.revokeSession.calls.isEmpty)
+    },
+    test("records no revocation when the session cookie is not signed by the OP") {
+      val env = new Env
+      val sid = SessionId("sso-session-forged")
+      for
+        _ <- env.stubRevocations
+        _ <- env.sessionRepository.findBySessionId.succeedsWith(List.empty)
+        _ <- env.jwksService.getPublicKeys.succeedsWith(env.publicKeys)
+        token <- env.signToken(sid = sid)
+        // Same header and claims, signature replaced: the sid is only a credential because
+        // the signature is checked, and a caller controls every byte of its own cookie.
+        forged = token.substring(0, token.lastIndexOf('.') + 1) + "Zm9yZ2Vk"
+        security <- ZIO.service[SecurityService]
+        client <- ZIO.service[Client]
+        service = env.buildService(client, security)
+        _ <- service.frontChannelLogout(
+          Some(env.edgeConfig.versolaUrl.encode),
+          Some(sid),
+          Some(s"${Fixtures.presetId}:$forged"),
+        )
+      yield assertTrue(env.revocationService.revokeSession.calls.isEmpty)
     },
     test("returns no cookies and does not touch session rows when issuer is unknown") {
       val env = new Env
@@ -598,7 +718,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
         security <- ZIO.service[SecurityService]
         client <- ZIO.service[Client]
         service = env.buildService(client, security)
-        cookies <- service.frontChannelLogout("https://untrusted.example", sid)
+        cookies <- service.frontChannelLogout(Some("https://untrusted.example"), Some(sid), None)
       yield assertTrue(
         cookies.isEmpty,
         env.sessionRepository.findBySessionId.calls.isEmpty,
@@ -626,7 +746,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
           security <- ZIO.service[SecurityService]
           client <- ZIO.service[Client]
           service = env.buildService(client, security)
-          cookies <- service.frontChannelLogout(iss, sid)
+          cookies <- service.frontChannelLogout(Some(iss), Some(sid), None)
         yield assertTrue(
           cookies == List(EdgeSessionCookie.clear(Fixtures.preset.cookieDomain, Fixtures.preset.cookiePath)),
         )
@@ -643,7 +763,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
           security <- ZIO.service[SecurityService]
           client <- ZIO.service[Client]
           service = env.buildService(client, security)
-          cookies <- service.frontChannelLogout(iss, sid)
+          cookies <- service.frontChannelLogout(Some(iss), Some(sid), None)
         yield assertTrue(
           cookies.isEmpty,
           env.sessionRepository.findBySessionId.calls.isEmpty,

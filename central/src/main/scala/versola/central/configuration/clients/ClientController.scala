@@ -6,7 +6,7 @@ import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.TenantId
 import versola.util.http.{Controller, Unauthorized}
-import versola.util.{Base64Url, Patch, Secret, SecurityService}
+import versola.util.{Base64Url, Secret, SecurityService}
 import zio.*
 import zio.http.*
 import zio.json.*
@@ -118,8 +118,6 @@ object ClientController extends Controller:
         _ <- authorizeBasic(request)
         service <- ZIO.service[OAuthClientService]
         body <- request.bodyAs[CreateClientRequest]
-        _ <- ZIO.when(body.frontChannelLogoutUri.isDefined && body.backChannelLogoutUri.isDefined):
-          ZIO.fail(InvalidClientLogoutConfiguration(body.id))
         secret <- service.registerClient(body)
         response = CreateClientResponse(Base64Url.encode(secret))
       yield Response.json(response.toJson).status(Status.Created))
@@ -127,10 +125,6 @@ object ClientController extends Controller:
           case error: ClientAlreadyExists =>
             ZIO.succeed:
               Response.status(Status.Conflict)
-          case error: InvalidClientLogoutConfiguration =>
-            ZIO.succeed:
-              Response.text("A client can only have one of frontChannelLogoutUri or backChannelLogoutUri configured")
-                .status(Status.BadRequest)
           case error: InvalidConsentUri =>
             ZIO.succeed(Response.text(error.getMessage).status(Status.BadRequest))
           case error: InvalidRegistrationConfiguration =>
@@ -147,15 +141,9 @@ object ClientController extends Controller:
         _ <- authorizeBasic(request)
         service <- ZIO.service[OAuthClientService]
         body <- request.bodyAs[UpdateClientRequest]
-        _ <- ZIO.when(hasInvalidLogoutConfiguration(body)):
-          ZIO.fail(InvalidClientLogoutConfiguration(body.clientId))
         _ <- service.updateClient(body)
       yield Response.status(Status.NoContent))
         .catchAll {
-          case error: InvalidClientLogoutConfiguration =>
-            ZIO.succeed:
-              Response.text("A client can only have one of frontChannelLogoutUri or backChannelLogoutUri configured")
-                .status(Status.BadRequest)
           case error: InvalidConsentUri =>
             ZIO.succeed(Response.text(error.getMessage).status(Status.BadRequest))
           case error: InvalidRegistrationConfiguration =>
@@ -165,14 +153,6 @@ object ClientController extends Controller:
             ZIO.fail(error)
         }
     }
-
-  private def hasInvalidLogoutConfiguration(request: UpdateClientRequest): Boolean =
-    isSettingValue(request.frontChannelLogoutUri) && isSettingValue(request.backChannelLogoutUri)
-
-  private def isSettingValue(patch: Option[Patch[String]]): Boolean =
-    patch.exists:
-      case Patch.Modified(_) => true
-      case Patch.Deleted     => false
 
   val rotateSecretEndpoint =
     Method.POST / "configuration" / "clients" / "rotate-secret" -> handler { (request: Request) =>

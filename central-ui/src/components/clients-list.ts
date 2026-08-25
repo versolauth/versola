@@ -1330,11 +1330,11 @@ export class VersolaClientsList extends LitElement {
       : flow.primaryCredentials.includes('phone')
         ? 'sms'
         : flow.otpType;
-    const logoutMode = client.frontChannelLogoutUri
-      ? 'front-channel'
-      : client.backChannelLogoutUri
-        ? 'back-channel'
-        : 'none';
+    const logoutChannels = [
+      client.frontChannelLogoutUri ? 'front-channel' : null,
+      client.backChannelLogoutUri ? 'back-channel' : null,
+    ].filter(Boolean);
+    const logoutMode = logoutChannels.length ? logoutChannels.join(' + ') : 'none';
 
     return html`
       <div class="auth-flow-settings">

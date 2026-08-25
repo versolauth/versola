@@ -47,13 +47,18 @@ trait EdgeService:
       resourceIds: List[ResourceId],
   ): UIO[EdgeService.PermissionsResponse]
 
-  /** OP-initiated front-channel logout: revokes the SSO session and returns a clearing
-    * cookie for every preset whose EDGE_SESSION cookie may have been derived from it.
-    * `iss` is the only credential this unauthenticated endpoint has; when it doesn't
-    * match the configured OP, the request is silently ignored (no cookies cleared)
-    * rather than failing.
+  /** Front-channel logout, either OP-initiated (`iss`/`sid` query params, rendered in an
+    * iframe) or first-party (the browser navigating to the endpoint itself). The presented
+    * EDGE_SESSION cookie is the only credential that authorizes a revocation: `sid` alone
+    * is attacker-supplied, so it clears cookies but never writes to the deny list. When
+    * `iss` doesn't match the configured OP the request is silently ignored rather than
+    * failing.
     */
-  def frontChannelLogout(iss: String, sid: SessionId): Task[List[Cookie.Response]]
+  def frontChannelLogout(
+      iss: Option[String],
+      sid: Option[SessionId],
+      sessionCookie: Option[String],
+  ): Task[List[Cookie.Response]]
 
   /** OP-initiated back-channel logout: validates the OP-signed `logout_token` and revokes
     * the SSO session it names. Server-to-server, so no cookie can be cleared; the
@@ -319,17 +324,40 @@ object EdgeService:
         yield Some(resourceId -> ResourcePermissions(perms))
       .map(entries => PermissionsResponse(entries.flatten.toMap, env.isProd))
 
-    override def frontChannelLogout(iss: String, sid: SessionId): Task[List[Cookie.Response]] =
-      if !URL.decode(iss).toOption.exists(sameOrigin(_, config.versolaUrl)) then
+    override def frontChannelLogout(
+        iss: Option[String],
+        sid: Option[SessionId],
+        sessionCookie: Option[String],
+    ): Task[List[Cookie.Response]] =
+      if !iss.forall(value => URL.decode(value).toOption.exists(sameOrigin(_, config.versolaUrl))) then
         ZIO.succeed(Nil)
       else
-        // The lookup here is for the cookies, not the revocation: this is the browser-facing
-        // half of a logout and it has to name the exact domain and path to clear.
         for
-          records <- sessionRepository.findBySessionId(sid)
+          cookieSid <- ZIO.foreach(sessionCookie)(verifiedSessionId).map(_.flatten)
+          // Only a caller holding a session token for this sid may record a revocation. A
+          // bare `sid` still clears cookies, but an unauthenticated caller cannot make an
+          // edge deny tokens it was never shown.
+          revoked = (sid, cookieSid) match
+            case (Some(claimed), Some(held)) if claimed == held => Some(held)
+            case (None, held)                                   => held
+            case _                                              => None
+          // The lookup here is for the cookies, not the revocation: this is the browser-facing
+          // half of a logout and it has to name the exact domain and path to clear.
+          records <- ZIO.foreach(sid.orElse(cookieSid))(sessionRepository.findBySessionId).map(_.getOrElse(Nil))
           presets <- clientService.listPresets(records.map(_.presetId).distinct)
-          _ <- revocationService.revokeSession(sid)
+          _ <- ZIO.foreachDiscard(revoked)(revocationService.revokeSession)
         yield presets.map(preset => EdgeSessionCookie.clear(preset.cookieDomain, preset.cookiePath))
+
+    /** The sid of the access token carried in EDGE_SESSION, or None when the cookie is
+      * absent, unparseable, forged or expired. The signature check is what makes this a
+      * credential: the cookie is caller-supplied, so unverified claims prove nothing.
+      */
+    private def verifiedSessionId(content: String): Task[Option[SessionId]] =
+      val (_, token) = EdgeSessionCookie.parse(content)
+      for
+        publicKeys <- jwksService.getPublicKeys
+        claims <- JWT.deserialize[Json.Obj](token, publicKeys, JWT.Type.AccessToken).option
+      yield claims.flatMap(_.fields.collectFirst { case ("sid", Json.Str(value)) => SessionId(value) })
 
     override def backChannelLogout(logoutToken: String): IO[Throwable | InvalidLogoutToken, Unit] =
       for

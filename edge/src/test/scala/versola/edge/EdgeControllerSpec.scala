@@ -317,7 +317,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         response.status == Status.Ok,
         response.header(Header.CacheControl).contains(Header.CacheControl.NoStore),
         response.header(Header.SetCookie).map(_.value.content).contains(""),
-        service.frontChannelLogout.calls == List(("https://idp.example", SessionId("sso-session-1"))),
+        service.frontChannelLogout.calls == List((Some("https://idp.example"), Some(SessionId("sso-session-1")), None)),
       )
     },
     test("responds 200 with no cookies when the session has no known refresh tokens") {
@@ -329,7 +329,19 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       yield assertTrue(
         response.status == Status.Ok,
         response.header(Header.SetCookie).isEmpty,
-        service.frontChannelLogout.calls == List(("https://idp.example", SessionId("sso-session-unknown"))),
+        service.frontChannelLogout.calls == List((Some("https://idp.example"), Some(SessionId("sso-session-unknown")), None)),
+      )
+    },
+    test("passes the EDGE_SESSION cookie through as the credential for the revocation") {
+      for
+        (response, service, _) <- run(
+          Request.get(URL.decode("/logout/frontchannel").toOption.get)
+            .addCookie(Cookie.Request(EdgeSessionCookie.name, "preset-1:token-1")),
+          (s, _) => s.frontChannelLogout.succeedsWith(List.empty),
+        )
+      yield assertTrue(
+        response.status == Status.Ok,
+        service.frontChannelLogout.calls == List((None, None, Some("preset-1:token-1"))),
       )
     },
     test("responds 200 with no cookies when the issuer is unknown") {
@@ -341,7 +353,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       yield assertTrue(
         response.status == Status.Ok,
         response.header(Header.SetCookie).isEmpty,
-        service.frontChannelLogout.calls == List(("https://untrusted.example", SessionId("sso-session-1"))),
+        service.frontChannelLogout.calls == List((Some("https://untrusted.example"), Some(SessionId("sso-session-1")), None)),
       )
     },
   )
