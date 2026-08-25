@@ -43,23 +43,31 @@ class PostgresRevocationRepository(xa: TransactorZIO) extends RevocationReposito
     * `issued_before` is null exactly for the kinds that have no issuance bound (`jti:`,
     * `sid:`), and that is a property of the key rather than of the write, so the two sides
     * of a conflict always agree on whether it is set.
+    *
+    * `revoked_at` comes from Postgres's own `NOW()` rather than this replica's `Clock`. It
+    * is compared, elsewhere, against other replicas' cursors, and a cursor only rewinds by a
+    * fixed overlap to cover ordinary commit lag — not whatever a replica's own clock happens
+    * to be off by. Stamping it from the writing replica would let a lagging clock write a row
+    * that lands behind every cursor by more than the overlap covers, permanently out of
+    * reach of the catch-up that exists to find it if its notification is ever missed. The
+    * database has one clock; every row taking its `revoked_at` from it is what makes the
+    * cursor comparable across replicas at all.
     */
   override def revokeAll(revocations: List[Revocation]): Task[Unit] =
     if revocations.isEmpty then ZIO.unit
     else
-      Clock.instant.flatMap: now =>
-        xa.transactMeasured("revoke-tokens"):
-          batchUpdate(revocations): revocation =>
-            sql"""
-              INSERT INTO revocations (revoked_key, revoked_at, expires_at, issued_before)
-              VALUES (${revocation.key.encoded}, $now, ${revocation.expiresAt}, ${revocation.issuedBefore})
-              ON CONFLICT (revoked_key) DO UPDATE
-              SET revoked_at    = EXCLUDED.revoked_at,
-                  expires_at    = GREATEST(revocations.expires_at, EXCLUDED.expires_at),
-                  issued_before = GREATEST(revocations.issued_before, EXCLUDED.issued_before)
-              WHERE revocations.expires_at < EXCLUDED.expires_at
-                 OR revocations.issued_before < EXCLUDED.issued_before
-            """.update
+      xa.transactMeasured("revoke-tokens"):
+        batchUpdate(revocations): revocation =>
+          sql"""
+            INSERT INTO revocations (revoked_key, revoked_at, expires_at, issued_before)
+            VALUES (${revocation.key.encoded}, NOW(), ${revocation.expiresAt}, ${revocation.issuedBefore})
+            ON CONFLICT (revoked_key) DO UPDATE
+            SET revoked_at    = EXCLUDED.revoked_at,
+                expires_at    = GREATEST(revocations.expires_at, EXCLUDED.expires_at),
+                issued_before = GREATEST(revocations.issued_before, EXCLUDED.issued_before)
+            WHERE revocations.expires_at < EXCLUDED.expires_at
+               OR revocations.issued_before < EXCLUDED.issued_before
+          """.update
 
   /** The row comparison is what makes the cursor a position rather than an offset: it resumes
     * on the ordering itself, so rows written between two reads shift nothing and no row is

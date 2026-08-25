@@ -10,7 +10,8 @@ trait RevocationNotifications:
 
 enum RevocationEvent:
   /** The feed (re)connected, so revocations written while it was down were never delivered.
-    * The cache has to be rebuilt from the table before it can be trusted again.
+    * The cache has to be caught up from the table before it can be trusted again — a catch-up
+    * from where it last left off, not a rebuild: what it already holds stays valid.
     */
   case Resubscribed
 

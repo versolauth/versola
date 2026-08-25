@@ -164,10 +164,11 @@ object PostgresNotificationListener:
             )
         yield ()
 
-  /** Opens a connection of this listener's own for the lifetime of the scope and issues
-    * `LISTEN` for each channel on it, after checking that notifications are deliverable at
-    * all. The check runs on a separate short-lived connection so a subscriber cannot miss a
-    * real notification arriving while it is in progress.
+  /** Checks that notifications are deliverable at all, on a separate short-lived connection
+    * so a subscriber cannot miss a real one arriving while the check is in progress, and
+    * returns a listener for the given channels. Opening the real connection and issuing
+    * `LISTEN` is not done here: that happens lazily, inside [[PostgresNotificationListener.notifications]],
+    * and again on every reconnect for as long as the stream is consumed.
     */
   def make(channels: List[String]): ZIO[PostgresConfig & Scope, Throwable, PostgresNotificationListener] =
     for
