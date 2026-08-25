@@ -8,6 +8,7 @@ import zio.*
 final case class E2EConfig(
     authUrl: String,
     centralUrl: String,
+    edgeUrl: String,
     adminLogin: String,
     adminPassword: String,
     adminNewPassword: String,
@@ -24,6 +25,7 @@ object E2EConfig:
     for
       authUrl       <- env("AUTH_URL",        "http://localhost:9003")
       centralUrl    <- env("CENTRAL_URL",     "http://localhost:9001")
+      edgeUrl       <- env("EDGE_URL",        "http://localhost:9005")
       adminLogin       <- env("E2E_LOGIN",          "admin")
       adminPassword    <- env("E2E_PASSWORD",       "Admin1234!")
       adminNewPassword <- env("E2E_NEW_PASSWORD",   "Admin5678!")
@@ -31,7 +33,7 @@ object E2EConfig:
       // Default matches the pinned local central resource secret.
       resourceSecret   <- env("E2E_RESOURCE_SECRET", "ZGV2LWNlbnRyYWwtYWRtaW4tc2VjcmV0LTMyYnl0ZXM")
       redirectUri      <- env("E2E_REDIRECT_URI",   "http://localhost:3000")
-    yield E2EConfig(authUrl, centralUrl, adminLogin, adminPassword, adminNewPassword, clientId, resourceSecret, redirectUri)
+    yield E2EConfig(authUrl, centralUrl, edgeUrl, adminLogin, adminPassword, adminNewPassword, clientId, resourceSecret, redirectUri)
 
   private def env(name: String, default: String): Task[String] =
     System.env(name).map(_.getOrElse(default))

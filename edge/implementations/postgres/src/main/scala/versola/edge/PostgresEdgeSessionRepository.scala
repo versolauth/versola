@@ -46,11 +46,11 @@ class PostgresEdgeSessionRepository(xa: TransactorZIO) extends EdgeSessionReposi
       """.update.run()
     }.unit
 
-  override def deleteBySessionId(sid: SessionId): Task[List[EdgeSessionRecord]] =
-    xa.connectMeasured("delete-edge-sessions-by-sid") {
+  override def findBySessionId(sid: SessionId): Task[List[EdgeSessionRecord]] =
+    xa.connectMeasured("find-edge-sessions-by-sid") {
       sql"""
-        DELETE FROM edge_sessions WHERE public_session_id = $sid
-        RETURNING public_session_id, preset_id, access_token_id, refresh_token, expires_at
+        SELECT public_session_id, preset_id, access_token_id, refresh_token, expires_at
+        FROM edge_sessions WHERE public_session_id = $sid
       """
         .query[EdgeSessionRecord]
         .run()

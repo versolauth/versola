@@ -15,7 +15,7 @@ object CentralSyncTokenService:
 
   def live: ZLayer[Scope & CoreConfig & Client, Throwable, CentralSyncTokenService] =
     TokenSource >>>
-      ZLayer(ReloadingCache.make[String](Schedule.spaced(ReloadInterval))) >>>
+      ZLayer(ReloadingCache.make[String](ReloadInterval)) >>>
       ZLayer.fromFunction(Impl(_, _, _))
 
   private def generateToken(config: CoreConfig): Task[String] =

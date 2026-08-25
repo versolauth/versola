@@ -35,11 +35,13 @@ trait SessionRepository:
       userId: UserId,
   ): Task[List[SessionRecord]]
 
-  /** Atomically expires all sessions and refresh tokens for the given user.
-   *  Intended for admin-panel use (e.g. force-logout). */
+  /** Atomically expires all active sessions and refresh tokens for the given user,
+   *  returning the sessions that were invalidated so callers (e.g. admin-panel
+   *  force-logout) can fan out back-channel logout to their participating clients
+   *  without a separate lookup. Intended for admin-panel use (e.g. force-logout). */
   def invalidateByUserId(
       userId: UserId,
-  ): Task[Unit]
+  ): Task[List[SessionRecord]]
 
   def invalidate(id: MAC.Of[SessionId]): Task[Option[SessionRecord]]
 

@@ -39,7 +39,7 @@ object RoleService:
   def live: ZLayer[RoleRepository & TenantRepository & Scope & CentralConfig, Throwable, RoleService] =
     (ZLayer.fromZIO:
       ZIO.serviceWithZIO[CentralConfig](config =>
-        ReloadingCache.make[Vector[RoleRecord]](Schedule.spaced(config.configurationCacheRefreshInterval)),
+        ReloadingCache.make[Vector[RoleRecord]](config.configurationCacheRefreshInterval),
       )
     )
       >>> ZLayer.fromFunction(Impl(_, _, _))

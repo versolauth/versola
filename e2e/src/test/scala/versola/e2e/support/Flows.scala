@@ -224,11 +224,33 @@ object Flows:
       _      <- oauthClient.setUserPassword(userId, password)
     yield Setup(clientId, clientResult.secret, redirectUri, userId, Some(login), None, None, password)
 
+  /** Register a client that receives security events at the edge, so that revoking one of
+    * its tokens reaches the edge enforcing it.
+    */
+  def setupBackChannelLogout(redirectUri: String = "http://localhost:3000"): RIO[OAuthClient, Setup] =
+    val uid      = UUID.randomUUID().toString.replace("-", "").take(8)
+    val login    = s"user-$uid"
+    val password = s"Pass-$uid-1!"
+    val clientId = s"revocation-client-$uid"
+    for
+      oauthClient  <- ZIO.service[OAuthClient]
+      clientResult <- oauthClient.registerClient(
+        clientId,
+        "Revocation Test Client",
+        Set(redirectUri),
+        authFlow = Some(loginPasswordAuthFlow),
+        backChannelLogoutUri = Some(oauthClient.edgeBackChannelLogoutUri),
+      ).success
+      userId <- oauthClient.registerUser(login = Some(login))
+      _      <- oauthClient.flushUserOutbox()
+      _      <- oauthClient.setUserPassword(userId, password)
+    yield Setup(clientId, clientResult.secret, redirectUri, userId, Some(login), None, None, password)
+
   // ── Multi-setup helpers ─────────────────────────────────────────────────
 
   /** Identifies a registered auth flow variant in the shared bootstrap data. */
   enum Id:
-    case LoginPassword, EmailOtp, PhoneOtp, PhoneRegistration, EmailRegistration, Consent, ConsentPartial
+    case LoginPassword, EmailOtp, PhoneOtp, PhoneRegistration, EmailRegistration, Consent, ConsentPartial, BackChannelLogout
 
   /** All shared test data for the e2e suite. */
   case class Setups(setups: Map[Id, Setup], client: OAuthClient):
@@ -249,6 +271,7 @@ object Flows:
         emailRegistration <- setupEmailRegistration()
         consent <- setupConsent()
         consentPartial <- setupConsent(consentFlow = partialConsentFlow)
+        backChannelLogout <- setupBackChannelLogout()
         _       <- client.flushUserOutbox()
         _       <- client.upsertChallengeSettings(
           acrVocabulary = Map(Acr.OtpLevel -> List("otp"), Acr.PasswordLevel -> List("password"), Acr.PasskeyLevel -> List("passkey")),
@@ -263,6 +286,7 @@ object Flows:
           Id.EmailRegistration -> emailRegistration,
           Id.Consent -> consent,
           Id.ConsentPartial -> consentPartial,
+          Id.BackChannelLogout -> backChannelLogout,
         ),
         client,
       )

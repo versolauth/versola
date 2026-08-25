@@ -76,7 +76,16 @@ object OAuthTokenService:
 
         _ <- authorizationCodeRepository.markAsUsed(codeMac).flatMap:
           case Left(at) =>
-            accessTokenRevocationService.revoke(at) *>
+            zio.Clock.instant.flatMap: replayedAt =>
+              // The replayed code's access token is not in hand here, only its id, so its
+              // lifetime is bounded by the client's TTL rather than read from the token.
+              accessTokenRevocationService.revoke(
+                client = client,
+                token = at,
+                subject = codeRecord.userId.toString,
+                expiresAt = replayedAt.plus(client.accessTokenTtl),
+              )
+            *>
               sessionRepository.deleteByAccessToken(at) *>
               ZIO.fail(TokenEndpointError.InvalidGrant)
 

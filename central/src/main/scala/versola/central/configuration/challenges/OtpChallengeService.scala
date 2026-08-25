@@ -19,7 +19,7 @@ object OtpChallengeService:
   def live: ZLayer[OtpChallengeRepository & Scope & LocaleService & CentralConfig, Throwable, OtpChallengeService] =
     (ZLayer.fromZIO:
       ZIO.serviceWithZIO[CentralConfig](config =>
-        ReloadingCache.make[Vector[OtpTemplateRecord]](Schedule.spaced(config.configurationCacheRefreshInterval)),
+        ReloadingCache.make[Vector[OtpTemplateRecord]](config.configurationCacheRefreshInterval),
       )
     )
       >>> ZLayer.fromFunction(Impl(_, _, _))

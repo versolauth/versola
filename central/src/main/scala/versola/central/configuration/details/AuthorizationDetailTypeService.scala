@@ -48,8 +48,7 @@ object AuthorizationDetailTypeService:
   ] =
     (ZLayer.fromZIO:
       ZIO.serviceWithZIO[CentralConfig](config =>
-        ReloadingCache.make[Vector[AuthorizationDetailTypeRecord]](
-          Schedule.spaced(config.configurationCacheRefreshInterval),
+        ReloadingCache.make[Vector[AuthorizationDetailTypeRecord]](config.configurationCacheRefreshInterval,
         ),
       )
     )

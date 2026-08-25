@@ -6,7 +6,7 @@ import versola.oauth.model.{AccessTokenPayload, RefreshToken}
 import versola.oauth.revoke.model.RevocationError
 import versola.oauth.session.SessionRepository
 import versola.util.{CoreConfig, Secret, SecurityService}
-import zio.{IO, Task, ZIO, ZLayer}
+import zio.{Clock, IO, Task, ZIO, ZLayer}
 
 trait RevocationService:
   def revokeRefreshToken(
@@ -50,8 +50,19 @@ object RevocationService:
           case None =>
             ZIO.unit
           case Some(record) =>
-            sessionRepository.delete(tokenMac) *>
-              accessTokenRevocationService.revoke(record.accessToken)
+            for
+              _ <- sessionRepository.delete(tokenMac)
+              now <- Clock.instant
+              // The access token itself was not presented here, so its real `exp` is not at
+              // hand. `exp = iat + accessTokenTtl` and `iat <= now`, so this over-retains the
+              // revocation by at most one TTL and never under-retains it.
+              _ <- accessTokenRevocationService.revoke(
+                client = client,
+                token = record.accessToken,
+                subject = record.userId.toString,
+                expiresAt = now.plus(client.accessTokenTtl),
+              )
+            yield ()
       yield ()
 
     override def revokeAccessToken(
@@ -63,7 +74,13 @@ object RevocationService:
         _ <- ZIO.fail(RevocationError.InvalidClient)
           .when(!token.clientId.contains(client.id))
 
-        _ <- accessTokenRevocationService.revoke(token.id)
+        // The token was presented and parsed, so its own `exp` is exact.
+        _ <- accessTokenRevocationService.revoke(
+          client = client,
+          token = token.id,
+          subject = token.subject,
+          expiresAt = token.expiresAt,
+        )
       yield ()
 
     private def authenticateClient(

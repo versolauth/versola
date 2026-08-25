@@ -1,7 +1,5 @@
 package versola.configuration.sync
 
-import com.zaxxer.hikari.HikariDataSource
-import org.postgresql.PGConnection
 import versola.central.configuration.clients.{ClientId, PresetId}
 import versola.central.configuration.details.AuthorizationDetailType
 import versola.central.configuration.forms.FormId
@@ -12,35 +10,21 @@ import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.challenges.{OtpTemplateChannel, OtpTemplatePurpose}
 import versola.central.configuration.sync.{CacheSyncRepository, SyncEvent}
 import versola.central.configuration.tenants.TenantId
+import versola.util.postgres.{NotificationEvent, PostgresConfig, PostgresNotificationListener}
 import zio.json.JsonDecoder
 import zio.json.DecoderOps
 import zio.*
-import zio.stream.{Stream, ZStream}
+import zio.stream.Stream
 
-class PostgresCacheSyncRepository(conn: PGConnection, jdbcConn: java.sql.Connection) extends CacheSyncRepository:
+class PostgresCacheSyncRepository(listener: PostgresNotificationListener) extends CacheSyncRepository:
 
   def getNotifications: Stream[Throwable, SyncEvent] =
-    ZStream
-      .repeatZIO(
-        // Blocks the dedicated LISTEN connection for up to NotificationTimeoutMillis waiting for a
-        // notification (pgjdbc's own recommended pattern), instead of busy-polling every 100ms.
-        // The underlying blocking socket read does not respond to a plain thread interrupt, so on
-        // fiber interruption (e.g. graceful shutdown) we abort the connection instead of closing it:
-        // `jdbcConn` is a Hikari-pooled proxy, and Connection#close() on it just returns the
-        // (still-blocked-on) connection to the pool for reuse rather than terminating the physical
-        // socket — it wouldn't reliably unblock the read, and worse, another caller could borrow the
-        // same connection while our read is still in flight on it. Connection#abort(Executor) forcibly
-        // terminates the physical connection and evicts it from the pool instead of returning it as
-        // healthy, which is exactly what we need here. Runs on the blocking executor since abort() can
-        // itself block briefly tearing down the socket.
-        ZIO.attemptBlockingCancelable(
-          Option(conn.getNotifications(PostgresCacheSyncRepository.NotificationTimeoutMillis))
-            .map(_.toList)
-            .getOrElse(Nil),
-        )(cancel = ZIO.attemptBlocking(jdbcConn.abort(PostgresCacheSyncRepository.directExecutor)).ignore),
-      )
-      .flattenIterables
-      .map(notification => PostgresCacheSyncRepository.parseNotification(notification.getName, notification.getParameter))
+    listener.notifications.collect:
+      // A reconnect needs no event of its own: every cache fed from here also reloads on a
+      // timer, so a change missed while the feed was down is picked up by the next reload
+      // rather than being lost until the next edit of the same record.
+      case NotificationEvent.Received(notification) =>
+        PostgresCacheSyncRepository.parseNotification(notification.getName, notification.getParameter)
 
 object PostgresCacheSyncRepository:
   private val notificationChannels = List(
@@ -61,14 +45,6 @@ object PostgresCacheSyncRepository:
     "system_settings_change",
     "metadata_change",
   )
-
-  // pgjdbc's own getNotifications(timeout) example uses 10s; see
-  // https://access.crunchydata.com/documentation/pgjdbc/42.1.1/listennotify.html
-  private val NotificationTimeoutMillis = 10000
-
-  // Connection#abort(Executor) requires an Executor to run its (usually trivial) teardown task on.
-  // This path only runs on interruption/shutdown, so a same-thread executor is sufficient.
-  private val directExecutor: java.util.concurrent.Executor = (r: Runnable) => r.run()
 
   private case class ChangePayload(
       tenantId: Option[String],
@@ -177,15 +153,6 @@ object PostgresCacheSyncRepository:
       case _ =>
         SyncEvent.Unknown
 
-  def live: ZLayer[HikariDataSource & Scope, Throwable, CacheSyncRepository] =
+  def live: ZLayer[PostgresConfig & Scope, Throwable, CacheSyncRepository] =
     ZLayer:
-      for
-        ds <- ZIO.service[HikariDataSource]
-        jdbcConn <- ZIO.acquireRelease(ZIO.attempt(ds.getConnection()))(c => ZIO.attempt(c.close()).orDie)
-        _ <- ZIO.attempt {
-          val statement = jdbcConn.createStatement()
-          try notificationChannels.foreach(channel => statement.execute(s"LISTEN $channel"))
-          finally statement.close()
-        }
-        conn <- ZIO.attempt(jdbcConn.unwrap(classOf[PGConnection]))
-      yield PostgresCacheSyncRepository(conn, jdbcConn)
+      PostgresNotificationListener.make(notificationChannels).map(PostgresCacheSyncRepository(_))
