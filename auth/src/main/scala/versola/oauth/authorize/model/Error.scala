@@ -17,11 +17,12 @@ private[authorize] object Error:
     def uri: URL
     def state: Option[State]
 
-    def redirectUriWithErrorParams: URL =
+    def redirectUriWithErrorParams(iss: String): URL =
       uri.addQueryParams(
         Iterable(
           "error" -> error,
           "error_description" -> errorDescription,
+          "iss" -> iss,
         )
           ++ errorUri.map("error_uri" -> _)
           ++ state.map("state" -> _),
