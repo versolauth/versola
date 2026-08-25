@@ -27,9 +27,22 @@ class PostgresRevocationRepository(xa: TransactorZIO) extends RevocationReposito
 
   private given DbCodec[RevocationRow] = DbCodec.derived
 
-  /** A key can be revoked more than once and the later one governs: a second administrative
-    * logout of the same user must not be swallowed as a duplicate of the first, which would
-    * leave the tokens issued in between live.
+  /** A key can be revoked more than once and the wider of the two governs: a second
+    * administrative logout of the same user must not be swallowed as a duplicate of the
+    * first, which would leave the tokens issued in between live.
+    *
+    * Widened on either field independently, because they do not move together. `expires_at`
+    * is `revokedAt + widestAccessTokenTtl`, and that TTL is whatever the writing replica's
+    * client cache says at the time — so a second invalidation can carry a shorter one (the
+    * longest-lived client was reconfigured, or that replica has yet to sync it) and produce
+    * an earlier `expires_at` than the row already holds. Keying the guard on expiry alone
+    * would then skip the write entirely, leaving `issued_before` where it was and never
+    * firing the notification, which is exactly the case the paragraph above says must not be
+    * swallowed.
+    *
+    * `issued_before` is null exactly for the kinds that have no issuance bound (`jti:`,
+    * `sid:`), and that is a property of the key rather than of the write, so the two sides
+    * of a conflict always agree on whether it is set.
     */
   override def revokeAll(revocations: List[Revocation]): Task[Unit] =
     if revocations.isEmpty then ZIO.unit
@@ -42,9 +55,10 @@ class PostgresRevocationRepository(xa: TransactorZIO) extends RevocationReposito
               VALUES (${revocation.key.encoded}, $now, ${revocation.expiresAt}, ${revocation.issuedBefore})
               ON CONFLICT (revoked_key) DO UPDATE
               SET revoked_at    = EXCLUDED.revoked_at,
-                  expires_at    = EXCLUDED.expires_at,
-                  issued_before = EXCLUDED.issued_before
+                  expires_at    = GREATEST(revocations.expires_at, EXCLUDED.expires_at),
+                  issued_before = GREATEST(revocations.issued_before, EXCLUDED.issued_before)
               WHERE revocations.expires_at < EXCLUDED.expires_at
+                 OR revocations.issued_before < EXCLUDED.issued_before
             """.update
 
   /** The row comparison is what makes the cursor a position rather than an offset: it resumes

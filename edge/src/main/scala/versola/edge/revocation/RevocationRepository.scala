@@ -34,9 +34,13 @@ case class RevocationPage(revocations: List[Revocation], last: Option[Revocation
   * and what an entry survives a restart in.
   */
 trait RevocationRepository:
-  /** Records revocations, ignoring keys already recorded. Every replica, including the one
-    * writing, learns about them through [[RevocationNotifications]] rather than from the
-    * return value.
+  /** Records revocations, widening any key already recorded rather than skipping it: a key
+    * can be revoked twice, and the second one covers tokens the first did not — a repeated
+    * administrative logout moves `issuedBefore` forward over the tokens issued in between.
+    * Neither field is ever narrowed, so the two writes can arrive in either order.
+    *
+    * Every replica, including the one writing, learns about them through
+    * [[RevocationNotifications]] rather than from the return value.
     */
   def revokeAll(revocations: List[Revocation]): Task[Unit]
 

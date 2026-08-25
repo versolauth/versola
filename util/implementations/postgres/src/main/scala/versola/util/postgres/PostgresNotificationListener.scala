@@ -42,7 +42,7 @@ class PostgresNotificationListener(config: PostgresConfig, channels: List[String
       .scoped(connect)
       .flatMap: session =>
         ZStream.succeed(NotificationEvent.Resubscribed) ++ read(session)
-      .retry(Schedule.exponential(ReconnectMinBackoff).jittered.upTo(ReconnectMaxBackoff))
+      .retry(reconnectSchedule)
 
   private def connect: ZIO[Scope, Throwable, PGConnection] =
     for
@@ -93,6 +93,18 @@ object PostgresNotificationListener:
 
   private val ReconnectMinBackoff = 100.millis
   private val ReconnectMaxBackoff = 10.seconds
+
+  /** Backs off up to [[ReconnectMaxBackoff]] between attempts, and never stops attempting.
+    *
+    * The cap is on the wait, not on how long reconnecting may go on for. Bounding the latter
+    * would mean an outage that outlasts it leaves the listener permanently silent, with
+    * propagation quietly falling back to the periodic catch-up — and a Postgres restart or a
+    * failover routinely outlasts any bound worth setting. There is no number of failures
+    * after which giving up is better than waiting: the connection is how this replica hears
+    * about revocations at all.
+    */
+  private[postgres] val reconnectSchedule: Schedule[Any, Any, Any] =
+    (Schedule.exponential(ReconnectMinBackoff) || Schedule.spaced(ReconnectMaxBackoff)).jittered
 
   /** How long the startup check waits for its own notification to come back. Generous: it
     * runs once, and a false failure here stops the service from starting.

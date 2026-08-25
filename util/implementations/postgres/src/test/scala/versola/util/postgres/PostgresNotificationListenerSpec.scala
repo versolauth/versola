@@ -5,6 +5,8 @@ import com.augustnagro.magnum.sql
 import zio.*
 import zio.test.*
 
+import java.time.OffsetDateTime
+
 /** Exercises the listener against a real database, because everything it has to get right —
   * delivery, a connection dying, resubscribing — only exists at that boundary.
   */
@@ -53,6 +55,25 @@ object PostgresNotificationListenerSpec extends ZIOSpecDefault:
         events(1).asInstanceOf[NotificationEvent.Received].notification.getParameter == "before",
         events(2) == NotificationEvent.Resubscribed,
         events(3).asInstanceOf[NotificationEvent.Received].notification.getParameter == "after",
+      )
+    },
+    test("keeps trying to reconnect however long the database stays away") {
+      // An outage is not a reason to stop: a restart or a failover routinely lasts longer
+      // than any total-elapsed bound worth setting, and a listener that gave up would go
+      // permanently silent while looking healthy, with propagation quietly degrading to the
+      // periodic catch-up.
+      val attempts = 1000
+      for
+        delays <- PostgresNotificationListener.reconnectSchedule
+          .delays
+          .run(OffsetDateTime.now().nn, List.fill(attempts)(RuntimeException("connection refused")))
+      yield assertTrue(
+        // Still recurring after far more failures than any bounded schedule would allow.
+        delays.size == attempts,
+        // And waiting a bounded amount between them, rather than backing off forever. The
+        // cap is the ceiling times the upper jitter factor, since `jittered` spreads a delay
+        // over 0.8x-1.2x to keep replicas from reconnecting in lockstep.
+        delays.forall(_ <= 10.seconds * 1.2),
       )
     },
     test("refuses to start when notifications cannot be delivered") {

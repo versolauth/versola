@@ -28,6 +28,8 @@ trait RevocationRepositorySpec extends DatabaseSpecBase[RevocationRepositorySpec
 
   private def jti(id: String) = RevocationKey.Jti(AccessTokenId(id))
 
+  private def sub(id: String) = RevocationKey.Sub(id)
+
   override def testCases(env: RevocationRepositorySpec.Env) =
     List(
       test("returns nothing when the table is empty") {
@@ -77,6 +79,23 @@ trait RevocationRepositorySpec extends DatabaseSpecBase[RevocationRepositorySpec
           _ <- env.repository.revokeAll(List(Revocation(jti("a"), widened, None)))
           page <- env.repository.activeSince(RevocationCursor.Beginning, limit = 10)
         yield assertTrue(page.revocations.map(_.key) == List(jti("a")), page.revocations.head.expiresAt == widened)
+      } @@ TestAspect.withLiveClock,
+      test("re-revoking moves issuedBefore forward even when the new expiry is shorter") {
+        // `expires_at` is derived from whatever the writing replica believes the widest
+        // access token TTL to be, so a second invalidation can carry a shorter one. Guarding
+        // the write on expiry alone would skip it, and the tokens issued between the two
+        // invalidations would stay accepted.
+        val firstAction = Instant.now().truncatedTo(ChronoUnit.MICROS)
+        val secondAction = firstAction.plusSeconds(60)
+        for
+          _ <- env.repository.revokeAll(List(Revocation(sub("u"), firstAction.plusSeconds(3600), Some(firstAction))))
+          _ <- env.repository.revokeAll(List(Revocation(sub("u"), secondAction.plusSeconds(300), Some(secondAction))))
+          page <- env.repository.activeSince(RevocationCursor.Beginning, limit = 10)
+        yield assertTrue(
+          page.revocations.map(_.issuedBefore) == List(Some(secondAction)),
+          // Neither field is narrowed: the shorter expiry does not pull the entry in.
+          page.revocations.map(_.expiresAt) == List(firstAction.plusSeconds(3600)),
+        )
       } @@ TestAspect.withLiveClock,
     )
 
