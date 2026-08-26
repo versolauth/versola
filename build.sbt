@@ -119,6 +119,27 @@ lazy val `central-postgres-impl` = project.in(centralImplementations / "postgres
     `util-postgres` % CompileTest
   )
 
+// Standalone migration runner shipped inside versola-tools (see docker/Dockerfile.tools and
+// docker/versola-tools/entrypoint.sh's "migrate" dispatch branch), backing `versola migrate`.
+// Reuses util/util-postgres rather than depending on auth/central/edge's own app modules --
+// it only ever needs PostgresHikariDataSource.transactor plus a HOCON ConfigProvider built from
+// each service's already-generated .conf file, none of their actual routes/services/repositories.
+// Not part of `root`'s aggregate, same reasoning as `tools`/`e2e` below -- staged explicitly in
+// CI (`sbt migrate-tool/stage`), not part of the default `sbt compile`/`sbt test` loop.
+lazy val migrateTool = project
+  .in(file("migrate-tool"))
+  .enablePlugins(JavaAppPackaging)
+  .settings(
+    name := "migrate-tool",
+    commonSettings,
+    libraryDependencies ++= Dependencies.database.postgres,
+    Compile / mainClass := Some("versola.migrate.MigrateTool"),
+  )
+  .dependsOn(
+    util % CompileTest,
+    `util-postgres` % CompileTest,
+  )
+
 lazy val e2e = project
   .in(file("e2e"))
   .settings(

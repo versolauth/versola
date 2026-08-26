@@ -223,7 +223,7 @@ jobs:
       # scala-cli) and rebuilding it inside the image.
       - name: Stage services for release images
         if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
-        run: sbt "auth-postgres-impl/stage" "central-postgres-impl/stage" "edge-postgres-impl/stage" "tools/stage"
+        run: sbt "auth-postgres-impl/stage" "central-postgres-impl/stage" "edge-postgres-impl/stage" "tools/stage" "migrateTool/stage"
 
       - name: Upload auth stage artifact
         if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
@@ -257,10 +257,23 @@ jobs:
           path: scripts/target/universal/stage
           retention-days: 1
 
+      - name: Upload migrate-tool stage artifact
+        if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: migrate-tool-stage
+          path: migrate-tool/target/universal/stage
+          retention-days: 1
+
       - name: Start central service
         if: github.event_name != 'release'
         run: |
-          PORT=9001 DPORT=9002 \
+          # RUN_MIGRATIONS=true: VersolaApp's default flipped to false (schema changes should be
+          # a deliberate `versola migrate` step, not an implicit side effect of starting a
+          # service -- see versola-tools' migrate-tool), so this e2e job -- which has no separate
+          # migrate step of its own against the fresh Postgres container above -- must opt back in
+          # explicitly, the same way any other local/dev setup would.
+          PORT=9001 DPORT=9002 RUN_MIGRATIONS=true \
             central/implementations/postgres/target/universal/stage/bin/central-postgres-impl \
             -Denv.path=central/dev/env.conf > /tmp/central.log 2>&1 &
           echo $! > /tmp/central.pid
@@ -285,7 +298,8 @@ jobs:
       - name: Start auth service
         if: github.event_name != 'release'
         run: |
-          PORT=9003 DPORT=9004 \
+          # See "Start central service" above for why RUN_MIGRATIONS=true is required here now.
+          PORT=9003 DPORT=9004 RUN_MIGRATIONS=true \
             auth/implementations/postgres/target/universal/stage/bin/auth-postgres-impl \
             -Denv.path=auth/dev/env.conf > /tmp/auth.log 2>&1 &
           echo $! > /tmp/auth.pid
@@ -675,6 +689,15 @@ jobs:
         with:
           name: tools-stage
           path: scripts/target/universal/stage
+
+      # Dockerfile.tools now also bundles migrate-tool (see its own comment
+      # on the jlink stage) -- same reasoning as the tools stage download
+      # just above: a pre-built jar, not a rebuild-inside-the-image step.
+      - name: Download migrate-tool stage artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: migrate-tool-stage
+          path: migrate-tool/target/universal/stage
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3

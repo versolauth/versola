@@ -121,11 +121,6 @@ object PostgresCentralApp extends VersolaApp("central"):
       ServiceController.routes,
     ).reduce(_ ++ _)
 
-  // See VersolaApp.migrationLayer's own comment for why this exists separately from
-  // `repositories` below, even though it's the same call.
-  override def migrationLayer: ZLayer[Scope & ConfigProvider, Throwable, Any] =
-    PostgresHikariDataSource.transactor(serviceName = Some("central"), migrate = true)
-
   private val repositories =
     PostgresHikariDataSource.transactor(serviceName = Some("central"), migrate = runMigrations) >+>
       SecureRandom.live >+> (

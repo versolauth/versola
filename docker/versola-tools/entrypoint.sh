@@ -1,6 +1,20 @@
 #!/bin/sh
 set -eu
 
+# "migrate" dispatch: backs the compose `migrate` service (see
+# compose.fragment.yml.template / compose.fragment.vps.yml.template) and,
+# through it, `versola migrate` (see versola-cli's internal/deploy/migrate.go).
+# Bypasses the config-generation flow below entirely -- MigrateTool doesn't
+# generate anything, it applies Flyway migrations against auth.conf/
+# central.conf/edge.conf that "versola configure" already wrote and that
+# compose mounts into this container read-only, the same way auth/central/
+# edge's own services consume them. `migrate-lib`, not `lib` (used by
+# genEnv below) -- see Dockerfile.tools' own comment on why the two jar
+# sets are kept apart instead of merged onto one classpath.
+if [ "${1:-}" = "migrate" ]; then
+  exec java -cp 'migrate-lib/*' versola.migrate.MigrateTool
+fi
+
 OUT_DIR="${OUT_DIR:-/out}"
 # TARGET picks which of gen-env.scala's non-interactive branches to run,
 # and which compose fragment to emit. Defaults to docker-local so every

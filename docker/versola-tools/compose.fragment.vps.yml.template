@@ -47,6 +47,41 @@ services:
       - ./openbao.hcl:/openbao/config/openbao.hcl:ro
       - versola-openbao-file-vps:/openbao/file
 
+  # Backs `versola migrate` (see versola-cli's internal/deploy/migrate.go),
+  # which runs this via `docker compose run --rm migrate`. Same role as
+  # compose.fragment.yml.template's own `migrate` service -- see the long
+  # comment there for why it deliberately has no `container_name:`.
+  #
+  # No `depends_on:` here, unlike the docker-local counterpart -- there is
+  # no `postgres` service in this file to depend on (see the top-of-file
+  # comment: vps's Postgres is a native systemd install this CLI doesn't
+  # own or manage the lifecycle of, and is assumed already up).
+  #
+  # `network_mode: host`, same reasoning as every other service below --
+  # $POSTGRES_HOST (see gen-env.scala's vps branch) is only ever resolved
+  # into auth.conf/central.conf/edge.conf's own postgres.url at `configure`
+  # time, not passed again here, so this only needs the same network
+  # namespace those services already run in to reach it.
+  migrate:
+    image: ghcr.io/versolauth/versola-tools:${VERSION}
+    platform: linux/amd64
+    network_mode: host
+    command: ["migrate"]
+    # auth.conf/central.conf/edge.conf's postgres.password field is an
+    # OpenBao-resolved ${?POSTGRES_PASSWORD} placeholder here (unlike
+    # docker-local's literal value -- see gen-env.scala's secretField call
+    # on that field), so it needs env_file the same way central's own
+    # service does below. All three services' passwords are the one value
+    # gen-env.scala generates and reuses (see pgPassDefault), so any one of
+    # the three secrets files would do; central.secrets.env is picked
+    # because central is already the first service this file starts.
+    env_file:
+      - ./central.secrets.env
+    volumes:
+      - ./auth.conf:/opt/versola-tools/config/auth.conf:ro
+      - ./central.conf:/opt/versola-tools/config/central.conf:ro
+      - ./edge.conf:/opt/versola-tools/config/edge.conf:ro
+
   central:
     image: ghcr.io/versolauth/versola-central:${VERSION}
     platform: linux/amd64

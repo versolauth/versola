@@ -33,6 +33,10 @@ target/
 !scripts/target/universal
 !scripts/target/universal/stage
 !scripts/target/universal/stage/**
+!migrate-tool/target
+!migrate-tool/target/universal
+!migrate-tool/target/universal/stage
+!migrate-tool/target/universal/stage/**
 
 # Dockerfile.gateway needs the built SPA in its build context -- everything
 # else (Dockerfile.central, which only needs central-ui's separately-built

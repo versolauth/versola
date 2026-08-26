@@ -15,14 +15,13 @@ object PostgresHikariDataSource:
       serviceName: Option[String],
       migrate: Boolean,
       validateOnMigrate: Boolean = true,
+      migrationLocations: Option[Seq[String]] = None,
   ): ZLayer[Scope & ConfigProvider, Throwable, TransactorZIO & HikariDataSource] =
     ZLayer(ZIO.serviceWithZIO[ConfigProvider](_.load(Config.Nested("postgres", deriveConfig[PostgresConfig])))) >+>
-      layer(serviceName, migrate, validateOnMigrate) >+>
+      layer(serviceName, migrate, validateOnMigrate, migrationLocations) >+>
       TransactorZIO.layer
 
   /** Create a HikariDataSource layer with optional Flyway migration.
-    *
-    * Auto-detects migration directories by scanning for `<service>/implementations/postgres/migrations` pattern.
     *
     * @param migrate
     *   Whether to apply Flyway migrations on startup. When false, the schema is *validated* against
@@ -30,6 +29,16 @@ object PostgresHikariDataSource:
     *   below for why "false" doesn't mean "skip Flyway entirely".
     * @param validateOnMigrate
     *   Whether to validate migrations on migrate. Should be true in production, false in tests/development
+    * @param migrationLocations
+    *   Where to find this schema's migrations. Defaults to auto-detecting a single
+    *   `<service>/implementations/postgres/migrations` directory under the working directory (see
+    *   `detectMigrationDirectories`) -- correct for auth/central/edge's own images, which each bundle
+    *   only their own migrations. Callers that bundle more than one service's migrations in the same
+    *   classpath/filesystem (versola-tools' migrate-tool, which ships all three so it can migrate
+    *   every schema from one image) MUST pass this explicitly -- auto-detection would otherwise find
+    *   all of them and hand Flyway a mix of unrelated schemas' migrations, exactly the bug diagnosed
+    *   in the CI e2e OOM investigation (`sbt test` from the repo root picking up all three services'
+    *   migrations directories together against one shared schema).
     * @return
     *   A ZLayer that provides HikariDataSource
     */
@@ -37,6 +46,7 @@ object PostgresHikariDataSource:
       serviceName: Option[String],
       migrate: Boolean,
       validateOnMigrate: Boolean = true,
+      migrationLocations: Option[Seq[String]] = None,
   ): ZLayer[Scope & PostgresConfig, Throwable, HikariDataSource] =
     ZLayer:
       ZIO.acquireRelease(
@@ -62,7 +72,7 @@ object PostgresHikariDataSource:
             config
           }
           _ <- ZIO.attemptBlocking:
-            val locations = detectMigrationDirectories()
+            val locations = migrationLocations.getOrElse(detectMigrationDirectories())
 
             val flyway = Flyway.configure()
               .locations(locations*)
@@ -75,13 +85,13 @@ object PostgresHikariDataSource:
               .load()
 
             // migrate = false does NOT mean "don't touch Flyway" -- it means "someone else is
-            // responsible for applying migrations" (`versola migrate`, via MIGRATE_ONLY -- see
-            // VersolaApp.migrationLayer, and the RUN_MIGRATIONS: "false" that versola-cli's
-            // compose fragments set on every service). Leaving it entirely unchecked in that case
-            // meant a skipped migrate step was invisible: the service started fine, passed its
-            // readiness check, and only failed later, at the first query against a table that
-            // was never created -- in production, on real traffic, long after the deploy looked
-            // successful.
+            // responsible for applying migrations" (`versola migrate`, which runs migrate-tool
+            // against each schema independently -- see versola-tools' entrypoint.sh and the
+            // RUN_MIGRATIONS: "false" that versola-cli's compose fragments set on every service).
+            // Leaving it entirely unchecked in that case meant a skipped migrate step was
+            // invisible: the service started fine, passed its readiness check, and only failed
+            // later, at the first query against a table that was never created -- in production,
+            // on real traffic, long after the deploy looked successful.
             //
             // validate() closes that: a schema this build has migrations for but the database
             // hasn't had applied fails here, at startup, with Flyway naming the exact migration.

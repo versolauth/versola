@@ -49,27 +49,6 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
 
   def routes: Routes[Dependencies & Tracing & EnvName, Throwable]
 
-  /** Builds and runs just this service's own database migrations, nothing else -- backs
-    * MIGRATE_ONLY (see below). Each concrete app overrides this with its own existing
-    * `PostgresHikariDataSource.transactor(serviceName = Some(...), migrate = true)` call, the same
-    * one already used inside its own `repositories`, just not composed with anything else.
-    *
-    * This can't be `dependencies` itself run partway: `dependencies` for auth in particular
-    * includes `OAuthConfigurationService`, which makes a blocking network call to central at
-    * layer-*construction* time (`ReloadingCache.make`) -- building the full layer and exiting
-    * before starting a server would still hang or OOM waiting on central being reachable, the
-    * same root cause diagnosed in the CI e2e OOM this was built to avoid repeating. A standalone
-    * migrate step needs to be independently reliable (e.g. runnable before anything else is even
-    * up), so this only ever touches the one layer migrations actually need --
-    * `PostgresHikariDataSource.transactor`, which needs nothing but `Scope & ConfigProvider`.
-    *
-    * Lives here as an abstract method rather than being called directly from `run` below because
-    * `util` (this trait's own module) cannot depend on `util-postgres` (the module
-    * `PostgresHikariDataSource` lives in) -- see `build.sbt`, the dependency only runs the other
-    * way.
-    */
-  def migrationLayer: ZLayer[Scope & ConfigProvider, Throwable, Any]
-
   def port: Int =
     Option(java.lang.System.getenv("PORT")).flatMap(_.toIntOption).getOrElse(8080)
 
@@ -117,15 +96,14 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
     * False does not mean "skip Flyway" -- it means the schema is validated instead of migrated
     * (see `PostgresHikariDataSource.layer`), so a deployment whose separate `versola migrate` step
     * was skipped fails at startup instead of at its first query.
+    *
+    * Defaults to false: applying a schema change should always be the deliberate, explicit
+    * `versola migrate` step (or whatever local setups wire up on their own), never an implicit
+    * side effect of starting a service. Local/dev setups that want the old "just migrate on
+    * boot" convenience should set RUN_MIGRATIONS=true explicitly rather than relying on a
+    * default that production can't safely share.
     */
-  def runMigrations: Boolean = boolEnv("RUN_MIGRATIONS", default = true)
-
-  /** Backs `versola migrate` (see versola-cli's internal/deploy/migrate.go): when set, `run` below
-    * builds `migrationLayer`, waits for it to finish, and exits -- it does not start either
-    * server. Defaults to false so ordinary startup stays the default path; this is an opt-in
-    * alternate mode for the one-shot containers `versola migrate` runs, not a replacement for it.
-    */
-  def migrateOnly: Boolean = boolEnv("MIGRATE_ONLY", default = false)
+  def runMigrations: Boolean = boolEnv("RUN_MIGRATIONS", default = false)
 
   def serverConfig: Server.Config =
     Server.Config.default.binding(bindHost, port)
@@ -133,32 +111,10 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
   def diagnosticsConfig: Server.Config =
     Server.Config.default.binding(bindHost, diagnosticsPort)
 
+  // Migrations are no longer ever run by way of starting one of these processes in a special
+  // mode -- see versola-tools' migrate-tool, which applies every service's migrations from one
+  // dedicated image instead (backs `versola migrate`). This always starts the real server.
   override def run: ZIO[Environment & ZIOAppArgs & zio.Scope, Any, Any] = {
-    if migrateOnly then runMigrationsOnly else runServer
-  }
-    .catchAll { (ex: Throwable) =>
-      ZIO.logErrorCause("Could not start application", Cause.fail(ex)) *>
-        armShutdownWatchdog *> ZIO.fail(ex)
-    }
-    .catchAllDefect { ex =>
-      ZIO.logErrorCause("Could not start application", Cause.die(ex)) *>
-        armShutdownWatchdog *> ZIO.die(ex)
-    }
-
-  /** The MIGRATE_ONLY path: build just `migrationLayer`, wait for the migration inside it to run
-    * (see `PostgresHikariDataSource.transactor`'s own `ZIO.acquireRelease`, where it actually
-    * happens), then return -- no server, diagnostics or otherwise, ever starts. `Environment`
-    * already includes `ConfigProvider`, which is all `migrationLayer` itself needs beyond the
-    * `Scope` this runs under.
-    */
-  private def runMigrationsOnly: ZIO[Environment & zio.Scope, Throwable, Any] =
-    for
-      _ <- ZIO.logInfo(s"$serviceName: MIGRATE_ONLY is set -- running migrations only, not starting a server")
-      _ <- ZIO.scoped(migrationLayer.build)
-      _ <- ZIO.logInfo(s"$serviceName: migrations complete")
-    yield ()
-
-  private def runServer: ZIO[Environment & ZIOAppArgs & zio.Scope, Throwable, Any] =
     for
       opentelemetry <- ZIO.service[api.OpenTelemetry]
       envConfig <- ZIO.service[ConfigProvider]
@@ -215,6 +171,15 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
         ZLayer.succeed(client),
       )
     yield ()
+  }
+    .catchAll { (ex: Throwable) =>
+      ZIO.logErrorCause("Could not start application", Cause.fail(ex)) *>
+        armShutdownWatchdog *> ZIO.fail(ex)
+    }
+    .catchAllDefect { ex =>
+      ZIO.logErrorCause("Could not start application", Cause.die(ex)) *>
+        armShutdownWatchdog *> ZIO.die(ex)
+    }
 
   /** How long `ZIOApp`'s shutdown hook waits for the runtime to drain on SIGTERM before giving up.
     *

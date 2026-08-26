@@ -98,11 +98,6 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       LogoutController.routes,
     ).reduce(_ ++ _)
 
-  // See VersolaApp.migrationLayer's own comment for why this exists separately from
-  // `repositories` below, even though it's the same call.
-  override def migrationLayer: ZLayer[Scope & ConfigProvider, Throwable, Any] =
-    PostgresHikariDataSource.transactor(serviceName = Some("auth"), migrate = true)
-
   val repositories = PostgresHikariDataSource.transactor(serviceName = Some("auth"), migrate = runMigrations) >+> (
     PostgresUserRepository.live >+>
       PostgresConversationRepository.live >+>
