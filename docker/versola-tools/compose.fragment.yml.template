@@ -139,11 +139,12 @@ services:
       PORT: 8090
       DPORT: 8091
       CONFIG_PATH: /app/config/env.conf
-      # `versola up` assumes `versola migrate` already ran (see
-      # VersolaApp's MIGRATE_ONLY) -- this is NOT a duplicate safety net,
-      # it's the whole point of splitting them: a schema change should
-      # get its own explicit, reviewable step, not happen silently as a
-      # side effect of starting the app.
+      # `versola up` assumes `versola migrate` already ran (see this
+      # file's own `migrate` service, and versola-tools' migrate-tool
+      # which backs it) -- this is NOT a duplicate safety net, it's the
+      # whole point of splitting them: a schema change should get its
+      # own explicit, reviewable step, not happen silently as a side
+      # effect of starting the app.
       #
       # A skipped migrate still fails loudly at startup rather than
       # silently: "false" here means Flyway *validates* the schema

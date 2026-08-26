@@ -455,7 +455,7 @@ input above) forever after.
   `PostgresHikariDataSource.layer`'s own comment). Applying a schema change is meant to be the
   deliberate, separate `versola migrate` step (backed by versola-tools' migrate-tool), not an
   implicit side effect of starting a service.
-- `true` / `false` → as specified, case-insensitive
+- `true` / `false` (lowercase, exact match — not case-insensitive) → as specified
 - anything else → the service **fails to start** with an explanatory error, deliberately. A flag
   whose whole purpose is to gate migrations must not silently run (or skip) them because of a typo.
 

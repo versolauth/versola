@@ -690,9 +690,9 @@ jobs:
           name: tools-stage
           path: scripts/target/universal/stage
 
-      # Dockerfile.tools now also bundles migrate-tool (see its own comment
-      # on the jlink stage) -- same reasoning as the tools stage download
-      # just above: a pre-built jar, not a rebuild-inside-the-image step.
+      # Dockerfile.tools now also bundles migrate-tool (see its own top
+      # comment) -- same reasoning as the tools stage download just above:
+      # a pre-built jar, not a rebuild-inside-the-image step.
       - name: Download migrate-tool stage artifact
         uses: actions/download-artifact@v4
         with:
