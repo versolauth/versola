@@ -69,11 +69,11 @@ object SSOClient:
         "client_id" -> preset.clientId,
         "redirect_uri" -> preset.redirectUri,
         "response_type" -> preset.responseType,
-        "scope" -> preset.scope.mkString(" "),
         "code_challenge" -> codeChallenge,
         "code_challenge_method" -> "S256",
         "state" -> state,
-      ) ++ preset.uiLocales
+      ) ++ Option.when(preset.scope.nonEmpty)("scope" -> preset.scope.mkString(" ")).toList
+        ++ preset.uiLocales
           .filterNot(_ => overrideParams.contains("ui_locales"))
           .map(locales => "ui_locales" -> locales.mkString(" "))
         ++ preset.customParameters

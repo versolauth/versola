@@ -83,7 +83,7 @@ object JwksController extends Controller:
     * `onValid`.
     */
   private def withValidJwk(request: Request)(onValid: (String, Json.Obj) => Task[Response]): Task[Response] =
-    request.body.asJsonFromCodec[Json.Obj].either.flatMap:
+    request.bodyAs[Json.Obj].either.flatMap:
       case Left(_) =>
         ZIO.succeed(Response.text("Invalid JWK JSON").status(Status.BadRequest))
       case Right(jwk) =>

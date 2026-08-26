@@ -1,7 +1,7 @@
 import { render } from 'solid-js/web';
 import { createSignal, Show } from 'solid-js';
 
-interface FormConfig { step: { csrfToken: string; postLogoutRedirectUri?: string; state?: string }; t: Record<string, string>; locale?: string; locales?: string[]; allT?: Record<string, Record<string, string>>; }
+interface FormConfig { step: { csrfToken: string; postLogoutRedirectUri?: string; state?: string }; t: Record<string, string>; locale?: string; locales?: string[]; allT?: Record<string, Record<string, string>>; logo?: string; }
 declare global { interface Window { __VERSOLA_FORM__?: FormConfig } }
 
 function ConfirmLogout(props: { config: FormConfig }) {

@@ -82,16 +82,18 @@ object PushedAuthorizationServiceSpec extends UnitSpecBase:
     val configuration = stub[OAuthConfigurationService]
 
     def service: UIO[PushedAuthorizationService] =
-      SecureRandom.live.build.map { env =>
+      SecureRandom.live.build.flatMap { env =>
         val secureRandom = env.get[SecureRandom]
-        PushedAuthorizationService.Impl(
-          config,
-          parser,
-          repository,
-          configuration,
-          secureRandom,
-          SecurityService.Impl(secureRandom),
-        )
+        Semaphore.make(1).map { hashingSemaphore =>
+          PushedAuthorizationService.Impl(
+            config,
+            parser,
+            repository,
+            configuration,
+            secureRandom,
+            SecurityService.Impl(secureRandom, hashingSemaphore),
+          )
+        }
       }.provideLayer(zio.Scope.default)
 
     def happyPath: UIO[Unit] =
@@ -154,7 +156,8 @@ object PushedAuthorizationServiceSpec extends UnitSpecBase:
         service <- env.service
         response <- service.push(validParams(), credentials, request)
         reference <- ZIO.fromEither(RequestUri.parse(response.requestUri)).mapError(RuntimeException(_))
-        expected <- SecurityService.Impl(secureRandom).mac(Secret(reference), config.security.parRequestsSecret)
+        hashingSemaphore <- Semaphore.make(1)
+        expected <- SecurityService.Impl(secureRandom, hashingSemaphore).mac(Secret(reference), config.security.parRequestsSecret)
         stored = env.repository.create.calls.head._1
       yield assertTrue(
         stored.toSeq == expected.toSeq,

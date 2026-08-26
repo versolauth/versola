@@ -147,9 +147,9 @@ export class VersolaLocalesList extends LitElement {
         border-color: rgba(210, 153, 34, 0.3);
       }
       .pill-default {
-        background: rgba(88, 166, 255, 0.15);
+        background: rgba(var(--accent-tint), 0.15);
         color: var(--accent);
-        border-color: rgba(88, 166, 255, 0.3);
+        border-color: rgba(var(--accent-tint), 0.3);
         cursor: default;
       }
       .pill-set-default {
@@ -159,7 +159,7 @@ export class VersolaLocalesList extends LitElement {
       }
       .pill-set-default:hover:not(:disabled) {
         color: var(--accent);
-        border-color: rgba(88, 166, 255, 0.3);
+        border-color: rgba(var(--accent-tint), 0.3);
       }
     `,
   ];

@@ -142,6 +142,7 @@ export interface SystemSettingsRecord {
   passwordRegex: string;
   passwordHistorySize: number;
   passwordNumDifferent: number;
+  identityProviderLogo?: string | null;
 }
 
 // A registered passkey credential for a user

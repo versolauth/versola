@@ -22,6 +22,7 @@ export class VersolaSystemSettings extends LitElement {
   @state() private editPasswordRegex = '';
   @state() private editPasswordHistorySize = 5;
   @state() private editPasswordNumDifferent = 3;
+  @state() private editIdentityProviderLogo = '';
 
   static styles = [
     theme,
@@ -95,6 +96,7 @@ export class VersolaSystemSettings extends LitElement {
     this.editPasswordRegex = this.settings?.passwordRegex ?? '';
     this.editPasswordHistorySize = this.settings?.passwordHistorySize ?? 5;
     this.editPasswordNumDifferent = this.settings?.passwordNumDifferent ?? 3;
+    this.editIdentityProviderLogo = this.settings?.identityProviderLogo ?? '';
     this.editError = '';
     this.editing = true;
   }
@@ -114,6 +116,18 @@ export class VersolaSystemSettings extends LitElement {
       this.editError = 'Invalid regular expression.';
       return;
     }
+    const logo = this.editIdentityProviderLogo.trim();
+    if (logo) {
+      try {
+        const url = new URL(logo);
+        if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+          throw new Error('unsupported protocol');
+        }
+      } catch {
+        this.editError = 'Logo must be an absolute http(s) URL.';
+        return;
+      }
+    }
     this.saving = true;
     this.editError = '';
     try {
@@ -121,6 +135,7 @@ export class VersolaSystemSettings extends LitElement {
         passwordRegex: regex,
         passwordHistorySize: this.editPasswordHistorySize,
         passwordNumDifferent: this.editPasswordNumDifferent,
+        identityProviderLogo: logo || null,
       };
       await upsertSystemSettings(updated);
       this.settings = updated;
@@ -166,6 +181,14 @@ export class VersolaSystemSettings extends LitElement {
           <span class="prop-value">${s.passwordNumDifferent}</span>
         </div>
       </div>
+
+      <div class="card">
+        <label>Branding</label>
+        <div class="prop-row">
+          <span class="prop-label">Identity provider logo</span>
+          <span class="prop-value">${s.identityProviderLogo || '—'}</span>
+        </div>
+      </div>
     `;
   }
 
@@ -196,6 +219,15 @@ export class VersolaSystemSettings extends LitElement {
               .value=${String(this.editPasswordNumDifferent)}
               @input=${(e: Event) => { this.editPasswordNumDifferent = Math.max(0, parseInt((e.target as HTMLInputElement).value) || 0); }} />
             <div class="hint">How many distinct passwords before an old one can be reused.</div>
+          </div>
+
+          <div class="form-group">
+            <label>Identity Provider Logo</label>
+            <input class="compact-input" type="url"
+              .value=${this.editIdentityProviderLogo}
+              placeholder="https://example.com/logo.svg"
+              @input=${(e: Event) => { this.editIdentityProviderLogo = (e.target as HTMLInputElement).value; }} />
+            <div class="hint">Shown on the login screens and as the favicon of the login pages.</div>
           </div>
         </div>
 

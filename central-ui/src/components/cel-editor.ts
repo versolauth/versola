@@ -43,7 +43,7 @@ export class VersolaCelEditor extends LitElement {
       }
       .wrapper:focus-within {
         border-color: var(--accent);
-        box-shadow: 0 0 0 2px rgba(88, 166, 255, 0.15);
+        box-shadow: 0 0 0 2px rgba(var(--accent-tint), 0.15);
       }
       :host([has-error]) .wrapper { border-color: var(--danger); }
       .error-message {
@@ -82,7 +82,7 @@ export class VersolaCelEditor extends LitElement {
         overflow: auto;
       }
       textarea::placeholder { color: var(--text-secondary); opacity: 0.7; }
-      textarea::selection { background: rgba(88, 166, 255, 0.35); color: transparent; }
+      textarea::selection { background: rgba(var(--accent-tint), 0.35); color: transparent; }
       .multiline pre, .multiline textarea {
         white-space: pre-wrap;
         overflow-wrap: anywhere;

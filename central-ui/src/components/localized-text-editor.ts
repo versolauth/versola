@@ -41,7 +41,7 @@ export class VersolaLocalizedTextEditor extends LitElement {
     }
     .locale-tab.active {
       border-color: var(--accent);
-      background: rgba(88, 166, 255, 0.12);
+      background: rgba(var(--accent-tint), 0.12);
       color: var(--accent);
     }
     .hint {

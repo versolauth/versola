@@ -213,7 +213,7 @@ jobs:
 
       - name: Stage services for e2e tests
         if: github.event_name != 'release'
-        run: sbt "central-postgres-impl/stage" "auth-postgres-impl/stage"
+        run: sbt "central-postgres-impl/stage" "auth-postgres-impl/stage" "edge-postgres-impl/stage"
 
       # The e2e staging step above is skipped on release (see its `if:`),
       # so a separate stage is needed here to produce the artifacts
@@ -321,6 +321,31 @@ jobs:
             sleep 2
           done
 
+      - name: Start edge service
+        if: github.event_name != 'release'
+        run: |
+          PORT=9005 DPORT=9006 \
+            edge/implementations/postgres/target/universal/stage/bin/edge-postgres-impl \
+            -Denv.path=edge/dev/env.conf > /tmp/edge.log 2>&1 &
+          echo $! > /tmp/edge.pid
+
+      - name: Wait for edge to be ready
+        if: github.event_name != 'release'
+        run: |
+          echo "Waiting for edge on port 9006..."
+          for i in $(seq 1 60); do
+            if curl -sf "http://localhost:9006/readiness" > /dev/null 2>&1; then
+              echo "edge is ready after $(( (i - 1) * 2 ))s"
+              break
+            fi
+            if [ "$i" -eq 60 ]; then
+              echo "edge did not become ready in 120s"
+              cat /tmp/edge.log
+              exit 1
+            fi
+            sleep 2
+          done
+
       - name: Run e2e tests
         if: github.event_name != 'release'
         run: sbt e2e/test
@@ -330,6 +355,7 @@ jobs:
         run: |
           [ -f /tmp/auth.pid ]    && kill "$(cat /tmp/auth.pid)"    2>/dev/null || true
           [ -f /tmp/central.pid ] && kill "$(cat /tmp/central.pid)" 2>/dev/null || true
+          [ -f /tmp/edge.pid ]   && kill "$(cat /tmp/edge.pid)"   2>/dev/null || true
 
   docker-auth:
     needs: build
@@ -352,6 +378,15 @@ jobs:
         with:
           name: auth-stage
           path: auth/implementations/postgres/target/universal/stage
+
+      # This image is built for linux/amd64 and linux/arm64 (see the
+      # "Build and push auth image" step) on an amd64 runner, so the arm64
+      # half needs binfmt registered to execute anything -- here, the
+      # `chmod +x /app/bin/*` in docker/Dockerfile.auth. Without this the
+      # arm64 build fails with "exec format error". Only the COPY layers
+      # are architecture-independent; a RUN is not.
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -418,6 +453,25 @@ jobs:
         with:
           context: .
           file: docker/Dockerfile.auth
+          # Published as a manifest list covering both architectures, so
+          # `docker pull` on an arm64 node (Graviton/Ampere, and the
+          # default on managed k8s offerings more and more) resolves to a
+          # native image instead of failing to schedule. Safe for this
+          # image specifically: what gets copied in is sbt-native-packager
+          # output -- JVM bytecode, no architecture-specific build step --
+          # and the only native code on the runtime classpath is Netty's
+          # epoll transport, which zio-http already pulls in for both
+          # linux-x86_64 and linux-aarch_64 (checked in its POM, not
+          # assumed). Everything else that could have been native is pure
+          # Java: Argon2id is BouncyCastle's Argon2BytesGenerator, the
+          # WebAuthn libs are Yubico's pure-JVM ones, and the Postgres
+          # driver is the JDBC one.
+          #
+          # The eclipse-temurin digest pinned in docker/Dockerfile.auth is
+          # already the multi-arch index digest, not the amd64 child
+          # manifest, so it needs no change to serve both -- verified
+          # against the registry rather than assumed.
+          platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.tags.outputs.tags }}
           cache-from: type=gha
@@ -448,6 +502,11 @@ jobs:
         with:
           name: central-stage
           path: central/implementations/postgres/target/universal/stage
+
+      # See the identical comment in docker-auth's "Set up QEMU" step --
+      # same reasoning, same fix.
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -497,6 +556,9 @@ jobs:
         with:
           context: .
           file: docker/Dockerfile.central
+          # See the identical comment in docker-auth's "Build and push auth
+          # image" step -- same reasoning, same base image digest.
+          platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.tags.outputs.tags }}
           cache-from: type=gha
@@ -523,6 +585,11 @@ jobs:
         with:
           name: edge-stage
           path: edge/implementations/postgres/target/universal/stage
+
+      # See the identical comment in docker-auth's "Set up QEMU" step --
+      # same reasoning, same fix.
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -572,6 +639,9 @@ jobs:
         with:
           context: .
           file: docker/Dockerfile.edge
+          # See the identical comment in docker-auth's "Build and push auth
+          # image" step -- same reasoning, same base image digest.
+          platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.tags.outputs.tags }}
           cache-from: type=gha
@@ -656,6 +726,13 @@ jobs:
         with:
           context: .
           file: docker/Dockerfile.gateway
+          # Same motivation as the other images: arm64 nodes should get a
+          # native pull. No "Set up QEMU" step in this job, unlike the
+          # others -- docker/Dockerfile.gateway is COPY-only on top of
+          # nginx:1.27-alpine (itself already multi-arch), so nothing is
+          # ever executed at build time and there is no foreign binary for
+          # binfmt to handle.
+          platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.tags.outputs.tags }}
           cache-from: type=gha
@@ -698,6 +775,13 @@ jobs:
         with:
           name: migrate-tool-stage
           path: migrate-tool/target/universal/stage
+
+      # See the identical comment in docker-auth's "Set up QEMU" step.
+      # This job needs it more than the others: docker/Dockerfile.tools
+      # runs jlink/jdeps and then `java -cp 'lib/*' genEnv` twice during
+      # the build, all of which execute under emulation on the arm64 half.
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -747,6 +831,11 @@ jobs:
         with:
           context: .
           file: docker/Dockerfile.tools
+          # See the identical comment in docker-auth's "Build and push auth
+          # image" step. The arm64 half builds its own minimal JRE with
+          # jlink from the arm64 eclipse-temurin JDK, so the runtime is
+          # native rather than emulated once the image is pulled.
+          platforms: linux/amd64,linux/arm64
           # Must be passed explicitly -- ARG VERSION defaults to "dev"
           # otherwise, and the image bakes that default straight into the
           # compose.fragment.yml it generates at bootstrap time (confirmed

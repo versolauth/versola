@@ -205,6 +205,33 @@ export class VersolaChallengesList extends LitElement {
         width: 100%;
         max-width: none;
       }
+      .settings-input-row {
+        flex-direction: row;
+        align-items: flex-start;
+        max-width: calc(22.8rem + 2rem);
+      }
+      .settings-list-input {
+        flex: 0 1 22.8rem;
+        width: min(100%, 22.8rem);
+        max-width: 22.8rem;
+        min-width: 0;
+      }
+      .settings-prefix-input {
+        flex-basis: 7.5rem;
+        width: 7.5rem;
+        max-width: 7.5rem;
+      }
+      @media (max-width: 720px) {
+        .settings-input-row {
+          flex-direction: column;
+          max-width: 22.8rem;
+        }
+        .settings-list-input,
+        .settings-prefix-input {
+          width: 100%;
+          max-width: 22.8rem;
+        }
+      }
       .template-channel-control,
       .template-type-control,
       .template-language-control {
@@ -366,8 +393,8 @@ export class VersolaChallengesList extends LitElement {
         font-size: 0.8125rem;
         font-weight: 600;
         color: var(--accent);
-        background: rgba(88, 166, 255, 0.1);
-        border: 1px solid rgba(88, 166, 255, 0.2);
+        background: rgba(var(--accent-tint), 0.1);
+        border: 1px solid rgba(var(--accent-tint), 0.2);
         border-radius: var(--radius-md);
         padding: var(--spacing-xs) var(--spacing-md);
       }
@@ -1263,7 +1290,6 @@ export class VersolaChallengesList extends LitElement {
                 ${this.phonePrefixes.map(prefix => html`<span class="prefix-tag">${prefix}</span>`)}
               </div>
             `}
-
         </div>
 
         <div class="card" style="margin-bottom: var(--spacing-lg);">
@@ -1412,8 +1438,8 @@ export class VersolaChallengesList extends LitElement {
         ${this.editPrefixes.length === 0
           ? html`<div class="hint">No prefixes configured.</div>`
           : this.editPrefixes.map((entry, i) => html`
-            <div class="locale-bar">
-              <input type="text" class="form-control compact-input locale-select" .value=${entry.value}
+            <div class="locale-bar settings-input-row">
+              <input type="text" class="form-control settings-list-input settings-prefix-input" .value=${entry.value}
                 @input=${(e: Event) => { entry.value = (e.target as HTMLInputElement).value; }}
                 placeholder="+77" />
               <button class="icon-action danger" @click=${() => this.removePrefix(i)} title="Remove">✕</button>
@@ -1484,8 +1510,8 @@ export class VersolaChallengesList extends LitElement {
         ${this.editPasskeyOrigins.length === 0
           ? html`<div class="hint">No origins configured.</div>`
           : this.editPasskeyOrigins.map((entry, i) => html`
-            <div class="locale-bar">
-              <input type="text" class="form-control compact-input locale-select" .value=${entry.value}
+            <div class="locale-bar settings-input-row">
+              <input type="text" class="form-control settings-list-input" .value=${entry.value}
                 @input=${(e: Event) => { entry.value = (e.target as HTMLInputElement).value; }}
                 placeholder="https://example.com" />
               <button class="icon-action danger" @click=${() => this.removePasskeyOrigin(i)} title="Remove">✕</button>
@@ -1550,8 +1576,8 @@ export class VersolaChallengesList extends LitElement {
         ${this.editPostLogoutRedirectUris.length === 0
           ? html`<div class="hint">No post-logout redirect URIs configured.</div>`
           : this.editPostLogoutRedirectUris.map((entry, i) => html`
-            <div class="locale-bar">
-              <input type="text" class="form-control compact-input locale-select" .value=${entry.value}
+            <div class="locale-bar settings-input-row">
+              <input type="text" class="form-control settings-list-input" .value=${entry.value}
                 @input=${(e: Event) => { entry.value = (e.target as HTMLInputElement).value; }}
                 placeholder="https://app.example.com/logged-out" />
               <button class="icon-action danger" @click=${() => this.removePostLogoutRedirectUri(i)} title="Remove">✕</button>

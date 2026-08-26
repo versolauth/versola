@@ -16,7 +16,7 @@ object PostgresHikariDataSource:
       migrate: Boolean,
       validateOnMigrate: Boolean = true,
       migrationLocations: Option[Seq[String]] = None,
-  ): ZLayer[Scope & ConfigProvider, Throwable, TransactorZIO & HikariDataSource] =
+  ): ZLayer[Scope & ConfigProvider, Throwable, TransactorZIO & HikariDataSource & PostgresConfig] =
     ZLayer(ZIO.serviceWithZIO[ConfigProvider](_.load(Config.Nested("postgres", deriveConfig[PostgresConfig])))) >+>
       layer(serviceName, migrate, validateOnMigrate, migrationLocations) >+>
       TransactorZIO.layer
@@ -125,6 +125,8 @@ object PostgresHikariDataSource:
         s"connection-timeout must be >= 250ms, got ${postgres.connectionTimeout}",
       Option.when(postgres.maxLifetime.toMillis != 0 && postgres.maxLifetime.toMillis < 30000):
         s"max-lifetime must be 0 (disabled) or >= 30 seconds, got ${postgres.maxLifetime}",
+      Option.when(postgres.notificationsUrl.exists(_.isBlank)):
+        "notifications-url must be a JDBC URL when set, or absent to reuse url",
       Option.when(postgres.leakDetectionThreshold.toMillis < 0):
         s"leak-detection-threshold must be >= 0, got ${postgres.leakDetectionThreshold}",
       Option.when(postgres.leakDetectionThreshold.toMillis > 0 && postgres.leakDetectionThreshold.toMillis < 2000):

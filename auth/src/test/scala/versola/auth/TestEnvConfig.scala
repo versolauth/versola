@@ -105,4 +105,5 @@ object TestEnvConfig:
     ),
     configurationCacheRefreshInterval = 5.minutes,
     par = None,
+    argon2 = None,
   )

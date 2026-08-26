@@ -3,6 +3,7 @@ package versola.util.http
 import io.opentelemetry.api.trace.{SpanKind, StatusCode}
 import zio.*
 import zio.http.*
+import zio.http.codec.HttpCodecError
 import zio.json.*
 import zio.logging.{LogAnnotation, logContext}
 import zio.metrics.MetricKeyType.Histogram.Boundaries
@@ -111,6 +112,22 @@ object Observability:
   def setRouteLabel(key: String, value: String): UIO[Unit] =
     routeLabel.set(Some(s"$key=$value"))
 
+  /** Replaces the route path of the current request's
+    * `http_server_requests_total`/`http_server_request_duration_seconds` metrics, which
+    * defaults to the matched route's pattern. Used where a single pattern fans out into
+    * several routes known only at request time, e.g. edge's `/resources/{resourceId}/...`
+    * proxy resolving to a registered endpoint template. The value must come from
+    * configuration rather than the request itself, otherwise metric cardinality becomes
+    * unbounded. [[middleware]] resets it per request so it never leaks into a subsequent
+    * one.
+    */
+  val routePath: FiberRef[Option[String]] = zio.Unsafe.unsafe { case given zio.Unsafe =>
+    FiberRef.unsafe.make(Option.empty[String])
+  }
+
+  def setRoutePath(path: String): UIO[Unit] =
+    routePath.set(Some(path))
+
   val serverLogging: FiberRef[HttpObservabilityConfig.Server] = zio.Unsafe.unsafe { case given zio.Unsafe =>
     FiberRef.unsafe.make(HttpObservabilityConfig.Server.default)
   }
@@ -154,6 +171,8 @@ object Observability:
     routes.handleErrorZIO {
       case Unauthorized => ZIO.succeed(Response.unauthorized)
       case Forbidden => ZIO.succeed(Response.forbidden)
+      case ex: BadRequest => ZIO.succeed(Response.text(ex.message).status(Status.BadRequest))
+      case ex: HttpCodecError => ZIO.succeed(Response.text(ex.message).status(Status.BadRequest))
       case ex: Throwable => Observability.cause.set(Some(Cause.fail(ex))).as(Response.internalServerError)
     }
 
@@ -210,71 +229,81 @@ object Observability:
     )
   }
 
+  /** Instruments every route with its own pattern (e.g. `/resources/{resourceId}/...`)
+    * rather than the concrete request path, so path parameters cannot blow up metric
+    * cardinality or span names. Handlers may narrow the route path to another bounded
+    * value with [[setRoutePath]].
+    */
   val middleware: Middleware[Tracing] = new Middleware[Tracing]:
     def apply[Env1 <: Tracing, Err](routes: Routes[Env1, Err]): Routes[Env1, Err] =
-      routes
-        .transform: handler =>
-          Handler.scoped[Env1]:
-            Handler.fromFunctionZIO[Request]: request =>
-              ZIO.serviceWithZIO[Tracing]: tracing =>
-                // the log context is restored once the request completes, so auth details set
-                // mid-flow annotate every log line of this request and no other
-                logContext.locallyWith(identity)(
-                  routeLabel.locally(None)(
-                  for
-                    startTime <- Clock.instant
-                    now <- Clock.nanoTime
-                    basePath = request.path.encode
-                    baseTags = Set(
-                      MetricLabel("method", request.method.name),
-                      MetricLabel("route", basePath),
-                    )
-                    response <- activeRequests.tagged(baseTags).increment
-                      .zipRight(handler(request))
-                      .ensuring(activeRequests.tagged(baseTags).decrement)
-                    masking <- serverLogging.get
-                    (requestLog, responseLog) <- toLog(request, masking) <&> toLog(request, response, masking)
-                    after <- Clock.nanoTime
-                    status = response.status.code
-                    statusClass = s"${status / 100}xx"
-                    label <- routeLabel.get
-                    route = label.fold(basePath)(l => s"$basePath?$l")
-                    tags = Set(
-                      MetricLabel("method", request.method.name),
-                      MetricLabel("route", route),
-                    )
-                    _ <- requestsCount
-                      .tagged(tags + MetricLabel("status", status.toString) + MetricLabel("status_class", statusClass))
-                      .increment
-                    _ <- requestDuration
-                      .tagged(tags + MetricLabel("status_class", statusClass))
-                      .update((after - now) / 1e9)
-                    log = receiveHttp(
-                      ReceiveHttpLog(
-                        request = requestLog,
-                        response = responseLog,
-                        startTime = startTime,
-                        elapsedMillis = (after - now) / 1000000,
-                      ),
-                    )
-                    loggerName = logging.loggerName("versola.http.HttpServer")
-                    cause <- cause.get
-                    _ <- cause match
-                      case Some(cause) =>
-                        ZIO.logErrorCause("receive-http", cause) @@ log @@ loggerName
-                      case None =>
-                        ZIO.logInfo("receive-http") @@ log @@ loggerName
-                    _ <- Observability.cause.set(None)
-                  yield response,
-                  ),
-                ) @@ tracing.aspects.extractSpan(
-                  TraceContextPropagator.default,
-                  IncomingContextCarrier.default(
-                    mutable.Map.from(request.headers.map(h => h.headerName -> h.renderedValue)),
-                  ),
-                  s"${request.method.name} ${request.path.encode}",
-                  SpanKind.SERVER,
+      Routes.fromIterable(routes.routes.map(route => route.transform(instrument(route.routePattern.pathCodec.render))))
+
+    private def instrument[Env1 <: Tracing](
+        pattern: String,
+    )(handler: Handler[Env1, Response, Request, Response]): Handler[Env1, Response, Request, Response] =
+      Handler.scoped[Env1]:
+        Handler.fromFunctionZIO[Request]: request =>
+          ZIO.serviceWithZIO[Tracing]: tracing =>
+            // the log context is restored once the request completes, so auth details set
+            // mid-flow annotate every log line of this request and no other
+            logContext.locallyWith(identity)(
+              routeLabel.locally(None)(
+              routePath.locally(None)(
+              for
+                startTime <- Clock.instant
+                now <- Clock.nanoTime
+                baseTags = Set(
+                  MetricLabel("method", request.method.name),
+                  MetricLabel("route", pattern),
                 )
+                response <- activeRequests.tagged(baseTags).increment
+                  .zipRight(handler(request))
+                  .ensuring(activeRequests.tagged(baseTags).decrement)
+                masking <- serverLogging.get
+                (requestLog, responseLog) <- toLog(request, masking) <&> toLog(request, response, masking)
+                after <- Clock.nanoTime
+                status = response.status.code
+                statusClass = s"${status / 100}xx"
+                label <- routeLabel.get
+                path <- routePath.get.map(_.getOrElse(pattern))
+                route = label.fold(path)(l => s"$path?$l")
+                tags = Set(
+                  MetricLabel("method", request.method.name),
+                  MetricLabel("route", route),
+                )
+                _ <- requestsCount
+                  .tagged(tags + MetricLabel("status", status.toString) + MetricLabel("status_class", statusClass))
+                  .increment
+                _ <- requestDuration
+                  .tagged(tags + MetricLabel("status_class", statusClass))
+                  .update((after - now) / 1e9)
+                log = receiveHttp(
+                  ReceiveHttpLog(
+                    request = requestLog,
+                    response = responseLog,
+                    startTime = startTime,
+                    elapsedMillis = (after - now) / 1000000,
+                  ),
+                )
+                loggerName = logging.loggerName("versola.http.HttpServer")
+                cause <- cause.get
+                _ <- cause match
+                  case Some(cause) =>
+                    ZIO.logErrorCause("receive-http", cause) @@ log @@ loggerName
+                  case None =>
+                    ZIO.logInfo("receive-http") @@ log @@ loggerName
+                _ <- Observability.cause.set(None)
+              yield response,
+              ),
+              ),
+            ) @@ tracing.aspects.extractSpan(
+              TraceContextPropagator.default,
+              IncomingContextCarrier.default(
+                mutable.Map.from(request.headers.map(h => h.headerName -> h.renderedValue)),
+              ),
+              s"${request.method.name} $pattern",
+              SpanKind.SERVER,
+            )
 
   val client: ZLayer[Tracing, Throwable, Client] =
     (Client.default ++ ZLayer.service[Tracing]).map: env =>

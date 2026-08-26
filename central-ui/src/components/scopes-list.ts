@@ -97,7 +97,7 @@ export class VersolaScopesList extends LitElement {
       }
 
       .tab.active {
-        background: rgba(88, 166, 255, 0.15);
+        background: rgba(var(--accent-tint), 0.15);
         border-color: var(--accent);
         color: var(--accent);
       }

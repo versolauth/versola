@@ -596,6 +596,31 @@ Environment variables read by the containers:
 Everything else — secrets, keys, database credentials, bootstrap data — lives in the HOCON file
 (see [5](#5-the-env-config-repository)), not in environment variables.
 
+### If a connection pooler is ever put in front of Postgres
+
+`central` and `edge` both keep a connection parked on `LISTEN` — that is how a config change
+reaches every replica, and how a revoked token stops being accepted before it expires. A pooler in
+**transaction mode cannot carry `LISTEN`**: it hands each transaction whichever backend is free, so
+the session the subscription was registered on goes back to the pool and no notification is ever
+delivered.
+
+So when `postgres.url` is pointed at a pooler, set `postgres.notifications-url` to a **direct**
+Postgres URL in the same `postgres { }` block:
+
+```hocon
+postgres {
+  url               = "jdbc:postgresql://pgbouncer:6432/auth?currentSchema=edge"
+  notifications-url = "jdbc:postgresql://postgres:5432/auth?currentSchema=edge"
+}
+```
+
+One direct connection per replica, which is what a listener needs anyway — pooling it achieves
+nothing, since it is held for the process's whole lifetime. (Session mode also works, at the cost of
+pinning a backend per replica for the same duration.)
+
+Getting this wrong does not fail quietly: each service checks at startup that it can receive its own
+notification, and refuses to start with an error naming this setting if it cannot.
+
 ---
 
 ## 8. Routine operations

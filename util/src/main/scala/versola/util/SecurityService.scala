@@ -3,7 +3,7 @@ package versola.util
 import org.apache.commons.codec.digest.Blake3
 import org.bouncycastle.crypto.generators.Argon2BytesGenerator
 import org.bouncycastle.crypto.params.Argon2Parameters
-import zio.{Clock, Task, UIO, URLayer, ZIO, ZLayer}
+import zio.{Clock, Semaphore, Task, UIO, URLayer, ZIO, ZLayer}
 
 import java.security.{KeyPairGenerator, PrivateKey, PublicKey}
 import java.security.interfaces.{RSAPrivateKey, RSAPublicKey}
@@ -26,10 +26,21 @@ trait SecurityService:
   def generateRsaKeyPair: UIO[RsaKeyPair]
 
 object SecurityService:
+  /** Used by services that never hash passwords (central, edge); auth passes its configured
+    * `Argon2Config`.
+    */
   def live: URLayer[SecureRandom, SecurityService] =
-    ZLayer.fromFunction(Impl(_))
+    live(Argon2Config.default)
 
-  class Impl(secureRandom: SecureRandom) extends SecurityService:
+  def live(argon2Config: Argon2Config): URLayer[SecureRandom, SecurityService] =
+    ZLayer.fromZIO {
+      for
+        secureRandom <- ZIO.service[SecureRandom]
+        hashingSemaphore <- Semaphore.make(argon2Config.maxConcurrent.toLong)
+      yield Impl(secureRandom, hashingSemaphore)
+    }
+
+  class Impl(secureRandom: SecureRandom, hashingSemaphore: Semaphore) extends SecurityService:
 
     private val Algorithm = "AES"
     private val Transformation = "AES/GCM/NoPadding"
@@ -93,7 +104,7 @@ object SecurityService:
         MAC(mac)
 
     override def hashPassword(password: Secret, salt: Salt, pepper: Secret.Bytes16): Task[MAC] =
-      ZIO.attemptBlocking:
+      val hashEffect = ZIO.attemptBlocking {
         // Combine salt and pepper as additional data
         val params = new Argon2Parameters.Builder(Argon2Parameters.ARGON2_id)
           .withVersion(Argon2Parameters.ARGON2_VERSION_13)
@@ -110,6 +121,12 @@ object SecurityService:
         val hash = Array.ofDim[Byte](Argon2HashLength)
         generator.generateBytes(password, hash)
         MAC(hash)
+      }
+      // Admission control: Argon2id holds ~19 MiB of heap per in-flight hash, so unbounded
+      // concurrency (this runs on ZIO's unbounded blocking pool) is an OOM vector under login
+      // load. The semaphore caps concurrent hashes; excess requests queue as cheap fibers
+      // instead of each claiming 19 MiB up front.
+      hashingSemaphore.withPermit(hashEffect)
 
     override def generateRsaKeyPair: UIO[RsaKeyPair] =
       for

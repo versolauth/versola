@@ -13,7 +13,7 @@ object CentralSyncTokenService:
 
   def live: ZLayer[Scope & EdgeConfig, Throwable, CentralSyncTokenService] = {
     TokenSource >>>
-      ZLayer(ReloadingCache.make[String](Schedule.spaced(ReloadInterval))) >>>
+      ZLayer(ReloadingCache.make[String](ReloadInterval)) >>>
       ZLayer.fromFunction(Impl(_, _))
   }
 

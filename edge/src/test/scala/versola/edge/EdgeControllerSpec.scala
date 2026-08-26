@@ -16,6 +16,7 @@ import versola.edge.model.{
   SessionId,
   TenantId,
 }
+import versola.edge.revocation.TokenRevocationService
 import versola.util.http.Observability
 import versola.util.{JWT, RedirectUri, Secret}
 import zio.*
@@ -82,18 +83,21 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
   private def run(
       request: Request,
       setup: (Stub[EdgeService], Stub[JwksService]) => UIO[Unit] = (_, _) => ZIO.unit,
+      revoked: Boolean = false,
   ): ZIO[TestClient & Client & Scope, Throwable, (Response, Stub[EdgeService], Stub[JwksService])] =
     for
       client  <- ZIO.service[Client]
       service =  stub[EdgeService]
       jwks    =  stub[JwksService]
       presets =  stub[AuthorizationPresetsSyncClient]
+      revocation = stub[TokenRevocationService]
       tracing <- tracingLayer.build
       _ <- TestClient.addRoutes(
         Observability.handleErrors(
           EdgeController.routes.provideEnvironment(
             ZEnvironment[EdgeService](service) ++
               ZEnvironment[JwksService](jwks) ++
+              ZEnvironment[TokenRevocationService](revocation) ++
               ZEnvironment[AuthorizationPresetsSyncClient](presets) ++
               ZEnvironment[EdgeConfig](edgeConfig) ++
               tracing,
@@ -101,6 +105,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         ),
       )
       _        <- jwks.getPublicKeys.succeedsWith(publicKeys)
+      _        <- revocation.isRevoked.succeedsWith(revoked)
       _        <- setup(service, jwks)
       response <- client.batched(request)
     yield (response, service, jwks)
@@ -161,16 +166,28 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       yield assertTrue(
         response.status == Status.Ok,
         payload == Right(sampleResponse),
-        service.getMyPermissions.calls == List(
-          (
-            PermissionsClaims(
-              clientId = Some(ClientId("central-admin")),
-              tenantId = Some(TenantId.default),
-              roles = Some(List(RoleId("oauth-admin"))),
+        // `jti` is minted per token, so the claims are compared field by field.
+        service.getMyPermissions.calls.map((claims, resources) => (claims.clientId, claims.tenantId, claims.roles, resources)) ==
+          List(
+            (
+              Some(ClientId("central-admin")),
+              Some(TenantId.default),
+              Some(List(RoleId("oauth-admin"))),
+              List("central", "orders"),
             ),
-            List("central", "orders"),
           ),
-        ),
+      )
+    },
+    test("returns 401 when the token has been revoked") {
+      for
+        accessToken <- token(clientId = "web-app", tenantId = Some("default"), roles = Some(List("member")))
+        request = Request
+          .get(URL.decode("/permissions/me?resource=orders").toOption.get)
+          .addHeader(Header.Authorization.Bearer(accessToken))
+        (response, service, _) <- run(request, (s, _) => s.getMyPermissions.succeedsWith(sampleResponse), revoked = true)
+      yield assertTrue(
+        response.status == Status.Unauthorized,
+        service.getMyPermissions.calls.isEmpty,
       )
     },
     test("accepts an Authorization Bearer token") {
@@ -182,12 +199,8 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         (response, service, _) <- run(request, (s, _) => s.getMyPermissions.succeedsWith(sampleResponse))
       yield assertTrue(
         response.status == Status.Ok,
-        service.getMyPermissions.calls == List(
-          (
-            PermissionsClaims(clientId = Some(ClientId("web-app")), tenantId = Some(TenantId.default), roles = Some(List(RoleId("member")))),
-            List("orders"),
-          ),
-        ),
+        service.getMyPermissions.calls.map((claims, resources) => (claims.clientId, claims.tenantId, claims.roles, resources)) ==
+          List((Some(ClientId("web-app")), Some(TenantId.default), Some(List(RoleId("member"))), List("orders"))),
       )
     },
   )
@@ -304,7 +317,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         response.status == Status.Ok,
         response.header(Header.CacheControl).contains(Header.CacheControl.NoStore),
         response.header(Header.SetCookie).map(_.value.content).contains(""),
-        service.frontChannelLogout.calls == List(("https://idp.example", SessionId("sso-session-1"))),
+        service.frontChannelLogout.calls == List((Some("https://idp.example"), Some(SessionId("sso-session-1")), None)),
       )
     },
     test("responds 200 with no cookies when the session has no known refresh tokens") {
@@ -316,7 +329,19 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       yield assertTrue(
         response.status == Status.Ok,
         response.header(Header.SetCookie).isEmpty,
-        service.frontChannelLogout.calls == List(("https://idp.example", SessionId("sso-session-unknown"))),
+        service.frontChannelLogout.calls == List((Some("https://idp.example"), Some(SessionId("sso-session-unknown")), None)),
+      )
+    },
+    test("passes the EDGE_SESSION cookie through as the credential for the revocation") {
+      for
+        (response, service, _) <- run(
+          Request.get(URL.decode("/logout/frontchannel").toOption.get)
+            .addCookie(Cookie.Request(EdgeSessionCookie.name, "preset-1:token-1")),
+          (s, _) => s.frontChannelLogout.succeedsWith(List.empty),
+        )
+      yield assertTrue(
+        response.status == Status.Ok,
+        service.frontChannelLogout.calls == List((None, None, Some("preset-1:token-1"))),
       )
     },
     test("responds 200 with no cookies when the issuer is unknown") {
@@ -328,7 +353,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       yield assertTrue(
         response.status == Status.Ok,
         response.header(Header.SetCookie).isEmpty,
-        service.frontChannelLogout.calls == List(("https://untrusted.example", SessionId("sso-session-1"))),
+        service.frontChannelLogout.calls == List((Some("https://untrusted.example"), Some(SessionId("sso-session-1")), None)),
       )
     },
   )

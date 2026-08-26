@@ -14,7 +14,7 @@ const alphaWebClient = {
 
 const alphaPresets = [
   {
-    id: 'a1b2c3d4-e5f6-4a5b-8c9d-0e1f2a3b4c5d',
+    id: 'web-login',
     clientId: 'alpha-web',
     description: 'Web Login',
     redirectUri: 'https://alpha.example.com/callback',
@@ -24,7 +24,7 @@ const alphaPresets = [
     uiLocales: ['en', 'fr'],
   },
   {
-    id: 'b2c3d4e5-f6a7-4b5c-9d0e-1f2a3b4c5d6e',
+    id: 'mobile-login',
     clientId: 'alpha-web',
     description: 'Mobile Login',
     redirectUri: 'https://alpha.example.com/silent',
@@ -150,7 +150,7 @@ test('shows preset details in card', async ({ page }) => {
   // Preset cards show description and ID by default (collapsed)
   const webLoginPreset = card.locator('.preset-card').filter({ hasText: 'Web Login' });
   await expect(webLoginPreset).toContainText('Web Login');
-  await expect(webLoginPreset).toContainText('a1b2c3d4-e5f6-4a5b-8c9d-0e1f2a3b4c5d');
+  await expect(webLoginPreset).toContainText('web-login');
 
   // Click on the preset card to expand and see all details
   await webLoginPreset.locator('.preset-card-header').click();
@@ -162,7 +162,7 @@ test('shows preset details in card', async ({ page }) => {
   await expect(webLoginPreset).toContainText('en, fr');
 });
 
-test('adds a new preset with auto-generated UUID', async ({ page }) => {
+test('adds a new preset with a manually entered ID', async ({ page }) => {
   const api = await loadAdminApp(page, {
     path: clientsPath,
     state: {
@@ -184,6 +184,8 @@ test('adds a new preset with auto-generated UUID', async ({ page }) => {
   await page.getByRole('button', { name: '+ Add Preset' }).click();
 
   // The preset form should now be visible - fill it in
+  await page.getByLabel('Preset ID').fill('admin-login');
+  await expect(page.getByText('/login/{presetId}')).toBeVisible();
   await page.getByLabel('Description').fill('Admin Login');
   await page.getByLabel('Redirect URI *', { exact: true }).selectOption('https://alpha.example.com/callback');
   await page.getByLabel('Post-login redirect URI').fill('https://alpha.example.com/dashboard');
@@ -225,9 +227,8 @@ test('adds a new preset with auto-generated UUID', async ({ page }) => {
     ]),
   });
 
-  // ID should be a valid UUID
   const preset = (saveRequest?.body as any)?.presets?.[0];
-  expect(preset?.id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+  expect(preset?.id).toBe('admin-login');
 });
 
 test('edits an existing preset', async ({ page }) => {
@@ -277,8 +278,50 @@ test('edits an existing preset', async ({ page }) => {
   expect(saveRequest?.body).toMatchObject({
     presets: expect.arrayContaining([
       expect.objectContaining({
-        id: 'a1b2c3d4-e5f6-4a5b-8c9d-0e1f2a3b4c5d',
+        id: 'web-login',
         description: 'Updated Web Login',
+      }),
+    ]),
+  });
+});
+
+test('updates a preset with the prompt consent custom parameter', async ({ page }) => {
+  const api = await loadAdminApp(page, {
+    path: clientsPath,
+    state: {
+      clients: { 'tenant-alpha': [alphaWebClient] },
+      authorizationPresets: { 'alpha-web': alphaPresets },
+    },
+  });
+
+  const card = clientCard(page, 'alpha-web');
+  await card.locator('.client-header').click();
+  await card.getByText('Authorization Presets').click();
+  await card.getByRole('button', { name: 'Edit presets for alpha-web' }).click();
+
+  const webLoginCard = page.locator('.preset-card').filter({ hasText: 'Web Login' });
+  await webLoginCard.getByRole('button', { name: 'Edit preset' }).click();
+
+  await page.getByPlaceholder('Parameter key').fill('prompt');
+  await page.getByPlaceholder('Parameter value').fill('consent');
+  await page.locator('.custom-param-input-row').getByRole('button', { name: 'Add', exact: true }).click();
+  await expect(page.locator('.custom-params-list')).toContainText('prompt');
+  await expect(page.locator('.custom-params-list')).toContainText('consent');
+
+  await page.getByRole('button', { name: 'Update Preset' }).click();
+  await expect(page.getByRole('button', { name: 'Save Presets' })).toBeVisible();
+  await page.getByRole('button', { name: 'Save Presets' }).click();
+  await page.waitForTimeout(300);
+
+  const saveRequest = api.requests.find(req =>
+    req.pathname === '/configuration/auth-request-presets' &&
+    req.method === 'POST'
+  );
+  expect(saveRequest?.body).toMatchObject({
+    presets: expect.arrayContaining([
+      expect.objectContaining({
+        id: 'web-login',
+        customParameters: { prompt: ['consent'] },
       }),
     ]),
   });
@@ -305,6 +348,7 @@ test('saves and reloads a preset with a post-logout redirect URI', async ({ page
   // Click "+ Add Preset" to open the form
   await page.getByRole('button', { name: '+ Add Preset' }).click();
 
+  await page.getByLabel('Preset ID').fill('admin-login-with-logout');
   await page.getByLabel('Description').fill('Admin Login');
   await page.getByLabel('Redirect URI *', { exact: true }).selectOption('https://alpha.example.com/callback');
   await page.getByLabel('Post-login redirect URI').fill('http://localhost:9005/login/central-admin');
@@ -377,7 +421,7 @@ test('deletes a preset', async ({ page }) => {
   // The request should only include the Mobile Login preset (Web Login was deleted)
   const presets = (saveRequest?.body as any)?.presets || [];
   expect(presets).toHaveLength(1);
-  expect(presets[0].id).toBe('b2c3d4e5-f6a7-4b5c-9d0e-1f2a3b4c5d6e');
+  expect(presets[0].id).toBe('mobile-login');
 });
 
 test('validates preset form - redirect URI must be in client allowed URIs', async ({ page }) => {
@@ -453,6 +497,7 @@ test('handles backend validation errors gracefully', async ({ page }) => {
   await page.getByRole('button', { name: '+ Add Preset' }).click();
 
   // Fill in the form
+  await page.getByLabel('Preset ID').fill('invalid-redirect');
   await page.getByLabel('Description').fill('Test');
   await page.getByLabel('Redirect URI *', { exact: true }).selectOption('https://alpha.example.com/callback');
   await page.getByLabel('Post-login redirect URI').fill('https://alpha.example.com/dashboard');

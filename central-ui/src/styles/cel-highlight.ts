@@ -1,14 +1,16 @@
 import { css } from 'lit';
 
 export const celHighlightStyles = css`
+  /* Colors come from CEL and code-highlight custom properties (defined per-theme in
+     index.html), same reasoning as code-highlight.ts. */
   .cel-tok { white-space: inherit; }
-  .cel-keyword { color: #ff7b72; }
-  .cel-ctxvar  { color: #d2a8ff; font-weight: 600; }
-  .cel-fn      { color: #d2a8ff; }
+  .cel-keyword { color: var(--cel-keyword); }
+  .cel-ctxvar  { color: var(--cel-ctxvar); font-weight: 600; }
+  .cel-fn      { color: var(--cel-ctxvar); }
   .cel-ident   { color: var(--text-primary); }
-  .cel-string  { color: #a5d6ff; }
-  .cel-number  { color: #79c0ff; }
-  .cel-op      { color: #ff7b72; }
+  .cel-string  { color: var(--ch-string); }
+  .cel-number  { color: var(--ch-attr-name); }
+  .cel-op      { color: var(--cel-keyword); }
   .cel-punct   { color: var(--text-secondary); }
   .cel-plain   { color: var(--text-primary); }
   .cel-whitespace { color: inherit; }

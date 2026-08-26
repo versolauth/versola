@@ -84,7 +84,11 @@ services:
 
   central:
     image: ghcr.io/versolauth/versola-central:${VERSION}
-    platform: linux/amd64
+    # No `platform:` pin here or on auth/edge below -- these images are
+    # published as multi-arch manifest lists now, so Docker resolves them
+    # natively on an arm64 VPS (Graviton/Ampere) instead of being forced
+    # onto emulated amd64. Same change, same reasoning, as in
+    # compose.fragment.yml.template -- see the comment at the top of it.
     container_name: versola-central
     restart: unless-stopped
     network_mode: host
@@ -111,7 +115,6 @@ services:
 
   auth:
     image: ghcr.io/versolauth/versola-auth:${VERSION}
-    platform: linux/amd64
     container_name: versola-auth
     restart: unless-stopped
     # Same caveat as docker-local's auth: central has no healthcheck, so
@@ -140,7 +143,6 @@ services:
 
   edge:
     image: ghcr.io/versolauth/versola-edge:${VERSION}
-    platform: linux/amd64
     container_name: versola-edge
     restart: unless-stopped
     depends_on:

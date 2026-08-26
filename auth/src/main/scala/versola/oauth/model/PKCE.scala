@@ -7,7 +7,7 @@ import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 
 enum CodeChallengeMethod derives Equal:
-  case S256, Plain
+  case S256
 
 type CodeVerifier = CodeVerifier.Type
 

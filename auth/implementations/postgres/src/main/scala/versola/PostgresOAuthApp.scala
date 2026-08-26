@@ -14,7 +14,7 @@ import versola.oauth.conversation.{ConversationController, ConversationRenderSer
 import versola.oauth.introspect.{IntrospectionController, IntrospectionService}
 import versola.oauth.client.CentralSyncTokenService
 import versola.oauth.jwks.{JwksController, JwksService, JwksSyncClient}
-import versola.oauth.logout.{LogoutController, LogoutService}
+import versola.oauth.logout.{BackChannelDispatcher, LogoutController, LogoutService}
 import versola.oauth.revoke.{AccessTokenRevocationService, RevocationController, RevocationService}
 import versola.oauth.session.{PostgresSessionRepository, PostgresUserAgentRepository, SessionRepository, SessionService, UserAgentRepository}
 import versola.oauth.token.{AuthorizationCodeRepository, OAuthTokenService, TokenEndpointController}
@@ -64,6 +64,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       IntrospectionService &
       RevocationService &
       AccessTokenRevocationService &
+      BackChannelDispatcher &
       AuthorizeRequestParser &
       PushedAuthorizationService &
       AuthorizeEndpointService &
@@ -112,11 +113,19 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       PostgresCleanupManager.live
   )
 
+  /** Argon2id hashing runs on the unbounded blocking pool; this applies the configured
+    * concurrency cap (see `Argon2Config`).
+    */
+  private val securityService: URLayer[SecureRandom & CoreConfig, SecurityService] =
+    ZLayer.service[CoreConfig].flatMap { env =>
+      SecurityService.live(env.get[CoreConfig].argon2OrDefault)
+    }
+
   val dependencies: ZLayer[Scope & EnvName & ConfigProvider & Tracing & Client, Throwable, Dependencies] =
     repositories >+>
       parseConfig[CoreConfig] >+>
       SecureRandom.live >+>
-      SecurityService.live >+>
+      securityService >+>
       JsonSchemaValidator.live >+>
       OAuthConfigurationService.live >+>
       CentralSyncTokenService.live >+>
@@ -125,7 +134,8 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       JwksService.live >+>
       AuthPropertyGenerator.live >+>
       SessionService.live >+>
-      AccessTokenRevocationService.noop >+>
+      BackChannelDispatcher.live >+>
+      AccessTokenRevocationService.live >+>
       OAuthTokenService.live >+>
       IntrospectionService.live >+>
       RevocationService.live >+>

@@ -11,7 +11,7 @@ object AuthorizationDetailMetadataSpec extends E2ESpec:
 
   def spec = suite("Authorization detail metadata")(
     test("adding and removing an authorization detail type updates server metadata") {
-      val typeName = s"e2e-${UUID.randomUUID().toString}"
+      val typeName = s"e2e_${UUID.randomUUID().toString.replace('-', '_')}"
       val schema = """{"type":"object"}"""
 
       for

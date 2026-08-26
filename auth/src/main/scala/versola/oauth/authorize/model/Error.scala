@@ -17,11 +17,12 @@ private[authorize] object Error:
     def uri: URL
     def state: Option[State]
 
-    def redirectUriWithErrorParams: URL =
+    def redirectUriWithErrorParams(iss: String): URL =
       uri.addQueryParams(
         Iterable(
           "error" -> error,
           "error_description" -> errorDescription,
+          "iss" -> iss,
         )
           ++ errorUri.map("error_uri" -> _)
           ++ state.map("state" -> _),
@@ -62,6 +63,12 @@ private[authorize] object Error:
       errorUri = Some("https://datatracker.ietf.org/doc/html/draft-ietf-oauth-v2-1#name-authorization-request"),
     )
 
+  case class CodeChallengeMethodMissing(uri: URL, state: Option[State]) extends RedirectError(
+      error = ErrorCode.InvalidRequest,
+      errorDescription = "Missing required parameter - code_challenge_method",
+      errorUri = Some("https://datatracker.ietf.org/doc/html/draft-ietf-oauth-v2-1#name-authorization-request"),
+    )
+
   case class CodeChallengeInvalid(uri: URL, state: Option[State], value: String) extends RedirectError(
       error = ErrorCode.InvalidRequest,
       errorDescription = s"Invalid code challenge alphabet or size - $value",
@@ -71,7 +78,7 @@ private[authorize] object Error:
   case class CodeChallengeMethodInvalid(uri: URL, state: Option[State], value: String) extends RedirectError(
       error = ErrorCode.InvalidRequest,
       errorDescription = s"Code challenge method is not supported - $value",
-      errorUri = Some("https://datatracker.ietf.org/doc/html/rfc7636#section-4.3"),
+      errorUri = Some("https://datatracker.ietf.org/doc/html/draft-ietf-oauth-v2-1#name-authorization-request"),
     )
 
   case class UnsupportedResponseType(uri: URL, state: Option[State], responseType: String) extends RedirectError(

@@ -99,14 +99,14 @@ export class VersolaTenantsList extends LitElement {
         font-weight: 600;
       }
       .badge-selected {
-        border: 1px solid rgba(88, 166, 255, 0.28);
-        background: rgba(88, 166, 255, 0.12);
+        border: 1px solid rgba(var(--accent-tint), 0.28);
+        background: rgba(var(--accent-tint), 0.12);
         color: var(--accent);
       }
       .badge-edge {
         border: 1px solid rgba(147, 147, 147, 0.28);
         background: rgba(147, 147, 147, 0.12);
-        color: #a0a0a0;
+        color: var(--text-secondary);
         font-family: var(--font-mono);
       }
       .form-actions {
@@ -123,9 +123,9 @@ export class VersolaTenantsList extends LitElement {
         color: var(--text-secondary);
       }
       .error-banner {
-        border: 1px solid rgba(248, 81, 73, 0.35);
-        background: rgba(248, 81, 73, 0.08);
-        color: #ffb4ad;
+        border: 1px solid rgba(var(--danger-tint), 0.35);
+        background: rgba(var(--danger-tint), 0.08);
+        color: var(--danger);
         border-radius: var(--radius-md);
         padding: 0.875rem 1rem;
       }

@@ -4,11 +4,11 @@ import { badgeStyles, buttonStyles, cardStyles, formStyles, methodBadgeStyles, t
 import { celHighlightStyles } from '../styles/cel-highlight';
 import { theme } from '../styles/theme';
 import type { InjectRule, InjectTarget, Resource, ResourceEndpoint, ResourceEndpointId } from '../types';
-import { createResource, deletePreviousResourceSecret, deleteResource, fetchAllClients, fetchChallengeSettings, getResources, rotateResourceSecret, updateResource } from '../utils/central-api';
+import { createResource, deletePreviousResourceSecret, deleteResource, fetchAllClients, fetchAllPermissions, fetchChallengeSettings, getResources, rotateResourceSecret, updateResource } from '../utils/central-api';
 import { renderHighlightedCel } from '../utils/cel-highlight';
 import { validateCel } from '../utils/cel-validator';
 import { confirmDestructiveAction } from '../utils/confirm-dialog';
-import { copyToClipboard, formatResourceLabel } from '../utils/helpers';
+import { PERMISSIONS_UPDATED_EVENT, type PermissionsUpdatedDetail, copyToClipboard, formatResourceLabel, indexPermissionsByEndpoint } from '../utils/helpers';
 import { validateResourceId, validateResourceUri } from '../utils/validators';
 import './cel-editor';
 import './content-header';
@@ -75,6 +75,8 @@ export class VersolaResourcesList extends LitElement {
   @state() private resources: Resource[] = [];
   @state() private clientIds: string[] = [];
   @state() private acrVocabulary: Record<string, string[]> = {};
+  /** Reverse index: endpoint id -> permission ids granting access to it. */
+  @state() private permissionsByEndpoint: Map<ResourceEndpointId, string[]> = new Map();
   @state() private expandedResources: Set<string> = new Set();
   @state() private expandedEndpoints: Set<ResourceEndpointId> = new Set();
   @state() private searchQuery = '';
@@ -128,18 +130,18 @@ export class VersolaResourcesList extends LitElement {
     .resource-actions { display:flex; align-items:center; gap:.5rem; margin-left:var(--spacing-md); }
     .resource-label-card { max-width:min(32rem, 100%); padding:.15rem 0; display:flex; align-items:center; gap:.625rem; flex-wrap:wrap; }
     .resource-label { color:var(--accent); font-size:1rem; font-weight:600; line-height:1.35; word-break:break-all; }
-    .resource-id-badge { display:inline-flex; align-items:center; min-height:1.5rem; padding:0 .6rem; border-radius:999px; font-size:.75rem; font-weight:600; letter-spacing:.01em; background:rgba(88, 166, 255, .16); color:#7cc4ff; border:1px solid rgba(88, 166, 255, .28); flex:none; }
+    .resource-id-badge { display:inline-flex; align-items:center; min-height:1.5rem; padding:0 .6rem; border-radius:999px; font-size:.75rem; font-weight:600; letter-spacing:.01em; background:rgba(var(--accent-tint), .16); color:var(--accent); border:1px solid rgba(var(--accent-tint), .28); flex:none; }
     .input-with-info { display:flex; align-items:center; gap:.5rem; }
     .input-with-info > .form-input { flex:1; min-width:0; }
     .cred-mode-cards { display:grid; grid-template-columns:repeat(auto-fill, minmax(160px, 1fr)); gap:.75rem; margin-top:.5rem; }
     .cred-mode-card { display:flex; align-items:center; justify-content:center; text-align:center; padding:.625rem .75rem; border:1px solid var(--border-dark); border-radius:var(--radius-sm); background:transparent; color:var(--text-primary); font-size:.875rem; font-family:var(--font-mono); cursor:pointer; transition:all var(--transition-fast); }
-    .cred-mode-card:hover { border-color:var(--accent); background:rgba(88, 166, 255, .05); }
-    .cred-mode-card.selected { border-color:var(--accent); background:rgba(88, 166, 255, .12); }
+    .cred-mode-card:hover { border-color:var(--accent); background:rgba(var(--accent-tint), .05); }
+    .cred-mode-card.selected { border-color:var(--accent); background:rgba(var(--accent-tint), .12); }
     .audience-add-row { display:flex; align-items:center; gap:.75rem; flex-wrap:wrap; margin-top:.5rem; }
     .audience-input-wrap { position:relative; flex:1; min-width:16rem; }
     .audience-suggestions { position:absolute; top:calc(100% + .25rem); left:0; right:0; z-index:30; display:grid; max-height:12rem; overflow-y:auto; padding:.25rem; border:1px solid var(--border-dark); border-radius:var(--radius-sm); background:var(--bg-dark-card); box-shadow:0 8px 20px rgba(0,0,0,.35); }
     .audience-suggestion { width:100%; padding:.5rem .625rem; border:0; border-radius:var(--radius-sm); background:transparent; color:var(--text-primary); font-family:var(--font-mono); font-size:.875rem; text-align:left; cursor:pointer; }
-    .audience-suggestion:hover, .audience-suggestion:focus-visible { background:rgba(88,166,255,.12); color:var(--accent); outline:none; }
+    .audience-suggestion:hover, .audience-suggestion:focus-visible { background:rgba(var(--accent-tint),.12); color:var(--accent); outline:none; }
     .audience-list { display:grid; gap:.5rem; margin-top:.75rem; }
     .audience-item { display:flex; align-items:center; justify-content:space-between; gap:.75rem; min-height:2.25rem; padding:.375rem .5rem .375rem .75rem; border:1px solid var(--border-dark); border-radius:var(--radius-sm); background:rgba(255,255,255,.02); font-family:var(--font-mono); font-size:.875rem; }
     .audience-empty { margin-top:.75rem; }
@@ -148,7 +150,7 @@ export class VersolaResourcesList extends LitElement {
     .resource-section-trigger:hover { color:var(--accent); }
     .resource-section-chevron { color:var(--text-secondary); font-size:.7rem; }
     .audience-view-list { display:flex; flex-wrap:wrap; gap:.5rem; }
-    .audience-view-item { padding:.375rem .625rem; border:1px solid rgba(88,166,255,.3); border-radius:var(--radius-sm); background:rgba(88,166,255,.08); color:var(--text-primary); font-family:var(--font-mono); font-size:.8125rem; }
+    .audience-view-item { padding:.375rem .625rem; border:1px solid rgba(var(--accent-tint),.3); border-radius:var(--radius-sm); background:rgba(var(--accent-tint),.08); color:var(--text-primary); font-family:var(--font-mono); font-size:.8125rem; }
     .secret-banner { margin-bottom:var(--spacing-lg); border-color:rgba(63, 185, 80, .35); background:linear-gradient(180deg, rgba(63, 185, 80, .08), rgba(63, 185, 80, .04)); }
     .secret-banner-header { display:flex; justify-content:space-between; align-items:flex-start; gap:var(--spacing-md); margin-bottom:var(--spacing-md); }
     .secret-banner-title { margin:0; font-size:1rem; color:var(--text-primary); }
@@ -179,7 +181,7 @@ export class VersolaResourcesList extends LitElement {
     .rule-group-view, .rule-group-editor { display:grid; gap:.625rem; }
     .rule-group-view, .rule-group-editor {
       padding-left:.875rem;
-      border-left:2px solid rgba(88, 166, 255, .18);
+      border-left:2px solid rgba(var(--accent-tint), .18);
     }
     .rule-group-actions { display:flex; gap:.5rem; flex-wrap:wrap; }
     .rule-logic-separator {
@@ -190,7 +192,7 @@ export class VersolaResourcesList extends LitElement {
       text-transform:uppercase;
     }
     .rule-item, .header-item { display:grid; gap:.4rem; padding:.75rem; border:1px solid var(--border-dark); border-radius:var(--radius-sm); background:rgba(255,255,255,.03); }
-    .source-badge { display:inline-flex; align-items:center; min-height:1.5rem; padding:0 .6rem; border-radius:999px; font-size:.75rem; font-weight:600; letter-spacing:.01em; background:rgba(88, 166, 255, .16); color:#7cc4ff; border:1px solid rgba(88, 166, 255, .28); }
+    .source-badge { display:inline-flex; align-items:center; min-height:1.5rem; padding:0 .6rem; border-radius:999px; font-size:.75rem; font-weight:600; letter-spacing:.01em; background:rgba(var(--accent-tint), .16); color:var(--accent); border:1px solid rgba(var(--accent-tint), .28); }
     .rule-expression { display:flex; align-items:center; gap:.5rem; flex-wrap:wrap; }
     .rule-field, .rule-operator, .rule-value, .header-item-key, .header-item-value { font-size:.875rem; font-family:var(--font-mono, monospace); word-break:break-word; }
     .rule-field, .rule-value, .header-item-key, .header-item-value { color:var(--text-primary); }
@@ -203,7 +205,7 @@ export class VersolaResourcesList extends LitElement {
     .header-item-key { font-weight:600; }
     .fetch-indicator { display:inline-flex; align-items:center; gap:.625rem; }
     .fetch-indicator-box { width:1.1rem; height:1.1rem; border-radius:.3rem; border:1px solid var(--border-dark); display:inline-flex; align-items:center; justify-content:center; font-size:.8rem; font-weight:700; }
-    .fetch-indicator.fetch-enabled .fetch-indicator-box { background:rgba(88, 166, 255, .16); border-color:rgba(88, 166, 255, .32); color:#7cc4ff; }
+    .fetch-indicator.fetch-enabled .fetch-indicator-box { background:rgba(var(--accent-tint), .16); border-color:rgba(var(--accent-tint), .32); color:var(--accent); }
     .fetch-indicator.fetch-disabled .fetch-indicator-box { background:rgba(255,255,255,.03); color:transparent; }
     .section-header { display:flex; align-items:center; justify-content:space-between; gap:var(--spacing-md); margin:var(--spacing-xl) 0 var(--spacing-md); }
     .section-title { margin:0; font-size:1rem; font-weight:600; color:var(--text-primary); }
@@ -230,9 +232,9 @@ export class VersolaResourcesList extends LitElement {
     .editor-section-title { margin:0; font-size:.9rem; color:var(--text-primary); }
     .option-info-button {
       flex:none;
-      border:1px solid rgba(88, 166, 255, 0.4);
+      border:1px solid rgba(var(--accent-tint), 0.4);
       border-radius:999px;
-      background:rgba(88, 166, 255, 0.12);
+      background:rgba(var(--accent-tint), 0.12);
       color:var(--accent);
       font-size:.75rem;
       font-weight:700;
@@ -242,8 +244,8 @@ export class VersolaResourcesList extends LitElement {
       font-family:var(--font-family);
     }
     .option-info { position:relative; display:inline-flex; align-items:center; flex:none; }
-    .option-info-button:hover { background:rgba(88, 166, 255, 0.18); border-color:rgba(88, 166, 255, 0.55); }
-    .option-info-button:focus-visible { outline:none; box-shadow:0 0 0 2px rgba(88, 166, 255, 0.2); }
+    .option-info-button:hover { background:rgba(var(--accent-tint), 0.18); border-color:rgba(var(--accent-tint), 0.55); }
+    .option-info-button:focus-visible { outline:none; box-shadow:0 0 0 2px rgba(var(--accent-tint), 0.2); }
     .option-tooltip {
       position:absolute;
       right:0;
@@ -252,7 +254,7 @@ export class VersolaResourcesList extends LitElement {
       min-width:18rem;
       max-width:min(28rem, 75vw);
       padding:0.75rem;
-      border:1px solid rgba(88, 166, 255, 0.28);
+      border:1px solid rgba(var(--accent-tint), 0.28);
       border-radius:var(--radius-md);
       background:linear-gradient(180deg, rgba(22, 27, 34, 0.98), rgba(13, 17, 23, 0.98));
       box-shadow:0 10px 24px rgba(0, 0, 0, 0.35);
@@ -271,7 +273,7 @@ export class VersolaResourcesList extends LitElement {
     .option-tooltip-section-title { margin:.625rem 0 .25rem; color:var(--text-secondary); font-size:.7rem; font-weight:600; text-transform:uppercase; letter-spacing:.04em; }
     .option-tooltip-section-title:first-child { margin-top:0; }
     .option-tooltip-list { margin:0; padding-left:1rem; display:grid; gap:.2rem; }
-    .option-tooltip-code { font-family:var(--font-mono, monospace); font-size:.72rem; color:var(--accent); background:rgba(88, 166, 255, .1); padding:.05rem .3rem; border-radius:.25rem; }
+    .option-tooltip-code { font-family:var(--font-mono, monospace); font-size:.72rem; color:var(--accent); background:rgba(var(--accent-tint), .1); padding:.05rem .3rem; border-radius:.25rem; }
     .option-tooltip-pre { margin:.25rem 0 0; padding:.5rem .625rem; border-radius:var(--radius-sm); background:rgba(0,0,0,.35); border:1px solid rgba(139, 148, 158, .18); font-family:var(--font-mono, monospace); font-size:.72rem; color:var(--text-primary); white-space:pre-wrap; word-break:break-word; }
     .rule-group-editor-list, .rule-editor-list, .header-editor-list { display:grid; gap:.75rem; }
     .rule-group-editor:not(:first-child), .header-editor-list > :not(:first-child) { padding-top:.75rem; border-top:1px solid rgba(139, 148, 158, .16); }
@@ -297,6 +299,28 @@ export class VersolaResourcesList extends LitElement {
       border: 1px solid var(--border-dark);
       border-radius: var(--radius-md);
       padding: var(--spacing-xs) var(--spacing-md);
+    }
+    .permission-alternatives {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: var(--spacing-xs);
+      margin-top: var(--spacing-xs);
+    }
+    .permission-tag {
+      font-family: var(--font-mono);
+      font-weight: 600;
+      font-size: 0.75rem;
+      color: var(--accent);
+      background: rgba(var(--accent-tint), 0.12);
+      border: 1px solid rgba(var(--accent-tint), 0.32);
+      border-radius: var(--radius-sm);
+      padding: 0.125rem var(--spacing-sm);
+    }
+    .permission-or {
+      font-size: 0.6875rem;
+      font-style: italic;
+      color: var(--text-secondary);
     }
     @media (max-width: 720px) {
       /* Same inherited-align-items trap as permissions-list: in a column,
@@ -326,12 +350,20 @@ export class VersolaResourcesList extends LitElement {
   connectedCallback() {
     super.connectedCallback();
     document.addEventListener('click', this.handleDocumentClick);
+    window.addEventListener(PERMISSIONS_UPDATED_EVENT, this.handlePermissionsUpdated);
   }
 
   disconnectedCallback() {
     document.removeEventListener('click', this.handleDocumentClick);
+    window.removeEventListener(PERMISSIONS_UPDATED_EVENT, this.handlePermissionsUpdated);
     super.disconnectedCallback();
   }
+
+  private handlePermissionsUpdated = (event: Event) => {
+    const detail = (event as CustomEvent<PermissionsUpdatedDetail>).detail;
+    if (!detail || detail.tenantId !== this.tenantId) return;
+    this.permissionsByEndpoint = indexPermissionsByEndpoint(detail.permissions);
+  };
 
   private resetForms() {
     this.formMode = 'none'; this.activeResourceId = null; this.resourceUri = ''; this.resourceId = '';
@@ -397,17 +429,19 @@ export class VersolaResourcesList extends LitElement {
   }
 
   private async loadData() {
-    if (!this.tenantId) { this.resources = []; this.error = ''; return; }
+    if (!this.tenantId) { this.resources = []; this.permissionsByEndpoint = new Map(); this.error = ''; return; }
     this.loading = true; this.error = '';
     try {
-      const [resources, challengeSettings, clients] = await Promise.all([
+      const [resources, challengeSettings, clients, permissions] = await Promise.all([
         getResources(this.tenantId),
         fetchChallengeSettings(this.tenantId),
         fetchAllClients(this.tenantId),
+        fetchAllPermissions(this.tenantId),
       ]);
       this.resources = resources;
       this.clientIds = clients.map(client => client.id);
       this.acrVocabulary = challengeSettings?.acrVocabulary ?? {};
+      this.permissionsByEndpoint = indexPermissionsByEndpoint(permissions);
       const validIds = new Set(resources.map(resource => resource.resourceId));
       const validEndpointIds = new Set(resources.flatMap(resource => resource.endpoints.map(endpoint => endpoint.id)));
       this.expandedResources = new Set([...this.expandedResources].filter(id => validIds.has(id)));
@@ -420,7 +454,7 @@ export class VersolaResourcesList extends LitElement {
         }
       }
     } catch (error) {
-      this.resources = []; this.error = error instanceof Error ? error.message : 'Failed to load resources';
+      this.resources = []; this.permissionsByEndpoint = new Map(); this.error = error instanceof Error ? error.message : 'Failed to load resources';
     } finally { this.loading = false; }
   }
 
@@ -435,7 +469,12 @@ export class VersolaResourcesList extends LitElement {
     if (!validation.valid) { this.error = validation.error ?? 'Resource URI is invalid'; return; }
     const invalidEndpoint = this.endpointDrafts.find(endpoint => this.isEndpointPathInvalid(endpoint.path));
     if (invalidEndpoint) {
-      this.error = `Endpoint path must start with "/" and contain only latin letters, digits, and "-" per segment (no consecutive "/"): ${endpointLabel(invalidEndpoint)}`;
+      this.error = `Endpoint path must start with "/" and contain only latin letters, digits, "-", or a "{name}" parameter per segment (no consecutive "/", no repeated parameter names): ${endpointLabel(invalidEndpoint)}`;
+      return;
+    }
+    const ambiguousEndpoint = this.findAmbiguousEndpoint();
+    if (ambiguousEndpoint) {
+      this.error = `Endpoint path differs from another endpoint of the same method only in its parameter names: ${endpointLabel(ambiguousEndpoint)}`;
       return;
     }
     const celIssue = this.findCelIssue();
@@ -491,7 +530,20 @@ export class VersolaResourcesList extends LitElement {
   private isEndpointPathInvalid(path: string) {
     const trimmed = path.trim();
     if (trimmed.length === 0) return false;
-    return !/^\/([a-zA-Z0-9-]+(\/[a-zA-Z0-9-]+)*)?$/.test(trimmed);
+    const segment = '([a-zA-Z0-9-]+|\\{[a-zA-Z_][a-zA-Z0-9_]*\\})';
+    if (!new RegExp(`^\\/(${segment}(\\/${segment})*)?$`).test(trimmed)) return true;
+    const params = trimmed.split('/').filter(part => part.startsWith('{'));
+    return new Set(params).size !== params.length;
+  }
+
+  /** Two endpoints of the same method whose paths differ only in parameter names match
+   * exactly the same requests, so edge could never tell them apart. */
+  private findAmbiguousEndpoint() {
+    const shape = (path: string) => path.trim().split('/').map(part => (part.startsWith('{') ? '{}' : part)).join('/');
+    return this.endpointDrafts.find((endpoint, index) => this.endpointDrafts.slice(0, index).some(earlier =>
+      earlier.method === endpoint.method &&
+      shape(earlier.path) === shape(endpoint.path) &&
+      earlier.path.trim() !== endpoint.path.trim()));
   }
 
   private findCelIssue(): string | null {
@@ -824,6 +876,7 @@ export class VersolaResourcesList extends LitElement {
         <li><span class="option-tooltip-code">user</span> — userinfo claims (only when "Fetch userinfo" is enabled).</li>
         <li><span class="option-tooltip-code">request</span> — incoming request data:
           <ul class="option-tooltip-list">
+            <li><span class="option-tooltip-code">request.path.params</span> — map of path parameters matched by the endpoint's <span class="option-tooltip-code">{name}</span> segments.</li>
             <li><span class="option-tooltip-code">request.query</span> — map of query parameters (first value per key).</li>
             <li><span class="option-tooltip-code">request.queryAll</span> — map of query parameters (all values per key as a list).</li>
             <li><span class="option-tooltip-code">request.headers</span> — map of request headers (first value per key).</li>
@@ -902,11 +955,32 @@ export class VersolaResourcesList extends LitElement {
     this.requestUpdate();
   }
 
+  /**
+   * Permissions that grant access to this endpoint, from the reverse index.
+   * Multiple permissions are alternatives, so they read as "a or b".
+   */
+  private renderRequiredPermissionSection(endpointId: ResourceEndpointId) {
+    const permissionIds = this.permissionsByEndpoint.get(endpointId) ?? [];
+    return html`
+      <div class="endpoint-editor-section">
+        <div class="endpoint-detail-label">Required Permission</div>
+        ${permissionIds.length === 0
+          ? html`<div class="endpoint-empty">— (none)</div>`
+          : html`<div class="permission-alternatives">
+              ${permissionIds.map((permissionId, index) => html`
+                ${index > 0 ? html`<span class="permission-or">or</span>` : ''}
+                <span class="permission-tag">${permissionId}</span>
+              `)}
+            </div>`}
+      </div>
+    `;
+  }
+
   private renderAllowSection(allow: string | undefined) {
     const hasAllow = allow != null && allow.length > 0;
     return html`
       <div class="endpoint-editor-section">
-        <div class="endpoint-detail-label">Allow (CEL)</div>
+        <div class="endpoint-detail-label">Allow</div>
         ${hasAllow
           ? html`<div class="cel-inline">${renderHighlightedCel(allow)}</div>`
           : html`<div class="endpoint-empty">— (unrestricted)</div>`}
@@ -968,6 +1042,10 @@ export class VersolaResourcesList extends LitElement {
   }
 
   private renderEndpointDetails(endpoint: ResourceEndpoint) {
+    const hasStepUp = (endpoint.stepUpCondition != null && endpoint.stepUpCondition.length > 0)
+      || (endpoint.stepUpAcr != null && endpoint.stepUpAcr.length > 0);
+    const hasMaxAge = endpoint.maxAge != null;
+
     return html`
       <div class="endpoint-card-details">
         <div class="fetch-row">
@@ -977,9 +1055,10 @@ export class VersolaResourcesList extends LitElement {
           </span>
         </div>
         <div class="endpoint-detail-grid">
+          ${this.renderRequiredPermissionSection(endpoint.id)}
           ${this.renderAllowSection(endpoint.allow)}
-          ${this.renderStepUpSection(endpoint.stepUpCondition, endpoint.stepUpAcr)}
-          ${this.renderMaxAgeSection(endpoint.maxAge)}
+          ${hasStepUp ? this.renderStepUpSection(endpoint.stepUpCondition, endpoint.stepUpAcr) : ''}
+          ${hasMaxAge ? this.renderMaxAgeSection(endpoint.maxAge) : ''}
           ${this.renderInjectSection(endpoint.inject)}
         </div>
       </div>

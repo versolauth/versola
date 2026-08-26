@@ -75,6 +75,8 @@ trait OAuthConfigurationService:
 
   def getPasswordHistorySettings: UIO[PasswordHistorySettings]
 
+  def getIdentityProviderLogo: UIO[Option[String]]
+
   def getAuthConversationTtl(id: ClientId): UIO[Duration]
 
   def getSessionTtl(id: ClientId): UIO[Duration]
@@ -119,7 +121,7 @@ object OAuthConfigurationService:
     def cacheLayer[A: Tag]: ZLayer[Scope & CoreConfig & CacheSource[A], Throwable, ReloadingCache[A]] =
       ZLayer.fromZIO:
         ZIO.serviceWithZIO[CoreConfig](config =>
-          ReloadingCache.make[A](Schedule.spaced(config.configurationCacheRefreshInterval)),
+          ReloadingCache.make[A](config.configurationCacheRefreshInterval),
         )
     val syncClients =
       CentralSyncTokenService.live >+>
@@ -280,6 +282,9 @@ object OAuthConfigurationService:
 
     override def getPasswordRegex: UIO[String] =
       systemSettingsCache.get.map(_.passwordRegex)
+
+    override def getIdentityProviderLogo: UIO[Option[String]] =
+      systemSettingsCache.get.map(_.identityProviderLogo)
 
     override def getSubmissionLimits(id: ClientId): UIO[SubmissionLimits] =
       find(id).flatMap:

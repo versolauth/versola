@@ -15,8 +15,11 @@ case class CoreConfig(
     smtp: Option[CoreConfig.SmtpConfig],
     configurationCacheRefreshInterval: Duration,
     par: Option[CoreConfig.ParConfig],
+    argon2: Option[Argon2Config],
 ):
   def parOrDefault: CoreConfig.ParConfig = par.getOrElse(CoreConfig.ParConfig.default)
+
+  def argon2OrDefault: Argon2Config = argon2.getOrElse(Argon2Config.default)
 
 object CoreConfig:
   case class BootstrapConfig(

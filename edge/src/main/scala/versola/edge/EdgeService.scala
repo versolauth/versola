@@ -2,6 +2,7 @@ package versola.edge
 
 import versola.edge.login.{LoginRecord, LoginRepository}
 import versola.edge.model.{AccessToken, AccessTokenClaims, AccessTokenId, AuthConversationNotFound, AuthorizationPreset, ClientId, Code, CodeVerifier, InjectRule, InjectTarget, InvalidLogoutToken, PermissionId, PresetId, PresetNotFound, RefreshToken, Resource, ResourceEndpoint, ResourceEndpointId, ResourceId, RoleId, SessionId, State, TenantId, TokenResponse}
+import versola.edge.revocation.{RevocationKey, TokenRevocationService}
 import versola.edge.session.{EdgeSessionRecord, EdgeSessionRepository}
 import versola.util.cel.CelEvaluator
 import versola.util.http.Observability
@@ -46,18 +47,23 @@ trait EdgeService:
       resourceIds: List[ResourceId],
   ): UIO[EdgeService.PermissionsResponse]
 
-  /** OP-initiated front-channel logout: drops the edge sessions tied to the SSO
-    * session and returns a clearing cookie for every preset whose EDGE_SESSION
-    * cookie may have been derived from it. `iss` is the only credential this
-    * unauthenticated endpoint has; when it doesn't match the configured OP, the
-    * request is silently ignored (no cookies cleared) rather than failing.
+  /** Front-channel logout, either OP-initiated (`iss`/`sid` query params, rendered in an
+    * iframe) or first-party (the browser navigating to the endpoint itself). The presented
+    * EDGE_SESSION cookie is the only credential that authorizes a revocation: `sid` alone
+    * is attacker-supplied, so it clears cookies but never writes to the deny list. When
+    * `iss` doesn't match the configured OP the request is silently ignored rather than
+    * failing.
     */
-  def frontChannelLogout(iss: String, sid: SessionId): Task[List[Cookie.Response]]
+  def frontChannelLogout(
+      iss: Option[String],
+      sid: Option[SessionId],
+      sessionCookie: Option[String],
+  ): Task[List[Cookie.Response]]
 
-  /** OP-initiated back-channel logout: validates the OP-signed `logout_token` and drops
-    * the edge sessions tied to the SSO session it names. Server-to-server, so no cookie
-    * can be cleared; dropping the session rows is what stops the EDGE_SESSION cookie
-    * from being honoured on the next request.
+  /** OP-initiated back-channel logout: validates the OP-signed `logout_token` and revokes
+    * the SSO session it names. Server-to-server, so no cookie can be cleared; the
+    * revocation is what stops the EDGE_SESSION cookie from being honoured on the next
+    * request.
     */
   def backChannelLogout(logoutToken: String): IO[Throwable | InvalidLogoutToken, Unit]
 
@@ -84,14 +90,32 @@ object EdgeService:
 
   private val BackChannelLogoutEvent = "http://schemas.openid.net/event/backchannel-logout"
 
-  /** The claims of an OIDC Back-Channel Logout token (spec §2.4) the edge validates and
-    * acts on. `sid` is optional in the spec, but the edge indexes its sessions by it and
-    * so cannot act on a token without one.
+  /** Auth's own event for a single revoked access token. Deliberately not the OIDC logout
+    * event: that one ends the whole session for every client sharing it, which is not what
+    * one client revoking one of its tokens may trigger.
+    */
+  private val AccessTokenRevocationEvent = "versola:event:access-token-revocation"
+
+  /** The claims of a security event token the OP pushes to this edge — an OIDC Back-Channel
+    * Logout token (spec §2.4) or an access token revocation. Back-Channel Logout requires a
+    * `sub`, a `sid` or both, and reads a token without a `sid` as covering every session of
+    * that subject, which is what an administrator ending a user's access sends.
+    * `revoked_jti`/`revoked_exp` describe the token a revocation names; they are deliberately
+    * not `jti`/`exp`, which belong to the event token itself.
     */
   private case class LogoutTokenClaims(
       @jsonField("iss") issuer: String,
       @jsonField("aud") audience: List[ClientId],
+      @jsonField("sub") subject: Option[String],
       @jsonField("sid") sessionId: Option[SessionId],
+      @jsonField("iat") issuedAt: Long,
+      /** When the event happened, as against `iat`, when the token announcing it was signed
+        * (RFC 8417 §2.2). Optional: an OP that does not send it leaves `iat` as the closest
+        * thing to it available.
+        */
+      @jsonField("toe") timeOfEvent: Option[Long],
+      @jsonField("revoked_jti") revokedTokenId: Option[AccessTokenId],
+      @jsonField("revoked_exp") revokedTokenExpiresAt: Option[Long],
       nonce: Option[String],
       events: Map[String, Json],
   ) derives JsonDecoder
@@ -109,11 +133,11 @@ object EdgeService:
   ) derives JsonCodec
 
   def live: ZLayer[
-    OAuthClientService & ResourceService & CelEvaluator & SecureRandom & LoginRepository & SSOClient & SecurityService & Client & EdgeConfig & session.EdgeSessionRepository & JwksService & PermissionService & EnvName,
+    OAuthClientService & ResourceService & CelEvaluator & SecureRandom & LoginRepository & SSOClient & SecurityService & Client & EdgeConfig & session.EdgeSessionRepository & TokenRevocationService & JwksService & PermissionService & EnvName,
     Nothing,
     EdgeService,
   ] =
-    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _))
+    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _))
 
   class Impl(
       clientService: OAuthClientService,
@@ -126,6 +150,7 @@ object EdgeService:
       httpClient: Client,
       config: EdgeConfig,
       sessionRepository: EdgeSessionRepository,
+      revocationService: TokenRevocationService,
       jwksService: JwksService,
       permissionService: PermissionService,
       env: EnvName,
@@ -299,14 +324,40 @@ object EdgeService:
         yield Some(resourceId -> ResourcePermissions(perms))
       .map(entries => PermissionsResponse(entries.flatten.toMap, env.isProd))
 
-    override def frontChannelLogout(iss: String, sid: SessionId): Task[List[Cookie.Response]] =
-      if !URL.decode(iss).toOption.exists(sameOrigin(_, config.versolaUrl)) then
+    override def frontChannelLogout(
+        iss: Option[String],
+        sid: Option[SessionId],
+        sessionCookie: Option[String],
+    ): Task[List[Cookie.Response]] =
+      if !iss.forall(value => URL.decode(value).toOption.exists(sameOrigin(_, config.versolaUrl))) then
         ZIO.succeed(Nil)
       else
         for
-          records <- sessionRepository.deleteBySessionId(sid)
+          cookieSid <- ZIO.foreach(sessionCookie)(verifiedSessionId).map(_.flatten)
+          // Only a caller holding a session token for this sid may record a revocation. A
+          // bare `sid` still clears cookies, but an unauthenticated caller cannot make an
+          // edge deny tokens it was never shown.
+          revoked = (sid, cookieSid) match
+            case (Some(claimed), Some(held)) if claimed == held => Some(held)
+            case (None, held)                                   => held
+            case _                                              => None
+          // The lookup here is for the cookies, not the revocation: this is the browser-facing
+          // half of a logout and it has to name the exact domain and path to clear.
+          records <- ZIO.foreach(sid.orElse(cookieSid))(sessionRepository.findBySessionId).map(_.getOrElse(Nil))
           presets <- clientService.listPresets(records.map(_.presetId).distinct)
+          _ <- ZIO.foreachDiscard(revoked)(revocationService.revokeSession)
         yield presets.map(preset => EdgeSessionCookie.clear(preset.cookieDomain, preset.cookiePath))
+
+    /** The sid of the access token carried in EDGE_SESSION, or None when the cookie is
+      * absent, unparseable, forged or expired. The signature check is what makes this a
+      * credential: the cookie is caller-supplied, so unverified claims prove nothing.
+      */
+    private def verifiedSessionId(content: String): Task[Option[SessionId]] =
+      val (_, token) = EdgeSessionCookie.parse(content)
+      for
+        publicKeys <- jwksService.getPublicKeys
+        claims <- JWT.deserialize[Json.Obj](token, publicKeys, JWT.Type.AccessToken).option
+      yield claims.flatMap(_.fields.collectFirst { case ("sid", Json.Str(value)) => SessionId(value) })
 
     override def backChannelLogout(logoutToken: String): IO[Throwable | InvalidLogoutToken, Unit] =
       for
@@ -314,9 +365,40 @@ object EdgeService:
         claims <- JWT.deserialize[EdgeService.LogoutTokenClaims](logoutToken, publicKeys, JWT.Type.JWT)
           .mapError(error => InvalidLogoutToken(s"logout token is not a valid JWT: $error"))
         _ <- validateLogoutToken(claims)
-        sid <- ZIO.fromOption(claims.sessionId)
-          .orElseFail(InvalidLogoutToken("logout token carries no sid claim"))
-        _ <- sessionRepository.deleteBySessionId(sid)
+        _ <-
+          if claims.events.contains(EdgeService.AccessTokenRevocationEvent) then revokeToken(claims)
+          else endSession(claims)
+      yield ()
+
+    /** A logout naming a session ends that session; one naming only a subject ends every
+      * session that user has here, which is how an administrator revokes their access.
+      *
+      * One revocation is the whole of what a logout does here, and it touches no table on
+      * the way. The `edge_sessions` rows are left alone: deleting them would stop the
+      * EDGE_SESSION cookie being honoured, but not the access tokens already issued under
+      * the session — which stay signed and unexpired, and which the proxy accepts as bearer
+      * tokens without consulting those rows at all. The revocation covers both, so the rows
+      * are left to expire on their own. A refresh cannot revive one either, since the session
+      * behind it is gone at auth.
+      */
+    private def endSession(claims: EdgeService.LogoutTokenClaims): IO[Throwable | InvalidLogoutToken, Unit] =
+      (claims.sessionId, claims.subject) match
+        case (Some(sid), _) => revocationService.revokeSession(sid)
+        // `toe` in preference to `iat`: the bound has to be when the administrator acted,
+        // not when the token telling us about it was signed. A delivery that took a moment
+        // to run would otherwise put the boundary after a login the user made in between,
+        // and lock them out of it for an access token's lifetime.
+        case (None, Some(subject)) =>
+          revocationService.revokeUser(subject, Instant.ofEpochSecond(claims.timeOfEvent.getOrElse(claims.issuedAt)))
+        case (None, None) => ZIO.fail(InvalidLogoutToken("logout token carries neither a sid nor a sub claim"))
+
+    private def revokeToken(claims: EdgeService.LogoutTokenClaims): IO[Throwable | InvalidLogoutToken, Unit] =
+      for
+        jti <- ZIO.fromOption(claims.revokedTokenId)
+          .orElseFail(InvalidLogoutToken("access token revocation carries no revoked_jti claim"))
+        expiresAt <- ZIO.fromOption(claims.revokedTokenExpiresAt)
+          .orElseFail(InvalidLogoutToken("access token revocation carries no revoked_exp claim"))
+        _ <- revocationService.revokeToken(jti, Instant.ofEpochSecond(expiresAt))
       yield ()
 
     /** OIDC Back-Channel Logout §2.6: the token must come from the configured OP, be
@@ -331,7 +413,10 @@ object EdgeService:
         _ <- ZIO.fail(InvalidLogoutToken("logout token is not addressed to a known client"))
           .unless(knownAudience)
         _ <- ZIO.fail(InvalidLogoutToken("logout token does not carry the back-channel logout event"))
-          .unless(claims.events.contains(EdgeService.BackChannelLogoutEvent))
+          .unless(
+            claims.events.contains(EdgeService.BackChannelLogoutEvent) ||
+              claims.events.contains(EdgeService.AccessTokenRevocationEvent),
+          )
         _ <- ZIO.fail(InvalidLogoutToken("logout token must not carry a nonce"))
           .when(claims.nonce.isDefined)
       yield ()
@@ -366,12 +451,17 @@ object EdgeService:
             },
             claims => ZIO.succeed(ActiveSession(accessToken, claims, None)),
           )
-        _ <- logAccessTokenClaims(session.claims)
+        typedClaims <- ZIO.fromEither(session.claims.as[AccessTokenClaims]).orElseFail(Outcome.Unauthorized)
+        _ <- logAccessTokenClaims(typedClaims)
+        _ <- checkRevoked(typedClaims)
 
         resource <- resourceService.findByResourceId(resourceId).someOrFail(Outcome.NotFound)
         endpoint <- findEndpoint(resource.endpoints, request.method.name, restPath)
+        // the registered template, not the concrete path: a parameterized endpoint would
+        // otherwise produce one metric time series per parameter value
+        _ <- Observability.setRoutePath(s"/resources/$resourceId${endpoint.path}")
         parsedBody <- readJsonBody(request)
-        typedClaims <- checkPermissions(session.claims, endpoint, request, parsedBody)
+        _ <- checkPermissions(typedClaims, endpoint)
         _ <- checkAudience(resource, typedClaims)
         userInfo <- ssoClient.userInfo(session.accessToken)
           .when(endpoint.fetchUserInfo)
@@ -405,40 +495,43 @@ object EdgeService:
           ),
       ).orElseFail(Outcome.Unauthorized)
 
-    /** Best-effort: annotates the request's `session_id`/`user_id`/`token` as soon as the
-      * access token's claims are known, so every subsequent log line (including one from
-      * [[checkPermissions]] failing) carries them. Decode failures are swallowed here since
-      * [[checkPermissions]] re-validates the same claims and turns a failure into
-      * `Outcome.Unauthorized`.
+    /** Annotates the request's `session_id`/`user_id`/`token` as soon as the access token's
+      * claims are known, so every subsequent log line (including one from a rejected
+      * permission check) carries them.
       */
-    private def logAccessTokenClaims(claims: Json.Obj): UIO[Unit] =
-      claims.as[AccessTokenClaims].fold(
-        _ => ZIO.unit,
-        typed =>
-          Observability.setToken(typed.jti) *>
-            Observability.setUserId(typed.subject) *>
-            ZIO.foreachDiscard(typed.sid)(Observability.setSessionId),
-      )
+    private def logAccessTokenClaims(claims: AccessTokenClaims): UIO[Unit] =
+      Observability.setToken(claims.jti) *>
+        Observability.setUserId(claims.subject) *>
+        ZIO.foreachDiscard(claims.sid)(Observability.setSessionId)
+
+    /** A signed, unexpired token is not necessarily still valid: it may have been revoked on
+      * its own, or its whole session logged out. Both are answered from memory, so this costs
+      * no I/O on the hot path.
+      */
+    private def checkRevoked(claims: AccessTokenClaims): IO[Outcome, Unit] =
+      revocationService
+        .isRevoked(
+          RevocationKey.of(claims.jti, claims.sid, claims.subject),
+          Instant.ofEpochSecond(claims.issuedAt),
+        )
+        .flatMap(revoked => ZIO.fail(Outcome.Unauthorized).when(revoked))
+        .unit
 
     private def checkPermissions(
-        claims: Json.Obj,
+        claims: AccessTokenClaims,
         endpoint: ResourceEndpoint,
-        request: Request,
-        parsedBody: Option[Json],
-    ): IO[Outcome, AccessTokenClaims] =
+    ): IO[Outcome, Unit] =
+      val isServiceToken = claims.subject == claims.clientId
       for
-        typed <- ZIO.fromEither(claims.as[AccessTokenClaims]).orElseFail(Outcome.Unauthorized)
-        isServiceToken = typed.subject == typed.clientId
-
         allowed <-
           if isServiceToken then
-            permissionService.getAllowedEndpointsForClient(typed.clientId)
+            permissionService.getAllowedEndpointsForClient(claims.clientId)
           else
-            permissionService.getAllowedEndpointsForRoles(typed.tenantId, typed.roles)
+            permissionService.getAllowedEndpointsForRoles(claims.tenantId, claims.roles)
 
         _ <- ZIO.fail(Outcome.Forbidden)
           .unless(allowed.contains(endpoint.id))
-      yield typed
+      yield ()
 
     private def checkAudience(
         resource: Resource,
@@ -597,8 +690,9 @@ object EdgeService:
         case (k, values) => k -> values.map(_.renderedValue).asJava
 
       val pathParams = extractPathParams(endpoint.path, restPath)
+      val pathData = Map[String, AnyRef]("params" -> pathParams.asJava)
       val requestData = scala.collection.mutable.LinkedHashMap[String, AnyRef](
-        "path" -> pathParams.asJava,
+        "path" -> pathData.asJava,
         "query" -> queryMap.asJava,
         "queryAll" -> queriesMap.asJava,
         "headers" -> headerMap.asJava,
@@ -711,6 +805,12 @@ object EdgeService:
     private def isJsonRequest(request: Request): Boolean =
       request.header(Header.ContentType).exists(_.mediaType == MediaType.application.json)
 
+    /** Picks the most specific endpoint whose template matches the request: a static
+      * segment always wins over a `{name}` placeholder at the same position, so
+      * `/users/me` takes precedence over `/users/{userId}` whatever the registration
+      * order is. Templates that stay tied (they differ only in placeholder names, which
+      * central rejects on registration) are ordered by path so the choice is stable.
+      */
     private def findEndpoint(
         endpoints: Vector[ResourceEndpoint],
         method: String,
@@ -718,9 +818,20 @@ object EdgeService:
     ): IO[Outcome, ResourceEndpoint] =
       ZIO.fromOption {
         val pathSegments = normalizePath(restPath.encode)
-        endpoints.find: endpoint =>
-          endpoint.method.equalsIgnoreCase(method) && matchesSegments(normalizePath(endpoint.path), pathSegments)
+        endpoints
+          .filter: endpoint =>
+            endpoint.method.equalsIgnoreCase(method) && matchesSegments(normalizePath(endpoint.path), pathSegments)
+          .minByOption(endpoint => (specificity(normalizePath(endpoint.path)), endpoint.path))
       }.orElseFail(Outcome.NotFound)
+
+    /** Placeholder mask of a template, one character per segment: candidates all have the
+      * same segment count, so comparing masks lexicographically prefers the template whose
+      * leftmost differing segment is static. */
+    private def specificity(pattern: Vector[String]): String =
+      pattern.map:
+        case s"{$_}" => '1'
+        case _ => '0'
+      .mkString
 
     private def matchesSegments(pattern: Vector[String], path: Vector[String]): Boolean =
       pattern.size == path.size && pattern.zip(path).forall:

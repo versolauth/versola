@@ -37,13 +37,13 @@ export class VersolaCodeEditor extends LitElement {
       }
       .wrapper:focus-within {
         border-color: var(--accent);
-        box-shadow: 0 0 0 2px rgba(88, 166, 255, 0.15);
+        box-shadow: 0 0 0 2px rgba(var(--accent-tint), 0.15);
       }
       .wrapper.invalid {
         border-color: var(--danger, #f85149);
       }
       .wrapper.invalid:focus-within {
-        box-shadow: 0 0 0 2px rgba(248, 81, 73, 0.15);
+        box-shadow: 0 0 0 2px rgba(var(--danger-tint), 0.15);
       }
       pre, textarea {
         margin: 0;
@@ -77,7 +77,7 @@ export class VersolaCodeEditor extends LitElement {
         outline: none;
         overflow: auto;
       }
-      textarea::selection { background: rgba(88, 166, 255, 0.35); color: transparent; }
+      textarea::selection { background: rgba(var(--accent-tint), 0.35); color: transparent; }
     `,
   ];
 

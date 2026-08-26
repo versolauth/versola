@@ -1,7 +1,7 @@
 package versola.oauth.session
 
 import versola.oauth.client.model.ClientId
-import versola.oauth.session.model.{PublicSessionId, SessionId, SessionInfo, SessionUnderUserAgent, UserAgentDetails}
+import versola.oauth.session.model.{PublicSessionId, SessionId, SessionInfo, SessionRecord, SessionUnderUserAgent, UserAgentDetails}
 import versola.user.model.UserId
 import versola.util.{CoreConfig, MAC, Secret, SecurityService}
 import zio.{Duration, Task, ZLayer}
@@ -23,6 +23,11 @@ trait SessionService:
    *  created them, enriched with its details, so callers (e.g. controllers) never
    *  need to query [[UserAgentRepository]] themselves. */
   def listByUser(userId: UserId): Task[List[SessionUnderUserAgent]]
+
+  /** Invalidates every active session of a user (admin-panel force-logout), returning
+   *  each session's record so callers (e.g. [[versola.oauth.logout.LogoutService]]) can
+   *  fan out back-channel logout to its participating clients without a separate lookup. */
+  def invalidateAllByUser(userId: UserId): Task[List[SessionRecord]]
 
 object SessionService:
   def live = ZLayer.fromFunction(Impl(_, _, _, _))
@@ -74,3 +79,6 @@ object SessionService:
             mac    <- macOf(rawId)
             record <- repository.invalidate(mac)
           yield record.map(SessionInfo(mac, _))
+
+    override def invalidateAllByUser(userId: UserId): Task[List[SessionRecord]] =
+      repository.invalidateByUserId(userId)

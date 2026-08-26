@@ -373,6 +373,7 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
        |  "end_session_endpoint": "$authUrl/logout",
        |  "scopes_supported": ["openid", "profile", "email", "phone", "offline_access"],
        |  "response_types_supported": ["code", "code id_token"],
+       |  "code_challenge_methods_supported": ["S256"],
        |  "grant_types_supported": ["authorization_code", "client_credentials", "refresh_token"],
        |  "subject_types_supported": ["public", "pairwise"],
        |  "id_token_signing_alg_values_supported": ["RS256"],
@@ -381,7 +382,8 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
        |  "frontchannel_logout_supported": true,
        |  "frontchannel_logout_session_supported": true,
        |  "backchannel_logout_supported": true,
-       |  "backchannel_logout_session_supported": true
+       |  "backchannel_logout_session_supported": true,
+       |  "authorization_response_iss_parameter_supported": true
        |}""".stripMargin
 
   section("\n── Edge service ──────────────────────────────────────────────────────")
@@ -508,6 +510,17 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
        |par {
        |  request-uri-ttl  = "60 seconds"
        |  max-request-size = 8192
+       |}
+       |
+       |# Admission control for Argon2id password hashing, which runs on ZIO's unbounded
+       |# blocking pool (see Argon2Config). max-concurrent bounds concurrent password hashes:
+       |# each holds ~19 MiB of heap for its duration, so worst-case hashing heap is roughly
+       |# max-concurrent * 19 MiB -- the default of 12 (~228 MiB) is sized for auth's 512m
+       |# mem_limit. Raise it only together with the container's memory limit, or logins
+       |# will OOM the pod. Overridable via ARGON2_MAX_CONCURRENCY without editing this file.
+       |argon2 {
+       |  max-concurrent = 12
+       |  max-concurrent = $${?ARGON2_MAX_CONCURRENCY}
        |}
        |
        |jwt {
@@ -648,7 +661,7 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
        |  minimum-idle = 15
        |  connection-timeout = "30 seconds"
        |  max-lifetime = "30 minutes"
-       |  leak-detection-threshold = "0 seconds"
+       |  leak-detection-threshold = "60 seconds"
        |}
        |""".stripMargin
 
@@ -709,6 +722,12 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
        |      batch-size = 500
        |      interval   = "1 hour"
        |      key-column = "ctid"
+       |    }
+       |    {
+       |      table-name = "revocations"
+       |      batch-size = 1000
+       |      interval   = "1 hour"
+       |      key-column = "revoked_key"
        |    }
        |  ]
        |}

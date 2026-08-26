@@ -44,6 +44,7 @@ interface FormConfig {
   error?: string;
   previewId?: string;
   csrf?: string;
+  logo?: string;
 }
 
 declare global {
@@ -122,7 +123,7 @@ function OtpForm(props: { config: FormConfig }) {
               const digit = otp()[i];
               return (
                 <div class={`otp-cell${digit !== undefined ? ' otp-cell-filled' : ''}${i === otp().length && lockRemaining() <= 0 ? ' otp-cell-active' : ''}`}>
-                  {digit !== undefined ? digit : <span class="otp-cell-dot" />}
+                  <span class={`otp-cell-dot${digit !== undefined ? ' otp-cell-dot-filled' : ''}`} />
                 </div>
               );
             })}

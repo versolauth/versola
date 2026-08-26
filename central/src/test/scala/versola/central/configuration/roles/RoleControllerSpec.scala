@@ -158,6 +158,17 @@ object RoleControllerSpec extends ZIOSpecDefault, ZIOStubs:
         ZIO.succeed(assertTrue(service.createRole.calls == List(createRequest))),
     ),
     controllerTestCase(
+      description = "reject create role with an invalid role id instead of forwarding it to the service",
+      request = Request(
+        method = Method.POST,
+        url = URL.empty / "configuration" / "roles",
+        body = Body.fromString(createRequest.copy(id = RoleId("Not A Valid Id!")).toJson),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.BadRequest,
+      verify = (_, service) =>
+        ZIO.succeed(assertTrue(service.createRole.calls.isEmpty)),
+    ),
+    controllerTestCase(
       description = "update role",
       request = Request(
         method = Method.PUT,

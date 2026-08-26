@@ -29,7 +29,7 @@ object RoleController extends Controller:
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[RoleService]
-        body <- request.body.asJsonFromCodec[CreateRoleRequest]
+        body <- request.bodyAs[CreateRoleRequest]
         role <- service.createRole(body)
       yield Response.status(Status.Created)
     }
@@ -39,7 +39,7 @@ object RoleController extends Controller:
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[RoleService]
-        body <- request.body.asJsonFromCodec[UpdateRoleRequest]
+        body <- request.bodyAs[UpdateRoleRequest]
         _ <- service.updateRole(body)
       yield Response.status(Status.NoContent)
     }

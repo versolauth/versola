@@ -10,7 +10,7 @@ import versola.oauth.model.State
 import versola.oauth.model.{ConversationCookie, SessionCookie, UserAgentCookie}
 import versola.oauth.session.model.SessionInfo
 import versola.util.http.Observability
-import versola.util.{Base64, Base64Url, CoreConfig, Email, JWT, Phone}
+import versola.util.{Base64, Base64Url, CoreConfig, Email, JWT, Phone, escapeCssForStyle, escapeHtml}
 import zio.http.{Body, Header, Headers, MediaType, Path, Response, Status, URL}
 import zio.json.*
 import zio.json.ast.Json
@@ -109,6 +109,7 @@ object ConversationRenderService:
       allT: Map[String, Map[String, String]],
       error: Option[String],
       csrf: String,
+      logo: Option[String] = None,
   ) derives JsonCodec
 
   case class LogoutConfirm(
@@ -141,7 +142,8 @@ object ConversationRenderService:
       for
         client <- configuration.find(record.clientId)
         themeId = client.map(_.theme).getOrElse(ThemeDefault)
-        css <- themeCss(themeId)
+        css  <- themeCss(themeId)
+        logo <- configuration.getIdentityProviderLogo
         maybeInfo <-
           formFor(
             record.step,
@@ -158,7 +160,7 @@ object ConversationRenderService:
           case None =>
             ZIO.succeed(htmlResponse(notFoundPage(css), Status.NotFound))
           case Some(info) =>
-            val body = solidPage(info, css)
+            val body = solidPage(info, css, logo)
             val etag = etagFor(body)
             if ifNoneMatch.contains(etag) then
               ZIO.succeed(Response.status(Status.NotModified))
@@ -190,13 +192,14 @@ object ConversationRenderService:
         error: String,
     ): Option[String] =
       URL.decode(redirectUri).toOption.map: url =>
-        url.addQueryParams(List("error" -> error) ++ state.map("state" -> _)).encode
+        url.addQueryParams(List("error" -> error, "iss" -> config.jwt.issuer) ++ state.map("state" -> _)).encode
 
     private def renderTerminal(clientId: ClientId, formId: String, step: StepView): Task[Response] =
       for
         client <- configuration.find(clientId)
         themeId = client.map(_.theme).getOrElse(ThemeDefault)
-        css <- themeCss(themeId)
+        css     <- themeCss(themeId)
+        logo    <- configuration.getIdentityProviderLogo
         formOpt <- configuration.getForm(formId)
         locales <- configuration.getLocales
       yield formOpt match
@@ -219,7 +222,7 @@ object ConversationRenderService:
             ),
             version = form.version,
           )
-          htmlResponse(solidPage(info, css))
+          htmlResponse(solidPage(info, css, logo))
             .addHeader(Header.Custom("Cache-Control", "private, no-cache"))
 
     private def etagFor(body: String): String =
@@ -255,7 +258,7 @@ object ConversationRenderService:
                   token <- serializeIdToken(dataWithCHash, signingKey)
                 yield Some(token)
               case None => ZIO.none
-            redirectUrl = AuthorizeRedirect.responseUrl(redirectUri, encodedCode, state, idToken)
+            redirectUrl = AuthorizeRedirect.responseUrl(redirectUri, encodedCode, state, idToken, config.jwt.issuer)
           yield Response.seeOther(redirectUrl)
             .addCookie(
               SessionCookie(
@@ -282,7 +285,8 @@ object ConversationRenderService:
       val redirectUri = postLogoutRedirectUri
         .map(url => state.fold(url)(url.addQueryParam("state", _)).encode)
       for
-        css <- themeCss(ThemeDefault)
+        css     <- themeCss(ThemeDefault)
+        logo    <- configuration.getIdentityProviderLogo
         formOpt <- configuration.getForm("signed-out")
         locales <- configuration.getLocales
       yield formOpt match
@@ -305,7 +309,7 @@ object ConversationRenderService:
             ),
             version = form.version,
           )
-          htmlResponse(solidPage(info, css))
+          htmlResponse(solidPage(info, css, logo))
             .addHeader(Header.Custom("Cache-Control", "no-cache, no-store"))
             // logoutUris are rendered as third-party iframes; without this, the browser could
             // leak this page's URL (id_token_hint, post_logout_redirect_uri, state) to those
@@ -321,8 +325,9 @@ object ConversationRenderService:
     ): Task[Response] =
       for
         client <- session.record.clients.headOption.map(_.clientId).fold(ZIO.succeed(None))(configuration.find)
-        css <- themeCss(client.map(_.theme).getOrElse(ThemeDefault))
-        form <- configuration.getForm("confirm-logout")
+        css     <- themeCss(client.map(_.theme).getOrElse(ThemeDefault))
+        logo    <- configuration.getIdentityProviderLogo
+        form    <- configuration.getForm("confirm-logout")
         locales <- configuration.getLocales
       yield form match
         case None => htmlResponse(notFoundPage(css), Status.NotFound)
@@ -344,7 +349,7 @@ object ConversationRenderService:
             ),
             value.version,
           )
-          htmlResponse(logoutConfirmPage(info, css))
+          htmlResponse(logoutConfirmPage(info, css, logo))
 
     private def serializeIdToken(data: ConversationResult.IdTokenData, signingKey: JWT.PublicKey): Task[String] =
       val claims = data.claims + ("sid" -> Json.Str(data.sessionId))
@@ -480,7 +485,14 @@ object ConversationRenderService:
             passwordRegex <-
               if inlinePassword then configuration.getPasswordRegex.map(Some(_))
               else ZIO.none
-          yield StepView.Credential(primaryCredentials, inlinePassword, passkey, allowedPhonePrefixes, passwordRegex, registration)
+          yield StepView.Credential(
+            primaryCredentials,
+            inlinePassword,
+            passkey,
+            allowedPhonePrefixes,
+            passwordRegex,
+            registration,
+          )
 
         case _: ConversationStep.Password =>
           configuration.getPasswordRegex.map(StepView.Password(_))
@@ -537,11 +549,11 @@ object ConversationRenderService:
             tosUri = client.flatMap(_.tosUri),
             scopes = rows,
             allowPartial = s.allowPartial,
-            denyUri = redirectUri.addQueryParams(List("error" -> "access_denied") ++ state.map("state" -> _)).encode,
+            denyUri = redirectUri.addQueryParams(List("error" -> "access_denied", "iss" -> config.jwt.issuer) ++ state.map("state" -> _)).encode,
           )
 
         case ConversationStep.AccessDenied =>
-          val params = List("error" -> "access_denied") ++ state.map("state" -> _)
+          val params = List("error" -> "access_denied", "iss" -> config.jwt.issuer) ++ state.map("state" -> _)
           ZIO.succeed(StepView.AccessDenied(redirectUri = redirectUri.addQueryParams(params).encode))
 
     private def availableClaimNames(record: ConversationRecord): Set[String] =
@@ -577,25 +589,54 @@ object ConversationRenderService:
       case _: LogoutConfirm => "confirm-logout"
       case _: SignedOut => "signed-out"
 
-    private def logoutConfirmPage(info: FormRenderInfo, themeCss: String): String =
-      s"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>${info.title}</title><style>$themeCss ${info.style}</style><script>window.__VERSOLA_FORM__ = ${info.config.toJson};</script></head><body><div id="versola-form-root"></div><script>${info.jsCompiled.getOrElse(
+    private def logoutConfirmPage(info: FormRenderInfo, themeCss: String, logo: Option[String]): String =
+      val config = inlineScriptJson(info.config.copy(logo = formLogo(info.config.step, logo)).toJson)
+      s"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>${escapeHtml(info.title)}</title>${faviconLink(
+          logo,
+          )}<style>${escapeCssForStyle(themeCss)} ${escapeCssForStyle(info.style)}</style><script>window.__VERSOLA_FORM__ = $config;</script></head><body><div id="versola-form-root"></div><script>${info.jsCompiled.getOrElse(
           "",
         )}</script></body></html>"""
 
-    private def solidPage(info: FormRenderInfo, themeCss: String): String =
+    /** The identity provider logo doubles as the favicon of the login pages. */
+    private def faviconLink(logo: Option[String]): String =
+      val href = logo.filter(_.nonEmpty).map(escapeAttribute).getOrElse(defaultFavicon)
+      s"""<link rel="icon" href="$href">"""
+
+    private val defaultFavicon =
+      val svg = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none"><rect width="64" height="64" rx="14" fill="#faf9f7"/><path d="M32 6 C32 6 52 10 54 12 L54 30 Q54 48 32 58 Q10 48 10 30 L10 12 C12 10 32 6 32 6Z" fill="#155e75" fill-opacity="0.06"/><path d="M32 6 C32 6 52 10 54 12 L54 30 Q54 48 32 58 Q10 48 10 30 L10 12 C12 10 32 6 32 6Z" fill="none" stroke="#155e75" stroke-width="2.2"/><text x="32" y="41" font-family="-apple-system, Inter, sans-serif" font-weight="800" font-size="26" fill="#155e75" text-anchor="middle">V</text></svg>"""
+      "data:image/svg+xml;base64," + java.util.Base64.getEncoder.encodeToString(svg.getBytes(StandardCharsets.UTF_8))
+
+    private def escapeAttribute(value: String): String =
+      value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;")
+
+    private def formLogo(step: StepView, logo: Option[String]): Option[String] = step match
+      case _: StepView.Consent | _: StepView.AccessDenied | _: StepView.ConversationExpired | _: StepView.ServiceUnavailable => None
+      case _ => logo
+
+    private def inlineScriptJson(value: String): String =
+      value
+        .replace("&", "\\u0026")
+        .replace("<", "\\u003c")
+        .replace(">", "\\u003e")
+        .replace("\u2028", "\\u2028")
+        .replace("\u2029", "\\u2029")
+
+    private def solidPage(info: FormRenderInfo, themeCss: String, logo: Option[String]): String =
+      val config = inlineScriptJson(info.config.copy(logo = formLogo(info.config.step, logo)).toJson)
       s"""<!DOCTYPE html>
          |<html lang="en">
          |  <head>
          |    <meta charset="UTF-8">
          |    <meta name="viewport" content="width=device-width, initial-scale=1.0">
          |    <meta name="versola-step" content="${stepName(info.config.step)}">
-         |    <title>${info.title}</title>
+         |    <title>${escapeHtml(info.title)}</title>
+         |    ${faviconLink(logo)}
          |    <style>
-         |      $themeCss
-         |      ${info.style}
+         |      ${escapeCssForStyle(themeCss)}
+         |      ${escapeCssForStyle(info.style)}
          |    </style>
          |    <script>
-         |      window.__VERSOLA_FORM__ = ${info.config.toJson};
+         |      window.__VERSOLA_FORM__ = $config;
          |    </script>
          |  </head>
          |  <body>
@@ -614,7 +655,7 @@ object ConversationRenderService:
          |    <meta name="viewport" content="width=device-width, initial-scale=1.0">
          |    <title>Page not found</title>
          |    <style>
-         |      $themeCss
+         |      ${escapeCssForStyle(themeCss)}
          |    </style>
          |  </head>
          |  <body>

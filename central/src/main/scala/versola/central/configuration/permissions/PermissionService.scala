@@ -39,7 +39,7 @@ object PermissionService:
   def live: ZLayer[PermissionRepository & TenantRepository & Scope & CentralConfig, Throwable, PermissionService] =
     (ZLayer.fromZIO:
       ZIO.serviceWithZIO[CentralConfig](config =>
-        ReloadingCache.make[Vector[PermissionRecord]](Schedule.spaced(config.configurationCacheRefreshInterval)),
+        ReloadingCache.make[Vector[PermissionRecord]](config.configurationCacheRefreshInterval),
       )
     )
       >>> ZLayer.fromFunction(Impl(_, _, _))

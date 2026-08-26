@@ -78,6 +78,13 @@ object SSOClientSpec extends ZIOSpecDefault:
         queryParam(url, "acr_values") == Some(Chunk("mfa")),
       )
     },
+    test("omits scope when the preset does not specify one") {
+      for
+        client <- ZIO.service[Client]
+        sso = SSOClient.Impl(client, config)
+        url <- sso.authorizeUri(basePreset.copy(scope = Set.empty), "challenge", state)
+      yield assertTrue(queryParam(url, "scope").isEmpty)
+    },
     test("empty overrideParams preserves customParameters and uiLocales") {
       for
         client <- ZIO.service[Client]
