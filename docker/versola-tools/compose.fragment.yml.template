@@ -108,7 +108,6 @@ services:
   # needed to poll it from outside the network.
   migrate:
     image: ghcr.io/versolauth/versola-tools:${VERSION}
-    platform: linux/amd64
     depends_on:
       postgres:
         condition: service_healthy

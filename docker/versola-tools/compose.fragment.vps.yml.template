@@ -64,7 +64,7 @@ services:
   # namespace those services already run in to reach it.
   migrate:
     image: ghcr.io/versolauth/versola-tools:${VERSION}
-    platform: linux/amd64
+    # No `platform:` pin, same reasoning as central/auth/edge below.
     network_mode: host
     command: ["migrate"]
     # auth.conf/central.conf/edge.conf's postgres.password field is an

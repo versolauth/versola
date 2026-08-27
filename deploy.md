@@ -264,7 +264,7 @@ services:
       PORT: 8080
       DPORT: 8081
       CONFIG_PATH: /app/config/env.conf
-      RUN_MIGRATIONS: ${RUN_MIGRATIONS:-true}
+      RUN_MIGRATIONS: ${RUN_MIGRATIONS:-false}
     volumes:
       - /opt/versola/config/auth.conf:/app/config/env.conf:ro
     mem_limit: 512m
@@ -278,7 +278,7 @@ services:
       PORT: 8090
       DPORT: 8091
       CONFIG_PATH: /app/config/env.conf
-      RUN_MIGRATIONS: ${RUN_MIGRATIONS:-true}
+      RUN_MIGRATIONS: ${RUN_MIGRATIONS:-false}
     volumes:
       - /opt/versola/config/central.conf:/app/config/env.conf:ro
     mem_limit: 768m
@@ -292,7 +292,7 @@ services:
       PORT: 8095
       DPORT: 8096
       CONFIG_PATH: /app/config/env.conf
-      RUN_MIGRATIONS: ${RUN_MIGRATIONS:-true}
+      RUN_MIGRATIONS: ${RUN_MIGRATIONS:-false}
     volumes:
       - /opt/versola/config/edge.conf:/app/config/env.conf:ro
     mem_limit: 384m
@@ -459,13 +459,18 @@ input above) forever after.
 - anything else → the service **fails to start** with an explanatory error, deliberately. A flag
   whose whole purpose is to gate migrations must not silently run (or skip) them because of a typo.
 
+The `docker-compose.prod.yml` example above shell-defaults `RUN_MIGRATIONS` to `false`
+(`${RUN_MIGRATIONS:-false}`) too, matching the service's own unset behaviour above — running
+`docker compose -f docker-compose.prod.yml up` manually without exporting the variable applies no
+migrations, the same as leaving it unset entirely. Export `RUN_MIGRATIONS=true` first if you
+specifically want a rollout to migrate on boot instead of running `versola migrate` (or an
+equivalent) as its own step first.
+
 The automated deploy pipeline (`deploy.yml`) sets its own `run_migrations` input, defaulting to
 `true` independently of the above — that default is unrelated to and unaffected by the service's
-own unset-value behaviour, since the pipeline always passes it explicitly. Set it to `false` there
-when you want a rollout to be strictly a code change — for example when deploying a hotfix and you
-want to be certain nothing touches the schema. Local/dev setups that want the old "just migrate on
-boot" convenience instead of running `versola migrate` (or an equivalent) should export
-`RUN_MIGRATIONS=true` explicitly.
+own unset-value behaviour or the compose example's shell default, since the pipeline always passes
+it explicitly. Set it to `false` there when you want a rollout to be strictly a code change — for
+example when deploying a hotfix and you want to be certain nothing touches the schema.
 
 ---
 
