@@ -77,7 +77,7 @@ object PostgresHikariDataSource:
             val flyway = Flyway.configure()
               .locations(locations*)
               .dataSource(dataSource)
-              .ignoreMigrationPatterns("*:missing")
+              .ignoreMigrationPatterns("*:missing", "*:future")
               .outOfOrder(true)
               .cleanDisabled(true)
               .validateMigrationNaming(false)
@@ -96,9 +96,21 @@ object PostgresHikariDataSource:
             // validate() closes that: a schema this build has migrations for but the database
             // hasn't had applied fails here, at startup, with Flyway naming the exact migration.
             // It deliberately does NOT fail the reverse case (database ahead of this build, e.g.
-            // deploying an older version back out) -- `ignoreMigrationPatterns("*:missing")`
-            // above already covers applied-but-not-resolved-locally, so a rollback deploy still
-            // starts.
+            // deploying an older version back out) -- both flavors of "database ahead" are
+            // explicitly ignored above:
+            //
+            //   - `*:missing`: a migration this build doesn't have a script for at all (its
+            //     history-table row can't be resolved against `locations` above).
+            //   - `*:future`: a migration this build DOES have a script for, but whose version is
+            //     higher than the highest one Flyway resolved locally (the ordinary case for a
+            //     rollback -- the newer build's migrations are still on disk in the older build's
+            //     source tree too, just numbered past what this checkout knows about).
+            //
+            // Flyway ignores `*:future` by default, but passing `ignoreMigrationPatterns` at all
+            // REPLACES that default outright rather than adding to it -- an earlier version of
+            // this only listed `*:missing`, which silently dropped the `*:future` ignore and made
+            // every rollback deploy fail validate() the moment a newer build's migration had been
+            // applied (flagged in review).
             if migrate then flyway.migrate() else flyway.validate()
 
         yield dataSource
