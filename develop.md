@@ -72,9 +72,13 @@ The script first asks for the environment **Name** (default `local`):
 5. Start server locally
     - `docker-compose -f services.yml up -d postgres` - Database
     - `docker-compose -f services.yml up -d jaeger` - Jaeger (optional)
-    - `PORT=9001 DPORT=9002 sbt -Denv.path=central/dev/env.conf "project central-postgres-impl; run"` - Central
-    - `PORT=9003 DPORT=9004 sbt -Denv.path=auth/dev/env.conf "project auth-postgres-impl; run"` - Auth
-    - `PORT=9005 DPORT=9006 sbt -Denv.path=edge/dev/env.conf "project edge-postgres-impl; run"` - Edge
+    - Each service below needs `RUN_MIGRATIONS=true` against a fresh Postgres --
+      without it, a service only *validates* its schema on startup rather than
+      applying migrations to it (deliberate for real deployments, see deploy.md's
+      own RUN_MIGRATIONS section), which fails immediately with no schema yet.
+    - `PORT=9001 DPORT=9002 RUN_MIGRATIONS=true sbt -Denv.path=central/dev/env.conf "project central-postgres-impl; run"` - Central
+    - `PORT=9003 DPORT=9004 RUN_MIGRATIONS=true sbt -Denv.path=auth/dev/env.conf "project auth-postgres-impl; run"` - Auth
+    - `PORT=9005 DPORT=9006 RUN_MIGRATIONS=true sbt -Denv.path=edge/dev/env.conf "project edge-postgres-impl; run"` - Edge
     - go to http://localhost:9005/login/central-admin
     - enter admin/Admin1234!
     - enter otp code 123456

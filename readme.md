@@ -46,9 +46,14 @@ scala-cli run scripts/gen-env.scala   # answer "local" at the Name prompt
 docker-compose -f services.yml up -d postgres
 
 # 3. Run each service (in separate terminals)
-PORT=9001 DPORT=9002 sbt -Denv.path=central/dev/env.conf "project central-postgres-impl; run"
-PORT=9003 DPORT=9004 sbt -Denv.path=auth/dev/env.conf "project auth-postgres-impl; run"
-PORT=9005 DPORT=9006 sbt -Denv.path=edge/dev/env.conf "project edge-postgres-impl; run"
+# RUN_MIGRATIONS=true: each service otherwise only *validates* its schema on
+# startup rather than applying migrations to it (deliberate for real
+# deployments, see deploy.md's own RUN_MIGRATIONS section) -- against the
+# fresh Postgres from step 2, that fails immediately with no schema to
+# validate against.
+PORT=9001 DPORT=9002 RUN_MIGRATIONS=true sbt -Denv.path=central/dev/env.conf "project central-postgres-impl; run"
+PORT=9003 DPORT=9004 RUN_MIGRATIONS=true sbt -Denv.path=auth/dev/env.conf "project auth-postgres-impl; run"
+PORT=9005 DPORT=9006 RUN_MIGRATIONS=true sbt -Denv.path=edge/dev/env.conf "project edge-postgres-impl; run"
 ```
 
 Before starting `central`, build the login forms it serves:
