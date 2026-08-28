@@ -102,9 +102,10 @@ class PostgresNotificationListener(
     )
 
   /** The queue [[connect]] already has [[pollLoop]] filling, turned into what a subscriber
-    * sees. The queue is unbounded because a bounded one would eventually apply the same
-    * backpressure the fiber in `connect` exists to avoid: it would just move where a slow
-    * subscriber stalls polling from "immediately" to "once the queue fills up".
+    * sees. The queue drops rather than backpressures when full, because blocking on a full
+    * buffer would apply the same backpressure the fiber in `connect` exists to avoid: it
+    * would just move where a slow subscriber stalls polling from "immediately" to "once the
+    * queue fills up".
     */
   private def read(session: Session, queue: Queue[Take[Throwable, PGNotification]]): Stream[Throwable, NotificationEvent] =
     ZStream
@@ -129,12 +130,27 @@ class PostgresNotificationListener(
 
   private def pollLoop(session: Session, queue: Queue[Take[Throwable, PGNotification]]): UIO[Unit] =
     poll(session).foldCauseZIO(
-      // A failure always gets in: `Queue.dropping` only drops what a full buffer has no room
-      // for, and this is the one element that must never be the one dropped, or a subscriber
-      // stuck behind a slow reload would never learn the connection under it died either.
-      cause => queue.offer(Take.failCause(cause)).unit,
+      cause => offerFailure(queue, cause),
       notifications => offer(queue, notifications) *> pollLoop(session, queue),
     )
+
+  /** Gets the failure in whatever it takes, because this is the one element that must not be
+    * dropped: [[pollLoop]] stops after it, so a failure lost to a full queue would leave the
+    * stream waiting on a queue nothing will ever fill again — no error to retry on, and the
+    * reconnect that a subscriber is waiting for never happens.
+    *
+    * A full queue is exactly the case where dropping it is most likely and least acceptable:
+    * the subscriber is already behind, and the connection under it just died. Evicting the
+    * oldest notification to make room trades an event that is already covered by the
+    * subscriber's periodic reload for the one signal that is not recoverable any other way.
+    */
+  private def offerFailure(queue: Queue[Take[Throwable, PGNotification]], cause: Cause[Throwable]): UIO[Unit] =
+    queue.offer(Take.failCause(cause)).flatMap: accepted =>
+      ZIO.unless(accepted):
+        // Non-blocking: the queue can only reject when it is full, so there is something to
+        // take, and this fiber is the only producer, so the space it frees stays free.
+        queue.take *> offerFailure(queue, cause)
+      .unit
 
   private def offer(queue: Queue[Take[Throwable, PGNotification]], notifications: List[PGNotification]): UIO[Unit] =
     if notifications.isEmpty then ZIO.unit

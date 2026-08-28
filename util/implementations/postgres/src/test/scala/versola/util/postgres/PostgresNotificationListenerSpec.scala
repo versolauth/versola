@@ -181,6 +181,39 @@ object PostgresNotificationListenerSpec extends ZIOSpecDefault:
         after.count - before.count >= 3.0,
       )
     },
+    test("still reports a connection that dies while the queue is full") {
+      // The two failure modes compound here: the subscriber is far enough behind to have
+      // filled the queue, and then the connection under it dies. Dropping that failure the
+      // way an ordinary notification is dropped would strand the stream — pollLoop stops
+      // after a failure, so nothing would ever fill the queue again, and the subscriber would
+      // wait on it forever rather than seeing the error and reconnecting.
+      //
+      // The overflow and the kill both happen inside the handler for the first Resubscribed,
+      // which is what guarantees the ordering: polling carries on while the handler is
+      // blocked, so the queue is already full by the time the connection is killed.
+      for
+        config <- ZIO.service[PostgresConfig]
+        listener = PostgresNotificationListener(config, List(channel), pollTimeout = 50.millis, queueCapacity = 2)
+        first <- Ref.make(true)
+        resubscribes <- listener
+          .notifications
+          .tap:
+            case NotificationEvent.Resubscribed =>
+              first.getAndSet(false).flatMap: isFirst =>
+                ZIO.when(isFirst):
+                  ZIO.foreachDiscard(1 to 5)(i => notify(s"stranded-$i").delay(150.millis)) *>
+                    killListener *> ZIO.sleep(300.millis)
+            case _ => ZIO.unit
+          .filter(_ == NotificationEvent.Resubscribed)
+          .take(2)
+          .runCollect
+          .timeout(30.seconds)
+      yield assertTrue(
+        // A second Resubscribed at all is the point: it can only happen if the failure got
+        // through the full queue, failed the stream, and drove a reconnect.
+        resubscribes.exists(_.size == 2),
+      )
+    },
     test("refuses to start when notifications cannot be delivered") {
       for
         config <- ZIO.service[PostgresConfig]
