@@ -2,8 +2,10 @@ package versola.util.postgres
 
 import com.augustnagro.magnum.magzio.TransactorZIO
 import com.augustnagro.magnum.sql
+import org.postgresql.PGNotification
 import zio.*
 import zio.metrics.*
+import zio.stream.Take
 import zio.test.*
 
 import java.time.OffsetDateTime
@@ -213,6 +215,26 @@ object PostgresNotificationListenerSpec extends ZIOSpecDefault:
         // through the full queue, failed the stream, and drove a reconnect.
         resubscribes.exists(_.size == 2),
       )
+    },
+    test("gets the failure in even when the consumer empties the queue first") {
+      // The eviction that makes room for a failure cannot assume the queue is still full: the
+      // consumer may drain it entirely between the rejected offer and the eviction. Taking
+      // blockingly there would wait on an empty queue whose only producer has already stopped
+      // (pollLoop ends at the failure), stranding the reconnect in the one case that needs it.
+      // Racing a drainer against the offer hits that window; a failure to make room shows up
+      // as this never completing rather than as a wrong value, hence the timeout.
+      val listener = PostgresNotificationListener(config = null, channels = Nil)
+      ZIO
+        .foreachDiscard(1 to 200): _ =>
+          for
+            queue <- Queue.dropping[Take[Throwable, PGNotification]](1)
+            _ <- queue.offer(Take.chunk(Chunk.empty))
+            drainer <- queue.takeAll.fork
+            _ <- listener.offerFailure(queue, Cause.fail(RuntimeException("connection lost")))
+            _ <- drainer.join
+          yield ()
+        .timeout(30.seconds)
+        .map(completed => assertTrue(completed.isDefined))
     },
     test("refuses to start when notifications cannot be delivered") {
       for

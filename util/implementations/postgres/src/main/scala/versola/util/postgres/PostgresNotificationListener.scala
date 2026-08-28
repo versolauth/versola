@@ -144,12 +144,18 @@ class PostgresNotificationListener(
     * oldest notification to make room trades an event that is already covered by the
     * subscriber's periodic reload for the one signal that is not recoverable any other way.
     */
-  private def offerFailure(queue: Queue[Take[Throwable, PGNotification]], cause: Cause[Throwable]): UIO[Unit] =
+  private[postgres] def offerFailure(
+      queue: Queue[Take[Throwable, PGNotification]],
+      cause: Cause[Throwable],
+  ): UIO[Unit] =
     queue.offer(Take.failCause(cause)).flatMap: accepted =>
       ZIO.unless(accepted):
-        // Non-blocking: the queue can only reject when it is full, so there is something to
-        // take, and this fiber is the only producer, so the space it frees stays free.
-        queue.take *> offerFailure(queue, cause)
+        // `poll` rather than `take`, because the queue being full is only true at the moment
+        // the offer is rejected: the consumer can drain it in between, and a blocking take
+        // would then wait on an empty queue that this fiber is the only producer for, which
+        // is the deadlock the eviction exists to prevent. Polling an empty queue returns
+        // nothing and the retry below simply succeeds, since draining freed the space.
+        queue.poll *> offerFailure(queue, cause)
       .unit
 
   private def offer(queue: Queue[Take[Throwable, PGNotification]], notifications: List[PGNotification]): UIO[Unit] =
