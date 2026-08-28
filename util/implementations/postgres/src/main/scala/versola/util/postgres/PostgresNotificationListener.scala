@@ -2,7 +2,7 @@ package versola.util.postgres
 
 import org.postgresql.{PGConnection, PGNotification}
 import zio.*
-import zio.stream.{Stream, ZStream}
+import zio.stream.{Stream, Take, ZStream}
 
 import java.nio.charset.StandardCharsets
 import java.sql.{Connection, DriverManager}
@@ -51,11 +51,21 @@ class PostgresNotificationListener(
   def notifications: Stream[Throwable, NotificationEvent] =
     ZStream
       .scoped(connect)
-      .flatMap: session =>
-        ZStream.succeed(NotificationEvent.Resubscribed) ++ read(session)
+      .flatMap: (session, queue) =>
+        ZStream.succeed(NotificationEvent.Resubscribed) ++ read(session, queue)
       .retry(reconnectSchedule)
 
-  private def connect: ZIO[Scope, Throwable, Session] =
+  /** Opens the connection, `LISTEN`s, and starts polling it on a fiber of its own before
+    * this returns — not lazily on the first pull of the resulting stream.
+    *
+    * That distinction matters because the first thing downstream ever does with a fresh
+    * connection is react to [[NotificationEvent.Resubscribed]], and in practice that handler
+    * is a synchronous reload against the same database this listener depends on. Deferring
+    * the fork until [[read]] is first pulled would start polling only once that handler
+    * returns, which is exactly backwards during the trouble this exists to survive: the
+    * heartbeat would not run precisely while the database is why it needs to.
+    */
+  private def connect: ZIO[Scope, Throwable, (Session, Queue[Take[Throwable, PGNotification]])] =
     for
       connection <- open
       // Unique per connection: what comes back on this channel proves that this session is
@@ -64,31 +74,43 @@ class PostgresNotificationListener(
       _ <- ZIO.attemptBlocking(execute(connection, (heartbeatChannel :: channels).map(channel => s"LISTEN $channel")))
       pg <- ZIO.attempt(connection.unwrap(classOf[PGConnection]))
       now <- Clock.instant
-      delivered <- Ref.make(now)
-      beat <- Ref.make(now)
-      _ <- DbMetrics.notificationListenerConnected(true)
+      // None until something actually round-trips: see DbMetrics.notificationListenerConnected
+      // for why LISTEN succeeding is not that proof.
+      delivered <- Ref.make(Option.empty[Instant])
+      // Already due, rather than due after a full heartbeatInterval: a freshly opened
+      // connection is proven, or shown broken, within the first poll cycle instead of only
+      // after sitting quiet for one interval first.
+      beat <- Ref.make(now.minus(heartbeatInterval))
       _ <- ZIO.addFinalizer(DbMetrics.notificationListenerConnected(false))
       _ <- ZIO.logInfo(s"Listening for notifications on ${channels.mkString(", ")}")
-    yield Session(connection, pg, heartbeatChannel, delivered, beat)
+      session = Session(connection, pg, heartbeatChannel, now, delivered, beat)
+      queue <- Queue.unbounded[Take[Throwable, PGNotification]]
+      _ <- pollLoop(session, queue).forkScoped
+    yield (session, queue)
 
   private def open: ZIO[Scope, Throwable, Connection] =
     ZIO.acquireRelease(ZIO.attemptBlocking(PostgresNotificationListener.open(config)))(connection =>
       ZIO.attemptBlocking(connection.close()).ignoreLogged,
     )
 
-  private def read(session: Session): Stream[Throwable, NotificationEvent] =
+  /** The queue [[connect]] already has [[pollLoop]] filling, turned into what a subscriber
+    * sees. The queue is unbounded because a bounded one would eventually apply the same
+    * backpressure the fiber in `connect` exists to avoid: it would just move where a slow
+    * subscriber stalls polling from "immediately" to "once the queue fills up".
+    */
+  private def read(session: Session, queue: Queue[Take[Throwable, PGNotification]]): Stream[Throwable, NotificationEvent] =
     ZStream
-      .repeatZIO(poll(session))
-      .flattenIterables
-      // The heartbeat is this listener talking to itself. It proves the connection is live and
-      // says nothing about the data, so subscribers never see it and it is not counted as a
-      // notification received.
+      .fromQueue(queue)
+      .flattenTake
+      // The heartbeat is this listener talking to itself. It proves the connection is live
+      // and says nothing about the data, so subscribers never see it and it is not counted
+      // as a notification received.
       .filter(_.getName != session.heartbeatChannel)
       .tap(_ => DbMetrics.notificationReceived)
       .map(NotificationEvent.Received(_))
-      // Counted apart from a loud failure rather than as well as one: a connection that went
-      // silent is the only one of the two that points at the network path rather than at the
-      // database, and summing them would hide exactly that.
+      // Counted apart from a loud failure rather than as well as one: a connection that
+      // went silent is the only one of the two that points at the network path rather than
+      // at the database, and summing them would hide exactly that.
       .tapError:
         case silent: SilentConnection =>
           ZIO.logWarningCause("Notification connection went silent; reconnecting", Cause.fail(silent)) *>
@@ -96,6 +118,12 @@ class PostgresNotificationListener(
         case cause =>
           ZIO.logWarningCause("Notification connection lost; reconnecting", Cause.fail(cause)) *>
             DbMetrics.notificationListenerReconnected
+
+  private def pollLoop(session: Session, queue: Queue[Take[Throwable, PGNotification]]): UIO[Unit] =
+    poll(session).foldCauseZIO(
+      cause => queue.offer(Take.failCause(cause)).unit,
+      notifications => queue.offer(Take.chunk(Chunk.fromIterable(notifications))) *> pollLoop(session, queue),
+    )
 
   /** One wait for notifications, and the liveness bookkeeping that goes with an empty one.
     *
@@ -111,8 +139,17 @@ class PostgresNotificationListener(
         Option(session.pg.getNotifications(pollTimeout.toMillis.toInt)).map(_.toList).getOrElse(Nil),
       )(cancel = ZIO.unit)
       now <- Clock.instant
-      _ <- if notifications.nonEmpty then session.delivered.set(now) else heartbeat(session, now)
+      _ <- if notifications.nonEmpty then proven(session, now) else heartbeat(session, now)
     yield notifications
+
+  /** Records that something (a real notification or this listener's own heartbeat, both
+    * arrive the same way) has round-tripped, and flips the gauge the first time that happens
+    * on this connection rather than optimistically at connect.
+    */
+  private def proven(session: Session, now: Instant): UIO[Unit] =
+    session.delivered.get.flatMap:
+      case Some(_) => session.delivered.set(Some(now))
+      case None    => session.delivered.set(Some(now)) *> DbMetrics.notificationListenerConnected(true)
 
   /** Proves the connection still delivers, by giving it something to deliver.
     *
@@ -135,9 +172,21 @@ class PostgresNotificationListener(
   private def heartbeat(session: Session, now: Instant): Task[Unit] =
     for
       delivered <- session.delivered.get
-      _ <- ZIO.when(now.isAfter(delivered.plus(livenessTimeout)))(ZIO.fail(SilentConnection(livenessTimeout)))
+      // Nothing has round-tripped since connecting: measured from connect, not from now, so
+      // a session that never manages a single delivery still gets exactly livenessTimeout
+      // before it is given up on, the same as one that has been failing for a while.
+      _ <- ZIO.when(now.isAfter(delivered.getOrElse(session.connectedAt).plus(livenessTimeout)))(
+        ZIO.fail(SilentConnection(livenessTimeout)),
+      )
       due <- session.beat.modify(sent => if now.isAfter(sent.plus(heartbeatInterval)) then (true, now) else (false, sent))
-      _ <- ZIO.when(due)(ZIO.attemptBlocking(execute(session.connection, List(s"NOTIFY ${session.heartbeatChannel}"))))
+      // A write that fails outright is the same silent connection revealing itself through
+      // the socket timeout on this send instead of through the read-side deadline above, so
+      // it is folded into the same failure rather than left to read as a loud one.
+      _ <- ZIO.when(due)(
+        ZIO
+          .attemptBlocking(execute(session.connection, List(s"NOTIFY ${session.heartbeatChannel}")))
+          .mapError(cause => SilentConnection(livenessTimeout, Some(cause))),
+      )
     yield ()
 
 /** What a subscriber sees on the notification stream. */
@@ -182,10 +231,15 @@ object PostgresNotificationListener:
   private val HeartbeatInterval = 30.seconds
   private val LivenessTimeout = 90.seconds
 
-  /** A connection that is open, has never failed, and is no longer delivering. */
-  private final class SilentConnection(timeout: Duration)
+  /** A connection that is open, has never failed, and is no longer delivering — whether that
+    * shows up as the read-side liveness deadline elapsing, or as the heartbeat's own write
+    * failing outright, which a socket timeout on a NAT- or firewall-blackholed connection
+    * does before the deadline otherwise would.
+    */
+  private final class SilentConnection(timeout: Duration, cause: Option[Throwable] = None)
       extends RuntimeException(
         s"No notification on this connection in $timeout, including this listener's own heartbeat",
+        cause.orNull,
       )
 
   /** The listener's connection, and what has to be remembered per connection to tell a quiet
@@ -195,7 +249,8 @@ object PostgresNotificationListener:
       connection: Connection,
       pg: PGConnection,
       heartbeatChannel: String,
-      delivered: Ref[Instant],
+      connectedAt: Instant,
+      delivered: Ref[Option[Instant]],
       beat: Ref[Instant],
   )
 

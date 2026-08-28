@@ -120,6 +120,35 @@ object PostgresNotificationListenerSpec extends ZIOSpecDefault:
         events <- listener.notifications.take(3).runCollect.timeout(30.seconds)
       yield assertTrue(events.exists(_.forall(_ == NotificationEvent.Resubscribed)))
     },
+    test("keeps polling behind a subscriber slow to react to its own Resubscribed") {
+      // The realistic version of a slow subscriber reloads from the database precisely when
+      // it sees Resubscribed — the same database this listener depends on — which is the one
+      // moment polling must not wait on it: starting it only after that handler returns would
+      // stop the heartbeat from running exactly while the database is why it needs to.
+      // livenessTimeout is short enough that if polling waited here anyway, the connection
+      // would look quiet for far longer than livenessTimeout the moment the handler finally
+      // returns, and get torn down for a reason that has nothing to do with it actually
+      // failing. Not waiting keeps this a healthy connection the whole time, resubscribing
+      // exactly once.
+      for
+        config <- ZIO.service[PostgresConfig]
+        listener = PostgresNotificationListener(
+          config,
+          List(channel),
+          heartbeatInterval = 200.millis,
+          livenessTimeout = 1.second,
+          pollTimeout = 100.millis,
+        )
+        resubscribes <- Ref.make(0)
+        fiber <- listener.notifications.runForeach {
+          case NotificationEvent.Resubscribed => resubscribes.update(_ + 1) *> ZIO.sleep(3.seconds)
+          case _ => ZIO.unit
+        }.fork
+        _ <- ZIO.sleep(4.seconds)
+        _ <- fiber.interrupt
+        count <- resubscribes.get
+      yield assertTrue(count == 1)
+    },
     test("refuses to start when notifications cannot be delivered") {
       for
         config <- ZIO.service[PostgresConfig]
