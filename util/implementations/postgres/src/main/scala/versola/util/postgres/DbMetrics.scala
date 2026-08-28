@@ -31,6 +31,13 @@ object DbMetrics:
   private val notificationListenerConnectedGauge =
     Metric.gauge("db_notification_listener_connected").tagged(MetricLabel("db_system", "postgresql"))
 
+  /** How many notifications were dropped because a subscriber fell far enough behind to fill
+    * the bounded queue between it and the polling fiber. Non-zero means that subscriber is
+    * now relying on its own periodic reload rather than the push path to catch up.
+    */
+  private val notificationListenerQueueOverflowTotal =
+    Metric.counter("db_notification_listener_queue_overflow_total").tagged(MetricLabel("db_system", "postgresql"))
+
   def notificationReceived: UIO[Unit] =
     notificationsReceivedTotal.increment
 
@@ -42,6 +49,9 @@ object DbMetrics:
 
   def notificationListenerConnected(connected: Boolean): UIO[Unit] =
     notificationListenerConnectedGauge.set(if connected then 1 else 0)
+
+  def notificationListenerQueueOverflow: UIO[Unit] =
+    notificationListenerQueueOverflowTotal.increment
 
   private def histogram(repository: String, operation: String, outcome: String) =
     Metric

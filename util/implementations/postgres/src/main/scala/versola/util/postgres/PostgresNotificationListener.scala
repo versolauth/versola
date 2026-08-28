@@ -31,6 +31,7 @@ class PostgresNotificationListener(
     heartbeatInterval: Duration = PostgresNotificationListener.HeartbeatInterval,
     livenessTimeout: Duration = PostgresNotificationListener.LivenessTimeout,
     pollTimeout: Duration = PostgresNotificationListener.PollTimeout,
+    queueCapacity: Int = PostgresNotificationListener.QueueCapacity,
 ):
   import PostgresNotificationListener.*
 
@@ -84,7 +85,14 @@ class PostgresNotificationListener(
       _ <- ZIO.addFinalizer(DbMetrics.notificationListenerConnected(false))
       _ <- ZIO.logInfo(s"Listening for notifications on ${channels.mkString(", ")}")
       session = Session(connection, pg, heartbeatChannel, now, delivered, beat)
-      queue <- Queue.unbounded[Take[Throwable, PGNotification]]
+      // Bounded and dropping rather than unbounded: a subscriber stuck behind its own slow
+      // reload is exactly the situation this fiber exists to keep polling through, so it
+      // must never suspend trying to hand off a result, and a queue that backpressures on a
+      // full buffer would do just that. Dropping the newest arrival instead of growing
+      // forever costs nothing this listener's subscribers do not already tolerate: every one
+      // of them treats a missed notification as covered by its own periodic reload against
+      // the same table, the same tolerance a lost connection relies on.
+      queue <- Queue.dropping[Take[Throwable, PGNotification]](queueCapacity)
       _ <- pollLoop(session, queue).forkScoped
     yield (session, queue)
 
@@ -121,9 +129,21 @@ class PostgresNotificationListener(
 
   private def pollLoop(session: Session, queue: Queue[Take[Throwable, PGNotification]]): UIO[Unit] =
     poll(session).foldCauseZIO(
+      // A failure always gets in: `Queue.dropping` only drops what a full buffer has no room
+      // for, and this is the one element that must never be the one dropped, or a subscriber
+      // stuck behind a slow reload would never learn the connection under it died either.
       cause => queue.offer(Take.failCause(cause)).unit,
-      notifications => queue.offer(Take.chunk(Chunk.fromIterable(notifications))) *> pollLoop(session, queue),
+      notifications => offer(queue, notifications) *> pollLoop(session, queue),
     )
+
+  private def offer(queue: Queue[Take[Throwable, PGNotification]], notifications: List[PGNotification]): UIO[Unit] =
+    if notifications.isEmpty then ZIO.unit
+    else
+      queue.offer(Take.chunk(Chunk.fromIterable(notifications))).flatMap: accepted =>
+        ZIO.unless(accepted):
+          ZIO.logWarning(s"Notification queue full; dropping ${notifications.size} notification(s)") *>
+            DbMetrics.notificationListenerQueueOverflow
+        .unit
 
   /** One wait for notifications, and the liveness bookkeeping that goes with an empty one.
     *
@@ -230,6 +250,14 @@ object PostgresNotificationListener:
     */
   private val HeartbeatInterval = 30.seconds
   private val LivenessTimeout = 90.seconds
+
+  /** Caps the backlog between the polling fiber and a subscriber that has fallen behind.
+    * Payloads here are a few hundred bytes each (see [[PostgresRevocationNotifications]]),
+    * so this bounds the worst case at a few megabytes, not a number picked to match any
+    * expected burst size: staying bounded at all is the property that matters, since falling
+    * behind this far already means the subscriber is relying on its periodic reload anyway.
+    */
+  private val QueueCapacity = 10_000
 
   /** A connection that is open, has never failed, and is no longer delivering — whether that
     * shows up as the read-side liveness deadline elapsing, or as the heartbeat's own write

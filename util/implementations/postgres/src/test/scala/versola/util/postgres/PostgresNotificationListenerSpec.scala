@@ -3,6 +3,7 @@ package versola.util.postgres
 import com.augustnagro.magnum.magzio.TransactorZIO
 import com.augustnagro.magnum.sql
 import zio.*
+import zio.metrics.*
 import zio.test.*
 
 import java.time.OffsetDateTime
@@ -103,11 +104,13 @@ object PostgresNotificationListenerSpec extends ZIOSpecDefault:
       )
     },
     test("replaces a connection that stops delivering, without it ever failing") {
-      // A heartbeat interval longer than the liveness timeout means none is ever sent, which
-      // leaves the connection in the state this is about: open, never erroring, and no longer
-      // carrying anything, exactly as a socket killed by a NAT or firewall idle timeout would
-      // be. Repeated resubscribes are the listener noticing and reconnecting anyway, which is
-      // what a subscriber needs in order to reload.
+      // A heartbeat interval longer than the liveness timeout does not mean no heartbeat is
+      // ever sent: `beat` starts already-due, so each fresh connection gets exactly one right
+      // after connecting. It means no *second* one arrives before livenessTimeout elapses, so
+      // every connection goes quiet after that first round trip and is replaced, exactly as a
+      // socket killed by a NAT or firewall idle timeout would be. Repeated resubscribes are
+      // the listener noticing and reconnecting anyway, which is what a subscriber needs in
+      // order to reload.
       for
         config <- ZIO.service[PostgresConfig]
         listener = PostgresNotificationListener(
@@ -148,6 +151,35 @@ object PostgresNotificationListenerSpec extends ZIOSpecDefault:
         _ <- fiber.interrupt
         count <- resubscribes.get
       yield assertTrue(count == 1)
+    },
+    test("drops rather than grows without bound when a subscriber never catches up") {
+      // A subscriber stuck on the opening Resubscribed forever, rather than merely slow: it
+      // never pulls again, so nothing but a bounded queue stands between a publisher that
+      // keeps going and unbounded memory growth. queueCapacity is set far below what gets
+      // published, and pollTimeout short enough that each notification lands in its own poll
+      // cycle (spaced well past it), so each becomes a separate queued item instead of
+      // batching into one and the overflow is forced deterministically rather than raced.
+      val overflow =
+        Metric.counter("db_notification_listener_queue_overflow_total").tagged(MetricLabel("db_system", "postgresql"))
+      for
+        config <- ZIO.service[PostgresConfig]
+        listener = PostgresNotificationListener(config, List(channel), pollTimeout = 50.millis, queueCapacity = 2)
+        before <- overflow.value
+        fiber <- listener.notifications.runForeach {
+          case NotificationEvent.Resubscribed => ZIO.never
+          case _ => ZIO.unit
+        }.fork
+        _ <- ZIO.sleep(300.millis)
+        _ <- ZIO.foreachDiscard(1 to 5)(i => notify(s"overflow-$i").delay(150.millis))
+        _ <- ZIO.sleep(300.millis)
+        after <- overflow.value
+        _ <- fiber.interrupt
+      yield assertTrue(
+        // At least 3, not exactly: a queue slot can also be consumed by the listener's own
+        // heartbeat (which starts already-due, so one always fires), and that consumption
+        // legitimately competes with real notifications for the same bounded capacity.
+        after.count - before.count >= 3.0,
+      )
     },
     test("refuses to start when notifications cannot be delivered") {
       for
