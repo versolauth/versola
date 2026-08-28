@@ -76,6 +76,42 @@ object PostgresNotificationListenerSpec extends ZIOSpecDefault:
         delays.forall(_ <= 10.seconds * 1.2),
       )
     },
+    test("holds a quiet connection open, without telling subscribers about its own heartbeat") {
+      // Nothing is published here at all. A listener that only reacted to traffic could not
+      // tell this apart from a dead connection, and the point of the heartbeat is that this
+      // case stays up: the liveness timeout is well short of the runtime, so it would have
+      // fired several times over if the heartbeat were not coming back.
+      for
+        config <- ZIO.service[PostgresConfig]
+        listener = PostgresNotificationListener(
+          config,
+          List(channel),
+          heartbeatInterval = 100.millis,
+          livenessTimeout = 500.millis,
+        )
+        events <- listener.notifications.take(2).runCollect.timeout(3.seconds)
+      yield assertTrue(
+        // Timed out waiting for a second event rather than collecting one, because the
+        // heartbeats it round-tripped in the meantime are filtered out of the stream.
+        events.isEmpty,
+      )
+    },
+    test("replaces a connection that stops delivering, without it ever failing") {
+      // A heartbeat that cannot arrive within the liveness timeout is the same situation as a
+      // socket killed by a NAT or firewall idle timeout: open, never erroring, and no longer
+      // carrying anything. Repeated resubscribes are the listener noticing and reconnecting,
+      // which is what a subscriber needs in order to reload.
+      for
+        config <- ZIO.service[PostgresConfig]
+        listener = PostgresNotificationListener(
+          config,
+          List(channel),
+          heartbeatInterval = 1.hour,
+          livenessTimeout = 300.millis,
+        )
+        events <- listener.notifications.take(3).runCollect.timeout(30.seconds)
+      yield assertTrue(events.exists(_.forall(_ == NotificationEvent.Resubscribed)))
+    },
     test("refuses to start when notifications cannot be delivered") {
       for
         config <- ZIO.service[PostgresConfig]

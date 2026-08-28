@@ -6,6 +6,7 @@ import zio.stream.{Stream, ZStream}
 
 import java.nio.charset.StandardCharsets
 import java.sql.{Connection, DriverManager}
+import java.time.Instant
 import java.util.Properties
 
 /** A dedicated connection parked on `LISTEN`, exposing everything Postgres pushes to it as a
@@ -24,7 +25,12 @@ import java.util.Properties
   * need a session that outlives a transaction, so [[PostgresConfig.notificationsUrl]] can
   * point past the pooler while everything else goes through it.
   */
-class PostgresNotificationListener(config: PostgresConfig, channels: List[String]):
+class PostgresNotificationListener(
+    config: PostgresConfig,
+    channels: List[String],
+    heartbeatInterval: Duration = PostgresNotificationListener.HeartbeatInterval,
+    livenessTimeout: Duration = PostgresNotificationListener.LivenessTimeout,
+):
   import PostgresNotificationListener.*
 
   /** Notifications from every channel this listener subscribes to, reconnecting for as long
@@ -36,6 +42,10 @@ class PostgresNotificationListener(config: PostgresConfig, channels: List[String
     * while the connection was gone is not redelivered on reconnect, so each (re)connect opens
     * with [[NotificationEvent.Resubscribed]]: subscribers treat it as "your view may have
     * gaps" and reload from the table, which is the source of truth in every case here.
+    *
+    * A connection that stops delivering without ever failing is treated as the same event,
+    * because that is what it is to a subscriber. [[heartbeat]] is what tells one apart from a
+    * database that simply has nothing to say.
     */
   def notifications: Stream[Throwable, NotificationEvent] =
     ZStream
@@ -44,37 +54,87 @@ class PostgresNotificationListener(config: PostgresConfig, channels: List[String
         ZStream.succeed(NotificationEvent.Resubscribed) ++ read(session)
       .retry(reconnectSchedule)
 
-  private def connect: ZIO[Scope, Throwable, PGConnection] =
+  private def connect: ZIO[Scope, Throwable, Session] =
     for
       connection <- open
-      _ <- ZIO.attemptBlocking(execute(connection, channels.map(channel => s"LISTEN $channel")))
-      session <- ZIO.attempt(connection.unwrap(classOf[PGConnection]))
+      // Unique per connection: what comes back on this channel proves that this session is
+      // being delivered to, not that some other replica's session is.
+      heartbeatChannel = s"versola_listener_heartbeat_${java.util.UUID.randomUUID().toString.replace("-", "_")}"
+      _ <- ZIO.attemptBlocking(execute(connection, (heartbeatChannel :: channels).map(channel => s"LISTEN $channel")))
+      pg <- ZIO.attempt(connection.unwrap(classOf[PGConnection]))
+      now <- Clock.instant
+      delivered <- Ref.make(now)
+      beat <- Ref.make(now)
       _ <- DbMetrics.notificationListenerConnected(true)
       _ <- ZIO.addFinalizer(DbMetrics.notificationListenerConnected(false))
       _ <- ZIO.logInfo(s"Listening for notifications on ${channels.mkString(", ")}")
-    yield session
+    yield Session(connection, pg, heartbeatChannel, delivered, beat)
 
   private def open: ZIO[Scope, Throwable, Connection] =
     ZIO.acquireRelease(ZIO.attemptBlocking(PostgresNotificationListener.open(config)))(connection =>
       ZIO.attemptBlocking(connection.close()).ignoreLogged,
     )
 
-  private def read(session: PGConnection): Stream[Throwable, NotificationEvent] =
+  private def read(session: Session): Stream[Throwable, NotificationEvent] =
     ZStream
-      .repeatZIO(
-        // Blocks for up to NotificationTimeoutMillis waiting for a notification (pgjdbc's own
-        // recommended pattern) instead of busy-polling. The blocking socket read does not respond
-        // to a plain thread interrupt, so on fiber interruption (graceful shutdown, or the retry
-        // above tearing this attempt down) the connection is closed out from under the read by the
-        // finalizer in `open`, which is what unblocks it.
-        ZIO.attemptBlockingCancelable(
-          Option(session.getNotifications(NotificationTimeoutMillis)).map(_.toList).getOrElse(Nil),
-        )(cancel = ZIO.unit),
-      )
+      .repeatZIO(poll(session))
       .flattenIterables
+      // The heartbeat is this listener talking to itself. It proves the connection is live and
+      // says nothing about the data, so subscribers never see it and it is not counted as a
+      // notification received.
+      .filter(_.getName != session.heartbeatChannel)
       .tap(_ => DbMetrics.notificationReceived)
       .map(NotificationEvent.Received(_))
-      .tapError(cause => ZIO.logWarningCause("Notification connection lost; reconnecting", Cause.fail(cause)) *> DbMetrics.notificationListenerReconnected)
+      .tapError:
+        case silent: SilentConnection =>
+          ZIO.logWarningCause("Notification connection went silent; reconnecting", Cause.fail(silent)) *>
+            DbMetrics.notificationListenerWentSilent *> DbMetrics.notificationListenerReconnected
+        case cause =>
+          ZIO.logWarningCause("Notification connection lost; reconnecting", Cause.fail(cause)) *>
+            DbMetrics.notificationListenerReconnected
+
+  /** One wait for notifications, and the liveness bookkeeping that goes with an empty one.
+    *
+    * Blocks for up to NotificationTimeoutMillis waiting for a notification (pgjdbc's own
+    * recommended pattern) instead of busy-polling. The blocking socket read does not respond
+    * to a plain thread interrupt, so on fiber interruption (graceful shutdown, or the retry
+    * above tearing this attempt down) the connection is closed out from under the read by the
+    * finalizer in `open`, which is what unblocks it.
+    */
+  private def poll(session: Session): Task[List[PGNotification]] =
+    for
+      notifications <- ZIO.attemptBlockingCancelable(
+        Option(session.pg.getNotifications(NotificationTimeoutMillis)).map(_.toList).getOrElse(Nil),
+      )(cancel = ZIO.unit)
+      now <- Clock.instant
+      _ <- if notifications.nonEmpty then session.delivered.set(now) else heartbeat(session, now)
+    yield notifications
+
+  /** Proves the connection still delivers, by giving it something to deliver.
+    *
+    * Nothing arriving is the ambiguous case: a database with nothing to say and a connection
+    * that has stopped carrying anything look identical from here, and the second one produces
+    * no error to react to. A socket killed by a NAT or firewall idle timeout is never closed
+    * from either end, so the read below simply blocks forever on a path nothing will ever
+    * write to again; `tcpKeepAlive` is set, but when it notices is the operating system's
+    * default, which is measured in hours on a stock Linux.
+    *
+    * So the listener notifies its own channel, and requires it back. Silence past
+    * [[livenessTimeout]] is taken as the connection being gone and fails the stream, which
+    * puts it through the same reconnect and [[NotificationEvent.Resubscribed]] path as a
+    * connection that dropped loudly.
+    *
+    * Sent from this fiber, in between reads, rather than from a second fiber or a second
+    * connection: a pgjdbc connection is not safe to use from two threads at once, and one
+    * that is blocked in `getNotifications` is exactly the case that would break.
+    */
+  private def heartbeat(session: Session, now: Instant): Task[Unit] =
+    for
+      delivered <- session.delivered.get
+      _ <- ZIO.when(now.isAfter(delivered.plus(livenessTimeout)))(ZIO.fail(SilentConnection(livenessTimeout)))
+      due <- session.beat.modify(sent => if now.isAfter(sent.plus(heartbeatInterval)) then (true, now) else (false, sent))
+      _ <- ZIO.when(due)(ZIO.attemptBlocking(execute(session.connection, List(s"NOTIFY ${session.heartbeatChannel}"))))
+    yield ()
 
 /** What a subscriber sees on the notification stream. */
 enum NotificationEvent:
@@ -93,6 +153,36 @@ object PostgresNotificationListener:
 
   private val ReconnectMinBackoff = 100.millis
   private val ReconnectMaxBackoff = 10.seconds
+
+  /** How often an otherwise idle connection is asked to prove itself, and how long it may
+    * stay silent before it is replaced.
+    *
+    * The timeout is a multiple of the interval rather than equal to it, so a single heartbeat
+    * lost to a slow moment is not read as a dead connection. Both are only checked when a
+    * read comes back empty, so what either one actually resolves to is the next read
+    * boundary. What the gap costs is bounded anyway: a subscriber's own periodic
+    * reconciliation is what covers the interval, and this only decides how quickly the push
+    * path comes back.
+    */
+  private val HeartbeatInterval = 30.seconds
+  private val LivenessTimeout = 90.seconds
+
+  /** A connection that is open, has never failed, and is no longer delivering. */
+  private final class SilentConnection(timeout: Duration)
+      extends RuntimeException(
+        s"No notification on this connection in $timeout, including this listener's own heartbeat",
+      )
+
+  /** The listener's connection, and what has to be remembered per connection to tell a quiet
+    * one from a dead one. Replaced wholesale on every reconnect, along with the timers.
+    */
+  private final case class Session(
+      connection: Connection,
+      pg: PGConnection,
+      heartbeatChannel: String,
+      delivered: Ref[Instant],
+      beat: Ref[Instant],
+  )
 
   /** Backs off up to [[ReconnectMaxBackoff]] between attempts, and never stops attempting.
     *
