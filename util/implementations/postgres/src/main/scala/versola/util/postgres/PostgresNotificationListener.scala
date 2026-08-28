@@ -30,6 +30,7 @@ class PostgresNotificationListener(
     channels: List[String],
     heartbeatInterval: Duration = PostgresNotificationListener.HeartbeatInterval,
     livenessTimeout: Duration = PostgresNotificationListener.LivenessTimeout,
+    pollTimeout: Duration = PostgresNotificationListener.PollTimeout,
 ):
   import PostgresNotificationListener.*
 
@@ -85,17 +86,20 @@ class PostgresNotificationListener(
       .filter(_.getName != session.heartbeatChannel)
       .tap(_ => DbMetrics.notificationReceived)
       .map(NotificationEvent.Received(_))
+      // Counted apart from a loud failure rather than as well as one: a connection that went
+      // silent is the only one of the two that points at the network path rather than at the
+      // database, and summing them would hide exactly that.
       .tapError:
         case silent: SilentConnection =>
           ZIO.logWarningCause("Notification connection went silent; reconnecting", Cause.fail(silent)) *>
-            DbMetrics.notificationListenerWentSilent *> DbMetrics.notificationListenerReconnected
+            DbMetrics.notificationListenerWentSilent
         case cause =>
           ZIO.logWarningCause("Notification connection lost; reconnecting", Cause.fail(cause)) *>
             DbMetrics.notificationListenerReconnected
 
   /** One wait for notifications, and the liveness bookkeeping that goes with an empty one.
     *
-    * Blocks for up to NotificationTimeoutMillis waiting for a notification (pgjdbc's own
+    * Blocks for up to [[pollTimeout]] waiting for a notification (pgjdbc's own
     * recommended pattern) instead of busy-polling. The blocking socket read does not respond
     * to a plain thread interrupt, so on fiber interruption (graceful shutdown, or the retry
     * above tearing this attempt down) the connection is closed out from under the read by the
@@ -104,7 +108,7 @@ class PostgresNotificationListener(
   private def poll(session: Session): Task[List[PGNotification]] =
     for
       notifications <- ZIO.attemptBlockingCancelable(
-        Option(session.pg.getNotifications(NotificationTimeoutMillis)).map(_.toList).getOrElse(Nil),
+        Option(session.pg.getNotifications(pollTimeout.toMillis.toInt)).map(_.toList).getOrElse(Nil),
       )(cancel = ZIO.unit)
       now <- Clock.instant
       _ <- if notifications.nonEmpty then session.delivered.set(now) else heartbeat(session, now)
@@ -149,7 +153,18 @@ enum NotificationEvent:
 object PostgresNotificationListener:
   // pgjdbc's own getNotifications(timeout) example uses 10s; see
   // https://access.crunchydata.com/documentation/pgjdbc/42.1.1/listennotify.html
-  private val NotificationTimeoutMillis = 10000
+  private val PollTimeout = 10.seconds
+
+  /** Bounds every read on this connection that isn't the wait for notifications.
+    *
+    * `getNotifications` takes its own timeout, and pgjdbc restores this one underneath it
+    * afterwards, so what this covers is the statements: `LISTEN` at connect time and the
+    * heartbeat's `NOTIFY`. Both are sent on the same connection the liveness check runs on,
+    * and a write to a black-holed socket is accepted locally and then waits forever for a
+    * response, so without a bound here the heartbeat is where a dead connection would hang
+    * instead of the read it was added to catch.
+    */
+  private val SocketTimeout = 30.seconds
 
   private val ReconnectMinBackoff = 100.millis
   private val ReconnectMaxBackoff = 10.seconds
@@ -216,6 +231,7 @@ object PostgresNotificationListener:
     // a plain String, so it's decoded back here at the point of use only.
     properties.setProperty("password", new String(config.password, StandardCharsets.UTF_8))
     properties.setProperty("tcpKeepAlive", "true")
+    properties.setProperty("socketTimeout", SocketTimeout.toSeconds.toString)
     properties.setProperty("ApplicationName", "versola-notification-listener")
     DriverManager.getConnection(config.notificationsUrl.getOrElse(config.url), properties)
 
