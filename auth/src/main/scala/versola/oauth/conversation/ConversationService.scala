@@ -258,6 +258,26 @@ object ConversationService:
         case LimitStatus.RateLimited(retryAfter) => renderStep(authId, conversation, step(Some(retryAfter)))
         case LimitStatus.Allowed => renderStep(authId, conversation, step(None))
 
+    /** The subject to throttle an OTP submission against.
+      *
+      * Normally this is the credential entered this conversation (`conversation.credential`).
+      * But when the credential step was skipped because the user was already known — step-up
+      * and any other silent/id_token_hint-driven re-authorization — `credential` is never set
+      * (see AuthorizeEndpointService.createConversation), so falling back to it alone would
+      * make `subject` the empty string for *every* such conversation: every user's step-up OTP
+      * attempts for a client would share one throttle bucket instead of one each, so one
+      * person's wrong codes (or a banned bucket) blocks everyone else's step-up.
+      *
+      * The fallback mirrors exactly what ConversationRouter.afterFactor already used to *send*
+      * the OTP in this situation (userEmail/userPhone per authFlow.otpType), so submit is
+      * throttled against the same identity the request was.
+      */
+    private def otpSubject(conversation: ConversationRecord): String =
+      val fallback = conversation.authFlow.otpType match
+        case OtpType.email => conversation.userEmail.map(_.toString)
+        case OtpType.sms => conversation.userPhone.map(_.toString)
+      conversation.credential.map(_.merge).orElse(fallback).getOrElse("")
+
     override def prepareInitialOtp(
         authId: AuthId,
         conversation: ConversationRecord,
@@ -370,7 +390,7 @@ object ConversationService:
         submittedCode: OtpCode,
         authId: AuthId,
     ): Task[ConversationResult] =
-      val subject = conversation.credential.map(_.merge).getOrElse("")
+      val subject = otpSubject(conversation)
       submissionLimiter.isBanned(conversation.clientId, subject, ChallengeType.OtpSubmit).flatMap:
         case LimitStatus.Banned =>
           accessDenied(authId, conversation)
