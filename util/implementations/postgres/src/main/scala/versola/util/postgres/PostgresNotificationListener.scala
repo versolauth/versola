@@ -51,7 +51,10 @@ class PostgresNotificationListener(
     */
   def notifications: Stream[Throwable, NotificationEvent] =
     ZStream
-      .scoped(connect)
+      // Reported here as well as from the polling fiber, because failing to get a connection
+      // up is a reconnect too, and it is the one kind the fiber never sees: there is no poll
+      // loop yet to fail.
+      .scoped(connect.tapErrorCause(lost))
       .flatMap: (session, queue) =>
         ZStream.succeed(NotificationEvent.Resubscribed) ++ read(session, queue)
       .retry(reconnectSchedule)
@@ -106,6 +109,10 @@ class PostgresNotificationListener(
     * buffer would apply the same backpressure the fiber in `connect` exists to avoid: it
     * would just move where a slow subscriber stalls polling from "immediately" to "once the
     * queue fills up".
+    *
+    * Nothing about the connection's health is recorded from here. What a subscriber has
+    * gotten around to observing is not when the connection died, and [[lost]] runs at the
+    * latter.
     */
   private def read(session: Session, queue: Queue[Take[Throwable, PGNotification]]): Stream[Throwable, NotificationEvent] =
     ZStream
@@ -117,46 +124,53 @@ class PostgresNotificationListener(
       .filter(_.getName != session.heartbeatChannel)
       .tap(_ => DbMetrics.notificationReceived)
       .map(NotificationEvent.Received(_))
-      // Counted apart from a loud failure rather than as well as one: a connection that
-      // went silent is the only one of the two that points at the network path rather than
-      // at the database, and summing them would hide exactly that.
-      .tapError:
-        case silent: SilentConnection =>
-          ZIO.logWarningCause("Notification connection went silent; reconnecting", Cause.fail(silent)) *>
-            DbMetrics.notificationListenerWentSilent
-        case cause =>
-          ZIO.logWarningCause("Notification connection lost; reconnecting", Cause.fail(cause)) *>
-            DbMetrics.notificationListenerReconnected
 
   private def pollLoop(session: Session, queue: Queue[Take[Throwable, PGNotification]]): UIO[Unit] =
     poll(session).foldCauseZIO(
-      cause => offerFailure(queue, cause),
+      cause => lost(cause) *> supersede(queue, cause),
       notifications => offer(queue, notifications) *> pollLoop(session, queue),
     )
 
-  /** Gets the failure in whatever it takes, because this is the one element that must not be
-    * dropped: [[pollLoop]] stops after it, so a failure lost to a full queue would leave the
-    * stream waiting on a queue nothing will ever fill again — no error to retry on, and the
-    * reconnect that a subscriber is waiting for never happens.
+  /** Records that this connection is gone, when the polling fiber finds out rather than when
+    * a subscriber gets around to observing it.
     *
-    * A full queue is exactly the case where dropping it is most likely and least acceptable:
-    * the subscriber is already behind, and the connection under it just died. Evicting the
-    * oldest notification to make room trades an event that is already covered by the
-    * subscriber's periodic reload for the one signal that is not recoverable any other way.
+    * These describe the connection, not a subscriber's view of it, and the two come apart in
+    * the exact case this fiber exists for: a subscriber blocked on its own reload against the
+    * same database would hold `db_notification_listener_connected` at 1 for as long as it
+    * stayed blocked, reporting a working push path that is already dead.
     */
-  private[postgres] def offerFailure(
-      queue: Queue[Take[Throwable, PGNotification]],
-      cause: Cause[Throwable],
-  ): UIO[Unit] =
-    queue.offer(Take.failCause(cause)).flatMap: accepted =>
-      ZIO.unless(accepted):
-        // `poll` rather than `take`, because the queue being full is only true at the moment
-        // the offer is rejected: the consumer can drain it in between, and a blocking take
-        // would then wait on an empty queue that this fiber is the only producer for, which
-        // is the deadlock the eviction exists to prevent. Polling an empty queue returns
-        // nothing and the retry below simply succeeds, since draining freed the space.
-        queue.poll *> offerFailure(queue, cause)
-      .unit
+  private def lost(cause: Cause[Throwable]): UIO[Unit] =
+    val silent = cause.failures.exists(_.isInstanceOf[SilentConnection])
+    ZIO.logWarningCause(
+      if silent then "Notification connection went silent; reconnecting"
+      else "Notification connection lost; reconnecting",
+      cause,
+    ) *>
+      // Counted apart from a loud failure rather than as well as one: a connection that went
+      // silent is the only one of the two that points at the network path rather than at the
+      // database, and summing them would hide exactly that.
+      (if silent then DbMetrics.notificationListenerWentSilent else DbMetrics.notificationListenerReconnected) *>
+      DbMetrics.notificationListenerConnected(false)
+
+  /** Puts the failure in the queue in place of whatever was still waiting there, rather than
+    * behind it.
+    *
+    * FIFO would land it after the backlog, and a subscriber only has a backlog because it is
+    * behind, so the reconnect would wait out however long that subscriber takes — on a
+    * connection that is already dead. Ordering it ahead is also free of anything to weigh
+    * against: [[pollLoop]] stops here, so the reconnect opens with
+    * [[NotificationEvent.Resubscribed]], and every subscriber answers that by reloading from
+    * the table, which covers those notifications and any the queue dropped before them.
+    *
+    * Draining also removes the offer's failure case rather than coping with it: this fiber is
+    * the only producer and it has stopped polling, so nothing can refill the queue in
+    * between, and the one element that must never be dropped cannot be. Nothing counts these
+    * as overflow — they are discarded because the connection died, not because a subscriber
+    * was too slow for the buffer, and conflating the two would spoil the only signal that
+    * says which.
+    */
+  private def supersede(queue: Queue[Take[Throwable, PGNotification]], cause: Cause[Throwable]): UIO[Unit] =
+    queue.takeAll *> queue.offer(Take.failCause(cause)).unit
 
   private def offer(queue: Queue[Take[Throwable, PGNotification]], notifications: List[PGNotification]): UIO[Unit] =
     if notifications.isEmpty then ZIO.unit

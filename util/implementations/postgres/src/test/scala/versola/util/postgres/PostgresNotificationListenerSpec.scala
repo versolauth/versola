@@ -2,10 +2,8 @@ package versola.util.postgres
 
 import com.augustnagro.magnum.magzio.TransactorZIO
 import com.augustnagro.magnum.sql
-import org.postgresql.PGNotification
 import zio.*
 import zio.metrics.*
-import zio.stream.Take
 import zio.test.*
 
 import java.time.OffsetDateTime
@@ -97,12 +95,32 @@ object PostgresNotificationListenerSpec extends ZIOSpecDefault:
           livenessTimeout = 1.second,
           pollTimeout = 100.millis,
         )
-        events <- listener.notifications.take(2).runCollect.timeout(4.seconds)
+        connected = Metric
+          .gauge("db_notification_listener_connected")
+          .tagged(MetricLabel("db_system", "postgresql"))
+        events <- Ref.make(Chunk.empty[NotificationEvent])
+        fiber <- listener.notifications.runForeach(event => events.update(_ :+ event)).fork
+        _ <- ZIO.sleep(4.seconds)
+        // Read before the interrupt, which tears the connection down and sets this back to 0.
+        proven <- connected.value
+        _ <- fiber.interrupt
+        collected <- events.get
       yield assertTrue(
-        // Timed out waiting for a second event rather than collecting one: the connection
-        // stayed up across every liveness deadline in those four seconds, and the heartbeats
-        // that kept it up are filtered out before a subscriber sees them.
-        events.isEmpty,
+        // Asserted as what did arrive rather than as a timeout: nothing arriving is also what
+        // a connection that never came up at all looks like, so an empty collection would
+        // have passed for a listener that spent the whole four seconds failing to connect.
+        //
+        // Exactly one Resubscribed: it came up once, and stayed up across every liveness
+        // deadline in four seconds — at a 100ms poll and a 1s timeout, a heartbeat that was
+        // not making the round trip would have failed the connection and shown up here as a
+        // second one.
+        collected == Chunk(NotificationEvent.Resubscribed),
+        // And the gauge only flips on something actually round-tripping. Nothing is published
+        // in this test, so the heartbeat is the only thing that can have flipped it, which is
+        // the round trip asserted directly rather than inferred from the absence of a
+        // reconnect. Read after a four-second window rather than at the moment of a flip, so
+        // there is nothing here to race.
+        proven.value == 1.0,
       )
     },
     test("replaces a connection that stops delivering, without it ever failing") {
@@ -183,58 +201,43 @@ object PostgresNotificationListenerSpec extends ZIOSpecDefault:
         after.count - before.count >= 3.0,
       )
     },
-    test("still reports a connection that dies while the queue is full") {
+    test("reconnects ahead of the backlog a subscriber has not caught up on") {
       // The two failure modes compound here: the subscriber is far enough behind to have
-      // filled the queue, and then the connection under it dies. Dropping that failure the
-      // way an ordinary notification is dropped would strand the stream — pollLoop stops
-      // after a failure, so nothing would ever fill the queue again, and the subscriber would
-      // wait on it forever rather than seeing the error and reconnecting.
+      // filled the queue, and then the connection under it dies. Both happen inside the
+      // handler for the first Resubscribed, which is what fixes the ordering rather than
+      // racing it: polling carries on while that handler is blocked, so the queue is full and
+      // the connection is dead before the subscriber pulls again.
       //
-      // The overflow and the kill both happen inside the handler for the first Resubscribed,
-      // which is what guarantees the ordering: polling carries on while the handler is
-      // blocked, so the queue is already full by the time the connection is killed.
+      // What the subscriber must see on its next pull is the reconnect, not the leftovers of
+      // the connection that died. Queued behind them, the failure would only surface once the
+      // subscriber had worked through a backlog it is by definition slow to work through, and
+      // the reconnect would wait that long on an already-dead connection. Ordered ahead of
+      // them, nothing is lost that the Resubscribed's own reload does not cover.
       for
         config <- ZIO.service[PostgresConfig]
         listener = PostgresNotificationListener(config, List(channel), pollTimeout = 50.millis, queueCapacity = 2)
+        events <- Ref.make(Chunk.empty[NotificationEvent])
         first <- Ref.make(true)
-        resubscribes <- listener
+        fiber <- listener
           .notifications
-          .tap:
-            case NotificationEvent.Resubscribed =>
+          .runForeach: event =>
+            events.update(_ :+ event) *> ZIO.when(event == NotificationEvent.Resubscribed):
               first.getAndSet(false).flatMap: isFirst =>
                 ZIO.when(isFirst):
-                  ZIO.foreachDiscard(1 to 5)(i => notify(s"stranded-$i").delay(150.millis)) *>
+                  ZIO.foreachDiscard(1 to 5)(i => notify(s"backlog-$i").delay(150.millis)) *>
                     killListener *> ZIO.sleep(300.millis)
-            case _ => ZIO.unit
-          .filter(_ == NotificationEvent.Resubscribed)
-          .take(2)
-          .runCollect
-          .timeout(30.seconds)
+          .fork
+        _ <- ZIO.sleep(5.seconds)
+        _ <- fiber.interrupt
+        collected <- events.get
       yield assertTrue(
-        // A second Resubscribed at all is the point: it can only happen if the failure got
-        // through the full queue, failed the stream, and drove a reconnect.
-        resubscribes.exists(_.size == 2),
+        // Two of them, so the failure got out of a full queue at all: pollLoop stops after
+        // the failure, so one that was dropped for want of room would leave the subscriber
+        // waiting on a queue nothing will ever fill again.
+        collected.count(_ == NotificationEvent.Resubscribed) == 2,
+        // And immediately, with none of the dead connection's notifications in between.
+        collected.take(2) == Chunk(NotificationEvent.Resubscribed, NotificationEvent.Resubscribed),
       )
-    },
-    test("gets the failure in even when the consumer empties the queue first") {
-      // The eviction that makes room for a failure cannot assume the queue is still full: the
-      // consumer may drain it entirely between the rejected offer and the eviction. Taking
-      // blockingly there would wait on an empty queue whose only producer has already stopped
-      // (pollLoop ends at the failure), stranding the reconnect in the one case that needs it.
-      // Racing a drainer against the offer hits that window; a failure to make room shows up
-      // as this never completing rather than as a wrong value, hence the timeout.
-      val listener = PostgresNotificationListener(config = null, channels = Nil)
-      ZIO
-        .foreachDiscard(1 to 200): _ =>
-          for
-            queue <- Queue.dropping[Take[Throwable, PGNotification]](1)
-            _ <- queue.offer(Take.chunk(Chunk.empty))
-            drainer <- queue.takeAll.fork
-            _ <- listener.offerFailure(queue, Cause.fail(RuntimeException("connection lost")))
-            _ <- drainer.join
-          yield ()
-        .timeout(30.seconds)
-        .map(completed => assertTrue(completed.isDefined))
     },
     test("refuses to start when notifications cannot be delivered") {
       for

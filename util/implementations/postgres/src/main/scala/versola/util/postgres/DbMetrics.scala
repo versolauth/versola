@@ -27,6 +27,10 @@ object DbMetrics:
   /** Whether the `LISTEN` connection is currently up, in the sense of proven to be
     * delivering rather than merely open: a connection that stops carrying notifications is
     * failed and replaced, so this reads 0 while that is happening.
+    *
+    * Written by the fiber that owns the connection, not by the subscriber's error path, so it
+    * describes the connection rather than how promptly anyone noticed. A subscriber blocked
+    * on its own reload cannot hold this at 1 over a connection that has already died.
     */
   private val notificationListenerConnectedGauge =
     Metric.gauge("db_notification_listener_connected").tagged(MetricLabel("db_system", "postgresql"))
