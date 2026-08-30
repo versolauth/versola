@@ -54,8 +54,8 @@ object DbMetrics:
   def notificationListenerConnected(connected: Boolean): UIO[Unit] =
     notificationListenerConnectedGauge.set(if connected then 1 else 0)
 
-  def notificationListenerQueueOverflow: UIO[Unit] =
-    notificationListenerQueueOverflowTotal.increment
+  def notificationListenerQueueOverflow(dropped: Int): UIO[Unit] =
+    notificationListenerQueueOverflowTotal.incrementBy(dropped.toLong)
 
   private def histogram(repository: String, operation: String, outcome: String) =
     Metric

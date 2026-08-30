@@ -178,7 +178,7 @@ class PostgresNotificationListener(
       queue.offer(Take.chunk(Chunk.fromIterable(notifications))).flatMap: accepted =>
         ZIO.unless(accepted):
           ZIO.logWarning(s"Notification queue full; dropping ${notifications.size} notification(s)") *>
-            DbMetrics.notificationListenerQueueOverflow
+            DbMetrics.notificationListenerQueueOverflow(notifications.size)
         .unit
 
   /** One wait for notifications, and the liveness bookkeeping that goes with an empty one.
