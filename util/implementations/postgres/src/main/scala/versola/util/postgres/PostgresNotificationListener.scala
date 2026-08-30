@@ -33,13 +33,21 @@ class PostgresNotificationListener(
     livenessTimeout: Duration = PostgresNotificationListener.LivenessTimeout,
     pollTimeout: Duration = PostgresNotificationListener.PollTimeout,
     queueCapacity: Int = PostgresNotificationListener.QueueCapacity,
+    deliveryCapacity: Int = PostgresNotificationListener.QueueCapacity,
 ):
   import PostgresNotificationListener.*
 
-  /** Notifications from every channel this listener subscribes to, reconnecting for as long
-    * as the stream is consumed.
+  /** Notifications from every channel this listener subscribes to, for as long as the
+    * returned stream is pulled -- reconnecting is not conditional on that, though: it runs on
+    * a fiber of its own, [[daemon]], which this only ever reads from.
     *
-    * A dropped connection is expected rather than exceptional \u2014 Postgres restarts, network
+    * That split matters because a subscriber's own handler is realistically a synchronous
+    * reload against the same database whose trouble is why a connection just died -- exactly
+    * the moment reconnecting cannot afford to wait on whatever is slow about that reload. A
+    * subscriber stalled inside one no longer holds a proven-dead connection open, or delays
+    * the new one: [[daemon]] never awaits `delivery`, only offers to it.
+    *
+    * A dropped connection is expected rather than exceptional -- Postgres restarts, network
     * blips, and poolers that recycle idle server connections all produce one, and an idle
     * `LISTEN` connection is the first thing an idle timeout reaps. Whatever was published
     * while the connection was gone is not redelivered on reconnect, so each (re)connect opens
@@ -51,24 +59,60 @@ class PostgresNotificationListener(
     * database that simply has nothing to say.
     */
   def notifications: Stream[Throwable, NotificationEvent] =
-    ZStream
-      // Reported here as well as from the polling fiber, because failing to get a connection
-      // up is a reconnect too, and it is the one kind the fiber never sees: there is no poll
-      // loop yet to fail.
-      .scoped(connect.tapErrorCause(lost))
-      .flatMap: (session, queue) =>
-        ZStream.succeed(NotificationEvent.Resubscribed) ++ read(session, queue)
+    ZStream.unwrapScoped:
+      for
+        delivery <- Queue.dropping[NotificationEvent](deliveryCapacity)
+        _ <- daemon(delivery).forkScoped
+      yield ZStream.fromQueue(delivery)
+
+  /** Connects, polls, reconnects, and hands every event to `delivery` -- forever, and
+    * regardless of whether, or how quickly, anything is pulling from it.
+    *
+    * [[reconnectSchedule]] retries without end, so this only ever stops on an unhandled bug:
+    * reaching the fallback below means that invariant broke, not that the database is down.
+    *
+    * Draining `delivery` on failure is what [[NotificationEvent.Resubscribed]] promises a
+    * subscriber that has fallen behind: whatever this connection already handed over but
+    * `delivery` is still holding is exactly the stale view a resubscribe exists to replace,
+    * so it goes with the connection rather than sitting in front of the event that says so.
+    */
+  private def daemon(delivery: Queue[NotificationEvent]): UIO[Unit] =
+    ZIO
+      .scoped:
+        connect.tapErrorCause(lost).flatMap: (session, queue) =>
+          (ZStream.succeed(NotificationEvent.Resubscribed) ++ read(session, queue))
+            .runForeach(deliver(delivery, _))
+      .tapErrorCause(_ => delivery.takeAll.unit)
       .retry(reconnectSchedule)
+      .catchAllCause: cause =>
+        ZIO.logFatalCause(
+          "Notification listener stopped reconnecting; reconnectSchedule retries without end, " +
+            "so reaching this is a bug in it, not an outage, and no further connections will be " +
+            "attempted on this listener",
+          cause,
+        )
+
+  /** Hands one event to whatever pulls [[notifications]], dropping rather than blocking when
+    * it is not keeping up -- the same tolerance every subscriber already has for a missed
+    * notification, since [[NotificationEvent.Resubscribed]] is what tells it to reload
+    * regardless of how it fell behind, and blocking here would be [[daemon]] inheriting the
+    * exact stall this queue exists to keep it out of.
+    */
+  private def deliver(delivery: Queue[NotificationEvent], event: NotificationEvent): UIO[Unit] =
+    delivery.offer(event).flatMap: accepted =>
+      ZIO.unless(accepted):
+        ZIO.logWarning("Notification delivery queue full; dropping a notification") *>
+          DbMetrics.notificationListenerQueueOverflow(1)
+    .unit
+
 
   /** Opens the connection, `LISTEN`s, and starts polling it on a fiber of its own before
     * this returns — not lazily on the first pull of the resulting stream.
     *
-    * That distinction matters because the first thing downstream ever does with a fresh
-    * connection is react to [[NotificationEvent.Resubscribed]], and in practice that handler
-    * is a synchronous reload against the same database this listener depends on. Deferring
-    * the fork until [[read]] is first pulled would start polling only once that handler
-    * returns, which is exactly backwards during the trouble this exists to survive: the
-    * heartbeat would not run precisely while the database is why it needs to.
+    * [[daemon]] pulls [[read]] immediately after this returns, so in practice the two happen
+    * back to back regardless; forking here rather than there just keeps the heartbeat cadence
+    * exact from the moment the connection exists, free of however this fiber happens to get
+    * scheduled once it does.
     */
   private def connect: ZIO[Scope, Throwable, (Session, Queue[Take[Throwable, PGNotification]])] =
     for
@@ -105,15 +149,15 @@ class PostgresNotificationListener(
       ZIO.attemptBlocking(connection.close()).ignoreLogged,
     )
 
-  /** The queue [[connect]] already has [[pollLoop]] filling, turned into what a subscriber
-    * sees. The queue drops rather than backpressures when full, because blocking on a full
+  /** The queue [[connect]] already has [[pollLoop]] filling, turned into what [[daemon]] pulls
+    * from. The queue drops rather than backpressures when full, because blocking on a full
     * buffer would apply the same backpressure the fiber in `connect` exists to avoid: it
-    * would just move where a slow subscriber stalls polling from "immediately" to "once the
-    * queue fills up".
+    * would just move where a slow drain stalls polling from "immediately" to "once the queue
+    * fills up" — and now that [[daemon]] never blocks on anything downstream of it either,
+    * that slow drain can only be this fiber itself falling behind actual poll throughput.
     *
-    * Nothing about the connection's health is recorded from here. What a subscriber has
-    * gotten around to observing is not when the connection died, and [[lost]] runs at the
-    * latter.
+    * Nothing about the connection's health is recorded from here. What has gotten around to
+    * being pulled is not when the connection died, and [[lost]] runs at the latter.
     */
   private def read(session: Session, queue: Queue[Take[Throwable, PGNotification]]): Stream[Throwable, NotificationEvent] =
     ZStream

@@ -28,6 +28,18 @@ object PostgresNotificationListenerSpec extends ZIOSpecDefault:
               WHERE application_name = 'versola-notification-listener'""".query[Boolean].run(),
       )
 
+  /** The backend pid(s) currently serving the listener's own connection, independent of
+    * anything the listener's public API exposes -- proof that a reconnect actually opened a
+    * new session, rather than an inference from what a subscriber happened to observe.
+    */
+  private def listenerPid =
+    ZIO.serviceWithZIO[TransactorZIO]:
+      _.connect(
+        sql"SELECT pid FROM pg_stat_activity WHERE application_name = 'versola-notification-listener'"
+          .query[Int]
+          .run(),
+      )
+
   def spec = suite("PostgresNotificationListener")(
     test("delivers notifications, opening with the resubscribe that tells subscribers to reload") {
       for
@@ -196,18 +208,19 @@ object PostgresNotificationListenerSpec extends ZIOSpecDefault:
       // notification per poll cycle: the point here is specifically what happens when several
       // arrive in the same getNotifications() call, since Queue.dropping bounds the number of
       // elements offered to it, not what those elements contain. A single element wrapping
-      // Postgres's whole batch would let a burst this size occupy one of queueCapacity slots
-      // regardless of how many notifications were in it, so the bound this exists to enforce
-      // would not hold. Offered individually, capacity elements are accepted and the rest are
-      // rejected regardless of how pgjdbc happened to batch them, which is what makes the
-      // dropped count below exact rather than just a lower bound.
+      // Postgres's whole batch would let a burst this size occupy one of deliveryCapacity
+      // slots regardless of how many notifications were in it, so the bound this exists to
+      // enforce would not hold. Offered individually -- both into the queue daemon fills and,
+      // from there, into delivery -- capacity elements are accepted and the rest are rejected
+      // regardless of how pgjdbc happened to batch them, which is what makes the dropped count
+      // below exact rather than just a lower bound.
       val overflow =
         Metric.counter("db_notification_listener_queue_overflow_total").tagged(MetricLabel("db_system", "postgresql"))
       val sent = 50
       val capacity = 3
       for
         config <- ZIO.service[PostgresConfig]
-        listener = PostgresNotificationListener(config, List(channel), pollTimeout = 5.seconds, queueCapacity = capacity)
+        listener = PostgresNotificationListener(config, List(channel), pollTimeout = 5.seconds, deliveryCapacity = capacity)
         before <- overflow.value
         fiber <- listener.notifications.runForeach {
           case NotificationEvent.Resubscribed => ZIO.never
@@ -227,16 +240,16 @@ object PostgresNotificationListenerSpec extends ZIOSpecDefault:
     },
     test("drops rather than grows without bound when a subscriber never catches up") {
       // A subscriber stuck on the opening Resubscribed forever, rather than merely slow: it
-      // never pulls again, so nothing but a bounded queue stands between a publisher that
-      // keeps going and unbounded memory growth. queueCapacity is set far below what gets
-      // published, and pollTimeout short enough that each notification lands in its own poll
-      // cycle (spaced well past it), so each becomes a separate queued item instead of
-      // batching into one and the overflow is forced deterministically rather than raced.
+      // never pulls again, so nothing but a bounded queue stands between daemon, which keeps
+      // running regardless, and unbounded memory growth. deliveryCapacity is set far below
+      // what gets published, and pollTimeout short enough that each notification lands in its
+      // own poll cycle (spaced well past it), so each becomes a separate queued item instead
+      // of batching into one and the overflow is forced deterministically rather than raced.
       val overflow =
         Metric.counter("db_notification_listener_queue_overflow_total").tagged(MetricLabel("db_system", "postgresql"))
       for
         config <- ZIO.service[PostgresConfig]
-        listener = PostgresNotificationListener(config, List(channel), pollTimeout = 50.millis, queueCapacity = 2)
+        listener = PostgresNotificationListener(config, List(channel), pollTimeout = 50.millis, deliveryCapacity = 2)
         before <- overflow.value
         fiber <- listener.notifications.runForeach {
           case NotificationEvent.Resubscribed => ZIO.never
@@ -256,19 +269,22 @@ object PostgresNotificationListenerSpec extends ZIOSpecDefault:
     },
     test("reconnects ahead of the backlog a subscriber has not caught up on") {
       // The two failure modes compound here: the subscriber is far enough behind to have
-      // filled the queue, and then the connection under it dies. Both happen inside the
+      // filled delivery, and then the connection under it dies. Both happen inside the
       // handler for the first Resubscribed, which is what fixes the ordering rather than
-      // racing it: polling carries on while that handler is blocked, so the queue is full and
-      // the connection is dead before the subscriber pulls again.
+      // racing it: daemon keeps running regardless of that handler -- polling, and delivering
+      // what it polls -- so delivery is full of the dying connection's backlog and the
+      // connection is dead before the subscriber pulls again.
       //
       // What the subscriber must see on its next pull is the reconnect, not the leftovers of
-      // the connection that died. Queued behind them, the failure would only surface once the
-      // subscriber had worked through a backlog it is by definition slow to work through, and
-      // the reconnect would wait that long on an already-dead connection. Ordered ahead of
-      // them, nothing is lost that the Resubscribed's own reload does not cover.
+      // the connection that died. Left in delivery, those leftovers would surface first, and
+      // only once the subscriber had worked through a backlog it is by definition slow to
+      // work through. daemon drains delivery on every failure for exactly this: nothing is
+      // lost that the Resubscribed's own reload does not cover, and what the subscriber pulls
+      // next is that Resubscribed, not what a connection already known to be dead sent before
+      // it died.
       for
         config <- ZIO.service[PostgresConfig]
-        listener = PostgresNotificationListener(config, List(channel), pollTimeout = 50.millis, queueCapacity = 2)
+        listener = PostgresNotificationListener(config, List(channel), pollTimeout = 50.millis, deliveryCapacity = 2)
         events <- Ref.make(Chunk.empty[NotificationEvent])
         first <- Ref.make(true)
         fiber <- listener
@@ -291,6 +307,28 @@ object PostgresNotificationListenerSpec extends ZIOSpecDefault:
         // And immediately, with none of the dead connection's notifications in between.
         collected.take(2) == Chunk(NotificationEvent.Resubscribed, NotificationEvent.Resubscribed),
       )
+    },
+    test("reconnects even while a subscriber is stalled inside its own handler indefinitely") {
+      // Not merely slow, as the tests above exercise, but never returning at all -- which is
+      // exactly what a synchronous reload against a database already struggling enough to
+      // have cost this listener its connection can do. Reconnecting cannot be conditional on
+      // that handler ever returning, and this is verified independent of what a subscriber
+      // observes, since a subscriber stuck like this by definition never observes anything
+      // again: a fresh backend pid is what a new connection looks like from outside either of
+      // them.
+      for
+        listener <- PostgresNotificationListener.make(List(channel))
+        fiber <- listener.notifications.runForeach {
+          case NotificationEvent.Resubscribed => ZIO.never
+          case _ => ZIO.unit
+        }.fork
+        before <- (listenerPid <* ZIO.sleep(50.millis)).repeatUntil(_.nonEmpty).map(_.head)
+        _ <- killListener
+        after <- (listenerPid.map(_.headOption) <* ZIO.sleep(50.millis))
+          .repeatUntil(pid => pid.isDefined && pid != Some(before))
+          .timeout(15.seconds)
+        _ <- fiber.interrupt
+      yield assertTrue(after.flatten.exists(_ != before))
     },
     test("refuses to start when notifications cannot be delivered") {
       for
