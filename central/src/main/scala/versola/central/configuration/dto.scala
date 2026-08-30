@@ -295,6 +295,7 @@ case class OAuthClientResponse(
     scope: Set[ScopeToken],
     permissions: Set[Permission],
     secretRotation: Boolean,
+    accessTokenTtl: Long,
     refreshTokenTtl: Long,
     theme: String,
     authFlow: Option[AuthFlow],

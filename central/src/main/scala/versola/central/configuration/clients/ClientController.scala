@@ -45,6 +45,7 @@ object ClientController extends Controller:
               scope = client.scope,
               permissions = client.permissions,
               secretRotation = client.previousSecret.nonEmpty,
+              accessTokenTtl = client.accessTokenTtl.toSeconds,
               refreshTokenTtl = client.refreshTokenTtl.toSeconds,
               theme = client.theme,
               authFlow = client.authFlow,
