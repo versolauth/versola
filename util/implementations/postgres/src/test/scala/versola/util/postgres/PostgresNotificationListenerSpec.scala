@@ -29,7 +29,7 @@ object PostgresNotificationListenerSpec extends ZIOSpecDefault:
       )
 
   /** The backend pid(s) currently serving the listener's own connection, independent of
-    * anything the listener's public API exposes -- proof that a reconnect actually opened a
+    * anything the listener's public API exposes — proof that a reconnect actually opened a
     * new session, rather than an inference from what a subscriber happened to observe.
     */
   private def listenerPid =
@@ -92,8 +92,8 @@ object PostgresNotificationListenerSpec extends ZIOSpecDefault:
     test("tells a black-holed heartbeat write apart from an ordinary loud one") {
       // The heartbeat's own NOTIFY relabels a failure as the connection going silent only for
       // the one case that actually is: a socket timing out on a write nothing will ever get a
-      // response to. Anything else that can fail a NOTIFY -- an admin shutdown, a terminated
-      // backend -- reached the driver the way a loud failure ordinarily does, and must stay
+      // response to. Anything else that can fail a NOTIFY — an admin shutdown, a terminated
+      // backend — reached the driver the way a loud failure ordinarily does, and must stay
       // one, or a real database incident gets counted and alerted on as a network problem.
       assertTrue(
         PostgresNotificationListener.isSocketTimeout(java.net.SocketTimeoutException("Read timed out")),
@@ -178,26 +178,30 @@ object PostgresNotificationListenerSpec extends ZIOSpecDefault:
       // it sees Resubscribed — the same database this listener depends on — which is the one
       // moment polling must not wait on it: starting it only after that handler returns would
       // stop the heartbeat from running exactly while the database is why it needs to.
-      // livenessTimeout is short enough that if polling waited here anyway, the connection
-      // would look quiet for far longer than livenessTimeout the moment the handler finally
-      // returns, and get torn down for a reason that has nothing to do with it actually
-      // failing. Not waiting keeps this a healthy connection the whole time, resubscribing
-      // exactly once.
+      // The handler blocks for longer than livenessTimeout, which is what gives this teeth: if
+      // polling waited here anyway, the connection would look quiet past the deadline and get
+      // torn down for a reason that has nothing to do with it actually failing. Not waiting
+      // keeps this a healthy connection the whole time, resubscribing exactly once.
+      //
+      // The deadline is generous relative to the heartbeat — sixteen round trips fit inside
+      // it — because the one thing that also resubscribes exactly when it should is a real
+      // liveness trip, and a shared runner stalling a single round trip past a tight deadline
+      // would be indistinguishable here from the failure this is looking for.
       for
         config <- ZIO.service[PostgresConfig]
         listener = PostgresNotificationListener(
           config,
           List(channel),
-          heartbeatInterval = 200.millis,
-          livenessTimeout = 1.second,
+          heartbeatInterval = 250.millis,
+          livenessTimeout = 4.seconds,
           pollTimeout = 100.millis,
         )
         resubscribes <- Ref.make(0)
         fiber <- listener.notifications.runForeach {
-          case NotificationEvent.Resubscribed => resubscribes.update(_ + 1) *> ZIO.sleep(3.seconds)
+          case NotificationEvent.Resubscribed => resubscribes.update(_ + 1) *> ZIO.sleep(6.seconds)
           case _ => ZIO.unit
         }.fork
-        _ <- ZIO.sleep(4.seconds)
+        _ <- ZIO.sleep(7.seconds)
         _ <- fiber.interrupt
         count <- resubscribes.get
       yield assertTrue(count == 1)
@@ -210,8 +214,8 @@ object PostgresNotificationListenerSpec extends ZIOSpecDefault:
       // elements offered to it, not what those elements contain. A single element wrapping
       // Postgres's whole batch would let a burst this size occupy one of deliveryCapacity
       // slots regardless of how many notifications were in it, so the bound this exists to
-      // enforce would not hold. Offered individually -- both into the queue daemon fills and,
-      // from there, into delivery -- capacity elements are accepted and the rest are rejected
+      // enforce would not hold. Offered individually — both into the queue daemon fills and,
+      // from there, into delivery — capacity elements are accepted and the rest are rejected
       // regardless of how pgjdbc happened to batch them, which is what makes the dropped count
       // below exact rather than just a lower bound.
       val overflow =
@@ -271,8 +275,8 @@ object PostgresNotificationListenerSpec extends ZIOSpecDefault:
       // The two failure modes compound here: the subscriber is far enough behind to have
       // filled delivery, and then the connection under it dies. Both happen inside the
       // handler for the first Resubscribed, which is what fixes the ordering rather than
-      // racing it: daemon keeps running regardless of that handler -- polling, and delivering
-      // what it polls -- so delivery is full of the dying connection's backlog and the
+      // racing it: daemon keeps running regardless of that handler — polling, and delivering
+      // what it polls — so delivery is full of the dying connection's backlog and the
       // connection is dead before the subscriber pulls again.
       //
       // What the subscriber must see on its next pull is the reconnect, not the leftovers of
@@ -309,7 +313,7 @@ object PostgresNotificationListenerSpec extends ZIOSpecDefault:
       )
     },
     test("reconnects even while a subscriber is stalled inside its own handler indefinitely") {
-      // Not merely slow, as the tests above exercise, but never returning at all -- which is
+      // Not merely slow, as the tests above exercise, but never returning at all — which is
       // exactly what a synchronous reload against a database already struggling enough to
       // have cost this listener its connection can do. Reconnecting cannot be conditional on
       // that handler ever returning, and this is verified independent of what a subscriber
