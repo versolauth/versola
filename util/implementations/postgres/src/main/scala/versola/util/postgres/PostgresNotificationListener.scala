@@ -38,16 +38,16 @@ class PostgresNotificationListener(
   import PostgresNotificationListener.*
 
   /** Notifications from every channel this listener subscribes to, for as long as the
-    * returned stream is pulled -- reconnecting is not conditional on that, though: it runs on
+    * returned stream is pulled — reconnecting is not conditional on that, though: it runs on
     * a fiber of its own, [[daemon]], which this only ever reads from.
     *
     * That split matters because a subscriber's own handler is realistically a synchronous
-    * reload against the same database whose trouble is why a connection just died -- exactly
+    * reload against the same database whose trouble is why a connection just died — exactly
     * the moment reconnecting cannot afford to wait on whatever is slow about that reload. A
     * subscriber stalled inside one no longer holds a proven-dead connection open, or delays
     * the new one: [[daemon]] never awaits `delivery`, only offers to it.
     *
-    * A dropped connection is expected rather than exceptional -- Postgres restarts, network
+    * A dropped connection is expected rather than exceptional — Postgres restarts, network
     * blips, and poolers that recycle idle server connections all produce one, and an idle
     * `LISTEN` connection is the first thing an idle timeout reaps. Whatever was published
     * while the connection was gone is not redelivered on reconnect, so each (re)connect opens
@@ -65,7 +65,7 @@ class PostgresNotificationListener(
         _ <- daemon(delivery).forkScoped
       yield ZStream.fromQueue(delivery)
 
-  /** Connects, polls, reconnects, and hands every event to `delivery` -- forever, and
+  /** Connects, polls, reconnects, and hands every event to `delivery` — forever, and
     * regardless of whether, or how quickly, anything is pulling from it.
     *
     * [[reconnectSchedule]] retries without end, so this only ever stops on an unhandled bug:
@@ -93,7 +93,7 @@ class PostgresNotificationListener(
         )
 
   /** Hands one event to whatever pulls [[notifications]], dropping rather than blocking when
-    * it is not keeping up -- the same tolerance every subscriber already has for a missed
+    * it is not keeping up — the same tolerance every subscriber already has for a missed
     * notification, since [[NotificationEvent.Resubscribed]] is what tells it to reload
     * regardless of how it fell behind, and blocking here would be [[daemon]] inheriting the
     * exact stall this queue exists to keep it out of.
@@ -295,7 +295,7 @@ class PostgresNotificationListener(
       // A socket timeout on this send is the same silent connection revealing itself through
       // the write side instead of the read-side deadline above, so it is folded into the same
       // failure rather than left to read as a loud one. Anything else that can fail a NOTIFY
-      // -- an admin shutdown, a terminated backend -- is a real database failure and stays
+      // — an admin shutdown, a terminated backend — is a real database failure and stays
       // one: only the specific failure this heartbeat exists to catch gets relabeled.
       _ <- ZIO.when(due)(
         ZIO
@@ -330,7 +330,7 @@ object PostgresNotificationListener:
     */
   private val SocketTimeout = 30.seconds
 
-  /** Whether `cause`, anywhere in its chain, is the socket timing out on a write -- what a
+  /** Whether `cause`, anywhere in its chain, is the socket timing out on a write — what a
     * black-holed connection does on this send, since nothing between here and the peer will
     * ever produce a real response or a closed-connection error. Any other failure reached the
     * driver in the ordinary way a loud one does, and is left to be counted as one, not
