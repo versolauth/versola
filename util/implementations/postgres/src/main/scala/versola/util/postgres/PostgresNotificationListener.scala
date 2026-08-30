@@ -4,6 +4,7 @@ import org.postgresql.{PGConnection, PGNotification}
 import zio.*
 import zio.stream.{Stream, Take, ZStream}
 
+import java.net.SocketTimeoutException
 import java.nio.charset.StandardCharsets
 import java.sql.{Connection, DriverManager}
 import java.time.Instant
@@ -172,13 +173,25 @@ class PostgresNotificationListener(
   private def supersede(queue: Queue[Take[Throwable, PGNotification]], cause: Cause[Throwable]): UIO[Unit] =
     queue.takeAll *> queue.offer(Take.failCause(cause)).unit
 
+  /** One queue slot per notification, offered one at a time, rather than the whole batch
+    * `getNotifications` handed back as a single [[Take]].
+    *
+    * [[Queue.dropping]] bounds the number of elements, not what they contain, and
+    * `Take.chunk` can hold arbitrarily many notifications in one element: Postgres can return
+    * every currently pending notification in a single batch, so one slot filled with that
+    * batch does not bound the memory a blocked subscriber leaves retained the way
+    * [[queueCapacity]] elements of one notification each does. Offering individually is what
+    * makes the queue's element count actually mean a notification count.
+    */
   private def offer(queue: Queue[Take[Throwable, PGNotification]], notifications: List[PGNotification]): UIO[Unit] =
-    if notifications.isEmpty then ZIO.unit
-    else
-      queue.offer(Take.chunk(Chunk.fromIterable(notifications))).flatMap: accepted =>
-        ZIO.unless(accepted):
-          ZIO.logWarning(s"Notification queue full; dropping ${notifications.size} notification(s)") *>
-            DbMetrics.notificationListenerQueueOverflow(notifications.size)
+    ZIO
+      .foldLeft(notifications)(0):
+        (dropped, notification) =>
+          queue.offer(Take.single(notification)).map(accepted => if accepted then dropped else dropped + 1)
+      .flatMap: dropped =>
+        ZIO.when(dropped > 0):
+          ZIO.logWarning(s"Notification queue full; dropping $dropped notification(s)") *>
+            DbMetrics.notificationListenerQueueOverflow(dropped)
         .unit
 
   /** One wait for notifications, and the liveness bookkeeping that goes with an empty one.
@@ -235,13 +248,15 @@ class PostgresNotificationListener(
         ZIO.fail(SilentConnection(livenessTimeout)),
       )
       due <- session.beat.modify(sent => if now.isAfter(sent.plus(heartbeatInterval)) then (true, now) else (false, sent))
-      // A write that fails outright is the same silent connection revealing itself through
-      // the socket timeout on this send instead of through the read-side deadline above, so
-      // it is folded into the same failure rather than left to read as a loud one.
+      // A socket timeout on this send is the same silent connection revealing itself through
+      // the write side instead of the read-side deadline above, so it is folded into the same
+      // failure rather than left to read as a loud one. Anything else that can fail a NOTIFY
+      // -- an admin shutdown, a terminated backend -- is a real database failure and stays
+      // one: only the specific failure this heartbeat exists to catch gets relabeled.
       _ <- ZIO.when(due)(
         ZIO
           .attemptBlocking(execute(session.connection, List(s"NOTIFY ${session.heartbeatChannel}")))
-          .mapError(cause => SilentConnection(livenessTimeout, Some(cause))),
+          .catchAll(cause => ZIO.fail(if isSocketTimeout(cause) then SilentConnection(livenessTimeout, Some(cause)) else cause)),
       )
     yield ()
 
@@ -270,6 +285,18 @@ object PostgresNotificationListener:
     * instead of the read it was added to catch.
     */
   private val SocketTimeout = 30.seconds
+
+  /** Whether `cause`, anywhere in its chain, is the socket timing out on a write -- what a
+    * black-holed connection does on this send, since nothing between here and the peer will
+    * ever produce a real response or a closed-connection error. Any other failure reached the
+    * driver in the ordinary way a loud one does, and is left to be counted as one, not
+    * relabeled as the specific silent case this exists to catch.
+    */
+  private[postgres] def isSocketTimeout(cause: Throwable): Boolean =
+    // Bounded rather than followed to null, in case a driver ever hands back a cause chain
+    // that cycles back on itself: this is a classification, not a diagnostic, so a chain long
+    // enough to matter here would be a bug elsewhere, not a reason to hang finding out.
+    Iterator.iterate(Option(cause))(_.flatMap(t => Option(t.getCause))).take(16).takeWhile(_.isDefined).flatten.exists(_.isInstanceOf[SocketTimeoutException])
 
   private val ReconnectMinBackoff = 100.millis
   private val ReconnectMaxBackoff = 10.seconds

@@ -77,6 +77,24 @@ object PostgresNotificationListenerSpec extends ZIOSpecDefault:
         delays.forall(_ <= 10.seconds * 1.2),
       )
     },
+    test("tells a black-holed heartbeat write apart from an ordinary loud one") {
+      // The heartbeat's own NOTIFY relabels a failure as the connection going silent only for
+      // the one case that actually is: a socket timing out on a write nothing will ever get a
+      // response to. Anything else that can fail a NOTIFY -- an admin shutdown, a terminated
+      // backend -- reached the driver the way a loud failure ordinarily does, and must stay
+      // one, or a real database incident gets counted and alerted on as a network problem.
+      assertTrue(
+        PostgresNotificationListener.isSocketTimeout(java.net.SocketTimeoutException("Read timed out")),
+        // Wrapped by an intermediate exception, the way pgjdbc wraps a socket-level failure
+        // in a PSQLException: still found, because it is the chain that is classified.
+        PostgresNotificationListener.isSocketTimeout(
+          RuntimeException("wrapped", java.net.SocketTimeoutException("Read timed out")),
+        ),
+        // A loud failure with no timeout anywhere in its chain is left alone.
+        !PostgresNotificationListener.isSocketTimeout(RuntimeException("FATAL: terminating connection due to administrator command")),
+        !PostgresNotificationListener.isSocketTimeout(RuntimeException("connection closed")),
+      )
+    },
     test("holds a quiet connection open on its heartbeat, and keeps that heartbeat to itself") {
       // Nothing is published here at all, so every poll comes back empty and the heartbeat is
       // the only thing keeping the connection alive. The liveness timeout is several
@@ -171,6 +189,41 @@ object PostgresNotificationListenerSpec extends ZIOSpecDefault:
         _ <- fiber.interrupt
         count <- resubscribes.get
       yield assertTrue(count == 1)
+    },
+    test("bounds memory by notification, not by the batch Postgres happens to hand back") {
+      // Sent as fast as this fiber can issue them, with a poll timeout long enough to cover
+      // the whole burst, rather than the spaced-out sends the next test uses to force one
+      // notification per poll cycle: the point here is specifically what happens when several
+      // arrive in the same getNotifications() call, since Queue.dropping bounds the number of
+      // elements offered to it, not what those elements contain. A single element wrapping
+      // Postgres's whole batch would let a burst this size occupy one of queueCapacity slots
+      // regardless of how many notifications were in it, so the bound this exists to enforce
+      // would not hold. Offered individually, capacity elements are accepted and the rest are
+      // rejected regardless of how pgjdbc happened to batch them, which is what makes the
+      // dropped count below exact rather than just a lower bound.
+      val overflow =
+        Metric.counter("db_notification_listener_queue_overflow_total").tagged(MetricLabel("db_system", "postgresql"))
+      val sent = 50
+      val capacity = 3
+      for
+        config <- ZIO.service[PostgresConfig]
+        listener = PostgresNotificationListener(config, List(channel), pollTimeout = 5.seconds, queueCapacity = capacity)
+        before <- overflow.value
+        fiber <- listener.notifications.runForeach {
+          case NotificationEvent.Resubscribed => ZIO.never
+          case _ => ZIO.unit
+        }.fork
+        _ <- ZIO.sleep(300.millis)
+        _ <- ZIO.foreachDiscard(1 to sent)(i => notify(s"burst-$i"))
+        _ <- ZIO.sleep(1.second)
+        after <- overflow.value
+        _ <- fiber.interrupt
+      yield assertTrue(
+        // Exact, not a lower bound: with a 5s poll timeout against a burst that lands well
+        // inside it, every poll before the burst is drained comes back non-empty, so the
+        // heartbeat never fires and never competes for a slot either.
+        after.count - before.count == (sent - capacity).toDouble,
+      )
     },
     test("drops rather than grows without bound when a subscriber never catches up") {
       // A subscriber stuck on the opening Resubscribed forever, rather than merely slow: it
