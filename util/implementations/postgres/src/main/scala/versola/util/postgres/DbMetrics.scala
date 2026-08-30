@@ -16,12 +16,31 @@ object DbMetrics:
   private val notificationListenerReconnectsTotal =
     Metric.counter("db_notification_listener_reconnects_total").tagged(MetricLabel("db_system", "postgresql"))
 
-  /** Whether the `LISTEN` connection is currently up. Notifications failing to arrive is
-    * otherwise indistinguishable from nothing having happened, so this is the only signal
-    * that propagation has stopped.
+  /** How many times a connection was torn down for going silent: still open, never erroring,
+    * and no longer delivering. Distinct from a reconnect, which counts connections that
+    * failed loudly, and the only one of the two that can point at the network path rather
+    * than at the database.
+    */
+  private val notificationListenerSilentTotal =
+    Metric.counter("db_notification_listener_silent_total").tagged(MetricLabel("db_system", "postgresql"))
+
+  /** Whether the `LISTEN` connection is currently up, in the sense of proven to be
+    * delivering rather than merely open: a connection that stops carrying notifications is
+    * failed and replaced, so this reads 0 while that is happening.
+    *
+    * Written by the fiber that owns the connection, not by the subscriber's error path, so it
+    * describes the connection rather than how promptly anyone noticed. A subscriber blocked
+    * on its own reload cannot hold this at 1 over a connection that has already died.
     */
   private val notificationListenerConnectedGauge =
     Metric.gauge("db_notification_listener_connected").tagged(MetricLabel("db_system", "postgresql"))
+
+  /** How many notifications were dropped because a subscriber fell far enough behind to fill
+    * the bounded queue between it and the polling fiber. Non-zero means that subscriber is
+    * now relying on its own periodic reload rather than the push path to catch up.
+    */
+  private val notificationListenerQueueOverflowTotal =
+    Metric.counter("db_notification_listener_queue_overflow_total").tagged(MetricLabel("db_system", "postgresql"))
 
   def notificationReceived: UIO[Unit] =
     notificationsReceivedTotal.increment
@@ -29,8 +48,14 @@ object DbMetrics:
   def notificationListenerReconnected: UIO[Unit] =
     notificationListenerReconnectsTotal.increment
 
+  def notificationListenerWentSilent: UIO[Unit] =
+    notificationListenerSilentTotal.increment
+
   def notificationListenerConnected(connected: Boolean): UIO[Unit] =
     notificationListenerConnectedGauge.set(if connected then 1 else 0)
+
+  def notificationListenerQueueOverflow(dropped: Int): UIO[Unit] =
+    notificationListenerQueueOverflowTotal.incrementBy(dropped.toLong)
 
   private def histogram(repository: String, operation: String, outcome: String) =
     Metric
