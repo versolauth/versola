@@ -116,6 +116,7 @@ type ClientsResponse = {
     scope: string[];
     permissions: string[];
     secretRotation: boolean;
+    accessTokenTtl: number;
     theme: string;
     otpTemplateId: string;
     authFlow?: BackendAuthFlow | null;
@@ -664,7 +665,10 @@ export async function fetchClients(tenantId: string, offset = 0, limit = DEFAULT
         redirectUris: [...client.redirectUris],
         scope: [...client.scope],
         hasPreviousSecret: supplement?.hasPreviousSecret ?? client.secretRotation,
-        accessTokenTtl: supplement?.accessTokenTtl ?? 3600,
+        // The backend now returns the real value directly (previously it didn't, and this
+        // fell back to a page-memory-only cache that was empty — and silently wrong — after
+        // every reload; see clientSupplementStore below).
+        accessTokenTtl: client.accessTokenTtl,
         refreshTokenTtl: supplement?.refreshTokenTtl ?? client.refreshTokenTtl ?? DEFAULT_REFRESH_TOKEN_TTL_SECONDS,
         permissions: [...client.permissions],
         theme: client.theme ?? 'default',
