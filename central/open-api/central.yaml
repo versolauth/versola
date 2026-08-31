@@ -26,8 +26,10 @@ info:
       /configuration/tenants?tenantId=acme`, not `DELETE /configuration/tenants/acme`.
     * Localized text is a map of BCP 47 language tag to string: `{"en": "Name", "ru": "Имя"}`.
     * `PUT` bodies that contain `add`/`remove`/`delete` members are patches: only the listed
-      members change. Nullable patch fields follow JSON merge-patch semantics — key absent
-      means "leave unchanged", `null` means "clear", a value means "set".
+      members change. Some nullable fields follow JSON merge-patch semantics — key absent
+      means "leave unchanged", `null` means "clear", a value means "set" — but others are
+      plain optional overwrites where `null` and absent both mean "leave unchanged"; each
+      operation states which applies to which field.
     * Secrets and private keys are returned exactly once, at creation or rotation time.
       Central stores only encrypted copies and cannot show them again.
   license:
@@ -328,8 +330,8 @@ paths:
       tags: [Resources]
       summary: Register a resource
       description: |
-        A non-internal resource is issued a secret that edge presents when calling it. The
-        plaintext is returned only here.
+        An internal resource is issued a secret that edge presents when calling it. The
+        plaintext is returned only here. Non-internal resources receive no secret.
       operationId: createResource
       requestBody:
         required: true
@@ -733,7 +735,10 @@ paths:
     post:
       tags: [Users]
       summary: Create a user
-      description: At least one of `email`, `phone` or `login` must be present.
+      description: |
+        At least one of `email`, `phone` or `login` should be present. This is not currently
+        enforced server-side: a request with none of them succeeds and creates a user with no
+        identifier, which `GET /users` can never find.
       operationId: createUser
       requestBody:
         required: true
@@ -947,6 +952,8 @@ paths:
       description: |
         Delivers a temporary password over the requested channel. The `show` channel returns
         the plaintext to the caller instead of delivering it and is rejected in production.
+        Omitting `channel` still creates the temporary password but delivers it nowhere and
+        returns nothing — always pass a channel, or the request silently locks the user out.
       operationId: resetUserPassword
       requestBody:
         required: true
@@ -1782,7 +1789,10 @@ components:
         description:
           type: string
         edgeId:
-          description: The edge serving this tenant, or `null` when it is served by every edge.
+          description: |
+            The edge this tenant is bound to. Sync is edge-scoped: an edge only receives
+            tenants whose `edgeId` matches its own, so `null` means the tenant is not
+            assigned to any edge yet and no edge will serve it.
           oneOf:
             - $ref: '#/components/schemas/EdgeId'
             - type: 'null'
@@ -2078,7 +2088,7 @@ components:
           description: Seconds.
         refreshTokenTtl:
           type: [integer, 'null']
-          description: Seconds. `null` disables refresh tokens.
+          description: Seconds. `null` or omitted uses the default of 7776000 (90 days).
         theme:
           type: string
         authFlow:
@@ -2121,8 +2131,15 @@ components:
     UpdateClientRequest:
       type: object
       description: |
-        Members typed as nullable follow merge-patch semantics: absent leaves the value
-        unchanged, `null` clears it, a value sets it.
+        `redirectUris`, `scope` and `permissions` are add/remove patches (see their schemas).
+        `authFlow`, `registrationFlow`, `frontChannelLogoutUri`, `backChannelLogoutUri`,
+        `logoUri`, `policyUri`, `tosUri` and `consentFlow` follow merge-patch semantics: absent
+        leaves the value unchanged, `null` clears it, a value sets it.
+
+        Every other member is a plain optional overwrite: absent *or* `null` both leave the
+        current value unchanged, and a value sets it. There is no way to clear `clientName`,
+        `accessTokenTtl`, `refreshTokenTtl`, `theme`, `otpTemplateId` or
+        `frontChannelLogoutSessionRequired` through this endpoint.
       properties:
         clientId:
           $ref: '#/components/schemas/ClientId'
@@ -2314,7 +2331,7 @@ components:
             $ref: '#/components/schemas/ResourceEndpointResponse'
         internal:
           type: boolean
-          description: Internal resources are Versola's own services and are issued no secret.
+          description: Internal resources are Versola's own services and are issued a secret.
         secretRotation:
           type: boolean
       required: [resourceId, resource, audience, endpoints, internal, secretRotation]
@@ -2399,7 +2416,7 @@ components:
         resourceId:
           $ref: '#/components/schemas/ResourceId'
         secret:
-          description: Absent for internal resources, which are issued no secret.
+          description: Present only for internal resources; non-internal resources are issued no secret.
           oneOf:
             - $ref: '#/components/schemas/Secret'
             - type: 'null'
@@ -2892,6 +2909,10 @@ components:
           type: integer
           format: int64
         channel:
+          description: |
+            When omitted, no password is delivered and none is returned, but the temporary
+            password is still created and takes priority over the user's current password
+            at login until it expires.
           oneOf:
             - $ref: '#/components/schemas/DeliveryChannel'
             - type: 'null'
