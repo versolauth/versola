@@ -1,9 +1,7 @@
 package versola.migrate
 
 import com.typesafe.config.ConfigFactory
-import versola.util.postgres.PostgresHikariDataSource
-import zio.*
-import zio.config.typesafe.FromConfigSourceTypesafe
+import org.flywaydb.core.Flyway
 
 import java.io.File
 
@@ -19,14 +17,17 @@ import java.io.File
   * files the real services will start from means there is no way for what this applies to drift
   * from what they expect to find already there.
   *
-  * Ships as a jar inside versola-tools (reusing `util`/`util-postgres` -- see build.sbt's
-  * `migrate-tool` project) rather than as three separate one-shot invocations of
-  * auth/central/edge's own images, precisely so it can bundle all three services' migrations
-  * together without any of them needing to know about the others (see
-  * `PostgresHikariDataSource.transactor`'s own comment on why `migrationLocations` must be passed
-  * explicitly here rather than relying on auto-detection).
+  * A plain synchronous `main`, not a ZIO app, and Flyway is handed a raw JDBC URL/user/password
+  * rather than going through `PostgresHikariDataSource`/HikariCP (see build.sbt's `migrateTool`
+  * project for the full reasoning) -- this runs once, sequentially, applying at most a handful of
+  * migrations per service before exiting; there is no concurrent workload here for a connection
+  * pool to serve, and pulling in `util`/`util-postgres` for one just to reuse their Flyway
+  * plumbing is what dragged ZIO/HikariCP/CEL onto this image's classpath and broke jlink for it.
+  * The Flyway configuration below is therefore its own copy, not a call into
+  * `PostgresHikariDataSource.layer` -- see the comment on `migrate` below for how it deliberately
+  * differs from that copy, not just duplicates it.
   */
-object MigrateTool extends ZIOAppDefault:
+object MigrateTool:
 
   private case class Target(serviceName: String, configPath: String, migrationsLocation: String)
 
@@ -34,7 +35,7 @@ object MigrateTool extends ZIOAppDefault:
   // auth.conf/central.conf/edge.conf inside this image -- see docker/Dockerfile.tools' WORKDIR
   // (/opt/versola-tools). Overridable via CONFIG_DIR for anyone invoking this image directly
   // instead of through those compose fragments.
-  private val configDir = Option(java.lang.System.getenv("CONFIG_DIR")).getOrElse("/opt/versola-tools/config")
+  private val configDir = Option(System.getenv("CONFIG_DIR")).getOrElse("/opt/versola-tools/config")
 
   private val targets = List(
     Target("auth", s"$configDir/auth.conf", "filesystem:./auth/implementations/postgres/migrations"),
@@ -42,45 +43,70 @@ object MigrateTool extends ZIOAppDefault:
     Target("edge", s"$configDir/edge.conf", "filesystem:./edge/implementations/postgres/migrations"),
   )
 
-  /** Builds a ConfigProvider straight from a mounted .conf file, the same shape VersolaApp's own
-    * `configProvider` builds from `ENV_CONFIG`/`env.path` -- `.kebabCase` matters here for the
-    * same reason it does there: `PostgresConfig`'s fields (`maximumPoolSize`, etc.) are looked up
-    * against the config's kebab-case HOCON keys (`maximum-pool-size`, etc.).
-    *
-    * Deliberately not `ConfigFactory.parseFile(...).resolve()` without first checking the file
-    * exists -- typesafe-config silently returns an *empty* config for a missing file rather than
-    * failing, which would otherwise surface here as an opaque "postgres.url is not set" instead of
-    * naming the actual missing mount.
+  /** Just the three fields Flyway itself needs -- unlike `PostgresConfig` (which HikariCP's pool
+    * tuning also needs: max-pool-size, connection-timeout, etc.), there is no pool here to tune.
+    * `password` stays a plain `String`, not wrapped in `Secret` -- that newtype exists to keep a
+    * long-lived config value out of a service's own logs/toString over its whole process
+    * lifetime; this process reads it once, hands it straight to Flyway, and exits.
     */
-  private def configProvider(path: String): Task[ConfigProvider] =
-    for
-      file <- ZIO.succeed(new File(path))
-      _ <- ZIO
-        .fail(new java.io.FileNotFoundException(s"Config file not found: $path"))
-        .unless(file.isFile)
-      typesafe <- ZIO.attempt(ConfigFactory.parseFile(file).resolve())
-      cp <- ConfigProvider.fromTypesafeConfigZIO(typesafe).map(_.kebabCase)
-    yield cp
+  private case class PgConnection(url: String, user: String, password: String)
 
-  private def migrate(target: Target): Task[Unit] =
-    for
-      _ <- ZIO.logInfo(s"${target.serviceName}: applying migrations from ${target.configPath}")
-      cp <- configProvider(target.configPath)
-      _ <- ZIO
-        .scoped {
-          PostgresHikariDataSource
-            .transactor(
-              serviceName = Some(target.serviceName),
-              migrate = true,
-              migrationLocations = Some(List(target.migrationsLocation)),
-            )
-            .build
-        }
-        .provide(ZLayer.succeed(cp))
-      _ <- ZIO.logInfo(s"${target.serviceName}: migrations complete")
-    yield ()
+  /** Reads just the `postgres.url`/`postgres.user`/`postgres.password` fields straight off the
+    * mounted .conf file via plain typesafe-config -- no `ConfigProvider`/kebab-case conversion
+    * needed the way `PostgresHikariDataSource.transactor` needs for `PostgresConfig`'s derived
+    * decoder, since these three keys are looked up by literal HOCON path instead of derived from
+    * a case class' camelCase field names.
+    *
+    * Deliberately checks the file exists before parsing it -- typesafe-config silently returns
+    * an *empty* config for a missing file rather than failing, which would otherwise surface here
+    * as an opaque "No configuration setting found for key 'postgres'" instead of naming the
+    * actual missing mount.
+    */
+  private def readConnection(path: String): PgConnection =
+    val file = File(path)
+    if !file.isFile then throw java.io.FileNotFoundException(s"Config file not found: $path")
+    val conf = ConfigFactory.parseFile(file).resolve()
+    PgConnection(
+      url = conf.getString("postgres.url"),
+      user = conf.getString("postgres.user"),
+      password = conf.getString("postgres.password"),
+    )
 
-  override def run: ZIO[Environment & ZIOAppArgs & Scope, Any, Any] =
-    ZIO
-      .foreachDiscard(targets)(migrate)
-      .tapErrorCause(cause => ZIO.logErrorCause("versola-tools migrate: failed", cause))
+  private def migrate(target: Target): Unit =
+    println(s"${target.serviceName}: applying migrations from ${target.configPath}")
+    val connection = readConnection(target.configPath)
+
+    val flyway = Flyway
+      .configure()
+      .locations(target.migrationsLocation)
+      .dataSource(connection.url, connection.user, connection.password)
+      // Never disabled, unlike `PostgresHikariDataSource.layer`'s own `validateOnMigrate` (which
+      // services can turn off in tests/development) -- this is the one place that actually
+      // mutates a real schema, so there's no context where skipping Flyway's own pre-migrate
+      // validation is the right call.
+      .validateOnMigrate(true)
+      .cleanDisabled(true)
+      .validateMigrationNaming(false)
+      // No `.ignoreMigrationPatterns(...)` override here, unlike the services' own `validate()`
+      // path -- that path deliberately tolerates a database ahead of the build it's running (see
+      // its own comment: a rollback deploy must still start against a schema a newer version
+      // already migrated). This tool has no such excuse: it's the one place that actually applies
+      // migrations, always meant to run against the SAME version's own migrations, never to roll
+      // one back. Leaving Flyway's defaults in place (only `*:future` is ignored out of the box;
+      // `*:missing` is not) means an unresolvable applied migration -- e.g. this image's
+      // migrations mount pointing at the wrong thing entirely -- fails loudly here instead of
+      // being silently waved through, which is the stricter behavior this tool should have and
+      // the per-service startup check specifically should not.
+      .outOfOrder(true)
+      .load()
+
+    flyway.migrate()
+    println(s"${target.serviceName}: migrations complete")
+
+  def main(args: Array[String]): Unit =
+    try targets.foreach(migrate)
+    catch
+      case t: Throwable =>
+        System.err.println(s"versola-tools migrate: failed -- ${t.getMessage}")
+        t.printStackTrace()
+        sys.exit(1)

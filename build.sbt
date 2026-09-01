@@ -125,23 +125,36 @@ lazy val `central-postgres-impl` = project.in(centralImplementations / "postgres
 
 // Standalone migration runner shipped inside versola-tools (see docker/Dockerfile.tools and
 // docker/versola-tools/entrypoint.sh's "migrate" dispatch branch), backing `versola migrate`.
-// Reuses util/util-postgres rather than depending on auth/central/edge's own app modules --
-// it only ever needs PostgresHikariDataSource.transactor plus a HOCON ConfigProvider built from
-// each service's already-generated .conf file, none of their actual routes/services/repositories.
 // Not part of `root`'s aggregate, same reasoning as `tools`/`e2e` below -- staged explicitly in
 // CI (`sbt migrate-tool/stage`), not part of the default `sbt compile`/`sbt test` loop.
+//
+// Deliberately does NOT use `commonSettings` (unlike every other project here except `tools`,
+// which has the same reason -- see its own comment) and does NOT `.dependsOn(util,
+// util-postgres)`. An earlier version did both, to reuse PostgresHikariDataSource's ZIO-based
+// Flyway setup instead of copying it -- but `commonSettings` alone pulls in the whole
+// `Dependencies.core` list (ZIO, HikariCP, WebAuthn, JWT, mail, ...) regardless of `dependsOn`,
+// and `util` additionally drags in CEL, transitively pulling okhttp/okio with
+// Automatic-Module-Name metadata `jdeps` can't resolve. That combination is what broke
+// jlink for this image ("Module okio not found, required by okhttp3" -- see
+// docker/Dockerfile.tools' git history). This is a one-shot batch job that only ever needs
+// Flyway, the Postgres driver, and a HOCON parser to read each service's already-generated
+// .conf file -- MigrateTool.scala now has its own small, synchronous copy of the Flyway
+// configuration instead (see its own comment on why that copy is intentional, not an
+// oversight), built only from the minimal `Dependencies.migrateTool` list below.
 lazy val migrateTool = project
   .in(file("migrate-tool"))
   .enablePlugins(JavaAppPackaging)
   .settings(
     name := "migrate-tool",
-    commonSettings,
-    libraryDependencies ++= Dependencies.database.postgres,
+    scalaVersion := "3.8.1",
+    scalacOptions ++= Seq(
+      "-deprecation",
+      "-source:future",
+      "-new-syntax",
+      "-indent",
+    ),
+    libraryDependencies ++= Dependencies.migrateTool,
     Compile / mainClass := Some("versola.migrate.MigrateTool"),
-  )
-  .dependsOn(
-    util % CompileTest,
-    `util-postgres` % CompileTest,
   )
 
 lazy val e2e = project

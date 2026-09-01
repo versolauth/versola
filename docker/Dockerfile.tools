@@ -1,7 +1,9 @@
 # versola-tools: generates auth.conf/central.conf/edge.conf (via
 # scripts/gen-env.scala, answered "docker-local") plus compose.fragment.yml
 # and nginx.conf, everything "versola bootstrap local <version>" (see
-# versola-cli) needs to bring up a local stack with nothing but Docker.
+# versola-cli) needs to bring up a local stack with nothing but Docker. Also
+# ships migrate-tool (see build.sbt's `migrateTool` project), which backs
+# `versola migrate`.
 #
 # No scala-cli in this image. gen-env.scala is compiled ahead of time as a
 # regular sbt module (see build.sbt's `tools` project, whose
@@ -14,96 +16,147 @@
 # of this file's comments cared about; `scala-cli run scripts/gen-env.scala`
 # (local dev, see develop.md) compiles that exact same file.
 #
-# The runtime used to be a custom jlink image on Alpine instead of a stock
-# JRE (this is a one-shot bootstrap tool, not a long-lived service, so a
-# full JRE was mostly wasted weight on modules gen-env.scala never
-# touches). That stopped working once migrate-tool (see build.sbt) started
-# shipping in this same image: `jdeps --print-module-deps` against
-# migrate-tool's own dependency tree (ZIO, Flyway, the Postgres JDBC
-# driver, HikariCP -- pulled in transitively via util/util-postgres, which
-# also drag in things migrate-tool itself never touches, like the CEL
-# evaluator and its own okhttp/okio dependency) hit a jar whose
-# Automatic-Module-Name metadata jdeps couldn't resolve ("Module okio not
-# found, required by okhttp3"), failing the build outright rather than
-# just producing a larger-than-ideal module list. Rather than chase that
-# down jar-by-jar (excluding CEL/JSON-schema/zio-http/OpenTelemetry from
-# migrate-tool's classpath might fix this one, but nothing guarantees the
-# next transitive dependency added to `util` won't break jdeps' module
-# resolution the same way again), this now uses the same plain
-# `eclipse-temurin:25-jre` auth/central/edge already use -- proven to work
-# in this repo already, and no longer worth optimizing away for an image
-# that runs briefly and infrequently.
+# The runtime is a custom jlink image on Alpine, not a stock JRE: this is a
+# one-shot bootstrap/migration tool (runs briefly, per "versola configure"/
+# "versola migrate" invocation, not a long-lived service), so a full JRE is
+# mostly wasted weight on modules neither genEnv nor migrate-tool ever
+# touch. This used to be a stock `eclipse-temurin:25-jre` instead, for one
+# release: migrate-tool originally reused `util`/`util-postgres`'s
+# ZIO-based Flyway setup rather than configuring Flyway itself, which
+# pulled in ZIO, HikariCP, and -- transitively, via `util`'s CEL dependency
+# -- okhttp/okio with Automatic-Module-Name metadata `jdeps` couldn't
+# resolve ("Module okio not found, required by okhttp3"), failing the
+# jlink build outright. migrate-tool now configures Flyway directly with
+# its own minimal dependency set (see build.sbt's `migrateTool` project and
+# `Dependencies.migrateTool`) instead of reaching for `util`/`util-postgres`,
+# so jdeps has a lean, resolvable classpath to work from again.
 #
-# Pinned by digest, not a floating tag -- same reproducibility reasoning
-# as auth/central/edge's Dockerfiles: this image is published per release
-# tag and expected to still build the same way if an old tag is ever
-# rebuilt. Same digest those three already use, not a coincidence -- one
-# fewer base image to keep in sync.
-FROM eclipse-temurin:25-jre@sha256:f19dbf0a22d0b3658fda48ce7d7181df05ad14bda151dd5ad12cc09d1451c70e
+# Both stages pinned by digest, not floating tags -- same reproducibility
+# reasoning as auth/central/edge's Dockerfiles: this image is published
+# per release tag and expected to still build the same way if an old tag
+# is ever rebuilt.
+
+# ── jlink stage: build a minimal custom JRE ──────────────────────────────
+FROM eclipse-temurin:25-jdk-alpine@sha256:5ecfde8e5ecde5954ea3721155b345ef56c1d579b940c761318ad4c05959a151 AS jlink
+
+WORKDIR /work
+COPY scripts/target/universal/stage stage
+# migrate-tool's jars are analyzed separately from genEnv's above -- see the runtime stage's own
+# comment on why the two are kept apart on the classpath, not merged into one lib/ directory.
+# jdeps needs both directories on --class-path regardless, so it can resolve classes each jar set
+# references in the other (there are none today, but nothing enforces that staying true).
+COPY migrate-tool/target/universal/stage/lib migrate-lib
+
+# jdeps inspects the staged jars' actual bytecode to find which JDK modules they touch, instead of
+# guessing which ones genEnv/migrate-tool need by hand. --recursive so it also follows what the
+# classpath jars (not just each app's own compiled classes) pull in. Both apps' jars are passed to
+# one jdeps invocation so the resulting module list covers whichever of the two this image
+# actually runs -- there is only one jlinked JRE in the runtime stage below, shared by both.
+# jdk.unsupported is added on top of whatever jdeps finds -- it's needed for sun.misc.Unsafe,
+# which the Scala runtime (scala-library, bundled alongside both apps' compiled classes) uses
+# internally for lazy vals (see the "terminally deprecated" warning that shows up on auth/central/
+# edge too); jdeps' static bytecode analysis doesn't reliably catch that kind of
+# reflective/internal-API usage.
+#
+# `tail -n 1`, not the raw output, feeds --add-modules below -- migrate-lib's jars (Jackson's,
+# specifically, pulled in transitively by Flyway/the Postgres driver) are multi-release JARs, and
+# combined with `--multi-release 25` this jdeps prints "Warning: split package: ..." advisory
+# lines to the SAME stdout stream --print-module-deps writes its actual comma-separated result
+# to, ahead of it -- genEnv's own jars never triggered this, so the single-app version of this
+# line never needed to filter anything. These warnings are harmless (they don't stop jdeps from
+# resolving a module list -- confirmed by hand: the real result still prints, last, as one clean
+# line), but capturing the whole stream verbatim feeds jlink a multi-line blob instead of a module
+# list, which fails outright ("Module Warning: split package: ... not found") rather than just
+# producing a warning of its own. jdeps always prints its real answer as the final line, so this
+# only needs `tail -n 1`, not real parsing.
+RUN jdeps --multi-release 25 --recursive --ignore-missing-deps --print-module-deps \
+      --class-path 'stage/lib/*:migrate-lib/*' stage/lib/*.jar migrate-lib/*.jar > /tmp/jdeps-output.txt 2>&1 && \
+    MODULES="$(tail -n 1 /tmp/jdeps-output.txt)" && \
+    echo "Detected modules: $MODULES" && \
+    jlink \
+      --add-modules "$MODULES,jdk.unsupported" \
+      --strip-debug \
+      --no-header-files \
+      --no-man-pages \
+      --compress=2 \
+      --output /opt/jre-minimal
+
+# ── runtime stage ─────────────────────────────────────────────────────────
+FROM alpine:3.21@sha256:48b0309ca019d89d40f670aa1bc06e426dc0931948452e8491e3d65087abc07d
 
 ARG VERSION=dev
 ENV VERSION=${VERSION}
+ENV JAVA_HOME=/opt/java
+ENV PATH="$JAVA_HOME/bin:$PATH"
+
+COPY --from=jlink /opt/jre-minimal /opt/java
 
 WORKDIR /opt/versola-tools
 
-# Staged application (see ci-cd.yml) -- carved back out of .dockerignore's
-# blanket `target/` exclusion for exactly this path. entrypoint.sh invokes
-# the app directly via `java -cp 'lib/*' genEnv` rather than the
-# sbt-native-packager launcher at bin/tools -- that launcher's generated
-# shebang is `#!/usr/bin/env bash`, and this base image (like auth/
-# central/edge's) has no bash either, only /bin/sh -- lib/ is used
-# directly instead, bin/tools is simply unused here, no need to chmod or
-# otherwise touch it.
+# Staged application (see ci-cd.yml) -- carved back out of .dockerignore's blanket `target/`
+# exclusion for exactly this path. entrypoint.sh invokes the app directly via
+# `java -cp 'lib/*' genEnv` rather than the sbt-native-packager launcher at bin/tools -- that
+# launcher's generated shebang is `#!/usr/bin/env bash`, and Alpine ships only busybox's ash as
+# /bin/sh, no bash (confirmed by hand: "env: can't execute 'bash'") -- lib/ is used directly
+# instead, bin/tools is simply unused here, no need to chmod or otherwise touch it.
 COPY scripts/target/universal/stage .
-# MigrateTool's jars go in their own directory, not merged into lib/ above --
-# gen-env.scala's `tools` sbt project deliberately excludes Dependencies.core
-# (see build.sbt's comment on that project) to keep its own classpath lean,
-# while migrate-tool pulls in the full ZIO/Flyway/Postgres stack; merging the
-# two risks silently shadowing one jar's classes with another's under a
-# colliding name. Kept separate, entrypoint.sh's "migrate" branch below
-# points `-cp` at this directory specifically, `lib/*` (for genEnv) is
-# untouched.
+# MigrateTool's jars go in their own directory, not merged into lib/ above -- gen-env.scala's
+# `tools` sbt project and migrate-tool's own project pull in two unrelated dependency sets (see
+# build.sbt's comments on both); merging them risks silently shadowing one jar's classes with
+# another's under a colliding name for no benefit, since nothing here ever needs both on one
+# classpath at once (entrypoint.sh's "migrate" branch below points `-cp` at this directory
+# specifically, `lib/*` for genEnv is untouched).
 COPY migrate-tool/target/universal/stage/lib migrate-lib
-# Each service's own Flyway migrations, bundled together so migrate-tool can
-# apply all three schemas from this one image (see MigrateTool.scala's own
-# comment on why `migrationLocations` has to be passed explicitly rather
-# than relying on auto-detection once more than one service's migrations
-# share a filesystem). Same relative shape auth/central/edge's own images
-# already use for their own single migrations directory (see
-# Dockerfile.auth/.central/.edge), just rooted at /opt/versola-tools
-# instead of /app.
+# Each service's own Flyway migrations, bundled together so migrate-tool can apply all three
+# schemas from this one image (see MigrateTool.scala's own comment on why `migrationLocations` --
+# now just a literal `filesystem:` path per target -- has to name each service's own directory
+# explicitly rather than relying on auto-detection once more than one service's migrations share
+# a filesystem). Same relative shape auth/central/edge's own images already use for their own
+# single migrations directory (see Dockerfile.auth/.central/.edge), just rooted at
+# /opt/versola-tools instead of /app.
 COPY auth/implementations/postgres/migrations auth/implementations/postgres/migrations
 COPY central/implementations/postgres/migrations central/implementations/postgres/migrations
 COPY edge/implementations/postgres/migrations edge/implementations/postgres/migrations
 COPY docker/versola-tools/nginx.conf.template .
 COPY docker/versola-tools/compose.fragment.yml.template .
 COPY docker/versola-tools/compose.fragment.vps.yml.template .
-# Was missing from this Dockerfile before this rewrite, even though
-# entrypoint.sh has always copied it through to $OUT_DIR -- a pre-existing
-# gap, not something introduced here; fixed while this file was already
-# being touched.
 COPY docker/versola-tools/proxy_params.conf.template .
 COPY docker/versola-tools/openbao.hcl.template .
 COPY docker/versola-tools/openbao.hcl.vps.template .
 COPY docker/versola-tools/entrypoint.sh .
 RUN chmod +x entrypoint.sh
 
-# Smoke-test the actual staged app against this runtime during `docker
-# build`, the same way the old scala-cli version did -- so a broken build
-# fails loudly here instead of only surfacing the first time someone runs
-# "versola bootstrap local" or "versola configure vps". Both
-# non-interactive targets are exercised, not just docker-local, since
-# vps's branch of gen-env.scala (Postgres password/admin bootstrap
-# password placeholders, host-network URL defaults) is new code this same
-# build could just as easily break. Output discarded -- gen-env.scala
-# generates fresh random secrets/keys every run, and every real
-# deployment needs its own, not whatever got baked in here.
+# Smoke-test the jlinked runtime against both staged apps during `docker build`, so a broken build
+# (e.g. jlink's --add-modules list missing something either app/its dependencies need, which
+# jdeps' static analysis can miss for reflective/internal-API usage) fails loudly here instead of
+# only surfacing the first time someone runs "versola bootstrap local"/"versola migrate". Both
+# non-interactive genEnv targets are exercised, not just docker-local, since vps's branch of
+# gen-env.scala (Postgres password/admin bootstrap password placeholders, host-network URL
+# defaults) is new code this same build could just as easily break. genEnv's output is discarded
+# -- it generates fresh random secrets/keys every run, and every real deployment needs its own,
+# not whatever got baked in here.
 RUN printf 'docker-local\n' | java -cp 'lib/*' genEnv && rm -rf .local
-# AUTH_URL has no sensible default (it's the deploying party's own
-# domain -- see gen-env.scala's requiredEnv), so vps's branch now
-# requires it to even run. A placeholder is fine here: this is a smoke
-# test, not a real deployment, and its output is discarded either way
-# (see the comment above).
+# AUTH_URL has no sensible default (it's the deploying party's own domain -- see gen-env.scala's
+# requiredEnv), so vps's branch now requires it to even run. A placeholder is fine here: this is a
+# smoke test, not a real deployment, and its output is discarded either way (see the comment
+# above).
 RUN printf 'vps\n' | AUTH_URL=https://smoke-test.invalid POSTGRES_HOST=127.0.0.1:5432 java -cp 'lib/*' genEnv && rm -rf .local
+# migrate-tool has no non-destructive smoke test available here the way genEnv does -- running it
+# for real needs a live Postgres and mounted .conf files (both only exist once versola-cli
+# actually invokes this image via the `migrate` compose service), and there's no dry-run mode to
+# fall back to instead. What this can still catch at build time: a classpath/linkage break (a
+# missing jar, a jlinked module gap -- jdk.unsupported not making it into --add-modules would
+# surface here as a NoClassDefFoundError on the Scala runtime's own use of it, for example).
+# Running with no CONFIG_DIR mounted is expected to fail -- there's no auth.conf here to read --
+# but it should fail for THAT reason, with MigrateTool's own clear message, not die earlier with a
+# classpath error. The runtime stage has no javac/jshell (this is a jlinked JRE, not a JDK) to
+# write a throwaway probe class against, so this asserts on the real failure message instead.
+RUN OUTPUT=$(java -cp 'migrate-lib/*' versola.migrate.MigrateTool 2>&1); \
+    STATUS=$?; \
+    echo "$OUTPUT"; \
+    if [ "$STATUS" -ne 1 ] || ! echo "$OUTPUT" | grep -q "Config file not found"; then \
+      echo "migrate-tool smoke test failed: expected exit 1 with 'Config file not found', got exit $STATUS" >&2; \
+      exit 1; \
+    fi
 
 ENTRYPOINT ["./entrypoint.sh"]

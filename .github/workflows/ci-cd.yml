@@ -777,9 +777,12 @@ jobs:
           path: migrate-tool/target/universal/stage
 
       # See the identical comment in docker-auth's "Set up QEMU" step.
-      # This job needs it more than the others: docker/Dockerfile.tools
-      # runs jlink/jdeps and then `java -cp 'lib/*' genEnv` twice during
-      # the build, all of which execute under emulation on the arm64 half.
+      # This job needs it more than the others: docker/Dockerfile.tools runs
+      # jlink/jdeps once (against both genEnv's and migrate-tool's jars
+      # together -- see its own comment), then three smoke tests --
+      # `java -cp 'lib/*' genEnv` twice (docker-local and vps) and
+      # migrate-tool's own check once -- all of which execute under
+      # emulation on the arm64 half.
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
