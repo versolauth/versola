@@ -54,21 +54,21 @@ on run argv
   set uiRoot to quoted form of (projectRoot & "/central-ui")
 
   tell application "Terminal"
-    do script "echo '[start-local] Starting Central'; cd " & root & " && PORT=9001 DPORT=9002 sbt --no-server -Denv.path=central/dev/env.conf 'project central-postgres-impl; run'"
+    do script "echo '[start-local] Starting Central'; cd " & root & " && PORT=9001 DPORT=9002 RUN_MIGRATIONS=true sbt --no-server -Denv.path=central/dev/env.conf 'project central-postgres-impl; run'"
   end tell
 
   do shell script "i=0; while [ \"$i\" -lt 180 ]; do /usr/bin/curl -s -o /dev/null --connect-timeout 1 --max-time 2 http://localhost:9001 && exit 0; i=$((i + 1)); sleep 1; done; exit 1"
   delay 10
 
   tell application "Terminal"
-    do script "echo '[start-local] Starting Auth'; cd " & root & " && PORT=9003 DPORT=9004 sbt --no-server -Denv.path=auth/dev/env.conf 'project auth-postgres-impl; run'"
+    do script "echo '[start-local] Starting Auth'; cd " & root & " && PORT=9003 DPORT=9004 RUN_MIGRATIONS=true sbt --no-server -Denv.path=auth/dev/env.conf 'project auth-postgres-impl; run'"
   end tell
 
   do shell script "i=0; while [ \"$i\" -lt 180 ]; do /usr/bin/curl -s -o /dev/null --connect-timeout 1 --max-time 2 http://localhost:9003 && exit 0; i=$((i + 1)); sleep 1; done; exit 1"
   delay 10
 
   tell application "Terminal"
-    do script "echo '[start-local] Starting Edge'; cd " & root & " && PORT=9005 DPORT=9006 sbt --no-server -Denv.path=edge/dev/env.conf 'project edge-postgres-impl; run'"
+    do script "echo '[start-local] Starting Edge'; cd " & root & " && PORT=9005 DPORT=9006 RUN_MIGRATIONS=true sbt --no-server -Denv.path=edge/dev/env.conf 'project edge-postgres-impl; run'"
     do script "echo '[start-local] Starting Central UI'; cd " & uiRoot & " && npm run dev"
     activate
   end tell

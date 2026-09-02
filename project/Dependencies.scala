@@ -27,6 +27,7 @@ object Versions {
   val javamail = "2.0.1"
   val cel = "0.12.0"
   val jsonSchemaValidator = "2.0.4"
+  val typesafeConfig = "1.4.3"
 }
 
 object Dependencies {
@@ -85,6 +86,26 @@ object Dependencies {
 
   val cel = Seq(
     "dev.cel" % "cel" % Versions.cel,
+  )
+
+  // migrate-tool's own dependency set -- deliberately NOT `database.postgres` above (that
+  // includes magnumpg, a SQL query library migrate-tool has no use for -- it never runs a query,
+  // only Flyway.migrate()) and deliberately NOT anything from `core`/`http` (ZIO, HikariCP, and
+  // everything those pull in transitively, including CEL's own okhttp/okio -- see the long
+  // comment on why migrate-tool used to depend on `util`/`util-postgres` for this instead, and
+  // why that broke jlink). This list is meant to be read as the complete runtime classpath: if a
+  // future change needs something not listed here, it should be added explicitly, not pulled in
+  // by reaching for `core`/`http` again.
+  val migrateTool = Seq(
+    "org.postgresql" % "postgresql" % Versions.postgresql,
+    "org.flywaydb" % "flyway-database-postgresql" % Versions.flyway,
+    "org.flywaydb" % "flyway-core" % Versions.flyway,
+    // Same library `util`'s VersolaApp and edge-postgres-impl's PostgresEdgeApp already use to
+    // parse HOCON -- but declared directly here rather than picked up transitively through
+    // `zio-config-typesafe` (part of the `http` Seq), which drags in zio-config and zio itself.
+    // Plain `com.typesafe:config` has no dependencies of its own, so this doesn't reintroduce the
+    // jlink problem the rest of this list was written to avoid.
+    "com.typesafe" % "config" % Versions.typesafeConfig,
   )
 
   // 2.x is the Jackson-2 line; 3.x requires Jackson 3 and would break the

@@ -70,14 +70,40 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
   def bindHost: String =
     Option(java.lang.System.getenv("BIND_HOST")).getOrElse("0.0.0.0")
 
-  def runMigrations: Boolean =
-    Option(java.lang.System.getenv("RUN_MIGRATIONS")) match
-      case None        => true
+  /** Reads a strictly-boolean environment variable, failing on anything that isn't exactly
+    * "true"/"false" rather than silently treating a typo ("True", "1", "yes") as the default. Both
+    * flags below gate whether this process touches the database at all, so guessing at a
+    * misspelled value is exactly the wrong thing to do.
+    *
+    * Deliberately NOT `value.toBooleanOption` -- that delegates to a case-insensitive comparison
+    * (`equalsIgnoreCase`, confirmed by inspecting scala-library's compiled `StringOps`), so it
+    * would accept "True"/"TRUE"/"False" despite this method's doc comment promising it won't
+    * (flagged in review). An exact match against the two literal values is what "strictly
+    * true/false" actually requires.
+    */
+  private def boolEnv(name: String, default: Boolean): Boolean =
+    Option(java.lang.System.getenv(name)) match
+      case None            => default
+      case Some("true")    => true
+      case Some("false")   => false
       case Some(value) =>
-        value.toBooleanOption.getOrElse:
-          throw new IllegalArgumentException(
-            s"RUN_MIGRATIONS must be 'true' or 'false', got: '$value'",
-          )
+        throw new IllegalArgumentException(
+          s"$name must be 'true' or 'false', got: '$value'",
+        )
+
+  /** Whether this process applies database migrations itself on startup.
+    *
+    * False does not mean "skip Flyway" -- it means the schema is validated instead of migrated
+    * (see `PostgresHikariDataSource.layer`), so a deployment whose separate `versola migrate` step
+    * was skipped fails at startup instead of at its first query.
+    *
+    * Defaults to false: applying a schema change should always be the deliberate, explicit
+    * `versola migrate` step (or whatever local setups wire up on their own), never an implicit
+    * side effect of starting a service. Local/dev setups that want the old "just migrate on
+    * boot" convenience should set RUN_MIGRATIONS=true explicitly rather than relying on a
+    * default that production can't safely share.
+    */
+  def runMigrations: Boolean = boolEnv("RUN_MIGRATIONS", default = false)
 
   def serverConfig: Server.Config =
     Server.Config.default.binding(bindHost, port)
@@ -85,6 +111,9 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
   def diagnosticsConfig: Server.Config =
     Server.Config.default.binding(bindHost, diagnosticsPort)
 
+  // Migrations are no longer ever run by way of starting one of these processes in a special
+  // mode -- see versola-tools' migrate-tool, which applies every service's migrations from one
+  // dedicated image instead (backs `versola migrate`). This always starts the real server.
   override def run: ZIO[Environment & ZIOAppArgs & zio.Scope, Any, Any] = {
     for
       opentelemetry <- ZIO.service[api.OpenTelemetry]

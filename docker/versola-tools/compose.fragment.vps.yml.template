@@ -47,6 +47,41 @@ services:
       - ./openbao.hcl:/openbao/config/openbao.hcl:ro
       - versola-openbao-file-vps:/openbao/file
 
+  # Backs `versola migrate` (see versola-cli's internal/deploy/migrate.go),
+  # which runs this via `docker compose run --rm migrate`. Same role as
+  # compose.fragment.yml.template's own `migrate` service -- see the long
+  # comment there for why it deliberately has no `container_name:`.
+  #
+  # No `depends_on:` here, unlike the docker-local counterpart -- there is
+  # no `postgres` service in this file to depend on (see the top-of-file
+  # comment: vps's Postgres is a native systemd install this CLI doesn't
+  # own or manage the lifecycle of, and is assumed already up).
+  #
+  # `network_mode: host`, same reasoning as every other service below --
+  # $POSTGRES_HOST (see gen-env.scala's vps branch) is only ever resolved
+  # into auth.conf/central.conf/edge.conf's own postgres.url at `configure`
+  # time, not passed again here, so this only needs the same network
+  # namespace those services already run in to reach it.
+  migrate:
+    image: ghcr.io/versolauth/versola-tools:${VERSION}
+    # No `platform:` pin, same reasoning as central/auth/edge below.
+    network_mode: host
+    command: ["migrate"]
+    # auth.conf/central.conf/edge.conf's postgres.password field is an
+    # OpenBao-resolved ${?POSTGRES_PASSWORD} placeholder here (unlike
+    # docker-local's literal value -- see gen-env.scala's secretField call
+    # on that field), so it needs env_file the same way central's own
+    # service does below. All three services' passwords are the one value
+    # gen-env.scala generates and reuses (see pgPassDefault), so any one of
+    # the three secrets files would do; central.secrets.env is picked
+    # because central is already the first service this file starts.
+    env_file:
+      - ./central.secrets.env
+    volumes:
+      - ./auth.conf:/opt/versola-tools/config/auth.conf:ro
+      - ./central.conf:/opt/versola-tools/config/central.conf:ro
+      - ./edge.conf:/opt/versola-tools/config/edge.conf:ro
+
   central:
     image: ghcr.io/versolauth/versola-central:${VERSION}
     # No `platform:` pin here or on auth/edge below -- these images are
@@ -69,6 +104,8 @@ services:
       # outside this host should ever reach at all -- would be open on
       # the VPS's public interface. See VersolaApp.bindHost's comment.
       BIND_HOST: "127.0.0.1"
+      # See compose.fragment.yml.template's own RUN_MIGRATIONS comment.
+      RUN_MIGRATIONS: "false"
     # Resolved by versola-cli against OpenBao, same as docker-local -- see
     # the comment on central's env_file in compose.fragment.yml.template.
     env_file:
@@ -98,6 +135,7 @@ services:
       # directly from outside, which is what a 0.0.0.0 bind here would
       # additionally allow, bypassing nginx's TLS/access control entirely.
       BIND_HOST: "127.0.0.1"
+      RUN_MIGRATIONS: "false"
     env_file:
       - ./auth.secrets.env
     volumes:
@@ -118,6 +156,7 @@ services:
       # separate public domain either (see gen-env.scala's vps branch:
       # edgeUrl equals authUrl), it's reached through nginx too.
       BIND_HOST: "127.0.0.1"
+      RUN_MIGRATIONS: "false"
     env_file:
       - ./edge.secrets.env
     volumes:

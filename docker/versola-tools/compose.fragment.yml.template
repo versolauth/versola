@@ -85,6 +85,44 @@ services:
     # caused a real "port already allocated" conflict during manual
     # testing on a machine that already ran its own Postgres.
 
+  # Backs `versola migrate` (see versola-cli's internal/deploy/migrate.go),
+  # which runs this via `docker compose run --rm migrate`. Applies each of
+  # auth/central/edge's own Flyway migrations against its own schema from
+  # one image (see docker/Dockerfile.tools and MigrateTool.scala) -- the
+  # deliberate, reviewable step that used to be an implicit side effect of
+  # starting a service (see central's own RUN_MIGRATIONS comment below).
+  #
+  # Deliberately no `container_name:` here, unlike every other service in
+  # this file -- `docker compose run` creates its own one-off container
+  # regardless, and a fixed name would only reintroduce the exact
+  # orphaned-container/concurrent-run collision that versola-cli's old
+  # MIGRATE_ONLY-based implementation had to work around by hand (checking
+  # `docker.IsRunning` before an unconditional `docker rm -f`). Compose
+  # already refuses to start a second `run` for the same one-off name at
+  # once; nothing here needs to duplicate that.
+  #
+  # `depends_on: postgres: condition: service_healthy`, not a manual wait
+  # loop -- `docker compose run` honours this the same way `up` does, so
+  # invoking this service already blocks until Postgres's own healthcheck
+  # (see postgres's own healthcheck above) passes, with no published port
+  # needed to poll it from outside the network.
+  migrate:
+    image: ghcr.io/versolauth/versola-tools:${VERSION}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # See gen-env.scala's pgUserDefault/pgPassDefault: docker-local's
+    # Postgres user/password are fixed, non-secret literals (matching
+    # postgres's own POSTGRES_USER/POSTGRES_PASSWORD above and what's
+    # already written literally into auth.conf/central.conf/edge.conf's own
+    # postgres blocks for this target) -- no OpenBao resolution needed here,
+    # unlike vps's counterpart in compose.fragment.vps.yml.template.
+    command: ["migrate"]
+    volumes:
+      - ./auth.conf:/opt/versola-tools/config/auth.conf:ro
+      - ./central.conf:/opt/versola-tools/config/central.conf:ro
+      - ./edge.conf:/opt/versola-tools/config/edge.conf:ro
+
   central:
     image: ghcr.io/versolauth/versola-central:${VERSION}
     container_name: versola-central
@@ -96,6 +134,21 @@ services:
       PORT: 8090
       DPORT: 8091
       CONFIG_PATH: /app/config/env.conf
+      # `versola up` assumes `versola migrate` already ran (see this
+      # file's own `migrate` service, and versola-tools' migrate-tool
+      # which backs it) -- this is NOT a duplicate safety net, it's the
+      # whole point of splitting them: a schema change should get its
+      # own explicit, reviewable step, not happen silently as a side
+      # effect of starting the app.
+      #
+      # A skipped migrate still fails loudly at startup rather than
+      # silently: "false" here means Flyway *validates* the schema
+      # instead of applying to it (see PostgresHikariDataSource.layer's
+      # own comment on that branch), so a missing migration surfaces
+      # here, named, before this container ever passes readiness --
+      # not later, on real traffic, at the first query against a table
+      # that was never created.
+      RUN_MIGRATIONS: "false"
     # Resolved by versola-cli against OpenBao, not written by this image --
     # central.conf's secret fields are ${?VAR} placeholders (see
     # gen-env.scala's secretField) that only resolve if the matching
@@ -135,6 +188,8 @@ services:
       PORT: 8080
       DPORT: 8081
       CONFIG_PATH: /app/config/env.conf
+      # See central's own RUN_MIGRATIONS comment above.
+      RUN_MIGRATIONS: "false"
     env_file:
       - ./auth.secrets.env
     volumes:
@@ -152,6 +207,8 @@ services:
       PORT: 8095
       DPORT: 8096
       CONFIG_PATH: /app/config/env.conf
+      # See central's own RUN_MIGRATIONS comment above.
+      RUN_MIGRATIONS: "false"
     env_file:
       - ./edge.secrets.env
     volumes:

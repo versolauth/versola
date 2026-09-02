@@ -264,7 +264,7 @@ services:
       PORT: 8080
       DPORT: 8081
       CONFIG_PATH: /app/config/env.conf
-      RUN_MIGRATIONS: ${RUN_MIGRATIONS:-true}
+      RUN_MIGRATIONS: ${RUN_MIGRATIONS:-false}
     volumes:
       - /opt/versola/config/auth.conf:/app/config/env.conf:ro
     mem_limit: 512m
@@ -278,7 +278,7 @@ services:
       PORT: 8090
       DPORT: 8091
       CONFIG_PATH: /app/config/env.conf
-      RUN_MIGRATIONS: ${RUN_MIGRATIONS:-true}
+      RUN_MIGRATIONS: ${RUN_MIGRATIONS:-false}
     volumes:
       - /opt/versola/config/central.conf:/app/config/env.conf:ro
     mem_limit: 768m
@@ -292,7 +292,7 @@ services:
       PORT: 8095
       DPORT: 8096
       CONFIG_PATH: /app/config/env.conf
-      RUN_MIGRATIONS: ${RUN_MIGRATIONS:-true}
+      RUN_MIGRATIONS: ${RUN_MIGRATIONS:-false}
     volumes:
       - /opt/versola/config/edge.conf:/app/config/env.conf:ro
     mem_limit: 384m
@@ -448,17 +448,29 @@ input above) forever after.
 
 ### `RUN_MIGRATIONS`
 
-Every service runs Flyway on startup. `RUN_MIGRATIONS` controls whether it does:
+`RUN_MIGRATIONS` controls whether a service applies Flyway migrations itself on startup:
 
-- unset → migrations run (the historical behaviour; existing deployments are unaffected)
-- `true` / `false` → as specified, case-insensitive
+- unset → **migrations do not run** (the service instead *validates* the schema against this
+  build's migrations and fails to start if they're missing — see
+  `PostgresHikariDataSource.layer`'s own comment). Applying a schema change is meant to be the
+  deliberate, separate `versola migrate` step (backed by versola-tools' migrate-tool), not an
+  implicit side effect of starting a service.
+- `true` / `false` (lowercase, exact match — not case-insensitive) → as specified
 - anything else → the service **fails to start** with an explanatory error, deliberately. A flag
-  whose whole purpose is to skip migrations must not silently run them because of a typo.
+  whose whole purpose is to gate migrations must not silently run (or skip) them because of a typo.
 
-Set it to `false` when you want a rollout to be strictly a code change — for example when
-deploying a hotfix and you want to be certain nothing touches the schema. In the automated
-pipeline this is the `run_migrations` input; manually, it's an exported shell variable before
-`docker compose -f docker-compose.prod.yml up`.
+The `docker-compose.prod.yml` example above shell-defaults `RUN_MIGRATIONS` to `false`
+(`${RUN_MIGRATIONS:-false}`) too, matching the service's own unset behaviour above — running
+`docker compose -f docker-compose.prod.yml up` manually without exporting the variable applies no
+migrations, the same as leaving it unset entirely. Export `RUN_MIGRATIONS=true` first if you
+specifically want a rollout to migrate on boot instead of running `versola migrate` (or an
+equivalent) as its own step first.
+
+The automated deploy pipeline (`deploy.yml`) sets its own `run_migrations` input, defaulting to
+`true` independently of the above — that default is unrelated to and unaffected by the service's
+own unset-value behaviour or the compose example's shell default, since the pipeline always passes
+it explicitly. Set it to `false` there when you want a rollout to be strictly a code change — for
+example when deploying a hotfix and you want to be certain nothing touches the schema.
 
 ---
 
@@ -583,7 +595,7 @@ Environment variables read by the containers:
 | `PORT` | `8080` | application port |
 | `DPORT` | `8081` | diagnostics port: `/metrics`, `/liveness`, `/readiness` |
 | `CONFIG_PATH` | `/app/config/env.conf` | path to the mounted HOCON config |
-| `RUN_MIGRATIONS` | `true` | run Flyway on startup |
+| `RUN_MIGRATIONS` | `false` | apply Flyway migrations on startup (vs. only validating the schema — see §4's `RUN_MIGRATIONS` section) |
 | `JAVA_OPTS` | `-XX:+UseG1GC -XX:MaxRAMPercentage=75.0` | JVM flags |
 
 Everything else — secrets, keys, database credentials, bootstrap data — lives in the HOCON file
