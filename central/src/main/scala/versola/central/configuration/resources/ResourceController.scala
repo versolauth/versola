@@ -133,12 +133,13 @@ object ResourceController extends Controller:
         edgeId <- authorizeInternal(request)
         resources <- service.getResourcesForSync(edgeId)
         entries = resources.map(toResourceRegistryEntry)
-        authSecret = resources
-          // Keep the caller on the old secret until the previous secret is explicitly removed.
-          .find(_.resourceId == authResourceId && edgeId.isEmpty)
-          .flatMap(r => r.previousSecret.orElse(r.secret))
-        authResourceSecret <- ZIO.foreach(authSecret)(transportEncryption(None))
-        response = GetResourcesRegistryResponse(entries, authResourceSecret)
+        authResource = resources.find(_.resourceId == authResourceId && edgeId.isEmpty)
+        // Both halves of a rotation go to auth, which accepts either: edge stays on the
+        // previous secret until it is removed, and the two refresh their caches at their
+        // own pace (see GetResourcesRegistryResponse.authResourcePreviousSecret).
+        authResourceSecret <- ZIO.foreach(authResource.flatMap(_.secret))(transportEncryption(None))
+        authResourcePreviousSecret <- ZIO.foreach(authResource.flatMap(_.previousSecret))(transportEncryption(None))
+        response = GetResourcesRegistryResponse(entries, authResourceSecret, authResourcePreviousSecret)
       yield Response.json(response.toJson)
     }
 

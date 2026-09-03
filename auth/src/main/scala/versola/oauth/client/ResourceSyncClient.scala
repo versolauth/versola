@@ -8,7 +8,7 @@ import zio.schema.codec.JsonCodec.zioJsonBinaryCodec
 import zio.{Task, URLayer, ZIO, ZLayer}
 
 /** Fetches the lightweight resource registry (id, tenant, URI) from central, used to
-  * validate the RFC 8707 `resource` request parameter. The response also carries the secret
+  * validate the RFC 8707 `resource` request parameter. The response also carries the secrets
   * of auth's own internal resource (hard-coded resourceId `"auth"`, matching central's
   * `BootstrapService.authResourceId`),
   * encrypted with the central secret key the same way as edge's resource sync (see
@@ -20,10 +20,14 @@ trait ResourceSyncClient extends CacheSource[ResourceSyncClient.SyncResult]:
 
 object ResourceSyncClient:
   /** `resources` is the full registry, used for RFC 8707 `resource` parameter validation.
-    * `authResourceSecret` is pulled out of that same response for the "auth" entry only. */
+    * `authResourceSecrets` is pulled out of that same response for the "auth" entry only:
+    * the current secret and, while a rotation is in flight, the one being rotated out. Any
+    * of them authenticates the caller, matching central's own `ResourceService.verifySecret`
+    * - edge switches to the new secret only once the previous one is removed, and the two
+    * services refresh their caches independently. */
   case class SyncResult(
       resources: Vector[ResourceRecord],
-      authResourceSecret: Option[Secret],
+      authResourceSecrets: List[Secret],
   )
 
   val live: URLayer[CoreConfig & SecurityService & CentralSyncTokenService, ResourceSyncClient] =
@@ -41,8 +45,8 @@ object ResourceSyncClient:
         response <- ZIO.scoped:
           centralSyncTokenService.syncRequest(Request.get(RegistryURL)).flatMap(_.bodyAs[RegistryResponse])
         records = response.resources.map(r => ResourceRecord(r.resourceId, r.tenantId, r.resource, r.audience, r.internal))
-        authSecret <- ZIO.foreach(response.authResourceSecret)(decryptSecret)
-      yield SyncResult(records, authSecret)
+        authSecrets <- ZIO.foreach(response.authResourceSecret.toList ++ response.authResourcePreviousSecret)(decryptSecret)
+      yield SyncResult(records, authSecrets)
 
     private def decryptSecret(value: String): Task[Secret] =
       for
@@ -61,4 +65,5 @@ object ResourceSyncClient:
     private case class RegistryResponse(
         resources: Vector[RegistryEntry],
         authResourceSecret: Option[String],
+        authResourcePreviousSecret: Option[String],
     ) derives JsonCodec

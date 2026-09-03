@@ -68,6 +68,10 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
     * resource, as if it had been decrypted from central's registry sync. */
   private val accountResourceSecret = Secret(Array.fill(32)(5.toByte))
 
+  /** The secret being rotated out, which central keeps reporting alongside the current one
+    * until an administrator removes it. */
+  private val previousAccountResourceSecret = Secret(Array.fill(32)(6.toByte))
+
   private val passkeySettings = PasskeySettings(
     rpId = "localhost",
     rpName = "Versola",
@@ -86,8 +90,9 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
       request: Request,
       callerUserId: UserId,
       callerSessionId: PublicSessionId,
+      callerSecret: Secret,
   ): Task[Request] =
-    val authenticated = request.removeHeader(Header.Authorization).addHeader(basic())
+    val authenticated = request.removeHeader(Header.Authorization).addHeader(basic(secret = callerSecret))
     if authenticated.method == Method.GET then
       ZIO.succeed(authenticated.copy(url = authenticated.url
         .removeQueryParam("userId")
@@ -131,6 +136,8 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
       verify: (Response, Stubs) => Task[TestResult] = (_, _) => ZIO.succeed(assertTrue(true)),
       authenticate: Boolean = true,
       callerSessionId: PublicSessionId = ownSessionId,
+      resourceSecrets: List[Secret] = List(accountResourceSecret),
+      callerSecret: Secret = accountResourceSecret,
   ) =
     test(description) {
       for
@@ -159,10 +166,10 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
               ),
           ),
         )
-        _ <- configuration.findAccountResourceSecret.succeedsWith(Some(accountResourceSecret))
+        _ <- configuration.accountResourceSecrets.succeedsWith(resourceSecrets)
         _ <- setup(stubs)
 
-        routedRequest <- if authenticate then withCaller(request, userId, callerSessionId) else ZIO.succeed(request)
+        routedRequest <- if authenticate then withCaller(request, userId, callerSessionId, callerSecret) else ZIO.succeed(request)
         response <- httpClient.batched(routedRequest)
         verifyResult <- verify(response, stubs)
       yield assertTrue(response.status == expectedStatus) && verifyResult
@@ -181,6 +188,31 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
         request = Request.get(URL.empty / "settings").addHeader(basic(resourceId = "other")),
         expectedStatus = Status.Unauthorized,
         authenticate = false,
+      ),
+      // Edge switches to the new secret when the previous one is removed, and refreshes its
+      // cache independently of auth, so both halves of a rotation have to be accepted.
+      controllerTestCase(
+        description = "accepts either secret while the resource secret is being rotated",
+        request = Request.get(URL.empty / "settings"),
+        expectedStatus = Status.Ok,
+        resourceSecrets = List(accountResourceSecret, previousAccountResourceSecret),
+        callerSecret = previousAccountResourceSecret,
+        setup = (_, sessionService, passkeyRepository, _, _, renderService) =>
+          sessionService.listByUser.succeedsWith(List(ownSession)) *>
+            passkeyRepository.listByUser.succeedsWith(Vector(passkey)) *>
+            renderService.renderAccount.succeedsWith(Response.text("<html>account</html>")),
+      ),
+      controllerTestCase(
+        description = "rejects a secret central no longer reports",
+        request = Request.get(URL.empty / "settings"),
+        expectedStatus = Status.Unauthorized,
+        callerSecret = previousAccountResourceSecret,
+      ),
+      controllerTestCase(
+        description = "rejects every request when no resource secret has synced yet",
+        request = Request.get(URL.empty / "settings"),
+        expectedStatus = Status.Unauthorized,
+        resourceSecrets = Nil,
       ),
       controllerTestCase(
         description = "rejects an invalid resource secret",

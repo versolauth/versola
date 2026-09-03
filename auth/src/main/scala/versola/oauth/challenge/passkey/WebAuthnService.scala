@@ -52,14 +52,16 @@ object WebAuthnError:
   case class CeremonyFailed(message: String) extends WebAuthnError(message)
   case object AssertionFailed extends WebAuthnError("assertion verification failed")
   case object CredentialNotFound extends WebAuthnError("credential not found on server")
+  case object PasskeysNotEnabled extends WebAuthnError("passkeys are not enabled")
 
 trait WebAuthnService:
   /** Begin an enrollment ceremony for the given user. */
   def startRegistration(settings: PasskeySettings, userId: UserId, displayName: String): IO[WebAuthnError, PasskeyCeremony]
 
   /** Verify an enrollment response and persist the resulting passkey.
-    * Looks up the client's passkey settings internally; dies if none are configured, since
-    * that's a server-side invariant violation (enrollment can only be offered when they exist).
+    * Looks up the client's passkey settings internally; fails with
+    * [[WebAuthnError.PasskeysNotEnabled]] when they are gone, which an administrator can do
+    * at any point during a ceremony the user has already started.
     */
   def finishRegistration(
       clientId: ClientId,
@@ -218,11 +220,12 @@ object WebAuthnService:
       for
         settings <- configService.getPasskeySettings(clientId).flatMap:
           case None =>
-            // Settings vanished mid-ceremony (e.g. disabled for the tenant after enrollment
-            // started) -- a server-side invariant violation, since enrollment is only offered
-            // when settings exist.
-            Observability.setError("illegal_state", Some("passkey settings missing")) *>
-              ZIO.die(new IllegalStateException("passkey settings missing"))
+            // Settings can be disabled for the client while a ceremony is in flight (an
+            // enrollment ticket stays usable for five minutes, and the login flow's step
+            // lasts as long as the user takes), so this is a stale ceremony rather than a
+            // broken invariant: fail typed, the way both callers already handle.
+            Observability.setError("passkeys_not_enabled") *>
+              ZIO.fail(WebAuthnError.PasskeysNotEnabled)
           case Some(s) => ZIO.succeed(s)
         now <- zio.Clock.instant
         record <- ZIO.attemptBlocking:

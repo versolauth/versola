@@ -122,7 +122,10 @@ object WebAuthnServiceSpec extends UnitSpecBase:
         assert(result)(fails(isSubtype[WebAuthnError.CeremonyFailed](anything)))
     },
 
-    test("finishRegistration dies when passkey settings are missing") {
+    // An administrator can disable passkeys for the client while a ceremony the user already
+    // started is still in flight, so this is a normal stale ceremony: it has to stay typed,
+    // or both callers (the login flow's enroll step and the account API) turn it into a 500.
+    test("finishRegistration fails when passkey settings are missing") {
       val repository = stub[PasskeyRepository]
       val configService = stub[OAuthConfigurationService]
       for
@@ -134,7 +137,7 @@ object WebAuthnServiceSpec extends UnitSpecBase:
         _ <- configService.getPasskeySettings.succeedsWith(None)
         result <- service.finishRegistration(clientId, userId, "{}", "{}", None).exit
       yield
-        assert(result)(dies(isSubtype[IllegalStateException](anything)))
+        assert(result)(fails(equalTo(WebAuthnError.PasskeysNotEnabled)))
     },
 
     test("finishAssertion fails with AssertionFailed if verification fails") {

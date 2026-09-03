@@ -125,9 +125,9 @@ object AccountSettingsController extends Controller:
     * encrypted from central rather than configured statically (see [[OAuthConfigurationService]]). */
   private def authorizeResource(request: Request): ZIO[OAuthConfigurationService, Throwable, Unit] =
     ZIO.serviceWithZIO[OAuthConfigurationService] { service =>
-      service.findAccountResourceSecret
-        .someOrFail(Unauthorized)
-        .flatMap(authorizeBasic(request, _))
+      service.accountResourceSecrets.flatMap:
+        case Nil => ZIO.fail(Unauthorized)
+        case secrets => authorizeBasic(request, secrets)
     }
 
   private def parseAndValidatePasskeyTicket(
@@ -144,12 +144,15 @@ object AccountSettingsController extends Controller:
       _ <- ZIO.fail(Unauthorized).unless(ticket.userId == body.userId)
     yield ticket
 
-  private def authorizeBasic(request: Request, expectedSecret: Secret): IO[Unauthorized.type, Unit] =
+  /** Accepts any secret central currently reports for this resource: during a rotation that
+    * is both the new one and the one being rotated out, since edge switches over only when
+    * the previous secret is removed and the two services refresh their caches independently. */
+  private def authorizeBasic(request: Request, expectedSecrets: List[Secret]): IO[Unauthorized.type, Unit] =
     request.header(Header.Authorization) match
       case Some(Header.Authorization.Basic(username, password)) if username == "auth" =>
         for
           provided <- ZIO.fromEither(Secret.fromBase64Url(password.stringValue)).orElseFail(Unauthorized)
-          _ <- ZIO.fail(Unauthorized).unless(MessageDigest.isEqual(provided, expectedSecret))
+          _ <- ZIO.fail(Unauthorized).unless(expectedSecrets.exists(MessageDigest.isEqual(provided, _)))
         yield ()
       case _ => ZIO.fail(Unauthorized)
 

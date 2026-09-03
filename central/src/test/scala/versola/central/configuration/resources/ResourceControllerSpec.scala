@@ -463,6 +463,47 @@ object ResourceControllerSpec extends ZIOSpecDefault, ZIOStubs:
       yield assertTrue(
         response.status == Status.Ok,
         payload.authResourceSecret.contains(Base64Url.encode(syncSecret)),
+        payload.authResourcePreviousSecret.isEmpty,
+      )
+    }.provideSomeLayer(TestClient.layer),
+    // Edge stays on the previous secret until it is removed, and edge and auth refresh
+    // their caches independently, so auth needs both halves of a rotation to accept either.
+    test("registry exposes both auth resource secrets during rotation") {
+      for
+        client <- ZIO.service[Client]
+        service = stub[ResourceService]
+        edgeService = stub[EdgeService]
+        tracing <- tracingLayer.build
+        security <- securityLayer.build
+        token <- JWT.serialize(
+          JWT.Claims("auth", "auth", List("central"), Json.Obj()),
+          1.minute,
+          JWT.Signature.Symmetric(config.secretKey),
+        )
+        _ <- service.getResourcesForSync.succeedsWith(Vector(
+          resourceRecords.head.copy(
+            resourceId = ResourceId("auth"),
+            secret = Some(syncSecret),
+            previousSecret = Some(previousSyncSecret),
+          ),
+        ))
+        _ <- TestClient.addRoutes(
+          Observability.handleErrors(
+            ResourceController.routes.provideEnvironment(
+              ZEnvironment[ResourceService](service) ++ ZEnvironment[CentralConfig](config) ++ tracing ++ security ++
+                ZEnvironment[EdgeService](edgeService)
+            )
+          )
+        )
+        response <- client.batched(
+          Request.get(URL.empty / "configuration" / "resources" / "registry")
+            .addHeader(Header.Authorization.Bearer(token))
+        )
+        payload <- decodeJsonBody[GetResourcesRegistryResponse](response)
+      yield assertTrue(
+        response.status == Status.Ok,
+        payload.authResourceSecret.contains(Base64Url.encode(syncSecret)),
+        payload.authResourcePreviousSecret.contains(Base64Url.encode(previousSyncSecret)),
       )
     }.provideSomeLayer(TestClient.layer),
   )

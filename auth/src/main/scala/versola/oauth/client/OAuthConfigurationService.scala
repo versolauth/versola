@@ -107,9 +107,10 @@ trait OAuthConfigurationService:
 
   def getResourcesForClient(tenantId: TenantId, clientId: ClientId): UIO[List[ResourceRecord]]
 
-  /** The decrypted secret of auth's own internal resource (see [[ResourceSyncClient]]),
-    * used to authenticate edge's Basic credentials on the Account Settings API. */
-  def findAccountResourceSecret: UIO[Option[Secret]]
+  /** The decrypted secrets of auth's own internal resource (see [[ResourceSyncClient]]),
+    * used to authenticate edge's Basic credentials on the Account Settings API. More than
+    * one while a rotation is in flight; any of them authenticates the caller. */
+  def accountResourceSecrets: UIO[List[Secret]]
 
   def syncConfiguration: Task[Unit]
 
@@ -401,8 +402,8 @@ object OAuthConfigurationService:
     override def getResourcesForClient(tenantId: TenantId, clientId: ClientId): UIO[List[ResourceRecord]] =
       resourceCache.get.map(_.resources.filter(r => r.tenantId == tenantId && r.audience.contains(clientId)).toList)
 
-    override def findAccountResourceSecret: UIO[Option[Secret]] =
-      resourceCache.get.map(_.authResourceSecret)
+    override def accountResourceSecrets: UIO[List[Secret]] =
+      resourceCache.get.map(_.authResourceSecrets)
 
     override def syncConfiguration: Task[Unit] =
       for
