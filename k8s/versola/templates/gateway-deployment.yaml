@@ -1,0 +1,72 @@
+{{- if .Values.gateway.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "versola.fullname" . }}-gateway
+  labels:
+    {{- include "versola.componentLabels" (dict "component" "gateway" "context" .) | nindent 4 }}
+spec:
+  replicas: {{ .Values.gateway.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "versola.componentSelectorLabels" (dict "component" "gateway" "context" .) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "versola.componentSelectorLabels" (dict "component" "gateway" "context" .) | nindent 8 }}
+    spec:
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      terminationGracePeriodSeconds: {{ .Values.gateway.terminationGracePeriodSeconds }}
+      containers:
+        - name: gateway
+          image: {{ include "versola.image" (dict "global" .Values.global "svc" .Values.gateway "chart" .Chart) }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.gateway.port }}
+          volumeMounts:
+            # See docker/versola-tools/nginx.conf.template's own comment on
+            # why "include proxy_params.conf;" resolves against
+            # /etc/nginx/proxy_params.conf and not conf.d/ -- nginx
+            # resolves relative include paths against the master config's
+            # directory (/etc/nginx), not the file doing the including.
+            - name: nginx-conf
+              mountPath: /etc/nginx/conf.d/default.conf
+              subPath: nginx.conf
+              readOnly: true
+            - name: nginx-conf
+              mountPath: /etc/nginx/proxy_params.conf
+              subPath: proxy_params.conf
+              readOnly: true
+          # gateway is nginx (see docker/Dockerfile.gateway), not a
+          # VersolaApp service -- it has no DPORT, no /liveness or
+          # /readiness. A plain TCP check against its own listener catches
+          # a crashed/wedged process without coupling gateway's readiness
+          # to auth/edge being up: nginx answers on this port regardless of
+          # upstream health, a downed backend just means proxied routes
+          # 502, which is a backend problem rather than a reason to pull
+          # gateway itself out of rotation.
+          livenessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sh", "-c", "sleep {{ .Values.gateway.preStopSleepSeconds }}"]
+          resources:
+            {{- toYaml .Values.gateway.resources | nindent 12 }}
+      volumes:
+        - name: nginx-conf
+          configMap:
+            name: {{ .Values.gateway.nginxConfig.existingConfigMap | default (printf "%s-gateway-nginx" (include "versola.fullname" .)) }}
+{{- end }}

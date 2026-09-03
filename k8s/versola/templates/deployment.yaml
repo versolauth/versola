@@ -1,0 +1,98 @@
+{{- range $name, $svc := .Values.services }}
+{{- if $svc.enabled }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "versola.fullname" $ }}-{{ $name }}
+  labels:
+    {{- include "versola.componentLabels" (dict "component" $name "context" $) | nindent 4 }}
+spec:
+  replicas: {{ $svc.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "versola.componentSelectorLabels" (dict "component" $name "context" $) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "versola.componentSelectorLabels" (dict "component" $name "context" $) | nindent 8 }}
+    spec:
+      {{- with $.Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      # See values.yaml's top-level comment on preStopSleepSeconds /
+      # terminationGracePeriodSeconds for why this has to cover both the
+      # preStop sleep below and VersolaApp's own gracefulShutdownTimeout.
+      terminationGracePeriodSeconds: {{ $.Values.terminationGracePeriodSeconds }}
+      containers:
+        - name: {{ $name }}
+          image: {{ include "versola.image" (dict "global" $.Values.global "svc" $svc "chart" $.Chart) }}
+          imagePullPolicy: {{ $.Values.global.imagePullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ $svc.port }}
+            - name: diagnostics
+              containerPort: {{ $svc.diagnosticsPort }}
+          env:
+            - name: PORT
+              value: {{ $svc.port | quote }}
+            - name: DPORT
+              value: {{ $svc.diagnosticsPort | quote }}
+            # See VersolaApp.scala's bindHost comment and #207: prod's VPS
+            # sets this to 127.0.0.1 because of network_mode: host, which
+            # would make every pod unreachable here. Deliberately not a
+            # values.yaml knob -- this chart must never inherit that value.
+            - name: BIND_HOST
+              value: "0.0.0.0"
+            - name: CONFIG_PATH
+              value: /app/config/env.conf
+            # The migration Job + RUN_MIGRATIONS wiring is #209 -- every
+            # replica stays a plain server until that lands.
+            - name: RUN_MIGRATIONS
+              value: "false"
+            {{- with $svc.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with $svc.extraEnvFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- if $svc.config.existingSecret }}
+          volumeMounts:
+            - name: config
+              mountPath: /app/config
+              readOnly: true
+          {{- end }}
+          # /liveness and /readiness are served by the diagnostics server,
+          # separate from application traffic on `http` -- see
+          # VersolaApp.scala's serviceRoutes.
+          livenessProbe:
+            httpGet:
+              path: /liveness
+              port: diagnostics
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readiness
+              port: diagnostics
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sh", "-c", "sleep {{ $.Values.preStopSleepSeconds }}"]
+          resources:
+            {{- toYaml $svc.resources | nindent 12 }}
+      {{- if $svc.config.existingSecret }}
+      volumes:
+        - name: config
+          secret:
+            secretName: {{ $svc.config.existingSecret }}
+            items:
+              - key: {{ $svc.config.secretKey }}
+                path: env.conf
+      {{- end }}
+{{- end }}
+{{- end }}
