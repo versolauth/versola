@@ -109,6 +109,16 @@ class PostgresResourceRepository(xa: TransactorZIO) extends ResourceRepository, 
       """.update.run()
     .map(_ > 0)
 
+  override def initializeSecret(resourceId: ResourceId, secret: Array[Byte]): Task[Boolean] =
+    xa.connectMeasured("initialize-resource-secret"):
+      sql"""
+        UPDATE resources
+        SET secret = ${Secret(secret)}
+        WHERE resource_id = $resourceId
+          AND secret IS NULL
+      """.update.run()
+    .map(_ > 0)
+
   override def deletePreviousSecret(resourceId: ResourceId): Task[Unit] =
     xa.connectMeasured("delete-previous-resource-secret"):
       sql"""

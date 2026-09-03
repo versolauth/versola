@@ -47,6 +47,8 @@ trait SessionRepository:
 
   def invalidateByPublicId(publicId: PublicSessionId): Task[Option[(MAC.Of[SessionId], SessionRecord)]]
 
+  def invalidateByPublicIdForUser(publicId: PublicSessionId, userId: UserId): Task[Boolean]
+
   def createRefreshToken(
       refreshToken: MAC.Of[RefreshToken],
       record: RefreshTokenRecord,

@@ -13,8 +13,8 @@ import versola.util.http.Observability
 import versola.util.{EnvName, JWT, ReloadingCache, Secret, SecureRandom, SecurityService}
 import zio.*
 import zio.http.*
-import zio.json.{DecoderOps, EncoderOps}
 import zio.json.ast.Json
+import zio.json.{DecoderOps, EncoderOps}
 import zio.test.*
 
 import java.security.KeyPairGenerator
@@ -32,12 +32,18 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
   private val centralClientId = ClientId("central-admin")
 
   private val preset = AuthorizationPreset(
-    id = presetId, clientId = clientId, description = "default",
+    id = presetId,
+    clientId = clientId,
+    description = "default",
     redirectUri = versola.util.RedirectUri("https://app.example/complete"),
     postLoginRedirectUri = versola.util.RedirectUri("https://app.example/home"),
     postLogoutRedirectUri = None,
-    scope = Set("openid"), responseType = "code", uiLocales = None,
-    customParameters = Map.empty, cookieDomain = Some("app.example"), cookiePath = Some("/"),
+    scope = Set("openid"),
+    responseType = "code",
+    uiLocales = None,
+    customParameters = Map.empty,
+    cookieDomain = Some("app.example"),
+    cookiePath = Some("/"),
   )
 
   private val oauthClient = OAuthClient(id = clientId, secret = Secret(Array.fill(48)(1.toByte)), permissions = Set.empty, accessTokenTtl = 15.minutes)
@@ -145,9 +151,20 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
 
     def buildService(httpClient: Client, security: SecurityService): EdgeService =
       EdgeService.Impl(
-        clientService, resourceService, celEvaluator, secureRandom,
-        loginRepository, ssoClient, security, httpClient, edgeConfig,
-          sessionRepository, revocationService, jwksService, permissionService, EnvName.Test("test"),
+        clientService,
+        resourceService,
+        celEvaluator,
+        secureRandom,
+        loginRepository,
+        ssoClient,
+        security,
+        httpClient,
+        edgeConfig,
+        sessionRepository,
+        revocationService,
+        jwksService,
+        permissionService,
+        EnvName.Test("test"),
       )
 
   private val securityServiceLayer: ULayer[SecurityService] =
@@ -167,42 +184,81 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
   private val scenarioEndpointIds: Set[ResourceEndpointId] =
     Set(usersEndpointId, userByIdEndpointId, createUserEndpointId, currentUserEndpointId, tenantOrderEndpointId)
 
-  private def usersEndpoint(allow: Option[String] = None,
-                             inject: Vector[InjectRule] = Vector.empty,
-                             fetchUserInfo: Boolean = false,
-                             stepUpCondition: Option[String] = None,
-                             stepUpAcr: Option[String] = None,
-                             maxAge: Option[Int] = None) =
+  private def usersEndpoint(
+      allow: Option[String] = None,
+      inject: Vector[InjectRule] = Vector.empty,
+      fetchUserInfo: Boolean = false,
+      stepUpCondition: Option[String] = None,
+      stepUpAcr: Option[String] = None,
+      maxAge: Option[Int] = None,
+  ) =
     ResourceEndpoint(
       id = usersEndpointId,
-      method = "GET", path = "/users", fetchUserInfo = fetchUserInfo, allow = allow, inject = inject, stepUpCondition = stepUpCondition, stepUpAcr = stepUpAcr, maxAge = maxAge,
+      method = "GET",
+      path = "/users",
+      fetchUserInfo = fetchUserInfo,
+      allow = allow,
+      inject = inject,
+      stepUpCondition = stepUpCondition,
+      stepUpAcr = stepUpAcr,
+      maxAge = maxAge,
     )
 
   private def userByIdEndpoint(allow: Option[String] = None, inject: Vector[InjectRule] = Vector.empty) =
     ResourceEndpoint(
       id = userByIdEndpointId,
-      method = "GET", path = "/users/{id}", fetchUserInfo = false, allow = allow, inject = inject, stepUpCondition = None, stepUpAcr = None, maxAge = None,
+      method = "GET",
+      path = "/users/{id}",
+      fetchUserInfo = false,
+      allow = allow,
+      inject = inject,
+      stepUpCondition = None,
+      stepUpAcr = None,
+      maxAge = None,
     )
 
   private def currentUserEndpoint(inject: Vector[InjectRule] = Vector.empty) =
     ResourceEndpoint(
       id = currentUserEndpointId,
-      method = "GET", path = "/users/me", fetchUserInfo = false, allow = None, inject = inject, stepUpCondition = None, stepUpAcr = None, maxAge = None,
+      method = "GET",
+      path = "/users/me",
+      fetchUserInfo = false,
+      allow = None,
+      inject = inject,
+      stepUpCondition = None,
+      stepUpAcr = None,
+      maxAge = None,
     )
 
   private def tenantOrderEndpoint(allow: Option[String] = None, inject: Vector[InjectRule] = Vector.empty) =
     ResourceEndpoint(
       id = tenantOrderEndpointId,
-      method = "GET", path = "/tenants/{tenantId}/orders/{orderId}", fetchUserInfo = false, allow = allow, inject = inject, stepUpCondition = None, stepUpAcr = None, maxAge = None,
+      method = "GET",
+      path = "/tenants/{tenantId}/orders/{orderId}",
+      fetchUserInfo = false,
+      allow = allow,
+      inject = inject,
+      stepUpCondition = None,
+      stepUpAcr = None,
+      maxAge = None,
     )
 
-  private def createUserEndpoint(allow: Option[String] = None,
-                                  inject: Vector[InjectRule] = Vector.empty,
-                                  stepUpCondition: Option[String] = None,
-                                  stepUpAcr: Option[String] = None) =
+  private def createUserEndpoint(
+      allow: Option[String] = None,
+      inject: Vector[InjectRule] = Vector.empty,
+      stepUpCondition: Option[String] = None,
+      stepUpAcr: Option[String] = None,
+  ) =
     ResourceEndpoint(
       id = createUserEndpointId,
-      method = "POST", path = "/users", fetchUserInfo = false, allow = allow, inject = inject, stepUpCondition = stepUpCondition, stepUpAcr = stepUpAcr, maxAge = None,
+      method = "POST",
+      path = "/users",
+      fetchUserInfo = false,
+      allow = allow,
+      inject = inject,
+      stepUpCondition = stepUpCondition,
+      stepUpAcr = stepUpAcr,
+      maxAge = None,
     )
 
   private def usersResource(endpoints: ResourceEndpoint*) =
@@ -211,7 +267,14 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
   private def centralEndpoint() =
     ResourceEndpoint(
       id = ResourceEndpointId(java.util.UUID.fromString("018f0f2a-1c7b-7000-8000-000000000501")),
-      method = "GET", path = "/tenants", fetchUserInfo = false, allow = None, inject = Vector.empty, stepUpCondition = None, stepUpAcr = None, maxAge = None,
+      method = "GET",
+      path = "/tenants",
+      fetchUserInfo = false,
+      allow = None,
+      inject = Vector.empty,
+      stepUpCondition = None,
+      stepUpAcr = None,
+      maxAge = None,
     )
 
   private val centralResourceSecret = Secret(Array.fill(48)(2.toByte))
@@ -222,6 +285,27 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
     */
   private def centralResource(endpoints: ResourceEndpoint*) =
     Resource(resourceId = ResourceId("central"), resource = centralUrl, endpoints = endpoints.toVector, secret = Some(centralResourceSecret))
+
+  private val accountResourceSecret = Secret(Array.fill(48)(4.toByte))
+
+  private def accountEndpoint() =
+    ResourceEndpoint(
+      id = ResourceEndpointId(java.util.UUID.fromString("018f0f2a-1c7b-7000-8000-000000000601")),
+      method = "GET",
+      path = "/settings/passkeys",
+      fetchUserInfo = false,
+      allow = None,
+      inject = Vector(InjectRule(InjectTarget.query, "userId", "token.sub")),
+      stepUpCondition = None,
+      stepUpAcr = None,
+      maxAge = None,
+    )
+
+  /** The "auth" alias proxies Account Settings to auth's additional listener. Like "central" it is
+    * internal: edge authenticates with `Basic(resourceId, secret)` rather than forwarding the caller's token.
+    */
+  private def accountResource(endpoints: ResourceEndpoint*) =
+    Resource(resourceId = ResourceId("auth"), resource = backendUrl, endpoints = endpoints.toVector, secret = Some(accountResourceSecret))
 
   private def captureUpstream(status: Status = Status.Ok, body: String = "ok"): ZIO[TestClient, Nothing, Ref[Option[Request]]] =
     for
@@ -385,36 +469,38 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
       yield assertTrue(response.status == Status.Forbidden)
     },
-      test("rejects the legacy Edge resource audience format") {
-        val env = new Env
-        for
-          _ <- env.setupDefaults()
-          client <- ZIO.service[Client]
-          security <- ZIO.service[SecurityService]
-          _ <- env.withResources(usersResource(usersEndpoint()))
-          token <- env.signToken(audience = List(s"${env.edgeConfig.versolaUrl.encode}/resources/users-api"))
-          request = Request.get(URL.empty / "users").addCookie(sessionCookie(token))
-          service = env.buildService(client, security)
-          response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
-        yield assertTrue(response.status == Status.Forbidden)
-      },
-      test("allows a public resource when its audience is mixed with Edge") {
-        val env = new Env
-        for
-          _ <- env.setupDefaults()
-          _ <- captureUpstream()
-          client <- ZIO.service[Client]
-          security <- ZIO.service[SecurityService]
-          _ <- env.withResources(usersResource(usersEndpoint()))
-          token <- env.signToken(audience = List(
+    test("rejects the legacy Edge resource audience format") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(usersEndpoint()))
+        token <- env.signToken(audience = List(s"${env.edgeConfig.versolaUrl.encode}/resources/users-api"))
+        request = Request.get(URL.empty / "users").addCookie(sessionCookie(token))
+        service = env.buildService(client, security)
+        response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
+      yield assertTrue(response.status == Status.Forbidden)
+    },
+    test("allows a public resource when its audience is mixed with Edge") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        _ <- captureUpstream()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(usersEndpoint()))
+        token <- env.signToken(audience =
+          List(
             backendUrl.encode,
             "resource://edge",
-          ))
-          request = Request.get(URL.empty / "users").addCookie(sessionCookie(token))
-          service = env.buildService(client, security)
-          response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
-        yield assertTrue(response.status == Status.Ok)
-      },
+          ),
+        )
+        request = Request.get(URL.empty / "users").addCookie(sessionCookie(token))
+        service = env.buildService(client, security)
+        response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
+      yield assertTrue(response.status == Status.Ok)
+    },
     test("forwards bearer token to a public resource when client is absent from the secret cache") {
       val env = new Env
       val endpoint = usersEndpoint(
@@ -429,7 +515,9 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         security <- ZIO.service[SecurityService]
         _ <- env.withResources(usersResource(endpoint))
         token <- env.signToken()
-        request = Request.get(URL.empty / "users").addCookie(sessionCookie(token))
+        request = Request.get(URL.empty / "users")
+          .addHeader(Header.Custom("x-user", "attacker-controlled"))
+          .addCookie(sessionCookie(token))
         service = env.buildService(client, security)
         response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
         body <- response.body.asString
@@ -440,6 +528,29 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         upstream.exists(_.header(Header.Authorization).contains(Header.Authorization.Bearer(token))),
         upstream.exists(_.headers.get("x-user").contains("user-1")),
         upstream.exists(_.headers.get(Header.Cookie.name).isEmpty),
+      )
+    },
+    test("removes an injected header when its CEL expression has no value") {
+      val env = new Env
+      val endpoint = usersEndpoint(
+        inject = Vector(InjectRule(InjectTarget.header, "x-optional", "token.missing")),
+      )
+      for
+        _ <- env.setupDefaults()
+        capture <- captureUpstream()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(endpoint))
+        token <- env.signToken()
+        request = Request.get(URL.empty / "users")
+          .addHeader(Header.Custom("x-optional", "attacker-controlled"))
+          .addCookie(sessionCookie(token))
+        service = env.buildService(client, security)
+        response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
+        upstream <- capture.get
+      yield assertTrue(
+        response.status == Status.Ok,
+        upstream.exists(_.headers.get("x-optional").isEmpty),
       )
     },
     test("returns 401 when access token is expired and no refresh token available") {
@@ -909,7 +1020,11 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         security <- ZIO.service[SecurityService]
         _ <- env.withResources(usersResource(endpoint))
         token <- env.signToken()
-        body = Json.Obj("action" -> Json.Str("create"), "name" -> Json.Str("Alice")).toJson
+        body = Json.Obj(
+          "action" -> Json.Str("create"),
+          "name" -> Json.Str("Alice"),
+          "actor" -> Json.Str("attacker-controlled"),
+        ).toJson
         request = Request.post(URL.empty / "users", Body.fromString(body))
           .addHeader(Header.ContentType(MediaType.application.json))
           .addCookie(sessionCookie(token))
@@ -921,6 +1036,7 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
       yield assertTrue(
         response.status == Status.Ok,
         parsed.exists(_.fields.exists((k, v) => k == "actor" && v == Json.Str("user-1"))),
+        parsed.exists(_.fields.count(_._1 == "actor") == 1),
         parsed.exists(_.fields.exists((k, v) => k == "name" && v == Json.Str("Alice"))),
       )
     },
@@ -1264,9 +1380,13 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         _ <- env.sessionRepository.findByAccessTokenId.succeedsWith(Some(record))
         newAccessToken <- env.signToken(jti = "new-jti", ttlSeconds = 600L)
         newTokens = TokenResponse(
-          accessToken = newAccessToken, tokenType = "Bearer", expiresIn = 600L,
+          accessToken = newAccessToken,
+          tokenType = "Bearer",
+          expiresIn = 600L,
           refreshToken = Some(RefreshToken("new-refresh")),
-          refreshTokenExpiresIn = Some(7200L), scope = None, idToken = None,
+          refreshTokenExpiresIn = Some(7200L),
+          scope = None,
+          idToken = None,
         )
         _ <- env.ssoClient.exchangeRefreshToken.succeedsWith(newTokens)
         _ <- env.sessionRepository.create.succeedsWith(())
@@ -1342,7 +1462,10 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         allow = Some("user.email == 'john@example.com'"),
         inject = Vector(
           InjectRule(
-            InjectTarget.header, "x-user-email", "user.email")
+            InjectTarget.header,
+            "x-user-email",
+            "user.email",
+          ),
         ),
         fetchUserInfo = true,
       )
@@ -1359,7 +1482,6 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         service = env.buildService(client, security)
         response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
         upstream <- capture.get
-
       yield assertTrue(
         response.status == Status.Ok,
         upstream.exists(_.headers.get("x-user-email").contains("john@example.com")),
@@ -1389,7 +1511,6 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
           Path.decode("/users"),
           request,
         )
-
       yield assertTrue(
         response.status == Status.Unauthorized,
       )
@@ -1403,7 +1524,7 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
       for
         _ <- env.setupDefaults()
         _ <- env.ssoClient.userInfo.failsWith(
-          new RuntimeException("userinfo failed")
+          new RuntimeException("userinfo failed"),
         )
 
         client <- ZIO.service[Client]
@@ -1423,7 +1544,6 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
           Path.decode("/users"),
           request,
         )
-
       yield assertTrue(
         response.status == Status.InternalServerError,
       )
@@ -1453,24 +1573,24 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         )),
       )
     },
-      test("returns 403 for an internal resource excluded by its audience") {
-        val env = new Env
-        val endpoint = centralEndpoint()
-        for
-          _ <- env.jwksService.getPublicKeys.succeedsWith(env.publicKeys)
-          _ <- env.permissionService.getAllowedEndpointsForRoles.succeedsWith(Set(endpoint.id))
-          _ <- env.permissionService.getAllowedEndpointsForClient.succeedsWith(Set.empty)
-          _ <- env.sessionRepository.findByAccessTokenId.succeedsWith(None)
-          _ <- env.revocationService.isRevoked.succeedsWith(false)
-          _ <- env.withResources(centralResource(endpoint))
-          client <- ZIO.service[Client]
-          security <- ZIO.service[SecurityService]
-          token <- env.signToken(audience = List("resource://users-api"))
-          request = Request.get(URL.empty / "tenants").addCookie(sessionCookie(token))
-          service = env.buildService(client, security)
-          response <- service.proxy(ResourceId("central"), Path.decode("/tenants"), request)
-        yield assertTrue(response.status == Status.Forbidden)
-      },
+    test("returns 403 for an internal resource excluded by its audience") {
+      val env = new Env
+      val endpoint = centralEndpoint()
+      for
+        _ <- env.jwksService.getPublicKeys.succeedsWith(env.publicKeys)
+        _ <- env.permissionService.getAllowedEndpointsForRoles.succeedsWith(Set(endpoint.id))
+        _ <- env.permissionService.getAllowedEndpointsForClient.succeedsWith(Set.empty)
+        _ <- env.sessionRepository.findByAccessTokenId.succeedsWith(None)
+        _ <- env.revocationService.isRevoked.succeedsWith(false)
+        _ <- env.withResources(centralResource(endpoint))
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        token <- env.signToken(audience = List("resource://users-api"))
+        request = Request.get(URL.empty / "tenants").addCookie(sessionCookie(token))
+        service = env.buildService(client, security)
+        response <- service.proxy(ResourceId("central"), Path.decode("/tenants"), request)
+      yield assertTrue(response.status == Status.Forbidden)
+    },
     test("central alias is deny-by-default: returns 403 when endpoint not in allowed set") {
       val env = new Env
       val endpoint = centralEndpoint()
@@ -1590,6 +1710,32 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         response.status == Status.Forbidden,
         env.permissionService.getAllowedEndpointsForRoles.calls ==
           List((TenantId.default, List.empty)),
+      )
+    },
+    test("account alias (Account Settings): authorized request is forwarded to auth's additional listener with Basic auth") {
+      val env = new Env
+      val endpoint = accountEndpoint()
+      for
+        _ <- env.jwksService.getPublicKeys.succeedsWith(env.publicKeys)
+        _ <- env.permissionService.getAllowedEndpointsForRoles.succeedsWith(Set(endpoint.id))
+        _ <- env.permissionService.getAllowedEndpointsForClient.succeedsWith(Set.empty)
+        _ <- env.sessionRepository.findByAccessTokenId.succeedsWith(None)
+        _ <- env.revocationService.isRevoked.succeedsWith(false)
+        _ <- env.withResources(accountResource(endpoint))
+        capture <- captureUpstream()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        token <- env.signToken(roles = List("user"), audience = List("resource://edge"))
+        request = Request.get(URL.empty / "settings" / "passkeys").addCookie(sessionCookie(token))
+        service = env.buildService(client, security)
+        response <- service.proxy(ResourceId("auth"), Path.decode("/settings/passkeys"), request)
+        upstream <- capture.get
+      yield assertTrue(
+        response.status == Status.Ok,
+        upstream.exists(_.header(Header.Authorization).contains(
+          Header.Authorization.Basic(ResourceId("auth"), versola.util.Base64.urlEncode(accountResourceSecret)),
+        )),
+        upstream.exists(_.url.queryParams.getAll("userId") == Chunk("user-1")),
       )
     },
   )

@@ -34,15 +34,15 @@ test('creates a role with selected permissions', async ({ page }) => {
 
   await page.getByRole('button', { name: '+ Create Role', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Create New Role', exact: true })).toBeVisible();
-  await page.getByLabel('Role ID *').fill('platform_admin');
+  await page.getByLabel('Role ID *').fill('platform-admin');
   await page.getByLabel('Description *').fill('Platform admin');
   await page.getByRole('checkbox', { name: 'alpha.read', exact: true }).check();
   await page.getByRole('checkbox', { name: 'reports.read', exact: true }).check();
   await page.getByRole('button', { name: 'Create Role', exact: true }).click();
 
   const created = roleCard(page, 'Platform admin');
-  await expect(created).toContainText('platform_admin');
-  expect(findRequest(api.requests, 'POST', '/configuration/roles').body).toEqual({ tenantId: 'tenant-alpha', id: 'platform_admin', description: { en: 'Platform admin' }, permissions: ['alpha.read', 'reports.read'] });
+  await expect(created).toContainText('platform-admin');
+  expect(findRequest(api.requests, 'POST', '/configuration/roles').body).toEqual({ tenantId: 'tenant-alpha', id: 'platform-admin', description: { en: 'Platform admin' }, permissions: ['alpha.read', 'reports.read'] });
 });
 
 test('shows role validation with a red input border before submitting', async ({ page }) => {

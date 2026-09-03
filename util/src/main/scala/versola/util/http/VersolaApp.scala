@@ -49,11 +49,17 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
 
   def routes: Routes[Dependencies & Tracing & EnvName, Throwable]
 
+  /** Optional second application surface, typically reachable only by internal proxies. */
+  def additionalRoutes: Option[Routes[Dependencies & Tracing & EnvName, Throwable]] = None
+
   def port: Int =
     Option(java.lang.System.getenv("PORT")).flatMap(_.toIntOption).getOrElse(8080)
 
   def diagnosticsPort: Int =
     Option(java.lang.System.getenv("DPORT")).flatMap(_.toIntOption).getOrElse(8081)
+
+  def additionalPort: Int =
+    Option(java.lang.System.getenv("APORT")).flatMap(_.toIntOption).getOrElse(8082)
 
   // Defaults to every interface, same as zio-http's own Server.Config.default
   // -- needed for docker-local, where this process's own 0.0.0.0 inside the
@@ -111,6 +117,9 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
   def diagnosticsConfig: Server.Config =
     Server.Config.default.binding(bindHost, diagnosticsPort)
 
+  def additionalConfig: Server.Config =
+    Server.Config.default.binding(bindHost, additionalPort)
+
   // Migrations are no longer ever run by way of starting one of these processes in a special
   // mode -- see versola-tools' migrate-tool, which applies every service's migrations from one
   // dedicated image instead (backs `versola migrate`). This always starts the real server.
@@ -123,6 +132,7 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
       scope <- ZIO.scope
       readinessService <- ReadinessService.make
       client <- ZIO.service[Client]
+      appDependencies <- dependencies.build
 
       fibers <-
         for
@@ -148,6 +158,34 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
 
       _ <- scope.addFinalizer(fibers.interrupt *> fibers.join.ignore)
 
+      additionalFiber <- ZIO.foreach(additionalRoutes): routes =>
+        for
+          ready <- Promise.make[Throwable, Int]
+          fiber <- {
+            for
+              port <- Server.install {
+                Observability.handleErrors(routes) @@
+                  Observability.middleware
+              }
+              _ <- ready.succeed(port)
+              _ <- ZIO.never
+            yield ()
+          }.provide(
+            ZLayer.succeedEnvironment(appDependencies),
+            Server.live,
+            ZLayer.succeed(additionalConfig),
+            ZLayer.succeed(tracing),
+            ZLayer.succeed(envName),
+          ).onExit {
+            case Exit.Failure(cause) => ready.failCause(cause)
+            case _ => ZIO.unit
+          }.fork
+          port <- ready.await
+          _ <- ZIO.logInfo(s"Additional application server started on port $port")
+        yield fiber
+
+      _ <- ZIO.foreachDiscard(additionalFiber)(fiber => scope.addFinalizer(fiber.interrupt *> fiber.join.ignore))
+
       _ <- {
         for
           _ <- ZIO.logInfo("Starting application server")
@@ -161,14 +199,11 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
           _ <- ZIO.never
         yield ()
       }.provide(
-        dependencies,
+        ZLayer.succeedEnvironment(appDependencies),
         Server.live,
         ZLayer.succeed(serverConfig),
         ZLayer.succeed(tracing),
-        ZLayer.succeed(envConfig),
         ZLayer.succeed(envName),
-        ZLayer.succeed(scope),
-        ZLayer.succeed(client),
       )
     yield ()
   }

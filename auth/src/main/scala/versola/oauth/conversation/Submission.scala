@@ -1,5 +1,5 @@
 package versola.oauth.conversation
-import versola.auth.model.{OtpCode, Password}
+import versola.auth.model.{OtpCode, PasskeyName, Password}
 import versola.oauth.client.model.ScopeToken
 import versola.user.model.Login
 import versola.util.{Email, Phone}
@@ -30,7 +30,7 @@ case class LoginPasswordSubmission(login: Login, password: Password, csrf: Strin
 case class PasskeyAssertionSubmission(response: String, csrf: String)
   extends Submission derives Schema
 
-case class PasskeyEnrollSubmission(response: String, name: String, csrf: String)
+case class PasskeyEnrollSubmission(response: String, name: PasskeyName, csrf: String)
   extends Submission derives Schema
 
 case class PasskeySkipSubmission(csrf: String)

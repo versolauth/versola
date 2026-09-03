@@ -197,7 +197,7 @@ export class VersolaRolesList extends LitElement {
         align-items: center;
         justify-content: space-between;
         gap: 0.5rem;
-        background: rgba(0, 0, 0, 0.2);
+        background: rgba(var(--accent-tint), 0.15);
         border: 1px solid var(--border-dark);
         border-radius: var(--radius-md);
         padding: var(--spacing-sm) var(--spacing-md);

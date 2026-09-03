@@ -91,6 +91,7 @@ object RevocationServiceSpec extends UnitSpecBase:
     issuer = "https://auth.example.com",
     id = accessToken1,
     authorizationDetails = None,
+    sessionId = None,
   )
 
   class Env:

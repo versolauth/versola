@@ -10,6 +10,7 @@ object OAuthClientSpec extends ZIOSpecDefault:
   private val resourceSecret = "resource-secret-for-test"
   private val config = E2EConfig(
     authUrl = "http://auth.test",
+    authAdditionalUrl = "http://auth-additional.test",
     centralUrl = "http://central.test",
     edgeUrl = "http://edge.test",
     adminLogin = "admin",
@@ -17,6 +18,7 @@ object OAuthClientSpec extends ZIOSpecDefault:
     adminNewPassword = "new-password",
     clientId = "client",
     resourceSecret = resourceSecret,
+    accountResourceSecret = "account-resource-secret-for-test",
     redirectUri = "http://edge.test/complete",
   )
   private val userId = UUID.fromString("018f0f2a-1c7b-7000-9000-000000000901")

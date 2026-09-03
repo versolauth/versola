@@ -2,6 +2,7 @@ package versola
 
 import org.scalamock.stubs.ZIOStubs
 import versola.central.configuration.clients.{AuthFactor, AuthFactorType}
+import versola.central.configuration.{InjectRule, InjectTarget}
 import versola.util.{Base64Url, EnvName, Phone, Secret, SecureRandom}
 import zio.*
 import zio.test.*
@@ -64,4 +65,46 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
         ),
       )
     },
+    test("auth-settings:manage covers the account page and every one of its APIs") {
+      assertTrue(
+        BootstrapService.accountEndpointIds == Set(
+          endpointId("GET", "/settings"),
+          endpointId("DELETE", "/settings/sessions"),
+          endpointId("PATCH", "/settings/passkeys"),
+          endpointId("DELETE", "/settings/passkeys"),
+          endpointId("POST", "/settings/passkeys/register/start"),
+          endpointId("POST", "/settings/passkeys/register/finish"),
+        ),
+      )
+    },
+      test("account endpoints inject trusted caller context and no step-up policy yet") {
+        val expectedQueryInjects = Vector(
+          InjectRule(InjectTarget.query, "userId", "token.sub"),
+          InjectRule(InjectTarget.query, "clientId", "token.client_id"),
+          InjectRule(InjectTarget.query, "sessionId", "token.sid"),
+        )
+        val expectedBodyInjects = Vector(
+          InjectRule(InjectTarget.body, "userId", "token.sub"),
+          InjectRule(InjectTarget.body, "clientId", "token.client_id"),
+        )
+        assertTrue(
+          BootstrapService.accountEndpointRecords.forall: endpoint =>
+            endpoint.inject == BootstrapService.accountCallerInjects(endpoint.method, endpoint.path),
+          BootstrapService.accountEndpointRecords.exists(_.inject == expectedQueryInjects),
+          BootstrapService.accountEndpointRecords.exists(_.inject == expectedBodyInjects),
+          BootstrapService.accountEndpointRecords.forall(_.stepUpCondition.isEmpty),
+          BootstrapService.accountEndpointRecords.forall(_.stepUpAcr.isEmpty),
+          BootstrapService.accountEndpointRecords.forall(_.maxAge.isEmpty),
+        )
+      },
+      test("session revocation is denied for the caller's own session") {
+        assertTrue(
+          BootstrapService.accountEndpointRecords
+            .filter(endpoint => endpoint.method == "DELETE" && endpoint.path == "/settings/sessions")
+            .map(_.allowExpression) == List(Some("token.sid != request.body.targetSessionId")),
+          BootstrapService.accountEndpointRecords
+            .filterNot(endpoint => endpoint.method == "DELETE" && endpoint.path == "/settings/sessions")
+            .forall(_.allowExpression.isEmpty),
+        )
+      },
   )

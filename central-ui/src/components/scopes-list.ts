@@ -178,7 +178,7 @@ export class VersolaScopesList extends LitElement {
       }
 
       .claim-item {
-        background: rgba(0, 0, 0, 0.2);
+        background: rgba(var(--accent-tint), 0.15);
         border: 1px solid var(--border-dark);
         border-radius: var(--radius-md);
         padding: var(--spacing-md);

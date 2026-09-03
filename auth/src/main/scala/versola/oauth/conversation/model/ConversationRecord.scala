@@ -6,7 +6,7 @@ import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, Nonce, State}
 import versola.oauth.model.UserAgentCookiePayload
 import versola.oauth.session.model.SessionId
 import versola.oauth.userinfo.model.RequestedClaims
-import versola.user.model.{Login, UserId}
+import versola.user.model.{Login, UserId, UserRecord}
 import versola.util.{Email, MAC, Phone}
 import zio.http.URL
 import zio.json.ast.Json
@@ -59,6 +59,16 @@ case class ConversationRecord(
       * is already on file. Persisted because the decision is taken long after `/authorize`. */
     promptConsent: Boolean,
 ):
+  def user: Option[UserRecord] = userId.map { userId =>
+    UserRecord(
+      id = userId,
+      email = userEmail,
+      phone = userPhone,
+      login = userLogin,
+      claims = userClaims.getOrElse(Json.Obj.empty),
+      uiLocales = uiLocales
+    )
+  }
 
   /** The scope to issue on, i.e. the granted subset once consent has been decided. */
   def effectiveScope: Set[ScopeToken] = grantedScope.getOrElse(scope)

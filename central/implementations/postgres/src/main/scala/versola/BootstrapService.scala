@@ -14,7 +14,7 @@ import versola.central.configuration.roles.{RoleId, RoleRepository}
 import versola.central.configuration.scopes.{Claim, OAuthScopeRepository, ScopeToken}
 import versola.central.configuration.tenants.{TenantId, TenantRepository}
 import versola.central.configuration.themes.{ThemeRecord, ThemeRepository}
-import versola.central.configuration.{CreateClaim, CreateClientRequest, PatchClientRedirectUris, PatchClientScope, PatchPermissions, ResourceUri, UpdateClientRequest}
+import versola.central.configuration.{CreateClaim, CreateClientRequest, InjectRule, InjectTarget, PatchClientRedirectUris, PatchClientScope, PatchPermissions, ResourceUri, UpdateClientRequest}
 import versola.central.configuration.metadata.ServerMetadataRepository
 import versola.central.users.{Login, UserConflict, UserId, UserRepository}
 import versola.util.{EnvName, Patch, Phone, RedirectUri, Secret, SecureRandom, SecurityService}
@@ -83,6 +83,63 @@ object BootstrapService:
     endpointId("POST", "/configuration/resources/rotate-secret"),
     endpointId("DELETE", "/configuration/resources/previous-secret"),
   )
+
+  /** Hard-coded resourceId for the edge-facing resource that proxies the account page
+    * back to auth. */
+  private val authResourceId = ResourceId("auth")
+
+  /** The self-service account surface exposed through edge and backed by auth's additional port. */
+  private val authEndpointCatalog: List[(String, String)] = List(
+    "GET"    -> "/settings",
+    "DELETE" -> "/settings/sessions",
+    "PATCH"  -> "/settings/passkeys",
+    "DELETE" -> "/settings/passkeys",
+    "POST"   -> "/settings/passkeys/register/start",
+    "POST"   -> "/settings/passkeys/register/finish",
+  )
+
+  /** Endpoints of the account page. Granted to every seeded role - each of them belongs to
+    * a human who owns an account - and to the self-registration role on creation. */
+  private[versola] val accountEndpointIds: Set[ResourceEndpointId] =
+    authEndpointCatalog.map((method, path) => endpointId(method, path)).toSet
+
+  private val accountPermission: Permission = Permission("auth-settings:manage")
+
+  /** Query/body parameter names edge injects the caller's token claims under. Must match
+    * what `AccountSettingsController` in auth reads them back as. */
+  private val accountCallerQueryInjects = Vector(
+    InjectRule(InjectTarget.query, "userId", "token.sub"),
+    InjectRule(InjectTarget.query, "clientId", "token.client_id"),
+    InjectRule(InjectTarget.query, "sessionId", "token.sid"),
+  )
+
+  private val accountCallerBodyInjects = Vector(
+    InjectRule(InjectTarget.body, "userId", "token.sub"),
+    InjectRule(InjectTarget.body, "clientId", "token.client_id"),
+  )
+
+  private[versola] def accountCallerInjects(method: String, path: String) =
+    if method == "GET" then accountCallerQueryInjects
+    else accountCallerBodyInjects
+
+  /** The caller may not revoke the session the page is being viewed from: edge compares the
+    * requested session against the `sid` of the token it authenticated and rejects the match
+    * before auth is called at all. */
+  private[versola] def accountAllowExpression(method: String, path: String): Option[String] =
+    Option.when(method == "DELETE" && path == "/settings/sessions")("token.sid != request.body.targetSessionId")
+
+  private[versola] val accountEndpointRecords = authEndpointCatalog.map: (method, path) =>
+    ResourceEndpointRecord(
+      id = endpointId(method, path),
+      path = path,
+      method = method,
+      fetchUserInfo = false,
+      allowExpression = accountAllowExpression(method, path),
+      inject = accountCallerInjects(method, path),
+      stepUpCondition = None,
+      stepUpAcr = None,
+      maxAge = None,
+    )
 
   private val permissionCatalog: List[(Permission, Map[String, String], Set[ResourceEndpointId])] = List(
     (Permission("oauth:read"), localized("View OAuth clients and scopes", "Просмотр OAuth клиентов и скоупов"), Set(
@@ -201,6 +258,7 @@ object BootstrapService:
       endpointId("DELETE", "/configuration/jwks"),
       endpointId("POST", "/configuration/server-metadata"),
     )),
+    (accountPermission, localized("Manage own account", "Управление своим аккаунтом"), accountEndpointIds),
   )
 
   private val allPermissions: List[Permission] = permissionCatalog.map(_._1)
@@ -216,27 +274,27 @@ object BootstrapService:
       (
         RoleId("security"),
         localized("Security Officer", "Сотрудник безопасности (ИБ)"),
-        List("oauth:read", "oauth:manage", "users:read", "users:manage", "access:read", "security:read", "resources:read").map(Permission(_)),
+        List("oauth:read", "oauth:manage", "users:read", "users:manage", "access:read", "security:read", "resources:read").map(Permission(_)) :+ accountPermission,
       ),
       (
         RoleId("support"),
         localized("Support Engineer", "Инженер поддержки"),
-        List("users:read", "users:manage", "oauth:read", "access:read", "security:read", "resources:read").map(Permission(_)),
+        List("users:read", "users:manage", "oauth:read", "access:read", "security:read", "resources:read").map(Permission(_)) :+ accountPermission,
       ),
       (
         RoleId("frontend-developer"),
         localized("Frontend Developer", "Фронтенд-разработчик"),
-        readOnly ++ List(Permission("forms:manage")),
+        readOnly ++ List(Permission("forms:manage"), accountPermission),
       ),
       (
         RoleId("auditor"),
         localized("Auditor", "Аудитор"),
-        readOnly,
+        readOnly :+ accountPermission,
       ),
       (
         RoleId("viewer"),
         localized("Read-only Viewer (No PII)", "Наблюдатель (без ПДн)"),
-        readOnly.filter(_ != "users:read"),
+        readOnly.filter(_ != "users:read") :+ accountPermission,
       ),
     )
 
@@ -469,6 +527,7 @@ object BootstrapService:
     "confirm-logout" -> Vector.empty,
     "signed-out" -> Vector.empty,
     "consent" -> Vector.empty,
+    "auth-settings" -> Vector.empty,
   )
 
   /** Hard-coded resourceId for the edge-facing resource that proxies central's admin API. */
@@ -621,6 +680,7 @@ object BootstrapService:
           _ <- seedEdges(config)
           _ <- linkTenantEdge(tenantId, config)
           _ <- seedCentralResource(config)
+          _ <- seedAuthResource(tenantId, config)
           _ <- seedJwks(config)
           _ <- seedMetadata(config)
         yield ()
@@ -640,8 +700,9 @@ object BootstrapService:
       ZIO.foreachDiscard(roleCatalog): (roleId, desc, perms) =>
         roleRepo.upsertRole(tenantId, roleId, desc, perms)
 
-    /** The role granted to self-registered users. Seeded without permissions and never
-      * overwritten, so permissions an administrator grants it later survive a restart.
+    /** The role granted to self-registered users. Seeded with self-service access to their
+      * own account and never overwritten, so permissions an administrator grants (or
+      * revokes) later survive a restart.
       */
     private def seedRegistrationRole(tenantId: TenantId): Task[Unit] =
       roleRepo.findRole(tenantId, RegistrationFlow.defaultRoleId).flatMap:
@@ -651,7 +712,7 @@ object BootstrapService:
             tenantId,
             RegistrationFlow.defaultRoleId,
             localized("User", "Пользователь"),
-            List.empty,
+            List(accountPermission),
           )
 
     private def seedOtpTemplates(tenantId: TenantId): Task[Unit] =
@@ -905,6 +966,48 @@ object BootstrapService:
                   resourceRepo.updateResource(centralResourceId, None, None, missing.toVector, Set.empty)
 
         yield ()
+
+    /** Seeds the internal resource that proxies Account Settings to auth's additional port.
+      * Edge owns authorization and future step-up policy, replaces the caller headers below,
+      * and authenticates to auth with the resource secret.
+      */
+    private def seedAuthResource(tenantId: TenantId, bootstrapConfig: CentralConfig.BootstrapConfig): Task[Unit] =
+      val desiredEndpoints = accountEndpointRecords
+      for
+        encryptedSecret <- securityService.encryptAes256(
+          bootstrapConfig.authResourceSecret,
+          SecretKeySpec(this.config.clientSecretsSecret, "AES"),
+        )
+        resources <- resourceRepo.getAll
+        _ <- resources.find(r => r.tenantId == tenantId && r.resourceId == authResourceId) match
+          case None =>
+            resourceRepo.createResource(
+              tenantId,
+              authResourceId,
+              ResourceUri(bootstrapConfig.authAdditionalUrl.encode),
+              List(CentralConfig.centralClientId),
+              desiredEndpoints.toVector,
+              Some(encryptedSecret),
+            )
+          case Some(existing) =>
+            val existingById = existing.endpoints.map(endpoint => endpoint.id -> endpoint).toMap
+            // The catalog, its injects and its access rules belong to bootstrap and have to
+            // converge on every start; step-up policy is operator-tuned and is kept as found.
+            val mergedEndpoints = desiredEndpoints.map: desired =>
+              existingById.get(desired.id).fold(desired): current =>
+                desired.copy(
+                  stepUpCondition = current.stepUpCondition,
+                  stepUpAcr = current.stepUpAcr,
+                  maxAge = current.maxAge,
+                )
+            val staleEndpoints = existingById.keySet -- desiredEndpoints.map(_.id).toSet
+            val desiredUrl = ResourceUri(bootstrapConfig.authAdditionalUrl.encode)
+            val needsUpdate = existing.resource != desiredUrl || existing.endpoints != mergedEndpoints
+            ZIO.when(existing.secret.isEmpty)(resourceRepo.initializeSecret(authResourceId, encryptedSecret).unit) *>
+              ZIO.when(needsUpdate)(
+                resourceRepo.updateResource(authResourceId, Some(desiredUrl), None, mergedEndpoints.toVector, staleEndpoints),
+              ).unit
+      yield ()
 
     private def seedJwks(config: CentralConfig.BootstrapConfig): Task[Unit] =
       val keys: Vector[Json.Obj] = config.jwks match

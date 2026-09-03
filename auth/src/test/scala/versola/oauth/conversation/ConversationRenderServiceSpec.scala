@@ -4,6 +4,7 @@ import versola.auth.TestEnvConfig
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.*
 import versola.oauth.conversation.model.*
+import versola.oauth.conversation.ConversationRenderService.StepView
 import versola.oauth.jwks.JwksService
 import versola.oauth.model.{AuthorizationCode, CodeChallenge, CodeChallengeMethod, SessionCookie, State, UserAgentData}
 import versola.oauth.session.model.{PublicSessionId, SessionId, UserAgentDetails, UserAgentId}
@@ -465,7 +466,27 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           assertTrue(body.contains("Name")) &&
           assertTrue(!body.contains("Email verification status"))
       },
-    ),
+      ),
+      suite("renderAccount")(
+        test("renders the account payload without a logout URL") {
+          val env = Env()
+          for
+            _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+            _ <- env.configuration.getTheme.succeedsWith(Some(theme))
+            _ <- env.configuration.getForm.succeedsWith(Some(formRecord.copy(id = "auth-settings")))
+            _ <- env.configuration.getLocales.succeedsWith(locales)
+            _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
+            response <- env.service.renderAccount(
+              clientId,
+              StepView.AccountSettings(Nil, Nil),
+              None,
+            )
+            body <- response.body.asString
+          yield assertTrue(
+            !body.contains("\"logoutUrl\""),
+          )
+        },
+      ),
     suite("renderExpired")(
       test("renders the expired page with an OAuth error return URI") {
         val env = Env()

@@ -34,6 +34,7 @@ object LogoutServiceSpec extends UnitSpecBase:
     createdAt = Instant.EPOCH,
     amr = Map.empty,
     publicId = publicSessionId1,
+    expiresAt = Instant.EPOCH,
   )
   private val sessionInfo1 = SessionInfo(mac, record1)
 

@@ -51,6 +51,16 @@ object CentralConfig:
         */
       frontChannelLogoutUri: Option[String],
       passkey: CentralConfig.PasskeyConfig,
+      /** Internal URL of auth's additional listener (Account Settings). Used to seed
+        * the internal "auth" resource record that proxies Account Settings through edge.
+        */
+      authAdditionalUrl: URL,
+      /** Base64Url-encoded secret shared with auth's additional listener, used to
+        * authenticate the seeded "auth" resource record. Always required — unlike
+        * the central resource secret, this is not auto-generated, since auth also
+        * needs to be configured with the same value out of band.
+        */
+      authResourceSecret: Secret,
   )
 
   object BootstrapConfig:

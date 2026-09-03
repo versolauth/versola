@@ -16,6 +16,10 @@ export class VersolaNavigation extends LitElement {
   /** Mobile drawer state. Reflected so the `:host([open])` rule below can match. */
   @property({ type: Boolean, reflect: true }) open = false;
   @property({ type: String }) logoutUrl = '/logout/central-admin';
+  // Edge's own route (kept unprefixed like /resources elsewhere - see vite.config.ts's
+  // dev proxy and deploy.md's nginx table), not the console's /central prefix: the
+  // Account Settings page is auth's self-service surface, not part of the admin API.
+  @property({ type: String }) accountSettingsUrl = '/resources/auth/settings';
   @query('.brand-close') private closeButton?: HTMLButtonElement;
   /** Mirrors whatever's currently applied to <html> (see src/utils/theme.ts).
     * Read once at construction rather than derived on every render — the only
@@ -448,6 +452,7 @@ export class VersolaNavigation extends LitElement {
               >🌙</button>
             </span>
           </div>
+          <a class="nav-item" href=${this.accountSettingsUrl}>My Security</a>
           <a class="nav-item" href=${this.logoutUrl}>Log out</a>
         </div>
       </div>

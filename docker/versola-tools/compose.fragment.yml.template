@@ -187,6 +187,7 @@ services:
     environment:
       PORT: 8080
       DPORT: 8081
+      APORT: 8082
       CONFIG_PATH: /app/config/env.conf
       # See central's own RUN_MIGRATIONS comment above.
       RUN_MIGRATIONS: "false"

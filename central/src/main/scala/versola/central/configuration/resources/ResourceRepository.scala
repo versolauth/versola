@@ -34,6 +34,9 @@ trait ResourceRepository extends CacheSource[Vector[ResourceRecord]]:
   /** Returns true only when an internal resource with no pending rotation was rotated. */
   def rotateSecret(resourceId: ResourceId, newSecret: Array[Byte]): Task[Boolean]
 
+  /** Converts a public resource to internal exactly once without creating a rotation grace period. */
+  def initializeSecret(resourceId: ResourceId, secret: Array[Byte]): Task[Boolean]
+
   def deletePreviousSecret(resourceId: ResourceId): Task[Unit]
 
   def deleteResource(

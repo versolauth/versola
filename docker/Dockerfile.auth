@@ -33,7 +33,7 @@ RUN chmod +x /app/bin/*
 COPY auth/implementations/postgres/migrations /app/auth/implementations/postgres/migrations
 
 # Expose ports
-EXPOSE 8080 9345
+EXPOSE 8080 8082 9345
 
 # Set environment variables
 # UseCompactObjectHeaders is a stable (non-experimental) product flag as

@@ -1,6 +1,6 @@
 package versola.user
 
-import versola.auth.model.{AuthenticatorTransport, CredentialDeviceType, CredentialId}
+import versola.auth.model.{AuthenticatorTransport, CredentialDeviceType, CredentialId, PasskeyName}
 import versola.oauth.challenge.password.model.DeliveryChannel
 import versola.oauth.client.model.TenantId
 import versola.role.model.RoleId
@@ -53,7 +53,7 @@ given JsonCodec[AuthenticatorTransport] =
 
 case class PasskeyInfoResponse(
     id: CredentialId,
-    name: Option[String],
+    name: Option[PasskeyName],
     deviceType: CredentialDeviceType,
     transports: List[AuthenticatorTransport],
     backedUp: Boolean,
@@ -67,7 +67,7 @@ case class ListPasskeysResponse(passkeys: List[PasskeyInfoResponse]) derives Jso
 case class RenamePasskeyPayload(
     userId: UserId,
     credentialId: CredentialId,
-    name: Option[String],
+    name: Option[PasskeyName],
 ) derives JsonCodec
 
 case class ResetPasswordPayload(

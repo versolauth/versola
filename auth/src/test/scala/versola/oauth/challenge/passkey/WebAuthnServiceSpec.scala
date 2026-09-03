@@ -1,7 +1,8 @@
 package versola.oauth.challenge.passkey
 
-import versola.auth.model.{AuthenticatorTransport, CredentialDeviceType, CredentialId, PasskeyRecord}
-import versola.oauth.client.model.PasskeySettings
+import versola.auth.model.{AuthenticatorTransport, CredentialDeviceType, CredentialId, PasskeyName, PasskeyRecord}
+import versola.oauth.client.OAuthConfigurationService
+import versola.oauth.client.model.{ClientId, PasskeySettings}
 import versola.user.model.UserId
 import versola.util.UnitSpecBase
 import zio.*
@@ -14,6 +15,7 @@ import java.util.UUID
 object WebAuthnServiceSpec extends UnitSpecBase:
 
   private val userId = UserId(UUID.randomUUID())
+  private val clientId = ClientId("test-client")
   private val settings = PasskeySettings(
     rpId = "localhost",
     rpName = "Versola",
@@ -35,7 +37,7 @@ object WebAuthnServiceSpec extends UnitSpecBase:
     attestationObject = None,
     clientDataJson = None,
     aaguid = None,
-    name = Some("My Key"),
+    name = Some(PasskeyName("My Key")),
     lastUsedAt = None,
     createdAt = baseInstant,
     updatedAt = baseInstant
@@ -45,9 +47,11 @@ object WebAuthnServiceSpec extends UnitSpecBase:
 
     test("startRegistration produces a ceremony") {
       val repository = stub[PasskeyRepository]
+      val configService = stub[OAuthConfigurationService]
       for
         service <- ZIO.service[WebAuthnService].provide(
           ZLayer.succeed(repository),
+          ZLayer.succeed(configService),
           WebAuthnService.live
         )
         _ <- repository.listByUser.succeedsWith(Vector.empty)
@@ -60,9 +64,11 @@ object WebAuthnServiceSpec extends UnitSpecBase:
 
     test("startAssertion produces a ceremony") {
       val repository = stub[PasskeyRepository]
+      val configService = stub[OAuthConfigurationService]
       for
         service <- ZIO.service[WebAuthnService].provide(
           ZLayer.succeed(repository),
+          ZLayer.succeed(configService),
           WebAuthnService.live
         )
         ceremony <- service.startAssertion(settings)
@@ -74,9 +80,11 @@ object WebAuthnServiceSpec extends UnitSpecBase:
 
     test("credentialIdFromResponse extracts id from valid JSON") {
       val repository = stub[PasskeyRepository]
+      val configService = stub[OAuthConfigurationService]
       for
         service <- ZIO.service[WebAuthnService].provide(
           ZLayer.succeed(repository),
+          ZLayer.succeed(configService),
           WebAuthnService.live
         )
         response = """{"id":"Y3JlZC0xMjM","rawId":"Y3JlZC0xMjM","response":{"clientDataJSON":"eyJ0eXBlIjoid2ViYXV0aG4uZ2V0IiwiY2hhbGxlbmdlIjoiQUFBQSIsIm9yaWdpbiI6Imh0dHA6Ly9sb2NhbGhvc3QifQ","authenticatorData":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFAAAAAAAA","signature":"Y3JlZC0xMjM","userHandle":"Y3JlZC0xMjM"},"type":"public-key","clientExtensionResults":{}}"""
@@ -87,9 +95,11 @@ object WebAuthnServiceSpec extends UnitSpecBase:
 
     test("credentialIdFromResponse returns None for invalid JSON") {
       val repository = stub[PasskeyRepository]
+      val configService = stub[OAuthConfigurationService]
       for
         service <- ZIO.service[WebAuthnService].provide(
           ZLayer.succeed(repository),
+          ZLayer.succeed(configService),
           WebAuthnService.live
         )
         id <- service.credentialIdFromResponse("not-json")
@@ -99,18 +109,40 @@ object WebAuthnServiceSpec extends UnitSpecBase:
 
     test("finishRegistration fails if repository insert fails") {
       val repository = stub[PasskeyRepository]
+      val configService = stub[OAuthConfigurationService]
       for
         service <- ZIO.service[WebAuthnService].provide(
           ZLayer.succeed(repository),
+          ZLayer.succeed(configService),
           WebAuthnService.live
         )
-        result <- service.finishRegistration(settings, userId, "{}", "{}", None).exit
+        _ <- configService.getPasskeySettings.succeedsWith(Some(settings))
+        result <- service.finishRegistration(clientId, userId, "{}", "{}", None).exit
       yield
         assert(result)(fails(isSubtype[WebAuthnError.CeremonyFailed](anything)))
     },
 
+    // An administrator can disable passkeys for the client while a ceremony the user already
+    // started is still in flight, so this is a normal stale ceremony: it has to stay typed,
+    // or both callers (the login flow's enroll step and the account API) turn it into a 500.
+    test("finishRegistration fails when passkey settings are missing") {
+      val repository = stub[PasskeyRepository]
+      val configService = stub[OAuthConfigurationService]
+      for
+        service <- ZIO.service[WebAuthnService].provide(
+          ZLayer.succeed(repository),
+          ZLayer.succeed(configService),
+          WebAuthnService.live
+        )
+        _ <- configService.getPasskeySettings.succeedsWith(None)
+        result <- service.finishRegistration(clientId, userId, "{}", "{}", None).exit
+      yield
+        assert(result)(fails(equalTo(WebAuthnError.PasskeysNotEnabled)))
+    },
+
     test("finishAssertion fails with AssertionFailed if verification fails") {
       val repository = stub[PasskeyRepository]
+      val configService = stub[OAuthConfigurationService]
       val credId = CredentialId("c".getBytes)
       val record = passkeyRecord(credId, userId)
 
@@ -120,6 +152,7 @@ object WebAuthnServiceSpec extends UnitSpecBase:
       for
         service <- ZIO.service[WebAuthnService].provide(
           ZLayer.succeed(repository),
+          ZLayer.succeed(configService),
           WebAuthnService.live
         )
         _ <- repository.findByCredentialId.succeedsWith(Vector(record))
@@ -131,6 +164,7 @@ object WebAuthnServiceSpec extends UnitSpecBase:
 
     test("finishAssertion fails if credential not found") {
       val repository = stub[PasskeyRepository]
+      val configService = stub[OAuthConfigurationService]
 
       // We use a realistic-looking but fake request/response to trigger the library
       val request = """{"publicKeyCredentialRequestOptions":{"challenge":"AAAA","timeout":60000,"rpId":"localhost","allowCredentials":[],"userVerification":"required","extensions":{}}}"""
@@ -139,6 +173,7 @@ object WebAuthnServiceSpec extends UnitSpecBase:
       for
         service <- ZIO.service[WebAuthnService].provide(
           ZLayer.succeed(repository),
+          ZLayer.succeed(configService),
           WebAuthnService.live
         )
         _ <- repository.findByCredentialId.succeedsWith(Vector.empty)

@@ -52,7 +52,7 @@ docker-compose -f services.yml up -d postgres
 # fresh Postgres from step 2, that fails immediately with no schema to
 # validate against.
 PORT=9001 DPORT=9002 RUN_MIGRATIONS=true sbt -Denv.path=central/dev/env.conf "project central-postgres-impl; run"
-PORT=9003 DPORT=9004 RUN_MIGRATIONS=true sbt -Denv.path=auth/dev/env.conf "project auth-postgres-impl; run"
+PORT=9003 DPORT=9004 APORT=9007 RUN_MIGRATIONS=true sbt -Denv.path=auth/dev/env.conf "project auth-postgres-impl; run"
 PORT=9005 DPORT=9006 RUN_MIGRATIONS=true sbt -Denv.path=edge/dev/env.conf "project edge-postgres-impl; run"
 ```
 
@@ -100,4 +100,4 @@ sbt e2e/test             # end-to-end tests (run explicitly, not part of the def
 [`ci-cd.yml`](.github/workflows/ci-cd.yml) is the main build pipeline. It runs on every push/PR to `main`:
 
 1. Compile all modules and run the unit test suite (`sbt test`) against a Postgres service container.
-2. Stage `auth` and `central`, then run the end-to-end suite (`sbt e2e/test`) against the staged services.
+2. Stage `auth`, `central` and `edge`, then run the end-to-end suite (`sbt e2e/test`) against the staged services.

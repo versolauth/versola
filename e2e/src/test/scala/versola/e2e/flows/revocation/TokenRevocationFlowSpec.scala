@@ -140,5 +140,7 @@ object TokenRevocationFlowSpec extends E2ESpec:
         .label("a session that was not logged out must still be accepted")
     },
     // The revocations under test are recorded against wall-clock expiry and polled for over
-    // real seconds, so the tests need the live clock rather than the test one.
+    // real seconds, so the tests need the live clock rather than the test one. That polling,
+    // once per test and run sequentially, is why this suite alone takes 40+ real seconds —
+    // not a hang.
   ) @@ TestAspect.sequential @@ TestAspect.withLiveClock @@ TestAspect.timeout(90.seconds)

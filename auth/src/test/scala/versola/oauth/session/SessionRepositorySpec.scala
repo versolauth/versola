@@ -44,6 +44,7 @@ trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
     createdAt = Instant.EPOCH,
     amr = Map.empty,
     publicId = publicId1,
+    expiresAt = Instant.EPOCH,
   )
 
   val session2 = SessionRecord(
@@ -53,7 +54,15 @@ trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
     createdAt = Instant.EPOCH,
     amr = Map.empty,
     publicId = publicId2,
+    expiresAt = Instant.EPOCH,
   )
+
+  /** `expiresAt` is computed by the repository from the requested TTL (and mutated by
+    * invalidation), so it's normalized away before comparing against `session1`/`session2`,
+    * whose `expiresAt` is just the field's unused default. Expiry itself is covered by the
+    * dedicated TTL/idle tests below. */
+  private def withoutExpiry(r: Option[SessionRecord]): Option[SessionRecord] =
+    r.map(_.copy(expiresAt = Instant.EPOCH))
 
   def testCases(env: SessionRepositorySpec.Env): List[Spec[SessionRepositorySpec.Env & Scope, Any]] =
     List(
@@ -61,7 +70,7 @@ trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
         for
           _ <- env.repository.create(sessionId1, session1, ttl, None, None)
           found <- env.repository.findSession(sessionId1)
-        yield assertTrue(found.contains(session1))
+        yield assertTrue(withoutExpiry(found).contains(session1))
       },
       test("find returns None for non-existent session") {
         for
@@ -82,8 +91,8 @@ trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
           found1 <- env.repository.findSession(sessionId1)
           found2 <- env.repository.findSession(sessionId2)
         yield assertTrue(
-          found1.contains(session1),
-          found2.contains(session2),
+          withoutExpiry(found1).contains(session1),
+          withoutExpiry(found2).contains(session2),
         )
       },
       test("session expires after TTL") {
@@ -93,7 +102,7 @@ trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
           _ <- TestClock.adjust(3.minutes)
           foundAfter <- env.repository.findSession(sessionId1)
         yield assertTrue(
-          foundBefore.contains(session1),
+          withoutExpiry(foundBefore).contains(session1),
           foundAfter.isEmpty,
         )
       },
@@ -104,7 +113,7 @@ trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
           _ <- TestClock.adjust(3.minutes)
           foundAfter <- env.repository.findSession(sessionId1)
         yield assertTrue(
-          foundBefore.contains(session1),
+          withoutExpiry(foundBefore).contains(session1),
           foundAfter.isEmpty,
         )
       },
@@ -122,7 +131,7 @@ trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
           _ <- env.repository.prolongIdle(sessionId1, 5.minutes)
           _ <- TestClock.adjust(4.minutes)
           found <- env.repository.findSession(sessionId1)
-        yield assertTrue(found.contains(session1))
+        yield assertTrue(withoutExpiry(found).contains(session1))
       },
       test("prolongIdle does not promote a session created without an idle window") {
         for
@@ -130,7 +139,7 @@ trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
           _ <- env.repository.prolongIdle(sessionId1, 1.minute)
           _ <- TestClock.adjust(2.minutes)
           found <- env.repository.findSession(sessionId1)
-        yield assertTrue(found.contains(session1))
+        yield assertTrue(withoutExpiry(found).contains(session1))
       },
       test("findByUserId returns active sessions for user") {
         for
@@ -216,7 +225,7 @@ trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
           _      <- env.repository.create(sessionId1, session1, ttl, None, None)
           result <- env.repository.invalidate(sessionId1)
           after  <- env.repository.findSession(sessionId1)
-        yield assertTrue(result.contains(session1), after.isEmpty)
+        yield assertTrue(withoutExpiry(result).contains(session1), after.isEmpty)
       },
       test("invalidate returns None for a non-existent session") {
         for result <- env.repository.invalidate(sessionId1)
@@ -263,7 +272,7 @@ trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
           result <- env.repository.invalidateByPublicId(publicId1)
           after  <- env.repository.findSession(sessionId1)
         yield assertTrue(
-          result.exists { case (id, record) => id.sameElements(sessionId1) && record == session1 },
+          result.exists { case (id, record) => id.sameElements(sessionId1) && record.copy(expiresAt = Instant.EPOCH) == session1 },
           after.isEmpty,
         )
       },
@@ -276,8 +285,22 @@ trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
           _      <- env.repository.create(sessionId1, session1, 0.seconds, None, None)
           _      <- TestClock.adjust(1.second)
           result <- env.repository.invalidateByPublicId(publicId1)
-        yield assertTrue(result.exists { case (id, record) => id.sameElements(sessionId1) && record == session1 })
+        yield assertTrue(result.exists { case (id, record) => id.sameElements(sessionId1) && record.copy(expiresAt = Instant.EPOCH) == session1 })
       },
+        test("invalidateByPublicIdForUser invalidates an expired session owned by the user") {
+          for
+            _       <- env.repository.create(sessionId1, session1, 0.seconds, None, None)
+            _       <- TestClock.adjust(1.second)
+            revoked <- env.repository.invalidateByPublicIdForUser(publicId1, userId1)
+          yield assertTrue(revoked)
+        },
+        test("invalidateByPublicIdForUser does not invalidate another user's session") {
+          for
+            _       <- env.repository.create(sessionId2, session2, ttl, None, None)
+            revoked <- env.repository.invalidateByPublicIdForUser(publicId2, userId1)
+            after   <- env.repository.findSession(sessionId2)
+          yield assertTrue(!revoked, withoutExpiry(after).contains(session2))
+        },
       test("invalidateByPublicId removes associated refresh tokens") {
         for
           now   <- Clock.instant

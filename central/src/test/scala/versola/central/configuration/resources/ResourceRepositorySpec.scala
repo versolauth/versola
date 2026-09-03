@@ -81,6 +81,21 @@ trait ResourceRepositorySpec extends DatabaseSpecBase[ResourceRepositorySpec.Env
           found <- env.resourceRepository.findResource(resourceId)
         yield assertTrue(found.map(_.secret.map(_.toVector)) == Some(Some(secret.toVector)))
       },
+        test("initializes a public resource secret exactly once") {
+          val initial = Array.fill(32)(3.toByte)
+          val replacement = Array.fill(32)(4.toByte)
+          for
+            _ <- env.resourceRepository.createResource(tenantId, resourceId, resourceUri, audience, Vector.empty, None)
+            initialized <- env.resourceRepository.initializeSecret(resourceId, initial)
+            initializedAgain <- env.resourceRepository.initializeSecret(resourceId, replacement)
+            found <- env.resourceRepository.findResource(resourceId)
+          yield assertTrue(
+            initialized,
+            !initializedAgain,
+            found.flatMap(_.secret).map(_.toVector).contains(initial.toVector),
+            found.flatMap(_.previousSecret).isEmpty,
+          )
+        },
       test("rotate and delete previous secret") {
         val secret1 = Array.fill(32)(1.toByte)
         val secret2 = Array.fill(32)(2.toByte)

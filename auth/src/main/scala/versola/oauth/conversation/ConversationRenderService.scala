@@ -1,5 +1,6 @@
 package versola.oauth.conversation
 
+import versola.auth.model.PasskeyName
 import versola.oauth.authorize.AuthorizeRedirect
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{ClientId, FormRecord, PrimaryCredential, ScopeToken}
@@ -19,6 +20,7 @@ import zio.{Chunk, Clock, Task, UIO, ZIO, ZLayer, durationInt}
 
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
+import java.time.Instant
 
 trait ConversationRenderService:
   def renderStep(record: ConversationRecord, ifNoneMatch: Option[String], errorKey: Option[String] = None): Task[Response]
@@ -43,6 +45,14 @@ trait ConversationRenderService:
       csrfToken: String,
       postLogoutRedirectUri: Option[String],
       state: Option[State],
+      uiLocales: Option[List[String]],
+  ): Task[Response]
+
+  /** Renders the self-service account page. The data is resolved by the caller and inlined
+    * into the page, so the first paint needs no request of its own. */
+  def renderAccount(
+      clientId: ClientId,
+      view: ConversationRenderService.StepView.AccountSettings,
       uiLocales: Option[List[String]],
   ): Task[Response]
 
@@ -90,6 +100,37 @@ object ConversationRenderService:
         scopes: List[ConsentScope],
         allowPartial: Boolean,
         denyUri: String,
+    ) extends StepView
+
+    /** One active session of the user, as rendered on the account page. `id` is the
+      * protocol-visible [[versola.oauth.session.model.PublicSessionId]]: it carries no
+      * authority (see its scaladoc), and revocation is authorized against the caller's own
+      * session list rather than against knowledge of this value. */
+    case class AccountSession(
+        id: String,
+        platform: Option[String],
+        os: Option[String],
+        browser: Option[String],
+        version: Option[String],
+        createdAt: Instant,
+        expiresAt: Instant,
+          /** The session the page is being viewed from, resolved from the access token's `sid`,
+            * so account settings can keep its revocation action unavailable. */
+        current: Boolean,
+    ) derives JsonCodec
+
+    case class AccountPasskey(
+        id: String,
+        name: Option[PasskeyName],
+        backedUp: Boolean,
+        lastUsedAt: Option[Instant],
+        createdAt: Instant,
+    ) derives JsonCodec
+
+    @jsonHint("auth-settings")
+    case class AccountSettings(
+        sessions: List[AccountSession],
+        passkeys: List[AccountPasskey],
     ) extends StepView
 
     @jsonHint("access-denied")
@@ -224,6 +265,41 @@ object ConversationRenderService:
           )
           htmlResponse(solidPage(info, css, logo))
             .addHeader(Header.Custom("Cache-Control", "private, no-cache"))
+
+    override def renderAccount(
+        clientId: ClientId,
+        view: StepView.AccountSettings,
+        uiLocales: Option[List[String]],
+    ): Task[Response] =
+      for
+        client <- configuration.find(clientId)
+        css     <- themeCss(client.map(_.theme).getOrElse(ThemeDefault))
+        logo    <- configuration.getIdentityProviderLogo
+        formOpt <- configuration.getForm("auth-settings")
+        locales <- configuration.getLocales
+      yield formOpt match
+        case None => htmlResponse(notFoundPage(css), Status.NotFound)
+        case Some(form) =>
+          val activeCodes = locales.locales.map(_.code).toSet + locales.default
+          val (chosenLocale, translations) = pickTranslations(form, uiLocales, locales.default, activeCodes)
+          val info = FormRenderInfo(
+            title = pageTitle(translations),
+            style = form.style,
+            jsCompiled = form.jsCompiled,
+            config = FormConfig(
+              step = view,
+              t = translations,
+              locale = chosenLocale,
+              locales = (form.localizations.keySet & activeCodes).toList.sorted,
+              allT = form.localizations,
+              error = None,
+              csrf = "",
+            ),
+            version = form.version,
+          )
+          htmlResponse(solidPage(info, css, logo))
+            // The page carries the user's sessions and passkeys; no cache may keep a copy.
+            .addHeader(Header.Custom("Cache-Control", "private, no-cache, no-store"))
 
     private def etagFor(body: String): String =
       val digest = MessageDigest.getInstance("SHA-256")
@@ -583,6 +659,7 @@ object ConversationRenderService:
       case _: StepView.Otp => "otp"
       case _: StepView.PasskeyEnroll => "passkey-enroll"
       case _: StepView.Consent => "consent"
+      case _: StepView.AccountSettings => "auth-settings"
       case _: StepView.AccessDenied => "access-denied"
       case _: StepView.ConversationExpired => "conversation-expired"
       case _: StepView.ServiceUnavailable => "service-unavailable"

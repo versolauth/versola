@@ -20,4 +20,5 @@ case class SessionUnderUserAgent(
     os: Option[String],
     browser: Option[String],
     version: Option[String],
+    expiresAt: Instant,
 )

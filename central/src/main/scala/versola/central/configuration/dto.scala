@@ -473,6 +473,19 @@ case class ResourceRegistryEntry(
 
 case class GetResourcesRegistryResponse(
     resources: Vector[ResourceRegistryEntry],
+    /** Base64Url-encoded current secret of the "auth" resource, encrypted the same way as
+      * [[ResourceSyncResponse.secret]] (AES-256 with the central secret key, since auth has
+      * no edge keypair). It lets auth authenticate calls to its own account settings API
+      * without a separately configured static secret. No other resource secret is exposed
+      * here. */
+    authResourceSecret: Option[String],
+    /** The secret being rotated out, sent alongside the current one so auth accepts either
+      * while a rotation is in flight. Edge keeps using the previous secret until it is
+      * explicitly removed ([[ResourceSyncResponse.secret]]), and edge and auth refresh their
+      * caches independently: without this, the window between edge picking up the new secret
+      * and auth doing the same rejects every call. Mirrors central's own
+      * `ResourceService.verifySecret`, which accepts both for the same reason. */
+    authResourcePreviousSecret: Option[String],
 ) derives Schema, JsonCodec
 
 case class AuthorizationDetailTypeSyncResponse(

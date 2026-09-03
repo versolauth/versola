@@ -104,6 +104,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
     createdAt = now,
     amr = amr,
     publicId = publicSessionId,
+    expiresAt = now.plusSeconds(86400),
   )
 
   class Env:
@@ -489,6 +490,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         createdAt = Instant.EPOCH.minusSeconds(1),
         amr = Map(PassedAuthFactor.otp -> PassedFactorRecord(Instant.EPOCH.minusSeconds(1), Set(AuthMethodRef.otp))),
         publicId = publicSessionId,
+        expiresAt = Instant.EPOCH.plusSeconds(86400),
       )
       for
         _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
@@ -516,6 +518,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         createdAt = Instant.EPOCH.minusSeconds(1),
         amr = Map(PassedAuthFactor.otp -> PassedFactorRecord(Instant.EPOCH.minusSeconds(1), Set(AuthMethodRef.otp))),
         publicId = publicSessionId,
+        expiresAt = Instant.EPOCH.plusSeconds(86400),
       )
       for
         _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
@@ -539,6 +542,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         createdAt = Instant.EPOCH,
         amr = Map(PassedAuthFactor.otp -> PassedFactorRecord(Instant.EPOCH, Set(AuthMethodRef.otp))),
         publicId = publicSessionId,
+        expiresAt = Instant.EPOCH.plusSeconds(86400),
       )
       for
         _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
@@ -952,6 +956,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         createdAt = Instant.EPOCH.minusSeconds(1),
         amr = Map(PassedAuthFactor.otp -> PassedFactorRecord(Instant.EPOCH.minusSeconds(1), Set(AuthMethodRef.otp))),
         publicId = publicSessionId,
+        expiresAt = Instant.EPOCH.plusSeconds(86400),
       )
       for
         _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))

@@ -118,8 +118,13 @@ object ResourceController extends Controller:
           securityService.encryptAes256(secret, centralConfig.secretKey).map(Base64Url.encode)
     yield encrypted
 
+  /** Hard-coded resourceId of the resource that proxies the account page back to auth. */
+  private val authResourceId = ResourceId("auth")
+
   /** Lightweight resource registry for auth's RFC 8707 `resource` parameter validation:
-    * only what's needed to resolve a requested resource URI to its id and tenant.
+    * only what's needed to resolve a requested resource URI to its id and tenant. The only
+    * secret it carries is the "auth" resource's own, so auth can authenticate calls to its
+    * account settings API.
     */
   val resourcesRegistryEndpoint =
     Method.GET / "configuration" / "resources" / "registry" -> handler { (request: Request) =>
@@ -127,15 +132,14 @@ object ResourceController extends Controller:
         service <- ZIO.service[ResourceService]
         edgeId <- authorizeInternal(request)
         resources <- service.getResourcesForSync(edgeId)
-        response = GetResourcesRegistryResponse(resources.map { r =>
-          ResourceRegistryEntry(
-            resourceId = r.resourceId,
-            tenantId = r.tenantId,
-            resource = r.resource,
-            audience = r.audience,
-            internal = r.isInternal,
-          )
-        })
+        entries = resources.map(toResourceRegistryEntry)
+        authResource = resources.find(_.resourceId == authResourceId && edgeId.isEmpty)
+        // Both halves of a rotation go to auth, which accepts either: edge stays on the
+        // previous secret until it is removed, and the two refresh their caches at their
+        // own pace (see GetResourcesRegistryResponse.authResourcePreviousSecret).
+        authResourceSecret <- ZIO.foreach(authResource.flatMap(_.secret))(transportEncryption(None))
+        authResourcePreviousSecret <- ZIO.foreach(authResource.flatMap(_.previousSecret))(transportEncryption(None))
+        response = GetResourcesRegistryResponse(entries, authResourceSecret, authResourcePreviousSecret)
       yield Response.json(response.toJson)
     }
 
@@ -159,6 +163,15 @@ object ResourceController extends Controller:
       },
       internal = record.isInternal,
       secretRotation = record.previousSecret.nonEmpty,
+    )
+
+  private def toResourceRegistryEntry(record: ResourceRecord): ResourceRegistryEntry =
+    ResourceRegistryEntry(
+      resourceId = record.resourceId,
+      tenantId = record.tenantId,
+      resource = record.resource,
+      audience = record.audience,
+      internal = record.isInternal,
     )
 
   private def toResourceSyncResponse(

@@ -14,4 +14,5 @@ case class SessionRecord(
     createdAt: Instant,
     amr: Map[PassedAuthFactor, PassedFactorRecord],
     publicId: PublicSessionId,
+    expiresAt: Instant,
 )

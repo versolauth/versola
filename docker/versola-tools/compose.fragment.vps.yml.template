@@ -128,6 +128,7 @@ services:
     environment:
       PORT: 8080
       DPORT: 8081
+      APORT: 8082
       CONFIG_PATH: /app/config/env.conf
       # Same reasoning as central's BIND_HOST above. auth's actual public
       # path is through the VPS's native nginx, which already reaches it
