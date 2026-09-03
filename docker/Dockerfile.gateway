@@ -5,12 +5,11 @@
 # central-ui/ (a CI build step, not something this Dockerfile does itself,
 # to keep the image simple and avoid needing Node in the build context).
 #
-# vite.config.ts bakes BASE_PATH = "/central/admin/" into every asset URL
-# in dist/index.html (the console is only ever served under that path, and
-# EDGE_SESSION's cookie scope depends on it -- see that file's comments).
-# So dist/ is copied here to /central/admin/ rather than the docroot root:
-# that's the only way a request for GET /central/admin/versola-admin.js
-# resolves, matching what's already baked into the built HTML.
+# vite.config.ts bakes a relative BASE_PATH into every asset URL in
+# dist/index.html, so the same dist/ resolves correctly at whatever path it's
+# mounted under. This image mounts it at /central/admin/ -- the path
+# EDGE_SESSION's cookie scope (and central-api.ts's default 'prefix' console
+# mode) assumes -- rather than the docroot root.
 #
 # Routing (nginx.conf) is still supplied at runtime, not baked in here --
 # see versola-cli/versola-tools' nginx.conf.template and

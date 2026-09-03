@@ -41,7 +41,8 @@ const DEFAULT_LOGIN_URL = '/login/central-admin';
 type LocalizedDescription = Record<string, string>;
 type PagedResult<T> = { items: T[]; total: number; hasNext: boolean };
 type QueryValue = string | number | undefined | null;
-type CentralApiConfig = { baseUrl: string | null; loginUrl: string };
+type ConsoleMode = 'prefix' | 'direct';
+type CentralApiConfig = { baseUrl: string | null; loginUrl: string; consoleMode: ConsoleMode };
 
 type ClientSecretResponse = { secret: string };
 type AuthorizationPresetResponse = {
@@ -137,7 +138,7 @@ type AuthorizationDetailTypesResponse = {
   types: Array<{ type: string; description: LocalizedDescription; schema: Record<string, unknown> }>;
 };
 
-const apiConfig: CentralApiConfig = { baseUrl: null, loginUrl: DEFAULT_LOGIN_URL };
+const apiConfig: CentralApiConfig = { baseUrl: null, loginUrl: DEFAULT_LOGIN_URL, consoleMode: 'prefix' };
 const permissionStore = new Map<string, Permission>();
 const clientSupplementStore = new Map<string, { accessTokenTtl: number; refreshTokenTtl: number; hasPreviousSecret: boolean }>();
 const roleSupplementStore = new Map<string, { active: boolean; createdAt: string; updatedAt: string }>();
@@ -247,20 +248,33 @@ export function resolveBaseUrl(): string {
   return apiConfig.baseUrl?.trim() || window.location.origin;
 }
 
-// Everything the console talks to lives under this prefix. It exists so the
-// EDGE_SESSION cookie can be scoped to a path (Path=/central) and thereby
-// belong to this application alone rather than to the whole domain — and a
-// cookie is only sent to URLs beneath its path, so the console's assets
-// (/central/admin/, see vite.config.ts) and its API calls have to share one
-// prefix. nginx rewrites /central/{x} back to edge's real /resources/central/{x}
-// route, so edge itself is unaware of this prefix.
-export const CONSOLE_PREFIX = 'central';
+// Everything the console talks to is edge's "central" resource (see
+// EdgeController.scala's /resources/{resourceId}/... proxy route --
+// "central" is the literal resourceId, not a prefix edge understands).
+//
+// In 'prefix' mode (the default -- local dev, docker-local, path-based prod;
+// see vite.config.ts and docker/versola-tools/nginx.conf.template) the
+// console takes a /central/{x} shortcut instead of calling that route
+// outright, so the EDGE_SESSION cookie can be scoped to a path (Path=/central)
+// and thereby belong to this application alone rather than to the whole
+// domain -- a cookie is only sent to URLs beneath its path, so the console's
+// assets (/central/admin/) and its API calls have to share one prefix. An
+// external proxy (the Vite dev server / gateway nginx) rewrites /central/{x}
+// back to /resources/central/{x} before anything reaches edge.
+//
+// In 'direct' mode (the console hosted on its own domain, e.g. k8s -- see
+// #222) there is no such proxy and no shared origin to scope a cookie path
+// against, so the console calls edge's real route directly. Set via the
+// console-mode attribute on <versola-admin> (see admin-app.ts).
+export function centralResourcePath(path: string): string {
+  return apiConfig.consoleMode === 'direct' ? `resources/central/${path}` : `central/${path}`;
+}
 
 function buildUrl(path: string, query?: Record<string, QueryValue>): string {
   const baseUrl = resolveBaseUrl();
   const normalizedBase = baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`;
   const normalizedPath = path.replace(/^\//, '');
-  const proxiedPath = `${CONSOLE_PREFIX}/${normalizedPath}`;
+  const proxiedPath = centralResourcePath(normalizedPath);
   const url = new URL(proxiedPath, normalizedBase);
   Object.entries(query ?? {}).forEach(([key, value]) => {
     if (value !== undefined && value !== null) {
@@ -321,12 +335,15 @@ function buildErrorMessage(status: number, bodyText: string): string {
 // null/empty for either field resets it to its default (host origin for baseUrl,
 // DEFAULT_LOGIN_URL for loginUrl) rather than leaving a previously-set value
 // stuck — so clearing the api-url / login-url attribute reverts to defaults.
-export function configureCentralApi(config: { baseUrl?: string | null; loginUrl?: string | null }): void {
+export function configureCentralApi(config: { baseUrl?: string | null; loginUrl?: string | null; consoleMode?: ConsoleMode | null }): void {
   if ('baseUrl' in config) {
     apiConfig.baseUrl = config.baseUrl?.trim() || null;
   }
   if ('loginUrl' in config) {
     apiConfig.loginUrl = config.loginUrl?.trim() || DEFAULT_LOGIN_URL;
+  }
+  if ('consoleMode' in config) {
+    apiConfig.consoleMode = config.consoleMode === 'direct' ? 'direct' : 'prefix';
   }
   invalidateReadCache();
   invalidateAllRefData();
@@ -1319,12 +1336,14 @@ export type MyPermissionsResponse = {
 export async function fetchMyPermissions(): Promise<MyPermissionsResponse> {
   const baseUrl = resolveBaseUrl();
   const normalizedBase = baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`;
-  // edge serves this at /permissions/me, outside any resource prefix — but the
-  // call has to carry EDGE_SESSION, and that cookie is scoped to /central, so
-  // the browser would withhold it from a root-level URL and every load would
-  // bounce to login. It's requested under the prefix instead, and nginx
-  // rewrites /central/permissions/me back to /permissions/me.
-  const url = new URL(`${CONSOLE_PREFIX}/permissions/me`, normalizedBase);
+  // edge serves this at /permissions/me, outside any resource prefix. In
+  // 'prefix' mode the call has to carry EDGE_SESSION, and that cookie is
+  // scoped to /central, so the browser would withhold it from a root-level
+  // URL and every load would bounce to login -- it's requested under the
+  // prefix instead, and an external proxy rewrites /central/permissions/me
+  // back to /permissions/me. In 'direct' mode there's no such cookie-path
+  // scoping to route around, so it's called outright.
+  const url = new URL(apiConfig.consoleMode === 'direct' ? 'permissions/me' : 'central/permissions/me', normalizedBase);
   url.searchParams.set('resource', 'central');
 
   const response = await fetch(url.toString(), {

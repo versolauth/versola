@@ -1,5 +1,5 @@
 import type { PasskeyInfo, SessionClientEntry, User, UserRoleAssignment, UserSearchField, UserSession } from '../types';
-import { CONSOLE_PREFIX, resolveBaseUrl } from './central-api';
+import { centralResourcePath, resolveBaseUrl } from './central-api';
 
 type UserSearchRecordDto = {
   id: string;
@@ -24,16 +24,15 @@ function toUser(record: UserSearchRecordDto): User {
   };
 }
 
-// Route through the console's /central prefix (see CONSOLE_PREFIX in
-// central-api.ts) rather than calling edge's resources/central/ route
-// directly, so this shares the EDGE_SESSION cookie's path scope with the rest
-// of the console. Uses the same base URL as central-api.ts (respects
-// configureCentralApi / api-url attribute).
+// Shares central-api.ts's centralResourcePath so this switches between
+// 'prefix' and 'direct' console modes the same way (see that function's
+// comment) -- and the same base URL (respects configureCentralApi / api-url
+// attribute).
 function proxyUrl(path: string): URL {
   const base = resolveBaseUrl();
   const normalizedBase = base.endsWith('/') ? base : `${base}/`;
   const normalizedPath = path.replace(/^\//, '');
-  return new URL(`${CONSOLE_PREFIX}/${normalizedPath}`, normalizedBase);
+  return new URL(centralResourcePath(normalizedPath), normalizedBase);
 }
 
 export async function searchUsers(field: UserSearchField, query: string): Promise<User[]> {

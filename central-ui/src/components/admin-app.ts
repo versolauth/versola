@@ -66,6 +66,13 @@ export class VersolaAdmin extends LitElement {
   // central-admin preset's edge login; override only if this console is ever
   // wired to a different preset.
   @property({ type: String, attribute: 'login-url' }) loginUrl: string | null = null;
+  // 'prefix' (default): the console is reached via the /central/{x} shortcut,
+  // relying on an external proxy (Vite dev server / gateway nginx) to rewrite
+  // it to edge's real /resources/central/{x} route -- local dev, docker-local,
+  // and path-based prod all use this. 'direct': the console has its own
+  // origin (e.g. k8s, see #222) and calls edge's real route outright. See
+  // centralResourcePath in central-api.ts.
+  @property({ type: String, attribute: 'console-mode' }) consoleMode: 'prefix' | 'direct' = 'prefix';
   @state() private currentView: NavItem = 'clients';
   /** Mobile drawer state; ignored by the layout above the 768px breakpoint. */
   @state() private navOpen = false;
@@ -154,7 +161,7 @@ export class VersolaAdmin extends LitElement {
   }
 
   updated(changed: Map<string, unknown>) {
-    if (changed.has('apiUrl') || changed.has('loginUrl')) {
+    if (changed.has('apiUrl') || changed.has('loginUrl') || changed.has('consoleMode')) {
       this.applyApiConfig();
       void this.loadPermissions();
     }
@@ -439,6 +446,7 @@ export class VersolaAdmin extends LitElement {
     configureCentralApi({
       baseUrl: this.apiUrl,
       loginUrl: this.loginUrl,
+      consoleMode: this.consoleMode,
     });
   }
 
