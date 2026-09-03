@@ -15,6 +15,16 @@ case class UserRecord(
 ):
   def createdAt: Instant = id.createdAt
 
+  /** The name a passkey authenticator shows in its account picker: the "name" claim if
+    * present, falling back to email, phone, login, and finally the user id. */
+  def passkeyDisplayName: String =
+    claims.fields.toMap.get("name")
+      .collect { case Json.Str(value) => value }
+      .orElse(email)
+      .orElse(phone)
+      .orElse(login)
+      .getOrElse(id.toString)
+
 object UserRecord:
   def empty(id: UserId): UserRecord =
     UserRecord(

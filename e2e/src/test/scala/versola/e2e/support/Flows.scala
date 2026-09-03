@@ -26,6 +26,20 @@ object Flows:
     "otpType"     -> Json.Str("sms"),
   )
 
+  /** Login credential with inline password as a fallback, plus a passkey primary that needs
+    * no additional factor — used to test enrolling and then signing in with a passkey.
+    */
+  val loginPasswordPasskeyAuthFlow: Json = Json.Obj(
+    "primary" -> Json.Obj(
+      "credentials"    -> Json.Arr(Json.Str("login")),
+      "inlinePassword" -> Json.Bool(true),
+      "factors"        -> Json.Arr(),
+    ),
+    "passkey"     -> Json.Obj("factors" -> Json.Arr()),
+    "equivalents" -> Json.Obj(),
+    "otpType"     -> Json.Str("sms"),
+  )
+
   /** Email credential with OTP factor, no inline password. */
   val emailOtpAuthFlow: Json = Json.Obj(
     "primary" -> Json.Obj(
@@ -114,6 +128,27 @@ object Flows:
         "Login Test Client",
         Set(redirectUri),
         authFlow = Some(loginPasswordAuthFlow),
+      ).success
+      userId <- oauthClient.registerUser(login = Some(login))
+      _      <- oauthClient.flushUserOutbox()
+      _      <- oauthClient.setUserPassword(userId, password)
+    yield Setup(clientId, clientResult.secret, redirectUri, userId, Some(login), None, None, password)
+
+  /** Register a client (login + inline password, plus passkey sign-in) and a matching user
+    * with a permanent password used to log in once and enroll a passkey.
+    */
+  def setupPasskeyLogin(redirectUri: String = "http://localhost:3000"): RIO[OAuthClient, Setup] =
+    val uid      = UUID.randomUUID().toString.replace("-", "").take(8)
+    val login    = s"passkey-user-$uid"
+    val password = s"Pass-$uid-1!"
+    val clientId = s"passkey-client-$uid"
+    for
+      oauthClient  <- ZIO.service[OAuthClient]
+      clientResult <- oauthClient.registerClient(
+        clientId,
+        "Passkey Login Test Client",
+        Set(redirectUri),
+        authFlow = Some(loginPasswordPasskeyAuthFlow),
       ).success
       userId <- oauthClient.registerUser(login = Some(login))
       _      <- oauthClient.flushUserOutbox()
@@ -250,7 +285,7 @@ object Flows:
 
   /** Identifies a registered auth flow variant in the shared bootstrap data. */
   enum Id:
-    case LoginPassword, EmailOtp, PhoneOtp, PhoneRegistration, EmailRegistration, Consent, ConsentPartial, BackChannelLogout
+    case LoginPassword, PasskeyLogin, EmailOtp, PhoneOtp, PhoneRegistration, EmailRegistration, Consent, ConsentPartial, BackChannelLogout
 
   /** All shared test data for the e2e suite. */
   case class Setups(setups: Map[Id, Setup], client: OAuthClient):
@@ -265,6 +300,7 @@ object Flows:
       for
         client  <- ZIO.service[OAuthClient]
         lp      <- setupLoginPassword()
+        passkeyLogin <- setupPasskeyLogin()
         otp     <- setupEmailOtp()
         phoneOtp <- setupPhoneOtp()
         registration <- setupPhoneRegistration()
@@ -280,6 +316,7 @@ object Flows:
       yield Setups(
         Map(
           Id.LoginPassword -> lp,
+          Id.PasskeyLogin -> passkeyLogin,
           Id.EmailOtp -> otp,
           Id.PhoneOtp -> phoneOtp,
           Id.PhoneRegistration -> registration,

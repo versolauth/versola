@@ -333,6 +333,64 @@ extension (task: Task[Response])
             if actualError == expectedError then ZIO.unit
             else ZIO.fail(RuntimeException(s"Expected error='$expectedError', got error='$actualError'"))
 
+/** The caller identity edge injects into every Account Settings call after it has
+  * authenticated the user and performed the configured step-up checks.
+  */
+case class AccountCaller(userId: java.util.UUID, clientId: String, sessionId: String):
+  private[support] def query: List[(String, String)] =
+    List("userId" -> userId.toString, "clientId" -> clientId, "sessionId" -> sessionId)
+
+  /** The caller fields every body-carrying route expects, plus the route's own payload. */
+  private[support] def bodyWith(extra: (String, Json)*): Json.Obj =
+    Json.Obj(
+      Chunk[(String, Json)](
+        "userId" -> Json.Str(userId.toString),
+        "clientId" -> Json.Str(clientId),
+      ) ++ Chunk.fromIterable(extra),
+    )
+
+/** Raw outcome of an Account Settings call — status assertions are the point of most
+  * of these tests, so the body is never interpreted eagerly.
+  */
+case class AccountResult(response: Response, body: String):
+  val status: Status = response.status
+
+  def json: Task[Json.Obj] =
+    ZIO.fromEither(body.fromJson[Json.Obj])
+      .mapError(error => RuntimeException(s"Expected a JSON object [$error]: $body"))
+
+  /** The `sessions` or `passkeys` array of a list response. */
+  def items(field: String): Task[Chunk[Json.Obj]] =
+    json.flatMap(array(_, field))
+
+  /** The `step` object of the `window.__VERSOLA_FORM__` config inlined into the account page:
+    * the page resolves its data server-side, so this is what the form renders from.
+    */
+  def formStep: Task[Json.Obj] =
+    for
+      line <- ZIO.fromOption(body.linesIterator.find(_.contains(AccountResult.formMarker)))
+        .orElseFail(RuntimeException(s"No inlined form config in: $body"))
+      raw = line.trim.stripPrefix(AccountResult.formMarker).stripSuffix(";")
+      config <- ZIO.fromEither(raw.fromJson[Json.Obj])
+        .mapError(error => RuntimeException(s"Inlined form config is not a JSON object [$error]: $raw"))
+      step <- ZIO.fromOption(config.fields.collectFirst { case ("step", obj: Json.Obj) => obj })
+        .orElseFail(RuntimeException(s"Inlined form config carries no 'step' object: $raw"))
+    yield step
+
+  /** The `sessions` or `passkeys` array of the account page's inlined form config. */
+  def formItems(field: String): Task[Chunk[Json.Obj]] =
+    formStep.flatMap(array(_, field))
+
+  private def array(obj: Json.Obj, field: String): Task[Chunk[Json.Obj]] =
+    ZIO.fromOption(obj.fields.collectFirst { case (name, value) if name == field => value })
+      .orElseFail(RuntimeException(s"Missing '$field' in: $body"))
+      .flatMap:
+        case Json.Arr(elements) => ZIO.succeed(elements.collect { case obj: Json.Obj => obj })
+        case _ => ZIO.fail(RuntimeException(s"'$field' is not an array in: $body"))
+
+object AccountResult:
+  private val formMarker = "window.__VERSOLA_FORM__ = "
+
 /** Thin HTTP client for e2e tests.
   *
   * Intentionally does NOT follow redirects — each hop is its own assertion.
@@ -498,6 +556,20 @@ final class OAuthClient(client: Client, config: E2EConfig):
   /** POST /challenge/set-password — submits a new password when the conversation requires it. */
   def submitSetPassword(cookie: String, password: String, csrf: String): Task[SubmitResult] =
     formPost(s"${config.authUrl}/challenge/set-password", Map("password" -> password, "csrf" -> csrf), cookie)
+      .map(SubmitResult(_))
+
+  /** GET /challenge/passkey/options — starts a discoverable assertion ceremony and returns the
+    * raw `PublicKeyCredentialRequestOptions` JSON body for `navigator.credentials.get()`.
+    */
+  def getPasskeyOptions(cookie: String): Task[Response] =
+    Client.batched(
+      Request.get(s"${config.authUrl}/challenge/passkey/options")
+        .addHeader(Header.Cookie(NonEmptyChunk(Cookie.Request("SSO_CONVERSATION", cookie)))),
+    ).provide(ZLayer.succeed(client))
+
+  /** POST /challenge/passkey — submits a signed assertion to log in with a passkey. */
+  def submitPasskeyAssertion(cookie: String, response: String, csrf: String): Task[SubmitResult] =
+    formPost(s"${config.authUrl}/challenge/passkey", Map("response" -> response, "csrf" -> csrf), cookie)
       .map(SubmitResult(_))
 
   /** POST /challenge/login-password — submits login + password in a single step. */
@@ -746,6 +818,27 @@ final class OAuthClient(client: Client, config: E2EConfig):
         resp.body.asString.flatMap: bodyStr =>
           ZIO.fail(RuntimeException(s"setUserPassword failed: status=${resp.status} body=$bodyStr"))
 
+  /** PATCH /users/roles — grants tenant roles to a user. The update travels through the
+    * Central user outbox, so call [[flushUserOutbox]] before signing the user in.
+    */
+  def assignUserRoles(userId: java.util.UUID, roles: Set[String], tenantId: String = "default"): Task[Unit] =
+    val body = Body.fromString(
+      Json.Obj(
+        "userId" -> Json.Str(userId.toString),
+        "tenantId" -> Json.Str(tenantId),
+        "add" -> Json.Arr(Chunk.fromIterable(roles.map(Json.Str(_)))),
+        "remove" -> Json.Arr(),
+      ).toJson,
+    )
+    val req = Request.patch(s"${config.centralUrl}/users/roles", body)
+      .addHeader(centralAuthorization)
+      .addHeader(Header.ContentType(MediaType.application.json))
+    Client.batched(req).provide(ZLayer.succeed(client)).flatMap: resp =>
+      if resp.status.isSuccess then ZIO.unit
+      else
+        resp.body.asString.flatMap: bodyStr =>
+          ZIO.fail(RuntimeException(s"assignUserRoles failed: status=${resp.status} body=$bodyStr"))
+
   /** POST /configuration/clients — registers a new OAuth client via the Central API.
     * Authenticates with the central resource secret.
     */
@@ -911,6 +1004,204 @@ final class OAuthClient(client: Client, config: E2EConfig):
       Request.get(s"${config.authUrl}/userinfo")
         .addHeader(Authorization.Bearer(accessToken)),
     ).provide(ZLayer.succeed(client)).flatMap(UserinfoResult.parse)
+
+  // ── Account Settings (auth's additional listener) ──────────────────────────
+
+  /** The Basic credentials edge presents to auth's Account Settings resource. */
+  val accountCredentials: (String, String) = ("auth", config.accountResourceSecret)
+
+  /** GET /settings — renders the Security page. */
+  def accountPage(
+      caller: AccountCaller,
+      credentials: Option[(String, String)] = Some(accountCredentials),
+  ): Task[AccountResult] =
+    accountRequest(Method.GET, "/settings", caller.query, None, credentials)
+
+  /** DELETE /settings/sessions — revokes another session of the same user. */
+  def revokeAccountSession(
+      caller: AccountCaller,
+      targetSessionId: String,
+      credentials: Option[(String, String)] = Some(accountCredentials),
+  ): Task[AccountResult] =
+    accountRequest(
+      Method.DELETE,
+      "/settings/sessions",
+      Nil,
+      Some(caller.bodyWith("targetSessionId" -> Json.Str(targetSessionId))),
+      credentials,
+    )
+
+  /** PATCH /settings/passkeys — renames a passkey; `None` clears the name. */
+  def renameAccountPasskey(
+      caller: AccountCaller,
+      credentialId: String,
+      name: Option[String],
+      credentials: Option[(String, String)] = Some(accountCredentials),
+  ): Task[AccountResult] =
+    accountRequest(
+      Method.PATCH,
+      "/settings/passkeys",
+      Nil,
+      Some(
+        caller.bodyWith(
+          "credentialId" -> Json.Str(credentialId),
+          "name" -> name.fold(Json.Null)(Json.Str(_)),
+        ),
+      ),
+      credentials,
+    )
+
+  /** DELETE /settings/passkeys — removes a passkey. */
+  def deleteAccountPasskey(
+      caller: AccountCaller,
+      credentialId: String,
+      credentials: Option[(String, String)] = Some(accountCredentials),
+  ): Task[AccountResult] =
+    accountRequest(
+      Method.DELETE,
+      "/settings/passkeys",
+      Nil,
+      Some(caller.bodyWith("credentialId" -> Json.Str(credentialId))),
+      credentials,
+    )
+
+  /** POST /settings/passkeys/register/start — obtains creation options plus the ceremony ticket. */
+  def startPasskeyEnrollment(
+      caller: AccountCaller,
+      credentials: Option[(String, String)] = Some(accountCredentials),
+  ): Task[AccountResult] =
+    accountRequest(Method.POST, "/settings/passkeys/register/start", Nil, Some(caller.bodyWith()), credentials)
+
+  /** POST /settings/passkeys/register/finish — verifies the authenticator response and enrolls. */
+  def finishPasskeyEnrollment(
+      caller: AccountCaller,
+      ticket: String,
+      response: Json,
+      name: String,
+      credentials: Option[(String, String)] = Some(accountCredentials),
+  ): Task[AccountResult] =
+    accountRequest(
+      Method.POST,
+      "/settings/passkeys/register/finish",
+      Nil,
+      Some(
+        caller.bodyWith(
+          "ticket" -> Json.Str(ticket),
+          "response" -> response,
+          "name" -> Json.Str(name),
+        ),
+      ),
+      credentials,
+    )
+
+  private def accountRequest(
+      method: Method,
+      path: String,
+      query: List[(String, String)],
+      body: Option[Json],
+      credentials: Option[(String, String)],
+  ): Task[AccountResult] =
+    for
+      base <- ZIO.fromEither(URL.decode(s"${config.authAdditionalUrl}$path")).mapError(new RuntimeException(_))
+      baseRequest = Request(
+        method = method,
+        url = base.addQueryParams(query),
+        body = body.fold(Body.empty)(json => Body.fromString(json.toJson)),
+      )
+      withBody = body.fold(baseRequest)(_ => baseRequest.addHeader(Header.ContentType(MediaType.application.json)))
+      request = credentials.fold(withBody)((user, secret) => withBody.addHeader(Authorization.Basic(user, secret)))
+      response <- Client.batched(request).provide(ZLayer.succeed(client))
+      text <- response.body.asString
+    yield AccountResult(response, text)
+
+  // ── Account Settings through the edge proxy ────────────────────────────────
+  //
+  // Edge authenticates the caller from the access token and injects `userId`/`clientId`/
+  // `sessionId` itself, so these helpers send only the route's own payload — exactly what
+  // the browser sends.
+
+  /** GET /resources/auth/settings — the account page as the browser loads it through edge. */
+  def edgeAccountPage(accessToken: Option[String]): Task[AccountResult] =
+    edgeAccountRequest(Method.GET, "/settings", None, accessToken)
+
+  /** DELETE /resources/auth/settings/sessions — revokes another session of the caller. */
+  def edgeRevokeAccountSession(accessToken: Option[String], targetSessionId: String): Task[AccountResult] =
+    edgeAccountRequest(
+      Method.DELETE,
+      "/settings/sessions",
+      Some(Json.Obj("targetSessionId" -> Json.Str(targetSessionId))),
+      accessToken,
+    )
+
+  /** PATCH /resources/auth/settings/passkeys — renames a passkey; `None` clears the name. */
+  def edgeRenameAccountPasskey(
+      accessToken: Option[String],
+      credentialId: String,
+      name: Option[String],
+  ): Task[AccountResult] =
+    edgeAccountRequest(
+      Method.PATCH,
+      "/settings/passkeys",
+      Some(
+        Json.Obj(
+          "credentialId" -> Json.Str(credentialId),
+          "name" -> name.fold(Json.Null)(Json.Str(_)),
+        ),
+      ),
+      accessToken,
+    )
+
+  /** DELETE /resources/auth/settings/passkeys — removes a passkey. */
+  def edgeDeleteAccountPasskey(accessToken: Option[String], credentialId: String): Task[AccountResult] =
+    edgeAccountRequest(
+      Method.DELETE,
+      "/settings/passkeys",
+      Some(Json.Obj("credentialId" -> Json.Str(credentialId))),
+      accessToken,
+    )
+
+  /** POST /resources/auth/settings/passkeys/register/start — obtains creation options plus the ticket. */
+  def edgeStartPasskeyEnrollment(accessToken: Option[String]): Task[AccountResult] =
+    edgeAccountRequest(Method.POST, "/settings/passkeys/register/start", Some(Json.Obj()), accessToken)
+
+  /** POST /resources/auth/settings/passkeys/register/finish — verifies the response and enrolls. */
+  def edgeFinishPasskeyEnrollment(
+      accessToken: Option[String],
+      ticket: String,
+      response: Json,
+      name: String,
+  ): Task[AccountResult] =
+    edgeAccountRequest(
+      Method.POST,
+      "/settings/passkeys/register/finish",
+      Some(
+        Json.Obj(
+          "ticket" -> Json.Str(ticket),
+          "response" -> response,
+          "name" -> Json.Str(name),
+        ),
+      ),
+      accessToken,
+    )
+
+  private def edgeAccountRequest(
+      method: Method,
+      path: String,
+      body: Option[Json],
+      accessToken: Option[String],
+  ): Task[AccountResult] =
+    for
+      url <- ZIO.fromEither(URL.decode(s"${config.edgeUrl}/resources/auth$path")).mapError(new RuntimeException(_))
+      baseRequest = Request(
+        method = method,
+        url = url,
+        body = body.fold(Body.empty)(json => Body.fromString(json.toJson)),
+      )
+      withBody = body.fold(baseRequest)(_ => baseRequest.addHeader(Header.ContentType(MediaType.application.json)))
+      request = accessToken.fold(withBody)(token => withBody.addHeader(Authorization.Bearer(token)))
+      response <- Client.batched(request).provide(ZLayer.succeed(client))
+      text <- response.body.asString
+    yield AccountResult(response, text)
 
   // ── helpers ────────────────────────────────────────────────────────────────
 

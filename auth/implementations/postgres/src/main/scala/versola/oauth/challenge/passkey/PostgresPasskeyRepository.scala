@@ -3,7 +3,7 @@ package versola.oauth.challenge.passkey
 import com.augustnagro.magnum.*
 import com.augustnagro.magnum.magzio.TransactorZIO
 import com.augustnagro.magnum.pg.SqlArrayCodec
-import versola.auth.model.{AuthenticatorTransport, CredentialDeviceType, CredentialId, PasskeyRecord}
+import versola.auth.model.{AuthenticatorTransport, CredentialDeviceType, CredentialId, PasskeyName, PasskeyRecord}
 import versola.user.model.UserId
 import versola.util.postgres.BasicCodecs
 import zio.{Task, ZLayer}
@@ -18,6 +18,7 @@ class PostgresPasskeyRepository(xa: TransactorZIO) extends PasskeyRepository, Ba
   given DbCodec[Instant] = DbCodec.InstantCodec
   given DbCodec[CredentialDeviceType] = DbCodec.StringCodec.biMap(CredentialDeviceType.valueOf, _.toString)
   given DbCodec[AuthenticatorTransport] = DbCodec.StringCodec.biMap(AuthenticatorTransport.valueOf, _.toString)
+  given DbCodec[PasskeyName] = DbCodec.StringCodec.biMap(PasskeyName(_), identity[String])
 
   given SqlArrayCodec[AuthenticatorTransport] = new SqlArrayCodec[AuthenticatorTransport]:
     val jdbcTypeName: String = "text"
@@ -79,7 +80,7 @@ class PostgresPasskeyRepository(xa: TransactorZIO) extends PasskeyRepository, Ba
       WHERE id = $id AND (signature_counter < $signatureCounter OR ($signatureCounter = 0 AND signature_counter = 0))
     """.update.run() > 0
 
-  override def rename(id: CredentialId, userId: UserId, name: Option[String]): Task[Unit] =
+  override def rename(id: CredentialId, userId: UserId, name: Option[PasskeyName]): Task[Unit] =
     xa.connectMeasured("rename-passkey"):
       sql"""
         UPDATE passkeys

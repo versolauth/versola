@@ -39,6 +39,8 @@ object LogoutController extends Controller:
         postLogoutRedirectUri <- request.queryZIO[Option[URL]]("post_logout_redirect_uri")
         state <- request.queryZIO[Option[State]]("state")
         idTokenHint <- request.queryZIO[Option[String]]("id_token_hint")
+        uiLocales <- request.queryZIO[Option[String]]("ui_locales")
+          .map(_.map(_.split(' ').toList.filter(_.nonEmpty)))
         config <- ZIO.service[CoreConfig]
         sessionId = sessionIdFromCookie(request, config)
         _ <- Observability.setRouteLabel("flow", (sessionId, idTokenHint) match
@@ -57,8 +59,8 @@ object LogoutController extends Controller:
             ZIO.serviceWithZIO[SessionService](_.find(rawId)).flatMap {
               case Some(info) =>
                 val redirect = postLogoutRedirectUri.map(_.encode)
-                  setSessionAuth(info) *>
-                    renderService.renderLogoutConfirm(info, csrfToken(rawId, redirect, state, config), redirect, state, None)
+                setSessionAuth(info) *>
+                  renderService.renderLogoutConfirm(info, csrfToken(rawId, redirect, state, config), redirect, state, uiLocales)
               case None => Observability.setError("session_not_found") *> renderService.renderLogout(List.empty, None, state)
             }
           case (Some(rawId), Some(hintId)) =>

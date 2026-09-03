@@ -29,11 +29,11 @@ host and there is no Docker network between them. They reach Postgres and each o
 The compose file lives on the server and is not in git (see [Known gaps](#10-known-gaps)), so if
 this table looks wrong, `cat /opt/versola/docker-compose.prod.yml` is the source of truth.
 
-| Service | App port (`PORT`) | Diagnostics port (`DPORT`) | Exposed publicly |
-|---|---|---|---|
-| `auth` | 8080 | 8081 | yes — `https://id.versola.kz` via nginx |
-| `central` | 8090 | 8091 | no — admin API, reached through `edge` |
-| `edge` | 8095 | 8096 | yes — path-routed on `https://id.versola.kz` (`/central`, `/resources`, `/permissions`, `/login`, `/complete`); see [The admin console](#the-admin-console-central-ui) |
+| Service | App port (`PORT`) | Additional port (`APORT`) | Diagnostics port (`DPORT`) | Exposed publicly |
+|---|---|---|---|---|
+| `auth` | 8080 | 8082 (Account Settings, internal) | 8081 | yes — `https://id.versola.kz` via nginx |
+| `central` | 8090 | — | 8091 | no — admin API, reached through `edge` |
+| `edge` | 8095 | — | 8096 | yes — path-routed on `https://id.versola.kz` (`/central`, `/resources`, `/permissions`, `/login`, `/complete`); see [The admin console](#the-admin-console-central-ui) |
 
 Note that the Dockerfiles `EXPOSE 8080 9345`, but `9345` is not what the deployment actually
 uses — with `network_mode: host` the `EXPOSE` directive is inert and `DPORT` decides.
@@ -593,6 +593,7 @@ Environment variables read by the containers:
 | Variable | Default | Meaning |
 |---|---|---|
 | `PORT` | `8080` | application port |
+| `APORT` | `8082` | optional additional internal application port; used by auth Account Settings |
 | `DPORT` | `8081` | diagnostics port: `/metrics`, `/liveness`, `/readiness` |
 | `CONFIG_PATH` | `/app/config/env.conf` | path to the mounted HOCON config |
 | `RUN_MIGRATIONS` | `false` | apply Flyway migrations on startup (vs. only validating the schema — see §4's `RUN_MIGRATIONS` section) |

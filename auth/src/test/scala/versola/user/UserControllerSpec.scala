@@ -1,7 +1,7 @@
 package versola.user
 
 import versola.auth.TestEnvConfig
-import versola.auth.model.{AuthenticatorTransport, CredentialDeviceType, CredentialId, PasskeyRecord, Password}
+import versola.auth.model.{AuthenticatorTransport, CredentialDeviceType, CredentialId, PasskeyName, PasskeyRecord, Password}
 import versola.oauth.challenge.passkey.PasskeyRepository
 import versola.oauth.challenge.password.PasswordService
 import versola.oauth.client.model.TenantId
@@ -59,7 +59,7 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
     attestationObject = None,
     clientDataJson = None,
     aaguid = None,
-    name = Some("My Phone"),
+    name = Some(PasskeyName("My Phone")),
     lastUsedAt = None,
     createdAt = Instant.parse("2024-01-01T00:00:00Z"),
     updatedAt = Instant.parse("2024-01-01T00:00:00Z"),
@@ -381,7 +381,7 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
         token   <- validToken(secretKey)
         _       <- repo.rename.succeedsWith(())
         _       <- TestClient.addRoutes(routes(tracing, passkey = repo))
-        payload  = RenamePasskeyPayload(passkeyUserId, credentialId, Some("New Name")).toJson
+        payload  = RenamePasskeyPayload(passkeyUserId, credentialId, Some(PasskeyName("New Name"))).toJson
         resp    <- client.batched(
           Request(method = Method.PATCH, url = URL.empty / "users" / "passkeys", body = Body.fromString(payload))
             .addHeader(Header.Authorization.Bearer(token))

@@ -28,6 +28,7 @@ object SessionServiceSpec extends UnitSpecBase:
     createdAt = Instant.EPOCH,
     amr = Map.empty,
     publicId = publicId,
+    expiresAt = Instant.EPOCH,
   )
 
   class Env:
@@ -75,6 +76,16 @@ object SessionServiceSpec extends UnitSpecBase:
           _ <- env.service.invalidate(Left(publicId))
         yield assertTrue(env.security.mac.calls.isEmpty)
       },
+        test("invalidateForUser delegates the ownership check to the repository") {
+          val env = Env()
+          for
+            _      <- env.repository.invalidateByPublicIdForUser.succeedsWith(true)
+            result <- env.service.invalidateForUser(publicId, userId)
+          yield assertTrue(
+            result,
+            env.repository.invalidateByPublicIdForUser.calls == List((publicId, userId)),
+          )
+        },
     ),
     suite("listByUser")(
       test("produces one entry per session, enriched with its user agent's details") {
@@ -91,8 +102,8 @@ object SessionServiceSpec extends UnitSpecBase:
           result <- env.service.listByUser(userId)
         yield assertTrue(
           result == List(
-            SessionUnderUserAgent(session1.publicId, session1.clients, session1.createdAt, details1.platform, details1.os, details1.browser, details1.version),
-            SessionUnderUserAgent(session2.publicId, session2.clients, session2.createdAt, details2.platform, details2.os, details2.browser, details2.version),
+            SessionUnderUserAgent(session1.publicId, session1.clients, session1.createdAt, details1.platform, details1.os, details1.browser, details1.version, session1.expiresAt),
+            SessionUnderUserAgent(session2.publicId, session2.clients, session2.createdAt, details2.platform, details2.os, details2.browser, details2.version, session2.expiresAt),
           ),
           env.userAgentRepository.findMany.calls == List(List(userAgentId1, userAgentId2)),
         )
@@ -107,7 +118,7 @@ object SessionServiceSpec extends UnitSpecBase:
           _      <- env.userAgentRepository.findMany.succeedsWith(Map.empty)
           result <- env.service.listByUser(userId)
         yield assertTrue(
-          result == List(SessionUnderUserAgent(session.publicId, session.clients, session.createdAt, unknown.platform, unknown.os, unknown.browser, unknown.version)),
+          result == List(SessionUnderUserAgent(session.publicId, session.clients, session.createdAt, unknown.platform, unknown.os, unknown.browser, unknown.version, session.expiresAt)),
         )
       },
     ),

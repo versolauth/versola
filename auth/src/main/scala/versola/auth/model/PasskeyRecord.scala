@@ -16,7 +16,7 @@ case class PasskeyRecord(
     attestationObject: Option[Array[Byte]],
     clientDataJson: Option[Array[Byte]],
     aaguid: Option[Array[Byte]],
-    name: Option[String],
+    name: Option[PasskeyName],
     lastUsedAt: Option[Instant],
     createdAt: Instant,
     updatedAt: Instant,

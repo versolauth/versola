@@ -298,8 +298,8 @@ jobs:
       - name: Start auth service
         if: github.event_name != 'release'
         run: |
-          # See "Start central service" above for why RUN_MIGRATIONS=true is required here now.
-          PORT=9003 DPORT=9004 RUN_MIGRATIONS=true \
+          # See "Start auth service" above for why RUN_MIGRATIONS=true is required here now.
+          PORT=9003 DPORT=9004 APORT=9007 RUN_MIGRATIONS=true \
             auth/implementations/postgres/target/universal/stage/bin/auth-postgres-impl \
             -Denv.path=auth/dev/env.conf > /tmp/auth.log 2>&1 &
           echo $! > /tmp/auth.pid
@@ -321,6 +321,8 @@ jobs:
             sleep 2
           done
 
+      # The account-settings e2e specs reach auth's Security page the way a
+      # browser does -- through edge -- so edge has to be up alongside auth.
       - name: Start edge service
         if: github.event_name != 'release'
         run: |

@@ -107,6 +107,10 @@ trait OAuthConfigurationService:
 
   def getResourcesForClient(tenantId: TenantId, clientId: ClientId): UIO[List[ResourceRecord]]
 
+  /** The decrypted secret of auth's own internal resource (see [[ResourceSyncClient]]),
+    * used to authenticate edge's Basic credentials on the Account Settings API. */
+  def findAccountResourceSecret: UIO[Option[Secret]]
+
   def syncConfiguration: Task[Unit]
 
 object OAuthConfigurationService:
@@ -134,7 +138,7 @@ object OAuthConfigurationService:
           (ChallengeSettingsSyncClient.live >+> cacheLayer[Vector[ChallengeSettingsRecord]]) >+>
           (SystemSettingsSyncClient.live >+> cacheLayer[SystemSettingsRecord]) >+>
           (MetadataSyncClient.live >+> cacheLayer[Json.Obj]) >+>
-          (ResourceSyncClient.live >+> cacheLayer[Vector[ResourceRecord]]) >+>
+          (ResourceSyncClient.live >+> cacheLayer[ResourceSyncClient.SyncResult]) >+>
           (AuthorizationDetailTypeSyncClient.live >+> cacheLayer[Vector[AuthorizationDetailTypeRecord]]))
     syncClients >>> ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _))
   }
@@ -158,7 +162,7 @@ object OAuthConfigurationService:
       systemSettingsRepository: SystemSettingsSyncClient,
       metadataCache: ReloadingCache[Json.Obj],
       metadataRepository: MetadataSyncClient,
-      resourceCache: ReloadingCache[Vector[ResourceRecord]],
+      resourceCache: ReloadingCache[ResourceSyncClient.SyncResult],
       resourceRepository: ResourceSyncClient,
       authorizationDetailTypeCache: ReloadingCache[Vector[AuthorizationDetailTypeRecord]],
       authorizationDetailTypeRepository: AuthorizationDetailTypeSyncClient,
@@ -389,13 +393,16 @@ object OAuthConfigurationService:
       authorizationDetailTypeCache.get.map(_.find(r => r.tenantId == tenantId && r.`type` == `type`))
 
     override def findResource(tenantId: TenantId, resource: ResourceUri): UIO[Option[ResourceRecord]] =
-      resourceCache.get.map(_.find(r => r.tenantId == tenantId && r.resource == resource))
+      resourceCache.get.map(_.resources.find(r => r.tenantId == tenantId && r.resource == resource))
 
     override def findResourceById(tenantId: TenantId, resourceId: ResourceId): UIO[Option[ResourceRecord]] =
-      resourceCache.get.map(_.find(r => r.tenantId == tenantId && r.resourceId == resourceId))
+      resourceCache.get.map(_.resources.find(r => r.tenantId == tenantId && r.resourceId == resourceId))
 
     override def getResourcesForClient(tenantId: TenantId, clientId: ClientId): UIO[List[ResourceRecord]] =
-      resourceCache.get.map(_.filter(r => r.tenantId == tenantId && r.audience.contains(clientId)).toList)
+      resourceCache.get.map(_.resources.filter(r => r.tenantId == tenantId && r.audience.contains(clientId)).toList)
+
+    override def findAccountResourceSecret: UIO[Option[Secret]] =
+      resourceCache.get.map(_.authResourceSecret)
 
     override def syncConfiguration: Task[Unit] =
       for

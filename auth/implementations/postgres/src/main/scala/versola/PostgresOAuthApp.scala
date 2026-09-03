@@ -3,6 +3,7 @@ package versola
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.cleanup.PostgresCleanupManager
 import versola.oauth.{PostgresAuthorizationCodeRepository, PostgresPushedAuthorizationRepository}
+import versola.oauth.account.AccountSettingsController
 import versola.oauth.authorize.{AcrResolutionService, AuthorizeEndpointController, AuthorizeEndpointService, AuthorizeRequestParser, PushedAuthorizationController, PushedAuthorizationRepository, PushedAuthorizationService}
 import versola.oauth.challenge.passkey.{PasskeyRepository, PostgresPasskeyRepository, WebAuthnService}
 import versola.oauth.challenge.password.{PasswordRepository, PasswordService, PostgresPasswordRepository}
@@ -99,6 +100,9 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       LogoutController.routes,
     ).reduce(_ ++ _)
 
+  override def additionalRoutes: Option[Routes[Dependencies & Tracing & EnvName, Throwable]] =
+    Some(AccountSettingsController.routes)
+
   val repositories = PostgresHikariDataSource.transactor(serviceName = Some("auth"), migrate = runMigrations) >+> (
     PostgresUserRepository.live >+>
       PostgresConversationRepository.live >+>
@@ -166,6 +170,11 @@ object PostgresOAuthApp extends VersolaApp("auth"):
 
   given DeriveConfig[Secret.Bytes32] = DeriveConfig[String]
     .mapOrFail(parseBase64UrlSecret(Secret.Bytes32))
+
+  given DeriveConfig[Secret] = DeriveConfig[String]
+    .mapOrFail: str =>
+      Secret.fromBase64Url(str)
+        .left.map(message => zio.Config.Error.InvalidData(message = message))
 
   given DeriveConfig[SecretKey] = DeriveConfig[String]
     .mapOrFail(parseBase64UrlSecret(Secret.Bytes32))

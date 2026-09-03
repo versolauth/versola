@@ -1,7 +1,7 @@
 package versola.oauth.conversation
 
 import versola.auth.TestEnvConfig
-import versola.auth.model.{AuthenticatorTransport, CredentialDeviceType, CredentialId, PasskeyRecord}
+import versola.auth.model.{AuthenticatorTransport, CredentialDeviceType, CredentialId, PasskeyName, PasskeyRecord}
 import versola.oauth.authorize.AcrResolutionService
 import versola.oauth.challenge.passkey.{AssertionOutcome, PasskeyCeremony, PasskeyRepository, WebAuthnService}
 import versola.oauth.challenge.password.PasswordService
@@ -421,7 +421,7 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
           _ <- env.configService.getSessionIdleTtl.succeedsWith(Option.empty[zio.Duration])
           _ <- env.secureRandom.nextUUIDv7.succeedsWith(java.util.UUID.randomUUID())
           _ <- env.userAgentRepository.create.succeedsWith(())
-          result <- env.service.finishPasskeyEnroll(authId, recordWithUser, enrollStep, "resp", "my-passkey")
+          result <- env.service.finishPasskeyEnroll(authId, recordWithUser, enrollStep, "resp", PasskeyName("my-passkey"))
         yield assertTrue(result == ConversationResult.StepPassed(recordWithUser))
       },
       test("re-render enroll step with enrollFailed flag when registration fails") {
@@ -432,7 +432,7 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
           _ <- env.configService.getPasskeySettings.succeedsWith(Some(passkeySettings))
           _ <- env.webAuthnService.finishRegistration.failsWith(versola.oauth.challenge.passkey.WebAuthnError.CeremonyFailed("fail"))
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
-          result <- env.service.finishPasskeyEnroll(authId, recordWithUser, enrollStep, "resp", "my-passkey")
+          result <- env.service.finishPasskeyEnroll(authId, recordWithUser, enrollStep, "resp", PasskeyName("my-passkey"))
         yield assertTrue(result == ConversationResult.RenderStep(enrollStep.copy(enrollFailed = true)))
       }
     ),

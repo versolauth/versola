@@ -1,7 +1,6 @@
 package versola.oauth.conversation
 
-import versola.auth.model.CredentialDeviceType
-import versola.auth.model.{OtpCode, Password}
+import versola.auth.model.{CredentialDeviceType, OtpCode, PasskeyName, Password}
 import versola.oauth.AuthMetrics
 import versola.oauth.authorize.AcrResolutionService
 import versola.oauth.authorize.model.{Prompt, ResponseTypeEntry}
@@ -36,7 +35,6 @@ import versola.user.{UserRepository, UserService}
 import versola.util.http.Observability
 import versola.util.{AuthPropertyGenerator, Base64, CoreConfig, Email, MAC, Phone, Secret, SecureRandom, SecurityService}
 import zio.*
-import zio.json.ast.Json
 import zio.prelude.NonEmptyList
 
 import java.time.Instant
@@ -163,7 +161,7 @@ trait ConversationService:
       conversation: ConversationRecord,
       enrollStep: ConversationStep.PasskeyEnroll,
       response: String,
-      name: String,
+      name: PasskeyName,
   ): Task[ConversationResult]
 
   /** Skip passkey enrollment. Returns `StepPassed` so the caller decides what follows. */
@@ -721,6 +719,7 @@ object ConversationService:
           createdAt = now,
           amr = conversation.amr,
           publicId = publicSessionId,
+          expiresAt = now.plusSeconds(sessionTtl.toSeconds),
         )
         codeMac <- securityService.mac(Secret(code), config.security.authCodesSecret)
         claimed <- conversationRepository.delete(authId, conversation.version)
@@ -889,12 +888,7 @@ object ConversationService:
                 if existing.nonEmpty then finish(authId, conversation)
                 else
                   val displayName: String =
-                    conversation.userClaims.flatMap(_.fields.toMap.get("name"))
-                      .collect { case Json.Str(v) => v }
-                      .orElse(conversation.userEmail.map(_.toString))
-                      .orElse(conversation.userPhone.map(_.toString))
-                      .orElse(conversation.userLogin.map(_.toString))
-                      .getOrElse(userId.toString)
+                    conversation.user.map(_.passkeyDisplayName).getOrElse(userId.toString)
                   webAuthnService.startRegistration(settings, userId, displayName).foldZIO(
                     _ => finish(authId, conversation),
                     ceremony =>
@@ -910,7 +904,7 @@ object ConversationService:
         conversation: ConversationRecord,
         enrollStep: ConversationStep.PasskeyEnroll,
         response: String,
-        name: String,
+        name: PasskeyName,
     ): Task[ConversationResult] =
       conversation.userId match
         case None =>
@@ -918,16 +912,12 @@ object ConversationService:
           // flow should guarantee.
           Observability.setError("illegal_state", Some("missing user id")) *> accessDenied(authId, conversation)
         case Some(userId) =>
-          configService.getPasskeySettings(conversation.clientId).flatMap:
-            case None =>
-              ZIO.succeed(ConversationResult.StepPassed(conversation))
-            case Some(settings) =>
-              webAuthnService.finishRegistration(settings, userId, enrollStep.request, response, Some(name)).foldZIO(
-                error =>
-                  ZIO.logWarning(s"Passkey enrollment failed for user $userId: ${error.getMessage}") *>
-                    renderStep(authId, conversation, enrollStep.copy(enrollFailed = true)),
-                _ => ZIO.succeed(ConversationResult.StepPassed(conversation)),
-              )
+          webAuthnService.finishRegistration(conversation.clientId, userId, enrollStep.request, response, Some(name)).foldZIO(
+            error =>
+              ZIO.logWarning(s"Passkey enrollment failed for user $userId: ${error.getMessage}") *>
+                renderStep(authId, conversation, enrollStep.copy(enrollFailed = true)),
+            _ => ZIO.succeed(ConversationResult.StepPassed(conversation)),
+          )
 
     override def skipPasskey(authId: AuthId, conversation: ConversationRecord): Task[ConversationResult] =
       ZIO.succeed(ConversationResult.StepPassed(conversation))
@@ -1040,14 +1030,7 @@ object ConversationService:
         acr: Option[Acr],
         sessionId: PublicSessionId,
     ): Task[Option[ConversationResult.IdTokenData]] =
-      val user = UserRecord(
-        id = userId,
-        email = conversation.userEmail,
-        phone = conversation.userPhone,
-        login = conversation.userLogin,
-        claims = conversation.userClaims.getOrElse(Json.Obj()),
-        uiLocales = conversation.uiLocales,
-      )
+      val user = conversation.user.getOrElse(UserRecord.empty(userId))
       for
         userInfo <- userInfoService.getUserInfoForIdToken(
           user = user,

@@ -2,7 +2,7 @@ import { LitElement, html, css } from 'lit';
 import { customElement, property, query, state } from 'lit/decorators.js';
 import { theme, resetStyles } from '../styles/theme';
 import type { NavItem, VersolaNavigation } from './navigation';
-import { configureCentralApi, fetchMyPermissions } from '../utils/central-api';
+import { configureCentralApi, fetchMyPermissions, resolveBaseUrl } from '../utils/central-api';
 
 import './navigation';
 // Imported directly (not just transitively via navigation) because the splash
@@ -25,6 +25,39 @@ import './challenges-list';
 import './well-known';
 import './system-settings';
 
+// The account settings page is auth's self-service surface (served by edge at
+// /resources/auth/settings), not part of the console's own /central API.
+// Resolved against resolveBaseUrl() — the same origin API calls and the login
+// redirect already use — rather than a bare root-relative path: that's correct
+// both for the standard deployment (edge and the console share an origin via
+// nginx, so resolveBaseUrl() falls back to window.location.origin) and for a
+// deployment that puts edge on its own host (which already has to set the
+// api-url attribute for API calls to reach it; this link then follows suit).
+//
+// Dev is the exception. vite's dev server sits at "/" (localhost:3000) and
+// proxies to edge without api-url being set, so resolveBaseUrl() would still
+// resolve to localhost:3000 here. A full-page navigation there gets proxied
+// *content*, but the browser's actual origin stays localhost:3000 — which
+// isn't in bootstrap.passkey.origins (dev/env.conf), so WebAuthn calls on the
+// page reject it as an untrusted origin. Point at edge's dev address directly
+// to sidestep the proxy for this one link.
+function accountSettingsUrl(): string {
+  return import.meta.env.DEV
+    ? 'http://localhost:9005/resources/auth/settings'
+    : new URL('/resources/auth/settings', resolveBaseUrl()).toString();
+}
+
+// Edge's preset-scoped logout route. Unlike accountSettingsUrl above, dev
+// needs no special case here: nothing on the way to a logged-out state
+// performs a WebAuthn ceremony, so it doesn't matter that a full-page
+// navigation to a proxied path leaves the browser at vite's own origin —
+// resolveBaseUrl() already resolves to that same origin there (api-url isn't
+// set in dev) and vite's `/logout/` proxy rule forwards it correctly either
+// way. Using resolveBaseUrl() here too just keeps this consistent with
+// accountSettingsUrl for a deployment where edge sits on its own host.
+function logoutUrl(): string {
+  return new URL('/logout/central-admin', resolveBaseUrl()).toString();
+}
 
 @customElement('versola-admin')
 export class VersolaAdmin extends LitElement {
@@ -540,7 +573,8 @@ export class VersolaAdmin extends LitElement {
           .permissions=${this.adminPermissions}
           .allowedTenantIds=${this.allowedTenantIds}
           .open=${this.navOpen}
-          .logoutUrl=${'/logout/central-admin'}
+          .logoutUrl=${logoutUrl()}
+          .accountSettingsUrl=${accountSettingsUrl()}
           @nav-change=${this.handleNavChange}
           @tenant-change=${this.handleTenantChange}
         ></versola-navigation>

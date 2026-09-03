@@ -1,6 +1,6 @@
 package versola.oauth.conversation
 
-import versola.auth.model.{OtpCode, Password}
+import versola.auth.model.{OtpCode, PasskeyName, Password}
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{ClientId, ScopeToken}
 import versola.oauth.conversation.model.Error
@@ -252,15 +252,10 @@ object ConversationController extends Controller:
       csrf     <- FormDecoder.single[String](form, "csrf", Right(_))
     yield PasskeyAssertionSubmission(response, csrf)
 
-  private val PasskeyNameRegex = "^[\\p{L}\\p{N} ()-]+$"
-
   given FormDecoder[PasskeyEnrollSubmission] = (form: Form) =>
     for
       response <- FormDecoder.single[String](form, "response", Right(_))
-      name     <- FormDecoder.single[String](form, "name", n =>
-        if n == n.trim && n.nonEmpty && n.matches(PasskeyNameRegex) then Right(n)
-        else Left("Invalid passkey name: only letters, digits, spaces, hyphens, and parentheses are allowed, with no leading or trailing spaces"),
-      )
+      name     <- FormDecoder.single[PasskeyName](form, "name", PasskeyName.from)
       csrf     <- FormDecoder.single[String](form, "csrf", Right(_))
     yield PasskeyEnrollSubmission(response, name, csrf)
 

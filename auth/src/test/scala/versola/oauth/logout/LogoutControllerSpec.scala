@@ -43,6 +43,7 @@ object LogoutControllerSpec extends UnitSpecBase:
     createdAt = Instant.EPOCH,
     amr = Map.empty,
     publicId = publicSessionId,
+    expiresAt = Instant.EPOCH,
   )
   private val sessionInfo = SessionInfo(sessionMac, sessionRecord)
 
@@ -153,6 +154,25 @@ object LogoutControllerSpec extends UnitSpecBase:
         )),
     ),
     controllerTestCase(
+        description = "GET /logout forwards ui_locales to the confirmation page",
+        request = Request.get((URL.root / "logout").addQueryParam("ui_locales", "ru en"))
+          .addHeader(sessionCookieHeader()),
+        expectedStatus = Status.Ok,
+        setup = (_, renderService, sessionService) =>
+          sessionService.find.succeedsWith(Some(sessionInfo)) *>
+            renderService.renderLogoutConfirm.succeedsWith(Response.text("<html>confirm</html>")),
+        verify = (_, _, renderService, _) =>
+          ZIO.succeed(assertTrue(
+            renderService.renderLogoutConfirm.calls == List((
+              sessionInfo,
+              csrfToken(rawSessionId),
+              None,
+              None,
+              Some(List("ru", "en")),
+            )),
+          )),
+      ),
+      controllerTestCase(
       description = "GET /logout with a session cookie for an unknown session renders the generic logout page",
       request = Request.get(URL.root / "logout").addHeader(sessionCookieHeader()),
       expectedStatus = Status.Ok,

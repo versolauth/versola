@@ -105,7 +105,7 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
       challengeRef      <- Ref.make(challengeSettingsVec)
       sysRef            <- Ref.make(sysSettings)
       metadataRef       <- Ref.make(metadata)
-      resourceRef       <- Ref.make(resources)
+      resourceRef       <- Ref.make(ResourceSyncClient.SyncResult(resources, None))
       authDetailTypeRef <- Ref.make(authorizationDetailTypes)
     yield OAuthConfigurationService.Impl(
       clientCache = ReloadingCache(clientRef),

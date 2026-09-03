@@ -1,7 +1,32 @@
 package versola.edge
 
 import versola.edge.login.{LoginRecord, LoginRepository}
-import versola.edge.model.{AccessToken, AccessTokenClaims, AccessTokenId, AuthConversationNotFound, AuthorizationPreset, ClientId, Code, CodeVerifier, InjectRule, InjectTarget, InvalidLogoutToken, PermissionId, PresetId, PresetNotFound, RefreshToken, Resource, ResourceEndpoint, ResourceEndpointId, ResourceId, RoleId, SessionId, State, TenantId, TokenResponse}
+import versola.edge.model.{
+  AccessToken,
+  AccessTokenClaims,
+  AccessTokenId,
+  AuthConversationNotFound,
+  AuthorizationPreset,
+  ClientId,
+  Code,
+  CodeVerifier,
+  InjectRule,
+  InjectTarget,
+  InvalidLogoutToken,
+  PermissionId,
+  PresetId,
+  PresetNotFound,
+  RefreshToken,
+  Resource,
+  ResourceEndpoint,
+  ResourceEndpointId,
+  ResourceId,
+  RoleId,
+  SessionId,
+  State,
+  TenantId,
+  TokenResponse,
+}
 import versola.edge.revocation.{RevocationKey, TokenRevocationService}
 import versola.edge.session.{EdgeSessionRecord, EdgeSessionRepository}
 import versola.util.cel.CelEvaluator
@@ -445,9 +470,10 @@ object EdgeService:
               case JWT.Error.Expired(jti) =>
                 authSource match
                   case AuthSource.Cookie(presetId) => refreshSession(AccessTokenId(jti), presetId, now)
-                  case AuthSource.Header => ZIO.fail(Outcome.Unauthorized)
+                  case AuthSource.Header =>
+                    Observability.setError("token_expired") *> ZIO.fail(Outcome.Unauthorized)
               case _ =>
-                ZIO.fail(Outcome.Unauthorized)
+                Observability.setError("token_invalid") *> ZIO.fail(Outcome.Unauthorized)
             },
             claims => ZIO.succeed(ActiveSession(accessToken, claims, None)),
           )
@@ -469,6 +495,10 @@ object EdgeService:
           .mapError {
             case SSOClient.UserInfoUnauthorized => Outcome.Unauthorized
             case _: Throwable => Outcome.InternalServerError
+          }
+          .tapError {
+            case Outcome.Unauthorized => Observability.setError("user_info_unauthorized")
+            case _ => ZIO.unit
           }
         celContext <- checkRules(session.claims, userInfo, request, endpoint, restPath, parsedBody)
         _ <- checkStepUp(endpoint, typedClaims, now, celContext)
@@ -494,6 +524,7 @@ object EdgeService:
             },
           ),
       ).orElseFail(Outcome.Unauthorized)
+        .tapError(_ => Observability.setError("token_missing"))
 
     /** Annotates the request's `session_id`/`user_id`/`token` as soon as the access token's
       * claims are known, so every subsequent log line (including one from a rejected
@@ -529,7 +560,7 @@ object EdgeService:
           else
             permissionService.getAllowedEndpointsForRoles(claims.tenantId, claims.roles)
 
-        _ <- ZIO.fail(Outcome.Forbidden)
+        _ <- (Observability.setError("permission_denied") *> ZIO.fail(Outcome.Forbidden))
           .unless(allowed.contains(endpoint.id))
       yield ()
 
@@ -543,7 +574,7 @@ object EdgeService:
           case None => resource.resource.encode
       val allowed = claims.audience.contains(expectedAudience) ||
         resource.secret.isDefined && claims.audience.contains(edgeAudience)
-      ZIO.fail(Outcome.Forbidden)
+      (Observability.setError("audience_denied") *> ZIO.fail(Outcome.Forbidden))
         .unless(allowed)
         .unit
 
@@ -585,10 +616,10 @@ object EdgeService:
         requiredAcr = Option.when(conditionPassed)(endpoint.stepUpAcr).flatten
         acrFailed = requiredAcr.flatMap(unsatisfied)
 
-        _ <- ZIO.fail(Outcome.InsufficientAuthentication(
+        _ <- (Observability.setError("step_up_required") *> ZIO.fail(Outcome.InsufficientAuthentication(
           acr = acrFailed,
           maxAge = Option.when(maxAgeFailed)(endpoint.maxAge).flatten,
-        )).when(acrFailed.isDefined || maxAgeFailed)
+        ))).when(acrFailed.isDefined || maxAgeFailed)
       yield ()
 
     private def checkRules(
@@ -603,7 +634,10 @@ object EdgeService:
       ZIO.foreachDiscard(endpoint.allow.filter(_.trim.nonEmpty)): expression =>
         celEvaluator.compile(expression)
           .flatMap(_.evaluateBoolean(context))
-          .flatMap(allowed => ZIO.fail(Outcome.Forbidden).unless(allowed))
+          .flatMap { allowed =>
+            (Observability.setError("access_rule_denied", Some(expression)) *> ZIO.fail(Outcome.Forbidden))
+              .unless(allowed)
+          }
       .as(context)
 
     private def refreshSession(
@@ -639,7 +673,7 @@ object EdgeService:
           _ <- storeSession(tokens, presetId, cookieTtl)
           publicKeys <- jwksService.getPublicKeys
           claims <- JWT.deserialize[Json.Obj](tokens.accessToken, publicKeys, JWT.Type.AccessToken)
-            .orElseFail(Outcome.Unauthorized)
+            .orElse(Observability.setError("token_invalid") *> ZIO.fail(Outcome.Unauthorized))
           now <- Clock.instant
           cookie = EdgeSessionCookie(
             presetId = presetId,
@@ -756,14 +790,21 @@ object EdgeService:
         case None => baseHeaders
 
       val authHeader = resolveAuthHeader(resource, accessToken)
+      val strippedQuery = queryInjects.foldLeft(baseUrl) { (acc, rule) =>
+        acc.removeQueryParam(rule.name)
+      }
       for
         injectedHeaders <- evaluateAll(headerInjects, celContext)
         injectedQuery <- evaluateAll(queryInjects, celContext)
-        finalHeaders = injectedHeaders.foldLeft(headersWithCookies):
+        strippedInjectedHeaders = headerInjects.foldLeft(headersWithCookies) {
+          case (acc, rule) => acc.removeHeader(rule.name)
+        }
+        finalHeaders = injectedHeaders.foldLeft(strippedInjectedHeaders) {
           case (acc, (name, value)) => acc.removeHeader(name).addHeader(name, value)
-        .addHeader(authHeader)
-        finalUrl = injectedQuery.foldLeft(baseUrl):
+        }.addHeader(authHeader)
+        finalUrl = injectedQuery.foldLeft(strippedQuery) {
           case (acc, (name, value)) => acc.removeQueryParam(name).addQueryParam(name, value)
+        }
         body <- applyBodyInjects(request, parsedBody, bodyInjects, celContext)
       yield request.copy(url = finalUrl, headers = finalHeaders, body = body)
 
@@ -785,9 +826,13 @@ object EdgeService:
     ): IO[Throwable | Outcome, Body] =
       parsedBody match
         case Some(obj: Json.Obj) if rules.nonEmpty =>
+          val injectedNames = rules.map(_.name).toSet
           evaluateAll(rules, context)
-            .map(values => Json.Obj(Chunk.from(values.map((k, v) => (k, Json.Str(v))))))
-            .map(json => Body.fromString(obj.merge(json).toJson, StandardCharsets.UTF_8))
+            .map { values =>
+              val fields = obj.fields.filterNot((name, _) => injectedNames.contains(name))
+              Json.Obj(Chunk.fromIterable(fields ++ values.map((k, v) => (k, Json.Str(v)))))
+            }
+            .map(json => Body.fromString(json.toJson, StandardCharsets.UTF_8))
         case Some(json) =>
           // Body was already read before permission check; reconstruct from the parsed JSON
           // so we don't double-consume the body stream when forwarding to upstream.
@@ -858,6 +903,7 @@ object EdgeService:
     case NotFound
     case InternalServerError
     case Reauthenticate(loginUri: URL, clearCookie: Cookie.Response)
+
     /** The token is valid but its authentication does not meet what this endpoint
       * requires (RFC 9470 §2): ACR too low (`acr`) and/or too old (`maxAge`). */
     case InsufficientAuthentication(acr: Option[String], maxAge: Option[Int])

@@ -115,7 +115,7 @@ class PostgresSessionRepository(xa: TransactorZIO)
     Clock.instant.flatMap: now =>
       xa.connectMeasured("find-session"):
         sql"""
-          SELECT user_id, clients, user_agent_id, created_at, amr, public_id
+          SELECT user_id, clients, user_agent_id, created_at, amr, public_id, expires_at
           FROM sso_sessions
           WHERE id = $id
             AND expires_at > $now
@@ -148,7 +148,7 @@ class PostgresSessionRepository(xa: TransactorZIO)
       now    <- Clock.instant
       result <- xa.connectMeasured("find-sessions-by-user"):
         sql"""
-          SELECT user_id, clients, user_agent_id, created_at, amr, public_id
+          SELECT user_id, clients, user_agent_id, created_at, amr, public_id, expires_at
           FROM sso_sessions
           WHERE
             user_id = $userId
@@ -166,7 +166,7 @@ class PostgresSessionRepository(xa: TransactorZIO)
           UPDATE sso_sessions
           SET expires_at = $now
           WHERE user_id = $userId AND expires_at > $now
-          RETURNING user_id, clients, user_agent_id, created_at, amr, public_id
+          RETURNING user_id, clients, user_agent_id, created_at, amr, public_id, expires_at
         """.query[SessionRecord].run().toList
         sql"""
           UPDATE refresh_tokens
@@ -184,7 +184,7 @@ class PostgresSessionRepository(xa: TransactorZIO)
           WHERE id = $id
             AND expires_at > $now
             AND (idle_expires_at IS NULL OR idle_expires_at > $now)
-          RETURNING user_id, clients, user_agent_id, created_at, amr, public_id
+          RETURNING user_id, clients, user_agent_id, created_at, amr, public_id, expires_at
         """.query[SessionRecord].run().headOption
         sql"""
           UPDATE refresh_tokens SET expires_at = $now WHERE session_id = $id
@@ -198,12 +198,25 @@ class PostgresSessionRepository(xa: TransactorZIO)
           UPDATE sso_sessions
           SET expires_at = $now
           WHERE public_id = $publicId
-          RETURNING id, user_id, clients, user_agent_id, created_at, amr, public_id
+          RETURNING id, user_id, clients, user_agent_id, created_at, amr, public_id, expires_at
         """.query[(MAC, SessionRecord)].run().headOption
         session.foreach { case (id, _) =>
           sql"""UPDATE refresh_tokens SET expires_at = $now WHERE session_id = $id""".update.run()
         }
         session
+
+  override def invalidateByPublicIdForUser(publicId: PublicSessionId, userId: UserId): Task[Boolean] =
+    Clock.instant.flatMap: now =>
+      xa.transactMeasured("invalidate-session-by-public-id-for-user"):
+        val sessionId = sql"""
+          UPDATE sso_sessions
+          SET expires_at = $now
+          WHERE public_id = $publicId AND user_id = $userId
+          RETURNING id
+        """.query[MAC].run().headOption
+        sessionId.foreach: id =>
+          sql"""UPDATE refresh_tokens SET expires_at = $now WHERE session_id = $id""".update.run()
+        sessionId.isDefined
 
   // ── refresh token methods ─────────────────────────────────────────────────
 

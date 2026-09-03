@@ -165,6 +165,7 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
   val edgeTokenEncKey           = rand(rng, 32)
   val edgeSessionsSecret        = rand(rng, 32)
   val parRequestsSecret         = rand(rng, 32) // auth only: keys the stored request_uri references
+  val accountResourceSecretGenerated = rand(rng, 32) // central: seeds the "auth" resource record; auth fetches it decrypted via registry sync
 
   // ── Environment ───────────────────────────────────────────────────────────────
   println("\n── Environment ───────────────────────────────────────────────────────")
@@ -264,6 +265,11 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
   val bootstrapResourceSecretLine =
     if isLocal then "  resource-secret = \"ZGV2LWNlbnRyYWwtYWRtaW4tc2VjcmV0LTMyYnl0ZXM\"\n" else "\n"
 
+  // Same reasoning for the "auth" resource secret: e2e tests call auth's additional
+  // listener (Account Settings) directly, with the Basic credentials edge would use.
+  val accountResourceSecret =
+    if isLocal then "ZGV2LWF1dGgtYWNjb3VudC1zZWNyZXQtMzJieXRlcyE" else accountResourceSecretGenerated
+
   // ── Service URLs ──────────────────────────────────────────────────────────────
   // authUrl      – public-facing URL (JWT issuer, server metadata, browser redirects via edge).
   // authInternalUrl – internal S2S URL used by central to call auth's admin APIs.
@@ -283,6 +289,12 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
   // service name.
   val authInternalDefault = if isDockerLocal then "http://auth:8080" else authUrl
   val authInternalUrl     = prompt(s"  Auth internal URL [$authInternalDefault]: ", authInternalDefault)
+  val authAdditionalDefault =
+    if isDockerLocal then "http://auth:8082"
+    else if isVps then "http://127.0.0.1:8082"
+    else if isLocal then "http://localhost:9007"
+    else "http://localhost:8082"
+  val authAdditionalUrl = prompt(s"  Auth additional URL [$authAdditionalDefault]: ", authAdditionalDefault)
   // centralUrl IS a real network call from both auth and edge, so it needs
   // the same treatment.
   // Reverted to 9001 (not 8090, which every other branch here uses) --
@@ -404,6 +416,7 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
       .map(u => s""""$u"""")
       .mkString(", ")
   val postLoginRedirectUri   = centralRedirectUris.split(",").map(_.trim).head
+  val passkeyOrigins = List(authUrl, edgeUrl).distinct.map(u => "\"" + u + "\"").mkString(", ")
 
   // ── OTP provider ──────────────────────────────────────────────────────────────
   section("\n── OTP Provider ──────────────────────────────────────────────────────")
@@ -634,8 +647,10 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
        |  front-channel-logout-uri = "$frontChannelLogoutUri"
        |  passkey {
        |    rp-id = "$passkeyRpId"
-       |    origins = ["$authUrl"]
+       |    origins = [$passkeyOrigins]
        |  }
+       |  auth-additional-url = "$authAdditionalUrl"
+       |  auth-resource-secret = ${secretField(useOpenBao, accountResourceSecret, "ACCOUNT_RESOURCE_SECRET")}
        |${bootstrapResourceSecretLine}|}
        |
        |secret-key = ${secretField(useOpenBao, centralSecretKey, "CENTRAL_SECRET_KEY")}
@@ -800,6 +815,7 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
       writeGeneratedSecrets(dir, "central.generated-secrets.env", Seq(
         "CENTRAL_SECRET_KEY"    -> centralSecretKey,
         "CLIENT_SECRETS_SECRET" -> clientSecretsSecret,
+        "ACCOUNT_RESOURCE_SECRET" -> accountResourceSecret,
         // Not secret in the confidentiality sense (these are public keys),
         // but resolved through OpenBao the same as everything else here
         // regardless -- see the comment on jwks/public-key-jwk above for

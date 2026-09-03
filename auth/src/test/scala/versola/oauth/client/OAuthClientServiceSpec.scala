@@ -112,7 +112,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
       val challengeSettingsCache: ReloadingCache[Vector[ChallengeSettingsRecord]],
       val systemSettingsCache: ReloadingCache[SystemSettingsRecord],
       val metadataCache: ReloadingCache[Json.Obj],
-      val resourceCache: ReloadingCache[Vector[ResourceRecord]],
+      val resourceCache: ReloadingCache[ResourceSyncClient.SyncResult],
       val authorizationDetailTypeCache: ReloadingCache[Vector[AuthorizationDetailTypeRecord]],
   ):
     val clientSync = stub[OAuthClientSyncClient]
@@ -174,7 +174,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
       challengeSettingsRef <- Ref.make(challengeSettings)
       systemSettingsRef <- Ref.make(systemSettings)
       metadataRef <- Ref.make(Json.Obj())
-      resourceRef <- Ref.make(resources)
+      resourceRef <- Ref.make(ResourceSyncClient.SyncResult(resources, None))
       authorizationDetailTypeRef <- Ref.make(authorizationDetailTypes)
     yield Env(
       clientCache = ReloadingCache(clientRef),
@@ -486,7 +486,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
         _ <- env.challengeSettingsSync.getAll.succeedsWith(Vector.empty)
         _ <- env.systemSettingsSync.getAll.succeedsWith(SystemSettingsRecord.default)
         _ <- env.metadataSync.getAll.succeedsWith(Json.Obj("a" -> Json.Num(1)))
-        _ <- env.resourceSync.getAll.succeedsWith(Vector.empty)
+        _ <- env.resourceSync.getAll.succeedsWith(ResourceSyncClient.SyncResult(Vector.empty, None))
         _ <- env.authorizationDetailTypeSync.getAll.succeedsWith(Vector.empty)
 
         _ <- env.service.syncConfiguration

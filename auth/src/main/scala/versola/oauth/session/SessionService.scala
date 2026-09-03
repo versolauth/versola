@@ -15,6 +15,9 @@ trait SessionService:
    *  data without a separate lookup. */
   def invalidate(id: Either[PublicSessionId, SessionId]): Task[Option[SessionInfo]]
 
+  /** Invalidates a public session id only when it belongs to the supplied user. */
+  def invalidateForUser(publicId: PublicSessionId, userId: UserId): Task[Boolean]
+
   /** Registers a relying party as logged-in on this session, so it can be notified on
    *  front/back-channel logout. Idempotent: a no-op if the client is already registered. */
   def registerClient(id: MAC.Of[SessionId], clientId: ClientId): Task[Unit]
@@ -68,6 +71,7 @@ object SessionService:
           os = details.os,
           browser = details.browser,
           version = details.version,
+          expiresAt = session.expiresAt,
         )
 
     override def invalidate(id: Either[PublicSessionId, SessionId]): Task[Option[SessionInfo]] =
@@ -79,6 +83,9 @@ object SessionService:
             mac    <- macOf(rawId)
             record <- repository.invalidate(mac)
           yield record.map(SessionInfo(mac, _))
+
+    override def invalidateForUser(publicId: PublicSessionId, userId: UserId): Task[Boolean] =
+      repository.invalidateByPublicIdForUser(publicId, userId)
 
     override def invalidateAllByUser(userId: UserId): Task[List[SessionRecord]] =
       repository.invalidateByUserId(userId)

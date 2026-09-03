@@ -431,4 +431,38 @@ object ResourceControllerSpec extends ZIOSpecDefault, ZIOStubs:
         payload.resources.map(_.resourceId) == resourceRecords.map(_.resourceId),
       )
     }.provideSomeLayer(TestClient.layer),
+    test("registry exposes the auth resource secret only") {
+      for
+        client <- ZIO.service[Client]
+        service = stub[ResourceService]
+        edgeService = stub[EdgeService]
+        tracing <- tracingLayer.build
+        security <- securityLayer.build
+        token <- JWT.serialize(
+          JWT.Claims("auth", "auth", List("central"), Json.Obj()),
+          1.minute,
+          JWT.Signature.Symmetric(config.secretKey),
+        )
+        _ <- service.getResourcesForSync.succeedsWith(Vector(
+          resourceRecords.head.copy(secret = Some(previousSyncSecret)),
+          resourceRecords.head.copy(resourceId = ResourceId("auth"), secret = Some(syncSecret)),
+        ))
+        _ <- TestClient.addRoutes(
+          Observability.handleErrors(
+            ResourceController.routes.provideEnvironment(
+              ZEnvironment[ResourceService](service) ++ ZEnvironment[CentralConfig](config) ++ tracing ++ security ++
+                ZEnvironment[EdgeService](edgeService)
+            )
+          )
+        )
+        response <- client.batched(
+          Request.get(URL.empty / "configuration" / "resources" / "registry")
+            .addHeader(Header.Authorization.Bearer(token))
+        )
+        payload <- decodeJsonBody[GetResourcesRegistryResponse](response)
+      yield assertTrue(
+        response.status == Status.Ok,
+        payload.authResourceSecret.contains(Base64Url.encode(syncSecret)),
+      )
+    }.provideSomeLayer(TestClient.layer),
   )

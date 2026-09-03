@@ -473,6 +473,12 @@ case class ResourceRegistryEntry(
 
 case class GetResourcesRegistryResponse(
     resources: Vector[ResourceRegistryEntry],
+    /** Base64Url-encoded secret of the "auth" resource, encrypted the same way as
+      * [[ResourceSyncResponse.secret]] (AES-256 with the central secret key, since auth has
+      * no edge keypair). It lets auth authenticate calls to its own account settings API
+      * without a separately configured static secret. No other resource secret is exposed
+      * here. */
+    authResourceSecret: Option[String],
 ) derives Schema, JsonCodec
 
 case class AuthorizationDetailTypeSyncResponse(
