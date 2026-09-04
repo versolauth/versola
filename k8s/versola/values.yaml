@@ -6,8 +6,8 @@
 #   - No bundled secret backend. This chart consumes secret values/refs
 #     (native Secret, External Secrets Operator, Vault, ...), it never
 #     generates or mandates one.
-#   - Ingress/HPA/PDB/topology spread are separate issues (#210, #211) --
-#     out of scope here.
+#   - HPA/PDB/topology spread are a separate issue (#211) -- out of scope
+#     here.
 
 nameOverride: ""
 fullnameOverride: ""
@@ -53,6 +53,13 @@ services:
     replicaCount: 1
     port: 8080 # PORT -- application traffic
     diagnosticsPort: 8081 # DPORT -- /metrics, /liveness, /readiness
+    # APORT -- VersolaApp.additionalRoutes, auth's only user. Backs
+    # AccountSettingsController (/settings/*), listed "internal" in
+    # deploy.md's port table because the VPS's nginx never proxies to it.
+    # A distinct value (not empty/0) so templates/{deployment,service}.yaml
+    # expose it as its own port -- see ingress.hosts' `settings` route
+    # group for whether/how it's actually reachable.
+    additionalPort: 8082
     resources:
       requests:
         cpu: 250m
@@ -114,17 +121,43 @@ services:
     extraEnv: []
     extraEnvFrom: []
 
-# gateway: nginx with central-ui's static build baked in (see
+# console: nginx with central-ui's static build baked in (see
 # docker/Dockerfile.gateway) -- not a VersolaApp service, so it has no
 # PORT/DPORT and no /liveness or /readiness to probe (see
-# templates/gateway-deployment.yaml for how it's probed instead).
-gateway:
+# templates/console-deployment.yaml for how it's probed instead).
+#
+# Under docker-compose this same image also proxies /resources, /login,
+# /authorize etc. to edge/auth (docker/versola-tools/nginx.conf.template).
+# Here it only serves files: routing is the Ingress's job (see `ingress`
+# below), so the pod needs no upstreams and no knowledge of auth/edge.
+# The image is still published as `versola-gateway` -- only its role in
+# this chart is narrower.
+console:
   enabled: true
   image:
     repository: versola-gateway
     tag: ""
   replicaCount: 1
   port: 2821
+  # Where the console answers on its host. "/" suits a dedicated hostname
+  # (console.example.com); the image bakes dist/ at /central/admin/, but
+  # vite.config.ts's BASE_PATH is relative, so the same files resolve
+  # correctly wherever they're mounted (see #222).
+  basePath: /
+  # How central-ui addresses the API -- the `console-mode` attribute added
+  # in #222/#223.
+  #
+  # "direct": call edge's real routes (/resources/central/..., plain
+  # /permissions/me) on the console's own origin. This is the only mode
+  # this chart's Ingress can serve, because "prefix" needs /central/{x}
+  # rewritten to /resources/central/{x}, and path rewriting is not in the
+  # Ingress core spec -- every controller spells it differently, which is
+  # exactly the per-controller coupling #210 set out to avoid.
+  #
+  # "prefix": the docker-compose/VPS behaviour. Only works here if you
+  # also supply your own proxying config via `nginxConfig` below and route
+  # the whole host to this pod, rather than using `ingress`.
+  mode: direct
   resources:
     requests:
       cpu: 100m
@@ -137,14 +170,107 @@ gateway:
   preStopSleepSeconds: 5
   terminationGracePeriodSeconds: 20
   nginxConfig:
-    # Name of a ConfigMap that already has an `nginx.conf` key (and,  if
-    # your routing still uses it, a `proxy_params.conf` key), if you'd
-    # rather manage gateway's routing outside this chart. Takes precedence
-    # over `content` below.
+    # Name of a ConfigMap that already has an `nginx.conf` key, if you'd
+    # rather manage this pod's config outside the chart. Takes precedence
+    # over `content` below. Both escape hatches replace the config
+    # wholesale, so anything they need (proxy_pass upstreams,
+    # proxy_set_header, ...) has to be self-contained.
     existingConfigMap: ""
     # Inline override for the rendered nginx.conf. Leave empty to use the
-    # chart's own default (adapted from
-    # docker/versola-tools/nginx.conf.template for in-cluster Service DNS
-    # instead of Compose service names -- see templates/_helpers.tpl's
-    # "versola.defaultNginxConf").
+    # chart's own static-file default (templates/_helpers.tpl's
+    # "versola.consoleNginxConf").
     content: ""
+
+# Ingress. Disabled by default: hostnames are deployment-specific and
+# there's no sensible guess to make.
+#
+# Routing is expressed as named groups of paths (see `routes` below)
+# rather than one host-wide rule, because which hostname answers what is
+# a deployment decision. Two shapes this is built for:
+#
+#   Split hosts (recommended). The console gets its own hostname, so
+#   EDGE_SESSION is isolated by domain and scoped Path=/:
+#     hosts:
+#       - host: id.example.com
+#         routes: [oidc, login]
+#       - host: console.example.com
+#         routes: [console, api, login]
+#
+#   Single host, path-isolated (today's VPS shape). Not expressible
+#   through this Ingress -- it depends on the /central/* -> /resources/*
+#   rewrite described under `console.mode` above. Point the whole host at
+#   the console pod with a proxying `console.nginxConfig` instead.
+#
+# Both hosts need `login` because edge's interactive login/logout runs on
+# whichever origin the session belongs to, and `/complete` must match the
+# redirect_uri in that preset's config -- the chart routes it, but the
+# preset still has to name the same hostname.
+ingress:
+  enabled: false
+  # Left empty to use the cluster's default IngressClass.
+  className: ""
+  # Free-form passthrough, e.g. cert-manager.io/cluster-issuer. The chart
+  # itself needs no annotations -- everything above is core-spec, so it
+  # works on ingress-nginx, Traefik, HAProxy, ALB, GKE, ... unchanged.
+  annotations: {}
+  # Each entry is one hostname plus the route groups it serves. Every
+  # group below is a real, named endpoint set (see auth's *Controller.scala
+  # and edge's EdgeService.scala) -- there is no catch-all `/` group, so a
+  # host only ever exposes what you actually list:
+  #   oidc     -> auth:    /authorize /token /par /introspect /revoke
+  #                        /userinfo /logout /.well-known/ /challenge
+  #   login    -> edge:    /login/ /complete /logout/
+  #   api      -> edge:    /resources/ /permissions/
+  #   console  -> console: console.basePath
+  #
+  # `users`, `service` and `settings` are not for public/browser traffic --
+  # none of the example `routes` combinations below include them, and every
+  # endpoint in all three is guarded server-side even if you do add one, so
+  # an accidental host+group typo isn't an open door:
+  #   users    -> auth:    /users, /users/* (UserController). Called by
+  #                        central over in-cluster Service DNS
+  #                        (config.auth.url), not through the Ingress in
+  #                        the normal case -- add this group only if your
+  #                        central genuinely reaches auth through a public
+  #                        URL instead. Every endpoint requires
+  #                        `authorizeInternal`: a Bearer JWT signed with
+  #                        central's own secret key, not a user session.
+  #   service  -> auth:    /service/* (ServiceController). Same
+  #                        cluster-internal caller and `authorizeInternal`
+  #                        guard as `users`, plus its own belt-and-braces:
+  #                        both endpoints 404 outright whenever `env` is
+  #                        "prod" (see ServiceController.scala's
+  #                        `env.isProd` check) -- they're config-sync/test
+  #                        tooling for non-prod environments only, so this
+  #                        group is a no-op in production even if listed.
+  #   settings -> auth:    /settings, /settings/* (AccountSettingsController),
+  #                        on auth's *additional* port
+  #                        (services.auth.additionalPort/APORT), not its
+  #                        main one -- deploy.md lists this "internal"
+  #                        because the VPS's nginx never proxies to it
+  #                        either. Guarded by `authorizeResource`: HTTP
+  #                        Basic auth against a resource secret central
+  #                        issues for auth, the same mechanism edge/central
+  #                        use for each other, not an end-user credential.
+  #                        Add it only if something outside the cluster
+  #                        needs to call it directly instead of through
+  #                        whatever already holds that secret.
+  hosts: []
+  #  - host: id.example.com
+  #    routes: [oidc, login]
+  #  - host: console.example.com
+  #    routes: [console, api, login]
+  # Standard Ingress TLS block, passed through as-is.
+  tls: []
+  #  - hosts: [id.example.com]
+  #    secretName: versola-id-tls
+  # Gateway API instead of Ingress, for clusters that have moved off it.
+  # Renders the same route groups as HTTPRoutes.
+  gatewayAPI:
+    enabled: false
+    # Required when enabled: which Gateway(s) these routes attach to.
+    #   parentRefs:
+    #     - name: public-gateway
+    #       namespace: gateway-system
+    #       sectionName: https
+    parentRefs: []

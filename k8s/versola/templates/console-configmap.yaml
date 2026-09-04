@@ -1,0 +1,15 @@
+{{- if and .Values.console.enabled (not .Values.console.nginxConfig.existingConfigMap) }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "versola.fullname" . }}-console-nginx
+  labels:
+    {{- include "versola.componentLabels" (dict "component" "console" "context" .) | nindent 4 }}
+data:
+  nginx.conf: |
+    {{- if .Values.console.nginxConfig.content }}
+    {{- .Values.console.nginxConfig.content | nindent 4 }}
+    {{- else }}
+    {{- include "versola.consoleNginxConf" . | nindent 4 }}
+    {{- end }}
+{{- end }}
