@@ -634,7 +634,7 @@ object EdgeService:
         celEvaluator.compile(expression)
           .flatMap(_.evaluateBoolean(context))
           .flatMap { allowed =>
-            (Observability.setErrorForExpression("access_rule_denied", expression) *> ZIO.fail(Outcome.Forbidden))
+            (Observability.setErrorKeepingCelFailure("access_rule_denied") *> ZIO.fail(Outcome.Forbidden))
               .unless(allowed)
           }
       .as(context)

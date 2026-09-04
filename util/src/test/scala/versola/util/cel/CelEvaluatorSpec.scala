@@ -99,7 +99,7 @@ object CelEvaluatorSpec extends ZIOSpecDefault:
           result    <- program.evaluateBoolean(tokenContext)
         yield assertTrue(!result)
       },
-      test("evaluateBoolean folds a type mismatch into the request's error context") {
+      test("evaluateBoolean folds a type mismatch into the request's error context, without the expression") {
         ownRequest:
           for
             evaluator <- make
@@ -108,11 +108,10 @@ object CelEvaluatorSpec extends ZIOSpecDefault:
             error     <- celError
           yield assertTrue(
             error.map(_.code).contains(Observability.CelEvaluationFailedCode),
-            error.flatMap(_.description).exists(_.startsWith("`token.role`: ")),
-            error.flatMap(_.description).exists(_.contains("instead of Boolean")),
+            error.flatMap(_.description).contains("non-boolean result, treated as false"),
           )
       },
-      test("evaluateBoolean folds an evaluation error into the request's error context") {
+      test("evaluateBoolean folds an evaluation error into the request's error context, without the expression") {
         ownRequest:
           for
             evaluator <- make
@@ -122,7 +121,7 @@ object CelEvaluatorSpec extends ZIOSpecDefault:
           yield assertTrue(
             !result,
             error.map(_.code).contains(Observability.CelEvaluationFailedCode),
-            error.flatMap(_.description).exists(_.startsWith("`token.missing.deep.path == 'x'`: ")),
+            error.flatMap(_.description).contains("evaluation failed, treated as false"),
           )
       },
       test("evaluateString returns Some for string-typed expression") {
@@ -139,7 +138,7 @@ object CelEvaluatorSpec extends ZIOSpecDefault:
           result    <- program.evaluateString(tokenContext)
         yield assertTrue(result.isEmpty)
       },
-      test("evaluateString folds an evaluation error into the request's error context") {
+      test("evaluateString folds an evaluation error into the request's error context, without the expression") {
         ownRequest:
           for
             evaluator <- make
@@ -148,7 +147,7 @@ object CelEvaluatorSpec extends ZIOSpecDefault:
             error     <- celError
           yield assertTrue(
             error.map(_.code).contains(Observability.CelEvaluationFailedCode),
-            error.flatMap(_.description).exists(_.startsWith("`token.missing.deep.path`: ")),
+            error.flatMap(_.description).contains("evaluation failed, no value injected"),
           )
       },
       test("a later failure replaces the description left by an earlier one") {
@@ -160,7 +159,7 @@ object CelEvaluatorSpec extends ZIOSpecDefault:
             _         <- allow.evaluateBoolean(tokenContext)
             _         <- inject.evaluateString(tokenContext)
             error     <- celError
-          yield assertTrue(error.flatMap(_.description).exists(_.startsWith("`token.other.deep.path`: ")))
+          yield assertTrue(error.flatMap(_.description).contains("evaluation failed, no value injected"))
       },
     ),
     suite("cache")(

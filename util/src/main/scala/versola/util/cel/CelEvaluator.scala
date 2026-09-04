@@ -68,7 +68,7 @@ object CelEvaluator:
           if actualType != t && actualType != SimpleType.DYN then
             throw new IllegalArgumentException(s"Expected return type $t but got $actualType")
           actualType == SimpleType.DYN
-        (ProgramImpl(expression, runtime.createProgram(ast)): Program, dynAccepted)
+        (ProgramImpl(runtime.createProgram(ast)): Program, dynAccepted)
       .either
       .flatMap:
         case Right((program, true)) =>
@@ -85,20 +85,18 @@ object CelEvaluator:
   /** A failed evaluation is reported into the log context of the request that triggered it
     * rather than as a warning line of its own: the degraded result (`false`, or no injected
     * value) is what the caller acts on, and it is only interpretable next to the outcome that
-    * request ended with. */
-  private class ProgramImpl(expression: String, program: CelRuntime.Program) extends Program:
+    * request ended with. The report names neither the expression nor the underlying exception --
+    * the expression is discoverable from the endpoint's configured rules in the console once
+    * the request's endpoint is known, and the exception text can vary in shape depending on
+    * the value that tripped it. */
+  private class ProgramImpl(program: CelRuntime.Program) extends Program:
     override def evaluateBoolean(context: Map[String, AnyRef]): UIO[Boolean] =
       ZIO.attempt(program.eval(context.asJava))
         .flatMap:
           case b: java.lang.Boolean => ZIO.succeed(b.booleanValue)
-          case other                =>
-            Observability.annotateCelFailure(
-              expression,
-              s"returned ${other.getClass.getSimpleName} instead of Boolean, treated as false",
-            ).as(false)
-        .catchAll: ex =>
-          Observability.annotateCelFailure(expression, s"evaluation failed: ${errorMessage(ex)}, treated as false")
-            .as(false)
+          case _                    => Observability.annotateCelFailure("non-boolean result, treated as false").as(false)
+        .catchAll: _ =>
+          Observability.annotateCelFailure("evaluation failed, treated as false").as(false)
 
     override def evaluateString(context: Map[String, AnyRef]): UIO[Option[String]] =
       ZIO.attempt(program.eval(context.asJava))
@@ -106,9 +104,5 @@ object CelEvaluator:
           case null         => None
           case s: String    => Some(s)
           case other        => Some(other.toString)
-        .catchAll: ex =>
-          Observability.annotateCelFailure(expression, s"evaluation failed: ${errorMessage(ex)}, no value injected")
-            .as(None)
-
-  private def errorMessage(ex: Throwable): String =
-    Option(ex.getMessage).getOrElse(ex.getClass.getSimpleName)
+        .catchAll: _ =>
+          Observability.annotateCelFailure("evaluation failed, no value injected").as(None)

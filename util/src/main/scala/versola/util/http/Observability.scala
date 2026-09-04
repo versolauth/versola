@@ -91,30 +91,27 @@ object Observability:
   def setError(code: String, description: Option[String] = None): UIO[Unit] =
     logContext.update(_.annotate(error, ErrorDetails(code, description)))
 
-  /** Records that the CEL expression `expression` failed to evaluate, folding the rule and the
-    * failure reason into a single `error.description` (e.g. `` `token.role`: returned String
-    * instead of Boolean, treated as false ``) instead of a context of its own: a failed
-    * expression degrades to `false`/absent rather than to an error response, so the request's
-    * own outcome is indistinguishable from a legitimate denial without this, and `error` is
-    * already the request's one place for that kind of explanation.
+  /** Records that a CEL expression failed to evaluate for this request, under `error`, without
+    * naming the expression or repeating the underlying exception text: which rule it was is
+    * discoverable from the endpoint's configured rules in the console once the request's
+    * endpoint is known, and an exception's own message can vary in shape. `outcome` says only
+    * what the caller did as a result (e.g. `"treated as false"`, `"no value injected"`) -- a
+    * failed expression degrades silently rather than erroring, so the request's own outcome is
+    * indistinguishable from a legitimate denial without at least that much.
     *
     * Left under [[CelEvaluationFailedCode]] until the check that ran this expression decides
-    * the request's real outcome. [[setErrorForExpression]] is how a check that denies based on
-    * this same expression (`access_rule_denied`) keeps this description while replacing the
-    * code; a check that doesn't run afterward (e.g. a failed inject rule, which doesn't fail
-    * the request) leaves this as the final `error` entry. */
-  def annotateCelFailure(expression: String, message: String): UIO[Unit] =
-    logContext.update(_.annotate(error, ErrorDetails(CelEvaluationFailedCode, Some(s"`$expression`: $message"))))
+    * the request's real outcome. [[setErrorKeepingCelFailure]] is how a check that denies as a
+    * result (`access_rule_denied`) keeps this description while replacing the code; a check
+    * that doesn't run afterward (e.g. a failed inject rule, which doesn't fail the request)
+    * leaves this as the final `error` entry. */
+  def annotateCelFailure(outcome: String): UIO[Unit] =
+    logContext.update(_.annotate(error, ErrorDetails(CelEvaluationFailedCode, Some(outcome))))
 
-  /** Sets the request's error to `code`, described by the CEL expression that produced it. If
-    * evaluating `expression` already failed and left a reason via [[annotateCelFailure]], keeps
-    * that richer description instead of replacing it with the bare expression: the failure
-    * reason is why the rule denied the request in the first place. */
-  def setErrorForExpression(code: String, expression: String): UIO[Unit] =
-    logContext.update { context =>
-      val description = context.get(error).flatMap(_.description).getOrElse(s"`$expression`")
-      context.annotate(error, ErrorDetails(code, Some(description)))
-    }
+  /** Sets the request's error to `code`, keeping the description already there if one was left
+    * by [[annotateCelFailure]] for this request instead of clearing it: that's why the check
+    * denied the request in the first place. Falls back to no description otherwise. */
+  def setErrorKeepingCelFailure(code: String): UIO[Unit] =
+    logContext.update(context => context.annotate(error, ErrorDetails(code, context.get(error).flatMap(_.description))))
 
   val clientLogging: FiberRef[HttpObservabilityConfig.Client] = zio.Unsafe.unsafe { case given zio.Unsafe =>
     FiberRef.unsafe.make(HttpObservabilityConfig.Client.default)
