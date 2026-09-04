@@ -124,10 +124,11 @@ components:
       required: false
       description: |
         Space-delimited scope tokens. Include `openid` to obtain an ID token from `/token`
-        and to be allowed to call `/userinfo`. Required unless `request_uri` is used.
+        and to be allowed to call `/userinfo`. Omitting it defaults to the client's full
+        registered scope, both here and when the request arrives via `request_uri`.
 
         Every token must be one the client is registered for; naming any other fails the
-        request with `invalid_scope`. When omitted, the client's full registered scope is used.
+        request with `invalid_scope`.
       schema:
         type: string
       example: openid profile email
