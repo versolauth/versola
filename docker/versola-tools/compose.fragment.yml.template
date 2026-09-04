@@ -30,7 +30,7 @@ name: versola-local
 services:
   # Secrets store. `versola configure` writes generated secrets here
   # (instead of into auth.conf/central.conf/edge.conf directly) and
-  # auth/central/edge read them back via ${?VAR} substitution -- see
+  # auth/central/edge read them back via ${VAR} substitution -- see
   # gen-env.scala's secretField and versola-cli's internal/deploy/secrets.go.
   openbao:
     image: openbao/openbao:2.5.4
@@ -150,9 +150,10 @@ services:
       # that was never created.
       RUN_MIGRATIONS: "false"
     # Resolved by versola-cli against OpenBao, not written by this image --
-    # central.conf's secret fields are ${?VAR} placeholders (see
+    # central.conf's secret fields are ${VAR} placeholders (see
     # gen-env.scala's secretField) that only resolve if the matching
-    # variable actually exists in this container's environment.
+    # variable actually exists in this container's environment, and fail
+    # config load loudly (ConfigException.UnresolvedSubstitution) if not.
     env_file:
       - ./central.secrets.env
     volumes:

@@ -62,7 +62,7 @@ Image reference for a service. Expects a dict: {global: .Values.global, svc: <se
 {{- end -}}
 
 {{/*
-Required ${?VAR} secret keys per service (see scripts/gen-env.scala's
+Required ${VAR} secret keys per service (see scripts/gen-env.scala's
 secretField/useOpenBao) -- fixed by the app's own config contract, not a
 values.yaml knob. CENTRAL_SECRET_KEY and CLIENT_SECRETS_SECRET are the
 only two genuinely shared between auth and central (same value, see

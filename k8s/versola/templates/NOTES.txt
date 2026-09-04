@@ -33,6 +33,6 @@ routes /complete, but the preset config still has to name the same host.
 {{- end }}
 
 Each service's config must be supplied via its own `services.<name>.config.existingSecret`,
-and the `${?VAR}` values that config references via `secrets.existingSecret` (one shared
+and the `${VAR}` values that config references via `secrets.existingSecret` (one shared
 Secret across auth/central/edge -- see values.yaml's `secrets` block for its required keys
 and naming) -- this chart does not generate or bundle secrets.

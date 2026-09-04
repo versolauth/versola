@@ -41,7 +41,7 @@ global:
 preStopSleepSeconds: 5
 terminationGracePeriodSeconds: 30
 
-# Secret values auth/central/edge's env.conf files reference as `${?VAR}`
+# Secret values auth/central/edge's env.conf files reference as `${VAR}`
 # placeholders (see scripts/gen-env.scala's secretField/useOpenBao) -- e.g.
 # ACCESS_TOKENS_SECRET, EDGE_PRIVATE_KEY, POSTGRES_PASSWORD. Delivered as
 # real process env vars via secretKeyRef, not baked into the mounted
@@ -110,10 +110,10 @@ services:
       secretKey: env.conf
     # Extra plain env vars: [{name: FOO, value: bar}, ...].
     extraEnv: []
-    # Extra envFrom entries, e.g. for the ${?VAR} secret placeholders
-    # gen-env.scala writes into env.conf (JWT_PRIVATE_KEY,
-    # ACCESS_TOKENS_SECRET, POSTGRES_PASSWORD, ...): point this at
-    # whichever Secret your backend resolves them into.
+    # Extra envFrom entries, for anything beyond the required ${VAR}
+    # secret placeholders `secrets.existingSecret` above already covers
+    # (JWT_PRIVATE_KEY, ACCESS_TOKENS_SECRET, POSTGRES_PASSWORD, ...; see
+    # versola.requiredSecretVars in templates/_helpers.tpl).
     #   extraEnvFrom:
     #     - secretRef:
     #         name: auth-secrets

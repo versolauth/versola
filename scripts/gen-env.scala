@@ -85,7 +85,7 @@ def writeFile(dir: File, name: String, content: String): Unit =
 
 // ── Secret placeholders (docker-local and vps) ───────────────────────────
 // In docker-local and vps modes, every secret field this script generates
-// becomes a `${?VAR}` HOCON substitution placeholder instead of a literal
+// becomes a `${VAR}` HOCON substitution placeholder instead of a literal
 // value. versola-cli resolves the real value -- reading it back from
 // OpenBao if a previous `configure` already generated one, or storing this
 // run's freshly generated value there if not -- and supplies it as a real
@@ -96,18 +96,30 @@ def writeFile(dir: File, name: String, content: String): Unit =
 // non-interactively are wired through OpenBao so far -- a person running
 // this interactively can just type the real value in.
 //
+// Deliberately `${VAR}`, not `${?VAR}`: the optional form silently drops
+// the key from the resolved config if the env var is missing, so a broken
+// secret pipeline (OpenBao/ESO/Vault misconfigured, a k8s Secret missing a
+// key, ...) doesn't fail until whatever code path first reads that
+// specific key -- possibly well after boot, with a message that doesn't
+// name the actual gap. Every placeholder this script writes is one the
+// same run's own writeGeneratedSecrets call (docker-local) or the OpenBao
+// resolution flow (vps) unconditionally populates before the container
+// ever starts, so requiring it costs nothing in the working case and
+// turns the broken case into an immediate, named
+// ConfigException.UnresolvedSubstitution at config load instead.
+//
 // usePlaceholder is a parameter, not a closed-over var like `interactive`
 // below: it's decided from local vals inside genEnv() (isDockerLocal,
 // isVps), not top-level mutable state, so there's nothing for a top-level
 // def to close over.
 def secretField(usePlaceholder: Boolean, value: String, envVar: String): String =
-  if usePlaceholder then s"$${?$envVar}" else "\"" + value + "\""
+  if usePlaceholder then s"$${$envVar}" else "\"" + value + "\""
 
 // Same idea as secretField, but for values the interactive branches wrap
 // in HOCON triple-quotes (the RSA private keys) rather than a plain quoted
 // string -- preserves that exactly on every path this doesn't change.
 def secretKeyField(usePlaceholder: Boolean, value: String, envVar: String): String =
-  if usePlaceholder then s"$${?$envVar}" else "\"\"\"" + value + "\"\"\""
+  if usePlaceholder then s"$${$envVar}" else "\"\"\"" + value + "\"\"\""
 
 // Writes the values secretField/secretKeyField placeholdered out, as
 // plain KEY=value lines -- not JSON: this script has no JSON dependency,
@@ -226,7 +238,7 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
     if isDockerLocal then "docker-local"
     else if isVps then sys.env.getOrElse("ENV_NAME", "prod")
     else target
-  // Every secret field this script generates becomes a `${?VAR}` HOCON
+  // Every secret field this script generates becomes a `${VAR}` HOCON
   // placeholder (resolved via OpenBao by versola-cli) in both
   // non-interactive Docker envs, not just docker-local -- see
   // secretField's own comment.
