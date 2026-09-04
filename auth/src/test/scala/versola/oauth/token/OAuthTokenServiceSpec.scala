@@ -672,6 +672,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
           _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
           _ <- env.tokenRepo.findToken.succeedsWith(None)
+          _ <- env.tokenRepo.markChainReplayed.succeedsWith(None)
 
           request = RefreshTokenRequest(refreshToken1, None, None, None)
           credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
@@ -679,6 +680,30 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           result <- env.service.refreshAccessToken(request, credentials).either
         yield assertTrue(
           result == Left(TokenEndpointError.InvalidGrant),
+          env.accessTokenRevocationService.revoke.calls.isEmpty,
+        )
+      },
+      test("fail with InvalidGrant and revoke the chain's access token when a rotated-away refresh token is replayed") {
+        val env = new Env
+        for
+          now <- Clock.instant
+          _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
+          _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
+          _ <- env.tokenRepo.findToken.succeedsWith(None)
+          _ <- env.tokenRepo.markChainReplayed.succeedsWith(Some((userId1, accessToken1)))
+          _ <- env.accessTokenRevocationService.revoke.succeedsWith(())
+
+          request = RefreshTokenRequest(refreshToken1, None, None, None)
+          credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
+
+          result <- env.service.refreshAccessToken(request, credentials).either
+        yield assertTrue(
+          result == Left(TokenEndpointError.InvalidGrant),
+          env.tokenRepo.markChainReplayed.calls == List((refreshTokenMac1, clientId1)),
+          // The replayed token's own access token is not in hand, only its id, so its
+          // lifetime is bounded by the client's access token TTL rather than read from it.
+          env.accessTokenRevocationService.revoke.calls ==
+            List((testClient, accessToken1, userId1.toString, now.plus(testClient.accessTokenTtl))),
         )
       },
       test("fail with InvalidScope when requested scope exceeds client scope") {

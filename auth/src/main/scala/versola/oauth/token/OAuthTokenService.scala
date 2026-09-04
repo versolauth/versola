@@ -145,9 +145,13 @@ object OAuthTokenService:
 
         refreshTokenMac <- securityService.mac(Secret(refreshToken), config.security.refreshTokensSecret)
 
-        tokenRecord <- sessionRepository.findToken(refreshTokenMac)
-          .someOrFail(TokenEndpointError.InvalidGrant)
-          .filterOrFail(_.clientId == client.id)(TokenEndpointError.InvalidGrant)
+        tokenRecord <- sessionRepository.findToken(refreshTokenMac).flatMap:
+          case Some(record) if record.clientId == client.id =>
+            ZIO.succeed(record)
+          case Some(_) =>
+            ZIO.fail(TokenEndpointError.InvalidGrant)
+          case None =>
+            detectReplay(client, refreshTokenMac) *> ZIO.fail(TokenEndpointError.InvalidGrant)
 
         _ <- Observability.setSessionId(tokenRecord.publicSessionId)
         _ <- Observability.setUserId(tokenRecord.userId.toString)
@@ -178,6 +182,34 @@ object OAuthTokenService:
           accessTokenAuthorizationDetails = details,
         )
       yield issuedTokens
+
+    /** RFC 9700 §4.14.2: a refresh token presented after it was already rotated away means the
+      * chain leaked -- to an attacker who redeemed it first, or back to its rightful owner
+      * after an attacker's redemption already won the rotation race. Either way neither party
+      * can be trusted with the chain's live end anymore, so it is expired and its access token
+      * pushed to the client's back channel, forcing a full re-authorization instead of leaving
+      * a live session for whoever asks next.
+      *
+      * Scoped to this refresh-token chain, not the wider SSO session: one client's leak
+      * should not log the user out of every other client sharing the session, and a chain
+      * that has already rotated past this token twice was already a dead end, so nothing is
+      * revoked (there is nothing left alive to protect).
+      */
+    private def detectReplay(client: OAuthClientRecord, replayed: MAC.Of[RefreshToken]): Task[Unit] =
+      sessionRepository.markChainReplayed(replayed, client.id).flatMap:
+        case Some((userId, accessToken)) =>
+          zio.Clock.instant.flatMap: now =>
+            // As with authorization-code replay, the live access token itself is not in
+            // hand here, only its id, so its lifetime is bounded by the client's TTL.
+            accessTokenRevocationService.revoke(
+              client = client,
+              token = accessToken,
+              subject = userId.toString,
+              expiresAt = now.plus(client.accessTokenTtl),
+            )
+          *> ZIO.logWarning(s"Refresh token replay detected for client '${client.id}': chain revoked")
+        case None =>
+          ZIO.unit
 
     /** RFC 9396 §6: a token request may ask for the authorization details of the underlying
       * grant or fewer of them, never for more; §6.1 compares the requested objects with the

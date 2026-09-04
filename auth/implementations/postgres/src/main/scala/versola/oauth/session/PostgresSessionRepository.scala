@@ -292,6 +292,16 @@ class PostgresSessionRepository(xa: TransactorZIO)
           .headOption
     yield result
 
+  override def markChainReplayed(token: MAC.Of[RefreshToken], clientId: ClientId): Task[Option[(UserId, AccessToken)]] =
+    Clock.instant.flatMap: now =>
+      xa.connectMeasured("mark-refresh-chain-replayed"):
+        sql"""
+          UPDATE refresh_tokens
+          SET expires_at = $now
+          WHERE previous_id = $token AND client_id = $clientId AND expires_at > $now
+          RETURNING user_id, access_token
+        """.query[(UserId, AccessToken)].run().headOption
+
   override def delete(token: MAC.Of[RefreshToken]): Task[Unit] =
     xa.connectMeasured("delete-refresh-token"):
       sql"""DELETE FROM refresh_tokens WHERE id = $token""".update.run()

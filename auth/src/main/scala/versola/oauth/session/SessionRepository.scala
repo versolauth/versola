@@ -56,6 +56,19 @@ trait SessionRepository:
 
   def findToken(token: MAC.Of[RefreshToken]): Task[Option[RefreshTokenRecord]]
 
+  /** Detects refresh-token replay: `token` has no row of its own but is named as some other
+   *  row's `previous_id`, i.e. it was already rotated away and is now being presented a
+   *  second time -- by whoever stole it, or by its rightful owner after the thief's use
+   *  already won the rotation race. Either way neither party can be trusted with the
+   *  chain's live end anymore, so it is expired in place (picked up by the cleanup manager
+   *  like any other expired row, rather than deleted inline) and its access token returned
+   *  so the caller can push a revocation to the client.
+   *
+   *  Scoped to `clientId` so one client cannot use another client's already-rotated token
+   *  as an oracle to expire a chain it does not own.
+   */
+  def markChainReplayed(token: MAC.Of[RefreshToken], clientId: ClientId): Task[Option[(UserId, AccessToken)]]
+
   def delete(token: MAC.Of[RefreshToken]): Task[Unit]
 
   def deleteByAccessToken(token: AccessToken): Task[Unit]
