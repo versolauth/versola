@@ -162,17 +162,24 @@ console:
 # UserController -- central's own client (see AuthClient.scala) calls
 # this over in-cluster Service DNS, not through the Ingress. Only add
 # this group to a host if that's genuinely not true in your deployment.
+# Not a bare door either way: every endpoint requires authorizeInternal.scala's
+# Bearer JWT, signed with central's own secret key, never a user session.
 users:
   - {path: /users, pathType: Exact, service: {{ $auth }}, port: {{ $authPort }}}
   - {path: /users/, pathType: Prefix, service: {{ $auth }}, port: {{ $authPort }}}
-# ServiceController -- same cluster-internal caller (central) and same
-# caveat as `users`.
+# ServiceController -- same cluster-internal caller, same authorizeInternal
+# guard as `users`, plus its own belt-and-braces: both endpoints 404
+# outright whenever env is "prod" (ServiceController.scala's env.isProd
+# check), so this group is a no-op in production even if listed.
 service:
   - {path: /service/, pathType: Prefix, service: {{ $auth }}, port: {{ $authPort }}}
 # AccountSettingsController -- lives on auth's *additional* port
 # (APORT), not `oidc`'s main one, so this only resolves to a working
 # backend once services.auth.additionalPort is set and the Deployment's
-# extra container port is enabled (see templates/deployment.yaml).
+# extra container port is enabled (see templates/deployment.yaml). Guarded
+# by authorizeResource: HTTP Basic auth against a resource secret central
+# issues for auth, the same edge/central-to-auth mechanism as `users` and
+# `service`, not an end-user credential.
 settings:
   - {path: /settings, pathType: Exact, service: {{ $auth }}, port: {{ $authAdditionalPort }}}
   - {path: /settings/, pathType: Prefix, service: {{ $auth }}, port: {{ $authAdditionalPort }}}

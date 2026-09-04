@@ -222,22 +222,39 @@ ingress:
   #   login    -> edge:    /login/ /complete /logout/
   #   api      -> edge:    /resources/ /permissions/
   #   console  -> console: console.basePath
-  #   users    -> auth:    /users, /users/* (UserController) -- central
-  #                        calls this over in-cluster Service DNS
-  #                        (config.auth.url), not through the Ingress.
-  #                        Add this group only if your central genuinely
-  #                        reaches auth through a public URL instead.
-  #   service  -> auth:    /service/* (ServiceController) -- same
-  #                        cluster-internal caller (central) as `users`,
-  #                        same caveat.
+  #
+  # `users`, `service` and `settings` are not for public/browser traffic --
+  # none of the example `routes` combinations below include them, and every
+  # endpoint in all three is guarded server-side even if you do add one, so
+  # an accidental host+group typo isn't an open door:
+  #   users    -> auth:    /users, /users/* (UserController). Called by
+  #                        central over in-cluster Service DNS
+  #                        (config.auth.url), not through the Ingress in
+  #                        the normal case -- add this group only if your
+  #                        central genuinely reaches auth through a public
+  #                        URL instead. Every endpoint requires
+  #                        `authorizeInternal`: a Bearer JWT signed with
+  #                        central's own secret key, not a user session.
+  #   service  -> auth:    /service/* (ServiceController). Same
+  #                        cluster-internal caller and `authorizeInternal`
+  #                        guard as `users`, plus its own belt-and-braces:
+  #                        both endpoints 404 outright whenever `env` is
+  #                        "prod" (see ServiceController.scala's
+  #                        `env.isProd` check) -- they're config-sync/test
+  #                        tooling for non-prod environments only, so this
+  #                        group is a no-op in production even if listed.
   #   settings -> auth:    /settings, /settings/* (AccountSettingsController),
   #                        on auth's *additional* port
   #                        (services.auth.additionalPort/APORT), not its
   #                        main one -- deploy.md lists this "internal"
   #                        because the VPS's nginx never proxies to it
-  #                        either. Add it only if something outside the
-  #                        cluster needs self-service account management
-  #                        directly against auth.
+  #                        either. Guarded by `authorizeResource`: HTTP
+  #                        Basic auth against a resource secret central
+  #                        issues for auth, the same mechanism edge/central
+  #                        use for each other, not an end-user credential.
+  #                        Add it only if something outside the cluster
+  #                        needs to call it directly instead of through
+  #                        whatever already holds that secret.
   hosts: []
   #  - host: id.example.com
   #    routes: [oidc, login]
