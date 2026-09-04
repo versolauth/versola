@@ -161,28 +161,6 @@ checksum/secret: {{ join "," $parts | sha256sum }}
 {{- end -}}
 
 {{/*
-Resolves the config Secret migrate-tool mounts for one target service.
-Expects a dict: {root: $, service: "auth"|"central"|"edge"}. Falls back
-to services.<service>.config.* when migrations.config.<service>.* is left
-empty (see values.yaml's `migrations` block for why a deployment would
-override it). Fails at template time rather than rendering a Job that
-mounts an empty secret name and only fails once the Pod actually starts.
-*/}}
-{{- define "versola.migrationConfigSecret" -}}
-{{- $svc := .service -}}
-{{- $root := .root -}}
-{{- $override := index $root.Values.migrations.config $svc -}}
-{{- $appConfig := (index $root.Values.services $svc).config -}}
-{{- $secretName := $override.existingSecret | default $appConfig.existingSecret -}}
-{{- $secretKey := $override.secretKey | default $appConfig.secretKey | default "env.conf" -}}
-{{- if not $secretName -}}
-{{- fail (printf "migrations.enabled requires a config Secret for %q -- set services.%s.config.existingSecret or migrations.config.%s.existingSecret" $svc $svc $svc) -}}
-{{- end -}}
-name: {{ $secretName }}
-key: {{ $secretKey }}
-{{- end -}}
-
-{{/*
 console nginx.conf: static files only.
 
 The docker-compose version of this image (docker/versola-tools/nginx.conf.template)

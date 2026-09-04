@@ -157,57 +157,6 @@ services:
     extraEnv: []
     extraEnvFrom: []
 
-# Migration Job (#209) -- runs migrate-tool (migrate-tool/src/main/scala/versola/migrate/MigrateTool.scala,
-# shipped in the versola-tools image, see docker/Dockerfile.tools) as a
-# Helm pre-install/pre-upgrade hook: one dedicated, one-shot Job per
-# release applies auth/central/edge's own Flyway migrations, instead of
-# every service replica racing to do it on boot. That's why
-# templates/deployment.yaml hardcodes RUN_MIGRATIONS=false regardless of
-# this setting (see VersolaApp.scala's own doc comment) -- migrating is
-# this Job's job alone, never a service replica's.
-#
-# migrate-tool reads the exact same env.conf each service starts from
-# (deliberately -- see MigrateTool.scala's own comment on why: no
-# separate config-construction path to drift from what the service
-# expects), so `config` below defaults to reusing each service's own
-# services.<name>.config.existingSecret/secretKey. Override a service's
-# entry here only if migrations need a *different* Postgres connection
-# than the app uses at runtime -- e.g. a direct/session-mode connection
-# where the app's own `postgres.url` goes through a transaction-pooling
-# proxy, which Flyway's advisory locking does not behave safely through.
-# See deploy.md's "If a connection pooler is ever put in front of
-# Postgres".
-migrations:
-  enabled: true
-  image:
-    repository: versola-tools
-    tag: "" # defaults to .Chart.AppVersion
-  config:
-    auth:
-      existingSecret: "" # "" -> services.auth.config.existingSecret
-      secretKey: "" # "" -> services.auth.config.secretKey
-    central:
-      existingSecret: ""
-      secretKey: ""
-    edge:
-      existingSecret: ""
-      secretKey: ""
-  resources:
-    requests:
-      cpu: 100m
-      memory: 256Mi
-    limits:
-      memory: 256Mi
-  # Retries within a single release's hook run before Helm treats the
-  # hook itself as failed and aborts (standard behavior for a failed Job
-  # hook -- see #209's "Job failure blocks the release").
-  backoffLimit: 2
-  activeDeadlineSeconds: 300
-  # Auto-cleanup so old migration Jobs don't accumulate release over
-  # release; helm.sh/hook-delete-policy: before-hook-creation (below) is
-  # the backstop if this doesn't fire in time for some reason.
-  ttlSecondsAfterFinished: 3600
-
 # console: nginx with central-ui's static build baked in (see
 # docker/Dockerfile.gateway) -- not a VersolaApp service, so it has no
 # PORT/DPORT and no /liveness or /readiness to probe (see
