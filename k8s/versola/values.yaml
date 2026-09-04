@@ -53,6 +53,13 @@ services:
     replicaCount: 1
     port: 8080 # PORT -- application traffic
     diagnosticsPort: 8081 # DPORT -- /metrics, /liveness, /readiness
+    # APORT -- VersolaApp.additionalRoutes, auth's only user. Backs
+    # AccountSettingsController (/settings/*), listed "internal" in
+    # deploy.md's port table because the VPS's nginx never proxies to it.
+    # A distinct value (not empty/0) so templates/{deployment,service}.yaml
+    # expose it as its own port -- see ingress.hosts' `settings` route
+    # group for whether/how it's actually reachable.
+    additionalPort: 8082
     resources:
       requests:
         cpu: 250m
@@ -206,16 +213,31 @@ ingress:
   # itself needs no annotations -- everything above is core-spec, so it
   # works on ingress-nginx, Traefik, HAProxy, ALB, GKE, ... unchanged.
   annotations: {}
-  # Each entry is one hostname plus the route groups it serves:
-  #   oidc    -> auth:    /authorize /token /par /introspect /revoke
-  #                       /userinfo /logout /.well-known/ /challenge
-  #   login   -> edge:    /login/ /complete /logout/
-  #   api     -> edge:    /resources/ /permissions/
-  #   console -> console: console.basePath
-  #   catchAll-> auth:    / (everything else, matching the VPS nginx's
-  #                       final `location /` -- also exposes auth's
-  #                       /users, /settings and /service endpoints, so
-  #                       opt in deliberately)
+  # Each entry is one hostname plus the route groups it serves. Every
+  # group below is a real, named endpoint set (see auth's *Controller.scala
+  # and edge's EdgeService.scala) -- there is no catch-all `/` group, so a
+  # host only ever exposes what you actually list:
+  #   oidc     -> auth:    /authorize /token /par /introspect /revoke
+  #                        /userinfo /logout /.well-known/ /challenge
+  #   login    -> edge:    /login/ /complete /logout/
+  #   api      -> edge:    /resources/ /permissions/
+  #   console  -> console: console.basePath
+  #   users    -> auth:    /users, /users/* (UserController) -- central
+  #                        calls this over in-cluster Service DNS
+  #                        (config.auth.url), not through the Ingress.
+  #                        Add this group only if your central genuinely
+  #                        reaches auth through a public URL instead.
+  #   service  -> auth:    /service/* (ServiceController) -- same
+  #                        cluster-internal caller (central) as `users`,
+  #                        same caveat.
+  #   settings -> auth:    /settings, /settings/* (AccountSettingsController),
+  #                        on auth's *additional* port
+  #                        (services.auth.additionalPort/APORT), not its
+  #                        main one -- deploy.md lists this "internal"
+  #                        because the VPS's nginx never proxies to it
+  #                        either. Add it only if something outside the
+  #                        cluster needs self-service account management
+  #                        directly against auth.
   hosts: []
   #  - host: id.example.com
   #    routes: [oidc, login]

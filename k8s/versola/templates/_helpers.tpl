@@ -105,13 +105,26 @@ group name -> list of {path, pathType, service, port}. Consumed with
 fromYaml so both templates route identically and there's one place to
 change when a service gains an endpoint.
 
-Paths are the app's real routes, not a copy of the VPS nginx locations:
-auth serves /authorize /token /par /introspect /revoke /userinfo
-/.well-known/* /challenge* and exactly /logout, while edge serves
-/login/{presetId}, /complete, /logout/{presetId}, /logout/frontchannel,
-/logout/backchannel, /permissions/me and /resources/{resourceId}/*.
+Paths are the app's real routes, taken straight from each
+*Controller.scala, not a copy of the VPS nginx locations (which only ever
+covered the `oidc`/`login`/`api` groups below -- `users`, `service` and
+`settings` were never in it): auth serves /authorize /token /par
+/introspect /revoke /userinfo /.well-known/* /challenge* and exactly
+/logout (all public OIDC surface), plus /users/* (UserController),
+/service/* (ServiceController) and /settings/* (AccountSettingsController,
+on auth's *additional* port -- see services.auth.additionalPort).
+edge serves /login/{presetId}, /complete, /logout/{presetId},
+/logout/frontchannel, /logout/backchannel, /permissions/me and
+/resources/{resourceId}/*.
 
-/logout is the one place where the two overlap: auth owns it exactly,
+There is deliberately no catch-all `/` group: /users and /service are
+called by central over in-cluster Service DNS (config.auth.url), not
+through this Ingress, and /settings isn't proxied by the VPS's nginx
+either (deploy.md marks it "internal"). Every real endpoint above is
+named, so nothing reaches the outside world unless a host's `routes`
+lists the group it's in.
+
+/logout is the one place oidc and login overlap: auth owns it exactly,
 edge owns everything beneath it. Ingress resolves that by preferring the
 longest match and, on a tie, Exact over Prefix -- so auth wins /logout
 and edge still gets /logout/frontchannel. That precedence is in the
@@ -125,6 +138,7 @@ hostnames.
 {{- $edge := printf "%s-edge" $fullname -}}
 {{- $console := printf "%s-console" $fullname -}}
 {{- $authPort := .Values.services.auth.port -}}
+{{- $authAdditionalPort := .Values.services.auth.additionalPort -}}
 {{- $edgePort := .Values.services.edge.port -}}
 oidc:
   - {path: /authorize, pathType: Exact, service: {{ $auth }}, port: {{ $authPort }}}
@@ -145,6 +159,21 @@ api:
   - {path: /permissions/, pathType: Prefix, service: {{ $edge }}, port: {{ $edgePort }}}
 console:
   - {path: {{ .Values.console.basePath }}, pathType: Prefix, service: {{ $console }}, port: {{ .Values.console.port }}}
-catchAll:
-  - {path: /, pathType: Prefix, service: {{ $auth }}, port: {{ $authPort }}}
+# UserController -- central's own client (see AuthClient.scala) calls
+# this over in-cluster Service DNS, not through the Ingress. Only add
+# this group to a host if that's genuinely not true in your deployment.
+users:
+  - {path: /users, pathType: Exact, service: {{ $auth }}, port: {{ $authPort }}}
+  - {path: /users/, pathType: Prefix, service: {{ $auth }}, port: {{ $authPort }}}
+# ServiceController -- same cluster-internal caller (central) and same
+# caveat as `users`.
+service:
+  - {path: /service/, pathType: Prefix, service: {{ $auth }}, port: {{ $authPort }}}
+# AccountSettingsController -- lives on auth's *additional* port
+# (APORT), not `oidc`'s main one, so this only resolves to a working
+# backend once services.auth.additionalPort is set and the Deployment's
+# extra container port is enabled (see templates/deployment.yaml).
+settings:
+  - {path: /settings, pathType: Exact, service: {{ $auth }}, port: {{ $authAdditionalPort }}}
+  - {path: /settings/, pathType: Prefix, service: {{ $auth }}, port: {{ $authAdditionalPort }}}
 {{- end -}}

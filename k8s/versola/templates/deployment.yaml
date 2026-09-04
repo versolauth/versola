@@ -34,11 +34,26 @@ spec:
               containerPort: {{ $svc.port }}
             - name: diagnostics
               containerPort: {{ $svc.diagnosticsPort }}
+            {{- if $svc.additionalPort }}
+            - name: additional
+              containerPort: {{ $svc.additionalPort }}
+            {{- end }}
           env:
             - name: PORT
               value: {{ $svc.port | quote }}
             - name: DPORT
               value: {{ $svc.diagnosticsPort | quote }}
+            {{- if $svc.additionalPort }}
+            # VersolaApp.additionalRoutes -- today only auth sets this, for
+            # AccountSettingsController's /settings/* (see deploy.md's port
+            # table: "Account Settings, internal"). Exposed here as a
+            # distinct container port because the app itself binds it
+            # separately from PORT; whether it's reachable from outside
+            # the cluster is a routing decision (ingress.hosts' `settings`
+            # route group), not something this Deployment forces.
+            - name: APORT
+              value: {{ $svc.additionalPort | quote }}
+            {{- end }}
             # See VersolaApp.scala's bindHost comment and #207: prod's VPS
             # sets this to 127.0.0.1 because of network_mode: host, which
             # would make every pod unreachable here. Deliberately not a

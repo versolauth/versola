@@ -18,5 +18,10 @@ spec:
     - name: diagnostics
       port: {{ $svc.diagnosticsPort }}
       targetPort: diagnostics
+    {{- if $svc.additionalPort }}
+    - name: additional
+      port: {{ $svc.additionalPort }}
+      targetPort: additional
+    {{- end }}
 {{- end }}
 {{- end }}
