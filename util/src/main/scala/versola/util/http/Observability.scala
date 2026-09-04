@@ -30,6 +30,14 @@ object Observability:
     * request/redirect that carried the failure). */
   val error = LogAnnotation[ErrorDetails]("error", (_, r) => r, _.toJson)
 
+  /** CEL expressions that could not be evaluated while handling the request, rendered under
+    * the `cel` key. A failed expression degrades to `false`/absent rather than to an error
+    * response, so the request's own outcome (e.g. `access_rule_denied`) is indistinguishable
+    * from a legitimate denial without this. Kept separate from [[error]] for that reason: the
+    * expression is the cause, not the outcome, and both have to survive to the log line.
+    */
+  val cel = LogAnnotation[Vector[CelFailure]]("cel", (_, r) => r, _.toJson)
+
   val cause = zio.Unsafe.unsafe { case given zio.Unsafe =>
     FiberRef.unsafe.make(Option.empty[Cause[Any]])
   }
@@ -85,6 +93,14 @@ object Observability:
     * be used for alerting/metrics without risking unbounded cardinality. */
   def setError(code: String, description: Option[String] = None): UIO[Unit] =
     logContext.update(_.annotate(error, ErrorDetails(code, description)))
+
+  /** Records an expression that failed to evaluate, under the `cel` key. Appends rather than
+    * replaces, since one request can evaluate several expressions (an allow rule, a step-up
+    * condition, one per inject rule) and each failure explains a different degraded result. */
+  def addCelFailure(expression: String, message: String): UIO[Unit] =
+    logContext.update(context =>
+      context.annotate(cel, context.get(cel).getOrElse(Vector.empty) :+ CelFailure(expression, message)),
+    )
 
   val clientLogging: FiberRef[HttpObservabilityConfig.Client] = zio.Unsafe.unsafe { case given zio.Unsafe =>
     FiberRef.unsafe.make(HttpObservabilityConfig.Client.default)
@@ -528,6 +544,13 @@ object Observability:
   case class ErrorDetails(
       code: String,
       description: Option[String] = None,
+  ) derives JsonEncoder
+
+  /** A CEL expression that failed while handling the request, and why. */
+  @jsonMemberNames(SnakeCase)
+  case class CelFailure(
+      expression: String,
+      message: String,
   ) derives JsonEncoder
 
   val logCause = zio.logging.LogAnnotation[Throwable](

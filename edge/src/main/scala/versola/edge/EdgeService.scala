@@ -337,16 +337,15 @@ object EdgeService:
         claims: PermissionsClaims,
         resourceIds: List[ResourceId],
     ): UIO[PermissionsResponse] =
-      val tenantId = claims.tenantId
       val roles = claims.roles.getOrElse(List.empty)
-      val rolesMap = tenantId.fold(Map.empty[TenantId, List[RoleId]])(tid => Map(tid -> roles))
 
       ZIO.foreach(resourceIds): resourceId =>
         for
           resource <- resourceService.findByResourceId(resourceId)
           endpointIds = resource.fold(Set.empty[ResourceEndpointId])(_.endpoints.map(_.id).toSet)
-          perms <- permissionService.getPermissionsForRoles(rolesMap, endpointIds)
-        yield Some(resourceId -> ResourcePermissions(perms))
+          // A token without a tenant claim cannot match a role grant, which is keyed by tenant.
+          perms <- ZIO.foreach(claims.tenantId)(permissionService.getPermissionsForRoles(_, roles, endpointIds))
+        yield Some(resourceId -> ResourcePermissions(perms.getOrElse(Set.empty)))
       .map(entries => PermissionsResponse(entries.flatten.toMap, env.isProd))
 
     override def frontChannelLogout(

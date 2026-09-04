@@ -1,6 +1,8 @@
 package versola.util.cel
 
+import versola.util.http.Observability
 import zio.*
+import zio.logging.{LogContext, logContext}
 import zio.test.*
 import zio.test.Assertion.*
 
@@ -11,6 +13,14 @@ object CelEvaluatorSpec extends ZIOSpecDefault:
   private def make: UIO[CelEvaluator] =
     Ref.make(Map.empty[String, Either[CelEvaluator.CompileError, CelEvaluator.Program]])
       .map(CelEvaluator.Impl(_))
+
+  private def celFailures: UIO[Vector[Observability.CelFailure]] =
+    logContext.get.map(_.get(Observability.cel).getOrElse(Vector.empty))
+
+  /** `logContext` is a `FiberRef` shared by tests running in the same fiber, so a test that
+    * asserts on annotations has to start from an empty one to see only its own. */
+  private def ownRequest[A](zio: UIO[A]): UIO[A] =
+    logContext.locally(LogContext.empty)(zio)
 
   private val tokenContext: Map[String, AnyRef] = Map(
     "token"   -> Map[String, AnyRef]("role" -> "admin", "scope" -> "read write").asJava,
@@ -89,6 +99,30 @@ object CelEvaluatorSpec extends ZIOSpecDefault:
           result    <- program.evaluateBoolean(tokenContext)
         yield assertTrue(!result)
       },
+      test("evaluateBoolean reports a type mismatch into the request's log context") {
+        ownRequest:
+          for
+            evaluator <- make
+            program   <- evaluator.compile("token.role")
+            _         <- program.evaluateBoolean(tokenContext)
+            failures  <- celFailures
+          yield assertTrue(
+            failures.map(_.expression) == Vector("token.role"),
+            failures.exists(_.message.contains("instead of Boolean")),
+          )
+      },
+      test("evaluateBoolean reports an evaluation error into the request's log context") {
+        ownRequest:
+          for
+            evaluator <- make
+            program   <- evaluator.compile("token.missing.deep.path == 'x'")
+            result    <- program.evaluateBoolean(tokenContext)
+            failures  <- celFailures
+          yield assertTrue(
+            !result,
+            failures.map(_.expression) == Vector("token.missing.deep.path == 'x'"),
+          )
+      },
       test("evaluateString returns Some for string-typed expression") {
         for
           evaluator <- make
@@ -102,6 +136,29 @@ object CelEvaluatorSpec extends ZIOSpecDefault:
           program   <- evaluator.compile("token.missing.deep.path")
           result    <- program.evaluateString(tokenContext)
         yield assertTrue(result.isEmpty)
+      },
+      test("evaluateString reports an evaluation error into the request's log context") {
+        ownRequest:
+          for
+            evaluator <- make
+            program   <- evaluator.compile("token.missing.deep.path")
+            _         <- program.evaluateString(tokenContext)
+            failures  <- celFailures
+          yield assertTrue(failures.map(_.expression) == Vector("token.missing.deep.path"))
+      },
+      test("failures of several expressions accumulate instead of replacing each other") {
+        ownRequest:
+          for
+            evaluator <- make
+            allow     <- evaluator.compile("token.missing.deep.path == 'x'")
+            inject    <- evaluator.compile("token.other.deep.path")
+            _         <- allow.evaluateBoolean(tokenContext)
+            _         <- inject.evaluateString(tokenContext)
+            failures  <- celFailures
+          yield assertTrue(
+            failures.map(_.expression) ==
+              Vector("token.missing.deep.path == 'x'", "token.other.deep.path"),
+          )
       },
     ),
     suite("cache")(

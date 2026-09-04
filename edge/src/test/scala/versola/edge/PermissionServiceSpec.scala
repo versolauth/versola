@@ -118,7 +118,8 @@ object PermissionServiceSpec extends ZIOSpecDefault:
       test("returns permissions whose endpoint IDs intersect with the provided set") {
         val service = buildService()
         for permissions <- service.getPermissionsForRoles(
-          Map(defaultTenant -> List(adminRole)),
+          defaultTenant,
+          List(adminRole),
           Set(listUsersEndpoint),
         )
         yield assertTrue(permissions == Set(readPerm))
@@ -126,7 +127,8 @@ object PermissionServiceSpec extends ZIOSpecDefault:
       test("returns multiple permissions when several intersect") {
         val service = buildService()
         for permissions <- service.getPermissionsForRoles(
-          Map(defaultTenant -> List(adminRole)),
+          defaultTenant,
+          List(adminRole),
           Set(listUsersEndpoint, createUserEndpoint),
         )
         yield assertTrue(permissions == Set(readPerm, writePerm))
@@ -135,25 +137,27 @@ object PermissionServiceSpec extends ZIOSpecDefault:
         val service = buildService()
         val unrelatedEndpoint = ResourceEndpointId(java.util.UUID.fromString("018f0f2a-1c7b-7000-8000-000000000099"))
         for permissions <- service.getPermissionsForRoles(
-          Map(defaultTenant -> List(adminRole)),
+          defaultTenant,
+          List(adminRole),
           Set(unrelatedEndpoint),
         )
         yield assertTrue(permissions.isEmpty)
       },
-      test("returns empty set when role map is empty") {
+      test("returns empty set when role list is empty") {
         val service = buildService()
-        for permissions <- service.getPermissionsForRoles(Map.empty, Set(listUsersEndpoint))
+        for permissions <- service.getPermissionsForRoles(defaultTenant, Nil, Set(listUsersEndpoint))
         yield assertTrue(permissions.isEmpty)
       },
       test("returns empty set when endpointIds is empty") {
         val service = buildService()
         for permissions <- service.getPermissionsForRoles(
-          Map(defaultTenant -> List(adminRole)),
+          defaultTenant,
+          List(adminRole),
           Set.empty,
         )
         yield assertTrue(permissions.isEmpty)
       },
-      test("merges permissions across multiple tenants filtered by endpoints") {
+      test("does not leak permissions granted to the same role in a different tenant") {
         val tenantA = TenantId("tenant-a")
         val multiTenantRoles: Map[(TenantId, RoleId), Set[PermissionId]] = Map(
           (defaultTenant, viewerRole) -> Set(readPerm),
@@ -161,10 +165,11 @@ object PermissionServiceSpec extends ZIOSpecDefault:
         )
         val service = buildService(roles = multiTenantRoles)
         for permissions <- service.getPermissionsForRoles(
-          Map(defaultTenant -> List(viewerRole), tenantA -> List(editorRole)),
+          defaultTenant,
+          List(viewerRole, editorRole),
           Set(listUsersEndpoint, createUserEndpoint),
         )
-        yield assertTrue(permissions == Set(readPerm, writePerm))
+        yield assertTrue(permissions == Set(readPerm))
       },
     ),
   )

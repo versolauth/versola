@@ -1038,7 +1038,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
       yield assertTrue(
         response.resources == Map("central" -> EdgeService.ResourcePermissions(Set(perm))),
         env.permissionService.getPermissionsForRoles.calls ==
-          List((Map(TenantId.default -> List(RoleId("oauth-admin"))), Set(centralEndpointId))),
+          List((TenantId.default, List(RoleId("oauth-admin")), Set(centralEndpointId))),
       )
     },
     test("central admin derives permissions from default-tenant roles") {
@@ -1062,7 +1062,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
       yield assertTrue(
         response.resources == Map("central" -> EdgeService.ResourcePermissions(Set(perm))),
         env.permissionService.getPermissionsForRoles.calls ==
-          List((Map(TenantId.default -> List(RoleId("operator"))), Set(centralEndpointId))),
+          List((TenantId.default, List(RoleId("operator")), Set(centralEndpointId))),
       )
     },
     test("central is NOT omitted when requested by a non-central client") {
@@ -1086,7 +1086,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
       yield assertTrue(
         response.resources == Map("central" -> EdgeService.ResourcePermissions(Set(perm))),
         env.permissionService.getPermissionsForRoles.calls ==
-          List((Map(TenantId.default -> List(RoleId("oauth-admin"))), Set(centralEndpointId))),
+          List((TenantId.default, List(RoleId("oauth-admin")), Set(centralEndpointId))),
       )
     },
     test("resource aliases map only to permissions whose endpoints belong to that resource") {
@@ -1210,11 +1210,11 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
         response <- service.getMyPermissions(claims, List(ResourceId("central")))
       yield assertTrue(
         env.permissionService.getPermissionsForRoles.calls ==
-          List((Map(TenantId.default -> List(RoleId("editor"))), Set(centralEndpointId))),
+          List((TenantId.default, List(RoleId("editor")), Set(centralEndpointId))),
         response.resources == Map("central" -> EdgeService.ResourcePermissions(Set(perm))),
       )
     },
-    test("tenantId=None yields empty roles map, resource aliases return empty permissions") {
+    test("tenantId=None is not resolved at all, resource aliases return empty permissions") {
       val env = new Env
       for
         _ <- env.withResources(ordersResource)
@@ -1233,9 +1233,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
         response <- service.getMyPermissions(claims, List(ResourceId("orders")))
       yield assertTrue(
         response.resources == Map("orders" -> EdgeService.ResourcePermissions(Set.empty)),
-        env.permissionService.getPermissionsForRoles.calls.map(_._1) == List(Map.empty),
-        env.permissionService.getPermissionsForRoles.calls.map(_._2) ==
-          List(Set(ordersEndpointId)),
+        env.permissionService.getPermissionsForRoles.calls.isEmpty,
       )
     },
   )

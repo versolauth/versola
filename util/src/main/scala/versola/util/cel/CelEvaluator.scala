@@ -3,6 +3,7 @@ package versola.util.cel
 import dev.cel.common.types.{CelType, SimpleType}
 import dev.cel.compiler.CelCompilerFactory
 import dev.cel.runtime.{CelRuntime, CelRuntimeFactory}
+import versola.util.http.Observability
 import zio.{IO, Ref, UIO, ULayer, ZIO, ZLayer}
 
 import scala.jdk.CollectionConverters.MapHasAsJava
@@ -67,7 +68,7 @@ object CelEvaluator:
           if actualType != t && actualType != SimpleType.DYN then
             throw new IllegalArgumentException(s"Expected return type $t but got $actualType")
           actualType == SimpleType.DYN
-        (ProgramImpl(runtime.createProgram(ast)): Program, dynAccepted)
+        (ProgramImpl(expression, runtime.createProgram(ast)): Program, dynAccepted)
       .either
       .flatMap:
         case Right((program, true)) =>
@@ -81,18 +82,23 @@ object CelEvaluator:
         case Left(ex) =>
           ZIO.succeed(Left(CompileError(expression, Option(ex.getMessage).getOrElse(ex.getClass.getSimpleName))))
 
-  private class ProgramImpl(program: CelRuntime.Program) extends Program:
+  /** A failed evaluation is reported into the log context of the request that triggered it
+    * rather than as a warning line of its own: the degraded result (`false`, or no injected
+    * value) is what the caller acts on, and it is only interpretable next to the outcome that
+    * request ended with. */
+  private class ProgramImpl(expression: String, program: CelRuntime.Program) extends Program:
     override def evaluateBoolean(context: Map[String, AnyRef]): UIO[Boolean] =
       ZIO.attempt(program.eval(context.asJava))
         .flatMap:
           case b: java.lang.Boolean => ZIO.succeed(b.booleanValue)
           case other                =>
-            ZIO.logWarning(
-              s"CEL expression returned ${other.getClass.getSimpleName} instead of Boolean; " +
-              s"treating as false. Check that the expression is a valid boolean CEL expression."
+            Observability.addCelFailure(
+              expression,
+              s"returned ${other.getClass.getSimpleName} instead of Boolean, treated as false",
             ).as(false)
         .catchAll: ex =>
-          ZIO.logWarning(s"CEL evaluation failed: ${ex.getMessage}").as(false)
+          Observability.addCelFailure(expression, s"evaluation failed: ${errorMessage(ex)}, treated as false")
+            .as(false)
 
     override def evaluateString(context: Map[String, AnyRef]): UIO[Option[String]] =
       ZIO.attempt(program.eval(context.asJava))
@@ -101,4 +107,8 @@ object CelEvaluator:
           case s: String    => Some(s)
           case other        => Some(other.toString)
         .catchAll: ex =>
-          ZIO.logWarning(s"CEL evaluation failed: ${ex.getMessage}").as(None)
+          Observability.addCelFailure(expression, s"evaluation failed: ${errorMessage(ex)}, no value injected")
+            .as(None)
+
+  private def errorMessage(ex: Throwable): String =
+    Option(ex.getMessage).getOrElse(ex.getClass.getSimpleName)
