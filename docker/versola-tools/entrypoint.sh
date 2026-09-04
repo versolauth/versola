@@ -95,7 +95,7 @@ cp .local/env/"$TARGET"/auth.conf    "$OUT_DIR"/auth.conf
 cp .local/env/"$TARGET"/central.conf "$OUT_DIR"/central.conf
 cp .local/env/"$TARGET"/edge.conf    "$OUT_DIR"/edge.conf
 
-# auth.conf/central.conf/edge.conf above reference these as ${?VAR} HOCON
+# auth.conf/central.conf/edge.conf above reference these as ${VAR} HOCON
 # placeholders instead of literal values (see gen-env.scala's secretField)
 # -- versola-cli reads the freshly generated candidates here, resolves
 # each against OpenBao (an existing value wins over regenerating one), and

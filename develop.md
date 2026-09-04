@@ -48,7 +48,7 @@ The script first asks for the environment **Name** (default `local`):
   (`https://id.versola.kz`) instead of a local port. Files are written to
   `.local/env/vps/`.
 
-  Every secret field is a `${?VAR}` placeholder here too, same as `docker-local` —
+  Every secret field is a `${VAR}` placeholder here too, same as `docker-local` —
   see "Secrets (OpenBao)" below. vps additionally placeholders Postgres's password
   and the admin bootstrap password, which `docker-local` doesn't: `docker-local`'s
   Postgres is a throwaway container this same run also creates, but vps's Postgres
@@ -132,8 +132,9 @@ This will test if the package is public or requires authentication.
 `docker-local` and `vps` never write a secret's real value into
 auth.conf/central.conf/edge.conf — every secret field (JWT signing key,
 session/cookie secrets, Postgres password, admin bootstrap password, etc.) is a
-`${?VAR}` HOCON placeholder instead (see gen-env.scala's `secretField`/
-`secretKeyField`). `versola-cli` resolves each one against an
+`${VAR}` HOCON placeholder instead (see gen-env.scala's `secretField`/
+`secretKeyField` for why it's a required, not optional, substitution).
+`versola-cli` resolves each one against an
 [OpenBao](https://openbao.org/) server before starting anything: an existing
 value there wins over regenerating one, so the same secrets survive being
 reconfigured. See `versola-cli`'s `internal/openbao` and

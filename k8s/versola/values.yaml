@@ -41,6 +41,42 @@ global:
 preStopSleepSeconds: 5
 terminationGracePeriodSeconds: 30
 
+# Secret values auth/central/edge's env.conf files reference as `${VAR}`
+# placeholders (see scripts/gen-env.scala's secretField/useOpenBao) -- e.g.
+# ACCESS_TOKENS_SECRET, EDGE_PRIVATE_KEY, POSTGRES_PASSWORD. Delivered as
+# real process env vars via secretKeyRef, not baked into the mounted
+# env.conf itself (that's `services.<name>.config.existingSecret`, a
+# separate Secret -- see the ground rules above).
+#
+# One Secret for every service, not one per service: the required values
+# were already generated as a single coherent set by gen-env.scala (its
+# own comment on CENTRAL_SECRET_KEY/CLIENT_SECRETS_SECRET: "a first-time
+# value gets stored [in OpenBao]... writing it into both [auth.conf and
+# central.conf] is harmless") -- splitting it into per-service Secrets
+# here would invent a boundary the source of truth doesn't have. Each
+# Deployment only pulls the specific keys it needs via secretKeyRef, so
+# nothing gains broader access than the per-service split would've given
+# it; see templates/_helpers.tpl's versola.secretKeyFor for the exact
+# per-service required-key lists and key-naming (kebab-case of the VAR
+# name, service-prefixed except for the two values genuinely shared
+# between auth and central).
+secrets:
+  existingSecret: ""
+  # How replicas notice a rotated value in existingSecret:
+  #   none     (default) -- nothing automatic; roll the Deployments
+  #            yourself (`kubectl rollout restart`) after rotating.
+  #   checksum -- chart computes a per-service checksum/secret annotation
+  #            (via `lookup`, same pattern as console's existingConfigMap
+  #            checksum) over only the keys that service actually
+  #            references, so rotating one service's value doesn't bounce
+  #            the others. Requires the Helm service account to `get`
+  #            Secrets at render time, and is a no-op under `helm
+  #            template`/client-side dry-run since `lookup` needs a live
+  #            cluster.
+  #   reloader -- adds reloader.stakater.com/auto: "true" instead, for
+  #            clusters already running Stakater Reloader.
+  restartStrategy: none
+
 # auth, central, edge: the three JVM services described by VersolaApp.scala.
 # Keyed by name so templates/deployment.yaml and templates/service.yaml can
 # render one Deployment + Service per entry instead of repeating themselves.
@@ -74,10 +110,10 @@ services:
       secretKey: env.conf
     # Extra plain env vars: [{name: FOO, value: bar}, ...].
     extraEnv: []
-    # Extra envFrom entries, e.g. for the ${?VAR} secret placeholders
-    # gen-env.scala writes into env.conf (JWT_PRIVATE_KEY,
-    # ACCESS_TOKENS_SECRET, POSTGRES_PASSWORD, ...): point this at
-    # whichever Secret your backend resolves them into.
+    # Extra envFrom entries, for anything beyond the required ${VAR}
+    # secret placeholders `secrets.existingSecret` above already covers
+    # (JWT_PRIVATE_KEY, ACCESS_TOKENS_SECRET, POSTGRES_PASSWORD, ...; see
+    # versola.requiredSecretVars in templates/_helpers.tpl).
     #   extraEnvFrom:
     #     - secretRef:
     #         name: auth-secrets
