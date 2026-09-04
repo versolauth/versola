@@ -82,20 +82,9 @@ object Observability:
 
   /** Records the outcome of a request that ended in an error, under the `error` key. `code`
     * should come from a stable, closed vocabulary (e.g. `stepErrorKey`, `ErrorCode`) so it can
-    * be used for alerting/metrics without risking unbounded cardinality. Replaces whatever
-    * error context the request already had; see [[updateError]] to change only part of it. */
+    * be used for alerting/metrics without risking unbounded cardinality. */
   def setError(code: String, description: Option[String] = None): UIO[Unit] =
     logContext.update(_.annotate(error, ErrorDetails(code, description)))
-
-  /** Applies `f` to the request's current error context (an empty one, `code = ""`, if none is
-    * set yet), so one part of it can be filled in without knowing or disturbing the rest. Used
-    * where the reason for an outcome is known before the outcome itself is: e.g. a CEL
-    * evaluation failure discovers *why* a rule will read as denied before the caller that ran
-    * it, a few lines later, decides *that* it's `access_rule_denied` -- each fills in its own
-    * half of the same [[ErrorDetails]] with `updateError`, instead of the second call
-    * overwriting the first's via [[setError]]. */
-  def updateError(f: ErrorDetails => ErrorDetails): UIO[Unit] =
-    logContext.update(context => context.annotate(error, f(context.get(error).getOrElse(ErrorDetails(code = "")))))
 
   val clientLogging: FiberRef[HttpObservabilityConfig.Client] = zio.Unsafe.unsafe { case given zio.Unsafe =>
     FiberRef.unsafe.make(HttpObservabilityConfig.Client.default)

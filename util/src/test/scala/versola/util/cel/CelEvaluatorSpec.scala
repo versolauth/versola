@@ -1,8 +1,7 @@
 package versola.util.cel
 
-import versola.util.http.Observability
+import versola.util.cel.CelEvaluator.EvaluationError
 import zio.*
-import zio.logging.{LogContext, logContext}
 import zio.test.*
 import zio.test.Assertion.*
 
@@ -13,14 +12,6 @@ object CelEvaluatorSpec extends ZIOSpecDefault:
   private def make: UIO[CelEvaluator] =
     Ref.make(Map.empty[String, Either[CelEvaluator.CompileError, CelEvaluator.Program]])
       .map(CelEvaluator.Impl(_))
-
-  private def celError: UIO[Option[Observability.ErrorDetails]] =
-    logContext.get.map(_.get(Observability.error))
-
-  /** `logContext` is a `FiberRef` shared by tests running in the same fiber, so a test that
-    * asserts on annotations has to start from an empty one to see only its own. */
-  private def ownRequest[A](zio: UIO[A]): UIO[A] =
-    logContext.locally(LogContext.empty)(zio)
 
   private val tokenContext: Map[String, AnyRef] = Map(
     "token"   -> Map[String, AnyRef]("role" -> "admin", "scope" -> "read write").asJava,
@@ -75,13 +66,16 @@ object CelEvaluatorSpec extends ZIOSpecDefault:
           result    <- program.evaluateBoolean(tokenContext)
         yield assertTrue(result)
       },
-      test("returns FailSafe Program (false) for invalid expression") {
+      test("returns a Program that fails as Broken for an expression that doesn't compile") {
         for
           evaluator <- make
           program   <- evaluator.compile("(unterminated")
-          boolean   <- program.evaluateBoolean(tokenContext)
-          string    <- program.evaluateString(tokenContext)
-        yield assertTrue(!boolean, string.isEmpty)
+          boolean   <- program.evaluateBoolean(tokenContext).either
+          string    <- program.evaluateString(tokenContext).either
+        yield assertTrue(
+          boolean == Left(EvaluationError.Broken),
+          string == Left(EvaluationError.Broken),
+        )
       },
     ),
     suite("Program evaluation")(
@@ -92,35 +86,33 @@ object CelEvaluatorSpec extends ZIOSpecDefault:
           result    <- program.evaluateBoolean(tokenContext)
         yield assertTrue(result)
       },
-      test("evaluateBoolean returns false on type mismatch instead of failing") {
+      test("evaluateBoolean fails as Broken when the expression returns a non-boolean") {
         for
           evaluator <- make
           program   <- evaluator.compile("token.role")
+          result    <- program.evaluateBoolean(tokenContext).either
+        yield assertTrue(result == Left(EvaluationError.Broken))
+      },
+      test("evaluateBoolean fails as DataMissing when the expression reads a claim the token lacks") {
+        for
+          evaluator <- make
+          program   <- evaluator.compile("token.missing.deep.path == 'x'")
+          result    <- program.evaluateBoolean(tokenContext).either
+        yield assertTrue(result == Left(EvaluationError.DataMissing))
+      },
+      test("evaluateBoolean fails as Broken for an evaluation error that isn't absent data") {
+        for
+          evaluator <- make
+          program   <- evaluator.compile("1 / 0 == 0")
+          result    <- program.evaluateBoolean(tokenContext).either
+        yield assertTrue(result == Left(EvaluationError.Broken))
+      },
+      test("an absent claim can be guarded with has(), leaving the rule evaluable") {
+        for
+          evaluator <- make
+          program   <- evaluator.compile("has(user.plan) && user.plan == 'premium'")
           result    <- program.evaluateBoolean(tokenContext)
         yield assertTrue(!result)
-      },
-      test("evaluateBoolean folds a type mismatch into the request's error context, without the expression") {
-        ownRequest:
-          for
-            evaluator <- make
-            program   <- evaluator.compile("token.role")
-            _         <- program.evaluateBoolean(tokenContext)
-            error     <- celError
-          yield assertTrue(
-            error.flatMap(_.description).contains("cel rule evaluated to non-boolean result, treated as false"),
-          )
-      },
-      test("evaluateBoolean folds an evaluation error into the request's error context, without the expression") {
-        ownRequest:
-          for
-            evaluator <- make
-            program   <- evaluator.compile("token.missing.deep.path == 'x'")
-            result    <- program.evaluateBoolean(tokenContext)
-            error     <- celError
-          yield assertTrue(
-            !result,
-            error.flatMap(_.description).contains("cel rule evaluation failed, treated as false"),
-          )
       },
       test("evaluateString returns Some for string-typed expression") {
         for
@@ -129,32 +121,19 @@ object CelEvaluatorSpec extends ZIOSpecDefault:
           result    <- program.evaluateString(tokenContext)
         yield assertTrue(result.contains("admin"))
       },
-      test("evaluateString returns None when evaluation throws") {
+      test("evaluateString fails as DataMissing when the expression reads a claim the token lacks") {
         for
           evaluator <- make
           program   <- evaluator.compile("token.missing.deep.path")
+          result    <- program.evaluateString(tokenContext).either
+        yield assertTrue(result == Left(EvaluationError.DataMissing))
+      },
+      test("an absent claim can be guarded with has(), leaving an inject rule evaluable") {
+        for
+          evaluator <- make
+          program   <- evaluator.compile("has(user.plan) ? user.plan : ''")
           result    <- program.evaluateString(tokenContext)
-        yield assertTrue(result.isEmpty)
-      },
-      test("evaluateString folds an evaluation error into the request's error context, without the expression") {
-        ownRequest:
-          for
-            evaluator <- make
-            program   <- evaluator.compile("token.missing.deep.path")
-            _         <- program.evaluateString(tokenContext)
-            error     <- celError
-          yield assertTrue(error.flatMap(_.description).contains("cel rule evaluation failed, no value injected"))
-      },
-      test("a later failure replaces the description left by an earlier one") {
-        ownRequest:
-          for
-            evaluator <- make
-            allow     <- evaluator.compile("token.missing.deep.path == 'x'")
-            inject    <- evaluator.compile("token.other.deep.path")
-            _         <- allow.evaluateBoolean(tokenContext)
-            _         <- inject.evaluateString(tokenContext)
-            error     <- celError
-          yield assertTrue(error.flatMap(_.description).contains("cel rule evaluation failed, no value injected"))
+        yield assertTrue(result.contains(""))
       },
     ),
     suite("cache")(
