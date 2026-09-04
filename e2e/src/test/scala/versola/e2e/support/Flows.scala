@@ -276,6 +276,12 @@ object Flows:
         authFlow = Some(loginPasswordAuthFlow),
         backChannelLogoutUri = Some(oauthClient.edgeBackChannelLogoutUri),
       ).success
+      // The edge only accepts security events for a client it already knows about, and
+      // otherwise waits for its next scheduled refresh from central to learn of one just
+      // registered. Forcing that refresh now, rather than waiting, is what lets the
+      // revocation tests poll for the edge's *reaction* to an event instead of re-sending
+      // the event itself until the edge is ready to accept it.
+      _      <- oauthClient.syncEdgeConfiguration()
       userId <- oauthClient.registerUser(login = Some(login))
       _      <- oauthClient.flushUserOutbox()
       _      <- oauthClient.setUserPassword(userId, password)

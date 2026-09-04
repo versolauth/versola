@@ -176,6 +176,7 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
   val userAgentCookieSecret     = rand(rng, 32) // auth only: signs the SSO_USER_AGENT_ID cookie
   val edgeTokenEncKey           = rand(rng, 32)
   val edgeSessionsSecret        = rand(rng, 32)
+  val edgeInternalSecret        = rand(rng, 32) // authorizes edge's non-prod /service/configuration/sync
   val parRequestsSecret         = rand(rng, 32) // auth only: keys the stored request_uri references
   val accountResourceSecretGenerated = rand(rng, 32) // central: seeds the "auth" resource record; auth fetches it decrypted via registry sync
 
@@ -281,6 +282,11 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
   // listener (Account Settings) directly, with the Basic credentials edge would use.
   val accountResourceSecret =
     if isLocal then "ZGV2LWF1dGgtYWNjb3VudC1zZWNyZXQtMzJieXRlcyE" else accountResourceSecretGenerated
+
+  // Same reasoning again: e2e calls edge's own /service/configuration/sync directly, so
+  // it needs a value it can hardcode rather than one generated fresh on every run.
+  val edgeInternalSecretValue =
+    if isLocal then "ZGV2LWVkZ2UtaW50ZXJuYWwtc2VjcmV0LTMyYnl0ZSE" else edgeInternalSecret
 
   // ── Service URLs ──────────────────────────────────────────────────────────────
   // authUrl      – public-facing URL (JWT issuer, server metadata, browser redirects via edge).
@@ -722,6 +728,10 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
        |    secret = ${secretField(useOpenBao, edgeSessionsSecret, "EDGE_SESSIONS_SECRET")}
        |    ttl = 30 days
        |  }
+       |
+       |  # Authorizes POST /service/configuration/sync (non-prod only) -- see
+       |  # EdgeConfig.Security.internalSecret.
+       |  internal-secret = ${secretField(useOpenBao, edgeInternalSecretValue, "EDGE_INTERNAL_SECRET")}
        |}
        |
        |postgres {
@@ -847,6 +857,7 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
         "EDGE_KEY_ID"          -> edgeKey.kid,
         "EDGE_TOKEN_ENC_KEY"   -> edgeTokenEncKey,
         "EDGE_SESSIONS_SECRET" -> edgeSessionsSecret,
+        "EDGE_INTERNAL_SECRET" -> edgeInternalSecret,
       ) ++ edgeExtras)
 
     println(

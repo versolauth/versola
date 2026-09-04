@@ -25,6 +25,11 @@ object EdgeConfigSpec extends ZIOSpecDefault:
 
   private given DeriveConfig[EdgeId] = DeriveConfig[String].map(EdgeId(_))
 
+  private given DeriveConfig[Secret] = DeriveConfig[String]
+    .mapOrFail: str =>
+      Secret.fromBase64Url(str)
+        .left.map(message => zio.Config.Error.InvalidData(message = message))
+
   private given DeriveConfig[Secret.Bytes32] = DeriveConfig[String]
     .mapOrFail: str =>
       Secret.Bytes32.fromBase64Url(str)

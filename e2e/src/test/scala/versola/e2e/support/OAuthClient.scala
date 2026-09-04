@@ -399,6 +399,7 @@ object AccountResult:
 final class OAuthClient(client: Client, config: E2EConfig):
 
   private val centralAuthorization = Authorization.Basic("central", config.resourceSecret)
+  private val edgeAuthorization = Authorization.Basic("edge", config.edgeInternalSecret)
 
   /** Where the edge receives security event tokens — what a client registers as its
     * back-channel logout URI so that logouts and revocations reach it.
@@ -962,6 +963,23 @@ final class OAuthClient(client: Client, config: E2EConfig):
         else
           resp.body.asString.flatMap: body =>
             ZIO.fail(RuntimeException(s"syncConfiguration failed: status=${resp.status} body=$body"))
+
+  /** POST /service/configuration/sync — makes edge reload its client/preset caches from
+    * central immediately (non-prod only), instead of waiting for
+    * `configurationCacheRefreshInterval`. Call this right after registering or updating a
+    * client that a test needs edge to recognize straight away, e.g. one it back-channel
+    * logs out through.
+    */
+  def syncEdgeConfiguration(): Task[Unit] =
+    val req = Request.post(s"${config.edgeUrl}/service/configuration/sync", Body.empty)
+      .addHeader(edgeAuthorization)
+    Client.batched(req)
+      .provide(ZLayer.succeed(client))
+      .flatMap: resp =>
+        if resp.status.isSuccess then ZIO.unit
+        else
+          resp.body.asString.flatMap: body =>
+            ZIO.fail(RuntimeException(s"syncEdgeConfiguration failed: status=${resp.status} body=$body"))
 
   /** PUT /configuration/challenges/challenge-settings — sets the ACR vocabulary for a tenant (non-prod only).
     *

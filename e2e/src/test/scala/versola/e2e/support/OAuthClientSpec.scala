@@ -19,6 +19,7 @@ object OAuthClientSpec extends ZIOSpecDefault:
     clientId = "client",
     resourceSecret = resourceSecret,
     accountResourceSecret = "account-resource-secret-for-test",
+    edgeInternalSecret = "edge-internal-secret-for-test",
     redirectUri = "http://edge.test/complete",
   )
   private val userId = UUID.fromString("018f0f2a-1c7b-7000-9000-000000000901")
