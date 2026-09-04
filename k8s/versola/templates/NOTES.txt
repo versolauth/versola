@@ -4,10 +4,33 @@ Versola has been deployed. Services created:
   - {{ include "versola.fullname" $ }}-{{ $name }} (port {{ $svc.port }}, diagnostics {{ $svc.diagnosticsPort }})
 {{- end }}
 {{- end }}
-{{- if .Values.gateway.enabled }}
-  - {{ include "versola.fullname" . }}-gateway (port {{ .Values.gateway.port }})
+{{- if .Values.console.enabled }}
+  - {{ include "versola.fullname" . }}-console (port {{ .Values.console.port }}, static assets only)
 {{- end }}
 
-No Ingress is created by this chart (see https://github.com/versolauth/versola/issues/210).
+{{ if not .Values.ingress.enabled -}}
+No Ingress is created (ingress.enabled=false), so nothing is reachable from
+outside the cluster yet. Set ingress.hosts to the hostnames you're serving --
+see values.yaml for the route groups each host can carry.
+{{- else if .Values.ingress.gatewayAPI.enabled -}}
+HTTPRoutes created (Gateway API):
+{{- range $host := .Values.ingress.hosts }}
+  - {{ $host.host }} -> {{ join ", " $host.routes }}
+{{- end }}
+{{- else -}}
+Ingress created:
+{{- range $host := .Values.ingress.hosts }}
+  - {{ $host.host }} -> {{ join ", " $host.routes }}
+{{- end }}
+{{- end }}
+{{- if and .Values.ingress.enabled .Values.console.enabled }}
+
+The console runs in "{{ .Values.console.mode }}" mode. Its hostname must also
+carry the `api` and `login` route groups: central-ui calls edge on its own
+origin, and EDGE_SESSION belongs to that origin. That hostname also has to
+match the redirect_uri of the preset the console logs in through -- the chart
+routes /complete, but the preset config still has to name the same host.
+{{- end }}
+
 Each service's config must be supplied via its own `services.<name>.config.existingSecret`
 (and, where used, `extraEnvFrom`) -- this chart does not generate or bundle secrets.

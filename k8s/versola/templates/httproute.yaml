@@ -1,0 +1,49 @@
+{{- if and .Values.ingress.enabled .Values.ingress.gatewayAPI.enabled }}
+{{- if not .Values.ingress.gatewayAPI.parentRefs }}
+{{- fail "ingress.gatewayAPI.enabled requires ingress.gatewayAPI.parentRefs -- an HTTPRoute has no effect until it attaches to a Gateway" }}
+{{- end }}
+{{/*
+Gateway API spells Ingress's Prefix as PathPrefix; the match semantics
+(whole path segments) are the same, as is the precedence that lets auth
+keep Exact /logout while edge takes everything under it -- see
+"versola.routeGroups" for both.
+*/}}
+{{- $groups := include "versola.routeGroups" . | fromYaml }}
+{{- $root := . }}
+{{- range $host := .Values.ingress.hosts }}
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  # One HTTPRoute per hostname rather than one with every hostname on it,
+  # so a host can be added or removed without touching the others.
+  name: {{ include "versola.fullname" $root }}-{{ $host.host | replace "." "-" | trunc 63 | trimSuffix "-" }}
+  labels:
+    {{- include "versola.labels" $root | nindent 4 }}
+  {{- with $root.Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  parentRefs:
+    {{- toYaml $root.Values.ingress.gatewayAPI.parentRefs | nindent 4 }}
+  hostnames:
+    - {{ $host.host | quote }}
+  rules:
+    {{- range $group := $host.routes }}
+    {{- $paths := index $groups $group }}
+    {{- if not $paths }}
+    {{- fail (printf "ingress.hosts[%s]: unknown route group %q (known: %s)" $host.host $group (keys $groups | sortAlpha | join ", ")) }}
+    {{- end }}
+    {{- range $paths }}
+    - matches:
+        - path:
+            type: {{ if eq .pathType "Exact" }}Exact{{ else }}PathPrefix{{ end }}
+            value: {{ .path | quote }}
+      backendRefs:
+        - name: {{ .service }}
+          port: {{ .port }}
+    {{- end }}
+    {{- end }}
+{{- end }}
+{{- end }}
