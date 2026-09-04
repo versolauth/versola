@@ -93,19 +93,20 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
       sysSettings: SystemSettingsRecord = systemSettings,
       metadata: Json.Obj = Json.Obj(),
       resources: Vector[ResourceRecord] = Vector.empty,
+      authResourceSecrets: List[Secret] = Nil,
       authorizationDetailTypes: Vector[AuthorizationDetailTypeRecord] = Vector.empty,
   ) =
     for
-      clientRef         <- Ref.make(clients)
-      scopeRef          <- Ref.make(scopes)
-      formRef           <- Ref.make(forms)
-      themeRef          <- Ref.make(themes)
-      localeRef         <- Ref.make(locales)
-      otpRef            <- Ref.make(otpTemplates)
-      challengeRef      <- Ref.make(challengeSettingsVec)
-      sysRef            <- Ref.make(sysSettings)
-      metadataRef       <- Ref.make(metadata)
-      resourceRef       <- Ref.make(ResourceSyncClient.SyncResult(resources, Nil))
+      clientRef <- Ref.make(clients)
+      scopeRef <- Ref.make(scopes)
+      formRef <- Ref.make(forms)
+      themeRef <- Ref.make(themes)
+      localeRef <- Ref.make(locales)
+      otpRef <- Ref.make(otpTemplates)
+      challengeRef <- Ref.make(challengeSettingsVec)
+      sysRef <- Ref.make(sysSettings)
+      metadataRef <- Ref.make(metadata)
+      resourceRef <- Ref.make(ResourceSyncClient.SyncResult(resources, authResourceSecrets))
       authDetailTypeRef <- Ref.make(authorizationDetailTypes)
     yield OAuthConfigurationService.Impl(
       clientCache = ReloadingCache(clientRef),
@@ -264,4 +265,93 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
         result <- env.getMetadata
       yield assertTrue(result == stored)
     },
+    test("findByTenant returns only the clients of that tenant") {
+      val otherTenant = privateClient.copy(id = ClientId("other"), tenantId = TenantId("other"))
+      for
+        env <- makeEnv(clients = Map(clientId1 -> privateClient, ClientId("other") -> otherTenant))
+        mine <- env.findByTenant(tenantId)
+        theirs <- env.findByTenant(TenantId("other"))
+        unknown <- env.findByTenant(TenantId("nobody"))
+      yield assertTrue(
+        mine == Vector(privateClient),
+        theirs == Vector(otherTenant),
+        unknown.isEmpty,
+      )
+    },
+    test("getIdentityProviderLogo reads the system settings value") {
+      for
+        withLogo <- makeEnv(sysSettings = systemSettings.copy(identityProviderLogo = Some("logo.svg")))
+        withoutLogo <- makeEnv()
+        set <- withLogo.getIdentityProviderLogo
+        unset <- withoutLogo.getIdentityProviderLogo
+      yield assertTrue(set == Some("logo.svg"), unset == systemSettings.identityProviderLogo)
+    },
+    test("getPostLogoutRedirectUris decodes the tenant's configured URLs") {
+      val settings = challengeSettings.copy(
+        postLogoutRedirectUris = List("https://app.example/bye", "not a url"),
+      )
+      for
+        env <- makeEnv(challengeSettingsVec = Vector(settings))
+        uris <- env.getPostLogoutRedirectUris(tenantId)
+        unknown <- env.getPostLogoutRedirectUris(TenantId("nobody"))
+      yield assertTrue(
+        uris.map(_.encode) == List("https://app.example/bye"),
+        unknown.isEmpty,
+      )
+    },
+    suite("resources")(
+      test("findResource matches on tenant and resource URI") {
+        for
+          env <- makeEnv(resources = Vector(resourceRecord))
+          found <- env.findResource(tenantId, ResourceUri("https://api.example"))
+          otherTenant <- env.findResource(TenantId("other"), ResourceUri("https://api.example"))
+          unknown <- env.findResource(tenantId, ResourceUri("https://other.example"))
+        yield assertTrue(
+          found == Some(resourceRecord),
+          otherTenant.isEmpty,
+          unknown.isEmpty,
+        )
+      },
+      test("findResourceById matches on tenant and resource id") {
+        for
+          env <- makeEnv(resources = Vector(resourceRecord))
+          found <- env.findResourceById(tenantId, ResourceId("api"))
+          otherTenant <- env.findResourceById(TenantId("other"), ResourceId("api"))
+          unknown <- env.findResourceById(tenantId, ResourceId("missing"))
+        yield assertTrue(
+          found == Some(resourceRecord),
+          otherTenant.isEmpty,
+          unknown.isEmpty,
+        )
+      },
+      test("getResourcesForClient returns only resources the client is an audience of") {
+        val unrelated = resourceRecord.copy(
+          resourceId = ResourceId("other"),
+          resource = ResourceUri("https://other.example"),
+          audience = List(ClientId("someone-else")),
+        )
+        for
+          env <- makeEnv(resources = Vector(resourceRecord, unrelated))
+          mine <- env.getResourcesForClient(tenantId, clientId1)
+          none <- env.getResourcesForClient(tenantId, ClientId("nobody"))
+        yield assertTrue(mine == List(resourceRecord), none.isEmpty)
+      },
+      test("accountResourceSecrets exposes the secrets carried on the sync result") {
+        val secrets = List(Secret(Array.fill(16)(7.toByte)))
+        for
+          env <- makeEnv(authResourceSecrets = secrets)
+          empty <- makeEnv()
+          loaded <- env.accountResourceSecrets
+          none <- empty.accountResourceSecrets
+        yield assertTrue(loaded.map(_.toSeq) == secrets.map(_.toSeq), none.isEmpty)
+      },
+    ),
+  )
+
+  private val resourceRecord = ResourceRecord(
+    resourceId = ResourceId("api"),
+    tenantId = tenantId,
+    resource = ResourceUri("https://api.example"),
+    audience = List(clientId1),
+    internal = false,
   )
