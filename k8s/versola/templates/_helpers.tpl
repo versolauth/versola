@@ -62,6 +62,127 @@ Image reference for a service. Expects a dict: {global: .Values.global, svc: <se
 {{- end -}}
 
 {{/*
+Required ${?VAR} secret keys per service (see scripts/gen-env.scala's
+secretField/useOpenBao) -- fixed by the app's own config contract, not a
+values.yaml knob. CENTRAL_SECRET_KEY and CLIENT_SECRETS_SECRET are the
+only two genuinely shared between auth and central (same value, see
+gen-env.scala's own comment on why); everything else -- including
+POSTGRES_PASSWORD, which every service needs but with a DIFFERENT value
+each -- is per-service only. See versola.secretKeyFor below for how that
+distinction avoids the three POSTGRES_PASSWORDs colliding under one key
+in the single shared Secret (values.yaml's `secrets.existingSecret`).
+*/}}
+{{- define "versola.requiredSecretVars" -}}
+{{- $vars := dict
+  "auth" (list "ACCESS_TOKENS_SECRET" "CLIENT_SECRETS_SECRET" "REFRESH_TOKENS_SECRET" "AUTH_CODES_SECRET" "SESSIONS_SECRET" "PASSWORDS_SECRET" "CONVERSATION_COOKIE_SECRET" "SESSION_COOKIE_SECRET" "USER_AGENT_COOKIE_SECRET" "PAR_REQUESTS_SECRET" "JWT_PRIVATE_KEY" "CENTRAL_SECRET_KEY" "POSTGRES_PASSWORD" "ADMIN_BOOTSTRAP_PASSWORD")
+  "central" (list "CENTRAL_SECRET_KEY" "CLIENT_SECRETS_SECRET" "ACCOUNT_RESOURCE_SECRET" "JWKS_JSON" "EDGE_PUBLIC_JWK" "POSTGRES_PASSWORD")
+  "edge" (list "EDGE_PRIVATE_KEY" "EDGE_KEY_ID" "EDGE_TOKEN_ENC_KEY" "EDGE_SESSIONS_SECRET" "POSTGRES_PASSWORD")
+ -}}
+{{- toYaml (index $vars .) -}}
+{{- end -}}
+
+{{/*
+Secret data key for one (service, VAR) pair in the shared
+secrets.existingSecret Secret. Expects a dict: {service: "auth", var:
+"ACCESS_TOKENS_SECRET"}. kebab-cases the VAR name, then:
+  - the 2 vars genuinely shared across services (see
+    versola.requiredSecretVars above) stay bare, e.g. "central-secret-key",
+    since both auth and central must read the identical key.
+  - everything else is namespaced by service, e.g. "auth-postgres-password"
+    vs "central-postgres-password" vs "edge-postgres-password", since
+    these coincide on VAR name but differ in value per service. Skips the
+    prefix if the kebab-cased name already starts with it (EDGE_PRIVATE_KEY
+    -> "edge-private-key", not "edge-edge-private-key").
+*/}}
+{{- define "versola.secretKeyFor" -}}
+{{- $shared := list "CENTRAL_SECRET_KEY" "CLIENT_SECRETS_SECRET" -}}
+{{- $kebab := kebabcase .var -}}
+{{- if has .var $shared -}}
+{{- $kebab -}}
+{{- else if hasPrefix (printf "%s-" .service) $kebab -}}
+{{- $kebab -}}
+{{- else -}}
+{{- printf "%s-%s" .service $kebab -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+Renders the `env:` entries pulling one service's required secret values
+from values.yaml's `secrets.existingSecret` via secretKeyRef. Expects a
+dict: {root: $, service: "auth"|"central"|"edge"}. Fails at template time
+(not a confusing "secret \"\" not found" at Pod-start) if
+secrets.existingSecret is unset.
+*/}}
+{{- define "versola.secretEnv" -}}
+{{- $svc := .service -}}
+{{- $root := .root -}}
+{{- $secretName := $root.Values.secrets.existingSecret -}}
+{{- if not $secretName -}}
+{{- fail (printf "services.%s requires secrets.existingSecret to be set -- see values.yaml's `secrets` block" $svc) -}}
+{{- end -}}
+{{- range $var := (include "versola.requiredSecretVars" $svc | fromYamlArray) -}}
+- name: {{ $var }}
+  valueFrom:
+    secretKeyRef:
+      name: {{ $secretName }}
+      key: {{ include "versola.secretKeyFor" (dict "service" $svc "var" $var) }}
+{{ end -}}
+{{- end -}}
+
+{{/*
+Pod-template annotations reflecting values.yaml's secrets.restartStrategy
+for one service's Deployment. Expects a dict: {root: $, service:
+"auth"|"central"|"edge"}. Empty string for "none" (the default -- see
+values.yaml's `secrets` block for what each mode does).
+*/}}
+{{- define "versola.secretRestartAnnotations" -}}
+{{- $svc := .service -}}
+{{- $root := .root -}}
+{{- $strategy := $root.Values.secrets.restartStrategy -}}
+{{- $secretName := $root.Values.secrets.existingSecret -}}
+{{- if eq $strategy "reloader" -}}
+reloader.stakater.com/auto: "true"
+{{- else if eq $strategy "checksum" -}}
+{{- if not $secretName -}}
+{{- fail (printf "services.%s requires secrets.existingSecret to be set -- see values.yaml's `secrets` block" $svc) -}}
+{{- end -}}
+{{- $obj := lookup "v1" "Secret" $root.Release.Namespace $secretName -}}
+{{- $data := dict -}}
+{{- if $obj -}}
+{{- $data = $obj.data -}}
+{{- end -}}
+{{- $parts := list -}}
+{{- range $var := (include "versola.requiredSecretVars" $svc | fromYamlArray) -}}
+{{- $key := include "versola.secretKeyFor" (dict "service" $svc "var" $var) -}}
+{{- $parts = append $parts (printf "%s=%s" $key (index $data $key)) -}}
+{{- end -}}
+checksum/secret: {{ join "," $parts | sha256sum }}
+{{- end -}}
+{{- end -}}
+
+{{/*
+Resolves the config Secret migrate-tool mounts for one target service.
+Expects a dict: {root: $, service: "auth"|"central"|"edge"}. Falls back
+to services.<service>.config.* when migrations.config.<service>.* is left
+empty (see values.yaml's `migrations` block for why a deployment would
+override it). Fails at template time rather than rendering a Job that
+mounts an empty secret name and only fails once the Pod actually starts.
+*/}}
+{{- define "versola.migrationConfigSecret" -}}
+{{- $svc := .service -}}
+{{- $root := .root -}}
+{{- $override := index $root.Values.migrations.config $svc -}}
+{{- $appConfig := (index $root.Values.services $svc).config -}}
+{{- $secretName := $override.existingSecret | default $appConfig.existingSecret -}}
+{{- $secretKey := $override.secretKey | default $appConfig.secretKey | default "env.conf" -}}
+{{- if not $secretName -}}
+{{- fail (printf "migrations.enabled requires a config Secret for %q -- set services.%s.config.existingSecret or migrations.config.%s.existingSecret" $svc $svc $svc) -}}
+{{- end -}}
+name: {{ $secretName }}
+key: {{ $secretKey }}
+{{- end -}}
+
+{{/*
 console nginx.conf: static files only.
 
 The docker-compose version of this image (docker/versola-tools/nginx.conf.template)
