@@ -92,12 +92,12 @@ object CelEvaluator:
         .flatMap:
           case b: java.lang.Boolean => ZIO.succeed(b.booleanValue)
           case other                =>
-            Observability.addCelFailure(
+            Observability.annotateCelFailure(
               expression,
               s"returned ${other.getClass.getSimpleName} instead of Boolean, treated as false",
             ).as(false)
         .catchAll: ex =>
-          Observability.addCelFailure(expression, s"evaluation failed: ${errorMessage(ex)}, treated as false")
+          Observability.annotateCelFailure(expression, s"evaluation failed: ${errorMessage(ex)}, treated as false")
             .as(false)
 
     override def evaluateString(context: Map[String, AnyRef]): UIO[Option[String]] =
@@ -107,7 +107,7 @@ object CelEvaluator:
           case s: String    => Some(s)
           case other        => Some(other.toString)
         .catchAll: ex =>
-          Observability.addCelFailure(expression, s"evaluation failed: ${errorMessage(ex)}, no value injected")
+          Observability.annotateCelFailure(expression, s"evaluation failed: ${errorMessage(ex)}, no value injected")
             .as(None)
 
   private def errorMessage(ex: Throwable): String =

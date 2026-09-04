@@ -14,8 +14,8 @@ object CelEvaluatorSpec extends ZIOSpecDefault:
     Ref.make(Map.empty[String, Either[CelEvaluator.CompileError, CelEvaluator.Program]])
       .map(CelEvaluator.Impl(_))
 
-  private def celFailures: UIO[Vector[Observability.CelFailure]] =
-    logContext.get.map(_.get(Observability.cel).getOrElse(Vector.empty))
+  private def celError: UIO[Option[Observability.ErrorDetails]] =
+    logContext.get.map(_.get(Observability.error))
 
   /** `logContext` is a `FiberRef` shared by tests running in the same fiber, so a test that
     * asserts on annotations has to start from an empty one to see only its own. */
@@ -99,28 +99,30 @@ object CelEvaluatorSpec extends ZIOSpecDefault:
           result    <- program.evaluateBoolean(tokenContext)
         yield assertTrue(!result)
       },
-      test("evaluateBoolean reports a type mismatch into the request's log context") {
+      test("evaluateBoolean folds a type mismatch into the request's error context") {
         ownRequest:
           for
             evaluator <- make
             program   <- evaluator.compile("token.role")
             _         <- program.evaluateBoolean(tokenContext)
-            failures  <- celFailures
+            error     <- celError
           yield assertTrue(
-            failures.map(_.expression) == Vector("token.role"),
-            failures.exists(_.message.contains("instead of Boolean")),
+            error.map(_.code).contains(Observability.CelEvaluationFailedCode),
+            error.flatMap(_.description).exists(_.startsWith("`token.role`: ")),
+            error.flatMap(_.description).exists(_.contains("instead of Boolean")),
           )
       },
-      test("evaluateBoolean reports an evaluation error into the request's log context") {
+      test("evaluateBoolean folds an evaluation error into the request's error context") {
         ownRequest:
           for
             evaluator <- make
             program   <- evaluator.compile("token.missing.deep.path == 'x'")
             result    <- program.evaluateBoolean(tokenContext)
-            failures  <- celFailures
+            error     <- celError
           yield assertTrue(
             !result,
-            failures.map(_.expression) == Vector("token.missing.deep.path == 'x'"),
+            error.map(_.code).contains(Observability.CelEvaluationFailedCode),
+            error.flatMap(_.description).exists(_.startsWith("`token.missing.deep.path == 'x'`: ")),
           )
       },
       test("evaluateString returns Some for string-typed expression") {
@@ -137,16 +139,19 @@ object CelEvaluatorSpec extends ZIOSpecDefault:
           result    <- program.evaluateString(tokenContext)
         yield assertTrue(result.isEmpty)
       },
-      test("evaluateString reports an evaluation error into the request's log context") {
+      test("evaluateString folds an evaluation error into the request's error context") {
         ownRequest:
           for
             evaluator <- make
             program   <- evaluator.compile("token.missing.deep.path")
             _         <- program.evaluateString(tokenContext)
-            failures  <- celFailures
-          yield assertTrue(failures.map(_.expression) == Vector("token.missing.deep.path"))
+            error     <- celError
+          yield assertTrue(
+            error.map(_.code).contains(Observability.CelEvaluationFailedCode),
+            error.flatMap(_.description).exists(_.startsWith("`token.missing.deep.path`: ")),
+          )
       },
-      test("failures of several expressions accumulate instead of replacing each other") {
+      test("a later failure replaces the description left by an earlier one") {
         ownRequest:
           for
             evaluator <- make
@@ -154,11 +159,8 @@ object CelEvaluatorSpec extends ZIOSpecDefault:
             inject    <- evaluator.compile("token.other.deep.path")
             _         <- allow.evaluateBoolean(tokenContext)
             _         <- inject.evaluateString(tokenContext)
-            failures  <- celFailures
-          yield assertTrue(
-            failures.map(_.expression) ==
-              Vector("token.missing.deep.path == 'x'", "token.other.deep.path"),
-          )
+            error     <- celError
+          yield assertTrue(error.flatMap(_.description).exists(_.startsWith("`token.other.deep.path`: ")))
       },
     ),
     suite("cache")(
