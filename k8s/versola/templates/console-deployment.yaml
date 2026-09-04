@@ -10,14 +10,38 @@ spec:
   selector:
     matchLabels:
       {{- include "versola.componentSelectorLabels" (dict "component" "console" "context" .) | nindent 6 }}
+  {{- /*
+  Roll the pods when the config changes: nginx reads it once at startup,
+  and the volume mount below is a subPath, which kubelet never
+  live-updates even when the source ConfigMap does change -- a pod
+  restart is the only way stale config gets replaced either way, hence
+  forcing one via a template diff rather than relying on the mount to
+  refresh itself.
+
+  When this chart renders its own ConfigMap (console-configmap.yaml),
+  hashing that render is exact: any content change changes the hash. When
+  nginxConfig.existingConfigMap points at a ConfigMap this chart doesn't
+  own, console-configmap.yaml renders empty (see its own guard), so
+  hashing it would produce the same constant value regardless of that
+  ConfigMap's real content -- silently defeating this whole mechanism.
+  `lookup` reads the live object's data instead, so an edit to it is
+  still picked up on the next `helm upgrade`. `lookup` always returns an
+  empty map under `helm template`/`helm lint` (no live cluster to
+  query), which only affects offline rendering, not real installs.
+  */}}
+  {{- $nginxConfigChecksum := "" }}
+  {{- if .Values.console.nginxConfig.existingConfigMap }}
+  {{- $cm := lookup "v1" "ConfigMap" .Release.Namespace .Values.console.nginxConfig.existingConfigMap }}
+  {{- $nginxConfigChecksum = dict "data" ($cm.data | default dict) | toYaml | sha256sum }}
+  {{- else }}
+  {{- $nginxConfigChecksum = include (print $.Template.BasePath "/console-configmap.yaml") . | sha256sum }}
+  {{- end }}
   template:
     metadata:
       labels:
         {{- include "versola.componentSelectorLabels" (dict "component" "console" "context" .) | nindent 8 }}
       annotations:
-        # Roll the pods when the config changes: nginx reads it once at
-        # startup, and a ConfigMap edit alone doesn't restart anything.
-        checksum/nginx-config: {{ include (print $.Template.BasePath "/console-configmap.yaml") . | sha256sum }}
+        checksum/nginx-config: {{ $nginxConfigChecksum }}
     spec:
       {{- with .Values.global.imagePullSecrets }}
       imagePullSecrets:

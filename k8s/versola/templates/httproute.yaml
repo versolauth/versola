@@ -17,7 +17,20 @@ kind: HTTPRoute
 metadata:
   # One HTTPRoute per hostname rather than one with every hostname on it,
   # so a host can be added or removed without touching the others.
-  name: {{ include "versola.fullname" $root }}-{{ $host.host | replace "." "-" | trunc 63 | trimSuffix "-" }}
+  #
+  # Just replacing "." -> "-" isn't enough on its own: a wildcard host
+  # (*.example.com) has a "*" that's not valid in a resource name, and two
+  # distinct real hosts can collapse onto the same sanitized string (e.g.
+  # foo.bar and foo-bar both become foo-bar), which would make the second
+  # host's HTTPRoute silently overwrite the first's. Lowercasing plus
+  # replacing every non `[a-z0-9-]` character (not just ".") handles any
+  # host shape, including wildcards; the hash suffix -- derived from the
+  # untouched original host -- keeps two different hosts apart even if
+  # their sanitized text collides.
+  {{- $lowerHost := lower $host.host }}
+  {{- $sanitizedHost := regexReplaceAll "[^a-z0-9-]+" $lowerHost "-" | trunc 40 | trimAll "-" }}
+  {{- $hostSuffix := sha256sum $host.host | trunc 8 }}
+  name: {{ include "versola.fullname" $root }}-{{ $sanitizedHost }}-{{ $hostSuffix }}
   labels:
     {{- include "versola.labels" $root | nindent 4 }}
   {{- with $root.Values.ingress.annotations }}

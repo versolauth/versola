@@ -82,9 +82,26 @@ ngx_http_sub_module is compiled into the official nginx images.
 */}}
 {{- define "versola.consoleNginxConf" -}}
 {{- $basePath := .Values.console.basePath -}}
+{{- $slashless := trimSuffix "/" $basePath -}}
 server {
     listen {{ .Values.console.port }};
     server_name _;
+
+    {{- /*
+    With `alias`, nginx only matches the location's exact string -- there's
+    no implicit fallback from the slashless path to the trailing-slash one
+    the way there is with `root` + a directory index. For a non-root
+    basePath (e.g. /central/admin/) that would make the slashless bookmark
+    (/central/admin) 404 instead of resolving, unlike the old gateway's
+    proxy_pass rules, which had an explicit `location = /central/admin`
+    redirect for exactly this (see nginx.conf.template). basePath "/" has
+    no slashless variant to redirect from, so this is skipped there.
+    */}}
+    {{- if and (ne $basePath "/") (hasSuffix "/" $basePath) }}
+    location = {{ $slashless }} {
+        return 301 {{ $basePath }};
+    }
+    {{- end }}
 
     location {{ $basePath }} {
         alias /usr/share/nginx/html/central/admin/;
