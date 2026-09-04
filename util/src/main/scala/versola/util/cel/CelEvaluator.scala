@@ -94,9 +94,11 @@ object CelEvaluator:
       ZIO.attempt(program.eval(context.asJava))
         .flatMap:
           case b: java.lang.Boolean => ZIO.succeed(b.booleanValue)
-          case _                    => Observability.annotateCelFailure("non-boolean result, treated as false").as(false)
+          case _ =>
+            Observability.updateError(_.copy(description = Some("cel rule evaluated to non-boolean result, treated as false")))
+              .as(false)
         .catchAll: _ =>
-          Observability.annotateCelFailure("evaluation failed, treated as false").as(false)
+          Observability.updateError(_.copy(description = Some("cel rule evaluation failed, treated as false"))).as(false)
 
     override def evaluateString(context: Map[String, AnyRef]): UIO[Option[String]] =
       ZIO.attempt(program.eval(context.asJava))
@@ -105,4 +107,4 @@ object CelEvaluator:
           case s: String    => Some(s)
           case other        => Some(other.toString)
         .catchAll: _ =>
-          Observability.annotateCelFailure("evaluation failed, no value injected").as(None)
+          Observability.updateError(_.copy(description = Some("cel rule evaluation failed, no value injected"))).as(None)

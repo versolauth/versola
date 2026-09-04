@@ -30,11 +30,6 @@ object Observability:
     * request/redirect that carried the failure). */
   val error = LogAnnotation[ErrorDetails]("error", (_, r) => r, _.toJson)
 
-  /** Code recorded under `error` when a CEL expression throws or returns the wrong type while
-    * being evaluated for a request, before whatever check ran it has decided the request's
-    * real outcome. */
-  val CelEvaluationFailedCode = "cel_evaluation_failed"
-
   val cause = zio.Unsafe.unsafe { case given zio.Unsafe =>
     FiberRef.unsafe.make(Option.empty[Cause[Any]])
   }
@@ -87,31 +82,20 @@ object Observability:
 
   /** Records the outcome of a request that ended in an error, under the `error` key. `code`
     * should come from a stable, closed vocabulary (e.g. `stepErrorKey`, `ErrorCode`) so it can
-    * be used for alerting/metrics without risking unbounded cardinality. */
+    * be used for alerting/metrics without risking unbounded cardinality. Replaces whatever
+    * error context the request already had; see [[updateError]] to change only part of it. */
   def setError(code: String, description: Option[String] = None): UIO[Unit] =
     logContext.update(_.annotate(error, ErrorDetails(code, description)))
 
-  /** Records that a CEL expression failed to evaluate for this request, under `error`, without
-    * naming the expression or repeating the underlying exception text: which rule it was is
-    * discoverable from the endpoint's configured rules in the console once the request's
-    * endpoint is known, and an exception's own message can vary in shape. `outcome` says only
-    * what the caller did as a result (e.g. `"treated as false"`, `"no value injected"`) -- a
-    * failed expression degrades silently rather than erroring, so the request's own outcome is
-    * indistinguishable from a legitimate denial without at least that much.
-    *
-    * Left under [[CelEvaluationFailedCode]] until the check that ran this expression decides
-    * the request's real outcome. [[setErrorKeepingCelFailure]] is how a check that denies as a
-    * result (`access_rule_denied`) keeps this description while replacing the code; a check
-    * that doesn't run afterward (e.g. a failed inject rule, which doesn't fail the request)
-    * leaves this as the final `error` entry. */
-  def annotateCelFailure(outcome: String): UIO[Unit] =
-    logContext.update(_.annotate(error, ErrorDetails(CelEvaluationFailedCode, Some(outcome))))
-
-  /** Sets the request's error to `code`, keeping the description already there if one was left
-    * by [[annotateCelFailure]] for this request instead of clearing it: that's why the check
-    * denied the request in the first place. Falls back to no description otherwise. */
-  def setErrorKeepingCelFailure(code: String): UIO[Unit] =
-    logContext.update(context => context.annotate(error, ErrorDetails(code, context.get(error).flatMap(_.description))))
+  /** Applies `f` to the request's current error context (an empty one, `code = ""`, if none is
+    * set yet), so one part of it can be filled in without knowing or disturbing the rest. Used
+    * where the reason for an outcome is known before the outcome itself is: e.g. a CEL
+    * evaluation failure discovers *why* a rule will read as denied before the caller that ran
+    * it, a few lines later, decides *that* it's `access_rule_denied` -- each fills in its own
+    * half of the same [[ErrorDetails]] with `updateError`, instead of the second call
+    * overwriting the first's via [[setError]]. */
+  def updateError(f: ErrorDetails => ErrorDetails): UIO[Unit] =
+    logContext.update(context => context.annotate(error, f(context.get(error).getOrElse(ErrorDetails(code = "")))))
 
   val clientLogging: FiberRef[HttpObservabilityConfig.Client] = zio.Unsafe.unsafe { case given zio.Unsafe =>
     FiberRef.unsafe.make(HttpObservabilityConfig.Client.default)

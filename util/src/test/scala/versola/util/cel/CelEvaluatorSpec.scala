@@ -107,8 +107,7 @@ object CelEvaluatorSpec extends ZIOSpecDefault:
             _         <- program.evaluateBoolean(tokenContext)
             error     <- celError
           yield assertTrue(
-            error.map(_.code).contains(Observability.CelEvaluationFailedCode),
-            error.flatMap(_.description).contains("non-boolean result, treated as false"),
+            error.flatMap(_.description).contains("cel rule evaluated to non-boolean result, treated as false"),
           )
       },
       test("evaluateBoolean folds an evaluation error into the request's error context, without the expression") {
@@ -120,8 +119,7 @@ object CelEvaluatorSpec extends ZIOSpecDefault:
             error     <- celError
           yield assertTrue(
             !result,
-            error.map(_.code).contains(Observability.CelEvaluationFailedCode),
-            error.flatMap(_.description).contains("evaluation failed, treated as false"),
+            error.flatMap(_.description).contains("cel rule evaluation failed, treated as false"),
           )
       },
       test("evaluateString returns Some for string-typed expression") {
@@ -145,10 +143,7 @@ object CelEvaluatorSpec extends ZIOSpecDefault:
             program   <- evaluator.compile("token.missing.deep.path")
             _         <- program.evaluateString(tokenContext)
             error     <- celError
-          yield assertTrue(
-            error.map(_.code).contains(Observability.CelEvaluationFailedCode),
-            error.flatMap(_.description).contains("evaluation failed, no value injected"),
-          )
+          yield assertTrue(error.flatMap(_.description).contains("cel rule evaluation failed, no value injected"))
       },
       test("a later failure replaces the description left by an earlier one") {
         ownRequest:
@@ -159,7 +154,7 @@ object CelEvaluatorSpec extends ZIOSpecDefault:
             _         <- allow.evaluateBoolean(tokenContext)
             _         <- inject.evaluateString(tokenContext)
             error     <- celError
-          yield assertTrue(error.flatMap(_.description).contains("evaluation failed, no value injected"))
+          yield assertTrue(error.flatMap(_.description).contains("cel rule evaluation failed, no value injected"))
       },
     ),
     suite("cache")(
