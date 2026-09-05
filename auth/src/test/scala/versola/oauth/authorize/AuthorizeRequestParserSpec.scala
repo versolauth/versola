@@ -4,14 +4,30 @@ import versola.auth.TestEnvConfig
 import versola.oauth.authorize.model.*
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.*
-import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, RequestUri, RequestUriReference, State}
+import versola.oauth.model.{
+  CodeChallenge,
+  CodeChallengeMethod,
+  Nonce,
+  RequestUri,
+  RequestUriReference,
+  SessionCookie,
+  State,
+  UserAgentCookie,
+  UserAgentCookiePayload,
+  UserAgentData,
+}
+import versola.oauth.session.model.{SessionId, UserAgentDetails, UserAgentId}
+import versola.oauth.userinfo.model.RequestedClaims
+import versola.user.model.UserId
 import versola.util.*
 import zio.*
 import zio.http.*
 import zio.json.*
 import zio.json.ast.Json
-import zio.prelude.NonEmptySet
+import zio.prelude.{NonEmptyList, NonEmptySet}
 import zio.test.*
+
+import java.util.UUID
 
 object AuthorizeRequestParserSpec extends UnitSpecBase:
 
@@ -228,6 +244,14 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
         _ <- env.configuration.find.succeedsWith(Some(clientRecord))
         result <- env.parser.parse(request).either
       yield assertTrue(result == Left(Error.InvalidTarget(redirectUri, Some(State("test-state")), edgeResource.toString)))
+    },
+    test("rejects a malformed resource value") {
+      val env = Env()
+      val request = Request.get(URL.root.addQueryParams(validParams + ("resource" -> "not-a-valid-resource")))
+      for
+        _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+        result <- env.parser.parse(request).either
+      yield assertTrue(result == Left(Error.InvalidTarget(redirectUri, Some(State("test-state")), "not-a-valid-resource")))
     },
     suite("parse POST")(
       test("successfully parses valid form-urlencoded request") {
@@ -665,6 +689,365 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
           _ <- env.pushedAuthorizationRepository.consume.succeedsWith(Some(pushedRecord))
           result <- env.parser.parse(request).either
         yield assertTrue(result == Left(Error.BadRequest))
+      },
+    ),
+    suite("paramsFromForm")(
+      test("splits the repeatable resource field but keeps other fields single-valued") {
+        val form = Form.fromStrings(
+          "client_id" -> "test-client",
+          "resource" -> "https://a.example,https://b.example",
+        )
+        val params = AuthorizeRequestParser.paramsFromForm(form)
+        assertTrue(
+          params("client_id") == Chunk("test-client"),
+          params("resource") == Chunk("https://a.example", "https://b.example"),
+        )
+      },
+    ),
+    suite("code_challenge")(
+      test("rejects a missing code_challenge") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(validParams - "code_challenge"))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request).either
+        yield assertTrue(result == Left(Error.CodeChallengeMissing(redirectUri, Some(State("test-state")))))
+      },
+      test("rejects an invalid code_challenge") {
+        val env = Env()
+        val invalid = "a" * 42
+        val request = Request.get(URL.root.addQueryParams(validParams ++ Map("code_challenge" -> invalid)))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request).either
+        yield assertTrue(result == Left(Error.CodeChallengeInvalid(redirectUri, Some(State("test-state")), invalid)))
+      },
+    ),
+    suite("response_type")(
+      test("accepts code id_token") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(validParams ++ Map("response_type" -> "code id_token")))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request)
+        yield assertTrue(result.responseType == NonEmptySet(ResponseTypeEntry.Code, ResponseTypeEntry.IdToken))
+      },
+      test("rejects an unsupported response_type") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(validParams ++ Map("response_type" -> "token")))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request).either
+        yield assertTrue(result == Left(Error.UnsupportedResponseType(redirectUri, Some(State("test-state")), "token")))
+      },
+      test("rejects a missing response_type") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(validParams - "response_type"))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request).either
+        yield assertTrue(result == Left(Error.ResponseTypeMissing(redirectUri, Some(State("test-state")))))
+      },
+    ),
+    suite("claims")(
+      test("parses a valid claims JSON object") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(validParams ++ Map("claims" -> """{"userinfo":{},"id_token":{}}""")))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request)
+        yield assertTrue(result.requestedClaims == Some(RequestedClaims(Map.empty, Map.empty)))
+      },
+      test("rejects claims that are not valid JSON") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(validParams ++ Map("claims" -> "not-json")))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request).either
+        yield assertTrue(result == Left(Error.InvalidClaims(redirectUri, Some(State("test-state")))))
+      },
+    ),
+    suite("ui_locales")(
+      test("splits ui_locales into a list") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(validParams ++ Map("ui_locales" -> "en fr")))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request)
+        yield assertTrue(result.uiLocales == Some(List("en", "fr")))
+      },
+    ),
+    suite("nonce")(
+      test("captures the nonce parameter") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(validParams ++ Map("nonce" -> "abc123")))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request)
+        yield assertTrue(result.nonce == Some(Nonce("abc123")))
+      },
+    ),
+    suite("prompt")(
+      test("accepts prompt=none alone") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(validParams ++ Map("prompt" -> "none")))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request)
+        yield assertTrue(result.prompt == Set(Prompt.none))
+      },
+      test("rejects prompt=none combined with other values") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(validParams ++ Map("prompt" -> "none login")))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request).either
+        yield assertTrue(result == Left(Error.PromptInvalid(redirectUri, Some(State("test-state")))))
+      },
+      test("ignores unrecognized prompt tokens") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(validParams ++ Map("prompt" -> "bogus")))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request)
+        yield assertTrue(result.prompt == Set.empty)
+      },
+    ),
+    suite("max_age")(
+      test("parses a numeric max_age") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(validParams ++ Map("max_age" -> "3600")))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request)
+        yield assertTrue(result.maxAge == Some(3600L))
+      },
+      test("silently drops a non-numeric max_age") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(validParams ++ Map("max_age" -> "not-a-number")))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request)
+        yield assertTrue(result.maxAge == None)
+      },
+    ),
+    suite("acr_values")(
+      test("parses acr_values into a list of Acr") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(validParams ++ Map("acr_values" -> "urn:mfa urn:pwd")))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request)
+        yield assertTrue(result.acrValues == Some(NonEmptyList(Acr("urn:mfa"), Acr("urn:pwd"))))
+      },
+    ),
+    suite("id_token_hint")(
+      test("captures the id_token_hint parameter") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(validParams ++ Map("id_token_hint" -> "raw-jwt-value")))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request)
+        yield assertTrue(result.idTokenHint == Some("raw-jwt-value"))
+      },
+    ),
+    suite("user_agent")(
+      test("captures the User-Agent header") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(validParams)).addHeader("User-Agent", "TestAgent/1.0")
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request)
+        yield assertTrue(result.userAgent == Some("TestAgent/1.0"))
+      },
+    ),
+    suite("cookies")(
+      test("parses a signed session cookie") {
+        val env = Env()
+        val sessionId = SessionId(Array.fill(32)(1.toByte))
+        val cookie = SessionCookie(sessionId, 1.hour, TestEnvConfig.coreConfig.security.sessionCookieSecret)
+        val request = Request.get(URL.root.addQueryParams(validParams))
+          .addCookie(Cookie.Request(SessionCookie.name, cookie.content))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request)
+        yield assertTrue(result.sessionId.map(_.toSeq) == Some(sessionId.toSeq))
+      },
+      test("parses a signed user agent cookie") {
+        val env = Env()
+        val userAgentId = UserAgentId(UUID.fromString("018f0f2a-1c7b-7000-8000-000000000001"))
+        val userAgentData = UserAgentData(
+          userAgent = Some("Mozilla/5.0"),
+          userId = UserId(UUID.fromString("00000000-0000-7000-8000-000000000001")),
+          details = UserAgentDetails(None, None, None, None),
+        )
+        val cookie = UserAgentCookie(userAgentId, userAgentData, 180.days, TestEnvConfig.coreConfig.security.userAgentCookieSecret)
+        val request = Request.get(URL.root.addQueryParams(validParams))
+          .addCookie(Cookie.Request(UserAgentCookie.name, cookie.content))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request)
+        yield assertTrue(result.userAgentCookie == Some(UserAgentCookiePayload(userAgentId, userAgentData)))
+      },
+    ),
+    suite("redirect_uri")(
+      test("rejects a relative redirect_uri") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(validParams ++ Map("redirect_uri" -> "/callback")))
+        for result <- env.parser.parse(request).either
+        yield assertTrue(result == Left(Error.BadRequest))
+      },
+      test("rejects a redirect_uri containing a fragment") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(validParams ++ Map("redirect_uri" -> "https://example.com/callback#section")))
+        for result <- env.parser.parse(request).either
+        yield assertTrue(result == Left(Error.BadRequest))
+      },
+      test("fails when redirect_uri is provided more than once") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(validParams).addQueryParam("redirect_uri", "https://other.example"))
+        for result <- env.parser.parse(request).either
+        yield assertTrue(result == Left(Error.BadRequest))
+      },
+    ),
+    suite("client_id")(
+      test("fails when client_id is provided more than once") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(validParams).addQueryParam("client_id", "other-client"))
+        for result <- env.parser.parse(request).either
+        yield assertTrue(result == Left(Error.BadRequest))
+      },
+    ),
+    suite("multiple values provided")(
+      test("fails when state is provided more than once") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(validParams).addQueryParam("state", "another"))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request).either
+        yield assertTrue(result == Left(Error.MultipleValuesProvided(redirectUri, None, "state")))
+      },
+      test("fails when response_type is provided more than once") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(validParams).addQueryParam("response_type", "code"))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request).either
+        yield assertTrue(result == Left(Error.MultipleValuesProvided(redirectUri, Some(State("test-state")), "response_type")))
+      },
+      test("fails when code_challenge is provided more than once") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(validParams).addQueryParam("code_challenge", "a" * 43))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request).either
+        yield assertTrue(result == Left(Error.MultipleValuesProvided(redirectUri, Some(State("test-state")), "code_challenge")))
+      },
+      test("fails when code_challenge_method is provided more than once") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(validParams).addQueryParam("code_challenge_method", "S256"))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request).either
+        yield assertTrue(result == Left(Error.MultipleValuesProvided(redirectUri, Some(State("test-state")), "code_challenge_method")))
+      },
+      test("fails when scope is provided more than once") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(validParams).addQueryParam("scope", "openid"))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request).either
+        yield assertTrue(result == Left(Error.MultipleValuesProvided(redirectUri, Some(State("test-state")), "scope")))
+      },
+      test("fails when ui_locales is provided more than once") {
+        val env = Env()
+        val request = Request.get(
+          URL.root.addQueryParams(validParams ++ Map("ui_locales" -> "en")).addQueryParam("ui_locales", "fr"),
+        )
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request).either
+        yield assertTrue(result == Left(Error.MultipleValuesProvided(redirectUri, Some(State("test-state")), "ui_locales")))
+      },
+      test("fails when claims is provided more than once") {
+        val env = Env()
+        val request = Request.get(
+          URL.root.addQueryParams(validParams ++ Map("claims" -> "{}")).addQueryParam("claims", "{}"),
+        )
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request).either
+        yield assertTrue(result == Left(Error.MultipleValuesProvided(redirectUri, Some(State("test-state")), "claims")))
+      },
+      test("fails when nonce is provided more than once") {
+        val env = Env()
+        val request = Request.get(
+          URL.root.addQueryParams(validParams ++ Map("nonce" -> "n1")).addQueryParam("nonce", "n2"),
+        )
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request).either
+        yield assertTrue(result == Left(Error.MultipleValuesProvided(redirectUri, Some(State("test-state")), "nonce")))
+      },
+      test("fails when prompt is provided more than once") {
+        val env = Env()
+        val request = Request.get(
+          URL.root.addQueryParams(validParams ++ Map("prompt" -> "login")).addQueryParam("prompt", "consent"),
+        )
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request).either
+        yield assertTrue(result == Left(Error.MultipleValuesProvided(redirectUri, Some(State("test-state")), "prompt")))
+      },
+      test("fails when max_age is provided more than once") {
+        val env = Env()
+        val request = Request.get(
+          URL.root.addQueryParams(validParams ++ Map("max_age" -> "60")).addQueryParam("max_age", "120"),
+        )
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request).either
+        yield assertTrue(result == Left(Error.MultipleValuesProvided(redirectUri, Some(State("test-state")), "max_age")))
+      },
+      test("fails when acr_values is provided more than once") {
+        val env = Env()
+        val request = Request.get(
+          URL.root.addQueryParams(validParams ++ Map("acr_values" -> "urn:mfa")).addQueryParam("acr_values", "urn:pwd"),
+        )
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request).either
+        yield assertTrue(result == Left(Error.MultipleValuesProvided(redirectUri, Some(State("test-state")), "acr_values")))
+      },
+      test("fails when login_hint is provided more than once") {
+        val env = Env()
+        val request = Request.get(
+          URL.root.addQueryParams(validParams ++ Map("login_hint" -> "user@example.com")).addQueryParam("login_hint", "user2@example.com"),
+        )
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request).either
+        yield assertTrue(result == Left(Error.MultipleValuesProvided(redirectUri, Some(State("test-state")), "login_hint")))
+      },
+      test("fails when id_token_hint is provided more than once") {
+        val env = Env()
+        val request = Request.get(
+          URL.root.addQueryParams(validParams ++ Map("id_token_hint" -> "jwt-1")).addQueryParam("id_token_hint", "jwt-2"),
+        )
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request).either
+        yield assertTrue(result == Left(Error.MultipleValuesProvided(redirectUri, Some(State("test-state")), "id_token_hint")))
+      },
+      test("fails when authorization_details is provided more than once") {
+        val env = Env()
+        val request = Request.get(
+          URL.root.addQueryParams(validParams ++ Map("authorization_details" -> "[]")).addQueryParam("authorization_details", "[]"),
+        )
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request).either
+        yield assertTrue(result == Left(Error.MultipleValuesProvided(redirectUri, Some(State("test-state")), "authorization_details")))
       },
     ),
   )
