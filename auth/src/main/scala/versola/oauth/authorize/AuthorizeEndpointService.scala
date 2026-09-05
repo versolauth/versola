@@ -439,7 +439,7 @@ object AuthorizeEndpointService:
           uiLocales = uiLocales,
           nonce = request.nonce,
         )
-        signingKey <- jwksService.getPublicKeys.map(_.active)
+        signingKey <- jwksService.signingKey
         cHash = JWT.leftHalfHash(Base64Url.encode(code), signingKey.algorithm)
         claims = userInfo.claims ++
           AuthMethodRef.idTokenClaims(amr, Some(session.createdAt), acr) +

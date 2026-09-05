@@ -2,6 +2,9 @@ package versola.oauth.token
 
 import org.scalamock.stubs.Stub
 import versola.auth.TestEnvConfig
+import com.nimbusds.jose.JWSAlgorithm
+import com.nimbusds.jose.crypto.RSASSAVerifier
+import com.nimbusds.jose.jwk.{KeyUse, RSAKey}
 import com.nimbusds.jwt.SignedJWT
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.jwks.JwksService
@@ -19,6 +22,8 @@ import zio.http.*
 import zio.json.*
 import zio.test.*
 
+import java.security.KeyPairGenerator
+import java.security.interfaces.RSAPublicKey
 import java.util.UUID
 
 object TokenEndpointControllerSpec extends UnitSpecBase:
@@ -762,6 +767,126 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
             tokenResponse.idToken.isEmpty, // No ID token for client_credentials
           ),
       ),
+    ),
+    // Regression for #104: signing must never use whichever entry the JWKS's "active" (i.e.
+    // first) key happens to be -- that can drift out of sync with this instance's static
+    // private key across a central-side rotation. Signing must always use
+    // JwksService.signingKey, which resolves to the entry matching this instance's own
+    // private key regardless of position (see JwksServiceSpec for that resolution logic) --
+    // otherwise the issued token carries a kid that doesn't match the key that actually
+    // signed it.
+    suite("signing key consistency (regression for #104)")(
+      test("signs the access token with JwksService.signingKey, never with the JWKS's raw 'active' entry") {
+        // Simulates central's JWKS holding an unrelated key it just rotated in -- reported
+        // as "active" because it happens to be listed first -- alongside the one that
+        // actually matches this instance's own private key (TestEnvConfig's pair, kid =
+        // "test-key-id"). JwksServiceSpec covers telling them apart; this only proves the
+        // controller trusts JwksService.signingKey and never falls back to `.active`.
+        val staleActiveKeyPairGenerator = KeyPairGenerator.getInstance("RSA")
+        staleActiveKeyPairGenerator.initialize(2048)
+        val staleActiveKeyPair = staleActiveKeyPairGenerator.generateKeyPair()
+        val staleActiveJwk = new RSAKey.Builder(staleActiveKeyPair.getPublic.asInstanceOf[RSAPublicKey])
+          .keyID("stale-active-kid-from-central")
+          .algorithm(JWSAlgorithm.RS256)
+          .keyUse(KeyUse.SIGNATURE)
+          .build()
+        val staleActiveJwkJson = staleActiveJwk.toJSONString.fromJson[Json.Obj].toOption.get
+        // Same-modulus JWK entry as TestEnvConfig's own pair, so the drifted JWKS looks like
+        // a real rotation window: the unrelated stale key listed first, this instance's own
+        // key listed second.
+        val ownJwk = new RSAKey.Builder(TestEnvConfig.publicKey)
+          .keyID(TestEnvConfig.publicKeys.active.id)
+          .algorithm(JWSAlgorithm.RS256)
+          .keyUse(KeyUse.SIGNATURE)
+          .build()
+        val ownJwkJson = ownJwk.toJSONString.fromJson[Json.Obj].toOption.get
+        val driftedJwks = JWT.PublicKeys.fromJson(Json.Obj("keys" -> Json.Arr(staleActiveJwkJson, ownJwkJson)))
+        val driftedJwksService: JwksService = new JwksService:
+          override def getPublicKeys: UIO[JWT.PublicKeys] = ZIO.succeed(driftedJwks)
+          override def signingKey: Task[JWT.PublicKey] = ZIO.succeed(TestEnvConfig.publicKeys.active)
+
+        for
+          client <- ZIO.service[Client]
+          tokenService = stub[OAuthTokenService]
+          clientService = stub[OAuthConfigurationService]
+          userInfoService = stub[UserInfoService]
+          tracing <- NoopTracing.layer.build
+          _ <- tokenService.exchangeAuthorizationCode.succeedsWith(issuedTokens)
+          _ <- TestClient.addRoutes(
+            Observability.handleErrors(
+              TokenEndpointController.routes
+                .provideEnvironment(
+                  ZEnvironment(tokenService) ++ ZEnvironment(clientService) ++ ZEnvironment(userInfoService) ++
+                    ZEnvironment(driftedJwksService) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ tracing,
+                )
+            )
+          )
+          response <- client.batched(
+            Request.post(
+              url = URL.empty / "token",
+              body = Body.fromURLEncodedForm(
+                Form.fromStrings(
+                  "grant_type" -> "authorization_code",
+                  "code" -> Base64.urlEncode(authCode1),
+                  "redirect_uri" -> redirectUri,
+                  "code_verifier" -> codeVerifier1,
+                )
+              )
+            ).addHeader(authHeader(clientId1, Some(clientSecret1))),
+          )
+          body <- response.body.asString
+          tokenResponse <- ZIO.fromEither(body.fromJson[TokenResponse]).mapError(new RuntimeException(_))
+          signedJwt = SignedJWT.parse(tokenResponse.accessToken)
+        yield assertTrue(
+          // kid must be the one JwksService.signingKey resolved to, never the unrelated
+          // "active" kid the raw JWKS happened to report first.
+          signedJwt.getHeader.getKeyID == TestEnvConfig.publicKeys.active.id,
+          signedJwt.getHeader.getKeyID != "stale-active-kid-from-central",
+          // and the signature must actually verify against the public key that
+          // corresponds to that kid, proving kid and signature are for the same key.
+          signedJwt.verify(new RSASSAVerifier(TestEnvConfig.publicKey)),
+        )
+      }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging,
+      test("fails the request (not the whole service) when no JWKS entry matches this instance's private key") {
+        // Can happen transiently right after a private-key rotation, before central's JWKS
+        // sync has caught up with the new public half. That must not crash the whole
+        // service -- only requests that need to sign should fail, until the next sync.
+        val noSigningKeyJwksService: JwksService = new JwksService:
+          override def getPublicKeys: UIO[JWT.PublicKeys] = ZIO.succeed(TestEnvConfig.publicKeys)
+          override def signingKey: Task[JWT.PublicKey] =
+            ZIO.fail(RuntimeException("no JWKS entry matches this instance's configured private key -- signing key not yet published"))
+
+        for
+          client <- ZIO.service[Client]
+          tokenService = stub[OAuthTokenService]
+          clientService = stub[OAuthConfigurationService]
+          userInfoService = stub[UserInfoService]
+          tracing <- NoopTracing.layer.build
+          _ <- tokenService.exchangeAuthorizationCode.succeedsWith(issuedTokens)
+          _ <- TestClient.addRoutes(
+            Observability.handleErrors(
+              TokenEndpointController.routes
+                .provideEnvironment(
+                  ZEnvironment(tokenService) ++ ZEnvironment(clientService) ++ ZEnvironment(userInfoService) ++
+                    ZEnvironment(noSigningKeyJwksService) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ tracing,
+                )
+            )
+          )
+          response <- client.batched(
+            Request.post(
+              url = URL.empty / "token",
+              body = Body.fromURLEncodedForm(
+                Form.fromStrings(
+                  "grant_type" -> "authorization_code",
+                  "code" -> Base64.urlEncode(authCode1),
+                  "redirect_uri" -> redirectUri,
+                  "code_verifier" -> codeVerifier1,
+                )
+              )
+            ).addHeader(authHeader(clientId1, Some(clientSecret1))),
+          )
+        yield assertTrue(response.status == Status.InternalServerError)
+      }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging,
     ),
     suite("resource parameter")(
       test("does not decode resource for authorization_code") {

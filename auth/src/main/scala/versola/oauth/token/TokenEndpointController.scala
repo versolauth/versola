@@ -34,7 +34,7 @@ object TokenEndpointController extends Controller:
       (for
         oauthTokenService <- ZIO.service[OAuthTokenService]
         config <- ZIO.service[CoreConfig]
-        signingKey <- ZIO.serviceWithZIO[JwksService](_.getPublicKeys).map(_.active)
+        signingKey <- ZIO.serviceWithZIO[JwksService](_.signingKey)
         form <- request.body.asURLEncodedForm.orElseFail(TokenEndpointError.InvalidRequest)
         tokenRequest <- parseRequest(form)
         credentials <- request.extractCredentials(form).orElseFail(TokenEndpointError.InvalidClient)

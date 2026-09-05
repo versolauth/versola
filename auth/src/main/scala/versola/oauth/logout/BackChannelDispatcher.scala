@@ -64,7 +64,7 @@ object BackChannelDispatcher:
         customClaims: Json.Obj,
     ): Task[Unit] =
       for
-        signingKey <- jwksService.getPublicKeys.map(_.active)
+        signingKey <- jwksService.signingKey
         token <- sign(audience, subject, customClaims, signingKey)
         request = Request.post(uri, Body.fromURLEncodedForm(Form.fromStrings("logout_token" -> token)))
         _ <- ZIO.scoped:

@@ -78,26 +78,27 @@ object UserInfoController extends Controller:
               ),
             )
           else
-            JWT.serialize(
-              claims = JWT.Claims(
-                issuer = config.jwt.issuer,
-                subject = userId.toString,
-                audience = List(token.clientId),
-                custom = userInfo.toJsonAST,
-              ),
-              ttl = 5.minutes,
-              signature = JWT.Signature.Asymmetric(
-                algorithm = publicKeys.active.algorithm,
-                keyId = publicKeys.active.id,
-                privateKey = config.jwt.privateKey,
-              ),
-            ).map { signedJwt =>
-              Response(
-                status = Status.Ok,
-                headers = Headers(Header.ContentType(MediaType.application.jwt)),
-                body = Body.fromString(signedJwt),
+            for
+              signingKey <- ZIO.serviceWithZIO[JwksService](_.signingKey)
+              signedJwt <- JWT.serialize(
+                claims = JWT.Claims(
+                  issuer = config.jwt.issuer,
+                  subject = userId.toString,
+                  audience = List(token.clientId),
+                  custom = userInfo.toJsonAST,
+                ),
+                ttl = 5.minutes,
+                signature = JWT.Signature.Asymmetric(
+                  algorithm = signingKey.algorithm,
+                  keyId = signingKey.id,
+                  privateKey = config.jwt.privateKey,
+                ),
               )
-            }
+            yield Response(
+              status = Status.Ok,
+              headers = Headers(Header.ContentType(MediaType.application.jwt)),
+              body = Body.fromString(signedJwt),
+            )
       yield response)
         .catchAll:
           case UserInfoError.InvalidToken =>
