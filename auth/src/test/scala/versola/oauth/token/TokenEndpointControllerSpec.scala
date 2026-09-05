@@ -768,15 +768,20 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
           ),
       ),
     ),
-    // Regression for #104: JwksService reloads the JWKS from central on a schedule and its
-    // "active" (first) key can drift out of sync with auth's static private key. Signing must
-    // always use config.jwt.keyId — never whatever kid JwksService currently reports as active —
-    // otherwise the issued token carries a kid that doesn't match the key that actually signed it.
+    // Regression for #104: signing must never use whichever entry the JWKS's "active" (i.e.
+    // first) key happens to be -- that can drift out of sync with this instance's static
+    // private key across a central-side rotation. Signing must always use
+    // JwksService.signingKey, which resolves to the entry matching this instance's own
+    // private key regardless of position (see JwksServiceSpec for that resolution logic) --
+    // otherwise the issued token carries a kid that doesn't match the key that actually
+    // signed it.
     suite("signing key consistency (regression for #104)")(
-      test("signs the access token with config.jwt.keyId even when JwksService reports a different active kid") {
-        // Simulates central having rotated in a brand-new key pair that JwksService now
-        // reports as "active", while auth's own config.jwt.keyId/privateKey (TestEnvConfig's
-        // pair, kid = "test-key-id") hasn't changed.
+      test("signs the access token with JwksService.signingKey, never with the JWKS's raw 'active' entry") {
+        // Simulates central's JWKS holding an unrelated key it just rotated in -- reported
+        // as "active" because it happens to be listed first -- alongside the one that
+        // actually matches this instance's own private key (TestEnvConfig's pair, kid =
+        // "test-key-id"). JwksServiceSpec covers telling them apart; this only proves the
+        // controller trusts JwksService.signingKey and never falls back to `.active`.
         val staleActiveKeyPairGenerator = KeyPairGenerator.getInstance("RSA")
         staleActiveKeyPairGenerator.initialize(2048)
         val staleActiveKeyPair = staleActiveKeyPairGenerator.generateKeyPair()
@@ -786,9 +791,19 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
           .keyUse(KeyUse.SIGNATURE)
           .build()
         val staleActiveJwkJson = staleActiveJwk.toJSONString.fromJson[Json.Obj].toOption.get
-        val driftedJwks = JWT.PublicKeys.fromJson(Json.Obj("keys" -> Json.Arr(staleActiveJwkJson)))
+        // Same-modulus JWK entry as TestEnvConfig's own pair, so the drifted JWKS looks like
+        // a real rotation window: the unrelated stale key listed first, this instance's own
+        // key listed second.
+        val ownJwk = new RSAKey.Builder(TestEnvConfig.publicKey)
+          .keyID(TestEnvConfig.publicKeys.active.id)
+          .algorithm(JWSAlgorithm.RS256)
+          .keyUse(KeyUse.SIGNATURE)
+          .build()
+        val ownJwkJson = ownJwk.toJSONString.fromJson[Json.Obj].toOption.get
+        val driftedJwks = JWT.PublicKeys.fromJson(Json.Obj("keys" -> Json.Arr(staleActiveJwkJson, ownJwkJson)))
         val driftedJwksService: JwksService = new JwksService:
           override def getPublicKeys: UIO[JWT.PublicKeys] = ZIO.succeed(driftedJwks)
+          override def signingKey: UIO[Option[JWT.PublicKey]] = ZIO.succeed(Some(TestEnvConfig.publicKeys.active))
 
         for
           client <- ZIO.service[Client]
@@ -823,23 +838,22 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
           tokenResponse <- ZIO.fromEither(body.fromJson[TokenResponse]).mapError(new RuntimeException(_))
           signedJwt = SignedJWT.parse(tokenResponse.accessToken)
         yield assertTrue(
-          // kid must be the one that matches the private key actually used to sign,
-          // never the unrelated "active" kid JwksService happened to report.
-          TestEnvConfig.jwtConfig.keyId.contains(signedJwt.getHeader.getKeyID),
+          // kid must be the one JwksService.signingKey resolved to, never the unrelated
+          // "active" kid the raw JWKS happened to report first.
+          signedJwt.getHeader.getKeyID == TestEnvConfig.publicKeys.active.id,
           signedJwt.getHeader.getKeyID != "stale-active-kid-from-central",
           // and the signature must actually verify against the public key that
           // corresponds to that kid, proving kid and signature are for the same key.
           signedJwt.verify(new RSASSAVerifier(TestEnvConfig.publicKey)),
         )
       }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging,
-      test("fails the request (not the whole service) when jwt.key-id is not configured") {
-        // config and code are deployed separately (see PR #104 review discussion); an old
-        // runtime config paired with this code has jwt.key-id absent. That must not crash
-        // config parsing / service startup -- it should fail only the requests that need to
-        // sign, leaving the rest of the service up.
-        val configWithoutKeyId = TestEnvConfig.coreConfig.copy(
-          jwt = TestEnvConfig.jwtConfig.copy(keyId = None),
-        )
+      test("fails the request (not the whole service) when no JWKS entry matches this instance's private key") {
+        // Can happen transiently right after a private-key rotation, before central's JWKS
+        // sync has caught up with the new public half. That must not crash the whole
+        // service -- only requests that need to sign should fail, until the next sync.
+        val noSigningKeyJwksService: JwksService = new JwksService:
+          override def getPublicKeys: UIO[JWT.PublicKeys] = ZIO.succeed(TestEnvConfig.publicKeys)
+          override def signingKey: UIO[Option[JWT.PublicKey]] = ZIO.none
 
         for
           client <- ZIO.service[Client]
@@ -853,7 +867,7 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
               TokenEndpointController.routes
                 .provideEnvironment(
                   ZEnvironment(tokenService) ++ ZEnvironment(clientService) ++ ZEnvironment(userInfoService) ++
-                    ZEnvironment(configWithoutKeyId) ++ tracing,
+                    ZEnvironment(noSigningKeyJwksService) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ tracing,
                 )
             )
           )

@@ -55,7 +55,6 @@ object TestEnvConfig:
 
   val jwtConfig = CoreConfig.JwtConfig(
     privateKey = privateKey,
-    keyId = Some(testKeyId),
     issuer = "https://versolauth.com",
   )
 
@@ -63,6 +62,7 @@ object TestEnvConfig:
 
   val jwksService: JwksService = new JwksService:
     override def getPublicKeys: UIO[JWT.PublicKeys] = ZIO.succeed(publicKeys)
+    override def signingKey: UIO[Option[JWT.PublicKey]] = ZIO.succeed(Some(publicKeys.active))
 
 
   val coreConfig = CoreConfig(

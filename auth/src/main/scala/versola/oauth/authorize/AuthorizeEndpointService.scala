@@ -439,11 +439,12 @@ object AuthorizeEndpointService:
           uiLocales = uiLocales,
           nonce = request.nonce,
         )
-        cHash = JWT.leftHalfHash(Base64Url.encode(code), JWT.Algorithm.RS256)
+        signingKey <- jwksService.signingKey
+          .someOrFail(RuntimeException("no JWKS entry matches this instance's configured private key -- signing key not yet published"))
+        cHash = JWT.leftHalfHash(Base64Url.encode(code), signingKey.algorithm)
         claims = userInfo.claims ++
           AuthMethodRef.idTokenClaims(amr, Some(session.createdAt), acr) +
           ("c_hash" -> Json.Str(cHash)) + ("sid" -> Json.Str(session.publicId))
-        keyId <- config.jwt.requireKeyId
         token <- JWT.serialize(
           typ = JWT.Type.JWT,
           claims = JWT.Claims(
@@ -454,8 +455,8 @@ object AuthorizeEndpointService:
           ),
           ttl = 15.minutes,
           signature = JWT.Signature.Asymmetric(
-            algorithm = JWT.Algorithm.RS256,
-            keyId = keyId,
+            algorithm = signingKey.algorithm,
+            keyId = signingKey.id,
             privateKey = config.jwt.privateKey,
           ),
         )

@@ -79,7 +79,8 @@ object UserInfoController extends Controller:
             )
           else
             for
-              keyId <- config.jwt.requireKeyId
+              signingKey <- ZIO.serviceWithZIO[JwksService](_.signingKey)
+                .someOrFail(RuntimeException("no JWKS entry matches this instance's configured private key -- signing key not yet published"))
               signedJwt <- JWT.serialize(
                 claims = JWT.Claims(
                   issuer = config.jwt.issuer,
@@ -89,8 +90,8 @@ object UserInfoController extends Controller:
                 ),
                 ttl = 5.minutes,
                 signature = JWT.Signature.Asymmetric(
-                  algorithm = JWT.Algorithm.RS256,
-                  keyId = keyId,
+                  algorithm = signingKey.algorithm,
+                  keyId = signingKey.id,
                   privateKey = config.jwt.privateKey,
                 ),
               )

@@ -556,7 +556,6 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
        |
        |jwt {
        |  issuer = "$authUrl"
-       |  key-id = "${jwtKey.kid}"
        |  private-key = ${secretKeyField(useOpenBao, jwtKey.privateB64, "JWT_PRIVATE_KEY")}
        |}
        |

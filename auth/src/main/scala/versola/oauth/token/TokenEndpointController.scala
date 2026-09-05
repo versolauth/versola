@@ -5,6 +5,7 @@ import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm, JWSHeader}
 import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{AuthMethodRef, AuthorizationDetail, ResourceUri, ScopeToken}
+import versola.oauth.jwks.JwksService
 import versola.oauth.model.{AccessToken, AuthorizationCode, CodeVerifier, RefreshToken}
 import versola.oauth.token.model.{ClientCredentialsRequest, CodeExchangeRequest, IssuedTokens, RefreshTokenRequest, TokenEndpointError, TokenErrorResponse, TokenRequest, TokenResponse}
 import versola.oauth.userinfo.UserInfoService
@@ -22,7 +23,7 @@ import java.time.Instant
 import java.util.Date
 
 object TokenEndpointController extends Controller:
-  type Env = Tracing & OAuthTokenService & OAuthConfigurationService & UserInfoService & CoreConfig
+  type Env = Tracing & OAuthTokenService & OAuthConfigurationService & UserInfoService & JwksService & CoreConfig
 
   def routes: Routes[Env, Throwable] = Routes(
     tokenEndpoint,
@@ -33,6 +34,8 @@ object TokenEndpointController extends Controller:
       (for
         oauthTokenService <- ZIO.service[OAuthTokenService]
         config <- ZIO.service[CoreConfig]
+        signingKey <- ZIO.serviceWithZIO[JwksService](_.signingKey)
+          .someOrFail(RuntimeException("no JWKS entry matches this instance's configured private key -- signing key not yet published"))
         form <- request.body.asURLEncodedForm.orElseFail(TokenEndpointError.InvalidRequest)
         tokenRequest <- parseRequest(form)
         credentials <- request.extractCredentials(form).orElseFail(TokenEndpointError.InvalidClient)
@@ -43,7 +46,7 @@ object TokenEndpointController extends Controller:
             oauthTokenService.refreshAccessToken(refreshTokenRequest, credentials)
           case clientCredentialsRequest: ClientCredentialsRequest =>
             oauthTokenService.clientCredentials(clientCredentialsRequest, credentials)
-        response <- toTokenResponse(issuedTokens, config)
+        response <- toTokenResponse(issuedTokens, config, signingKey)
       yield Response.json(response.toJson))
         .catchAll {
           case error: TokenEndpointError =>
@@ -63,6 +66,7 @@ object TokenEndpointController extends Controller:
   private def toTokenResponse(
       tokens: IssuedTokens,
       config: CoreConfig,
+      signingKey: JWT.PublicKey,
   ): ZIO[UserInfoService, Throwable, TokenResponse] =
     import versola.oauth.userinfo.model.RequestedClaims.given
     for
@@ -84,7 +88,6 @@ object TokenEndpointController extends Controller:
       // For client_credentials grant, use client_id as subject; otherwise use user_id
       subject = tokens.userId.map(_.toString).getOrElse(tokens.clientId)
 
-      keyId <- config.jwt.requireKeyId
       serializedAT <- JWT.serialize(
         typ = JWT.Type.AccessToken,
         claims = JWT.Claims(
@@ -95,12 +98,12 @@ object TokenEndpointController extends Controller:
         ),
         ttl = tokens.accessTokenTtl,
         signature = JWT.Signature.Asymmetric(
-          algorithm = JWT.Algorithm.RS256,
-          keyId = keyId,
+          algorithm = signingKey.algorithm,
+          keyId = signingKey.id,
           privateKey = config.jwt.privateKey,
         ),
       )
-      idToken <- generateIdToken(tokens, config, serializedAT)
+      idToken <- generateIdToken(tokens, config, signingKey, serializedAT)
     yield TokenResponse(
       accessToken = serializedAT,
       tokenType = "Bearer",
@@ -121,6 +124,7 @@ object TokenEndpointController extends Controller:
   private def generateIdToken(
       tokens: IssuedTokens,
       config: CoreConfig,
+      signingKey: JWT.PublicKey,
       accessToken: String,
   ): ZIO[UserInfoService, Throwable, Option[String]] =
     (tokens.user, tokens.userId) match
@@ -135,9 +139,8 @@ object TokenEndpointController extends Controller:
             uiLocales = tokens.uiLocales,
             nonce = tokens.nonce,
           )
-          atHash = JWT.leftHalfHash(accessToken, JWT.Algorithm.RS256)
+          atHash = JWT.leftHalfHash(accessToken, signingKey.algorithm)
           sidClaim = tokens.sessionId.map(sid => "sid" -> Json.Str(sid))
-          keyId <- config.jwt.requireKeyId
           serializedIdToken <- JWT.serialize(
             typ = JWT.Type.JWT,
             claims = JWT.Claims(
@@ -152,8 +155,8 @@ object TokenEndpointController extends Controller:
             ),
             ttl = tokens.accessTokenTtl,
             signature = JWT.Signature.Asymmetric(
-              algorithm = JWT.Algorithm.RS256,
-              keyId = keyId,
+              algorithm = signingKey.algorithm,
+              keyId = signingKey.id,
               privateKey = config.jwt.privateKey,
             ),
           )
