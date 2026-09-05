@@ -93,6 +93,16 @@ private[authorize] object Error:
       errorUri = Some("https://datatracker.ietf.org/doc/html/rfc6749#section-4.1.1"),
     )
 
+  /** Only the scopes the client is not registered for are named back, not the whole requested
+    * set: the unregistered ones are the reason the request failed, and echoing the rest would
+    * grow the redirect URI for no benefit.
+    */
+  case class ScopeNotGranted(uri: URL, state: Option[State], value: String) extends RedirectError(
+      error = ErrorCode.InvalidScope,
+      errorDescription = s"The requested scope is not registered for this client - $value",
+      errorUri = Some("https://datatracker.ietf.org/doc/html/rfc6749#section-3.3"),
+    )
+
   case class InvalidClaims(uri: URL, state: Option[State]) extends RedirectError(
       error = ErrorCode.InvalidRequest,
       errorDescription = "Invalid claims parameter - must be valid JSON",

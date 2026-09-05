@@ -422,6 +422,40 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
         yield assertTrue(result == Left(Error.StateInvalid(redirectUri)))
       },
     ),
+    suite("scope")(
+      test("accepts a subset of the scopes the client is registered for") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(validParams ++ Map("scope" -> "openid")))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request)
+        yield assertTrue(result.scope == Set(ScopeToken("openid")))
+      },
+      test("rejects a scope the client is not registered for") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(validParams ++ Map("scope" -> "openid phone")))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request).either
+        yield assertTrue(result == Left(Error.ScopeNotGranted(redirectUri, Some(State("test-state")), "phone")))
+      },
+      test("names every unregistered scope, not only the first") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(validParams ++ Map("scope" -> "openid phone address")))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request).either
+        yield assertTrue(result == Left(Error.ScopeNotGranted(redirectUri, Some(State("test-state")), "address phone")))
+      },
+      test("rejects an unregistered scope pushed through /par too") {
+        val env = Env()
+        val pushedParams = validParams.updated("scope", "openid phone").view.mapValues(List(_)).toMap
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.validate(pushedParams.view.mapValues(Chunk.fromIterable).toMap, Request.get(URL.root)).either
+        yield assertTrue(result == Left(Error.ScopeNotGranted(redirectUri, Some(State("test-state")), "phone")))
+      },
+    ),
     suite("code_challenge_method")(
       test("accepts S256") {
         val env = Env()

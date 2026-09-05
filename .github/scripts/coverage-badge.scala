@@ -8,14 +8,20 @@ import scala.xml.XML
 
 val Output = "coverage.json"
 
-/** Locate the aggregated scoverage report produced by `sbt coverageAggregate`. */
+/** Locate the aggregated scoverage report produced by `sbt coverageAggregate`.
+  *
+  * Per-module reports (e.g. `auth/target/.../scoverage-report/scoverage.xml`) live several
+  * segments below the repo root; `coverageAggregate` writes the whole-build report directly to
+  * `target/scala-.../scoverage-report/scoverage.xml`, i.e. with `target` as the first path
+  * segment. Matching on that instead of taking the alphabetically-first report avoids picking an
+  * arbitrary module (previously `auth/implementations/postgres`, whose name sorts first).
+  */
 def findReport(): os.Path =
   os.walk(os.pwd)
     .filter(p => p.last == "scoverage.xml" && p.segments.contains("scoverage-report"))
-    .sortBy(_.toString)
-    .headOption
+    .find(p => p.relativeTo(os.pwd).segments.headOption.contains("target"))
     .getOrElse {
-      System.err.println("No scoverage report found")
+      System.err.println("No aggregated scoverage report found")
       sys.exit(1)
     }
 

@@ -337,16 +337,15 @@ object EdgeService:
         claims: PermissionsClaims,
         resourceIds: List[ResourceId],
     ): UIO[PermissionsResponse] =
-      val tenantId = claims.tenantId
       val roles = claims.roles.getOrElse(List.empty)
-      val rolesMap = tenantId.fold(Map.empty[TenantId, List[RoleId]])(tid => Map(tid -> roles))
 
       ZIO.foreach(resourceIds): resourceId =>
         for
           resource <- resourceService.findByResourceId(resourceId)
           endpointIds = resource.fold(Set.empty[ResourceEndpointId])(_.endpoints.map(_.id).toSet)
-          perms <- permissionService.getPermissionsForRoles(rolesMap, endpointIds)
-        yield Some(resourceId -> ResourcePermissions(perms))
+          // A token without a tenant claim cannot match a role grant, which is keyed by tenant.
+          perms <- ZIO.foreach(claims.tenantId)(permissionService.getPermissionsForRoles(_, roles, endpointIds))
+        yield Some(resourceId -> ResourcePermissions(perms.getOrElse(Set.empty)))
       .map(entries => PermissionsResponse(entries.flatten.toMap, env.isProd))
 
     override def frontChannelLogout(
@@ -616,6 +615,15 @@ object EdgeService:
           case Some(expression) =>
             celEvaluator.compile(expression)
               .flatMap(_.evaluateBoolean(celContext))
+              .catchAll:
+                // The condition decides whether the stronger authentication is required, so an
+                // expression that can't say either way has to be read as "required": reading it
+                // as "not required" would let a token that can't be checked through on the
+                // weaker one it already has.
+                case CelEvaluator.EvaluationError.DataMissing => ZIO.succeed(true)
+                case CelEvaluator.EvaluationError.Broken =>
+                  Observability.setError("step_up_condition_failed", Some("cel condition could not be evaluated")) *>
+                    ZIO.fail(Outcome.InternalServerError)
 
         requiredAcr = Option.when(conditionPassed)(endpoint.stepUpAcr).flatten
         acrFailed = requiredAcr.flatMap(unsatisfied)
@@ -639,9 +647,19 @@ object EdgeService:
         celEvaluator.compile(expression)
           .flatMap(_.evaluateBoolean(context))
           .flatMap { allowed =>
-            (Observability.setError("access_rule_denied", Some(expression)) *> ZIO.fail(Outcome.Forbidden))
-              .unless(allowed)
+            (Observability.setError("access_rule_denied") *> ZIO.fail(Outcome.Forbidden)).unless(allowed)
           }
+          .catchAll:
+            // A rule that reads a claim this token doesn't carry is unsatisfied, the same as one
+            // that evaluates cleanly to false -- same code, so a denial is one thing to alert
+            // on, with the description telling the two apart when someone looks.
+            case CelEvaluator.EvaluationError.DataMissing =>
+              Observability.setError("access_rule_denied", Some("cel rule read a value the request doesn't carry")) *>
+                ZIO.fail(Outcome.Forbidden)
+            case CelEvaluator.EvaluationError.Broken =>
+              Observability.setError("access_rule_failed", Some("cel rule could not be evaluated")) *>
+                ZIO.fail(Outcome.InternalServerError)
+            case outcome: Outcome => ZIO.fail(outcome)
       .as(context)
 
     private def refreshSession(
@@ -812,6 +830,10 @@ object EdgeService:
         body <- applyBodyInjects(request, parsedBody, bodyInjects, celContext)
       yield request.copy(url = finalUrl, headers = finalHeaders, body = body)
 
+    /** An inject rule that produces nothing is not forwarded as a request with the value simply
+      * missing: upstream has no way to tell an absent header from one it was never meant to
+      * get, and it may well be the value upstream scopes its own authorization by. A rule that
+      * is meant to be optional can evaluate to an empty string via `has(...)`. */
     private def evaluateAll(
         rules: Vector[InjectRule],
         context: Map[String, AnyRef],
@@ -820,6 +842,13 @@ object EdgeService:
         celEvaluator.compile(rule.expression)
           .flatMap(_.evaluateString(context))
           .map(_.map(rule.name -> _))
+          .catchAll:
+            case CelEvaluator.EvaluationError.DataMissing =>
+              Observability.setError("inject_rule_denied", Some("cel rule read a value the request doesn't carry")) *>
+                ZIO.fail(Outcome.Forbidden)
+            case CelEvaluator.EvaluationError.Broken =>
+              Observability.setError("inject_rule_failed", Some("cel rule could not be evaluated")) *>
+                ZIO.fail(Outcome.InternalServerError)
       .map(_.flatten)
 
     private def applyBodyInjects(

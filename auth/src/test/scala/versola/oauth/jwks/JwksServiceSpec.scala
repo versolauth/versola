@@ -2,7 +2,8 @@ package versola.oauth.jwks
 
 import com.nimbusds.jose.JWSAlgorithm
 import com.nimbusds.jose.jwk.{KeyUse, RSAKey}
-import versola.util.JWT
+import versola.util.{JWT, ReloadingCache}
+import zio.*
 import zio.json.*
 import zio.json.ast.Json
 import zio.test.*
@@ -29,35 +30,58 @@ object JwksServiceSpec extends ZIOSpecDefault:
       Json.Obj("keys" -> Json.Arr(jwks.map(jwk => jwk.toJSONString.fromJson[Json.Obj].toOption.get)*)),
     )
 
-  def spec = suite("JwksService.resolveSigningKey")(
-    test("picks the entry matching the private key even when a different, unrelated entry is listed first (and would be 'active')") {
-      val gen = KeyPairGenerator.getInstance("RSA")
-      gen.initialize(2048)
-      val ownKeyPair = gen.generateKeyPair()
-      val staleKeyPair = gen.generateKeyPair()
+  private def snapshotWithKeyId(keyId: String): JwksService.Snapshot =
+    val generator = java.security.KeyPairGenerator.getInstance("RSA").nn
+    generator.initialize(2048)
+    val keyPair = generator.generateKeyPair().nn
+    JwksService.Snapshot(publicKeysOf(rsaJwk(keyPair, keyId)), signingKey = None)
 
-      // Simulates central having rotated in a new key that it now reports as active,
-      // while this instance's own private key hasn't changed.
-      val staleJwk = rsaJwk(staleKeyPair, "stale-active-kid-from-central")
-      val ownJwk = rsaJwk(ownKeyPair, "own-kid")
-      val publicKeys = publicKeysOf(staleJwk, ownJwk)
-
-      val resolved = JwksService.resolveSigningKey(ownKeyPair.getPrivate, publicKeys)
-
-      assertTrue(
-        // Sanity: confirms .active would have picked the wrong key here.
-        publicKeys.active.id == "stale-active-kid-from-central",
-        resolved.map(_.id).contains("own-kid"),
-      )
+  def spec = suite("JwksService")(
+    test("getPublicKeys reads through to the underlying cache") {
+      for
+        cache <- Ref.make(snapshotWithKeyId("key-1"))
+        service = JwksService.Impl(ReloadingCache(cache))
+        result <- service.getPublicKeys
+      yield assertTrue(result.active.id == "key-1")
     },
-    test("returns None when no JWKS entry matches the private key") {
-      val gen = KeyPairGenerator.getInstance("RSA")
-      gen.initialize(2048)
-      val unrelatedKeyPair = gen.generateKeyPair()
-      val ownKeyPair = gen.generateKeyPair()
-
-      val publicKeys = publicKeysOf(rsaJwk(unrelatedKeyPair, "unrelated-kid"))
-
-      assertTrue(JwksService.resolveSigningKey(ownKeyPair.getPrivate, publicKeys).isEmpty)
+    test("getPublicKeys reflects a cache update") {
+      for
+        cache <- Ref.make(snapshotWithKeyId("key-1"))
+        service = JwksService.Impl(ReloadingCache(cache))
+        _ <- cache.set(snapshotWithKeyId("key-2"))
+        result <- service.getPublicKeys
+      yield assertTrue(result.active.id == "key-2")
     },
+    suite("resolveSigningKey")(
+      test("picks the entry matching the private key even when a different, unrelated entry is listed first (and would be 'active')") {
+        val gen = KeyPairGenerator.getInstance("RSA")
+        gen.initialize(2048)
+        val ownKeyPair = gen.generateKeyPair()
+        val staleKeyPair = gen.generateKeyPair()
+
+        // Simulates central having rotated in a new key that it now reports as active,
+        // while this instance's own private key hasn't changed.
+        val staleJwk = rsaJwk(staleKeyPair, "stale-active-kid-from-central")
+        val ownJwk = rsaJwk(ownKeyPair, "own-kid")
+        val publicKeys = publicKeysOf(staleJwk, ownJwk)
+
+        val resolved = JwksService.resolveSigningKey(ownKeyPair.getPrivate, publicKeys)
+
+        assertTrue(
+          // Sanity: confirms .active would have picked the wrong key here.
+          publicKeys.active.id == "stale-active-kid-from-central",
+          resolved.map(_.id).contains("own-kid"),
+        )
+      },
+      test("returns None when no JWKS entry matches the private key") {
+        val gen = KeyPairGenerator.getInstance("RSA")
+        gen.initialize(2048)
+        val unrelatedKeyPair = gen.generateKeyPair()
+        val ownKeyPair = gen.generateKeyPair()
+
+        val publicKeys = publicKeysOf(rsaJwk(unrelatedKeyPair, "unrelated-kid"))
+
+        assertTrue(JwksService.resolveSigningKey(ownKeyPair.getPrivate, publicKeys).isEmpty)
+      },
+    ),
   )
