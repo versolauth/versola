@@ -440,7 +440,6 @@ object AuthorizeEndpointService:
           nonce = request.nonce,
         )
         signingKey <- jwksService.signingKey
-          .someOrFail(RuntimeException("no JWKS entry matches this instance's configured private key -- signing key not yet published"))
         cHash = JWT.leftHalfHash(Base64Url.encode(code), signingKey.algorithm)
         claims = userInfo.claims ++
           AuthMethodRef.idTokenClaims(amr, Some(session.createdAt), acr) +

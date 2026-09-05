@@ -11,7 +11,7 @@ import versola.oauth.model.AccessToken
 import versola.user.model.UserId
 import versola.util.{CoreConfig, Email, EnvName, JWT, Secret}
 import zio.json.ast.Json
-import zio.{UIO, ZIO}
+import zio.{Task, UIO, ZIO}
 
 import java.security.KeyPairGenerator
 import java.security.interfaces.{RSAPrivateKey, RSAPublicKey}
@@ -62,7 +62,7 @@ object TestEnvConfig:
 
   val jwksService: JwksService = new JwksService:
     override def getPublicKeys: UIO[JWT.PublicKeys] = ZIO.succeed(publicKeys)
-    override def signingKey: UIO[Option[JWT.PublicKey]] = ZIO.succeed(Some(publicKeys.active))
+    override def signingKey: Task[JWT.PublicKey] = ZIO.succeed(publicKeys.active)
 
 
   val coreConfig = CoreConfig(

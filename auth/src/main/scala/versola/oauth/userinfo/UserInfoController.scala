@@ -80,7 +80,6 @@ object UserInfoController extends Controller:
           else
             for
               signingKey <- ZIO.serviceWithZIO[JwksService](_.signingKey)
-                .someOrFail(RuntimeException("no JWKS entry matches this instance's configured private key -- signing key not yet published"))
               signedJwt <- JWT.serialize(
                 claims = JWT.Claims(
                   issuer = config.jwt.issuer,

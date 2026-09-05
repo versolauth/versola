@@ -35,7 +35,6 @@ object TokenEndpointController extends Controller:
         oauthTokenService <- ZIO.service[OAuthTokenService]
         config <- ZIO.service[CoreConfig]
         signingKey <- ZIO.serviceWithZIO[JwksService](_.signingKey)
-          .someOrFail(RuntimeException("no JWKS entry matches this instance's configured private key -- signing key not yet published"))
         form <- request.body.asURLEncodedForm.orElseFail(TokenEndpointError.InvalidRequest)
         tokenRequest <- parseRequest(form)
         credentials <- request.extractCredentials(form).orElseFail(TokenEndpointError.InvalidClient)

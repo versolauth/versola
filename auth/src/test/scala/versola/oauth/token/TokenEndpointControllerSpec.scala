@@ -803,7 +803,7 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
         val driftedJwks = JWT.PublicKeys.fromJson(Json.Obj("keys" -> Json.Arr(staleActiveJwkJson, ownJwkJson)))
         val driftedJwksService: JwksService = new JwksService:
           override def getPublicKeys: UIO[JWT.PublicKeys] = ZIO.succeed(driftedJwks)
-          override def signingKey: UIO[Option[JWT.PublicKey]] = ZIO.succeed(Some(TestEnvConfig.publicKeys.active))
+          override def signingKey: Task[JWT.PublicKey] = ZIO.succeed(TestEnvConfig.publicKeys.active)
 
         for
           client <- ZIO.service[Client]
@@ -853,7 +853,8 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
         // service -- only requests that need to sign should fail, until the next sync.
         val noSigningKeyJwksService: JwksService = new JwksService:
           override def getPublicKeys: UIO[JWT.PublicKeys] = ZIO.succeed(TestEnvConfig.publicKeys)
-          override def signingKey: UIO[Option[JWT.PublicKey]] = ZIO.none
+          override def signingKey: Task[JWT.PublicKey] =
+            ZIO.fail(RuntimeException("no JWKS entry matches this instance's configured private key -- signing key not yet published"))
 
         for
           client <- ZIO.service[Client]

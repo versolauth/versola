@@ -65,7 +65,6 @@ object BackChannelDispatcher:
     ): Task[Unit] =
       for
         signingKey <- jwksService.signingKey
-          .someOrFail(RuntimeException("no JWKS entry matches this instance's configured private key -- signing key not yet published"))
         token <- sign(audience, subject, customClaims, signingKey)
         request = Request.post(uri, Body.fromURLEncodedForm(Form.fromStrings("logout_token" -> token)))
         _ <- ZIO.scoped:

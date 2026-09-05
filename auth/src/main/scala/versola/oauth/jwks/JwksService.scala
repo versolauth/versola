@@ -21,7 +21,11 @@ import scala.jdk.CollectionConverters.*
   */
 trait JwksService:
   def getPublicKeys: UIO[JWT.PublicKeys]
-  def signingKey: UIO[Option[JWT.PublicKey]]
+
+  /** Fails if no synced JWKS entry matches this instance's configured private key yet
+    * (e.g. it hasn't picked up central's most recent rotation).
+    */
+  def signingKey: Task[JWT.PublicKey]
 
 object JwksService:
   case class Snapshot(publicKeys: JWT.PublicKeys, signingKey: Option[JWT.PublicKey])
@@ -63,4 +67,7 @@ object JwksService:
       cache: ReloadingCache[Snapshot],
   ) extends JwksService:
     override def getPublicKeys: UIO[JWT.PublicKeys] = cache.get.map(_.publicKeys)
-    override def signingKey: UIO[Option[JWT.PublicKey]] = cache.get.map(_.signingKey)
+    override def signingKey: Task[JWT.PublicKey] =
+      cache.get.map(_.signingKey).someOrFail(
+        RuntimeException("no JWKS entry matches this instance's configured private key -- signing key not yet published"),
+      )

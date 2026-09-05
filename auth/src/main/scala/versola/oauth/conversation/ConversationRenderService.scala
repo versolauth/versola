@@ -329,7 +329,6 @@ object ConversationRenderService:
               case Some(data) =>
                 for
                   signingKey <- jwksService.signingKey
-                    .someOrFail(RuntimeException("no JWKS entry matches this instance's configured private key -- signing key not yet published"))
                   cHash = JWT.leftHalfHash(encodedCode, signingKey.algorithm)
                   dataWithCHash = data.copy(claims = data.claims + ("c_hash" -> Json.Str(cHash)))
                   token <- serializeIdToken(dataWithCHash, signingKey)
