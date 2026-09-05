@@ -164,7 +164,7 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
         ).addHeader(authHeader(clientId1, Some(clientSecret1))),
         expectedStatus = Status.BadRequest,
         setup = services =>
-          services.oauthTokenService.exchangeAuthorizationCode.failsWith(TokenEndpointError.InvalidGrant),
+          services.oauthTokenService.exchangeAuthorizationCode.failsWith(TokenEndpointError.InvalidGrant.CodeNotFound),
         verify = response =>
           for
             body <- response.body.asString
@@ -233,7 +233,7 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
         ).addHeader(authHeader(clientId1, Some(clientSecret1))),
         expectedStatus = Status.BadRequest,
         setup = services =>
-          services.oauthTokenService.refreshAccessToken.failsWith(TokenEndpointError.InvalidGrant),
+          services.oauthTokenService.refreshAccessToken.failsWith(TokenEndpointError.InvalidGrant.RefreshTokenNotFound),
         verify = response =>
           for
             body <- response.body.asString
@@ -276,7 +276,7 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
         ).addHeader(authHeader(clientId1, Some(clientSecret1))),
         expectedStatus = Status.BadRequest,
         setup = services =>
-          services.oauthTokenService.refreshAccessToken.failsWith(TokenEndpointError.InvalidGrant),
+          services.oauthTokenService.refreshAccessToken.failsWith(TokenEndpointError.InvalidGrant.RefreshTokenReplayed),
         verify = response =>
           for
             body <- response.body.asString

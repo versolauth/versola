@@ -49,9 +49,7 @@ object TokenEndpointController extends Controller:
       yield Response.json(response.toJson))
         .catchAll {
           case error: TokenEndpointError =>
-            // setErrorIfAbsent: a service-layer detector (e.g. refresh-token replay) may
-            // have already recorded a more specific description under this same code.
-            Observability.setErrorIfAbsent(error.error, error.errorDescription).as:
+            Observability.setError(error.error, error.logDescription).as:
               val errorResponse = TokenErrorResponse.from(error)
               Response
                 .json(errorResponse.toJson)

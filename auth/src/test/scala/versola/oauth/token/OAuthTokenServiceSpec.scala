@@ -335,7 +335,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
 
           result <- env.service.exchangeAuthorizationCode(request, credentials).either
         yield assertTrue(
-          result == Left(TokenEndpointError.InvalidGrant),
+          result == Left(TokenEndpointError.InvalidGrant.CodeNotFound),
         )
       },
       test("fail with InvalidGrant when redirect_uri doesn't match") {
@@ -371,7 +371,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
 
           result <- env.service.exchangeAuthorizationCode(request, credentials).either
         yield assertTrue(
-          result == Left(TokenEndpointError.InvalidGrant),
+          result == Left(TokenEndpointError.InvalidGrant.RedirectUriMismatch),
         )
       },
       test("fail with InvalidGrant and revoke the previously issued token when code is reused (double-spend)") {
@@ -410,7 +410,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           now <- Clock.instant
           result <- env.service.exchangeAuthorizationCode(request, credentials).either
         yield assertTrue(
-          result == Left(TokenEndpointError.InvalidGrant),
+          result == Left(TokenEndpointError.InvalidGrant.CodeReplayed),
           // The replayed code's token is not in hand, so its lifetime is bounded by the
           // client's access token TTL rather than read from the token itself.
           env.accessTokenRevocationService.revoke.calls ==
@@ -679,7 +679,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
 
           result <- env.service.refreshAccessToken(request, credentials).either
         yield assertTrue(
-          result == Left(TokenEndpointError.InvalidGrant),
+          result == Left(TokenEndpointError.InvalidGrant.RefreshTokenNotFound),
           env.accessTokenRevocationService.revoke.calls.isEmpty,
         )
       },
@@ -698,7 +698,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
 
           result <- env.service.refreshAccessToken(request, credentials).either
         yield assertTrue(
-          result == Left(TokenEndpointError.InvalidGrant),
+          result == Left(TokenEndpointError.InvalidGrant.RefreshTokenReplayed),
           env.tokenRepo.markChainReplayed.calls == List((refreshTokenMac1, clientId1)),
           // The replayed token's own access token is not in hand, only its id, so its
           // lifetime is bounded by the client's access token TTL rather than read from it.
@@ -785,7 +785,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
 
           result <- env.service.refreshAccessToken(request, credentials).either
         yield assertTrue(
-          result == Left(TokenEndpointError.InvalidGrant),
+          result == Left(TokenEndpointError.InvalidGrant.RefreshChainAlreadyExchanged),
         )
       },
     ),

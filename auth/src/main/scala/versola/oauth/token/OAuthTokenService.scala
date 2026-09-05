@@ -66,10 +66,10 @@ object OAuthTokenService:
         codeMac <- securityService.mac(Secret(code), config.security.authCodesSecret)
 
         codeRecord <- authorizationCodeRepository.find(codeMac)
-          .someOrFail(TokenEndpointError.InvalidGrant)
-          .filterOrFail(_.clientId == client.id)(TokenEndpointError.InvalidGrant)
-          .filterOrFail(_.redirectUri == redirectUri)(TokenEndpointError.InvalidGrant)
-          .filterOrFail(_.verify(codeVerifier))(TokenEndpointError.InvalidGrant)
+          .someOrFail(TokenEndpointError.InvalidGrant.CodeNotFound)
+          .filterOrFail(_.clientId == client.id)(TokenEndpointError.InvalidGrant.CodeClientMismatch)
+          .filterOrFail(_.redirectUri == redirectUri)(TokenEndpointError.InvalidGrant.RedirectUriMismatch)
+          .filterOrFail(_.verify(codeVerifier))(TokenEndpointError.InvalidGrant.PkceMismatch)
 
         _ <- Observability.setSessionId(codeRecord.publicSessionId)
         _ <- Observability.setUserId(codeRecord.userId.toString)
@@ -87,7 +87,7 @@ object OAuthTokenService:
               )
             *>
               sessionRepository.deleteByAccessToken(at) *>
-              ZIO.fail(TokenEndpointError.InvalidGrant)
+              ZIO.fail(TokenEndpointError.InvalidGrant.CodeReplayed)
 
           case Right(_) =>
             ZIO.unit
@@ -122,7 +122,7 @@ object OAuthTokenService:
           accessTokenAuthorizationDetails = codeRecord.authorizationDetails.getOrElse(Nil),
         ).mapError {
           case ex: Throwable => ex
-          case _ => TokenEndpointError.InvalidGrant // illegal state
+          case _ => TokenEndpointError.InvalidGrant.RefreshChainAlreadyExchanged // illegal state
         }
       yield issuedTokens
 
@@ -149,9 +149,12 @@ object OAuthTokenService:
           case Some(record) if record.clientId == client.id =>
             ZIO.succeed(record)
           case Some(_) =>
-            ZIO.fail(TokenEndpointError.InvalidGrant)
+            ZIO.fail(TokenEndpointError.InvalidGrant.RefreshTokenClientMismatch)
           case None =>
-            detectReplay(client, refreshTokenMac) *> ZIO.fail(TokenEndpointError.InvalidGrant)
+            detectReplay(client, refreshTokenMac).flatMap: replayed =>
+              ZIO.fail:
+                if replayed then TokenEndpointError.InvalidGrant.RefreshTokenReplayed
+                else TokenEndpointError.InvalidGrant.RefreshTokenNotFound
 
         _ <- Observability.setSessionId(tokenRecord.publicSessionId)
         _ <- Observability.setUserId(tokenRecord.userId.toString)
@@ -194,8 +197,12 @@ object OAuthTokenService:
       * should not log the user out of every other client sharing the session, and a chain
       * that has already rotated past this token twice was already a dead end, so nothing is
       * revoked (there is nothing left alive to protect).
+      *
+      * Returns whether a chain was found and revoked, so the caller can tell a replay apart
+      * from a token that never existed -- both fail the request identically, but only the
+      * former is worth surfacing in the request's error context.
       */
-    private def detectReplay(client: OAuthClientRecord, replayed: MAC.Of[RefreshToken]): Task[Unit] =
+    private def detectReplay(client: OAuthClientRecord, replayed: MAC.Of[RefreshToken]): Task[Boolean] =
       sessionRepository.markChainReplayed(replayed, client.id).flatMap:
         case Some((userId, accessToken)) =>
           zio.Clock.instant.flatMap: now =>
@@ -207,12 +214,9 @@ object OAuthTokenService:
               subject = userId.toString,
               expiresAt = now.plus(client.accessTokenTtl),
             )
-          *> Observability.setError(
-            TokenEndpointError.InvalidGrant.error,
-            Some("Refresh token already exchanged for a successor (replay); chain revoked"),
-          )
+          .as(true)
         case None =>
-          ZIO.unit
+          ZIO.succeed(false)
 
     /** RFC 9396 §6: a token request may ask for the authorization details of the underlying
       * grant or fewer of them, never for more; §6.1 compares the requested objects with the
@@ -347,7 +351,7 @@ object OAuthTokenService:
             _ <- sessionRepository.createRefreshToken(mac, record)
               .mapError:
                 case ex: Throwable => ex
-                case _ => TokenEndpointError.InvalidGrant
+                case _ => TokenEndpointError.InvalidGrant.RefreshChainAlreadyExchanged
           yield token,
         )
 

@@ -86,16 +86,6 @@ object Observability:
   def setError(code: String, description: Option[String] = None): UIO[Unit] =
     logContext.update(_.annotate(error, ErrorDetails(code, description)))
 
-  /** Like [[setError]], but a no-op if the error context was already filled in earlier in
-    * this request. Lets a service-layer detector record a more specific description than
-    * the generic default an endpoint's `catchAll` falls back to for the same error code,
-    * without that fallback clobbering it once the failure reaches the controller boundary. */
-  def setErrorIfAbsent(code: String, description: Option[String] = None): UIO[Unit] =
-    logContext.update: context =>
-      context.get(error) match
-        case Some(_) => context
-        case None    => context.annotate(error, ErrorDetails(code, description))
-
   val clientLogging: FiberRef[HttpObservabilityConfig.Client] = zio.Unsafe.unsafe { case given zio.Unsafe =>
     FiberRef.unsafe.make(HttpObservabilityConfig.Client.default)
   }
