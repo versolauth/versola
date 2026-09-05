@@ -84,4 +84,16 @@ object AuthorizeNegativeSpec extends E2ESpec:
       yield assertCompletes
     },
 
+    test("prompt=none without session redirects with fragment error=login_required for hybrid response_type") {
+      for
+        (s, auth) <- setup(Flows.Id.LoginPassword)
+        _ <- auth.authorizeRaw(
+          clientId = s.clientId,
+          redirectUri = s.redirectUri,
+          responseType = Some("code id_token"),
+          prompt = Some("none"),
+        ).assertFragmentErrorRedirect("login_required")
+      yield assertCompletes
+    },
+
   ) @@ TestAspect.sequential @@ TestAspect.timeout(60.seconds)

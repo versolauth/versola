@@ -192,7 +192,7 @@ object PushedAuthorizationServiceSpec extends UnitSpecBase:
       val env = Env()
       for
         _ <- env.configuration.verifySecret.succeedsWith(Some(clientRecord))
-        _ <- env.parser.validate.failsWith(Error.ScopeMissing(redirectUri, None))
+        _ <- env.parser.validate.failsWith(Error.ScopeMissing(redirectUri, None, useFragment = false))
         service <- env.service
         result <- service.push(validParams(), credentials, request).either
       yield assertTrue(result.left.toOption.exists(_.asInstanceOf[PushedAuthorizationError].error == "invalid_scope"))

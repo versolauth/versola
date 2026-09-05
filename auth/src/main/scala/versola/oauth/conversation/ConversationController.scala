@@ -44,7 +44,7 @@ object ConversationController extends Controller:
           _ <- Observability.setAuth(cookie.authId.toString, cookie.clientId)
           record <- router.getConversation(cookie.authId)
           response <- record match
-            case None => formService.renderExpired(cookie.clientId, cookie.redirectUri, cookie.state)
+            case None => formService.renderExpired(cookie.clientId, cookie.redirectUri, cookie.state, cookie.useFragment.getOrElse(false))
             case Some(record) =>
               val ifNoneMatch = request.headers.get(Header.IfNoneMatch)
               formService.renderStep(record, ifNoneMatch.map(_.renderedValue))
@@ -195,14 +195,14 @@ object ConversationController extends Controller:
     for
       formService <- ZIO.service[ConversationRenderService]
       cookie <- extractCookie(request)
-      response <- formService.renderExpired(cookie.clientId, cookie.redirectUri, cookie.state)
+      response <- formService.renderExpired(cookie.clientId, cookie.redirectUri, cookie.state, cookie.useFragment.getOrElse(false))
     yield response
 
   private def serviceUnavailableResponse(request: Request): ZIO[ConversationRenderService & CoreConfig, Throwable, Response] =
     for
       formService <- ZIO.service[ConversationRenderService]
       cookie <- extractCookie(request)
-      response <- formService.renderServiceUnavailable(cookie.clientId, cookie.redirectUri, cookie.state)
+      response <- formService.renderServiceUnavailable(cookie.clientId, cookie.redirectUri, cookie.state, cookie.useFragment.getOrElse(false))
     yield response
 
   /** Extracts the client IP from the header configured in submission limits. Returns None when no

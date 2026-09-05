@@ -111,42 +111,52 @@ object AuthorizeRequestParser:
         ip = request.headers.get(ipHeader).map(_.split(',').head.trim).filter(_.nonEmpty)
         _ <- ZIO.foreachDiscard(ip)(Observability.setIp)
 
-        state <- getParam(params, "state")
-          .mapBoth(
-            _ => Error.MultipleValuesProvided(redirectUri, None, "state"),
-            _.map(State(_)),
-          )
-          .filterOrFail(_.forall(_.length <= MaxStateLength))(Error.StateInvalid(redirectUri))
+        stateForErrors = params.get("state")
+          .flatMap(chunk => if chunk.size == 1 then chunk.headOption else None)
+          .filter(_.length <= MaxStateLength)
+          .map(State(_))
+
+        useFragmentForErrors = params.get("response_type")
+          .exists(_.exists(_.split(" ").contains("id_token")))
 
         responseTypeEntries <- getParam(params, "response_type")
-          .orElseFail(Error.MultipleValuesProvided(redirectUri, state, "response_type"))
-          .someOrFail(Error.ResponseTypeMissing(redirectUri, state))
+          .orElseFail(Error.MultipleValuesProvided(redirectUri, stateForErrors, "response_type", useFragment = useFragmentForErrors))
+          .someOrFail(Error.ResponseTypeMissing(redirectUri, stateForErrors, useFragment = useFragmentForErrors))
           .flatMap:
             case "code" =>
               ZIO.succeed(NonEmptySet(ResponseTypeEntry.Code))
             case "code id_token" =>
               ZIO.succeed(NonEmptySet(ResponseTypeEntry.Code, ResponseTypeEntry.IdToken))
             case other =>
-              ZIO.fail(Error.UnsupportedResponseType(redirectUri, state, other))
+              ZIO.fail(Error.UnsupportedResponseType(redirectUri, stateForErrors, other, useFragment = other.split(" ").contains("id_token")))
+
+        useFragment = responseTypeEntries.contains(ResponseTypeEntry.IdToken)
+
+        state <- getParam(params, "state")
+          .mapBoth(
+            _ => Error.MultipleValuesProvided(redirectUri, None, "state", useFragment = useFragment),
+            _.map(State(_)),
+          )
+          .filterOrFail(_.forall(_.length <= MaxStateLength))(Error.StateInvalid(redirectUri, useFragment = useFragment))
 
         codeChallenge <- getParam(params, "code_challenge")
-          .orElseFail(Error.MultipleValuesProvided(redirectUri, state, "code_challenge"))
-          .someOrFail(Error.CodeChallengeMissing(redirectUri, state))
+          .orElseFail(Error.MultipleValuesProvided(redirectUri, state, "code_challenge", useFragment = useFragment))
+          .someOrFail(Error.CodeChallengeMissing(redirectUri, state, useFragment = useFragment))
           .flatMap { string =>
             ZIO.fromEither(CodeChallenge.from(string))
-              .orElseFail(Error.CodeChallengeInvalid(redirectUri, state, string))
+              .orElseFail(Error.CodeChallengeInvalid(redirectUri, state, string, useFragment = useFragment))
           }
 
         codeChallengeMethod <- getParam(params, "code_challenge_method")
-          .orElseFail(Error.MultipleValuesProvided(redirectUri, state, "code_challenge_method"))
-          .someOrFail(Error.CodeChallengeMethodMissing(redirectUri, state))
+          .orElseFail(Error.MultipleValuesProvided(redirectUri, state, "code_challenge_method", useFragment = useFragment))
+          .someOrFail(Error.CodeChallengeMethodMissing(redirectUri, state, useFragment = useFragment))
           .flatMap {
             case "S256" => ZIO.succeed(CodeChallengeMethod.S256)
-            case other => ZIO.fail(Error.CodeChallengeMethodInvalid(redirectUri, state, other))
+            case other => ZIO.fail(Error.CodeChallengeMethodInvalid(redirectUri, state, other, useFragment = useFragment))
           }
 
         scope <- getParam(params, "scope")
-          .orElseFail[Error](Error.MultipleValuesProvided(redirectUri, state, "scope"))
+          .orElseFail[Error](Error.MultipleValuesProvided(redirectUri, state, "scope", useFragment = useFragment))
           .flatMap:
             case None => ZIO.succeed(client.scope)
             case Some(value) =>
@@ -158,30 +168,30 @@ object AuthorizeRequestParser:
               ZIO.cond(
                 unregistered.isEmpty,
                 requested,
-                Error.ScopeNotGranted(redirectUri, state, unregistered.mkString(" ")),
+                Error.ScopeNotGranted(redirectUri, state, unregistered.mkString(" "), useFragment = useFragment),
               )
 
         uiLocales <- getParam(params, "ui_locales")
-          .orElseFail(Error.MultipleValuesProvided(redirectUri, state, "ui_locales"))
+          .orElseFail(Error.MultipleValuesProvided(redirectUri, state, "ui_locales", useFragment = useFragment))
           .map(_.map(_.split(' ').toList))
 
         requestedClaims <- getParam(params, "claims")
-          .orElseFail(Error.MultipleValuesProvided(redirectUri, state, "claims"))
+          .orElseFail(Error.MultipleValuesProvided(redirectUri, state, "claims", useFragment = useFragment))
           .flatMap {
             case Some(claimsJson) =>
               ZIO.fromEither(claimsJson.fromJson[RequestedClaims])
-                .orElseFail(Error.InvalidClaims(redirectUri, state))
+                .orElseFail(Error.InvalidClaims(redirectUri, state, useFragment = useFragment))
                 .map(Some(_))
             case None =>
               ZIO.none
           }
 
         nonce <- getParam(params, "nonce")
-          .orElseFail(Error.MultipleValuesProvided(redirectUri, state, "nonce"))
+          .orElseFail(Error.MultipleValuesProvided(redirectUri, state, "nonce", useFragment = useFragment))
           .map(_.map(Nonce(_)))
 
         prompt <- getParam(params, "prompt")
-          .orElseFail(Error.MultipleValuesProvided(redirectUri, state, "prompt"))
+          .orElseFail(Error.MultipleValuesProvided(redirectUri, state, "prompt", useFragment = useFragment))
           .flatMap {
             case None => ZIO.succeed(Set.empty[Prompt])
             case Some(raw) =>
@@ -189,21 +199,21 @@ object AuthorizeRequestParser:
               ZIO.cond(
                 !(prompts.contains(Prompt.none) && prompts.size > 1),
                 prompts,
-                Error.PromptInvalid(redirectUri, state),
+                Error.PromptInvalid(redirectUri, state, useFragment = useFragment),
               )
           }
 
         maxAge <- getParam(params, "max_age")
-          .orElseFail(Error.MultipleValuesProvided(redirectUri, state, "max_age"))
+          .orElseFail(Error.MultipleValuesProvided(redirectUri, state, "max_age", useFragment = useFragment))
           .map(_.flatMap(_.toLongOption))
 
         acrValues <- getParam(params, "acr_values")
-          .orElseFail[Error](Error.MultipleValuesProvided(redirectUri, state, "acr_values"))
+          .orElseFail[Error](Error.MultipleValuesProvided(redirectUri, state, "acr_values", useFragment = useFragment))
           .flatMap:
             case None => ZIO.none
             case Some(values) =>
               ZIO.fromOption(NonEmptyList.fromIterableOption(values.split(' ').map(Acr(_)).toList))
-                .orElseFail(Error.NoValuesProvided(redirectUri, state, "acr_values"))
+                .orElseFail(Error.NoValuesProvided(redirectUri, state, "acr_values", useFragment = useFragment))
                 .asSome
 
         userAgent =
@@ -219,19 +229,19 @@ object AuthorizeRequestParser:
             .flatMap(c => UserAgentCookie.parse(c.content, config.security.userAgentCookieSecret).toOption)
 
         loginHint <- getParam(params, "login_hint")
-          .orElseFail(Error.MultipleValuesProvided(redirectUri, state, "login_hint"))
+          .orElseFail(Error.MultipleValuesProvided(redirectUri, state, "login_hint", useFragment = useFragment))
           .flatMap {
             case None => ZIO.none
-            case Some(value) if value.startsWith("+") && value.drop(1).forall(_.isDigit) => parsePhoneLoginHint(value, client, redirectUri, state)
-            case Some(value) => parseEmailLoginHint(value, client, redirectUri, state)
+            case Some(value) if value.startsWith("+") && value.drop(1).forall(_.isDigit) => parsePhoneLoginHint(value, client, redirectUri, state, useFragment)
+            case Some(value) => parseEmailLoginHint(value, client, redirectUri, state, useFragment)
           }
 
         idTokenHint <- getParam(params, "id_token_hint")
-          .orElseFail(Error.MultipleValuesProvided(redirectUri, state, "id_token_hint"))
+          .orElseFail(Error.MultipleValuesProvided(redirectUri, state, "id_token_hint", useFragment = useFragment))
 
-        resources <- resolveResources(params, client, redirectUri, state)
+        resources <- resolveResources(params, client, redirectUri, state, useFragment)
 
-        authorizationDetails <- resolveAuthorizationDetails(params, client, redirectUri, state)
+        authorizationDetails <- resolveAuthorizationDetails(params, client, redirectUri, state, useFragment)
 
         authorizeRequest = AuthorizeRequest(
           clientId = clientId,
@@ -268,18 +278,19 @@ object AuthorizeRequestParser:
         client: OAuthClientRecord,
         redirectUri: URL,
         state: Option[State],
+        useFragment: Boolean,
     ): IO[Error, Option[List[AuthorizationDetail]]] =
       getParam(params, AuthorizationDetail.Parameter)
-        .orElseFail(Error.MultipleValuesProvided(redirectUri, state, AuthorizationDetail.Parameter))
+        .orElseFail(Error.MultipleValuesProvided(redirectUri, state, AuthorizationDetail.Parameter, useFragment = useFragment))
         .flatMap:
           case None => ZIO.none
           case Some(raw) =>
             ZIO.fromEither(AuthorizationDetail.parseAll(raw))
-              .mapError(reason => Error.InvalidAuthorizationDetails(redirectUri, state, reason))
+              .mapError(reason => Error.InvalidAuthorizationDetails(redirectUri, state, reason, useFragment = useFragment))
               .flatMap: details =>
                 AuthorizationDetailResolver.resolve(oauthClientService, schemaValidator, client, details)
                   .mapError(rejected =>
-                    Error.InvalidAuthorizationDetails(redirectUri, state, s"${rejected.`type`} - ${rejected.reason}"),
+                    Error.InvalidAuthorizationDetails(redirectUri, state, s"${rejected.`type`} - ${rejected.reason}", useFragment = useFragment),
                   )
                   .asSome
 
@@ -296,18 +307,19 @@ object AuthorizeRequestParser:
         client: OAuthClientRecord,
         redirectUri: URL,
         state: Option[State],
+        useFragment: Boolean,
     ): IO[Error, List[ResourceUri]] =
       params.getOrElse("resource", Chunk.empty).toList match
         case Nil =>
           ResourceResolver.resolve(oauthClientService, client, None)
-            .mapError(resource => Error.InvalidTarget(redirectUri, state, resource.toString))
+            .mapError(resource => Error.InvalidTarget(redirectUri, state, resource.toString, useFragment = useFragment))
         case values =>
           ZIO.foreach(values)(value =>
             ZIO.fromEither(ResourceUri.parse(value))
-              .orElseFail(Error.InvalidTarget(redirectUri, state, value)),
+              .orElseFail(Error.InvalidTarget(redirectUri, state, value, useFragment = useFragment)),
           ).flatMap(resources =>
             ResourceResolver.resolve(oauthClientService, client, Some(resources))
-              .mapError(resource => Error.InvalidTarget(redirectUri, state, resource.toString)),
+              .mapError(resource => Error.InvalidTarget(redirectUri, state, resource.toString, useFragment = useFragment)),
           )
 
     private def parseEmailLoginHint(
@@ -315,27 +327,29 @@ object AuthorizeRequestParser:
         client: OAuthClientRecord,
         redirectUri: URL,
         state: Option[State],
+        useFragment: Boolean,
     ): IO[Error.LoginHintInvalid, Option[Either[Email, Phone]]] =
       val allowed = client.authFlow.exists(_.primary.credentials.contains(PrimaryCredential.email))
-      if !allowed then ZIO.fail(Error.LoginHintInvalid(redirectUri, state))
+      if !allowed then ZIO.fail(Error.LoginHintInvalid(redirectUri, state, useFragment = useFragment))
       else
         ZIO.fromEither(Email.from(value))
-          .mapBoth(_ => Error.LoginHintInvalid(redirectUri, state), e => Some(Left(e)))
+          .mapBoth(_ => Error.LoginHintInvalid(redirectUri, state, useFragment = useFragment), e => Some(Left(e)))
 
     private def parsePhoneLoginHint(
         value: String,
         client: OAuthClientRecord,
         redirectUri: URL,
         state: Option[State],
+        useFragment: Boolean,
     ): IO[Error.LoginHintInvalid, Option[Either[Email, Phone]]] =
       val allowed = client.authFlow.exists(_.primary.credentials.contains(PrimaryCredential.phone))
-      if !allowed then ZIO.fail(Error.LoginHintInvalid(redirectUri, state))
+      if !allowed then ZIO.fail(Error.LoginHintInvalid(redirectUri, state, useFragment = useFragment))
       else if value.drop(1).forall(_.isDigit) then
         oauthClientService.getAllowedPhonePrefixes(client.id).flatMap: prefixes =>
           if prefixes.isEmpty || prefixes.exists(value.startsWith) then
-            ZIO.fromEither(Phone.parse(value)).mapBoth(_ => Error.LoginHintInvalid(redirectUri, state), p => Some(Right(p)))
-          else ZIO.fail(Error.LoginHintInvalid(redirectUri, state))
-      else ZIO.fail(Error.LoginHintInvalid(redirectUri, state))
+            ZIO.fromEither(Phone.parse(value)).mapBoth(_ => Error.LoginHintInvalid(redirectUri, state, useFragment = useFragment), p => Some(Right(p)))
+          else ZIO.fail(Error.LoginHintInvalid(redirectUri, state, useFragment = useFragment))
+      else ZIO.fail(Error.LoginHintInvalid(redirectUri, state, useFragment = useFragment))
 
     private def parseRedirectUri(params: Map[String, Chunk[String]]): IO[Error, (URL, String)] =
       getParam(params, "redirect_uri")
