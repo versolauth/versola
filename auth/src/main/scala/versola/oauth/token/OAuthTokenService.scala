@@ -207,7 +207,8 @@ object OAuthTokenService:
               subject = userId.toString,
               expiresAt = now.plus(client.accessTokenTtl),
             )
-          *> ZIO.logError(s"Refresh token replay detected for client '${client.id}': chain revoked")
+          *> (ZIO.logWarning(s"Refresh token replay detected for client '${client.id}': chain revoked")
+            @@ Observability.error(Observability.ErrorDetails("refresh_token_replay", Some(s"chain revoked for user $userId"))))
         case None =>
           ZIO.unit
 
