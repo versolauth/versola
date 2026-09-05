@@ -3,8 +3,12 @@ package versola.util.cel
 import dev.cel.common.{CelErrorCode, CelException}
 import dev.cel.common.types.{CelType, SimpleType}
 import dev.cel.compiler.CelCompilerFactory
+import dev.cel.optimizer.CelOptimizerFactory
+import dev.cel.optimizer.optimizers.ConstantFoldingOptimizer
 import dev.cel.parser.CelStandardMacro
 import dev.cel.runtime.{CelRuntime, CelRuntimeFactory}
+import dev.cel.validator.CelValidatorFactory
+import dev.cel.validator.validators.{DurationLiteralValidator, RegexLiteralValidator, TimestampLiteralValidator}
 import zio.{IO, Ref, UIO, ULayer, ZIO, ZLayer}
 
 import scala.jdk.CollectionConverters.MapHasAsJava
@@ -57,6 +61,27 @@ object CelEvaluator:
   private val runtime: CelRuntime =
     CelRuntimeFactory.standardCelRuntimeBuilder().build()
 
+  // Catches literals that are syntactically valid CEL but semantically nonsensical
+  // regardless of the value data ever supplies -- a malformed regex, timestamp, or
+  // duration literal is wrong the moment it's saved, not just on the request that
+  // happens to exercise it.
+  private val validator =
+    CelValidatorFactory.standardCelValidatorBuilder(compiler, runtime)
+      .addAstValidators(
+        TimestampLiteralValidator.INSTANCE,
+        DurationLiteralValidator.INSTANCE,
+        RegexLiteralValidator.INSTANCE,
+      )
+      .build()
+
+  // Folds constant subexpressions at compile time. As a side effect this also catches
+  // errors that are only "constant" by accident of how someone wrote the expression,
+  // e.g. `1 / 0 == 0`: no request data makes that stop being a division by zero.
+  private val optimizer =
+    CelOptimizerFactory.standardCelOptimizerBuilder(compiler, runtime)
+      .addAstOptimizers(ConstantFoldingOptimizer.getInstance())
+      .build()
+
   /** Stands in for an expression that didn't compile, so a configuration mistake surfaces the
     * same way at every call site as one that only shows up at evaluation time. Evaluating to
     * `false`/no value instead would let a rule that doesn't compile pass silently: a step-up
@@ -98,7 +123,11 @@ object CelEvaluator:
           if actualType != t && actualType != SimpleType.DYN then
             throw new IllegalArgumentException(s"Expected return type $t but got $actualType")
           actualType == SimpleType.DYN
-        (ProgramImpl(runtime.createProgram(ast)): Program, dynAccepted)
+        val validationResult = validator.validate(ast)
+        if validationResult.hasError then
+          throw new IllegalArgumentException(validationResult.getErrorString)
+        val optimizedAst = optimizer.optimize(ast)
+        (ProgramImpl(runtime.createProgram(optimizedAst)): Program, dynAccepted)
       .either
       .flatMap:
         case Right((program, true)) =>

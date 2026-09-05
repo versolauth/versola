@@ -57,6 +57,48 @@ object CelEvaluatorSpec extends ZIOSpecDefault:
           first.swap.toOption == second.swap.toOption,
         )
       },
+      test("fails a division by zero folded out of a constant subexpression") {
+        for
+          evaluator <- make
+          result    <- evaluator.validate("1 / 0 == 0").either
+        yield assertTrue(result.isLeft)
+      },
+      test("fails a malformed regex literal passed to matches") {
+        for
+          evaluator <- make
+          result    <- evaluator.validate("token.role.matches('[')").either
+        yield assertTrue(result.isLeft)
+      },
+      test("fails a malformed timestamp literal") {
+        for
+          evaluator <- make
+          result    <- evaluator.validate("timestamp('not-a-time')").either
+        yield assertTrue(result.isLeft)
+      },
+      test("fails a malformed duration literal") {
+        for
+          evaluator <- make
+          result    <- evaluator.validate("duration('bad')").either
+        yield assertTrue(result.isLeft)
+      },
+      test("does not fail a value-dependent division, since the divisor isn't a constant") {
+        for
+          evaluator <- make
+          result    <- evaluator.validate("100 / token.divisor == 1").either
+        yield assertTrue(result.isRight)
+      },
+      test("does not fail an arithmetic expression on DYN-typed claims, since type-checking is off for them") {
+        for
+          evaluator <- make
+          result    <- evaluator.validate("token.role + 1 > 2").either
+        yield assertTrue(result.isRight)
+      },
+      test("does not fail a mixed-type list literal, since HomogeneousLiteralValidator is deliberately not wired in") {
+        for
+          evaluator <- make
+          result    <- evaluator.validate("token.role in ['a', 2, 'c']").either
+        yield assertTrue(result.isRight)
+      },
     ),
     suite("compile (safe)")(
       test("returns a working Program for a valid expression") {
