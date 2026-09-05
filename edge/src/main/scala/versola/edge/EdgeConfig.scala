@@ -40,6 +40,12 @@ object EdgeConfig:
   case class Security(
       tokenEncryption: EdgeConfig.Security.TokenEncryption,
       edgeSessions: EdgeConfig.Security.EdgeSessions,
+      /** Authorizes the non-prod `/service/configuration/sync` endpoint (see
+        * ServiceController). Absent by default, which leaves that endpoint
+        * unreachable -- configs written before it existed, and any environment
+        * that never needs it, keep working unchanged; prod never needs it at all,
+        * since the endpoint 404s there regardless of this. */
+      internalSecret: Option[Secret] = None,
   )
 
   object Security:

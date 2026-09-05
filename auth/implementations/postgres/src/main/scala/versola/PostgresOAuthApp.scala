@@ -15,7 +15,7 @@ import versola.oauth.conversation.{ConversationController, ConversationRenderSer
 import versola.oauth.introspect.{IntrospectionController, IntrospectionService}
 import versola.oauth.client.CentralSyncTokenService
 import versola.oauth.jwks.{JwksController, JwksService, JwksSyncClient}
-import versola.oauth.logout.{BackChannelDispatcher, LogoutController, LogoutService}
+import versola.oauth.logout.{BackChannelDispatcher, BackChannelOutbox, LogoutController, LogoutService}
 import versola.oauth.revoke.{AccessTokenRevocationService, RevocationController, RevocationService}
 import versola.oauth.session.{PostgresSessionRepository, PostgresUserAgentRepository, SessionRepository, SessionService, UserAgentRepository}
 import versola.oauth.token.{AuthorizationCodeRepository, OAuthTokenService, TokenEndpointController}
@@ -66,6 +66,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       RevocationService &
       AccessTokenRevocationService &
       BackChannelDispatcher &
+      BackChannelOutbox &
       AuthorizeRequestParser &
       PushedAuthorizationService &
       AuthorizeEndpointService &
@@ -139,6 +140,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       AuthPropertyGenerator.live >+>
       SessionService.live >+>
       BackChannelDispatcher.live >+>
+      BackChannelOutbox.live >+>
       AccessTokenRevocationService.live >+>
       OAuthTokenService.live >+>
       IntrospectionService.live >+>

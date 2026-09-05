@@ -62,7 +62,7 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
     val presetCache = ReloadingCache(Unsafe.unsafe(unsafe ?=> Ref.unsafe.make(Map.empty[PresetId, AuthorizationPreset])))
     val clientCache = ReloadingCache(Unsafe.unsafe(unsafe ?=> Ref.unsafe.make(Map.empty[ClientId, OAuthClient])))
     val resourceService = ResourceService.Impl(resourceCache)
-    val clientService = OAuthClientService.Impl(presetCache, clientCache)
+    val clientService = OAuthClientService.Impl(presetCache, clientCache, stub[AuthorizationPresetsSyncClient], stub[OAuthClientsSyncClient])
     val celEvaluator = CelEvaluator.Impl(Unsafe.unsafe(unsafe ?=> Ref.unsafe.make(Map.empty)))
 
     private val keyPair =

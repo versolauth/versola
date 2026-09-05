@@ -40,13 +40,15 @@ object TokenRevocationFlowSpec extends E2ESpec:
   private def edgeStatus(auth: OAuthClient, accessToken: String): Task[Status] =
     auth.edgePermissions(accessToken).map(_.status)
 
-  /** The edge only accepts security events for clients it knows about, and it learns about a
-    * freshly registered one on its next configuration refresh. Both of these are idempotent,
-    * so the request is simply repeated until the edge starts rejecting the token.
+  /** Sends the revoking request once, then waits for the edge to reflect it.
+    * `Flows.layer` already forces the edge to learn about the client before any test runs,
+    * so this is only the ordinary delay of a back-channel event travelling from auth to the
+    * edge -- not a wait for the edge's own configuration cache, which is why it can be
+    * polled tightly instead of resent.
     */
-  private def repeatUntilRejected(request: Task[Any], auth: OAuthClient, accessToken: String): Task[Status] =
-    (request *> edgeStatus(auth, accessToken))
-      .repeat(Schedule.spaced(1.second) && Schedule.recurUntil[Status](_ == Status.Unauthorized))
+  private def awaitRejected(request: Task[Any], auth: OAuthClient, accessToken: String): Task[Status] =
+    request *> edgeStatus(auth, accessToken)
+      .repeat(Schedule.spaced(100.millis) && Schedule.recurUntil[Status](_ == Status.Unauthorized))
       .map(_._2)
 
   def spec = suite("Token revocation")(
@@ -55,7 +57,7 @@ object TokenRevocationFlowSpec extends E2ESpec:
         (s, auth) <- setup(Flows.Id.BackChannelLogout)
         session <- login(s, auth)
         before <- edgeStatus(auth, session.accessToken)
-        after <- repeatUntilRejected(
+        after <- awaitRejected(
           auth.revoke(session.accessToken, s.clientId, s.clientSecret),
           auth,
           session.accessToken,
@@ -70,7 +72,7 @@ object TokenRevocationFlowSpec extends E2ESpec:
         (s, auth) <- setup(Flows.Id.BackChannelLogout)
         revokedSession <- login(s, auth)
         survivingSession <- login(s, auth)
-        _ <- repeatUntilRejected(
+        _ <- awaitRejected(
           auth.revoke(revokedSession.accessToken, s.clientId, s.clientSecret),
           auth,
           revokedSession.accessToken,
@@ -89,7 +91,7 @@ object TokenRevocationFlowSpec extends E2ESpec:
         before <- edgeStatus(auth, session.accessToken)
         // The bearer token is still signed and unexpired after the logout, and the edge has
         // no session cookie to drop for it: only the revocation keyed by `sid` stops it.
-        after <- repeatUntilRejected(
+        after <- awaitRejected(
           auth.logoutWithIdTokenHint(session.idToken),
           auth,
           session.accessToken,
@@ -105,7 +107,7 @@ object TokenRevocationFlowSpec extends E2ESpec:
         first <- login(s, auth)
         second <- login(s, auth)
         // One event per client covers both sessions, so it is enough to poll on one of them.
-        _ <- repeatUntilRejected(auth.invalidateUserSessions(s.userId), auth, first.accessToken)
+        _ <- awaitRejected(auth.invalidateUserSessions(s.userId), auth, first.accessToken)
         other <- edgeStatus(auth, second.accessToken)
       yield assertTrue(other == Status.Unauthorized)
         .label("every session of the user must be rejected, not just one")
@@ -114,7 +116,7 @@ object TokenRevocationFlowSpec extends E2ESpec:
       for
         (s, auth) <- setup(Flows.Id.BackChannelLogout)
         old <- login(s, auth)
-        _ <- repeatUntilRejected(auth.invalidateUserSessions(s.userId), auth, old.accessToken)
+        _ <- awaitRejected(auth.invalidateUserSessions(s.userId), auth, old.accessToken)
         // Past the second the revocation was recorded in: `iat` is whole seconds, and a
         // token minted in that same second is deliberately treated as one it covers.
         _ <- ZIO.sleep(1100.millis)
@@ -130,7 +132,7 @@ object TokenRevocationFlowSpec extends E2ESpec:
         (s, auth) <- setup(Flows.Id.BackChannelLogout)
         endedSession <- login(s, auth)
         survivingSession <- login(s, auth)
-        _ <- repeatUntilRejected(
+        _ <- awaitRejected(
           auth.logoutWithIdTokenHint(endedSession.idToken),
           auth,
           endedSession.accessToken,
@@ -139,8 +141,6 @@ object TokenRevocationFlowSpec extends E2ESpec:
       yield assertTrue(surviving == Status.Ok)
         .label("a session that was not logged out must still be accepted")
     },
-    // The revocations under test are recorded against wall-clock expiry and polled for over
-    // real seconds, so the tests need the live clock rather than the test one. That polling,
-    // once per test and run sequentially, is why this suite alone takes 40+ real seconds —
-    // not a hang.
-  ) @@ TestAspect.sequential @@ TestAspect.withLiveClock @@ TestAspect.timeout(90.seconds)
+    // The revocations under test are recorded against wall-clock expiry, so the tests need
+    // the live clock rather than the test one.
+  ) @@ TestAspect.sequential @@ TestAspect.withLiveClock @@ TestAspect.timeout(30.seconds)

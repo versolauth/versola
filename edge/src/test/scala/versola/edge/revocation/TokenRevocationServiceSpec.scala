@@ -1,7 +1,7 @@
 package versola.edge.revocation
 
 import org.scalamock.stubs.ZIOStubs
-import versola.edge.{EdgeConfig, OAuthClientService}
+import versola.edge.{AuthorizationPresetsSyncClient, EdgeConfig, OAuthClientService, OAuthClientsSyncClient}
 import versola.edge.model.{AccessTokenId, AuthorizationPreset, ClientId, EdgeId, OAuthClient, PresetId, SessionId}
 import versola.util.{ReloadingCache, Secret}
 import zio.*
@@ -72,6 +72,8 @@ object TokenRevocationServiceSpec extends ZIOSpecDefault, ZIOStubs:
     OAuthClientService.Impl(
       ReloadingCache(Unsafe.unsafe(unsafe ?=> Ref.unsafe.make(Map.empty[PresetId, AuthorizationPreset]))),
       ReloadingCache(Unsafe.unsafe(unsafe ?=> Ref.unsafe.make(values.map(c => c.id -> c).toMap))),
+      stub[AuthorizationPresetsSyncClient],
+      stub[OAuthClientsSyncClient],
     )
 
   private val clientService = clientServiceOf(client("web", 5.minutes))

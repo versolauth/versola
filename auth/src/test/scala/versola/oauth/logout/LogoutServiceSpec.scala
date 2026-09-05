@@ -81,12 +81,12 @@ object LogoutServiceSpec extends UnitSpecBase:
   class Env:
     val sessionService = stub[SessionService]
     val configuration = stub[OAuthConfigurationService]
-    val dispatcher = stub[BackChannelDispatcher]
+    val outbox = stub[BackChannelOutbox]
     val service: LogoutService = LogoutService.Impl(
       sessionService,
       configuration,
       TestEnvConfig.coreConfig,
-      dispatcher,
+      outbox,
     )
 
   def spec = suite("LogoutService")(
@@ -201,14 +201,13 @@ object LogoutServiceSpec extends UnitSpecBase:
           _ <- env.sessionService.invalidate.succeedsWith(Some(sessionInfo1))
           _ <- env.configuration.find.succeedsWith(Some(withBackChannel))
           _ <- env.configuration.getPostLogoutRedirectUris.succeedsWith(Nil)
-          _ <- env.dispatcher.dispatch.succeedsWith(())
+          _ <- env.outbox.submit.succeedsWith(())
           _ <- env.service.logout(Right(rawSessionId), None, None)
-          // Delivery is forked so a slow RP cannot hold up the user's own logout response.
-          calls <- ZIO.succeed(env.dispatcher.dispatch.calls).repeatUntil(_.nonEmpty)
+          calls = env.outbox.submit.calls
         yield assertTrue(
-          calls.map((audience, uri, subject, _) => (audience.toList, uri.encode, subject)) ==
+          calls.map(delivery => (delivery.audience.toList, delivery.uri.encode, delivery.subject)) ==
             List((List(withBackChannel.id), "https://rp-a.example/backchannel", userId.toString)),
-          calls.head._4 == Json.Obj(
+          calls.head.customClaims == Json.Obj(
             "sid" -> Json.Str(publicSessionId1),
             "events" -> Json.Obj("http://schemas.openid.net/event/backchannel-logout" -> Json.Obj()),
           ),
@@ -221,7 +220,7 @@ object LogoutServiceSpec extends UnitSpecBase:
           _ <- env.configuration.find.succeedsWith(Some(clientNoLogoutUri))
           _ <- env.configuration.getPostLogoutRedirectUris.succeedsWith(Nil)
           _ <- env.service.logout(Right(rawSessionId), None, None)
-        yield assertTrue(env.dispatcher.dispatch.calls.isEmpty)
+        yield assertTrue(env.outbox.submit.calls.isEmpty)
       },
     ),
     suite("invalidateAllSessions")(
@@ -255,15 +254,15 @@ object LogoutServiceSpec extends UnitSpecBase:
         for
           _ <- env.sessionService.invalidateAllByUser.succeedsWith(sessions)
           _ <- env.configuration.find.succeedsWith(Some(withBackChannel))
-          _ <- env.dispatcher.dispatch.succeedsWith(())
+          _ <- env.outbox.submit.succeedsWith(())
           _ <- env.service.invalidateAllSessions(userId)
-          calls <- ZIO.succeed(env.dispatcher.dispatch.calls).repeatUntil(_.nonEmpty)
+          calls = env.outbox.submit.calls
         yield assertTrue(
           // Three sessions, one client, one delivery: a logout token carrying a subject and
           // no session asks the RP to end every session that user has with it.
-          calls.map((audience, _, subject, _) => (audience.toList, subject)) ==
+          calls.map(delivery => (delivery.audience.toList, delivery.subject)) ==
             List((List(withBackChannel.id), userId.toString)),
-          calls.head._4 == Json.Obj(
+          calls.head.customClaims == Json.Obj(
             "toe" -> Json.Num(0),
             "events" -> Json.Obj("http://schemas.openid.net/event/backchannel-logout" -> Json.Obj()),
           ),
@@ -278,11 +277,10 @@ object LogoutServiceSpec extends UnitSpecBase:
         for
           _ <- env.sessionService.invalidateAllByUser.succeedsWith(sessions)
           _ <- env.configuration.find.returnsZIO(id => ZIO.succeed(participants.get(id)))
-          _ <- env.dispatcher.dispatch.succeedsWith(())
+          _ <- env.outbox.submit.succeedsWith(())
           occurredAt <- Clock.instant
           _ <- env.service.invalidateAllSessions(userId)
-          calls <- ZIO.succeed(env.dispatcher.dispatch.calls).repeatUntil(_.size == 2)
-          eventTimes = calls.map(_._4.get(JsonCursor.field("toe")))
+          eventTimes = env.outbox.submit.calls.map(_.customClaims.get(JsonCursor.field("toe")))
         yield assertTrue(
           // One administrative action is one boundary. Signed per delivery instead, two
           // endpoints would bound the same revocation at two different instants, and a

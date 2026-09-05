@@ -313,6 +313,19 @@ object Flows:
           acrVocabulary = Map(Acr.OtpLevel -> List("otp"), Acr.PasswordLevel -> List("password"), Acr.PasskeyLevel -> List("passkey")),
         )
         _       <- client.syncConfiguration()
+        // The edge only accepts security events for a client it already knows about, and
+        // otherwise waits for its next scheduled refresh from central to learn of one just
+        // registered. Forcing that refresh now, rather than waiting, is what lets the
+        // revocation tests poll for the edge's *reaction* to an event instead of re-sending
+        // the event itself until the edge is ready to accept it.
+        //
+        // Deliberately last, not right after registerClient in setupBackChannelLogout above:
+        // registerClient only writes central's database, and central's own OAuthClientService
+        // cache -- what this pull reads -- only catches up once its background listener
+        // processes the resulting PostgreSQL NOTIFY. Every setup*() call still ahead of this
+        // one in the chain gives that listener room to do so before this fires, so the pull
+        // sees the client rather than racing the notification that would add it.
+        _       <- client.syncEdgeConfiguration()
       yield Setups(
         Map(
           Id.LoginPassword -> lp,

@@ -39,7 +39,7 @@ object LogoutService:
       sessionService: SessionService,
       configuration: OAuthConfigurationService,
       config: CoreConfig,
-      dispatcher: BackChannelDispatcher,
+      outbox: BackChannelOutbox,
   ) extends LogoutService:
 
     override def logout(
@@ -78,13 +78,13 @@ object LogoutService:
         // Stamped here, once, rather than left to each delivery: the RP bounds the
         // revocation at this instant, so a token issued after it is one the user obtained by
         // logging in again and must keep working. Deliveries are forked and sign their own
-        // `iat` whenever they get to run, which would put that boundary after a login that
-        // beat them to it and lock the user out for an access token's lifetime — and would
-        // give two endpoints two different boundaries for one administrative action.
+        // `iat` whenever a worker gets to them, which would put that boundary after a login
+        // that beat them to it and lock the user out for an access token's lifetime — and
+        // would give two endpoints two different boundaries for one administrative action.
         occurredAt <- Clock.instant
         participants <- sessionClients(sessions.flatMap(_.clients.map(_.clientId)).distinct)
         _ <- ZIO.foreachDiscard(byEndpoint(participants)):
-          case (uri, audience) => sendUserLogout(uri, audience, userId, occurredAt).forkDaemon
+          case (uri, audience) => sendUserLogout(uri, audience, userId, occurredAt)
       yield ()
 
     /** Resolves the RPs that actually participated in this SSO session (tracked via
@@ -129,12 +129,12 @@ object LogoutService:
         .toList
         .flatMap((uri, ids) => NonEmptyChunk.fromIterableOption(ids).map(uri -> _))
 
-    /** OIDC Back-Channel Logout (spec §2.4): each endpoint is notified on its own daemon
-      * fiber, so a slow or unreachable RP never delays or fails the user's own logout
-      * response. */
+    /** OIDC Back-Channel Logout (spec §2.4): the deliveries are handed to the outbox rather
+      * than made here, so a slow or unreachable RP never delays or fails the user's own
+      * logout response. */
     private def sendBackChannelLogouts(clients: List[OAuthClientRecord], session: SessionRecord): UIO[Unit] =
       ZIO.foreachDiscard(byEndpoint(clients)):
-        case (uri, audience) => sendBackChannelLogout(uri, audience, session).forkDaemon
+        case (uri, audience) => sendBackChannelLogout(uri, audience, session)
 
     private def sendBackChannelLogout(uri: URL, audience: NonEmptyChunk[ClientId], session: SessionRecord): UIO[Unit] =
       send(
@@ -168,6 +168,9 @@ object LogoutService:
       )
 
     private def send(uri: URL, audience: NonEmptyChunk[ClientId], subject: String, customClaims: Json.Obj): UIO[Unit] =
-      dispatcher
-        .dispatch(audience = audience, uri = uri, subject = subject, customClaims = customClaims)
-        .catchAllCause(cause => ZIO.logWarningCause(s"Back-channel logout to '$uri' failed", cause))
+      outbox.submit(BackChannelOutbox.Delivery(
+        audience = audience,
+        uri = uri,
+        subject = subject,
+        customClaims = customClaims,
+      ))

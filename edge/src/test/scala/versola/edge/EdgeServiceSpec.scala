@@ -80,7 +80,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
     val clientCache = ReloadingCache(Unsafe.unsafe(unsafe ?=> Ref.unsafe.make(Map.empty[ClientId, OAuthClient])))
     val resourceCache = ReloadingCache(Unsafe.unsafe(unsafe ?=> Ref.unsafe.make(Map.empty[ResourceId, Resource])))
 
-    val clientService = OAuthClientService.Impl(presetCache, clientCache)
+    val clientService = OAuthClientService.Impl(presetCache, clientCache, stub[AuthorizationPresetsSyncClient], stub[OAuthClientsSyncClient])
     val resourceService = ResourceService.Impl(resourceCache)
     val celEvaluator = CelEvaluator.Impl(Unsafe.unsafe(unsafe ?=> Ref.unsafe.make(Map.empty)))
 
