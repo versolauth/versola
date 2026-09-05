@@ -1,7 +1,6 @@
 package versola.oauth.logout
 
 import versola.oauth.client.model.ClientId
-import versola.oauth.jwks.JwksService
 import versola.util.{CoreConfig, JWT}
 import zio.*
 import zio.http.{Body, Client, Form, Request, URL}
@@ -40,11 +39,10 @@ object BackChannelDispatcher:
     */
   private val RequestTimeout = 5.seconds
 
-  val live = ZLayer.fromFunction(Impl(_, _, _))
+  val live = ZLayer.fromFunction(Impl(_, _))
 
   class Impl(
       config: CoreConfig,
-      jwksService: JwksService,
       httpClient: Client,
   ) extends BackChannelDispatcher:
 
@@ -64,8 +62,7 @@ object BackChannelDispatcher:
         customClaims: Json.Obj,
     ): Task[Unit] =
       for
-        signingKey <- jwksService.getPublicKeys.map(_.active)
-        token <- sign(audience, subject, customClaims, signingKey)
+        token <- sign(audience, subject, customClaims)
         request = Request.post(uri, Body.fromURLEncodedForm(Form.fromStrings("logout_token" -> token)))
         _ <- ZIO.scoped:
           httpClient.request(request).flatMap: response =>
@@ -83,19 +80,21 @@ object BackChannelDispatcher:
         audience: NonEmptyChunk[ClientId],
         subject: String,
         customClaims: Json.Obj,
-        signingKey: JWT.PublicKey,
     ): Task[String] =
-      JWT.serialize(
-        claims = JWT.Claims(
-          issuer = config.jwt.issuer,
-          subject = subject,
-          audience = audience.toList,
-          custom = customClaims,
-        ),
-        ttl = TokenTtl,
-        signature = JWT.Signature.Asymmetric(
-          algorithm = signingKey.algorithm,
-          keyId = signingKey.id,
-          privateKey = config.jwt.privateKey,
-        ),
-      )
+      for
+        keyId <- config.jwt.requireKeyId
+        token <- JWT.serialize(
+          claims = JWT.Claims(
+            issuer = config.jwt.issuer,
+            subject = subject,
+            audience = audience.toList,
+            custom = customClaims,
+          ),
+          ttl = TokenTtl,
+          signature = JWT.Signature.Asymmetric(
+            algorithm = JWT.Algorithm.RS256,
+            keyId = keyId,
+            privateKey = config.jwt.privateKey,
+          ),
+        )
+      yield token
