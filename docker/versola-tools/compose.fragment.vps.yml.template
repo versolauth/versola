@@ -68,7 +68,7 @@ services:
     network_mode: host
     command: ["migrate"]
     # auth.conf/central.conf/edge.conf's postgres.password field is an
-    # OpenBao-resolved ${?POSTGRES_PASSWORD} placeholder here (unlike
+    # OpenBao-resolved ${POSTGRES_PASSWORD} placeholder here (unlike
     # docker-local's literal value -- see gen-env.scala's secretField call
     # on that field), so it needs env_file the same way central's own
     # service does below. All three services' passwords are the one value

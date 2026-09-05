@@ -16,6 +16,10 @@ spec:
     metadata:
       labels:
         {{- include "versola.componentSelectorLabels" (dict "component" $name "context" $) | nindent 8 }}
+      {{- with (include "versola.secretRestartAnnotations" (dict "root" $ "service" $name) | trim) }}
+      annotations:
+        {{ . }}
+      {{- end }}
     spec:
       {{- with $.Values.global.imagePullSecrets }}
       imagePullSecrets:
@@ -66,6 +70,7 @@ spec:
             # replica stays a plain server until that lands.
             - name: RUN_MIGRATIONS
               value: "false"
+            {{- include "versola.secretEnv" (dict "root" $ "service" $name) | nindent 12 }}
             {{- with $svc.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

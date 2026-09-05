@@ -2,8 +2,9 @@ package versola.edge.revocation
 
 import com.augustnagro.magnum.magzio.TransactorZIO
 import com.augustnagro.magnum.sql
+import org.scalamock.stubs.ZIOStubs
 import versola.edge.model.{AccessTokenId, AuthorizationPreset, PresetId}
-import versola.edge.{OAuthClientService, PostgresRevocationNotifications, PostgresRevocationRepository}
+import versola.edge.{AuthorizationPresetsSyncClient, OAuthClientService, OAuthClientsSyncClient, PostgresRevocationNotifications, PostgresRevocationRepository}
 import versola.util.ReloadingCache
 import versola.util.postgres.{PostgresConfig, PostgresSpec}
 import zio.*
@@ -19,13 +20,15 @@ import java.time.Instant
   * parts of this same service that *are* abstracted, over `RevocationRepositorySpec` and
   * `TokenRevocationServiceSyncSpec`.
   */
-object PostgresTokenRevocationServiceSpec extends ZIOSpecDefault:
+object PostgresTokenRevocationServiceSpec extends ZIOSpecDefault, ZIOStubs:
 
   /** No clients configured: nothing here goes through the TTL-derived paths. */
   private val clientService: OAuthClientService =
     OAuthClientService.Impl(
       ReloadingCache(Unsafe.unsafe(unsafe ?=> Ref.unsafe.make(Map.empty[PresetId, AuthorizationPreset]))),
       ReloadingCache(Unsafe.unsafe(unsafe ?=> Ref.unsafe.make(Map.empty[versola.edge.model.ClientId, versola.edge.model.OAuthClient]))),
+      stub[AuthorizationPresetsSyncClient],
+      stub[OAuthClientsSyncClient],
     )
 
   private def service =

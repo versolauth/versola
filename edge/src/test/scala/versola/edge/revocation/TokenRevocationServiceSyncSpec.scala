@@ -2,7 +2,7 @@ package versola.edge.revocation
 
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.edge.model.{AccessTokenId, AuthorizationPreset, ClientId, OAuthClient, PresetId}
-import versola.edge.OAuthClientService
+import versola.edge.{AuthorizationPresetsSyncClient, OAuthClientService, OAuthClientsSyncClient}
 import versola.util.{DatabaseSpecBase, ReloadingCache}
 import zio.*
 import zio.test.*
@@ -26,6 +26,8 @@ trait TokenRevocationServiceSyncSpec extends DatabaseSpecBase[TokenRevocationSer
     OAuthClientService.Impl(
       ReloadingCache(Unsafe.unsafe(unsafe ?=> Ref.unsafe.make(Map.empty[PresetId, AuthorizationPreset]))),
       ReloadingCache(Unsafe.unsafe(unsafe ?=> Ref.unsafe.make(Map.empty[ClientId, OAuthClient]))),
+      stub[AuthorizationPresetsSyncClient],
+      stub[OAuthClientsSyncClient],
     )
 
   private def revocation(id: String) =

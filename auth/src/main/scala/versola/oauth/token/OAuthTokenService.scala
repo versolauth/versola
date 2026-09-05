@@ -152,8 +152,11 @@ object OAuthTokenService:
         _ <- Observability.setSessionId(tokenRecord.publicSessionId)
         _ <- Observability.setUserId(tokenRecord.userId.toString)
 
+        // RFC 6749 §6: the request may narrow the underlying grant but never widen it, so the
+        // comparison is against what was granted, not against the client's registration —
+        // which would hand back every scope the user deselected at consent on the first refresh.
         _ <- ZIO.fail(TokenEndpointError.InvalidScope)
-          .when(scope.exists(!_.subsetOf(client.scope)))
+          .when(scope.exists(!_.subsetOf(tokenRecord.scope)))
 
         audience <- resolveTokenAudience(client, tokenRecord.audience, resources)
 

@@ -502,7 +502,11 @@ object EdgeService:
         celContext <- checkRules(session.claims, userInfo, request, endpoint, restPath, parsedBody)
         _ <- checkStepUp(endpoint, typedClaims, now, celContext)
         upstream <- buildUpstreamRequest(resource, endpoint, restPath, request, parsedBody, session.accessToken, celContext)
-        response <- ZIO.scoped(httpClient.request(upstream))
+        // `collect` inside the scope: the response this returns is handed straight back to
+        // edge's own server, which streams it to the caller long after the upstream scope has
+        // closed. Left streaming, whatever the body had not yet delivered by then dies with the
+        // upstream connection, and the caller sees its own connection close mid-body.
+        response <- ZIO.scoped(httpClient.request(upstream).flatMap(_.collect))
         stripped = response.removeHeader(Header.SetCookie)
       yield session.rotatedCookie.fold(stripped)(stripped.addCookie)
 

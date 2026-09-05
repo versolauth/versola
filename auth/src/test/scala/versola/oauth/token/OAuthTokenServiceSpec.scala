@@ -681,7 +681,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           result == Left(TokenEndpointError.InvalidGrant),
         )
       },
-      test("fail with InvalidScope when requested scope exceeds client scope") {
+      test("fail with InvalidScope when requested scope was never granted") {
         val env = new Env
         val invalidScope = Set(ScopeToken("admin"), ScopeToken.OfflineAccess)
         for
@@ -716,6 +716,49 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
 
           result <- env.service.refreshAccessToken(request, credentials).either
         yield assertTrue(
+          result == Left(TokenEndpointError.InvalidScope),
+        )
+      },
+      // RFC 6749 §6: the underlying grant, not the client registration, is the ceiling. A user
+      // who deselected a scope at consent must not have it handed back on the first refresh.
+      test("fail with InvalidScope when requested scope is registered for the client but was not granted") {
+        val env = new Env
+        val grantedScope = Set(ScopeToken("read"), ScopeToken.OfflineAccess)
+        val widenedScope = Set(ScopeToken("read"), ScopeToken("write"), ScopeToken.OfflineAccess)
+        for
+          now <- Clock.instant
+
+          tokenRecord = RefreshTokenRecord(
+            sessionId = sessionId1,
+            publicSessionId = publicSessionId1,
+            accessToken = accessToken1,
+            userId = userId1,
+            clientId = clientId1,
+            audience = List.empty,
+            authorizationDetails = None,
+            scope = grantedScope,
+            issuedAt = now.minusSeconds(3600),
+            expiresAt = now.plusSeconds(testClient.refreshTokenTtl.toSeconds),
+            requestedClaims = None,
+            uiLocales = None,
+            nonce = None,
+            previousRefreshToken = None,
+            amr = amr1,
+            authTime = authTime1,
+            acr = None,
+          )
+
+          _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
+          _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
+          _ <- env.tokenRepo.findToken.succeedsWith(Some(tokenRecord))
+
+          request = RefreshTokenRequest(refreshToken1, Some(widenedScope), None, None)
+          credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
+
+          result <- env.service.refreshAccessToken(request, credentials).either
+        yield assertTrue(
+          // `write` is registered for the client, so only the grant can reject it
+          widenedScope.subsetOf(testClient.scope),
           result == Left(TokenEndpointError.InvalidScope),
         )
       },
