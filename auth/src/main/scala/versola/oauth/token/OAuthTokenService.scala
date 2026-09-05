@@ -207,8 +207,10 @@ object OAuthTokenService:
               subject = userId.toString,
               expiresAt = now.plus(client.accessTokenTtl),
             )
-          *> (ZIO.logWarning(s"Refresh token replay detected for client '${client.id}': chain revoked")
-            @@ Observability.error(Observability.ErrorDetails("refresh_token_replay", Some(s"chain revoked for user $userId"))))
+          *> Observability.setError(
+            TokenEndpointError.InvalidGrant.error,
+            Some("Refresh token already exchanged for a successor (replay); chain revoked"),
+          )
         case None =>
           ZIO.unit
 
