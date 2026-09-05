@@ -255,9 +255,16 @@ class PostgresSessionRepository(xa: TransactorZIO)
 
             // Retire the presented token. Zero rows means it was already exchanged -- either
             // earlier, or by a concurrent request that just released the lock above.
+            //
+            // expires_at here is not "when this token stops working" -- rotated_at already
+            // means that -- it is how long the row survives the cleanup sweep so a replay of
+            // this generation still resolves to its family. That only needs to outlast a
+            // plausible detection window, not the full refresh-token TTL: tying it to the
+            // latter (as the successor's own expiry would) makes retained rows outlive their
+            // usefulness by up to refresh_token_ttl, multiplying storage for every rotation.
             val retired = sql"""
               UPDATE refresh_tokens
-              SET rotated_at = $now, expires_at = ${record.expiresAt}
+              SET rotated_at = $now, expires_at = ${now.plus(PostgresSessionRepository.ReplayDetectionWindow)}
               WHERE id = $previousToken AND rotated_at IS NULL AND expires_at > $now
             """.update.run()
 
@@ -396,6 +403,25 @@ object PostgresSessionRepository:
 
   /** Signals a rotation that lost its race, from inside the transaction body. */
   private case object RotationLost extends RuntimeException("refresh token already exchanged")
+
+  /** How long a retired token's row is kept around after rotation so a replay of that
+    * generation still resolves to its family. Independent of refresh_token_ttl on purpose:
+    * that value governs how long an *unused* token stays valid, not how far back a replay
+    * has to be detectable. A replay older than this window falls back to a plain
+    * invalid_grant with no revocation -- the pre-fix behavior -- which is an accepted
+    * trade-off for keeping the table's steady-state size bounded by rotation frequency
+    * times this window rather than times the (typically much longer) refresh-token TTL.
+    *
+    * The case this exists for is an attacker rotating a stolen token before the legitimate
+    * client wakes up and presents the one it still holds -- that presentation is the only
+    * signal the chain leaked. 24h covers the common absence pattern (overnight, a closed
+    * laptop) at a bounded cost: retained rows per family are window / refresh interval, so
+    * this is ~1 row/family/day at an hourly refresh cadence rather than ~90 at the full
+    * refresh-token TTL. A client that goes quiet for longer than this loses detection for
+    * that gap; if that matters, retaining a narrow tombstone (id, family_id, user_id,
+    * client_id, issued_at) instead of the full row would make a much longer window cheap.
+    */
+  private val ReplayDetectionWindow: Duration = Duration.fromSeconds(24 * 3600)
 
   private val SerializationFailureSqlState = "40001"
   private val UniqueViolationSqlState      = "23505"
