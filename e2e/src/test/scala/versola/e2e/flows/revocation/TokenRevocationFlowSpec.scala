@@ -41,10 +41,10 @@ object TokenRevocationFlowSpec extends E2ESpec:
     auth.edgePermissions(accessToken).map(_.status)
 
   /** Sends the revoking request once, then waits for the edge to reflect it.
-    * `setupBackChannelLogout` already forces the edge to learn about the client before any
-    * test runs, so this is only the ordinary delay of a back-channel event travelling from
-    * auth to the edge -- not a wait for the edge's own configuration cache, which is why it
-    * can be polled tightly instead of resent.
+    * `Flows.layer` already forces the edge to learn about the client before any test runs,
+    * so this is only the ordinary delay of a back-channel event travelling from auth to the
+    * edge -- not a wait for the edge's own configuration cache, which is why it can be
+    * polled tightly instead of resent.
     */
   private def awaitRejected(request: Task[Any], auth: OAuthClient, accessToken: String): Task[Status] =
     request *> edgeStatus(auth, accessToken)
