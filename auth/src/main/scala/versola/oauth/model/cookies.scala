@@ -18,7 +18,7 @@ case class ConversationCookie(
     clientId: ClientId,
     redirectUri: String,
     state: Option[String],
-    useFragment: Option[Boolean] = None,
+    useFragment: Option[Boolean],
 ) derives JsonCodec
 
 object ConversationCookie:

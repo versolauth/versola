@@ -67,7 +67,7 @@ object AuthorizeEndpointController extends Controller:
                   request.clientId,
                   redirectUri = request.redirectUri.encode,
                   state = request.state,
-                  useFragment = Some(request.responseType.contains(ResponseTypeEntry.IdToken)),
+                  useFragment = Some(request.isHybrid),
                 ),
                 authConversationTtl,
                 config.security.conversationCookieSecret,

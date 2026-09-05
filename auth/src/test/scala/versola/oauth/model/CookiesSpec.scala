@@ -30,8 +30,8 @@ object CookiesSpec extends ZIOSpecDefault:
   def spec = suite("CookiesSpec")(
     suite("ConversationCookie")(
       test("responseCookie creates a secure cookie with valid signature") {
-        val cookie = ConversationCookie(authId, clientId, "https://example.com/callback", None)
-        val resp = ConversationCookie.responseCookie(cookie, 15.minutes, secret)
+        val cookie = ConversationCookie(authId, clientId, "https://example.com/callback", None, None)
+        val resp   = ConversationCookie.responseCookie(cookie, 15.minutes, secret)
         assertTrue(
           resp.name == ConversationCookie.name,
           resp.path.nonEmpty,
@@ -47,20 +47,21 @@ object CookiesSpec extends ZIOSpecDefault:
           clientId,
           redirectUri = "https://example.com/callback",
           state = Some("state-1"),
+          useFragment = None,
         )
         val content = ConversationCookie.responseCookie(cookie, 15.minutes, secret).content
         assertTrue(ConversationCookie.parse(content, secret) == Right(cookie))
       },
       test("parse fails with wrong secret") {
-        val cookie = ConversationCookie(authId, clientId, "https://example.com/callback", None)
-        val content = ConversationCookie.responseCookie(cookie, 15.minutes, secret).content
+        val cookie      = ConversationCookie(authId, clientId, "https://example.com/callback", None, None)
+        val content     = ConversationCookie.responseCookie(cookie, 15.minutes, secret).content
         val wrongSecret = Secret.Bytes32(Array.fill(32)(9.toByte))
         assertTrue(ConversationCookie.parse(content, wrongSecret).isLeft)
       },
       test("parse fails with tampered payload") {
-        val cookie = ConversationCookie(authId, clientId, "https://example.com/callback", None)
-        val content = ConversationCookie.responseCookie(cookie, 15.minutes, secret).content
-        val parts = content.split('.')
+        val cookie          = ConversationCookie(authId, clientId, "https://example.com/callback", None, None)
+        val content         = ConversationCookie.responseCookie(cookie, 15.minutes, secret).content
+        val parts           = content.split('.')
         val tamperedPayload = "eyJhdXRoSWQiOiJiYmJiYmJiYi1iYmJiLWJiYmItYmJiYi1iYmJiYmJiYmJiYmIiLCJjbGllbnRJZCI6InRlc3QtY2xpZW50In0"
         val tamperedContent = s"$tamperedPayload.${parts(1)}"
         assertTrue(ConversationCookie.parse(tamperedContent, secret).isLeft)

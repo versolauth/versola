@@ -36,6 +36,7 @@ private[authorize] case class AuthorizeRequest(
     authorizationDetails: Option[List[AuthorizationDetail]],
     ip: Option[String] = None,
 ):
-  def promptNone: Boolean = prompt.contains(Prompt.none)
-  def promptLogin: Boolean = prompt.contains(Prompt.login)
+  def promptNone: Boolean    = prompt.contains(Prompt.none)
+  def promptLogin: Boolean   = prompt.contains(Prompt.login)
   def promptConsent: Boolean = prompt.contains(Prompt.consent)
+  def isHybrid: Boolean      = responseType.contains(ResponseTypeEntry.IdToken)
