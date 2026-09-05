@@ -60,6 +60,15 @@ object AuthorizeErrorSpec extends ZIOSpecDefault:
       assertTrue(url.queryParams.map.get("error").exists(_.contains("access_denied")))
     },
 
+    test("ScopeNotGranted uses invalid_scope error code and names the offending scopes") {
+      val err = Error.ScopeNotGranted(redirectUri, state = None, value = "address phone")
+      val url = err.redirectUriWithErrorParams(testIss)
+      assertTrue(
+        url.queryParams.map.get("error").exists(_.contains("invalid_scope")),
+        url.queryParams.map.get("error_description").exists(_.exists(_.contains("address phone"))),
+      )
+    },
+
     test("base uri is preserved in error redirect") {
       val err = Error.ResponseTypeMissing(redirectUri, state = None)
       val url = err.redirectUriWithErrorParams(testIss)

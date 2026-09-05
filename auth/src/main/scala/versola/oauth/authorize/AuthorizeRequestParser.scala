@@ -146,10 +146,20 @@ object AuthorizeRequestParser:
           }
 
         scope <- getParam(params, "scope")
-          .orElseFail(Error.MultipleValuesProvided(redirectUri, state, "scope"))
-          .map:
-            case None => client.scope
-            case Some(value) => value.split(' ').toSet.filter(_.nonEmpty).map(ScopeToken(_))
+          .orElseFail[Error](Error.MultipleValuesProvided(redirectUri, state, "scope"))
+          .flatMap:
+            case None => ZIO.succeed(client.scope)
+            case Some(value) =>
+              // RFC 6749 §3.3: the request may only name scopes the client is registered for.
+              // Unfiltered, the requested set reaches the access token's `scope` claim and
+              // /userinfo releases whatever claims the registry maps those scopes to.
+              val requested = value.split(' ').toSet.filter(_.nonEmpty).map(ScopeToken(_))
+              val unregistered = (requested -- client.scope).toList.sorted
+              ZIO.cond(
+                unregistered.isEmpty,
+                requested,
+                Error.ScopeNotGranted(redirectUri, state, unregistered.mkString(" ")),
+              )
 
         uiLocales <- getParam(params, "ui_locales")
           .orElseFail(Error.MultipleValuesProvided(redirectUri, state, "ui_locales"))
