@@ -143,7 +143,7 @@ object CookiesSpec extends ZIOSpecDefault:
         // reach the decoding step -- re-signing an arbitrary payload isn't possible from
         // outside, since computeMac is private.
         val content = ConversationCookie.responseCookie(
-          ConversationCookie(authId, clientId, "https://example.com/callback", None),
+          ConversationCookie(authId, clientId, "https://example.com/callback", None, None),
           15.minutes,
           secret,
         ).content
@@ -161,7 +161,7 @@ object CookiesSpec extends ZIOSpecDefault:
       },
       test("ConversationCookie.parse rejects a payload that is not base64url") {
         val content = ConversationCookie.responseCookie(
-          ConversationCookie(authId, clientId, "https://example.com/callback", None),
+          ConversationCookie(authId, clientId, "https://example.com/callback", None, None),
           15.minutes,
           secret,
         ).content

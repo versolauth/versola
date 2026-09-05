@@ -574,7 +574,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
         for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
           result <- env.parser.validate(params, Request.get(URL.root)).either
-        yield assertTrue(result == Left(Error.ResponseTypeMissing(redirectUri, Some(State("test-state")))))
+        yield assertTrue(result == Left(Error.ResponseTypeMissing(redirectUri, Some(State("test-state")), useFragment = false)))
       },
     ),
     suite("ip")(
