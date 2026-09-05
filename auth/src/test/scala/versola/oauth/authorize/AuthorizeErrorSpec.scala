@@ -80,4 +80,35 @@ object AuthorizeErrorSpec extends ZIOSpecDefault:
       val url = err.redirectUriWithErrorParams(testIss)
       assertTrue(url.queryParams.map.get("iss").exists(_.contains(testIss)))
     },
+
+    suite("fragment response mode (useFragment = true)")(
+      test("params go to URL fragment, not query string") {
+        val err = Error.LoginRequired(redirectUri, state = None, useFragment = true)
+        val url = err.redirectUriWithErrorParams(testIss)
+        assertTrue(
+          url.queryParams.map.isEmpty,
+          url.fragment.exists(_.contains("error=login_required")),
+          url.fragment.exists(_.contains("iss=")),
+        )
+      },
+
+      test("state is included in fragment when provided") {
+        val err = Error.LoginRequired(redirectUri, state = Some(State("mystate")), useFragment = true)
+        val url = err.redirectUriWithErrorParams(testIss)
+        assertTrue(url.fragment.exists(_.contains("state=mystate")))
+      },
+
+      test("state is absent from fragment when not provided") {
+        val err = Error.LoginRequired(redirectUri, state = None, useFragment = true)
+        val url = err.redirectUriWithErrorParams(testIss)
+        assertTrue(!url.fragment.exists(_.contains("state=")))
+      },
+
+      test("error_description is percent-encoded in fragment") {
+        val err = Error.LoginRequired(redirectUri, state = None, useFragment = true)
+        val url = err.redirectUriWithErrorParams(testIss)
+        // spaces must not appear raw in the fragment — must be %20 or +
+        assertTrue(url.fragment.forall(!_.contains(" ")))
+      },
+    ),
   )

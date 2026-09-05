@@ -139,6 +139,8 @@ object AuthorizeRequestParser:
           )
           .filterOrFail(_.forall(_.length <= MaxStateLength))(Error.StateInvalid(redirectUri, useFragment = useFragment))
 
+        val useFragment = responseTypeEntries.contains(ResponseTypeEntry.IdToken)
+
         codeChallenge <- getParam(params, "code_challenge")
           .orElseFail(Error.MultipleValuesProvided(redirectUri, state, "code_challenge", useFragment = useFragment))
           .someOrFail(Error.CodeChallengeMissing(redirectUri, state, useFragment = useFragment))
@@ -239,9 +241,9 @@ object AuthorizeRequestParser:
         idTokenHint <- getParam(params, "id_token_hint")
           .orElseFail(Error.MultipleValuesProvided(redirectUri, state, "id_token_hint", useFragment = useFragment))
 
-        resources <- resolveResources(params, client, redirectUri, state)
+        resources <- resolveResources(params, client, redirectUri, state, useFragment)
 
-        authorizationDetails <- resolveAuthorizationDetails(params, client, redirectUri, state)
+        authorizationDetails <- resolveAuthorizationDetails(params, client, redirectUri, state, useFragment)
 
         authorizeRequest = AuthorizeRequest(
           clientId = clientId,
@@ -278,6 +280,7 @@ object AuthorizeRequestParser:
         client: OAuthClientRecord,
         redirectUri: URL,
         state: Option[State],
+        useFragment: Boolean,
     ): IO[Error, Option[List[AuthorizationDetail]]] =
       getParam(params, AuthorizationDetail.Parameter)
         .orElseFail(Error.MultipleValuesProvided(redirectUri, state, AuthorizationDetail.Parameter, useFragment = useFragment))
@@ -306,6 +309,7 @@ object AuthorizeRequestParser:
         client: OAuthClientRecord,
         redirectUri: URL,
         state: Option[State],
+        useFragment: Boolean,
     ): IO[Error, List[ResourceUri]] =
       params.getOrElse("resource", Chunk.empty).toList match
         case Nil =>

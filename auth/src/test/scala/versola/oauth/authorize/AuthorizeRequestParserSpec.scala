@@ -487,6 +487,36 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
         yield assertTrue(result == Left(Error.CodeChallengeMethodMissing(redirectUri, Some(State("test-state")), useFragment = false)))
       },
     ),
+    suite("hybrid flow useFragment propagation")(
+      test("useFragment=true on CodeChallengeMethodMissing when response_type=code id_token") {
+        val env = Env()
+        val hybridParams = validParams ++ Map("response_type" -> "code id_token") - "code_challenge_method"
+        val request = Request.get(URL.root.addQueryParams(hybridParams))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request).either
+        yield assertTrue(result == Left(Error.CodeChallengeMethodMissing(redirectUri, Some(State("test-state")), useFragment = true)))
+      },
+
+      test("useFragment=true on CodeChallengeMissing when response_type=code id_token") {
+        val env = Env()
+        val hybridParams = validParams ++ Map("response_type" -> "code id_token") - "code_challenge" - "code_challenge_method"
+        val request = Request.get(URL.root.addQueryParams(hybridParams))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request).either
+        yield assertTrue(result == Left(Error.CodeChallengeMissing(redirectUri, Some(State("test-state")), useFragment = true)))
+      },
+
+      test("useFragment=false on CodeChallengeMethodMissing when response_type=code") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(validParams - "code_challenge_method"))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request).either
+        yield assertTrue(result == Left(Error.CodeChallengeMethodMissing(redirectUri, Some(State("test-state")), useFragment = false)))
+      },
+    ),
     suite("ip")(
       test("extracts the ip from the tenant-configured header") {
         val env = Env()

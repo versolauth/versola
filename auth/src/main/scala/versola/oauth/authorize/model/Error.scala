@@ -1,6 +1,7 @@
 package versola.oauth.authorize.model
 
 import versola.oauth.model.State
+import versola.util.encodeQueryParam
 import zio.http.URL
 
 private[authorize] sealed trait Error extends Exception
@@ -28,13 +29,11 @@ private[authorize] object Error:
         ++ state.map("state" -> _)
 
       if useFragment then
-        val raw = params.map((k, v) => s"$k=${enc(v)}").mkString("&")
+        val raw = params.map((k, v) => s"$k=${encodeQueryParam(v)}").mkString("&")
         URL.decode(s"${uri.encode}#$raw").getOrElse(uri)
       else
         uri.addQueryParams(params)
 
-    private def enc(value: String): String =
-      java.net.URLEncoder.encode(value, java.nio.charset.StandardCharsets.UTF_8).replace("+", "%20")
 
   case class MultipleValuesProvided(uri: URL, state: Option[State], queryParamName: String, useFragment: Boolean = false) extends RedirectError(
       error = ErrorCode.InvalidRequest,

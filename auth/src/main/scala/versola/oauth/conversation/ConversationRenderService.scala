@@ -11,7 +11,7 @@ import versola.oauth.model.State
 import versola.oauth.model.{ConversationCookie, SessionCookie, UserAgentCookie}
 import versola.oauth.session.model.SessionInfo
 import versola.util.http.Observability
-import versola.util.{Base64, Base64Url, CoreConfig, Email, JWT, Phone, escapeCssForStyle, escapeHtml}
+import versola.util.{Base64, Base64Url, CoreConfig, Email, JWT, Phone, encodeQueryParam, escapeCssForStyle, escapeHtml}
 import zio.http.{Body, Header, Headers, MediaType, Path, Response, Status, URL}
 import zio.json.*
 import zio.json.ast.Json
@@ -238,13 +238,11 @@ object ConversationRenderService:
       URL.decode(redirectUri).toOption.map: url =>
         val params = List("error" -> error, "iss" -> config.jwt.issuer) ++ state.map("state" -> _)
         if useFragment then
-          val raw = params.map((k, v) => s"$k=${enc(v)}").mkString("&")
+          val raw = params.map((k, v) => s"$k=${encodeQueryParam(v)}").mkString("&")
           URL.decode(s"${url.encode}#$raw").getOrElse(url).encode
         else
           url.addQueryParams(params).encode
 
-    private def enc(value: String): String =
-      java.net.URLEncoder.encode(value, java.nio.charset.StandardCharsets.UTF_8).replace("+", "%20")
 
     private def renderTerminal(clientId: ClientId, formId: String, step: StepView): Task[Response] =
       for
@@ -638,24 +636,12 @@ object ConversationRenderService:
             tosUri = client.flatMap(_.tosUri),
             scopes = rows,
             allowPartial = s.allowPartial,
-            denyUri = {
-              val params = List("error" -> "access_denied", "iss" -> config.jwt.issuer) ++ state.map("state" -> _)
-              if useFragment then
-                val raw = params.map((k, v) => s"$k=${enc(v)}").mkString("&")
-                URL.decode(s"${redirectUri.encode}#$raw").getOrElse(redirectUri).encode
-              else
-                redirectUri.addQueryParams(params).encode
-            },
+            denyUri = returnUri(redirectUri.encode, state, "access_denied", useFragment).getOrElse(redirectUri.encode),
           )
 
         case ConversationStep.AccessDenied =>
-          val params = List("error" -> "access_denied", "iss" -> config.jwt.issuer) ++ state.map("state" -> _)
           ZIO.succeed(StepView.AccessDenied(redirectUri =
-            if useFragment then
-              val raw = params.map((k, v) => s"$k=${enc(v)}").mkString("&")
-              URL.decode(s"${redirectUri.encode}#$raw").getOrElse(redirectUri).encode
-            else
-              redirectUri.addQueryParams(params).encode
+            returnUri(redirectUri.encode, state, "access_denied", useFragment).getOrElse(redirectUri.encode)
           ))
 
     private def availableClaimNames(record: ConversationRecord): Set[String] =
