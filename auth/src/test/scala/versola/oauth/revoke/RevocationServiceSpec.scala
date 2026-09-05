@@ -73,7 +73,6 @@ object RevocationServiceSpec extends UnitSpecBase:
     requestedClaims = None,
     uiLocales = None,
     nonce = None,
-    previousRefreshToken = None,
     amr = Set(AuthMethodRef.pwd),
     authTime = now,
     acr = None,

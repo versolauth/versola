@@ -208,13 +208,12 @@ trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
             requestedClaims      = None,
             uiLocales            = None,
             nonce                = None,
-            previousRefreshToken = None,
             amr                  = Set(AuthMethodRef.pwd),
             authTime             = now,
             acr                  = None,
           )
           _            <- env.repository.create(atomicSessionId, session1, 5.minutes, None, None)
-          _            <- env.repository.createRefreshToken(atomicTokenId, record)
+          _            <- env.repository.createRefreshToken(atomicTokenId, None, record)
           _            <- env.repository.invalidateByUserId(userId1)
           sessionAfter <- env.repository.findSession(atomicSessionId)
           tokenAfter   <- env.repository.findToken(atomicTokenId)
@@ -255,13 +254,12 @@ trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
             requestedClaims      = None,
             uiLocales            = None,
             nonce                = None,
-            previousRefreshToken = None,
             amr                  = Set(AuthMethodRef.pwd),
             authTime             = now,
             acr                  = None,
           )
           _          <- env.repository.create(atomicSessionId, session1, 5.minutes, None, None)
-          _          <- env.repository.createRefreshToken(atomicTokenId, record)
+          _          <- env.repository.createRefreshToken(atomicTokenId, None, record)
           _          <- env.repository.invalidate(atomicSessionId)
           tokenAfter <- env.repository.findToken(atomicTokenId)
         yield assertTrue(tokenAfter.isEmpty)
@@ -318,13 +316,12 @@ trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
             requestedClaims      = None,
             uiLocales            = None,
             nonce                = None,
-            previousRefreshToken = None,
             amr                  = Set(AuthMethodRef.pwd),
             authTime             = now,
             acr                  = None,
           )
           _          <- env.repository.create(atomicSessionId, session1.copy(publicId = atomicPublicId), 5.minutes, None, None)
-          _          <- env.repository.createRefreshToken(atomicTokenId, record)
+          _          <- env.repository.createRefreshToken(atomicTokenId, None, record)
           _          <- env.repository.invalidateByPublicId(atomicPublicId)
           tokenAfter <- env.repository.findToken(atomicTokenId)
         yield assertTrue(tokenAfter.isEmpty)

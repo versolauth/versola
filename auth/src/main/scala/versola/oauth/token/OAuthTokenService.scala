@@ -113,11 +113,11 @@ object OAuthTokenService:
             requestedClaims = codeRecord.requestedClaims,
             uiLocales = codeRecord.uiLocales,
             nonce = codeRecord.nonce,
-            previousRefreshToken = None,
             amr = codeRecord.amr,
             authTime = codeRecord.authTime,
             acr = codeRecord.acr,
           ),
+          previousRefreshToken = None,
           accessTokenAudience = codeRecord.resources,
           accessTokenAuthorizationDetails = codeRecord.authorizationDetails.getOrElse(Nil),
         ).mapError {
@@ -177,13 +177,21 @@ object OAuthTokenService:
           record = tokenRecord.copy(
             accessToken = accessToken,
             scope = scope.getOrElse(tokenRecord.scope),
-            previousRefreshToken = Some(refreshTokenMac),
             issuedAt = now,
             expiresAt = now.plusSeconds(client.refreshTokenTtl.toSeconds),
           ),
+          previousRefreshToken = Some(refreshTokenMac),
           accessTokenAudience = audience,
           accessTokenAuthorizationDetails = details,
-        )
+        ).catchSome:
+          // Losing the rotation race means this token was presented twice concurrently: the
+          // winner's successor is live and the leak is just as proven as a sequential replay,
+          // so it goes the same way rather than failing with a bare invalid_grant.
+          case TokenEndpointError.InvalidGrant.RefreshChainAlreadyExchanged =>
+            detectReplay(client, refreshTokenMac).flatMap: replayed =>
+              ZIO.fail:
+                if replayed then TokenEndpointError.InvalidGrant.RefreshTokenReplayed
+                else TokenEndpointError.InvalidGrant.RefreshChainAlreadyExchanged
       yield issuedTokens
 
     /** RFC 9700 §4.14.2: a refresh token presented after it was already rotated away means the
@@ -193,30 +201,31 @@ object OAuthTokenService:
       * pushed to the client's back channel, forcing a full re-authorization instead of leaving
       * a live session for whoever asks next.
       *
-      * Scoped to this refresh-token chain, not the wider SSO session: one client's leak
-      * should not log the user out of every other client sharing the session, and a chain
-      * that has already rotated past this token twice was already a dead end, so nothing is
-      * revoked (there is nothing left alive to protect).
+      * Scoped to the leaked family, not the wider SSO session: one client's leak should not
+      * log the user out of every other client sharing the session. Within the family it is
+      * total -- every generation is expired, however far the chain has rotated since the
+      * replayed token was retired, because any of them could be the one in the wrong hands.
       *
-      * Returns whether a chain was found and revoked, so the caller can tell a replay apart
+      * Returns whether a family was found and revoked, so the caller can tell a replay apart
       * from a token that never existed -- both fail the request identically, but only the
       * former is worth surfacing in the request's error context.
       */
     private def detectReplay(client: OAuthClientRecord, replayed: MAC.Of[RefreshToken]): Task[Boolean] =
-      sessionRepository.markChainReplayed(replayed, client.id).flatMap:
-        case Some((userId, accessToken)) =>
-          zio.Clock.instant.flatMap: now =>
-            // As with authorization-code replay, the live access token itself is not in
-            // hand here, only its id, so its lifetime is bounded by the client's TTL.
-            accessTokenRevocationService.revoke(
-              client = client,
-              token = accessToken,
-              subject = userId.toString,
-              expiresAt = now.plus(client.accessTokenTtl),
-            )
-          .as(true)
-        case None =>
-          ZIO.succeed(false)
+      zio.Clock.instant.flatMap: now =>
+        sessionRepository.revokeFamily(replayed, client.id, now.minus(client.accessTokenTtl)).flatMap:
+          case Some(family) =>
+            ZIO.foreachDiscard(family.accessTokens): accessToken =>
+              // As with authorization-code replay, the live access tokens are not in hand
+              // here, only their ids, so their lifetime is bounded by the client's TTL.
+              accessTokenRevocationService.revoke(
+                client = client,
+                token = accessToken,
+                subject = family.userId.toString,
+                expiresAt = now.plus(client.accessTokenTtl),
+              )
+            .as(true)
+          case None =>
+            ZIO.succeed(false)
 
     /** RFC 9396 §6: a token request may ask for the authorization details of the underlying
       * grant or fewer of them, never for more; §6.1 compares the requested objects with the
@@ -339,6 +348,7 @@ object OAuthTokenService:
         accessToken: AccessToken,
         client: OAuthClientRecord,
         record: RefreshTokenRecord,
+        previousRefreshToken: Option[MAC.Of[RefreshToken]],
         accessTokenAudience: List[ResourceUri],
         accessTokenAuthorizationDetails: List[AuthorizationDetail],
     ): IO[Throwable | TokenEndpointError, IssuedTokens] =
@@ -348,7 +358,7 @@ object OAuthTokenService:
             token <- authPropertyGenerator.nextRefreshToken
             _ <- Observability.setRefreshToken(Base64.urlEncode(token))
             mac <- securityService.mac(Secret(token), config.security.refreshTokensSecret)
-            _ <- sessionRepository.createRefreshToken(mac, record)
+            _ <- sessionRepository.createRefreshToken(mac, previousRefreshToken, record)
               .mapError:
                 case ex: Throwable => ex
                 case _ => TokenEndpointError.InvalidGrant.RefreshChainAlreadyExchanged

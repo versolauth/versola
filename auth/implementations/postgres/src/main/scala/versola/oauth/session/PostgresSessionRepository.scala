@@ -6,7 +6,7 @@ import com.augustnagro.magnum.pg.json.JsonBDbCodec
 import com.augustnagro.magnum.pg.{PgCodec, SqlArrayCodec}
 import versola.oauth.client.model.{Acr, AuthMethodRef, AuthorizationDetail, ClientId, PassedAuthFactor, PassedFactorRecord, ResourceUri, ScopeToken}
 import versola.oauth.model.{AccessToken, Nonce, RefreshToken}
-import versola.oauth.session.model.{ClientEntry, PriorSession, PublicSessionId, RefreshAlreadyExchanged, RefreshTokenRecord, SessionId, SessionRecord, UserAgentId}
+import versola.oauth.session.model.{ClientEntry, PriorSession, PublicSessionId, RefreshAlreadyExchanged, RefreshTokenRecord, RevokedFamily, SessionId, SessionRecord, UserAgentId}
 import versola.oauth.userinfo.model.RequestedClaims
 import versola.user.model.UserId
 import versola.util.MAC
@@ -15,6 +15,7 @@ import zio.json.*
 import zio.{Clock, Duration, IO, Task, ZIO, ZLayer}
 
 import java.sql.{Connection, SQLException}
+import java.time.Instant
 import java.util.UUID
 
 class PostgresSessionRepository(xa: TransactorZIO)
@@ -222,59 +223,106 @@ class PostgresSessionRepository(xa: TransactorZIO)
 
   override def createRefreshToken(
       refreshToken: MAC.Of[RefreshToken],
+      previous: Option[MAC.Of[RefreshToken]],
       record: RefreshTokenRecord,
   ): IO[Throwable | RefreshAlreadyExchanged, Unit] =
-    xa.transactMeasured("create-refresh-token") {
-      record.previousRefreshToken
-        .foreach { oldToken => sql"""DELETE FROM refresh_tokens WHERE id = $oldToken""".update.run() }
+    Clock.instant.flatMap: now =>
+      xa.transactMeasured("create-refresh-token") {
+        val familyId = previous match
+          case None =>
+            // A fresh chain: the token is the root of its own family.
+            refreshToken
 
-      sql"""
-        INSERT INTO refresh_tokens (
-          id,
-          previous_id,
-          session_id,
-          public_session_id,
-          access_token,
-          user_id,
-          client_id,
-          audience,
-          authorization_details,
-          scope,
-          issued_at,
-          expires_at,
-          requested_claims,
-          ui_locales,
-          nonce,
-          amr,
-          auth_time,
-          acr
-        )
-        VALUES (
-          $refreshToken,
-          ${record.previousRefreshToken},
-          ${record.sessionId},
-          ${record.publicSessionId},
-          ${record.accessToken},
-          ${record.userId},
-          ${record.clientId},
-          ${record.audience},
-          ${record.authorizationDetails},
-          ${record.scope},
-          ${record.issuedAt},
-          ${record.expiresAt},
-          ${record.requestedClaims},
-          ${record.uiLocales}::text[],
-          ${record.nonce},
-          ${record.amr},
-          ${record.authTime},
-          ${record.acr}
-        )
-        """.update.run()
-      ()
-    }.catchSome {
-      case e if PostgresSessionRepository.isSerializationOrUniqueViolationFailure(e) =>
-        ZIO.fail(RefreshAlreadyExchanged())
-    }
+          case Some(previousToken) =>
+            val family = sql"""SELECT family_id FROM refresh_tokens WHERE id = $previousToken"""
+              .query[MAC.Of[RefreshToken]]
+              .run()
+              .headOption
+              .getOrElse(throw PostgresSessionRepository.RotationLost)
+
+            // Both this and revokeFamily take the root's lock before touching any member, so
+            // a rotation cannot slip a successor past a revocation running beside it: one of
+            // the two waits, and whichever goes second sees the other's committed state. The
+            // family is read unlocked above only because a token never changes families.
+            val rootLocked = sql"""SELECT 1 FROM refresh_tokens WHERE id = $family FOR UPDATE"""
+              .query[Int]
+              .run()
+              .nonEmpty
+
+            // No root left to lock (swept, or revoked through the token endpoint) means the
+            // family is gone and nothing here can be serialised against. Fail closed.
+            if !rootLocked then throw PostgresSessionRepository.RotationLost
+
+            // Retire the presented token. Zero rows means it was already exchanged -- either
+            // earlier, or by a concurrent request that just released the lock above.
+            val retired = sql"""
+              UPDATE refresh_tokens
+              SET rotated_at = $now, expires_at = ${record.expiresAt}
+              WHERE id = $previousToken AND rotated_at IS NULL AND expires_at > $now
+            """.update.run()
+
+            if retired == 0 then throw PostgresSessionRepository.RotationLost
+
+            // Keep the root alive for as long as the family it anchors: it is the lock target
+            // every later rotation and revocation depends on, and the sweep would otherwise
+            // collect it once the generation that retired it aged out.
+            sql"""
+              UPDATE refresh_tokens
+              SET expires_at = GREATEST(expires_at, ${record.expiresAt})
+              WHERE id = $family
+            """.update.run()
+
+            family
+
+        sql"""
+          INSERT INTO refresh_tokens (
+            id,
+            family_id,
+            session_id,
+            public_session_id,
+            access_token,
+            user_id,
+            client_id,
+            audience,
+            authorization_details,
+            scope,
+            issued_at,
+            expires_at,
+            requested_claims,
+            ui_locales,
+            nonce,
+            amr,
+            auth_time,
+            acr
+          )
+          VALUES (
+            $refreshToken,
+            $familyId,
+            ${record.sessionId},
+            ${record.publicSessionId},
+            ${record.accessToken},
+            ${record.userId},
+            ${record.clientId},
+            ${record.audience},
+            ${record.authorizationDetails},
+            ${record.scope},
+            ${record.issuedAt},
+            ${record.expiresAt},
+            ${record.requestedClaims},
+            ${record.uiLocales}::text[],
+            ${record.nonce},
+            ${record.amr},
+            ${record.authTime},
+            ${record.acr}
+          )
+          """.update.run()
+        ()
+      }.catchSome {
+        case PostgresSessionRepository.RotationLost =>
+          ZIO.fail(RefreshAlreadyExchanged())
+        case e if PostgresSessionRepository.isSerializationOrUniqueViolationFailure(e) =>
+          ZIO.fail(RefreshAlreadyExchanged())
+      }
 
   override def findToken(token: MAC.Of[RefreshToken]): Task[Option[RefreshTokenRecord]] =
     for
@@ -283,38 +331,71 @@ class PostgresSessionRepository(xa: TransactorZIO)
         sql"""
           SELECT session_id, public_session_id, access_token, user_id, client_id,
                  audience, authorization_details, scope, issued_at,
-                 expires_at, requested_claims, ui_locales, nonce, previous_id,
+                 expires_at, requested_claims, ui_locales, nonce,
                  amr, auth_time, acr
           FROM refresh_tokens
-          WHERE id = $token AND expires_at > $now"""
+          WHERE id = $token AND expires_at > $now AND rotated_at IS NULL"""
           .query[RefreshTokenRecord]
           .run()
           .headOption
     yield result
 
-  override def markChainReplayed(token: MAC.Of[RefreshToken], clientId: ClientId): Task[Option[(UserId, AccessToken)]] =
+  override def revokeFamily(
+      token: MAC.Of[RefreshToken],
+      clientId: ClientId,
+      accessTokensIssuedAfter: Instant,
+  ): Task[Option[RevokedFamily]] =
     Clock.instant.flatMap: now =>
-      xa.connectMeasured("mark-refresh-chain-replayed"):
+      xa.transactMeasured("revoke-refresh-token-family") {
         sql"""
-          UPDATE refresh_tokens
-          SET expires_at = $now
-          WHERE previous_id = $token AND client_id = $clientId AND expires_at > $now
-          RETURNING user_id, access_token
-        """.query[(UserId, AccessToken)].run().headOption
+          SELECT family_id, user_id
+          FROM refresh_tokens
+          WHERE id = $token AND client_id = $clientId AND rotated_at IS NOT NULL
+        """.query[(MAC.Of[RefreshToken], UserId)]
+          .run()
+          .headOption
+          .map: (family, userId) =>
+            // Same lock createRefreshToken takes, and for the same reason: a rotation in
+            // flight either commits first and has its successor expired by the update below,
+            // or waits here and then finds the token it meant to rotate already dead.
+            sql"""SELECT 1 FROM refresh_tokens WHERE id = $family FOR UPDATE""".query[Int].run()
+
+            val revoked = sql"""
+              UPDATE refresh_tokens
+              SET expires_at = $now
+              WHERE family_id = $family AND expires_at > $now
+              RETURNING access_token, issued_at
+            """.query[(AccessToken, Instant)].run()
+
+            RevokedFamily(
+              userId = userId,
+              // Older generations are past their access-token TTL, so pushing them to the
+              // client's back channel would revoke nothing.
+              accessTokens = revoked.view
+                .filter(_._2.isAfter(accessTokensIssuedAfter))
+                .map(_._1)
+                .toList,
+            )
+      }
 
   override def delete(token: MAC.Of[RefreshToken]): Task[Unit] =
-    xa.connectMeasured("delete-refresh-token"):
-      sql"""DELETE FROM refresh_tokens WHERE id = $token""".update.run()
-    .unit
+    Clock.instant.flatMap: now =>
+      xa.connectMeasured("delete-refresh-token"):
+        sql"""UPDATE refresh_tokens SET expires_at = $now WHERE id = $token""".update.run()
+      .unit
 
   override def deleteByAccessToken(token: AccessToken): Task[Unit] =
-    xa.connectMeasured("delete-refresh-token-by-access-token"):
-      sql"""DELETE FROM refresh_tokens WHERE access_token = $token""".update.run()
-    .unit
+    Clock.instant.flatMap: now =>
+      xa.connectMeasured("delete-refresh-token-by-access-token"):
+        sql"""UPDATE refresh_tokens SET expires_at = $now WHERE access_token = $token""".update.run()
+      .unit
 
 object PostgresSessionRepository:
   def live: ZLayer[TransactorZIO, Throwable, SessionRepository] =
     ZLayer.fromFunction(PostgresSessionRepository(_))
+
+  /** Signals a rotation that lost its race, from inside the transaction body. */
+  private case object RotationLost extends RuntimeException("refresh token already exchanged")
 
   private val SerializationFailureSqlState = "40001"
   private val UniqueViolationSqlState      = "23505"

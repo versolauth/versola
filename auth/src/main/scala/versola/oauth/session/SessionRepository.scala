@@ -2,10 +2,12 @@ package versola.oauth.session
 
 import versola.oauth.client.model.ClientId
 import versola.oauth.model.{AccessToken, RefreshToken}
-import versola.oauth.session.model.{PriorSession, PublicSessionId, RefreshAlreadyExchanged, RefreshTokenRecord, SessionId, SessionRecord}
+import versola.oauth.session.model.{PriorSession, PublicSessionId, RefreshAlreadyExchanged, RefreshTokenRecord, RevokedFamily, SessionId, SessionRecord}
 import versola.user.model.UserId
 import versola.util.MAC
 import zio.*
+
+import java.time.Instant
 
 trait SessionRepository:
   /** Creates a new session in a single transaction.
@@ -49,25 +51,39 @@ trait SessionRepository:
 
   def invalidateByPublicIdForUser(publicId: PublicSessionId, userId: UserId): Task[Boolean]
 
+  /** Issues `refreshToken`. With `previous` set this is a rotation: the presented token is
+    * retired in place and the new one joins its family, both under the family's row lock, so
+    * a rotation cannot interleave with a [[revokeFamily]] and leave its successor behind.
+    * Fails with `RefreshAlreadyExchanged` when the presented token was already retired --
+    * either sequentially or by a concurrent request that won the lock first.
+    */
   def createRefreshToken(
       refreshToken: MAC.Of[RefreshToken],
+      previous: Option[MAC.Of[RefreshToken]],
       record: RefreshTokenRecord,
   ): IO[Throwable | RefreshAlreadyExchanged, Unit]
 
   def findToken(token: MAC.Of[RefreshToken]): Task[Option[RefreshTokenRecord]]
 
-  /** Detects refresh-token replay: `token` has no row of its own but is named as some other
-   *  row's `previous_id`, i.e. it was already rotated away and is now being presented a
-   *  second time -- by whoever stole it, or by its rightful owner after the thief's use
-   *  already won the rotation race. Either way neither party can be trusted with the
-   *  chain's live end anymore, so it is expired in place (picked up by the cleanup manager
-   *  like any other expired row, rather than deleted inline) and its access token returned
-   *  so the caller can push a revocation to the client.
-   *
-   *  Scoped to `clientId` so one client cannot use another client's already-rotated token
-   *  as an oracle to expire a chain it does not own.
-   */
-  def markChainReplayed(token: MAC.Of[RefreshToken], clientId: ClientId): Task[Option[(UserId, AccessToken)]]
+  /** Revokes the whole rotation family of an already-retired `token`, i.e. one presented
+    * after it was exchanged for its successor. That is a proven leak -- to whoever stole it,
+    * or back to its rightful owner after a thief's exchange won the race -- so no member of
+    * the family can be trusted anymore, however many generations have passed since.
+    *
+    * Every member is expired in place (collected by the cleanup manager's `expires_at` sweep
+    * like any other expiry in this table, rather than deleted inline). Members issued after
+    * `accessTokensIssuedAfter` are returned so the caller can push their access tokens to the
+    * client's back channel; older ones are past their access-token TTL and not worth pushing.
+    *
+    * Returns `None` when `token` is not a retired member of a family owned by `clientId`:
+    * unknown, still live, or belonging to someone else. Scoping to `clientId` keeps one
+    * client from using another's retired token as an oracle to kill a family it does not own.
+    */
+  def revokeFamily(
+      token: MAC.Of[RefreshToken],
+      clientId: ClientId,
+      accessTokensIssuedAfter: Instant,
+  ): Task[Option[RevokedFamily]]
 
   def delete(token: MAC.Of[RefreshToken]): Task[Unit]
 
