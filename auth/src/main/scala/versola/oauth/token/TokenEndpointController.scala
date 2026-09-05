@@ -49,7 +49,7 @@ object TokenEndpointController extends Controller:
       yield Response.json(response.toJson))
         .catchAll {
           case error: TokenEndpointError =>
-            Observability.setError(error.error, error.errorDescription).as:
+            Observability.setError(error.error, error.logDescription).as:
               val errorResponse = TokenErrorResponse.from(error)
               Response
                 .json(errorResponse.toJson)

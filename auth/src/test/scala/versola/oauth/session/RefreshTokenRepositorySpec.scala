@@ -170,6 +170,60 @@ trait RefreshTokenRepositorySpec extends DatabaseSpecBase[RefreshTokenRepository
           results.count(_.left.toOption.contains(())) == 5
         )
       },
+      test("markChainReplayed finds and expires the successor of an already-rotated token") {
+        for
+          now <- Clock.instant
+          record1 = tokenRecord1(now, refreshTtl)
+          record2 = record1.copy(previousRefreshToken = Some(refreshToken1), accessToken = accessToken2)
+          _ <- env.repository.createRefreshToken(refreshToken1, record1)
+          _ <- env.repository.createRefreshToken(refreshToken2, record2)
+
+          replayed <- env.repository.markChainReplayed(refreshToken1, clientId1)
+          successorAfter <- env.repository.findToken(refreshToken2)
+        yield assertTrue(
+          // Array-backed AccessToken has reference equality under `==`, hence `===`.
+          replayed.exists(r => r._1 == userId1 && r._2 === accessToken2),
+          // Expired, not deleted: the cleanup manager's expires_at sweep removes it later,
+          // rather than this call issuing its own DELETE inline.
+          successorAfter.isEmpty,
+        )
+      },
+      test("markChainReplayed ignores a token with no successor") {
+        for
+          now <- Clock.instant
+          record1 = tokenRecord1(now, refreshTtl)
+          _ <- env.repository.createRefreshToken(refreshToken1, record1)
+
+          replayed <- env.repository.markChainReplayed(refreshToken2, clientId1)
+        yield assertTrue(replayed.isEmpty)
+      },
+      test("markChainReplayed does not act on a chain owned by a different client") {
+        for
+          now <- Clock.instant
+          record1 = tokenRecord1(now, refreshTtl)
+          record2 = record1.copy(previousRefreshToken = Some(refreshToken1))
+          _ <- env.repository.createRefreshToken(refreshToken1, record1)
+          _ <- env.repository.createRefreshToken(refreshToken2, record2)
+
+          replayed <- env.repository.markChainReplayed(refreshToken1, clientId2)
+          successorAfter <- env.repository.findToken(refreshToken2)
+        yield assertTrue(
+          replayed.isEmpty,
+          successorAfter.isDefined,
+        )
+      },
+      test("markChainReplayed is idempotent: a second replay of the same token finds nothing left to expire") {
+        for
+          now <- Clock.instant
+          record1 = tokenRecord1(now, refreshTtl)
+          record2 = record1.copy(previousRefreshToken = Some(refreshToken1))
+          _ <- env.repository.createRefreshToken(refreshToken1, record1)
+          _ <- env.repository.createRefreshToken(refreshToken2, record2)
+
+          _ <- env.repository.markChainReplayed(refreshToken1, clientId1)
+          second <- env.repository.markChainReplayed(refreshToken1, clientId1)
+        yield assertTrue(second.isEmpty)
+      },
     )
 
 object RefreshTokenRepositorySpec:
