@@ -1,18 +1,25 @@
 package versola.central.configuration.clients
 
 import org.scalamock.stubs.{Stub, ZIOStubs}
-import versola.central.{CentralConfig, TestCentralConfig}
 import versola.central.configuration.edges.EdgeId
 import versola.central.configuration.permissions.Permission
 import versola.central.configuration.roles.{RoleRecord, RoleRepository}
 import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.sync.SyncEvent
 import versola.central.configuration.tenants.{TenantId, TenantRecord, TenantRepository}
-import versola.central.configuration.{ConsentFlowDto, CreateClientRequest, PatchClientRedirectUris, PatchClientScope, PatchPermissions, UpdateClientRequest}
+import versola.central.configuration.{
+  ConsentFlowDto,
+  CreateClientRequest,
+  PatchClientRedirectUris,
+  PatchClientScope,
+  PatchPermissions,
+  UpdateClientRequest,
+}
+import versola.central.{CentralConfig, TestCentralConfig}
 import versola.util.{Patch, RedirectUri, ReloadingCache, Secret, SecureRandom, SecurityService}
-import zio.prelude.EqualOps
 import zio.*
 import zio.http.URL
+import zio.prelude.EqualOps
 import zio.test.*
 
 import javax.crypto.spec.SecretKeySpec
@@ -207,7 +214,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
       for
         _ <- env.repository.updateClient.succeedsWith(())
         _ <- env.service.updateClient(
-          updateRequest.copy(consentFlow = Some(Patch.Modified(consentFlow)))
+          updateRequest.copy(consentFlow = Some(Patch.Modified(consentFlow))),
         )
       yield assertTrue(
         env.repository.updateClient.calls == List(
@@ -230,8 +237,71 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
             None,
             None,
             Some(Patch.Modified(ConsentFlow(allowPartial = false, rememberDuration = Some(30.days)))),
-          )
-        )
+          ),
+        ),
+      )
+    },
+    test("getAllClients returns everything in the cache") {
+      val env = new Env(Vector(cachedClient, otherTenantClient))
+      for result <- env.service.getAllClients
+      yield assertTrue(result == Vector(cachedClient, otherTenantClient))
+    },
+    test("registerClient accepts a valid https logoUri, policyUri and tosUri") {
+      val env = new Env()
+
+      for
+        _ <- env.secureRandom.nextBytes.succeedsWith(Array.fill(32)(11.toByte))
+        _ <- env.securityService.encryptAes256.succeedsWith(Array.fill(48)(17.toByte))
+        _ <- env.repository.createClient.succeedsWith(())
+        _ <- env.service.registerClient(createRequest.copy(
+          logoUri = Some("https://example.com/logo.png"),
+          policyUri = Some("https://example.com/policy"),
+          tosUri = Some("https://example.com/tos"),
+        ))
+        created = env.repository.createClient.calls.head
+      yield assertTrue(
+        created.logoUri == Some("https://example.com/logo.png"),
+        created.policyUri == Some("https://example.com/policy"),
+        created.tosUri == Some("https://example.com/tos"),
+      )
+    },
+    test("registerClient rejects a non-HTTPS logoUri instead of silently dropping it") {
+      val env = new Env()
+
+      for
+        result <- env.service.registerClient(createRequest.copy(logoUri = Some("http://example.com/logo.png"))).either
+        createCalls = env.repository.createClient.times
+      yield assertTrue(
+        result.left.toOption.exists:
+          case error: InvalidConsentUri => error.field == "logoUri"
+          case _ => false,
+        createCalls == 0,
+      )
+    },
+    test("registerClient rejects a malformed policyUri instead of silently dropping it") {
+      val env = new Env()
+
+      for
+        result <- env.service.registerClient(createRequest.copy(policyUri = Some("not a url"))).either
+        createCalls = env.repository.createClient.times
+      yield assertTrue(
+        result.left.toOption.exists:
+          case error: InvalidConsentUri => error.field == "policyUri"
+          case _ => false,
+        createCalls == 0,
+      )
+    },
+    test("updateClient rejects a non-HTTPS tosUri patch instead of silently dropping it") {
+      val env = new Env()
+
+      for
+        result <- env.service.updateClient(updateRequest.copy(tosUri = Some(Patch.Modified("http://example.com/tos")))).either
+        updateCalls = env.repository.updateClient.times
+      yield assertTrue(
+        result.left.toOption.exists:
+          case error: InvalidConsentUri => error.field == "tosUri"
+          case _ => false,
+        updateCalls == 0,
       )
     },
     test("registerClient accepts an https frontChannelLogoutUri") {
@@ -267,7 +337,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
       yield assertTrue(
         result.left.toOption.exists:
           case error: InvalidConsentUri => error.field == "frontChannelLogoutUri"
-          case _                        => false,
+          case _ => false,
         createCalls == 0,
       )
     },
@@ -282,7 +352,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
       yield assertTrue(
         result.left.toOption.exists:
           case error: InvalidConsentUri => error.field == "backChannelLogoutUri"
-          case _                        => false,
+          case _ => false,
         createCalls == 0,
       )
     },
@@ -297,9 +367,36 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
       yield assertTrue(
         result.left.toOption.exists:
           case error: InvalidConsentUri => error.field == "frontChannelLogoutUri"
-          case _                        => false,
+          case _ => false,
         updateCalls == 0,
       )
+    },
+    test("registerClient rejects a relative frontChannelLogoutUri instead of silently dropping it") {
+      val env = new Env()
+
+      for
+        result <- env.service.registerClient(createRequest.copy(frontChannelLogoutUri = Some("/relative/front-logout"))).either
+        createCalls = env.repository.createClient.times
+      yield assertTrue(
+        result.left.toOption.exists:
+          case error: InvalidConsentUri => error.field == "frontChannelLogoutUri"
+          case _ => false,
+        createCalls == 0,
+      )
+    },
+    test("updateClient clears frontChannelLogoutUri and consentFlow when the patch is an explicit deletion") {
+      val env = new Env()
+
+      for
+        _ <- env.repository.updateClient.succeedsWith(())
+        _ <- env.service.updateClient(
+          updateRequest.copy(
+            frontChannelLogoutUri = Some(Patch.Deleted),
+            consentFlow = Some(Patch.Deleted),
+          ),
+        )
+        (_, _, _, _, _, _, _, _, _, _, _, frontChannelLogoutUri, _, _, _, _, _, consentFlow) = env.repository.updateClient.calls.head
+      yield assertTrue(frontChannelLogoutUri == Some(Patch.Deleted), consentFlow == Some(Patch.Deleted))
     },
     test("updateClient stores a frontChannelLogoutUri with surrounding whitespace instead of clearing it") {
       val env = new Env()
@@ -307,7 +404,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
       for
         _ <- env.repository.updateClient.succeedsWith(())
         _ <- env.service.updateClient(
-          updateRequest.copy(frontChannelLogoutUri = Some(Patch.Modified(" https://rp.example.com/front-logout ")))
+          updateRequest.copy(frontChannelLogoutUri = Some(Patch.Modified(" https://rp.example.com/front-logout "))),
         )
         patched = env.repository.updateClient.calls.head._12
       yield assertTrue(patched == Some(Patch.Modified(URL.decode("https://rp.example.com/front-logout").toOption.get)))
@@ -324,7 +421,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
       yield assertTrue(
         result.left.toOption.exists:
           case error: InvalidRegistrationConfiguration => error.reason.contains("does not exist")
-          case _                                       => false,
+          case _ => false,
         createCalls == 0,
       )
     },
@@ -361,7 +458,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
       yield assertTrue(
         result.left.toOption.exists:
           case error: InvalidRegistrationConfiguration => error.reason.contains("login+password")
-          case _                                       => false,
+          case _ => false,
         createCalls == 0,
       )
     },
@@ -382,7 +479,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
       yield assertTrue(
         result.left.toOption.exists:
           case error: InvalidRegistrationConfiguration => error.reason.contains("password inline")
-          case _                                       => false,
+          case _ => false,
         createCalls == 0,
       )
     },
@@ -402,7 +499,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
       yield assertTrue(
         result.left.toOption.exists:
           case error: InvalidRegistrationConfiguration => error.reason.contains("exactly one primary credential")
-          case _                                       => false,
+          case _ => false,
         createCalls == 0,
       )
     },
@@ -421,7 +518,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
       yield assertTrue(
         result.left.toOption.exists:
           case error: InvalidRegistrationConfiguration => error.reason.contains("login+password")
-          case _                                       => false,
+          case _ => false,
         updateCalls == 0,
       )
     },
@@ -496,7 +593,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         cached <- env.cache.get
       yield assertTrue(
         env.repository.find.calls === List(clientId),
-        cached === Vector(otherTenantClient, decryptedClient),  // sorted by ID: mobile-app, web-app
+        cached === Vector(otherTenantClient, decryptedClient), // sorted by ID: mobile-app, web-app
       )
     },
     test("sync removes cached client when record is missing on non-delete event") {
@@ -510,5 +607,31 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         env.repository.find.calls === List(clientId),
         cached === Vector(otherTenantClient),
       )
+    },
+    test("verifySecret accepts the central-admin client's current secret") {
+      val currentSecret = Secret(Array.fill(32)(1.toByte))
+      val adminClient = cachedClient.copy(id = CentralConfig.centralClientId, secret = Some(currentSecret))
+      val env = new Env(Vector(adminClient))
+      for result <- env.service.verifySecret(currentSecret)
+      yield assertTrue(result)
+    },
+    test("verifySecret accepts the central-admin client's previous secret") {
+      val currentSecret = Secret(Array.fill(32)(1.toByte))
+      val previousSecret = Secret(Array.fill(32)(2.toByte))
+      val adminClient = cachedClient.copy(id = CentralConfig.centralClientId, secret = Some(currentSecret), previousSecret = Some(previousSecret))
+      val env = new Env(Vector(adminClient))
+      for result <- env.service.verifySecret(previousSecret)
+      yield assertTrue(result)
+    },
+    test("verifySecret rejects a secret that matches neither current nor previous") {
+      val adminClient = cachedClient.copy(id = CentralConfig.centralClientId, secret = Some(Secret(Array.fill(32)(1.toByte))))
+      val env = new Env(Vector(adminClient))
+      for result <- env.service.verifySecret(Secret(Array.fill(32)(9.toByte)))
+      yield assertTrue(!result)
+    },
+    test("verifySecret rejects when no central-admin client is cached") {
+      val env = new Env(Vector(cachedClient))
+      for result <- env.service.verifySecret(Secret(Array.fill(32)(1.toByte)))
+      yield assertTrue(!result)
     },
   )

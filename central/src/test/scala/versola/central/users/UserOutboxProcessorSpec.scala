@@ -13,7 +13,7 @@ import java.util.UUID
 
 object UserOutboxProcessorSpec extends ZIOSpecDefault, ZIOStubs:
 
-  private val userId  = UserId(UUID.fromString("00000000-0000-0000-0000-000000000001"))
+  private val userId = UserId(UUID.fromString("00000000-0000-0000-0000-000000000001"))
   private val eventId = UUID.fromString("00000000-0000-0000-0000-000000000099")
 
   private val config = UserOutboxConfig(
@@ -111,48 +111,174 @@ object UserOutboxProcessorSpec extends ZIOSpecDefault, ZIOStubs:
         repo.deleteEvent.calls == List(eventId),
       )
     },
-      test("flush retries a transient dispatch failure") {
-        val repo = stub[UserRepository]
-        val client = stub[AuthClient]
+    test("flush retries a transient dispatch failure") {
+      val repo = stub[UserRepository]
+      val client = stub[AuthClient]
 
-        for
-          _ <- repo.claimDueEvents.returnsZIOOnCall:
-            case 1 => ZIO.succeed(Vector(record))
-            case 2 => ZIO.succeed(Vector.empty)
-          _ <- client.upsertUser.returnsZIOOnCall:
-            case 1 => ZIO.fail(new RuntimeException("temporary failure"))
-            case 2 => ZIO.succeed(())
-          _ <- repo.deleteEvent.succeedsWith(())
+      for
+        _ <- repo.claimDueEvents.returnsZIOOnCall:
+          case 1 => ZIO.succeed(Vector(record))
+          case 2 => ZIO.succeed(Vector.empty)
+        _ <- client.upsertUser.returnsZIOOnCall:
+          case 1 => ZIO.fail(new RuntimeException("temporary failure"))
+          case 2 => ZIO.succeed(())
+        _ <- repo.deleteEvent.succeedsWith(())
 
-          fiberRef <- Ref.make(Option.empty[Fiber.Runtime[Nothing, Unit]])
-          semaphore <- Semaphore.make(1)
-          processor = UserOutboxProcessor.Live(config, repo, client, fiberRef, semaphore)
-          _ <- runFlush(processor)
-        yield assertTrue(
-          client.upsertUser.calls.length == 2,
-          repo.deleteEvent.calls == List(eventId),
-        )
-      },
-      test("flush fails when dispatch cannot be completed") {
-        val repo = stub[UserRepository]
-        val client = stub[AuthClient]
+        fiberRef <- Ref.make(Option.empty[Fiber.Runtime[Nothing, Unit]])
+        semaphore <- Semaphore.make(1)
+        processor = UserOutboxProcessor.Live(config, repo, client, fiberRef, semaphore)
+        _ <- runFlush(processor)
+      yield assertTrue(
+        client.upsertUser.calls.length == 2,
+        repo.deleteEvent.calls == List(eventId),
+      )
+    },
+    test("flush fails when dispatch cannot be completed") {
+      val repo = stub[UserRepository]
+      val client = stub[AuthClient]
 
-        for
-          _ <- repo.claimDueEvents.succeedsWith(Vector(record))
-          _ <- client.upsertUser.failsWith(new RuntimeException("Auth unavailable"))
-          _ <- repo.rescheduleEvent.succeedsWith(())
+      for
+        _ <- repo.claimDueEvents.succeedsWith(Vector(record))
+        _ <- client.upsertUser.failsWith(new RuntimeException("Auth unavailable"))
+        _ <- repo.rescheduleEvent.succeedsWith(())
 
-          fiberRef <- Ref.make(Option.empty[Fiber.Runtime[Nothing, Unit]])
-          semaphore <- Semaphore.make(1)
-          processor = UserOutboxProcessor.Live(config, repo, client, fiberRef, semaphore)
-          exit <- runFlushExit(processor)
-        yield assertTrue(
-          exit.isFailure,
-          client.upsertUser.calls.length > 1,
-          repo.rescheduleEvent.calls == List((eventId, Duration.fromSeconds(2))),
-          repo.deleteEvent.calls.isEmpty,
-        )
-      },
+        fiberRef <- Ref.make(Option.empty[Fiber.Runtime[Nothing, Unit]])
+        semaphore <- Semaphore.make(1)
+        processor = UserOutboxProcessor.Live(config, repo, client, fiberRef, semaphore)
+        exit <- runFlushExit(processor)
+      yield assertTrue(
+        exit.isFailure,
+        client.upsertUser.calls.length > 1,
+        repo.rescheduleEvent.calls == List((eventId, Duration.fromSeconds(2))),
+        repo.deleteEvent.calls.isEmpty,
+      )
+    },
+    test("processOnce logs an error and returns false when claimDueEvents itself fails") {
+      val repo = stub[UserRepository]
+      val client = stub[AuthClient]
+
+      for
+        _ <- repo.claimDueEvents.failsWith(new RuntimeException("db unavailable"))
+        fiberRef <- Ref.make(Option.empty[Fiber.Runtime[Nothing, Unit]])
+        semaphore <- Semaphore.make(1)
+        processor = UserOutboxProcessor.Live(config, repo, client, fiberRef, semaphore)
+        result <- processor.processOnce
+        logs <- ZTestLogger.logOutput
+      yield assertTrue(
+        !result,
+        logs.exists(e => e.logLevel == zio.LogLevel.Error && e.message().contains("user_outbox poll failed")),
+      )
+    },
+    test("logs an error but still fails when moveToDeadLetter itself fails") {
+      val failedRecord = record.copy(attempts = config.maxAttempts - 1)
+      val repo = stub[UserRepository]
+      val client = stub[AuthClient]
+
+      for
+        _ <- repo.claimDueEvents.succeedsWith(Vector(failedRecord))
+        _ <- client.upsertUser.failsWith(new RuntimeException("Permanent failure"))
+        _ <- repo.moveToDeadLetter.failsWith(new RuntimeException("write failed"))
+
+        fiberRef <- Ref.make(Option.empty[Fiber.Runtime[Nothing, Unit]])
+        semaphore <- Semaphore.make(1)
+        processor = UserOutboxProcessor.Live(config, repo, client, fiberRef, semaphore)
+        _ <- processor.processOnce
+        logs <- ZTestLogger.logOutput
+      yield assertTrue(
+        logs.exists(e => e.logLevel == zio.LogLevel.Error && e.message() == "moveToDeadLetter failed"),
+      )
+    },
+    test("logs an error but still fails when rescheduleEvent itself fails") {
+      val repo = stub[UserRepository]
+      val client = stub[AuthClient]
+
+      for
+        _ <- repo.claimDueEvents.succeedsWith(Vector(record))
+        _ <- client.upsertUser.failsWith(new RuntimeException("Auth call failed"))
+        _ <- repo.rescheduleEvent.failsWith(new RuntimeException("write failed"))
+
+        fiberRef <- Ref.make(Option.empty[Fiber.Runtime[Nothing, Unit]])
+        semaphore <- Semaphore.make(1)
+        processor = UserOutboxProcessor.Live(config, repo, client, fiberRef, semaphore)
+        _ <- processor.processOnce
+        logs <- ZTestLogger.logOutput
+      yield assertTrue(
+        logs.exists(e => e.logLevel == zio.LogLevel.Error && e.message() == "reschedule failed"),
+      )
+    },
+    test("logs an error but still reports success when deleteEvent fails after a successful dispatch") {
+      val repo = stub[UserRepository]
+      val client = stub[AuthClient]
+
+      for
+        _ <- repo.claimDueEvents.succeedsWith(Vector(record))
+        _ <- client.upsertUser.succeedsWith(())
+        _ <- repo.deleteEvent.failsWith(new RuntimeException("delete failed"))
+
+        fiberRef <- Ref.make(Option.empty[Fiber.Runtime[Nothing, Unit]])
+        semaphore <- Semaphore.make(1)
+        processor = UserOutboxProcessor.Live(config, repo, client, fiberRef, semaphore)
+        _ <- processor.processOnce
+        logs <- ZTestLogger.logOutput
+      yield assertTrue(
+        logs.exists(e => e.logLevel == zio.LogLevel.Error && e.message() == "delete failed"),
+      )
+    },
+    test("dispatch routes UpdateUserRoles and DeleteUser events to the matching AuthClient calls") {
+      val tenantId = TenantId("tenant-a")
+      val roleId = RoleId("admin")
+      val rolesEvent = record.copy(event = OutboxEvent.UpdateUserRoles(userId, tenantId, Set(roleId), Set.empty))
+      val deleteEvent = record.copy(id = UUID.fromString("00000000-0000-0000-0000-000000000098"), event = OutboxEvent.DeleteUser(userId))
+      val repo = stub[UserRepository]
+      val client = stub[AuthClient]
+
+      for
+        _ <- repo.claimDueEvents.succeedsWith(Vector(rolesEvent, deleteEvent))
+        _ <- client.updateUserRoles.succeedsWith(())
+        _ <- client.deleteUser.succeedsWith(())
+        _ <- repo.deleteEvent.succeedsWith(())
+
+        fiberRef <- Ref.make(Option.empty[Fiber.Runtime[Nothing, Unit]])
+        semaphore <- Semaphore.make(1)
+        processor = UserOutboxProcessor.Live(config, repo, client, fiberRef, semaphore)
+        _ <- processor.processOnce
+      yield assertTrue(
+        client.updateUserRoles.calls == List((userId, tenantId, Set(roleId), Set.empty)),
+        client.deleteUser.calls == List(userId),
+      )
+    },
+    test("start forks a background poll loop that runs after the initial delay") {
+      val repo = stub[UserRepository]
+      val client = stub[AuthClient]
+
+      for
+        _ <- repo.claimDueEvents.succeedsWith(Vector.empty)
+        fiberRef <- Ref.make(Option.empty[Fiber.Runtime[Nothing, Unit]])
+        semaphore <- Semaphore.make(1)
+        processor = UserOutboxProcessor.Live(config, repo, client, fiberRef, semaphore)
+        _ <- ZIO.scoped(processor.start() *> TestClock.adjust(Duration.fromSeconds(20)) *> TestClock.adjust(config.pollInterval))
+        fiber <- fiberRef.get
+      yield assertTrue(fiber.isDefined, repo.claimDueEvents.calls.nonEmpty)
+    },
+    test("stop interrupts the running background fiber") {
+      val repo = stub[UserRepository]
+      val client = stub[AuthClient]
+
+      for
+        _ <- repo.claimDueEvents.succeedsWith(Vector.empty)
+        fiberRef <- Ref.make(Option.empty[Fiber.Runtime[Nothing, Unit]])
+        semaphore <- Semaphore.make(1)
+        processor = UserOutboxProcessor.Live(config, repo, client, fiberRef, semaphore)
+        stillRunning <- ZIO.scoped:
+          for
+            _ <- processor.start()
+            _ <- TestClock.adjust(Duration.fromSeconds(20))
+            _ <- processor.stop()
+            fiberAfterStop <- fiberRef.get
+            status <- ZIO.foreach(fiberAfterStop)(_.status)
+          yield status.exists(_ != zio.Fiber.Status.Done)
+      yield assertTrue(!stillRunning)
+    },
     test("moves event to dead letter when max attempts exceeded") {
       val failedRecord = record.copy(attempts = config.maxAttempts - 1)
       val repo = stub[UserRepository]
