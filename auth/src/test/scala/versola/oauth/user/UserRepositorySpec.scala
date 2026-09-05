@@ -7,6 +7,7 @@ import versola.user.UserRepository
 import versola.user.model.*
 import versola.util.{DatabaseSpecBase, Email, Phone}
 import zio.*
+import zio.json.ast.Json
 import zio.test.*
 
 import java.time.Instant
@@ -47,6 +48,9 @@ trait UserRepositorySpec extends DatabaseSpecBase[UserRepositorySpec.Env]:
       findTests(env),
       findByCredentialTests(env),
       roleTests(env),
+      registerTests(env),
+      claimsTests(env),
+      deleteTests(env),
     )
 
   private def seed(
@@ -146,6 +150,117 @@ trait UserRepositorySpec extends DatabaseSpecBase[UserRepositorySpec.Env]:
           _ <- env.userRepository.updateRoles(userId1, TenantId("tenant-1"), Set.empty, Set(RoleId("role-b")))
           roles <- env.userRepository.findRolesByUserAndTenant(userId1, TenantId("tenant-1"))
         yield assertTrue(roles == List(RoleId("role-a")))
+      },
+    )
+
+  def registerTests(env: UserRepositorySpec.Env) =
+    suite("register")(
+      test("creates the account and grants the tenant roles") {
+        for
+          user <- env.userRepository.register(userId1, Left(email1), TenantId("tenant-1"), Set(RoleId("role-a")))
+          found <- env.userRepository.find(user.id)
+          roles <- env.userRepository.findRolesByUserAndTenant(user.id, TenantId("tenant-1"))
+        yield assertTrue(
+          user.email == Some(email1),
+          found.map(_.id) == Some(user.id),
+          roles == List(RoleId("role-a")),
+        )
+      },
+      test("creates the account from a phone credential") {
+        for
+          user <- env.userRepository.register(userId1, Right(phone1), TenantId("tenant-1"), Set.empty)
+          found <- env.userRepository.find(user.id)
+        yield assertTrue(user.phone == Some(phone1), found.flatMap(_.phone) == Some(phone1))
+      },
+      test("returns the existing account when the credential was already claimed") {
+        for
+          first <- env.userRepository.register(userId1, Left(email1), TenantId("tenant-1"), Set.empty)
+          second <- env.userRepository.register(userId2, Left(email1), TenantId("tenant-1"), Set.empty)
+        yield assertTrue(first.id == second.id, second.id == userId1)
+      },
+      test("grants no roles when the registration flow configures none") {
+        for
+          user <- env.userRepository.register(userId1, Left(email1), TenantId("tenant-1"), Set.empty)
+          roles <- env.userRepository.findRolesByUser(user.id)
+        yield assertTrue(roles.isEmpty)
+      },
+      test("re-registering with the same roles is idempotent") {
+        for
+          _ <- env.userRepository.register(userId1, Left(email1), TenantId("tenant-1"), Set(RoleId("role-a")))
+          _ <- env.userRepository.register(userId1, Left(email1), TenantId("tenant-1"), Set(RoleId("role-a")))
+          roles <- env.userRepository.findRolesByUserAndTenant(userId1, TenantId("tenant-1"))
+        yield assertTrue(roles == List(RoleId("role-a")))
+      },
+      test("findRolesByUser groups the roles by tenant") {
+        for
+          _ <- seed(env, userId1)
+          _ <- env.userRepository.updateRoles(userId1, TenantId("tenant-1"), Set(RoleId("role-a"), RoleId("role-b")), Set.empty)
+          _ <- env.userRepository.updateRoles(userId1, TenantId("tenant-2"), Set(RoleId("role-c")), Set.empty)
+          roles <- env.userRepository.findRolesByUser(userId1)
+        yield assertTrue(
+          roles.keySet == Set(TenantId("tenant-1"), TenantId("tenant-2")),
+          roles(TenantId("tenant-1")).toSet == Set(RoleId("role-a"), RoleId("role-b")),
+          roles(TenantId("tenant-2")) == List(RoleId("role-c")),
+        )
+      },
+      test("findRolesByUser returns nothing for a user with no roles") {
+        for
+          _ <- seed(env, userId1)
+          roles <- env.userRepository.findRolesByUser(userId1)
+        yield assertTrue(roles.isEmpty)
+      },
+      test("findByLogin returns the account holding that login") {
+        for
+          _ <- env.userRepository.upsert(userId1, UUID.randomUUID(), None, None, Some(Login("someone")))
+          found <- env.userRepository.findByLogin(Login("someone"))
+          missing <- env.userRepository.findByLogin(Login("nobody"))
+        yield assertTrue(found.map(_.id) == Some(userId1), missing.isEmpty)
+      },
+    )
+
+  def claimsTests(env: UserRepositorySpec.Env) =
+    suite("patchClaims")(
+      test("merges the patch into the stored claims") {
+        for
+          _ <- seed(env, userId1, email = Some(email1))
+          _ <- env.userRepository.patchClaims(userId1, Json.Obj("name" -> Json.Str("Ada")))
+          _ <- env.userRepository.patchClaims(userId1, Json.Obj("locale" -> Json.Str("en")))
+          found <- env.userRepository.find(userId1)
+        yield assertTrue(
+          found.map(_.claims) == Some(Json.Obj("name" -> Json.Str("Ada"), "locale" -> Json.Str("en"))),
+        )
+      },
+      test("a null value removes the claim rather than storing null") {
+        for
+          _ <- seed(env, userId1)
+          _ <- env.userRepository.patchClaims(userId1, Json.Obj("name" -> Json.Str("Ada")))
+          _ <- env.userRepository.patchClaims(userId1, Json.Obj("name" -> Json.Null))
+          found <- env.userRepository.find(userId1)
+        yield assertTrue(found.map(_.claims) == Some(Json.Obj()))
+      },
+      test("patching an unknown user is a no-op") {
+        for
+          _ <- env.userRepository.patchClaims(userId1, Json.Obj("name" -> Json.Str("Ada")))
+          found <- env.userRepository.find(userId1)
+        yield assertTrue(found.isEmpty)
+      },
+    )
+
+  def deleteTests(env: UserRepositorySpec.Env) =
+    suite("delete")(
+      test("removes the account") {
+        for
+          _ <- seed(env, userId1, email = Some(email1))
+          _ <- env.userRepository.delete(userId1)
+          found <- env.userRepository.find(userId1)
+        yield assertTrue(found.isEmpty)
+      },
+      test("deleting an unknown user is a no-op") {
+        for
+          _ <- seed(env, userId1)
+          _ <- env.userRepository.delete(userId2)
+          found <- env.userRepository.find(userId1)
+        yield assertTrue(found.nonEmpty)
       },
     )
 
