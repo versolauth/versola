@@ -516,6 +516,66 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
           result <- env.parser.parse(request).either
         yield assertTrue(result == Left(Error.CodeChallengeMethodMissing(redirectUri, Some(State("test-state")), useFragment = false)))
       },
+
+      test("useFragment=true on UnsupportedResponseType when response_type contains id_token") {
+        val env = Env()
+        val params = validParams.view.mapValues(Chunk(_)).toMap + ("response_type" -> Chunk("id_token"))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.validate(params, Request.get(URL.root)).either
+        yield assertTrue(result == Left(Error.UnsupportedResponseType(redirectUri, Some(State("test-state")), "id_token", useFragment = true)))
+      },
+
+      test("useFragment=false on UnsupportedResponseType when response_type does not contain id_token") {
+        val env = Env()
+        val params = validParams.view.mapValues(Chunk(_)).toMap + ("response_type" -> Chunk("token"))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.validate(params, Request.get(URL.root)).either
+        yield assertTrue(result == Left(Error.UnsupportedResponseType(redirectUri, Some(State("test-state")), "token", useFragment = false)))
+      },
+
+      test("useFragment=true on MultipleValuesProvided(state) when response_type=code id_token") {
+        val env = Env()
+        val params = validParams.view.mapValues(Chunk(_)).toMap
+          + ("response_type" -> Chunk("code id_token"))
+          + ("state" -> Chunk("a", "b"))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.validate(params, Request.get(URL.root)).either
+        yield assertTrue(result == Left(Error.MultipleValuesProvided(redirectUri, None, "state", useFragment = true)))
+      },
+
+      test("useFragment=true on MultipleValuesProvided(response_type) when any value contains id_token") {
+        val env = Env()
+        val params = validParams.view.mapValues(Chunk(_)).toMap
+          + ("response_type" -> Chunk("code id_token", "code"))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.validate(params, Request.get(URL.root)).either
+        yield assertTrue(result == Left(Error.MultipleValuesProvided(redirectUri, Some(State("test-state")), "response_type", useFragment = true)))
+      },
+
+      test("oversized state is not echoed in response_type error") {
+        val env = Env()
+        val longState = "a" * 129
+        val params = validParams.view.mapValues(Chunk(_)).toMap
+          + ("response_type" -> Chunk("unsupported"))
+          + ("state" -> Chunk(longState))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.validate(params, Request.get(URL.root)).either
+        yield assertTrue(result == Left(Error.UnsupportedResponseType(redirectUri, None, "unsupported", useFragment = false)))
+      },
+
+      test("ResponseTypeMissing echoes valid state") {
+        val env = Env()
+        val params = validParams.view.mapValues(Chunk(_)).toMap - "response_type"
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.validate(params, Request.get(URL.root)).either
+        yield assertTrue(result == Left(Error.ResponseTypeMissing(redirectUri, Some(State("test-state")))))
+      },
     ),
     suite("ip")(
       test("extracts the ip from the tenant-configured header") {
