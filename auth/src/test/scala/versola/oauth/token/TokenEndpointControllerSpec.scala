@@ -872,6 +872,7 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
           )
         yield assertTrue(response.status == Status.InternalServerError)
       }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging,
+    ),
     suite("resource parameter")(
       test("does not decode resource for authorization_code") {
         val form = Form.fromStrings(
