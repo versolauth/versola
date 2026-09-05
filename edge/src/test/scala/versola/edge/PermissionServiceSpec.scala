@@ -217,7 +217,8 @@ object PermissionServiceSpec extends ZIOSpecDefault:
               PermissionService.live,
             )
             permissions <- service.getPermissionsForRoles(
-              Map(defaultTenant -> List(editorRole)),
+              defaultTenant,
+              List(editorRole),
               Set(listUsersEndpoint, createUserEndpoint),
             )
           yield assertTrue(permissions == Set(readPerm, writePerm))
