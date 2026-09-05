@@ -1,0 +1,19 @@
+.consent-logo { display: block; width: 56px; height: 56px; object-fit: contain; margin: 0 auto 16px; border-radius: var(--radius); }
+.consent-description { color: var(--text-muted); line-height: 1.6; margin: -8px 0 20px; }
+.consent-scopes-container {
+  max-height: min(40vh, 24rem);
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+  margin: 0 0 20px;
+  padding-right: 6px;
+  text-align: left;
+}
+.consent-scopes-container:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.consent-scopes { list-style: none; margin: 0; padding: 0; }
+.consent-scope { border: 1px solid var(--border); border-radius: var(--radius); margin-bottom: 8px; }
+.consent-scope-label { display: flex; align-items: flex-start; gap: 10px; padding: 12px 14px; cursor: pointer; }
+.consent-scope-label input:disabled { cursor: default; }
+.consent-scope-name { display: block; }
+.consent-scope-claims { display: block; color: var(--text-muted); font-size: 0.85rem; margin-top: 2px; }
+.consent-legal { color: var(--text-muted); font-size: 0.85rem; margin: 16px 0 0; }
+.consent-legal a { color: var(--text-muted); }

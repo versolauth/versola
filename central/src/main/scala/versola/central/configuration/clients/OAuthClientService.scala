@@ -7,10 +7,10 @@ import versola.central.configuration.roles.RoleRepository
 import versola.central.configuration.scopes.{OAuthScopeRepository, ScopeToken}
 import versola.central.configuration.sync.{SyncEvent, SyncOps}
 import versola.central.configuration.tenants.{TenantId, TenantRepository}
-import versola.central.configuration.{CreateClientRequest, UpdateClientRequest}
-import versola.util.{CacheSource, ReloadingCache, Secret, SecureRandom, SecurityService}
+import versola.central.configuration.{ConsentFlowDto, CreateClientRequest, UpdateClientRequest}
+import versola.util.{CacheSource, Patch, ReloadingCache, Secret, SecureRandom, SecurityService}
 import zio.*
-import zio.http.URL
+import zio.http.{Scheme, URL}
 
 import java.security.MessageDigest
 import javax.crypto.SecretKey
@@ -31,11 +31,11 @@ trait OAuthClientService:
   def registerClient(
       request: CreateClientRequest,
       presetSecret: Option[Secret] = None,
-  ): IO[ClientAlreadyExists | Throwable, Secret]
+  ): IO[ClientAlreadyExists | InvalidRegistrationConfiguration | Throwable, Secret]
 
   def updateClient(
       request: UpdateClientRequest,
-  ): Task[Unit]
+  ): IO[InvalidRegistrationConfiguration | Throwable, Unit]
 
   def rotateClientSecret(clientId: ClientId): Task[Secret]
 
@@ -52,12 +52,14 @@ trait OAuthClientService:
   def verifySecret(provided: Secret): Task[Boolean]
 
 object OAuthClientService:
-  def live(
-      schedule: Schedule[Any, Any, Any],
-  ): ZLayer[Scope & OAuthClientRepository & TenantRepository & SecureRandom & SecurityService & CentralConfig, Throwable, OAuthClientService] =
+  def live: ZLayer[Scope & OAuthClientRepository & TenantRepository & RoleRepository & SecureRandom & SecurityService & CentralConfig, Throwable, OAuthClientService] =
     decryptingCacheSource >>>
-      ZLayer(ReloadingCache.make[Vector[OAuthClientRecord]](schedule)) >>>
-      ZLayer.fromFunction(Impl(_, _, _, _, _, _))
+      (ZLayer.fromZIO:
+        ZIO.serviceWithZIO[CentralConfig](config =>
+          ReloadingCache.make[Vector[OAuthClientRecord]](config.configurationCacheRefreshInterval),
+        )
+      ) >>>
+      ZLayer.fromFunction(Impl(_, _, _, _, _, _, _))
 
   /** A [[CacheSource]] that reads the client records from the
     * repository and decrypts their secrets, so the in-memory cache holds plaintext
@@ -88,6 +90,7 @@ object OAuthClientService:
       cache: ReloadingCache[Vector[OAuthClientRecord]],
       clientRepository: OAuthClientRepository,
       tenantRepository: TenantRepository,
+      roleRepository: RoleRepository,
       secureRandom: SecureRandom,
       securityService: SecurityService,
       config: CentralConfig,
@@ -120,8 +123,16 @@ object OAuthClientService:
     override def registerClient(
         request: CreateClientRequest,
         presetSecret: Option[Secret] = None,
-    ): IO[ClientAlreadyExists | Throwable, Secret] =
+    ): IO[ClientAlreadyExists | InvalidRegistrationConfiguration | Throwable, Secret] =
       for
+        _ <- validateConsentUris(
+          "logoUri" -> request.logoUri,
+          "policyUri" -> request.policyUri,
+          "tosUri" -> request.tosUri,
+        )
+        frontChannelLogoutUrl <- validateLogoutUri("frontChannelLogoutUri", request.frontChannelLogoutUri)
+        backChannelLogoutUrl <- validateLogoutUri("backChannelLogoutUri", request.backChannelLogoutUri)
+        _ <- validateRegistration(request.id, request.tenantId, request.authFlow, request.registrationFlow)
         secret <- presetSecret.fold(generateSecret)(ZIO.succeed(_))
         encryptedSecret <- encryptRawSecret(secret)
         client = OAuthClientRecord(
@@ -130,7 +141,6 @@ object OAuthClientService:
           clientName = request.clientName,
           redirectUris = request.redirectUris,
           scope = request.allowedScopes,
-          externalAudience = request.audience,
           secret = Some(encryptedSecret),
           previousSecret = None,
           accessTokenTtl = Duration.fromSeconds(request.accessTokenTtl),
@@ -138,18 +148,38 @@ object OAuthClientService:
           permissions = request.permissions,
           theme = request.theme,
           authFlow = request.authFlow,
+          registrationFlow = request.registrationFlow,
           otpTemplateId = request.otpTemplateId,
-          frontChannelLogoutUri = request.frontChannelLogoutUri.flatMap(URL.decode(_).toOption),
+          frontChannelLogoutUri = frontChannelLogoutUrl,
           frontChannelLogoutSessionRequired = request.frontChannelLogoutSessionRequired,
-          backChannelLogoutUri = request.backChannelLogoutUri.flatMap(URL.decode(_).toOption),
+          backChannelLogoutUri = backChannelLogoutUrl,
+          logoUri = request.logoUri,
+          policyUri = request.policyUri,
+          tosUri = request.tosUri,
+          consentFlow = request.consentFlow.map(_.toDomain),
         )
         _ <- clientRepository.createClient(client)
       yield secret
 
     override def updateClient(
         request: UpdateClientRequest,
-    ): Task[Unit] =
+    ): IO[InvalidRegistrationConfiguration | Throwable, Unit] =
       for
+        _ <- validateConsentUris(
+          "logoUri" -> request.logoUri.flatMap(patchValue),
+          "policyUri" -> request.policyUri.flatMap(patchValue),
+          "tosUri" -> request.tosUri.flatMap(patchValue),
+        )
+        _ <- validateLogoutUri("frontChannelLogoutUri", request.frontChannelLogoutUri.flatMap(patchValue))
+        _ <- validateLogoutUri("backChannelLogoutUri", request.backChannelLogoutUri.flatMap(patchValue))
+        current <- cache.get.map(_.find(_.id == request.clientId))
+        _ <- ZIO.foreachDiscard(current): client =>
+          validateRegistration(
+            clientId = request.clientId,
+            tenantId = client.tenantId,
+            authFlow = request.authFlow.applyTo(client.authFlow),
+            registrationFlow = request.registrationFlow.applyTo(client.registrationFlow),
+          )
         _ <- clientRepository.updateClient(
           clientId = request.clientId,
           clientName = request.clientName,
@@ -160,10 +190,15 @@ object OAuthClientService:
           refreshTokenTtl = request.refreshTokenTtl.map(Duration.fromSeconds),
           theme = request.theme,
           authFlow = request.authFlow,
+          registrationFlow = request.registrationFlow,
           otpTemplateId = request.otpTemplateId,
-          frontChannelLogoutUri = request.frontChannelLogoutUri.map(_.flatMap(URL.decode(_).toOption)),
+          frontChannelLogoutUri = request.frontChannelLogoutUri.map(decodeUrlPatch),
           frontChannelLogoutSessionRequired = request.frontChannelLogoutSessionRequired,
-          backChannelLogoutUri = request.backChannelLogoutUri.map(_.flatMap(URL.decode(_).toOption)),
+          backChannelLogoutUri = request.backChannelLogoutUri.map(decodeUrlPatch),
+          logoUri = request.logoUri,
+          policyUri = request.policyUri,
+          tosUri = request.tosUri,
+          consentFlow = request.consentFlow.map(toConsentFlowPatch),
         )
       yield ()
 
@@ -191,6 +226,70 @@ object OAuthClientService:
         clients.find(_.id == CentralConfig.centralClientId).exists: client =>
           client.secret.exists(MessageDigest.isEqual(provided, _)) ||
             client.previousSecret.exists(MessageDigest.isEqual(provided, _))
+
+    /** Rejects a registration flow the auth service could not run: one without a usable
+      * entry credential, or one granting roles that do not exist in the client's tenant.
+      */
+    private def validateRegistration(
+        clientId: ClientId,
+        tenantId: TenantId,
+        authFlow: Option[AuthFlow],
+        registrationFlow: Option[RegistrationFlow],
+    ): IO[InvalidRegistrationConfiguration | Throwable, Unit] =
+      for
+        _ <- ZIO.foreachDiscard(InvalidRegistrationConfiguration.validate(clientId, authFlow, registrationFlow))(ZIO.fail(_))
+        _ <- ZIO.foreachDiscard(registrationFlow): flow =>
+          ZIO.foreachDiscard(flow.roleIds): roleId =>
+            roleRepository.findRole(tenantId, roleId).someOrFail:
+              InvalidRegistrationConfiguration(clientId, s"role '$roleId' does not exist in tenant '$tenantId'")
+      yield ()
+
+    /** An unparsable URI clears the column, matching how create drops undecodable URIs.
+      * Trims before parsing so this agrees with `validateLogoutUri`, which validates the
+      * trimmed value - otherwise a value with leading/trailing whitespace could pass
+      * validation here yet fail to parse untrimmed, silently clearing the column instead of
+      * storing the validated URI.
+      */
+    private def decodeUrlPatch(patch: Patch[String]): Patch[URL] = patch match
+      case Patch.Deleted     => Patch.Deleted
+      case Patch.Modified(v) => URL.decode(v.trim).toOption.fold(Patch.Deleted)(Patch.Modified(_))
+
+    private def toConsentFlowPatch(patch: Patch[ConsentFlowDto]): Patch[ConsentFlow] = patch match
+      case Patch.Deleted        => Patch.Deleted
+      case Patch.Modified(flow) => Patch.Modified(flow.toDomain)
+
+    private def patchValue(patch: Patch[String]): Option[String] = patch match
+      case Patch.Deleted     => None
+      case Patch.Modified(v) => Some(v)
+
+    private def validateConsentUris(
+        values: (String, Option[String])*,
+    ): IO[InvalidConsentUri | Throwable, Unit] =
+      ZIO.foreachDiscard(values): (field, value) =>
+        value.fold[IO[InvalidConsentUri | Throwable, Unit]](ZIO.unit): uri =>
+          URL.decode(uri.trim) match
+            case Left(_) =>
+              ZIO.fail(InvalidConsentUri(field, "must be an absolute HTTPS URL"))
+            case Right(url)
+                if !url.isAbsolute || url.scheme != Some(Scheme.HTTPS) || url.host.isEmpty =>
+              ZIO.fail(InvalidConsentUri(field, "must be an absolute HTTPS URL"))
+            case Right(_) => ZIO.unit
+
+    /** Unlike `logoUri`/`policyUri`/`tosUri` (browser-loaded consent links, HTTPS-only), a
+      * logout notification URI may target `http://localhost` for local development - matching
+      * the frontend's `validateLogoutUri`. A malformed or disallowed value is rejected outright
+      * rather than silently dropped, so an API caller cannot end up with a client that looks
+      * configured but has no working logout notification.
+      */
+    private def validateLogoutUri(field: String, value: Option[String]): IO[InvalidConsentUri | Throwable, Option[URL]] =
+      value.fold[IO[InvalidConsentUri | Throwable, Option[URL]]](ZIO.none): raw =>
+        val invalid = ZIO.fail(InvalidConsentUri(field, "must be an absolute https:// URL (or http://localhost for local development)"))
+        URL.decode(raw.trim) match
+          case Left(_) => invalid
+          case Right(url) if !url.isAbsolute || url.host.isEmpty || url.fragment.isDefined => invalid
+          case Right(url) if url.scheme == Some(Scheme.HTTPS) => ZIO.some(url)
+          case Right(url) if url.scheme == Some(Scheme.HTTP) && url.host.exists(h => h == "localhost" || h == "127.0.0.1") => ZIO.some(url)
+          case Right(_) => invalid
 
     private val clientSecretsKey: SecretKey = OAuthClientService.clientSecretsKey(config)
 

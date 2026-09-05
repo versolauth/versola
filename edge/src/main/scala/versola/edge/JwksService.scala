@@ -1,16 +1,18 @@
 package versola.edge
 
 import versola.util.{JWT, ReloadingCache}
-import zio.{Schedule, Scope, UIO, ZLayer}
+import zio.{Schedule, Scope, UIO, ZIO, ZLayer}
 
 trait JwksService:
   def getPublicKeys: UIO[JWT.PublicKeys]
 
 object JwksService:
-  def live(
-      schedule: Schedule[Any, Any, Any],
-  ): ZLayer[JwksSyncClient & Scope, Throwable, JwksService] =
-    ZLayer(ReloadingCache.make[JWT.PublicKeys](schedule)) >>>
+  def live: ZLayer[JwksSyncClient & Scope & EdgeConfig, Throwable, JwksService] =
+    (ZLayer.fromZIO:
+      ZIO.serviceWithZIO[EdgeConfig](config =>
+        ReloadingCache.make[JWT.PublicKeys](config.configurationCacheRefreshInterval),
+      )
+    ) >>>
       ZLayer.fromFunction(Impl(_))
 
   case class Impl(

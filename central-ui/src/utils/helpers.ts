@@ -1,4 +1,4 @@
-import { AuthFlow, PaginatedResponse, Permission, Resource, SortConfig } from '../types';
+import { AuthFlow, ConsentFlow, PaginatedResponse, Permission, RegistrationFlow, Resource, ResourceEndpointId, SortConfig } from '../types';
 
 /**
  * Default authentication flow: phone primary credential + required OTP.
@@ -7,11 +7,37 @@ import { AuthFlow, PaginatedResponse, Permission, Resource, SortConfig } from '.
 export function createDefaultAuthFlow(): AuthFlow {
   return {
     primaryCredentials: ['phone'],
+    otpType: 'sms',
     inlinePassword: false,
     passkey: false,
     factors: [{ type: 'otp', required: true }],
     passkeyFactors: [],
     equivalents: {},
+  };
+}
+
+/** Role granted to self-registered users; seeded without permissions by central's bootstrap. */
+export const DEFAULT_REGISTRATION_ROLE_ID = 'user';
+
+/**
+ * Default registration flow: prove ownership of the phone entry credential with an OTP.
+ */
+export function createDefaultRegistrationFlow(): RegistrationFlow {
+  return {
+    credential: 'phone',
+    steps: [{ type: 'otp' }],
+    roleIds: [DEFAULT_REGISTRATION_ROLE_ID],
+  };
+}
+
+/**
+ * Default consent flow: ask once, remember the grant until it is revoked, and require the
+ * whole requested scope to be granted at once.
+ */
+export function createDefaultConsentFlow(): ConsentFlow {
+  return {
+    allowPartial: false,
+    rememberDurationDays: 180,
   };
 }
 
@@ -174,6 +200,40 @@ export function humanizeLabel(name: string): string {
     .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
     .replace(/[_-]+/g, ' ')
     .replace(/^./, c => c.toUpperCase());
+}
+
+/**
+ * Fired on `window` when a tenant's permissions change, so views holding a
+ * derived permission index (the resources list) can rebuild it without a reload.
+ */
+export const PERMISSIONS_UPDATED_EVENT = 'versola-permissions-updated';
+
+export type PermissionsUpdatedDetail = {
+  tenantId: string | null;
+  permissions: Permission[];
+};
+
+/**
+ * Reverse of `Permission.endpointIds`: endpoint id -> the permissions that grant
+ * access to it. A single endpoint may be reachable through several permissions,
+ * which the caller renders as an "or" list. Permission ids are sorted so the
+ * rendering is stable across reloads.
+ */
+export function indexPermissionsByEndpoint(permissions: Permission[]): Map<ResourceEndpointId, string[]> {
+  const index = new Map<ResourceEndpointId, string[]>();
+
+  for (const permission of permissions) {
+    for (const endpointId of permission.endpointIds ?? []) {
+      const existing = index.get(endpointId);
+      if (existing) existing.push(permission.id); else index.set(endpointId, [permission.id]);
+    }
+  }
+
+  for (const permissionIds of index.values()) {
+    permissionIds.sort((a, b) => a.localeCompare(b));
+  }
+
+  return index;
 }
 
 export function resolvePermissionEndpointLabels(permission: Permission, resources: Resource[]): string[] {

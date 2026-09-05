@@ -2,7 +2,7 @@ import { LitElement, html, css } from 'lit';
 import { customElement, property, query, state } from 'lit/decorators.js';
 import { theme, resetStyles } from '../styles/theme';
 import type { NavItem, VersolaNavigation } from './navigation';
-import { configureCentralApi, fetchMyPermissions } from '../utils/central-api';
+import { configureCentralApi, fetchMyPermissions, resolveBaseUrl } from '../utils/central-api';
 
 import './navigation';
 // Imported directly (not just transitively via navigation) because the splash
@@ -25,6 +25,39 @@ import './challenges-list';
 import './well-known';
 import './system-settings';
 
+// The account settings page is auth's self-service surface (served by edge at
+// /resources/auth/settings), not part of the console's own /central API.
+// Resolved against resolveBaseUrl() — the same origin API calls and the login
+// redirect already use — rather than a bare root-relative path: that's correct
+// both for the standard deployment (edge and the console share an origin via
+// nginx, so resolveBaseUrl() falls back to window.location.origin) and for a
+// deployment that puts edge on its own host (which already has to set the
+// api-url attribute for API calls to reach it; this link then follows suit).
+//
+// Dev is the exception. vite's dev server sits at "/" (localhost:3000) and
+// proxies to edge without api-url being set, so resolveBaseUrl() would still
+// resolve to localhost:3000 here. A full-page navigation there gets proxied
+// *content*, but the browser's actual origin stays localhost:3000 — which
+// isn't in bootstrap.passkey.origins (dev/env.conf), so WebAuthn calls on the
+// page reject it as an untrusted origin. Point at edge's dev address directly
+// to sidestep the proxy for this one link.
+function accountSettingsUrl(): string {
+  return import.meta.env.DEV
+    ? 'http://localhost:9005/resources/auth/settings'
+    : new URL('/resources/auth/settings', resolveBaseUrl()).toString();
+}
+
+// Edge's preset-scoped logout route. Unlike accountSettingsUrl above, dev
+// needs no special case here: nothing on the way to a logged-out state
+// performs a WebAuthn ceremony, so it doesn't matter that a full-page
+// navigation to a proxied path leaves the browser at vite's own origin —
+// resolveBaseUrl() already resolves to that same origin there (api-url isn't
+// set in dev) and vite's `/logout/` proxy rule forwards it correctly either
+// way. Using resolveBaseUrl() here too just keeps this consistent with
+// accountSettingsUrl for a deployment where edge sits on its own host.
+function logoutUrl(): string {
+  return new URL('/logout/central-admin', resolveBaseUrl()).toString();
+}
 
 @customElement('versola-admin')
 export class VersolaAdmin extends LitElement {
@@ -33,6 +66,13 @@ export class VersolaAdmin extends LitElement {
   // central-admin preset's edge login; override only if this console is ever
   // wired to a different preset.
   @property({ type: String, attribute: 'login-url' }) loginUrl: string | null = null;
+  // 'prefix' (default): the console is reached via the /central/{x} shortcut,
+  // relying on an external proxy (Vite dev server / gateway nginx) to rewrite
+  // it to edge's real /resources/central/{x} route -- local dev, docker-local,
+  // and path-based prod all use this. 'direct': the console has its own
+  // origin (e.g. k8s, see #222) and calls edge's real route outright. See
+  // centralResourcePath in central-api.ts.
+  @property({ type: String, attribute: 'console-mode' }) consoleMode: 'prefix' | 'direct' = 'prefix';
   @state() private currentView: NavItem = 'clients';
   /** Mobile drawer state; ignored by the layout above the 768px breakpoint. */
   @state() private navOpen = false;
@@ -55,6 +95,9 @@ export class VersolaAdmin extends LitElement {
   @state() private permissionsLoaded = false;
   // Tenant IDs accessible to this admin (null = all tenants visible)
   @state() private allowedTenantIds: string[] | null = null;
+  /** Reported by /permissions/me. Defaults to true so a failed load hides
+    * non-prod-only affordances rather than exposing them. */
+  @state() private isProd = true;
 
   /** Mirrors the 768px breakpoint in navigation.ts's media query. Kept in sync
     * by hand — if that breakpoint moves, move this one too. */
@@ -118,7 +161,7 @@ export class VersolaAdmin extends LitElement {
   }
 
   updated(changed: Map<string, unknown>) {
-    if (changed.has('apiUrl') || changed.has('loginUrl')) {
+    if (changed.has('apiUrl') || changed.has('loginUrl') || changed.has('consoleMode')) {
       this.applyApiConfig();
       void this.loadPermissions();
     }
@@ -139,7 +182,12 @@ export class VersolaAdmin extends LitElement {
         color: var(--text-primary);
       }
 
+      /* A flex row so versola-navigation's sticky sidebar — sized only by its
+         own content plus stretch, not by an explicit height — is given the
+         row's actual height (align-items defaults to stretch). See the
+         comment on versola-navigation's :host for why this matters. */
       .app-layout {
+        display: flex;
         min-height: 100vh;
       }
 
@@ -165,7 +213,7 @@ export class VersolaAdmin extends LitElement {
       }
 
       .main-content {
-        margin-left: 250px;
+        flex: 1 1 auto;
         padding: 2rem;
         max-width: 1400px;
         min-width: 0; /* let children shrink instead of overflowing */
@@ -209,8 +257,11 @@ export class VersolaAdmin extends LitElement {
       }
 
       @media (max-width: 768px) {
+        /* versola-navigation switches back to position: fixed below the
+           breakpoint (see its own styles), which takes it out of flow — so
+           .main-content, as the only remaining flex child, naturally takes
+           the full row width without an explicit margin-left override. */
         .main-content {
-          margin-left: 0;
           padding: 1rem;
         }
 
@@ -231,9 +282,11 @@ export class VersolaAdmin extends LitElement {
       const central = response.resources['central'];
       this.adminPermissions = new Set(central?.permissions ?? []);
       this.allowedTenantIds = this.adminPermissions.size > 0 ? null : [];
+      this.isProd = response.isProd;
     } catch {
       this.adminPermissions = new Set();
       this.allowedTenantIds = [];
+      this.isProd = true;
     } finally {
       // Deliberately never runs on the unauthenticated path: a 401 hands off to
       // a top-level navigation and fetchMyPermissions' promise never settles,
@@ -393,6 +446,7 @@ export class VersolaAdmin extends LitElement {
     configureCentralApi({
       baseUrl: this.apiUrl,
       loginUrl: this.loginUrl,
+      consoleMode: this.consoleMode,
     });
   }
 
@@ -486,7 +540,7 @@ export class VersolaAdmin extends LitElement {
       case 'edges':
         return html`<versola-edges-list .expandEdgeId=${this.edgeToExpandOnLoad} .canManage=${this.canManage('edges')} @navigate-to-client=${this.handleNavigateToClient}></versola-edges-list>`;
       case 'users':
-        return html`<versola-users-list .tenantId=${this.currentTenantId} .canManage=${this.canManage('users')}></versola-users-list>`;
+        return html`<versola-users-list .tenantId=${this.currentTenantId} .canManage=${this.canManage('users')} .canRevealPassword=${!this.isProd}></versola-users-list>`;
       case 'forms':
         return html`<versola-forms-list .tenantId=${this.currentTenantId} .canManage=${this.canManage('forms')}></versola-forms-list>`;
       case 'locales':
@@ -527,7 +581,8 @@ export class VersolaAdmin extends LitElement {
           .permissions=${this.adminPermissions}
           .allowedTenantIds=${this.allowedTenantIds}
           .open=${this.navOpen}
-          .logoutUrl=${'/logout/central-admin'}
+          .logoutUrl=${logoutUrl()}
+          .accountSettingsUrl=${accountSettingsUrl()}
           @nav-change=${this.handleNavChange}
           @tenant-change=${this.handleTenantChange}
         ></versola-navigation>

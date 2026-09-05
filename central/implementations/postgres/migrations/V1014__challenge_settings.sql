@@ -8,6 +8,7 @@ CREATE TABLE challenge_settings (
     auth_conversation_ttl_seconds INT NOT NULL,
     session_ttl_seconds          INT NOT NULL,
     session_idle_ttl_seconds     INT,
+    user_agent_ttl_seconds       INT NOT NULL DEFAULT 15552000,
     ip_header                    TEXT NOT NULL,
     acr_vocabulary               JSONB,
     post_logout_redirect_uris    TEXT[] NOT NULL DEFAULT '{}',

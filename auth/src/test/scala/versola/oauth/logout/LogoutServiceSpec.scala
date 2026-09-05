@@ -4,11 +4,12 @@ import versola.auth.TestEnvConfig
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{ClientId, OAuthClientRecord, ScopeToken, TenantId}
 import versola.oauth.session.SessionService
-import versola.oauth.session.model.{ClientEntry, PublicSessionId, SessionId, SessionInfo, SessionRecord, UserAgentInfo}
+import versola.oauth.session.model.{ClientEntry, PublicSessionId, SessionId, SessionInfo, SessionRecord, UserAgentId}
 import versola.user.model.UserId
 import versola.util.{MAC, UnitSpecBase}
 import zio.*
 import zio.http.*
+import zio.json.ast.{Json, JsonCursor}
 import zio.prelude.NonEmptySet
 import zio.test.*
 
@@ -24,57 +25,40 @@ object LogoutServiceSpec extends UnitSpecBase:
   private val rawSessionId = SessionId(Array.fill(32)(9.toByte))
   private val mac = MAC(Array.fill(32)(1.toByte))
   private val redirectUri = URL.decode("https://example.com/callback").toOption.get
+  private val testUserAgentId = UserAgentId(UUID.randomUUID())
 
   private val record1 = SessionRecord(
     userId = userId,
     clients = List(ClientEntry(clientId1, Instant.EPOCH)),
-    userAgent = UserAgentInfo("desktop", None, None, None),
+    userAgentId = testUserAgentId,
     createdAt = Instant.EPOCH,
     amr = Map.empty,
     publicId = publicSessionId1,
+    expiresAt = Instant.EPOCH,
   )
   private val sessionInfo1 = SessionInfo(mac, record1)
 
   private val baseClient = OAuthClientRecord(
     id = clientId1,
     tenantId = tenantId,
-    clientName = "Client 1",
+    clientName = Map("en" -> "Client 1"),
     redirectUris = NonEmptySet("https://example.com/callback"),
     scope = Set(ScopeToken("read")),
-    externalAudience = Nil,
     secret = None,
     previousSecret = None,
     accessTokenTtl = 10.minutes,
     refreshTokenTtl = 7776000.seconds,
     theme = "default",
     authFlow = None,
+    registrationFlow = None,
     otpTemplateId = "default",
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
     backChannelLogoutUri = None,
-  )
-
-  /** A Client whose driver dies if invoked; no test in this spec exercises a
-    * back-channel delivery (none of the fixture clients set backChannelLogoutUri). */
-  private val unusedHttpClient: Client = ZClient.fromDriver(new ZClient.Driver[Any, Scope, Throwable]:
-    override def request(
-        version: Version,
-        method: Method,
-        url: URL,
-        headers: Headers,
-        body: Body,
-        sslConfig: Option[ClientSSLConfig],
-        proxy: Option[Proxy],
-    )(using trace: Trace): ZIO[Scope, Throwable, Response] =
-      ZIO.dieMessage("HTTP client should not be used in LogoutService tests")
-
-    override def socket[Env1 <: Any](
-        version: Version,
-        url: URL,
-        headers: Headers,
-        app: WebSocketApp[Env1],
-    )(using trace: Trace, ev: Scope =:= Scope): ZIO[Env1 & Scope, Throwable, Response] =
-      ZIO.dieMessage("WebSocket not used in LogoutService tests"),
+    logoUri = None,
+    policyUri = None,
+    tosUri = None,
+    consentFlow = None,
   )
 
   private val clientNoLogoutUri = baseClient
@@ -97,11 +81,12 @@ object LogoutServiceSpec extends UnitSpecBase:
   class Env:
     val sessionService = stub[SessionService]
     val configuration = stub[OAuthConfigurationService]
+    val outbox = stub[BackChannelOutbox]
     val service: LogoutService = LogoutService.Impl(
       sessionService,
       configuration,
       TestEnvConfig.coreConfig,
-      unusedHttpClient,
+      outbox,
     )
 
   def spec = suite("LogoutService")(
@@ -206,6 +191,102 @@ object LogoutServiceSpec extends UnitSpecBase:
           _      <- env.configuration.getPostLogoutRedirectUris.succeedsWith(Nil)
           result <- env.service.logout(Right(rawSessionId), Some(redirectUri), Some("st-6"))
         yield assertTrue(result.postLogoutRedirectUri == None)
+      },
+    ),
+    suite("back-channel logout")(
+      test("pushes a logout event naming the session to every participant that registered a URI") {
+        val env = Env()
+        val withBackChannel = clientA.copy(backChannelLogoutUri = Some(URL.decode("https://rp-a.example/backchannel").toOption.get))
+        for
+          _ <- env.sessionService.invalidate.succeedsWith(Some(sessionInfo1))
+          _ <- env.configuration.find.succeedsWith(Some(withBackChannel))
+          _ <- env.configuration.getPostLogoutRedirectUris.succeedsWith(Nil)
+          _ <- env.outbox.submit.succeedsWith(())
+          _ <- env.service.logout(Right(rawSessionId), None, None)
+          calls = env.outbox.submit.calls
+        yield assertTrue(
+          calls.map(delivery => (delivery.audience.toList, delivery.uri.encode, delivery.subject)) ==
+            List((List(withBackChannel.id), "https://rp-a.example/backchannel", userId.toString)),
+          calls.head.customClaims == Json.Obj(
+            "sid" -> Json.Str(publicSessionId1),
+            "events" -> Json.Obj("http://schemas.openid.net/event/backchannel-logout" -> Json.Obj()),
+          ),
+        )
+      },
+      test("pushes nothing to a participant that registered no back-channel URI") {
+        val env = Env()
+        for
+          _ <- env.sessionService.invalidate.succeedsWith(Some(sessionInfo1))
+          _ <- env.configuration.find.succeedsWith(Some(clientNoLogoutUri))
+          _ <- env.configuration.getPostLogoutRedirectUris.succeedsWith(Nil)
+          _ <- env.service.logout(Right(rawSessionId), None, None)
+        yield assertTrue(env.outbox.submit.calls.isEmpty)
+      },
+    ),
+    suite("invalidateAllSessions")(
+      test("does nothing when the user has no active sessions") {
+        val env = Env()
+        for
+          _ <- env.sessionService.invalidateAllByUser.succeedsWith(Nil)
+          _ <- env.service.invalidateAllSessions(userId)
+        yield assertTrue(env.configuration.find.calls.isEmpty)
+      },
+      test("resolves participants for every session the user had, not just one") {
+        val env = Env()
+        val recordA = record1.copy(clients = List(ClientEntry(clientA.id, Instant.EPOCH)))
+        val recordB = record1.copy(clients = List(ClientEntry(clientB.id, Instant.EPOCH)), publicId = PublicSessionId("public-session-2"))
+        val participants = Map(clientA.id -> clientA, clientB.id -> clientB)
+        for
+          _ <- env.sessionService.invalidateAllByUser.succeedsWith(List(recordA, recordB))
+          _ <- env.configuration.find.returnsZIO(id => ZIO.succeed(participants.get(id)))
+          _ <- env.service.invalidateAllSessions(userId)
+        yield assertTrue(env.configuration.find.calls.toSet == Set(clientA.id, clientB.id))
+      },
+      test("pushes one event per client naming the user, not one per session") {
+        val env = Env()
+        val withBackChannel = clientA.copy(backChannelLogoutUri = Some(URL.decode("https://rp-a.example/backchannel").toOption.get))
+        val clients = List(ClientEntry(withBackChannel.id, Instant.EPOCH))
+        val sessions = List(
+          record1.copy(clients = clients),
+          record1.copy(clients = clients, publicId = PublicSessionId("public-session-2")),
+          record1.copy(clients = clients, publicId = PublicSessionId("public-session-3")),
+        )
+        for
+          _ <- env.sessionService.invalidateAllByUser.succeedsWith(sessions)
+          _ <- env.configuration.find.succeedsWith(Some(withBackChannel))
+          _ <- env.outbox.submit.succeedsWith(())
+          _ <- env.service.invalidateAllSessions(userId)
+          calls = env.outbox.submit.calls
+        yield assertTrue(
+          // Three sessions, one client, one delivery: a logout token carrying a subject and
+          // no session asks the RP to end every session that user has with it.
+          calls.map(delivery => (delivery.audience.toList, delivery.subject)) ==
+            List((List(withBackChannel.id), userId.toString)),
+          calls.head.customClaims == Json.Obj(
+            "toe" -> Json.Num(0),
+            "events" -> Json.Obj("http://schemas.openid.net/event/backchannel-logout" -> Json.Obj()),
+          ),
+        )
+      },
+      test("gives every endpoint the same event time, stamped when the sessions were ended") {
+        val env = Env()
+        val rpA = clientA.copy(backChannelLogoutUri = Some(URL.decode("https://rp-a.example/backchannel").toOption.get))
+        val rpB = clientB.copy(backChannelLogoutUri = Some(URL.decode("https://rp-b.example/backchannel").toOption.get))
+        val participants = Map(rpA.id -> rpA, rpB.id -> rpB)
+        val sessions = List(record1.copy(clients = List(ClientEntry(rpA.id, Instant.EPOCH), ClientEntry(rpB.id, Instant.EPOCH))))
+        for
+          _ <- env.sessionService.invalidateAllByUser.succeedsWith(sessions)
+          _ <- env.configuration.find.returnsZIO(id => ZIO.succeed(participants.get(id)))
+          _ <- env.outbox.submit.succeedsWith(())
+          occurredAt <- Clock.instant
+          _ <- env.service.invalidateAllSessions(userId)
+          eventTimes = env.outbox.submit.calls.map(_.customClaims.get(JsonCursor.field("toe")))
+        yield assertTrue(
+          // One administrative action is one boundary. Signed per delivery instead, two
+          // endpoints would bound the same revocation at two different instants, and a
+          // delivery that took a moment to run would bound it past a login made in between.
+          eventTimes == List.fill(2)(Right(Json.Num(occurredAt.getEpochSecond))),
+        )
       },
     ),
   )

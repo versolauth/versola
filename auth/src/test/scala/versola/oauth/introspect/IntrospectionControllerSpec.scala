@@ -88,5 +88,34 @@ object IntrospectionControllerSpec extends UnitSpecBase:
           for body <- response.body.asString
           yield assertTrue(body.contains("\"active\":true")),
       ),
+      controllerTestCase(
+        description = "authenticates the client with client_secret_post",
+        request = Request.post(
+          url = URL.root / "introspect",
+          body = Body.fromURLEncodedForm(Form.fromStrings(
+            "token" -> Base64.urlEncode(Array.fill(32)(2.toByte)),
+            "client_id" -> clientId,
+            "client_secret" -> Base64.urlEncode(clientSecret),
+          )),
+        ),
+        expectedStatus = Status.Ok,
+        setup = svc =>
+          svc.introspectRefreshToken.succeedsWith(IntrospectionResponse.Inactive.copy(active = true)),
+        verify = response =>
+          for body <- response.body.asString
+          yield assertTrue(body.contains("\"active\":true")),
+      ),
+      controllerTestCase(
+        description = "returns 401 when Basic and post credentials are combined",
+        request = Request.post(
+          url = URL.root / "introspect",
+          body = Body.fromURLEncodedForm(Form.fromStrings(
+            "token" -> Base64.urlEncode(Array.fill(32)(2.toByte)),
+            "client_id" -> clientId,
+            "client_secret" -> Base64.urlEncode(clientSecret),
+          )),
+        ).addHeader(authHeader(clientId, clientSecret)),
+        expectedStatus = Status.Unauthorized,
+      ),
     ),
   )

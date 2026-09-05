@@ -2,9 +2,9 @@ package versola.central.configuration.locales
 
 import io.opentelemetry.api
 import org.scalamock.stubs.{Stub, ZIOStubs}
-import versola.central.{TestAdminAuth, TestCentralConfig}
-import versola.central.configuration.clients.OAuthClientService
+import versola.central.{CentralConfig, TestAdminAuth, TestCentralConfig}
 import versola.central.configuration.edges.EdgeService
+import versola.central.configuration.resources.ResourceService
 import versola.util.JWT
 import versola.util.http.Observability
 import zio.*
@@ -55,17 +55,17 @@ object LocaleControllerSpec extends ZIOSpecDefault, ZIOStubs:
         client      <- ZIO.service[Client]
         service     = stub[LocaleService]
         edgeService = stub[EdgeService]
-        oauthClientService = stub[OAuthClientService]
+        resourceService = stub[ResourceService]
         tracing     <- tracingLayer.build
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             LocaleController.routes.provideEnvironment(
-              ZEnvironment[LocaleService](service) ++ tracing ++ ZEnvironment(config) ++
-                ZEnvironment[EdgeService](edgeService) ++ ZEnvironment[OAuthClientService](oauthClientService)
+              ZEnvironment[LocaleService](service) ++ tracing ++ ZEnvironment[CentralConfig](config) ++
+                ZEnvironment[EdgeService](edgeService) ++ ZEnvironment[ResourceService](resourceService)
             )
           )
         )
-        _            <- oauthClientService.verifySecret.succeedsWith(true)
+        _            <- resourceService.verifySecret.succeedsWith(true)
         _            <- setup(service)
         requestWithAuth = request.headers.header(Header.Authorization) match
           case None => request.addHeader(TestAdminAuth.basicAuthHeader)
@@ -100,6 +100,22 @@ object LocaleControllerSpec extends ZIOSpecDefault, ZIOStubs:
       verify = (_, service) =>
         ZIO.succeed(assertTrue(service.update.calls == List((Vector(ru), Vector("fr"))))),
     ),
+      controllerTestCase(
+        description = "PUT locales returns missing localized fields when activation is incomplete",
+        request = Request(
+          method = Method.PUT,
+          url = URL.empty / "configuration" / "locales",
+          body = Body.fromString(UpdateLocalesRequest(add = Vector(ru.copy(active = true)), delete = Vector.empty).toJson),
+        ).addHeader(Header.ContentType(MediaType.application.json)),
+        expectedStatus = Status.BadRequest,
+        setup = service => service.update.failsWith(LocaleActivationError("ru", Vector("client 'app' name"))),
+        verify = (response, service) =>
+          for payload <- response.body.asJson[LocaleActivationError]
+          yield assertTrue(
+            service.update.calls == List((Vector(ru.copy(active = true)), Vector.empty)),
+            payload == LocaleActivationError("ru", Vector("client 'app' name")),
+          ),
+      ),
     controllerTestCase(
       description = "PUT locales/default sets default locale and returns no content",
       request = Request(

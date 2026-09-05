@@ -1,5 +1,6 @@
 package versola.central.configuration.themes
 
+import versola.central.CentralConfig
 import versola.central.configuration.tenants.TenantId
 import versola.util.ReloadingCache
 import zio.{Schedule, Scope, Task, ZIO, ZLayer}
@@ -20,8 +21,12 @@ object ThemeService:
   final class ThemeInUseError
       extends RuntimeException("Theme is in use by one or more clients and cannot be deleted")
 
-  def live(schedule: Schedule[Any, Any, Any]): ZLayer[ThemeRepository & Scope, Throwable, ThemeService] =
-    ZLayer(ReloadingCache.make[Vector[ThemeRecord]](schedule))
+  def live: ZLayer[ThemeRepository & Scope & CentralConfig, Throwable, ThemeService] =
+    (ZLayer.fromZIO:
+      ZIO.serviceWithZIO[CentralConfig](config =>
+        ReloadingCache.make[Vector[ThemeRecord]](config.configurationCacheRefreshInterval),
+      )
+    )
       >>> ZLayer.fromFunction(Impl(_, _))
 
   class Impl(

@@ -1,8 +1,9 @@
 package versola.central.users
 
-import versola.central.configuration.clients.OAuthClientService
+import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
+import versola.central.configuration.edges.EdgeService
+import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.TenantId
-import versola.central.authorizeBasic
 import versola.util.http.Controller
 import versola.util.{Email, EnvName, Phone}
 import zio.ZIO
@@ -11,13 +12,14 @@ import zio.json.EncoderOps
 import zio.telemetry.opentelemetry.tracing.Tracing
 
 object UserController extends Controller:
-  type Env = Tracing & UserService & OAuthClientService & EnvName
+  type Env = Tracing & CentralConfig & EdgeService & UserService & ResourceService & EnvName
 
   def routes: Routes[Env, Throwable] = Routes(
     findUsersEndpoint,
     getUserRolesEndpoint,
     getUserSessionsEndpoint,
     createUserEndpoint,
+    registeredUserEndpoint,
     patchUserEndpoint,
     patchUserClaimsEndpoint,
     patchRolesEndpoint,
@@ -77,7 +79,7 @@ object UserController extends Controller:
       (for
         _ <- authorizeBasic(request)
         service <- ZIO.service[UserService]
-        body <- request.body.asJsonFromCodec[CreateUserRequest]
+        body <- request.bodyAs[CreateUserRequest]
         id <- service.create(body)
       yield Response.json(CreateUserResponse(id).toJson).status(Status.Created))
         .catchAll:
@@ -85,12 +87,25 @@ object UserController extends Controller:
           case error: Throwable => ZIO.fail(error)
     }
 
+  val registeredUserEndpoint =
+    Method.POST / "users" / "registrations" -> handler { (request: Request) =>
+      (for
+        _ <- authorizeInternal(request)
+        service <- ZIO.service[UserService]
+        body <- request.bodyAs[RegisteredUserRequest]
+        userId <- service.indexRegistered(body)
+      yield Response.json(RegisteredUserResponse(userId).toJson))
+        .catchAll:
+          case UserIndexConflict => ZIO.succeed(Response.status(Status.Conflict))
+          case error: Throwable  => ZIO.fail(error)
+    }
+
   val patchUserEndpoint =
     Method.PATCH / "users" -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[UserService]
-        body <- request.body.asJsonFromCodec[PatchUserRequest]
+        body <- request.bodyAs[PatchUserRequest]
         _ <- service.patch(body)
       yield Response.status(Status.Accepted)
     }
@@ -100,7 +115,7 @@ object UserController extends Controller:
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[UserService]
-        body <- request.body.asJsonFromCodec[PatchUserClaimsRequest]
+        body <- request.bodyAs[PatchUserClaimsRequest]
         _ <- service.patchClaims(body.id, body.claims)
       yield Response.status(Status.Accepted)
     }
@@ -110,7 +125,7 @@ object UserController extends Controller:
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[UserService]
-        body <- request.body.asJson[UpdateUserRolesRequest]
+        body <- request.bodyAs[UpdateUserRolesRequest]
         _ <- service.updateRoles(body)
       yield Response.status(Status.Accepted)
     }
@@ -130,7 +145,7 @@ object UserController extends Controller:
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[UserService]
-        body <- request.body.asJsonFromCodec[ResetUserLimitsRequest]
+        body <- request.bodyAs[ResetUserLimitsRequest]
         _ <- service.resetLimits(body)
       yield Response.status(Status.Accepted)
     }
@@ -150,7 +165,7 @@ object UserController extends Controller:
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[UserService]
-        body <- request.body.asJsonFromCodec[RenamePasskeyRequest]
+        body <- request.bodyAs[RenamePasskeyRequest]
         _ <- service.renamePasskey(body)
       yield Response.status(Status.Accepted)
     }
@@ -170,10 +185,19 @@ object UserController extends Controller:
     Method.POST / "users" / "password" / "reset" -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
+        env <- ZIO.service[EnvName]
         service <- ZIO.service[UserService]
-        body <- request.body.asJsonFromCodec[ResetPasswordRequest]
-        _ <- service.resetPassword(body)
-      yield Response.status(Status.NoContent)
+        body <- request.bodyAs[ResetPasswordRequest]
+        // Revealing the plaintext is a non-prod affordance; auth rejects it too,
+        // this guard keeps a tampered console from even reaching auth.
+        response <-
+          if body.channel.contains(DeliveryChannel.show) && env.isProd then
+            ZIO.succeed(Response.status(Status.NotFound))
+          else
+            service.resetPassword(body).map:
+              case Some(password) => Response.json(ResetPasswordResponse(password).toJson)
+              case None           => Response.status(Status.NoContent)
+      yield response
     }
 
   val setPasswordEndpoint =
@@ -183,7 +207,7 @@ object UserController extends Controller:
         else for
           _ <- authorizeBasic(request)
           service <- ZIO.service[UserService]
-          body <- request.body.asJsonFromCodec[SetPasswordRequest]
+          body <- request.bodyAs[SetPasswordRequest]
           _ <- service.setPassword(body.userId, body.password)
         yield Response.status(Status.NoContent)
     }

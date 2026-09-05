@@ -1,0 +1,13 @@
+apiVersion: v2
+name: versola
+description: >-
+  Helm chart for running Versola's auth, central and edge services plus the
+  admin console in Kubernetes. Does not bundle Postgres or a secret backend
+  -- see https://github.com/versolauth/versola/issues/206 for the ground
+  rules and deploy.md for the equivalent docker-compose deployment.
+type: application
+version: 0.1.0
+appVersion: "0.4.0"
+home: https://github.com/versolauth/versola
+sources:
+  - https://github.com/versolauth/versola

@@ -52,3 +52,10 @@ object RedirectUri:
   given JsonEncoder[Type] = JsonEncoder.string.contramap(identity)
   given JsonDecoder[Type] = JsonDecoder.string.mapOrFail(parse)
 
+  /** Every [[RedirectUri]] is constructed via [[parse]], which already proved it
+   *  decodes into an absolute [[URL]], so this conversion is total in practice.
+   */
+  extension (uri: Type)
+    def toUrl: URL = URL.decode(uri)
+      .getOrElse(throw IllegalStateException(s"Invalid RedirectUri '$uri'"))
+

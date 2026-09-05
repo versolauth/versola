@@ -4,13 +4,13 @@ import com.nimbusds.jose.crypto.RSASSASigner
 import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm, JWSHeader}
 import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{AuthMethodRef, ScopeToken}
+import versola.oauth.client.model.{AuthMethodRef, AuthorizationDetail, ResourceUri, ScopeToken}
 import versola.oauth.model.{AccessToken, AuthorizationCode, CodeVerifier, RefreshToken}
 import versola.oauth.token.model.{ClientCredentialsRequest, CodeExchangeRequest, IssuedTokens, RefreshTokenRequest, TokenEndpointError, TokenErrorResponse, TokenRequest, TokenResponse}
 import versola.oauth.userinfo.UserInfoService
 import versola.user.model.UserId
 import versola.util.CoreConfig.JwtConfig
-import versola.util.http.{Controller, extractCredentials}
+import versola.util.http.{Controller, Observability, extractCredentials}
 import versola.util.{Base64, Base64Url, CoreConfig, FormDecoder, JWT, Secret}
 import zio.*
 import zio.http.*
@@ -33,8 +33,9 @@ object TokenEndpointController extends Controller:
       (for
         oauthTokenService <- ZIO.service[OAuthTokenService]
         config <- ZIO.service[CoreConfig]
-        tokenRequest <- parseRequest(request)
-        credentials <- request.extractCredentials.orElseFail(TokenEndpointError.InvalidClient)
+        form <- request.body.asURLEncodedForm.orElseFail(TokenEndpointError.InvalidRequest)
+        tokenRequest <- parseRequest(form)
+        credentials <- request.extractCredentials(form).orElseFail(TokenEndpointError.InvalidClient)
         issuedTokens <- tokenRequest match
           case codeExchangeRequest: CodeExchangeRequest =>
             oauthTokenService.exchangeAuthorizationCode(codeExchangeRequest, credentials)
@@ -46,7 +47,7 @@ object TokenEndpointController extends Controller:
       yield Response.json(response.toJson))
         .catchAll {
           case error: TokenEndpointError =>
-            ZIO.succeed:
+            Observability.setError(error.error, error.errorDescription).as:
               val errorResponse = TokenErrorResponse.from(error)
               Response
                 .json(errorResponse.toJson)
@@ -76,6 +77,7 @@ object TokenEndpointController extends Controller:
       ) ++
         tokens.sessionId.map(sid => "sid" -> Json.Str(sid)) ++
         tokens.requestedClaims.map(rc => "requested_claims" -> rc.toJsonAST.toOption.get) ++
+        authorizationDetailsClaim(tokens).map("authorization_details" -> _) ++
         AuthMethodRef.idTokenClaims(tokens.amr, tokens.authTime, tokens.acr)
 
 
@@ -106,6 +108,14 @@ object TokenEndpointController extends Controller:
       refreshToken = tokens.refreshToken.map(Base64.urlEncode),
       scope = Option.when(tokens.scope.nonEmpty)(tokens.scope.mkString(" ")),
       idToken = idToken,
+      authorizationDetails = authorizationDetailsClaim(tokens),
+    )
+
+  /** RFC 9396 §7: the granted authorization details are returned in the token response and
+    * carried in the access token, unchanged from how they were granted. */
+  private def authorizationDetailsClaim(tokens: IssuedTokens): Option[Json.Arr] =
+    Option.when(tokens.authorizationDetails.nonEmpty)(
+      Json.Arr(tokens.authorizationDetails.map(_.value)*),
     )
 
   private def generateIdToken(
@@ -152,19 +162,19 @@ object TokenEndpointController extends Controller:
       case _ =>
         ZIO.none
 
-  private def parseRequest(request: Request): IO[TokenEndpointError, TokenRequest] =
-    for
-      form <- request.body.asURLEncodedForm.orElseFail(TokenEndpointError.InvalidRequest)
-      request <- form.get("grant_type").flatMap(_.stringValue) match
-        case Some("authorization_code") =>
+  private def parseRequest(form: Form): IO[TokenEndpointError, TokenRequest] =
+    form.get("grant_type").flatMap(_.stringValue) match
+      case Some(grantType @ "authorization_code") =>
+        Observability.setRouteLabel("grant_type", grantType) *>
           codeExchangeRequestDecoder.decode(form).orElseFail(TokenEndpointError.InvalidRequest)
-        case Some("refresh_token") =>
+      case Some(grantType @ "refresh_token") =>
+        Observability.setRouteLabel("grant_type", grantType) *>
           refreshTokenRequestDecoder.decode(form).orElseFail(TokenEndpointError.InvalidRequest)
-        case Some("client_credentials") =>
+      case Some(grantType @ "client_credentials") =>
+        Observability.setRouteLabel("grant_type", grantType) *>
           clientCredentialsRequestDecoder.decode(form).orElseFail(TokenEndpointError.InvalidRequest)
-        case _ =>
-          ZIO.fail(TokenEndpointError.UnsupportedGrantType)
-    yield request
+      case _ =>
+        ZIO.fail(TokenEndpointError.UnsupportedGrantType)
 
   val codeExchangeRequestDecoder: FormDecoder[CodeExchangeRequest] = (form: Form) =>
     for
@@ -177,9 +187,23 @@ object TokenEndpointController extends Controller:
     for
       refreshToken <- FormDecoder.single(form, "refresh_token", RefreshToken.fromBase64Url)
       scope <- FormDecoder.optional(form, "scope", scope => Right(ScopeToken.parseTokens(scope)))
-    yield RefreshTokenRequest(refreshToken, scope)
+      resources <- resourceRequestDecoder(form)
+      authorizationDetails <- authorizationDetailsRequestDecoder(form)
+    yield RefreshTokenRequest(refreshToken, scope, resources, authorizationDetails)
 
   val clientCredentialsRequestDecoder: FormDecoder[ClientCredentialsRequest] = (form: Form) =>
     for
       scope <- FormDecoder.optional(form, "scope", scope => Right(ScopeToken.parseTokens(scope)))
-    yield ClientCredentialsRequest(scope)
+      resources <- resourceRequestDecoder(form)
+      authorizationDetails <- authorizationDetailsRequestDecoder(form)
+    yield ClientCredentialsRequest(scope, resources, authorizationDetails)
+
+  private def authorizationDetailsRequestDecoder(form: Form): IO[String, Option[List[AuthorizationDetail]]] =
+    FormDecoder.optional(form, AuthorizationDetail.Parameter, AuthorizationDetail.parseAll)
+
+  private def resourceRequestDecoder(form: Form): IO[String, Option[List[ResourceUri]]] =
+    val resourceFields = form.formData.filter(_.name == "resource")
+    val resourceValues = resourceFields.flatMap: field =>
+      field.stringValue.toList.flatMap(ResourceUri.splitFormValue).filter(_.nonEmpty)
+    ZIO.foreach(resourceValues)(value => ZIO.fromEither(ResourceUri.parse(value)))
+      .map(resources => Option.when(resourceFields.nonEmpty)(resources.toList))

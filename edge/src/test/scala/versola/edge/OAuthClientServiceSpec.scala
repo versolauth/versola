@@ -1,18 +1,19 @@
 package versola.edge
 
+import org.scalamock.stubs.ZIOStubs
 import versola.edge.model.{AuthorizationPreset, ClientId, OAuthClient, PresetId}
 import versola.util.{RedirectUri, ReloadingCache, Secret}
 import zio.*
 import zio.test.*
 
-object OAuthClientServiceSpec extends ZIOSpecDefault:
+object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
   private val clientId = ClientId("web-app")
   private val otherClientId = ClientId("mobile-app")
   private val presetId = PresetId("preset-default")
   private val otherPresetId = PresetId("preset-mobile")
 
-  private val client = OAuthClient(id = clientId, secret = Secret(Array.fill(48)(1.toByte)), permissions = Set.empty)
-  private val otherClient = OAuthClient(id = otherClientId, secret = Secret(Array.fill(48)(2.toByte)), permissions = Set.empty)
+  private val client = OAuthClient(id = clientId, secret = Secret(Array.fill(48)(1.toByte)), permissions = Set.empty, accessTokenTtl = 15.minutes)
+  private val otherClient = OAuthClient(id = otherClientId, secret = Secret(Array.fill(48)(2.toByte)), permissions = Set.empty, accessTokenTtl = 15.minutes)
 
   private val preset = AuthorizationPreset(
     id = presetId,
@@ -36,7 +37,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault:
     for
       presetCache <- Ref.make(presets).map(ReloadingCache(_))
       clientCache <- Ref.make(clients).map(ReloadingCache(_))
-    yield OAuthClientService.Impl(presetCache, clientCache)
+    yield OAuthClientService.Impl(presetCache, clientCache, stub[AuthorizationPresetsSyncClient], stub[OAuthClientsSyncClient])
 
   def spec = suite("edge.OAuthClientService")(
     test("findPreset returns cached preset when id is known") {

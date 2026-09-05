@@ -1,6 +1,6 @@
 package versola.oauth.client
 
-import versola.oauth.client.model.{Acr, ChallengeSettingsRecord, Claim, ClaimRecord, ClientId, FormRecord, Locales, OAuthClientRecord, OtpTemplateRecord, PassedAuthFactor, PasskeySettings, RateLimit, ScopeRecord, ScopeToken, SubmissionLimits, SystemSettingsRecord, TenantId, ThemeRecord}
+import versola.oauth.client.model.{Acr, AuthorizationDetailType, AuthorizationDetailTypeRecord, ChallengeSettingsRecord, Claim, ClaimRecord, ClientId, FormRecord, Locales, OAuthClientRecord, OtpTemplateChannel, OtpTemplatePurpose, OtpTemplateRecord, OtpType, PassedAuthFactor, PasskeySettings, RateLimit, ResourceRecord, ScopeRecord, ScopeToken, SubmissionLimits, SystemSettingsRecord, TenantId, ThemeRecord}
 import versola.oauth.conversation.otp.model.OtpTemplate
 import versola.oauth.metadata.MetadataSyncClient
 import versola.util.*
@@ -22,66 +22,83 @@ object OAuthClientServiceSpec extends UnitSpecBase:
   val privateClient1 = OAuthClientRecord(
     id = clientId1,
     tenantId = TenantId("default"),
-    clientName = "Private 1",
+    clientName = Map("en" -> "Private 1"),
     redirectUris = NonEmptySet("https://example.com/callback"),
     scope = Set(ScopeToken("read"), ScopeToken("write")),
-    externalAudience = Nil,
     secret = Some(testSecret),
     previousSecret = None,
     accessTokenTtl = 10.minutes,
     refreshTokenTtl = 7776000.seconds,
     theme = "default",
     authFlow = None,
+    registrationFlow = None,
     otpTemplateId = "default",
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
     backChannelLogoutUri = None,
+    logoUri = None,
+    policyUri = None,
+    tosUri = None,
+    consentFlow = None,
   )
   val privateClient2 = OAuthClientRecord(
     id = clientId2,
     tenantId = TenantId("default"),
-    clientName = "Private 2",
+    clientName = Map("en" -> "Private 2"),
     redirectUris = NonEmptySet("https://example2.com/callback"),
     scope = Set(ScopeToken("read")),
-    externalAudience = Nil,
     secret = Some(testSecret),
     previousSecret = Some(previousClientSecret),
     accessTokenTtl = 10.minutes,
     refreshTokenTtl = 7776000.seconds,
     theme = "default",
     authFlow = None,
+    registrationFlow = None,
     otpTemplateId = "default",
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
     backChannelLogoutUri = None,
+    logoUri = None,
+    policyUri = None,
+    tosUri = None,
+    consentFlow = None,
   )
   val publicClient = OAuthClientRecord(
     id = publicClientId,
     tenantId = TenantId("default"),
-    clientName = "Public",
+    clientName = Map("en" -> "Public"),
     redirectUris = NonEmptySet("https://public.example.com/callback"),
     scope = Set(ScopeToken("read")),
-    externalAudience = Nil,
     secret = None,
     previousSecret = None,
     accessTokenTtl = 10.minutes,
     refreshTokenTtl = 7776000.seconds,
     theme = "default",
     authFlow = None,
+    registrationFlow = None,
     otpTemplateId = "default",
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
     backChannelLogoutUri = None,
+    logoUri = None,
+    policyUri = None,
+    tosUri = None,
+    consentFlow = None,
   )
   val testClients = Map(clientId1 -> privateClient1, clientId2 -> privateClient2, publicClientId -> publicClient)
   val testScopes = Vector(
     ScopeRecord(
       scope = ScopeToken("read"),
-      claims = Vector(ClaimRecord(claim = Claim("sub")), ClaimRecord(claim = Claim("name"))),
+      description = Map("en" -> "Read access"),
+      claims = Vector(
+        ClaimRecord(claim = Claim("sub"), description = Map("en" -> "Subject")),
+        ClaimRecord(claim = Claim("name"), description = Map("en" -> "Name")),
+      ),
     ),
     ScopeRecord(
       scope = ScopeToken("write"),
-      claims = Vector(ClaimRecord(claim = Claim("email"))),
+      description = Map("en" -> "Write access"),
+      claims = Vector(ClaimRecord(claim = Claim("email"), description = Map("en" -> "Email"))),
     ),
   )
 
@@ -95,6 +112,8 @@ object OAuthClientServiceSpec extends UnitSpecBase:
       val challengeSettingsCache: ReloadingCache[Vector[ChallengeSettingsRecord]],
       val systemSettingsCache: ReloadingCache[SystemSettingsRecord],
       val metadataCache: ReloadingCache[Json.Obj],
+      val resourceCache: ReloadingCache[ResourceSyncClient.SyncResult],
+      val authorizationDetailTypeCache: ReloadingCache[Vector[AuthorizationDetailTypeRecord]],
   ):
     val clientSync = stub[OAuthClientSyncClient]
     val scopeSync = stub[OAuthScopeSyncClient]
@@ -105,6 +124,8 @@ object OAuthClientServiceSpec extends UnitSpecBase:
     val challengeSettingsSync = stub[ChallengeSettingsSyncClient]
     val systemSettingsSync = stub[SystemSettingsSyncClient]
     val metadataSync = stub[MetadataSyncClient]
+    val resourceSync = stub[ResourceSyncClient]
+    val authorizationDetailTypeSync = stub[AuthorizationDetailTypeSyncClient]
     val service: OAuthConfigurationService =
       OAuthConfigurationService.Impl(
         clientCache,
@@ -125,6 +146,10 @@ object OAuthClientServiceSpec extends UnitSpecBase:
         systemSettingsSync,
         metadataCache,
         metadataSync,
+        resourceCache,
+        resourceSync,
+        authorizationDetailTypeCache,
+        authorizationDetailTypeSync,
       )
 
   private def makeEnv(
@@ -136,6 +161,8 @@ object OAuthClientServiceSpec extends UnitSpecBase:
       otpTemplates: Vector[OtpTemplateRecord] = Vector.empty,
       challengeSettings: Vector[ChallengeSettingsRecord] = Vector.empty,
       systemSettings: SystemSettingsRecord = SystemSettingsRecord.default,
+      resources: Vector[ResourceRecord] = Vector.empty,
+      authorizationDetailTypes: Vector[AuthorizationDetailTypeRecord] = Vector.empty,
   ) =
     for
       clientRef <- Ref.make(clients)
@@ -147,6 +174,8 @@ object OAuthClientServiceSpec extends UnitSpecBase:
       challengeSettingsRef <- Ref.make(challengeSettings)
       systemSettingsRef <- Ref.make(systemSettings)
       metadataRef <- Ref.make(Json.Obj())
+      resourceRef <- Ref.make(ResourceSyncClient.SyncResult(resources, Nil))
+      authorizationDetailTypeRef <- Ref.make(authorizationDetailTypes)
     yield Env(
       clientCache = ReloadingCache(clientRef),
       scopeCache = ReloadingCache(scopeRef),
@@ -157,6 +186,8 @@ object OAuthClientServiceSpec extends UnitSpecBase:
       challengeSettingsCache = ReloadingCache(challengeSettingsRef),
       systemSettingsCache = ReloadingCache(systemSettingsRef),
       metadataCache = ReloadingCache(metadataRef),
+      resourceCache = ReloadingCache(resourceRef),
+      authorizationDetailTypeCache = ReloadingCache(authorizationDetailTypeRef),
     )
 
   val spec = suite("OAuthConfigurationService")(
@@ -171,6 +202,12 @@ object OAuthClientServiceSpec extends UnitSpecBase:
         env <- makeEnv()
         result <- env.service.find(ClientId("missing"))
       yield assertTrue(result.isEmpty)
+    },
+    test("get returns existing client") {
+      for
+        env <- makeEnv()
+        result <- env.service.get(clientId1)
+      yield assertTrue(result == privateClient1)
     },
     test("verifySecret accepts public client only without secret") {
       for
@@ -205,29 +242,55 @@ object OAuthClientServiceSpec extends UnitSpecBase:
           "default",
           TenantId("default"),
           Map("en" -> "Your code is {{code}}", "ru" -> "Ваш код {{code}}"),
-          purpose = "otp",
+          purpose = OtpTemplatePurpose.otp,
+          channel = OtpTemplateChannel.sms,
         )
         for
           env <- makeEnv(
             otpTemplates = Vector(template),
             locales = Locales(Vector.empty, "en"),
           )
-          result <- env.service.getClientTemplate(clientId1, Some(List("ru")))
+          result <- env.service.getClientTemplate(clientId1, OtpType.sms, Some(List("ru")))
         yield assertTrue(result == OtpTemplate("Ваш код {{code}}"))
+      },
+      test("selects only OTP templates matching the requested channel") {
+        val emailTemplate = OtpTemplateRecord(
+          "default",
+          TenantId("default"),
+          Map("en" -> "Email code: {{code}}"),
+          purpose = OtpTemplatePurpose.otp,
+          channel = OtpTemplateChannel.email,
+        )
+        val passwordTemplate = emailTemplate.copy(
+          purpose = OtpTemplatePurpose.password,
+          localizations = Map("en" -> "Password: {{password}}"),
+        )
+        for
+          env <- makeEnv(
+            otpTemplates = Vector(emailTemplate, passwordTemplate),
+            locales = Locales(Vector.empty, "en"),
+          )
+          emailResult <- env.service.getClientTemplate(clientId1, OtpType.email, None)
+          smsResult <- env.service.getClientTemplate(clientId1, OtpType.sms, None)
+        yield assertTrue(
+          emailResult == OtpTemplate("Email code: {{code}}"),
+          smsResult == OtpTemplate("{{code}}"),
+        )
       },
       test("falls back to default locale when preferred locale is not in template") {
         val template = OtpTemplateRecord(
           "default",
           TenantId("default"),
           Map("en" -> "Your code is {{code}}"),
-          purpose = "otp",
+          purpose = OtpTemplatePurpose.otp,
+          channel = OtpTemplateChannel.sms,
         )
         for
           env <- makeEnv(
             otpTemplates = Vector(template),
             locales = Locales(Vector.empty, "en"),
           )
-          result <- env.service.getClientTemplate(clientId1, Some(List("ru")))
+          result <- env.service.getClientTemplate(clientId1, OtpType.sms, Some(List("ru")))
         yield assertTrue(result == OtpTemplate("Your code is {{code}}"))
       },
       test("falls back to first available locale when no preferred or default matches") {
@@ -235,26 +298,27 @@ object OAuthClientServiceSpec extends UnitSpecBase:
           "default",
           TenantId("default"),
           Map("fr" -> "Votre code {{code}}"),
-          purpose = "otp",
+          purpose = OtpTemplatePurpose.otp,
+          channel = OtpTemplateChannel.sms,
         )
         for
           env <- makeEnv(
             otpTemplates = Vector(template),
             locales = Locales(Vector.empty, "en"),
           )
-          result <- env.service.getClientTemplate(clientId1, None)
+          result <- env.service.getClientTemplate(clientId1, OtpType.sms, None)
         yield assertTrue(result == OtpTemplate("Votre code {{code}}"))
       },
       test("returns illegal state template when client is not found") {
         for
           env <- makeEnv(clients = Map.empty)
-          result <- env.service.getClientTemplate(ClientId("missing"), None)
+          result <- env.service.getClientTemplate(ClientId("missing"), OtpType.sms, None)
         yield assertTrue(result == OtpTemplate("{{code}}"))
       },
       test("returns illegal state template when no template found for client") {
         for
           env <- makeEnv(otpTemplates = Vector.empty)
-          result <- env.service.getClientTemplate(clientId1, None)
+          result <- env.service.getClientTemplate(clientId1, OtpType.sms, None)
         yield assertTrue(result == OtpTemplate("{{code}}"))
       },
     ),
@@ -264,20 +328,45 @@ object OAuthClientServiceSpec extends UnitSpecBase:
           "password-template",
           TenantId("default"),
           Map("en" -> "Password reset: {{code}}", "ru" -> "Сброс пароля: {{code}}"),
-          purpose = "password",
+          purpose = OtpTemplatePurpose.password,
+          channel = OtpTemplateChannel.email,
         )
         for
           env <- makeEnv(
             otpTemplates = Vector(template),
             locales = Locales(Vector.empty, "en"),
           )
-          result <- env.service.getPasswordTemplate(Some(List("ru")))
+          result <- env.service.getPasswordTemplate(OtpTemplateChannel.email, Some(List("ru")))
         yield assertTrue(result == OtpTemplate("Сброс пароля: {{code}}"))
+      },
+      test("selects password template by requested channel") {
+        val emailTemplate = OtpTemplateRecord(
+          "default",
+          TenantId("default"),
+          Map("en" -> "Email password: {{password}}"),
+          purpose = OtpTemplatePurpose.password,
+          channel = OtpTemplateChannel.email,
+        )
+        val smsTemplate = emailTemplate.copy(
+          localizations = Map("en" -> "SMS password: {{password}}"),
+          channel = OtpTemplateChannel.sms,
+        )
+        for
+          env <- makeEnv(
+            otpTemplates = Vector(emailTemplate, smsTemplate),
+            locales = Locales(Vector.empty, "en"),
+          )
+          emailResult <- env.service.getPasswordTemplate(OtpTemplateChannel.email, None)
+          smsResult <- env.service.getPasswordTemplate(OtpTemplateChannel.sms, None)
+        yield assertTrue(
+          emailResult == OtpTemplate("Email password: {{password}}"),
+          smsResult == OtpTemplate("SMS password: {{password}}"),
+        )
       },
       test("fails when no password template found") {
         for
           env <- makeEnv(otpTemplates = Vector.empty)
-          result <- env.service.getPasswordTemplate(None).exit
+          result <- env.service.getPasswordTemplate(OtpTemplateChannel.email, None).exit
         yield assert(result)(fails(isSubtype[RuntimeException](hasMessage(equalTo("No global password template configured")))))
       }
     ),
@@ -293,6 +382,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
         authConversationTtlSeconds = 900,
         sessionTtlSeconds = 86400,
         sessionIdleTtlSeconds = None,
+        userAgentTtlSeconds = 15552000,
         ipHeader = "X-Forwarded-For",
         acrVocabulary = None,
         postLogoutRedirectUris = List.empty,
@@ -313,6 +403,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
         authConversationTtlSeconds = 900,
         sessionTtlSeconds = 86400,
         sessionIdleTtlSeconds = None,
+        userAgentTtlSeconds = 15552000,
         ipHeader = "X-Custom-IP",
         acrVocabulary = None,
         postLogoutRedirectUris = List.empty,
@@ -334,6 +425,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
         authConversationTtlSeconds = 900,
         sessionTtlSeconds = 86400,
         sessionIdleTtlSeconds = None,
+        userAgentTtlSeconds = 15552000,
         ipHeader = "X-Real-IP",
         acrVocabulary = None,
         postLogoutRedirectUris = List.empty,
@@ -358,6 +450,30 @@ object OAuthClientServiceSpec extends UnitSpecBase:
         result <- env.service.getMetadata
       yield assertTrue(result == metadata)
     },
+    test("getMetadata returns cached authorization detail metadata") {
+      val metadata = Json.Obj(
+        "issuer" -> Json.Str("https://issuer.com"),
+        "authorization_details_types_supported" -> Json.Arr(Json.Str("payment_initiation")),
+      )
+      for
+        env <- makeEnv()
+        _ <- env.metadataCache.set(metadata)
+        result <- env.service.getMetadata
+      yield assertTrue(result == metadata)
+    },
+    test("findAuthorizationDetailType resolves a type within the tenant only") {
+      val paymentType = AuthorizationDetailTypeRecord(
+        tenantId = TenantId("default"),
+        `type` = AuthorizationDetailType("payment_initiation"),
+        schema = Json.Obj("type" -> Json.Str("object")),
+      )
+      for
+        env <- makeEnv()
+        _ <- env.authorizationDetailTypeCache.set(Vector(paymentType))
+        found <- env.service.findAuthorizationDetailType(TenantId("default"), paymentType.`type`)
+        otherTenant <- env.service.findAuthorizationDetailType(TenantId("other"), paymentType.`type`)
+      yield assertTrue(found == Some(paymentType), otherTenant.isEmpty)
+    },
     test("syncConfiguration fetches and updates all caches") {
       for
         env <- makeEnv(clients = Map.empty, scopes = Vector.empty)
@@ -370,6 +486,8 @@ object OAuthClientServiceSpec extends UnitSpecBase:
         _ <- env.challengeSettingsSync.getAll.succeedsWith(Vector.empty)
         _ <- env.systemSettingsSync.getAll.succeedsWith(SystemSettingsRecord.default)
         _ <- env.metadataSync.getAll.succeedsWith(Json.Obj("a" -> Json.Num(1)))
+        _ <- env.resourceSync.getAll.succeedsWith(ResourceSyncClient.SyncResult(Vector.empty, Nil))
+        _ <- env.authorizationDetailTypeSync.getAll.succeedsWith(Vector.empty)
 
         _ <- env.service.syncConfiguration
 
@@ -394,6 +512,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
         authConversationTtlSeconds = 900,
         sessionTtlSeconds = 86400,
         sessionIdleTtlSeconds = None,
+        userAgentTtlSeconds = 15552000,
         ipHeader = "X-Real-IP",
         acrVocabulary = Some(vocabulary),
         postLogoutRedirectUris = List.empty,

@@ -14,16 +14,22 @@ import java.time.Instant
 enum AuthMethodRef derives JsonCodec, Schema, Equal:
   /** Password-based authentication. */
   case pwd
+
   /** One-time password (code). */
   case otp
+
   /** OTP delivered via SMS channel. Paired with [[otp]]. */
   case sms
+
   /** Proof-of-possession of a hardware-secured (device-bound) key. */
   case hwk
+
   /** Proof-of-possession of a software-secured (synced / multi-device) key. */
   case swk
+
   /** User presence was confirmed (WebAuthn UP flag). */
   case user
+
   /** Multiple factors of authentication were performed. */
   case mfa
 
@@ -48,11 +54,11 @@ object AuthMethodRef:
     * method references and the authentication time. Omits `amr` when empty.
     */
   def idTokenClaims(amr: Set[AuthMethodRef], authTime: Option[Instant], acr: Option[Acr] = None): Map[String, Json] = {
-    val amrField      = Option.when(amr.nonEmpty) {
+    val amrField = Option.when(amr.nonEmpty) {
       "amr" -> Json.Arr(Chunk.fromIterable(amr.toList.sortBy(_.toString).map(m => Json.Str(m.toString))))
     }
     val authTimeField = authTime.map(t => "auth_time" -> Json.Num(t.getEpochSecond))
-    val acrField      = acr.map(v => "acr" -> Json.Str(v))
+    val acrField = acr.map(v => "acr" -> Json.Str(v))
     (amrField ++ authTimeField ++ acrField).toMap
   }
 

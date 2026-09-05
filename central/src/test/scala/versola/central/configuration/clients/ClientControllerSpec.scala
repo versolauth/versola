@@ -8,7 +8,7 @@ import versola.central.configuration.permissions.Permission
 import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.tenants.TenantId
 import versola.util.http.Observability
-import versola.util.{Base64, Base64Url, JWT, RedirectUri, Secret, SecurityService}
+import versola.util.{Base64, Base64Url, JWT, Patch, RedirectUri, Secret, SecurityService}
 import zio.*
 import zio.http.*
 import zio.json.*
@@ -49,15 +49,15 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
   private val createRequest = CreateClientRequest(
     tenantId = tenantId,
     id = clientId,
-    clientName = "Web App",
+    clientName = Map("en" -> "Web App"),
     redirectUris = Set(redirectUri1),
     allowedScopes = Set(readScope),
-    audience = List(ClientId("api")),
     permissions = Set(readPermission),
     accessTokenTtl = 300,
     refreshTokenTtl = Some(7776000),
     theme = "default",
     authFlow = Some(AuthFlow.default),
+    registrationFlow = None,
     otpTemplateId = "default",
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
@@ -66,7 +66,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
 
   private val updateRequest = UpdateClientRequest(
     clientId = clientId,
-    clientName = Some("Updated Web App"),
+    clientName = Some(Map("en" -> "Updated Web App")),
     redirectUris = PatchClientRedirectUris(
       add = Set(redirectUri2),
       remove = Set(redirectUri1),
@@ -83,6 +83,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
     refreshTokenTtl = None,
     theme = None,
     authFlow = None,
+    registrationFlow = None,
     otpTemplateId = None,
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = None,
@@ -93,10 +94,9 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
     OAuthClientRecord(
       id = clientId,
       tenantId = tenantId,
-      clientName = "Web App",
+      clientName = Map("en" -> "Web App"),
       redirectUris = Set(redirectUri1),
       scope = Set(readScope),
-      externalAudience = List(ClientId("api")),
       secret = Some(currentSecret),
       previousSecret = None,
       accessTokenTtl = 5.minutes,
@@ -104,18 +104,22 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       permissions = Set(readPermission),
       theme = "",
       authFlow = Some(AuthFlow.default),
+      registrationFlow = None,
       otpTemplateId = "default",
       frontChannelLogoutUri = None,
       frontChannelLogoutSessionRequired = false,
       backChannelLogoutUri = None,
+      logoUri = None,
+      policyUri = None,
+      tosUri = None,
+      consentFlow = Some(ConsentFlow(allowPartial = true, rememberDuration = Some(14.days))),
     ),
     OAuthClientRecord(
       id = ClientId("mobile-app"),
       tenantId = tenantId,
-      clientName = "Mobile App",
+      clientName = Map("en" -> "Mobile App"),
       redirectUris = Set(redirectUri2),
       scope = Set(writeScope),
-      externalAudience = List(ClientId("api")),
       secret = Some(currentSecret),
       previousSecret = Some(previousSecret),
       accessTokenTtl = 10.minutes,
@@ -123,10 +127,15 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       permissions = Set(writePermission),
       theme = "",
       authFlow = Some(AuthFlow.default),
+      registrationFlow = None,
       otpTemplateId = "default",
       frontChannelLogoutUri = None,
       frontChannelLogoutSessionRequired = false,
       backChannelLogoutUri = None,
+      logoUri = None,
+      policyUri = None,
+      tosUri = None,
+      consentFlow = None,
     ),
   )
 
@@ -159,6 +168,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       for
         client <- ZIO.service[Client]
         service = stub[OAuthClientService]
+        resourceService = stub[versola.central.configuration.resources.ResourceService]
         edgeService = stub[versola.central.configuration.edges.EdgeService]
         tracing <- tracingLayer.build
         security <- securityLayer.build
@@ -166,12 +176,13 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             ClientController.routes.provideEnvironment(
-              ZEnvironment[OAuthClientService](service) ++ ZEnvironment(config) ++ tracing ++ security ++
+              ZEnvironment[OAuthClientService](service) ++ ZEnvironment[versola.central.configuration.resources.ResourceService](resourceService) ++ ZEnvironment[CentralConfig](config) ++ tracing ++ security ++
                 ZEnvironment[versola.central.configuration.edges.EdgeService](edgeService),
             ),
           ),
         )
         _ <- service.verifySecret.succeedsWith(true)
+        _ <- resourceService.verifySecret.succeedsWith(true)
         _ <- setup(service)
         requestWithAuth = request.headers.header(Header.Authorization) match
           case None => request.addHeader(TestAdminAuth.basicAuthHeader)
@@ -189,10 +200,9 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
 
   private case class DecryptedSyncOAuthClientRecord(
       id: String,
-      clientName: String,
+      clientName: Map[String, String],
       redirectUris: Set[RedirectUri],
       scope: Set[ScopeToken],
-      externalAudience: List[ClientId],
       secret: Option[Chunk[Byte]],
       previousSecret: Option[Chunk[Byte]],
       accessTokenTtl: Duration,
@@ -212,7 +222,6 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       clientName = client.clientName,
       redirectUris = client.redirectUris,
       scope = client.scope,
-      externalAudience = client.externalAudience,
       secret = secret.map(Chunk.fromArray),
       previousSecret = previousSecret.map(Chunk.fromArray),
       accessTokenTtl = client.accessTokenTtl,
@@ -240,33 +249,47 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
             List(
               OAuthClientResponse(
                 id = clientId,
-                clientName = "Web App",
+                clientName = Map("en" -> "Web App"),
                 redirectUris = Set(redirectUri1),
                 scope = Set(readScope),
-                externalAudience = List(ClientId("api")),
                 permissions = Set(readPermission),
                 secretRotation = false,
+                accessTokenTtl = 300L,
+                refreshTokenTtl = 7776000L,
                 theme = "",
                 authFlow = Some(AuthFlow.default),
+                registrationFlow = None,
                 otpTemplateId = "default",
                 frontChannelLogoutUri = None,
                 frontChannelLogoutSessionRequired = false,
                 backChannelLogoutUri = None,
+                logoUri = None,
+                policyUri = None,
+                tosUri = None,
+                consentFlow = Some(
+                  ConsentFlowDto(allowPartial = true, rememberDuration = Some(14.days.toSeconds))
+                ),
               ),
               OAuthClientResponse(
                 id = ClientId("mobile-app"),
-                clientName = "Mobile App",
+                clientName = Map("en" -> "Mobile App"),
                 redirectUris = Set(redirectUri2),
                 scope = Set(writeScope),
-                externalAudience = List(ClientId("api")),
                 permissions = Set(writePermission),
                 secretRotation = true,
+                accessTokenTtl = 600L,
+                refreshTokenTtl = 7776000L,
                 theme = "",
                 authFlow = Some(AuthFlow.default),
+                registrationFlow = None,
                 otpTemplateId = "default",
                 frontChannelLogoutUri = None,
                 frontChannelLogoutSessionRequired = false,
                 backChannelLogoutUri = None,
+                logoUri = None,
+                policyUri = None,
+                tosUri = None,
+                consentFlow = None,
               ),
             ),
           ),
@@ -307,10 +330,9 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
           decryptedClients == Vector(
             DecryptedSyncOAuthClientRecord(
               id = clientId.toString,
-              clientName = "Web App",
+              clientName = Map("en" -> "Web App"),
               redirectUris = Set(redirectUri1),
               scope = Set(readScope),
-              externalAudience = List(ClientId("api")),
               secret = Some(Chunk.fromArray(currentSecret)),
               previousSecret = None,
               accessTokenTtl = 5.minutes,
@@ -319,10 +341,9 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
             ),
             DecryptedSyncOAuthClientRecord(
               id = "mobile-app",
-              clientName = "Mobile App",
+              clientName = Map("en" -> "Mobile App"),
               redirectUris = Set(redirectUri2),
               scope = Set(writeScope),
-              externalAudience = List(ClientId("api")),
               secret = Some(Chunk.fromArray(currentSecret)),
               previousSecret = Some(Chunk.fromArray(previousSecret)),
               accessTokenTtl = 10.minutes,
@@ -392,13 +413,40 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
         ),
     ),
     controllerTestCase(
+      description = "clear registration flow while leaving auth flow unchanged",
+      request = Request(
+        method = Method.PUT,
+        url = URL.empty / "configuration" / "clients",
+        body = Body.fromString(
+          """{
+            |  "clientId": "web-app",
+            |  "clientName": {"en": "Updated Web App"},
+            |  "redirectUris": {"add": ["https://example.com/alt-callback"], "remove": ["https://example.com/callback"]},
+            |  "scope": {"add": ["write"], "remove": ["read"]},
+            |  "permissions": {"add": ["users:write"], "remove": ["users:read"]},
+            |  "accessTokenTtl": 900,
+            |  "registrationFlow": null
+            |}""".stripMargin,
+        ),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.NoContent,
+      setup = service =>
+        service.updateClient.succeedsWith(()),
+      verify = (_, service, _) =>
+        ZIO.succeed(
+          assertTrue(
+            service.updateClient.calls == List(updateRequest.copy(registrationFlow = Some(Patch.Deleted))),
+          ),
+        ),
+    ),
+    controllerTestCase(
       description = "update client returns 400 when both logout URIs are configured",
       request = Request(
         method = Method.PUT,
         url = URL.empty / "configuration" / "clients",
         body = Body.fromString(updateRequest.copy(
-          frontChannelLogoutUri = Some(Some("https://example.com/front-logout")),
-          backChannelLogoutUri = Some(Some("https://example.com/back-logout")),
+          frontChannelLogoutUri = Some(Patch.Modified("https://example.com/front-logout")),
+          backChannelLogoutUri = Some(Patch.Modified("https://example.com/back-logout")),
         ).toJson),
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.BadRequest,
@@ -413,7 +461,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
         method = Method.PUT,
         url = URL.empty / "configuration" / "clients",
         body = Body.fromString(updateRequest.copy(
-          frontChannelLogoutUri = Some(Some("https://example.com/front-logout")),
+          frontChannelLogoutUri = Some(Patch.Modified("https://example.com/front-logout")),
         ).toJson),
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.NoContent,

@@ -1,0 +1,138 @@
+/* The base .container is sized for a single login card; the account page lists an
+ * unbounded number of sessions and passkeys, so it needs to be wider and left-aligned
+ * instead of centered. */
+.account-container {
+  width: min(560px, calc(100vw - 40px));
+  max-height: min(720px, calc(100dvh - 40px));
+  text-align: left;
+  overflow-y: auto;
+}
+.account-container h1 {
+  text-align: center;
+}
+.account-section + .account-section {
+  margin-top: 32px;
+}
+.account-section h2 {
+  font-size: 1rem;
+  font-weight: 600;
+  margin: 0 0 12px;
+  color: var(--text);
+}
+.account-empty {
+  color: var(--text-muted);
+  font-size: 0.9rem;
+  margin: 0 0 12px;
+}
+.account-list {
+  list-style: none;
+  margin: 0 0 16px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.account-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  background: var(--field-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.account-row-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.account-row-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.92rem;
+  font-weight: 500;
+  color: var(--text);
+}
+.account-row-subtitle {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+.account-badge {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--accent);
+  background: rgba(21, 94, 117, 0.1);
+  border-radius: 999px;
+  padding: 2px 8px;
+}
+.account-row-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.account-row-action {
+  width: auto;
+  padding: 8px 14px;
+  font-size: 0.85rem;
+}
+.account-rename {
+  flex: 1;
+}
+.account-rename .input-field {
+  padding: 8px 12px;
+  font-size: 0.9rem;
+}
+.account-enroll {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.account-enroll-error {
+  font-size: 0.85rem;
+}
+.account-go-back {
+  margin-top: 28px;
+}
+
+.confirmation-backdrop {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(21, 23, 28, 0.35);
+  z-index: 300;
+}
+.confirmation-dialog {
+  width: min(360px, 100%);
+  padding: 28px;
+  text-align: left;
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 20px 48px rgba(16, 24, 40, 0.2);
+}
+.confirmation-dialog h2 {
+  margin: 0 0 10px;
+  font-size: 1.1rem;
+  color: var(--text);
+}
+.confirmation-dialog p {
+  margin: 0 0 22px;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+.confirmation-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.confirmation-actions .btn {
+  width: auto;
+  padding: 10px 16px;
+  font-size: 0.9rem;
+}

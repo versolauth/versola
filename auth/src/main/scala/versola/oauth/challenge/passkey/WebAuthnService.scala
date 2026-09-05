@@ -23,9 +23,11 @@ import com.yubico.webauthn.{
   StartAssertionOptions,
   StartRegistrationOptions,
 }
-import versola.auth.model.{AuthenticatorTransport, CredentialDeviceType, CredentialId, PasskeyRecord}
-import versola.oauth.client.model.PasskeySettings
+import versola.auth.model.{AuthenticatorTransport, CredentialDeviceType, CredentialId, PasskeyName, PasskeyRecord}
+import versola.oauth.client.OAuthConfigurationService
+import versola.oauth.client.model.{ClientId, PasskeySettings}
 import versola.user.model.UserId
+import versola.util.http.Observability
 import zio.{IO, Runtime, Task, Unsafe, ZIO, ZLayer}
 
 import java.nio.ByteBuffer
@@ -50,18 +52,23 @@ object WebAuthnError:
   case class CeremonyFailed(message: String) extends WebAuthnError(message)
   case object AssertionFailed extends WebAuthnError("assertion verification failed")
   case object CredentialNotFound extends WebAuthnError("credential not found on server")
+  case object PasskeysNotEnabled extends WebAuthnError("passkeys are not enabled")
 
 trait WebAuthnService:
   /** Begin an enrollment ceremony for the given user. */
   def startRegistration(settings: PasskeySettings, userId: UserId, displayName: String): IO[WebAuthnError, PasskeyCeremony]
 
-  /** Verify an enrollment response and persist the resulting passkey. */
+  /** Verify an enrollment response and persist the resulting passkey.
+    * Looks up the client's passkey settings internally; fails with
+    * [[WebAuthnError.PasskeysNotEnabled]] when they are gone, which an administrator can do
+    * at any point during a ceremony the user has already started.
+    */
   def finishRegistration(
-      settings: PasskeySettings,
+      clientId: ClientId,
       userId: UserId,
       request: String,
       response: String,
-      name: Option[String],
+      name: Option[PasskeyName],
   ): IO[WebAuthnError, PasskeyRecord]
 
   /** Begin a passwordless (discoverable) assertion ceremony. */
@@ -77,14 +84,15 @@ trait WebAuthnService:
   def finishAssertion(settings: PasskeySettings, request: String, response: String): IO[WebAuthnError, AssertionOutcome]
 
 object WebAuthnService:
-  def live: ZLayer[PasskeyRepository, Nothing, WebAuthnService] =
+  def live: ZLayer[PasskeyRepository & OAuthConfigurationService, Nothing, WebAuthnService] =
     ZLayer:
       for
         repository <- ZIO.service[PasskeyRepository]
+        configService <- ZIO.service[OAuthConfigurationService]
         runtime <- ZIO.runtime[Any]
-      yield Impl(repository, runtime)
+      yield Impl(repository, configService, runtime)
 
-  private final class Impl(repository: PasskeyRepository, runtime: Runtime[Any]) extends WebAuthnService:
+  private final class Impl(repository: PasskeyRepository, configService: OAuthConfigurationService, runtime: Runtime[Any]) extends WebAuthnService:
 
     private val mapper = JacksonCodecs.json()
 
@@ -203,13 +211,22 @@ object WebAuthnService:
       .mapError(e => WebAuthnError.CeremonyFailed(e.getMessage))
 
     override def finishRegistration(
-        settings: PasskeySettings,
+        clientId: ClientId,
         userId: UserId,
         request: String,
         response: String,
-        name: Option[String],
+        name: Option[PasskeyName],
     ): IO[WebAuthnError, PasskeyRecord] =
       for
+        settings <- configService.getPasskeySettings(clientId).flatMap:
+          case None =>
+            // Settings can be disabled for the client while a ceremony is in flight (an
+            // enrollment ticket stays usable for five minutes, and the login flow's step
+            // lasts as long as the user takes), so this is a stale ceremony rather than a
+            // broken invariant: fail typed, the way both callers already handle.
+            Observability.setError("passkeys_not_enabled") *>
+              ZIO.fail(WebAuthnError.PasskeysNotEnabled)
+          case Some(s) => ZIO.succeed(s)
         now <- zio.Clock.instant
         record <- ZIO.attemptBlocking:
           val creationOptions = mapper.readValue(request, classOf[PublicKeyCredentialCreationOptions])

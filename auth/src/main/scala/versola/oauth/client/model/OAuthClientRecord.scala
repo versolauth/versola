@@ -12,23 +12,26 @@ given Equal[URL] = (a, b) => a == b
 case class OAuthClientRecord(
     id: ClientId,
     tenantId: TenantId,
-    clientName: String,
+    clientName: Map[String, String],
     redirectUris: NonEmptySet[String],
     scope: Set[ScopeToken],
-    externalAudience: List[ClientId],
     secret: Option[Secret],
     previousSecret: Option[Secret],
     accessTokenTtl: Duration,
     refreshTokenTtl: Duration,
     theme: String,
     authFlow: Option[AuthFlow],
+    registrationFlow: Option[RegistrationFlow],
     otpTemplateId: String,
     frontChannelLogoutUri: Option[URL],
     frontChannelLogoutSessionRequired: Boolean,
     backChannelLogoutUri: Option[URL],
+    logoUri: Option[String],
+    policyUri: Option[String],
+    tosUri: Option[String],
+    /** Consent screen configuration; `None` for first-party clients, which never prompt. */
+    consentFlow: Option[ConsentFlow],
 ) derives CanEqual, Equal:
-
-  def audience: List[ClientId] = id :: externalAudience
 
   def isConfidential: Boolean = secret.nonEmpty
 

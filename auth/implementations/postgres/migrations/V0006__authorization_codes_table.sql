@@ -6,6 +6,7 @@ CREATE TABLE authorization_codes (
     public_session_id TEXT NOT NULL,
     redirect_uri TEXT NOT NULL,
     scope TEXT[] NOT NULL,
+    resources TEXT[] NOT NULL,
     code_challenge TEXT NOT NULL,
     code_challenge_method TEXT NOT NULL,
     expires_at TIMESTAMP WITH TIME ZONE NOT NULL,

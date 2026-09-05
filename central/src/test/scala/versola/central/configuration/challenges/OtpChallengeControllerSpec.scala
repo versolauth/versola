@@ -2,9 +2,9 @@ package versola.central.configuration.challenges
 
 import io.opentelemetry.api
 import org.scalamock.stubs.{Stub, ZIOStubs}
-import versola.central.{TestAdminAuth, TestCentralConfig}
-import versola.central.configuration.clients.OAuthClientService
+import versola.central.{CentralConfig, TestAdminAuth, TestCentralConfig}
 import versola.central.configuration.edges.EdgeService
+import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.TenantId
 import versola.util.JWT
 import versola.util.http.Observability
@@ -23,7 +23,7 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
   private val tenantId = TenantId("tenant-a")
   private val secretKey = SecretKeySpec(Array.fill(32)(7.toByte), "AES")
 
-  private val template = OtpTemplateRecord("default", tenantId, Map("en" -> "Code: {{code}}"), purpose = "otp")
+  private val template = OtpTemplateRecord("default", tenantId, Map("en" -> "Code: {{code}}"), purpose = OtpTemplatePurpose.otp, channel = OtpTemplateChannel.sms)
 
   private val syncToken = Unsafe.unsafe { unsafe ?=>
     Runtime.default.unsafe
@@ -57,19 +57,19 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         service       = stub[OtpChallengeService]
         challengeSettingsService = stub[ChallengeSettingsService]
         edgeService   = stub[EdgeService]
-        oauthClientService = stub[OAuthClientService]
+        resourceService = stub[ResourceService]
         tracing       <- tracingLayer.build
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             OtpChallengeController.routes.provideEnvironment(
               ZEnvironment[OtpChallengeService](service) ++
                 ZEnvironment[ChallengeSettingsService](challengeSettingsService) ++
-                tracing ++ ZEnvironment(config) ++ ZEnvironment[EdgeService](edgeService) ++
-                ZEnvironment[OAuthClientService](oauthClientService)
+                tracing ++ ZEnvironment[CentralConfig](config) ++ ZEnvironment[EdgeService](edgeService) ++
+                ZEnvironment[ResourceService](resourceService)
             )
           )
         )
-        _            <- oauthClientService.verifySecret.succeedsWith(true)
+        _            <- resourceService.verifySecret.succeedsWith(true)
         _            <- setup(service)
         requestWithAuth = request.headers.header(Header.Authorization) match
           case None => request.addHeader(TestAdminAuth.basicAuthHeader)
@@ -121,7 +121,7 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       request = Request(
         method = Method.PUT,
         url = URL.empty / "configuration" / "challenges" / "otp-templates",
-        body = Body.fromString(UpsertOtpTemplateRequest(template.id, template.tenantId, template.localizations, template.purpose).toJson),
+        body = Body.fromString(UpsertOtpTemplateRequest(template.id, template.tenantId, template.localizations, template.purpose, template.channel).toJson),
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.NoContent,
       setup = service => service.upsertTemplate.succeedsWith(()),
@@ -133,11 +133,11 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       request = Request(
         method = Method.DELETE,
         url = URL.empty / "configuration" / "challenges" / "otp-templates",
-        body = Body.fromString(DeleteOtpTemplateRequest(template.id, template.tenantId).toJson),
+        body = Body.fromString(DeleteOtpTemplateRequest(template.id, template.tenantId, template.purpose, OtpTemplateChannel.sms).toJson),
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.NoContent,
       setup = service => service.deleteTemplate.succeedsWith(()),
       verify = (_, service) =>
-        ZIO.succeed(assertTrue(service.deleteTemplate.calls == List((template.id, template.tenantId)))),
+        ZIO.succeed(assertTrue(service.deleteTemplate.calls == List((template.id, template.tenantId, template.purpose, template.channel)))),
     ),
   )

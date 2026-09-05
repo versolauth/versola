@@ -24,6 +24,11 @@ object ResourceUriSpec extends ZIOSpecDefault:
           expectedResult = Right(ResourceUri("https://api.example.com")),
         ),
         TestCase(
+          description = "reject reserved resource scheme",
+          input = "resource://foo",
+          expectedResult = Left("Resource URI scheme resource:// is reserved"),
+        ),
+        TestCase(
           description = "reject URN resource unsupported by zio-http URL",
           input = "urn:versola:permission:admin:view",
           expectedResult = Left("Invalid URI format: urn:versola:permission:admin:view"),

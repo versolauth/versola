@@ -2,16 +2,18 @@ package versola.edge
 
 import versola.edge.model.{Resource, ResourceId}
 import versola.util.ReloadingCache
-import zio.{Schedule, Scope, UIO, ZLayer}
+import zio.{Schedule, Scope, UIO, ZIO, ZLayer}
 
 trait ResourceService:
   def findByResourceId(resourceId: ResourceId): UIO[Option[Resource]]
 
 object ResourceService:
-  def live(
-      schedule: Schedule[Any, Any, Any],
-  ): ZLayer[ResourcesSyncClient & Scope, Throwable, ResourceService] =
-    ZLayer(ReloadingCache.make[Map[ResourceId, Resource]](schedule)) >>>
+  def live: ZLayer[ResourcesSyncClient & Scope & EdgeConfig, Throwable, ResourceService] =
+    (ZLayer.fromZIO:
+      ZIO.serviceWithZIO[EdgeConfig](config =>
+        ReloadingCache.make[Map[ResourceId, Resource]](config.configurationCacheRefreshInterval),
+      )
+    ) >>>
       ZLayer.fromFunction(Impl(_))
 
   class Impl(cache: ReloadingCache[Map[ResourceId, Resource]]) extends ResourceService:

@@ -82,7 +82,7 @@ export function confirmDestructiveAction(options: ConfirmDialogOptions): Promise
         button:hover { transform: translateY(-1px); }
         button:focus-visible {
           outline: none;
-          box-shadow: 0 0 0 3px rgba(88, 166, 255, 0.22);
+          box-shadow: 0 0 0 3px rgba(var(--accent-tint), 0.22);
         }
         .cancel {
           background: var(--bg-dark-card, #161b22);
@@ -94,14 +94,14 @@ export function confirmDestructiveAction(options: ConfirmDialogOptions): Promise
           color: var(--accent, #58a6ff);
         }
         .confirm {
-          background: rgba(248, 81, 73, 0.12);
-          border-color: rgba(248, 81, 73, 0.35);
-          color: #ffb4ad;
+          background: rgba(var(--danger-tint), 0.12);
+          border-color: rgba(var(--danger-tint), 0.35);
+          color: var(--danger-strong);
         }
         .confirm:hover {
-          background: rgba(248, 81, 73, 0.18);
+          background: rgba(var(--danger-tint), 0.18);
           border-color: var(--danger, #f85149);
-          color: #ffd2cd;
+          color: var(--danger-stronger);
         }
         @media (max-width: 520px) {
           .actions {

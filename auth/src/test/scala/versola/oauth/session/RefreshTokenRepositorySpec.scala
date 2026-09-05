@@ -1,12 +1,14 @@
 package versola.oauth.session
 
 import com.augustnagro.magnum.magzio.TransactorZIO
-import versola.oauth.client.model.{Acr, AuthMethodRef, ClientId, ScopeToken}
+import versola.oauth.client.model.{Acr, AuthMethodRef, AuthorizationDetail, ClientId, ScopeToken}
 import versola.oauth.model.{AccessToken, RefreshToken}
 import versola.oauth.session.model.{PublicSessionId, RefreshTokenRecord, SessionId}
 import versola.user.model.UserId
 import versola.util.{DatabaseSpecBase, MAC}
 import zio.*
+import zio.json.*
+import zio.json.ast.Json
 import zio.prelude.EqualOps
 import zio.test.*
 
@@ -50,7 +52,8 @@ trait RefreshTokenRepositorySpec extends DatabaseSpecBase[RefreshTokenRepository
     accessToken = accessToken1,
     userId = userId1,
     clientId = clientId1,
-    externalAudience = List.empty,
+    audience = List.empty,
+    authorizationDetails = None,
     scope = scope1,
     issuedAt = now,
     expiresAt = now.plusSeconds(ttl.toSeconds),
@@ -69,7 +72,8 @@ trait RefreshTokenRepositorySpec extends DatabaseSpecBase[RefreshTokenRepository
     accessToken = accessToken2,
     userId = userId2,
     clientId = clientId2,
-    externalAudience = List.empty,
+    audience = List.empty,
+    authorizationDetails = None,
     scope = scope2,
     issuedAt = now,
     expiresAt = now.plusSeconds(ttl.toSeconds),
@@ -97,6 +101,18 @@ trait RefreshTokenRepositorySpec extends DatabaseSpecBase[RefreshTokenRepository
           found1.isDefined,
           found2.isDefined,
         )
+      },
+      test("persist and retrieve authorization details verbatim") {
+        val detail = AuthorizationDetail.parse(
+          """{"type":"payment_initiation","instructedAmount":{"currency":"EUR","amount":"1.00"}}"""
+            .fromJson[Json].toOption.get,
+        ).toOption.get
+        for
+          now <- Clock.instant
+          record = tokenRecord1(now, refreshTtl).copy(authorizationDetails = Some(List(detail)))
+          _ <- env.repository.createRefreshToken(refreshToken1, record)
+          found <- env.repository.findToken(refreshToken1)
+        yield assertTrue(found.map(_.authorizationDetails) == Some(Some(List(detail))))
       },
       test("find returns None for non-existent refresh token") {
         for

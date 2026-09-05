@@ -14,6 +14,10 @@ object LocaleServiceSpec extends ZIOSpecDefault, ZIOStubs:
     val repository = stub[LocaleRepository]
     val service    = LocaleService.Impl(repository)
 
+  private def completenessResult(expectedMissing: Vector[String]): LocaleCompletenessValidator =
+    new LocaleCompletenessValidator:
+      override def missing(locale: String): Task[Vector[String]] = ZIO.succeed(expectedMissing)
+
   def spec = suite("LocaleService")(
     test("getActive returns only active locales") {
       val env = new Env()
@@ -52,5 +56,37 @@ object LocaleServiceSpec extends ZIOSpecDefault, ZIOStubs:
         result == Left(SetDefaultLocaleError.NotFound),
         env.repository.setDefault.calls.isEmpty,
       )
+    },
+    test("update validates a locale before activating it") {
+      val env = new Env()
+      val updated = frInactive.copy(active = true)
+      val service = LocaleService.Impl(env.repository, completenessResult(Vector.empty))
+      for
+        _ <- env.repository.getAll.succeedsWith(Vector(frInactive))
+        _ <- env.repository.update.succeedsWith(())
+        result <- service.update(Vector(updated), Vector.empty)
+      yield assertTrue(result == ())
+    },
+    test("update does not persist an incomplete locale activation") {
+      val env = new Env()
+      val service = LocaleService.Impl(env.repository, completenessResult(Vector("client 'app' name")))
+      for
+        _ <- env.repository.getAll.succeedsWith(Vector(frInactive))
+        result <- service.update(Vector(frInactive.copy(active = true)), Vector.empty).either
+      yield assertTrue(result.isLeft, env.repository.update.calls.isEmpty)
+    },
+    test("update validates all newly active locales before persisting any of them") {
+      val env = new Env()
+      val deInactive = LocaleRecord("de", "German", isDefault = false, active = false)
+      val service = LocaleService.Impl(
+        env.repository,
+        new LocaleCompletenessValidator:
+          override def missing(locale: String): Task[Vector[String]] =
+            ZIO.succeed(if locale == "de" then Vector("scope 'profile' description") else Vector.empty),
+      )
+      for
+        _ <- env.repository.getAll.succeedsWith(Vector(frInactive, deInactive))
+        result <- service.update(Vector(frInactive.copy(active = true), deInactive.copy(active = true)), Vector.empty).either
+      yield assertTrue(result.isLeft, env.repository.update.calls.isEmpty)
     },
   )

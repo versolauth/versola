@@ -1,11 +1,13 @@
+
 package versola
 
 import com.augustnagro.magnum.magzio.TransactorZIO
 import com.typesafe.config.ConfigFactory
 import versola.cleanup.PostgresCleanupManager
 import versola.edge.login.LoginRepository
+import versola.edge.revocation.{RevocationNotifications, RevocationRepository, TokenRevocationService}
 import versola.edge.session.EdgeSessionRepository
-import versola.edge.{AuthorizationPresetsSyncClient, CentralSyncTokenService, EdgeConfig, EdgeController, EdgeService, JwksService, JwksSyncClient, OAuthClientService, OAuthClientsSyncClient, PermissionService, PermissionsSyncClient, PostgresEdgeSessionRepository, PostgresLoginRepository, ResourceService, ResourcesSyncClient, RolesSyncClient, SSOClient}
+import versola.edge.{AuthorizationPresetsSyncClient, CentralSyncTokenService, EdgeConfig, EdgeController, EdgeService, JwksService, JwksSyncClient, OAuthClientService, OAuthClientsSyncClient, PermissionService, PermissionsSyncClient, PostgresEdgeSessionRepository, PostgresLoginRepository, PostgresRevocationNotifications, PostgresRevocationRepository, ResourceService, ResourcesSyncClient, RolesSyncClient, SSOClient, ServiceController}
 import versola.util.*
 import versola.util.cel.CelEvaluator
 import versola.util.http.VersolaApp
@@ -39,21 +41,29 @@ object PostgresEdgeApp extends VersolaApp("edge"):
     CelEvaluator &
     LoginRepository &
     EdgeSessionRepository &
+    RevocationRepository &
+    RevocationNotifications &
+    TokenRevocationService &
     JwksService &
     SSOClient &
     EdgeService
 
-  override def routes: Routes[Dependencies & Tracing, Throwable] =
+  override def routes: Routes[Dependencies & Tracing & EnvName, Throwable] =
     List(
       EdgeController.routes,
+      ServiceController.routes,
     ).reduce(_ ++ _)
 
   val dependencies: ZLayer[Scope & EnvName & ConfigProvider & Tracing & Client, Throwable, Dependencies] =
     parseConfig[EdgeConfig] >+>
-      (PostgresHikariDataSource.transactor(serviceName = Some("edge"), migrate = runMigrations) >>>
+      // `>+>` rather than `>>>`: PostgresRevocationNotifications needs the PostgresConfig the
+      // transactor loaded, to open a connection of its own to park on LISTEN.
+      (PostgresHikariDataSource.transactor(serviceName = Some("edge"), migrate = runMigrations) >+>
         (ZLayer.fromFunction(PostgresLoginRepository(_)) ++
           ZLayer.fromFunction(PostgresEdgeSessionRepository(_)) ++
+          PostgresRevocationRepository.live ++
           PostgresCleanupManager.live)) >+>
+      PostgresRevocationNotifications.live >+>
       SecureRandom.live >+>
       SecurityService.live >+>
       CentralSyncTokenService.live >+>
@@ -63,10 +73,11 @@ object PostgresEdgeApp extends VersolaApp("edge"):
       RolesSyncClient.live >+>
       PermissionsSyncClient.live >+>
       JwksSyncClient.live >+>
-      OAuthClientService.live(zio.Schedule.spaced(5.minute)) >+>
-      ResourceService.live(zio.Schedule.spaced(5.minute)) >+>
-      PermissionService.live(zio.Schedule.spaced(5.minute)) >+>
-      JwksService.live(zio.Schedule.spaced(5.minute)) >+>
+      OAuthClientService.live >+>
+      ResourceService.live >+>
+      PermissionService.live >+>
+      JwksService.live >+>
+      TokenRevocationService.live >+>
       CelEvaluator.live >+>
       SSOClient.live >+>
       EdgeService.live

@@ -3,9 +3,10 @@ package versola.central.configuration.clients
 import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
 import versola.central.configuration.*
 import versola.central.configuration.edges.EdgeService
+import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.TenantId
 import versola.util.http.{Controller, Unauthorized}
-import versola.util.{Base64Url, Secret, SecurityService}
+import versola.util.{Base64Url, Patch, Secret, SecurityService}
 import zio.*
 import zio.http.*
 import zio.json.*
@@ -13,7 +14,7 @@ import zio.schema.*
 import zio.prelude.These
 
 object ClientController extends Controller:
-  type Env = Tracing & OAuthClientService & CentralConfig & SecurityService & EdgeService
+  type Env = Tracing & OAuthClientService & ResourceService & CentralConfig & SecurityService & EdgeService
 
   def routes: Routes[Env, Throwable] = Routes(
     getAllClientsEndpoint,
@@ -42,15 +43,21 @@ object ClientController extends Controller:
               clientName = client.clientName,
               redirectUris = client.redirectUris,
               scope = client.scope,
-              externalAudience = client.externalAudience,
               permissions = client.permissions,
               secretRotation = client.previousSecret.nonEmpty,
+              accessTokenTtl = client.accessTokenTtl.toSeconds,
+              refreshTokenTtl = client.refreshTokenTtl.toSeconds,
               theme = client.theme,
               authFlow = client.authFlow,
+              registrationFlow = client.registrationFlow,
               otpTemplateId = client.otpTemplateId,
               frontChannelLogoutUri = client.frontChannelLogoutUri.map(_.encode),
               frontChannelLogoutSessionRequired = client.frontChannelLogoutSessionRequired,
               backChannelLogoutUri = client.backChannelLogoutUri.map(_.encode),
+              logoUri = client.logoUri,
+              policyUri = client.policyUri,
+              tosUri = client.tosUri,
+              consentFlow = client.consentFlow.map(ConsentFlowDto.fromDomain),
             )
           })
       yield Response.json(GetAllClientsResponse(clients.toList).toJson)
@@ -84,7 +91,6 @@ object ClientController extends Controller:
             clientName = client.clientName,
             redirectUris = client.redirectUris,
             scope = client.scope,
-            externalAudience = client.externalAudience,
             secret = secret,
             previousSecret = previousSecret,
             accessTokenTtl = client.accessTokenTtl,
@@ -92,10 +98,15 @@ object ClientController extends Controller:
             permissions = client.permissions,
             theme = client.theme,
             authFlow = client.authFlow,
+            registrationFlow = client.registrationFlow,
             otpTemplateId = client.otpTemplateId,
             frontChannelLogoutUri = client.frontChannelLogoutUri.map(_.encode),
             frontChannelLogoutSessionRequired = client.frontChannelLogoutSessionRequired,
             backChannelLogoutUri = client.backChannelLogoutUri.map(_.encode),
+            logoUri = client.logoUri,
+            policyUri = client.policyUri,
+            tosUri = client.tosUri,
+            consentFlow = client.consentFlow,
           )
         }
       yield Response.json(GetOAuthClientsSyncResponse(clients = encryptedClients).toJson)
@@ -107,7 +118,7 @@ object ClientController extends Controller:
       (for
         _ <- authorizeBasic(request)
         service <- ZIO.service[OAuthClientService]
-        body <- request.body.asJson[CreateClientRequest]
+        body <- request.bodyAs[CreateClientRequest]
         _ <- ZIO.when(body.frontChannelLogoutUri.isDefined && body.backChannelLogoutUri.isDefined):
           ZIO.fail(InvalidClientLogoutConfiguration(body.id))
         secret <- service.registerClient(body)
@@ -121,6 +132,11 @@ object ClientController extends Controller:
             ZIO.succeed:
               Response.text("A client can only have one of frontChannelLogoutUri or backChannelLogoutUri configured")
                 .status(Status.BadRequest)
+          case error: InvalidConsentUri =>
+            ZIO.succeed(Response.text(error.getMessage).status(Status.BadRequest))
+          case error: InvalidRegistrationConfiguration =>
+            ZIO.succeed:
+              Response.text(s"Invalid registration configuration: ${error.reason}").status(Status.BadRequest)
           case error: Throwable =>
             ZIO.fail(error)
         }
@@ -131,7 +147,7 @@ object ClientController extends Controller:
       (for
         _ <- authorizeBasic(request)
         service <- ZIO.service[OAuthClientService]
-        body <- request.body.asJson[UpdateClientRequest]
+        body <- request.bodyAs[UpdateClientRequest]
         _ <- ZIO.when(hasInvalidLogoutConfiguration(body)):
           ZIO.fail(InvalidClientLogoutConfiguration(body.clientId))
         _ <- service.updateClient(body)
@@ -141,13 +157,23 @@ object ClientController extends Controller:
             ZIO.succeed:
               Response.text("A client can only have one of frontChannelLogoutUri or backChannelLogoutUri configured")
                 .status(Status.BadRequest)
+          case error: InvalidConsentUri =>
+            ZIO.succeed(Response.text(error.getMessage).status(Status.BadRequest))
+          case error: InvalidRegistrationConfiguration =>
+            ZIO.succeed:
+              Response.text(s"Invalid registration configuration: ${error.reason}").status(Status.BadRequest)
           case error: Throwable =>
             ZIO.fail(error)
         }
     }
 
   private def hasInvalidLogoutConfiguration(request: UpdateClientRequest): Boolean =
-    request.frontChannelLogoutUri.exists(_.isDefined) && request.backChannelLogoutUri.exists(_.isDefined)
+    isSettingValue(request.frontChannelLogoutUri) && isSettingValue(request.backChannelLogoutUri)
+
+  private def isSettingValue(patch: Option[Patch[String]]): Boolean =
+    patch.exists:
+      case Patch.Modified(_) => true
+      case Patch.Deleted     => false
 
   val rotateSecretEndpoint =
     Method.POST / "configuration" / "clients" / "rotate-secret" -> handler { (request: Request) =>

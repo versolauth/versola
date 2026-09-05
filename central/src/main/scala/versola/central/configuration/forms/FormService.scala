@@ -1,9 +1,10 @@
 package versola.central.configuration.forms
 
+import versola.central.CentralConfig
 import versola.central.configuration.locales.LocaleService
 import versola.central.configuration.sync.{SyncEvent, SyncOps}
 import versola.util.ReloadingCache
-import zio.{Schedule, Scope, Task, ZLayer}
+import zio.{Schedule, Scope, Task, ZIO, ZLayer}
 
 trait FormService:
   def getAllForms: Task[Vector[FormRecord]]
@@ -21,10 +22,12 @@ trait FormService:
   def sync(event: SyncEvent.FormsUpdated): Task[Unit]
 
 object FormService:
-  def live(
-      schedule: Schedule[Any, Any, Any],
-  ): ZLayer[FormRepository & Scope & LocaleService, Throwable, FormService] =
-    ZLayer(ReloadingCache.make[Vector[FormRecord]](schedule))
+  def live: ZLayer[FormRepository & Scope & LocaleService & CentralConfig, Throwable, FormService] =
+    (ZLayer.fromZIO:
+      ZIO.serviceWithZIO[CentralConfig](config =>
+        ReloadingCache.make[Vector[FormRecord]](config.configurationCacheRefreshInterval),
+      )
+    )
       >>> ZLayer.fromFunction(Impl(_, _, _))
 
   class Impl(

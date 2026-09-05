@@ -2,8 +2,8 @@ package versola.central.configuration.system
 
 import io.opentelemetry.api
 import org.scalamock.stubs.{Stub, ZIOStubs}
-import versola.central.{TestAdminAuth, TestCentralConfig}
-import versola.central.configuration.clients.OAuthClientService
+import versola.central.{CentralConfig, TestAdminAuth, TestCentralConfig}
+import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.edges.EdgeService
 import versola.util.JWT
 import versola.util.http.Observability
@@ -58,19 +58,19 @@ object SystemSettingsControllerSpec extends ZIOSpecDefault, ZIOStubs:
         client             <- ZIO.service[Client]
         service             = stub[SystemSettingsService]
         edgeService         = stub[EdgeService]
-        oauthClientService  = stub[OAuthClientService]
+        resourceService  = stub[ResourceService]
         tracing            <- tracingLayer.build
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             SystemSettingsController.routes.provideEnvironment(
               ZEnvironment[SystemSettingsService](service) ++
-                tracing ++ ZEnvironment(config) ++
+                tracing ++ ZEnvironment[CentralConfig](config) ++
                 ZEnvironment[EdgeService](edgeService) ++
-                ZEnvironment[OAuthClientService](oauthClientService)
+                ZEnvironment[ResourceService](resourceService)
             )
           )
         )
-        _               <- oauthClientService.verifySecret.succeedsWith(true)
+        _               <- resourceService.verifySecret.succeedsWith(true)
         _               <- setup(service)
         requestWithAuth  = request.headers.header(Header.Authorization) match
           case None => request.addHeader(TestAdminAuth.basicAuthHeader)
@@ -111,9 +111,25 @@ object SystemSettingsControllerSpec extends ZIOSpecDefault, ZIOStubs:
         body   = Body.fromString(customSettings.toJson),
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.NoContent,
-      setup          = svc => svc.upsertSettings.succeedsWith(()),
+      setup          = svc => svc.upsertSettings.succeedsWith(Right(())),
       verify         = (_, svc) =>
         ZIO.succeed(assertTrue(svc.upsertSettings.calls == List(customSettings))),
+    ),
+    controllerTestCase(
+      description = "PUT returns 400 for an invalid identity provider logo URL",
+      request = Request(
+        method = Method.PUT,
+        url    = URL.empty / "configuration" / "system-settings",
+        body   = Body.fromString(customSettings.copy(identityProviderLogo = Some("javascript:alert(1)")).toJson),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.BadRequest,
+      setup = svc => svc.upsertSettings.succeedsWith(Left(SystemSettingsValidationError.InvalidIdentityProviderLogo)),
+      verify = (response, svc) =>
+        for message <- response.body.asString
+        yield assertTrue(
+          svc.upsertSettings.calls.length == 1,
+          message == "Identity provider logo must be an absolute HTTP(S) URL",
+        ),
     ),
     controllerTestCase(
       description    = "PUT returns 401 without credentials",
@@ -124,7 +140,7 @@ object SystemSettingsControllerSpec extends ZIOSpecDefault, ZIOStubs:
       ).addHeader(Header.ContentType(MediaType.application.json))
        .addHeader(Header.Authorization.Bearer("not-basic")),
       expectedStatus = Status.Unauthorized,
-      setup          = svc => svc.upsertSettings.succeedsWith(()),
+      setup          = svc => svc.upsertSettings.succeedsWith(Right(())),
       verify         = (_, svc) => ZIO.succeed(assertTrue(svc.upsertSettings.calls.isEmpty)),
     ),
     controllerTestCase(

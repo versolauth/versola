@@ -7,7 +7,7 @@ import versola.oauth.client.model.ScopeToken
 import versola.oauth.jwks.JwksService
 import versola.oauth.model.AccessTokenPayload
 import versola.oauth.userinfo.model.{UserInfoError, UserInfoResponse}
-import versola.util.http.Controller
+import versola.util.http.{Controller, Observability}
 import versola.util.{CoreConfig, JWT}
 import zio.*
 import zio.http.*
@@ -50,8 +50,10 @@ object UserInfoController extends Controller:
         tokenString <- extractBearerToken(request)
         token <- JWT.deserialize[AccessTokenPayload](tokenString, publicKeys, JWT.Type.AccessToken)
           .orElseFail(UserInfoError.InvalidToken)
+        _ <- Observability.setToken(token.id.encoded) *> Observability.setClientId(token.clientId)
 
         userId <- ZIO.fromOption(token.userId).orElseFail(UserInfoError.InvalidToken)
+        _ <- Observability.setUserId(userId.toString)
 
         _ <- ZIO.fail(UserInfoError.InsufficientScope)
           .unless(token.scope.contains(ScopeToken.OpenId))
@@ -64,6 +66,7 @@ object UserInfoController extends Controller:
 
         jwtNeeded = request.header(Header.Accept)
           .exists(_.mimeTypes.exists(_.mediaType == MediaType.application.jwt))
+        _ <- Observability.setRouteLabel("format", if jwtNeeded then "jwt" else "json")
 
         response <-
           if !jwtNeeded then
@@ -99,7 +102,7 @@ object UserInfoController extends Controller:
       yield response)
         .catchAll:
           case UserInfoError.InvalidToken =>
-            ZIO.succeed:
+            Observability.setError("invalid_token").as:
               Response
                 .status(Status.Unauthorized)
                 .addHeader(
@@ -111,7 +114,7 @@ object UserInfoController extends Controller:
                 )
 
           case UserInfoError.InsufficientScope =>
-            ZIO.succeed:
+            Observability.setError("insufficient_scope").as:
               Response
                 .status(Status.Unauthorized)
                 .addHeader(
@@ -123,7 +126,7 @@ object UserInfoController extends Controller:
                 )
 
           case UserInfoError.Unauthorized =>
-            ZIO.succeed:
+            Observability.setError("invalid_request").as:
               Response
                 .status(Status.Unauthorized)
                 .addHeader(

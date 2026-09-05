@@ -32,7 +32,12 @@ object ConversationControllerSpec extends UnitSpecBase:
       Cookie.Request(
         ConversationCookie.name,
         ConversationCookie.responseCookie(
-          ConversationCookie(authId, clientId),
+          ConversationCookie(
+            authId,
+            clientId,
+            redirectUri = "https://example.com/callback",
+            state = Some("test-state"),
+          ),
           Duration.Zero,
           TestEnvConfig.coreConfig.security.conversationCookieSecret,
         ).content,
@@ -71,13 +76,20 @@ object ConversationControllerSpec extends UnitSpecBase:
     userLogin = None,
     userClaims = None,
     authFlow = AuthFlow.default,
+    registrationFlow = None,
+    registrationStep = None,
     userAgent = None,
+    userAgentCookie = None,
     version = 0,
     amr = Map.empty,
     needsPasswordChange = false,
     targetAcr = None,
     csrfToken = "test-csrf",
     priorSessionId = None,
+    resources = Nil,
+    authorizationDetails = None,
+    grantedScope = None,
+    promptConsent = false,
   )
 
   def successfulSubmitTestCase(
@@ -164,6 +176,7 @@ object ConversationControllerSpec extends UnitSpecBase:
           )
         )
         _ <- configuration.getPasswordRegex.succeedsWith(passwordRegex)
+        _ <- configuration.getIpHeader.succeedsWith("X-Real-IP")
 
         response <- client.batched(request)
         submitCalls = router.submit.calls
@@ -276,6 +289,37 @@ object ConversationControllerSpec extends UnitSpecBase:
       ).addHeader(conversationCookie),
       submission = (authId, LoginPasswordSubmission(Login("user"), Password("s3cret"), ""), None, None),
     ),
+    test("POST /challenge renders service unavailable when conversation lookup fails") {
+      for
+        client <- ZIO.service[Client]
+        router = stub[ConversationRouter]
+        configuration = stub[OAuthConfigurationService]
+        renderService = stub[ConversationRenderService]
+        tracing <- NoopTracing.layer.build
+        _ <- TestClient.addRoutes(
+          Observability.handleErrors(
+            ConversationController.routes.provideEnvironment(
+              ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ ZEnvironment(renderService) ++ tracing
+            )
+          )
+        )
+        _ <- configuration.getIpHeader.succeedsWith("X-Real-IP")
+        _ <- router.submit.failsWith(Error.ServiceUnavailable)
+        _ <- renderService.renderServiceUnavailable.succeedsWith(Response.text("<html>Unavailable</html>"))
+
+        response <- client.batched(
+          Request.post(
+            url = URL.empty / "challenge" / "email",
+            body = Body.fromURLEncodedForm(Form.fromStrings("email" -> email, "csrf" -> "test-csrf")),
+          ).addHeader(conversationCookie)
+        )
+        body <- response.body.asString
+      yield assertTrue(
+        response.status == Status.Ok,
+        body == "<html>Unavailable</html>",
+        renderService.renderServiceUnavailable.calls == List((clientId, "https://example.com/callback", Some("test-state"))),
+      )
+    }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging,
     test("GET /challenge renders step") {
       for
         client <- ZIO.service[Client]
@@ -300,6 +344,58 @@ object ConversationControllerSpec extends UnitSpecBase:
       )
     }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging,
 
+    test("GET /challenge renders conversation expired when the record is missing") {
+      for
+        client <- ZIO.service[Client]
+        router = stub[ConversationRouter]
+        configuration = stub[OAuthConfigurationService]
+        renderService = stub[ConversationRenderService]
+        tracing <- NoopTracing.layer.build
+        _ <- TestClient.addRoutes(
+          Observability.handleErrors(
+            ConversationController.routes.provideEnvironment(
+              ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ ZEnvironment(renderService) ++ tracing
+            )
+          )
+        )
+        _ <- router.getConversation.succeedsWith(None)
+        _ <- renderService.renderExpired.succeedsWith(Response.text("<html>Expired</html>"))
+
+        response <- client.batched(Request.get(URL.empty / "challenge").addHeader(conversationCookie))
+        body <- response.body.asString
+      yield assertTrue(
+        response.status == Status.Ok,
+        body == "<html>Expired</html>",
+        renderService.renderExpired.calls == List((clientId, "https://example.com/callback", Some("test-state"))),
+      )
+    }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging,
+
+    test("GET /challenge renders service unavailable when conversation lookup fails") {
+      for
+        client <- ZIO.service[Client]
+        router = stub[ConversationRouter]
+        configuration = stub[OAuthConfigurationService]
+        renderService = stub[ConversationRenderService]
+        tracing <- NoopTracing.layer.build
+        _ <- TestClient.addRoutes(
+          Observability.handleErrors(
+            ConversationController.routes.provideEnvironment(
+              ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ ZEnvironment(renderService) ++ tracing
+            )
+          )
+        )
+        _ <- router.getConversation.failsWith(Error.ServiceUnavailable)
+        _ <- renderService.renderServiceUnavailable.succeedsWith(Response.text("<html>Unavailable</html>"))
+
+        response <- client.batched(Request.get(URL.empty / "challenge").addHeader(conversationCookie))
+        body <- response.body.asString
+      yield assertTrue(
+        response.status == Status.Ok,
+        body == "<html>Unavailable</html>",
+        renderService.renderServiceUnavailable.calls == List((clientId, "https://example.com/callback", Some("test-state"))),
+      )
+    }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging,
+
     test("GET /challenge/passkey/options returns options") {
       for
         client <- ZIO.service[Client]
@@ -319,7 +415,54 @@ object ConversationControllerSpec extends UnitSpecBase:
         response <- client.batched(Request.get(URL.empty / "challenge" / "passkey" / "options").addHeader(conversationCookie))
       yield assertTrue(
         response.status == Status.Ok,
-        response.headers.get(Header.ContentType).exists(_.mediaType == MediaType.application.json)
+        response.headers.get(Header.ContentType).exists(_.mediaType == MediaType.application.json),
+        response.headers.get(Header.CacheControl).contains(Header.CacheControl.NoStore),
+      )
+    }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging,
+
+    test("GET /challenge/passkey/options returns 410 with no-store when conversation expired") {
+      for
+        client <- ZIO.service[Client]
+        router = stub[ConversationRouter]
+        configuration = stub[OAuthConfigurationService]
+        renderService = stub[ConversationRenderService]
+        tracing <- NoopTracing.layer.build
+        _ <- TestClient.addRoutes(
+          Observability.handleErrors(
+            ConversationController.routes.provideEnvironment(
+              ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ ZEnvironment(renderService) ++ tracing
+            )
+          )
+        )
+        _ <- router.startPasskeyOptions.failsWith(Error.ConversationExpired)
+
+        response <- client.batched(Request.get(URL.empty / "challenge" / "passkey" / "options").addHeader(conversationCookie))
+      yield assertTrue(
+        response.status == Status.Gone,
+        response.headers.get(Header.CacheControl).contains(Header.CacheControl.NoStore),
+      )
+    }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging,
+
+    test("GET /challenge/passkey/options returns 500 with no-store on unexpected failure") {
+      for
+        client <- ZIO.service[Client]
+        router = stub[ConversationRouter]
+        configuration = stub[OAuthConfigurationService]
+        renderService = stub[ConversationRenderService]
+        tracing <- NoopTracing.layer.build
+        _ <- TestClient.addRoutes(
+          Observability.handleErrors(
+            ConversationController.routes.provideEnvironment(
+              ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ ZEnvironment(renderService) ++ tracing
+            )
+          )
+        )
+        _ <- router.startPasskeyOptions.failsWith(new RuntimeException("boom"))
+
+        response <- client.batched(Request.get(URL.empty / "challenge" / "passkey" / "options").addHeader(conversationCookie))
+      yield assertTrue(
+        response.status == Status.InternalServerError,
+        response.headers.get(Header.CacheControl).contains(Header.CacheControl.NoStore),
       )
     }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging,
     rejectedSubmitTestCase(

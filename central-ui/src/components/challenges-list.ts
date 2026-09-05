@@ -1,5 +1,5 @@
 import { LitElement, html, css, nothing } from 'lit';
-import { customElement, property, state } from 'lit/decorators.js';
+import { customElement, property, query, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
 import { buttonStyles, cardStyles, formStyles, iconActionStyles } from '../styles/components';
 import type { OtpTemplateRecord, Locale, SubmissionLimits, RateLimit, PasskeySettings } from '../types';
@@ -14,33 +14,44 @@ import {
 import { confirmDestructiveAction } from '../utils/confirm-dialog';
 import { validateRedirectUri } from '../utils/validators';
 import './content-header';
+import './code-editor';
+import './authorization-detail-types-list';
 import './error-card';
 import './loading-cards';
 import './nav-toggle';
+import { VersolaAuthorizationDetailTypesList } from './authorization-detail-types-list';
 
 const CODE_PLACEHOLDER = '{{code}}';
 const PASSWORD_PLACEHOLDER = '{{password}}';
+const PASSWORD_EXPIRY_PLACEHOLDER = '{{expiresHours}}';
+type TemplatePurpose = 'otp' | 'password';
+type TemplateChannel = 'sms' | 'email';
+type TemplateViewSelection = { purpose: TemplatePurpose; channel: TemplateChannel };
 
 @customElement('versola-challenges-list')
 export class VersolaChallengesList extends LitElement {
   @property({ type: String }) tenantId: string | null = null;
   @property({ type: Boolean }) canManage = false;
+  @query('versola-authorization-detail-types-list') private authorizationDetailTypesList?: VersolaAuthorizationDetailTypesList;
 
   @state() private templates: OtpTemplateRecord[] = [];
   @state() private availableLocales: Locale[] = [];
   @state() private isLoading = false;
   @state() private errorMessage = '';
 
-  // View-mode: selected locale code per template id.
+  // View-mode: selected locale code and template variant per template id.
   @state() private viewLocale: Record<string, string> = {};
+  @state() private viewSelection: Record<string, TemplateViewSelection> = {};
 
   // Edit-mode: expanded localization cards, keyed by locale code (collapsed by default).
   @state() private expandedLocales = new Set<string>();
 
   @state() private editingTemplateId: string | null = null; // null means not editing/adding
   @state() private editingPurpose: 'otp' | 'password' = 'otp';
+  @state() private editingChannel: 'sms' | 'email' = 'sms';
   @state() private editId = '';
   @state() private editLocalizations: Array<{ locale: string; template: string }> = [];
+  @state() private previewLocales = new Set<string>();
   @state() private saving = false;
   @state() private editError = '';
 
@@ -59,9 +70,11 @@ export class VersolaChallengesList extends LitElement {
   @state() private authConversationTtlSeconds = 900;
   @state() private sessionTtlSeconds = 86400;
   @state() private sessionIdleTtlSeconds: number | null = null;
+  @state() private userAgentTtlSeconds = 15552000;
   @state() private editAuthConversationTtlSeconds = 900;
   @state() private editSessionTtlSeconds = 86400;
   @state() private editSessionIdleTtlSeconds: number | null = null;
+  @state() private editUserAgentTtlSeconds = 15552000;
 
   @state() private ipHeader = 'X-Real-IP';
   @state() private editIpHeader = 'X-Real-IP';
@@ -99,7 +112,22 @@ export class VersolaChallengesList extends LitElement {
     formStyles,
     iconActionStyles,
     css`
-      :host { display: block; }
+      :host {
+        display: block;
+        --challenge-button-width: 12rem;
+        --challenge-button-height: 2.75rem;
+      }
+
+      .btn {
+        box-sizing: border-box;
+        flex: 0 0 var(--challenge-button-width);
+        width: var(--challenge-button-width);
+        min-height: var(--challenge-button-height);
+      }
+
+      .section-header > .btn {
+        width: var(--challenge-button-width) !important;
+      }
       .form-header {
         display: flex;
         justify-content: space-between;
@@ -148,22 +176,70 @@ export class VersolaChallengesList extends LitElement {
         font-size: 1.0625rem;
         color: var(--accent);
       }
+      .template-id-group {
+        display: flex;
+        align-items: center;
+        gap: var(--spacing-sm);
+      }
+      .template-channel-select {
+        width: 100%;
+        max-width: none;
+      }
       .template-actions {
         display: flex;
         gap: var(--spacing-sm);
       }
       .locale-bar {
         display: flex;
-        align-items: center;
+        flex-direction: column;
+        align-items: flex-start;
         gap: var(--spacing-sm);
         margin-bottom: var(--spacing-sm);
+        width: 100%;
       }
       .locale-bar-label {
         font-size: 0.8125rem;
         color: var(--text-secondary);
       }
       .locale-select {
-        max-width: 220px;
+        width: 100%;
+        max-width: none;
+      }
+      .settings-input-row {
+        flex-direction: row;
+        align-items: flex-start;
+        max-width: calc(22.8rem + 2rem);
+      }
+      .settings-list-input {
+        flex: 0 1 22.8rem;
+        width: min(100%, 22.8rem);
+        max-width: 22.8rem;
+        min-width: 0;
+      }
+      .settings-prefix-input {
+        flex-basis: 7.5rem;
+        width: 7.5rem;
+        max-width: 7.5rem;
+      }
+      @media (max-width: 720px) {
+        .settings-input-row {
+          flex-direction: column;
+          max-width: 22.8rem;
+        }
+        .settings-list-input,
+        .settings-prefix-input {
+          width: 100%;
+          max-width: 22.8rem;
+        }
+      }
+      .template-channel-control,
+      .template-type-control,
+      .template-language-control {
+        display: grid;
+        grid-template-columns: 7rem minmax(0, 1fr);
+        align-items: center;
+        gap: var(--spacing-sm);
+        width: 100%;
       }
       .template-text {
         font-size: 0.9375rem;
@@ -206,6 +282,27 @@ export class VersolaChallengesList extends LitElement {
         display: grid;
         gap: var(--spacing-md);
         margin-top: var(--spacing-md);
+      }
+      .edit-loc-toolbar {
+        display: flex;
+        align-items: center;
+        gap: var(--spacing-md);
+      }
+      .preview-toggle {
+        width: auto;
+        padding: 0.5rem 0.75rem;
+      }
+      .html-validation-error {
+        font-size: 0.75rem;
+      }
+      .html-validation-error { color: var(--danger); }
+      .email-preview {
+        display: block;
+        width: 100%;
+        min-height: 360px;
+        border: 1px solid var(--border-dark);
+        border-radius: var(--radius-md);
+        background: #fff;
       }
       .edit-loc-textarea {
         box-sizing: border-box;
@@ -296,8 +393,8 @@ export class VersolaChallengesList extends LitElement {
         font-size: 0.8125rem;
         font-weight: 600;
         color: var(--accent);
-        background: rgba(88, 166, 255, 0.1);
-        border: 1px solid rgba(88, 166, 255, 0.2);
+        background: rgba(var(--accent-tint), 0.1);
+        border: 1px solid rgba(var(--accent-tint), 0.2);
         border-radius: var(--radius-md);
         padding: var(--spacing-xs) var(--spacing-md);
       }
@@ -381,6 +478,7 @@ export class VersolaChallengesList extends LitElement {
         fetchChallengeSettings(this.tenantId),
       ]);
       this.templates = templates;
+      this.viewSelection = {};
       this.availableLocales = locales;
       this.hasChallengeSettings = challengeSettings !== null;
       if (challengeSettings) {
@@ -392,6 +490,7 @@ export class VersolaChallengesList extends LitElement {
         this.authConversationTtlSeconds = challengeSettings.authConversationTtlSeconds;
         this.sessionTtlSeconds = challengeSettings.sessionTtlSeconds;
         this.sessionIdleTtlSeconds = challengeSettings.sessionIdleTtlSeconds ?? null;
+        this.userAgentTtlSeconds = challengeSettings.userAgentTtlSeconds;
         this.acrVocabulary = challengeSettings.acrVocabulary ?? {};
         this.ipHeader = challengeSettings.ipHeader || 'X-Real-IP';
         this.postLogoutRedirectUris = challengeSettings.postLogoutRedirectUris ?? [];
@@ -404,6 +503,7 @@ export class VersolaChallengesList extends LitElement {
         this.authConversationTtlSeconds = 900;
         this.sessionTtlSeconds = 86400;
         this.sessionIdleTtlSeconds = null;
+        this.userAgentTtlSeconds = 15552000;
         this.acrVocabulary = {};
         this.ipHeader = 'X-Real-IP';
         this.postLogoutRedirectUris = [];
@@ -418,18 +518,58 @@ export class VersolaChallengesList extends LitElement {
   private startAdd() {
     this.editingTemplateId = 'NEW';
     this.editingPurpose = 'otp';
+    this.editingChannel = 'sms';
     this.editId = '';
     this.editLocalizations = this.buildLocalizations({});
+    this.previewLocales = new Set();
     this.expandedLocales = new Set(this.editLocalizations.map(l => l.locale));
     this.editError = '';
   }
 
   private startEdit(template: OtpTemplateRecord) {
-    this.editingTemplateId = template.id;
+    this.editingTemplateId = this.templateKey(template);
     this.editingPurpose = template.purpose === 'password' ? 'password' : 'otp';
+    this.editingChannel = template.channel ?? (this.editingPurpose === 'password' ? 'email' : 'sms');
     this.editId = template.id;
     this.editLocalizations = this.buildLocalizations(template.localizations);
-    this.expandedLocales = new Set(this.editLocalizations.filter(l => !l.template).map(l => l.locale));
+    this.previewLocales = new Set();
+    this.expandedLocales = new Set(this.editLocalizations.map(l => l.locale));
+    this.editError = '';
+  }
+
+  private changeEditingChannel(channel: 'sms' | 'email') {
+    if (channel === this.editingChannel) return;
+
+    this.editingChannel = channel;
+    const existing = this.templates.find(template =>
+      template.id === this.editId
+      && template.purpose === this.editingPurpose
+      && template.channel === channel,
+    );
+    this.editLocalizations = this.buildLocalizations(existing?.localizations ?? {});
+    this.previewLocales = new Set();
+    this.expandedLocales = new Set(this.editLocalizations.map(l => l.locale));
+    this.editError = '';
+  }
+
+  private changeEditingPurpose(purpose: 'otp' | 'password') {
+    if (purpose === this.editingPurpose) return;
+
+    this.editingPurpose = purpose;
+    const channels = this.templates
+      .filter(template => template.id === this.editId && template.purpose === purpose)
+      .map(template => template.channel);
+    this.editingChannel = channels.includes(this.editingChannel)
+      ? this.editingChannel
+      : channels.includes('sms') ? 'sms' : 'email';
+    const existing = this.templates.find(template =>
+      template.id === this.editId
+      && template.purpose === purpose
+      && template.channel === this.editingChannel,
+    );
+    this.editLocalizations = this.buildLocalizations(existing?.localizations ?? {});
+    this.previewLocales = new Set();
+    this.expandedLocales = new Set(this.editLocalizations.map(l => l.locale));
     this.editError = '';
   }
 
@@ -454,10 +594,86 @@ export class VersolaChallengesList extends LitElement {
     this.requestUpdate();
   }
 
+  private toggleLocalePreview(code: string) {
+    const next = new Set(this.previewLocales);
+    if (next.has(code)) next.delete(code);
+    else next.add(code);
+    this.previewLocales = next;
+  }
+
+  private updateLocalization(locale: string, template: string) {
+    this.editLocalizations = this.editLocalizations.map(item =>
+      item.locale === locale ? { ...item, template } : item,
+    );
+  }
+
   private selectedViewLocale(template: OtpTemplateRecord): string {
     const codes = Object.keys(template.localizations);
-    const selected = this.viewLocale[template.id];
+    const selected = this.viewLocale[this.templateGroupKey(template)];
     return selected && codes.includes(selected) ? selected : codes[0] ?? '';
+  }
+
+  private templateKey(template: OtpTemplateRecord): string {
+    return `${template.purpose}:${template.id}:${template.channel}`;
+  }
+
+  private templateGroupKey(template: OtpTemplateRecord): string {
+    return template.id;
+  }
+
+  private availableViewPurposes(template: OtpTemplateRecord): TemplatePurpose[] {
+    const purposes = [...new Set(this.templates
+      .filter(candidate => this.templateGroupKey(candidate) === this.templateGroupKey(template))
+      .map(candidate => candidate.purpose as TemplatePurpose))];
+    if (template.id === 'default') {
+      if (!purposes.includes('otp')) purposes.push('otp');
+      if (!purposes.includes('password')) purposes.push('password');
+    }
+    return purposes;
+  }
+
+  private availableViewChannels(template: OtpTemplateRecord, purpose: TemplatePurpose): TemplateChannel[] {
+    const channels = [...new Set(this.templates
+      .filter(candidate => this.templateGroupKey(candidate) === this.templateGroupKey(template) && candidate.purpose === purpose)
+      .map(candidate => candidate.channel as TemplateChannel))];
+    if (channels.length === 0) channels.push(purpose === 'password' ? 'email' : template.channel as TemplateChannel);
+    return channels;
+  }
+
+  private selectedViewSelection(template: OtpTemplateRecord): TemplateViewSelection {
+    const groupKey = this.templateGroupKey(template);
+    const purposes = this.availableViewPurposes(template);
+    const stored = this.viewSelection[groupKey];
+    const purpose = stored && purposes.includes(stored.purpose)
+      ? stored.purpose
+      : purposes.includes('otp') ? 'otp' : template.purpose as TemplatePurpose;
+    const channels = this.availableViewChannels(template, purpose);
+    const channel = stored?.purpose === purpose && channels.includes(stored.channel)
+      ? stored.channel
+      : channels.includes('sms') ? 'sms' : channels[0];
+    return { purpose, channel };
+  }
+
+  private selectViewPurpose(template: OtpTemplateRecord, purpose: TemplatePurpose) {
+    const currentSelection = this.selectedViewSelection(template);
+    const channels = this.availableViewChannels(template, purpose);
+    const channel = channels.includes(currentSelection.channel)
+      ? currentSelection.channel
+      : channels.includes('sms') ? 'sms' : channels[0];
+    this.viewSelection = {
+      ...this.viewSelection,
+      [this.templateGroupKey(template)]: { purpose, channel },
+    };
+  }
+
+  private selectViewChannel(template: OtpTemplateRecord, channel: TemplateChannel) {
+    const selection = this.selectedViewSelection(template);
+    const channels = this.availableViewChannels(template, selection.purpose);
+    if (!channels.includes(channel)) return;
+    this.viewSelection = {
+      ...this.viewSelection,
+      [this.templateGroupKey(template)]: { ...selection, channel },
+    };
   }
 
   private localeName(code: string): string {
@@ -466,6 +682,10 @@ export class VersolaChallengesList extends LitElement {
 
   private formatDuration(seconds: number): string {
     if (seconds === 0) return '—';
+    if (seconds % 86400 === 0 && seconds >= 86400) {
+      const days = seconds / 86400;
+      return `${days} day${days === 1 ? '' : 's'}`;
+    }
     if (seconds % 3600 === 0) return `${seconds / 3600} hr`;
     if (seconds % 60 === 0) return `${seconds / 60} min`;
     return `${seconds}s`;
@@ -479,7 +699,9 @@ export class VersolaChallengesList extends LitElement {
       return;
     }
 
-    const placeholder = this.editingPurpose === 'password' ? PASSWORD_PLACEHOLDER : CODE_PLACEHOLDER;
+    const placeholders = this.editingPurpose === 'password'
+      ? [PASSWORD_PLACEHOLDER, PASSWORD_EXPIRY_PLACEHOLDER]
+      : [CODE_PLACEHOLDER];
     const localizations: Record<string, string> = {};
     for (const { locale, template } of this.editLocalizations) {
       const t = template.trim();
@@ -487,8 +709,15 @@ export class VersolaChallengesList extends LitElement {
         this.editError = `Localization for ${this.localeName(locale)} (${locale}) is required`;
         return;
       }
-      if (!t.includes(placeholder)) {
-        this.editError = `Localization for ${this.localeName(locale)} (${locale}) must include the ${placeholder} placeholder`;
+      for (const placeholder of placeholders) {
+        if (!t.includes(placeholder)) {
+          this.editError = `Localization for ${this.localeName(locale)} (${locale}) must include the ${placeholder} placeholder`;
+          return;
+        }
+      }
+      const htmlError = this.getEmailHtmlValidationError(t);
+      if (this.editingChannel === 'email' && htmlError) {
+        this.editError = `Localization for ${this.localeName(locale)} (${locale}) must contain valid HTML: ${htmlError}`;
         return;
       }
       localizations[locale] = t;
@@ -502,11 +731,17 @@ export class VersolaChallengesList extends LitElement {
     this.saving = true;
     this.editError = '';
     try {
-      await upsertOtpTemplate(id, this.tenantId, localizations, this.editingPurpose);
-      const updated: OtpTemplateRecord = { id, tenantId: this.tenantId, localizations, purpose: this.editingPurpose };
-      const existing = this.templates.some(t => t.id === id);
+      await upsertOtpTemplate(id, this.tenantId, localizations, this.editingPurpose, this.editingChannel);
+      const updated: OtpTemplateRecord = {
+        id,
+        tenantId: this.tenantId,
+        localizations,
+        purpose: this.editingPurpose,
+        channel: this.editingChannel,
+      };
+      const existing = this.templates.some(t => this.templateKey(t) === this.templateKey(updated));
       this.templates = existing
-        ? this.templates.map(t => (t.id === id ? updated : t))
+        ? this.templates.map(t => (this.templateKey(t) === this.templateKey(updated) ? updated : t))
         : [...this.templates, updated];
       this.editingTemplateId = null;
     } catch (e) {
@@ -516,19 +751,108 @@ export class VersolaChallengesList extends LitElement {
     }
   }
 
-  private async handleDelete(id: string) {
+  private getEmailHtmlValidationError(template: string): string {
+    if (!template.trim().startsWith('<')) return 'HTML must start with an element';
+    const document = new DOMParser().parseFromString(template, 'text/html');
+    if (document.querySelector('parsererror')) return 'HTML could not be parsed';
+    if (!document.body.querySelector('*')) return 'HTML must contain an element';
+    if (document.querySelector('script')) return 'script elements are not allowed';
+    if (document.querySelector('[onclick], [onload], [onerror], iframe, object, embed')) {
+      return 'scripts and executable embedded content are not allowed';
+    }
+    const structureError = this.getHtmlStructureError(template);
+    if (structureError) return structureError;
+    return '';
+  }
+
+  private getHtmlStructureError(template: string): string {
+    const voidElements = new Set(['area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'param', 'source', 'track', 'wbr']);
+    const tags = /<!--[\s\S]*?-->|<!doctype\s+[^>]*>|<\/?([A-Za-z][A-Za-z0-9:-]*)(?:\s[^<>]*?)?\/?>/gi;
+    const openElements: string[] = [];
+    let cursor = 0;
+    let match: RegExpExecArray | null;
+
+    while ((match = tags.exec(template)) !== null) {
+      if (template.slice(cursor, match.index).includes('<')) return 'HTML contains an invalid tag';
+      cursor = tags.lastIndex;
+      const token = match[0];
+      const name = match[1]?.toLowerCase();
+      if (!name || token.startsWith('<!--') || token.toLowerCase().startsWith('<!doctype')) continue;
+
+      if (token.startsWith('</')) {
+        if (openElements[openElements.length - 1] !== name) return `Unexpected closing tag </${name}>`;
+        openElements.pop();
+      } else {
+        const attributeError = this.getHtmlAttributeError(token, name);
+        if (attributeError) return attributeError;
+        if (!token.endsWith('/>') && !voidElements.has(name)) openElements.push(name);
+      }
+    }
+
+    if (template.slice(cursor).includes('<')) return 'HTML contains an invalid tag';
+    if (openElements.length > 0) return `Unclosed tag <${openElements[openElements.length - 1]}>`;
+    return '';
+  }
+
+  private getHtmlAttributeError(token: string, tagName: string): string {
+    const booleanAttributes = new Set(['allowfullscreen', 'async', 'autofocus', 'autoplay', 'checked', 'controls', 'default', 'defer', 'disabled', 'formnovalidate', 'hidden', 'inert', 'ismap', 'itemscope', 'loop', 'multiple', 'muted', 'nomodule', 'novalidate', 'open', 'playsinline', 'readonly', 'required', 'reversed', 'selected']);
+    const body = token.slice(1, token.endsWith('/>') ? -2 : -1).trim();
+    const firstWhitespace = body.search(/\s/);
+    if (firstWhitespace < 0) return '';
+
+    const attributes = body.slice(firstWhitespace).trim();
+    let index = 0;
+    while (index < attributes.length) {
+      while (/\s/.test(attributes[index] ?? '')) index += 1;
+      if (index >= attributes.length) break;
+
+      const nameStart = index;
+      while (index < attributes.length && !/[\s=]/.test(attributes[index])) index += 1;
+      const attributeName = attributes.slice(nameStart, index);
+      if (!attributeName) return `Malformed attribute on <${tagName}>`;
+      while (/\s/.test(attributes[index] ?? '')) index += 1;
+
+      if (attributes[index] !== '=') {
+        if (booleanAttributes.has(attributeName.toLowerCase())) continue;
+        return `Attribute "${attributeName}" on <${tagName}> must have a value`;
+      }
+
+      index += 1;
+      while (/\s/.test(attributes[index] ?? '')) index += 1;
+      if (index >= attributes.length || attributes[index] === '=') {
+        return `Attribute "${attributeName}" on <${tagName}> must have a value`;
+      }
+
+      const quote = attributes[index];
+      if (quote === '"' || quote === "'") {
+        index += 1;
+        const valueEnd = attributes.indexOf(quote, index);
+        if (valueEnd < 0) return `Attribute "${attributeName}" on <${tagName}> has an unterminated value`;
+        index = valueEnd + 1;
+      } else {
+        while (index < attributes.length && !/\s/.test(attributes[index])) index += 1;
+      }
+    }
+    return '';
+  }
+
+  private previewTemplate(template: string): string {
+    return template;
+  }
+
+  private async handleDelete(template: OtpTemplateRecord) {
     if (!this.tenantId) return;
     const confirmed = await confirmDestructiveAction({
       title: 'Delete template',
       messagePrefix: 'Delete template ',
-      messageSubject: id,
+      messageSubject: `${template.id} (${template.channel})`,
       messageSuffix: '?',
       confirmLabel: 'Delete',
     });
     if (!confirmed) return;
     try {
-      await deleteOtpTemplate(id, this.tenantId);
-      this.templates = this.templates.filter(t => t.id !== id);
+      await deleteOtpTemplate(template.id, this.tenantId, template.purpose, template.channel);
+      this.templates = this.templates.filter(t => this.templateKey(t) !== this.templateKey(template));
     } catch (e) {
       this.errorMessage = e instanceof Error ? e.message : 'Failed to delete template';
     }
@@ -543,6 +867,7 @@ export class VersolaChallengesList extends LitElement {
     this.editAuthConversationTtlSeconds = this.authConversationTtlSeconds;
     this.editSessionTtlSeconds = this.sessionTtlSeconds;
     this.editSessionIdleTtlSeconds = this.sessionIdleTtlSeconds;
+    this.editUserAgentTtlSeconds = this.userAgentTtlSeconds;
     this.editIpHeader = this.ipHeader;
     this.editPasskeyRpId = this.passkeySettings?.rpId ?? '';
     this.editPasskeyRpName = this.passkeySettings?.rpName ?? '';
@@ -658,6 +983,7 @@ export class VersolaChallengesList extends LitElement {
         this.editAuthConversationTtlSeconds,
         this.editSessionTtlSeconds,
         this.editSessionIdleTtlSeconds,
+        this.editUserAgentTtlSeconds,
         ipHeader,
         acrVocabulary,
         postLogoutRedirectUris,
@@ -669,6 +995,7 @@ export class VersolaChallengesList extends LitElement {
       this.authConversationTtlSeconds = this.editAuthConversationTtlSeconds;
       this.sessionTtlSeconds = this.editSessionTtlSeconds;
       this.sessionIdleTtlSeconds = this.editSessionIdleTtlSeconds;
+      this.userAgentTtlSeconds = this.editUserAgentTtlSeconds;
       this.ipHeader = ipHeader;
       this.passkeySettings = { ...passkeySettings, origins: [...passkeySettings.origins] };
       this.acrVocabulary = acrVocabulary;
@@ -687,11 +1014,15 @@ export class VersolaChallengesList extends LitElement {
     const isPassword = this.editingPurpose === 'password';
     // password template always uses the fixed 'password' id — treat as edit even on first creation
     const isNewOtp = isNew && !isPassword;
-    const placeholder = isPassword ? PASSWORD_PLACEHOLDER : CODE_PLACEHOLDER;
+    const placeholders = isPassword
+      ? `${PASSWORD_PLACEHOLDER} and ${PASSWORD_EXPIRY_PLACEHOLDER}`
+      : CODE_PLACEHOLDER;
     const typeLabel = isPassword ? 'Password Template' : 'OTP Template';
     const textareaPlaceholder = isPassword
-      ? 'Your temporary password is {{password}}. It expires in {{expiresHours}} hours.'
-      : 'Your verification code is: {{code}}';
+      ? '<html><body><p>Your temporary password is {{password}}.</p><p>It expires in {{expiresHours}} hours.</p></body></html>'
+      : this.editingChannel === 'email'
+        ? '<html><body><p>Your verification code is {{code}}</p></body></html>'
+        : 'Your verification code is: {{code}}';
 
     return html`
       <div class="form-header">
@@ -715,11 +1046,31 @@ export class VersolaChallengesList extends LitElement {
           </div>
         ` : nothing}
 
+        <div class="form-group">
+          <label for="template-purpose">Type</label>
+          <select id="template-purpose" class="compact-input" .value=${this.editingPurpose}
+            @change=${(e: Event) => this.changeEditingPurpose((e.target as HTMLSelectElement).value as 'otp' | 'password')}>
+            <option value="otp">otp</option>
+            <option value="password">password</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label for="template-channel">Channel</label>
+          <select id="template-channel" class="compact-input" .value=${this.editingChannel}
+            @change=${(e: Event) => this.changeEditingChannel((e.target as HTMLSelectElement).value as 'sms' | 'email')}>
+            <option value="sms">sms</option>
+            <option value="email">email</option>
+          </select>
+          <div class="hint">${this.editingChannel === 'email' ? 'Email templates must contain valid HTML.' : 'SMS templates are plain text.'}</div>
+        </div>
+
         <label>Localizations</label>
-        <div class="hint">All active localizations are required. Use <code>${placeholder}</code> as a placeholder for the ${isPassword ? 'temporary password' : 'verification code'}.</div>
+        <div class="hint">All active localizations are required. Use <code>${placeholders}</code> as placeholders for the ${isPassword ? 'temporary password' : 'verification code'}.</div>
 
         ${this.editLocalizations.map((loc) => {
           const expanded = this.expandedLocales.has(loc.locale);
+          const htmlError = this.editingChannel === 'email' ? this.getEmailHtmlValidationError(loc.template) : '';
           return html`
             <div class="edit-loc-card">
               <div class="edit-loc-head" @click=${() => this.toggleLocExpand(loc.locale)}>
@@ -730,9 +1081,28 @@ export class VersolaChallengesList extends LitElement {
               </div>
               ${expanded ? html`
                 <div class="edit-loc-body">
-                  <textarea class="edit-loc-textarea" .value=${loc.template}
-                    @input=${(e: Event) => { loc.template = (e.target as HTMLTextAreaElement).value; }}
-                    placeholder=${textareaPlaceholder}></textarea>
+                  ${this.editingChannel === 'email' ? html`
+                    <div class="edit-loc-toolbar">
+                      <button type="button" class="btn btn-secondary preview-toggle"
+                        ?disabled=${Boolean(htmlError) && !this.previewLocales.has(loc.locale)}
+                        @click=${() => this.toggleLocalePreview(loc.locale)}>
+                        ${this.previewLocales.has(loc.locale) ? 'Edit HTML' : 'Preview'}
+                      </button>
+                      ${htmlError ? html`<span class="html-validation-error">${htmlError}</span>` : nothing}
+                    </div>
+                    ${this.previewLocales.has(loc.locale)
+                      ? html`<iframe class="email-preview" title=${`Preview for ${loc.locale}`} sandbox="" .srcdoc=${this.previewTemplate(loc.template)}></iframe>`
+                      : html`<versola-code-editor language="html" rows="20"
+                          .value=${loc.template}
+                          .placeholder=${textareaPlaceholder}
+                          .invalid=${Boolean(htmlError)}
+                          @code-input=${(e: CustomEvent<{ value: string }>) => this.updateLocalization(loc.locale, e.detail.value)}
+                        ></versola-code-editor>`}
+                  ` : html`
+                    <textarea class="edit-loc-textarea" .value=${loc.template}
+                      @input=${(e: Event) => this.updateLocalization(loc.locale, (e.target as HTMLTextAreaElement).value)}
+                      placeholder=${textareaPlaceholder}></textarea>
+                  `}
                 </div>
               ` : nothing}
             </div>
@@ -750,114 +1120,123 @@ export class VersolaChallengesList extends LitElement {
     `;
   }
 
-  private renderTemplateCard(template: OtpTemplateRecord) {
-    const codes = Object.keys(template.localizations);
-    const selected = this.selectedViewLocale(template);
+  private renderTemplateCard(template: OtpTemplateRecord, showActions = true) {
+    const selection = this.selectedViewSelection(template);
+    const selectedPurpose = selection.purpose;
+    const selectedChannel = selection.channel;
+    const selectedTemplate = this.templates.find(candidate =>
+      this.templateGroupKey(candidate) === this.templateGroupKey(template)
+      && candidate.purpose === selectedPurpose
+      && candidate.channel === selectedChannel,
+    );
+    const displayTemplate: OtpTemplateRecord = selectedTemplate ?? {
+      ...template,
+      purpose: selectedPurpose,
+      channel: selectedChannel,
+      localizations: {},
+    };
+    const purposes = this.availableViewPurposes(template);
+    const codes = Object.keys(displayTemplate.localizations);
+    const selected = selectedTemplate ? this.selectedViewLocale(selectedTemplate) : '';
+    const channels = this.availableViewChannels(template, selectedPurpose);
+    const orderedChannels = (['sms', 'email'] as TemplateChannel[]).filter(channel => channels.includes(channel));
     return html`
       <div class="card template-card">
         <div class="template-header">
-          <span class="template-id">${template.id}</span>
-          ${this.canManage ? html`
+          <div class="template-id-group">
+            <span class="template-id">${displayTemplate.id}</span>
+          </div>
+          ${this.canManage && showActions ? html`
           <div class="template-actions">
-            <button class="icon-action" @click=${() => this.startEdit(template)} title="Edit">✎</button>
-            <button class="icon-action danger" @click=${() => this.handleDelete(template.id)} title="Delete">✕</button>
+            <button class="icon-action" @click=${() => this.startEdit(displayTemplate)} title=${selectedTemplate ? 'Edit' : 'Create'}>✎</button>
+            ${selectedTemplate ? html`<button class="icon-action danger" @click=${() => this.handleDelete(selectedTemplate)} title="Delete">✕</button>` : nothing}
           </div>` : ''}
         </div>
         <div class="locale-bar">
-          <span class="locale-bar-label">Language</span>
-          <select class="form-control locale-select" .value=${selected}
-            @change=${(e: Event) => { this.viewLocale = { ...this.viewLocale, [template.id]: (e.target as HTMLSelectElement).value }; }}>
-            ${codes.map(code => html`
-              <option value=${code} ?selected=${code === selected}>${code} (${this.localeName(code)})</option>
-            `)}
-          </select>
+          ${purposes.length > 1 ? html`
+            <div class="template-type-control">
+              <span class="locale-bar-label">Type</span>
+              <select class="form-control" aria-label="Type"
+                .value=${selectedPurpose}
+                @change=${(e: Event) => this.selectViewPurpose(template, (e.target as HTMLSelectElement).value as 'otp' | 'password')}>
+                ${purposes.map(purpose => html`<option value=${purpose}>${purpose}</option>`)}
+              </select>
+            </div>
+          ` : nothing}
+          <div class="template-channel-control">
+            <span class="locale-bar-label">Channel</span>
+            <select class="form-control template-channel-select" aria-label="Channel"
+              .value=${selectedChannel}
+              @change=${(e: Event) => this.selectViewChannel(template, (e.target as HTMLSelectElement).value as 'sms' | 'email')}>
+              ${orderedChannels.map(channel => html`<option value=${channel}>${channel}</option>`)}
+            </select>
+          </div>
+          <div class="template-language-control">
+            <span class="locale-bar-label">Language</span>
+            <select class="form-control locale-select" .value=${selected}
+              @change=${(e: Event) => { this.viewLocale = { ...this.viewLocale, [this.templateGroupKey(template)]: (e.target as HTMLSelectElement).value }; }}>
+              ${codes.map(code => html`
+                <option value=${code} ?selected=${code === selected}>${code} (${this.localeName(code)})</option>
+              `)}
+            </select>
+          </div>
         </div>
-        <div class="template-text">${template.localizations[selected] ?? ''}</div>
+        ${selectedTemplate && selectedTemplate.channel === 'email'
+          ? html`<iframe class="email-preview" title=${`Preview for ${selectedTemplate.id} ${selectedChannel}`} sandbox=""
+              .srcdoc=${this.previewTemplate(selectedTemplate.localizations[selected] ?? '')}></iframe>`
+          : selectedTemplate
+            ? html`<div class="template-text">${selectedTemplate.localizations[selected] ?? ''}</div>`
+            : html`<div class="empty-state"><p>No ${selectedPurpose} template exists for this ID yet.</p></div>`}
       </div>
     `;
   }
 
   private renderOtpSettings() {
-    const otpTemplates = this.templates.filter(t => t.purpose !== 'password');
     return html`
       <section class="settings-section">
         <div class="section-header">
           <div>
-            <h2 class="section-title">OTP Templates</h2>
-            <div class="section-desc">One-time verification code templates used by OAuth clients. Must include the <code>${CODE_PLACEHOLDER}</code> placeholder.</div>
+            <h2 class="section-title">Templates</h2>
+            <div class="section-desc">OTP and temporary-password templates used by OAuth clients. Choose the type and delivery channel for each template. SMS templates are plain text; email templates use HTML.</div>
           </div>
           ${this.canManage ? html`<button class="btn btn-primary" @click=${() => this.startAdd()}>Add Template</button>` : ''}
         </div>
 
-        ${otpTemplates.length === 0
+        ${this.templates.length === 0
           ? html`
             <div class="card">
               <div class="empty-state">
-                <h3>No OTP templates yet</h3>
-                <p>Add your first OTP template to get started.</p>
+                <h3>No templates yet</h3>
+                <p>Add your first template to get started.</p>
                 ${this.canManage ? html`<button class="btn btn-primary" @click=${() => this.startAdd()} style="margin-top: 1rem;">+ Add Template</button>` : ''}
               </div>
             </div>`
-          : otpTemplates.map(template => this.renderTemplateCard(template))}
+          : this.templates
+            .filter((template, index, all) => all.findIndex(candidate =>
+              this.templateGroupKey(candidate) === this.templateGroupKey(template),
+            ) === index)
+            .map(template => this.renderTemplateCard(template))}
       </section>
     `;
   }
 
-  private startEditPasswordTemplate(template?: OtpTemplateRecord) {
-    this.editingTemplateId = 'password';
-    this.editingPurpose = 'password';
-    this.editId = 'password';
-    this.editLocalizations = this.buildLocalizations(template?.localizations ?? {});
-    this.expandedLocales = new Set(this.editLocalizations.map(l => l.locale));
-    this.editError = '';
-  }
-
-  private renderPasswordTemplates() {
-    const passwordTemplate = this.templates.find(t => t.purpose === 'password');
+  private renderAuthorizationDetailTypes() {
     return html`
       <section class="settings-section">
         <div class="section-header">
           <div>
-            <h2 class="section-title">Password Templates</h2>
-            <div class="section-desc">Message sent when a temporary password is issued. Must include the <code>${PASSWORD_PLACEHOLDER}</code> placeholder.</div>
+            <h2 class="section-title">Authorization Details</h2>
+            <div class="section-desc">Register the RFC 9396 authorization detail types and JSON Schemas that clients may request.</div>
           </div>
           ${this.canManage ? html`
-            <button class="btn btn-primary" @click=${() => this.startEditPasswordTemplate(passwordTemplate)}>
-              ${passwordTemplate ? 'Edit' : 'Create'}
-            </button>
+            <button class="btn btn-primary" @click=${() => this.authorizationDetailTypesList?.startCreate()}>Create Type</button>
           ` : nothing}
         </div>
-
-        ${!passwordTemplate
-          ? html`
-            <div class="card">
-              <div class="empty-state">
-                <h3>No password template</h3>
-                <p>Create a template or restart the server to seed the default one.</p>
-                ${this.canManage ? html`<button class="btn btn-primary" @click=${() => this.startEditPasswordTemplate()} style="margin-top: 1rem;">+ Create Template</button>` : ''}
-              </div>
-            </div>`
-          : this.renderPasswordTemplateCard(passwordTemplate)}
+        <versola-authorization-detail-types-list
+          .tenantId=${this.tenantId}
+          .canManage=${this.canManage}
+        ></versola-authorization-detail-types-list>
       </section>
-    `;
-  }
-
-  private renderPasswordTemplateCard(template: OtpTemplateRecord) {
-    const codes = Object.keys(template.localizations);
-    const selected = this.selectedViewLocale(template);
-    return html`
-      <div class="card template-card">
-        <div class="locale-bar">
-          <span class="locale-bar-label">Language</span>
-          <select class="form-control locale-select" .value=${selected}
-            @change=${(e: Event) => { this.viewLocale = { ...this.viewLocale, [template.id]: (e.target as HTMLSelectElement).value }; }}>
-            ${codes.map(code => html`
-              <option value=${code} ?selected=${code === selected}>${code} (${this.localeName(code)})</option>
-            `)}
-          </select>
-        </div>
-        <div class="template-text">${template.localizations[selected] ?? ''}</div>
-      </div>
     `;
   }
 
@@ -911,7 +1290,6 @@ export class VersolaChallengesList extends LitElement {
                 ${this.phonePrefixes.map(prefix => html`<span class="prefix-tag">${prefix}</span>`)}
               </div>
             `}
-
         </div>
 
         <div class="card" style="margin-bottom: var(--spacing-lg);">
@@ -923,6 +1301,9 @@ export class VersolaChallengesList extends LitElement {
 
           <label style="margin-top: var(--spacing-lg);">SSO Session Idle Timeout</label>
           <div class="template-text">${this.sessionIdleTtlSeconds != null ? this.formatDuration(this.sessionIdleTtlSeconds) : 'Disabled'}</div>
+
+          <label style="margin-top: var(--spacing-lg);">User Agent TTL</label>
+          <div class="template-text">${this.formatDuration(this.userAgentTtlSeconds)}</div>
 
           <label style="margin-top: var(--spacing-lg);">Client IP Header</label>
           <div class="template-text">${this.ipHeader}</div>
@@ -1057,8 +1438,8 @@ export class VersolaChallengesList extends LitElement {
         ${this.editPrefixes.length === 0
           ? html`<div class="hint">No prefixes configured.</div>`
           : this.editPrefixes.map((entry, i) => html`
-            <div class="locale-bar">
-              <input type="text" class="form-control compact-input locale-select" .value=${entry.value}
+            <div class="locale-bar settings-input-row">
+              <input type="text" class="form-control settings-list-input settings-prefix-input" .value=${entry.value}
                 @input=${(e: Event) => { entry.value = (e.target as HTMLInputElement).value; }}
                 placeholder="+77" />
               <button class="icon-action danger" @click=${() => this.removePrefix(i)} title="Remove">✕</button>
@@ -1077,11 +1458,11 @@ export class VersolaChallengesList extends LitElement {
           <span class="limit-hint">${this.formatDuration(this.editAuthConversationTtlSeconds)}</span>
         </div>
 
-        <label style="margin-top: var(--spacing-lg);">SSO Session TTL (seconds)</label>
+        <label style="margin-top: var(--spacing-lg);">SSO Session TTL (days)</label>
         <div class="hint">How long the SSO session cookie remains valid after authentication.</div>
         <div class="limit-row" style="margin-bottom: 0;">
-          <input type="number" class="form-control compact-input limit-input" .value=${this.editSessionTtlSeconds}
-            @input=${(e: Event) => { this.editSessionTtlSeconds = Math.max(1, parseInt((e.target as HTMLInputElement).value) || 1); this.requestUpdate(); }} />
+          <input type="number" step="0.5" class="form-control compact-input limit-input" .value=${this.editSessionTtlSeconds / 86400}
+            @input=${(e: Event) => { const days = Math.max(1 / 86400, parseFloat((e.target as HTMLInputElement).value) || 0); this.editSessionTtlSeconds = Math.round(days * 86400); this.requestUpdate(); }} />
           <span class="limit-hint">${this.formatDuration(this.editSessionTtlSeconds)}</span>
         </div>
 
@@ -1091,6 +1472,14 @@ export class VersolaChallengesList extends LitElement {
           <input type="number" class="form-control compact-input limit-input" .value=${this.editSessionIdleTtlSeconds ?? ''}
             @input=${(e: Event) => { const v = parseInt((e.target as HTMLInputElement).value); this.editSessionIdleTtlSeconds = Number.isFinite(v) && v > 0 ? v : null; this.requestUpdate(); }} />
           <span class="limit-hint">${this.editSessionIdleTtlSeconds != null ? this.formatDuration(this.editSessionIdleTtlSeconds) : 'Disabled'}</span>
+        </div>
+
+        <label style="margin-top: var(--spacing-lg);">User Agent TTL (days)</label>
+        <div class="hint">How long a recognized device (user agent) is remembered before it needs to be re-verified.</div>
+        <div class="limit-row" style="margin-bottom: 0;">
+          <input type="number" step="0.5" class="form-control compact-input limit-input" .value=${this.editUserAgentTtlSeconds / 86400}
+            @input=${(e: Event) => { const days = Math.max(1 / 86400, parseFloat((e.target as HTMLInputElement).value) || 0); this.editUserAgentTtlSeconds = Math.round(days * 86400); this.requestUpdate(); }} />
+          <span class="limit-hint">${this.formatDuration(this.editUserAgentTtlSeconds)}</span>
         </div>
 
         <h3 style="margin-top: var(--spacing-xl); margin-bottom: var(--spacing-md);">Passkey (WebAuthn)</h3>
@@ -1121,8 +1510,8 @@ export class VersolaChallengesList extends LitElement {
         ${this.editPasskeyOrigins.length === 0
           ? html`<div class="hint">No origins configured.</div>`
           : this.editPasskeyOrigins.map((entry, i) => html`
-            <div class="locale-bar">
-              <input type="text" class="form-control compact-input locale-select" .value=${entry.value}
+            <div class="locale-bar settings-input-row">
+              <input type="text" class="form-control settings-list-input" .value=${entry.value}
                 @input=${(e: Event) => { entry.value = (e.target as HTMLInputElement).value; }}
                 placeholder="https://example.com" />
               <button class="icon-action danger" @click=${() => this.removePasskeyOrigin(i)} title="Remove">✕</button>
@@ -1187,8 +1576,8 @@ export class VersolaChallengesList extends LitElement {
         ${this.editPostLogoutRedirectUris.length === 0
           ? html`<div class="hint">No post-logout redirect URIs configured.</div>`
           : this.editPostLogoutRedirectUris.map((entry, i) => html`
-            <div class="locale-bar">
-              <input type="text" class="form-control compact-input locale-select" .value=${entry.value}
+            <div class="locale-bar settings-input-row">
+              <input type="text" class="form-control settings-list-input" .value=${entry.value}
                 @input=${(e: Event) => { entry.value = (e.target as HTMLInputElement).value; }}
                 placeholder="https://app.example.com/logged-out" />
               <button class="icon-action danger" @click=${() => this.removePostLogoutRedirectUri(i)} title="Remove">✕</button>
@@ -1272,7 +1661,7 @@ export class VersolaChallengesList extends LitElement {
         `
         : html`
           ${this.renderOtpSettings()}
-          ${this.renderPasswordTemplates()}
+          ${this.renderAuthorizationDetailTypes()}
           ${this.renderChallengeSettings()}
         `}
     `;

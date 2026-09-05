@@ -1,6 +1,6 @@
 import { render } from 'solid-js/web';
 import { createSignal, Show } from 'solid-js';
-import { getAssertionResponse, submitViaForm, passkeysSupported } from '../passkey/webauthn';
+import { getAssertionResponse, isPasskeyCancellation, passkeysSupported, submitViaForm } from '../passkey/webauthn';
 
 function LocaleDropdown(props: { locales: string[]; current: string; onChange: (l: string) => void }) {
   const [open, setOpen] = createSignal(false);
@@ -53,6 +53,7 @@ interface FormConfig {
   error?: string;
   previewId?: string;
   csrf?: string;
+  logo?: string;
 }
 
 declare global {
@@ -92,6 +93,7 @@ function CredentialForm(props: { config: FormConfig }) {
   const [phoneNotAllowed, setPhoneNotAllowed] = createSignal(false);
   const [passwordNotAllowed, setPasswordNotAllowed] = createSignal(false);
   const [passkeyBusy, setPasskeyBusy] = createSignal(false);
+  const [logoLoadFailed, setLogoLoadFailed] = createSignal(false);
 
   // All passkey-related errors (client failures and the server's passkey_failed /
   // passkey_orphaned) are surfaced through a dismissible popup rather than inline text.
@@ -120,13 +122,23 @@ function CredentialForm(props: { config: FormConfig }) {
     setPasskeyBusy(true);
     setPasskeyErrorKey(null);
     try {
-      const optionsJson = await fetch(`/challenge/passkey/options?ui_locale=${currentLocale()}`).then((r) => {
-        if (!r.ok) throw new Error('options request failed');
-        return r.text();
-      });
+      const optionsResponse = await fetch(`/challenge/passkey/options?ui_locale=${currentLocale()}`);
+      // Conversation expired (410) or the auth service failed (500): reload the
+      // conversation page itself so the server renders the proper terminal screen instead
+      // of surfacing a generic passkey-failed dialog on top of a stale form.
+      if (optionsResponse.status === 410 || optionsResponse.status === 500) {
+        window.location.href = '/challenge';
+        return;
+      }
+      if (!optionsResponse.ok) throw new Error('options request failed');
+      const optionsJson = await optionsResponse.text();
       const response = await getAssertionResponse(optionsJson);
       submitViaForm(`/challenge/passkey?ui_locale=${currentLocale()}`, { response, csrf: props.config.csrf ?? '' });
-    } catch (_) {
+    } catch (error) {
+      if (isPasskeyCancellation(error)) {
+        setPasskeyBusy(false);
+        return;
+      }
       setPasskeyErrorKey('passkey_failed');
       setPasskeyBusy(false);
     }
@@ -157,6 +169,25 @@ function CredentialForm(props: { config: FormConfig }) {
       <Show when={locales.length > 1}>
         <div class="locale-selector">
           <LocaleDropdown locales={locales} current={currentLocale()} onChange={changeLocale} />
+        </div>
+      </Show>
+      <Show when={!props.config.logo || !logoLoadFailed()}>
+        <div class="brand-mark" aria-hidden="true">
+          <Show
+            when={props.config.logo}
+            fallback={
+              <svg viewBox="0 0 64 64" fill="none">
+                <path d="M32 6 C32 6 52 10 54 12 L54 30 Q54 48 32 58 Q10 48 10 30 L10 12 C12 10 32 6 32 6Z"
+                      fill="var(--accent)" fill-opacity="0.06"/>
+                <path d="M32 6 C32 6 52 10 54 12 L54 30 Q54 48 32 58 Q10 48 10 30 L10 12 C12 10 32 6 32 6Z"
+                      fill="none" stroke="var(--accent)" stroke-width="2.2"/>
+                <text x="32" y="41" font-family="-apple-system, Inter, sans-serif" font-weight="800"
+                      font-size="26" fill="var(--accent)" text-anchor="middle">V</text>
+              </svg>
+            }
+          >
+            <img src={props.config.logo} alt="" onError={() => setLogoLoadFailed(true)} />
+          </Show>
         </div>
       </Show>
       <h1>{t().title}</h1>

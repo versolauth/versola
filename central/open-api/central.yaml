@@ -1,0 +1,3418 @@
+openapi: 3.1.0
+
+info:
+  title: Versola Central API
+  version: '1.0'
+  description: |
+    Central is the Versola control plane: the source of truth for tenants, clients,
+    resources, scopes, permissions, roles, users and the branding/challenge configuration
+    that auth and edge consume.
+
+    Central is an internal service. It is never exposed to end users or to browser
+    traffic — only to the admin console (`central-ui`).
+
+    This reference covers the admin console surface. Central also exposes internal
+    replication endpoints (`/sync`, `/registry`) that auth and edge use to pull configuration;
+    those are not part of this document.
+
+    ## Authentication
+
+    Every operation below is called with HTTP Basic: the fixed username `central` and the
+    base64url-encoded central resource secret as the password.
+
+    ## Conventions
+
+    * Identifiers are passed as query parameters, not path segments — `DELETE
+      /configuration/tenants?tenantId=acme`, not `DELETE /configuration/tenants/acme`.
+    * Localized text is a map of BCP 47 language tag to string: `{"en": "Name", "ru": "Имя"}`.
+    * `PUT` bodies that contain `add`/`remove`/`delete` members are patches: only the listed
+      members change. Some nullable fields follow JSON merge-patch semantics — key absent
+      means "leave unchanged", `null` means "clear", a value means "set" — but others are
+      plain optional overwrites where `null` and absent both mean "leave unchanged"; each
+      operation states which applies to which field.
+    * Secrets and private keys are returned exactly once, at creation or rotation time.
+      Central stores only encrypted copies and cannot show them again.
+  license:
+    name: Apache-2.0
+    url: https://github.com/versolauth/versola/blob/main/LICENCE.md
+
+externalDocs:
+  description: Versola documentation
+  url: https://docs.versola.kz
+
+servers:
+  - url: '{centralBaseUrl}'
+    description: |
+      Central is self-hosted and has no public address. Point this at your own deployment —
+      the default is the address it listens on in the docker-compose setup.
+    variables:
+      centralBaseUrl:
+        default: http://localhost:8090
+
+security:
+  - centralBasic: []
+
+tags:
+  - name: Tenants
+    description: Isolation boundaries that own clients, resources, scopes, permissions and roles.
+  - name: Clients
+    description: OAuth clients, their secrets and their login/registration flows.
+  - name: Authorization presets
+    description: Named, server-side authorization request templates for a client.
+  - name: Resources
+    description: Protected APIs behind edge, their endpoints and their access policies.
+  - name: Scopes
+    description: OAuth scopes and the claims each scope releases.
+  - name: Permissions
+    description: Fine-grained rights that map to resource endpoints.
+  - name: Roles
+    description: Named bundles of permissions granted to users within a tenant.
+  - name: Authorization detail types
+    description: RFC 9396 `authorization_details` types and their JSON Schemas.
+  - name: Users
+    description: The user index — identifiers, claims, roles, sessions, passkeys and passwords.
+  - name: Challenges
+    description: OTP templates and per-tenant challenge, session and passkey settings.
+  - name: Forms
+    description: Versioned login form bundles (style, script, localizations, properties).
+  - name: Locales
+    description: Locales offered on the login UI, and the default among them.
+  - name: Themes
+    description: CSS themes applied to the login UI, globally or per tenant.
+  - name: JWKS
+    description: The central-owned JSON Web Key Set used to sign and verify admin tokens.
+  - name: Server metadata
+    description: Overrides merged into the RFC 8414 authorization server metadata document.
+  - name: System settings
+    description: Global, non-tenant-scoped settings such as the password policy.
+  - name: Edges
+    description: Registered edge deployments and their signing keys.
+  - name: Service
+    description: Operational endpoints that return `404 Not Found` in production.
+
+paths:
+  # ─────────────────────────────── Tenants ───────────────────────────────
+  /configuration/tenants:
+    get:
+      tags: [Tenants]
+      summary: List tenants
+      operationId: getAllTenants
+      responses:
+        '200':
+          description: Every tenant known to central.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetAllTenantsResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [Tenants]
+      summary: Create a tenant
+      operationId: createTenant
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTenantRequest'
+      responses:
+        '201':
+          description: Tenant created.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    put:
+      tags: [Tenants]
+      summary: Update a tenant
+      description: Replaces the description and edge binding of an existing tenant.
+      operationId: updateTenant
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateTenantRequest'
+      responses:
+        '204':
+          description: Tenant updated.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    delete:
+      tags: [Tenants]
+      summary: Delete a tenant
+      operationId: deleteTenant
+      parameters:
+        - $ref: '#/components/parameters/TenantIdQuery'
+      responses:
+        '204':
+          description: Tenant deleted.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # ─────────────────────────────── Clients ───────────────────────────────
+  /configuration/clients:
+    get:
+      tags: [Clients]
+      summary: List a tenant's clients
+      operationId: getAllClients
+      parameters:
+        - $ref: '#/components/parameters/TenantIdQuery'
+        - $ref: '#/components/parameters/OffsetQuery'
+        - $ref: '#/components/parameters/LimitQuery'
+      responses:
+        '200':
+          description: Clients belonging to the tenant.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetAllClientsResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [Clients]
+      summary: Register a client
+      description: |
+        Returns the generated client secret. This is the only time the plaintext secret is
+        available — central keeps only an encrypted copy.
+      operationId: createClient
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateClientRequest'
+      responses:
+        '201':
+          description: Client registered.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateClientResponse'
+        '400':
+          description: |
+            The configuration was rejected: both logout URIs set at once, a consent URI that
+            is not an absolute HTTPS URL, or a registration flow auth cannot run.
+          content:
+            text/plain:
+              schema:
+                type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: A client with this id already exists.
+    put:
+      tags: [Clients]
+      summary: Update a client
+      operationId: updateClient
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateClientRequest'
+      responses:
+        '204':
+          description: Client updated.
+        '400':
+          description: The patch was rejected — see `POST /configuration/clients`.
+          content:
+            text/plain:
+              schema:
+                type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    delete:
+      tags: [Clients]
+      summary: Delete a client
+      operationId: deleteClient
+      parameters:
+        - $ref: '#/components/parameters/ClientIdQuery'
+      responses:
+        '204':
+          description: Client deleted.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /configuration/clients/rotate-secret:
+    post:
+      tags: [Clients]
+      summary: Rotate a client secret
+      description: |
+        Issues a new secret and keeps the previous one valid until
+        `DELETE /configuration/clients/previous-secret` retires it, so deployments can roll
+        over without downtime.
+      operationId: rotateClientSecret
+      parameters:
+        - $ref: '#/components/parameters/ClientIdQuery'
+      responses:
+        '200':
+          description: The new secret.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RotateSecretResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /configuration/clients/previous-secret:
+    delete:
+      tags: [Clients]
+      summary: Retire the previous client secret
+      operationId: deletePreviousClientSecret
+      parameters:
+        - $ref: '#/components/parameters/ClientIdQuery'
+      responses:
+        '204':
+          description: Previous secret removed.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /configuration/auth-request-presets:
+    get:
+      tags: [Authorization presets]
+      summary: List a client's presets
+      operationId: getClientPresets
+      parameters:
+        - $ref: '#/components/parameters/ClientIdQuery'
+      responses:
+        '200':
+          description: The client's presets.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/AuthorizationPresetResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [Authorization presets]
+      summary: Replace a client's presets
+      description: The submitted list becomes the client's complete set of presets.
+      operationId: saveClientPresets
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SaveAuthorizationPresetsRequest'
+      responses:
+        '204':
+          description: Presets saved.
+        '400':
+          description: The presets were rejected, e.g. two presets share an id.
+          content:
+            text/plain:
+              schema:
+                type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /configuration/resources:
+    get:
+      tags: [Resources]
+      summary: List a tenant's resources
+      operationId: getAllResources
+      parameters:
+        - $ref: '#/components/parameters/TenantIdQuery'
+        - $ref: '#/components/parameters/OffsetQuery'
+        - $ref: '#/components/parameters/LimitQuery'
+      responses:
+        '200':
+          description: Resources belonging to the tenant.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetAllResourcesResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [Resources]
+      summary: Register a resource
+      description: |
+        An internal resource is issued a secret that edge presents when calling it. The
+        plaintext is returned only here. Non-internal resources receive no secret.
+      operationId: createResource
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateResourceRequest'
+      responses:
+        '201':
+          description: Resource registered.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateResourceResponse'
+        '400':
+          description: The resource or one of its endpoints is invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResourceValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    put:
+      tags: [Resources]
+      summary: Update a resource
+      description: Endpoints listed in `deleteEndpoints` are removed before `createEndpoints` are added.
+      operationId: updateResource
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateResourceRequest'
+      responses:
+        '204':
+          description: Resource updated.
+        '400':
+          description: The resource or one of its endpoints is invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResourceValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    delete:
+      tags: [Resources]
+      summary: Delete a resource
+      operationId: deleteResource
+      parameters:
+        - $ref: '#/components/parameters/ResourceIdQuery'
+      responses:
+        '204':
+          description: Resource deleted.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /configuration/resources/rotate-secret:
+    post:
+      tags: [Resources]
+      summary: Rotate a resource secret
+      operationId: rotateResourceSecret
+      parameters:
+        - $ref: '#/components/parameters/ResourceIdQuery'
+      responses:
+        '200':
+          description: The new secret.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RotateResourceSecretResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: A rotation is already in progress — retire the previous secret first.
+
+  /configuration/resources/previous-secret:
+    delete:
+      tags: [Resources]
+      summary: Retire the previous resource secret
+      description: |
+        Edge keeps using the previous secret until it is retired here, so this call is what
+        completes a rotation.
+      operationId: deletePreviousResourceSecret
+      parameters:
+        - $ref: '#/components/parameters/ResourceIdQuery'
+      responses:
+        '204':
+          description: Previous secret removed.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /configuration/scopes:
+    get:
+      tags: [Scopes]
+      summary: List a tenant's scopes
+      operationId: getAllScopes
+      parameters:
+        - $ref: '#/components/parameters/TenantIdQuery'
+        - $ref: '#/components/parameters/OffsetQuery'
+        - $ref: '#/components/parameters/LimitQuery'
+      responses:
+        '200':
+          description: Scopes with their claims.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetAllScopesResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [Scopes]
+      summary: Create a scope
+      operationId: createScope
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateScopeRequest'
+      responses:
+        '201':
+          description: Scope created.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    put:
+      tags: [Scopes]
+      summary: Update a scope
+      description: Adds, updates and deletes claims and description translations in one patch.
+      operationId: updateScope
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateScopeRequest'
+      responses:
+        '204':
+          description: Scope updated.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    delete:
+      tags: [Scopes]
+      summary: Delete a scope
+      operationId: deleteScope
+      parameters:
+        - $ref: '#/components/parameters/TenantIdQuery'
+        - name: scopeId
+          in: query
+          required: true
+          schema:
+            $ref: '#/components/schemas/ScopeToken'
+      responses:
+        '204':
+          description: Scope deleted.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /configuration/permissions:
+    get:
+      tags: [Permissions]
+      summary: List a tenant's permissions
+      operationId: getAllPermissions
+      parameters:
+        - $ref: '#/components/parameters/TenantIdQuery'
+        - $ref: '#/components/parameters/OffsetQuery'
+        - $ref: '#/components/parameters/LimitQuery'
+      responses:
+        '200':
+          description: Permissions belonging to the tenant.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetAllPermissionsResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [Permissions]
+      summary: Create a permission
+      operationId: createPermission
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreatePermissionRequest'
+      responses:
+        '201':
+          description: Permission created.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    put:
+      tags: [Permissions]
+      summary: Update a permission
+      operationId: updatePermission
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdatePermissionRequest'
+      responses:
+        '204':
+          description: Permission updated.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    delete:
+      tags: [Permissions]
+      summary: Delete a permission
+      operationId: deletePermission
+      parameters:
+        - $ref: '#/components/parameters/TenantIdQuery'
+        - name: permission
+          in: query
+          required: true
+          schema:
+            $ref: '#/components/schemas/Permission'
+      responses:
+        '204':
+          description: Permission deleted.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /configuration/roles:
+    get:
+      tags: [Roles]
+      summary: List a tenant's roles
+      operationId: getAllRoles
+      parameters:
+        - $ref: '#/components/parameters/TenantIdQuery'
+        - $ref: '#/components/parameters/OffsetQuery'
+        - $ref: '#/components/parameters/LimitQuery'
+      responses:
+        '200':
+          description: Roles belonging to the tenant.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetAllRolesResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [Roles]
+      summary: Create a role
+      operationId: createRole
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateRoleRequest'
+      responses:
+        '201':
+          description: Role created.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    put:
+      tags: [Roles]
+      summary: Update a role
+      operationId: updateRole
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateRoleRequest'
+      responses:
+        '204':
+          description: Role updated.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    delete:
+      tags: [Roles]
+      summary: Delete a role
+      operationId: deleteRole
+      parameters:
+        - $ref: '#/components/parameters/TenantIdQuery'
+        - name: roleId
+          in: query
+          required: true
+          schema:
+            $ref: '#/components/schemas/RoleId'
+      responses:
+        '204':
+          description: Role deleted.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /configuration/authorization-detail-types:
+    get:
+      tags: [Authorization detail types]
+      summary: List a tenant's authorization detail types
+      operationId: getAllAuthorizationDetailTypes
+      parameters:
+        - $ref: '#/components/parameters/TenantIdQuery'
+        - $ref: '#/components/parameters/OffsetQuery'
+        - $ref: '#/components/parameters/LimitQuery'
+      responses:
+        '200':
+          description: Types belonging to the tenant.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetAllAuthorizationDetailTypesResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [Authorization detail types]
+      summary: Create an authorization detail type
+      operationId: createAuthorizationDetailType
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateAuthorizationDetailTypeRequest'
+      responses:
+        '201':
+          description: Type created.
+        '400':
+          description: The supplied JSON Schema is not valid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthorizationDetailTypeValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    put:
+      tags: [Authorization detail types]
+      summary: Update an authorization detail type
+      operationId: updateAuthorizationDetailType
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateAuthorizationDetailTypeRequest'
+      responses:
+        '204':
+          description: Type updated.
+        '400':
+          description: The supplied JSON Schema is not valid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthorizationDetailTypeValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    delete:
+      tags: [Authorization detail types]
+      summary: Delete an authorization detail type
+      operationId: deleteAuthorizationDetailType
+      parameters:
+        - $ref: '#/components/parameters/TenantIdQuery'
+        - name: type
+          in: query
+          required: true
+          schema:
+            $ref: '#/components/schemas/AuthorizationDetailType'
+      responses:
+        '204':
+          description: Type deleted.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /users:
+    get:
+      tags: [Users]
+      summary: Find users
+      description: |
+        Looks up a user by exactly one identifier. When several are supplied the first of
+        `id`, `email`, `phone`, `login` wins; when none are supplied the request is rejected.
+      operationId: findUsers
+      parameters:
+        - name: id
+          in: query
+          schema:
+            $ref: '#/components/schemas/UserId'
+        - name: email
+          in: query
+          schema:
+            $ref: '#/components/schemas/Email'
+        - name: phone
+          in: query
+          schema:
+            $ref: '#/components/schemas/Phone'
+        - name: login
+          in: query
+          schema:
+            $ref: '#/components/schemas/Login'
+      responses:
+        '200':
+          description: Matching users — empty when the identifier is unknown.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserSearchResponse'
+        '400':
+          description: No identifier was supplied.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [Users]
+      summary: Create a user
+      description: |
+        At least one of `email`, `phone` or `login` should be present. This is not currently
+        enforced server-side: a request with none of them succeeds and creates a user with no
+        identifier, which `GET /users` can never find.
+      operationId: createUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateUserRequest'
+      responses:
+        '201':
+          description: User created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateUserResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: One of the identifiers is already taken.
+    patch:
+      tags: [Users]
+      summary: Patch a user's identifiers
+      description: |
+        Applied asynchronously through the user outbox, so the change is not yet visible to
+        `GET /users` when this returns.
+      operationId: patchUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchUserRequest'
+      responses:
+        '202':
+          description: Patch accepted.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /users/claims:
+    patch:
+      tags: [Users]
+      summary: Patch a user's claims
+      description: Members present in `claims` are merged over the stored claims; `null` clears a member.
+      operationId: patchUserClaims
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchUserClaimsRequest'
+      responses:
+        '202':
+          description: Patch accepted.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /users/roles:
+    get:
+      tags: [Users]
+      summary: List a user's roles in a tenant
+      operationId: getUserRoles
+      parameters:
+        - name: id
+          in: query
+          required: true
+          schema:
+            $ref: '#/components/schemas/UserId'
+        - $ref: '#/components/parameters/TenantIdQuery'
+      responses:
+        '200':
+          description: The roles granted to the user in that tenant.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserRolesResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    patch:
+      tags: [Users]
+      summary: Grant and revoke a user's roles
+      operationId: patchUserRoles
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateUserRolesRequest'
+      responses:
+        '202':
+          description: Patch accepted.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /users/sessions:
+    get:
+      tags: [Users]
+      summary: List a user's sessions
+      operationId: getUserSessions
+      parameters:
+        - name: id
+          in: query
+          required: true
+          schema:
+            $ref: '#/components/schemas/UserId'
+      responses:
+        '200':
+          description: Active sessions, each with the clients entered during it.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/SessionResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    delete:
+      tags: [Users]
+      summary: Invalidate a user's sessions
+      description: Logs the user out everywhere; subsequent authorization requires re-authentication.
+      operationId: invalidateUserSessions
+      parameters:
+        - name: userId
+          in: query
+          required: true
+          schema:
+            $ref: '#/components/schemas/UserId'
+      responses:
+        '204':
+          description: Sessions invalidated.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /users/limits/reset:
+    post:
+      tags: [Users]
+      summary: Reset a user's submission limits
+      description: Clears OTP, password and passkey rate-limit counters and any active ban.
+      operationId: resetUserLimits
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResetUserLimitsRequest'
+      responses:
+        '202':
+          description: Reset accepted.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /users/passkeys:
+    get:
+      tags: [Users]
+      summary: List a user's passkeys
+      operationId: listUserPasskeys
+      parameters:
+        - name: id
+          in: query
+          required: true
+          schema:
+            $ref: '#/components/schemas/UserId'
+      responses:
+        '200':
+          description: The user's enrolled passkeys.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListPasskeysResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    patch:
+      tags: [Users]
+      summary: Rename a passkey
+      operationId: renameUserPasskey
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RenamePasskeyRequest'
+      responses:
+        '202':
+          description: Rename accepted.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    delete:
+      tags: [Users]
+      summary: Delete a passkey
+      operationId: deleteUserPasskey
+      parameters:
+        - name: id
+          in: query
+          required: true
+          schema:
+            $ref: '#/components/schemas/UserId'
+        - name: credentialId
+          in: query
+          required: true
+          description: The WebAuthn credential id, as returned by `GET /users/passkeys`.
+          schema:
+            type: string
+      responses:
+        '202':
+          description: Deletion accepted.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /users/password/reset:
+    post:
+      tags: [Users]
+      summary: Issue a temporary password
+      description: |
+        Delivers a temporary password over the requested channel. The `show` channel returns
+        the plaintext to the caller instead of delivering it and is rejected in production.
+        Omitting `channel` still creates the temporary password but delivers it nowhere and
+        returns nothing — always pass a channel, or the request silently locks the user out.
+      operationId: resetUserPassword
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResetPasswordRequest'
+      responses:
+        '200':
+          description: The temporary password, returned only for the `show` channel.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResetPasswordResponse'
+        '204':
+          description: The password was delivered over `email` or `sms`.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: The `show` channel was requested in production.
+
+  /users/password/set:
+    post:
+      tags: [Users]
+      summary: Set a user's password
+      description: A test affordance — returns `404 Not Found` in production.
+      operationId: setUserPassword
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetPasswordRequest'
+      responses:
+        '204':
+          description: Password set.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: The deployment runs in production.
+
+  # ───────────────────────────── Challenges ─────────────────────────────
+  /configuration/challenges/otp-templates:
+    get:
+      tags: [Challenges]
+      summary: List a tenant's OTP templates
+      operationId: getOtpTemplates
+      parameters:
+        - $ref: '#/components/parameters/TenantIdQuery'
+      responses:
+        '200':
+          description: Templates belonging to the tenant.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetOtpTemplatesResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    put:
+      tags: [Challenges]
+      summary: Create or replace an OTP template
+      description: Keyed by `id`, `tenantId`, `purpose` and `channel` together.
+      operationId: upsertOtpTemplate
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpsertOtpTemplateRequest'
+      responses:
+        '204':
+          description: Template stored.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    delete:
+      tags: [Challenges]
+      summary: Delete an OTP template
+      description: |
+        The template is identified by a request body rather than query parameters, because its
+        key is composite.
+      operationId: deleteOtpTemplate
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeleteOtpTemplateRequest'
+      responses:
+        '204':
+          description: Template deleted.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /configuration/challenges/challenge-settings:
+    get:
+      tags: [Challenges]
+      summary: Get a tenant's challenge settings
+      operationId: getChallengeSettings
+      parameters:
+        - $ref: '#/components/parameters/TenantIdQuery'
+      responses:
+        '200':
+          description: The settings, or `null` when the tenant has none.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetChallengeSettingsResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    put:
+      tags: [Challenges]
+      summary: Create or replace a tenant's challenge settings
+      description: |
+        Omitted TTL members keep their stored value, or fall back to the built-in default when
+        the tenant has no settings yet.
+      operationId: upsertChallengeSettings
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpsertChallengeSettingsRequest'
+      responses:
+        '204':
+          description: Settings stored.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /configuration/forms:
+    get:
+      tags: [Forms]
+      summary: List form versions
+      operationId: getAllForms
+      responses:
+        '200':
+          description: Every stored version of every form.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetAllFormsResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    put:
+      tags: [Forms]
+      summary: Store a new form version
+      description: |
+        Creates a new version without activating it. Activate it separately with
+        `PUT /configuration/forms/active`.
+      operationId: updateForm
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateFormRequest'
+      responses:
+        '204':
+          description: Version stored.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /configuration/forms/active:
+    put:
+      tags: [Forms]
+      summary: Activate a form version
+      description: The activated version is the one auth serves; activating another rolls back or forward.
+      operationId: setActiveFormVersion
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetActiveVersionRequest'
+      responses:
+        '204':
+          description: Version activated.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /configuration/locales:
+    get:
+      tags: [Locales]
+      summary: List locales
+      operationId: getLocales
+      responses:
+        '200':
+          description: Every locale, active or not.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetLocalesResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    put:
+      tags: [Locales]
+      summary: Add and remove locales
+      description: |
+        A locale can only be activated once every form, scope and OTP template has content for
+        it; otherwise the missing keys are reported.
+      operationId: updateLocales
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateLocalesRequest'
+      responses:
+        '204':
+          description: Locales updated.
+        '400':
+          description: A locale being activated has incomplete localized content.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LocaleActivationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /configuration/locales/default:
+    put:
+      tags: [Locales]
+      summary: Set the default locale
+      description: The default is used when the authorization request asks for no `ui_locales`.
+      operationId: setDefaultLocale
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetDefaultLocaleRequest'
+      responses:
+        '204':
+          description: Default set.
+        '400':
+          description: The locale is unknown or not active.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LocaleActivationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /configuration/themes:
+    get:
+      tags: [Themes]
+      summary: List themes available to a tenant
+      operationId: getAllThemes
+      parameters:
+        - $ref: '#/components/parameters/TenantIdQuery'
+      responses:
+        '200':
+          description: Themes owned by the tenant plus the global ones.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetAllThemesResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [Themes]
+      summary: Create a theme
+      description: A theme without `tenantId` is global and available to every tenant.
+      operationId: createTheme
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateThemeRequest'
+      responses:
+        '201':
+          description: Theme created.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    put:
+      tags: [Themes]
+      summary: Update a theme's CSS
+      operationId: updateTheme
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateThemeRequest'
+      responses:
+        '204':
+          description: Theme updated.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    delete:
+      tags: [Themes]
+      summary: Delete a theme
+      operationId: deleteTheme
+      parameters:
+        - name: id
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Theme deleted.
+        '400':
+          description: The theme id is invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: One or more clients still use this theme.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
+
+  /configuration/jwks:
+    get:
+      tags: [JWKS]
+      summary: Get the central JWKS
+      operationId: getJwks
+      responses:
+        '200':
+          description: The key set.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Jwks'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [JWKS]
+      summary: Add a JWK
+      description: The body is a raw JWK object; its `kid` becomes the key id.
+      operationId: createJwk
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Jwk'
+      responses:
+        '201':
+          description: Key added.
+        '400':
+          description: The body is not valid JSON, or has no `kid` member.
+          content:
+            text/plain:
+              schema:
+                type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    put:
+      tags: [JWKS]
+      summary: Replace a JWK
+      description: Replaces the stored key whose `kid` matches the one in the body.
+      operationId: updateJwk
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Jwk'
+      responses:
+        '204':
+          description: Key replaced.
+        '400':
+          description: The body is not valid JSON, or has no `kid` member.
+          content:
+            text/plain:
+              schema:
+                type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    delete:
+      tags: [JWKS]
+      summary: Delete a JWK
+      operationId: deleteJwk
+      parameters:
+        - name: kid
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Key deleted.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /configuration/server-metadata:
+    get:
+      tags: [Server metadata]
+      summary: Get the metadata overrides
+      operationId: getServerMetadata
+      responses:
+        '200':
+          description: The stored overrides, or `null` when none are configured.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - type: object
+                    additionalProperties: true
+                  - type: 'null'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [Server metadata]
+      summary: Replace the metadata overrides
+      description: |
+        The object is merged over the RFC 8414 metadata auth computes, so it can advertise
+        deployment-specific members or override computed ones.
+      operationId: upsertServerMetadata
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        '204':
+          description: Overrides stored.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /configuration/system-settings:
+    get:
+      tags: [System settings]
+      summary: Get the system settings
+      operationId: getSystemSettings
+      responses:
+        '200':
+          description: The stored settings, or the built-in defaults.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SystemSettingsRecord'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    put:
+      tags: [System settings]
+      summary: Replace the system settings
+      operationId: upsertSystemSettings
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SystemSettingsRecord'
+      responses:
+        '204':
+          description: Settings stored.
+        '400':
+          description: The password policy is not usable, e.g. `passwordRegex` does not compile.
+          content:
+            text/plain:
+              schema:
+                type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /configuration/edges:
+    get:
+      tags: [Edges]
+      summary: List edges
+      operationId: getAllEdges
+      responses:
+        '200':
+          description: Registered edges and whether each still holds an old key.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetAllEdgesResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [Edges]
+      summary: Register an edge
+      description: |
+        Central generates the key pair, keeps the public half and returns the private half
+        once. The edge signs its `/sync` requests with it.
+      operationId: registerEdge
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterEdgeRequest'
+      responses:
+        '201':
+          description: Edge registered.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServiceKeyResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    delete:
+      tags: [Edges]
+      summary: Delete an edge
+      operationId: deleteEdge
+      parameters:
+        - $ref: '#/components/parameters/EdgeIdQuery'
+      responses:
+        '204':
+          description: Edge deleted.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /configuration/edges/rotate-key:
+    post:
+      tags: [Edges]
+      summary: Rotate an edge key
+      description: |
+        The previous public key keeps verifying tokens until
+        `DELETE /configuration/edges/old-key` retires it, so the edge can be redeployed
+        without a gap.
+      operationId: rotateEdgeKey
+      parameters:
+        - $ref: '#/components/parameters/EdgeIdQuery'
+      responses:
+        '200':
+          description: The new key pair.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServiceKeyResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /configuration/edges/old-key:
+    delete:
+      tags: [Edges]
+      summary: Retire an edge's old key
+      operationId: deleteOldEdgeKey
+      parameters:
+        - $ref: '#/components/parameters/EdgeIdQuery'
+      responses:
+        '204':
+          description: Old key removed.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # ─────────────────────────────── Service ───────────────────────────────
+  /service/users/outbox/flush:
+    post:
+      tags: [Service]
+      summary: Flush the user outbox
+      description: |
+        Drains pending user events to auth synchronously instead of waiting for the poll
+        interval. Returns `404 Not Found` in production.
+      operationId: flushUserOutbox
+      responses:
+        '200':
+          description: Outbox flushed.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: The deployment runs in production.
+
+  /service/configuration/sync:
+    post:
+      tags: [Service]
+      summary: Force a configuration sync
+      description: |
+        Asks auth to reload its configuration caches immediately. Returns `404 Not Found` in
+        production.
+      operationId: forceConfigurationSync
+      responses:
+        '200':
+          description: Sync triggered.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: The deployment runs in production.
+
+  /service/users:
+    delete:
+      tags: [Service]
+      summary: Delete a user
+      description: |
+        Hard-deletes a user and their credentials. Exists for test cleanup and returns
+        `404 Not Found` in production.
+      operationId: deleteUser
+      parameters:
+        - name: id
+          in: query
+          required: true
+          schema:
+            $ref: '#/components/schemas/UserId'
+      responses:
+        '204':
+          description: User deleted.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: The deployment runs in production.
+
+components:
+  securitySchemes:
+    centralBasic:
+      type: http
+      scheme: basic
+      description: |
+        HTTP Basic with the username `central` and the base64url-encoded central resource
+        secret as the password.
+
+  responses:
+    Unauthorized:
+      description: The credentials are missing, malformed or not accepted.
+
+  parameters:
+    TenantIdQuery:
+      name: tenantId
+      in: query
+      required: true
+      schema:
+        $ref: '#/components/schemas/TenantId'
+    ClientIdQuery:
+      name: clientId
+      in: query
+      required: true
+      schema:
+        $ref: '#/components/schemas/ClientId'
+    ResourceIdQuery:
+      name: resourceId
+      in: query
+      required: true
+      schema:
+        $ref: '#/components/schemas/ResourceId'
+    EdgeIdQuery:
+      name: edgeId
+      in: query
+      required: true
+      schema:
+        $ref: '#/components/schemas/EdgeId'
+    OffsetQuery:
+      name: offset
+      in: query
+      description: Number of records to skip. Defaults to `0`.
+      schema:
+        type: integer
+        minimum: 0
+        default: 0
+    LimitQuery:
+      name: limit
+      in: query
+      description: Maximum number of records to return. Unbounded when omitted.
+      schema:
+        type: integer
+        minimum: 1
+
+  schemas:
+    # ───────────────────────── Identifier types ─────────────────────────
+    TenantId:
+      type: string
+      pattern: '^[a-z][a-z0-9-]*$'
+      description: Lowercase letters, digits and hyphens, starting with a letter.
+      examples: [acme]
+    ClientId:
+      type: string
+      pattern: '^[a-z][a-z0-9-]*$'
+      examples: [web-portal]
+    ResourceId:
+      type: string
+      pattern: '^[a-z][a-z0-9-]*$'
+      examples: [billing-api]
+    RoleId:
+      type: string
+      pattern: '^[a-z][a-z0-9-]*$'
+      examples: [admin]
+    EdgeId:
+      type: string
+      pattern: '^[a-z][a-z0-9-]*$'
+      examples: [eu-central]
+    ScopeToken:
+      type: string
+      pattern: '^[a-z][a-z0-9_]*$'
+      examples: [profile]
+    Claim:
+      type: string
+      pattern: '^[a-z][a-z0-9_]*$'
+      examples: [given_name]
+    Permission:
+      type: string
+      pattern: '^[a-z][a-z0-9_]*([.:][a-z][a-z0-9_]*)*$'
+      description: Segments of lowercase letters, digits and underscores, separated by `.` or `:`.
+      examples: ['billing:invoice.read']
+    AuthorizationDetailType:
+      type: string
+      pattern: '^[a-z][a-z0-9_]*$'
+      description: The RFC 9396 `type` member of an authorization detail object.
+      examples: [payment_initiation]
+    ResourceEndpointId:
+      type: string
+      format: uuid
+      description: A UUIDv7 chosen by the caller when the endpoint is created.
+    FormId:
+      type: string
+      examples: [login]
+    PresetId:
+      type: string
+      examples: [default]
+    UserId:
+      type: string
+      format: uuid
+      description: A UUIDv7 assigned by central.
+    Email:
+      type: string
+      format: email
+    Phone:
+      type: string
+      pattern: '^\+?\d{9,15}$'
+      description: A number that parses and validates as an international phone number.
+      examples: ['+77001234567']
+    Login:
+      type: string
+      description: An opaque login handle, when the deployment authenticates by login.
+    RedirectUri:
+      type: string
+      format: uri
+      description: |
+        An absolute URI with no fragment. `http` is allowed only for `localhost` and
+        `127.0.0.1`; any other scheme, including custom native-app schemes, is accepted.
+      examples: ['https://app.example.com/callback']
+    ResourceUri:
+      type: string
+      format: uri
+      description: |
+        The absolute origin identifying a protected resource — no path, query or fragment.
+        The `resource://` scheme is reserved.
+      examples: ['https://billing.example.com']
+    Secret:
+      type: string
+      description: A base64url-encoded secret. Returned only at creation or rotation time.
+    LocalizedText:
+      type: object
+      additionalProperties:
+        type: string
+      description: BCP 47 language tag to text.
+      examples:
+        - en: Sign in
+          ru: Вход
+    Message:
+      type: object
+      properties:
+        message:
+          type: string
+      required: [message]
+    Jwk:
+      type: object
+      additionalProperties: true
+      description: An RFC 7517 JSON Web Key. Must contain a `kid` member.
+      required: [kid]
+      properties:
+        kid:
+          type: string
+    Jwks:
+      type: object
+      description: An RFC 7517 JSON Web Key Set.
+      properties:
+        keys:
+          type: array
+          items:
+            $ref: '#/components/schemas/Jwk'
+      required: [keys]
+
+    # ───────────────────────────── Patches ─────────────────────────────
+    PatchDescription:
+      type: object
+      description: Translations to add or overwrite, and language tags to drop.
+      properties:
+        add:
+          $ref: '#/components/schemas/LocalizedText'
+        delete:
+          type: array
+          uniqueItems: true
+          items:
+            type: string
+      required: [add, delete]
+    PatchPermissions:
+      type: object
+      properties:
+        add:
+          type: array
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/Permission'
+        remove:
+          type: array
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/Permission'
+      required: [add, remove]
+    PatchClientRedirectUris:
+      type: object
+      properties:
+        add:
+          type: array
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/RedirectUri'
+        remove:
+          type: array
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/RedirectUri'
+      required: [add, remove]
+    PatchClientScope:
+      type: object
+      properties:
+        add:
+          type: array
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/ScopeToken'
+        remove:
+          type: array
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/ScopeToken'
+      required: [add, remove]
+
+    # ───────────────────────────── Tenants ─────────────────────────────
+    TenantResponse:
+      type: object
+      properties:
+        id:
+          $ref: '#/components/schemas/TenantId'
+        description:
+          type: string
+        edgeId:
+          description: |
+            The edge this tenant is bound to. Sync is edge-scoped: an edge only receives
+            tenants whose `edgeId` matches its own, so `null` means the tenant is not
+            assigned to any edge yet and no edge will serve it.
+          oneOf:
+            - $ref: '#/components/schemas/EdgeId'
+            - type: 'null'
+      required: [id, description]
+    GetAllTenantsResponse:
+      type: object
+      properties:
+        tenants:
+          type: array
+          items:
+            $ref: '#/components/schemas/TenantResponse'
+      required: [tenants]
+    CreateTenantRequest:
+      type: object
+      properties:
+        id:
+          $ref: '#/components/schemas/TenantId'
+        description:
+          type: string
+        edgeId:
+          oneOf:
+            - $ref: '#/components/schemas/EdgeId'
+            - type: 'null'
+      required: [id, description]
+    UpdateTenantRequest:
+      type: object
+      properties:
+        id:
+          $ref: '#/components/schemas/TenantId'
+        description:
+          type: string
+        edgeId:
+          oneOf:
+            - $ref: '#/components/schemas/EdgeId'
+            - type: 'null'
+      required: [id, description]
+
+    # ───────────────────────── Auth & registration flows ─────────────────────────
+    PrimaryCredential:
+      type: string
+      enum: [email, phone, login]
+    RegistrationCredential:
+      type: string
+      enum: [email, phone]
+    OtpType:
+      type: string
+      enum: [sms, email]
+    AuthFactorType:
+      type: string
+      enum: [otp, password, passkeyEnroll]
+    PassedAuthFactor:
+      type: string
+      enum: [otp, password, passkey]
+    AuthFactor:
+      type: object
+      properties:
+        type:
+          $ref: '#/components/schemas/AuthFactorType'
+        required:
+          type: boolean
+      required: [type, required]
+    PrimaryAuthFlow:
+      type: object
+      properties:
+        credentials:
+          type: array
+          items:
+            $ref: '#/components/schemas/PrimaryCredential'
+        inlinePassword:
+          type: boolean
+          description: Whether the password field is shown next to the credential field.
+        factors:
+          type: array
+          items:
+            $ref: '#/components/schemas/AuthFactor'
+      required: [credentials, inlinePassword, factors]
+    PasskeyAuthFlow:
+      type: object
+      properties:
+        factors:
+          type: array
+          items:
+            $ref: '#/components/schemas/AuthFactor'
+      required: [factors]
+    AuthFlow:
+      type: object
+      description: How a client's users authenticate.
+      properties:
+        primary:
+          $ref: '#/components/schemas/PrimaryAuthFlow'
+        passkey:
+          oneOf:
+            - $ref: '#/components/schemas/PasskeyAuthFlow'
+            - type: 'null'
+        equivalents:
+          type: object
+          description: |
+            Factors that satisfy another factor. Keyed by the required factor, valued by the
+            set of factors accepted in its place.
+          additionalProperties:
+            type: array
+            uniqueItems: true
+            items:
+              $ref: '#/components/schemas/PassedAuthFactor'
+        otpType:
+          $ref: '#/components/schemas/OtpType'
+      required: [primary, equivalents, otpType]
+    RegistrationStep:
+      type: object
+      description: A step the user passes to create an account.
+      discriminator:
+        propertyName: type
+      oneOf:
+        - $ref: '#/components/schemas/RegistrationStepOtp'
+        - $ref: '#/components/schemas/RegistrationStepSetPassword'
+        - $ref: '#/components/schemas/RegistrationStepPasskeyEnroll'
+    RegistrationStepOtp:
+      type: object
+      title: otp
+      description: Proves ownership of the entry credential with a one-time code.
+      properties:
+        type:
+          type: string
+          const: otp
+      required: [type]
+    RegistrationStepSetPassword:
+      type: object
+      title: setPassword
+      description: Asks the new user to choose a password.
+      properties:
+        type:
+          type: string
+          const: setPassword
+      required: [type]
+    RegistrationStepPasskeyEnroll:
+      type: object
+      title: passkeyEnroll
+      description: Asks the new user to enroll a passkey.
+      properties:
+        type:
+          type: string
+          const: passkeyEnroll
+      required: [type]
+    RegistrationFlow:
+      type: object
+      description: |
+        Self-service account creation. Allowed only alongside an `authFlow` whose primary
+        credentials are phone or email. OTP must be the first step; the account is created
+        once OTP succeeds, before any password or passkey step.
+      properties:
+        credential:
+          $ref: '#/components/schemas/RegistrationCredential'
+        steps:
+          type: array
+          items:
+            $ref: '#/components/schemas/RegistrationStep'
+        roleIds:
+          type: array
+          uniqueItems: true
+          description: Roles granted to the account on creation.
+          items:
+            $ref: '#/components/schemas/RoleId'
+      required: [credential, steps, roleIds]
+    ConsentFlowDto:
+      type: object
+      description: Whether and how the consent screen is shown before a grant is issued.
+      properties:
+        allowPartial:
+          type: boolean
+          description: |
+            Whether the user may deselect optional scopes. `openid` and `offline_access` are
+            never deselectable.
+        rememberDuration:
+          description: |
+            Seconds a granted consent is reused without re-prompting. `null` remembers it
+            until revoked.
+          oneOf:
+            - type: integer
+              format: int64
+              minimum: 0
+            - type: 'null'
+      required: [allowPartial]
+    OAuthClientResponse:
+      type: object
+      properties:
+        id:
+          $ref: '#/components/schemas/ClientId'
+        clientName:
+          $ref: '#/components/schemas/LocalizedText'
+        redirectUris:
+          type: array
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/RedirectUri'
+        scope:
+          type: array
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/ScopeToken'
+        permissions:
+          type: array
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/Permission'
+        secretRotation:
+          type: boolean
+          description: Whether a previous secret is still accepted.
+        accessTokenTtl:
+          type: integer
+          format: int64
+          description: Seconds.
+        refreshTokenTtl:
+          type: integer
+          format: int64
+          description: Seconds.
+        theme:
+          type: string
+        authFlow:
+          oneOf:
+            - $ref: '#/components/schemas/AuthFlow'
+            - type: 'null'
+        registrationFlow:
+          oneOf:
+            - $ref: '#/components/schemas/RegistrationFlow'
+            - type: 'null'
+        otpTemplateId:
+          type: string
+        frontChannelLogoutUri:
+          type: [string, 'null']
+        frontChannelLogoutSessionRequired:
+          type: boolean
+        backChannelLogoutUri:
+          type: [string, 'null']
+        logoUri:
+          type: [string, 'null']
+        policyUri:
+          type: [string, 'null']
+        tosUri:
+          type: [string, 'null']
+        consentFlow:
+          oneOf:
+            - $ref: '#/components/schemas/ConsentFlowDto'
+            - type: 'null'
+      required:
+        - id
+        - clientName
+        - redirectUris
+        - scope
+        - permissions
+        - secretRotation
+        - accessTokenTtl
+        - refreshTokenTtl
+        - theme
+        - otpTemplateId
+        - frontChannelLogoutSessionRequired
+    GetAllClientsResponse:
+      type: object
+      properties:
+        clients:
+          type: array
+          items:
+            $ref: '#/components/schemas/OAuthClientResponse'
+      required: [clients]
+    CreateClientRequest:
+      type: object
+      description: |
+        A client may configure `frontChannelLogoutUri` or `backChannelLogoutUri`, never both.
+        `logoUri`, `policyUri` and `tosUri` must be absolute HTTPS URLs.
+      properties:
+        tenantId:
+          $ref: '#/components/schemas/TenantId'
+        id:
+          $ref: '#/components/schemas/ClientId'
+        clientName:
+          $ref: '#/components/schemas/LocalizedText'
+        redirectUris:
+          type: array
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/RedirectUri'
+        allowedScopes:
+          type: array
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/ScopeToken'
+        permissions:
+          type: array
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/Permission'
+        accessTokenTtl:
+          type: integer
+          description: Seconds.
+        refreshTokenTtl:
+          type: [integer, 'null']
+          description: Seconds. `null` or omitted uses the default of 7776000 (90 days).
+        theme:
+          type: string
+        authFlow:
+          oneOf:
+            - $ref: '#/components/schemas/AuthFlow'
+            - type: 'null'
+        registrationFlow:
+          oneOf:
+            - $ref: '#/components/schemas/RegistrationFlow'
+            - type: 'null'
+        otpTemplateId:
+          type: string
+        frontChannelLogoutUri:
+          type: [string, 'null']
+        frontChannelLogoutSessionRequired:
+          type: boolean
+        backChannelLogoutUri:
+          type: [string, 'null']
+        logoUri:
+          type: [string, 'null']
+        policyUri:
+          type: [string, 'null']
+        tosUri:
+          type: [string, 'null']
+        consentFlow:
+          oneOf:
+            - $ref: '#/components/schemas/ConsentFlowDto'
+            - type: 'null'
+      required:
+        - tenantId
+        - id
+        - clientName
+        - redirectUris
+        - allowedScopes
+        - permissions
+        - accessTokenTtl
+        - theme
+        - otpTemplateId
+        - frontChannelLogoutSessionRequired
+    UpdateClientRequest:
+      type: object
+      description: |
+        `redirectUris`, `scope` and `permissions` are add/remove patches (see their schemas).
+        `authFlow`, `registrationFlow`, `frontChannelLogoutUri`, `backChannelLogoutUri`,
+        `logoUri`, `policyUri`, `tosUri` and `consentFlow` follow merge-patch semantics: absent
+        leaves the value unchanged, `null` clears it, a value sets it.
+
+        Every other member is a plain optional overwrite: absent *or* `null` both leave the
+        current value unchanged, and a value sets it. There is no way to clear `clientName`,
+        `accessTokenTtl`, `refreshTokenTtl`, `theme`, `otpTemplateId` or
+        `frontChannelLogoutSessionRequired` through this endpoint.
+      properties:
+        clientId:
+          $ref: '#/components/schemas/ClientId'
+        clientName:
+          oneOf:
+            - $ref: '#/components/schemas/LocalizedText'
+            - type: 'null'
+        redirectUris:
+          $ref: '#/components/schemas/PatchClientRedirectUris'
+        scope:
+          $ref: '#/components/schemas/PatchClientScope'
+        permissions:
+          $ref: '#/components/schemas/PatchPermissions'
+        accessTokenTtl:
+          type: [integer, 'null']
+          format: int64
+          description: Seconds.
+        refreshTokenTtl:
+          type: [integer, 'null']
+          format: int64
+          description: Seconds.
+        theme:
+          type: [string, 'null']
+        authFlow:
+          oneOf:
+            - $ref: '#/components/schemas/AuthFlow'
+            - type: 'null'
+        registrationFlow:
+          oneOf:
+            - $ref: '#/components/schemas/RegistrationFlow'
+            - type: 'null'
+        otpTemplateId:
+          type: [string, 'null']
+        frontChannelLogoutUri:
+          type: [string, 'null']
+        frontChannelLogoutSessionRequired:
+          type: [boolean, 'null']
+        backChannelLogoutUri:
+          type: [string, 'null']
+        logoUri:
+          type: [string, 'null']
+        policyUri:
+          type: [string, 'null']
+        tosUri:
+          type: [string, 'null']
+        consentFlow:
+          oneOf:
+            - $ref: '#/components/schemas/ConsentFlowDto'
+            - type: 'null'
+      required: [clientId, redirectUris, scope, permissions]
+    CreateClientResponse:
+      type: object
+      properties:
+        secret:
+          $ref: '#/components/schemas/Secret'
+      required: [secret]
+    RotateSecretResponse:
+      type: object
+      properties:
+        secret:
+          $ref: '#/components/schemas/Secret'
+      required: [secret]
+    ResponseType:
+      type: string
+      enum: [code, 'code id_token']
+    AuthorizationPresetInput:
+      type: object
+      properties:
+        id:
+          $ref: '#/components/schemas/PresetId'
+        description:
+          type: string
+        redirectUri:
+          $ref: '#/components/schemas/RedirectUri'
+        postLoginRedirectUri:
+          $ref: '#/components/schemas/RedirectUri'
+        postLogoutRedirectUri:
+          oneOf:
+            - $ref: '#/components/schemas/RedirectUri'
+            - type: 'null'
+        scope:
+          type: array
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/ScopeToken'
+        responseType:
+          $ref: '#/components/schemas/ResponseType'
+        uiLocales:
+          type: [array, 'null']
+          items:
+            type: string
+        customParameters:
+          type: object
+          description: Extra authorization request parameters, each with its list of values.
+          additionalProperties:
+            type: array
+            items:
+              type: string
+        cookieDomain:
+          type: [string, 'null']
+        cookiePath:
+          type: [string, 'null']
+      required:
+        - id
+        - description
+        - redirectUri
+        - postLoginRedirectUri
+        - scope
+        - responseType
+        - customParameters
+    SaveAuthorizationPresetsRequest:
+      type: object
+      properties:
+        clientId:
+          $ref: '#/components/schemas/ClientId'
+        presets:
+          type: array
+          items:
+            $ref: '#/components/schemas/AuthorizationPresetInput'
+      required: [clientId, presets]
+    AuthorizationPresetResponse:
+      allOf:
+        - $ref: '#/components/schemas/AuthorizationPresetInput'
+        - type: object
+          properties:
+            clientId:
+              $ref: '#/components/schemas/ClientId'
+          required: [clientId]
+    InjectTarget:
+      type: string
+      enum: [header, query, body]
+    InjectRule:
+      type: object
+      description: A value computed by a CEL expression and injected into the upstream request.
+      properties:
+        target:
+          $ref: '#/components/schemas/InjectTarget'
+        name:
+          type: string
+        expression:
+          type: string
+          description: A CEL expression evaluated against the token and request context.
+      required: [target, name, expression]
+    ResourceEndpointResponse:
+      type: object
+      properties:
+        id:
+          $ref: '#/components/schemas/ResourceEndpointId'
+        method:
+          type: string
+        path:
+          type: string
+          description: 'Path template, e.g. `/invoices/{invoiceId}`.'
+        fetchUserInfo:
+          type: boolean
+          description: Whether edge resolves the user's claims before calling the endpoint.
+        allow:
+          type: [string, 'null']
+          description: CEL expression that must hold for the request to be forwarded.
+        inject:
+          type: array
+          items:
+            $ref: '#/components/schemas/InjectRule'
+        stepUpCondition:
+          type: [string, 'null']
+          description: CEL expression that, when true, demands RFC 9470 step-up authentication.
+        stepUpAcr:
+          type: [string, 'null']
+          description: The `acr` value required when `stepUpCondition` holds.
+        maxAge:
+          type: [integer, 'null']
+          description: Maximum authentication age, in seconds, accepted for this endpoint.
+      required: [id, method, path, fetchUserInfo, inject]
+    ResourceResponse:
+      type: object
+      properties:
+        resourceId:
+          $ref: '#/components/schemas/ResourceId'
+        resource:
+          $ref: '#/components/schemas/ResourceUri'
+        audience:
+          type: array
+          description: Clients allowed to request tokens for this resource.
+          items:
+            $ref: '#/components/schemas/ClientId'
+        endpoints:
+          type: array
+          items:
+            $ref: '#/components/schemas/ResourceEndpointResponse'
+        internal:
+          type: boolean
+          description: Internal resources are Versola's own services and are issued a secret.
+        secretRotation:
+          type: boolean
+      required: [resourceId, resource, audience, endpoints, internal, secretRotation]
+    GetAllResourcesResponse:
+      type: object
+      properties:
+        resources:
+          type: array
+          items:
+            $ref: '#/components/schemas/ResourceResponse'
+      required: [resources]
+    CreateResourceEndpointRequest:
+      type: object
+      properties:
+        id:
+          $ref: '#/components/schemas/ResourceEndpointId'
+        path:
+          type: string
+        method:
+          type: string
+        fetchUserInfo:
+          type: boolean
+        allow:
+          type: [string, 'null']
+        inject:
+          type: array
+          items:
+            $ref: '#/components/schemas/InjectRule'
+        stepUpCondition:
+          type: [string, 'null']
+        stepUpAcr:
+          type: [string, 'null']
+        maxAge:
+          type: [integer, 'null']
+      required: [id, path, method, fetchUserInfo, inject]
+    CreateResourceRequest:
+      type: object
+      properties:
+        tenantId:
+          $ref: '#/components/schemas/TenantId'
+        resourceId:
+          $ref: '#/components/schemas/ResourceId'
+        resource:
+          $ref: '#/components/schemas/ResourceUri'
+        audience:
+          type: array
+          items:
+            $ref: '#/components/schemas/ClientId'
+        endpoints:
+          type: array
+          items:
+            $ref: '#/components/schemas/CreateResourceEndpointRequest'
+        internal:
+          type: boolean
+      required: [tenantId, resourceId, resource, audience, endpoints, internal]
+    UpdateResourceRequest:
+      type: object
+      properties:
+        resourceId:
+          $ref: '#/components/schemas/ResourceId'
+        resource:
+          oneOf:
+            - $ref: '#/components/schemas/ResourceUri'
+            - type: 'null'
+        audience:
+          type: [array, 'null']
+          items:
+            $ref: '#/components/schemas/ClientId'
+        deleteEndpoints:
+          type: array
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/ResourceEndpointId'
+        createEndpoints:
+          type: array
+          items:
+            $ref: '#/components/schemas/CreateResourceEndpointRequest'
+      required: [resourceId, deleteEndpoints, createEndpoints]
+    CreateResourceResponse:
+      type: object
+      properties:
+        resourceId:
+          $ref: '#/components/schemas/ResourceId'
+        secret:
+          description: Present only for internal resources; non-internal resources are issued no secret.
+          oneOf:
+            - $ref: '#/components/schemas/Secret'
+            - type: 'null'
+      required: [resourceId]
+    RotateResourceSecretResponse:
+      type: object
+      properties:
+        secret:
+          $ref: '#/components/schemas/Secret'
+      required: [secret]
+    ResourceValidationError:
+      type: object
+      description: |
+        A single-member object naming the rejected case, e.g.
+        `{"InvalidAllowExpression": {"endpointId": "...", "expression": "...", "message": "..."}}`.
+      minProperties: 1
+      maxProperties: 1
+      properties:
+        InvalidResourceId:
+          type: object
+        ReservedResourceId:
+          type: object
+        InvalidAllowExpression:
+          type: object
+          properties:
+            endpointId:
+              $ref: '#/components/schemas/ResourceEndpointId'
+            expression:
+              type: string
+            message:
+              type: string
+          required: [endpointId, expression, message]
+        InvalidInjectExpression:
+          type: object
+          properties:
+            endpointId:
+              $ref: '#/components/schemas/ResourceEndpointId'
+            ruleName:
+              type: string
+            expression:
+              type: string
+            message:
+              type: string
+          required: [endpointId, ruleName, expression, message]
+        InvalidStepUpConditionExpression:
+          type: object
+          properties:
+            endpointId:
+              $ref: '#/components/schemas/ResourceEndpointId'
+            expression:
+              type: string
+            message:
+              type: string
+          required: [endpointId, expression, message]
+        InvalidEndpointPath:
+          type: object
+          properties:
+            endpointId:
+              $ref: '#/components/schemas/ResourceEndpointId'
+          required: [endpointId]
+        AmbiguousEndpointPath:
+          type: object
+          description: |
+            Another endpoint with the same method matches exactly the same requests, differing
+            only in its path parameter names.
+          properties:
+            endpointId:
+              $ref: '#/components/schemas/ResourceEndpointId'
+            path:
+              type: string
+          required: [endpointId, path]
+    CreateClaim:
+      type: object
+      properties:
+        id:
+          $ref: '#/components/schemas/Claim'
+        description:
+          $ref: '#/components/schemas/LocalizedText'
+      required: [id, description]
+    ClaimResponse:
+      type: object
+      properties:
+        claim:
+          $ref: '#/components/schemas/Claim'
+        description:
+          $ref: '#/components/schemas/LocalizedText'
+      required: [claim, description]
+    ScopeWithClaimsResponse:
+      type: object
+      properties:
+        scope:
+          $ref: '#/components/schemas/ScopeToken'
+        description:
+          $ref: '#/components/schemas/LocalizedText'
+        claims:
+          type: array
+          items:
+            $ref: '#/components/schemas/ClaimResponse'
+      required: [scope, description, claims]
+    GetAllScopesResponse:
+      type: object
+      properties:
+        scopes:
+          type: array
+          items:
+            $ref: '#/components/schemas/ScopeWithClaimsResponse'
+      required: [scopes]
+    CreateScopeRequest:
+      type: object
+      properties:
+        tenantId:
+          $ref: '#/components/schemas/TenantId'
+        id:
+          $ref: '#/components/schemas/ScopeToken'
+        description:
+          $ref: '#/components/schemas/LocalizedText'
+        claims:
+          type: array
+          items:
+            $ref: '#/components/schemas/CreateClaim'
+      required: [tenantId, id, description, claims]
+    PatchClaim:
+      type: object
+      properties:
+        id:
+          $ref: '#/components/schemas/Claim'
+        description:
+          $ref: '#/components/schemas/PatchDescription'
+      required: [id, description]
+    PatchScope:
+      type: object
+      properties:
+        add:
+          type: array
+          items:
+            $ref: '#/components/schemas/CreateClaim'
+        update:
+          type: array
+          items:
+            $ref: '#/components/schemas/PatchClaim'
+        delete:
+          type: array
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/Claim'
+        description:
+          $ref: '#/components/schemas/PatchDescription'
+      required: [add, update, delete, description]
+    UpdateScopeRequest:
+      type: object
+      properties:
+        tenantId:
+          $ref: '#/components/schemas/TenantId'
+        id:
+          $ref: '#/components/schemas/ScopeToken'
+        patch:
+          $ref: '#/components/schemas/PatchScope'
+      required: [tenantId, id, patch]
+
+    # ──────────────────────────── Permissions ────────────────────────────
+    PermissionResponse:
+      type: object
+      properties:
+        permission:
+          $ref: '#/components/schemas/Permission'
+        description:
+          $ref: '#/components/schemas/LocalizedText'
+        endpointIds:
+          type: array
+          uniqueItems: true
+          description: Resource endpoints this permission unlocks.
+          items:
+            $ref: '#/components/schemas/ResourceEndpointId'
+      required: [permission, description, endpointIds]
+    GetAllPermissionsResponse:
+      type: object
+      properties:
+        permissions:
+          type: array
+          items:
+            $ref: '#/components/schemas/PermissionResponse'
+      required: [permissions]
+    CreatePermissionRequest:
+      type: object
+      properties:
+        tenantId:
+          $ref: '#/components/schemas/TenantId'
+        permission:
+          $ref: '#/components/schemas/Permission'
+        description:
+          $ref: '#/components/schemas/LocalizedText'
+        endpointIds:
+          type: array
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/ResourceEndpointId'
+      required: [tenantId, permission, description, endpointIds]
+    UpdatePermissionRequest:
+      type: object
+      properties:
+        tenantId:
+          $ref: '#/components/schemas/TenantId'
+        permission:
+          $ref: '#/components/schemas/Permission'
+        description:
+          $ref: '#/components/schemas/PatchDescription'
+        endpointIds:
+          type: [array, 'null']
+          uniqueItems: true
+          description: Replaces the endpoint set when present; leaves it unchanged when absent.
+          items:
+            $ref: '#/components/schemas/ResourceEndpointId'
+      required: [tenantId, permission, description]
+    RoleResponse:
+      type: object
+      properties:
+        id:
+          $ref: '#/components/schemas/RoleId'
+        description:
+          $ref: '#/components/schemas/LocalizedText'
+        permissions:
+          type: array
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/Permission'
+        active:
+          type: boolean
+      required: [id, description, permissions, active]
+    GetAllRolesResponse:
+      type: object
+      properties:
+        roles:
+          type: array
+          items:
+            $ref: '#/components/schemas/RoleResponse'
+      required: [roles]
+    CreateRoleRequest:
+      type: object
+      properties:
+        tenantId:
+          $ref: '#/components/schemas/TenantId'
+        id:
+          $ref: '#/components/schemas/RoleId'
+        description:
+          $ref: '#/components/schemas/LocalizedText'
+        permissions:
+          type: array
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/Permission'
+      required: [tenantId, id, description, permissions]
+    UpdateRoleRequest:
+      type: object
+      properties:
+        tenantId:
+          $ref: '#/components/schemas/TenantId'
+        id:
+          $ref: '#/components/schemas/RoleId'
+        description:
+          $ref: '#/components/schemas/PatchDescription'
+        permissions:
+          $ref: '#/components/schemas/PatchPermissions'
+      required: [tenantId, id, description, permissions]
+    AuthorizationDetailTypeResponse:
+      type: object
+      properties:
+        type:
+          $ref: '#/components/schemas/AuthorizationDetailType'
+        description:
+          $ref: '#/components/schemas/LocalizedText'
+        schema:
+          type: object
+          additionalProperties: true
+          description: JSON Schema the authorization detail object must satisfy.
+      required: [type, description, schema]
+    GetAllAuthorizationDetailTypesResponse:
+      type: object
+      properties:
+        types:
+          type: array
+          items:
+            $ref: '#/components/schemas/AuthorizationDetailTypeResponse'
+      required: [types]
+    CreateAuthorizationDetailTypeRequest:
+      type: object
+      properties:
+        tenantId:
+          $ref: '#/components/schemas/TenantId'
+        type:
+          $ref: '#/components/schemas/AuthorizationDetailType'
+        description:
+          $ref: '#/components/schemas/LocalizedText'
+        schema:
+          type: object
+          additionalProperties: true
+      required: [tenantId, type, description, schema]
+    UpdateAuthorizationDetailTypeRequest:
+      $ref: '#/components/schemas/CreateAuthorizationDetailTypeRequest'
+    AuthorizationDetailTypeValidationError:
+      type: object
+      description: 'Always the single-member form `{"InvalidSchema": {"errors": [...]}}`.'
+      properties:
+        InvalidSchema:
+          type: object
+          properties:
+            errors:
+              type: array
+              items:
+                type: string
+          required: [errors]
+      required: [InvalidSchema]
+
+    # ────────────────────────────── Users ──────────────────────────────
+    CreateUserRequest:
+      type: object
+      properties:
+        email:
+          oneOf:
+            - $ref: '#/components/schemas/Email'
+            - type: 'null'
+        phone:
+          oneOf:
+            - $ref: '#/components/schemas/Phone'
+            - type: 'null'
+        login:
+          oneOf:
+            - $ref: '#/components/schemas/Login'
+            - type: 'null'
+    CreateUserResponse:
+      type: object
+      properties:
+        id:
+          $ref: '#/components/schemas/UserId'
+      required: [id]
+    PatchUserRequest:
+      type: object
+      description: 'Merge-patch semantics: absent leaves unchanged, `null` clears, a value sets.'
+      properties:
+        id:
+          $ref: '#/components/schemas/UserId'
+        email:
+          oneOf:
+            - $ref: '#/components/schemas/Email'
+            - type: 'null'
+        phone:
+          oneOf:
+            - $ref: '#/components/schemas/Phone'
+            - type: 'null'
+        login:
+          oneOf:
+            - $ref: '#/components/schemas/Login'
+            - type: 'null'
+      required: [id]
+    PatchUserClaimsRequest:
+      type: object
+      properties:
+        id:
+          $ref: '#/components/schemas/UserId'
+        claims:
+          type: object
+          additionalProperties: true
+      required: [id, claims]
+    UpdateUserRolesRequest:
+      type: object
+      properties:
+        userId:
+          $ref: '#/components/schemas/UserId'
+        tenantId:
+          $ref: '#/components/schemas/TenantId'
+        add:
+          type: array
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/RoleId'
+        remove:
+          type: array
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/RoleId'
+      required: [userId, tenantId, add, remove]
+    ResetUserLimitsRequest:
+      type: object
+      description: |
+        Counters are keyed by credential as well as by user, so pass the `email` or `phone`
+        whose limits should be cleared.
+      properties:
+        userId:
+          $ref: '#/components/schemas/UserId'
+        tenantId:
+          $ref: '#/components/schemas/TenantId'
+        email:
+          oneOf:
+            - $ref: '#/components/schemas/Email'
+            - type: 'null'
+        phone:
+          oneOf:
+            - $ref: '#/components/schemas/Phone'
+            - type: 'null'
+      required: [userId, tenantId]
+    UserSearchRecord:
+      type: object
+      properties:
+        id:
+          $ref: '#/components/schemas/UserId'
+        email:
+          oneOf:
+            - $ref: '#/components/schemas/Email'
+            - type: 'null'
+        phone:
+          oneOf:
+            - $ref: '#/components/schemas/Phone'
+            - type: 'null'
+        login:
+          oneOf:
+            - $ref: '#/components/schemas/Login'
+            - type: 'null'
+        claims:
+          type: object
+          additionalProperties: true
+      required: [id, claims]
+    UserSearchResponse:
+      type: object
+      properties:
+        users:
+          type: array
+          items:
+            $ref: '#/components/schemas/UserSearchRecord'
+      required: [users]
+    UserRolesResponse:
+      type: object
+      properties:
+        roles:
+          type: array
+          items:
+            $ref: '#/components/schemas/RoleId'
+      required: [roles]
+    PasskeyInfo:
+      type: object
+      properties:
+        id:
+          type: string
+          description: The WebAuthn credential id.
+        name:
+          type: [string, 'null']
+        deviceType:
+          type: string
+        transports:
+          type: array
+          items:
+            type: string
+        backedUp:
+          type: boolean
+        backupEligible:
+          type: boolean
+        lastUsedAt:
+          type: [string, 'null']
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+      required: [id, deviceType, transports, backedUp, backupEligible, createdAt]
+    ListPasskeysResponse:
+      type: object
+      properties:
+        passkeys:
+          type: array
+          items:
+            $ref: '#/components/schemas/PasskeyInfo'
+      required: [passkeys]
+    RenamePasskeyRequest:
+      type: object
+      properties:
+        userId:
+          $ref: '#/components/schemas/UserId'
+        credentialId:
+          type: string
+        name:
+          type: [string, 'null']
+      required: [userId, credentialId]
+    DeliveryChannel:
+      type: string
+      enum: [email, sms, show]
+      description: '`show` returns the plaintext to the caller and is rejected in production.'
+    ResetPasswordRequest:
+      type: object
+      properties:
+        userId:
+          $ref: '#/components/schemas/UserId'
+        expiresInSeconds:
+          type: integer
+          format: int64
+        channel:
+          description: |
+            When omitted, no password is delivered and none is returned, but the temporary
+            password is still created and takes priority over the user's current password
+            at login until it expires.
+          oneOf:
+            - $ref: '#/components/schemas/DeliveryChannel'
+            - type: 'null'
+      required: [userId, expiresInSeconds]
+    ResetPasswordResponse:
+      type: object
+      properties:
+        password:
+          type: string
+      required: [password]
+    SetPasswordRequest:
+      type: object
+      properties:
+        userId:
+          $ref: '#/components/schemas/UserId'
+        password:
+          type: string
+      required: [userId, password]
+    ClientSessionEntry:
+      type: object
+      properties:
+        clientId:
+          $ref: '#/components/schemas/ClientId'
+        enteredAt:
+          type: string
+          format: date-time
+        expiresAt:
+          type: string
+          format: date-time
+          description: Derived from the client's access token TTL.
+      required: [clientId, enteredAt, expiresAt]
+    SessionResponse:
+      type: object
+      properties:
+        publicId:
+          type: string
+        clients:
+          type: array
+          items:
+            $ref: '#/components/schemas/ClientSessionEntry'
+        platform:
+          type: [string, 'null']
+        os:
+          type: [string, 'null']
+        browser:
+          type: [string, 'null']
+        version:
+          type: [string, 'null']
+        createdAt:
+          type: string
+          format: date-time
+      required: [publicId, clients, createdAt]
+
+    # ──────────────────────────── Challenges ────────────────────────────
+    OtpTemplatePurpose:
+      type: string
+      enum: [otp, password]
+    OtpTemplateChannel:
+      type: string
+      enum: [sms, email]
+    OtpTemplateRecord:
+      type: object
+      properties:
+        id:
+          type: string
+        tenantId:
+          $ref: '#/components/schemas/TenantId'
+        localizations:
+          $ref: '#/components/schemas/LocalizedText'
+        purpose:
+          $ref: '#/components/schemas/OtpTemplatePurpose'
+        channel:
+          $ref: '#/components/schemas/OtpTemplateChannel'
+      required: [id, tenantId, localizations, purpose, channel]
+    GetOtpTemplatesResponse:
+      type: object
+      properties:
+        templates:
+          type: array
+          items:
+            $ref: '#/components/schemas/OtpTemplateRecord'
+      required: [templates]
+    UpsertOtpTemplateRequest:
+      $ref: '#/components/schemas/OtpTemplateRecord'
+    DeleteOtpTemplateRequest:
+      type: object
+      properties:
+        id:
+          type: string
+        tenantId:
+          $ref: '#/components/schemas/TenantId'
+        purpose:
+          $ref: '#/components/schemas/OtpTemplatePurpose'
+        channel:
+          $ref: '#/components/schemas/OtpTemplateChannel'
+      required: [id, tenantId, purpose, channel]
+    RateLimit:
+      type: object
+      properties:
+        maxAttempts:
+          type: integer
+        windowSeconds:
+          type: integer
+      required: [maxAttempts, windowSeconds]
+    SubmissionLimits:
+      type: object
+      description: Sliding-window limits per action, and how long a breach bans the credential.
+      properties:
+        otpRequest:
+          type: array
+          items:
+            $ref: '#/components/schemas/RateLimit'
+        otpSubmit:
+          type: array
+          items:
+            $ref: '#/components/schemas/RateLimit'
+        passwordSubmit:
+          type: array
+          items:
+            $ref: '#/components/schemas/RateLimit'
+        passkeyAssertion:
+          type: array
+          items:
+            $ref: '#/components/schemas/RateLimit'
+        banDurationSeconds:
+          type: integer
+    PasskeySettings:
+      type: object
+      properties:
+        rpId:
+          type: string
+          description: The WebAuthn relying party id.
+        rpName:
+          type: string
+        origins:
+          type: array
+          items:
+            type: string
+        userVerification:
+          type: string
+          description: 'The WebAuthn user verification requirement, e.g. `preferred`.'
+      required: [rpId, rpName, origins, userVerification]
+    ChallengeSettingsRecord:
+      type: object
+      properties:
+        tenantId:
+          $ref: '#/components/schemas/TenantId'
+        allowedPrefixes:
+          type: array
+          description: Phone country prefixes accepted on the login form.
+          items:
+            type: string
+        submissionLimits:
+          $ref: '#/components/schemas/SubmissionLimits'
+        otpLength:
+          type: integer
+        otpResendAfter:
+          type: integer
+          description: Seconds before a new code can be requested.
+        passkeySettings:
+          $ref: '#/components/schemas/PasskeySettings'
+        authConversationTtlSeconds:
+          type: integer
+        sessionTtlSeconds:
+          type: integer
+        sessionIdleTtlSeconds:
+          type: [integer, 'null']
+        userAgentTtlSeconds:
+          type: integer
+        ipHeader:
+          type: string
+          description: Header edge reads the client IP from.
+        acrVocabulary:
+          type: [object, 'null']
+          description: '`acr` value to the authentication methods that satisfy it.'
+          additionalProperties:
+            type: array
+            items:
+              type: string
+        postLogoutRedirectUris:
+          type: array
+          items:
+            type: string
+      required:
+        - tenantId
+        - allowedPrefixes
+        - submissionLimits
+        - otpLength
+        - otpResendAfter
+        - passkeySettings
+        - authConversationTtlSeconds
+        - sessionTtlSeconds
+        - userAgentTtlSeconds
+        - ipHeader
+        - postLogoutRedirectUris
+    GetChallengeSettingsResponse:
+      type: object
+      properties:
+        settings:
+          oneOf:
+            - $ref: '#/components/schemas/ChallengeSettingsRecord'
+            - type: 'null'
+    UpsertChallengeSettingsRequest:
+      type: object
+      properties:
+        tenantId:
+          $ref: '#/components/schemas/TenantId'
+        allowedPrefixes:
+          type: array
+          items:
+            type: string
+        submissionLimits:
+          $ref: '#/components/schemas/SubmissionLimits'
+        otpLength:
+          type: integer
+        otpResendAfter:
+          type: integer
+        passkeySettings:
+          $ref: '#/components/schemas/PasskeySettings'
+        authConversationTtlSeconds:
+          type: [integer, 'null']
+          description: Keeps the stored value when omitted; defaults to 900 for a new tenant.
+        sessionTtlSeconds:
+          type: [integer, 'null']
+          description: Keeps the stored value when omitted; defaults to 86400 for a new tenant.
+        sessionIdleTtlSeconds:
+          type: [integer, 'null']
+        userAgentTtlSeconds:
+          type: [integer, 'null']
+          description: Keeps the stored value when omitted; defaults to 15552000 for a new tenant.
+        ipHeader:
+          type: string
+        acrVocabulary:
+          type: [object, 'null']
+          additionalProperties:
+            type: array
+            items:
+              type: string
+        postLogoutRedirectUris:
+          type: [array, 'null']
+          items:
+            type: string
+      required:
+        - tenantId
+        - allowedPrefixes
+        - submissionLimits
+        - otpLength
+        - otpResendAfter
+        - passkeySettings
+        - ipHeader
+
+    # ────────────────────────────── Forms ──────────────────────────────
+    BackendProperty:
+      type: object
+      description: A form setting the login UI exposes to the deployment.
+      discriminator:
+        propertyName: type
+      oneOf:
+        - $ref: '#/components/schemas/BooleanProperty'
+        - $ref: '#/components/schemas/StringArrayProperty'
+        - $ref: '#/components/schemas/NumberProperty'
+    BooleanProperty:
+      type: object
+      title: BooleanProperty
+      properties:
+        type:
+          type: string
+          const: BooleanProperty
+        name:
+          type: string
+      required: [type, name]
+    StringArrayProperty:
+      type: object
+      title: StringArrayProperty
+      properties:
+        type:
+          type: string
+          const: StringArrayProperty
+        name:
+          type: string
+        allowedValues:
+          type: array
+          items:
+            type: string
+      required: [type, name, allowedValues]
+    NumberProperty:
+      type: object
+      title: NumberProperty
+      properties:
+        type:
+          type: string
+          const: NumberProperty
+        name:
+          type: string
+        default:
+          type: integer
+        min:
+          type: [integer, 'null']
+        max:
+          type: [integer, 'null']
+      required: [type, name, default]
+    FormRecord:
+      type: object
+      properties:
+        id:
+          $ref: '#/components/schemas/FormId'
+        version:
+          type: integer
+        active:
+          type: boolean
+        style:
+          type: string
+          description: The form's CSS.
+        jsSource:
+          type: [string, 'null']
+          description: TypeScript source, kept so the console can edit the form.
+        jsCompiled:
+          type: [string, 'null']
+          description: The JavaScript auth actually serves.
+        localizations:
+          type: object
+          description: Language tag to message key to text.
+          additionalProperties:
+            $ref: '#/components/schemas/LocalizedText'
+        properties:
+          type: array
+          items:
+            $ref: '#/components/schemas/BackendProperty'
+      required: [id, version, active, style, localizations, properties]
+    GetAllFormsResponse:
+      type: object
+      properties:
+        forms:
+          type: array
+          items:
+            $ref: '#/components/schemas/FormRecord'
+      required: [forms]
+    UpdateFormRequest:
+      type: object
+      properties:
+        id:
+          $ref: '#/components/schemas/FormId'
+        style:
+          type: string
+        jsSource:
+          type: [string, 'null']
+        jsCompiled:
+          type: [string, 'null']
+        localizations:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/LocalizedText'
+        properties:
+          type: array
+          items:
+            $ref: '#/components/schemas/BackendProperty'
+      required: [id, style, localizations, properties]
+    SetActiveVersionRequest:
+      type: object
+      properties:
+        id:
+          $ref: '#/components/schemas/FormId'
+        version:
+          type: integer
+      required: [id, version]
+
+    # ───────────────────────────── Locales ─────────────────────────────
+    LocaleRecord:
+      type: object
+      properties:
+        code:
+          type: string
+          description: A BCP 47 language tag.
+        name:
+          type: string
+          description: The locale's name in its own language.
+        isDefault:
+          type: boolean
+        active:
+          type: boolean
+      required: [code, name, isDefault, active]
+    GetLocalesResponse:
+      type: object
+      properties:
+        locales:
+          type: array
+          items:
+            $ref: '#/components/schemas/LocaleRecord'
+      required: [locales]
+    UpdateLocalesRequest:
+      type: object
+      properties:
+        add:
+          type: array
+          items:
+            $ref: '#/components/schemas/LocaleRecord'
+        delete:
+          type: array
+          items:
+            type: string
+      required: [add, delete]
+    SetDefaultLocaleRequest:
+      type: object
+      properties:
+        code:
+          type: string
+      required: [code]
+    LocaleActivationError:
+      type: object
+      properties:
+        locale:
+          type: string
+        missing:
+          type: array
+          description: Keys that have no content in this locale.
+          items:
+            type: string
+      required: [locale, missing]
+    ThemeRecord:
+      type: object
+      properties:
+        id:
+          type: string
+        css:
+          type: string
+        tenantId:
+          description: '`null` for a global theme.'
+          oneOf:
+            - $ref: '#/components/schemas/TenantId'
+            - type: 'null'
+      required: [id, css]
+    GetAllThemesResponse:
+      type: object
+      properties:
+        themes:
+          type: array
+          items:
+            $ref: '#/components/schemas/ThemeRecord'
+      required: [themes]
+    CreateThemeRequest:
+      $ref: '#/components/schemas/ThemeRecord'
+    UpdateThemeRequest:
+      type: object
+      properties:
+        id:
+          type: string
+        css:
+          type: string
+      required: [id, css]
+
+    # ─────────────────────────── System settings ───────────────────────────
+    SystemSettingsRecord:
+      type: object
+      description: |
+        Global settings. The password policy lives here because password credentials are
+        stored per user, not per tenant.
+      properties:
+        passwordRegex:
+          type: string
+          description: A password must match this regular expression.
+        passwordHistorySize:
+          type: integer
+          description: How many previous passwords a new one is compared against.
+        passwordNumDifferent:
+          type: integer
+          description: How many characters a new password must differ by.
+        identityProviderLogo:
+          type: [string, 'null']
+      required: [passwordRegex, passwordHistorySize, passwordNumDifferent]
+
+    # ─────────────────────────────── Edges ───────────────────────────────
+    RegisterEdgeRequest:
+      type: object
+      properties:
+        id:
+          $ref: '#/components/schemas/EdgeId'
+      required: [id]
+    EdgeResponse:
+      type: object
+      properties:
+        id:
+          $ref: '#/components/schemas/EdgeId'
+        hasOldKey:
+          type: boolean
+          description: Whether a rotation is open and the previous key still verifies.
+      required: [id, hasOldKey]
+    GetAllEdgesResponse:
+      type: object
+      properties:
+        edges:
+          type: array
+          items:
+            $ref: '#/components/schemas/EdgeResponse'
+      required: [edges]
+    ServiceKeyResponse:
+      type: object
+      properties:
+        keyId:
+          type: string
+        privateKey:
+          type: string
+          description: The base64url-encoded PKCS#8 private key. Returned only once.
+      required: [keyId, privateKey]

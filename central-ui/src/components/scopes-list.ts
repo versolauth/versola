@@ -2,8 +2,8 @@ import { LitElement, html, css } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
 import { buttonStyles, cardStyles, formStyles } from '../styles/components';
-import { OAuthScope } from '../types';
-import { createScope, deleteScope, getScopes, updateScope } from '../utils/central-api';
+import { Locale, OAuthScope } from '../types';
+import { createScope, deleteScope, fetchLocales, getScopes, updateScope } from '../utils/central-api';
 import { confirmDestructiveAction } from '../utils/confirm-dialog';
 import { getLocalizedDescription } from '../utils/helpers';
 import './scope-form';
@@ -23,6 +23,7 @@ export class VersolaScopesList extends LitElement {
   @state() private showCreateForm = false;
   @state() private editingScope: OAuthScope | null = null;
   @state() private expandedScopes: Set<string> = new Set();
+  @state() private locales: Locale[] = [];
   private loadRequestId = 0;
 
   updated(changedProperties: Map<string, unknown>) {
@@ -47,9 +48,10 @@ export class VersolaScopesList extends LitElement {
     this.errorMessage = '';
 
     try {
-      const result = await getScopes(this.tenantId);
+      const [result, locales] = await Promise.all([getScopes(this.tenantId), fetchLocales()]);
       if (requestId !== this.loadRequestId) return;
       this.scopes = result;
+      this.locales = locales;
     } catch (error) {
       if (requestId !== this.loadRequestId) return;
       this.scopes = [];
@@ -74,6 +76,30 @@ export class VersolaScopesList extends LitElement {
       .search-bar {
         margin-bottom: var(--spacing-lg);
         max-width: 28rem;
+      }
+
+      .tabs {
+        display: flex;
+        gap: 0.5rem;
+        margin-bottom: var(--spacing-lg);
+        flex-wrap: wrap;
+      }
+
+      .tab {
+        padding: 0.375rem 0.875rem;
+        border-radius: var(--radius-md);
+        border: 1px solid var(--border-dark);
+        background: transparent;
+        color: var(--text-secondary);
+        font-size: 0.875rem;
+        cursor: pointer;
+        transition: all var(--transition-fast);
+      }
+
+      .tab.active {
+        background: rgba(var(--accent-tint), 0.15);
+        border-color: var(--accent);
+        color: var(--accent);
       }
 
       .header {
@@ -152,7 +178,7 @@ export class VersolaScopesList extends LitElement {
       }
 
       .claim-item {
-        background: rgba(0, 0, 0, 0.2);
+        background: rgba(var(--accent-tint), 0.15);
         border: 1px solid var(--border-dark);
         border-radius: var(--radius-md);
         padding: var(--spacing-md);
@@ -316,6 +342,7 @@ export class VersolaScopesList extends LitElement {
       return html`
         <versola-scope-form
           .scope=${this.editingScope}
+          .locales=${this.locales}
           @close=${this.handleFormClose}
           @save-scope=${this.handleFormSubmit}
         ></versola-scope-form>
@@ -323,9 +350,7 @@ export class VersolaScopesList extends LitElement {
     }
 
     return html`
-      <content-header
-        title="OAuth Scopes"
-      >
+      <content-header title="OAuth Scopes">
         ${this.scopes.length > 0 && this.canManage ? html`
           <button slot="actions" class="btn btn-primary" @click=${this.handleCreateClick}>
             + Create Scope

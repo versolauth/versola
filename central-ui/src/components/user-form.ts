@@ -42,7 +42,7 @@ export class VersolaUserForm extends LitElement {
       }
 
       .error-text {
-        color: var(--error, #ef4444);
+        color: var(--danger);
         font-size: 0.75rem;
         margin-top: 0.25rem;
       }

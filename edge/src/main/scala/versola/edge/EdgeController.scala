@@ -1,6 +1,7 @@
 package versola.edge
 
 import versola.edge.model.{AuthConversationNotFound, Code, InvalidLogoutToken, PresetId, PresetNotFound, ResourceId, SessionId, State}
+import versola.edge.revocation.TokenRevocationService
 import versola.util.FormDecoder
 import versola.util.http.Controller
 import zio.*
@@ -8,7 +9,7 @@ import zio.http.*
 import zio.json.{EncoderOps, JsonEncoder, jsonField}
 
 object EdgeController extends Controller:
-  type Env = Tracing & EdgeService & EdgeConfig & JwksService & AuthorizationPresetsSyncClient
+  type Env = Tracing & EdgeService & EdgeConfig & JwksService & TokenRevocationService & AuthorizationPresetsSyncClient
 
   /** OIDC Back-Channel Logout §2.8 error response body. */
   private case class LogoutError(
@@ -77,49 +78,67 @@ object EdgeController extends Controller:
     Method.GET / "complete" -> handler { (request: Request) =>
       for
         edgeService <- ZIO.service[EdgeService]
-        config <- ZIO.service[EdgeConfig]
-
-        code <- request.queryZIO[Code]("code")
+        code <- request.queryZIO[Option[Code]]("code")
         state <- request.queryZIO[State]("state")
+        error <- request.queryZIO[Option[String]]("error")
+        errorDescription <- request.queryZIO[Option[String]]("error_description")
+        errorUri <- request.queryZIO[Option[String]]("error_uri")
 
-        response <- edgeService.complete(code, state)
-          .either.flatMap:
-            case Left(_: AuthConversationNotFound) =>
-              ZIO.succeed(Response.badRequest)
+        response <- (code, error) match
+          case (Some(code), None) =>
+            edgeService.complete(code, state)
+              .either.flatMap:
+                case Left(_: AuthConversationNotFound) =>
+                  ZIO.succeed(Response.badRequest)
 
-            case Left(ex: Throwable) =>
-              ZIO.fail(ex)
+                case Left(ex: Throwable) =>
+                  ZIO.fail(ex)
 
-            case Right(completion) =>
-              for
-                redirectUrl <- ZIO.fromEither(URL.decode(completion.postLoginRedirectUri))
-                now <- Clock.instant
-              yield Response
-                .seeOther(redirectUrl)
-                .addCookie(
-                  EdgeSessionCookie(
-                    presetId = completion.presetId,
-                    accessToken = completion.accessToken,
-                    ttl = completion.cookieTtl,
-                    domain = completion.cookieDomain,
-                    path = completion.cookiePath,
-                    now = now,
-                  ),
-                )
+                case Right(completion) =>
+                  for
+                    now <- Clock.instant
+                  yield Response
+                    .seeOther(completion.postLoginRedirectUri.toUrl)
+                    .addCookie(
+                      EdgeSessionCookie(
+                        presetId = completion.presetId,
+                        accessToken = completion.accessToken,
+                        ttl = completion.cookieTtl,
+                        domain = completion.cookieDomain,
+                        path = completion.cookiePath,
+                        now = now,
+                      ),
+                    )
+
+          case (None, Some(error)) =>
+            edgeService.completeError(state, error, errorDescription, errorUri)
+              .either.flatMap:
+                case Left(_: AuthConversationNotFound) =>
+                  ZIO.succeed(Response.badRequest)
+
+                case Left(ex: Throwable) =>
+                  ZIO.fail(ex)
+
+                case Right(redirectUrl) =>
+                  ZIO.succeed(Response.seeOther(redirectUrl))
+
+          case _ =>
+            ZIO.succeed(Response.badRequest)
       yield response
     }
 
-  // OP-initiated front-channel logout, invoked by the OP in a hidden iframe (or via
-  // direct navigation) with the `iss`/`sid` query params of the OIDC logout token.
-  // Path-independent: it never reads EDGE_SESSION, only clears it for the presets
-  // it finds tied to the session.
+  // Front-channel logout, invoked either by the OP in a hidden iframe with the `iss`/`sid`
+  // query params of the OIDC logout token, or first-party by the browser with no params at
+  // all. EDGE_SESSION is read, not just cleared: it is what authorizes the revocation, and
+  // being SameSite=Strict it only reaches here on a same-site request.
   val frontChannelLogoutEndpoint =
     Method.GET / "logout" / "frontchannel" -> handler { (request: Request) =>
       for
         edgeService <- ZIO.service[EdgeService]
-        iss <- request.queryZIO[String]("iss")
-        sid <- request.queryZIO[SessionId]("sid")
-        cookies <- edgeService.frontChannelLogout(iss, sid)
+        iss = request.url.queryParams.getAll("iss").headOption
+        sid = request.url.queryParams.getAll("sid").headOption.map(SessionId(_))
+        sessionCookie = request.cookie(EdgeSessionCookie.name).map(_.content)
+        cookies <- edgeService.frontChannelLogout(iss, sid, sessionCookie)
       yield cookies.foldLeft(
         Response
           .status(Status.Ok)

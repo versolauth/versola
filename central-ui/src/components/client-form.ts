@@ -2,15 +2,19 @@ import { LitElement, html, css } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
 import { buttonStyles, cardStyles, formStyles, iconActionStyles } from '../styles/components';
-import { AuthFactorType, AuthFlow, OAuthClient, OAuthScope, OtpTemplateRecord, Permission, PrimaryCredential, Resource, ThemeRecord } from '../types';
-import { createDefaultAuthFlow, getLocalizedDescription, resolvePermissionEndpointGroups } from '../utils/helpers';
+import { AuthFactorType, AuthFlow, ConsentFlow, Locale, OAuthClient, OAuthScope, OtpTemplateRecord, Permission, RegistrationCredential, RegistrationFlow, RegistrationStepType, Resource, Role, ThemeRecord } from '../types';
+import { createDefaultAuthFlow, createDefaultConsentFlow, createDefaultRegistrationFlow, getLocalizedDescription, resolvePermissionEndpointGroups } from '../utils/helpers';
 import './nav-toggle';
+import './localized-text-editor';
 import {
   validateClientId,
   validateRedirectUri,
   validateLogoutUri,
+  validateConsentUri,
   ttlToSeconds,
   secondsToTtl,
+  daysToSeconds,
+  secondsToDays,
 } from '../utils/validators';
 
 @customElement('versola-client-form')
@@ -19,38 +23,41 @@ export class VersolaClientForm extends LitElement {
   @property({ attribute: false }) availableScopes: OAuthScope[] = [];
   @property({ attribute: false }) availablePermissions: Permission[] = [];
   @property({ attribute: false }) availableResources: Resource[] = [];
-  @property({ attribute: false }) availableClientIds: string[] = [];
   @property({ attribute: false }) availableThemes: ThemeRecord[] = [];
   @property({ attribute: false }) availableOtpTemplates: OtpTemplateRecord[] = [];
+  @property({ attribute: false }) availableRoles: Role[] = [];
+  @property({ attribute: false }) locales: Locale[] = [];
   @property({ type: Boolean }) canManageSecrets = false;
 
   @state() private formData: Partial<OAuthClient> = {
     id: '',
-    clientName: '',
+    clientName: { en: '' },
     redirectUris: [],
     scope: [],
-    externalAudience: [],
     accessTokenTtl: 3600,
+    refreshTokenTtl: daysToSeconds(90),
     permissions: [],
     theme: 'default',
     authFlow: createDefaultAuthFlow(),
+    registrationFlow: null,
+    consentFlow: null,
     frontChannelLogoutSessionRequired: true,
   };
 
   @state() private redirectUriInput = '';
-  @state() private audienceInput = '';
   @state() private ttlValue = 1;
   @state() private ttlUnit: 'minutes' | 'hours' = 'hours';
+  @state() private refreshTokenTtlDays = 90;
   @state() private redirectUriError = '';
-  @state() private audienceError = '';
   @state() private logoutMode: 'none' | 'front' | 'back' = 'none';
   @state() private frontChannelLogoutUriError = '';
   @state() private backChannelLogoutUriError = '';
+  @state() private logoUriError = '';
+  @state() private policyUriError = '';
+  @state() private tosUriError = '';
   @state() private authFlowError = '';
-  @state() private audienceSuggestionsOpen = false;
   @state() private openInfoKey: string | null = null;
 
-  private audienceBlurTimeout: number | null = null;
   private handleDocumentClick = () => {
     this.openInfoKey = null;
   };
@@ -146,7 +153,7 @@ export class VersolaClientForm extends LitElement {
         background: var(--bg-dark);
         border: 1px solid var(--border-dark);
         border-radius: var(--radius-md);
-        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35), 0 0 0 1px rgba(88, 166, 255, 0.08);
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35), 0 0 0 1px rgba(var(--accent-tint), 0.08);
         overflow: hidden;
         max-height: 220px;
         overflow-y: auto;
@@ -173,7 +180,7 @@ export class VersolaClientForm extends LitElement {
       }
 
       .autocomplete-option:hover {
-        background: rgba(88, 166, 255, 0.12);
+        background: rgba(var(--accent-tint), 0.12);
         color: var(--accent);
       }
 
@@ -195,7 +202,7 @@ export class VersolaClientForm extends LitElement {
         align-items: center;
         gap: 0.5rem;
         padding: 0.375rem 0.75rem;
-        background: rgba(88, 166, 255, 0.15);
+        background: rgba(var(--accent-tint), 0.15);
         border: 1px solid var(--border-dark);
         border-radius: var(--radius-md);
         color: var(--accent);
@@ -231,7 +238,7 @@ export class VersolaClientForm extends LitElement {
 
       .checkbox-item:hover {
         border-color: var(--accent);
-        background: rgba(88, 166, 255, 0.05);
+        background: rgba(var(--accent-tint), 0.05);
       }
 
       .checkbox-item input[type="checkbox"] {
@@ -265,9 +272,9 @@ export class VersolaClientForm extends LitElement {
 
       .option-info-button {
         flex: none;
-        border: 1px solid rgba(88, 166, 255, 0.4);
+        border: 1px solid rgba(var(--accent-tint), 0.4);
         border-radius: 999px;
-        background: rgba(88, 166, 255, 0.12);
+        background: rgba(var(--accent-tint), 0.12);
         color: var(--accent);
         font-size: 0.75rem;
         font-weight: 700;
@@ -285,13 +292,13 @@ export class VersolaClientForm extends LitElement {
       }
 
       .option-info-button:hover {
-        background: rgba(88, 166, 255, 0.18);
-        border-color: rgba(88, 166, 255, 0.55);
+        background: rgba(var(--accent-tint), 0.18);
+        border-color: rgba(var(--accent-tint), 0.55);
       }
 
       .option-info-button:focus-visible {
         outline: none;
-        box-shadow: 0 0 0 2px rgba(88, 166, 255, 0.2);
+        box-shadow: 0 0 0 2px rgba(var(--accent-tint), 0.2);
       }
 
       .option-tooltip {
@@ -304,7 +311,7 @@ export class VersolaClientForm extends LitElement {
         max-height: 18rem;
         overflow: auto;
         padding: 0.75rem;
-        border: 1px solid rgba(88, 166, 255, 0.28);
+        border: 1px solid rgba(var(--accent-tint), 0.28);
         border-radius: var(--radius-md);
         background: linear-gradient(180deg, rgba(22, 27, 34, 0.98), rgba(13, 17, 23, 0.98));
         box-shadow: 0 10px 24px rgba(0, 0, 0, 0.35);
@@ -411,7 +418,7 @@ export class VersolaClientForm extends LitElement {
       }
 
       .ttl-unit-select:hover {
-        background: rgba(88, 166, 255, 0.1);
+        background: rgba(var(--accent-tint), 0.1);
       }
 
       .ttl-unit-select:focus {
@@ -492,18 +499,50 @@ export class VersolaClientForm extends LitElement {
 
       .cred-mode-card:hover {
         border-color: var(--accent);
-        background: rgba(88, 166, 255, 0.05);
+        background: rgba(var(--accent-tint), 0.05);
       }
 
       .cred-mode-card.selected {
         border-color: var(--accent);
-        background: rgba(88, 166, 255, 0.12);
+        background: rgba(var(--accent-tint), 0.12);
       }
 
       .cred-options {
         margin-top: 0.75rem;
         padding-top: 0.75rem;
         border-top: 1px solid var(--border-dark);
+      }
+
+      .otp-settings-grid {
+        display: grid;
+        gap: 0.75rem;
+        padding-top: 0.875rem;
+        border-top: 1px dashed var(--border-dark);
+      }
+
+      .otp-settings-section {
+        margin-top: 1rem;
+        padding-top: 1rem;
+      }
+
+      .otp-settings-title {
+        margin-bottom: 0.875rem;
+        font-size: 0.875rem;
+        font-weight: 500;
+        line-height: 18px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+      }
+
+      .otp-settings-label {
+        text-transform: none;
+        letter-spacing: normal;
+      }
+
+      .logout-settings-title {
+        margin-bottom: 0.875rem;
+        padding-bottom: 0.875rem;
+        border-bottom: 1px dashed var(--border-dark);
       }
 
       .plain-checkboxes {
@@ -537,6 +576,118 @@ export class VersolaClientForm extends LitElement {
         display: flex;
         align-items: center;
         gap: 0.75rem;
+      }
+
+      .registration-settings {
+        display: grid;
+        gap: 0.75rem;
+        margin-top: 0.75rem;
+        padding-top: 0.75rem;
+        border-top: 1px dashed var(--border-dark);
+      }
+
+      .registration-row {
+        display: grid;
+        grid-template-columns: minmax(7rem, 0.35fr) minmax(0, 1fr);
+        gap: 0.75rem;
+        align-items: start;
+      }
+
+      .registration-label {
+        margin: 0;
+        padding-top: 0.5rem;
+        font-size: 0.8125rem;
+        font-weight: 600;
+        color: var(--text-secondary);
+        text-transform: none;
+        letter-spacing: normal;
+      }
+
+      .consent-property-label {
+        display: flex;
+        align-items: center;
+        gap: 0.4rem;
+      }
+
+      .consent-property-label > label {
+        text-transform: none;
+        letter-spacing: normal;
+      }
+
+      .consent-property-label .option-tooltip {
+        pointer-events: none;
+      }
+
+      .registration-value {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        width: 100%;
+        max-width: var(--compact-field-width);
+        min-height: 2.5rem;
+        box-sizing: border-box;
+        padding: 0.625rem 0.75rem;
+        border: 1px solid var(--border-dark);
+        border-radius: var(--radius-md);
+        background: rgba(255, 255, 255, 0.03);
+        color: var(--text-primary);
+        font-family: var(--font-mono);
+        font-size: 0.875rem;
+      }
+
+      .registration-role-list {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem 1rem;
+        width: 100%;
+        max-width: var(--compact-field-width);
+        min-height: 2.5rem;
+        box-sizing: border-box;
+        padding: 0.625rem 0.75rem;
+        border: 1px solid var(--border-dark);
+        border-radius: var(--radius-md);
+        background: rgba(255, 255, 255, 0.03);
+      }
+
+      .registration-lock {
+        color: var(--text-secondary);
+        font-size: 0.75rem;
+      }
+
+      .registration-hint {
+        margin-top: 0.375rem;
+        color: var(--text-secondary);
+        font-size: 0.75rem;
+        line-height: 1.4;
+      }
+
+      .consent-remember-row {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+      }
+
+      .consent-remember-row input[type='number'] {
+        width: 5rem;
+      }
+
+      .consent-remember-row .registration-hint {
+        margin-top: 0;
+      }
+
+      .consent-uri-input {
+        width: 100%;
+      }
+
+      @media (max-width: 560px) {
+        .registration-row {
+          grid-template-columns: 1fr;
+          gap: 0.375rem;
+        }
+
+        .registration-label {
+          padding-top: 0;
+        }
       }
 
       .toggle {
@@ -589,11 +740,15 @@ export class VersolaClientForm extends LitElement {
     super.connectedCallback();
     document.addEventListener('click', this.handleDocumentClick);
     if (this.client) {
-      this.formData = { ...this.client };
+      this.formData = {
+        ...this.client,
+        scope: this.client.authFlow ? [...this.client.scope] : this.client.scope.filter(scope => scope !== 'openid'),
+      };
       // Convert TTL from seconds to value + unit
       const { value, unit } = secondsToTtl(this.client.accessTokenTtl);
       this.ttlValue = value;
       this.ttlUnit = unit;
+      this.refreshTokenTtlDays = secondsToDays(this.client.refreshTokenTtl ?? daysToSeconds(90));
       this.logoutMode = this.client.frontChannelLogoutUri
         ? 'front'
         : this.client.backChannelLogoutUri
@@ -603,15 +758,15 @@ export class VersolaClientForm extends LitElement {
       // Defaults: 1 hour, pre-select first available OTP template
       this.ttlValue = 1;
       this.ttlUnit = 'hours';
-      if (this.availableOtpTemplates.length > 0) {
-        this.formData = { ...this.formData, otpTemplateId: this.availableOtpTemplates[0].id };
+      this.refreshTokenTtlDays = 90;
+      if (this.otpTemplateOptions.length > 0) {
+        this.formData = { ...this.formData, otpTemplateId: this.otpTemplateOptions[0].id };
       }
     }
   }
 
   disconnectedCallback() {
     document.removeEventListener('click', this.handleDocumentClick);
-    this.clearAudienceBlurTimeout();
     super.disconnectedCallback();
   }
 
@@ -625,14 +780,6 @@ export class VersolaClientForm extends LitElement {
       }
     }
 
-    const audienceError = this.getAudienceValidationError(this.formData.externalAudience || []);
-    if (audienceError) {
-      this.audienceError = audienceError;
-      return;
-    }
-
-    this.audienceError = '';
-
     const authFlow = this.formData.authFlow ?? null;
     if (authFlow) {
       const authFlowError = this.getAuthFlowValidationError(authFlow);
@@ -644,7 +791,21 @@ export class VersolaClientForm extends LitElement {
 
     this.authFlowError = '';
 
-    const frontChannelLogoutUri = this.logoutMode === 'front' ? (this.formData.frontChannelLogoutUri || '').trim() : '';
+    const logoutEnabled = authFlow !== null;
+    const authFlowTheme = authFlow ? (this.formData.theme || 'default') : 'default';
+    const authFlowRedirectUris = authFlow ? (this.formData.redirectUris || []) : [];
+    const authFlowOtpTemplateId = authFlow ? this.selectedOtpTemplateId : 'default';
+    const registrationCredential = this.authFlow.primaryCredentials.find(
+      credential => credential === 'phone' || credential === 'email',
+    ) as RegistrationCredential | undefined;
+    const registrationFlow = this.registrationSupported && this.formData.registrationFlow && registrationCredential
+      ? { ...this.formData.registrationFlow, credential: registrationCredential }
+      : null;
+    const scope = this.formData.scope || [];
+    const hasOfflineAccess = scope.includes('offline_access');
+    const frontChannelLogoutUri = logoutEnabled && this.logoutMode === 'front'
+      ? (this.formData.frontChannelLogoutUri || '').trim()
+      : '';
     if (frontChannelLogoutUri) {
       const uriValidation = validateLogoutUri(frontChannelLogoutUri);
       if (!uriValidation.valid) {
@@ -655,7 +816,9 @@ export class VersolaClientForm extends LitElement {
 
     this.frontChannelLogoutUriError = '';
 
-    const backChannelLogoutUri = this.logoutMode === 'back' ? (this.formData.backChannelLogoutUri || '').trim() : '';
+    const backChannelLogoutUri = logoutEnabled && this.logoutMode === 'back'
+      ? (this.formData.backChannelLogoutUri || '').trim()
+      : '';
     if (backChannelLogoutUri) {
       const uriValidation = validateLogoutUri(backChannelLogoutUri);
       if (!uriValidation.valid) {
@@ -666,23 +829,46 @@ export class VersolaClientForm extends LitElement {
 
     this.backChannelLogoutUriError = '';
 
+    const consentUris = [
+      ['logoUri', (this.formData.logoUri || '').trim(), 'logoUriError'],
+      ['policyUri', (this.formData.policyUri || '').trim(), 'policyUriError'],
+      ['tosUri', (this.formData.tosUri || '').trim(), 'tosUriError'],
+    ] as const;
+    for (const [, value, errorKey] of consentUris) {
+      const validation = validateConsentUri(value);
+      if (!validation.valid) {
+        this[errorKey] = validation.error || 'Invalid consent URI';
+        return;
+      }
+    }
+    this.logoUriError = '';
+    this.policyUriError = '';
+    this.tosUriError = '';
+
     const client: OAuthClient = {
       id: this.formData.id!,
       clientName: this.formData.clientName!,
-      redirectUris: this.formData.redirectUris || [],
-      scope: this.formData.scope || [],
-      externalAudience: this.formData.externalAudience || [],
+      redirectUris: authFlowRedirectUris,
+      scope,
       hasPreviousSecret: false,
       accessTokenTtl: ttlToSeconds(this.ttlValue, this.ttlUnit),
+      refreshTokenTtl: hasOfflineAccess
+        ? daysToSeconds(this.refreshTokenTtlDays)
+        : this.client?.refreshTokenTtl,
       permissions: this.formData.permissions || [],
-      theme: this.formData.theme || 'default',
-      otpTemplateId: this.formData.otpTemplateId ?? null,
+      theme: authFlowTheme,
+      otpTemplateId: authFlowOtpTemplateId,
       authFlow,
+      registrationFlow,
       frontChannelLogoutUri: frontChannelLogoutUri || null,
       frontChannelLogoutSessionRequired: frontChannelLogoutUri
         ? !!this.formData.frontChannelLogoutSessionRequired
         : false,
       backChannelLogoutUri: backChannelLogoutUri || null,
+      logoUri: (this.formData.logoUri || '').trim() || null,
+      policyUri: (this.formData.policyUri || '').trim() || null,
+      tosUri: (this.formData.tosUri || '').trim() || null,
+      consentFlow: authFlow ? this.formData.consentFlow ?? null : null,
     };
 
     this.dispatchEvent(new CustomEvent('submit', {
@@ -700,6 +886,14 @@ export class VersolaClientForm extends LitElement {
   private get isClientIdInvalid() {
     const clientId = (this.formData.id || '').trim();
     return !this.client && clientId.length > 0 && !validateClientId(clientId);
+  }
+
+  private get hasOfflineAccessScope(): boolean {
+    return (this.formData.scope || []).includes('offline_access');
+  }
+
+  private handleRefreshTokenTtlInput(e: Event) {
+    this.refreshTokenTtlDays = parseInt((e.target as HTMLInputElement).value, 10) || 1;
   }
 
   private get isRedirectUriInvalid() {
@@ -733,7 +927,7 @@ export class VersolaClientForm extends LitElement {
     this.dispatchEvent(new CustomEvent('rotate-secret', {
       detail: {
         clientId: this.client.id,
-        clientName: this.formData.clientName || this.client.clientName,
+        clientName: getLocalizedDescription(this.formData.clientName ?? this.client.clientName),
       },
       bubbles: true,
       composed: true,
@@ -748,7 +942,7 @@ export class VersolaClientForm extends LitElement {
     this.dispatchEvent(new CustomEvent('delete-previous-secret', {
       detail: {
         clientId: this.client.id,
-        clientName: this.formData.clientName || this.client.clientName,
+        clientName: getLocalizedDescription(this.formData.clientName ?? this.client.clientName),
       },
       bubbles: true,
       composed: true,
@@ -785,12 +979,6 @@ export class VersolaClientForm extends LitElement {
     this.logoutMode = mode;
     this.frontChannelLogoutUriError = '';
     this.backChannelLogoutUriError = '';
-    this.formData = {
-      ...this.formData,
-      frontChannelLogoutUri: mode === 'front' ? this.formData.frontChannelLogoutUri : '',
-      frontChannelLogoutSessionRequired: mode === 'front' ? this.formData.frontChannelLogoutSessionRequired : false,
-      backChannelLogoutUri: mode === 'back' ? this.formData.backChannelLogoutUri : '',
-    };
   }
 
   private handleFrontChannelLogoutUriInput(e: Event) {
@@ -824,138 +1012,101 @@ export class VersolaClientForm extends LitElement {
     }
   }
 
+  private renderLogoutSettings() {
+    return html`
+      <div class="form-group">
+        <label class="logout-settings-title">Logout Settings</label>
+        <div class="cred-mode-cards">
+          <button
+            type="button"
+            class=${`cred-mode-card ${this.logoutMode === 'none' ? 'selected' : ''}`}
+            @click=${() => this.setLogoutMode('none')}
+          >none</button>
+          <button
+            type="button"
+            class=${`cred-mode-card ${this.logoutMode === 'front' ? 'selected' : ''}`}
+            @click=${() => this.setLogoutMode('front')}
+          >front-channel</button>
+          <button
+            type="button"
+            class=${`cred-mode-card ${this.logoutMode === 'back' ? 'selected' : ''}`}
+            @click=${() => this.setLogoutMode('back')}
+          >back-channel</button>
+        </div>
+
+        ${this.logoutMode === 'front' ? html`
+          <div class="cred-options">
+            <div style="display: flex; align-items: center; gap: 0.4rem; margin-bottom: var(--spacing-sm);">
+              <label for="client-front-channel-logout-uri" style="margin-bottom: 0;">Front-Channel Logout URI</label>
+              ${this.renderOptionInfo(
+                'front-channel-logout-uri',
+                'Front-Channel Logout URI',
+                html`
+                  <div class="option-tooltip-item">Loaded by the browser in a hidden iframe when logout is initiated, so this client can clear its own local session/cookies in response.</div>
+                  <div class="option-tooltip-item">If this client sits behind an edge, use the edge's own front-channel logout endpoint (<code>/logout/frontchannel</code>) rather than a client-specific URL — the edge clears the session for every client routed through it.</div>
+                `,
+                'Front-channel logout URI info',
+              )}
+            </div>
+            <input
+              type="text"
+              id="client-front-channel-logout-uri"
+              class="compact-input ${this.frontChannelLogoutUriError ? 'input-error' : ''}"
+              .value=${this.formData.frontChannelLogoutUri || ''}
+              @input=${this.handleFrontChannelLogoutUriInput}
+              placeholder="https://app.example.com/logout/frontchannel"
+            />
+            ${this.frontChannelLogoutUriError ? html`
+              <div class="error-message" style="margin-top: 0.5rem;">${this.frontChannelLogoutUriError}</div>
+            ` : ''}
+            ${(this.formData.frontChannelLogoutUri || '').trim() ? html`
+              <label class="plain-checkbox-label" style="margin-top: 0.5rem;">
+                <input
+                  type="checkbox"
+                  .checked=${!!this.formData.frontChannelLogoutSessionRequired}
+                  @change=${() => this.toggleFrontChannelLogoutSessionRequired()}
+                />
+                Include session parameters (iss &amp; sid)
+              </label>
+            ` : ''}
+          </div>
+        ` : ''}
+
+        ${this.logoutMode === 'back' ? html`
+          <div class="cred-options">
+            <div style="display: flex; align-items: center; gap: 0.4rem; margin-bottom: var(--spacing-sm);">
+              <label for="client-back-channel-logout-uri" style="margin-bottom: 0;">Back-Channel Logout URI</label>
+              ${this.renderOptionInfo(
+                'back-channel-logout-uri',
+                'Back-Channel Logout URI',
+                html`
+                  <div class="option-tooltip-item">Called directly, server-to-server, when logout is initiated, so this client can revoke its own sessions/tokens without relying on the browser.</div>
+                  <div class="option-tooltip-item">If this client sits behind an edge, use the edge's own back-channel logout endpoint (<code>/logout/backchannel</code>) rather than a client-specific URL — the edge revokes the session for every client routed through it.</div>
+                `,
+                'Back-channel logout URI info',
+              )}
+            </div>
+            <input
+              type="text"
+              id="client-back-channel-logout-uri"
+              class="compact-input ${this.backChannelLogoutUriError ? 'input-error' : ''}"
+              .value=${this.formData.backChannelLogoutUri || ''}
+              @input=${this.handleBackChannelLogoutUriInput}
+              placeholder="https://app.example.com/logout/backchannel"
+            />
+            ${this.backChannelLogoutUriError ? html`
+              <div class="error-message" style="margin-top: 0.5rem;">${this.backChannelLogoutUriError}</div>
+            ` : ''}
+          </div>
+        ` : ''}
+      </div>
+    `;
+  }
+
   private removeRedirectUri(uri: string) {
     this.formData = {
       ...this.formData,
       redirectUris: (this.formData.redirectUris || []).filter(u => u !== uri),
-    };
-  }
-
-  private addAudience() {
-    this.addAudienceValue(this.audienceInput);
-  }
-
-  private addAudienceValue(value: string) {
-    const aud = value.trim();
-    if (!aud) return;
-
-    const audienceError = this.getAudienceEntryValidationError(aud);
-    if (audienceError) {
-      this.audienceError = audienceError;
-      return;
-    }
-
-    this.formData = {
-      ...this.formData,
-      externalAudience: [...(this.formData.externalAudience || []), aud],
-    };
-    this.audienceInput = '';
-    this.audienceError = '';
-    this.audienceSuggestionsOpen = false;
-  }
-
-  private isExistingAudience(audience: string) {
-    return this.availableClientIds.includes(audience);
-  }
-
-  private getAudienceValidationError(audiences: string[]) {
-    const seen = new Set<string>();
-
-    for (const audience of audiences) {
-      const error = this.getAudienceReferenceValidationError(audience);
-      if (error) {
-        return error;
-      }
-
-      if (seen.has(audience)) {
-        return 'Audience has already been added';
-      }
-
-      seen.add(audience);
-    }
-
-    return '';
-  }
-
-  private getAudienceEntryValidationError(audience: string) {
-    const referenceError = this.getAudienceReferenceValidationError(audience);
-    if (referenceError) {
-      return referenceError;
-    }
-
-    if ((this.formData.externalAudience || []).includes(audience)) {
-      return 'Audience has already been added';
-    }
-
-    return '';
-  }
-
-  private getAudienceReferenceValidationError(audience: string) {
-    if (audience === this.formData.id?.trim()) {
-      return 'Audience cannot reference the client itself';
-    }
-
-    if (!this.isExistingAudience(audience)) {
-      return 'Audience must reference an existing client in this tenant';
-    }
-
-    return '';
-  }
-
-  private handleAudienceInput(e: Event) {
-    this.audienceInput = (e.target as HTMLInputElement).value;
-    this.clearAudienceBlurTimeout();
-    this.audienceSuggestionsOpen = true;
-    if (this.audienceError) {
-      this.audienceError = '';
-    }
-  }
-
-  private handleAudienceFocus() {
-    this.clearAudienceBlurTimeout();
-    this.audienceSuggestionsOpen = true;
-  }
-
-  private handleAudienceBlur() {
-    this.clearAudienceBlurTimeout();
-    this.audienceBlurTimeout = window.setTimeout(() => {
-      this.audienceSuggestionsOpen = false;
-      this.audienceBlurTimeout = null;
-    }, 120);
-  }
-
-  private clearAudienceBlurTimeout() {
-    if (this.audienceBlurTimeout !== null) {
-      window.clearTimeout(this.audienceBlurTimeout);
-      this.audienceBlurTimeout = null;
-    }
-  }
-
-  private selectAudience(audience: string) {
-    this.clearAudienceBlurTimeout();
-    this.addAudienceValue(audience);
-  }
-
-  private get filteredAudienceOptions() {
-    const selectedAudiences = new Set(this.formData.externalAudience || []);
-    const currentClientId = this.formData.id?.trim() || '';
-    const query = this.audienceInput.trim().toLowerCase();
-
-    return this.availableClientIds
-      .filter(audience => {
-        if (selectedAudiences.has(audience) || audience === currentClientId) {
-          return false;
-        }
-
-        return !query || audience.toLowerCase().includes(query);
-      })
-      .sort((a, b) => a.localeCompare(b));
-  }
-
-  private removeAudience(aud: string) {
-    this.formData = {
-      ...this.formData,
-      externalAudience: (this.formData.externalAudience || []).filter(a => a !== aud),
     };
   }
 
@@ -1042,6 +1193,10 @@ export class VersolaClientForm extends LitElement {
   }
 
   private toggleScope(scope: string) {
+    if (scope === 'openid' && !this.hasAuthFlow) {
+      return;
+    }
+
     const scopes = this.formData.scope || [];
     this.formData = {
       ...this.formData,
@@ -1066,7 +1221,15 @@ export class VersolaClientForm extends LitElement {
   }
 
   private toggleAuthFlowEnabled() {
-    this.formData = { ...this.formData, authFlow: this.hasAuthFlow ? null : createDefaultAuthFlow() };
+    const enablingAuthFlow = !this.hasAuthFlow;
+    this.formData = {
+      ...this.formData,
+      authFlow: enablingAuthFlow ? createDefaultAuthFlow() : null,
+      registrationFlow: enablingAuthFlow ? this.formData.registrationFlow ?? null : null,
+      scope: enablingAuthFlow
+        ? (this.formData.scope || [])
+        : (this.formData.scope || []).filter(scope => scope !== 'openid'),
+    };
     if (this.authFlowError) {
       this.authFlowError = '';
     }
@@ -1076,8 +1239,32 @@ export class VersolaClientForm extends LitElement {
     return this.formData.authFlow ?? createDefaultAuthFlow();
   }
 
+  private get otpTemplateOptions(): OtpTemplateRecord[] {
+    return this.availableOtpTemplates.filter(template =>
+      (template.purpose ?? 'otp') === 'otp'
+      && (template.channel ?? 'sms') === this.otpChannel,
+    );
+  }
+
+  private get selectedOtpTemplateId(): string {
+    const current = this.formData.otpTemplateId;
+    return this.otpTemplateOptions.some(template => template.id === current)
+      ? current!
+      : this.otpTemplateOptions[0]?.id ?? current ?? 'default';
+  }
+
   private setAuthFlow(patch: Partial<AuthFlow>) {
-    this.formData = { ...this.formData, authFlow: { ...this.authFlow, ...patch } };
+    const nextAuthFlow = { ...this.authFlow, ...patch };
+    const nextCredential = nextAuthFlow.primaryCredentials.find(
+      credential => credential === 'phone' || credential === 'email',
+    ) as RegistrationCredential | undefined;
+    this.formData = {
+      ...this.formData,
+      authFlow: nextAuthFlow,
+      registrationFlow: this.formData.registrationFlow && nextCredential
+        ? { ...this.formData.registrationFlow, credential: nextCredential }
+        : this.formData.registrationFlow,
+    };
     if (this.authFlowError) {
       this.authFlowError = '';
     }
@@ -1096,34 +1283,124 @@ export class VersolaClientForm extends LitElement {
     return '';
   }
 
+  /** Registration needs a phone/email entry credential to prove ownership of. */
+  private get registrationSupported(): boolean {
+    return this.hasAuthFlow && this.credentialMode === 'phone-email' && !this.authFlow.inlinePassword;
+  }
+
+  private get hasRegistrationFlow(): boolean {
+    return this.formData.registrationFlow != null;
+  }
+
+  private get registrationFlow(): RegistrationFlow {
+    return this.formData.registrationFlow ?? createDefaultRegistrationFlow();
+  }
+
+  private setRegistrationFlow(patch: Partial<RegistrationFlow>) {
+    this.formData = {
+      ...this.formData,
+      registrationFlow: { ...this.registrationFlow, ...patch },
+    };
+  }
+
+  /** The optional challenge that follows OTP; the admin picks at most one. */
+  private get registrationChallenge(): 'none' | 'setPassword' | 'passkeyEnroll' {
+    const challenge = this.registrationFlow.steps.find(step => step.type !== 'otp');
+    return (challenge?.type as 'setPassword' | 'passkeyEnroll') ?? 'none';
+  }
+
+  private setRegistrationChallenge(challenge: 'none' | 'setPassword' | 'passkeyEnroll') {
+    const steps: { type: RegistrationStepType }[] = [{ type: 'otp' }];
+    if (challenge !== 'none') steps.push({ type: challenge });
+    this.setRegistrationFlow({ steps });
+  }
+
+  private toggleRegistrationEnabled() {
+    this.formData = {
+      ...this.formData,
+      registrationFlow: this.hasRegistrationFlow ? null : createDefaultRegistrationFlow(),
+    };
+  }
+
+  private toggleRegistrationRole(roleId: string) {
+    const roleIds = this.registrationFlow.roleIds;
+    this.setRegistrationFlow({
+      roleIds: roleIds.includes(roleId)
+        ? roleIds.filter(id => id !== roleId)
+        : [...roleIds, roleId],
+    });
+  }
+
+  private get hasConsentFlow(): boolean {
+    return this.formData.consentFlow != null;
+  }
+
+  private get consentFlow(): ConsentFlow {
+    return this.formData.consentFlow ?? createDefaultConsentFlow();
+  }
+
+  private setConsentFlow(patch: Partial<ConsentFlow>) {
+    this.formData = {
+      ...this.formData,
+      consentFlow: { ...this.consentFlow, ...patch },
+    };
+  }
+
+  private toggleConsentEnabled() {
+    this.formData = {
+      ...this.formData,
+      consentFlow: this.hasConsentFlow ? null : createDefaultConsentFlow(),
+    };
+  }
+
+  /** `null` remembers the grant until it is revoked; a number expires it after that many days. */
+  private get consentRemember(): 'forever' | 'days' {
+    return this.consentFlow.rememberDurationDays == null ? 'forever' : 'days';
+  }
+
+  private setConsentRemember(mode: 'forever' | 'days') {
+    this.setConsentFlow({ rememberDurationDays: mode === 'forever' ? null : 180 });
+  }
+
   private get credentialMode(): 'phone-email' | 'login-password' {
     if (this.authFlow.primaryCredentials.includes('login')) return 'login-password';
     return 'phone-email';
   }
 
-  private selectPhoneEmailMode() {
-    if (this.credentialMode === 'phone-email') return;
-    const preserved = this.authFlow.primaryCredentials.filter(c => c !== 'login');
-    const next = preserved.length > 0 ? preserved : ['email' as PrimaryCredential];
+  private selectPhoneEmailMode(credential: 'email' | 'phone') {
+    const otpType = credential === 'email' ? 'email' : 'sms';
+    if (
+      this.credentialMode === 'phone-email'
+      && this.authFlow.primaryCredentials.includes(credential)
+      && this.authFlow.otpType === otpType
+    ) return;
     const real = this.realFactors.length > 0
       ? this.realFactors.map(f => ({ ...f, required: true }))
       : [{ type: 'otp' as AuthFactorType, required: true }];
-    this.setAuthFlow({ primaryCredentials: next, inlinePassword: false, factors: this.withPasskeyEnroll(real) });
+    this.setAuthFlow({
+      primaryCredentials: [credential],
+      otpType,
+      inlinePassword: false,
+      factors: this.withPasskeyEnroll(real),
+    });
   }
 
   private selectLoginPasswordMode() {
     if (this.credentialMode === 'login-password') return;
     const otp = this.realFactors.find(f => f.type === 'otp');
-    this.setAuthFlow({ primaryCredentials: ['login'], inlinePassword: true, factors: this.withPasskeyEnroll(otp ? [otp] : []) });
+    this.setAuthFlow({
+      primaryCredentials: ['login'],
+      otpType: this.authFlow.otpType ?? 'sms',
+      inlinePassword: true,
+      factors: this.withPasskeyEnroll(otp ? [otp] : []),
+    });
+    // Registration has no credential to verify in a login+password flow.
+    this.formData = { ...this.formData, registrationFlow: null };
   }
 
-  private togglePhoneEmailCredential(credential: 'email' | 'phone') {
-    const current = this.authFlow.primaryCredentials;
-    const next = current.includes(credential)
-      ? current.filter(c => c !== credential)
-      : [...current, credential];
-    if (next.length === 0) return;
-    this.setAuthFlow({ primaryCredentials: next });
+  private setOtpType(otpType: 'sms' | 'email') {
+    if (this.otpChannelLocked) return;
+    this.setAuthFlow({ otpType });
   }
 
   private toggleInlinePassword() {
@@ -1175,6 +1452,23 @@ export class VersolaClientForm extends LitElement {
 
   private get passkeyOtpEnabled(): boolean {
     return (this.authFlow.passkeyFactors ?? []).some(f => f.type === 'otp');
+  }
+
+  private get otpSettingsVisible(): boolean {
+    return this.hasAuthFlow
+      && (this.realFactors.some(f => f.type === 'otp')
+        || (this.authFlow.passkey && this.passkeyOtpEnabled));
+  }
+
+  private get otpChannelLocked(): boolean {
+    return this.authFlow.primaryCredentials.includes('email')
+      || this.authFlow.primaryCredentials.includes('phone');
+  }
+
+  private get otpChannel(): 'sms' | 'email' {
+    if (this.authFlow.primaryCredentials.includes('email')) return 'email';
+    if (this.authFlow.primaryCredentials.includes('phone')) return 'sms';
+    return this.authFlow.otpType;
   }
 
   private get passkeyOtpRequired(): boolean {
@@ -1251,9 +1545,6 @@ export class VersolaClientForm extends LitElement {
   }
 
   render() {
-    const filteredAudienceOptions = this.filteredAudienceOptions;
-    const showAudienceSuggestions = this.audienceSuggestionsOpen && (!!this.audienceInput.trim() || filteredAudienceOptions.length > 0);
-
     return html`
       <div class="form-header">
         <div class="form-header-lead">
@@ -1287,231 +1578,28 @@ export class VersolaClientForm extends LitElement {
             ` : ''}
 
             <div class="form-group">
-              <label for="client-name">Client Name *</label>
-              <input
-                type="text"
-                id="client-name"
-                class="compact-input"
-                .value=${this.formData.clientName || ''}
-                @input=${(e: Event) => this.formData = { ...this.formData, clientName: (e.target as HTMLInputElement).value }}
-                required
-                placeholder="e.g., My Web Application"
-              />
-            </div>
-
-            <div class="form-group">
-              <label for="client-theme">Theme</label>
-              <select
-                id="client-theme"
-                class="compact-input"
-                .value=${this.formData.theme || 'default'}
-                @change=${(e: Event) => this.formData = { ...this.formData, theme: (e.target as HTMLSelectElement).value }}
-              >
-                ${this.availableThemes.length === 0
-                  ? html`<option value="default">Default</option>`
-                  : this.availableThemes.map(t => html`
-                    <option value=${t.id} ?selected=${(this.formData.theme || 'default') === t.id}>${t.id}</option>
-                  `)}
-              </select>
-            </div>
-
-            <div class="form-group">
-              <label for="client-otp-template">OTP Template</label>
-              <select
-                id="client-otp-template"
-                class="compact-input"
-                .value=${this.formData.otpTemplateId || ''}
-                @change=${(e: Event) => {
-                  const val = (e.target as HTMLSelectElement).value;
-                  this.formData = { ...this.formData, otpTemplateId: val || null };
+              <div style="display: flex; align-items: center; gap: 0.4rem;">
+                <label style="margin-bottom: 0;" for="client-name">Client Name *</label>
+                ${this.renderOptionInfo(
+                  'client-name-consent',
+                  'Consent screen client name',
+                  html`<div class="option-tooltip-item">Shown to the user on the consent screen. Each locale can have its own name.</div>`,
+                  'Consent display info',
+                )}
+              </div>
+              <versola-localized-text-editor
+                .value=${this.formData.clientName || { en: '' }}
+                .locales=${this.locales}
+                fieldId="client-name"
+                label="Client Name"
+                .required=${true}
+                .showLabel=${false}
+                .showRequiredIndicator=${true}
+                @localized-change=${(e: CustomEvent<{ value: Record<string, string> }>) => this.formData = {
+                  ...this.formData,
+                  clientName: e.detail.value,
                 }}
-              >
-                ${this.availableOtpTemplates.length === 0 ? html`
-                  <option value="" disabled selected>— No templates loaded —</option>
-                ` : this.availableOtpTemplates.map(t => html`
-                  <option value=${t.id} ?selected=${this.formData.otpTemplateId === t.id}>${t.id}</option>
-                `)}
-              </select>
-            </div>
-
-            <div class="form-group">
-              <label style="margin-bottom: 0;">Logout Notification</label>
-              <div class="cred-mode-cards">
-                <button
-                  type="button"
-                  class=${`cred-mode-card ${this.logoutMode === 'none' ? 'selected' : ''}`}
-                  @click=${() => this.setLogoutMode('none')}
-                >none</button>
-                <button
-                  type="button"
-                  class=${`cred-mode-card ${this.logoutMode === 'front' ? 'selected' : ''}`}
-                  @click=${() => this.setLogoutMode('front')}
-                >front-channel</button>
-                <button
-                  type="button"
-                  class=${`cred-mode-card ${this.logoutMode === 'back' ? 'selected' : ''}`}
-                  @click=${() => this.setLogoutMode('back')}
-                >back-channel</button>
-              </div>
-              <div class="hint">How this client is notified when the session ends elsewhere. Choose one.</div>
-
-              ${this.logoutMode === 'front' ? html`
-                <div class="cred-options">
-                  <div style="display: flex; align-items: center; gap: 0.4rem; margin-bottom: var(--spacing-sm);">
-                    <label for="client-front-channel-logout-uri" style="margin-bottom: 0;">Front-Channel Logout URI</label>
-                    ${this.renderOptionInfo(
-                      'front-channel-logout-uri',
-                      'Front-Channel Logout URI',
-                      html`
-                        <div class="option-tooltip-item">Loaded by the browser in a hidden iframe when logout is initiated, so this client can clear its own local session/cookies in response.</div>
-                        <div class="option-tooltip-item">If this client sits behind an edge, use the edge's own front-channel logout endpoint (<code>/logout/frontchannel</code>) rather than a client-specific URL — the edge clears the session for every client routed through it.</div>
-                      `,
-                      'Front-channel logout URI info',
-                    )}
-                  </div>
-                  <input
-                    type="text"
-                    id="client-front-channel-logout-uri"
-                    class="compact-input ${this.frontChannelLogoutUriError ? 'input-error' : ''}"
-                    .value=${this.formData.frontChannelLogoutUri || ''}
-                    @input=${this.handleFrontChannelLogoutUriInput}
-                    placeholder="https://app.example.com/logout/frontchannel"
-                  />
-                  ${this.frontChannelLogoutUriError ? html`
-                    <div class="error-message" style="margin-top: 0.5rem;">${this.frontChannelLogoutUriError}</div>
-                  ` : html`
-                    <div class="hint">Loaded in a hidden iframe to notify this client when the session ends elsewhere.</div>
-                  `}
-                  ${(this.formData.frontChannelLogoutUri || '').trim() ? html`
-                    <label class="plain-checkbox-label" style="margin-top: 0.5rem;">
-                      <input
-                        type="checkbox"
-                        .checked=${!!this.formData.frontChannelLogoutSessionRequired}
-                        @change=${() => this.toggleFrontChannelLogoutSessionRequired()}
-                      />
-                      Include session parameters (iss &amp; sid)
-                    </label>
-                  ` : ''}
-                </div>
-              ` : ''}
-
-              ${this.logoutMode === 'back' ? html`
-                <div class="cred-options">
-                  <div style="display: flex; align-items: center; gap: 0.4rem; margin-bottom: var(--spacing-sm);">
-                    <label for="client-back-channel-logout-uri" style="margin-bottom: 0;">Back-Channel Logout URI</label>
-                    ${this.renderOptionInfo(
-                      'back-channel-logout-uri',
-                      'Back-Channel Logout URI',
-                      html`
-                        <div class="option-tooltip-item">Called directly, server-to-server, when logout is initiated, so this client can revoke its own sessions/tokens without relying on the browser.</div>
-                        <div class="option-tooltip-item">If this client sits behind an edge, use the edge's own back-channel logout endpoint (<code>/logout/backchannel</code>) rather than a client-specific URL — the edge revokes the session for every client routed through it.</div>
-                      `,
-                      'Back-channel logout URI info',
-                    )}
-                  </div>
-                  <input
-                    type="text"
-                    id="client-back-channel-logout-uri"
-                    class="compact-input ${this.backChannelLogoutUriError ? 'input-error' : ''}"
-                    .value=${this.formData.backChannelLogoutUri || ''}
-                    @input=${this.handleBackChannelLogoutUriInput}
-                    placeholder="https://app.example.com/logout/backchannel"
-                  />
-                  ${this.backChannelLogoutUriError ? html`
-                    <div class="error-message" style="margin-top: 0.5rem;">${this.backChannelLogoutUriError}</div>
-                  ` : html`
-                    <div class="hint">Called server-to-server to notify this client when the session ends elsewhere.</div>
-                  `}
-                </div>
-              ` : ''}
-            </div>
-
-            <div class="form-group">
-              <label>Redirect URIs</label>
-              <div class="array-input-group compact-inline-row">
-                <input
-                  type="text"
-                  class="${this.isRedirectUriInvalid || this.redirectUriError ? 'input-error' : ''}"
-                  .value=${this.redirectUriInput}
-                  @input=${this.handleRedirectUriInput}
-                  @keydown=${(e: KeyboardEvent) => e.key === 'Enter' && (e.preventDefault(), this.addRedirectUri())}
-                  placeholder="https://app.example.com/callback"
-                />
-                <button type="button" class="btn btn-secondary inline-action-button" @click=${this.addRedirectUri}>
-                  Add
-                </button>
-              </div>
-              ${this.redirectUriError ? html`
-                <div class="error-message" style="margin-top: 0.5rem;">${this.redirectUriError}</div>
-              ` : ''}
-              ${(this.formData.redirectUris || []).length > 0 ? html`
-                <div class="tag-list">
-                  ${this.formData.redirectUris!.map(uri => html`
-                    <div class="tag">
-                      <span>${uri}</span>
-                      <button type="button" class="icon-action danger tag-remove" @click=${() => this.removeRedirectUri(uri)} title="Remove redirect URI" aria-label=${`Remove redirect URI ${uri}`}>✕</button>
-                    </div>
-                  `)}
-                </div>
-              ` : ''}
-            </div>
-
-            <div class="form-group">
-              <label for="external-audience">External Audience</label>
-              <div class="autocomplete-wrapper compact-input">
-                <input
-                  type="text"
-                  id="external-audience"
-                  class="${this.audienceError ? 'input-error' : ''}"
-                  .value=${this.audienceInput}
-                  @input=${this.handleAudienceInput}
-                  @focus=${this.handleAudienceFocus}
-                  @blur=${this.handleAudienceBlur}
-                  @keydown=${(e: KeyboardEvent) => {
-                    if (e.key === 'Enter') {
-                      e.preventDefault();
-                      this.addAudience();
-                    }
-
-                    if (e.key === 'Escape') {
-                      this.audienceSuggestionsOpen = false;
-                    }
-                  }}
-                  aria-haspopup="listbox"
-                  aria-expanded=${showAudienceSuggestions ? 'true' : 'false'}
-                  aria-controls="external-audience-options"
-                  placeholder="api-service"
-                  autocomplete="off"
-                />
-              </div>
-              ${showAudienceSuggestions ? html`
-                <div class="autocomplete-dropdown compact-autocomplete-dropdown" id="external-audience-options" role="listbox" aria-label="Available client audiences">
-                  ${filteredAudienceOptions.length > 0 ? filteredAudienceOptions.map(audience => html`
-                    <button
-                      type="button"
-                      class="autocomplete-option"
-                      @mousedown=${(e: MouseEvent) => e.preventDefault()}
-                      @click=${() => this.selectAudience(audience)}
-                      aria-label=${`Select audience ${audience}`}
-                    >${audience}</button>
-                  `) : html`
-                    <div class="autocomplete-empty">No matching clients</div>
-                  `}
-                </div>
-              ` : ''}
-              ${this.audienceError ? html`
-                <div class="error-message" style="margin-top: 0.5rem;">${this.audienceError}</div>
-              ` : ''}
-              ${(this.formData.externalAudience || []).length > 0 ? html`
-                <div class="tag-list">
-                  ${this.formData.externalAudience!.map(aud => html`
-                    <div class="tag">
-                      <span>${aud}</span>
-                      <button type="button" class="icon-action danger tag-remove" @click=${() => this.removeAudience(aud)} title="Remove audience" aria-label=${`Remove audience ${aud}`}>✕</button>
-                    </div>
-                  `)}
-                </div>
-              ` : ''}
+              ></versola-localized-text-editor>
             </div>
 
             <div class="form-group">
@@ -1541,8 +1629,33 @@ export class VersolaClientForm extends LitElement {
               <div class="hint">${ttlToSeconds(this.ttlValue, this.ttlUnit)} seconds</div>
             </div>
 
+            ${this.hasOfflineAccessScope ? html`
+              <div class="form-group">
+                <label for="refresh-token-ttl">Refresh Token TTL (days) *</label>
+                <input
+                  type="number"
+                  id="refresh-token-ttl"
+                  class="compact-input"
+                  .value=${String(this.refreshTokenTtlDays)}
+                  @input=${this.handleRefreshTokenTtlInput}
+                  required
+                  min="1"
+                  step="1"
+                />
+                <div class="hint">${daysToSeconds(this.refreshTokenTtlDays)} seconds</div>
+              </div>
+            ` : ''}
+
             <div class="form-group">
-              <label>OAuth Scopes</label>
+              <div style="display: flex; align-items: center; gap: 0.4rem;">
+                <label style="margin-bottom: 0;">OAuth Scopes</label>
+                ${this.renderOptionInfo(
+                  'scopes-consent',
+                  'Consent screen scopes',
+                  html`<div class="option-tooltip-item">Scope descriptions and their claim descriptions are shown to the user before the authorization code is issued.</div>`,
+                  'OAuth scopes consent info',
+                )}
+              </div>
               <div class="checkbox-group">
                 ${this.availableScopes.map(scope => html`
                   <div class="checkbox-item" @click=${() => this.toggleScope(scope.id)}>
@@ -1550,6 +1663,7 @@ export class VersolaClientForm extends LitElement {
                       type="checkbox"
                       id="scope-${scope.id}"
                       .checked=${(this.formData.scope || []).includes(scope.id)}
+                      ?disabled=${scope.id === 'openid' && !this.hasAuthFlow}
                       @click=${(e: Event) => e.stopPropagation()}
                       @change=${() => this.toggleScope(scope.id)}
                     />
@@ -1601,11 +1715,13 @@ export class VersolaClientForm extends LitElement {
               <div class="flow-subsection">
                 <div class="flow-subtitle">Primary credentials</div>
                 <div class="cred-mode-cards">
-                  <button
-                    type="button"
-                    class=${`cred-mode-card ${this.credentialMode === 'phone-email' ? 'selected' : ''}`}
-                    @click=${() => this.selectPhoneEmailMode()}
-                  >phone or email</button>
+                  ${(['phone', 'email'] as const).map(credential => html`
+                    <button
+                      type="button"
+                      class=${`cred-mode-card ${this.credentialMode === 'phone-email' && this.authFlow.primaryCredentials.includes(credential) ? 'selected' : ''}`}
+                      @click=${() => this.selectPhoneEmailMode(credential)}
+                    >${credential}</button>
+                  `)}
                   <button
                     type="button"
                     class=${`cred-mode-card ${this.credentialMode === 'login-password' ? 'selected' : ''}`}
@@ -1626,21 +1742,6 @@ export class VersolaClientForm extends LitElement {
                     passkey
                   </div>
                 </div>
-
-                ${this.credentialMode === 'phone-email' ? html`
-                  <div class="plain-checkboxes">
-                    ${(['email', 'phone'] as const).map(cred => html`
-                      <label class="plain-checkbox-label">
-                        <input
-                          type="checkbox"
-                          .checked=${this.authFlow.primaryCredentials.includes(cred)}
-                          @change=${() => this.togglePhoneEmailCredential(cred)}
-                        />
-                        ${cred}
-                      </label>
-                    `)}
-                  </div>
-                ` : ''}
 
                 ${this.credentialMode === 'phone-email' ? html`
                   <div class="cred-options">
@@ -1790,10 +1891,336 @@ export class VersolaClientForm extends LitElement {
                   </select>
                 </div>
               </div>
+
               ` : ''}
 
               ${this.authFlowError ? html`<div class="error-message" style="margin-top: 0.5rem;">${this.authFlowError}</div>` : ''}
             </div>
+
+            ${this.registrationSupported ? html`
+              <div class="form-group">
+                <div class="flow-toggle-row">
+                  <label style="margin: 0; line-height: 18px;">Registration</label>
+                  <label class="toggle">
+                    <input
+                      type="checkbox"
+                      .checked=${this.hasRegistrationFlow}
+                      @change=${() => this.toggleRegistrationEnabled()}
+                    />
+                  </label>
+                </div>
+
+                ${this.hasRegistrationFlow ? html`
+                  <div class="registration-settings">
+                    <div class="registration-row">
+                      <div class="registration-label">Credential</div>
+                      <div>
+                        <div class="registration-value" aria-label="Registration credential (locked)">
+                          <span>${this.authFlow.primaryCredentials[0]}</span>
+                          <span class="registration-lock" aria-hidden="true" title="Locked">🔒</span>
+                        </div>
+                        <div class="registration-hint">
+                          New users prove ownership of their ${this.authFlow.primaryCredentials[0]} with an OTP.
+                        </div>
+                      </div>
+                    </div>
+
+                    <div class="registration-row">
+                      <label class="registration-label" for="registration-challenge">Challenge</label>
+                      <select
+                        id="registration-challenge"
+                        class="compact-input"
+                        .value=${this.registrationChallenge}
+                        @change=${(e: Event) =>
+                          this.setRegistrationChallenge((e.target as HTMLSelectElement).value as 'none' | 'setPassword' | 'passkeyEnroll')}
+                      >
+                        <option value="none" ?selected=${this.registrationChallenge === 'none'}>none</option>
+                        <option value="setPassword" ?selected=${this.registrationChallenge === 'setPassword'}>set password</option>
+                        <option value="passkeyEnroll" ?selected=${this.registrationChallenge === 'passkeyEnroll'}>enroll passkey</option>
+                      </select>
+                    </div>
+
+                    <div class="registration-row">
+                      <div class="registration-label">Assigned roles *</div>
+                      <div>
+                        <div class="registration-role-list" role="group" aria-label="Assigned roles">
+                          ${this.availableRoles.length === 0
+                            ? this.registrationFlow.roleIds.map(roleId => html`
+                              <label class="plain-checkbox-label">
+                                <input type="checkbox" checked disabled />
+                                ${roleId}
+                              </label>
+                            `)
+                            : this.availableRoles.map(role => {
+                              const checked = this.registrationFlow.roleIds.includes(role.id);
+                              return html`
+                                <label class="plain-checkbox-label">
+                                  <input
+                                    type="checkbox"
+                                    .checked=${checked}
+                                    ?disabled=${checked && this.registrationFlow.roleIds.length === 1}
+                                    @change=${() => this.toggleRegistrationRole(role.id)}
+                                  />
+                                  ${role.id}
+                                </label>
+                              `;
+                            })}
+                        </div>
+                        <div class="registration-hint">Granted once, when the account is created.</div>
+                      </div>
+                    </div>
+                  </div>
+                ` : ''}
+              </div>
+            ` : ''}
+
+            ${this.hasAuthFlow ? html`
+              <div class="form-group">
+                <div class="flow-toggle-row">
+                  <label style="margin: 0; line-height: 18px;">Consent</label>
+                  ${this.renderOptionInfo(
+                    'consent',
+                    'Consent screen',
+                    html`<div class="option-tooltip-item">Shows the user which scopes the client is requesting before an authorization code is issued.</div>`,
+                    'Consent settings info',
+                  )}
+                  <label class="toggle">
+                    <input
+                      type="checkbox"
+                      .checked=${this.hasConsentFlow}
+                      @change=${() => this.toggleConsentEnabled()}
+                    />
+                  </label>
+                </div>
+
+                ${this.hasConsentFlow ? html`
+                  <div class="registration-settings">
+                    <div class="registration-row">
+                      <div class="registration-label consent-property-label">
+                        <span>Partial grants</span>
+                        ${this.renderOptionInfo(
+                          'consent-allow-partial',
+                          'Partial grants',
+                          html`<div class="option-tooltip-item">Allows the user to deselect optional scopes and approve only a subset of the requested access.</div>`,
+                          'Partial grants consent info',
+                        )}
+                      </div>
+                      <div>
+                        <label class="plain-checkbox-label">
+                          <input
+                            type="checkbox"
+                            .checked=${this.consentFlow.allowPartial}
+                            @change=${(e: Event) => this.setConsentFlow({ allowPartial: (e.target as HTMLInputElement).checked })}
+                          />
+                          Let the user deselect optional scopes
+                        </label>
+                        <div class="registration-hint"><code>openid</code> and <code>offline_access</code> can never be deselected.</div>
+                      </div>
+                    </div>
+
+                    <div class="registration-row">
+                      <div class="registration-label consent-property-label">
+                        <label for="consent-remember">Remember</label>
+                        ${this.renderOptionInfo(
+                          'consent-remember',
+                          'Remember grant',
+                          html`<div class="option-tooltip-item">Controls how long a previously approved grant can be reused without showing the consent screen again. A grant is always re-requested if the requested scopes grow.</div>`,
+                          'Remember consent info',
+                        )}
+                      </div>
+                      <div>
+                        <div class="consent-remember-row">
+                          <select
+                            id="consent-remember"
+                            class="compact-input"
+                            .value=${this.consentRemember}
+                            @change=${(e: Event) => this.setConsentRemember((e.target as HTMLSelectElement).value as 'forever' | 'days')}
+                          >
+                            <option value="forever" ?selected=${this.consentRemember === 'forever'}>until revoked</option>
+                            <option value="days" ?selected=${this.consentRemember === 'days'}>for a period</option>
+                          </select>
+                          ${this.consentRemember === 'days' ? html`
+                            <input
+                              class="compact-input"
+                              type="number"
+                              min="1"
+                              aria-label="Remember duration in days"
+                              .value=${String(this.consentFlow.rememberDurationDays ?? 30)}
+                              @input=${(e: Event) => this.setConsentFlow({
+                                rememberDurationDays: parseInt((e.target as HTMLInputElement).value, 10) || 1,
+                              })}
+                            />
+                            <span class="registration-hint">days</span>
+                          ` : ''}
+                        </div>
+                        <div class="registration-hint">A widened scope always re-asks, however long the grant is remembered.</div>
+                      </div>
+                    </div>
+
+                    <div class="registration-row">
+                      <div class="registration-label consent-property-label">
+                        <label for="consent-logo-uri">Logo URI</label>
+                        ${this.renderOptionInfo(
+                          'consent-logo-uri',
+                          'Logo URI',
+                          html`<div class="option-tooltip-item">An image URL displayed on the consent screen next to the client name.</div>`,
+                          'Consent logo URI info',
+                        )}
+                      </div>
+                      <div>
+                        <input
+                          id="consent-logo-uri"
+                          class=${`compact-input consent-uri-input ${this.logoUriError ? 'input-error' : ''}`}
+                          type="url"
+                          placeholder="https://example.com/logo.png"
+                          .value=${this.formData.logoUri || ''}
+                          @input=${(e: Event) => { this.formData = { ...this.formData, logoUri: (e.target as HTMLInputElement).value }; this.logoUriError = ''; }}
+                        />
+                        ${this.logoUriError ? html`<div class="error-message">${this.logoUriError}</div>` : ''}
+                        <div class="registration-hint">Shown on the consent screen next to the client name.</div>
+                      </div>
+                    </div>
+
+                    <div class="registration-row">
+                      <div class="registration-label consent-property-label">
+                        <label for="consent-policy-uri">Privacy policy</label>
+                        ${this.renderOptionInfo(
+                          'consent-policy-uri',
+                          'Privacy policy',
+                          html`<div class="option-tooltip-item">A link to the privacy policy that the user can open from the consent screen.</div>`,
+                          'Privacy policy consent info',
+                        )}
+                      </div>
+                      <div>
+                        <input
+                          id="consent-policy-uri"
+                          class=${`compact-input consent-uri-input ${this.policyUriError ? 'input-error' : ''}`}
+                          type="url"
+                          placeholder="https://example.com/privacy"
+                          .value=${this.formData.policyUri || ''}
+                          @input=${(e: Event) => { this.formData = { ...this.formData, policyUri: (e.target as HTMLInputElement).value }; this.policyUriError = ''; }}
+                        />
+                        ${this.policyUriError ? html`<div class="error-message">${this.policyUriError}</div>` : ''}
+                      </div>
+                    </div>
+
+                    <div class="registration-row">
+                      <div class="registration-label consent-property-label">
+                        <label for="consent-tos-uri">Terms of service</label>
+                        ${this.renderOptionInfo(
+                          'consent-tos-uri',
+                          'Terms of service',
+                          html`<div class="option-tooltip-item">A link to the terms of service that the user can open from the consent screen.</div>`,
+                          'Terms of service consent info',
+                        )}
+                      </div>
+                      <div>
+                        <input
+                          id="consent-tos-uri"
+                          class=${`compact-input consent-uri-input ${this.tosUriError ? 'input-error' : ''}`}
+                          type="url"
+                          placeholder="https://example.com/terms"
+                          .value=${this.formData.tosUri || ''}
+                          @input=${(e: Event) => { this.formData = { ...this.formData, tosUri: (e.target as HTMLInputElement).value }; this.tosUriError = ''; }}
+                        />
+                        ${this.tosUriError ? html`<div class="error-message">${this.tosUriError}</div>` : ''}
+                      </div>
+                    </div>
+                  </div>
+                ` : ''}
+              </div>
+            ` : ''}
+
+            ${this.otpSettingsVisible ? html`
+              <div class="form-group">
+                <div class="flow-subsection otp-settings-section">
+                  <div class="flow-subtitle otp-settings-title">OTP Settings</div>
+                  <div class="otp-settings-grid">
+                    <div>
+                      <label class="otp-settings-label" for="client-otp-template">OTP Template</label>
+                      <select
+                        id="client-otp-template"
+                        class="compact-input"
+                        .value=${this.selectedOtpTemplateId}
+                        @change=${(e: Event) => {
+                          const val = (e.target as HTMLSelectElement).value;
+                          this.formData = { ...this.formData, otpTemplateId: val || null };
+                        }}
+                      >
+                        ${this.otpTemplateOptions.length === 0 ? html`
+                          <option value="" disabled selected>— No templates loaded —</option>
+                        ` : this.otpTemplateOptions.map(t => html`
+                          <option value=${t.id} ?selected=${this.selectedOtpTemplateId === t.id}>${t.id}</option>
+                        `)}
+                      </select>
+                    </div>
+                    <div>
+                      <label class="otp-settings-label" for="client-otp-channel">OTP channel</label>
+                      <select
+                        id="client-otp-channel"
+                        class="compact-input"
+                        .value=${this.otpChannel}
+                        ?disabled=${this.otpChannelLocked}
+                        @change=${(e: Event) => this.setOtpType((e.target as HTMLSelectElement).value as 'sms' | 'email')}
+                      >
+                        <option value="sms">sms</option>
+                        <option value="email">email</option>
+                      </select>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ` : ''}
+
+            ${this.hasAuthFlow ? html`
+            <div class="form-group">
+              <label for="client-theme">Forms Theme</label>
+              <select
+                id="client-theme"
+                class="compact-input"
+                .value=${this.formData.theme || 'default'}
+                @change=${(e: Event) => this.formData = { ...this.formData, theme: (e.target as HTMLSelectElement).value }}
+              >
+                ${this.availableThemes.length === 0
+                  ? html`<option value="default">Default</option>`
+                  : this.availableThemes.map(t => html`
+                    <option value=${t.id} ?selected=${(this.formData.theme || 'default') === t.id}>${t.id}</option>
+                  `)}
+              </select>
+            </div>
+
+            <div class="form-group">
+              <label>Redirect URIs</label>
+              <div class="array-input-group compact-inline-row">
+                <input
+                  type="text"
+                  class="${this.isRedirectUriInvalid || this.redirectUriError ? 'input-error' : ''}"
+                  .value=${this.redirectUriInput}
+                  @input=${this.handleRedirectUriInput}
+                  @keydown=${(e: KeyboardEvent) => e.key === 'Enter' && (e.preventDefault(), this.addRedirectUri())}
+                  placeholder="https://app.example.com/callback"
+                />
+                <button type="button" class="btn btn-secondary inline-action-button" @click=${this.addRedirectUri}>
+                  Add
+                </button>
+              </div>
+              ${this.redirectUriError ? html`
+                <div class="error-message" style="margin-top: 0.5rem;">${this.redirectUriError}</div>
+              ` : ''}
+              ${(this.formData.redirectUris || []).length > 0 ? html`
+                <div class="tag-list">
+                  ${this.formData.redirectUris!.map(uri => html`
+                    <div class="tag">
+                      <span>${uri}</span>
+                      <button type="button" class="icon-action danger tag-remove" @click=${() => this.removeRedirectUri(uri)} title="Remove redirect URI" aria-label=${`Remove redirect URI ${uri}`}>✕</button>
+                    </div>
+                  `)}
+                </div>
+              ` : ''}
+            </div>
+            ` : ''}
+
+            ${this.hasAuthFlow ? this.renderLogoutSettings() : ''}
           </div>
 
           <div class="form-actions">

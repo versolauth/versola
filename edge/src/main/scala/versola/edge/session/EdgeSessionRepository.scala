@@ -13,8 +13,11 @@ trait EdgeSessionRepository:
 
   def delete(accessTokenId: AccessTokenId): Task[Unit]
 
-  /** Deletes every participation row for `sid` and returns the deleted records, so callers
-    * can enumerate the presets that participated without a separate lookup. Ignores expiry:
-    * a lapsed row still identifies a preset whose cookie must be cleared.
+  /** Every participation row for `sid`, so callers can enumerate the presets that took part
+    * in the SSO session. Ignores expiry: a lapsed row still identifies a preset whose cookie
+    * must be cleared.
+    *
+    * A logout reads these rather than deleting them — what stops the session from being
+    * honoured is its revocation, not the absence of a row, and the rows expire on their own.
     */
-  def deleteBySessionId(sid: SessionId): Task[List[EdgeSessionRecord]]
+  def findBySessionId(sid: SessionId): Task[List[EdgeSessionRecord]]

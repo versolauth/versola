@@ -1,7 +1,7 @@
 package versola.oauth.challenge.passkey
 
 import com.augustnagro.magnum.magzio.TransactorZIO
-import versola.auth.model.{AuthenticatorTransport, CredentialDeviceType, CredentialId, PasskeyRecord}
+import versola.auth.model.{AuthenticatorTransport, CredentialDeviceType, CredentialId, PasskeyName, PasskeyRecord}
 import versola.user.model.UserId
 import versola.util.DatabaseSpecBase
 import zio.*
@@ -24,7 +24,7 @@ trait PasskeyRepositorySpec extends DatabaseSpecBase[PasskeyRepositorySpec.Env]:
   def record(
       id: CredentialId,
       userId: UserId,
-      name: Option[String] = Some("My Key"),
+      name: Option[PasskeyName] = Some(PasskeyName("My Key")),
       createdAt: Instant = baseInstant,
   ) = PasskeyRecord(
     id = id,
@@ -75,11 +75,11 @@ trait PasskeyRepositorySpec extends DatabaseSpecBase[PasskeyRepositorySpec.Env]:
       },
       test("listByUser returns the user's records ordered by created_at") {
         for
-          _ <- env.repository.insert(record(credId2, userId1, name = Some("second"), createdAt = baseInstant.plusSeconds(60)))
-          _ <- env.repository.insert(record(credId1, userId1, name = Some("first"), createdAt = baseInstant))
-          _ <- env.repository.insert(record(CredentialId(Array.fill(32)(3.toByte)), userId2, name = Some("other")))
+          _ <- env.repository.insert(record(credId2, userId1, name = Some(PasskeyName("second")), createdAt = baseInstant.plusSeconds(60)))
+          _ <- env.repository.insert(record(credId1, userId1, name = Some(PasskeyName("first")), createdAt = baseInstant))
+          _ <- env.repository.insert(record(CredentialId(Array.fill(32)(3.toByte)), userId2, name = Some(PasskeyName("other"))))
           found <- env.repository.listByUser(userId1)
-        yield assertTrue(found.map(_.name) == Vector(Some("first"), Some("second")))
+        yield assertTrue(found.map(_.name) == Vector(Some(PasskeyName("first")), Some(PasskeyName("second"))))
       },
       test("updateUsage updates signature counter and last used timestamp") {
         val usedAt = baseInstant.plusSeconds(120)
@@ -124,15 +124,15 @@ trait PasskeyRepositorySpec extends DatabaseSpecBase[PasskeyRepositorySpec.Env]:
       },
       test("rename updates the name when the user matches") {
         for
-          _ <- env.repository.insert(record(credId1, userId1, name = Some("orig")))
-          _ <- env.repository.rename(credId1, userId1, Some("renamed"))
+          _ <- env.repository.insert(record(credId1, userId1, name = Some(PasskeyName("orig"))))
+          _ <- env.repository.rename(credId1, userId1, Some(PasskeyName("renamed")))
           found <- env.repository.findByCredentialIdAndUser(credId1, userId1)
         yield assertTrue(found.exists(_.name.contains("renamed")))
       },
       test("rename does not change the name when the user does not match") {
         for
-          _ <- env.repository.insert(record(credId1, userId1, name = Some("orig")))
-          _ <- env.repository.rename(credId1, userId2, Some("hacked"))
+          _ <- env.repository.insert(record(credId1, userId1, name = Some(PasskeyName("orig"))))
+          _ <- env.repository.rename(credId1, userId2, Some(PasskeyName("hacked")))
           found <- env.repository.findByCredentialIdAndUser(credId1, userId1)
         yield assertTrue(found.exists(_.name.contains("orig")))
       },

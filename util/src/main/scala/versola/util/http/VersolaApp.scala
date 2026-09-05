@@ -49,27 +49,80 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
 
   def routes: Routes[Dependencies & Tracing & EnvName, Throwable]
 
+  /** Optional second application surface, typically reachable only by internal proxies. */
+  def additionalRoutes: Option[Routes[Dependencies & Tracing & EnvName, Throwable]] = None
+
   def port: Int =
     Option(java.lang.System.getenv("PORT")).flatMap(_.toIntOption).getOrElse(8080)
 
   def diagnosticsPort: Int =
     Option(java.lang.System.getenv("DPORT")).flatMap(_.toIntOption).getOrElse(8081)
 
-  def runMigrations: Boolean =
-    Option(java.lang.System.getenv("RUN_MIGRATIONS")) match
-      case None        => true
+  def additionalPort: Int =
+    Option(java.lang.System.getenv("APORT")).flatMap(_.toIntOption).getOrElse(8082)
+
+  // Defaults to every interface, same as zio-http's own Server.Config.default
+  // -- needed for docker-local, where this process's own 0.0.0.0 inside the
+  // container is what makes Compose's port-publish reach it at all (same
+  // reasoning as OpenBao's listener -- see openbao.hcl.template's comment).
+  // vps overrides this to "127.0.0.1": with `network_mode: host` there's no
+  // publish step to restrict exposure on the other side, so 0.0.0.0 there
+  // would put this service directly on the VPS's public interface, reachable
+  // from the whole internet and bypassing nginx's TLS/access control -- not
+  // just central and edge, which nothing outside this host should ever reach
+  // directly, but auth too: its actual public path is through the VPS's
+  // native nginx, which already reaches it via 127.0.0.1 (see deploy.md),
+  // not by connecting to auth's port directly from outside.
+  def bindHost: String =
+    Option(java.lang.System.getenv("BIND_HOST")).getOrElse("0.0.0.0")
+
+  /** Reads a strictly-boolean environment variable, failing on anything that isn't exactly
+    * "true"/"false" rather than silently treating a typo ("True", "1", "yes") as the default. Both
+    * flags below gate whether this process touches the database at all, so guessing at a
+    * misspelled value is exactly the wrong thing to do.
+    *
+    * Deliberately NOT `value.toBooleanOption` -- that delegates to a case-insensitive comparison
+    * (`equalsIgnoreCase`, confirmed by inspecting scala-library's compiled `StringOps`), so it
+    * would accept "True"/"TRUE"/"False" despite this method's doc comment promising it won't
+    * (flagged in review). An exact match against the two literal values is what "strictly
+    * true/false" actually requires.
+    */
+  private def boolEnv(name: String, default: Boolean): Boolean =
+    Option(java.lang.System.getenv(name)) match
+      case None            => default
+      case Some("true")    => true
+      case Some("false")   => false
       case Some(value) =>
-        value.toBooleanOption.getOrElse:
-          throw new IllegalArgumentException(
-            s"RUN_MIGRATIONS must be 'true' or 'false', got: '$value'",
-          )
+        throw new IllegalArgumentException(
+          s"$name must be 'true' or 'false', got: '$value'",
+        )
+
+  /** Whether this process applies database migrations itself on startup.
+    *
+    * False does not mean "skip Flyway" -- it means the schema is validated instead of migrated
+    * (see `PostgresHikariDataSource.layer`), so a deployment whose separate `versola migrate` step
+    * was skipped fails at startup instead of at its first query.
+    *
+    * Defaults to false: applying a schema change should always be the deliberate, explicit
+    * `versola migrate` step (or whatever local setups wire up on their own), never an implicit
+    * side effect of starting a service. Local/dev setups that want the old "just migrate on
+    * boot" convenience should set RUN_MIGRATIONS=true explicitly rather than relying on a
+    * default that production can't safely share.
+    */
+  def runMigrations: Boolean = boolEnv("RUN_MIGRATIONS", default = false)
 
   def serverConfig: Server.Config =
-    Server.Config.default.port(port)
+    Server.Config.default.binding(bindHost, port)
 
   def diagnosticsConfig: Server.Config =
-    Server.Config.default.port(diagnosticsPort)
+    Server.Config.default.binding(bindHost, diagnosticsPort)
 
+  def additionalConfig: Server.Config =
+    Server.Config.default.binding(bindHost, additionalPort)
+
+  // Migrations are no longer ever run by way of starting one of these processes in a special
+  // mode -- see versola-tools' migrate-tool, which applies every service's migrations from one
+  // dedicated image instead (backs `versola migrate`). This always starts the real server.
   override def run: ZIO[Environment & ZIOAppArgs & zio.Scope, Any, Any] = {
     for
       opentelemetry <- ZIO.service[api.OpenTelemetry]
@@ -79,6 +132,7 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
       scope <- ZIO.scope
       readinessService <- ReadinessService.make
       client <- ZIO.service[Client]
+      appDependencies <- dependencies.build
 
       fibers <-
         for
@@ -104,6 +158,34 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
 
       _ <- scope.addFinalizer(fibers.interrupt *> fibers.join.ignore)
 
+      additionalFiber <- ZIO.foreach(additionalRoutes): routes =>
+        for
+          ready <- Promise.make[Throwable, Int]
+          fiber <- {
+            for
+              port <- Server.install {
+                Observability.handleErrors(routes) @@
+                  Observability.middleware
+              }
+              _ <- ready.succeed(port)
+              _ <- ZIO.never
+            yield ()
+          }.provide(
+            ZLayer.succeedEnvironment(appDependencies),
+            Server.live,
+            ZLayer.succeed(additionalConfig),
+            ZLayer.succeed(tracing),
+            ZLayer.succeed(envName),
+          ).onExit {
+            case Exit.Failure(cause) => ready.failCause(cause)
+            case _ => ZIO.unit
+          }.fork
+          port <- ready.await
+          _ <- ZIO.logInfo(s"Additional application server started on port $port")
+        yield fiber
+
+      _ <- ZIO.foreachDiscard(additionalFiber)(fiber => scope.addFinalizer(fiber.interrupt *> fiber.join.ignore))
+
       _ <- {
         for
           _ <- ZIO.logInfo("Starting application server")
@@ -117,32 +199,72 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
           _ <- ZIO.never
         yield ()
       }.provide(
-        dependencies,
+        ZLayer.succeedEnvironment(appDependencies),
         Server.live,
         ZLayer.succeed(serverConfig),
         ZLayer.succeed(tracing),
-        ZLayer.succeed(envConfig),
         ZLayer.succeed(envName),
-        ZLayer.succeed(scope),
-        ZLayer.succeed(client),
       )
     yield ()
   }
     .catchAll { (ex: Throwable) =>
-      // The diagnostics server is forked above onto non-daemon Netty threads that keep the JVM
-      // alive even after startup fails. Merely returning ExitCode.failure here therefore leaves a
-      // "zombie": the process never exits, so `restart: unless-stopped` never fires and /readiness
-      // stays false forever (see deploy.md 8.5). Force-terminate so the orchestrator restarts us -
-      // by then the dependency this startup failed on (e.g. central sync) is typically available.
       ZIO.logErrorCause("Could not start application", Cause.fail(ex)) *>
-        ZIO.succeed(java.lang.System.exit(1))
+        armShutdownWatchdog *> ZIO.fail(ex)
     }
     .catchAllDefect { ex =>
       ZIO.logErrorCause("Could not start application", Cause.die(ex)) *>
-        ZIO.succeed(java.lang.System.exit(1))
+        armShutdownWatchdog *> ZIO.die(ex)
     }
 
-  def parseConfig[A: {DeriveConfig, Tag}] =
+  /** How long `ZIOApp`'s shutdown hook waits for the runtime to drain on SIGTERM before giving up.
+    *
+    * ZIO's default is `Duration.Infinity`, which turns any wedged finalizer (a pool draining a dead
+    * socket, an OTel exporter flushing to an unreachable collector) into a container that never
+    * stops. A finite value bounds that: the hook logs a warning and returns, and the JVM finishes
+    * exiting.
+    */
+  override def gracefulShutdownTimeout: Duration = 15.seconds
+
+  /** Deadline for the failed-startup path, which `gracefulShutdownTimeout` does not cover. */
+  protected def startupFailureShutdownTimeout: Duration = 20.seconds
+
+  /** Arms a hard deadline on the shutdown that follows a failed startup.
+    *
+    * Startup failures re-fail rather than terminating the JVM directly, so that `ZIOApp` unwinds
+    * the scope and finalizers actually run - the Hikari pool gets closed, spans get flushed - and
+    * so that the exit code is `ZIOApp`'s own. Terminating in place (`System.exit`, `halt`, or
+    * `ZIOApp.exit`) skips all of that.
+    *
+    * The risk of unwinding is that a finalizer hangs. Nothing bounds it on this path:
+    * `gracefulShutdownTimeout` guards only the shutdown *hook*, and the JVM would not exit anyway
+    * because the diagnostics server forked above holds non-daemon Netty threads. The container
+    * would then never exit, `restart: unless-stopped` would never fire, and /readiness would stay
+    * false forever (see deploy.md 9.5).
+    *
+    * So: a plain daemon JVM thread that halts once the deadline passes. Not a forked fiber - the
+    * shutdown being guarded is precisely what interrupts fibers, so a fiber watchdog would be
+    * killed by the thing it is watching. Daemon, so a shutdown that completes in time simply takes
+    * it down with the JVM and the halt never happens.
+    */
+  private def armShutdownWatchdog: UIO[Unit] =
+    ZIO.succeed:
+      val timeout = startupFailureShutdownTimeout
+      val watchdog = new Thread(
+        () =>
+          try Thread.sleep(timeout.toMillis)
+          catch case _: InterruptedException => ()
+
+          java.lang.System.err.println(
+            s"Shutdown after failed startup did not complete within ${timeout.render}; halting.",
+          )
+          java.lang.Runtime.getRuntime.halt(1)
+        ,
+        s"$serviceName-shutdown-watchdog",
+      )
+      watchdog.setDaemon(true)
+      watchdog.start()
+
+  def parseConfig[A: {DeriveConfig, Tag}]: ZLayer[ConfigProvider, Config.Error, A] =
     ZLayer:
       ZIO.serviceWithZIO[ConfigProvider](_.load(deriveConfig[A]))
 
@@ -200,10 +322,12 @@ object VersolaApp:
               label("thread", fiberId),
               label("message", quoted(line)) +
                 (space + label("stack_trace", cause)).filter(LogFilter.causeNonEmpty),
-              formats.spanIdLabel,
-              formats.traceIdLabel,
+              label("span_id", formats.spanId),
+              label("trace_id", formats.traceId),
               logAnnotation(Observability.receiveHttp),
               logAnnotation(Observability.sendHttp),
+              logAnnotation(Observability.auth),
+              logAnnotation(Observability.error),
               label("logger", LoggerNameExtractor.loggerNameAnnotationOrTrace.toLogFormat()),
             ).reduce(_ |-| _),
         )

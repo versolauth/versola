@@ -1,6 +1,6 @@
-import { createDefaultAuthFlow } from './helpers';
 import type {
   AuthFlow,
+  AuthorizationDetailType,
   AuthorizationPreset,
   BackendProperty,
   Edge,
@@ -16,6 +16,8 @@ import type {
   OAuthClient,
   OAuthScope,
   Permission,
+  ConsentFlow,
+  RegistrationFlow,
   Resource,
   ResourceEndpoint,
   ResourceEndpointId,
@@ -27,6 +29,7 @@ import type {
 
 export const DEFAULT_PAGE_SIZE = 30;
 const READ_CACHE_TTL_MS = 60_000;
+const DEFAULT_REFRESH_TOKEN_TTL_SECONDS = 90 * 24 * 60 * 60;
 
 // Where to send the browser when a request comes back 401 without a Location
 // header — i.e. there is no session for the edge to reauthenticate, so it can't
@@ -38,7 +41,8 @@ const DEFAULT_LOGIN_URL = '/login/central-admin';
 type LocalizedDescription = Record<string, string>;
 type PagedResult<T> = { items: T[]; total: number; hasNext: boolean };
 type QueryValue = string | number | undefined | null;
-type CentralApiConfig = { baseUrl: string | null; loginUrl: string };
+type ConsoleMode = 'prefix' | 'direct';
+type CentralApiConfig = { baseUrl: string | null; loginUrl: string; consoleMode: ConsoleMode };
 
 type ClientSecretResponse = { secret: string };
 type AuthorizationPresetResponse = {
@@ -55,7 +59,8 @@ type AuthorizationPresetResponse = {
   cookieDomain?: string;
   cookiePath?: string;
 };
-type CreateResourceResponse = { resourceId: string };
+type CreateResourceResponse = { resourceId: string; secret: string | null };
+type RotateResourceSecretResponse = { secret: string };
 type CreateResourceEndpointPayload = Omit<ResourceEndpoint, 'id' | 'allow' | 'stepUpCondition' | 'stepUpAcr' | 'maxAge'> & {
   allow: string | null;
   stepUpCondition: string | null;
@@ -85,7 +90,7 @@ type ResourceEndpointDto = {
   stepUpAcr?: string;
   maxAge?: number;
 };
-type ResourceResponseDto = { resourceId: string; resource: string; endpoints: Array<ResourceEndpointDto & { id: ResourceEndpointId }> };
+type ResourceResponseDto = { resourceId: string; resource: string; audience: string[]; endpoints: Array<ResourceEndpointDto & { id: ResourceEndpointId }>; internal: boolean; secretRotation: boolean };
 
 type EdgeResponseDto = { id: string; hasOldKey?: boolean };
 type EdgesResponse = { edges: EdgeResponseDto[] };
@@ -95,34 +100,47 @@ type TenantsResponse = { tenants: Array<{ id: string; description: string; edgeI
 type PermissionsResponse = { permissions: Array<{ permission: string; description: LocalizedDescription; endpointIds: ResourceEndpointId[] }> };
 type ScopesResponse = { scopes: Array<{ scope: string; description: LocalizedDescription; claims: Array<{ claim: string; description: LocalizedDescription }> }> };
 type BackendAuthFactor = { type: string; required: boolean };
+type BackendRegistrationStep = { type: string };
+type BackendRegistrationFlow = { credential: string; steps: BackendRegistrationStep[]; roleIds: string[] };
 type BackendAuthFlow = {
   primary: { credentials: string[]; inlinePassword: boolean; factors: BackendAuthFactor[] };
   passkey?: { factors: BackendAuthFactor[] } | null;
   equivalents?: Record<string, string[]>;
+  otpType: 'sms' | 'email';
 };
+type BackendConsentFlow = { allowPartial: boolean; rememberDuration?: number | null };
 type ClientsResponse = {
   clients: Array<{
     id: string;
-    clientName: string;
+    clientName: LocalizedDescription;
     redirectUris: string[];
     scope: string[];
-    externalAudience: string[];
     permissions: string[];
     secretRotation: boolean;
+    accessTokenTtl: number;
     theme: string;
     otpTemplateId: string;
     authFlow?: BackendAuthFlow | null;
+    registrationFlow?: BackendRegistrationFlow | null;
     frontChannelLogoutUri?: string | null;
     frontChannelLogoutSessionRequired: boolean;
     backChannelLogoutUri?: string | null;
+    refreshTokenTtl?: number;
+    logoUri?: string | null;
+    policyUri?: string | null;
+    tosUri?: string | null;
+    consentFlow?: BackendConsentFlow | null;
   }>;
 };
 type RolesResponse = { roles: Array<{ id: string; description: LocalizedDescription; permissions: string[]; active: boolean }> };
 type ResourcesResponse = { resources: ResourceResponseDto[] };
+type AuthorizationDetailTypesResponse = {
+  types: Array<{ type: string; description: LocalizedDescription; schema: Record<string, unknown> }>;
+};
 
-const apiConfig: CentralApiConfig = { baseUrl: null, loginUrl: DEFAULT_LOGIN_URL };
+const apiConfig: CentralApiConfig = { baseUrl: null, loginUrl: DEFAULT_LOGIN_URL, consoleMode: 'prefix' };
 const permissionStore = new Map<string, Permission>();
-const clientSupplementStore = new Map<string, { externalAudience: string[]; accessTokenTtl: number; hasPreviousSecret: boolean }>();
+const clientSupplementStore = new Map<string, { accessTokenTtl: number; refreshTokenTtl: number; hasPreviousSecret: boolean }>();
 const roleSupplementStore = new Map<string, { active: boolean; createdAt: string; updatedAt: string }>();
 const readCache = new Map<string, { expiresAt: number; value: unknown }>();
 const inFlightReads = new Map<string, Promise<unknown>>();
@@ -144,6 +162,7 @@ function authFlowToBackend(flow: AuthFlow | null | undefined): BackendAuthFlow |
     },
     passkey: flow.passkey ? { factors: flow.passkeyFactors ?? [] } : null,
     equivalents: flow.equivalents,
+    otpType: flow.otpType,
   };
 }
 
@@ -151,12 +170,70 @@ function authFlowFromBackend(flow: BackendAuthFlow | null | undefined): AuthFlow
   if (!flow) return null;
   return {
     primaryCredentials: flow.primary.credentials as AuthFlow['primaryCredentials'],
+    otpType: flow.otpType,
     inlinePassword: flow.primary.inlinePassword,
     factors: flow.primary.factors as AuthFlow['factors'],
     passkey: flow.passkey != null,
     passkeyFactors: (flow.passkey?.factors ?? []) as AuthFlow['passkeyFactors'],
     equivalents: flow.equivalents ?? {},
   };
+}
+
+function registrationFlowToBackend(flow: RegistrationFlow | null | undefined): BackendRegistrationFlow | null {
+  if (!flow) return null;
+  return {
+    credential: flow.credential,
+    steps: flow.steps.map(step => ({ type: step.type })),
+    roleIds: unique(flow.roleIds),
+  };
+}
+
+function registrationFlowFromBackend(flow: BackendRegistrationFlow | null | undefined): RegistrationFlow | null {
+  if (!flow) return null;
+  return {
+    credential: flow.credential as RegistrationFlow['credential'],
+    steps: flow.steps.map(step => ({ type: step.type as RegistrationFlow['steps'][number]['type'] })),
+    roleIds: unique(flow.roleIds),
+  };
+}
+
+function consentFlowToBackend(flow: ConsentFlow | null | undefined): BackendConsentFlow | null {
+  if (!flow) return null;
+  return {
+    allowPartial: flow.allowPartial,
+    rememberDuration: flow.rememberDurationDays != null ? flow.rememberDurationDays * 86400 : null,
+  };
+}
+
+function consentFlowFromBackend(flow: BackendConsentFlow | null | undefined): ConsentFlow | null {
+  if (!flow) return null;
+  return {
+    allowPartial: flow.allowPartial,
+    rememberDurationDays: flow.rememberDuration != null ? Math.round(flow.rememberDuration / 86400) : null,
+  };
+}
+
+function sameConsentFlow(a: ConsentFlow | null | undefined, b: ConsentFlow | null | undefined): boolean {
+  if (!a || !b) return !a && !b;
+  return a.allowPartial === b.allowPartial
+    && a.rememberDurationDays === b.rememberDurationDays;
+}
+
+// Client names are displayed on the consent screen and are stored as locale-keyed objects.
+function clientNameToBackend(name: LocalizedDescription): LocalizedDescription {
+  return { ...name };
+}
+
+function clientNameFromBackend(name: LocalizedDescription | string | null | undefined): LocalizedDescription {
+  if (name == null) return {};
+  if (typeof name === 'string') return { en: name };
+  return { ...name };
+}
+
+function sameLocalizedDescription(a: LocalizedDescription, b: LocalizedDescription): boolean {
+  const keys = Object.keys(a);
+  return keys.length === Object.keys(b).length
+    && keys.every(key => a[key] === b[key]);
 }
 
 function clone<T>(value: T): T {
@@ -171,20 +248,33 @@ export function resolveBaseUrl(): string {
   return apiConfig.baseUrl?.trim() || window.location.origin;
 }
 
-// Everything the console talks to lives under this prefix. It exists so the
-// EDGE_SESSION cookie can be scoped to a path (Path=/central) and thereby
-// belong to this application alone rather than to the whole domain — and a
-// cookie is only sent to URLs beneath its path, so the console's assets
-// (/central/admin/, see vite.config.ts) and its API calls have to share one
-// prefix. nginx rewrites /central/{x} back to edge's real /resources/central/{x}
-// route, so edge itself is unaware of this prefix.
-export const CONSOLE_PREFIX = 'central';
+// Everything the console talks to is edge's "central" resource (see
+// EdgeController.scala's /resources/{resourceId}/... proxy route --
+// "central" is the literal resourceId, not a prefix edge understands).
+//
+// In 'prefix' mode (the default -- local dev, docker-local, path-based prod;
+// see vite.config.ts and docker/versola-tools/nginx.conf.template) the
+// console takes a /central/{x} shortcut instead of calling that route
+// outright, so the EDGE_SESSION cookie can be scoped to a path (Path=/central)
+// and thereby belong to this application alone rather than to the whole
+// domain -- a cookie is only sent to URLs beneath its path, so the console's
+// assets (/central/admin/) and its API calls have to share one prefix. An
+// external proxy (the Vite dev server / gateway nginx) rewrites /central/{x}
+// back to /resources/central/{x} before anything reaches edge.
+//
+// In 'direct' mode (the console hosted on its own domain, e.g. k8s -- see
+// #222) there is no such proxy and no shared origin to scope a cookie path
+// against, so the console calls edge's real route directly. Set via the
+// console-mode attribute on <versola-admin> (see admin-app.ts).
+export function centralResourcePath(path: string): string {
+  return apiConfig.consoleMode === 'direct' ? `resources/central/${path}` : `central/${path}`;
+}
 
 function buildUrl(path: string, query?: Record<string, QueryValue>): string {
   const baseUrl = resolveBaseUrl();
   const normalizedBase = baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`;
   const normalizedPath = path.replace(/^\//, '');
-  const proxiedPath = `${CONSOLE_PREFIX}/${normalizedPath}`;
+  const proxiedPath = centralResourcePath(normalizedPath);
   const url = new URL(proxiedPath, normalizedBase);
   Object.entries(query ?? {}).forEach(([key, value]) => {
     if (value !== undefined && value !== null) {
@@ -231,7 +321,11 @@ function buildErrorMessage(status: number, bodyText: string): string {
   }
 
   try {
-    const parsed = JSON.parse(trimmed) as { message?: string; error?: string };
+    const parsed = JSON.parse(trimmed) as { message?: string; error?: string; locale?: string; missing?: string[] };
+    if (parsed.missing?.length) {
+      const prefix = parsed.message || parsed.error || `Locale ${parsed.locale || ''} is incomplete`;
+      return `${prefix}. Missing: ${parsed.missing.join(', ')}`;
+    }
     return parsed.message || parsed.error || `Request failed (${status})`;
   } catch {
     return `${trimmed} (${status})`;
@@ -241,12 +335,15 @@ function buildErrorMessage(status: number, bodyText: string): string {
 // null/empty for either field resets it to its default (host origin for baseUrl,
 // DEFAULT_LOGIN_URL for loginUrl) rather than leaving a previously-set value
 // stuck — so clearing the api-url / login-url attribute reverts to defaults.
-export function configureCentralApi(config: { baseUrl?: string | null; loginUrl?: string | null }): void {
+export function configureCentralApi(config: { baseUrl?: string | null; loginUrl?: string | null; consoleMode?: ConsoleMode | null }): void {
   if ('baseUrl' in config) {
     apiConfig.baseUrl = config.baseUrl?.trim() || null;
   }
   if ('loginUrl' in config) {
     apiConfig.loginUrl = config.loginUrl?.trim() || DEFAULT_LOGIN_URL;
+  }
+  if ('consoleMode' in config) {
+    apiConfig.consoleMode = config.consoleMode === 'direct' ? 'direct' : 'prefix';
   }
   invalidateReadCache();
   invalidateAllRefData();
@@ -497,6 +594,7 @@ function mapResource(resource: ResourceResponseDto): Resource {
   return {
     resourceId: resource.resourceId,
     resource: resource.resource,
+    audience: [...(resource.audience ?? [])],
     endpoints: resource.endpoints.map(endpoint => ({
       id: endpoint.id,
       method: endpoint.method,
@@ -508,6 +606,8 @@ function mapResource(resource: ResourceResponseDto): Resource {
       ...(endpoint.stepUpAcr != null ? { stepUpAcr: endpoint.stepUpAcr } : {}),
       ...(endpoint.maxAge != null ? { maxAge: endpoint.maxAge } : {}),
     })),
+    hasSecret: resource.internal,
+    hasPreviousSecret: resource.secretRotation,
   };
 }
 
@@ -578,19 +678,27 @@ export async function fetchClients(tenantId: string, offset = 0, limit = DEFAULT
       const supplement = clientSupplementStore.get(entityKey(tenantId, client.id));
       return {
         id: client.id,
-        clientName: client.clientName,
+        clientName: clientNameFromBackend(client.clientName),
         redirectUris: [...client.redirectUris],
         scope: [...client.scope],
-        externalAudience: client.externalAudience ? [...client.externalAudience] : (supplement?.externalAudience ? [...supplement.externalAudience] : []),
         hasPreviousSecret: supplement?.hasPreviousSecret ?? client.secretRotation,
-        accessTokenTtl: supplement?.accessTokenTtl ?? 3600,
+        // The backend now returns the real value directly (previously it didn't, and this
+        // fell back to a page-memory-only cache that was empty — and silently wrong — after
+        // every reload; see clientSupplementStore below).
+        accessTokenTtl: client.accessTokenTtl,
+        refreshTokenTtl: supplement?.refreshTokenTtl ?? client.refreshTokenTtl ?? DEFAULT_REFRESH_TOKEN_TTL_SECONDS,
         permissions: [...client.permissions],
         theme: client.theme ?? 'default',
         otpTemplateId: client.otpTemplateId ?? null,
-        authFlow: authFlowFromBackend(client.authFlow) ?? createDefaultAuthFlow(),
+        authFlow: authFlowFromBackend(client.authFlow),
+        registrationFlow: registrationFlowFromBackend(client.registrationFlow),
         frontChannelLogoutUri: client.frontChannelLogoutUri ?? null,
         frontChannelLogoutSessionRequired: client.frontChannelLogoutSessionRequired,
         backChannelLogoutUri: client.backChannelLogoutUri ?? null,
+        logoUri: client.logoUri ?? null,
+        policyUri: client.policyUri ?? null,
+        tosUri: client.tosUri ?? null,
+        consentFlow: consentFlowFromBackend(client.consentFlow),
         tenantId,
       };
     }),
@@ -700,21 +808,41 @@ export async function createResource(
   tenantId: string,
   resourceId: string,
   resource: string,
+  audience: string[],
   endpoints: CreateResourceEndpointPayload[] = [],
-): Promise<{ resourceId: string; endpoints: Array<ResourceEndpointWriteDto & { id: ResourceEndpointId }> }> {
+  internal = false,
+): Promise<{ resourceId: string; endpoints: Array<ResourceEndpointWriteDto & { id: ResourceEndpointId }>; secret: string | null }> {
   const serializedEndpoints = endpoints.map(endpoint => serializePersistedResourceEndpoint(endpoint));
   const response = await request<CreateResourceResponse>('/configuration/resources', {
     method: 'POST',
-    body: { tenantId, resourceId, resource, endpoints: serializedEndpoints },
+    body: { tenantId, resourceId, resource, audience, endpoints: serializedEndpoints, internal },
   });
   resourcesStore.clear();
-  return { resourceId: response.resourceId, endpoints: serializedEndpoints };
+  return { resourceId: response.resourceId, endpoints: serializedEndpoints, secret: response.secret };
+}
+
+export async function rotateResourceSecret(resourceId: string): Promise<string> {
+  const response = await request<RotateResourceSecretResponse>('/configuration/resources/rotate-secret', {
+    method: 'POST',
+    query: { resourceId },
+  });
+  resourcesStore.clear();
+  return response.secret;
+}
+
+export async function deletePreviousResourceSecret(resourceId: string): Promise<void> {
+  await requestVoid('/configuration/resources/previous-secret', {
+    method: 'DELETE',
+    query: { resourceId },
+  });
+  resourcesStore.clear();
 }
 
 export async function updateResource(
   resourceId: string,
   existingEndpoints: Array<Pick<ResourceEndpoint, 'id'>>,
   resource: string,
+  audience: string[],
   endpoints?: SaveResourceEndpointPayload[],
 ): Promise<Array<ResourceEndpointWriteDto & { id: ResourceEndpointId }>> {
   const createEndpoints = (endpoints ?? []).map(endpoint => serializePersistedResourceEndpoint(endpoint));
@@ -725,7 +853,7 @@ export async function updateResource(
 
   await requestVoid('/configuration/resources', {
     method: 'PUT',
-    body: { resourceId, resource, deleteEndpoints, createEndpoints },
+    body: { resourceId, resource, audience, deleteEndpoints, createEndpoints },
   });
 
   resourcesStore.clear();
@@ -822,6 +950,46 @@ export async function deleteScope(tenantId: string, scopeId: string): Promise<vo
   invalidateRefData(scopesStore, tenantId);
 }
 
+export async function fetchAuthorizationDetailTypes(tenantId: string): Promise<AuthorizationDetailType[]> {
+  const response = await request<AuthorizationDetailTypesResponse>('/configuration/authorization-detail-types', {
+    query: { tenantId },
+  });
+  return response.types
+    .map(type => ({ type: type.type, description: type.description, schema: type.schema }))
+    .sort((a, b) => a.type.localeCompare(b.type, undefined, { numeric: true }));
+}
+
+export async function createAuthorizationDetailType(tenantId: string, detailType: AuthorizationDetailType): Promise<void> {
+  await requestVoid('/configuration/authorization-detail-types', {
+    method: 'POST',
+    body: {
+      tenantId,
+      type: detailType.type,
+      description: detailType.description,
+      schema: detailType.schema,
+    },
+  });
+}
+
+export async function updateAuthorizationDetailType(tenantId: string, detailType: AuthorizationDetailType): Promise<void> {
+  await requestVoid('/configuration/authorization-detail-types', {
+    method: 'PUT',
+    body: {
+      tenantId,
+      type: detailType.type,
+      description: detailType.description,
+      schema: detailType.schema,
+    },
+  });
+}
+
+export async function deleteAuthorizationDetailType(tenantId: string, type: string): Promise<void> {
+  await requestVoid('/configuration/authorization-detail-types', {
+    method: 'DELETE',
+    query: { tenantId, type },
+  });
+}
+
 export async function createRole(tenantId: string, role: Role): Promise<void> {
   await requestVoid('/configuration/roles', {
     method: 'POST',
@@ -879,24 +1047,29 @@ export async function createClient(tenantId: string, client: OAuthClient): Promi
     body: {
       tenantId,
       id: client.id,
-      clientName: client.clientName,
+      clientName: clientNameToBackend(client.clientName),
       redirectUris: unique(client.redirectUris),
       allowedScopes: unique(client.scope),
-      audience: unique(client.externalAudience),
       permissions: unique(client.permissions),
       accessTokenTtl: client.accessTokenTtl,
       theme: client.theme ?? 'default',
       otpTemplateId: client.otpTemplateId ?? null,
       authFlow: authFlowToBackend(client.authFlow),
+      registrationFlow: registrationFlowToBackend(client.registrationFlow),
       frontChannelLogoutUri: client.frontChannelLogoutUri ?? null,
       frontChannelLogoutSessionRequired: client.frontChannelLogoutSessionRequired,
       backChannelLogoutUri: client.backChannelLogoutUri ?? null,
+      refreshTokenTtl: client.refreshTokenTtl,
+      logoUri: client.logoUri ?? null,
+      policyUri: client.policyUri ?? null,
+      tosUri: client.tosUri ?? null,
+      consentFlow: consentFlowToBackend(client.consentFlow),
     },
   });
 
   clientSupplementStore.set(entityKey(tenantId, client.id), {
-    externalAudience: [...client.externalAudience],
     accessTokenTtl: client.accessTokenTtl,
+    refreshTokenTtl: client.refreshTokenTtl ?? DEFAULT_REFRESH_TOKEN_TTL_SECONDS,
     hasPreviousSecret: client.hasPreviousSecret,
   });
 
@@ -911,8 +1084,8 @@ export async function rotateClientSecret(tenantId: string, clientId: string): Pr
 
   const existing = clientSupplementStore.get(entityKey(tenantId, clientId));
   clientSupplementStore.set(entityKey(tenantId, clientId), {
-    externalAudience: existing?.externalAudience ? [...existing.externalAudience] : [],
     accessTokenTtl: existing?.accessTokenTtl ?? 3600,
+    refreshTokenTtl: existing?.refreshTokenTtl ?? DEFAULT_REFRESH_TOKEN_TTL_SECONDS,
     hasPreviousSecret: true,
   });
 
@@ -927,8 +1100,8 @@ export async function deletePreviousClientSecret(tenantId: string, clientId: str
 
   const existing = clientSupplementStore.get(entityKey(tenantId, clientId));
   clientSupplementStore.set(entityKey(tenantId, clientId), {
-    externalAudience: existing?.externalAudience ? [...existing.externalAudience] : [],
     accessTokenTtl: existing?.accessTokenTtl ?? 3600,
+    refreshTokenTtl: existing?.refreshTokenTtl ?? DEFAULT_REFRESH_TOKEN_TTL_SECONDS,
     hasPreviousSecret: false,
   });
 }
@@ -938,25 +1111,48 @@ export async function updateClient(tenantId: string, existing: OAuthClient, clie
     method: 'PUT',
     body: {
       clientId: client.id,
-      clientName: existing.clientName !== client.clientName ? client.clientName : undefined,
+      clientName: sameLocalizedDescription(existing.clientName, client.clientName)
+        ? undefined
+        : clientNameToBackend(client.clientName),
       redirectUris: patchSet(existing.redirectUris, client.redirectUris),
       scope: patchSet(existing.scope, client.scope),
       permissions: patchSet(existing.permissions, client.permissions),
       accessTokenTtl: existing.accessTokenTtl !== client.accessTokenTtl ? client.accessTokenTtl : undefined,
+      refreshTokenTtl: existing.refreshTokenTtl !== client.refreshTokenTtl ? client.refreshTokenTtl : undefined,
       theme: existing.theme !== client.theme ? client.theme : undefined,
       otpTemplateId: existing.otpTemplateId !== client.otpTemplateId ? (client.otpTemplateId ?? null) : undefined,
       authFlow: authFlowToBackend(client.authFlow),
+      // Patch semantics: omitted leaves the stored flow alone, null clears it.
+      registrationFlow: sameRegistrationFlow(existing.registrationFlow, client.registrationFlow)
+        ? undefined
+        : registrationFlowToBackend(client.registrationFlow),
       frontChannelLogoutUri: existing.frontChannelLogoutUri !== client.frontChannelLogoutUri ? (client.frontChannelLogoutUri ?? null) : undefined,
       frontChannelLogoutSessionRequired: existing.frontChannelLogoutSessionRequired !== client.frontChannelLogoutSessionRequired ? client.frontChannelLogoutSessionRequired : undefined,
       backChannelLogoutUri: existing.backChannelLogoutUri !== client.backChannelLogoutUri ? (client.backChannelLogoutUri ?? null) : undefined,
+      logoUri: existing.logoUri !== client.logoUri ? (client.logoUri ?? null) : undefined,
+      policyUri: existing.policyUri !== client.policyUri ? (client.policyUri ?? null) : undefined,
+      tosUri: existing.tosUri !== client.tosUri ? (client.tosUri ?? null) : undefined,
+      // Patch semantics: omitted leaves the stored flow alone, null clears it.
+      consentFlow: sameConsentFlow(existing.consentFlow, client.consentFlow)
+        ? undefined
+        : consentFlowToBackend(client.consentFlow),
     },
   });
 
   clientSupplementStore.set(entityKey(tenantId, client.id), {
-    externalAudience: [...client.externalAudience],
     accessTokenTtl: client.accessTokenTtl,
+    refreshTokenTtl: client.refreshTokenTtl ?? existing.refreshTokenTtl ?? DEFAULT_REFRESH_TOKEN_TTL_SECONDS,
     hasPreviousSecret: client.hasPreviousSecret,
   });
+}
+
+function sameRegistrationFlow(a: RegistrationFlow | null | undefined, b: RegistrationFlow | null | undefined): boolean {
+  if (!a || !b) return !a && !b;
+  return a.credential === b.credential
+    && a.roleIds.length === b.roleIds.length
+    && a.roleIds.every(roleId => b.roleIds.includes(roleId))
+    && a.steps.length === b.steps.length
+    && a.steps.every((step, index) => step.type === b.steps[index]?.type);
 }
 
 export async function deleteClient(tenantId: string, clientId: string): Promise<void> {
@@ -1110,33 +1306,44 @@ export async function fetchOtpTemplates(tenantId: string): Promise<OtpTemplateRe
   return response.templates;
 }
 
-export async function upsertOtpTemplate(id: string, tenantId: string, localizations: Record<string, string>, purpose: string): Promise<void> {
+export async function upsertOtpTemplate(
+  id: string,
+  tenantId: string,
+  localizations: Record<string, string>,
+  purpose: string,
+  channel: 'sms' | 'email',
+): Promise<void> {
   await requestVoid('/configuration/challenges/otp-templates', {
     method: 'PUT',
-    body: { id, tenantId, localizations, purpose },
+    body: { id, tenantId, localizations, purpose, channel },
   });
 }
 
-export async function deleteOtpTemplate(id: string, tenantId: string): Promise<void> {
+export async function deleteOtpTemplate(id: string, tenantId: string, purpose: string, channel: 'sms' | 'email'): Promise<void> {
   await requestVoid('/configuration/challenges/otp-templates', {
     method: 'DELETE',
-    body: { id, tenantId },
+    body: { id, tenantId, purpose, channel },
   });
 }
 
 export type MyPermissionsResponse = {
   resources: Record<string, { permissions: string[] }>;
+  // Lets the console hide affordances that only exist outside production,
+  // such as revealing a generated temporary password.
+  isProd: boolean;
 };
 
 export async function fetchMyPermissions(): Promise<MyPermissionsResponse> {
   const baseUrl = resolveBaseUrl();
   const normalizedBase = baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`;
-  // edge serves this at /permissions/me, outside any resource prefix — but the
-  // call has to carry EDGE_SESSION, and that cookie is scoped to /central, so
-  // the browser would withhold it from a root-level URL and every load would
-  // bounce to login. It's requested under the prefix instead, and nginx
-  // rewrites /central/permissions/me back to /permissions/me.
-  const url = new URL(`${CONSOLE_PREFIX}/permissions/me`, normalizedBase);
+  // edge serves this at /permissions/me, outside any resource prefix. In
+  // 'prefix' mode the call has to carry EDGE_SESSION, and that cookie is
+  // scoped to /central, so the browser would withhold it from a root-level
+  // URL and every load would bounce to login -- it's requested under the
+  // prefix instead, and an external proxy rewrites /central/permissions/me
+  // back to /permissions/me. In 'direct' mode there's no such cookie-path
+  // scoping to route around, so it's called outright.
+  const url = new URL(apiConfig.consoleMode === 'direct' ? 'permissions/me' : 'central/permissions/me', normalizedBase);
   url.searchParams.set('resource', 'central');
 
   const response = await fetch(url.toString(), {
@@ -1178,6 +1385,7 @@ export async function upsertChallengeSettings(
   authConversationTtlSeconds: number,
   sessionTtlSeconds: number,
   sessionIdleTtlSeconds: number | null,
+  userAgentTtlSeconds: number,
   ipHeader: string,
   acrVocabulary?: Record<string, string[]> | null,
   postLogoutRedirectUris?: string[],
@@ -1194,6 +1402,7 @@ export async function upsertChallengeSettings(
       authConversationTtlSeconds,
       sessionTtlSeconds,
       sessionIdleTtlSeconds: sessionIdleTtlSeconds ?? null,
+      userAgentTtlSeconds,
       ipHeader,
       acrVocabulary: acrVocabulary ?? null,
       postLogoutRedirectUris: postLogoutRedirectUris ?? null,

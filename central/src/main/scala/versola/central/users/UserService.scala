@@ -24,6 +24,9 @@ trait UserService:
 
   def create(request: CreateUserRequest): IO[UserConflict | Throwable, UserId]
 
+  /** Claim credentials and return the canonical ID for self-service registration. */
+  def indexRegistered(request: RegisteredUserRequest): IO[UserIndexConflict | Throwable, UserId]
+
   def patch(request: PatchUserRequest): Task[Unit]
 
   def patchClaims(id: UserId, patch: Json.Obj): Task[Unit]
@@ -40,7 +43,7 @@ trait UserService:
 
   def deletePasskey(userId: UserId, credentialId: String): Task[Unit]
 
-  def resetPassword(request: ResetPasswordRequest): Task[Unit]
+  def resetPassword(request: ResetPasswordRequest): Task[Option[String]]
 
   def setPassword(userId: UserId, password: String): Task[Unit]
 
@@ -86,6 +89,7 @@ object UserService:
         ttlByClientId: Map[ClientId, Duration],
     ): SessionResponse =
       SessionResponse(
+        publicId = session.publicId,
         clients = session.clients
           .flatMap { entry =>
             ttlByClientId.get(entry.clientId)
@@ -114,6 +118,9 @@ object UserService:
         _ <- userRepository.create(id, request.email, request.phone, request.login)
       yield id
 
+    override def indexRegistered(request: RegisteredUserRequest): IO[UserIndexConflict | Throwable, UserId] =
+      userRepository.indexFromAuth(request.email, request.phone, request.login)
+
     override def patch(request: PatchUserRequest): Task[Unit] =
       userRepository.patch(request.id, request.email, request.phone, request.login)
 
@@ -138,8 +145,8 @@ object UserService:
     override def deletePasskey(userId: UserId, credentialId: String): Task[Unit] =
       authClient.deletePasskey(userId, credentialId)
 
-    override def resetPassword(request: ResetPasswordRequest): Task[Unit] =
-      authClient.resetPassword(request)
+    override def resetPassword(request: ResetPasswordRequest): Task[Option[String]] =
+      authClient.resetPassword(request.userId, request.expiresInSeconds, request.channel)
 
     override def setPassword(userId: UserId, password: String): Task[Unit] =
       authClient.setPassword(userId, password)

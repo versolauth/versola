@@ -1,7 +1,7 @@
 package versola.central.configuration.tenants
 
 import versola.central.configuration.{CreateTenantRequest, GetAllTenantsResponse, TenantResponse, UpdateTenantRequest}
-import versola.central.configuration.clients.OAuthClientService
+import versola.central.configuration.resources.ResourceService
 import versola.central.authorizeBasic
 import versola.util.http.Controller
 import zio.http.{Method, Request, Response, Routes, Status, handler}
@@ -10,7 +10,7 @@ import zio.schema.*
 import zio.{Cause, ZIO}
 
 object TenantController extends Controller:
-  type Env = Tracing & TenantService & OAuthClientService
+  type Env = Tracing & TenantService & ResourceService
 
   def routes: Routes[Env, Throwable] = Routes(
     getAllTenantsEndpoint,
@@ -34,7 +34,7 @@ object TenantController extends Controller:
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[TenantService]
-        body <- request.body.asJson[CreateTenantRequest]
+        body <- request.bodyAs[CreateTenantRequest]
         _ <- service.createTenant(body)
       yield Response.status(Status.Created)
     }
@@ -44,7 +44,7 @@ object TenantController extends Controller:
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[TenantService]
-        body <- request.body.asJson[UpdateTenantRequest]
+        body <- request.bodyAs[UpdateTenantRequest]
         _ <- service.updateTenant(body)
       yield Response.status(Status.NoContent)
     }

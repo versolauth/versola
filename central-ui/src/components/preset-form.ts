@@ -161,7 +161,7 @@ export class VersolaPresetForm extends LitElement {
 
       .checkbox-item:hover {
         border-color: var(--accent);
-        background: rgba(88, 166, 255, 0.05);
+        background: rgba(var(--accent-tint), 0.05);
       }
 
       .checkbox-item input[type="checkbox"] {
@@ -191,11 +191,11 @@ export class VersolaPresetForm extends LitElement {
       }
 
       .input-error {
-        border-color: var(--error, #ef4444);
+        border-color: var(--danger);
       }
 
       .error-text {
-        color: var(--error, #ef4444);
+        color: var(--danger);
         font-size: 0.75rem;
         margin-top: 0.25rem;
       }
@@ -204,9 +204,9 @@ export class VersolaPresetForm extends LitElement {
 
       .option-info-button {
         flex: none;
-        border: 1px solid rgba(88, 166, 255, 0.4);
+        border: 1px solid rgba(var(--accent-tint), 0.4);
         border-radius: 999px;
-        background: rgba(88, 166, 255, 0.12);
+        background: rgba(var(--accent-tint), 0.12);
         color: var(--accent);
         font-size: 0.75rem;
         font-weight: 700;
@@ -224,13 +224,13 @@ export class VersolaPresetForm extends LitElement {
       }
 
       .option-info-button:hover {
-        background: rgba(88, 166, 255, 0.18);
-        border-color: rgba(88, 166, 255, 0.55);
+        background: rgba(var(--accent-tint), 0.18);
+        border-color: rgba(var(--accent-tint), 0.55);
       }
 
       .option-info-button:focus-visible {
         outline: none;
-        box-shadow: 0 0 0 2px rgba(88, 166, 255, 0.2);
+        box-shadow: 0 0 0 2px rgba(var(--accent-tint), 0.2);
       }
 
       .option-tooltip {
@@ -243,7 +243,7 @@ export class VersolaPresetForm extends LitElement {
         max-height: 18rem;
         overflow: auto;
         padding: 0.75rem;
-        border: 1px solid rgba(88, 166, 255, 0.28);
+        border: 1px solid rgba(var(--accent-tint), 0.28);
         border-radius: var(--radius-md);
         background: linear-gradient(180deg, rgba(22, 27, 34, 0.98), rgba(13, 17, 23, 0.98));
         box-shadow: 0 10px 24px rgba(0, 0, 0, 0.35);
@@ -309,7 +309,7 @@ export class VersolaPresetForm extends LitElement {
         align-items: center;
         gap: 0.5rem;
         padding: 0.375rem 0.75rem;
-        background: rgba(88, 166, 255, 0.15);
+        background: rgba(var(--accent-tint), 0.15);
         border: 1px solid var(--border-dark);
         border-radius: var(--radius-md);
         color: var(--accent);
@@ -380,26 +380,16 @@ export class VersolaPresetForm extends LitElement {
     }
   }
 
-  private generateUUID() {
-    // Generate a proper UUID v4
-    this.formData = {
-      ...this.formData,
-      id: crypto.randomUUID(),
-    };
-    this.validatePresetId();
-  }
-
   private validatePresetId() {
     const id = this.formData.id?.trim() || '';
     if (!id) {
       this.presetIdError = '';
       return true;
     }
-    // Only accept UUID format
-    const isUuidFormat = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
+    const isValidFormat = /^[a-z]+(?:-[a-z]+)*$/.test(id);
 
-    if (!isUuidFormat) {
-      this.presetIdError = 'Must be valid UUID format';
+    if (!isValidFormat) {
+      this.presetIdError = 'Use lowercase Latin letters separated by hyphens';
       return false;
     }
     this.presetIdError = '';
@@ -439,24 +429,16 @@ export class VersolaPresetForm extends LitElement {
   private handleSubmit(e: Event) {
     e.preventDefault();
 
-    // Auto-generate UUID if ID is empty
     const id = this.formData.id?.trim() || '';
-    let finalId = id;
+    const finalId = this.preset?.id || id;
 
-    if (!id) {
-      // Generate UUID v4
-      finalId = crypto.randomUUID();
-      this.formData = {
-        ...this.formData,
-        id: finalId,
-      };
+    const isValidFormat = /^[a-z]+(?:-[a-z]+)*$/.test(finalId);
+    if (!this.preset && !id) {
+      this.presetIdError = 'Preset ID is required';
+      return;
     }
-
-    // Validate the ID (either provided or generated)
-    const isUuidFormat = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(finalId);
-
-    if (!isUuidFormat) {
-      this.presetIdError = 'Must be valid UUID format';
+    if (!this.preset && !isValidFormat) {
+      this.presetIdError = 'Use lowercase Latin letters separated by hyphens';
       return;
     }
 
@@ -667,25 +649,22 @@ export class VersolaPresetForm extends LitElement {
           <div class="form-grid">
             ${!this.preset ? html`
               <div class="form-group">
-                <label for="preset-id">Preset ID</label>
-                <div class="array-input-group compact-inline-row">
-                  <input
-                    type="text"
-                    id="preset-id"
-                    class="${this.presetIdError ? 'input-error' : ''}"
-                    .value=${this.formData.id || ''}
-                    @input=${(e: Event) => {
-                      this.formData = { ...this.formData, id: (e.target as HTMLInputElement).value };
-                      this.validatePresetId();
-                    }}
-                    placeholder="Leave empty to auto-generate UUID"
-                  />
-                  <button type="button" class="btn btn-secondary inline-action-button" @click=${this.generateUUID} title="Generate UUID" aria-label="Generate UUID">
-                    ↻
-                  </button>
-                </div>
+                <label for="preset-id">Preset ID *</label>
+                <input
+                  type="text"
+                  id="preset-id"
+                  class="form-input compact-input ${this.presetIdError ? 'input-error' : ''}"
+                  .value=${this.formData.id || ''}
+                  @input=${(e: Event) => {
+                    this.formData = { ...this.formData, id: (e.target as HTMLInputElement).value };
+                    this.validatePresetId();
+                  }}
+                  placeholder="e.g. web-login"
+                  required
+                />
                 ${this.presetIdError ? html`<div class="error-text">${this.presetIdError}</div>` : html`
-                  <div class="hint">Leave empty to auto-generate UUID</div>
+                  <div class="hint">Use lowercase Latin letters separated by hyphens, e.g. web-login</div>
+                  <div class="hint">Used in the Edge login path: <code>/login/{presetId}</code></div>
                 `}
               </div>
             ` : ''}

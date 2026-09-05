@@ -27,10 +27,9 @@ object AuthorizationPresetServiceSpec extends ZIOSpecDefault, ZIOStubs:
   private val client = OAuthClientRecord(
     id = clientId,
     tenantId = tenantId,
-    clientName = "Web App",
+    clientName = Map("en" -> "Web App"),
     redirectUris = Set(RedirectUri("https://example.com/callback")),
     scope = Set(ScopeToken("openid"), ScopeToken("profile")),
-    externalAudience = Nil,
     secret = None,
     previousSecret = None,
     accessTokenTtl = 5.minutes,
@@ -38,10 +37,15 @@ object AuthorizationPresetServiceSpec extends ZIOSpecDefault, ZIOStubs:
     permissions = Set.empty,
     theme = "",
     authFlow = Some(AuthFlow.default),
+    registrationFlow = None,
     otpTemplateId = "default",
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
     backChannelLogoutUri = None,
+    logoUri = None,
+    policyUri = None,
+    tosUri = None,
+    consentFlow = None,
   )
 
   private val validRequest = SaveAuthorizationPresetsRequest(
@@ -86,6 +90,7 @@ object AuthorizationPresetServiceSpec extends ZIOSpecDefault, ZIOStubs:
     authConversationTtlSeconds = 900,
     sessionTtlSeconds = 86400,
     sessionIdleTtlSeconds = None,
+    userAgentTtlSeconds = 15552000,
     ipHeader = "X-Real-IP",
     acrVocabulary = None,
     postLogoutRedirectUris = Nil,
@@ -232,6 +237,32 @@ object AuthorizationPresetServiceSpec extends ZIOSpecDefault, ZIOStubs:
       yield assertTrue(
         result.isLeft,
         result.swap.exists(_ == PresetValidationError.InvalidScope),
+      )
+    },
+    test("return error when preset ID is already used by another client") {
+      val existingPreset = preset1.copy(clientId = ClientId("other-client"))
+      val env = Env()
+      for
+        _ <- env.clientService.getAllClients.succeedsWith(Vector(client))
+        _ <- env.presetRepo.getAll.succeedsWith(Vector(existingPreset))
+        result <- env.service.savePresets(validRequest)
+      yield assertTrue(
+        result.isLeft,
+        result.swap.exists(_ == PresetValidationError.DuplicatePresetId),
+        env.presetRepo.replace.calls.isEmpty,
+      )
+    },
+    test("return error when submitted presets contain duplicate IDs") {
+      val request = validRequest.copy(presets = validRequest.presets ++ validRequest.presets)
+      val env = Env()
+      for
+        _ <- env.clientService.getAllClients.succeedsWith(Vector(client))
+        result <- env.service.savePresets(request)
+      yield assertTrue(
+        result.isLeft,
+        result.swap.exists(_ == PresetValidationError.DuplicatePresetId),
+        env.presetRepo.getAll.calls.isEmpty,
+        env.presetRepo.replace.calls.isEmpty,
       )
     },
     test("get client presets from cache") {

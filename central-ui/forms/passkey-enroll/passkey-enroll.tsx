@@ -45,6 +45,7 @@ interface FormConfig {
   error?: string;
   previewId?: string;
   csrf?: string;
+  logo?: string;
 }
 
 declare global {

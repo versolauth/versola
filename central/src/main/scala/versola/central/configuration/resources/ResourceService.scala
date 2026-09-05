@@ -1,13 +1,18 @@
 package versola.central.configuration.resources
 
+import versola.central.CentralConfig
 import versola.central.configuration.edges.EdgeId
 import versola.central.configuration.sync.{SyncEvent, SyncOps}
 import versola.central.configuration.tenants.{TenantId, TenantRepository}
 import versola.central.configuration.{CreateResourceEndpointRequest, CreateResourceRequest, UpdateResourceRequest}
-import versola.util.ReloadingCache
+import versola.util.{CacheSource, ReloadingCache, Secret, SecureRandom, SecurityService}
 import versola.util.cel.CelEvaluator
 import dev.cel.common.types.{CelType, SimpleType}
-import zio.{Schedule, Scope, Task, ZIO, ZLayer}
+import zio.{Schedule, Scope, Task, URLayer, ZIO, ZLayer}
+import java.security.MessageDigest
+
+import javax.crypto.SecretKey
+import javax.crypto.spec.SecretKeySpec
 
 trait ResourceService:
   def getTenantResources(
@@ -18,28 +23,73 @@ trait ResourceService:
 
   def getResourcesForSync(edgeId: Option[EdgeId]): Task[Vector[ResourceRecord]]
 
-  def createResource(request: CreateResourceRequest): Task[Either[ResourceValidationError, ResourceId]]
+  def verifySecret(provided: Secret): Task[Boolean]
+
+  def createResource(request: CreateResourceRequest): Task[Either[ResourceValidationError, (ResourceId, Option[Secret])]]
 
   def updateResource(request: UpdateResourceRequest): Task[Either[ResourceValidationError, Unit]]
+
+  def rotateSecret(resourceId: ResourceId): Task[Secret]
+
+  def deletePreviousSecret(resourceId: ResourceId): Task[Unit]
 
   def deleteResource(resourceId: ResourceId): Task[Unit]
 
   def sync(event: SyncEvent.ResourcesUpdated): Task[Unit]
 
 object ResourceService:
-  def live(
-      schedule: Schedule[Any, Any, Any],
-  ): ZLayer[ResourceRepository & TenantRepository & CelEvaluator & Scope, Throwable, ResourceService] =
-    ZLayer(ReloadingCache.make[Vector[ResourceRecord]](schedule))
-      >>> ZLayer.fromFunction(Impl(_, _, _, _))
+  case object SecretRotationInProgress extends RuntimeException("Resource secret rotation is already in progress")
+
+  def live: ZLayer[
+    ResourceRepository & TenantRepository & CelEvaluator & SecureRandom & SecurityService & CentralConfig & Scope,
+    Throwable,
+    ResourceService,
+  ] =
+    decryptingCacheSource >>>
+      (ZLayer.fromZIO:
+        ZIO.serviceWithZIO[CentralConfig](config =>
+          ReloadingCache.make[Vector[ResourceRecord]](config.configurationCacheRefreshInterval),
+        )
+      ) >>>
+      ZLayer.fromFunction(Impl(_, _, _, _, _, _, _))
+
+  /** A [[CacheSource]] that reads the resource records from the repository and decrypts
+    * their secrets, so the in-memory cache holds plaintext secrets and no
+    * decryption is needed on cache reads.
+    */
+  private val decryptingCacheSource
+      : URLayer[ResourceRepository & SecurityService & CentralConfig, CacheSource[Vector[ResourceRecord]]] =
+    ZLayer.fromFunction: (repository: ResourceRepository, securityService: SecurityService, config: CentralConfig) =>
+      new CacheSource[Vector[ResourceRecord]]:
+        override def getAll: Task[Vector[ResourceRecord]] =
+          repository.getAll.flatMap(ZIO.foreach(_)(decryptSecrets(_, securityService, resourceSecretsKey(config))))
+
+  private def resourceSecretsKey(config: CentralConfig): SecretKey =
+    SecretKeySpec(config.clientSecretsSecret, "AES")
+
+  /** Decrypts the at-rest encrypted `secret` and `previousSecret` of a resource record. */
+  private def decryptSecrets(
+      record: ResourceRecord,
+      securityService: SecurityService,
+      key: SecretKey,
+  ): Task[ResourceRecord] =
+    for
+      secret         <- ZIO.foreach(record.secret)(c => securityService.decryptAes256(c, key).map(Secret(_)))
+      previousSecret <- ZIO.foreach(record.previousSecret)(c => securityService.decryptAes256(c, key).map(Secret(_)))
+    yield record.copy(secret = secret, previousSecret = previousSecret)
 
   class Impl(
       cache: ReloadingCache[Vector[ResourceRecord]],
       resourceRepository: ResourceRepository,
       tenantRepository: TenantRepository,
       celEvaluator: CelEvaluator,
+      secureRandom: SecureRandom,
+      securityService: SecurityService,
+      config: CentralConfig,
   ) extends ResourceService:
     export resourceRepository.deleteResource
+
+    private val edgeResourceId = ResourceId("edge")
 
     override def getTenantResources(
         tenantId: TenantId,
@@ -62,33 +112,87 @@ object ResourceService:
             allowedTenantIds = tenants.filter(_.edgeId.contains(id)).map(_.id).toSet
           yield resources.filter(r => allowedTenantIds.contains(r.tenantId))
 
-    override def createResource(request: CreateResourceRequest): Task[Either[ResourceValidationError, ResourceId]] =
-      validateEndpoints(request.endpoints).flatMap:
-        case Some(error) => ZIO.left(error)
-        case None =>
-          resourceRepository.createResource(
-            tenantId = request.tenantId,
-            resourceId = request.resourceId,
-            resource = request.resource,
-            endpoints = request.endpoints.map(asRecord),
-          ).as(Right(request.resourceId))
+    override def verifySecret(provided: Secret): Task[Boolean] =
+      cache.get.map: resources =>
+        resources.find(_.resourceId == ResourceId("central")).exists: resource =>
+          resource.secret.exists(MessageDigest.isEqual(provided, _)) ||
+            resource.previousSecret.exists(MessageDigest.isEqual(provided, _))
+
+    override def createResource(request: CreateResourceRequest): Task[Either[ResourceValidationError, (ResourceId, Option[Secret])]] =
+      if !ResourceId.isValid(request.resourceId) then ZIO.left(ResourceValidationError.InvalidResourceId)
+      else if request.resourceId == edgeResourceId then ZIO.left(ResourceValidationError.ReservedResourceId)
+      else
+        validateEndpoints(request.endpoints).flatMap:
+          case Some(error) => ZIO.left(error)
+          case None =>
+            findAmbiguousEndpoint(request.endpoints.map(EndpointRef.from)) match
+              case Some(error) => ZIO.left(error)
+              case None =>
+                for
+                  secret <- if request.internal then generateSecret.map(Some(_)) else ZIO.none
+                  encryptedSecret <- ZIO.foreach(secret)(encryptRawSecret)
+                  _ <- resourceRepository.createResource(
+                    tenantId = request.tenantId,
+                    resourceId = request.resourceId,
+                    resource = request.resource,
+                    audience = request.audience,
+                    endpoints = request.endpoints.map(asRecord),
+                    secret = encryptedSecret,
+                  )
+                yield Right((request.resourceId, secret))
 
     override def updateResource(request: UpdateResourceRequest): Task[Either[ResourceValidationError, Unit]] =
       validateEndpoints(request.createEndpoints).flatMap:
         case Some(error) => ZIO.left(error)
         case None =>
-          resourceRepository.updateResource(
-            resourceId = request.resourceId,
-            resourcePatch = request.resource,
-            deleteEndpoints = request.deleteEndpoints,
-            addEndpoints = request.createEndpoints.map(asRecord),
-          ).map(Right(_))
+          resourceRepository.findResource(request.resourceId).flatMap: existing =>
+            findAmbiguousEndpoint(finalEndpointRefs(existing, request)) match
+              case Some(error) => ZIO.left(error)
+              case None =>
+                resourceRepository.updateResource(
+                  resourceId = request.resourceId,
+                  resourcePatch = request.resource,
+                  audiencePatch = request.audience,
+                  deleteEndpoints = request.deleteEndpoints,
+                  addEndpoints = request.createEndpoints.map(asRecord),
+                ).map(Right(_))
+
+    /** The endpoint set the resource will have once `request` is applied: retained
+      * existing endpoints (neither deleted nor replaced) plus the submitted ones,
+      * mirroring the repository's own upsert-by-id semantics (see [[ResourceRepository.updateResource]]).
+      * Ambiguity must be checked against this final set, not just the submitted endpoints,
+      * since a PUT can add an ambiguous endpoint while silently retaining a conflicting
+      * one already stored (by omitting it from `deleteEndpoints`).
+      */
+    private def finalEndpointRefs(existing: Option[ResourceRecord], request: UpdateResourceRequest): Vector[EndpointRef] =
+      val overwrittenOrDeleted = request.deleteEndpoints ++ request.createEndpoints.map(_.id)
+      val retained = existing.fold(Vector.empty[ResourceEndpointRecord])(_.endpoints).filterNot(e => overwrittenOrDeleted.contains(e.id))
+      retained.map(EndpointRef.from) ++ request.createEndpoints.map(EndpointRef.from)
+
+    override def rotateSecret(resourceId: ResourceId): Task[Secret] =
+      for
+        newSecret <- generateSecret
+        encryptedSecret <- encryptRawSecret(newSecret)
+        rotated <- resourceRepository.rotateSecret(resourceId, encryptedSecret)
+        _ <- ZIO.fail(SecretRotationInProgress).unless(rotated)
+      yield newSecret
+
+    override def deletePreviousSecret(resourceId: ResourceId): Task[Unit] =
+      resourceRepository.deletePreviousSecret(resourceId)
 
     override def sync(event: SyncEvent.ResourcesUpdated): Task[Unit] =
       SyncOps.syncCache(event)(
         cache,
-        resourceRepository.findResource(event.id),
+        resourceRepository.findResource(event.id).flatMap(ZIO.foreach(_)(decryptSecrets(_, securityService, secretsKey))),
       )
+
+    private val secretsKey: SecretKey = ResourceService.resourceSecretsKey(config)
+
+    private def generateSecret: Task[Secret] =
+      secureRandom.nextBytes(32).map(Secret(_))
+
+    private def encryptRawSecret(secret: Secret): Task[Array[Byte]] =
+      securityService.encryptAes256(secret, secretsKey)
 
     private def validateEndpoints(
         endpoints: Vector[CreateResourceEndpointRequest],
@@ -97,13 +201,62 @@ object ResourceService:
         case (Some(err), _) => ZIO.succeed(Some(err))
         case (None, endpoint) => validateEndpoint(endpoint)
 
-    private val validPathRegex = "^/([a-zA-Z0-9-]+(/[a-zA-Z0-9-]+)*)?$".r
+    private val staticSegmentRegex = "[a-zA-Z0-9-]+".r
+    private val pathParamRegex = "\\{([a-zA-Z_][a-zA-Z0-9_]*)\\}".r
+
+    /** The (method, path, id) shape of an endpoint, regardless of whether it comes from
+      * a submitted request or an already-stored record; ambiguity depends on nothing else. */
+    private case class EndpointRef(id: ResourceEndpointId, method: String, path: String)
+
+    private object EndpointRef:
+      def from(request: CreateResourceEndpointRequest): EndpointRef =
+        EndpointRef(request.id, request.method, request.path)
+      def from(record: ResourceEndpointRecord): EndpointRef =
+        EndpointRef(record.id, record.method, record.path)
+
+    /** Two templates with the same method that differ only in their parameter names
+      * (e.g. `/users/{id}` and `/users/{userId}`) match exactly the same requests, so
+      * edge could never tell which one the caller meant. Identical templates are left
+      * to edge, which picks between them deterministically.
+      */
+    private def findAmbiguousEndpoint(
+        endpoints: Vector[EndpointRef],
+    ): Option[ResourceValidationError] =
+      val shapes = endpoints.map: endpoint =>
+        (endpoint.method.toUpperCase, pathShape(endpoint.path.trim), endpoint.path.trim, endpoint.id)
+      shapes.zipWithIndex.collectFirst:
+        case ((method, shape, path, id), index)
+            if shapes.take(index).exists((m, s, p, _) => m == method && s == shape && p != path) =>
+          ResourceValidationError.AmbiguousEndpointPath(id, path)
+
+    /** Path with every parameter placeholder collapsed to a positional marker, so two
+      * templates that match the same requests share a shape. */
+    private def pathShape(path: String): Vector[String] =
+      pathSegments(path).map:
+        case pathParamRegex(_) => "{}"
+        case segment => segment
+
+    private def pathSegments(path: String): Vector[String] =
+      path.stripPrefix("/") match
+        case "" => Vector.empty
+        case rest => rest.split("/", -1).toVector
+
+    /** A registered path is a `/`-prefixed sequence of static segments and `{name}`
+      * placeholders, each matching exactly one request segment. Placeholder names must be
+      * identifiers, and unique within the path so no `request.path.params` entry is lost.
+      */
+    private def isValidEndpointPath(path: String): Boolean =
+      val segments = pathSegments(path)
+      val params = segments.collect { case pathParamRegex(name) => name }
+      path.startsWith("/") &&
+        segments.forall(segment => staticSegmentRegex.matches(segment) || pathParamRegex.matches(segment)) &&
+        params.distinct.size == params.size
 
     private def validateEndpoint(
         endpoint: CreateResourceEndpointRequest,
     ): Task[Option[ResourceValidationError]] =
       val trimmedPath = endpoint.path.trim
-      if !validPathRegex.matches(trimmedPath) then
+      if !isValidEndpointPath(trimmedPath) then
         return ZIO.some(ResourceValidationError.InvalidEndpointPath(endpoint.id))
       val allowCheck = endpoint.allow.filter(_.trim.nonEmpty) match
         case None => ZIO.none

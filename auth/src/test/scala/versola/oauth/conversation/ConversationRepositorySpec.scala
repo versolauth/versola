@@ -2,13 +2,15 @@ package versola.oauth.conversation
 
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.auth.model.OtpCode
-import versola.oauth.client.model.{AuthFlow, ClientId, PrimaryCredential, ScopeToken}
+import versola.oauth.client.model.{AuthFlow, AuthorizationDetail, ClientId, PrimaryCredential, ScopeToken}
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, State}
 import versola.user.model.UserId
 import versola.util.{DatabaseSpecBase, Email, Phone}
 import zio.*
 import zio.http.URL
+import zio.json.*
+import zio.json.ast.Json
 import zio.test.*
 
 import java.util.UUID
@@ -65,13 +67,20 @@ trait ConversationRepositorySpec extends DatabaseSpecBase[ConversationRepository
     userLogin = None,
     userClaims = Some(zio.json.ast.Json.Obj()),
     authFlow = AuthFlow.default,
+    registrationFlow = None,
+    registrationStep = None,
     userAgent = None,
+    userAgentCookie = None,
     version = 0,
     amr = Map.empty,
     needsPasswordChange = false,
     targetAcr = None,
     csrfToken = "test-csrf",
     priorSessionId = None,
+    resources = Nil,
+    authorizationDetails = None,
+    grantedScope = Some(Set(ScopeToken("openid"))),
+    promptConsent = true,
   )
 
   val record2 = record1.copy(
@@ -100,13 +109,20 @@ trait ConversationRepositorySpec extends DatabaseSpecBase[ConversationRepository
     userLogin = None,
     userClaims = None,
     authFlow = AuthFlow.default,
+    registrationFlow = None,
+    registrationStep = None,
     userAgent = None,
+    userAgentCookie = None,
     version = 0,
     amr = Map.empty,
     needsPasswordChange = false,
     targetAcr = None,
     csrfToken = "test-csrf",
     priorSessionId = None,
+    resources = Nil,
+    authorizationDetails = None,
+    grantedScope = None,
+    promptConsent = false,
   )
 
   def testCases(env: ConversationRepositorySpec.Env): List[Spec[ConversationRepositorySpec.Env & zio.Scope, Any]] =
@@ -123,6 +139,16 @@ trait ConversationRepositorySpec extends DatabaseSpecBase[ConversationRepository
           found2.contains(record2),
           notFound.isEmpty,
         )
+      },
+      test("persist and retrieve authorization details verbatim") {
+        val detail = AuthorizationDetail.parse(
+          """{"type":"payment_initiation","instructedAmount":{"currency":"EUR","amount":"1.00"}}"""
+            .fromJson[Json].toOption.get,
+        ).toOption.get
+        for
+          _ <- env.repository.create(authId1, record1.copy(authorizationDetails = Some(List(detail))), ttl)
+          found <- env.repository.find(authId1)
+        yield assertTrue(found.map(_.authorizationDetails) == Some(Some(List(detail))))
       },
       test("delete conversation by auth ID") {
         for
@@ -185,6 +211,14 @@ trait ConversationRepositorySpec extends DatabaseSpecBase[ConversationRepository
           found2.priorSessionId.exists(m => java.util.Arrays.equals(m: Array[Byte], mac: Array[Byte])),
           found2.version == found1.version + 1
         )
+      },
+      test("find returns None for expired conversation") {
+        val pastAuthId = AuthId(UUID.fromString("00000000-0001-7000-8000-000000000001"))
+        for
+          _ <- env.repository.create(pastAuthId, record1, ttl = 1.second)
+          _ <- TestClock.adjust(2.seconds)
+          result <- env.repository.find(pastAuthId)
+        yield assertTrue(result.isEmpty)
       },
 
     )

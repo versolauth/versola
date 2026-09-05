@@ -18,6 +18,15 @@ case class CreateUserRequest(
 
 case class CreateUserResponse(id: UserId) derives JsonCodec, Schema
 
+/** An account auth created through self-service registration. */
+case class RegisteredUserRequest(
+    email: Option[Email],
+    phone: Option[Phone],
+    login: Option[Login],
+) derives JsonCodec, Schema
+
+case class RegisteredUserResponse(userId: UserId) derives JsonCodec, Schema
+
 case class PatchUserRequest(
     id: UserId,
     email: Option[Patch[Email]],
@@ -75,14 +84,22 @@ case class RenamePasskeyRequest(
     name: Option[String],
 ) derives JsonCodec, Schema
 
-/** Channel used to deliver an admin-issued temporary password to the user. */
+/** Channel used to deliver an admin-issued temporary password to the user.
+  * `show` returns the plaintext to the calling admin instead of delivering it,
+  * and is rejected in production.
+  */
 enum DeliveryChannel derives JsonCodec, Schema:
-  case email, sms
+  case email, sms, show
 
 case class ResetPasswordRequest(
     userId: UserId,
-    expiresInSeconds: Option[Long],
+    expiresInSeconds: Long,
     channel: Option[DeliveryChannel],
+) derives JsonCodec, Schema
+
+/** Returned only for [[DeliveryChannel.show]] resets, which are non-prod only. */
+case class ResetPasswordResponse(
+    password: String,
 ) derives JsonCodec, Schema
 
 case class SetPasswordRequest(
@@ -100,8 +117,11 @@ case class ClientSessionEntry(
 ) derives JsonCodec, Schema
 
 case class SessionResponse(
+    /** Not rendered to end users, but kept available for internal use (e.g. a future
+     *  per-session invalidation call). */
+    publicId: String,
     clients: List[ClientSessionEntry],
-    platform: String,
+    platform: Option[String],
     os: Option[String],
     browser: Option[String],
     version: Option[String],

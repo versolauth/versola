@@ -21,16 +21,18 @@ function backendPath(pathname: string): string {
 
 type TenantDto = { id: string; description: string; edgeId?: string | null };
 type BackendAuthFactor = { type: string; required: boolean };
-type BackendAuthFlow = { primary: { credentials: string[]; inlinePassword: boolean; factors: BackendAuthFactor[] }; passkey?: { factors: BackendAuthFactor[] } | null };
-type ClientDto = { id: string; clientName: string; redirectUris: string[]; scope: string[]; permissions: string[]; secretRotation: boolean; edgeId?: string; authFlow?: BackendAuthFlow | null };
+type BackendAuthFlow = { primary: { credentials: string[]; inlinePassword: boolean; factors: BackendAuthFactor[] }; passkey?: { factors: BackendAuthFactor[] } | null; otpType: 'sms' | 'email' };
+type BackendConsentFlow = { allowPartial: boolean; rememberDuration: number | null };
+type ClientDto = { id: string; clientName: Record<string, string>; redirectUris: string[]; scope: string[]; permissions: string[]; secretRotation: boolean; refreshTokenTtl?: number; edgeId?: string; authFlow?: BackendAuthFlow | null; consentFlow?: BackendConsentFlow | null; theme?: string; otpTemplateId?: string; registrationFlow?: { credential: string; steps: Array<{ type: string }>; roleIds: string[] } | null; frontChannelLogoutUri?: string | null; frontChannelLogoutSessionRequired?: boolean; backChannelLogoutUri?: string | null };
 type ScopeDto = { scope: string; description: Record<string, string>; claims: Array<{ claim: string; description: Record<string, string> }> };
 type PermissionDto = { permission: string; description: Record<string, string>; endpointIds: ResourceEndpointId[] };
 type InjectTargetDto = 'header' | 'query' | 'body';
 type InjectRuleDto = { target: InjectTargetDto; name: string; expression: string };
 type ResourceEndpointId = string | number;
 type ResourceEndpointDto = { id: ResourceEndpointId; method: string; path: string; fetchUserInfo: boolean; allow?: string | null; inject: InjectRuleDto[] };
-type ResourceDto = { resourceId: string; resource: string; endpoints: ResourceEndpointDto[] };
+type ResourceDto = { resourceId: string; resource: string; endpoints: ResourceEndpointDto[]; internal?: boolean; secretRotation?: boolean };
 type RoleDto = { id: string; description: Record<string, string>; permissions: string[]; active: boolean };
+type AuthorizationDetailTypeDto = { type: string; description: Record<string, string>; schema: Record<string, unknown> };
 type EdgeDto = { id: string; hasOldKey?: boolean; tenants?: string[]; clients?: EdgeClientLinkDto[] };
 type EdgeClientLinkDto = { tenantId: string; clientId: string };
 type AuthorizationPresetDto = {
@@ -42,7 +44,10 @@ type AuthorizationPresetDto = {
   postLogoutRedirectUri?: string;
   scope: string[];
   responseType: string;
-  uiLocales?: string[]
+  uiLocales?: string[];
+  customParameters?: Record<string, string[]>;
+  cookieDomain?: string;
+  cookiePath?: string;
 };
 type FormPropertyDto =
   | { type: 'BooleanProperty'; name: string }
@@ -59,27 +64,32 @@ type FormDto = {
 };
 type FormLocaleDto = { code: string; name: string };
 type ThemeDto = { id: string; css: string; tenantId: string | null };
+type SystemSettingsDto = { passwordRegex: string; passwordHistorySize: number; passwordNumDifferent: number; identityProviderLogo?: string | null };
 type SetPatch<T> = { add?: T[]; remove?: T[] };
 type DescriptionPatch = { add?: Record<string, string>; delete?: string[] };
 type CreateClientRequest = {
   tenantId: string;
   id: string;
-  clientName: string;
+  clientName: Record<string, string>;
   redirectUris: string[];
   allowedScopes: string[];
   audience: string[];
   permissions: string[];
   accessTokenTtl: number;
+  refreshTokenTtl?: number;
   authFlow?: BackendAuthFlow | null;
+  consentFlow?: BackendConsentFlow | null;
 };
 type UpdateClientRequest = {
   clientId: string;
-  clientName?: string;
+  clientName?: Record<string, string>;
   redirectUris?: SetPatch<string>;
   scope?: SetPatch<string>;
   permissions?: SetPatch<string>;
   accessTokenTtl?: number;
+  refreshTokenTtl?: number;
   authFlow?: BackendAuthFlow | null;
+  consentFlow?: BackendConsentFlow | null;
 };
 type CreateScopeRequest = {
   tenantId: string;
@@ -92,6 +102,7 @@ type CreateResourceRequest = {
   resourceId: string;
   resource: string;
   endpoints: Array<{ id?: ResourceEndpointId; method: string; path: string; fetchUserInfo: boolean; allow?: string | null; inject: InjectRuleDto[] }>;
+  internal?: boolean;
 };
 type UpdateResourceRequest = {
   resourceId: string;
@@ -152,6 +163,16 @@ type PasskeyInfoDto = {
   createdAt: string;
 };
 
+type SessionClientEntryDto = { clientId: string; enteredAt: string; expiresAt: string };
+type UserSessionDto = {
+  clients: SessionClientEntryDto[];
+  createdAt?: string;
+  platform?: 'ios' | 'android' | 'desktop';
+  os?: string;
+  browser?: string;
+  version?: string;
+};
+
 type UserDto = {
   id: string;
   email?: string;
@@ -160,6 +181,7 @@ type UserDto = {
   claims: Record<string, unknown>;
   rolesByTenant?: Record<string, string[]>;
   passkeys?: PasskeyInfoDto[];
+  sessions?: UserSessionDto[];
 };
 
 type RateLimitDto = { maxAttempts: number; windowSeconds: number };
@@ -170,7 +192,7 @@ type SubmissionLimitsDto = {
   banDurationSeconds: number;
 };
 type PasskeySettingsDto = { rpId: string; rpName: string; origins: string[]; userVerification: string };
-type OtpTemplateDto = { id: string; tenantId: string; localizations: Record<string, string> };
+type OtpTemplateDto = { id: string; tenantId: string; localizations: Record<string, string>; purpose: string; channel: 'sms' | 'email' };
 type ChallengeSettingsDto = {
   tenantId: string;
   allowedPrefixes: string[];
@@ -201,6 +223,7 @@ const defaultChallengeSettings = (tenantId: string): ChallengeSettingsDto => ({
 
 type MyPermissionsDto = {
   resources: Record<string, { permissions: string[] }>;
+  isProd: boolean;
 };
 
 export type MockConfigState = {
@@ -216,9 +239,12 @@ export type MockConfigState = {
   forms: FormDto[];
   formLocales: FormLocaleDto[];
   themes: ThemeDto[];
+  systemSettings: SystemSettingsDto;
   otpTemplates: Record<string, OtpTemplateDto[]>; // keyed by tenantId
   challengeSettings: Record<string, ChallengeSettingsDto>; // keyed by tenantId
+  authorizationDetailTypes: Record<string, AuthorizationDetailTypeDto[]>; // keyed by tenantId
   locales: LocaleDto[];
+  localeActivationMissing: Record<string, string[]>;
   myPermissions: MyPermissionsDto;
 };
 
@@ -227,32 +253,35 @@ export type MockConfigHarness = {
   requests: RequestLog[];
 };
 
+export const defaultMyPermissions: MyPermissionsDto = {
+  resources: {
+    central: {
+      permissions: [
+        'oauth:read', 'oauth:manage', 'oauth:secrets',
+        'access:read', 'access:manage',
+        'security:read', 'security:manage',
+        'users:read', 'users:manage',
+        'resources:read', 'resources:manage',
+        'forms:read', 'forms:manage',
+        'locales:read', 'locales:manage',
+        'tenants:read', 'tenants:manage',
+        'edges:read', 'edges:manage',
+        'jwks:read', 'jwks:manage'
+      ]
+    }
+  },
+  isProd: false
+};
+
 const defaultState: MockConfigState = {
   tenants: [
     { id: 'tenant-alpha', description: 'Alpha Workspace', edgeId: null },
     { id: 'tenant-bravo', description: 'Bravo Workspace', edgeId: null },
   ],
-  myPermissions: {
-    resources: {
-      central: {
-        permissions: [
-          'oauth:read', 'oauth:manage', 'oauth:secrets',
-          'access:read', 'access:manage',
-          'security:read', 'security:manage',
-          'users:read', 'users:manage',
-          'resources:read', 'resources:manage',
-          'forms:read', 'forms:manage',
-          'locales:read', 'locales:manage',
-          'tenants:read', 'tenants:manage',
-          'edges:read', 'edges:manage',
-          'jwks:read', 'jwks:manage'
-        ]
-      }
-    }
-  },
+  myPermissions: defaultMyPermissions,
   clients: {
-    'tenant-alpha': [{ id: 'alpha-web', clientName: 'Alpha Web', redirectUris: ['https://alpha.example/callback'], scope: ['openid'], permissions: ['alpha.read'], secretRotation: false }],
-    'tenant-bravo': [{ id: 'bravo-web', clientName: 'Bravo Web', redirectUris: ['https://bravo.example/callback'], scope: ['email'], permissions: ['bravo.read'], secretRotation: false }],
+    'tenant-alpha': [{ id: 'alpha-web', clientName: { en: 'Alpha Web' }, redirectUris: ['https://alpha.example/callback'], scope: ['openid'], permissions: ['alpha.read'], secretRotation: false }],
+    'tenant-bravo': [{ id: 'bravo-web', clientName: { en: 'Bravo Web' }, redirectUris: ['https://bravo.example/callback'], scope: ['email'], permissions: ['bravo.read'], secretRotation: false }],
   },
   scopes: {
     'tenant-alpha': [{ scope: 'openid', description: { en: 'OpenID scope' }, claims: [{ claim: 'sub', description: { en: 'Subject' } }] }],
@@ -276,9 +305,17 @@ const defaultState: MockConfigState = {
   forms: [],
   formLocales: [],
   themes: [],
+  systemSettings: {
+    passwordRegex: '^(?=.*[A-Za-z])(?=.*\\d).{8,}$',
+    passwordHistorySize: 5,
+    passwordNumDifferent: 3,
+    identityProviderLogo: null,
+  },
   otpTemplates: {},
   challengeSettings: {},
+  authorizationDetailTypes: {},
   locales: [],
+  localeActivationMissing: {},
 };
 
 function clone<T>(value: T): T {
@@ -299,9 +336,12 @@ function mergeState(overrides: Partial<MockConfigState> = {}): MockConfigState {
     forms: clone(overrides.forms ?? defaultState.forms),
     formLocales: clone(overrides.formLocales ?? defaultState.formLocales),
     themes: clone(overrides.themes ?? defaultState.themes),
+    systemSettings: clone(overrides.systemSettings ?? defaultState.systemSettings),
     otpTemplates: clone({ ...defaultState.otpTemplates, ...overrides.otpTemplates }),
     challengeSettings: clone({ ...defaultState.challengeSettings, ...overrides.challengeSettings }),
+    authorizationDetailTypes: clone({ ...defaultState.authorizationDetailTypes, ...overrides.authorizationDetailTypes }),
     locales: clone(overrides.locales ?? defaultState.locales),
+    localeActivationMissing: clone(overrides.localeActivationMissing ?? defaultState.localeActivationMissing),
     myPermissions: clone(overrides.myPermissions ?? defaultState.myPermissions),
   };
 }
@@ -373,6 +413,19 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
       searchParams: Object.fromEntries(url.searchParams.entries()),
       body,
     });
+
+    if (pathname === '/configuration/system-settings') {
+      if (method === 'GET') {
+        await route.fulfill(json(state.systemSettings));
+        return;
+      }
+
+      if (method === 'PUT') {
+        state.systemSettings = clone(body as SystemSettingsDto);
+        await route.fulfill({ status: 204, body: '' });
+        return;
+      }
+    }
 
     if (pathname === '/configuration/tenants') {
       if (method === 'GET') {
@@ -448,7 +501,9 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
           scope: [...payload.allowedScopes],
           permissions: [...payload.permissions],
           secretRotation: false,
+          refreshTokenTtl: payload.refreshTokenTtl ?? 90 * 24 * 60 * 60,
           authFlow: payload.authFlow ?? null,
+          consentFlow: payload.consentFlow ?? null,
         };
 
         state.clients[payload.tenantId] = [createdClient, ...tenantClients];
@@ -473,8 +528,14 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
         client.redirectUris = applyPatchSet(client.redirectUris, payload.redirectUris);
         client.scope = applyPatchSet(client.scope, payload.scope);
         client.permissions = applyPatchSet(client.permissions, payload.permissions);
+        if (payload.refreshTokenTtl !== undefined) {
+          client.refreshTokenTtl = payload.refreshTokenTtl;
+        }
         if ('authFlow' in payload) {
           client.authFlow = payload.authFlow ?? null;
+        }
+        if ('consentFlow' in payload) {
+          client.consentFlow = payload.consentFlow ?? null;
         }
 
         await route.fulfill({ status: 204, body: '' });
@@ -548,6 +609,50 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
         if (clientId && presetId) {
           state.authorizationPresets[clientId] = (state.authorizationPresets[clientId] ?? []).filter(p => p.id !== presetId);
         }
+        await route.fulfill({ status: 204, body: '' });
+        return;
+      }
+    }
+
+    if (pathname === '/configuration/authorization-detail-types') {
+      const tenantTypes = state.authorizationDetailTypes[tenantId] ?? [];
+
+      if (method === 'GET') {
+        await route.fulfill(json({ types: pageSlice(tenantTypes, url) }));
+        return;
+      }
+
+      if (method === 'POST') {
+        const payload = body as { tenantId: string; type: string; description: Record<string, string>; schema: Record<string, unknown> };
+        const types = state.authorizationDetailTypes[payload.tenantId] ?? [];
+        if (types.some(detailType => detailType.type === payload.type)) {
+          await route.fulfill(json({ message: `Authorization detail type ${payload.type} already exists` }, 409));
+          return;
+        }
+        state.authorizationDetailTypes[payload.tenantId] = [
+          { type: payload.type, description: { ...payload.description }, schema: { ...payload.schema } },
+          ...types,
+        ];
+        await route.fulfill({ status: 201, body: '' });
+        return;
+      }
+
+      if (method === 'PUT') {
+        const payload = body as { tenantId: string; type: string; description: Record<string, string>; schema: Record<string, unknown> };
+        const detailType = tenantTypes.find(candidate => candidate.type === payload.type);
+        if (!detailType) {
+          await route.fulfill(json({ message: `Authorization detail type ${payload.type} was not found` }, 404));
+          return;
+        }
+        detailType.description = { ...payload.description };
+        detailType.schema = { ...payload.schema };
+        await route.fulfill({ status: 204, body: '' });
+        return;
+      }
+
+      if (method === 'DELETE') {
+        const type = url.searchParams.get('type');
+        state.authorizationDetailTypes[tenantId] = tenantTypes.filter(detailType => detailType.type !== type);
         await route.fulfill({ status: 204, body: '' });
         return;
       }
@@ -687,10 +792,15 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
             ...(endpoint.allow != null && endpoint.allow.length > 0 ? { allow: endpoint.allow } : {}),
             inject: endpoint.inject.map(rule => ({ ...rule })),
           })),
+          internal: payload.internal ?? false,
+          secretRotation: false,
         };
 
         state.resources[payload.tenantId] = [createdResource, ...(state.resources[payload.tenantId] ?? [])];
-        await route.fulfill(json({ resourceId: createdResource.resourceId }, 201));
+        await route.fulfill(json({
+          resourceId: createdResource.resourceId,
+          secret: payload.internal ? `generated-${createdResource.resourceId}` : null,
+        }, 201));
         return;
       }
 
@@ -735,6 +845,35 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
         await route.fulfill({ status: 204, body: '' });
         return;
       }
+    }
+
+    if (pathname === '/configuration/resources/rotate-secret' && method === 'POST') {
+      const resourceId = url.searchParams.get('resourceId');
+      const resource = Object.values(state.resources).flat().find(candidate => candidate.resourceId === resourceId);
+
+      if (!resource || !resourceId) {
+        await route.fulfill(json({ message: `Resource ${resourceId} was not found` }, 404));
+        return;
+      }
+
+      resource.internal = true;
+      resource.secretRotation = true;
+      await route.fulfill(json({ secret: `rotated-${resourceId}` }));
+      return;
+    }
+
+    if (pathname === '/configuration/resources/previous-secret' && method === 'DELETE') {
+      const resourceId = url.searchParams.get('resourceId');
+      const resource = Object.values(state.resources).flat().find(candidate => candidate.resourceId === resourceId);
+
+      if (!resource || !resourceId) {
+        await route.fulfill(json({ message: `Resource ${resourceId} was not found` }, 404));
+        return;
+      }
+
+      resource.secretRotation = false;
+      await route.fulfill({ status: 204, body: '' });
+      return;
     }
 
     if (pathname === '/configuration/roles') {
@@ -969,6 +1108,14 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
 
       if (method === 'PUT') {
         const payload = body as { add?: LocaleDto[]; delete?: string[] };
+        const currentLocales = new Map(state.locales.map(locale => [locale.code, locale]));
+        for (const locale of payload.add ?? []) {
+          const missing = state.localeActivationMissing[locale.code] ?? [];
+          if (locale.active && !currentLocales.get(locale.code)?.active && missing.length > 0) {
+            await route.fulfill(json({ locale: locale.code, missing }, 400));
+            return;
+          }
+        }
         const removed = new Set(payload.delete ?? []);
         state.locales = state.locales.filter(locale => !removed.has(locale.code));
         for (const locale of payload.add ?? []) {
@@ -1002,11 +1149,19 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
       if (method === 'PUT') {
         const payload = body as OtpTemplateDto;
         const templates = state.otpTemplates[payload.tenantId] ?? [];
-        const existing = templates.find(template => template.id === payload.id);
+        const existing = templates.find(template => template.id === payload.id && template.purpose === payload.purpose && template.channel === payload.channel);
         if (existing) {
           existing.localizations = { ...payload.localizations };
+          existing.purpose = payload.purpose;
+          existing.channel = payload.channel;
         } else {
-          templates.push({ id: payload.id, tenantId: payload.tenantId, localizations: { ...payload.localizations } });
+          templates.push({
+            id: payload.id,
+            tenantId: payload.tenantId,
+            localizations: { ...payload.localizations },
+            purpose: payload.purpose,
+            channel: payload.channel,
+          });
         }
         state.otpTemplates[payload.tenantId] = templates;
         await route.fulfill({ status: 204, body: '' });
@@ -1014,9 +1169,9 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
       }
 
       if (method === 'DELETE') {
-        const payload = body as { id: string; tenantId: string };
+        const payload = body as { id: string; tenantId: string; purpose: string; channel: 'sms' | 'email' };
         state.otpTemplates[payload.tenantId] = (state.otpTemplates[payload.tenantId] ?? [])
-          .filter(template => template.id !== payload.id);
+          .filter(template => !(template.id === payload.id && template.purpose === payload.purpose && template.channel === payload.channel));
         await route.fulfill({ status: 204, body: '' });
         return;
       }
@@ -1179,6 +1334,29 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
       }
     }
 
+    if (pathname === '/users/sessions') {
+      if (method === 'GET') {
+        const id = url.searchParams.get('id') ?? '';
+        const user = state.users.find(candidate => candidate.id === id);
+        if (!user) {
+          await route.fulfill(json({ message: `User ${id} not found` }, 404));
+          return;
+        }
+        await route.fulfill(json(user.sessions ?? []));
+        return;
+      }
+
+      if (method === 'DELETE') {
+        const userId = url.searchParams.get('userId') ?? '';
+        const user = state.users.find(candidate => candidate.id === userId);
+        if (user) {
+          user.sessions = [];
+        }
+        await route.fulfill({ status: 202, body: '' });
+        return;
+      }
+    }
+
     if (pathname === '/users/passkeys') {
       if (method === 'GET') {
         const id = url.searchParams.get('id') ?? '';
@@ -1218,6 +1396,26 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
         await route.fulfill({ status: 202, body: '' });
         return;
       }
+    }
+
+    if (pathname === '/users/password/reset' && method === 'POST') {
+      const payload = body as { userId: string; channel: string | null };
+      const user = state.users.find(candidate => candidate.id === payload.userId);
+      if (!user) {
+        await route.fulfill(json({ message: `User ${payload.userId} not found` }, 404));
+        return;
+      }
+      // `show` is rejected in prod, mirroring central; otherwise it returns the plaintext.
+      if (payload.channel === 'show') {
+        if (state.myPermissions.isProd) {
+          await route.fulfill(json({ message: 'Not Found' }, 404));
+          return;
+        }
+        await route.fulfill(json({ password: 'Temp1234!' }));
+        return;
+      }
+      await route.fulfill({ status: 204, body: '' });
+      return;
     }
 
     if (pathname === '/users/limits/reset' && method === 'POST') {

@@ -1,7 +1,7 @@
 package versola.oauth.client
 
 import versola.auth.TestEnvConfig
-import versola.oauth.client.model.{ClientId, ScopeToken, TenantId}
+import versola.oauth.client.model.{ClientId, ConsentFlow, ScopeToken, TenantId}
 import versola.util.*
 import zio.*
 import zio.http.*
@@ -25,10 +25,9 @@ object OAuthClientSyncClientSpec extends ZIOSpecDefault:
   private case class EncodedClient(
       id: ClientId,
       tenantId: TenantId,
-      clientName: String,
+      clientName: Map[String, String],
       redirectUris: NonEmptySet[String],
       scope: Set[ScopeToken],
-      externalAudience: List[ClientId],
       secret: Option[String],
       previousSecret: Option[String],
       accessTokenTtl: Duration,
@@ -37,6 +36,10 @@ object OAuthClientSyncClientSpec extends ZIOSpecDefault:
       otpTemplateId: String,
       frontChannelLogoutUri: Option[String],
       frontChannelLogoutSessionRequired: Boolean,
+      logoUri: Option[String],
+      policyUri: Option[String],
+      tosUri: Option[String],
+      consentFlow: Option[ConsentFlow],
   ) derives JsonCodec
   private case class EncodedClientsSyncResponse(clients: Vector[EncodedClient]) derives JsonCodec
 
@@ -79,10 +82,9 @@ object OAuthClientSyncClientSpec extends ZIOSpecDefault:
                     EncodedClient(
                       ClientId("web-app"),
                       TenantId("default"),
-                      "Web App",
+                      Map("en" -> "Web App", "de" -> "Web-Anwendung"),
                       NonEmptySet("https://example.com/callback"),
                       Set(ScopeToken.OpenId, ScopeToken("profile")),
-                      List(ClientId("api")),
                       Some(Base64Url.encode(currentSecret)),
                       Some(Base64Url.encode(previousSecret)),
                       300.seconds,
@@ -91,6 +93,10 @@ object OAuthClientSyncClientSpec extends ZIOSpecDefault:
                       "default",
                       Some("https://example.com/frontchannel-logout"),
                       true,
+                      Some("https://example.com/logo.png"),
+                      Some("https://example.com/privacy"),
+                      Some("https://example.com/terms"),
+                      Some(ConsentFlow(allowPartial = true, rememberDuration = Some(30.days))),
                     )
                   ),
                 ).toJson
@@ -113,12 +119,16 @@ object OAuthClientSyncClientSpec extends ZIOSpecDefault:
         claims.aud == List("central"),
         result.size == 1,
         client.scope == Set(ScopeToken.OpenId, ScopeToken("profile")),
-        client.externalAudience == List(ClientId("api")),
         client.secret.exists(_.sameElements(currentSecret)),
         client.previousSecret.exists(_.sameElements(previousSecret)),
         client.accessTokenTtl == 300.seconds,
         client.frontChannelLogoutUri.contains(URL.decode("https://example.com/frontchannel-logout").toOption.get),
         client.frontChannelLogoutSessionRequired,
+        client.clientName == Map("en" -> "Web App", "de" -> "Web-Anwendung"),
+        client.logoUri.contains("https://example.com/logo.png"),
+        client.policyUri.contains("https://example.com/privacy"),
+        client.tosUri.contains("https://example.com/terms"),
+        client.consentFlow.contains(ConsentFlow(allowPartial = true, rememberDuration = Some(30.days))),
       )
     },
   ).provideShared(TestClient.layer, configLayer, tokenLayer, securityLayer, OAuthClientSyncClient.live) @@ TestAspect.silentLogging

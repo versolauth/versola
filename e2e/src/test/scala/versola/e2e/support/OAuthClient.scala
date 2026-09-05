@@ -4,6 +4,7 @@ import zio.*
 import zio.http.*
 import zio.http.Header.Authorization
 import zio.json.*
+import zio.json.ast.Json
 
 import scala.annotation.targetName
 
@@ -81,6 +82,10 @@ object TokenResult:
       expiresIn: Long,
       refreshToken: Option[String],
       idToken: Option[String],
+      /** RFC 6749 §5.1: the scope actually granted, present when it differs from the request. */
+      scope: Option[String],
+      /** RFC 9396 §7: the authorization details granted, echoed back when the grant carries any. */
+      authorizationDetails: Option[Json.Arr],
   ) extends TokenResult
 
   case class Failure(response: Response, body: String) extends TokenResult
@@ -91,6 +96,8 @@ object TokenResult:
       expires_in: Long,
       refresh_token: Option[String],
       id_token: Option[String],
+      scope: Option[String],
+      authorization_details: Option[Json.Arr],
   ) derives JsonDecoder
 
   def parse(response: Response): Task[TokenResult] =
@@ -98,7 +105,16 @@ object TokenResult:
       if response.status.isSuccess then
         body.fromJson[Raw].fold(
           err => Failure(response, s"JSON parse error [$err] body=$body"),
-          raw => Success(response, raw.access_token, raw.token_type, raw.expires_in, raw.refresh_token, raw.id_token),
+          raw => Success(
+            response,
+            raw.access_token,
+            raw.token_type,
+            raw.expires_in,
+            raw.refresh_token,
+            raw.id_token,
+            raw.scope,
+            raw.authorization_details,
+          ),
         )
       else Failure(response, body)
 
@@ -202,6 +218,60 @@ extension (task: Task[RegisterClientResult])
   @targetName("registerClientSuccess")
   def success: Task[RegisterClientResult.Success] = task.flatMap(_.success)
 
+/** Result of [[OAuthClient.registerAuthorizationDetailType]] — a `Failure` carries the raw
+  * JSON body (e.g. an `InvalidSchema` validation error) for tests that assert on rejection.
+  */
+sealed trait RegisterAuthorizationDetailTypeResult:
+  def response: Response
+  def success: Task[Unit] = this match
+    case RegisterAuthorizationDetailTypeResult.Success(_) => ZIO.unit
+    case RegisterAuthorizationDetailTypeResult.Failure(resp, body) =>
+      ZIO.fail(RuntimeException(s"Expected registerAuthorizationDetailType success but got: status=${resp.status} body=$body"))
+
+object RegisterAuthorizationDetailTypeResult:
+  case class Success(response: Response) extends RegisterAuthorizationDetailTypeResult
+  case class Failure(response: Response, body: String) extends RegisterAuthorizationDetailTypeResult
+
+  def parse(response: Response): Task[RegisterAuthorizationDetailTypeResult] =
+    if response.status.isSuccess then ZIO.succeed(Success(response))
+    else response.body.asString.map(Failure(response, _))
+
+extension (task: Task[RegisterAuthorizationDetailTypeResult])
+  @targetName("registerAuthorizationDetailTypeSuccess")
+  def success: Task[Unit] = task.flatMap(_.success)
+
+/** Result of [[OAuthClient.pushAuthorizationRequest]] (RFC 9126). A `Failure` keeps the parsed
+  * `error` code, since `/par` reports validation failures to the client directly rather than
+  * redirecting them back to the redirect URI.
+  */
+sealed trait PushedAuthorizationResult:
+  def response: Response
+  def success: Task[PushedAuthorizationResult.Success] = this match
+    case s: PushedAuthorizationResult.Success => ZIO.succeed(s)
+    case PushedAuthorizationResult.Failure(resp, body, _) =>
+      ZIO.fail(RuntimeException(s"Expected /par success but got: status=${resp.status} body=$body"))
+
+object PushedAuthorizationResult:
+  case class Success(response: Response, requestUri: String, expiresIn: Long, verifier: String, state: String)
+      extends PushedAuthorizationResult
+  case class Failure(response: Response, body: String, error: Option[String]) extends PushedAuthorizationResult
+
+  private case class RawSuccess(request_uri: String, expires_in: Long) derives JsonDecoder
+  private case class RawError(error: String) derives JsonDecoder
+
+  def parse(response: Response, verifier: String, state: String): Task[PushedAuthorizationResult] =
+    response.body.asString.map: body =>
+      if response.status.isSuccess then
+        body.fromJson[RawSuccess].fold(
+          err => Failure(response, s"JSON parse error [$err] body=$body", None),
+          raw => Success(response, raw.request_uri, raw.expires_in, verifier, state),
+        )
+      else Failure(response, body, body.fromJson[RawError].toOption.map(_.error))
+
+extension (task: Task[PushedAuthorizationResult])
+  @targetName("pushedAuthorizationSuccess")
+  def success: Task[PushedAuthorizationResult.Success] = task.flatMap(_.success)
+
 case class SubmitResult(response: Response):
   val location: String = response.location
   /** `SSO_SESSION` cookie set by the server when an auth conversation finishes. */
@@ -263,12 +333,78 @@ extension (task: Task[Response])
             if actualError == expectedError then ZIO.unit
             else ZIO.fail(RuntimeException(s"Expected error='$expectedError', got error='$actualError'"))
 
+/** The caller identity edge injects into every Account Settings call after it has
+  * authenticated the user and performed the configured step-up checks.
+  */
+case class AccountCaller(userId: java.util.UUID, clientId: String, sessionId: String):
+  private[support] def query: List[(String, String)] =
+    List("userId" -> userId.toString, "clientId" -> clientId, "sessionId" -> sessionId)
+
+  /** The caller fields every body-carrying route expects, plus the route's own payload. */
+  private[support] def bodyWith(extra: (String, Json)*): Json.Obj =
+    Json.Obj(
+      Chunk[(String, Json)](
+        "userId" -> Json.Str(userId.toString),
+        "clientId" -> Json.Str(clientId),
+      ) ++ Chunk.fromIterable(extra),
+    )
+
+/** Raw outcome of an Account Settings call — status assertions are the point of most
+  * of these tests, so the body is never interpreted eagerly.
+  */
+case class AccountResult(response: Response, body: String):
+  val status: Status = response.status
+
+  def json: Task[Json.Obj] =
+    ZIO.fromEither(body.fromJson[Json.Obj])
+      .mapError(error => RuntimeException(s"Expected a JSON object [$error]: $body"))
+
+  /** The `sessions` or `passkeys` array of a list response. */
+  def items(field: String): Task[Chunk[Json.Obj]] =
+    json.flatMap(array(_, field))
+
+  /** The `step` object of the `window.__VERSOLA_FORM__` config inlined into the account page:
+    * the page resolves its data server-side, so this is what the form renders from.
+    */
+  def formStep: Task[Json.Obj] =
+    for
+      line <- ZIO.fromOption(body.linesIterator.find(_.contains(AccountResult.formMarker)))
+        .orElseFail(RuntimeException(s"No inlined form config in: $body"))
+      raw = line.trim.stripPrefix(AccountResult.formMarker).stripSuffix(";")
+      config <- ZIO.fromEither(raw.fromJson[Json.Obj])
+        .mapError(error => RuntimeException(s"Inlined form config is not a JSON object [$error]: $raw"))
+      step <- ZIO.fromOption(config.fields.collectFirst { case ("step", obj: Json.Obj) => obj })
+        .orElseFail(RuntimeException(s"Inlined form config carries no 'step' object: $raw"))
+    yield step
+
+  /** The `sessions` or `passkeys` array of the account page's inlined form config. */
+  def formItems(field: String): Task[Chunk[Json.Obj]] =
+    formStep.flatMap(array(_, field))
+
+  private def array(obj: Json.Obj, field: String): Task[Chunk[Json.Obj]] =
+    ZIO.fromOption(obj.fields.collectFirst { case (name, value) if name == field => value })
+      .orElseFail(RuntimeException(s"Missing '$field' in: $body"))
+      .flatMap:
+        case Json.Arr(elements) => ZIO.succeed(elements.collect { case obj: Json.Obj => obj })
+        case _ => ZIO.fail(RuntimeException(s"'$field' is not an array in: $body"))
+
+object AccountResult:
+  private val formMarker = "window.__VERSOLA_FORM__ = "
+
 /** Thin HTTP client for e2e tests.
   *
   * Intentionally does NOT follow redirects — each hop is its own assertion.
   * Cookies are threaded explicitly so tests can inspect every step.
   */
 final class OAuthClient(client: Client, config: E2EConfig):
+
+  private val centralAuthorization = Authorization.Basic("central", config.resourceSecret)
+  private val edgeAuthorization = Authorization.Basic("edge", config.edgeInternalSecret)
+
+  /** Where the edge receives security event tokens — what a client registers as its
+    * back-channel logout URI so that logouts and revocations reach it.
+    */
+  val edgeBackChannelLogoutUri: String = s"${config.edgeUrl}/logout/backchannel"
 
   /** GET /authorize — generates PKCE + state, starts a new conversation, extracts the
     * SSO_CONVERSATION cookie, and returns everything the caller needs for subsequent steps.
@@ -277,6 +413,8 @@ final class OAuthClient(client: Client, config: E2EConfig):
       scope: String = "openid",
       clientId: Option[String] = None,
       redirectUri: Option[String] = None,
+      /** RFC 9396 §2: the raw JSON value of the `authorization_details` request parameter. */
+      authorizationDetails: Option[String] = None,
   ): Task[AuthorizeResult] =
     val effectiveClientId = clientId.getOrElse(config.clientId)
     val effectiveRedirectUri = redirectUri.getOrElse(config.redirectUri)
@@ -292,7 +430,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
         "state" -> state,
         "code_challenge" -> challenge,
         "code_challenge_method" -> "S256",
-      ))
+      ) ++ authorizationDetails.map("authorization_details" -> _))
       response <- Client.batched(Request.get(url)).provide(ZLayer.succeed(client))
       cookie <- ZIO.fromOption(OAuthClient.extractConversationCookie(response))
         .orElseFail(new RuntimeException(
@@ -303,6 +441,9 @@ final class OAuthClient(client: Client, config: E2EConfig):
   /** GET /authorize — raw variant with full control over which parameters are sent.
     * Generates PKCE and state internally; use the returned [[AuthorizeResult]] to access the verifier and cookie.
     * Pass `omitCodeChallenge = true` to omit `code_challenge` from the request (e.g. to test missing-challenge errors).
+    * Pass `requestUri` to redeem a pushed authorization request (RFC 9126) instead of sending
+    * the authorization parameters directly; only `client_id` and `request_uri` are then sent.
+    * Pass `codeChallengeMethod = None` or an unsupported value to test PKCE method errors.
     */
   def authorizeRaw(
       clientId: String,
@@ -310,28 +451,41 @@ final class OAuthClient(client: Client, config: E2EConfig):
       scope: Option[String] = Some("openid"),
       responseType: Option[String] = Some("code"),
       omitCodeChallenge: Boolean = false,
+      codeChallengeMethod: Option[String] = Some("S256"),
       prompt: Option[String] = None,
       maxAge: Option[Long] = None,
       sessionCookie: Option[String] = None,
       acrValues: Option[String] = None,
       idTokenHint: Option[String] = None,
+      requestUri: Option[String] = None,
+      omitClientId: Boolean = false,
+      /** RFC 9396 §2: the raw JSON value of the `authorization_details` request parameter. */
+      authorizationDetails: Option[String] = None,
   ): Task[AuthorizeResult] =
     val (verifier, challenge) = PkceHelper.generate()
     val state = java.util.UUID.randomUUID().toString
     for
       base <- ZIO.fromEither(URL.decode(s"${config.authUrl}/authorize")).mapError(new RuntimeException(_))
-      params = List(
-        "client_id"            -> Some(clientId),
-        "redirect_uri"         -> Some(redirectUri),
-        "scope"                -> scope,
-        "response_type"        -> responseType,
-        "code_challenge"       -> (if omitCodeChallenge then None else Some(challenge)),
-        "code_challenge_method"-> (if omitCodeChallenge then None else Some("S256")),
-        "state"                -> Some(state),
-        "prompt"               -> prompt,
-        "max_age"              -> maxAge.map(_.toString),
-        "acr_values"           -> acrValues,
-        "id_token_hint"        -> idTokenHint,
+      params = requestUri.fold(
+        List(
+          "client_id"            -> Some(clientId),
+          "redirect_uri"         -> Some(redirectUri),
+          "scope"                -> scope,
+          "response_type"        -> responseType,
+          "code_challenge"       -> (if omitCodeChallenge then None else Some(challenge)),
+          "code_challenge_method"-> (if omitCodeChallenge then None else codeChallengeMethod),
+          "state"                -> Some(state),
+          "prompt"               -> prompt,
+          "max_age"              -> maxAge.map(_.toString),
+          "acr_values"           -> acrValues,
+          "id_token_hint"        -> idTokenHint,
+          "authorization_details" -> authorizationDetails,
+        ),
+      )(uri =>
+        List(
+          "client_id"    -> (if omitClientId then None else Some(clientId)),
+          "request_uri"  -> Some(uri),
+        ),
       ).collect { case (k, Some(v)) => k -> v }
       req = Request.get(base.addQueryParams(params))
       reqWithSession = sessionCookie.fold(req)(sc =>
@@ -339,6 +493,43 @@ final class OAuthClient(client: Client, config: E2EConfig):
       )
       response <- Client.batched(reqWithSession).provide(ZLayer.succeed(client))
     yield AuthorizeResult(response, verifier, state, OAuthClient.extractConversationCookie(response))
+
+  /** POST /par — pushes an authorization request per RFC 9126, returning a `request_uri`
+    * reference for redemption at `/authorize`. Authenticates with HTTP Basic.
+    */
+  def pushAuthorization(
+      clientId: String,
+      clientSecret: String,
+      redirectUri: String,
+      scope: String = "openid",
+      responseType: String = "code",
+      extraParams: Map[String, String] = Map.empty,
+      useBasicAuth: Boolean = true,
+  ): Task[PushedAuthorizationResult] =
+    val (verifier, challenge) = PkceHelper.generate()
+    val state = java.util.UUID.randomUUID().toString
+    // `client_id` is always required in the pushed body per RFC 9126 §2.1, even when the
+    // client authenticates with HTTP Basic. When authenticating with client_secret_post
+    // instead, `client_secret` must travel in the same body — a client must not combine
+    // both authentication methods in a single request.
+    val formParams = Map(
+      "client_id"             -> clientId,
+      "response_type"         -> responseType,
+      "redirect_uri"          -> redirectUri,
+      "scope"                 -> scope,
+      "state"                 -> state,
+      "code_challenge"        -> challenge,
+      "code_challenge_method" -> "S256",
+    ) ++ (if useBasicAuth then Map.empty else Map("client_secret" -> clientSecret)) ++ extraParams
+    val req0 = Request.post(s"${config.authUrl}/par", formBody(formParams))
+      .addHeader(Header.ContentType(MediaType.application.`x-www-form-urlencoded`))
+    val req = if useBasicAuth then req0.addHeader(Authorization.Basic(clientId, clientSecret)) else req0
+    Client.batched(req).provide(ZLayer.succeed(client)).flatMap(PushedAuthorizationResult.parse(_, verifier, state))
+
+  /** Issues an arbitrary HTTP method against /par — used to test method-not-allowed handling. */
+  def parRaw(method: Method): Task[Response] =
+    val req = Request(method = method, url = URL.decode(s"${config.authUrl}/par").toOption.get)
+    Client.batched(req).provide(ZLayer.succeed(client))
 
   /** GET /challenge — fetches the current challenge form HTML and parses the step meta tag. */
   def getChallenge(cookie: String): Task[ChallengeResult] =
@@ -368,6 +559,20 @@ final class OAuthClient(client: Client, config: E2EConfig):
     formPost(s"${config.authUrl}/challenge/set-password", Map("password" -> password, "csrf" -> csrf), cookie)
       .map(SubmitResult(_))
 
+  /** GET /challenge/passkey/options — starts a discoverable assertion ceremony and returns the
+    * raw `PublicKeyCredentialRequestOptions` JSON body for `navigator.credentials.get()`.
+    */
+  def getPasskeyOptions(cookie: String): Task[Response] =
+    Client.batched(
+      Request.get(s"${config.authUrl}/challenge/passkey/options")
+        .addHeader(Header.Cookie(NonEmptyChunk(Cookie.Request("SSO_CONVERSATION", cookie)))),
+    ).provide(ZLayer.succeed(client))
+
+  /** POST /challenge/passkey — submits a signed assertion to log in with a passkey. */
+  def submitPasskeyAssertion(cookie: String, response: String, csrf: String): Task[SubmitResult] =
+    formPost(s"${config.authUrl}/challenge/passkey", Map("response" -> response, "csrf" -> csrf), cookie)
+      .map(SubmitResult(_))
+
   /** POST /challenge/login-password — submits login + password in a single step. */
   def submitLoginPassword(cookie: String, login: String, password: String, csrf: String): Task[SubmitResult] =
     formPost(
@@ -375,6 +580,19 @@ final class OAuthClient(client: Client, config: E2EConfig):
       Map("login" -> login, "password" -> password, "csrf" -> csrf),
       cookie,
     ).map(SubmitResult(_))
+
+  /** POST /challenge/consent — grants `scope` (space-delimited, as everywhere else in OAuth). */
+  def submitConsent(cookie: String, scope: Set[String], csrf: String): Task[SubmitResult] =
+    formPost(
+      s"${config.authUrl}/challenge/consent",
+      Map("scope" -> scope.mkString(" "), "csrf" -> csrf),
+      cookie,
+    ).map(SubmitResult(_))
+
+  /** POST /challenge/consent/deny — refuses the grant. */
+  def denyConsent(cookie: String, csrf: String): Task[SubmitResult] =
+    formPost(s"${config.authUrl}/challenge/consent/deny", Map("csrf" -> csrf), cookie)
+      .map(SubmitResult(_))
 
   /** POST /token — exchanges authorization code for tokens. */
   def token(
@@ -385,7 +603,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
       redirectUri: Option[String] = None,
   ): Task[TokenResult] =
     val effectiveClientId = clientId.getOrElse(config.clientId)
-    val effectiveClientSecret = clientSecret.getOrElse(config.clientSecret)
+    val effectiveClientSecret = clientSecret.getOrElse(throw IllegalArgumentException("clientSecret must be provided for token requests"))
     val effectiveRedirectUri = redirectUri.getOrElse(config.redirectUri)
     val body = formBody(Map(
       "grant_type" -> "authorization_code",
@@ -406,7 +624,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
       scope: Option[String] = None,
   ): Task[TokenResult] =
     val effectiveClientId = clientId.getOrElse(config.clientId)
-    val effectiveClientSecret = clientSecret.getOrElse(config.clientSecret)
+    val effectiveClientSecret = clientSecret.getOrElse(throw IllegalArgumentException("clientSecret must be provided for token requests"))
     val body = formBody(Map(
       "grant_type" -> "refresh_token",
       "refresh_token" -> refreshToken,
@@ -423,16 +641,90 @@ final class OAuthClient(client: Client, config: E2EConfig):
       clientSecret: Option[String] = None,
   ): Task[IntrospectResult] =
     val effectiveClientId = clientId.getOrElse(config.clientId)
-    val effectiveClientSecret = clientSecret.getOrElse(config.clientSecret)
+    val effectiveClientSecret = clientSecret.getOrElse(throw IllegalArgumentException("clientSecret must be provided for introspection requests"))
     val body = formBody(Map("token" -> token))
     val req = Request.post(s"${config.authUrl}/introspect", body)
       .addHeader(Authorization.Basic(effectiveClientId, effectiveClientSecret))
       .addHeader(Header.ContentType(MediaType.application.`x-www-form-urlencoded`))
     Client.batched(req).provide(ZLayer.succeed(client)).flatMap(IntrospectResult.parse)
 
+  /** POST /revoke — revokes a token per RFC 7009. The endpoint answers 200 whether or not
+    * the token existed, so the response is returned for the caller to assert on.
+    */
+  def revoke(
+      token: String,
+      clientId: String,
+      clientSecret: String,
+      tokenTypeHint: Option[String] = None,
+  ): Task[Response] =
+    val body = formBody(Map("token" -> token) ++ tokenTypeHint.map("token_type_hint" -> _))
+    val req = Request.post(s"${config.authUrl}/revoke", body)
+      .addHeader(Authorization.Basic(clientId, clientSecret))
+      .addHeader(Header.ContentType(MediaType.application.`x-www-form-urlencoded`))
+    Client.batched(req).provide(ZLayer.succeed(client))
+
+  /** GET /logout?id_token_hint=… — ends the session the id token names (OIDC RP-Initiated
+    * Logout §2). No cookie is sent, so the hint alone identifies the session and auth logs it
+    * out without asking the user to confirm.
+    */
+  def logoutWithIdTokenHint(idToken: String): Task[Response] =
+    for
+      base <- ZIO.fromEither(URL.decode(s"${config.authUrl}/logout")).mapError(RuntimeException(_))
+      url = base.addQueryParam("id_token_hint", idToken)
+      response <- Client.batched(Request.get(url)).provide(ZLayer.succeed(client))
+    yield response
+
+  /** GET /permissions/me on the edge — an edge endpoint that authenticates the caller's
+    * access token, so it answers 401 for a token the edge has been told to reject.
+    */
+  def edgePermissions(accessToken: String): Task[Response] =
+    val req = Request.get(s"${config.edgeUrl}/permissions/me")
+      .addHeader(Authorization.Bearer(accessToken))
+    Client.batched(req).provide(ZLayer.succeed(client))
+
+  /** POST /par — pushes an authorization request (RFC 9126). Generates PKCE + state internally
+    * and authenticates the client with HTTP Basic, as `/token` does.
+    */
+  def pushAuthorizationRequest(
+      clientId: String,
+      clientSecret: String,
+      redirectUri: String,
+      scope: String = "openid",
+      responseType: String = "code",
+      authorizationDetails: Option[String] = None,
+  ): Task[PushedAuthorizationResult] =
+    val (verifier, challenge) = PkceHelper.generate()
+    val state = java.util.UUID.randomUUID().toString
+    val fields = Map(
+      "client_id" -> clientId,
+      "redirect_uri" -> redirectUri,
+      "response_type" -> responseType,
+      "scope" -> scope,
+      "state" -> state,
+      "code_challenge" -> challenge,
+      "code_challenge_method" -> "S256",
+    ) ++ authorizationDetails.map("authorization_details" -> _)
+    val req = Request.post(s"${config.authUrl}/par", formBody(fields))
+      .addHeader(Authorization.Basic(clientId, clientSecret))
+      .addHeader(Header.ContentType(MediaType.application.`x-www-form-urlencoded`))
+    Client.batched(req).provide(ZLayer.succeed(client))
+      .flatMap(PushedAuthorizationResult.parse(_, verifier, state))
+
+  /** GET /authorize?request_uri=… — redeems a pushed request (RFC 9126 §4). The `client_id` is
+    * sent alongside the `request_uri`, which is the only other parameter the AS accepts here.
+    */
+  def authorizePushed(
+      clientId: String,
+      pushed: PushedAuthorizationResult.Success,
+  ): Task[AuthorizeResult] =
+    for
+      base <- ZIO.fromEither(URL.decode(s"${config.authUrl}/authorize")).mapError(new RuntimeException(_))
+      url = base.addQueryParams(List("client_id" -> clientId, "request_uri" -> pushed.requestUri))
+      response <- Client.batched(Request.get(url)).provide(ZLayer.succeed(client))
+    yield AuthorizeResult(response, pushed.verifier, pushed.state, OAuthClient.extractConversationCookie(response))
+
   /** POST /users — registers a new user via the Central API, returns the generated user ID. */
   def registerUser(email: Option[String] = None, login: Option[String] = None, phone: Option[String] = None): Task[java.util.UUID] =
-    import zio.json.ast.Json
     val fields = List(
       email.map("email" -> Json.Str(_)),
       login.map("login" -> Json.Str(_)),
@@ -440,7 +732,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
     ).flatten
     val body = Body.fromString(Json.Obj(fields*).toJson)
     val req = Request.post(s"${config.centralUrl}/users", body)
-      .addHeader(Authorization.Basic(config.clientId, config.clientSecret))
+      .addHeader(centralAuthorization)
       .addHeader(Header.ContentType(MediaType.application.json))
     Client.batched(req).provide(ZLayer.succeed(client)).flatMap: resp =>
       resp.body.asString.flatMap: bodyStr =>
@@ -454,24 +746,72 @@ final class OAuthClient(client: Client, config: E2EConfig):
         else
           ZIO.fail(RuntimeException(s"registerUser failed: status=${resp.status} body=$bodyStr"))
 
+  /** GET /users?phone=... — checks the Central user index for a phone credential. */
+  def userExistsByPhone(phone: String): Task[Boolean] =
+    findUsers("phone", phone).map(_.nonEmpty)
+
+  /** GET /users?email=... — checks the Central user index for an email credential. */
+  def userExistsByEmail(email: String): Task[Boolean] =
+    findUsers("email", email).map(_.nonEmpty)
+
+  /** GET /users?phone=... — resolves the canonical Central user id for a phone credential. */
+  def findUserIdByPhone(phone: String): Task[Option[java.util.UUID]] =
+    findUsers("phone", phone).map(_.headOption.map(u => java.util.UUID.fromString(u.id)))
+
+  /** Waits for an auth-created registration to reach the Central user index. */
+  def awaitUserByPhone(phone: String): Task[Boolean] =
+    awaitUser(userExistsByPhone(phone), s"phone=$phone")
+
+  private def findUsers(queryName: String, value: String): Task[Vector[OAuthClient.UserSearchRecordBody]] =
+    for
+      base <- ZIO.fromEither(URL.decode(s"${config.centralUrl}/users"))
+        .mapError(error => RuntimeException(s"Invalid Central users URL: $error"))
+      response <- Client.batched(
+        Request.get(base.addQueryParam(queryName, value)).addHeader(centralAuthorization),
+      ).provide(ZLayer.succeed(client))
+      body <- response.body.asString
+      users <- if response.status.isSuccess then
+        ZIO.fromEither(body.fromJson[OAuthClient.UserSearchResponseBody])
+          .mapError(error => RuntimeException(s"Failed to parse Central user search response [$error]"))
+      else
+        ZIO.fail(RuntimeException(s"Central user search failed: status=${response.status}"))
+    yield users.users
+
+  private def awaitUser(exists: Task[Boolean], credential: String): Task[Boolean] =
+    exists.flatMap: found =>
+      if found then ZIO.succeed(true)
+      else ZIO.fail(RuntimeException(s"User with $credential is not yet present in Central"))
+    .retry(Schedule.spaced(100.millis) && Schedule.recurs(100))
+
   /** DELETE /service/users — deletes a user via the Central service API (non-prod only). */
   def deleteUser(userId: java.util.UUID): Task[Unit] =
     val req = Request.delete(s"${config.centralUrl}/service/users?id=$userId")
-      .addHeader(Authorization.Basic(config.clientId, config.clientSecret))
+      .addHeader(centralAuthorization)
     Client.batched(req).provide(ZLayer.succeed(client)).flatMap: resp =>
       if resp.status.isSuccess then ZIO.unit
       else
         resp.body.asString.flatMap: body =>
           ZIO.fail(RuntimeException(s"deleteUser failed: status=${resp.status} body=$body"))
 
+  /** DELETE /users/sessions — ends every session a user has, the way an administrator does
+    * it from the console.
+    */
+  def invalidateUserSessions(userId: java.util.UUID): Task[Unit] =
+    val req = Request.delete(s"${config.centralUrl}/users/sessions?userId=$userId")
+      .addHeader(centralAuthorization)
+    Client.batched(req).provide(ZLayer.succeed(client)).flatMap: resp =>
+      if resp.status.isSuccess then ZIO.unit
+      else
+        resp.body.asString.flatMap: body =>
+          ZIO.fail(RuntimeException(s"invalidateUserSessions failed: status=${resp.status} body=$body"))
+
   /** POST /users/password/set — sets a permanent password for a user (non-prod only). */
   def setUserPassword(userId: java.util.UUID, password: String): Task[Unit] =
-    import zio.json.ast.Json
     val body = Body.fromString(
       Json.Obj("userId" -> Json.Str(userId.toString), "password" -> Json.Str(password)).toJson,
     )
     val req = Request.post(s"${config.centralUrl}/users/password/set", body)
-      .addHeader(Authorization.Basic(config.clientId, config.clientSecret))
+      .addHeader(centralAuthorization)
       .addHeader(Header.ContentType(MediaType.application.json))
     Client.batched(req).provide(ZLayer.succeed(client)).flatMap: resp =>
       if resp.status.isSuccess then ZIO.unit
@@ -479,8 +819,29 @@ final class OAuthClient(client: Client, config: E2EConfig):
         resp.body.asString.flatMap: bodyStr =>
           ZIO.fail(RuntimeException(s"setUserPassword failed: status=${resp.status} body=$bodyStr"))
 
+  /** PATCH /users/roles — grants tenant roles to a user. The update travels through the
+    * Central user outbox, so call [[flushUserOutbox]] before signing the user in.
+    */
+  def assignUserRoles(userId: java.util.UUID, roles: Set[String], tenantId: String = "default"): Task[Unit] =
+    val body = Body.fromString(
+      Json.Obj(
+        "userId" -> Json.Str(userId.toString),
+        "tenantId" -> Json.Str(tenantId),
+        "add" -> Json.Arr(Chunk.fromIterable(roles.map(Json.Str(_)))),
+        "remove" -> Json.Arr(),
+      ).toJson,
+    )
+    val req = Request.patch(s"${config.centralUrl}/users/roles", body)
+      .addHeader(centralAuthorization)
+      .addHeader(Header.ContentType(MediaType.application.json))
+    Client.batched(req).provide(ZLayer.succeed(client)).flatMap: resp =>
+      if resp.status.isSuccess then ZIO.unit
+      else
+        resp.body.asString.flatMap: bodyStr =>
+          ZIO.fail(RuntimeException(s"assignUserRoles failed: status=${resp.status} body=$bodyStr"))
+
   /** POST /configuration/clients — registers a new OAuth client via the Central API.
-    * Authenticates with the central-admin secret (same credential as [[token]]).
+    * Authenticates with the central resource secret.
     */
   def registerClient(
       clientId: String,
@@ -489,11 +850,14 @@ final class OAuthClient(client: Client, config: E2EConfig):
       tenantId: String = "default",
       allowedScopes: Set[String] = Set("openid"),
       authFlow: Option[zio.json.ast.Json] = None,
+      registrationFlow: Option[zio.json.ast.Json] = None,
+      consentFlow: Option[zio.json.ast.Json] = None,
+      backChannelLogoutUri: Option[String] = None,
   ): Task[RegisterClientResult] =
     val body = Body.fromString(OAuthClient.RegisterClientBody(
       tenantId = tenantId,
       id = clientId,
-      clientName = clientName,
+      clientName = Map("en" -> clientName),
       redirectUris = redirectUris,
       allowedScopes = allowedScopes,
       audience = List.empty,
@@ -502,19 +866,82 @@ final class OAuthClient(client: Client, config: E2EConfig):
       refreshTokenTtl = None,
       theme = "default",
       authFlow = authFlow,
+      registrationFlow = registrationFlow,
+      consentFlow = consentFlow,
       otpTemplateId = "default",
       frontChannelLogoutUri = None,
       frontChannelLogoutSessionRequired = false,
+      backChannelLogoutUri = backChannelLogoutUri,
     ).toJson)
     val req = Request.post(s"${config.centralUrl}/configuration/clients", body)
-      .addHeader(Authorization.Basic(config.clientId, config.clientSecret))
+      .addHeader(centralAuthorization)
       .addHeader(Header.ContentType(MediaType.application.json))
     Client.batched(req).provide(ZLayer.succeed(client)).flatMap(RegisterClientResult.parse)
+
+  /** POST /configuration/authorization-detail-types — registers an RFC 9396 authorization detail
+    * type via the Central API. `schema` is the raw JSON Schema (as a JSON string) that requested
+    * `authorization_details` entries of this `typeName` must validate against.
+    */
+  def registerAuthorizationDetailType(
+      typeName: String,
+      schema: String,
+      tenantId: String = "default",
+  ): Task[RegisterAuthorizationDetailTypeResult] =
+    val body = Body.fromString(
+      // Field names/shape mirror central's CreateAuthorizationDetailTypeRequest DTO.
+      // `schema` is inlined verbatim so an invalid-JSON-Schema fixture round-trips as-is.
+      s"""{"tenantId":"$tenantId","type":"$typeName","description":{},"schema":$schema}""",
+    )
+    val req = Request.post(s"${config.centralUrl}/configuration/authorization-detail-types", body)
+      .addHeader(centralAuthorization)
+      .addHeader(Header.ContentType(MediaType.application.json))
+    Client.batched(req).provide(ZLayer.succeed(client)).flatMap(RegisterAuthorizationDetailTypeResult.parse)
+
+  /** DELETE /configuration/authorization-detail-types — removes an RFC 9396 authorization detail type. */
+  def deleteAuthorizationDetailType(
+      typeName: String,
+      tenantId: String = "default",
+  ): Task[Unit] =
+    val req = Request.delete(
+      s"${config.centralUrl}/configuration/authorization-detail-types?tenantId=$tenantId&type=$typeName",
+    ).addHeader(centralAuthorization)
+    Client.batched(req).provide(ZLayer.succeed(client)).flatMap: resp =>
+      if resp.status.isSuccess then ZIO.unit
+      else
+        resp.body.asString.flatMap: body =>
+          ZIO.fail(RuntimeException(s"deleteAuthorizationDetailType failed: status=${resp.status} body=$body"))
+
+  /** GET /configuration/server-metadata — reads the current Central server metadata document. */
+  def serverMetadata: Task[Json.Obj] =
+    val req = Request.get(s"${config.centralUrl}/configuration/server-metadata")
+      .addHeader(centralAuthorization)
+    Client.batched(req).provide(ZLayer.succeed(client)).flatMap: resp =>
+      resp.body.asString.flatMap: body =>
+        if resp.status.isSuccess then
+          ZIO.fromEither(body.fromJson[Json.Obj])
+            .mapError(error => RuntimeException(s"Failed to parse server metadata [$error]: $body"))
+        else
+          ZIO.fail(RuntimeException(s"serverMetadata failed: status=${resp.status} body=$body"))
+
+  /** Waits for the metadata cache to reflect an authorization-detail type write. */
+  def awaitAuthorizationDetailTypeInMetadata(typeName: String, expected: Boolean): Task[Unit] =
+    def check: Task[Unit] =
+      serverMetadata.flatMap: metadata =>
+        val supportedTypes = metadata.get("authorization_details_types_supported")
+          .flatMap(_.as[Set[String]].toOption)
+          .getOrElse(Set.empty)
+        val actual = supportedTypes.contains(typeName)
+        if actual == expected then ZIO.unit
+        else
+          ZIO.fail(RuntimeException(
+            s"Expected authorization detail type '$typeName' metadata presence=$expected, got $actual",
+          ))
+    check.retry(Schedule.spaced(100.millis) && Schedule.recurs(100))
 
   /** POST /service/users/outbox/flush — forces central to dispatch all pending user-outbox events to auth (non-prod only). */
   def flushUserOutbox(): Task[Unit] =
     val req = Request.post(s"${config.centralUrl}/service/users/outbox/flush", Body.empty)
-      .addHeader(Authorization.Basic(config.clientId, config.clientSecret))
+      .addHeader(centralAuthorization)
     Client.batched(req)
       .provide(ZLayer.succeed(client))
       .flatMap: resp =>
@@ -528,7 +955,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
     */
   def syncConfiguration(): Task[Unit] =
     val req = Request.post(s"${config.centralUrl}/service/configuration/sync", Body.empty)
-      .addHeader(Authorization.Basic(config.clientId, config.clientSecret))
+      .addHeader(centralAuthorization)
     Client.batched(req)
       .provide(ZLayer.succeed(client))
       .flatMap: resp =>
@@ -536,6 +963,23 @@ final class OAuthClient(client: Client, config: E2EConfig):
         else
           resp.body.asString.flatMap: body =>
             ZIO.fail(RuntimeException(s"syncConfiguration failed: status=${resp.status} body=$body"))
+
+  /** POST /service/configuration/sync — makes edge reload its client/preset caches from
+    * central immediately (non-prod only), instead of waiting for
+    * `configurationCacheRefreshInterval`. Call this right after registering or updating a
+    * client that a test needs edge to recognize straight away, e.g. one it back-channel
+    * logs out through.
+    */
+  def syncEdgeConfiguration(): Task[Unit] =
+    val req = Request.post(s"${config.edgeUrl}/service/configuration/sync", Body.empty)
+      .addHeader(edgeAuthorization)
+    Client.batched(req)
+      .provide(ZLayer.succeed(client))
+      .flatMap: resp =>
+        if resp.status.isSuccess then ZIO.unit
+        else
+          resp.body.asString.flatMap: body =>
+            ZIO.fail(RuntimeException(s"syncEdgeConfiguration failed: status=${resp.status} body=$body"))
 
   /** PUT /configuration/challenges/challenge-settings — sets the ACR vocabulary for a tenant (non-prod only).
     *
@@ -564,7 +1008,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
          |  "acrVocabulary": $vocabJson
          |}""".stripMargin
     val req = Request.put(s"${config.centralUrl}/configuration/challenges/challenge-settings", Body.fromString(bodyStr))
-      .addHeader(Authorization.Basic(config.clientId, config.clientSecret))
+      .addHeader(centralAuthorization)
       .addHeader(Header.ContentType(MediaType.application.json))
     Client.batched(req).provide(ZLayer.succeed(client)).flatMap: resp =>
       if resp.status.isSuccess then ZIO.unit
@@ -578,6 +1022,204 @@ final class OAuthClient(client: Client, config: E2EConfig):
       Request.get(s"${config.authUrl}/userinfo")
         .addHeader(Authorization.Bearer(accessToken)),
     ).provide(ZLayer.succeed(client)).flatMap(UserinfoResult.parse)
+
+  // ── Account Settings (auth's additional listener) ──────────────────────────
+
+  /** The Basic credentials edge presents to auth's Account Settings resource. */
+  val accountCredentials: (String, String) = ("auth", config.accountResourceSecret)
+
+  /** GET /settings — renders the Security page. */
+  def accountPage(
+      caller: AccountCaller,
+      credentials: Option[(String, String)] = Some(accountCredentials),
+  ): Task[AccountResult] =
+    accountRequest(Method.GET, "/settings", caller.query, None, credentials)
+
+  /** DELETE /settings/sessions — revokes another session of the same user. */
+  def revokeAccountSession(
+      caller: AccountCaller,
+      targetSessionId: String,
+      credentials: Option[(String, String)] = Some(accountCredentials),
+  ): Task[AccountResult] =
+    accountRequest(
+      Method.DELETE,
+      "/settings/sessions",
+      Nil,
+      Some(caller.bodyWith("targetSessionId" -> Json.Str(targetSessionId))),
+      credentials,
+    )
+
+  /** PATCH /settings/passkeys — renames a passkey; `None` clears the name. */
+  def renameAccountPasskey(
+      caller: AccountCaller,
+      credentialId: String,
+      name: Option[String],
+      credentials: Option[(String, String)] = Some(accountCredentials),
+  ): Task[AccountResult] =
+    accountRequest(
+      Method.PATCH,
+      "/settings/passkeys",
+      Nil,
+      Some(
+        caller.bodyWith(
+          "credentialId" -> Json.Str(credentialId),
+          "name" -> name.fold(Json.Null)(Json.Str(_)),
+        ),
+      ),
+      credentials,
+    )
+
+  /** DELETE /settings/passkeys — removes a passkey. */
+  def deleteAccountPasskey(
+      caller: AccountCaller,
+      credentialId: String,
+      credentials: Option[(String, String)] = Some(accountCredentials),
+  ): Task[AccountResult] =
+    accountRequest(
+      Method.DELETE,
+      "/settings/passkeys",
+      Nil,
+      Some(caller.bodyWith("credentialId" -> Json.Str(credentialId))),
+      credentials,
+    )
+
+  /** POST /settings/passkeys/register/start — obtains creation options plus the ceremony ticket. */
+  def startPasskeyEnrollment(
+      caller: AccountCaller,
+      credentials: Option[(String, String)] = Some(accountCredentials),
+  ): Task[AccountResult] =
+    accountRequest(Method.POST, "/settings/passkeys/register/start", Nil, Some(caller.bodyWith()), credentials)
+
+  /** POST /settings/passkeys/register/finish — verifies the authenticator response and enrolls. */
+  def finishPasskeyEnrollment(
+      caller: AccountCaller,
+      ticket: String,
+      response: Json,
+      name: String,
+      credentials: Option[(String, String)] = Some(accountCredentials),
+  ): Task[AccountResult] =
+    accountRequest(
+      Method.POST,
+      "/settings/passkeys/register/finish",
+      Nil,
+      Some(
+        caller.bodyWith(
+          "ticket" -> Json.Str(ticket),
+          "response" -> response,
+          "name" -> Json.Str(name),
+        ),
+      ),
+      credentials,
+    )
+
+  private def accountRequest(
+      method: Method,
+      path: String,
+      query: List[(String, String)],
+      body: Option[Json],
+      credentials: Option[(String, String)],
+  ): Task[AccountResult] =
+    for
+      base <- ZIO.fromEither(URL.decode(s"${config.authAdditionalUrl}$path")).mapError(new RuntimeException(_))
+      baseRequest = Request(
+        method = method,
+        url = base.addQueryParams(query),
+        body = body.fold(Body.empty)(json => Body.fromString(json.toJson)),
+      )
+      withBody = body.fold(baseRequest)(_ => baseRequest.addHeader(Header.ContentType(MediaType.application.json)))
+      request = credentials.fold(withBody)((user, secret) => withBody.addHeader(Authorization.Basic(user, secret)))
+      response <- Client.batched(request).provide(ZLayer.succeed(client))
+      text <- response.body.asString
+    yield AccountResult(response, text)
+
+  // ── Account Settings through the edge proxy ────────────────────────────────
+  //
+  // Edge authenticates the caller from the access token and injects `userId`/`clientId`/
+  // `sessionId` itself, so these helpers send only the route's own payload — exactly what
+  // the browser sends.
+
+  /** GET /resources/auth/settings — the account page as the browser loads it through edge. */
+  def edgeAccountPage(accessToken: Option[String]): Task[AccountResult] =
+    edgeAccountRequest(Method.GET, "/settings", None, accessToken)
+
+  /** DELETE /resources/auth/settings/sessions — revokes another session of the caller. */
+  def edgeRevokeAccountSession(accessToken: Option[String], targetSessionId: String): Task[AccountResult] =
+    edgeAccountRequest(
+      Method.DELETE,
+      "/settings/sessions",
+      Some(Json.Obj("targetSessionId" -> Json.Str(targetSessionId))),
+      accessToken,
+    )
+
+  /** PATCH /resources/auth/settings/passkeys — renames a passkey; `None` clears the name. */
+  def edgeRenameAccountPasskey(
+      accessToken: Option[String],
+      credentialId: String,
+      name: Option[String],
+  ): Task[AccountResult] =
+    edgeAccountRequest(
+      Method.PATCH,
+      "/settings/passkeys",
+      Some(
+        Json.Obj(
+          "credentialId" -> Json.Str(credentialId),
+          "name" -> name.fold(Json.Null)(Json.Str(_)),
+        ),
+      ),
+      accessToken,
+    )
+
+  /** DELETE /resources/auth/settings/passkeys — removes a passkey. */
+  def edgeDeleteAccountPasskey(accessToken: Option[String], credentialId: String): Task[AccountResult] =
+    edgeAccountRequest(
+      Method.DELETE,
+      "/settings/passkeys",
+      Some(Json.Obj("credentialId" -> Json.Str(credentialId))),
+      accessToken,
+    )
+
+  /** POST /resources/auth/settings/passkeys/register/start — obtains creation options plus the ticket. */
+  def edgeStartPasskeyEnrollment(accessToken: Option[String]): Task[AccountResult] =
+    edgeAccountRequest(Method.POST, "/settings/passkeys/register/start", Some(Json.Obj()), accessToken)
+
+  /** POST /resources/auth/settings/passkeys/register/finish — verifies the response and enrolls. */
+  def edgeFinishPasskeyEnrollment(
+      accessToken: Option[String],
+      ticket: String,
+      response: Json,
+      name: String,
+  ): Task[AccountResult] =
+    edgeAccountRequest(
+      Method.POST,
+      "/settings/passkeys/register/finish",
+      Some(
+        Json.Obj(
+          "ticket" -> Json.Str(ticket),
+          "response" -> response,
+          "name" -> Json.Str(name),
+        ),
+      ),
+      accessToken,
+    )
+
+  private def edgeAccountRequest(
+      method: Method,
+      path: String,
+      body: Option[Json],
+      accessToken: Option[String],
+  ): Task[AccountResult] =
+    for
+      url <- ZIO.fromEither(URL.decode(s"${config.edgeUrl}/resources/auth$path")).mapError(new RuntimeException(_))
+      baseRequest = Request(
+        method = method,
+        url = url,
+        body = body.fold(Body.empty)(json => Body.fromString(json.toJson)),
+      )
+      withBody = body.fold(baseRequest)(_ => baseRequest.addHeader(Header.ContentType(MediaType.application.json)))
+      request = accessToken.fold(withBody)(token => withBody.addHeader(Authorization.Bearer(token)))
+      response <- Client.batched(request).provide(ZLayer.succeed(client))
+      text <- response.body.asString
+    yield AccountResult(response, text)
 
   // ── helpers ────────────────────────────────────────────────────────────────
 
@@ -605,11 +1247,23 @@ object OAuthClient:
 
   private[support] case class CreateUserResponseBody(id: String) derives JsonDecoder
 
+  private[support] case class UserSearchResponseBody(
+      users: Vector[UserSearchRecordBody],
+  ) derives JsonDecoder
+
+  private[support] case class UserSearchRecordBody(
+      id: String,
+      email: Option[String],
+      phone: Option[String],
+      login: Option[String],
+      claims: zio.json.ast.Json.Obj,
+  ) derives JsonDecoder
+
   /** Minimal mirror of `CreateClientRequest` for e2e JSON serialisation. */
   private[support] case class RegisterClientBody(
       tenantId: String,
       id: String,
-      clientName: String,
+      clientName: Map[String, String],
       redirectUris: Set[String],
       allowedScopes: Set[String],
       audience: List[String],
@@ -618,7 +1272,10 @@ object OAuthClient:
       refreshTokenTtl: Option[Int],
       theme: String,
       authFlow: Option[zio.json.ast.Json],
+      registrationFlow: Option[zio.json.ast.Json],
+      consentFlow: Option[zio.json.ast.Json],
       otpTemplateId: String,
       frontChannelLogoutUri: Option[String],
       frontChannelLogoutSessionRequired: Boolean,
+      backChannelLogoutUri: Option[String],
   ) derives JsonEncoder

@@ -35,6 +35,26 @@ object StepUpFlowSpec extends E2ESpec:
       challenge2 <- auth.getChallenge(authorize.conversationCookie.get)
       csrf2 = challenge2.csrf
       submit <- auth.submitOtp(authorize.conversationCookie.get, fixedOtp, csrf2)
+      _ <- ZIO.succeed(submit).assertRedirect(auth, authorize.conversationCookie.get)
+      sessionCookie <- ZIO.fromOption(submit.sessionCookie)
+        .orElseFail(RuntimeException("No SSO_SESSION cookie in final submission response"))
+    yield sessionCookie
+
+  /** Complete the phone+OTP flow and return the SSO_SESSION cookie value. */
+  private def completePhoneOtpAuth(s: Flows.Setup, auth: OAuthClient): Task[String] =
+    for
+      authorize <- auth.authorize(
+        scope = "openid",
+        clientId = Some(s.clientId),
+        redirectUri = Some(s.redirectUri),
+      ).assertChallengeRedirect
+      challenge1 <- auth.getChallenge(authorize.conversationCookie.get)
+      csrf1 = challenge1.csrf
+      _ <- auth.submitPhone(authorize.conversationCookie.get, s.phone.get, csrf1)
+      challenge2 <- auth.getChallenge(authorize.conversationCookie.get)
+      csrf2 = challenge2.csrf
+      submit <- auth.submitOtp(authorize.conversationCookie.get, fixedOtp, csrf2)
+      _ <- ZIO.succeed(submit).assertRedirect(auth, authorize.conversationCookie.get)
       sessionCookie <- ZIO.fromOption(submit.sessionCookie)
         .orElseFail(RuntimeException("No SSO_SESSION cookie in final submission response"))
     yield sessionCookie
@@ -66,6 +86,42 @@ object StepUpFlowSpec extends E2ESpec:
             prompt = Some("login"),
           ).assertChallengeRedirect
         yield assertCompletes
+      },
+
+      test("prompt=login requires email credential before OTP") {
+        for
+          (s, auth) <- setup(Flows.Id.EmailOtp)
+          sessionCookie <- completeOtpAuth(s, auth)
+          authorize <- auth.authorizeRaw(
+            clientId = s.clientId,
+            redirectUri = s.redirectUri,
+            sessionCookie = Some(sessionCookie),
+            prompt = Some("login"),
+          ).assertChallengeRedirect
+          credentialChallenge <- auth.getChallenge(authorize.conversationCookie.get).assertStep(ConversationStep.Credential)
+          _ <- auth.submitEmail(authorize.conversationCookie.get, s.email.get, credentialChallenge.csrf)
+          otpChallenge <- auth.getChallenge(authorize.conversationCookie.get).assertStep(ConversationStep.Otp)
+          code <- auth.submitOtp(authorize.conversationCookie.get, fixedOtp, otpChallenge.csrf)
+            .assertRedirect(auth, authorize.conversationCookie.get)
+        yield assertTrue(code.nonEmpty).label("code must not be empty")
+      },
+
+      test("prompt=login requires phone credential before OTP") {
+        for
+          (s, auth) <- setup(Flows.Id.PhoneOtp)
+          sessionCookie <- completePhoneOtpAuth(s, auth)
+          authorize <- auth.authorizeRaw(
+            clientId = s.clientId,
+            redirectUri = s.redirectUri,
+            sessionCookie = Some(sessionCookie),
+            prompt = Some("login"),
+          ).assertChallengeRedirect
+          credentialChallenge <- auth.getChallenge(authorize.conversationCookie.get).assertStep(ConversationStep.Credential)
+          _ <- auth.submitPhone(authorize.conversationCookie.get, s.phone.get, credentialChallenge.csrf)
+          otpChallenge <- auth.getChallenge(authorize.conversationCookie.get).assertStep(ConversationStep.Otp)
+          code <- auth.submitOtp(authorize.conversationCookie.get, fixedOtp, otpChallenge.csrf)
+            .assertRedirect(auth, authorize.conversationCookie.get)
+        yield assertTrue(code.nonEmpty).label("code must not be empty")
       },
 
       test("max_age=0 with valid session forces new challenge") {
@@ -206,7 +262,8 @@ object StepUpFlowSpec extends E2ESpec:
           _ <- auth.submitEmail(authorize.conversationCookie.get, email, csrf1)
           challenge2 <- auth.getChallenge(authorize.conversationCookie.get)
           csrf2 = challenge2.csrf
-          code <- auth.submitOtp(authorize.conversationCookie.get, fixedOtp, csrf2).assertRedirect
+          code <- auth.submitOtp(authorize.conversationCookie.get, fixedOtp, csrf2)
+            .assertRedirect(auth, authorize.conversationCookie.get)
           token <- auth.token(
             code,
             authorize.verifier,
@@ -242,7 +299,8 @@ object StepUpFlowSpec extends E2ESpec:
           _ <- auth.submitEmail(authorize1.conversationCookie.get, email, csrf1)
           challenge2 <- auth.getChallenge(authorize1.conversationCookie.get)
           csrf2 = challenge2.csrf
-          code1 <- auth.submitOtp(authorize1.conversationCookie.get, fixedOtp, csrf2).assertRedirect
+          code1 <- auth.submitOtp(authorize1.conversationCookie.get, fixedOtp, csrf2)
+            .assertRedirect(auth, authorize1.conversationCookie.get)
           token1 <- auth.token(code1, authorize1.verifier, clientId = Some(s.clientId), clientSecret = Some(s.clientSecret), redirectUri = Some(s.redirectUri)).success
           idToken <- ZIO.fromOption(token1.idToken).orElseFail(RuntimeException("Missing id_token"))
           // 2. Start a NEW authorize flow with id_token_hint (no session) — must go straight to OTP, not credential
@@ -271,7 +329,8 @@ object StepUpFlowSpec extends E2ESpec:
           _ <- auth.submitPhone(authorize1.conversationCookie.get, phone, csrf1)
           challenge2 <- auth.getChallenge(authorize1.conversationCookie.get)
           csrf2 = challenge2.csrf
-          code1 <- auth.submitOtp(authorize1.conversationCookie.get, fixedOtp, csrf2).assertRedirect
+          code1 <- auth.submitOtp(authorize1.conversationCookie.get, fixedOtp, csrf2)
+            .assertRedirect(auth, authorize1.conversationCookie.get)
           token1 <- auth.token(code1, authorize1.verifier, clientId = Some(s.clientId), clientSecret = Some(s.clientSecret), redirectUri = Some(s.redirectUri)).success
           idToken <- ZIO.fromOption(token1.idToken).orElseFail(RuntimeException("Missing id_token"))
           // 2. Start a NEW authorize flow with id_token_hint (no session) — must go straight to OTP, not credential
@@ -302,7 +361,8 @@ object StepUpFlowSpec extends E2ESpec:
           _ <- auth.submitPhone(authorize1.conversationCookie.get, phone, csrf1)
           challenge2 <- auth.getChallenge(authorize1.conversationCookie.get)
           csrf2 = challenge2.csrf
-          code1 <- auth.submitOtp(authorize1.conversationCookie.get, fixedOtp, csrf2).assertRedirect
+          code1 <- auth.submitOtp(authorize1.conversationCookie.get, fixedOtp, csrf2)
+            .assertRedirect(auth, authorize1.conversationCookie.get)
           token1 <- auth.token(code1, authorize1.verifier, clientId = Some(s.clientId), clientSecret = Some(s.clientSecret), redirectUri = Some(s.redirectUri)).success
           idToken <- ZIO.fromOption(token1.idToken).orElseFail(RuntimeException("Missing id_token"))
           // 2. Start a flow with id_token_hint — identity is locked (userId set in conversation)
@@ -338,7 +398,8 @@ object StepUpFlowSpec extends E2ESpec:
           _ <- auth.submitEmail(authorize1.conversationCookie.get, email, csrf1)
           challenge2 <- auth.getChallenge(authorize1.conversationCookie.get)
           csrf2 = challenge2.csrf
-          code1 <- auth.submitOtp(authorize1.conversationCookie.get, fixedOtp, csrf2).assertRedirect
+          code1 <- auth.submitOtp(authorize1.conversationCookie.get, fixedOtp, csrf2)
+            .assertRedirect(auth, authorize1.conversationCookie.get)
           token1 <- auth.token(code1, authorize1.verifier, clientId = Some(s.clientId), clientSecret = Some(s.clientSecret), redirectUri = Some(s.redirectUri)).success
           idToken <- ZIO.fromOption(token1.idToken).orElseFail(RuntimeException("Missing id_token"))
           // 2. Start a flow with id_token_hint — identity is locked (userId set in conversation)

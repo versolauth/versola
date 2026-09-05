@@ -4,7 +4,7 @@ import versola.central.configuration.permissions.Permission
 import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.tenants.TenantId
 import versola.central.configuration.{PatchClientRedirectUris, PatchClientScope, PatchPermissions}
-import versola.util.CacheSource
+import versola.util.{CacheSource, Patch}
 import zio.*
 import zio.http.URL
 
@@ -18,18 +18,23 @@ trait OAuthClientRepository extends CacheSource[Vector[OAuthClientRecord]]:
 
   def updateClient(
       clientId: ClientId,
-      clientName: Option[String],
+      clientName: Option[Map[String, String]],
       patchRedirectUris: PatchClientRedirectUris,
       patchScope: PatchClientScope,
       patchPermissions: PatchPermissions,
       accessTokenTtl: Option[Duration],
       refreshTokenTtl: Option[Duration],
       theme: Option[String],
-      authFlow: Option[AuthFlow],
+      authFlow: Option[Patch[AuthFlow]],
+      registrationFlow: Option[Patch[RegistrationFlow]],
       otpTemplateId: Option[String],
-      frontChannelLogoutUri: Option[Option[URL]],
+      frontChannelLogoutUri: Option[Patch[URL]],
       frontChannelLogoutSessionRequired: Option[Boolean],
-      backChannelLogoutUri: Option[Option[URL]],
+      backChannelLogoutUri: Option[Patch[URL]],
+      logoUri: Option[Patch[String]] = None,
+      policyUri: Option[Patch[String]] = None,
+      tosUri: Option[Patch[String]] = None,
+      consentFlow: Option[Patch[ConsentFlow]] = None,
   ): Task[Unit]
 
   def rotateClientSecret(clientId: ClientId, newSecret: Array[Byte]): Task[Unit]

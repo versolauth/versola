@@ -2,24 +2,26 @@ package versola
 
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.cleanup.PostgresCleanupManager
-import versola.oauth.PostgresAuthorizationCodeRepository
-import versola.oauth.authorize.{AcrResolutionService, AuthorizeEndpointController, AuthorizeEndpointService, AuthorizeRequestParser}
+import versola.oauth.{PostgresAuthorizationCodeRepository, PostgresPushedAuthorizationRepository}
+import versola.oauth.account.AccountSettingsController
+import versola.oauth.authorize.{AcrResolutionService, AuthorizeEndpointController, AuthorizeEndpointService, AuthorizeRequestParser, PushedAuthorizationController, PushedAuthorizationRepository, PushedAuthorizationService}
 import versola.oauth.challenge.passkey.{PasskeyRepository, PostgresPasskeyRepository, WebAuthnService}
 import versola.oauth.challenge.password.{PasswordRepository, PasswordService, PostgresPasswordRepository}
 import versola.oauth.client.{ServiceController, OAuthClientSyncClient, OAuthConfigurationService, OAuthScopeSyncClient}
+import versola.oauth.consent.{ConsentRepository, ConsentService, PostgresConsentRepository}
 import versola.oauth.conversation.otp.{EmailOtpProvider, SmsOtpProvider, OtpGenerationService, OtpService}
 import versola.oauth.conversation.limit.{ChallengeThrottleRepository, PostgresChallengeThrottleRepository, SubmissionLimiter}
 import versola.oauth.conversation.{ConversationController, ConversationRenderService, ConversationRepository, ConversationRouter, ConversationService, PostgresConversationRepository}
 import versola.oauth.introspect.{IntrospectionController, IntrospectionService}
 import versola.oauth.client.CentralSyncTokenService
 import versola.oauth.jwks.{JwksController, JwksService, JwksSyncClient}
-import versola.oauth.logout.{LogoutController, LogoutService}
+import versola.oauth.logout.{BackChannelDispatcher, BackChannelOutbox, LogoutController, LogoutService}
 import versola.oauth.revoke.{AccessTokenRevocationService, RevocationController, RevocationService}
-import versola.oauth.session.{PostgresSessionRepository, SessionRepository, SessionService}
+import versola.oauth.session.{PostgresSessionRepository, PostgresUserAgentRepository, SessionRepository, SessionService, UserAgentRepository}
 import versola.oauth.token.{AuthorizationCodeRepository, OAuthTokenService, TokenEndpointController}
 import versola.oauth.userinfo.{UserInfoController, UserInfoService}
 import versola.oauth.metadata.{MetadataController, MetadataSyncClient}
-import versola.user.{PostgresUserRepository, PostgresUserRolesRepository, UserController, UserRepository, UserRolesRepository}
+import versola.user.{PostgresUserRepository, UserController, UserRegistrationSyncClient, UserRepository, UserService}
 import versola.util.*
 import versola.util.http.VersolaApp
 import versola.util.postgres.{PostgresConfig, PostgresHikariDataSource}
@@ -42,23 +44,31 @@ object PostgresOAuthApp extends VersolaApp("auth"):
   type Dependencies =
     CoreConfig &
       UserRepository &
-      UserRolesRepository &
+      UserService &
       OAuthConfigurationService &
       ConversationRepository &
+      ConsentRepository &
+      ConsentService &
       AuthorizationCodeRepository &
+      PushedAuthorizationRepository &
       SessionRepository &
+      UserAgentRepository &
       PasswordRepository &
       PasswordService &
       PasskeyRepository &
       WebAuthnService &
       SecureRandom &
       SecurityService &
+      JsonSchemaValidator &
       AuthPropertyGenerator &
       OAuthTokenService &
       IntrospectionService &
       RevocationService &
       AccessTokenRevocationService &
+      BackChannelDispatcher &
+      BackChannelOutbox &
       AuthorizeRequestParser &
+      PushedAuthorizationService &
       AuthorizeEndpointService &
       ConversationRouter &
       ConversationService &
@@ -72,11 +82,13 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       SubmissionLimiter &
       ChallengeThrottleRepository &
       LogoutService &
-      SessionService
+      SessionService &
+      UserRegistrationSyncClient
 
   override def routes: Routes[Dependencies & Tracing & EnvName, Throwable] =
     List(
       AuthorizeEndpointController.routes,
+      PushedAuthorizationController.routes,
       TokenEndpointController.routes,
       IntrospectionController.routes,
       RevocationController.routes,
@@ -89,35 +101,52 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       LogoutController.routes,
     ).reduce(_ ++ _)
 
+  override def additionalRoutes: Option[Routes[Dependencies & Tracing & EnvName, Throwable]] =
+    Some(AccountSettingsController.routes)
+
   val repositories = PostgresHikariDataSource.transactor(serviceName = Some("auth"), migrate = runMigrations) >+> (
     PostgresUserRepository.live >+>
-      PostgresUserRolesRepository.live >+>
       PostgresConversationRepository.live >+>
+      PostgresConsentRepository.live >+>
       PostgresAuthorizationCodeRepository.live >+>
+      PostgresPushedAuthorizationRepository.live >+>
       PostgresSessionRepository.live >+>
+      PostgresUserAgentRepository.live >+>
       PostgresPasswordRepository.live >+>
       PostgresPasskeyRepository.live >+>
       PostgresChallengeThrottleRepository.live >+>
       PostgresCleanupManager.live
   )
 
+  /** Argon2id hashing runs on the unbounded blocking pool; this applies the configured
+    * concurrency cap (see `Argon2Config`).
+    */
+  private val securityService: URLayer[SecureRandom & CoreConfig, SecurityService] =
+    ZLayer.service[CoreConfig].flatMap { env =>
+      SecurityService.live(env.get[CoreConfig].argon2OrDefault)
+    }
+
   val dependencies: ZLayer[Scope & EnvName & ConfigProvider & Tracing & Client, Throwable, Dependencies] =
     repositories >+>
       parseConfig[CoreConfig] >+>
       SecureRandom.live >+>
-      SecurityService.live >+>
-      OAuthConfigurationService.live(Schedule.spaced(1.minute)) >+>
+      securityService >+>
+      JsonSchemaValidator.live >+>
+      OAuthConfigurationService.live >+>
       CentralSyncTokenService.live >+>
       JwksSyncClient.live >+>
       MetadataSyncClient.live >+>
-      JwksService.live(Schedule.spaced(1.minute)) >+>
+      JwksService.live >+>
       AuthPropertyGenerator.live >+>
       SessionService.live >+>
-      AccessTokenRevocationService.noop >+>
+      BackChannelDispatcher.live >+>
+      BackChannelOutbox.live >+>
+      AccessTokenRevocationService.live >+>
       OAuthTokenService.live >+>
       IntrospectionService.live >+>
       RevocationService.live >+>
       AuthorizeRequestParser.live >+>
+      PushedAuthorizationService.live >+>
       OtpGenerationService.live >+>
       ZLayer.succeed(versola.oauth.conversation.otp.OtpDecisionService.Impl()) >+>
       EmailOtpProvider.live >+>
@@ -129,6 +158,9 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       UserInfoService.live >+>
       SubmissionLimiter.live >+>
       AcrResolutionService.live >+>
+      UserRegistrationSyncClient.live >+>
+      UserService.live >+>
+      ConsentService.live >+>
       ConversationService.live >+>
       ConversationRouter.live >+>
       AuthorizeEndpointService.live >+>
@@ -140,6 +172,11 @@ object PostgresOAuthApp extends VersolaApp("auth"):
 
   given DeriveConfig[Secret.Bytes32] = DeriveConfig[String]
     .mapOrFail(parseBase64UrlSecret(Secret.Bytes32))
+
+  given DeriveConfig[Secret] = DeriveConfig[String]
+    .mapOrFail: str =>
+      Secret.fromBase64Url(str)
+        .left.map(message => zio.Config.Error.InvalidData(message = message))
 
   given DeriveConfig[SecretKey] = DeriveConfig[String]
     .mapOrFail(parseBase64UrlSecret(Secret.Bytes32))

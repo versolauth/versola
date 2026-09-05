@@ -2,7 +2,7 @@ import { LitElement, html, css } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
 import { badgeStyles, buttonStyles, cardStyles, formStyles } from '../styles/components';
-import {AuthFlow, AuthorizationPreset, OAuthClient, OAuthScope, OtpTemplateRecord, Permission, Resource, ThemeRecord} from '../types';
+import {AuthFlow, AuthorizationPreset, Locale, OAuthClient, OAuthScope, OtpTemplateRecord, Permission, Resource, Role, ThemeRecord} from '../types';
 import {
   createClient,
   deleteClient,
@@ -10,18 +10,19 @@ import {
   fetchAllClients,
   fetchClientPresets,
   fetchChallengeSettings,
+  fetchLocales,
   fetchOtpTemplates,
-  fetchTenants,
   fetchThemes,
   getPermissions,
   getResources,
+  getRoles,
   getScopes,
   rotateClientSecret,
   saveClientPresets,
   updateClient,
 } from '../utils/central-api';
 import { confirmDestructiveAction } from '../utils/confirm-dialog';
-import { copyToClipboard, formatDuration } from '../utils/helpers';
+import { copyToClipboard, formatDuration, getLocalizedDescription } from '../utils/helpers';
 import './client-form';
 import './content-header';
 import './error-card';
@@ -36,7 +37,6 @@ export class VersolaClientsList extends LitElement {
   @property({ type: Boolean }) canManageSecrets = false;
 
   @state() private clients: OAuthClient[] = [];
-  @state() private tenantEdgeId: string | null = null;
   @state() private searchQuery = '';
   @state() private isLoading = false;
   @state() private errorMessage = '';
@@ -51,6 +51,8 @@ export class VersolaClientsList extends LitElement {
   @state() private availableResources: Resource[] = [];
   @state() private availableThemes: ThemeRecord[] = [];
   @state() private availableOtpTemplates: OtpTemplateRecord[] = [];
+  @state() private availableRoles: Role[] = [];
+  @state() private availableLocales: Locale[] = [];
   @state() private availablePostLogoutRedirectUris: string[] = [];
   @state() private isPreparingForm = false;
   @state() private createdSecret: { clientName: string; secret: string; action: 'created' | 'rotated' } | null = null;
@@ -70,6 +72,8 @@ export class VersolaClientsList extends LitElement {
       this.availableScopes = [];
       this.availablePermissions = [];
       this.availableResources = [];
+      this.availableRoles = [];
+      this.availableLocales = [];
       this.availablePostLogoutRedirectUris = [];
       this.createdSecret = null;
       this.copyFeedback = '';
@@ -82,13 +86,13 @@ export class VersolaClientsList extends LitElement {
 
     if (changedProperties.has('expandClientId') && this.expandClientId) {
       this.expandedClients = new Set([...this.expandedClients, this.expandClientId]);
+      this.expandedFlows = new Set([...this.expandedFlows, this.expandClientId]);
     }
   }
 
   private async loadData() {
     if (!this.tenantId) {
       this.clients = [];
-      this.tenantEdgeId = null;
       this.errorMessage = '';
       return;
     }
@@ -98,13 +102,9 @@ export class VersolaClientsList extends LitElement {
     this.errorMessage = '';
 
     try {
-      const [result, tenants] = await Promise.all([
-        fetchAllClients(this.tenantId),
-        fetchTenants(),
-      ]);
+      const result = await fetchAllClients(this.tenantId);
       if (requestId !== this.loadRequestId) return;
       this.clients = result;
-      this.tenantEdgeId = tenants.find(t => t.id === this.tenantId)?.edgeId ?? null;
     } catch (error) {
       if (requestId !== this.loadRequestId) return;
       this.clients = [];
@@ -212,7 +212,7 @@ export class VersolaClientsList extends LitElement {
       }
 
       .detail-section {
-        background: rgba(0, 0, 0, 0.2);
+        background: var(--bg-dark);
         border: 1px solid var(--border-dark);
         border-radius: var(--radius-md);
         padding: var(--spacing-md);
@@ -269,7 +269,7 @@ export class VersolaClientsList extends LitElement {
 
       .tag {
         padding: 0.25rem 0.5rem;
-        background: rgba(88, 166, 255, 0.15);
+        background: rgba(var(--accent-tint), 0.15);
         color: var(--accent);
         border-radius: var(--radius-sm);
         font-size: 0.75rem;
@@ -282,6 +282,76 @@ export class VersolaClientsList extends LitElement {
         gap: var(--spacing-lg);
       }
 
+      .auth-flow-settings {
+        margin-top: var(--spacing-lg);
+        border-top: 1px solid var(--border-dark);
+        padding-top: var(--spacing-lg);
+      }
+
+      .auth-flow-settings-list {
+        display: grid;
+        gap: var(--spacing-md);
+      }
+
+      .auth-flow-setting-row {
+        display: grid;
+        grid-template-columns: minmax(10rem, 0.3fr) minmax(0, 1fr);
+        align-items: start;
+        gap: var(--spacing-lg);
+        padding: 0.875rem 0;
+      }
+
+      .auth-flow-setting-label {
+        color: var(--text-secondary);
+        font-size: 0.8125rem;
+        font-weight: 600;
+      }
+
+      .auth-flow-setting-value {
+        min-width: 0;
+        color: var(--text-primary);
+        font-size: 0.875rem;
+      }
+
+      .auth-flow-setting-stack {
+        display: grid;
+        gap: 0.625rem;
+      }
+
+      .auth-flow-setting-detail {
+        display: grid;
+        grid-template-columns: minmax(7rem, auto) minmax(0, 1fr);
+        gap: 0.75rem;
+        align-items: baseline;
+      }
+
+      .auth-flow-setting-detail-label {
+        color: var(--text-secondary);
+        font-size: 0.75rem;
+      }
+
+      .logout-session-note {
+        color: var(--text-secondary);
+        font-size: 0.8125rem;
+      }
+
+      .logout-claim-key {
+        padding: 0.1rem 0.3rem;
+        border-radius: var(--radius-sm);
+        background: rgba(var(--accent-tint), 0.15);
+        color: var(--accent);
+        font-family: var(--font-mono);
+        font-size: 0.75rem;
+      }
+
+      @media (max-width: 640px) {
+        .auth-flow-setting-row,
+        .auth-flow-setting-detail {
+          grid-template-columns: 1fr;
+          gap: 0.35rem;
+        }
+      }
+
       .flow-chain {
         display: flex;
         flex-direction: column;
@@ -290,7 +360,7 @@ export class VersolaClientsList extends LitElement {
       }
 
       .flow-step {
-        background: rgba(0, 0, 0, 0.2);
+        background: var(--bg-dark);
         border: 1px solid var(--border-dark);
         border-radius: var(--radius-md);
         padding: var(--spacing-md);
@@ -361,7 +431,7 @@ export class VersolaClientsList extends LitElement {
       .secret-value {
         margin: 0;
         padding: 0.875rem 1rem;
-        background: rgba(0, 0, 0, 0.25);
+        background: var(--bg-dark);
         border: 1px solid var(--border-dark);
         border-radius: var(--radius-md);
         color: var(--text-primary);
@@ -444,12 +514,20 @@ export class VersolaClientsList extends LitElement {
         padding-top: var(--spacing-md);
       }
 
+      .auth-flow-body {
+        padding-left: 1.25rem;
+      }
+
+      .auth-flow-body > .flow-section {
+        margin-left: -1.25rem;
+      }
+
       .empty-presets {
         padding: var(--spacing-lg);
         text-align: center;
         color: var(--text-secondary);
         font-size: 0.875rem;
-        background: rgba(0, 0, 0, 0.2);
+        background: var(--bg-dark);
         border-radius: var(--radius-md);
       }
 
@@ -459,7 +537,7 @@ export class VersolaClientsList extends LitElement {
       }
 
       .preset-card {
-        background: rgba(0, 0, 0, 0.2);
+        background: var(--bg-dark);
         border: 1px solid var(--border-dark);
         border-radius: var(--radius-md);
         transition: border-color var(--transition-fast);
@@ -481,7 +559,7 @@ export class VersolaClientsList extends LitElement {
       }
 
       .preset-card-header:hover {
-        background: rgba(88, 166, 255, 0.05);
+        background: rgba(var(--accent-tint), 0.05);
       }
 
       .preset-info {
@@ -558,8 +636,10 @@ export class VersolaClientsList extends LitElement {
   private async toggleExpand(clientId: string) {
     if (this.expandedClients.has(clientId)) {
       this.expandedClients.delete(clientId);
+      this.expandedFlows.delete(clientId);
     } else {
       this.expandedClients.add(clientId);
+      this.expandedFlows.add(clientId);
       // Load presets when expanding if not already loaded
       await this.loadPresetsForClient(clientId);
     }
@@ -614,13 +694,15 @@ export class VersolaClientsList extends LitElement {
       return;
     }
 
-    const [scopes, permissions, resources, themes, otpTemplates, challengeSettings] = await Promise.all([
+    const [scopes, permissions, resources, themes, otpTemplates, challengeSettings, roles, locales] = await Promise.all([
       getScopes(tenantId),
       getPermissions(tenantId),
       getResources(tenantId),
       fetchThemes(tenantId),
       fetchOtpTemplates(tenantId),
       fetchChallengeSettings(tenantId),
+      getRoles(tenantId),
+      fetchLocales(),
     ]);
 
     if (this.tenantId === tenantId) {
@@ -629,6 +711,8 @@ export class VersolaClientsList extends LitElement {
       this.availableResources = resources;
       this.availableThemes = themes;
       this.availableOtpTemplates = otpTemplates;
+      this.availableRoles = roles;
+      this.availableLocales = locales;
       this.availablePostLogoutRedirectUris = challengeSettings?.postLogoutRedirectUris ?? [];
       this.formOptionsTenantId = tenantId;
     }
@@ -834,12 +918,13 @@ export class VersolaClientsList extends LitElement {
 
       if (generatedSecret) {
         this.createdSecret = {
-          clientName: client.clientName,
+          clientName: getLocalizedDescription(client.clientName),
           secret: generatedSecret,
           action: 'created',
         };
         this.copyFeedback = '';
         this.expandedClients = new Set([...this.expandedClients, client.id]);
+        this.expandedFlows = new Set([...this.expandedFlows, client.id]);
       }
     } catch (error) {
       // Check if it's a 409 Conflict (duplicate client)
@@ -921,9 +1006,10 @@ export class VersolaClientsList extends LitElement {
           .availableScopes=${this.availableScopes}
           .availablePermissions=${this.availablePermissions}
           .availableResources=${this.availableResources}
-          .availableClientIds=${this.clients.map(client => client.id)}
           .availableThemes=${this.availableThemes}
           .availableOtpTemplates=${this.availableOtpTemplates}
+          .availableRoles=${this.availableRoles}
+          .locales=${this.availableLocales}
           .canManageSecrets=${this.canManageSecrets}
           @close=${this.handleFormClose}
           @delete-previous-secret=${this.handleDeletePreviousSecret}
@@ -999,7 +1085,7 @@ export class VersolaClientsList extends LitElement {
                 <div class="client-header" @click=${() => this.toggleExpand(client.id)}>
                   <div class="client-info">
                     <div class="client-name">
-                      ${client.clientName}
+                      ${getLocalizedDescription(client.clientName)}
                       ${client.hasPreviousSecret ? html`
                         <span class="badge badge-warning">Secret Rotation</span>
                       ` : ''}
@@ -1043,17 +1129,6 @@ export class VersolaClientsList extends LitElement {
                         </div>
                       </div>
 
-                      ${client.externalAudience.length > 0 ? html`
-                        <div class="detail-section">
-                          <div class="detail-label">External Audience</div>
-                          <div class="uri-list">
-                            ${client.externalAudience.map(aud => html`
-                              <div class="uri-item">${aud}</div>
-                            `)}
-                          </div>
-                        </div>
-                      ` : ''}
-
                       <div class="detail-section">
                         <div class="detail-label">OAuth Scopes</div>
                         <div class="tag-list">
@@ -1077,33 +1152,13 @@ export class VersolaClientsList extends LitElement {
                         <div class="detail-value">${formatDuration(client.accessTokenTtl)}</div>
                       </div>
 
-                      <div class="detail-section">
-                        <div class="detail-label">Theme</div>
-                        <div class="detail-value">${client.theme ?? 'default'}</div>
-                      </div>
-
-                      ${client.otpTemplateId ? html`
+                      ${client.scope.includes('offline_access') ? html`
                         <div class="detail-section">
-                          <div class="detail-label">OTP Template</div>
-                          <div class="detail-value">${client.otpTemplateId}</div>
+                          <div class="detail-label">Refresh Token TTL</div>
+                          <div class="detail-value">${formatDuration(client.refreshTokenTtl ?? 90 * 24 * 60 * 60)}</div>
                         </div>
                       ` : ''}
 
-                      ${this.tenantEdgeId ? html`
-                        <div class="detail-section">
-                          <div class="detail-label">Edge</div>
-                          <div class="detail-value">
-                            <button
-                              type="button"
-                              class="client-link"
-                              @click=${() => this.navigateToEdge(this.tenantEdgeId!)}
-                              aria-label=${`Open edge ${this.tenantEdgeId}`}
-                            >
-                              ${this.tenantEdgeId}
-                            </button>
-                          </div>
-                        </div>
-                      ` : ''}
                     </div>
 
                     ${this.renderAuthFlowSection(client)}
@@ -1182,7 +1237,7 @@ export class VersolaClientsList extends LitElement {
       <div class="card">
         <h2>Edit Authorization Presets</h2>
         <p style="color: var(--text-secondary); margin-bottom: 1.5rem;">
-          Manage authorization presets for ${this.editingPresetsForClient.clientName}
+          Manage authorization presets for ${getLocalizedDescription(this.editingPresetsForClient.clientName)}
         </p>
 
         ${this.presetDrafts.length === 0 ? html`
@@ -1251,14 +1306,88 @@ export class VersolaClientsList extends LitElement {
         </div>
 
         ${isFlowsExpanded ? html`
-          <div class="presets-body">
+          <div class="presets-body auth-flow-body">
             ${client.authFlow ? this.renderAuthFlow(client.authFlow) : html`
               <div class="empty-presets">
                 No authorization flow configured. This client cannot be used for interactive authentication.
               </div>
             `}
+            ${this.renderAuthFlowSettings(client)}
           </div>
         ` : ''}
+      </div>
+    `;
+  }
+
+  private renderAuthFlowSettings(client: OAuthClient) {
+    const flow = client.authFlow;
+    if (!flow) return '';
+
+    const hasOtp = flow.factors.some(factor => factor.type === 'otp')
+      || (flow.passkeyFactors ?? []).some(factor => factor.type === 'otp');
+    const otpChannel = flow.primaryCredentials.includes('email')
+      ? 'email'
+      : flow.primaryCredentials.includes('phone')
+        ? 'sms'
+        : flow.otpType;
+    const logoutMode = client.frontChannelLogoutUri
+      ? 'front-channel'
+      : client.backChannelLogoutUri
+        ? 'back-channel'
+        : 'none';
+
+    return html`
+      <div class="auth-flow-settings">
+        <div class="auth-flow-settings-list">
+          <div class="auth-flow-setting-row">
+            <div class="auth-flow-setting-label">Forms Theme</div>
+            <div class="auth-flow-setting-value">${client.theme ?? 'default'}</div>
+          </div>
+
+          <div class="auth-flow-setting-row">
+            <div class="auth-flow-setting-label">Redirect URIs</div>
+            <div class="auth-flow-setting-value">
+              ${client.redirectUris.length > 0 ? html`
+                <div class="uri-list">
+                  ${client.redirectUris.map(uri => html`<div class="uri-item">${uri}</div>`)}
+                </div>
+              ` : '—'}
+            </div>
+          </div>
+
+          ${hasOtp ? html`
+            <div class="auth-flow-setting-row">
+              <div class="auth-flow-setting-label">OTP Settings</div>
+              <div class="auth-flow-setting-value auth-flow-setting-stack">
+                <div class="auth-flow-setting-detail">
+                  <div class="auth-flow-setting-detail-label">Template</div>
+                  <div>${client.otpTemplateId || 'default'}</div>
+                </div>
+                <div class="auth-flow-setting-detail">
+                  <div class="auth-flow-setting-detail-label">Channel</div>
+                  <div>${otpChannel}</div>
+                </div>
+              </div>
+            </div>
+          ` : ''}
+
+          <div class="auth-flow-setting-row">
+            <div class="auth-flow-setting-label">Logout Settings</div>
+            <div class="auth-flow-setting-value auth-flow-setting-stack">
+              <div>${logoutMode}</div>
+              ${client.frontChannelLogoutUri ? html`
+                <div class="uri-item">${client.frontChannelLogoutUri}</div>
+                <div class="logout-session-note">
+                  <span class="logout-claim-key">iss</span> and <span class="logout-claim-key">sid</span>
+                  ${client.frontChannelLogoutSessionRequired ? ' included' : ' not included'}
+                </div>
+              ` : ''}
+              ${client.backChannelLogoutUri ? html`
+                <div class="uri-item">${client.backChannelLogoutUri}</div>
+              ` : ''}
+            </div>
+          </div>
+        </div>
       </div>
     `;
   }
@@ -1527,12 +1656,5 @@ export class VersolaClientsList extends LitElement {
     }
   }
 
-  private navigateToEdge(edgeId: string) {
-    this.dispatchEvent(new CustomEvent('navigate-to-edge', {
-      detail: { edgeId },
-      bubbles: true,
-      composed: true,
-    }));
-  }
 }
 

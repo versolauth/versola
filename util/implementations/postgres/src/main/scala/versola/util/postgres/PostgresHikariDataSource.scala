@@ -15,19 +15,30 @@ object PostgresHikariDataSource:
       serviceName: Option[String],
       migrate: Boolean,
       validateOnMigrate: Boolean = true,
-  ): ZLayer[Scope & ConfigProvider, Throwable, TransactorZIO & HikariDataSource] =
+      migrationLocations: Option[Seq[String]] = None,
+  ): ZLayer[Scope & ConfigProvider, Throwable, TransactorZIO & HikariDataSource & PostgresConfig] =
     ZLayer(ZIO.serviceWithZIO[ConfigProvider](_.load(Config.Nested("postgres", deriveConfig[PostgresConfig])))) >+>
-      layer(serviceName, migrate, validateOnMigrate) >+>
+      layer(serviceName, migrate, validateOnMigrate, migrationLocations) >+>
       TransactorZIO.layer
 
   /** Create a HikariDataSource layer with optional Flyway migration.
     *
-    * Auto-detects migration directories by scanning for `<service>/implementations/postgres/migrations` pattern.
-    *
     * @param migrate
-    *   Whether to run Flyway migrations on startup
+    *   Whether to apply Flyway migrations on startup. When false, the schema is *validated* against
+    *   this build's migrations instead of being left unchecked -- see the comment on that branch
+    *   below for why "false" doesn't mean "skip Flyway entirely".
     * @param validateOnMigrate
     *   Whether to validate migrations on migrate. Should be true in production, false in tests/development
+    * @param migrationLocations
+    *   Where to find this schema's migrations. Defaults to auto-detecting a single
+    *   `<service>/implementations/postgres/migrations` directory under the working directory (see
+    *   `detectMigrationDirectories`) -- correct for auth/central/edge's own images, which each bundle
+    *   only their own migrations. Callers that bundle more than one service's migrations in the same
+    *   classpath/filesystem (versola-tools' migrate-tool, which ships all three so it can migrate
+    *   every schema from one image) MUST pass this explicitly -- auto-detection would otherwise find
+    *   all of them and hand Flyway a mix of unrelated schemas' migrations, exactly the bug diagnosed
+    *   in the CI e2e OOM investigation (`sbt test` from the repo root picking up all three services'
+    *   migrations directories together against one shared schema).
     * @return
     *   A ZLayer that provides HikariDataSource
     */
@@ -35,6 +46,7 @@ object PostgresHikariDataSource:
       serviceName: Option[String],
       migrate: Boolean,
       validateOnMigrate: Boolean = true,
+      migrationLocations: Option[Seq[String]] = None,
   ): ZLayer[Scope & PostgresConfig, Throwable, HikariDataSource] =
     ZLayer:
       ZIO.acquireRelease(
@@ -59,21 +71,47 @@ object PostgresHikariDataSource:
             serviceName.foreach(config.setPoolName)
             config
           }
-          _ <- ZIO.when(migrate):
-            ZIO.attemptBlocking:
-              val locations = detectMigrationDirectories()
+          _ <- ZIO.attemptBlocking:
+            val locations = migrationLocations.getOrElse(detectMigrationDirectories())
 
-              val flyway = Flyway.configure()
-                .locations(locations*)
-                .dataSource(dataSource)
-                .ignoreMigrationPatterns("*:missing")
-                .outOfOrder(true)
-                .cleanDisabled(true)
-                .validateMigrationNaming(false)
-                .validateOnMigrate(validateOnMigrate)
-                .load()
+            val flyway = Flyway.configure()
+              .locations(locations*)
+              .dataSource(dataSource)
+              .ignoreMigrationPatterns("*:missing", "*:future")
+              .outOfOrder(true)
+              .cleanDisabled(true)
+              .validateMigrationNaming(false)
+              .validateOnMigrate(validateOnMigrate)
+              .load()
 
-              flyway.migrate()
+            // migrate = false does NOT mean "don't touch Flyway" -- it means "someone else is
+            // responsible for applying migrations" (`versola migrate`, which runs migrate-tool
+            // against each schema independently -- see versola-tools' entrypoint.sh and the
+            // RUN_MIGRATIONS: "false" that versola-cli's compose fragments set on every service).
+            // Leaving it entirely unchecked in that case meant a skipped migrate step was
+            // invisible: the service started fine, passed its readiness check, and only failed
+            // later, at the first query against a table that was never created -- in production,
+            // on real traffic, long after the deploy looked successful.
+            //
+            // validate() closes that: a schema this build has migrations for but the database
+            // hasn't had applied fails here, at startup, with Flyway naming the exact migration.
+            // It deliberately does NOT fail the reverse case (database ahead of this build, e.g.
+            // deploying an older version back out) -- both flavors of "database ahead" are
+            // explicitly ignored above:
+            //
+            //   - `*:missing`: a migration this build doesn't have a script for at all (its
+            //     history-table row can't be resolved against `locations` above).
+            //   - `*:future`: a migration this build DOES have a script for, but whose version is
+            //     higher than the highest one Flyway resolved locally (the ordinary case for a
+            //     rollback -- the newer build's migrations are still on disk in the older build's
+            //     source tree too, just numbered past what this checkout knows about).
+            //
+            // Flyway ignores `*:future` by default, but passing `ignoreMigrationPatterns` at all
+            // REPLACES that default outright rather than adding to it -- an earlier version of
+            // this only listed `*:missing`, which silently dropped the `*:future` ignore and made
+            // every rollback deploy fail validate() the moment a newer build's migration had been
+            // applied (flagged in review).
+            if migrate then flyway.migrate() else flyway.validate()
 
         yield dataSource
       )(dataSource => ZIO.attemptBlocking(dataSource.close()).orDie)
@@ -99,6 +137,8 @@ object PostgresHikariDataSource:
         s"connection-timeout must be >= 250ms, got ${postgres.connectionTimeout}",
       Option.when(postgres.maxLifetime.toMillis != 0 && postgres.maxLifetime.toMillis < 30000):
         s"max-lifetime must be 0 (disabled) or >= 30 seconds, got ${postgres.maxLifetime}",
+      Option.when(postgres.notificationsUrl.exists(_.isBlank)):
+        "notifications-url must be a JDBC URL when set, or absent to reuse url",
       Option.when(postgres.leakDetectionThreshold.toMillis < 0):
         s"leak-detection-threshold must be >= 0, got ${postgres.leakDetectionThreshold}",
       Option.when(postgres.leakDetectionThreshold.toMillis > 0 && postgres.leakDetectionThreshold.toMillis < 2000):

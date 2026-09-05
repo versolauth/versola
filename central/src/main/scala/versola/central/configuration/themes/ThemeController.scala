@@ -1,8 +1,8 @@
 package versola.central.configuration.themes
 
 import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
-import versola.central.configuration.clients.OAuthClientService
 import versola.central.configuration.edges.EdgeService
+import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.TenantId
 import versola.util.http.Controller
 import zio.ZIO
@@ -10,7 +10,7 @@ import zio.http.{Method, Request, Response, Routes, Status, handler}
 import zio.json.EncoderOps
 
 object ThemeController extends Controller:
-  type Env = Tracing & ThemeService & OAuthClientService & CentralConfig & EdgeService
+  type Env = Tracing & ThemeService & ResourceService & CentralConfig & EdgeService
 
   def routes: Routes[Env, Throwable] = Routes(
     getAllThemesEndpoint,
@@ -44,7 +44,7 @@ object ThemeController extends Controller:
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[ThemeService]
-        body <- request.body.asJson[CreateThemeRequest]
+        body <- request.bodyAs[CreateThemeRequest]
         _ <- service.createTheme(ThemeRecord(body.id, body.css, body.tenantId))
       yield Response.status(Status.Created)
     }
@@ -54,7 +54,7 @@ object ThemeController extends Controller:
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[ThemeService]
-        body <- request.body.asJson[UpdateThemeRequest]
+        body <- request.bodyAs[UpdateThemeRequest]
         _ <- service.updateTheme(ThemeRecord(body.id, body.css, None))
       yield Response.status(Status.NoContent)
     }

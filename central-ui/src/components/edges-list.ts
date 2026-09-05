@@ -135,7 +135,7 @@ export class VersolaEdgesList extends LitElement {
       }
 
       .secret-banner {
-        background: rgba(88, 166, 255, 0.1);
+        background: rgba(var(--accent-tint), 0.1);
         border: 1px solid var(--accent);
         border-radius: var(--radius-lg);
         padding: var(--spacing-lg);
@@ -215,8 +215,8 @@ export class VersolaEdgesList extends LitElement {
         display: inline-flex;
         align-items: center;
         padding: 0.25rem 0.75rem;
-        background: rgba(88, 166, 255, 0.12);
-        border: 1px solid rgba(88, 166, 255, 0.28);
+        background: rgba(var(--accent-tint), 0.12);
+        border: 1px solid rgba(var(--accent-tint), 0.28);
         border-radius: 999px;
         color: var(--accent);
         font-size: 0.8125rem;

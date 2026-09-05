@@ -1,24 +1,27 @@
 package versola.central.configuration.challenges
 
+import versola.central.CentralConfig
 import versola.central.configuration.locales.LocaleService
 import versola.central.configuration.sync.{SyncEvent, SyncOps}
 import versola.central.configuration.tenants.TenantId
 import versola.util.ReloadingCache
-import zio.{Schedule, Scope, Task, ZLayer}
+import zio.{Schedule, Scope, Task, ZIO, ZLayer}
 
 trait OtpChallengeService:
   def getTemplates(tenantId: TenantId): Task[Vector[OtpTemplateRecord]]
   def getAllTemplates: Task[Vector[OtpTemplateRecord]]
   def getSyncTemplates: Task[Vector[OtpTemplateRecord]]
   def upsertTemplate(record: OtpTemplateRecord): Task[Unit]
-  def deleteTemplate(id: String, tenantId: TenantId): Task[Unit]
+  def deleteTemplate(id: String, tenantId: TenantId, purpose: OtpTemplatePurpose, channel: OtpTemplateChannel): Task[Unit]
   def sync(event: SyncEvent.OtpTemplatesUpdated): Task[Unit]
 
 object OtpChallengeService:
-  def live(
-      schedule: Schedule[Any, Any, Any],
-  ): ZLayer[OtpChallengeRepository & Scope & LocaleService, Throwable, OtpChallengeService] =
-    ZLayer(ReloadingCache.make[Vector[OtpTemplateRecord]](schedule))
+  def live: ZLayer[OtpChallengeRepository & Scope & LocaleService & CentralConfig, Throwable, OtpChallengeService] =
+    (ZLayer.fromZIO:
+      ZIO.serviceWithZIO[CentralConfig](config =>
+        ReloadingCache.make[Vector[OtpTemplateRecord]](config.configurationCacheRefreshInterval),
+      )
+    )
       >>> ZLayer.fromFunction(Impl(_, _, _))
 
   class Impl(
@@ -40,13 +43,30 @@ object OtpChallengeService:
       yield templates.map(t => t.copy(localizations = t.localizations.filter((code, _) => activeLocales.contains(code))))
 
     override def upsertTemplate(record: OtpTemplateRecord): Task[Unit] =
-      repository.upsertTemplate(record)
+      validate(record) match
+        case Left(error) => ZIO.fail(IllegalArgumentException(error))
+        case Right(_)    => repository.upsertTemplate(record)
 
-    override def deleteTemplate(id: String, tenantId: TenantId): Task[Unit] =
-      repository.deleteTemplate(id, tenantId)
+    override def deleteTemplate(id: String, tenantId: TenantId, purpose: OtpTemplatePurpose, channel: OtpTemplateChannel): Task[Unit] =
+      repository.deleteTemplate(id, tenantId, purpose, channel)
 
     override def sync(event: SyncEvent.OtpTemplatesUpdated): Task[Unit] =
       SyncOps.syncCache(event)(
         cache,
-        repository.find(event.id, event.tenantId),
+        repository.find(event.id, event.tenantId, event.purpose, event.channel),
       )
+
+    private def validate(record: OtpTemplateRecord): Either[String, Unit] =
+      val placeholders = record.purpose match
+        case OtpTemplatePurpose.password => List("{{password}}", "{{expiresHours}}")
+        case OtpTemplatePurpose.otp      => List("{{code}}")
+      record.localizations.toList.collectFirst { case (locale, template) if placeholders.exists(placeholder => !template.contains(placeholder)) =>
+        s"Localization $locale is missing a required template placeholder"
+      } match
+        case Some(error) => Left(error)
+        case None if record.channel == OtpTemplateChannel.email && record.localizations.values.exists(template => !containsHtml(template)) =>
+          Left("Email OTP templates must contain HTML")
+        case None => Right(())
+
+    private def containsHtml(template: String): Boolean =
+      template.matches("(?s).*<[A-Za-z][^>]*>.*")

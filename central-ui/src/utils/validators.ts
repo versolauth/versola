@@ -20,12 +20,13 @@ export function validatePermission(permission: string): boolean {
 }
 
 /**
- * Validates role ID format: same as resource/action
- * Lowercase letters, numbers, underscore, starting with letter
- * Examples: admin, support_user, api_manager
+ * Validates role ID format: lowercase letters, numbers, hyphen, starting with letter
+ * (unlike scope/permission/detail-type IDs, role IDs allow hyphens - matching built-in
+ * roles like `oauth-admin` and `frontend-developer`)
+ * Examples: admin, oauth-admin, frontend-developer
  */
 export function validateRoleId(roleId: string): boolean {
-  return validateResourceAction(roleId);
+  return /^[a-z][a-z0-9-]*$/.test(roleId);
 }
 
 /**
@@ -35,6 +36,15 @@ export function validateRoleId(roleId: string): boolean {
  */
 export function validateScopeId(scopeId: string): boolean {
   return validateResourceAction(scopeId);
+}
+
+/**
+ * Validates an RFC 9396 authorization detail type: same as resource/action
+ * Lowercase letters, numbers, underscore, starting with letter
+ * Examples: payment_initiation, account_information
+ */
+export function validateAuthorizationDetailType(type: string): boolean {
+  return validateResourceAction(type);
 }
 
 /**
@@ -142,6 +152,23 @@ export function validateLogoutUri(uri: string): { valid: boolean; error?: string
   }
 }
 
+/** Consent-screen links are opened or loaded by a browser, so only absolute HTTPS
+ * URLs are accepted. Native-app custom schemes are not valid here. */
+export function validateConsentUri(uri: string): { valid: boolean; error?: string } {
+  const trimmed = uri.trim();
+  if (!trimmed) return { valid: true };
+
+  try {
+    const url = new URL(trimmed);
+    if (url.protocol !== 'https:' || !url.hostname) {
+      return { valid: false, error: 'Consent URI must use an absolute https:// URL' };
+    }
+    return { valid: true };
+  } catch {
+    return { valid: false, error: 'Invalid consent URI format' };
+  }
+}
+
 /**
  * Validates resource URI according to backend ResourceUri rules
  * - Must be absolute URI
@@ -157,6 +184,9 @@ export function validateResourceUri(uri: string): { valid: boolean; error?: stri
 
   try {
     const url = new URL(trimmed);
+    if (url.protocol.toLowerCase() === 'resource:') {
+      return { valid: false, error: 'Resource URI scheme resource:// is reserved' };
+    }
     if (url.search) {
       return { valid: false, error: 'Resource URI query must be empty' };
     }
@@ -173,11 +203,17 @@ export function validateResourceUri(uri: string): { valid: boolean; error?: stri
 }
 
 /**
- * Validates audience (same as client ID validation)
- * Lowercase letters, numbers, hyphen, starting with letter
+ * Validates a resource ID. IDs are also used in resource://<id> internal-resource URIs.
  */
-export function validateAudience(audience: string): boolean {
-  return validateClientId(audience);
+export function validateResourceId(resourceId: string): { valid: boolean; error?: string } {
+  const trimmed = resourceId.trim();
+  if (!/^[a-z][a-z0-9-]*$/.test(trimmed)) {
+    return { valid: false, error: 'Resource ID must start with a lowercase Latin letter and contain only lowercase Latin letters, numbers, and hyphens' };
+  }
+  if (trimmed === 'edge') {
+    return { valid: false, error: 'Resource ID "edge" is reserved' };
+  }
+  return { valid: true };
 }
 
 /**
@@ -197,13 +233,21 @@ export function secondsToTtl(seconds: number): { value: number; unit: 'minutes' 
   return { value: seconds / 60, unit: 'minutes' };
 }
 
+export function daysToSeconds(days: number): number {
+  return Math.round(days * 24 * 60 * 60);
+}
+
+export function secondsToDays(seconds: number): number {
+  return Math.max(1, Math.round(seconds / (24 * 60 * 60)));
+}
+
 /**
  * Get error message for validation type
  */
 export function getValidationError(type: string): string {
   const errors: Record<string, string> = {
     permission: 'Lowercase letters, numbers, underscore, dot or colon separators, start each segment with letter',
-    role: 'Lowercase letters, numbers, underscore, start with letter',
+    role: 'Lowercase letters, numbers, hyphen, start with letter',
     scope: 'Lowercase letters, numbers, underscore, start with letter',
     clientId: 'Lowercase letters, numbers, hyphen, start with letter',
     tenantId: 'Lowercase letters, numbers, hyphen, start with letter',

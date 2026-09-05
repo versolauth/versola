@@ -1,14 +1,15 @@
 package versola.oauth.token
 
-import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{ClientCredentials, ClientId, ClientIdWithSecret, OAuthClientRecord, ScopeToken, TenantId}
+import versola.oauth.client.{AuthorizationDetailResolver, OAuthConfigurationService, ResourceResolver}
+import versola.oauth.client.model.{AuthorizationDetail, ClientCredentials, ClientId, ClientIdWithSecret, OAuthClientRecord, ResourceUri, ScopeToken, TenantId}
 import versola.oauth.model.{AccessToken, AuthorizationCodeRecord, RefreshToken}
 import versola.oauth.revoke.AccessTokenRevocationService
 import versola.oauth.session.model.{RefreshAlreadyExchanged, RefreshTokenRecord, WithTtl}
 import versola.oauth.session.SessionRepository
 import versola.oauth.token.model.{ClientCredentialsRequest, CodeExchangeRequest, IssuedTokens, RefreshTokenRequest, TokenEndpointError}
-import versola.user.{UserRepository, UserRolesRepository}
-import versola.util.{AuthPropertyGenerator, CoreConfig, MAC, Secret, SecurityService}
+import versola.user.UserRepository
+import versola.util.{AuthPropertyGenerator, Base64, CoreConfig, JsonSchemaValidator, MAC, Secret, SecurityService}
+import versola.util.http.Observability
 import zio.prelude.These
 import zio.{Duration, IO, Task, ZIO, ZLayer}
 
@@ -43,7 +44,7 @@ object OAuthTokenService:
       securityService: SecurityService,
       authPropertyGenerator: AuthPropertyGenerator,
       userRepository: UserRepository,
-      userRolesRepository: UserRolesRepository,
+      schemaValidator: JsonSchemaValidator,
       config: CoreConfig,
   ) extends OAuthTokenService:
 
@@ -58,8 +59,9 @@ object OAuthTokenService:
       for
         client <- tokenCredentials match
           case ClientIdWithSecret(clientId, clientSecret) =>
-            oauthClientService.verifySecret(clientId, clientSecret)
-              .someOrFail(TokenEndpointError.InvalidClient)
+            Observability.setClientId(clientId) *>
+              oauthClientService.verifySecret(clientId, clientSecret)
+                .someOrFail(TokenEndpointError.InvalidClient)
 
         codeMac <- securityService.mac(Secret(code), config.security.authCodesSecret)
 
@@ -69,9 +71,21 @@ object OAuthTokenService:
           .filterOrFail(_.redirectUri == redirectUri)(TokenEndpointError.InvalidGrant)
           .filterOrFail(_.verify(codeVerifier))(TokenEndpointError.InvalidGrant)
 
+        _ <- Observability.setSessionId(codeRecord.publicSessionId)
+        _ <- Observability.setUserId(codeRecord.userId.toString)
+
         _ <- authorizationCodeRepository.markAsUsed(codeMac).flatMap:
           case Left(at) =>
-            accessTokenRevocationService.revoke(at) *>
+            zio.Clock.instant.flatMap: replayedAt =>
+              // The replayed code's access token is not in hand here, only its id, so its
+              // lifetime is bounded by the client's TTL rather than read from the token.
+              accessTokenRevocationService.revoke(
+                client = client,
+                token = at,
+                subject = codeRecord.userId.toString,
+                expiresAt = replayedAt.plus(client.accessTokenTtl),
+              )
+            *>
               sessionRepository.deleteByAccessToken(at) *>
               ZIO.fail(TokenEndpointError.InvalidGrant)
 
@@ -80,6 +94,7 @@ object OAuthTokenService:
 
         now <- zio.Clock.instant
         accessToken = codeRecord.accessToken
+        _ <- Observability.setToken(accessToken.encoded)
 
         issuedTokens <- issueTokens(
           accessToken = accessToken,
@@ -90,7 +105,8 @@ object OAuthTokenService:
             accessToken = accessToken,
             userId = codeRecord.userId,
             clientId = codeRecord.clientId,
-            externalAudience = client.externalAudience,
+            audience = codeRecord.resources,
+            authorizationDetails = codeRecord.authorizationDetails,
             scope = codeRecord.scope,
             issuedAt = now,
             expiresAt = now.plusSeconds(client.refreshTokenTtl.toSeconds),
@@ -102,6 +118,8 @@ object OAuthTokenService:
             authTime = codeRecord.authTime,
             acr = codeRecord.acr,
           ),
+          accessTokenAudience = codeRecord.resources,
+          accessTokenAuthorizationDetails = codeRecord.authorizationDetails.getOrElse(Nil),
         ).mapError {
           case ex: Throwable => ex
           case _ => TokenEndpointError.InvalidGrant // illegal state
@@ -115,12 +133,15 @@ object OAuthTokenService:
         refreshTokenRequest: RefreshTokenRequest,
         tokenCredentials: ClientCredentials,
     ): IO[Throwable | TokenEndpointError, IssuedTokens] =
-      import refreshTokenRequest.{refreshToken, scope}
+      import refreshTokenRequest.{authorizationDetails, refreshToken, resources, scope}
       for
+        _ <- Observability.setPreviousRefreshToken(Base64.urlEncode(refreshToken))
+
         client <- tokenCredentials match
           case ClientIdWithSecret(clientId, clientSecret) =>
-            oauthClientService.verifySecret(clientId, clientSecret)
-              .someOrFail(TokenEndpointError.InvalidClient)
+            Observability.setClientId(clientId) *>
+              oauthClientService.verifySecret(clientId, clientSecret)
+                .someOrFail(TokenEndpointError.InvalidClient)
 
         refreshTokenMac <- securityService.mac(Secret(refreshToken), config.security.refreshTokensSecret)
 
@@ -128,12 +149,20 @@ object OAuthTokenService:
           .someOrFail(TokenEndpointError.InvalidGrant)
           .filterOrFail(_.clientId == client.id)(TokenEndpointError.InvalidGrant)
 
+        _ <- Observability.setSessionId(tokenRecord.publicSessionId)
+        _ <- Observability.setUserId(tokenRecord.userId.toString)
+
         _ <- ZIO.fail(TokenEndpointError.InvalidScope)
           .when(scope.exists(!_.subsetOf(client.scope)))
+
+        audience <- resolveTokenAudience(client, tokenRecord.audience, resources)
+
+        details <- resolveTokenAuthorizationDetails(client, tokenRecord.authorizationDetails.getOrElse(Nil), authorizationDetails)
 
         now <- zio.Clock.instant
 
         accessToken <- authPropertyGenerator.nextAccessToken
+        _ <- Observability.setToken(accessToken.encoded)
 
         issuedTokens <- issueTokens(
           accessToken = accessToken,
@@ -145,8 +174,67 @@ object OAuthTokenService:
             issuedAt = now,
             expiresAt = now.plusSeconds(client.refreshTokenTtl.toSeconds),
           ),
+          accessTokenAudience = audience,
+          accessTokenAuthorizationDetails = details,
         )
       yield issuedTokens
+
+    /** RFC 9396 §6: a token request may ask for the authorization details of the underlying
+      * grant or fewer of them, never for more; §6.1 compares the requested objects with the
+      * granted ones. Comparison is on the whole object (key order normalized), so a client
+      * may drop details but not alter one — altering it would be asking for something that
+      * was never granted.
+      */
+    private def resolveTokenAuthorizationDetails(
+        client: OAuthClientRecord,
+        granted: List[AuthorizationDetail],
+        requested: Option[List[AuthorizationDetail]],
+    ): IO[TokenEndpointError, List[AuthorizationDetail]] =
+      requested match
+        case None =>
+          ZIO.succeed(granted)
+        case Some(details) if details.isEmpty =>
+          ZIO.fail(TokenEndpointError.InvalidRequest)
+        case Some(details) =>
+          val grantedCanonical = granted.map(_.canonical).toSet
+          details.find(detail => !grantedCanonical.contains(detail.canonical)) match
+            case Some(detail) =>
+              ZIO.fail(TokenEndpointError.InvalidAuthorizationDetails(
+                s"${detail.`type`} was not granted by the underlying grant",
+              ))
+            case None =>
+              AuthorizationDetailResolver.resolve(oauthClientService, schemaValidator, client, details)
+                .mapError(rejected =>
+                  TokenEndpointError.InvalidAuthorizationDetails(s"${rejected.`type`} - ${rejected.reason}"),
+                )
+
+    private def resolveTokenAudience(
+        client: OAuthClientRecord,
+        granted: List[ResourceUri],
+        requested: Option[List[ResourceUri]],
+    ): IO[TokenEndpointError, List[ResourceUri]] =
+      requested match
+        case None =>
+          ZIO.succeed(granted)
+        case Some(resources) if resources.isEmpty =>
+          ZIO.fail(TokenEndpointError.InvalidRequest)
+        case Some(resources) =>
+          val distinctResources = resources.distinct
+          val invalidResource = distinctResources.find: resource =>
+            !granted.contains(resource) &&
+              !(granted.contains(ResourceResolver.EdgeResource) && isInternalResource(resource))
+
+          invalidResource match
+            case Some(resource) =>
+              ZIO.fail(TokenEndpointError.InvalidTarget(resource))
+            case None if distinctResources.exists(isInternalResource) && granted.contains(ResourceResolver.EdgeResource) =>
+              ResourceResolver.resolve(oauthClientService, client, Some(distinctResources))
+                .mapError(TokenEndpointError.InvalidTarget.apply)
+            case None =>
+              ZIO.succeed(distinctResources)
+
+    private def isInternalResource(resource: ResourceUri): Boolean =
+      resource != ResourceResolver.EdgeResource && ResourceUri.internalResourceId(resource).isDefined
 
     override def clientCredentials(
         request: ClientCredentialsRequest,
@@ -155,8 +243,9 @@ object OAuthTokenService:
       for
         client <- tokenCredentials match
           case ClientIdWithSecret(clientId, clientSecret) =>
-            oauthClientService.verifySecret(clientId, clientSecret)
-              .someOrFail(TokenEndpointError.InvalidClient)
+            Observability.setClientId(clientId) *>
+              oauthClientService.verifySecret(clientId, clientSecret)
+                .someOrFail(TokenEndpointError.InvalidClient)
 
         _ <- ZIO.fail(TokenEndpointError.InvalidClient)
           .when(client.isPublic)
@@ -164,11 +253,30 @@ object OAuthTokenService:
         _ <- ZIO.fail(TokenEndpointError.InvalidScope)
           .when(request.scope.exists(!_.subsetOf(client.scope)))
 
+        _ <- ZIO.fail(TokenEndpointError.InvalidRequest)
+          .when(request.resources.exists(_.isEmpty))
+
+        _ <- ZIO.fail(TokenEndpointError.InvalidRequest)
+          .when(request.authorizationDetails.exists(_.isEmpty))
+
+        audience <- ResourceResolver.resolve(oauthClientService, client, request.resources)
+          .mapError(TokenEndpointError.InvalidTarget.apply)
+
+        // No underlying grant exists for client_credentials (RFC 9396 §6), so the requested
+        // details are checked against the tenant's registry alone.
+        details <- AuthorizationDetailResolver
+          .resolve(oauthClientService, schemaValidator, client, request.authorizationDetails.getOrElse(Nil))
+          .mapError(rejected =>
+            TokenEndpointError.InvalidAuthorizationDetails(s"${rejected.`type`} - ${rejected.reason}"),
+          )
+
         accessToken <- authPropertyGenerator.nextAccessToken
+        _ <- Observability.setToken(accessToken.encoded)
       yield IssuedTokens(
         accessToken = accessToken,
         clientId = client.id,
-        audience = client.audience,
+        audience = audience,
+        authorizationDetails = details,
         accessTokenTtl = client.accessTokenTtl,
         userId = None,
         refreshToken = None,
@@ -192,11 +300,14 @@ object OAuthTokenService:
         accessToken: AccessToken,
         client: OAuthClientRecord,
         record: RefreshTokenRecord,
+        accessTokenAudience: List[ResourceUri],
+        accessTokenAuthorizationDetails: List[AuthorizationDetail],
     ): IO[Throwable | TokenEndpointError, IssuedTokens] =
       for
         refreshToken <- ZIO.when(record.scope.contains(ScopeToken.OfflineAccess))(
           for
             token <- authPropertyGenerator.nextRefreshToken
+            _ <- Observability.setRefreshToken(Base64.urlEncode(token))
             mac <- securityService.mac(Secret(token), config.security.refreshTokensSecret)
             _ <- sessionRepository.createRefreshToken(mac, record)
               .mapError:
@@ -210,11 +321,12 @@ object OAuthTokenService:
           userRepository.find(record.userId),
         )
 
-        roles <- userRolesRepository.findRolesByUserAndTenant(record.userId, client.tenantId)
+        roles <- userRepository.findRolesByUserAndTenant(record.userId, client.tenantId)
       yield IssuedTokens(
         accessToken = accessToken,
         clientId = record.clientId,
-        audience = client.audience,
+        audience = accessTokenAudience,
+        authorizationDetails = accessTokenAuthorizationDetails,
         accessTokenTtl = client.accessTokenTtl,
         userId = Some(record.userId),
         refreshToken = refreshToken,

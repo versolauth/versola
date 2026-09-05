@@ -29,3 +29,9 @@ object ErrorCode:
   /** The requested scope is invalid, unknown, or malformed */
   val InvalidScope: ErrorCode = "invalid_scope"
 
+    /** The requested RFC 8707 resource target is invalid or unknown */
+    val InvalidTarget: ErrorCode = "invalid_target"
+
+    /** The requested RFC 9396 authorization details are invalid, unknown, or exceed the grant */
+    val InvalidAuthorizationDetails: ErrorCode = "invalid_authorization_details"
+

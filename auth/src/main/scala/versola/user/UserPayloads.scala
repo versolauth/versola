@@ -1,6 +1,6 @@
 package versola.user
 
-import versola.auth.model.{AuthenticatorTransport, CredentialDeviceType, CredentialId}
+import versola.auth.model.{AuthenticatorTransport, CredentialDeviceType, CredentialId, PasskeyName}
 import versola.oauth.challenge.password.model.DeliveryChannel
 import versola.oauth.client.model.TenantId
 import versola.role.model.RoleId
@@ -53,7 +53,7 @@ given JsonCodec[AuthenticatorTransport] =
 
 case class PasskeyInfoResponse(
     id: CredentialId,
-    name: Option[String],
+    name: Option[PasskeyName],
     deviceType: CredentialDeviceType,
     transports: List[AuthenticatorTransport],
     backedUp: Boolean,
@@ -67,13 +67,18 @@ case class ListPasskeysResponse(passkeys: List[PasskeyInfoResponse]) derives Jso
 case class RenamePasskeyPayload(
     userId: UserId,
     credentialId: CredentialId,
-    name: Option[String],
+    name: Option[PasskeyName],
 ) derives JsonCodec
 
 case class ResetPasswordPayload(
     userId: UserId,
     expiresInSeconds: Option[Long],
     channel: Option[DeliveryChannel],
+) derives JsonCodec
+
+/** Returned only for [[DeliveryChannel.show]] resets, which are non-prod only. */
+case class ResetPasswordResponse(
+    password: String,
 ) derives JsonCodec
 
 case class SetPasswordPayload(
@@ -83,16 +88,19 @@ case class SetPasswordPayload(
 
 case class ClientEntryResponse(
     clientId: String,
-    enteredAt: String,
+    enteredAt: Instant,
 ) derives JsonCodec
 
 case class SessionResponse(
+    /** Not rendered to end users, but forwarded so internal callers (e.g. central)
+     *  can reference or invalidate this specific session. */
+    publicId: String,
     clients: List[ClientEntryResponse],
-    platform: String,
+    platform: Option[String],
     os: Option[String],
     browser: Option[String],
     version: Option[String],
-    createdAt: String,
+    createdAt: Instant,
 ) derives JsonCodec
 
 case class SessionListResponse(sessions: List[SessionResponse]) derives JsonCodec

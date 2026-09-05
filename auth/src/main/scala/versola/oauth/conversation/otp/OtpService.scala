@@ -2,7 +2,7 @@ package versola.oauth.conversation.otp
 
 import versola.auth.model.OtpCode
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.ClientId
+import versola.oauth.client.model.{ClientId, OtpType}
 import versola.oauth.conversation.model.{AuthId, ConversationStep}
 import versola.oauth.conversation.otp.model.{SendOtpResult, SubmitOtpResult}
 import versola.user.model.UserId
@@ -14,6 +14,7 @@ trait OtpService:
       previous: Option[ConversationStep.Otp],
       userId: Option[UserId],
       clientId: ClientId,
+      isRegistering: Boolean,
   ): UIO[ConversationStep.Otp]
 
   def sendOtp(
@@ -35,15 +36,16 @@ object OtpService:
       emailOtpProvider: EmailOtpProvider,
       smsOtpProvider: SmsOtpProvider,
       configService: OAuthConfigurationService,
-      envName: EnvName
+      envName: EnvName,
   ) extends OtpService:
 
     override def prepareOtp(
         previous: Option[ConversationStep.Otp],
         userId: Option[UserId],
         clientId: ClientId,
+        isRegistering: Boolean,
     ): UIO[ConversationStep.Otp] =
-      otpDecisionService.checkRequest(previous, userId).flatMap:
+      otpDecisionService.checkRequest(previous, userId, isRegistering).flatMap:
         case SendOtpResult.Success(fake) =>
           ZIO
             .unless(fake):
@@ -69,11 +71,11 @@ object OtpService:
     ): Task[Unit] =
       (otp.real, credential) match
         case (Some(otp), Left(email)) if envName.isProd =>
-          configService.getClientTemplate(clientId, uiLocales).flatMap: template =>
+          configService.getClientTemplate(clientId, OtpType.email, uiLocales).flatMap: template =>
             emailOtpProvider.sendOtp(email, otp.code, template)
 
         case (Some(otp), Right(phone)) if envName.isProd =>
-          configService.getClientTemplate(clientId, uiLocales).flatMap: template =>
+          configService.getClientTemplate(clientId, OtpType.sms, uiLocales).flatMap: template =>
             smsOtpProvider.sendOtp(phone, otp.code, template)
 
         case _ =>

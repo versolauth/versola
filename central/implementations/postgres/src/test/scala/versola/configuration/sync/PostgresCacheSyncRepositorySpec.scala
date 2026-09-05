@@ -1,6 +1,8 @@
 package versola.configuration.sync
 
 import versola.central.configuration.clients.{ClientId, PresetId}
+import versola.central.configuration.challenges.{OtpTemplateChannel, OtpTemplatePurpose}
+import versola.central.configuration.details.AuthorizationDetailType
 import versola.central.configuration.forms.FormId
 import versola.central.configuration.permissions.Permission
 import versola.central.configuration.resources.ResourceId
@@ -104,6 +106,21 @@ object PostgresCacheSyncRepositorySpec extends ZIOSpecDefault:
         val payload = """{"tenantId":"","id":"read","op":"DELETE"}"""
         assertTrue(parseNotification("scope_change", payload) == SyncEvent.Unknown)
       },
+      test("authorization_detail_type_change parses a well-formed payload") {
+        val payload = """{"tenantId":"t1","id":"payment_initiation","op":"UPDATE"}"""
+        assertTrue(
+          parseNotification("authorization_detail_type_change", payload) ==
+            SyncEvent.AuthorizationDetailTypesUpdated(
+              tenantId = TenantId("t1"),
+              id = AuthorizationDetailType("payment_initiation"),
+              op = SyncEvent.Op.UPDATE,
+            ),
+        )
+      },
+      test("authorization_detail_type_change falls back to Unknown when tenantId is missing") {
+        val payload = """{"id":"payment_initiation","op":"UPDATE"}"""
+        assertTrue(parseNotification("authorization_detail_type_change", payload) == SyncEvent.Unknown)
+      },
       test("permission_change parses a well-formed payload") {
         val payload = """{"tenantId":"t1","id":"p1","op":"UPDATE"}"""
         assertTrue(
@@ -135,10 +152,10 @@ object PostgresCacheSyncRepositorySpec extends ZIOSpecDefault:
         assertTrue(parseNotification("resource_change", payload) == SyncEvent.Unknown)
       },
       test("otp_template_change parses a well-formed payload") {
-        val payload = """{"tenantId":"t1","id":"otp1","op":"UPDATE"}"""
+        val payload = """{"tenantId":"t1","id":"otp1","purpose":"otp","channel":"sms","op":"UPDATE"}"""
         assertTrue(
           parseNotification("otp_template_change", payload) ==
-            SyncEvent.OtpTemplatesUpdated(tenantId = TenantId("t1"), id = "otp1", op = SyncEvent.Op.UPDATE),
+            SyncEvent.OtpTemplatesUpdated(tenantId = TenantId("t1"), id = "otp1", purpose = OtpTemplatePurpose.otp, channel = OtpTemplateChannel.sms, op = SyncEvent.Op.UPDATE),
         )
       },
       test("otp_template_change falls back to Unknown when tenantId is missing") {

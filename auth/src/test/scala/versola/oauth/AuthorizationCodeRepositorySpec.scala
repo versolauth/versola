@@ -1,7 +1,7 @@
 package versola.oauth
 
 import com.augustnagro.magnum.magzio.TransactorZIO
-import versola.oauth.client.model.{AuthMethodRef, Claim, ClientId, ScopeToken}
+import versola.oauth.client.model.{AuthMethodRef, AuthorizationDetail, Claim, ClientId, ScopeToken}
 import versola.oauth.model.*
 import versola.oauth.session.model.PublicSessionId
 import versola.oauth.token.AuthorizationCodeRepository
@@ -10,6 +10,8 @@ import versola.user.model.UserId
 import versola.util.{DatabaseSpecBase, MAC}
 import zio.*
 import zio.http.URL
+import zio.json.*
+import zio.json.ast.Json
 import zio.prelude.EqualOps
 import zio.test.*
 
@@ -75,6 +77,8 @@ trait AuthorizationCodeRepositorySpec extends DatabaseSpecBase[AuthorizationCode
     amr = amr1,
     authTime = authTime1,
     acr = None,
+    resources = Nil,
+    authorizationDetails = None,
   )
 
   val recordWithClaims = AuthorizationCodeRecord(
@@ -93,6 +97,8 @@ trait AuthorizationCodeRepositorySpec extends DatabaseSpecBase[AuthorizationCode
     amr = amr1,
     authTime = authTime1,
     acr = None,
+    resources = Nil,
+    authorizationDetails = None,
   )
 
   def testCases(env: AuthorizationCodeRepositorySpec.Env): List[Spec[AuthorizationCodeRepositorySpec.Env & Scope, Any]] =
@@ -133,6 +139,18 @@ trait AuthorizationCodeRepositorySpec extends DatabaseSpecBase[AuthorizationCode
           found.get.uiLocales.isDefined,
           found.get.uiLocales.get == uiLocales1,
         )
+      },
+      test("persist and retrieve authorization details verbatim") {
+        val detail = AuthorizationDetail.parse(
+          """{"type":"payment_initiation","instructedAmount":{"currency":"EUR","amount":"1.00"}}"""
+            .fromJson[Json].toOption.get,
+        ).toOption.get
+        val recordWithDetails = record.copy(authorizationDetails = Some(List(detail)))
+        for
+          _ <- env.repository.create(code1, recordWithDetails, ttl)
+          found <- env.repository.find(code1)
+          _ <- env.repository.delete(code1)
+        yield assertTrue(found.map(_.authorizationDetails) == Some(Some(List(detail))))
       },
       test("persist and retrieve authorization code with only requested_claims") {
         val recordWithOnlyClaims = record.copy(requestedClaims = Some(requestedClaims1))

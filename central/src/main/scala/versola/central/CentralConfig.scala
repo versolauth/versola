@@ -16,6 +16,7 @@ case class CentralConfig(
     secretKey: SecretKey,
     auth: CentralConfig.AuthConfig,
     userOutbox: CentralConfig.UserOutboxConfig,
+    configurationCacheRefreshInterval: Duration,
 )
 
 object CentralConfig:
@@ -23,6 +24,11 @@ object CentralConfig:
   val defaultTenantId: TenantId = TenantId("default")
 
   case class AuthConfig(url: URL)
+
+  case class PasskeyConfig(
+      rpId: String,
+      origins: List[String],
+  )
 
   case class BootstrapConfig(
       login: String,
@@ -33,12 +39,10 @@ object CentralConfig:
       metadata: Option[Json.Obj],
       presets: Option[List[CentralConfig.BootstrapConfig.PresetSeed]],
       centralUrl: Option[String],
-      /** Base64Url-encoded fixed secret for the central-admin OAuth client.
-        * When set, bootstrap will force this exact secret on every startup (idempotent).
-        * Intended for local dev and e2e testing where a stable, known secret is needed.
-        * Leave unset in production; the secret is then generated randomly on first boot.
+      /** Optional Base64Url-encoded secret for the central resource used by edge-to-central calls.
+        * When absent, bootstrap generates a random secret before storing it in the central resource record.
         */
-      clientSecret: Option[String],
+      resourceSecret: Option[Secret],
       /** OP-initiated front-channel logout endpoint notified so the browser-facing edge can
         * clear its session cookie when this session is logged out elsewhere. Must be a
         * publicly reachable URL (loaded by the browser), not necessarily edge's own address —
@@ -46,6 +50,17 @@ object CentralConfig:
         * this is typically "$authUrl/logout/frontchannel".
         */
       frontChannelLogoutUri: Option[String],
+      passkey: CentralConfig.PasskeyConfig,
+      /** Internal URL of auth's additional listener (Account Settings). Used to seed
+        * the internal "auth" resource record that proxies Account Settings through edge.
+        */
+      authAdditionalUrl: URL,
+      /** Base64Url-encoded secret shared with auth's additional listener, used to
+        * authenticate the seeded "auth" resource record. Always required — unlike
+        * the central resource secret, this is not auto-generated, since auth also
+        * needs to be configured with the same value out of band.
+        */
+      authResourceSecret: Secret,
   )
 
   object BootstrapConfig:

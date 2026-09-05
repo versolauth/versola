@@ -3,7 +3,8 @@ CREATE TABLE otp_templates (
     tenant_id     TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
     localizations JSONB NOT NULL,
     purpose       TEXT NOT NULL,
-    PRIMARY KEY (id, tenant_id)
+    channel       TEXT NOT NULL,
+    PRIMARY KEY (id, tenant_id, purpose, channel)
 );
 
 -- otp_template_change — fired on otp_templates row changes
@@ -15,7 +16,7 @@ BEGIN
   rec := CASE WHEN TG_OP = 'DELETE' THEN OLD ELSE NEW END;
   PERFORM pg_notify(
     'otp_template_change',
-    json_build_object('tenantId', rec.tenant_id, 'id', rec.id, 'op', TG_OP)::text
+    json_build_object('tenantId', rec.tenant_id, 'id', rec.id, 'purpose', rec.purpose, 'channel', rec.channel, 'op', TG_OP)::text
   );
   RETURN NULL;
 END;

@@ -1,6 +1,6 @@
 package versola.oauth.challenge.passkey
 
-import versola.auth.model.{CredentialId, PasskeyRecord}
+import versola.auth.model.{CredentialId, PasskeyName, PasskeyRecord}
 import versola.user.model.UserId
 import zio.Task
 
@@ -25,7 +25,7 @@ trait PasskeyRepository:
 
   def updateUsage(id: CredentialId, signatureCounter: Long, lastUsedAt: Instant): Task[Boolean]
 
-  def rename(id: CredentialId, userId: UserId, name: Option[String]): Task[Unit]
+  def rename(id: CredentialId, userId: UserId, name: Option[PasskeyName]): Task[Unit]
 
   def deleteByUser(id: CredentialId, userId: UserId): Task[Unit]
 

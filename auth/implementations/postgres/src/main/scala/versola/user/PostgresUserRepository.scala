@@ -4,37 +4,37 @@ import com.augustnagro.magnum.*
 import com.augustnagro.magnum.magzio.TransactorZIO
 import com.augustnagro.magnum.pg.PgCodec
 import com.augustnagro.magnum.pg.PgCodec.given
+import versola.oauth.client.model.TenantId
+import versola.role.model.RoleId
 import versola.util.postgres.BasicCodecs
 import versola.user.model.*
 import versola.util.{Email, Phone}
-import zio.{Clock, Task, ZIO, ZLayer}
+import zio.{Task, ZIO, ZLayer}
 import zio.json.*
 import zio.json.ast.Json
 
-import java.time.{Instant, LocalDate}
+import java.time.LocalDate
 import java.util.UUID
 
 class PostgresUserRepository(
     xa: TransactorZIO,
 ) extends UserRepository, BasicCodecs:
 
-  override def findOrCreate(userId: UserId, credential: Either[Email, Phone]): Task[(UserRecord, WasCreated)] =
-    for
-      now <- Clock.instant
-      (user, wasCreated) <- xa.connectMeasured("find-or-create-user"):
-        credential match
-          case Left(email) => createByEmailQuery(userId, email, now).run().head
-          case Right(phone) => createByPhoneQuery(userId, phone, now).run().head
-    yield (user, WasCreated(wasCreated))
+  override def register(
+      userId: UserId,
+      credential: Either[Email, Phone],
+      tenantId: TenantId,
+      roleIds: Set[RoleId],
+  ): Task[UserRecord] =
+    xa.transactMeasured("register-user"):
+      val (user, _) = findOrCreateSql(userId, credential)
+      if roleIds.nonEmpty then
+        sql"""insert into user_roles (user_id, tenant_id, role_id)
+              select ${user.id}, $tenantId, unnest($roleIds)
+              on conflict do nothing""".update.run()
+      user
 
-  override def create(id: UserId): Task[UserRecord] =
-    for
-      now <- Clock.instant
-      user <- xa.connectMeasured("create-user"):
-        createQuery(id, now).run().head
-    yield user
-
-  private def createByEmailQuery(id: UserId, email: Email, now: Instant) =
+  private def createByEmailQuery(id: UserId, email: Email) =
     sql"""insert into users (id, email, phone, login, claims, ui_locales)
           values ($id, $email, null, null, '{}'::jsonb, null)
           on conflict (email) where email is not null
@@ -42,7 +42,7 @@ class PostgresUserRepository(
           returning id, email, phone, login, claims, ui_locales, (xmax = 0) as created
        """.returning[(UserRecord, Boolean)]
 
-  private def createByPhoneQuery(id: UserId, phone: Phone, now: Instant) =
+  private def createByPhoneQuery(id: UserId, phone: Phone) =
     sql"""insert into users (id, email, phone, login, claims, ui_locales)
           values ($id, null, $phone, null, '{}'::jsonb, null)
           on conflict (phone) where phone is not null
@@ -50,11 +50,10 @@ class PostgresUserRepository(
           returning id, email, phone, login, claims, ui_locales, (xmax = 0) as created
        """.returning[(UserRecord, Boolean)]
 
-  private def createQuery(id: UserId, now: Instant) =
-    sql"""insert into users (id, email, phone, login, claims, ui_locales)
-          values ($id, null, null, null, '{}'::jsonb, null)
-          returning id, email, phone, login, claims, ui_locales
-       """.returning[UserRecord]
+  private def findOrCreateSql(userId: UserId, credential: Either[Email, Phone])(using DbCon) =
+    credential match
+      case Left(email) => createByEmailQuery(userId, email).run().head
+      case Right(phone) => createByPhoneQuery(userId, phone).run().head
 
   override def find(id: UserId): Task[Option[UserRecord]] =
     xa.connectMeasured("find-user"):
@@ -105,6 +104,41 @@ class PostgresUserRepository(
       sql"delete from users where id = $id".update.run()
     .unit
 
+  override def findRolesByUserAndTenant(userId: UserId, tenantId: TenantId): Task[List[RoleId]] =
+    xa.connectMeasured("find-roles-by-user-and-tenant"):
+      sql"SELECT role_id FROM user_roles WHERE user_id = $userId AND tenant_id = $tenantId"
+        .query[String]
+        .run()
+        .map(RoleId(_))
+        .toList
+
+  override def findRolesByUser(userId: UserId): Task[Map[TenantId, List[RoleId]]] =
+    xa.connectMeasured("find-roles-by-user"):
+      sql"SELECT tenant_id, role_id FROM user_roles WHERE user_id = $userId"
+        .query[(TenantId, RoleId)]
+        .run()
+        .groupMap(_._1)(_._2)
+        .map((tenantId, roleIds) => tenantId -> roleIds.toList)
+
+  override def updateRoles(
+      userId: UserId,
+      tenantId: TenantId,
+      add: Set[RoleId],
+      remove: Set[RoleId],
+  ): Task[Unit] =
+    if add.isEmpty && remove.isEmpty then ZIO.unit
+    else
+      xa.transactMeasured("update-roles"):
+        if remove.nonEmpty then
+          sql"DELETE FROM user_roles WHERE user_id = $userId AND tenant_id = $tenantId AND role_id = ANY($remove)"
+            .update.run()
+        if add.nonEmpty then
+          sql"""INSERT INTO user_roles (user_id, tenant_id, role_id)
+                SELECT $userId, $tenantId, unnest($add)
+                ON CONFLICT DO NOTHING"""
+            .update.run()
+      .unit
+
   private def findByPhoneQuery(phone: Phone) =
     sql"select id, email, phone, login, claims, ui_locales from users where phone = $phone".query[UserRecord]
 
@@ -116,6 +150,8 @@ class PostgresUserRepository(
   given DbCodec[Email] = DbCodec.StringCodec.biMap(Email(_), identity[String])
   given DbCodec[Phone] = DbCodec.StringCodec.biMap(Phone(_), identity[String])
   given DbCodec[Login] = DbCodec.StringCodec.biMap(Login(_), identity[String])
+  given DbCodec[TenantId] = DbCodec.StringCodec.biMap(TenantId(_), identity[String])
+  given DbCodec[RoleId] = DbCodec.StringCodec.biMap(RoleId(_), identity[String])
   given DbCodec[FirstName] = DbCodec.StringCodec.biMap(FirstName(_), identity[String])
   given DbCodec[MiddleName] = DbCodec.StringCodec.biMap(MiddleName(_), identity[String])
   given DbCodec[LastName] = DbCodec.StringCodec.biMap(LastName(_), identity[String])

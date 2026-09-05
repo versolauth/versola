@@ -1,0 +1,14 @@
+{
+  "en": {
+    "page_title": "Conversation expired",
+    "title": "Conversation expired",
+    "description": "This sign-in session has expired. Please start again.",
+    "return_button": "Return"
+  },
+  "ru": {
+    "page_title": "Срок действия сессии истёк",
+    "title": "Сессия истекла",
+    "description": "Срок действия этой сессии входа истёк. Начните процесс заново.",
+    "return_button": "Вернуться"
+  }
+}

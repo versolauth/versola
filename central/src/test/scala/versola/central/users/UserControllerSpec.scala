@@ -2,9 +2,10 @@ package versola.central.users
 
 import io.opentelemetry.api
 import org.scalamock.stubs.{Stub, ZIOStubs}
-import versola.central.{TestAdminAuth, TestCentralConfig}
-import versola.central.configuration.clients.OAuthClientService
-import versola.util.{Email, EnvName}
+import versola.central.{CentralConfig, TestAdminAuth, TestCentralConfig}
+import versola.central.configuration.edges.EdgeService
+import versola.central.configuration.resources.ResourceService
+import versola.util.{Email, EnvName, JWT}
 import versola.util.http.Observability
 import zio.*
 import zio.http.*
@@ -40,6 +41,21 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
   private val createRequestBody =
     """{"email":"user@example.com"}"""
 
+  private val registeredRequest = RegisteredUserRequest(
+    email = Some(email),
+    phone = None,
+    login = None,
+  )
+
+  private val registeredRequestBody = s"""{"email":"$email"}"""
+
+  private val internalAuthorization: Task[Header] =
+    JWT.serialize(
+      JWT.Claims("auth", "auth", List("central"), Json.Obj()),
+      1.minute,
+      JWT.Signature.Symmetric(TestCentralConfig.config.secretKey),
+    ).map(token => Header.Authorization.Bearer(token))
+
   private val tracingLayer: ULayer[Tracing] =
     ZLayer.make[Tracing](
       Tracing.live(logAnnotated = false),
@@ -54,29 +70,33 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
       env: EnvName = EnvName.Test("test"),
       setup: Stub[UserService] => UIO[Unit] = _ => ZIO.unit,
       verify: (Response, Stub[UserService]) => Task[TestResult] = (_, _) => ZIO.succeed(assertTrue(true)),
+      authorization: Task[Header] = ZIO.succeed(TestAdminAuth.basicAuthHeader),
   ) =
     test(description) {
       for
         client      <- ZIO.service[Client]
         service     =  stub[UserService]
-        oauthClientService = stub[OAuthClientService]
+        resourceService = stub[ResourceService]
+        edgeService = stub[EdgeService]
         tracing     <- tracingLayer.build
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             UserController.routes.provideEnvironment(
               ZEnvironment[UserService](service) ++
-                ZEnvironment(TestCentralConfig.config) ++
-                tracing ++ ZEnvironment[OAuthClientService](oauthClientService) ++
+                ZEnvironment[CentralConfig](TestCentralConfig.config) ++
+                tracing ++ ZEnvironment[ResourceService](resourceService) ++
+                ZEnvironment[EdgeService](edgeService) ++
                 ZEnvironment[EnvName](env)
             )
           )
         )
-        _ <- oauthClientService.verifySecret.succeedsWith(true)
+        _ <- resourceService.verifySecret.succeedsWith(true)
         _ <- setup(service)
+        authorizationHeader <- authorization
         response <- client.batched(
           request
             .addHeader(Header.Accept(MediaType.application.json))
-            .addHeader(TestAdminAuth.basicAuthHeader)
+            .addHeader(authorizationHeader)
         )
         verifyResult <- verify(response, service)
       yield assertTrue(response.status == expectedStatus) && verifyResult
@@ -98,6 +118,49 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
           service.create.calls == List(createRequest),
           body == CreateUserResponse(userId),
         ),
+    ),
+    controllerTestCase(
+      description = "registered user returns 200 OK with the claimed userId",
+      request = Request(
+        method = Method.POST,
+        url = URL.empty / "users" / "registrations",
+        body = Body.fromString(registeredRequestBody),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.Ok,
+      setup = service => service.indexRegistered.succeedsWith(userId),
+      authorization = internalAuthorization,
+      verify = (response, service) =>
+        for body <- response.body.asJson[RegisteredUserResponse]
+        yield assertTrue(
+          service.indexRegistered.calls == List(registeredRequest),
+          body == RegisteredUserResponse(userId),
+        ),
+    ),
+    controllerTestCase(
+      description = "registered user maps UserIndexConflict to 409 Conflict",
+      request = Request(
+        method = Method.POST,
+        url = URL.empty / "users" / "registrations",
+        body = Body.fromString(registeredRequestBody),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.Conflict,
+      setup = service => service.indexRegistered.failsWith(UserIndexConflict),
+      authorization = internalAuthorization,
+    ),
+    controllerTestCase(
+      description = "registered user forwards the login field when present",
+      request = Request(
+        method = Method.POST,
+        url = URL.empty / "users" / "registrations",
+        body = Body.fromString(s"""{"email":"$email","login":"jdoe"}"""),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.Ok,
+      setup = service => service.indexRegistered.succeedsWith(userId),
+      authorization = internalAuthorization,
+      verify = (_, service) =>
+        ZIO.succeed(assertTrue(
+          service.indexRegistered.calls == List(registeredRequest.copy(login = Some(Login("jdoe")))),
+        )),
     ),
     controllerTestCase(
       description = "create user returns 409 Conflict when service signals UserConflict",
@@ -197,12 +260,37 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
       request = Request(
         method = Method.POST,
         url = URL.empty / "users" / "password" / "reset",
-        body = Body.fromString(s"""{"userId":"$userId","expiresInSeconds":3600,"channel":"email"}"""),
+        body = Body.fromString(s"""{"userId":"$userId","expiresInSeconds":43200,"channel":"email"}"""),
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.NoContent,
-      setup = service => service.resetPassword.succeedsWith(()),
+      setup = service => service.resetPassword.succeedsWith(None),
       verify = (_, service) =>
         ZIO.succeed(assertTrue(service.resetPassword.calls.nonEmpty))
+    ),
+    controllerTestCase(
+      description = "reset password with the show channel returns the plaintext in non-prod",
+      request = Request(
+        method = Method.POST,
+        url = URL.empty / "users" / "password" / "reset",
+        body = Body.fromString(s"""{"userId":"$userId","expiresInSeconds":43200,"channel":"show"}"""),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.Ok,
+      setup = service => service.resetPassword.succeedsWith(Some("Temp1234!")),
+      verify = (response, service) =>
+        for body <- response.body.asJson[ResetPasswordResponse]
+        yield assertTrue(body.password == "Temp1234!", service.resetPassword.calls.nonEmpty)
+    ),
+    controllerTestCase(
+      description = "reset password with the show channel returns 404 Not Found in prod",
+      request = Request(
+        method = Method.POST,
+        url = URL.empty / "users" / "password" / "reset",
+        body = Body.fromString(s"""{"userId":"$userId","expiresInSeconds":43200,"channel":"show"}"""),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.NotFound,
+      env = EnvName.Prod,
+      verify = (_, service) =>
+        ZIO.succeed(assertTrue(service.resetPassword.calls.isEmpty)),
     ),
     controllerTestCase(
       description = "set password returns 204 No Content in non-prod",

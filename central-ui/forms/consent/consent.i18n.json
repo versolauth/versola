@@ -1,0 +1,28 @@
+{
+  "en": {
+    "page_title": "Authorize",
+    "title": "Authorize access",
+    "description": "{client} wants to access your account.",
+    "unknown_client": "An application",
+    "scopes_label": "Requested scopes",
+    "allow_button": "Allow",
+    "deny_button": "Deny",
+    "policy_link": "Privacy policy",
+    "tos_link": "Terms of service",
+    "invalid_consent": "That selection is not allowed. Please review the permissions and try again.",
+    "service_unavailable": "Service temporarily unavailable. Please try again later"
+  },
+  "ru": {
+    "page_title": "Авторизация",
+    "title": "Разрешить доступ",
+    "description": "Приложение {client} запрашивает доступ к вашей учётной записи.",
+    "unknown_client": "Приложение",
+    "scopes_label": "Запрашиваемые разрешения",
+    "allow_button": "Разрешить",
+    "deny_button": "Отклонить",
+    "policy_link": "Политика конфиденциальности",
+    "tos_link": "Условия использования",
+    "invalid_consent": "Такой выбор недопустим. Проверьте разрешения и попробуйте ещё раз.",
+    "service_unavailable": "Сервис временно недоступен. Попробуйте позже"
+  }
+}

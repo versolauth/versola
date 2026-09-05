@@ -1,13 +1,15 @@
 package versola.central.configuration
 
-import versola.central.configuration.clients.{AuthFlow, ClientId, PresetId, ResponseType}
+import versola.central.configuration.clients.{AuthFlow, ClientId, ConsentFlow, PresetId, RegistrationFlow, ResponseType}
+import versola.central.configuration.details.AuthorizationDetailType
 import versola.central.configuration.permissions.Permission
 import versola.central.configuration.resources.{ResourceEndpointId, ResourceId}
 import versola.central.configuration.roles.RoleId
 import versola.central.configuration.scopes.{Claim, ClaimRecord, ScopeToken}
 import versola.central.configuration.tenants.TenantId
-import versola.util.RedirectUri
+import versola.util.{Patch, RedirectUri}
 import zio.http.{Scheme, URL}
+import zio.json.ast.Json
 import zio.json.{DeriveJsonCodec, JsonCodec, JsonDecoder, JsonEncoder}
 import zio.prelude.Equal
 import zio.schema.*
@@ -110,7 +112,10 @@ case class GetAllPermissionsResponse(
 case class ResourceResponse(
     resourceId: ResourceId,
     resource: ResourceUri,
+    audience: List[ClientId],
     endpoints: Vector[ResourceEndpointResponse],
+    internal: Boolean,
+    secretRotation: Boolean,
 ) derives Schema, JsonCodec
 
 case class ResourceEndpointResponse(
@@ -147,19 +152,27 @@ case class CreateResourceRequest(
     tenantId: TenantId,
     resourceId: ResourceId,
     resource: ResourceUri,
+    audience: List[ClientId],
     endpoints: Vector[CreateResourceEndpointRequest],
+    internal: Boolean,
 ) derives Schema, JsonCodec
 
 case class UpdateResourceRequest(
     resourceId: ResourceId,
     resource: Option[ResourceUri],
+    audience: Option[List[ClientId]],
     deleteEndpoints: Set[ResourceEndpointId],
     createEndpoints: Vector[CreateResourceEndpointRequest],
 ) derives Schema, JsonCodec
 
 case class CreateResourceResponse(
     resourceId: ResourceId,
+    secret: Option[String],
 ) derives Schema, JsonCodec
+
+case class RotateResourceSecretResponse(
+    secret: String,
+) derives Schema, JsonEncoder
 
 case class CreateResourceEndpointRequest(
     id: ResourceEndpointId,
@@ -229,6 +242,30 @@ case class UpdateScopeRequest(
     patch: PatchScope,
 ) derives Schema, JsonCodec
 
+case class AuthorizationDetailTypeResponse(
+    `type`: AuthorizationDetailType,
+    description: Map[String, String],
+    schema: Json.Obj,
+) derives Schema, JsonCodec
+
+case class GetAllAuthorizationDetailTypesResponse(
+    types: Vector[AuthorizationDetailTypeResponse],
+) derives Schema, JsonCodec
+
+case class CreateAuthorizationDetailTypeRequest(
+    tenantId: TenantId,
+    `type`: AuthorizationDetailType,
+    description: Map[String, String],
+    schema: Json.Obj,
+) derives Schema, JsonCodec
+
+case class UpdateAuthorizationDetailTypeRequest(
+    tenantId: TenantId,
+    `type`: AuthorizationDetailType,
+    description: Map[String, String],
+    schema: Json.Obj,
+) derives Schema, JsonCodec
+
 case class TenantResponse(
     id: TenantId,
     description: String,
@@ -253,19 +290,42 @@ case class UpdateTenantRequest(
 
 case class OAuthClientResponse(
     id: ClientId,
-    clientName: String,
+    clientName: Map[String, String],
     redirectUris: Set[RedirectUri],
     scope: Set[ScopeToken],
-    externalAudience: List[ClientId],
     permissions: Set[Permission],
     secretRotation: Boolean,
+    accessTokenTtl: Long,
+    refreshTokenTtl: Long,
     theme: String,
     authFlow: Option[AuthFlow],
+    registrationFlow: Option[RegistrationFlow],
     otpTemplateId: String,
     frontChannelLogoutUri: Option[String],
     frontChannelLogoutSessionRequired: Boolean,
     backChannelLogoutUri: Option[String],
+    logoUri: Option[String],
+    policyUri: Option[String],
+    tosUri: Option[String],
+    consentFlow: Option[ConsentFlowDto],
 ) derives Schema, JsonCodec
+
+case class ConsentFlowDto(
+    allowPartial: Boolean,
+    rememberDuration: Option[Long],
+) derives Schema, JsonCodec:
+  def toDomain: ConsentFlow =
+    ConsentFlow(
+      allowPartial = allowPartial,
+      rememberDuration = rememberDuration.map(Duration.fromSeconds),
+    )
+
+object ConsentFlowDto:
+  def fromDomain(flow: ConsentFlow): ConsentFlowDto =
+    ConsentFlowDto(
+      allowPartial = flow.allowPartial,
+      rememberDuration = flow.rememberDuration.map(_.toSeconds),
+    )
 
 case class GetAllClientsResponse(
     clients: List[OAuthClientResponse],
@@ -274,19 +334,23 @@ case class GetAllClientsResponse(
 case class CreateClientRequest(
     tenantId: TenantId,
     id: ClientId,
-    clientName: String,
+    clientName: Map[String, String],
     redirectUris: Set[RedirectUri],
     allowedScopes: Set[ScopeToken],
-    audience: List[ClientId],
     permissions: Set[Permission],
     accessTokenTtl: Int,
     refreshTokenTtl: Option[Int],
     theme: String,
     authFlow: Option[AuthFlow],
+    registrationFlow: Option[RegistrationFlow],
     otpTemplateId: String,
     frontChannelLogoutUri: Option[String],
     frontChannelLogoutSessionRequired: Boolean,
     backChannelLogoutUri: Option[String],
+    logoUri: Option[String] = None,
+    policyUri: Option[String] = None,
+    tosUri: Option[String] = None,
+    consentFlow: Option[ConsentFlowDto] = None,
 ) derives Schema, JsonCodec
 
 case class CreateClientResponse(
@@ -299,18 +363,23 @@ case class RotateSecretResponse(
 
 case class UpdateClientRequest(
     clientId: ClientId,
-    clientName: Option[String],
+    clientName: Option[Map[String, String]],
     redirectUris: PatchClientRedirectUris,
     scope: PatchClientScope,
     permissions: PatchPermissions,
     accessTokenTtl: Option[Long],
     refreshTokenTtl: Option[Long],
     theme: Option[String],
-    authFlow: Option[AuthFlow],
+    authFlow: Option[Patch[AuthFlow]],
+    registrationFlow: Option[Patch[RegistrationFlow]],
     otpTemplateId: Option[String],
-    frontChannelLogoutUri: Option[Option[String]],
+    frontChannelLogoutUri: Option[Patch[String]],
     frontChannelLogoutSessionRequired: Option[Boolean],
-    backChannelLogoutUri: Option[Option[String]],
+    backChannelLogoutUri: Option[Patch[String]],
+    logoUri: Option[Patch[String]] = None,
+    policyUri: Option[Patch[String]] = None,
+    tosUri: Option[Patch[String]] = None,
+    consentFlow: Option[Patch[ConsentFlowDto]] = None,
 ) derives Schema, JsonCodec
 
 case class AuthorizationPresetInput(
@@ -387,10 +456,46 @@ case class ResourceSyncResponse(
     tenantId: TenantId,
     resource: ResourceUri,
     endpoints: Vector[ResourceEndpointSyncResponse],
+    secret: Option[String],
 ) derives Schema, JsonCodec
 
 case class GetResourcesSyncResponse(
     resources: Vector[ResourceSyncResponse],
+) derives Schema, JsonCodec
+
+case class ResourceRegistryEntry(
+    resourceId: ResourceId,
+    tenantId: TenantId,
+    resource: ResourceUri,
+    audience: List[ClientId],
+    internal: Boolean,
+) derives Schema, JsonCodec
+
+case class GetResourcesRegistryResponse(
+    resources: Vector[ResourceRegistryEntry],
+    /** Base64Url-encoded current secret of the "auth" resource, encrypted the same way as
+      * [[ResourceSyncResponse.secret]] (AES-256 with the central secret key, since auth has
+      * no edge keypair). It lets auth authenticate calls to its own account settings API
+      * without a separately configured static secret. No other resource secret is exposed
+      * here. */
+    authResourceSecret: Option[String],
+    /** The secret being rotated out, sent alongside the current one so auth accepts either
+      * while a rotation is in flight. Edge keeps using the previous secret until it is
+      * explicitly removed ([[ResourceSyncResponse.secret]]), and edge and auth refresh their
+      * caches independently: without this, the window between edge picking up the new secret
+      * and auth doing the same rejects every call. Mirrors central's own
+      * `ResourceService.verifySecret`, which accepts both for the same reason. */
+    authResourcePreviousSecret: Option[String],
+) derives Schema, JsonCodec
+
+case class AuthorizationDetailTypeSyncResponse(
+    tenantId: TenantId,
+    `type`: AuthorizationDetailType,
+    schema: Json.Obj,
+) derives Schema, JsonCodec
+
+case class GetAuthorizationDetailTypesSyncResponse(
+    types: Vector[AuthorizationDetailTypeSyncResponse],
 ) derives Schema, JsonCodec
 
 type ResourceUri = ResourceUri.Type
@@ -406,6 +511,8 @@ object ResourceUri:
         Left(s"Invalid URI format: $uri")
       case Right(url) if !url.isAbsolute =>
         Left("Resource URI must be absolute")
+      case _ if uri.regionMatches(true, 0, "resource://", 0, "resource://".length) =>
+        Left("Resource URI scheme resource:// is reserved")
       case Right(url) if url.path.nonEmpty =>
         Left("Resource URI path must be empty")
       case Right(url) if url.queryParams.nonEmpty =>
@@ -426,10 +533,9 @@ object ResourceUri:
 case class SyncOAuthClientRecord(
     id: String,
     tenantId: String,
-    clientName: String,
+    clientName: Map[String, String],
     redirectUris: Set[RedirectUri],
     scope: Set[ScopeToken],
-    externalAudience: List[ClientId],
     secret: Option[String],
     previousSecret: Option[String],
     accessTokenTtl: Duration,
@@ -437,10 +543,15 @@ case class SyncOAuthClientRecord(
     permissions: Set[Permission],
     theme: String,
     authFlow: Option[AuthFlow],
+    registrationFlow: Option[RegistrationFlow],
     otpTemplateId: String,
     frontChannelLogoutUri: Option[String],
     frontChannelLogoutSessionRequired: Boolean,
     backChannelLogoutUri: Option[String],
+    logoUri: Option[String],
+    policyUri: Option[String],
+    tosUri: Option[String],
+    consentFlow: Option[ConsentFlow],
 ) derives JsonCodec, Schema
 
 case class GetOAuthClientsSyncResponse(

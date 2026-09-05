@@ -3,7 +3,8 @@ package versola.oauth.revoke
 import org.scalamock.stubs.ZIOStubs
 import versola.auth.TestEnvConfig
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{AuthMethodRef, ClientId, ClientIdWithSecret, OAuthClientRecord, ScopeToken, TenantId}
+import versola.oauth.logout.BackChannelDispatcher
+import versola.oauth.client.model.{AuthMethodRef, ClientId, ClientIdWithSecret, OAuthClientRecord, ResourceUri, ScopeToken, TenantId}
 import versola.oauth.model.{AccessToken, AccessTokenPayload, RefreshToken}
 import versola.oauth.revoke.model.RevocationError
 import versola.oauth.session.SessionRepository
@@ -11,6 +12,8 @@ import versola.oauth.session.model.{PublicSessionId, RefreshTokenRecord, Session
 import versola.user.model.UserId
 import versola.util.{CoreConfig, MAC, Secret, SecurityService, UnitSpecBase}
 import zio.*
+import zio.http.URL
+import zio.json.ast.Json
 import zio.prelude.NonEmptySet
 import zio.test.*
 
@@ -36,20 +39,24 @@ object RevocationServiceSpec extends UnitSpecBase:
   val testClient = OAuthClientRecord(
     id = clientId1,
     tenantId = TenantId("default"),
-    clientName = "Test Client",
+    clientName = Map("en" -> "Test Client"),
     redirectUris = NonEmptySet("https://example.com/callback"),
     scope = scope1,
-    externalAudience = List.empty,
     secret = Some(clientSecret1),
     previousSecret = None,
     accessTokenTtl = 10.minutes,
     refreshTokenTtl = 7776000.seconds,
     theme = "default",
     authFlow = None,
+    registrationFlow = None,
     otpTemplateId = "default",
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
     backChannelLogoutUri = None,
+    logoUri = None,
+    policyUri = None,
+    tosUri = None,
+    consentFlow = None,
   )
 
   def tokenRecord(now: Instant) = RefreshTokenRecord(
@@ -58,7 +65,8 @@ object RevocationServiceSpec extends UnitSpecBase:
     accessToken = accessToken1,
     userId = userId1,
     clientId = clientId1,
-    externalAudience = List.empty,
+    audience = List.empty,
+    authorizationDetails = None,
     scope = scope1,
     issuedAt = now,
     expiresAt = now.plusSeconds(3600),
@@ -79,9 +87,11 @@ object RevocationServiceSpec extends UnitSpecBase:
     expiresAt = now.plusSeconds(3600),
     issuedAt = now,
     notBefore = None,
-    audience = Vector(clientId1),
+    audience = Vector(ResourceUri("https://api.example.com")),
     issuer = "https://auth.example.com",
     id = accessToken1,
+    authorizationDetails = None,
+    sessionId = None,
   )
 
   class Env:
@@ -113,7 +123,13 @@ object RevocationServiceSpec extends UnitSpecBase:
 
           service <- ZIO.service[RevocationService]
           result <- service.revokeRefreshToken(refreshToken1, credentials)
-        yield assertTrue(result == ())).provide(env.layer)
+        yield assertTrue(
+          result == (),
+          // The access token itself was never presented, so its lifetime is bounded by the
+          // client's TTL rather than read off the token.
+          env.accessTokenRevocationService.revoke.calls ==
+            List((testClient, accessToken1, userId1.toString, now.plus(testClient.accessTokenTtl))),
+        )).provide(env.layer)
       },
       test("fail with InvalidClient when client authentication fails") {
         val env = Env()
@@ -169,7 +185,12 @@ object RevocationServiceSpec extends UnitSpecBase:
 
           service <- ZIO.service[RevocationService]
           result <- service.revokeAccessToken(payload, credentials)
-        yield assertTrue(result == ())).provide(env.layer)
+        yield assertTrue(
+          result == (),
+          // The token was parsed here, so its own `exp` is used rather than an upper bound.
+          env.accessTokenRevocationService.revoke.calls ==
+            List((testClient, accessToken1, userId1.toString, payload.expiresAt)),
+        )).provide(env.layer)
       },
       test("fail with InvalidClient when client authentication fails") {
         val env = Env()
@@ -197,6 +218,47 @@ object RevocationServiceSpec extends UnitSpecBase:
           service <- ZIO.service[RevocationService]
           result <- service.revokeAccessToken(payload, credentials).either
         yield assertTrue(result == Left(RevocationError.InvalidClient))).provide(env.layer)
+      },
+    ),
+    suite("AccessTokenRevocationService")(
+      test("pushes a token-scoped event, not a session-scoped one, to the client's back channel") {
+        val dispatcher = stub[BackChannelDispatcher]
+        val backChannelUri = URL.decode("https://rp.example/backchannel").toOption.get
+        val client = testClient.copy(backChannelLogoutUri = Some(backChannelUri))
+        val service = AccessTokenRevocationService.Impl(dispatcher)
+        for
+          now <- Clock.instant
+          _ <- dispatcher.dispatch.succeedsWith(())
+          // Awaited, not forked: one client, one call, so there is nothing to fan out.
+          _ <- service.revoke(client, accessToken1, userId1.toString, now.plusSeconds(300))
+          calls = dispatcher.dispatch.calls
+        yield assertTrue(
+          calls.map((audience, uri, subject, _) => (audience.toList, uri, subject)) == List((List(client.id), backChannelUri, userId1.toString)),
+          // No `sid`: this must not end the SSO session the token belongs to.
+          calls.head._4 == Json.Obj(
+            "revoked_jti" -> Json.Str(accessToken1.encoded),
+            "revoked_exp" -> Json.Num(now.plusSeconds(300).getEpochSecond),
+            "events" -> Json.Obj("versola:event:access-token-revocation" -> Json.Obj()),
+          ),
+        )
+      },
+      test("pushes nothing when the client registered no back-channel URI") {
+        val dispatcher = stub[BackChannelDispatcher]
+        val service = AccessTokenRevocationService.Impl(dispatcher)
+        for
+          now <- Clock.instant
+          _ <- service.revoke(testClient, accessToken1, userId1.toString, now.plusSeconds(300))
+        yield assertTrue(dispatcher.dispatch.calls.isEmpty)
+      },
+      test("still succeeds when the push fails, since the revocation itself is already done") {
+        val dispatcher = stub[BackChannelDispatcher]
+        val client = testClient.copy(backChannelLogoutUri = Some(URL.decode("https://rp.example/backchannel").toOption.get))
+        val service = AccessTokenRevocationService.Impl(dispatcher)
+        for
+          now <- Clock.instant
+          _ <- dispatcher.dispatch.failsWith(RuntimeException("connection refused"))
+          result <- service.revoke(client, accessToken1, userId1.toString, now.plusSeconds(300)).either
+        yield assertTrue(result == Right(()))
       },
     ),
   )

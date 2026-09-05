@@ -29,11 +29,11 @@ host and there is no Docker network between them. They reach Postgres and each o
 The compose file lives on the server and is not in git (see [Known gaps](#10-known-gaps)), so if
 this table looks wrong, `cat /opt/versola/docker-compose.prod.yml` is the source of truth.
 
-| Service | App port (`PORT`) | Diagnostics port (`DPORT`) | Exposed publicly |
-|---|---|---|---|
-| `auth` | 8080 | 8081 | yes — `https://id.versola.kz` via nginx |
-| `central` | 8090 | 8091 | no — admin API, reached through `edge` |
-| `edge` | 8095 | 8096 | yes — path-routed on `https://id.versola.kz` (`/central`, `/resources`, `/permissions`, `/login`, `/complete`); see [The admin console](#the-admin-console-central-ui) |
+| Service | App port (`PORT`) | Additional port (`APORT`) | Diagnostics port (`DPORT`) | Exposed publicly |
+|---|---|---|---|---|
+| `auth` | 8080 | 8082 (Account Settings, internal) | 8081 | yes — `https://id.versola.kz` via nginx |
+| `central` | 8090 | — | 8091 | no — admin API, reached through `edge` |
+| `edge` | 8095 | — | 8096 | yes — path-routed on `https://id.versola.kz` (`/central`, `/resources`, `/permissions`, `/login`, `/complete`); see [The admin console](#the-admin-console-central-ui) |
 
 Note that the Dockerfiles `EXPOSE 8080 9345`, but `9345` is not what the deployment actually
 uses — with `network_mode: host` the `EXPOSE` directive is inert and `DPORT` decides.
@@ -264,7 +264,7 @@ services:
       PORT: 8080
       DPORT: 8081
       CONFIG_PATH: /app/config/env.conf
-      RUN_MIGRATIONS: ${RUN_MIGRATIONS:-true}
+      RUN_MIGRATIONS: ${RUN_MIGRATIONS:-false}
     volumes:
       - /opt/versola/config/auth.conf:/app/config/env.conf:ro
     mem_limit: 512m
@@ -278,7 +278,7 @@ services:
       PORT: 8090
       DPORT: 8091
       CONFIG_PATH: /app/config/env.conf
-      RUN_MIGRATIONS: ${RUN_MIGRATIONS:-true}
+      RUN_MIGRATIONS: ${RUN_MIGRATIONS:-false}
     volumes:
       - /opt/versola/config/central.conf:/app/config/env.conf:ro
     mem_limit: 768m
@@ -292,7 +292,7 @@ services:
       PORT: 8095
       DPORT: 8096
       CONFIG_PATH: /app/config/env.conf
-      RUN_MIGRATIONS: ${RUN_MIGRATIONS:-true}
+      RUN_MIGRATIONS: ${RUN_MIGRATIONS:-false}
     volumes:
       - /opt/versola/config/edge.conf:/app/config/env.conf:ro
     mem_limit: 384m
@@ -448,17 +448,29 @@ input above) forever after.
 
 ### `RUN_MIGRATIONS`
 
-Every service runs Flyway on startup. `RUN_MIGRATIONS` controls whether it does:
+`RUN_MIGRATIONS` controls whether a service applies Flyway migrations itself on startup:
 
-- unset → migrations run (the historical behaviour; existing deployments are unaffected)
-- `true` / `false` → as specified, case-insensitive
+- unset → **migrations do not run** (the service instead *validates* the schema against this
+  build's migrations and fails to start if they're missing — see
+  `PostgresHikariDataSource.layer`'s own comment). Applying a schema change is meant to be the
+  deliberate, separate `versola migrate` step (backed by versola-tools' migrate-tool), not an
+  implicit side effect of starting a service.
+- `true` / `false` (lowercase, exact match — not case-insensitive) → as specified
 - anything else → the service **fails to start** with an explanatory error, deliberately. A flag
-  whose whole purpose is to skip migrations must not silently run them because of a typo.
+  whose whole purpose is to gate migrations must not silently run (or skip) them because of a typo.
 
-Set it to `false` when you want a rollout to be strictly a code change — for example when
-deploying a hotfix and you want to be certain nothing touches the schema. In the automated
-pipeline this is the `run_migrations` input; manually, it's an exported shell variable before
-`docker compose -f docker-compose.prod.yml up`.
+The `docker-compose.prod.yml` example above shell-defaults `RUN_MIGRATIONS` to `false`
+(`${RUN_MIGRATIONS:-false}`) too, matching the service's own unset behaviour above — running
+`docker compose -f docker-compose.prod.yml up` manually without exporting the variable applies no
+migrations, the same as leaving it unset entirely. Export `RUN_MIGRATIONS=true` first if you
+specifically want a rollout to migrate on boot instead of running `versola migrate` (or an
+equivalent) as its own step first.
+
+The automated deploy pipeline (`deploy.yml`) sets its own `run_migrations` input, defaulting to
+`true` independently of the above — that default is unrelated to and unaffected by the service's
+own unset-value behaviour or the compose example's shell default, since the pipeline always passes
+it explicitly. Set it to `false` there when you want a rollout to be strictly a code change — for
+example when deploying a hotfix and you want to be certain nothing touches the schema.
 
 ---
 
@@ -581,13 +593,39 @@ Environment variables read by the containers:
 | Variable | Default | Meaning |
 |---|---|---|
 | `PORT` | `8080` | application port |
+| `APORT` | `8082` | optional additional internal application port; used by auth Account Settings |
 | `DPORT` | `8081` | diagnostics port: `/metrics`, `/liveness`, `/readiness` |
 | `CONFIG_PATH` | `/app/config/env.conf` | path to the mounted HOCON config |
-| `RUN_MIGRATIONS` | `true` | run Flyway on startup |
+| `RUN_MIGRATIONS` | `false` | apply Flyway migrations on startup (vs. only validating the schema — see §4's `RUN_MIGRATIONS` section) |
 | `JAVA_OPTS` | `-XX:+UseG1GC -XX:MaxRAMPercentage=75.0` | JVM flags |
 
 Everything else — secrets, keys, database credentials, bootstrap data — lives in the HOCON file
 (see [5](#5-the-env-config-repository)), not in environment variables.
+
+### If a connection pooler is ever put in front of Postgres
+
+`central` and `edge` both keep a connection parked on `LISTEN` — that is how a config change
+reaches every replica, and how a revoked token stops being accepted before it expires. A pooler in
+**transaction mode cannot carry `LISTEN`**: it hands each transaction whichever backend is free, so
+the session the subscription was registered on goes back to the pool and no notification is ever
+delivered.
+
+So when `postgres.url` is pointed at a pooler, set `postgres.notifications-url` to a **direct**
+Postgres URL in the same `postgres { }` block:
+
+```hocon
+postgres {
+  url               = "jdbc:postgresql://pgbouncer:6432/auth?currentSchema=edge"
+  notifications-url = "jdbc:postgresql://postgres:5432/auth?currentSchema=edge"
+}
+```
+
+One direct connection per replica, which is what a listener needs anyway — pooling it achieves
+nothing, since it is held for the process's whole lifetime. (Session mode also works, at the cost of
+pinning a backend per replica for the same duration.)
+
+Getting this wrong does not fail quietly: each service checks at startup that it can receive its own
+notification, and refuses to start with an error naming this setting if it cannot.
 
 ---
 
@@ -660,38 +698,49 @@ successfully reached `auth` and `auth` answered. Only 502/000 indicates a real p
 
 ### 9.5 `auth`/`edge` never become ready after restarting the whole stack together
 
-**Status: fixed at the application level** (`VersolaApp.run`'s failure handlers now call
-`System.exit(1)` instead of just returning `ExitCode.failure`), but the section below is kept
-because the *cause* is still worth understanding, and because it fully applies if you're ever
-running an older image that predates the fix.
+**Status: fixed at the application level**, in two places — `ReloadingCache.make` retries the
+initial load with exponential backoff, so the affected service waits for `central` instead of
+failing, and if startup does fail anyway `VersolaApp.run`'s failure handlers re-fail instead of
+terminating in place, so `ZIOApp` unwinds the scope and finalizers actually run (Hikari pool
+closed, spans flushed) before the process exits. A daemon watchdog thread bounds that unwind: if
+it hasn't finished within `startupFailureShutdownTimeout` (20s), the watchdog calls
+`Runtime.getRuntime.halt(1)` so a wedged finalizer can't leave the zombie behind again. The
+section below is kept because the *cause* is still worth understanding, and because it fully
+applies if you're ever running an older image.
 
 Both `auth` and `edge` read configuration from `central` once, synchronously, during their own
 startup — `auth` syncs OAuth clients, `edge` syncs OAuth clients *and* authorization presets. If
 `central` isn't listening yet at that exact moment (a real risk when all three come up together —
 observed in production: `central` became ready roughly 0.4s **after** `auth` had already given
-up), the failing service's startup effect fails and is logged as `Could not start application`.
+up), the initial cache load fails. It is now retried (7 attempts, 500ms doubling, jittered), which
+covers this window; only if `central` is still unreachable after that does startup fail and log
+`Could not start application`.
 
-Before the fix, the container did not exit and did not restart: each service's diagnostics server
-(`auth`: 8081, `edge`: 8096) starts *before* the failing part and kept running independently,
-holding the JVM alive on its own non-daemon threads, so `restart: unless-stopped` never fired.
-With the fix, a failed startup now force-terminates the process (`System.exit(1)`), which *does*
-trigger `restart: unless-stopped` — Docker's restart policy now provides the retry loop that the
-application previously lacked. This turns a permanent zombie into a bounded number of automatic
-restarts, which is normally enough once `central` is actually up, but is still a blunt retry (no
-backoff, no cap) rather than a graceful wait-and-retry inside the application.
+When startup does fail, the container must exit so `restart: unless-stopped` fires. It did not
+originally: each service's diagnostics server (`auth`: 8081, `edge`: 8096) starts *before* the
+failing part and keeps running independently, holding the JVM alive on its own non-daemon threads.
+Note that `System.exit(1)` does **not** fix this — `exit` runs shutdown hooks and waits for them,
+and `ZIOApp` installs one that waits for the ZIO runtime to drain; called from inside a fiber, that
+hook waits on the runtime while the runtime waits on the fiber blocked in `exit`, and the JVM never
+terminates. Calling `Runtime.getRuntime.halt(1)` directly avoids that deadlock but skips
+finalizers entirely, so the Hikari pool and OTel exporter never get a chance to close/flush.
+Instead, the failure handlers re-fail the effect so `ZIOApp` unwinds the scope normally, and a
+daemon watchdog thread halts the JVM only if that unwind hasn't completed within
+`startupFailureShutdownTimeout` (20s) — finalizers run on the common path, and the watchdog is
+purely a backstop against a wedged one.
 
-If you do see a container stuck (pre-fix image, or some other stall), confirm with:
+If you do see a container stuck (old image, or some other stall), confirm with:
 ```bash
 docker inspect versola-auth --format='{{json .State}}'    # or versola-edge
 ```
-`FinishedAt` at the zero timestamp with a `StartedAt` well in the past means the process has been
-running since the original failed attempt, with no restart at all — that specifically indicates
-the pre-fix behaviour. Recovery is the same either way: confirm `central` is ready, then
+`FinishedAt` at the zero timestamp with a `StartedAt` well in the past, and `RestartCount` of `0`,
+means the process has been running since the original failed attempt with no restart at all — the
+zombie described above. Recovery is the same either way: confirm `central` is ready, then
 ```bash
 docker compose -f docker-compose.prod.yml restart auth   # and/or edge
 ```
 
-**Practical rule, still true even with the fix:** never bring up all three services in one
+**Practical rule, still worth following:** never bring up all three services in one
 `docker compose -f docker-compose.prod.yml up -d`. Start `central` alone, wait for `curl 127.0.0.1:8091/readiness` to return
 200, *then* bring up `auth` and `edge`. The automated pipeline already does this for you by
 deploying `central` first and gating `auth`/`edge` on it.

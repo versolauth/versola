@@ -1,11 +1,12 @@
 package versola.oauth.conversation.model
 
 import versola.oauth.authorize.model.ResponseTypeEntry
-import versola.oauth.client.model.{Acr, AuthFlow, ClientId, PassedAuthFactor, PassedFactorRecord, ScopeToken}
+import versola.oauth.client.model.{Acr, AuthFlow, AuthorizationDetail, ClientId, PassedAuthFactor, PassedFactorRecord, RegistrationFlow, RegistrationStep, ResourceUri, ScopeToken}
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, Nonce, State}
+import versola.oauth.model.UserAgentCookiePayload
 import versola.oauth.session.model.SessionId
 import versola.oauth.userinfo.model.RequestedClaims
-import versola.user.model.{Login, UserId}
+import versola.user.model.{Login, UserId, UserRecord}
 import versola.util.{Email, MAC, Phone}
 import zio.http.URL
 import zio.json.ast.Json
@@ -31,7 +32,13 @@ case class ConversationRecord(
     userLogin: Option[Login],
     userClaims: Option[Json.Obj],
     authFlow: AuthFlow,
+    /** Snapshot of the client's registration flow, absent when the client has none. */
+    registrationFlow: Option[RegistrationFlow],
+    /** Index into `registrationFlow.steps` while the user is registering; `None` while logging in. */
+    registrationStep: Option[Int],
     userAgent: Option[String],
+    /** Full signed user-agent cookie payload persisted as one JSONB value. */
+    userAgentCookie: Option[UserAgentCookiePayload],
     version: Long,
     amr: Map[PassedAuthFactor, PassedFactorRecord],
     needsPasswordChange: Boolean,
@@ -39,9 +46,45 @@ case class ConversationRecord(
     csrfToken: String,
     /** MAC of the session that existed before this conversation was started. */
     priorSessionId: Option[MAC.Of[SessionId]],
+    /** RFC 8707 `resource` parameter(s) requested at `/authorize`. */
+    resources: List[ResourceUri],
+    /** RFC 9396 `authorization_details` requested at `/authorize`; `None` when the parameter
+      * was absent, distinct from an empty list (which the parameter itself disallows). */
+    authorizationDetails: Option[List[AuthorizationDetail]],
+    /** The scope the user granted on the consent step, which supersedes `scope` when the
+      * authorization code is issued. `None` until consent has been decided; the requested
+      * `scope` is kept alongside it so a later request can be compared against it. */
+    grantedScope: Option[Set[ScopeToken]],
+    /** `prompt=consent` was requested, so the consent screen is shown even when a matching grant
+      * is already on file. Persisted because the decision is taken long after `/authorize`. */
+    promptConsent: Boolean,
 ):
+  def user: Option[UserRecord] = userId.map { userId =>
+    UserRecord(
+      id = userId,
+      email = userEmail,
+      phone = userPhone,
+      login = userLogin,
+      claims = userClaims.getOrElse(Json.Obj.empty),
+      uiLocales = uiLocales
+    )
+  }
 
-  def hasOfflineAccess = scope.contains(ScopeToken.OfflineAccess)
+  /** The scope to issue on, i.e. the granted subset once consent has been decided. */
+  def effectiveScope: Set[ScopeToken] = grantedScope.getOrElse(scope)
+
+  def hasOfflineAccess = effectiveScope.contains(ScopeToken.OfflineAccess)
+
+  /** The user reached this conversation through the register button rather than sign-in. */
+  def isRegistering: Boolean = registrationStep.isDefined
+
+  /** The registration step awaiting the user, or `None` once the flow is exhausted. */
+  def currentRegistrationStep: Option[RegistrationStep] =
+    for
+      index <- registrationStep
+      flow <- registrationFlow
+      step <- flow.steps.lift(index)
+    yield step
 
   def patch(patch: ConversationRecord.Patch): ConversationRecord =
     this.copy(
@@ -85,4 +128,16 @@ object ConversationRecord:
     def unapply(record: ConversationRecord): Option[ConversationStep.SetPassword] =
       record.step match
         case step: ConversationStep.SetPassword => Some(step)
+        case _ => None
+
+  object PasskeyEnroll:
+    def unapply(record: ConversationRecord): Option[ConversationStep.PasskeyEnroll] =
+      record.step match
+        case step: ConversationStep.PasskeyEnroll => Some(step)
+        case _ => None
+
+  object Consent:
+    def unapply(record: ConversationRecord): Option[ConversationStep.Consent] =
+      record.step match
+        case step: ConversationStep.Consent => Some(step)
         case _ => None

@@ -25,6 +25,7 @@ object ResourceServiceSpec extends ZIOSpecDefault:
     resourceId = ResourceId("alpha"),
     resource = URL.decode("https://alpha.example").toOption.get,
     endpoints = Vector(alphaEndpoint),
+    secret = None,
   )
 
   private val beta = alpha.copy(

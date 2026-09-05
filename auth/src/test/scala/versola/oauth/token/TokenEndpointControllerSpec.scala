@@ -8,7 +8,7 @@ import com.nimbusds.jose.jwk.{KeyUse, RSAKey}
 import com.nimbusds.jwt.SignedJWT
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.jwks.JwksService
-import versola.oauth.client.model.{AuthMethodRef, ClientId, ClientIdWithSecret, ScopeToken, TenantId}
+import versola.oauth.client.model.{AuthMethodRef, ClientId, ClientIdWithSecret, ResourceUri, ScopeToken, TenantId}
 import versola.oauth.model.{AccessToken, AuthorizationCode, CodeVerifier, Nonce, RefreshToken}
 import versola.oauth.token.model.{ClientCredentialsRequest, CodeExchangeRequest, IssuedTokens, RefreshTokenRequest, TokenEndpointError, TokenResponse}
 import versola.oauth.userinfo.UserInfoService
@@ -40,7 +40,8 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
   val issuedTokens = IssuedTokens(
     accessToken = accessToken1,
     clientId = clientId1,
-    audience = List(clientId1),
+    audience = List(ResourceUri("https://api.example.com")),
+    authorizationDetails = Nil,
     accessTokenTtl = 10.minutes,
     userId = Some(userId1),
     refreshToken = Some(refreshToken1),
@@ -120,11 +121,15 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
           for
             body <- response.body.asString
             tokenResponse <- ZIO.fromEither(body.fromJson[TokenResponse]).mapError(new RuntimeException(_))
+            accessToken = SignedJWT.parse(tokenResponse.accessToken).getJWTClaimsSet
           yield assertTrue(
             tokenResponse.tokenType == "Bearer",
             tokenResponse.expiresIn == 600,
             tokenResponse.refreshToken.isDefined,
             tokenResponse.scope.contains("read write offline_access"),
+            accessToken.getAudience == java.util.List.of(
+              "https://api.example.com",
+            ),
           ),
       ),
       tokenEndpointTestCase(
@@ -308,12 +313,102 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
           for
             body <- response.body.asString
             tokenResponse <- ZIO.fromEither(body.fromJson[TokenResponse]).mapError(new RuntimeException(_))
+              accessToken = SignedJWT.parse(tokenResponse.accessToken).getJWTClaimsSet
           yield assertTrue(
             tokenResponse.tokenType == "Bearer",
             tokenResponse.refreshToken.isEmpty,
             tokenResponse.scope.contains("read write offline_access"),
+              accessToken.getAudience == java.util.List.of(
+                "https://api.example.com",
+              ),
           ),
       ),
+        test("decodes repeated resource parameters") {
+          val resources = List(
+            ResourceUri("https://api.example.com"),
+            ResourceUri("resource://internal-api"),
+          )
+          val form = Form.fromStrings(
+            "resource" -> resources.head,
+            "resource" -> resources.last,
+          )
+          for
+            result <- TokenEndpointController.clientCredentialsRequestDecoder.decode(form)
+          yield assertTrue(result == ClientCredentialsRequest(scope = None, resources = Some(resources), authorizationDetails = None))
+        },
+        test("decodes a single comma-joined resource field, as zio-http produces from a repeated form field") {
+          val resources = List(
+            ResourceUri("https://api.example.com"),
+            ResourceUri("resource://internal-api"),
+          )
+          val form = Form.fromStrings(
+            "resource" -> resources.mkString(","),
+          )
+          for
+            result <- TokenEndpointController.clientCredentialsRequestDecoder.decode(form)
+          yield assertTrue(result == ClientCredentialsRequest(scope = None, resources = Some(resources), authorizationDetails = None))
+        },
+        test("preserves an omitted resource parameter") {
+          for
+            result <- TokenEndpointController.clientCredentialsRequestDecoder.decode(Form.empty)
+          yield assertTrue(result == ClientCredentialsRequest(scope = None, resources = None, authorizationDetails = None))
+        },
+        test("preserves an explicitly empty resource list") {
+          for
+            result <- TokenEndpointController.clientCredentialsRequestDecoder.decode(Form.fromStrings("resource" -> ""))
+          yield assertTrue(result == ClientCredentialsRequest(scope = None, resources = Some(Nil), authorizationDetails = None))
+        },
+        tokenEndpointTestCase(
+          description = "fail with InvalidRequest when the resource list is explicitly empty",
+          request = Request.post(
+            url = URL.empty / "token",
+            body = Body.fromURLEncodedForm(Form.fromStrings(
+              "grant_type" -> "client_credentials",
+              "resource" -> "",
+            )),
+          ).addHeader(authHeader(clientId1, Some(clientSecret1))),
+          expectedStatus = Status.BadRequest,
+          setup = services =>
+            services.oauthTokenService.clientCredentials.failsWith(TokenEndpointError.InvalidRequest),
+          verify = response =>
+            for
+              body <- response.body.asString
+            yield assertTrue(body.contains("invalid_request")),
+        ),
+        tokenEndpointTestCase(
+          description = "uses requested resource audiences",
+          request = Request.post(
+            url = URL.empty / "token",
+            body = Body.fromURLEncodedForm(Form.fromStrings(
+              "grant_type" -> "client_credentials",
+              "resource" -> "resource://internal-api",
+              "resource" -> "https://api.example.com",
+            )),
+          ).addHeader(authHeader(clientId1, Some(clientSecret1))),
+          expectedStatus = Status.Ok,
+          setup = services => services.oauthTokenService.clientCredentials.succeedsWith(
+            issuedTokens.copy(
+              audience = List(
+                ResourceUri("resource://internal-api"),
+                ResourceUri("https://api.example.com"),
+              ),
+              userId = None,
+              refreshToken = None,
+            )
+          ),
+          verify = response =>
+            for
+              body <- response.body.asString
+              tokenResponse <- ZIO.fromEither(body.fromJson[TokenResponse]).mapError(new RuntimeException(_))
+              audience = SignedJWT.parse(tokenResponse.accessToken).getJWTClaimsSet.getAudience
+            yield assertTrue(
+              audience == java.util.List.of(
+                "resource://internal-api",
+                "https://api.example.com",
+              ),
+              !audience.contains(TestEnvConfig.coreConfig.jwt.issuer),
+            ),
+        ),
       tokenEndpointTestCase(
         description = "successfully issue access token with requested scope",
         request = Request.post(
@@ -355,6 +450,93 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
         expectedStatus = Status.Unauthorized,
         setup = services =>
           services.oauthTokenService.clientCredentials.failsWith(TokenEndpointError.InvalidClient),
+        verify = response =>
+          for
+            body <- response.body.asString
+          yield assertTrue(
+            body.contains("invalid_client"),
+          ),
+      ),
+      tokenEndpointTestCase(
+        description = "successfully authenticate with client_secret_post",
+        request = Request.post(
+          url = URL.empty / "token",
+          body = Body.fromURLEncodedForm(
+            Form.fromStrings(
+              "grant_type" -> "client_credentials",
+              "client_id" -> clientId1,
+              "client_secret" -> Base64.urlEncode(clientSecret1),
+            )
+          )
+        ),
+        expectedStatus = Status.Ok,
+        setup = services =>
+          services.oauthTokenService.clientCredentials.succeedsWith(
+            issuedTokens.copy(
+              userId = None,
+              refreshToken = None,
+            )
+          ),
+        verify = response =>
+          for
+            body <- response.body.asString
+            tokenResponse <- ZIO.fromEither(body.fromJson[TokenResponse]).mapError(new RuntimeException(_))
+          yield assertTrue(
+            tokenResponse.tokenType == "Bearer",
+          ),
+      ),
+      tokenEndpointTestCase(
+        description = "authenticate a public client with client_id only",
+        request = Request.post(
+          url = URL.empty / "token",
+          body = Body.fromURLEncodedForm(
+            Form.fromStrings(
+              "grant_type" -> "client_credentials",
+              "client_id" -> clientId1,
+            )
+          )
+        ),
+        expectedStatus = Status.Ok,
+        setup = services =>
+          services.oauthTokenService.clientCredentials.succeedsWith(
+            issuedTokens.copy(
+              userId = None,
+              refreshToken = None,
+            )
+          ),
+      ),
+      tokenEndpointTestCase(
+        description = "fail with InvalidClient when both Basic and post credentials are used",
+        request = Request.post(
+          url = URL.empty / "token",
+          body = Body.fromURLEncodedForm(
+            Form.fromStrings(
+              "grant_type" -> "client_credentials",
+              "client_id" -> clientId1,
+              "client_secret" -> Base64.urlEncode(clientSecret1),
+            )
+          )
+        ).addHeader(authHeader(clientId1, Some(clientSecret1))),
+        expectedStatus = Status.Unauthorized,
+        verify = response =>
+          for
+            body <- response.body.asString
+          yield assertTrue(
+            body.contains("invalid_client"),
+          ),
+      ),
+      tokenEndpointTestCase(
+        description = "fail with InvalidClient when client_secret is sent without client_id",
+        request = Request.post(
+          url = URL.empty / "token",
+          body = Body.fromURLEncodedForm(
+            Form.fromStrings(
+              "grant_type" -> "client_credentials",
+              "client_secret" -> Base64.urlEncode(clientSecret1),
+            )
+          )
+        ),
+        expectedStatus = Status.Unauthorized,
         verify = response =>
           for
             body <- response.body.asString
@@ -690,6 +872,38 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
           )
         yield assertTrue(response.status == Status.InternalServerError)
       }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging,
+    suite("resource parameter")(
+      test("does not decode resource for authorization_code") {
+        val form = Form.fromStrings(
+          "code" -> Base64.urlEncode(authCode1),
+          "redirect_uri" -> redirectUri,
+          "code_verifier" -> codeVerifier1,
+          "resource" -> "not a URI",
+        )
+        TokenEndpointController.codeExchangeRequestDecoder.decode(form).map: request =>
+          assertTrue(
+            request.code == authCode1,
+            request.redirectUri.encode == redirectUri,
+            request.codeVerifier == codeVerifier1,
+          )
+      },
+      test("decodes resource for refresh_token") {
+        val resource = ResourceUri("https://api.example.com")
+        val form = Form.fromStrings(
+          "refresh_token" -> Base64.urlEncode(refreshToken1),
+          "resource" -> resource,
+        )
+        TokenEndpointController.refreshTokenRequestDecoder.decode(form).map: request =>
+          assertTrue(request.resources == Some(List(resource)))
+      },
+      test("rejects malformed resource") {
+        val form = Form.fromStrings(
+          "refresh_token" -> Base64.urlEncode(refreshToken1),
+          "resource" -> "not a URI",
+        )
+        TokenEndpointController.refreshTokenRequestDecoder.decode(form).either.map: result =>
+          assertTrue(result.isLeft)
+      },
     ),
   )
 

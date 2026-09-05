@@ -23,6 +23,8 @@ export interface AuthorizationPreset {
 
 // Authentication flow (cards: credential -> factor -> factor)
 export type PrimaryCredential = 'email' | 'phone' | 'login';
+export type RegistrationCredential = 'email' | 'phone';
+export type OtpType = 'sms' | 'email';
 export type AuthFactorType = 'otp' | 'password' | 'passkeyEnroll';
 
 // A challenge the user can pass; used as the key/value type of the equivalences map.
@@ -35,6 +37,7 @@ export interface AuthFactor {
 
 export interface AuthFlow {
   primaryCredentials: PrimaryCredential[];  // first card: one or more options the user can pick
+  otpType: OtpType;                          // OTP delivery channel; selected for login + password flows
   inlinePassword: boolean;                  // first card: ask for password inline
   passkey: boolean;                         // first card: offer passkey
   factors: AuthFactor[];                    // subsequent challenge cards for the primary flow (0-2)
@@ -42,22 +45,47 @@ export interface AuthFlow {
   equivalents: Record<string, string[]>;    // challenge equivalences: a passed key-factor satisfies each listed value-factor
 }
 
+// Registration flow (self-service account creation)
+export type RegistrationStepType = 'otp' | 'setPassword' | 'passkeyEnroll';
+
+export interface RegistrationStep {
+  type: RegistrationStepType;
+}
+
+export interface RegistrationFlow {
+  credential: RegistrationCredential;     // entry credential whose ownership is verified
+  steps: RegistrationStep[];  // ordered steps the user passes before the account is created
+  roleIds: string[];          // roles granted to the account on creation
+}
+
+// Consent screen shown before an authorization code is issued. Absent for first-party
+// clients, which never prompt.
+export interface ConsentFlow {
+  allowPartial: boolean;  // let the user deselect optional scopes and grant a subset
+  rememberDurationDays: number | null;  // how long a grant is reused; null = until revoked
+}
+
 // OAuth Client
 export interface OAuthClient {
   id: string;
-  clientName: string;
+  clientName: Record<string, string>;
   redirectUris: string[];
   scope: string[];
-  externalAudience: string[];
   hasPreviousSecret: boolean;
   accessTokenTtl: number;
+  refreshTokenTtl?: number;
   permissions: string[];
   theme: string;
   otpTemplateId?: string | null;
   authFlow: AuthFlow | null;
+  registrationFlow: RegistrationFlow | null;
   frontChannelLogoutUri?: string | null;
   frontChannelLogoutSessionRequired: boolean;
   backChannelLogoutUri?: string | null;
+  logoUri?: string | null;
+  policyUri?: string | null;
+  tosUri?: string | null;
+  consentFlow?: ConsentFlow | null;
   tenantId?: string;  // Tenant scope (clients inherit edge from their tenant)
   authorizationPresets?: AuthorizationPreset[];
 }
@@ -68,6 +96,7 @@ export interface OtpTemplateRecord {
   tenantId: string;
   localizations: Record<string, string>;
   purpose: string;
+  channel: 'sms' | 'email';
 }
 
 export interface RateLimit {
@@ -102,6 +131,7 @@ export interface ChallengeSettingsRecord {
   authConversationTtlSeconds: number;
   sessionTtlSeconds: number;
   sessionIdleTtlSeconds?: number | null;
+  userAgentTtlSeconds: number;
   ipHeader: string;
   acrVocabulary?: Record<string, string[]> | null;
   postLogoutRedirectUris: string[];
@@ -112,6 +142,7 @@ export interface SystemSettingsRecord {
   passwordRegex: string;
   passwordHistorySize: number;
   passwordNumDifferent: number;
+  identityProviderLogo?: string | null;
 }
 
 // A registered passkey credential for a user
@@ -138,6 +169,14 @@ export interface OAuthClaim {
   id: string;
   scopeId: string;
   description: Record<string, string>;
+}
+
+// RFC 9396 authorization detail type: a registered `type` value clients may request in
+// `authorization_details`, and the JSON Schema (2020-12) its objects are validated against.
+export interface AuthorizationDetailType {
+  type: string;
+  description: Record<string, string>;
+  schema: Record<string, unknown>;
 }
 
 // CEL-based authorization and request injection
@@ -192,7 +231,12 @@ export interface ResourceEndpoint {
 export interface Resource {
   resourceId: string;
   resource: string;
+  audience: string[];
   endpoints: ResourceEndpoint[];
+  // Internal resources carry a secret edge authenticates with (Basic auth) instead
+  // of forwarding the caller's own access token. Public resources have neither.
+  hasSecret: boolean;
+  hasPreviousSecret: boolean;
 }
 
 // Pagination
@@ -302,7 +346,7 @@ export interface SessionClientEntry {
 export interface UserSession {
   clients: SessionClientEntry[];
   createdAt?: string;
-  platform: 'ios' | 'android' | 'desktop' | 'unknown';
+  platform?: 'ios' | 'android' | 'desktop';
   os?: string;
   browser?: string;
   version?: string;

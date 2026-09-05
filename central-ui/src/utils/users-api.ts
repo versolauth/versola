@@ -1,5 +1,5 @@
 import type { PasskeyInfo, SessionClientEntry, User, UserRoleAssignment, UserSearchField, UserSession } from '../types';
-import { CONSOLE_PREFIX, resolveBaseUrl } from './central-api';
+import { centralResourcePath, resolveBaseUrl } from './central-api';
 
 type UserSearchRecordDto = {
   id: string;
@@ -12,6 +12,8 @@ type UserSearchResponseDto = { users: UserSearchRecordDto[] };
 type CreateUserResponseDto = { id: string };
 type UserRolesResponseDto = { roles: string[] };
 
+export const DEFAULT_TEMPORARY_PASSWORD_TTL_HOURS = 12;
+
 function toUser(record: UserSearchRecordDto): User {
   return {
     id: record.id,
@@ -22,16 +24,15 @@ function toUser(record: UserSearchRecordDto): User {
   };
 }
 
-// Route through the console's /central prefix (see CONSOLE_PREFIX in
-// central-api.ts) rather than calling edge's resources/central/ route
-// directly, so this shares the EDGE_SESSION cookie's path scope with the rest
-// of the console. Uses the same base URL as central-api.ts (respects
-// configureCentralApi / api-url attribute).
+// Shares central-api.ts's centralResourcePath so this switches between
+// 'prefix' and 'direct' console modes the same way (see that function's
+// comment) -- and the same base URL (respects configureCentralApi / api-url
+// attribute).
 function proxyUrl(path: string): URL {
   const base = resolveBaseUrl();
   const normalizedBase = base.endsWith('/') ? base : `${base}/`;
   const normalizedPath = path.replace(/^\//, '');
-  return new URL(`${CONSOLE_PREFIX}/${normalizedPath}`, normalizedBase);
+  return new URL(centralResourcePath(normalizedPath), normalizedBase);
 }
 
 export async function searchUsers(field: UserSearchField, query: string): Promise<User[]> {
@@ -158,7 +159,7 @@ export async function updateUserRoles(
 
 type UserSessionDto = {
   clients: SessionClientEntry[];
-  platform: 'ios' | 'android' | 'desktop' | 'unknown';
+  platform?: 'ios' | 'android' | 'desktop';
   os?: string;
   browser?: string;
   version?: string;
@@ -250,11 +251,12 @@ export async function deletePasskey(userId: string, credentialId: string): Promi
   }
 }
 
+/** Returns the plaintext temporary password for the `show` channel (non-prod only), null otherwise. */
 export async function resetPassword(
   userId: string,
   channel?: string,
-  expiresInSeconds?: number,
-): Promise<void> {
+  expiresInSeconds = DEFAULT_TEMPORARY_PASSWORD_TTL_HOURS * 60 * 60,
+): Promise<string | null> {
   const response = await fetch(proxyUrl('/users/password/reset').toString(), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -262,7 +264,7 @@ export async function resetPassword(
     body: JSON.stringify({
       userId,
       channel: channel ?? null,
-      expiresInSeconds: expiresInSeconds ?? null,
+      expiresInSeconds,
     }),
   });
 
@@ -270,6 +272,10 @@ export async function resetPassword(
     const text = await response.text();
     throw new Error(text.trim() || `Reset password failed (${response.status})`);
   }
+
+  if (response.status === 204) return null;
+  const body = await response.json() as { password: string };
+  return body.password;
 }
 
 export async function resetUserLimits(

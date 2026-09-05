@@ -3,9 +3,29 @@ package versola.edge
 import versola.edge.model.*
 import versola.util.{ReloadingCache, Secret}
 import zio.*
+import zio.http.URL
 import zio.test.*
 
+import java.security.KeyPairGenerator
+import java.security.interfaces.RSAPrivateKey
+
 object PermissionServiceSpec extends ZIOSpecDefault:
+
+  private lazy val edgeConfig =
+    val gen = KeyPairGenerator.getInstance("RSA").nn
+    gen.initialize(2048)
+    EdgeConfig(
+      id = EdgeId("edge-1"),
+      keyId = "kid-1",
+      privateKey = gen.generateKeyPair().nn.getPrivate.asInstanceOf[RSAPrivateKey],
+      security = EdgeConfig.Security(
+        tokenEncryption = EdgeConfig.Security.TokenEncryption(Secret.Bytes32(Array.fill(32)(3.toByte))),
+        edgeSessions = EdgeConfig.Security.EdgeSessions(Secret.Bytes32(Array.fill(32)(5.toByte)), 1.hour),
+      ),
+      central = EdgeConfig.CentralConfig(url = URL.decode("https://central.example").toOption.get),
+      versolaUrl = URL.decode("https://idp.example").toOption.get,
+      configurationCacheRefreshInterval = 5.minutes,
+    )
 
   private val readPerm = PermissionId("read")
   private val writePerm = PermissionId("write")
@@ -82,7 +102,7 @@ object PermissionServiceSpec extends ZIOSpecDefault:
         val tenantA = TenantId("tenant-a")
         val multiTenantRoles: Map[(TenantId, RoleId), Set[PermissionId]] = Map(
           (defaultTenant, viewerRole) -> Set(readPerm),
-          (tenantA, editorRole)       -> Set(writePerm),
+          (tenantA, editorRole) -> Set(writePerm),
         )
         val service = buildService(roles = multiTenantRoles)
         for endpoints <- service.getAllowedEndpointsForRoles(defaultTenant, List(editorRole))
@@ -91,7 +111,8 @@ object PermissionServiceSpec extends ZIOSpecDefault:
     ),
     suite("getAllowedEndpointsForClient")(
       test("returns endpoints composed from the client's permissions") {
-        val client = OAuthClient(id = serviceClient, secret = Secret(Array.fill(8)(1.toByte)), permissions = Set(writePerm))
+        val client =
+          OAuthClient(id = serviceClient, secret = Secret(Array.fill(8)(1.toByte)), permissions = Set(writePerm), accessTokenTtl = 15.minutes)
         val service = buildService(clients = Map(serviceClient -> client))
         for endpoints <- service.getAllowedEndpointsForClient(serviceClient)
         yield assertTrue(endpoints == Set(createUserEndpoint))
@@ -102,13 +123,18 @@ object PermissionServiceSpec extends ZIOSpecDefault:
         yield assertTrue(endpoints.isEmpty)
       },
       test("returns empty set when client has no permissions") {
-        val client = OAuthClient(id = serviceClient, secret = Secret(Array.fill(8)(1.toByte)), permissions = Set.empty)
+        val client = OAuthClient(id = serviceClient, secret = Secret(Array.fill(8)(1.toByte)), permissions = Set.empty, accessTokenTtl = 15.minutes)
         val service = buildService(clients = Map(serviceClient -> client))
         for endpoints <- service.getAllowedEndpointsForClient(serviceClient)
         yield assertTrue(endpoints.isEmpty)
       },
       test("ignores client permissions that map to no endpoints") {
-        val client = OAuthClient(id = serviceClient, secret = Secret(Array.fill(8)(1.toByte)), permissions = Set(PermissionId("unmapped")))
+        val client = OAuthClient(
+          id = serviceClient,
+          secret = Secret(Array.fill(8)(1.toByte)),
+          permissions = Set(PermissionId("unmapped")),
+          accessTokenTtl = 15.minutes,
+        )
         val service = buildService(clients = Map(serviceClient -> client))
         for endpoints <- service.getAllowedEndpointsForClient(serviceClient)
         yield assertTrue(endpoints.isEmpty)
@@ -118,26 +144,26 @@ object PermissionServiceSpec extends ZIOSpecDefault:
       test("returns permissions whose endpoint IDs intersect with the provided set") {
         val service = buildService()
         for permissions <- service.getPermissionsForRoles(
-          Map(defaultTenant -> List(adminRole)),
-          Set(listUsersEndpoint),
-        )
+            Map(defaultTenant -> List(adminRole)),
+            Set(listUsersEndpoint),
+          )
         yield assertTrue(permissions == Set(readPerm))
       },
       test("returns multiple permissions when several intersect") {
         val service = buildService()
         for permissions <- service.getPermissionsForRoles(
-          Map(defaultTenant -> List(adminRole)),
-          Set(listUsersEndpoint, createUserEndpoint),
-        )
+            Map(defaultTenant -> List(adminRole)),
+            Set(listUsersEndpoint, createUserEndpoint),
+          )
         yield assertTrue(permissions == Set(readPerm, writePerm))
       },
       test("returns empty set when no permission endpoint IDs intersect") {
         val service = buildService()
         val unrelatedEndpoint = ResourceEndpointId(java.util.UUID.fromString("018f0f2a-1c7b-7000-8000-000000000099"))
         for permissions <- service.getPermissionsForRoles(
-          Map(defaultTenant -> List(adminRole)),
-          Set(unrelatedEndpoint),
-        )
+            Map(defaultTenant -> List(adminRole)),
+            Set(unrelatedEndpoint),
+          )
         yield assertTrue(permissions.isEmpty)
       },
       test("returns empty set when role map is empty") {
@@ -148,24 +174,49 @@ object PermissionServiceSpec extends ZIOSpecDefault:
       test("returns empty set when endpointIds is empty") {
         val service = buildService()
         for permissions <- service.getPermissionsForRoles(
-          Map(defaultTenant -> List(adminRole)),
-          Set.empty,
-        )
+            Map(defaultTenant -> List(adminRole)),
+            Set.empty,
+          )
         yield assertTrue(permissions.isEmpty)
       },
       test("merges permissions across multiple tenants filtered by endpoints") {
         val tenantA = TenantId("tenant-a")
         val multiTenantRoles: Map[(TenantId, RoleId), Set[PermissionId]] = Map(
           (defaultTenant, viewerRole) -> Set(readPerm),
-          (tenantA, editorRole)       -> Set(writePerm),
+          (tenantA, editorRole) -> Set(writePerm),
         )
         val service = buildService(roles = multiTenantRoles)
         for permissions <- service.getPermissionsForRoles(
-          Map(defaultTenant -> List(viewerRole), tenantA -> List(editorRole)),
-          Set(listUsersEndpoint, createUserEndpoint),
-        )
+            Map(defaultTenant -> List(viewerRole), tenantA -> List(editorRole)),
+            Set(listUsersEndpoint, createUserEndpoint),
+          )
         yield assertTrue(permissions == Set(readPerm, writePerm))
       },
     ),
-  )
+    suite("live")(
+      test("wires the three sync clients into caches the service reads from") {
+        val rolesClient = new RolesSyncClient:
+          override def getAll: Task[Map[(TenantId, RoleId), Set[PermissionId]]] = ZIO.succeed(rolesMap)
+        val permissionsClient = new PermissionsSyncClient:
+          override def getAll: Task[Map[PermissionId, Set[ResourceEndpointId]]] = ZIO.succeed(permissionsMap)
+        val clientsClient = new OAuthClientsSyncClient:
+          override def getAll: Task[Map[ClientId, OAuthClient]] = ZIO.succeed(Map.empty)
+
+        ZIO.scoped:
+          for
+            service <- ZIO.service[PermissionService].provideSome[Scope](
+              ZLayer.succeed(rolesClient),
+              ZLayer.succeed(permissionsClient),
+              ZLayer.succeed(clientsClient),
+              ZLayer.succeed(edgeConfig),
+              PermissionService.live,
+            )
+            permissions <- service.getPermissionsForRoles(
+              Map(defaultTenant -> List(editorRole)),
+              Set(listUsersEndpoint, createUserEndpoint),
+            )
+          yield assertTrue(permissions == Set(readPerm, writePerm))
+      },
+    ),
+  ) @@ TestAspect.silentLogging
 end PermissionServiceSpec

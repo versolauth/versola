@@ -21,6 +21,7 @@ case class ChallengeSettingsRecord(
     authConversationTtlSeconds: Int,
     sessionTtlSeconds: Int,
     sessionIdleTtlSeconds: Option[Int],
+    userAgentTtlSeconds: Int,
     ipHeader: String,
     acrVocabulary: Option[Map[String, List[String]]],
     postLogoutRedirectUris: List[String],

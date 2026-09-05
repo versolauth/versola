@@ -1,0 +1,269 @@
+openapi: 3.1.0
+info:
+  title: Versola Auth — Pushed Authorization Request Endpoint
+  version: 1.0.0
+  description: |
+    OAuth 2.0 Pushed Authorization Requests (RFC 9126).
+
+    The client sends the authorization request directly to the server over an authenticated
+    back channel and receives a `request_uri` in return. The subsequent `/authorize` call
+    then carries only `client_id` and that `request_uri`, so the authorization parameters
+    never pass through the user agent and cannot be tampered with in the browser.
+
+    The pushed request is validated exactly as `/authorize` would validate it, but errors are
+    returned to the client in the token-endpoint error format rather than redirected.
+  license:
+    name: Business Source License 1.1
+    url: https://github.com/versolauth/versola/blob/main/LICENCE.md
+
+servers:
+  - url: https://auth.example.com
+    description: Auth service issuer origin
+
+paths:
+  /par:
+    post:
+      operationId: pushedAuthorizationRequest
+      summary: Push an authorization request
+      description: |
+        Accepts the full `/authorize` parameter set as a form body. `client_id` is mandatory
+        and must identify the authenticated client; `request_uri` must not be present.
+
+        The body is read as a bounded stream, so a request that understates or omits its
+        length is still rejected once it exceeds the configured maximum size.
+
+        Client authentication is `client_secret_basic` (the `Authorization` header),
+        `client_secret_post` (`client_id` and `client_secret` as form fields of the request
+        body), or, for a public client, `client_id` alone with no secret at all. At most one
+        of the two credentialed methods may be used per request. The empty security
+        requirement below stands for the form-field cases, which OpenAPI cannot express as a
+        security scheme.
+      tags: [Authorization]
+      security:
+        - clientSecretBasic: []
+        - {}
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PushedAuthorizationRequest'
+            example:
+              client_id: web-app
+              redirect_uri: https://app.example.com/callback
+              response_type: code
+              scope: openid profile email
+              code_challenge: E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM
+              code_challenge_method: S256
+              state: af0ifjsldkj
+      responses:
+        '201':
+          $ref: '#/components/responses/Pushed'
+        '400':
+          $ref: '#/components/responses/PushError'
+        '401':
+          $ref: '#/components/responses/InvalidClient'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '413':
+          $ref: '#/components/responses/TooLarge'
+
+components:
+  securitySchemes:
+    clientSecretBasic:
+      type: http
+      scheme: basic
+      description: '`client_secret_basic` — `client_id` as the username, `client_secret` as the password.'
+
+  schemas:
+    PushedAuthorizationRequest:
+      type: object
+      description: |
+        Every `/authorize` parameter is accepted. `client_id` is required, `request_uri` is
+        forbidden. Credential fields (`client_id`, `client_secret`) are stripped before the
+        payload is stored.
+      required: [client_id, redirect_uri, response_type, scope, code_challenge]
+      properties:
+        client_id:
+          type: string
+        client_secret:
+          type: string
+          description: Confidential clients using `client_secret_post`.
+        redirect_uri:
+          type: string
+          format: uri
+        response_type:
+          type: string
+          enum: [code, code id_token]
+        scope:
+          type: string
+        code_challenge:
+          type: string
+        code_challenge_method:
+          type: string
+          enum: [S256, plain]
+          default: plain
+        state:
+          type: string
+          maxLength: 128
+        nonce:
+          type: string
+        prompt:
+          type: string
+        max_age:
+          type: integer
+          format: int64
+        acr_values:
+          type: string
+        ui_locales:
+          type: string
+        claims:
+          type: string
+          contentMediaType: application/json
+        login_hint:
+          type: string
+        id_token_hint:
+          type: string
+        resource:
+          type: array
+          items:
+            type: string
+            format: uri
+          description: |
+            RFC 8707 resource indicator. Repeatable; a repeated field is also accepted joined
+            into one comma-separated value, split back apart only before another absolute-URI
+            scheme so a comma belonging to a resource URI is preserved. Public resources may
+            be requested directly by URI; an internal resource (addressed as
+            `resource://{resourceId}`) may be requested on its own, but not together with the
+            edge indicator `resource://edge` in the same request.
+        authorization_details:
+          type: string
+          contentMediaType: application/json
+          description: |
+            RFC 9396 fine-grained authorization request: a JSON array of objects, each
+            validated against the JSON Schema registered for its `type` in the client's
+            tenant. An object's `locations`, when present, are validated the same way as
+            `resource`.
+
+    PushedAuthorizationResponse:
+      type: object
+      required: [request_uri, expires_in]
+      properties:
+        request_uri:
+          type: string
+          description: |
+            Single-use reference in the `urn:ietf:params:oauth:request_uri:` namespace. Pass it
+            to `/authorize` together with `client_id`.
+          example: urn:ietf:params:oauth:request_uri:6esc_11ACC5bwc014ltc14eY22c
+        expires_in:
+          type: integer
+          format: int64
+          description: Lifetime of the reference in seconds.
+          example: 90
+
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+        error_description:
+          type: string
+        error_uri:
+          type: string
+          format: uri
+
+  responses:
+    Pushed:
+      description: Request stored; the reference is valid once, until it expires.
+      headers:
+        Cache-Control:
+          schema:
+            type: string
+            const: no-store
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/PushedAuthorizationResponse'
+          example:
+            request_uri: urn:ietf:params:oauth:request_uri:6esc_11ACC5bwc014ltc14eY22c
+            expires_in: 90
+
+    PushError:
+      description: |
+        `invalid_request` when `request_uri` was supplied, `client_id` is missing, or the body
+        is not a readable form. Otherwise the authorization-request validation error, reported
+        with the same `error` code `/authorize` would have redirected — for example
+        `unsupported_response_type`, `invalid_scope`, `invalid_target` or
+        `invalid_authorization_details`.
+      headers:
+        Cache-Control:
+          schema:
+            type: string
+            const: no-store
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: invalid_request
+            error_description: The request_uri parameter must not be provided to the pushed authorization request endpoint
+            error_uri: https://datatracker.ietf.org/doc/html/rfc9126#section-2.1
+
+    InvalidClient:
+      description: Client authentication failed.
+      headers:
+        Cache-Control:
+          schema:
+            type: string
+            const: no-store
+        WWW-Authenticate:
+          schema:
+            type: string
+            const: Basic
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: invalid_client
+            error_description: Client not exists, credentials not provided or otherwise invalid
+            error_uri: https://datatracker.ietf.org/doc/html/rfc6749#section-2.3.1
+
+    MethodNotAllowed:
+      description: |
+        The endpoint accepts `POST` only. Any other method is answered here rather than by the
+        router's 404, so the response can advertise the supported method.
+      headers:
+        Allow:
+          schema:
+            type: string
+            const: POST
+        Cache-Control:
+          schema:
+            type: string
+            const: no-store
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: invalid_request
+            error_description: The pushed authorization request endpoint only accepts POST
+            error_uri: https://datatracker.ietf.org/doc/html/rfc9126#section-2.3
+
+    TooLarge:
+      description: The body exceeds the configured maximum pushed-request size.
+      headers:
+        Cache-Control:
+          schema:
+            type: string
+            const: no-store
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: invalid_request
+            error_description: The pushed authorization request exceeds the maximum allowed size
+            error_uri: https://datatracker.ietf.org/doc/html/rfc9126#section-2.3

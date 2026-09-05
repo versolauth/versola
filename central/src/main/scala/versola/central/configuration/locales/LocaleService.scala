@@ -11,11 +11,12 @@ trait LocaleService:
   def setDefault(code: String): Task[Either[SetDefaultLocaleError, Unit]]
 
 object LocaleService:
-  def live: ZLayer[LocaleRepository, Throwable, LocaleService] =
-    ZLayer.fromFunction(Impl(_))
+  def live: ZLayer[LocaleRepository & LocaleCompletenessValidator, Nothing, LocaleService] =
+    ZLayer.fromFunction(Impl(_, _))
 
   class Impl(
       repository: LocaleRepository,
+      completeness: LocaleCompletenessValidator = LocaleCompletenessValidator.empty,
   ) extends LocaleService:
 
     override def getAll: Task[Vector[LocaleRecord]] =
@@ -25,7 +26,15 @@ object LocaleService:
       repository.getAll.map(_.filter(_.active))
 
     override def update(add: Vector[LocaleRecord], delete: Vector[String]): Task[Unit] =
-      repository.update(add, delete)
+      for
+        locales <- repository.getAll
+        newlyActive = add.filter: locale =>
+          locale.active && !locales.exists(existing => existing.code == locale.code && existing.active)
+        _ <- ZIO.foreachDiscard(newlyActive): locale =>
+          completeness.missing(locale.code).flatMap: missing =>
+            ZIO.when(missing.nonEmpty)(ZIO.fail[Throwable](LocaleActivationError(locale.code, missing)))
+        _ <- repository.update(add, delete)
+      yield ()
 
     override def setDefault(code: String): Task[Either[SetDefaultLocaleError, Unit]] =
       repository.getAll.flatMap: locales =>

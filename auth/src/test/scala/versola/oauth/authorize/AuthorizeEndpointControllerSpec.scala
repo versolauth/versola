@@ -36,12 +36,15 @@ object AuthorizeEndpointControllerSpec extends UnitSpecBase:
     uiLocales          = None,
     nonce              = None,
     userAgent          = None,
-    prompt             = Set.empty,
+    userAgentCookie    = None,
+        prompt             = Set.empty,
     maxAge             = None,
     acrValues          = None,
     sessionId          = None,
     loginHint          = None,
     idTokenHint        = None,
+    resources          = Nil,
+    authorizationDetails = None,
   )
 
   case class Services(

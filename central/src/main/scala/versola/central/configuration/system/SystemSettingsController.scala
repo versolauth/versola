@@ -1,15 +1,15 @@
 package versola.central.configuration.system
 
 import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
-import versola.central.configuration.clients.OAuthClientService
 import versola.central.configuration.edges.EdgeService
+import versola.central.configuration.resources.ResourceService
 import versola.util.http.Controller
 import zio.ZIO
 import zio.http.{Method, Request, Response, Routes, Status, handler}
 import zio.json.EncoderOps
 
 object SystemSettingsController extends Controller:
-  type Env = Tracing & SystemSettingsService & CentralConfig & OAuthClientService & EdgeService
+  type Env = Tracing & SystemSettingsService & CentralConfig & ResourceService & EdgeService
 
   def routes: Routes[Env, Throwable] = Routes(
     getSystemSettingsEndpoint,
@@ -40,7 +40,9 @@ object SystemSettingsController extends Controller:
       for
         _       <- authorizeBasic(request)
         service <- ZIO.service[SystemSettingsService]
-        body    <- request.body.asJson[SystemSettingsRecord]
-        _       <- service.upsertSettings(body)
-      yield Response.status(Status.NoContent)
+        body    <- request.bodyAs[SystemSettingsRecord]
+        result  <- service.upsertSettings(body)
+      yield result match
+        case Right(_)    => Response.status(Status.NoContent)
+        case Left(error) => Response.text(error.message).status(Status.BadRequest)
     }

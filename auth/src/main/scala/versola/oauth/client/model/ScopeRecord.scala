@@ -8,5 +8,6 @@ import java.time.Instant
 
 case class ScopeRecord(
     scope: ScopeToken,
+    description: Map[String, String],
     claims: Vector[ClaimRecord],
 ) derives Schema, JsonCodec

@@ -1,5 +1,6 @@
 package versola.oauth.token.model
 
+import versola.oauth.client.model.ResourceUri
 import versola.oauth.model.GrantType
 import zio.http.Status
 
@@ -40,3 +41,15 @@ object TokenEndpointError:
     val error = ErrorCode.InvalidScope
     val errorDescription = Some("The requested scope is invalid, unknown, or malformed, or exceeds the scope granted by the resource owner")
     val errorUri = Some("https://datatracker.ietf.org/doc/html/rfc6749#section-5.2")
+
+  case class InvalidTarget(resource: ResourceUri) extends TokenEndpointError:
+    val status = Status.BadRequest
+    val error = ErrorCode.InvalidTarget
+    val errorDescription = Some(s"The requested resource target is invalid or unknown: $resource")
+    val errorUri = Some("https://datatracker.ietf.org/doc/html/rfc8707#section-2.2")
+
+  case class InvalidAuthorizationDetails(reason: String) extends TokenEndpointError:
+    val status = Status.BadRequest
+    val error = ErrorCode.InvalidAuthorizationDetails
+    val errorDescription = Some(s"The requested authorization details are invalid or exceed the grant: $reason")
+    val errorUri = Some("https://datatracker.ietf.org/doc/html/rfc9396#section-6")

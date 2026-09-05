@@ -1,10 +1,11 @@
 package versola.oauth.authorize
 
 import versola.oauth.authorize.model.{AuthorizeRequest, AuthorizeResponse, Error, ResponseTypeEntry}
+import versola.oauth.AuthMetrics
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.model.ConversationCookie
 import versola.util.{Base64Url, CoreConfig}
-import versola.util.http.Controller
+import versola.util.http.{Controller, Observability}
 import zio.*
 import zio.http.*
 import zio.prelude.NonEmptySet
@@ -32,10 +33,16 @@ object AuthorizeEndpointController extends Controller:
       result
         .catchSome {
           case Error.BadRequest =>
-            ZIO.succeed(Response.badRequest(Error.BadRequest.description))
+            AuthMetrics.authorizeError("invalid_request") *>
+              (Observability.setError("invalid_request", Some(Error.BadRequest.description))
+                .as(Response.badRequest(Error.BadRequest.description)))
 
           case error: Error.RedirectError =>
-            ZIO.succeed(Response.seeOther(error.redirectUriWithErrorParams))
+            for
+              config <- ZIO.service[CoreConfig]
+              _ <- AuthMetrics.authorizeError(error.error.toString)
+              _ <- Observability.setError(error.error, Some(error.errorDescription))
+            yield Response.seeOther(error.redirectUriWithErrorParams(config.jwt.issuer))
         }
     }
 
@@ -45,17 +52,22 @@ object AuthorizeEndpointController extends Controller:
       configService <- ZIO.service[OAuthConfigurationService]
       config <- ZIO.service[CoreConfig]
       authConversationTtl <- configService.getAuthConversationTtl(request.clientId)
-      response <- authService.authorize(request).map:
+      response <- authService.authorize(request).tap(AuthMetrics.authorizeOutcome).map:
         case AuthorizeResponse.Authorized(code, idToken) =>
           Response.seeOther(
-            AuthorizeRedirect.responseUrl(request.redirectUri, Base64Url.encode(code), request.state, idToken),
+            AuthorizeRedirect.responseUrl(request.redirectUri, Base64Url.encode(code), request.state, idToken, config.jwt.issuer),
           )
 
         case AuthorizeResponse.Initialize(authId) =>
           Response.seeOther(URL.root / "challenge")
             .addCookie(
               ConversationCookie.responseCookie(
-                ConversationCookie(authId, request.clientId),
+                ConversationCookie(
+                  authId,
+                  request.clientId,
+                  redirectUri = request.redirectUri.encode,
+                  state = request.state,
+                ),
                 authConversationTtl,
                 config.security.conversationCookieSecret,
               ),

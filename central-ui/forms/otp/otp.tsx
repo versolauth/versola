@@ -33,7 +33,7 @@ function LocaleDropdown(props: { locales: string[]; current: string; onChange: (
   );
 }
 
-type OtpStep = { type: 'otp'; length?: number; resendAfter?: number; lockedSeconds?: number };
+type OtpStep = { type: 'otp'; length?: number; resendAfter?: number; lockedSeconds?: number; destination: string };
 
 interface FormConfig {
   step: OtpStep;
@@ -44,6 +44,7 @@ interface FormConfig {
   error?: string;
   previewId?: string;
   csrf?: string;
+  logo?: string;
 }
 
 declare global {
@@ -69,6 +70,10 @@ function OtpForm(props: { config: FormConfig }) {
   };
   const locales = props.config.locales ?? [];
   const otpLength = props.config.step.length ?? 6;
+  const description = () => {
+    const destination = props.config.step.destination;
+    return t().description.replace('{destination}', destination);
+  };
   const [otp, setOtp] = createSignal('');
   let inputRef!: HTMLInputElement;
   let submitRef!: HTMLButtonElement;
@@ -101,7 +106,7 @@ function OtpForm(props: { config: FormConfig }) {
         </div>
       </Show>
       <h1>{t().title}</h1>
-      <p class="otp-description">{t().description}</p>
+      <p class="otp-description">{description()}</p>
       <Show when={lockRemaining() > 0}>
         <div class="error-text" style="margin-bottom: 8px;">
           {(t().locked_for ?? 'Input locked. Try again in {seconds}s.').replace('{seconds}', String(lockRemaining()))}
@@ -118,7 +123,7 @@ function OtpForm(props: { config: FormConfig }) {
               const digit = otp()[i];
               return (
                 <div class={`otp-cell${digit !== undefined ? ' otp-cell-filled' : ''}${i === otp().length && lockRemaining() <= 0 ? ' otp-cell-active' : ''}`}>
-                  {digit !== undefined ? digit : <span class="otp-cell-dot" />}
+                  <span class={`otp-cell-dot${digit !== undefined ? ' otp-cell-dot-filled' : ''}`} />
                 </div>
               );
             })}

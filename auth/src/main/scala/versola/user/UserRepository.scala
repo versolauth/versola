@@ -1,6 +1,8 @@
 package versola.user
 
 import versola.user.model.*
+import versola.oauth.client.model.TenantId
+import versola.role.model.RoleId
 import versola.util.{Email, Patch, Phone}
 import zio.Task
 import zio.json.ast.Json
@@ -8,9 +10,15 @@ import zio.json.ast.Json
 import java.util.UUID
 
 trait UserRepository:
-  def findOrCreate(userId: UserId, credential: Either[Email, Phone]): Task[(UserRecord, WasCreated)]
-
-  def create(id: UserId): Task[UserRecord]
+  /** Atomically resolves or creates a registration account and grants its tenant roles. Central
+    * has already claimed the credential and returned the canonical `userId` before this is called.
+    */
+  def register(
+      userId: UserId,
+      credential: Either[Email, Phone],
+      tenantId: TenantId,
+      roleIds: Set[RoleId],
+  ): Task[UserRecord]
 
   def find(id: UserId): Task[Option[UserRecord]]
 
@@ -30,4 +38,14 @@ trait UserRepository:
 
   def delete(id: UserId): Task[Unit]
 
+  def findRolesByUserAndTenant(userId: UserId, tenantId: TenantId): Task[List[RoleId]]
+
+  def findRolesByUser(userId: UserId): Task[Map[TenantId, List[RoleId]]]
+
+  def updateRoles(
+      userId: UserId,
+      tenantId: TenantId,
+      add: Set[RoleId],
+      remove: Set[RoleId],
+  ): Task[Unit]
 

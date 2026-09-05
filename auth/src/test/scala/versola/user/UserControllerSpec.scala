@@ -1,13 +1,14 @@
 package versola.user
 
 import versola.auth.TestEnvConfig
-import versola.auth.model.{AuthenticatorTransport, CredentialDeviceType, CredentialId, PasskeyRecord}
+import versola.auth.model.{AuthenticatorTransport, CredentialDeviceType, CredentialId, PasskeyName, PasskeyRecord, Password}
 import versola.oauth.challenge.passkey.PasskeyRepository
 import versola.oauth.challenge.password.PasswordService
 import versola.oauth.client.model.TenantId
 import versola.oauth.conversation.limit.ChallengeThrottleRepository
 import org.scalamock.stubs.ZIOStubs
-import versola.oauth.session.SessionRepository
+import versola.oauth.logout.LogoutService
+import versola.oauth.session.SessionService
 import versola.role.model.RoleId
 import versola.user.model.*
 import versola.util.http.{NoopTracing, Observability}
@@ -30,8 +31,8 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
   private val wrongKey = SecretKeySpec(Array.fill(32)(99.toByte), "AES")
 
   private val userRepo             = stub[UserRepository]
-  private val rolesRepo            = stub[UserRolesRepository]
-  private val sessionRepo          = stub[SessionRepository]
+  private val logoutService        = stub[LogoutService]
+  private val sessionService       = stub[SessionService]
   private val noopThrottle         = stub[ChallengeThrottleRepository]
   private val noopPasskeyRepo      = stub[PasskeyRepository]
   private val noopPasswordSvc      = stub[PasswordService]
@@ -58,7 +59,7 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
     attestationObject = None,
     clientDataJson = None,
     aaguid = None,
-    name = Some("My Phone"),
+    name = Some(PasskeyName("My Phone")),
     lastUsedAt = None,
     createdAt = Instant.parse("2024-01-01T00:00:00Z"),
     updatedAt = Instant.parse("2024-01-01T00:00:00Z"),
@@ -69,16 +70,16 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
   private def routes(
       tracing: ZEnvironment[zio.telemetry.opentelemetry.tracing.Tracing],
       users: UserRepository = userRepo,
-      roles: UserRolesRepository = rolesRepo,
-      sessions: SessionRepository = sessionRepo,
+      logout: LogoutService = logoutService,
       throttle: ChallengeThrottleRepository = noopThrottle,
       passkey: PasskeyRepository = noopPasskeyRepo,
+      sessionsService: SessionService = sessionService,
   ) =
     Observability.handleErrors(
       UserController.routes
         .provideEnvironment(
-          ZEnvironment(users) ++ ZEnvironment(roles) ++ ZEnvironment(config) ++
-            ZEnvironment(sessions) ++ ZEnvironment(throttle) ++ ZEnvironment(passkey) ++
+          ZEnvironment(users) ++ ZEnvironment(config) ++
+            ZEnvironment(logout) ++ ZEnvironment(sessionsService) ++ ZEnvironment(throttle) ++ ZEnvironment(passkey) ++
             ZEnvironment(noopPasswordSvc) ++ tracing,
         ),
     )
@@ -133,7 +134,7 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
         client <- ZIO.service[Client]
         tracing <- NoopTracing.layer.build
         token <- validToken(secretKey)
-        _ <- rolesRepo.updateRoles.succeedsWith(())
+        _ <- userRepo.updateRoles.succeedsWith(())
         _ <- TestClient.addRoutes(routes(tracing))
         body = """{"userId":"00000000-0000-0000-0000-000000000001","tenantId":"t1","add":["r1"],"remove":[]}"""
         resp <- client.batched(
@@ -226,14 +227,14 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
       yield assertTrue(resp.status == Status.Unauthorized)
     },
     test("GET /users/roles with valid token returns the user's roles for the tenant") {
-      val repo = stub[UserRolesRepository]
+      val repo = stub[UserRepository]
       val userId = UserId(UUID.fromString("00000000-0000-0000-0000-000000000001"))
       for
         client  <- ZIO.service[Client]
         tracing <- NoopTracing.layer.build
         token   <- validToken(secretKey)
         _       <- repo.findRolesByUserAndTenant.succeedsWith(List(RoleId("admin"), RoleId("viewer")))
-        _       <- TestClient.addRoutes(routes(tracing, roles = repo))
+        _       <- TestClient.addRoutes(routes(tracing, users = repo))
         resp    <- client.batched(
           Request.get(
             (URL.empty / "users" / "roles")
@@ -266,7 +267,7 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
         client <- ZIO.service[Client]
         tracing <- NoopTracing.layer.build
         token <- validToken(secretKey)
-        _ <- sessionRepo.findByUserId.succeedsWith(Nil)
+        _ <- sessionService.listByUser.succeedsWith(Nil)
         _ <- TestClient.addRoutes(routes(tracing))
         resp <- client.batched(
           Request.get((URL.empty / "users" / "sessions").addQueryParam("id", "f077fb08-9935-4a6d-8643-bf97c073bf0f"))
@@ -287,13 +288,13 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
       yield assertTrue(resp.status == Status.Unauthorized)
     },
 
-    test("DELETE /users/sessions with valid token returns 204 and invalidates sessions atomically") {
+    test("DELETE /users/sessions with valid token returns 204 and invalidates all of the user's sessions") {
       for
         client <- ZIO.service[Client]
         tracing <- NoopTracing.layer.build
         token <- validToken(secretKey)
         testUserId = UserId(UUID.fromString("f077fb08-9935-4a6d-8643-bf97c073bf0f"))
-        _ <- sessionRepo.invalidateByUserId.succeedsWith(())
+        _ <- logoutService.invalidateAllSessions.succeedsWith(())
         _ <- TestClient.addRoutes(routes(tracing))
         resp <- client.batched(
           Request(
@@ -301,7 +302,7 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
             url = (URL.empty / "users" / "sessions").addQueryParam("userId", testUserId.toString),
           ).addHeader(Header.Authorization.Bearer(token)),
         )
-        invalidatedSessions = sessionRepo.invalidateByUserId.calls.toSet
+        invalidatedSessions = logoutService.invalidateAllSessions.calls.toSet
       yield assertTrue(
         resp.status == Status.NoContent,
         invalidatedSessions == Set(testUserId),
@@ -380,7 +381,7 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
         token   <- validToken(secretKey)
         _       <- repo.rename.succeedsWith(())
         _       <- TestClient.addRoutes(routes(tracing, passkey = repo))
-        payload  = RenamePasskeyPayload(passkeyUserId, credentialId, Some("New Name")).toJson
+        payload  = RenamePasskeyPayload(passkeyUserId, credentialId, Some(PasskeyName("New Name"))).toJson
         resp    <- client.batched(
           Request(method = Method.PATCH, url = URL.empty / "users" / "passkeys", body = Body.fromString(payload))
             .addHeader(Header.Authorization.Bearer(token))
@@ -442,14 +443,15 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
         client  <- ZIO.service[Client]
         tracing <- NoopTracing.layer.build
         token   <- validToken(secretKey)
-        _       <- passwordSvc.resetPassword.succeedsWith(())
+        _       <- passwordSvc.resetPassword.succeedsWith(None)
         _       <- TestClient.addRoutes(
           Observability.handleErrors(
             UserController.routes
               .provideEnvironment(
-                ZEnvironment(userRepo) ++ ZEnvironment(rolesRepo) ++ ZEnvironment(config) ++
-                  ZEnvironment(sessionRepo) ++
+                ZEnvironment(userRepo) ++ ZEnvironment(config) ++
+                  ZEnvironment(logoutService) ++
                   ZEnvironment(noopThrottle) ++ ZEnvironment(noopPasskeyRepo) ++
+                  ZEnvironment(sessionService) ++
                   ZEnvironment(passwordSvc) ++ tracing,
               ),
           ),
@@ -476,14 +478,15 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
         client  <- ZIO.service[Client]
         tracing <- NoopTracing.layer.build
         token   <- validToken(secretKey)
-        _       <- passwordSvc.resetPassword.succeedsWith(())
+        _       <- passwordSvc.resetPassword.succeedsWith(None)
         _       <- TestClient.addRoutes(
           Observability.handleErrors(
             UserController.routes
               .provideEnvironment(
-                ZEnvironment(userRepo) ++ ZEnvironment(rolesRepo) ++ ZEnvironment(config) ++
-                  ZEnvironment(sessionRepo) ++
+                ZEnvironment(userRepo) ++ ZEnvironment(config) ++
+                  ZEnvironment(logoutService) ++
                   ZEnvironment(noopThrottle) ++ ZEnvironment(noopPasskeyRepo) ++
+                  ZEnvironment(sessionService) ++
                   ZEnvironment(passwordSvc) ++ tracing,
               ),
           ),
@@ -500,6 +503,40 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
         calls.size == 1,
         calls.head._2 == Some(3600L),
         calls.head._3 == None,
+      )
+    },
+    test("POST /users/password/reset returns 200 with the plaintext when the service reveals it") {
+      val passwordSvc = stub[PasswordService]
+      val targetUserId = UserId(UUID.fromString("00000000-0000-0000-0000-000000000004"))
+      for
+        client  <- ZIO.service[Client]
+        tracing <- NoopTracing.layer.build
+        token   <- validToken(secretKey)
+        _       <- passwordSvc.resetPassword.succeedsWith(Some(Password("Temp1234!")))
+        _       <- TestClient.addRoutes(
+          Observability.handleErrors(
+            UserController.routes
+              .provideEnvironment(
+                ZEnvironment(userRepo) ++ ZEnvironment(config) ++
+                  ZEnvironment(logoutService) ++
+                  ZEnvironment(noopThrottle) ++ ZEnvironment(noopPasskeyRepo) ++
+                  ZEnvironment(sessionService) ++
+                  ZEnvironment(passwordSvc) ++ tracing,
+              ),
+          ),
+        )
+        body = s"""{"userId":"${targetUserId}","expiresInSeconds":null,"channel":"show"}"""
+        resp <- client.batched(
+          Request(method = Method.POST, url = URL.empty / "users" / "password" / "reset", body = Body.fromString(body))
+            .addHeader(Header.Authorization.Bearer(token))
+            .addHeader(Header.ContentType(MediaType.application.json)),
+        )
+        respBody <- resp.body.asString
+      yield assertTrue(
+        resp.status == Status.Ok,
+        respBody.contains("Temp1234!"),
+        passwordSvc.resetPassword.calls.head._3
+          .contains(versola.oauth.challenge.password.model.DeliveryChannel.show),
       )
     },
   ).provideSome[Scope](TestClient.layer) @@ TestAspect.silentLogging

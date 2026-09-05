@@ -51,6 +51,14 @@ object UserServiceSpec extends UnitSpecBase:
         result <- env.service.create(CreateUserRequest(Some(email), None, None))
       yield assertTrue(result == UserId(newId))
     },
+    test("indexRegistered returns the canonical repository id") {
+      val env = Env()
+      val request = RegisteredUserRequest(Some(email), None, None)
+      for
+        _ <- env.userRepository.indexFromAuth.succeedsWith(userId)
+        result <- env.service.indexRegistered(request)
+      yield assertTrue(result == userId)
+    },
     test("getRoles delegates to authClient") {
       val env = Env()
       for
@@ -66,10 +74,9 @@ object UserServiceSpec extends UnitSpecBase:
       val client = OAuthClientRecord(
         id = clientId,
         tenantId = tenantId,
-        clientName = "Web App",
+        clientName = Map("en" -> "Web App"),
         redirectUris = Set(RedirectUri("https://example.com/callback")),
         scope = Set.empty,
-        externalAudience = Nil,
         secret = None,
         previousSecret = None,
         accessTokenTtl = ttl,
@@ -77,14 +84,20 @@ object UserServiceSpec extends UnitSpecBase:
         permissions = Set.empty,
         theme = "",
         authFlow = Some(AuthFlow.default),
+        registrationFlow = None,
         otpTemplateId = "default",
         frontChannelLogoutUri = None,
         frontChannelLogoutSessionRequired = false,
         backChannelLogoutUri = None,
+        logoUri = None,
+        policyUri = None,
+        tosUri = None,
+        consentFlow = None,
       )
       val sessionDto = AuthClient.SessionDto(
+        publicId = "public-session-1",
         clients = List(AuthClient.ClientEntryDto(clientId, enteredAt)),
-        platform = "desktop",
+        platform = Some("desktop"),
         os = None,
         browser = None,
         version = None,
@@ -111,10 +124,9 @@ object UserServiceSpec extends UnitSpecBase:
       def client(id: ClientId) = OAuthClientRecord(
         id = id,
         tenantId = tenantId,
-        clientName = "Web App",
+        clientName = Map("en" -> "Web App"),
         redirectUris = Set(RedirectUri("https://example.com/callback")),
         scope = Set.empty,
-        externalAudience = Nil,
         secret = None,
         previousSecret = None,
         accessTokenTtl = ttl,
@@ -122,17 +134,23 @@ object UserServiceSpec extends UnitSpecBase:
         permissions = Set.empty,
         theme = "",
         authFlow = Some(AuthFlow.default),
+        registrationFlow = None,
         otpTemplateId = "default",
         frontChannelLogoutUri = None,
         frontChannelLogoutSessionRequired = false,
         backChannelLogoutUri = None,
+        logoUri = None,
+        policyUri = None,
+        tosUri = None,
+        consentFlow = None,
       )
       val sessionDto = AuthClient.SessionDto(
+        publicId = "public-session-1",
         clients = List(
           AuthClient.ClientEntryDto(clientIdA, olderEnteredAt),
           AuthClient.ClientEntryDto(clientIdB, newerEnteredAt),
         ),
-        platform = "desktop",
+        platform = Some("desktop"),
         os = None,
         browser = None,
         version = None,

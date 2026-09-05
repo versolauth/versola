@@ -78,3 +78,13 @@ object Patch:
       case None                    => (false, None)
       case Some(Patch.Deleted)     => (true, None)
       case Some(Patch.Modified(v)) => (true, Some(v))
+
+    /** Applies the patch to a currently stored nullable value:
+     *   - None              → `current` unchanged
+     *   - Some(Deleted)     → None
+     *   - Some(Modified(v)) → Some(v)
+     */
+    def applyTo(current: Option[A]): Option[A] = opt match
+      case None                    => current
+      case Some(Patch.Deleted)     => None
+      case Some(Patch.Modified(v)) => Some(v)

@@ -4,14 +4,13 @@ import com.augustnagro.magnum.*
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.central.configuration.roles.RoleId
 import versola.central.configuration.tenants.TenantId
-import versola.central.users.{Login, OutboxEvent, OutboxRecord, UserConflict, UserId, UserIndexRecord, UserRepository}
+import versola.central.users.{Login, OutboxEvent, OutboxRecord, UserConflict, UserId, UserIndexConflict, UserIndexRecord, UserRepository}
 import versola.util.Patch.toUpdate
 import versola.util.postgres.BasicCodecs
 import versola.util.{Email, Patch, Phone, SecureRandom}
-import zio.{Clock, Duration, IO, Task, ZLayer}
+import zio.{Duration, IO, Schedule, Task, ZLayer}
 
 import java.sql.SQLException
-import java.time.Instant
 import java.util.UUID
 
 class PostgresUserRepository(xa: TransactorZIO, secureRandom: SecureRandom) extends UserRepository, BasicCodecs:
@@ -24,8 +23,6 @@ class PostgresUserRepository(xa: TransactorZIO, secureRandom: SecureRandom) exte
   given DbCodec[TenantId] = DbCodec.StringCodec.biMap(TenantId(_), identity[String])
   given DbCodec[OutboxEvent] = dbCodecFromJsonCodec[OutboxEvent]
   given DbCodec[OutboxRecord] = DbCodec.derived
-  given DbCodec[Instant] = DbCodec.InstantCodec
-
   override def findById(id: UserId): Task[Option[UserIndexRecord]] =
     xa.connectMeasured("find-user-by-id"):
       sql"SELECT id, email, phone, login FROM user_index WHERE id = $id"
@@ -71,9 +68,9 @@ class PostgresUserRepository(xa: TransactorZIO, secureRandom: SecureRandom) exte
           WHERE id = $id""".update.run()
     ()
 
-  private def enqueueEventSql(userId: UserId, id: UUID, event: OutboxEvent, now: Instant)(using DbCon): Unit =
+  private def enqueueEventSql(userId: UserId, id: UUID, event: OutboxEvent)(using DbCon): Unit =
     sql"""INSERT INTO user_outbox (id, user_id, event_type, payload, attempts, next_attempt_at)
-          VALUES ($id, $userId, ${event.eventType}, $event::jsonb, 0, $now)""".update.run()
+          VALUES ($id, $userId, ${event.eventType}, $event::jsonb, 0, NOW())""".update.run()
     ()
 
   override def create(
@@ -84,13 +81,53 @@ class PostgresUserRepository(xa: TransactorZIO, secureRandom: SecureRandom) exte
   ): IO[UserConflict | Throwable, Unit] =
     (for
       version <- secureRandom.nextUUIDv7
-      now <- Clock.instant
       _ <- xa.transactMeasured("create-user"):
              upsertSql(id, email, phone, login)
-             enqueueEventSql(id, version, OutboxEvent.UpsertUser(id, version, email, phone, login), now)
+             enqueueEventSql(id, version, OutboxEvent.UpsertUser(id, version, email, phone, login))
     yield ()).mapError:
       case e if PostgresUserRepository.isUniqueViolation(e) => UserConflict
       case e                                                => e
+
+  override def indexFromAuth(
+      email: Option[Email],
+      phone: Option[Phone],
+      login: Option[Login],
+  ): IO[UserIndexConflict | Throwable, UserId] =
+    attemptIndexFromAuth(email, phone, login)
+      .retry(Schedule.recurWhile[Throwable](_ == PostgresUserRepository.IndexRace) && Schedule.recurs(3))
+      .mapError:
+        case PostgresUserRepository.IndexConflict => UserIndexConflict
+        case e                                    => e
+
+  private def attemptIndexFromAuth(
+      email: Option[Email],
+      phone: Option[Phone],
+      login: Option[Login],
+  ): Task[UserId] =
+    for
+      id <- secureRandom.nextUUIDv7.map(UserId(_))
+      version <- secureRandom.nextUUIDv7
+      owner <- xa.transactMeasured("index-user-from-auth"):
+       val inserted =
+         sql"""INSERT INTO user_index (id, email, phone, login)
+               VALUES ($id, $email, $phone, $login)
+               ON CONFLICT DO NOTHING
+               RETURNING id""".returning[UserId].run().headOption
+
+       inserted match
+         case Some(owner) =>
+           enqueueEventSql(id, version, OutboxEvent.UpsertUser(id, version, email, phone, login))
+           owner
+         case None =>
+           val owners =
+             sql"""SELECT id FROM user_index
+                   WHERE email = $email OR phone = $phone OR login = $login
+                   FOR UPDATE""".query[UserId].run().distinct
+           owners match
+             case Seq(owner) => owner
+             case Seq() => throw PostgresUserRepository.IndexRace
+             case _     => throw PostgresUserRepository.IndexConflict
+    yield owner
 
   override def patch(
       id: UserId,
@@ -100,7 +137,6 @@ class PostgresUserRepository(xa: TransactorZIO, secureRandom: SecureRandom) exte
   ): Task[Unit] =
     for
       version <- secureRandom.nextUUIDv7
-      now <- Clock.instant
       _ <- xa.transactMeasured("patch-user"):
         // Lock the user row to prevent lost updates and serialize events
         sql"SELECT id FROM user_index WHERE id = $id FOR UPDATE".query[UserId].run()
@@ -112,22 +148,25 @@ class PostgresUserRepository(xa: TransactorZIO, secureRandom: SecureRandom) exte
         val user = sql"SELECT id, email, phone, login FROM user_index WHERE id = $id"
           .query[UserIndexRecord].run().head
 
-        enqueueEventSql(id, version, OutboxEvent.UpsertUser(
-          userId = id,
-          version = version,
-          email = user.email,
-          phone = user.phone,
-          login = user.login,
-        ), now)
+        enqueueEventSql(
+          id,
+          version,
+          OutboxEvent.UpsertUser(
+            userId = id,
+            version = version,
+            email = user.email,
+            phone = user.phone,
+            login = user.login,
+          ),
+        )
     yield ()
 
   override def delete(id: UserId): Task[Unit] =
     for
-      now <- Clock.instant
       eventId <- secureRandom.nextUUIDv7
       _ <- xa.transactMeasured("delete-user"):
              sql"DELETE FROM user_index WHERE id = $id".update.run()
-             enqueueEventSql(id, eventId, OutboxEvent.DeleteUser(id), now)
+             enqueueEventSql(id, eventId, OutboxEvent.DeleteUser(id))
     yield ()
 
   override def enqueueRoleUpdate(
@@ -138,9 +177,8 @@ class PostgresUserRepository(xa: TransactorZIO, secureRandom: SecureRandom) exte
   ): Task[Unit] =
     for
       eventId <- secureRandom.nextUUIDv7
-      now <- Clock.instant
       _ <- xa.transactMeasured("enqueue-role-update"):
-             enqueueEventSql(userId, eventId, OutboxEvent.UpdateUserRoles(userId, tenantId, add, remove), now)
+             enqueueEventSql(userId, eventId, OutboxEvent.UpdateUserRoles(userId, tenantId, add, remove))
     yield ()
 
   /** Atomically claims a batch by pushing `next_attempt_at` forward by `leaseSeconds`.
@@ -199,3 +237,12 @@ object PostgresUserRepository:
   private def isUniqueViolation(t: Throwable): Boolean = t match
     case sql: SQLException => sql.getSQLState == UniqueViolationSqlState
     case _                 => Option(t.getCause).exists(isUniqueViolation)
+
+  /** Raised when the ON CONFLICT branch of [[PostgresUserRepository.attemptIndexFromAuth]] finds
+    * no owner row, meaning a concurrent delete raced the insert. Retried since the claim is safe
+    * to redo from scratch.
+    */
+  private case object IndexRace extends RuntimeException("Unable to resolve conflicting user index claim")
+
+  /** Raised when the supplied credentials already resolve to more than one existing user. */
+  private case object IndexConflict extends RuntimeException("Registration claim resolves to multiple user IDs")

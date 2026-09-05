@@ -1,0 +1,42 @@
+{{- if and .Values.ingress.enabled (not .Values.ingress.gatewayAPI.enabled) }}
+{{- $groups := include "versola.routeGroups" . | fromYaml }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "versola.fullname" . }}
+  labels:
+    {{- include "versola.labels" . | nindent 4 }}
+  {{- with .Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  {{- with .Values.ingress.tls }}
+  tls:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    {{- range $host := .Values.ingress.hosts }}
+    - host: {{ $host.host | quote }}
+      http:
+        paths:
+          {{- range $group := $host.routes }}
+          {{- $paths := index $groups $group }}
+          {{- if not $paths }}
+          {{- fail (printf "ingress.hosts[%s]: unknown route group %q (known: %s)" $host.host $group (keys $groups | sortAlpha | join ", ")) }}
+          {{- end }}
+          {{- range $paths }}
+          - path: {{ .path }}
+            pathType: {{ .pathType }}
+            backend:
+              service:
+                name: {{ .service }}
+                port:
+                  number: {{ .port }}
+          {{- end }}
+          {{- end }}
+    {{- end }}
+{{- end }}

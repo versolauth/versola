@@ -2,7 +2,7 @@
   "en": {
     "page_title": "Sign In",
     "title": "Enter Code",
-    "description": "We sent a verification code to entered credential",
+    "description": "We sent a verification code to {destination}",
     "code_placeholder": "Enter verification code",
     "verify_button": "Verify",
     "divider": "or",
@@ -16,7 +16,7 @@
   "ru": {
     "page_title": "Вход",
     "title": "Введите код",
-    "description": "Мы отправили код подтверждения на указанный контакт",
+    "description": "Мы отправили код подтверждения на {destination}",
     "code_placeholder": "Введите код подтверждения",
     "verify_button": "Подтвердить",
     "divider": "или",

@@ -4,6 +4,7 @@ import org.scalamock.stubs.{Stub, ZIOStubs}
 import versola.central.{CentralConfig, TestAdminAuth, TestCentralConfig}
 import versola.central.configuration.{AuthorizationPresetInput, AuthorizationPresetResponse, SaveAuthorizationPresetsRequest}
 import versola.central.configuration.edges.EdgeService
+import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.tenants.TenantId
 import versola.util.{RedirectUri, Secret}
@@ -88,15 +89,15 @@ object AuthorizationPresetControllerSpec extends ZIOSpecDefault, ZIOStubs:
         client <- ZIO.service[Client]
         service = stub[AuthorizationPresetService]
         edgeService = stub[EdgeService]
-        oauthClientService = stub[OAuthClientService]
+        resourceService = stub[ResourceService]
         tracing <- tracingLayer.build
         _ <- TestClient.addRoutes(
           AuthorizationPresetController.routes.provideEnvironment(
             ZEnvironment[AuthorizationPresetService](service) ++ ZEnvironment(config) ++ tracing ++
-              ZEnvironment[EdgeService](edgeService) ++ ZEnvironment[OAuthClientService](oauthClientService)
+              ZEnvironment[EdgeService](edgeService) ++ ZEnvironment[ResourceService](resourceService)
           ).sandbox
         )
-        _ <- oauthClientService.verifySecret.succeedsWith(true)
+        _ <- resourceService.verifySecret.succeedsWith(true)
         _ <- setup(service)
         requestWithAuth = request.headers.header(Header.Authorization) match
           case None => request.addHeader(TestAdminAuth.basicAuthHeader)
@@ -212,5 +213,20 @@ object AuthorizationPresetControllerSpec extends ZIOSpecDefault, ZIOStubs:
       expectedStatus = Status.BadRequest,
       setup = service =>
         service.savePresets.succeedsWith(Left(PresetValidationError.InvalidScope)),
+    ),
+    controllerTestCase(
+      description = "return validation message when preset ID is already used",
+      request = Request(
+        method = Method.POST,
+        url = URL.empty / "configuration" / "auth-request-presets",
+        body = Body.fromString(saveRequest.toJson),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.BadRequest,
+      setup = service =>
+        service.savePresets.succeedsWith(Left(PresetValidationError.DuplicatePresetId)),
+      verify = (response, _) =>
+        response.body.asString.map(body =>
+          assertTrue(body == PresetValidationError.DuplicatePresetId.getMessage),
+        ),
     ),
   )

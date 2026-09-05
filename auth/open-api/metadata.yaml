@@ -1,0 +1,164 @@
+openapi: 3.1.0
+info:
+  title: Versola Auth — Discovery Metadata Endpoints
+  version: 1.0.0
+  description: |
+    Authorization server discovery metadata, published under both well-known locations
+    defined by RFC 8414 (OAuth 2.0 Authorization Server Metadata) and OpenID Connect
+    Discovery 1.0.
+
+    Both paths serve the same document, so an OAuth-only client and an OIDC client discover
+    the same server. Clients typically fetch this once at startup to learn the endpoint URLs
+    and the capabilities to negotiate, rather than hard-coding them.
+
+    The document is administrator-configured in `central` and synced to `auth`, so the exact
+    member set reflects how the deployment is configured. The properties below are the ones a
+    client should expect.
+  license:
+    name: Business Source License 1.1
+    url: https://github.com/versolauth/versola/blob/main/LICENCE.md
+
+servers:
+  - url: https://auth.example.com
+    description: Auth service issuer origin
+
+paths:
+  /.well-known/oauth-authorization-server:
+    get:
+      operationId: oauthAuthorizationServerMetadata
+      summary: Retrieve authorization server metadata
+      description: RFC 8414 location. No authentication required.
+      tags: [Discovery]
+      security: []
+      responses:
+        '200':
+          $ref: '#/components/responses/Metadata'
+
+  /.well-known/openid-configuration:
+    get:
+      operationId: openIdConfiguration
+      summary: Retrieve authorization server metadata
+      description: |
+        OpenID Connect Discovery location. Serves the same document as
+        `/.well-known/oauth-authorization-server`.
+      tags: [Discovery]
+      security: []
+      responses:
+        '200':
+          $ref: '#/components/responses/Metadata'
+
+components:
+  schemas:
+    ServerMetadata:
+      type: object
+      additionalProperties: true
+      required: [issuer, authorization_endpoint, token_endpoint, jwks_uri, response_types_supported]
+      properties:
+        issuer:
+          type: string
+          format: uri
+          description: |
+            Identifier of this authorization server. Must equal the `iss` claim of issued
+            tokens, and clients must reject tokens whose issuer differs.
+        authorization_endpoint:
+          type: string
+          format: uri
+        token_endpoint:
+          type: string
+          format: uri
+        userinfo_endpoint:
+          type: string
+          format: uri
+        jwks_uri:
+          type: string
+          format: uri
+        introspection_endpoint:
+          type: string
+          format: uri
+        revocation_endpoint:
+          type: string
+          format: uri
+        pushed_authorization_request_endpoint:
+          type: string
+          format: uri
+        end_session_endpoint:
+          type: string
+          format: uri
+        response_types_supported:
+          type: array
+          items:
+            type: string
+        grant_types_supported:
+          type: array
+          items:
+            type: string
+        scopes_supported:
+          type: array
+          items:
+            type: string
+        code_challenge_methods_supported:
+          type: array
+          items:
+            type: string
+          description: PKCE is mandatory, so this always includes `S256`.
+        token_endpoint_auth_methods_supported:
+          type: array
+          items:
+            type: string
+        id_token_signing_alg_values_supported:
+          type: array
+          items:
+            type: string
+        subject_types_supported:
+          type: array
+          items:
+            type: string
+        claims_supported:
+          type: array
+          items:
+            type: string
+        acr_values_supported:
+          type: array
+          items:
+            type: string
+        authorization_details_types_supported:
+          type: array
+          items:
+            type: string
+          description: |
+            RFC 9396 §18: the union of `type` values registered across all tenants of this
+            deployment. A type listed here is usable in the `authorization_details` parameter
+            of `/authorize`, `/par` and `/token` only if it is also registered for the
+            requesting client's own tenant; otherwise the request fails with
+            `invalid_authorization_details`.
+        authorization_response_iss_parameter_supported:
+          type: boolean
+          description: |
+            RFC 9207 — the iss parameter is included in every authorization response
+            (both successful and error redirects).
+
+  responses:
+    Metadata:
+      description: The server's discovery document.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ServerMetadata'
+          example:
+            authorization_response_iss_parameter_supported: true
+            issuer: https://auth.example.com
+            authorization_endpoint: https://auth.example.com/authorize
+            token_endpoint: https://auth.example.com/token
+            userinfo_endpoint: https://auth.example.com/userinfo
+            jwks_uri: https://auth.example.com/.well-known/jwks.json
+            introspection_endpoint: https://auth.example.com/introspect
+            revocation_endpoint: https://auth.example.com/revoke
+            pushed_authorization_request_endpoint: https://auth.example.com/par
+            end_session_endpoint: https://auth.example.com/logout
+            response_types_supported: [code, code id_token]
+            grant_types_supported: [authorization_code, refresh_token, client_credentials]
+            scopes_supported: [openid, profile, email, phone]
+            code_challenge_methods_supported: [S256]
+            token_endpoint_auth_methods_supported: [client_secret_basic, client_secret_post, none]
+            id_token_signing_alg_values_supported: [RS256]
+            subject_types_supported: [public]

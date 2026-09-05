@@ -17,11 +17,12 @@ private[authorize] object Error:
     def uri: URL
     def state: Option[State]
 
-    def redirectUriWithErrorParams: URL =
+    def redirectUriWithErrorParams(iss: String): URL =
       uri.addQueryParams(
         Iterable(
           "error" -> error,
           "error_description" -> errorDescription,
+          "iss" -> iss,
         )
           ++ errorUri.map("error_uri" -> _)
           ++ state.map("state" -> _),
@@ -39,6 +40,17 @@ private[authorize] object Error:
     errorUri = Some("https://datatracker.ietf.org/doc/html/rfc6749#section-4.1.2.1"),
   )
 
+  /** The `state` value itself is deliberately not echoed back here: it is invalid because it
+    * is too long, and echoing it would grow the redirect URI further (and could push a
+    * later ConversationCookie past the ~4 KiB per-cookie limit).
+    */
+  case class StateInvalid(uri: URL) extends RedirectError(
+      error = ErrorCode.InvalidRequest,
+      errorDescription = "The state parameter exceeds the maximum allowed length of 128 characters",
+      errorUri = Some("https://datatracker.ietf.org/doc/html/rfc6749#section-4.1.1"),
+    ):
+    val state: Option[State] = None
+
   case class ResponseTypeMissing(uri: URL, state: Option[State]) extends RedirectError(
       error = ErrorCode.InvalidRequest,
       errorDescription = "Missing required parameter - response_type",
@@ -51,6 +63,12 @@ private[authorize] object Error:
       errorUri = Some("https://datatracker.ietf.org/doc/html/draft-ietf-oauth-v2-1#name-authorization-request"),
     )
 
+  case class CodeChallengeMethodMissing(uri: URL, state: Option[State]) extends RedirectError(
+      error = ErrorCode.InvalidRequest,
+      errorDescription = "Missing required parameter - code_challenge_method",
+      errorUri = Some("https://datatracker.ietf.org/doc/html/draft-ietf-oauth-v2-1#name-authorization-request"),
+    )
+
   case class CodeChallengeInvalid(uri: URL, state: Option[State], value: String) extends RedirectError(
       error = ErrorCode.InvalidRequest,
       errorDescription = s"Invalid code challenge alphabet or size - $value",
@@ -60,7 +78,7 @@ private[authorize] object Error:
   case class CodeChallengeMethodInvalid(uri: URL, state: Option[State], value: String) extends RedirectError(
       error = ErrorCode.InvalidRequest,
       errorDescription = s"Code challenge method is not supported - $value",
-      errorUri = Some("https://datatracker.ietf.org/doc/html/rfc7636#section-4.3"),
+      errorUri = Some("https://datatracker.ietf.org/doc/html/draft-ietf-oauth-v2-1#name-authorization-request"),
     )
 
   case class UnsupportedResponseType(uri: URL, state: Option[State], responseType: String) extends RedirectError(
@@ -99,6 +117,18 @@ private[authorize] object Error:
       errorUri = Some("https://openid.net/specs/openid-connect-core-1_0.html#AuthRequest"),
     )
 
+  case class ConsentRequired(uri: URL, state: Option[State]) extends RedirectError(
+      error = ErrorCode.ConsentRequired,
+      errorDescription = "Consent is required but prompt=none was requested",
+      errorUri = Some("https://openid.net/specs/openid-connect-core-1_0.html#AuthRequest"),
+    )
+
+  case class InteractionRequired(uri: URL, state: Option[State]) extends RedirectError(
+      error = ErrorCode.InteractionRequired,
+      errorDescription = "End-user interaction is required but prompt=none was requested",
+      errorUri = Some("https://openid.net/specs/openid-connect-core-1_0.html#AuthRequest"),
+    )
+
   case class AccessDenied(uri: URL, state: Option[State]) extends RedirectError(
       error = ErrorCode.AccessDenied,
       errorDescription = "The resource owner could not be resolved for the existing session",
@@ -132,4 +162,16 @@ private[authorize] object Error:
       error = ErrorCode.InvalidRequest,
       errorDescription = "The login_hint parameter is invalid or not supported by the client auth flow",
       errorUri = Some("https://openid.net/specs/openid-connect-core-1_0.html#AuthRequest"),
+    )
+
+  case class InvalidTarget(uri: URL, state: Option[State], value: String) extends RedirectError(
+      error = ErrorCode.InvalidTarget,
+      errorDescription = s"The requested resource is invalid, malformed, or unknown - $value",
+      errorUri = Some("https://datatracker.ietf.org/doc/html/rfc8707#section-2"),
+    )
+
+  case class InvalidAuthorizationDetails(uri: URL, state: Option[State], value: String) extends RedirectError(
+      error = ErrorCode.InvalidAuthorizationDetails,
+      errorDescription = s"The authorization_details parameter is invalid, malformed, or unknown - $value",
+      errorUri = Some("https://datatracker.ietf.org/doc/html/rfc9396#section-5"),
     )

@@ -23,6 +23,7 @@ lazy val util = project
     libraryDependencies ++= Dependencies.core,
     libraryDependencies ++= Dependencies.http,
     libraryDependencies ++= Dependencies.cel,
+    libraryDependencies ++= Dependencies.jsonSchema,
   )
 
 lazy val utilImplementations = file("util/implementations")
@@ -72,6 +73,9 @@ lazy val `edge-postgres-impl` = project.in(edgeImplementations / "postgres")
     commonSettings,
     libraryDependencies ++= Dependencies.database.postgres,
     Compile / mainClass := Some("versola.PostgresEdgeApp"),
+    // Every spec in here truncates the same `revocations` table between tests,
+    // so two of them running at once would clear each other's rows.
+    Test / parallelExecution := false,
     sbtForkSettings
   ).dependsOn(
     edge % CompileTest,
@@ -112,10 +116,45 @@ lazy val `central-postgres-impl` = project.in(centralImplementations / "postgres
     commonSettings,
     libraryDependencies ++= Dependencies.database.postgres,
     Compile / mainClass := Some("versola.PostgresCentralApp"),
+    Test / parallelExecution := false,
     sbtForkSettings,
   ).dependsOn(
     central % CompileTest,
     `util-postgres` % CompileTest
+  )
+
+// Standalone migration runner shipped inside versola-tools (see docker/Dockerfile.tools and
+// docker/versola-tools/entrypoint.sh's "migrate" dispatch branch), backing `versola migrate`.
+// Not part of `root`'s aggregate, same reasoning as `tools`/`e2e` below -- staged explicitly in
+// CI (`sbt migrate-tool/stage`), not part of the default `sbt compile`/`sbt test` loop.
+//
+// Deliberately does NOT use `commonSettings` (unlike every other project here except `tools`,
+// which has the same reason -- see its own comment) and does NOT `.dependsOn(util,
+// util-postgres)`. An earlier version did both, to reuse PostgresHikariDataSource's ZIO-based
+// Flyway setup instead of copying it -- but `commonSettings` alone pulls in the whole
+// `Dependencies.core` list (ZIO, HikariCP, WebAuthn, JWT, mail, ...) regardless of `dependsOn`,
+// and `util` additionally drags in CEL, transitively pulling okhttp/okio with
+// Automatic-Module-Name metadata `jdeps` can't resolve. That combination is what broke
+// jlink for this image ("Module okio not found, required by okhttp3" -- see
+// docker/Dockerfile.tools' git history). This is a one-shot batch job that only ever needs
+// Flyway, the Postgres driver, and a HOCON parser to read each service's already-generated
+// .conf file -- MigrateTool.scala now has its own small, synchronous copy of the Flyway
+// configuration instead (see its own comment on why that copy is intentional, not an
+// oversight), built only from the minimal `Dependencies.migrateTool` list below.
+lazy val migrateTool = project
+  .in(file("migrate-tool"))
+  .enablePlugins(JavaAppPackaging)
+  .settings(
+    name := "migrate-tool",
+    scalaVersion := "3.8.1",
+    scalacOptions ++= Seq(
+      "-deprecation",
+      "-source:future",
+      "-new-syntax",
+      "-indent",
+    ),
+    libraryDependencies ++= Dependencies.migrateTool,
+    Compile / mainClass := Some("versola.migrate.MigrateTool"),
   )
 
 lazy val e2e = project
@@ -126,6 +165,52 @@ lazy val e2e = project
     libraryDependencies ++= Dependencies.http,
     // Not part of the normal test run — only executed explicitly via `e2e/test`
     Test / fork := true,
+  )
+
+// versola-tools: packages scripts/gen-env.scala as a plain JVM app instead
+// of relying on scala-cli at image-build/run time (see docker/Dockerfile.tools).
+// Deliberately NOT using commonSettings -- that pulls in Dependencies.core
+// (ZIO, etc.), which gen-env.scala doesn't use and which would bloat the
+// staged jar for no reason. Base directory is scripts/ itself (not a new
+// top-level tools/ folder) and Compile/scalaSource points at that same
+// directory, so gen-env.scala stays the single copy on disk, compiled by
+// both `scala-cli run scripts/gen-env.scala` (local dev, see develop.md)
+// and this sbt project (CI release staging) -- not a duplicated snapshot
+// that could drift, the exact property the old Dockerfile.tools comments
+// cared about preserving.
+// Not part of `root`'s aggregate, same reasoning as `e2e` above: staged
+// explicitly in CI (`sbt tools/stage`), not part of the default
+// `sbt compile`/`sbt test` loop.
+lazy val tools = project
+  .in(file("scripts"))
+  .enablePlugins(JavaAppPackaging)
+  .settings(
+    name := "tools",
+    scalaVersion := "3.8.1",
+    scalacOptions ++= Seq(
+      "-deprecation",
+      "-source:future",
+      "-new-syntax",
+      "-indent",
+    ),
+    // scripts/ also holds scala-cli's own build cache (.scala-build/,
+    // possibly .bsp/) from `scala-cli run scripts/gen-env.scala` -- full
+    // of old generated snapshots of this same file from past edits, with
+    // top-level defs that collide with the real gen-env.scala once sbt
+    // globs a whole directory recursively for sources. Tried excluding
+    // .scala-build via `excludeFilter` first (sbt's default excludeFilter,
+    // HiddenFileFilter, only recognizes the OS-level hidden attribute --
+    // .scala-build isn't flagged hidden on Windows despite the leading
+    // dot); that didn't take effect either (confirmed by hand: same
+    // duplicate-definition errors regardless). Sidestepping the whole
+    // recursive-discovery-plus-filter mechanism instead: there is exactly
+    // one real source file here, so list it directly rather than pointing
+    // at the directory and hoping nothing else in it gets swept up.
+    Compile / unmanagedSourceDirectories := Seq(baseDirectory.value),
+    Compile / unmanagedSources := Seq(baseDirectory.value / "gen-env.scala"),
+    // Matches the synthetic object Scala 3 generates for gen-env.scala's
+    // top-level `@main def genEnv(): Unit`.
+    Compile / mainClass := Some("genEnv"),
   )
 
 lazy val sbtForkSettings = Seq(
