@@ -139,8 +139,6 @@ object AuthorizeRequestParser:
           )
           .filterOrFail(_.forall(_.length <= MaxStateLength))(Error.StateInvalid(redirectUri, useFragment = useFragment))
 
-        val useFragment = responseTypeEntries.contains(ResponseTypeEntry.IdToken)
-
         codeChallenge <- getParam(params, "code_challenge")
           .orElseFail(Error.MultipleValuesProvided(redirectUri, state, "code_challenge", useFragment = useFragment))
           .someOrFail(Error.CodeChallengeMissing(redirectUri, state, useFragment = useFragment))
