@@ -61,10 +61,11 @@ object CelEvaluator:
   private val runtime: CelRuntime =
     CelRuntimeFactory.standardCelRuntimeBuilder().build()
 
-  // Catches literals that are syntactically valid CEL but semantically nonsensical
-  // regardless of the value data ever supplies -- a malformed regex, timestamp, or
-  // duration literal is wrong the moment it's saved, not just on the request that
-  // happens to exercise it.
+  // Used only by validate (config save time), never by compile (edge, runtime): catches
+  // literals that are syntactically valid CEL but semantically nonsensical regardless of the
+  // value data ever supplies -- a malformed regex, timestamp, or duration literal is wrong
+  // the moment it's saved, not just on the request that happens to exercise it. compile trusts
+  // that whatever it's given already passed this at save time, so it does none of this work.
   private val validator =
     CelValidatorFactory.standardCelValidatorBuilder(compiler, runtime)
       .addAstValidators(
@@ -74,9 +75,9 @@ object CelEvaluator:
       )
       .build()
 
-  // Folds constant subexpressions at compile time. As a side effect this also catches
-  // errors that are only "constant" by accident of how someone wrote the expression,
-  // e.g. `1 / 0 == 0`: no request data makes that stop being a division by zero.
+  // Used only by validate, same as above. Folds constant subexpressions, which as a side
+  // effect also catches errors that are only "constant" by accident of how someone wrote the
+  // expression, e.g. `1 / 0 == 0`: no request data makes that stop being a division by zero.
   private val optimizer =
     CelOptimizerFactory.standardCelOptimizerBuilder(compiler, runtime)
       .addAstOptimizers(ConstantFoldingOptimizer.getInstance())
@@ -94,26 +95,38 @@ object CelEvaluator:
 
   class Impl(cache: Ref[Map[String, Either[CompileError, Program]]]) extends CelEvaluator:
     override def compile(expression: String): UIO[Program] =
-      compileCached(expression, None).flatMap:
+      compileCached(expression, None, strict = false).flatMap:
         case Right(program) => ZIO.succeed(program)
         case Left(err) =>
           ZIO.logWarning(s"CEL compilation failed for trusted expression '${err.expression}': ${err.message}")
             .as(FailSafe)
 
     override def validate(expression: String, expectedType: Option[CelType]): IO[CompileError, Program] =
-      compileCached(expression, expectedType).flatMap:
+      compileCached(expression, expectedType, strict = true).flatMap:
         case Right(program) => ZIO.succeed(program)
         case Left(err)      => ZIO.fail(err)
 
-    private def compileCached(expression: String, expectedType: Option[CelType]): UIO[Either[CompileError, Program]] =
-      val key = expectedType.fold(expression)(t => s"$expression:$t")
+    private def compileCached(
+        expression: String,
+        expectedType: Option[CelType],
+        strict: Boolean,
+    ): UIO[Either[CompileError, Program]] =
+      // Keyed on strictness too: `compile` and `validate` must never land on the same cache
+      // slot, or whichever of the two runs first for a given expression would decide, for
+      // every later call on this instance, whether the checks only `validate` is supposed to
+      // pay for actually ran.
+      val key = s"${if strict then "strict" else "trusted"}:${expectedType.fold(expression)(t => s"$expression:$t")}"
       cache.get.map(_.get(key)).flatMap:
         case Some(result) => ZIO.succeed(result)
         case None =>
-          compileProgram(expression, expectedType)
+          compileProgram(expression, expectedType, strict)
             .tap(result => cache.update(_.updated(key, result)))
 
-    private def compileProgram(expression: String, expectedType: Option[CelType]): UIO[Either[CompileError, Program]] =
+    private def compileProgram(
+        expression: String,
+        expectedType: Option[CelType],
+        strict: Boolean,
+    ): UIO[Either[CompileError, Program]] =
       ZIO.attempt:
         val ast = compiler.compile(expression).getAst
         // Returns true when the expected type was accepted only because the compiler
@@ -123,11 +136,20 @@ object CelEvaluator:
           if actualType != t && actualType != SimpleType.DYN then
             throw new IllegalArgumentException(s"Expected return type $t but got $actualType")
           actualType == SimpleType.DYN
-        val validationResult = validator.validate(ast)
-        if validationResult.hasError then
-          throw new IllegalArgumentException(validationResult.getErrorString)
-        val optimizedAst = optimizer.optimize(ast)
-        (ProgramImpl(runtime.createProgram(optimizedAst)): Program, dynAccepted)
+
+        // Only `validate` (config save time) pays for these: they're properties of the
+        // expression alone, so `compile` (edge, runtime) trusts that they already ran and
+        // skips them, rather than re-running central's save-time checks on its own first use
+        // of every already-persisted, already-trusted expression.
+        val preparedAst =
+          if strict then
+            val validationResult = validator.validate(ast)
+            if validationResult.hasError then
+              throw new IllegalArgumentException(validationResult.getErrorString)
+            optimizer.optimize(ast)
+          else ast
+
+        (ProgramImpl(runtime.createProgram(preparedAst)): Program, dynAccepted)
       .either
       .flatMap:
         case Right((program, true)) =>

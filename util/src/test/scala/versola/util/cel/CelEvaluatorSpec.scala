@@ -145,6 +145,9 @@ object CelEvaluatorSpec extends ZIOSpecDefault:
       test("evaluateBoolean fails as Broken for an evaluation error that isn't absent data") {
         for
           evaluator <- make
+          // compile() trusts the expression rather than folding constants, so this compiles
+          // fine (unlike validate("1 / 0 == 0"), which is rejected before it's ever saved) and
+          // the division by zero only surfaces here, when it's actually evaluated.
           program   <- evaluator.compile("1 / 0 == 0")
           result    <- program.evaluateBoolean(tokenContext).either
         yield assertTrue(result == Left(EvaluationError.Broken))
@@ -179,14 +182,27 @@ object CelEvaluatorSpec extends ZIOSpecDefault:
       },
     ),
     suite("cache")(
-      test("compile and validate share results across calls") {
+      test("compile and validate cache independently, so neither call can skip the other's checks") {
         for
           cacheRef  <- Ref.make(Map.empty[String, Either[CelEvaluator.CompileError, CelEvaluator.Program]])
           evaluator  = CelEvaluator.Impl(cacheRef)
           _         <- evaluator.validate("token.role == 'admin'").either
           _         <- evaluator.compile("token.role == 'admin'")
           cached    <- cacheRef.get
-        yield assertTrue(cached.size == 1, cached.contains("token.role == 'admin'"))
+        yield assertTrue(cached.size == 2)
+      },
+      test("compile does not run validate's literal validators or constant folding") {
+        for
+          cacheRef  <- Ref.make(Map.empty[String, Either[CelEvaluator.CompileError, CelEvaluator.Program]])
+          evaluator  = CelEvaluator.Impl(cacheRef)
+          // Every one of these is rejected by validate (see the "validate" suite above); compile
+          // must still succeed for each, since central already validated it before persisting,
+          // and edge is not supposed to pay for or repeat that check on its own first use.
+          _ <- evaluator.compile("1 / 0 == 0")
+          _ <- evaluator.compile("token.role.matches('[')")
+          _ <- evaluator.compile("timestamp('not-a-time')")
+          _ <- evaluator.compile("duration('bad')")
+        yield assertTrue(true)
       },
       test("cache stores failed compilations so they are not retried") {
         for
@@ -195,7 +211,7 @@ object CelEvaluatorSpec extends ZIOSpecDefault:
           _         <- evaluator.validate("(broken").either
           _         <- evaluator.validate("(broken").either
           cached    <- cacheRef.get
-        yield assertTrue(cached.size == 1, cached.get("(broken").exists(_.isLeft))
+        yield assertTrue(cached.size == 1, cached.values.exists(_.isLeft))
       },
     ),
   )
