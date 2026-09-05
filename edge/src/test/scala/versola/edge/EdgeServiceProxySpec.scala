@@ -456,6 +456,36 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
       yield assertTrue(response.status == Status.Forbidden)
     },
+    test("returns 403 when an allow expression reads a claim the token doesn't carry") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        capture <- captureUpstream()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(usersEndpoint(allow = Some("token.subscription == 'premium'"))))
+        token <- env.signToken()
+        request = Request.get(URL.empty / "users").addCookie(sessionCookie(token))
+        service = env.buildService(client, security)
+        response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
+        upstream <- capture.get
+      yield assertTrue(response.status == Status.Forbidden, upstream.isEmpty)
+    },
+    test("returns 500 when an allow expression cannot be evaluated at all") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        capture <- captureUpstream()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(usersEndpoint(allow = Some("1 / 0 == 0"))))
+        token <- env.signToken()
+        request = Request.get(URL.empty / "users").addCookie(sessionCookie(token))
+        service = env.buildService(client, security)
+        response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
+        upstream <- capture.get
+      yield assertTrue(response.status == Status.InternalServerError, upstream.isEmpty)
+    },
     test("returns 403 when public resource URI is absent from token audience") {
       val env = new Env
       for
@@ -530,7 +560,7 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         upstream.exists(_.headers.get(Header.Cookie.name).isEmpty),
       )
     },
-    test("removes an injected header when its CEL expression has no value") {
+    test("refuses the request when an injected header's CEL expression reads an absent claim") {
       val env = new Env
       val endpoint = usersEndpoint(
         inject = Vector(InjectRule(InjectTarget.header, "x-optional", "token.missing")),
@@ -549,8 +579,31 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
         upstream <- capture.get
       yield assertTrue(
+        response.status == Status.Forbidden,
+        upstream.isEmpty,
+      )
+    },
+    test("injects an empty value when a has()-guarded expression finds no claim") {
+      val env = new Env
+      val endpoint = usersEndpoint(
+        inject = Vector(InjectRule(InjectTarget.header, "x-optional", "has(token.missing) ? token.missing : ''")),
+      )
+      for
+        _ <- env.setupDefaults()
+        capture <- captureUpstream()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(endpoint))
+        token <- env.signToken()
+        request = Request.get(URL.empty / "users")
+          .addHeader(Header.Custom("x-optional", "attacker-controlled"))
+          .addCookie(sessionCookie(token))
+        service = env.buildService(client, security)
+        response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
+        upstream <- capture.get
+      yield assertTrue(
         response.status == Status.Ok,
-        upstream.exists(_.headers.get("x-optional").isEmpty),
+        upstream.exists(_.headers.get("x-optional").contains("")),
       )
     },
     test("returns 401 when access token is expired and no refresh token available") {
@@ -584,6 +637,49 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         response.status == Status.Unauthorized,
         challenge.exists(_.contains("""error="insufficient_user_authentication"""")),
         challenge.exists(_.contains("""acr_values="passkey-level"""")),
+      )
+    },
+    test("requires step-up when the condition reads a claim the token doesn't carry") {
+      val env = new Env
+      val endpoint = usersEndpoint(
+        stepUpCondition = Some("token.risk_score > 50"),
+        stepUpAcr = Some("passkey-level"),
+      )
+      for
+        _ <- env.setupDefaults()
+        capture <- captureUpstream()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(endpoint))
+        token <- env.signToken(acr = Some("otp-level"))
+        request = Request.get(URL.empty / "users").addCookie(sessionCookie(token))
+        service = env.buildService(client, security)
+        response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
+        challenge = response.headers.get("WWW-Authenticate")
+        upstream <- capture.get
+      yield assertTrue(
+        response.status == Status.Unauthorized,
+        challenge.exists(_.contains("""acr_values="passkey-level"""")),
+        upstream.isEmpty,
+      )
+    },
+    test("returns 500 when the step-up condition cannot be evaluated at all") {
+      val env = new Env
+      val endpoint = usersEndpoint(stepUpCondition = Some("1 / 0 == 0"), stepUpAcr = Some("passkey-level"))
+      for
+        _ <- env.setupDefaults()
+        capture <- captureUpstream()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(endpoint))
+        token <- env.signToken(acr = Some("passkey-level"))
+        request = Request.get(URL.empty / "users").addCookie(sessionCookie(token))
+        service = env.buildService(client, security)
+        response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
+        upstream <- capture.get
+      yield assertTrue(
+        response.status == Status.InternalServerError,
+        upstream.isEmpty,
       )
     },
     test("forwards upstream when token acr satisfies endpoint requirement") {

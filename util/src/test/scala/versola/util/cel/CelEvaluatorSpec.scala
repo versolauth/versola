@@ -1,5 +1,6 @@
 package versola.util.cel
 
+import versola.util.cel.CelEvaluator.EvaluationError
 import zio.*
 import zio.test.*
 import zio.test.Assertion.*
@@ -65,13 +66,16 @@ object CelEvaluatorSpec extends ZIOSpecDefault:
           result    <- program.evaluateBoolean(tokenContext)
         yield assertTrue(result)
       },
-      test("returns FailSafe Program (false) for invalid expression") {
+      test("returns a Program that fails as Broken for an expression that doesn't compile") {
         for
           evaluator <- make
           program   <- evaluator.compile("(unterminated")
-          boolean   <- program.evaluateBoolean(tokenContext)
-          string    <- program.evaluateString(tokenContext)
-        yield assertTrue(!boolean, string.isEmpty)
+          boolean   <- program.evaluateBoolean(tokenContext).either
+          string    <- program.evaluateString(tokenContext).either
+        yield assertTrue(
+          boolean == Left(EvaluationError.Broken),
+          string == Left(EvaluationError.Broken),
+        )
       },
     ),
     suite("Program evaluation")(
@@ -82,10 +86,31 @@ object CelEvaluatorSpec extends ZIOSpecDefault:
           result    <- program.evaluateBoolean(tokenContext)
         yield assertTrue(result)
       },
-      test("evaluateBoolean returns false on type mismatch instead of failing") {
+      test("evaluateBoolean fails as Broken when the expression returns a non-boolean") {
         for
           evaluator <- make
           program   <- evaluator.compile("token.role")
+          result    <- program.evaluateBoolean(tokenContext).either
+        yield assertTrue(result == Left(EvaluationError.Broken))
+      },
+      test("evaluateBoolean fails as DataMissing when the expression reads a claim the token lacks") {
+        for
+          evaluator <- make
+          program   <- evaluator.compile("token.missing.deep.path == 'x'")
+          result    <- program.evaluateBoolean(tokenContext).either
+        yield assertTrue(result == Left(EvaluationError.DataMissing))
+      },
+      test("evaluateBoolean fails as Broken for an evaluation error that isn't absent data") {
+        for
+          evaluator <- make
+          program   <- evaluator.compile("1 / 0 == 0")
+          result    <- program.evaluateBoolean(tokenContext).either
+        yield assertTrue(result == Left(EvaluationError.Broken))
+      },
+      test("an absent claim can be guarded with has(), leaving the rule evaluable") {
+        for
+          evaluator <- make
+          program   <- evaluator.compile("has(user.plan) && user.plan == 'premium'")
           result    <- program.evaluateBoolean(tokenContext)
         yield assertTrue(!result)
       },
@@ -96,12 +121,19 @@ object CelEvaluatorSpec extends ZIOSpecDefault:
           result    <- program.evaluateString(tokenContext)
         yield assertTrue(result.contains("admin"))
       },
-      test("evaluateString returns None when evaluation throws") {
+      test("evaluateString fails as DataMissing when the expression reads a claim the token lacks") {
         for
           evaluator <- make
           program   <- evaluator.compile("token.missing.deep.path")
+          result    <- program.evaluateString(tokenContext).either
+        yield assertTrue(result == Left(EvaluationError.DataMissing))
+      },
+      test("an absent claim can be guarded with has(), leaving an inject rule evaluable") {
+        for
+          evaluator <- make
+          program   <- evaluator.compile("has(user.plan) ? user.plan : ''")
           result    <- program.evaluateString(tokenContext)
-        yield assertTrue(result.isEmpty)
+        yield assertTrue(result.contains(""))
       },
     ),
     suite("cache")(

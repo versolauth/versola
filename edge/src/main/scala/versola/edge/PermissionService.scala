@@ -10,7 +10,8 @@ trait PermissionService:
   def getAllowedEndpointsForClient(clientId: ClientId): UIO[Set[ResourceEndpointId]]
 
   def getPermissionsForRoles(
-      roles: Map[TenantId, List[RoleId]],
+      tenantId: TenantId,
+      roles: List[RoleId],
       endpointIds: Set[ResourceEndpointId],
   ): UIO[Set[PermissionId]]
 
@@ -41,18 +42,17 @@ object PermissionService:
   ) extends PermissionService:
 
     private def permissionsFor(
-        roles: Map[TenantId, List[RoleId]],
+        tenantId: TenantId,
+        roles: List[RoleId],
         roleMap: Map[(TenantId, RoleId), Set[PermissionId]],
     ): Set[PermissionId] =
-      roles.iterator.flatMap { (tenantId, roleIds) =>
-        roleIds.flatMap(roleId => roleMap.getOrElse((tenantId, roleId), Set.empty))
-      }.toSet
+      roles.iterator.flatMap(roleId => roleMap.getOrElse((tenantId, roleId), Set.empty)).toSet
 
     override def getAllowedEndpointsForRoles(tenantId: TenantId, roles: List[RoleId]): UIO[Set[ResourceEndpointId]] =
       for
         roleMap <- rolesCache.get
         permMap <- permissionsCache.get
-        permIds = permissionsFor(Map(tenantId -> roles), roleMap)
+        permIds = permissionsFor(tenantId, roles, roleMap)
       yield permIds.flatMap(permMap.getOrElse(_, Set.empty))
 
     override def getAllowedEndpointsForClient(clientId: ClientId): UIO[Set[ResourceEndpointId]] =
@@ -63,11 +63,12 @@ object PermissionService:
       yield permIds.flatMap(permMap.getOrElse(_, Set.empty))
 
     override def getPermissionsForRoles(
-        roles: Map[TenantId, List[RoleId]],
+        tenantId: TenantId,
+        roles: List[RoleId],
         endpointIds: Set[ResourceEndpointId],
     ): UIO[Set[PermissionId]] =
       for
         roleMap <- rolesCache.get
         permMap <- permissionsCache.get
-        permIds = permissionsFor(roles, roleMap)
+        permIds = permissionsFor(tenantId, roles, roleMap)
       yield permIds.filter(permId => permMap.getOrElse(permId, Set.empty).exists(endpointIds.contains))
