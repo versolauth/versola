@@ -136,11 +136,22 @@ object CookiesSpec extends ZIOSpecDefault:
         assertTrue(UserAgentCookie.parse("no-signature-here", secret) == Left("missing signature"))
       },
       test("parse rejects a signed payload that is not the expected JSON shape") {
-        // Signed with the right key, so this gets past the MAC check and fails on decoding.
-        val bytes = """{"unexpected":true}""".getBytes("UTF-8").nn
-        val signed = UserAgentCookie(userAgentId, userAgentData, 180.days, secret).content
-        val tampered = s"${Base64.urlEncode(bytes)}.${signed.split('.')(1)}"
-        assertTrue(UserAgentCookie.parse(tampered, secret).isLeft)
+        // Every cookie here signs with the same keyed hash, so a ConversationCookie's own
+        // content carries a signature UserAgentCookie.parse accepts. That gets past the MAC
+        // check on a payload that is not a UserAgentCookiePayload, which is the only way to
+        // reach the decoding step -- re-signing an arbitrary payload isn't possible from
+        // outside, since computeMac is private.
+        val content = ConversationCookie.responseCookie(
+          ConversationCookie(authId, clientId, "https://example.com/callback", None),
+          15.minutes,
+          secret,
+        ).content
+        val result = UserAgentCookie.parse(content, secret)
+        assertTrue(
+          result.isLeft,
+          result != Left("invalid signature"),
+          result != Left("missing signature"),
+        )
       },
     ),
     suite("malformed content")(
