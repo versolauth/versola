@@ -207,7 +207,7 @@ object OAuthTokenService:
               subject = userId.toString,
               expiresAt = now.plus(client.accessTokenTtl),
             )
-          *> ZIO.logWarning(s"Refresh token replay detected for client '${client.id}': chain revoked")
+          *> ZIO.logError(s"Refresh token replay detected for client '${client.id}': chain revoked")
         case None =>
           ZIO.unit
 
