@@ -25,6 +25,10 @@ import java.util.Date
 object TokenEndpointController extends Controller:
   type Env = Tracing & OAuthTokenService & OAuthConfigurationService & UserInfoService & JwksService & CoreConfig
 
+  /** draft-ietf-httpapi-idempotency-key-header. Only honoured for `refresh_token`: that is
+    * the grant where losing a response costs the client its session rather than one request. */
+  private val IdempotencyKeyHeader = "Idempotency-Key"
+
   def routes: Routes[Env, Throwable] = Routes(
     tokenEndpoint,
   )
@@ -38,11 +42,16 @@ object TokenEndpointController extends Controller:
         form <- request.body.asURLEncodedForm.orElseFail(TokenEndpointError.InvalidRequest)
         tokenRequest <- parseRequest(form)
         credentials <- request.extractCredentials(form).orElseFail(TokenEndpointError.InvalidClient)
+
         issuedTokens <- tokenRequest match
           case codeExchangeRequest: CodeExchangeRequest =>
             oauthTokenService.exchangeAuthorizationCode(codeExchangeRequest, credentials)
           case refreshTokenRequest: RefreshTokenRequest =>
-            oauthTokenService.refreshAccessToken(refreshTokenRequest, credentials)
+            oauthTokenService.refreshAccessToken(
+              refreshTokenRequest,
+              credentials,
+              request.headers.get(IdempotencyKeyHeader),
+            )
           case clientCredentialsRequest: ClientCredentialsRequest =>
             oauthTokenService.clientCredentials(clientCredentialsRequest, credentials)
         response <- toTokenResponse(issuedTokens, config, signingKey)

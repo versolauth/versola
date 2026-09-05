@@ -7,6 +7,11 @@ CREATE TABLE refresh_tokens(
     -- Set when the token is exchanged for its successor. The row stays behind as the record
     -- of that exchange: unusable, but still resolvable to its family.
     rotated_at TIMESTAMP WITH TIME ZONE,
+    -- MAC of the Idempotency-Key the exchange carried, if any. Lets the client that never
+    -- received its response retry: presenting this token again with the same key continues
+    -- the chain instead of being read as a replay. Only honoured while this row is the
+    -- family's most recent exchange, so the key stops working the moment the chain moves on.
+    idempotency_key BYTEA,
     access_token BYTEA UNIQUE NOT NULL,
     session_id BYTEA NOT NULL,
     public_session_id TEXT NOT NULL,

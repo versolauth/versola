@@ -621,6 +621,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
       clientId: Option[String] = None,
       clientSecret: Option[String] = None,
       scope: Option[String] = None,
+      idempotencyKey: Option[String] = None,
   ): Task[TokenResult] =
     val effectiveClientId = clientId.getOrElse(config.clientId)
     val effectiveClientSecret = clientSecret.getOrElse(throw IllegalArgumentException("clientSecret must be provided for token requests"))
@@ -631,7 +632,8 @@ final class OAuthClient(client: Client, config: E2EConfig):
     val req = Request.post(s"${config.authUrl}/token", body)
       .addHeader(Authorization.Basic(effectiveClientId, effectiveClientSecret))
       .addHeader(Header.ContentType(MediaType.application.`x-www-form-urlencoded`))
-    Client.batched(req).provide(ZLayer.succeed(client)).flatMap(TokenResult.parse)
+    val withKey = idempotencyKey.fold(req)(req.addHeader("Idempotency-Key", _))
+    Client.batched(withKey).provide(ZLayer.succeed(client)).flatMap(TokenResult.parse)
 
   /** POST /introspect — introspects a token (access or refresh) per RFC 7662. */
   def introspect(

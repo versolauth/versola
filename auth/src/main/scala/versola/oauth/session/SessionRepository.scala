@@ -56,12 +56,38 @@ trait SessionRepository:
     * a rotation cannot interleave with a [[revokeFamily]] and leave its successor behind.
     * Fails with `RefreshAlreadyExchanged` when the presented token was already retired --
     * either sequentially or by a concurrent request that won the lock first.
+    *
+    * `idempotencyKey` is recorded against the token being retired, so that the exchange can
+    * be recognised later if the client repeats it -- see [[findIdempotentRetry]].
     */
   def createRefreshToken(
       refreshToken: MAC.Of[RefreshToken],
       previous: Option[MAC.Of[RefreshToken]],
       record: RefreshTokenRecord,
+      idempotencyKey: Option[MAC],
   ): IO[Throwable | RefreshAlreadyExchanged, Unit]
+
+  /** Resolves a repeat of an exchange that already happened, for a client that never received
+    * its response. Returns the family's live tip, with its id, so the caller can continue the
+    * chain from there: the original response -- and the token inside it -- is not recoverable,
+    * only re-minted.
+    *
+    * Returns `None` unless the family's most recent exchange was made by this client carrying
+    * this exact key, and left a live tip behind. Only one row in a family holds a key at a
+    * time -- [[createRefreshToken]] moves it onto whichever token it retires -- so matching it
+    * is the same as asking whether the chain has moved on since. It has not while the client
+    * is still retrying, however many times; it has the moment the client gets through and
+    * refreshes under a new key, at which point the old one stops being honoured with nothing
+    * needing to expire or be cleared.
+    *
+    * A caller holding the token but not the key still reads as a replay, which is what keeps
+    * this from weakening reuse detection.
+    */
+  def findIdempotentRetry(
+      token: MAC.Of[RefreshToken],
+      clientId: ClientId,
+      idempotencyKey: MAC,
+  ): Task[Option[(MAC.Of[RefreshToken], RefreshTokenRecord)]]
 
   def findToken(token: MAC.Of[RefreshToken]): Task[Option[RefreshTokenRecord]]
 

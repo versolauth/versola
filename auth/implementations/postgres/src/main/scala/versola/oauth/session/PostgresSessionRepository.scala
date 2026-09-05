@@ -225,6 +225,7 @@ class PostgresSessionRepository(xa: TransactorZIO)
       refreshToken: MAC.Of[RefreshToken],
       previous: Option[MAC.Of[RefreshToken]],
       record: RefreshTokenRecord,
+      idempotencyKey: Option[MAC],
   ): IO[Throwable | RefreshAlreadyExchanged, Unit] =
     Clock.instant.flatMap: now =>
       xa.transactMeasured("create-refresh-token") {
@@ -264,11 +265,24 @@ class PostgresSessionRepository(xa: TransactorZIO)
             // usefulness by up to refresh_token_ttl, multiplying storage for every rotation.
             val retired = sql"""
               UPDATE refresh_tokens
-              SET rotated_at = $now, expires_at = ${now.plus(PostgresSessionRepository.ReplayDetectionWindow)}
+              SET rotated_at = $now,
+                  expires_at = ${now.plus(PostgresSessionRepository.ReplayDetectionWindow)},
+                  idempotency_key = $idempotencyKey
               WHERE id = $previousToken AND rotated_at IS NULL AND expires_at > $now
             """.update.run()
 
             if retired == 0 then throw PostgresSessionRepository.RotationLost
+
+            // A key names the family's latest exchange and no other, so that recognising it
+            // is the same as asking whether the chain has moved on. Clearing it from wherever
+            // it sat before is what lets a client retry more than once: each retry carries the
+            // key forward, while any exchange under a different key -- the client finally
+            // getting through -- strands the old one and takes reuse detection back.
+            sql"""
+              UPDATE refresh_tokens
+              SET idempotency_key = NULL
+              WHERE family_id = $family AND id <> $previousToken AND idempotency_key IS NOT NULL
+            """.update.run()
 
             // Keep the root alive for as long as the family it anchors: it is the lock target
             // every later rotation and revocation depends on, and the sweep would otherwise
@@ -346,6 +360,37 @@ class PostgresSessionRepository(xa: TransactorZIO)
           .run()
           .headOption
     yield result
+
+  override def findIdempotentRetry(
+      token: MAC.Of[RefreshToken],
+      clientId: ClientId,
+      idempotencyKey: MAC,
+  ): Task[Option[(MAC.Of[RefreshToken], RefreshTokenRecord)]] =
+    Clock.instant.flatMap: now =>
+      xa.connectMeasured("find-idempotent-refresh-retry"):
+        // `exchanged` is the row the key names: the family's latest exchange, since a key is
+        // only ever on one. Requiring the presented token to share its family stops a leaked
+        // key from being usable on its own, and scoping to the client stops one client from
+        // reaching into another's chain.
+        sql"""
+          SELECT tip.id, tip.session_id, tip.public_session_id, tip.access_token, tip.user_id,
+                 tip.client_id, tip.audience, tip.authorization_details, tip.scope,
+                 tip.issued_at, tip.expires_at, tip.requested_claims, tip.ui_locales,
+                 tip.nonce, tip.amr, tip.auth_time, tip.acr
+          FROM refresh_tokens presented
+          JOIN refresh_tokens exchanged
+            ON exchanged.family_id = presented.family_id
+           AND exchanged.idempotency_key = $idempotencyKey
+           AND exchanged.rotated_at IS NOT NULL
+          JOIN refresh_tokens tip
+            ON tip.family_id = presented.family_id
+           AND tip.rotated_at IS NULL
+           AND tip.expires_at > $now
+          WHERE presented.id = $token AND presented.client_id = $clientId
+        """
+          .query[(MAC.Of[RefreshToken], RefreshTokenRecord)]
+          .run()
+          .headOption
 
   override def revokeFamily(
       token: MAC.Of[RefreshToken],
