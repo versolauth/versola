@@ -3,7 +3,8 @@ package versola.central.configuration.resources
 import org.scalamock.stubs.ZIOStubs
 import versola.central.{CentralConfig, TestCentralConfig}
 import versola.central.configuration.clients.ClientId
-import versola.central.configuration.tenants.TenantId
+import versola.central.configuration.edges.EdgeId
+import versola.central.configuration.tenants.{TenantId, TenantRecord, TenantRepository}
 import versola.central.configuration.sync.SyncEvent
 import versola.central.configuration.{CreateResourceEndpointRequest, CreateResourceRequest, InjectRule, InjectTarget, ResourceUri, UpdateResourceRequest}
 import versola.util.{ReloadingCache, SecureRandom, Secret, SecurityService}
@@ -81,6 +82,27 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
     val config = TestCentralConfig.config
     val service = ResourceService.Impl(cache, repository, tenantRepository, celEvaluator, secureRandom, securityService, config)
 
+  /** Builds a [[ResourceService]] through [[ResourceService.live]] itself, rather than
+    * constructing [[ResourceService.Impl]] directly like [[Env]] does, so the wiring in
+    * `live` (the reloading cache backed by the secret-decrypting CacheSource) is exercised.
+    */
+  private def liveResourceService(
+      repository: ResourceRepository,
+      tenantRepository: TenantRepository,
+      secureRandom: SecureRandom,
+      securityService: SecurityService,
+  ) =
+    ZLayer.make[ResourceService](
+      ZLayer.succeed(repository),
+      ZLayer.succeed(tenantRepository),
+      ZLayer.succeed(CelEvaluator.Impl(Unsafe.unsafe(unsafe ?=> Ref.unsafe.make(Map.empty)))),
+      ZLayer.succeed(secureRandom),
+      ZLayer.succeed(securityService),
+      ZLayer.succeed(TestCentralConfig.config),
+      Scope.default,
+      ResourceService.live,
+    )
+
   def spec = suite("ResourceService")(
     test("verifySecret accepts current and previous central resource secrets") {
       val env = new Env(Vector(centralResource))
@@ -104,6 +126,48 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
 
       for result <- env.service.getTenantResources(tenantId, offset = 1, limit = Some(1))
       yield assertTrue(result == Vector(pagedResource))
+    },
+    // Gap: getResourcesForSync had no coverage at all (neither branch).
+    test("getResourcesForSync returns every cached resource when no edge is specified") {
+      val env = new Env(Vector(resource, otherTenantResource))
+
+      for result <- env.service.getResourcesForSync(None)
+      yield assertTrue(result == Vector(resource, otherTenantResource))
+    },
+    test("getResourcesForSync filters resources to tenants assigned to the given edge") {
+      val syncEdgeId = EdgeId("edge-1")
+      val env = new Env(Vector(resource, otherTenantResource))
+
+      for
+        _ <- env.tenantRepository.getAll.succeedsWith(Vector(
+          TenantRecord(tenantId, "tenant a", Some(syncEdgeId)),
+          TenantRecord(otherTenantId, "tenant b", None),
+        ))
+        result <- env.service.getResourcesForSync(Some(syncEdgeId))
+      yield assertTrue(result == Vector(resource))
+    },
+    // Gap: ResourceService.live's ZLayer wiring (the reloading cache and the
+    // secret-decrypting CacheSource built on top of the repository) was never built by any
+    // test; Env instantiates Impl directly with a hand-made cache instead.
+    test("live decrypts resource secrets loaded from the repository through the reloading cache") {
+      val liveRepository = stub[ResourceRepository]
+      val liveTenantRepository = stub[TenantRepository]
+      val liveSecureRandom = stub[SecureRandom]
+      val liveSecurityService = stub[SecurityService]
+      val encryptedSecret = Array.fill(32)(9.toByte)
+      val decryptedSecret = Secret(Array.fill(32)(5.toByte))
+      // Both current and previous secret are set so decryptSecrets' foreach over each one
+      // (two independent closures) is actually invoked, not just skipped as None.
+      val storedResource = resource.copy(secret = Some(Secret(encryptedSecret)), previousSecret = Some(Secret(encryptedSecret)))
+
+      for
+        _ <- liveRepository.getAll.succeedsWith(Vector(storedResource))
+        _ <- liveSecurityService.decryptAes256.succeedsWith(decryptedSecret)
+        result <- (for
+          service   <- ZIO.service[ResourceService]
+          resources <- service.getTenantResources(tenantId, 0, None)
+        yield resources).provide(liveResourceService(liveRepository, liveTenantRepository, liveSecureRandom, liveSecurityService))
+      yield assertTrue(result == Vector(storedResource.copy(secret = Some(decryptedSecret), previousSecret = Some(decryptedSecret))))
     },
     test("createResource delegates resource and endpoint records to repository") {
       val env = new Env
@@ -176,6 +240,23 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
         result.isLeft,
         result.swap.exists(_.isInstanceOf[ResourceValidationError.InvalidAllowExpression]),
         env.repository.createResource.calls.isEmpty,
+      )
+    },
+    // Gap: pathSegments' `case "" => Vector.empty` branch (the root path, stripped of its
+    // leading slash) was never reached; every other endpoint path test has segments after "/".
+    test("createResource accepts the root path as a valid endpoint") {
+      val env = new Env
+      val request = createRequest.copy(
+        endpoints = Vector(
+          CreateResourceEndpointRequest(existingEndpointId, "/", "GET", false, None, Vector.empty, stepUpCondition = None, stepUpAcr = None, maxAge = None),
+        ),
+      )
+      for
+        _ <- env.repository.createResource.succeedsWith(())
+        result <- env.service.createResource(request)
+      yield assertTrue(
+        result == Right((resourceId, None)),
+        env.repository.createResource.calls.nonEmpty,
       )
     },
     test("createResource accepts endpoint paths with named path parameters") {
@@ -290,6 +371,23 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
         env.repository.createResource.calls.isEmpty,
       )
     },
+    // Gap: validateEndpoints' fold short-circuit (`case (Some(err), _) => ...`, skipping
+    // validation once an earlier endpoint already failed) was never reached because every
+    // existing invalid-endpoint test used a single-endpoint request.
+    test("createResource stops validating endpoints once an earlier one already failed") {
+      val env = new Env
+      val badRequest = createRequest.copy(
+        endpoints = Vector(
+          CreateResourceEndpointRequest(existingEndpointId, "/users/{}", "GET", false, None, Vector.empty, stepUpCondition = None, stepUpAcr = None, maxAge = None),
+          CreateResourceEndpointRequest(createdEndpointId, "/users", "POST", false, None, Vector.empty, stepUpCondition = None, stepUpAcr = None, maxAge = None),
+        ),
+      )
+      for result <- env.service.createResource(badRequest)
+      yield assertTrue(
+        result == Left(ResourceValidationError.InvalidEndpointPath(existingEndpointId)),
+        env.repository.createResource.calls.isEmpty,
+      )
+    },
     test("createResource returns error when inject expression is invalid CEL") {
       val env = new Env
       val badRequest = createRequest.copy(
@@ -307,6 +405,29 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
       for
         _ <- env.repository.createResource.succeedsWith(())
         result <- env.service.createResource(badRequest)
+      yield assertTrue(
+        result.isLeft,
+        result.swap.exists(_.isInstanceOf[ResourceValidationError.InvalidInjectExpression]),
+        env.repository.createResource.calls.isEmpty,
+      )
+    },
+    // Gap: same fold short-circuit as above, but for inject rules within a single endpoint
+    // (`injectCheck`'s `case (Some(err), _) => ...`) - needs 2+ inject rules, first invalid.
+    test("createResource stops validating inject rules once an earlier one already failed") {
+      val env = new Env
+      val badRequest = createRequest.copy(
+        endpoints = Vector(
+          CreateResourceEndpointRequest(
+            existingEndpointId, "/users", "GET", false, None,
+            Vector(InjectRule(InjectTarget.header, "x-bad", "(unterminated"), InjectRule(InjectTarget.header, "x-user", "token.sub")),
+            stepUpCondition = None,
+            stepUpAcr = None,
+            maxAge = None,
+          ),
+        ),
+      )
+
+      for result <- env.service.createResource(badRequest)
       yield assertTrue(
         result.isLeft,
         result.swap.exists(_.isInstanceOf[ResourceValidationError.InvalidInjectExpression]),
@@ -359,6 +480,30 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
         env.repository.createResource.calls.isEmpty,
       )
     },
+    // Gap: every stepUpCondition test above exercises only the error paths of the validate
+    // call; the success path (`.as(Option.empty[ResourceValidationError])`) was never hit.
+    test("createResource accepts endpoint with a valid boolean stepUpCondition expression") {
+      val env = new Env
+      val request = createRequest.copy(
+        endpoints = Vector(
+          CreateResourceEndpointRequest(
+            existingEndpointId, "/users", "GET", false, None,
+            Vector.empty,
+            stepUpCondition = Some("true"),
+            stepUpAcr = None,
+            maxAge = None,
+          ),
+        ),
+      )
+
+      for
+        _ <- env.repository.createResource.succeedsWith(())
+        result <- env.service.createResource(request)
+      yield assertTrue(
+        result == Right((resourceId, None)),
+        env.repository.createResource.calls.nonEmpty,
+      )
+    },
     test("updateResource delegates patches and endpoint replacements to repository") {
       val env = new Env
 
@@ -375,6 +520,47 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
           Vector(updatedEndpoint, createdEndpoint),
           Set(removedEndpointId),
         )),
+      )
+    },
+    // Gap: updateResource's own `validateEndpoints(...).flatMap { case Some(error) => ... }`
+    // branch was never reached; existing update tests either succeed outright or fail via
+    // findAmbiguousEndpoint (which runs only once validateEndpoints returns None).
+    test("updateResource returns error when a submitted endpoint fails validation") {
+      val env = new Env
+      val badRequest = updateRequest.copy(
+        createEndpoints = Vector(
+          CreateResourceEndpointRequest(createdEndpointId, "/users/{}", "GET", false, None, Vector.empty, stepUpCondition = None, stepUpAcr = None, maxAge = None),
+        ),
+      )
+
+      for result <- env.service.updateResource(badRequest)
+      yield assertTrue(
+        result == Left(ResourceValidationError.InvalidEndpointPath(createdEndpointId)),
+        env.repository.findResource.calls.isEmpty,
+        env.repository.updateResource.calls.isEmpty,
+      )
+    },
+    // Gap: finalEndpointRefs' `existing.fold(Vector.empty[...])(...)` "missing resource" branch
+    // was never reached; every other update test stubs findResource to return Some(...).
+    test("updateResource treats a missing existing resource as having no retained endpoints") {
+      val env = new Env
+      val request = UpdateResourceRequest(
+        resourceId = resourceId,
+        resource = None,
+        audience = None,
+        deleteEndpoints = Set.empty,
+        createEndpoints = Vector(
+          CreateResourceEndpointRequest(createdEndpointId, "/users", "GET", false, None, Vector.empty, stepUpCondition = None, stepUpAcr = None, maxAge = None),
+        ),
+      )
+
+      for
+        _ <- env.repository.findResource.succeedsWith(None)
+        _ <- env.repository.updateResource.succeedsWith(())
+        result <- env.service.updateResource(request)
+      yield assertTrue(
+        result == Right(()),
+        env.repository.updateResource.calls.nonEmpty,
       )
     },
     test("updateResource returns error when a submitted endpoint is ambiguous with one retained from the existing resource") {
