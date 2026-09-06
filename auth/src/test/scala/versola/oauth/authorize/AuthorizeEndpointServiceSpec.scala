@@ -315,7 +315,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         _ <- env.userRepository.find.succeedsWith(None)
         _ <- env.secureRandom.nextUUIDv7.succeedsWith(UUID.randomUUID())
         result <- env.service.authorize(hybridRequest).flip
-      yield assertTrue(result == Error.AccessDenied(redirectUri, baseRequest.state))
+      yield assertTrue(result == Error.AccessDenied(redirectUri, baseRequest.state, useFragment = true))
     },
     test("silently authorize when passkey satisfies otp via equivalents") {
       val env = Env()
@@ -943,7 +943,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         _ <- env.secureRandom.nextAlphanumeric.succeedsWith("testcsrf1")
         _ <- env.userRepository.find.succeedsWith(None)
         result <- env.service.authorize(baseRequest.copy(sessionId = Some(rawSessionId))).flip
-      yield assertTrue(result == Error.AccessDenied(redirectUri, baseRequest.state))
+      yield assertTrue(result == Error.AccessDenied(redirectUri, baseRequest.state, useFragment = false))
     },
     test("fail with AccessDenied when max_age forces re-auth and session user no longer exists") {
       val env = Env()
@@ -966,7 +966,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         _ <- env.secureRandom.nextAlphanumeric.succeedsWith("testcsrf1")
         _ <- env.userRepository.find.succeedsWith(None)
         result <- env.service.authorize(baseRequest.copy(sessionId = Some(rawSessionId), maxAge = Some(0))).flip
-      yield assertTrue(result == Error.AccessDenied(redirectUri, baseRequest.state))
+      yield assertTrue(result == Error.AccessDenied(redirectUri, baseRequest.state, useFragment = false))
     },
     test("fall back to credential entry when id_token_hint user no longer exists") {
       val env = Env()
@@ -1121,7 +1121,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         result <- env.service.authorize(baseRequest.copy(sessionId = Some(rawSessionId), prompt = Set(Prompt.none))).flip
         createTimes = env.conversationRepository.create.times
       yield assertTrue(
-        result == Error.ConsentRequired(redirectUri, baseRequest.state),
+        result == Error.ConsentRequired(redirectUri, baseRequest.state, useFragment = false),
         createTimes == 0,
       )
     },
@@ -1167,5 +1167,55 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         _ <- env.service.authorize(baseRequest.copy(sessionId = Some(rawSessionId)))
         decideTimes = env.consentService.decide.times
       yield assertTrue(decideTimes == 0)
+    },
+    test("fail with LoginRequired with useFragment=true when no session, prompt=none, and hybrid response_type") {
+      val env = Env()
+      val hybridRequest = baseRequest.copy(
+        prompt = Set(Prompt.none),
+        responseType = NonEmptySet(ResponseTypeEntry.Code, ResponseTypeEntry.IdToken),
+      )
+      for
+        _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
+        _ <- env.secureRandom.nextUUIDv7.succeedsWith(UUID.randomUUID())
+        result <- env.service.authorize(hybridRequest).flip
+      yield assertTrue(result == Error.LoginRequired(redirectUri, baseRequest.state, useFragment = true))
+    },
+    test("fail with LoginRequired with useFragment=true when session not satisfied, prompt=none, and hybrid response_type") {
+      val env = Env()
+      val session = sessionWithAmr(Map.empty)
+      val hybridRequest = baseRequest.copy(
+        sessionId = Some(rawSessionId),
+        prompt = Set(Prompt.none),
+        responseType = NonEmptySet(ResponseTypeEntry.Code, ResponseTypeEntry.IdToken),
+      )
+      for
+        _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
+        _ <- env.sessionService.find.succeedsWith(Some(SessionInfo(sessionMac, session)))
+        _ <- env.configurationService.getAcrVocabulary.succeedsWith(Map.empty)
+        _ <- env.secureRandom.nextUUIDv7.succeedsWith(UUID.randomUUID())
+        result <- env.service.authorize(hybridRequest).flip
+      yield assertTrue(result == Error.LoginRequired(redirectUri, baseRequest.state, useFragment = true))
+    },
+    test("fail with ConsentRequired with useFragment=true when consent needed, prompt=none, and hybrid response_type") {
+      val env = Env()
+      val session = sessionWithAmr(Map(PassedAuthFactor.otp -> PassedFactorRecord(now, Set(AuthMethodRef.otp))))
+      val hybridRequest = baseRequest.copy(
+        sessionId = Some(rawSessionId),
+        prompt = Set(Prompt.none),
+        responseType = NonEmptySet(ResponseTypeEntry.Code, ResponseTypeEntry.IdToken),
+      )
+      for
+        _ <- env.configurationService.find.succeedsWith(Some(clientWithConsent))
+        _ <- env.sessionService.find.succeedsWith(Some(SessionInfo(sessionMac, session)))
+        _ <- env.configurationService.getAcrVocabulary.succeedsWith(Map.empty)
+        _ <- env.configurationService.getSessionIdleTtl.succeedsWith(Option.empty[zio.Duration])
+        _ <- env.consentService.decide.succeedsWith(ConsentDecision.Required(Set(ScopeToken.OpenId)))
+        _ <- env.secureRandom.nextUUIDv7.succeedsWith(UUID.randomUUID())
+        result <- env.service.authorize(hybridRequest).flip
+        createTimes = env.conversationRepository.create.times
+      yield assertTrue(
+        result == Error.ConsentRequired(redirectUri, baseRequest.state, useFragment = true),
+        createTimes == 0,
+      )
     },
   )

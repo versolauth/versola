@@ -32,3 +32,9 @@ def escapeJsonForScript(json: String): String =
   */
 def escapeCssForStyle(css: String): String =
   css.replace("<", "\\3c ")
+
+/** Percent-encodes a query-parameter value for use in a URI fragment or query string.
+  * Produces RFC 3986 output with spaces as `%20` (not `+`).
+  */
+def encodeQueryParam(value: String): String =
+  java.net.URLEncoder.encode(value, java.nio.charset.StandardCharsets.UTF_8).replace("+", "%20")

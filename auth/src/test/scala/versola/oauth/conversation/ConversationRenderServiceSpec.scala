@@ -500,7 +500,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getForm.succeedsWith(Some(expiredForm))
           _ <- env.configuration.getLocales.succeedsWith(locales)
           _ <- env.configuration.getIdentityProviderLogo.succeedsWith(Some("https://acme.test/logo.svg"))
-          response <- env.service.renderExpired(clientId, redirectUri.encode, Some("test-state"))
+          response <- env.service.renderExpired(clientId, redirectUri.encode, Some("test-state"), false)
           body <- response.body.asString
         yield
           assertTrue(response.status == Status.Ok) &&
@@ -524,7 +524,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getForm.succeedsWith(Some(unavailableForm))
           _ <- env.configuration.getLocales.succeedsWith(locales)
           _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
-          response <- env.service.renderServiceUnavailable(clientId, redirectUri.encode, Some("test-state"))
+          response <- env.service.renderServiceUnavailable(clientId, redirectUri.encode, Some("test-state"), false)
           body <- response.body.asString
         yield
           assertTrue(response.status == Status.Ok) &&

@@ -1,10 +1,8 @@
 package versola.oauth.authorize
 
 import versola.oauth.model.State
+import versola.util.encodeQueryParam
 import zio.http.URL
-
-import java.net.URLEncoder
-import java.nio.charset.StandardCharsets
 
 object AuthorizeRedirect:
   /** Builds the authorization response redirect URI.
@@ -23,8 +21,5 @@ object AuthorizeRedirect:
       case None =>
         redirectUri.addQueryParams(params)
       case Some(_) =>
-        val raw = params.map((k, v) => s"$k=${enc(v)}").mkString("&")
+        val raw = params.map((k, v) => s"$k=${encodeQueryParam(v)}").mkString("&")
         URL.decode(s"${redirectUri.encode}#$raw").getOrElse(redirectUri)
-
-  private def enc(value: String): String =
-    URLEncoder.encode(value, StandardCharsets.UTF_8).replace("+", "%20")

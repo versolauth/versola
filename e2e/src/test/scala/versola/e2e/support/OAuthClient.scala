@@ -49,11 +49,33 @@ case class AuthorizeResult(
           if actualError == expectedError then ZIO.unit
           else ZIO.fail(RuntimeException(s"Expected error='$expectedError', got error='$actualError'"))
 
+  /** Assert a 303 fragment-error redirect (hybrid / implicit flow): error is in `#error=…`, not `?error=…`. */
+  def assertFragmentErrorRedirect(expectedError: String): Task[Unit] =
+    if response.status != Status.SeeOther then
+      ZIO.fail(RuntimeException(s"Expected 303 fragment error redirect, got status=${response.status}"))
+    else
+      val fragmentPart = location.dropWhile(_ != '#').drop(1)
+      if fragmentPart.isEmpty then
+        ZIO.fail(RuntimeException(s"Expected fragment in redirect location, got: $location"))
+      else
+        val params = fragmentPart.split('&').collect:
+          case s if s.contains('=') =>
+            val i = s.indexOf('=')
+            s.substring(0, i) -> java.net.URLDecoder.decode(s.substring(i + 1), "UTF-8")
+        .toMap
+        params.get("error") match
+          case Some(actual) if actual == expectedError => ZIO.unit
+          case Some(actual) =>
+            ZIO.fail(RuntimeException(s"Expected fragment error='$expectedError', got '$actual'; location=$location"))
+          case None =>
+            ZIO.fail(RuntimeException(s"No 'error' param in fragment; location=$location"))
+
 extension (task: Task[AuthorizeResult])
   def assertRedirectTo(path: String): Task[AuthorizeResult] = task.flatMap(_.assertRedirectTo(path))
   def assertChallengeRedirect: Task[AuthorizeResult] = task.flatMap(_.assertChallengeRedirect)
   def assertCodeRedirect: Task[String] = task.flatMap(_.assertCodeRedirect)
   def assertErrorRedirect(expectedError: String): Task[Unit] = task.flatMap(_.assertErrorRedirect(expectedError))
+  def assertFragmentErrorRedirect(expectedError: String): Task[Unit] = task.flatMap(_.assertFragmentErrorRedirect(expectedError))
 
 case class ChallengeResult(response: Response, html: String):
   val step: Option[ConversationStep] = ConversationStep.fromHtml(html)
