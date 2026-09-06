@@ -56,6 +56,17 @@ object JWTSpec extends ZIOSpecDefault:
     ),
   )
 
+  // A JWK type not handled by any case of `verifySignature`'s match (RSAKey/ECKey/OctetSequenceKey),
+  // so it falls through to `case _ => false` rather than attempting real signature verification.
+  private val okpPublicKeys = JWT.PublicKeys(
+    com.nimbusds.jose.jwk.JWKSet(
+      new com.nimbusds.jose.jwk.OctetKeyPair.Builder(
+        com.nimbusds.jose.jwk.Curve.Ed25519,
+        com.nimbusds.jose.util.Base64URL.encode(new Array[Byte](32)),
+      ).keyID("okp-key-1").build(),
+    ),
+  )
+
   // Test claims
   case class TestClaims(sub: String, name: String, admin: Boolean) derives JsonCodec
 
@@ -86,6 +97,9 @@ object JWTSpec extends ZIOSpecDefault:
     parseClaimsTests,
     signatureAlgorithmTests,
     headerTests,
+    leftHalfHashTests,
+    parseHeaderTests,
+    publicKeysTests,
   )
 
   /** Signs an arbitrary Nimbus claims set so claim values of Java types that zio-json would
@@ -165,6 +179,21 @@ object JWTSpec extends ZIOSpecDefault:
     test("falls back to the string form for any other claim type") {
       for claims <- claimJson(_.claim("uri", java.net.URI.create("https://example.com")))
       yield assertTrue(claims.get("uri") == Some(Json.Str("https://example.com")))
+    },
+    // Closes the `case null => Json.Null` gap in `javaObjectToJson` (line 282): a top-level
+    // null claim is dropped entirely by Nimbus's own JSON serialization (so it can never
+    // reach this branch), but a null nested inside a list/map survives the round trip.
+    test("converts a null nested inside a list or map to JSON null") {
+      val listWithNull = new java.util.ArrayList[Object]()
+      listWithNull.add(null)
+      listWithNull.add("x")
+      val mapWithNull = new java.util.LinkedHashMap[String, Object]()
+      mapWithNull.put("inner", null)
+      for claims <- claimJson(_.claim("list", listWithNull).claim("map", mapWithNull))
+      yield assertTrue(
+        claims.get("list") == Some(Json.Arr(Json.Null, Json.Str("x"))),
+        claims.get("map") == Some(Json.Obj("inner" -> Json.Null)),
+      )
     },
   )
 
@@ -252,6 +281,28 @@ object JWTSpec extends ZIOSpecDefault:
         result.get("nothing").forall(_ == Json.Null),
       )
     },
+    // Closes the Json.Num/Json.Arr branches of `serialize`'s custom-claim conversion (lines
+    // 45/47/48): the other serialize-side tests only ever pass string/boolean/object claims.
+    test("serializes numeric and array custom claims") {
+      val claims = JWT.Claims(
+        issuer = "test-issuer",
+        subject = "user123",
+        audience = List("api"),
+        custom = Json.Obj("count" -> Json.Num(42), "tags" -> Json.Arr(Json.Str("a"), Json.Str("b"))),
+      )
+
+      for
+        token <- JWT.serialize(
+          claims = claims,
+          ttl = 1.hour,
+          signature = JWT.Signature.Asymmetric(JWT.Algorithm.RS256, "test-key-1", privateKey),
+        )
+        result <- JWT.deserialize[Json.Obj](token, publicKeys, JWT.Type.JWT)
+      yield assertTrue(
+        result.get("count") == Some(Json.Num(42)),
+        result.get("tags") == Some(Json.Arr(Json.Str("a"), Json.Str("b"))),
+      )
+    },
     test("verifies against an EC key served from the JWKS (not just RSA)") {
       for
         token <- signRawWithHeader(
@@ -271,6 +322,19 @@ object JWTSpec extends ZIOSpecDefault:
         )(_.subject("user123"))
         result <- JWT.deserialize[Json.Obj](token, octetPublicKeys, JWT.Type.JWT)
       yield assertTrue(result.get("sub") == Some(Json.Str("user123")))
+    },
+    // Closes the `case _ => false` gap in `verifySignature` (lines 258/263): a JWK type that
+    // is neither RSAKey, ECKey nor OctetSequenceKey must fail as InvalidSignature without
+    // ever attempting to call `jwt.verify`.
+    test("fails with InvalidSignature for a JWK type not handled by verifySignature (e.g. OKP)") {
+      for
+        token <- signRawWithHeader(
+          "okp-key-1",
+          com.nimbusds.jose.JWSAlgorithm.HS256,
+          com.nimbusds.jose.crypto.MACSigner(symmetricKey),
+        )(_.subject("user123"))
+        result <- JWT.deserialize[Json.Obj](token, okpPublicKeys, JWT.Type.JWT).either
+      yield assertTrue(result == Left(JWT.Error.InvalidSignature))
     },
   )
 
@@ -338,5 +402,68 @@ object JWTSpec extends ZIOSpecDefault:
         _ <- TestClock.adjust(2.hours)
         result <- JWT.deserialize[TestClaims](token, symmetricKey, JWT.Type.JWT).either
       yield assertTrue(result.left.exists { case _: JWT.Error.Expired => true; case _ => false })
+    },
+  )
+
+  // Closes the leftHalfHash function (lines 74/76/78/79): computes the OIDC c_hash/at_hash
+  // value, never previously called by any test.
+  private val leftHalfHashTests = suite("leftHalfHash")(
+    test("is deterministic and depends on the input value") {
+      val hash = JWT.leftHalfHash("token-value", JWT.Algorithm.RS256)
+      assertTrue(
+        hash.nonEmpty,
+        JWT.leftHalfHash("token-value", JWT.Algorithm.RS256) == hash,
+        JWT.leftHalfHash("other-value", JWT.Algorithm.RS256) != hash,
+        // RS256 and HS256 both hash with SHA-256, so they agree for the same input.
+        JWT.leftHalfHash("token-value", JWT.Algorithm.HS256) == hash,
+      )
+    },
+  )
+
+  // Closes the parseHeader function (lines 147-153): decodes only the header segment,
+  // never previously called by any test.
+  private val parseHeaderTests = suite("parseHeader")(
+    test("decodes the header segment without verifying the signature") {
+      for
+        token <- JWT.serialize(
+          claims = JWT.Claims("test-issuer", "user123", List("api"), Json.Obj()),
+          ttl = 1.hour,
+          signature = JWT.Signature.Asymmetric(JWT.Algorithm.RS256, "test-key-1", privateKey),
+        )
+        tampered = token.split('.').nn.updated(2, "not-a-signature").mkString(".")
+        header <- JWT.parseHeader[Json.Obj](tampered)
+      yield assertTrue(header.get("kid") == Some(Json.Str("test-key-1")))
+    },
+    test("fails with InvalidHeader when the header segment isn't valid base64url") {
+      for result <- JWT.parseHeader[Json.Obj]("!!!.payload.sig").either
+      yield assertTrue(result == Left(JWT.Error.InvalidHeader))
+    },
+    test("fails with InvalidHeader when the decoded header segment isn't valid JSON") {
+      val notJson = java.util.Base64.getUrlEncoder.withoutPadding.encodeToString("not-json-text".getBytes)
+      for result <- JWT.parseHeader[Json.Obj](s"$notJson.payload.sig").either
+      yield assertTrue(result == Left(JWT.Error.InvalidHeader))
+    },
+  )
+
+  // Closes PublicKeys/PublicKey's own convenience methods (lines 119/120/123/124/127/130/131/132):
+  // every other test reaches PublicKeys only through JWT.deserialize's `verifySignature`, which
+  // never calls .active, .toString, .fromJson, the given JsonDecoder, .id or .algorithm.
+  private val publicKeysTests = suite("PublicKeys/PublicKey")(
+    test("active returns the first key, exposing its id and algorithm") {
+      val active = publicKeys.active
+      assertTrue(
+        active.id == "test-key-1",
+        active.algorithm == JWT.Algorithm.RS256,
+      )
+    },
+    test("toString, fromJson and the given JsonDecoder all round-trip through the JWKSet JSON") {
+      val json = publicKeys.toString.fromJson[Json.Obj].toOption.get
+      val viaFromJson = JWT.PublicKeys.fromJson(json)
+      val viaJsonDecoder = publicKeys.toString.fromJson[JWT.PublicKeys].toOption.get
+      assertTrue(
+        publicKeys.toString.contains("test-key-1"),
+        viaFromJson.active.id == "test-key-1",
+        viaJsonDecoder.active.id == "test-key-1",
+      )
     },
   )
