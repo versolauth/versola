@@ -4,11 +4,12 @@ import io.opentelemetry.api
 import org.scalamock.stubs.{Stub, ZIOStubs}
 import versola.central.{CentralConfig, TestAdminAuth, TestCentralConfig}
 import versola.central.configuration.*
+import versola.central.configuration.edges.{EdgeId, EdgeRecord, EdgeService}
 import versola.central.configuration.permissions.Permission
 import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.tenants.TenantId
 import versola.util.http.Observability
-import versola.util.{Base64, Base64Url, JWT, Patch, RedirectUri, Secret, SecurityService}
+import versola.util.{Base64, Base64Url, JWT, Patch, RedirectUri, RsaKeyPair, Secret, SecureRandom, SecurityService}
 import zio.*
 import zio.http.*
 import zio.json.*
@@ -17,6 +18,8 @@ import zio.telemetry.opentelemetry.OpenTelemetry
 import zio.telemetry.opentelemetry.tracing.Tracing
 import zio.test.*
 
+import java.security.KeyPairGenerator
+import java.security.interfaces.RSAPublicKey
 import javax.crypto.spec.SecretKeySpec
 
 object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
@@ -32,6 +35,17 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
   private val previousSecret = Secret(Array.fill(48)(2.toByte))
   private val rotatedSecret = Secret(Array.fill(32)(3.toByte))
   private val secretKey = SecretKeySpec(Array.fill(32)(7.toByte), "AES")
+  private val edgeId = EdgeId("edge-1")
+  private val edgeKeyPair =
+    val generator = KeyPairGenerator.getInstance("RSA")
+    generator.initialize(2048)
+    val pair = generator.generateKeyPair()
+    RsaKeyPair(
+      keyId = "client-controller-edge-key",
+      publicKey = pair.getPublic.asInstanceOf[RSAPublicKey],
+      privateKey = pair.getPrivate.asInstanceOf[java.security.interfaces.RSAPrivateKey],
+    )
+  private val edgeRecord = EdgeRecord(edgeId, edgeKeyPair.toPublicJwk, None)
 
   private val config = TestCentralConfig.config
   private val syncToken = Unsafe.unsafe { unsafe ?=>
@@ -363,6 +377,68 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       verify = (_, service, _) =>
         ZIO.succeed(assertTrue(service.getClientsForSync.calls.isEmpty)),
     ),
+    // Gap: getAllClientsSyncEndpoint's edgeId match { case Some(id) => ... } branch (RSA transport
+    // encryption for edge-issued tokens) was never exercised; every other sync test uses a
+    // central-signed token, which takes the `None` (AES) branch.
+    test("return synced tenant clients encrypted via edge RSA key when request is signed by an edge") {
+      // Delegates to the real RSA implementation, so the emitted secret is genuine ciphertext
+      // that only the edge's private key can open, and records which public key was used.
+      // The AES path dies: for an edge-issued token it must not be taken at all.
+      def edgeSecurity(realSecurity: SecurityService, rsaKeys: Ref[Vector[java.security.PublicKey]]) = new SecurityService:
+        override def encryptAes256(data: Array[Byte], key: javax.crypto.SecretKey) =
+          ZIO.dieMessage("AES transport encryption must not be used for an edge-issued token")
+        override def decryptAes256(data: Array[Byte], key: javax.crypto.SecretKey) = ZIO.succeed(data)
+        override def encryptRsa(data: Array[Byte], key: java.security.PublicKey) =
+          rsaKeys.update(_ :+ key) *> realSecurity.encryptRsa(data, key)
+        override def decryptRsa(data: Array[Byte], key: java.security.PrivateKey) = realSecurity.decryptRsa(data, key)
+        override def mac(secret: versola.util.Secret, key: Array[Byte]) = ZIO.dieMessage("Unused in test")
+        override def hashPassword(password: versola.util.Secret, salt: versola.util.Salt, pepper: versola.util.Secret.Bytes16) = ZIO.dieMessage("Unused in test")
+        override def generateRsaKeyPair = ZIO.dieMessage("Unused in test")
+      for
+        client <- ZIO.service[Client]
+        security <- (SecureRandom.live >>> SecurityService.live).build
+        realSecurity = security.get[SecurityService]
+        rsaKeys <- Ref.make(Vector.empty[java.security.PublicKey])
+        service = stub[OAuthClientService]
+        resourceService = stub[versola.central.configuration.resources.ResourceService]
+        edgeService = stub[EdgeService]
+        tracing <- tracingLayer.build
+        token <- JWT.serialize(
+          JWT.Claims("edge", "edge", List("central"), Json.Obj()),
+          1.minute,
+          JWT.Signature.Asymmetric(JWT.Algorithm.RS256, edgeKeyPair.keyId, edgeKeyPair.privateKey),
+          headers = Map("edge_id" -> edgeId.toString),
+        )
+        _ <- edgeService.find.succeedsWith(Some(edgeRecord))
+        _ <- service.getClientsForSync.succeedsWith(Vector(clients.head))
+        _ <- TestClient.addRoutes(
+          Observability.handleErrors(
+            ClientController.routes.provideEnvironment(
+              ZEnvironment[OAuthClientService](service) ++ ZEnvironment[versola.central.configuration.resources.ResourceService](resourceService) ++ ZEnvironment[CentralConfig](config) ++ tracing ++
+                ZEnvironment[SecurityService](edgeSecurity(realSecurity, rsaKeys)) ++ ZEnvironment[EdgeService](edgeService),
+            ),
+          ),
+        )
+        response <- client.batched(
+          Request.get((URL.empty / "configuration" / "clients" / "sync").addQueryParam("tenantId", tenantId.toString))
+            .addHeader(Header.Authorization.Bearer(token)),
+        )
+        payload <- response.body.asJson[GetOAuthClientsSyncResponse]
+        rsaKeysUsed <- rsaKeys.get
+        wireSecret = payload.clients.head.secret
+        recovered <- ZIO.foreach(wireSecret)(s => realSecurity.decryptRsa(Base64.urlDecode(s), edgeKeyPair.privateKey))
+        plaintext = clients.head.secret
+      yield assertTrue(
+        response.status == Status.Ok,
+        // authorizeInternal verifies the token's issuing edge, then the sync endpoint looks
+        // up the edge again to pick its RSA public key for transport encryption.
+        edgeService.find.calls == List(edgeId, edgeId),
+        service.getClientsForSync.calls == List(Some(edgeId)),
+        rsaKeysUsed == Vector(edgeRecord.activeRsaPublicKey),
+        wireSecret.exists(_ != Base64Url.encode(plaintext.get)),
+        recovered.map(_.toVector) == plaintext.map(_.toVector),
+      )
+    }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging,
     controllerTestCase(
       description = "create client and return encoded secret",
       request = Request(
@@ -396,6 +472,56 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
         ZIO.succeed(
           assertTrue(service.registerClient.calls.isEmpty),
         ),
+    ),
+    controllerTestCase(
+      description = "create client returns 409 when the client id already exists",
+      request = Request(
+        method = Method.POST,
+        url = URL.empty / "configuration" / "clients",
+        body = Body.fromString(createRequest.toJson),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.Conflict,
+      setup = service =>
+        service.registerClient.failsWith(ClientAlreadyExists(clientId)),
+    ),
+    controllerTestCase(
+      description = "create client returns 400 when the consent screen URI is invalid",
+      request = Request(
+        method = Method.POST,
+        url = URL.empty / "configuration" / "clients",
+        body = Body.fromString(createRequest.toJson),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.BadRequest,
+      setup = service =>
+        service.registerClient.failsWith(InvalidConsentUri("policyUri", "must be an absolute https URL")),
+      verify = (response, _, _) =>
+        for body <- response.body.asString
+        yield assertTrue(body == "Invalid policyUri: must be an absolute https URL"),
+    ),
+    controllerTestCase(
+      description = "create client returns 400 when the registration configuration is invalid",
+      request = Request(
+        method = Method.POST,
+        url = URL.empty / "configuration" / "clients",
+        body = Body.fromString(createRequest.toJson),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.BadRequest,
+      setup = service =>
+        service.registerClient.failsWith(InvalidRegistrationConfiguration(clientId, "registration must start with OTP verification")),
+      verify = (response, _, _) =>
+        for body <- response.body.asString
+        yield assertTrue(body == "Invalid registration configuration: registration must start with OTP verification"),
+    ),
+    controllerTestCase(
+      description = "create client surfaces an unexpected failure as 500 Internal Server Error",
+      request = Request(
+        method = Method.POST,
+        url = URL.empty / "configuration" / "clients",
+        body = Body.fromString(createRequest.toJson),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.InternalServerError,
+      setup = service =>
+        service.registerClient.failsWith(RuntimeException("boom")),
     ),
     controllerTestCase(
       description = "update client and return no content",
@@ -471,6 +597,65 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
         ZIO.succeed(
           assertTrue(service.updateClient.calls.nonEmpty),
         ),
+    ),
+    // Gap: isSettingValue's `case Patch.Deleted => false` branch is only reached when a logout
+    // URI patch is explicitly nulled out; every other test either omits the field or sets it
+    // to a value (Patch.Modified).
+    controllerTestCase(
+      description = "update client succeeds when clearing a single logout URI via null patch",
+      request = Request(
+        method = Method.PUT,
+        url = URL.empty / "configuration" / "clients",
+        body = Body.fromString(updateRequest.copy(
+          frontChannelLogoutUri = Some(Patch.Deleted),
+        ).toJson),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.NoContent,
+      setup = service =>
+        service.updateClient.succeedsWith(()),
+      verify = (_, service, _) =>
+        ZIO.succeed(
+          assertTrue(service.updateClient.calls == List(updateRequest.copy(frontChannelLogoutUri = Some(Patch.Deleted)))),
+        ),
+    ),
+    controllerTestCase(
+      description = "update client returns 400 when the consent screen URI is invalid",
+      request = Request(
+        method = Method.PUT,
+        url = URL.empty / "configuration" / "clients",
+        body = Body.fromString(updateRequest.toJson),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.BadRequest,
+      setup = service =>
+        service.updateClient.failsWith(InvalidConsentUri("policyUri", "must be an absolute https URL")),
+      verify = (response, _, _) =>
+        for body <- response.body.asString
+        yield assertTrue(body == "Invalid policyUri: must be an absolute https URL"),
+    ),
+    controllerTestCase(
+      description = "update client returns 400 when the registration configuration is invalid",
+      request = Request(
+        method = Method.PUT,
+        url = URL.empty / "configuration" / "clients",
+        body = Body.fromString(updateRequest.toJson),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.BadRequest,
+      setup = service =>
+        service.updateClient.failsWith(InvalidRegistrationConfiguration(clientId, "registration must start with OTP verification")),
+      verify = (response, _, _) =>
+        for body <- response.body.asString
+        yield assertTrue(body == "Invalid registration configuration: registration must start with OTP verification"),
+    ),
+    controllerTestCase(
+      description = "update client surfaces an unexpected failure as 500 Internal Server Error",
+      request = Request(
+        method = Method.PUT,
+        url = URL.empty / "configuration" / "clients",
+        body = Body.fromString(updateRequest.toJson),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.InternalServerError,
+      setup = service =>
+        service.updateClient.failsWith(RuntimeException("boom")),
     ),
     controllerTestCase(
       description = "rotate client secret and return encoded value",
