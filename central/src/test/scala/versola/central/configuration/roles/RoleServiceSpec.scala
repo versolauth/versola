@@ -1,13 +1,14 @@
 package versola.central.configuration.roles
 
 import org.scalamock.stubs.{Stub, ZIOStubs}
+import versola.central.configuration.edges.EdgeId
 import versola.central.configuration.permissions.Permission
 import versola.central.configuration.sync.SyncEvent
-import versola.central.configuration.tenants.{TenantId, TenantRepository}
+import versola.central.configuration.tenants.{TenantId, TenantRecord, TenantRepository}
 import versola.central.configuration.{CreateRoleRequest, PatchDescription, PatchPermissions, UpdateRoleRequest}
 import versola.util.ReloadingCache
-import zio.prelude.EqualOps
 import zio.*
+import zio.prelude.EqualOps
 import zio.test.*
 
 object RoleServiceSpec extends ZIOSpecDefault, ZIOStubs:
@@ -64,7 +65,7 @@ object RoleServiceSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- env.repository.createRole.succeedsWith(())
         _ <- env.service.createRole(createRequest)
       yield assertTrue(
-        env.repository.createRole.calls === List((tenantId, adminRoleId, createRequest.description, createRequest.permissions.toList))
+        env.repository.createRole.calls === List((tenantId, adminRoleId, createRequest.description, createRequest.permissions.toList)),
       )
     },
     test("updateRole delegates request fields to repository") {
@@ -74,7 +75,7 @@ object RoleServiceSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- env.repository.updateRole.succeedsWith(())
         _ <- env.service.updateRole(updateRequest)
       yield assertTrue(
-        env.repository.updateRole.calls == List((tenantId, adminRoleId, updateRequest.description, updateRequest.permissions))
+        env.repository.updateRole.calls == List((tenantId, adminRoleId, updateRequest.description, updateRequest.permissions)),
       )
     },
     test("markRoleInactive delegates tenant and id to repository") {
@@ -152,6 +153,41 @@ object RoleServiceSpec extends ZIOSpecDefault, ZIOStubs:
 
       for
         result <- env.service.getPermissionsForRoles(tenantId, Set.empty)
+      yield assertTrue(result.isEmpty)
+    },
+    test("getRolesForSync returns all cached roles when no edge is specified") {
+      val env = new Env(Vector(adminRole, otherTenantRole))
+
+      for
+        result <- env.service.getRolesForSync(None)
+      yield assertTrue(result === Vector(adminRole, otherTenantRole))
+    },
+    test("getRolesForSync filters roles to tenants assigned to the given edge") {
+      val edgeId = EdgeId("edge-1")
+      val env = new Env(Vector(adminRole, otherTenantRole))
+
+      for
+        _ <- env.tenantRepository.getAll.succeedsWith(
+          Vector(
+            TenantRecord(tenantId, "Tenant A", Some(edgeId)),
+            TenantRecord(otherTenantId, "Tenant B", None),
+          ),
+        )
+        result <- env.service.getRolesForSync(Some(edgeId))
+      yield assertTrue(result === Vector(adminRole))
+    },
+    test("getRolesForSync excludes all roles when no tenant is assigned to the given edge") {
+      val edgeId = EdgeId("edge-1")
+      val env = new Env(Vector(adminRole, otherTenantRole))
+
+      for
+        _ <- env.tenantRepository.getAll.succeedsWith(
+          Vector(
+            TenantRecord(tenantId, "Tenant A", None),
+            TenantRecord(otherTenantId, "Tenant B", None),
+          ),
+        )
+        result <- env.service.getRolesForSync(Some(edgeId))
       yield assertTrue(result.isEmpty)
     },
   )

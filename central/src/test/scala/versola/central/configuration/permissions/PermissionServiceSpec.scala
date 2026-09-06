@@ -1,13 +1,14 @@
 package versola.central.configuration.permissions
 
 import org.scalamock.stubs.{Stub, ZIOStubs}
+import versola.central.configuration.edges.EdgeId
 import versola.central.configuration.resources.ResourceEndpointId
 import versola.central.configuration.sync.SyncEvent
-import versola.central.configuration.tenants.{TenantId, TenantRepository}
+import versola.central.configuration.tenants.{TenantId, TenantRecord, TenantRepository}
 import versola.central.configuration.{CreatePermissionRequest, PatchDescription, UpdatePermissionRequest}
 import versola.util.ReloadingCache
-import zio.prelude.EqualOps
 import zio.*
+import zio.prelude.EqualOps
 import zio.test.*
 
 import java.util.UUID
@@ -22,7 +23,8 @@ object PermissionServiceSpec extends ZIOSpecDefault, ZIOStubs:
   private val readManagedEndpointId = endpointId("018f0f2a-1c7b-7000-8000-000000000103")
   private val writeUpdateEndpointId = endpointId("018f0f2a-1c7b-7000-8000-000000000201")
   private val tenantPermission = PermissionRecord(tenantId, Permission("users:read"), Map("en" -> "Read users"), Set(readListEndpointId))
-  private val otherTenantPermission = PermissionRecord(otherTenantId, Permission("users:write"), Map("en" -> "Write users"), Set(writeUpdateEndpointId))
+  private val otherTenantPermission =
+    PermissionRecord(otherTenantId, Permission("users:write"), Map("en" -> "Write users"), Set(writeUpdateEndpointId))
 
   private val createRequest = CreatePermissionRequest(
     tenantId = tenantId,
@@ -66,7 +68,7 @@ object PermissionServiceSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- env.repository.createPermission.succeedsWith(())
         _ <- env.service.createPermission(createRequest)
       yield assertTrue(
-        env.repository.createPermission.calls === List((tenantId, tenantPermission.id, tenantPermission.description, tenantPermission.endpointIds))
+        env.repository.createPermission.calls === List((tenantId, tenantPermission.id, tenantPermission.description, tenantPermission.endpointIds)),
       )
     },
     test("updatePermission delegates request fields to repository") {
@@ -76,7 +78,7 @@ object PermissionServiceSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- env.repository.updatePermission.succeedsWith(())
         _ <- env.service.updatePermission(updateRequest)
       yield assertTrue(
-        env.repository.updatePermission.calls == List((tenantId, tenantPermission.id, updateRequest.description, updateRequest.endpointIds))
+        env.repository.updatePermission.calls == List((tenantId, tenantPermission.id, updateRequest.description, updateRequest.endpointIds)),
       )
     },
     test("deletePermission delegates tenant and permission to repository") {
@@ -86,6 +88,33 @@ object PermissionServiceSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- env.repository.deletePermission.succeedsWith(())
         _ <- env.service.deletePermission(tenantId, tenantPermission.id)
       yield assertTrue(env.repository.deletePermission.calls === List((tenantId, tenantPermission.id)))
+    },
+    test("getPermissionsForSync returns all cached permissions when no edge is specified") {
+      val env = new Env(Vector(tenantPermission, otherTenantPermission))
+
+      for result <- env.service.getPermissionsForSync(None)
+      yield assertTrue(result === Vector(tenantPermission, otherTenantPermission))
+    },
+    test("getPermissionsForSync filters permissions to tenants routed through the given edge") {
+      val env = new Env(Vector(tenantPermission, otherTenantPermission))
+      val edgeId = EdgeId("edge-1")
+      val routedTenant = TenantRecord(tenantId, "Tenant A", Some(edgeId))
+      val unroutedTenant = TenantRecord(otherTenantId, "Tenant B", None)
+
+      for
+        _ <- env.tenantRepository.getAll.succeedsWith(Vector(routedTenant, unroutedTenant))
+        result <- env.service.getPermissionsForSync(Some(edgeId))
+      yield assertTrue(result === Vector(tenantPermission))
+    },
+    test("getPermissionsForSync returns empty when no tenant is routed through the given edge") {
+      val env = new Env(Vector(tenantPermission, otherTenantPermission))
+      val edgeId = EdgeId("edge-1")
+      val unroutedTenant = TenantRecord(tenantId, "Tenant A", None)
+
+      for
+        _ <- env.tenantRepository.getAll.succeedsWith(Vector(unroutedTenant))
+        result <- env.service.getPermissionsForSync(Some(edgeId))
+      yield assertTrue(result.isEmpty)
     },
     test("sync removes cached permission on delete event") {
       val env = new Env(Vector(tenantPermission, otherTenantPermission))
