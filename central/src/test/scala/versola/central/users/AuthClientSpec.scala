@@ -315,6 +315,51 @@ object AuthClientSpec extends ZIOSpecDefault:
         result <- client.listPasskeys(userId)
       yield assertTrue(result == List(passkeyInfo))
     }.provide(TestClient.layer, ZLayer.succeed(TestCentralConfig.config), tokenServiceLayer, authClientLayer),
+    test("send fails with the status and body when the server returns a non-success status") {
+      for
+        _ <- TestClient.addRoutes(
+          Handler.fromFunctionZIO[Request](_ => ZIO.succeed(Response.text("boom").status(Status.InternalServerError))).toRoutes,
+        )
+        client <- ZIO.service[AuthClient]
+        exit <- client.deleteUser(userId).exit
+      yield assert(exit)(fails(isSubtype[RuntimeException](hasMessage(containsString("500")) && hasMessage(containsString("boom")))))
+    }.provide(TestClient.layer, ZLayer.succeed(TestCentralConfig.config), tokenServiceLayer, authClientLayer),
+    test("sendReceive fails with the status and body when the server returns a non-success status") {
+      for
+        _ <- TestClient.addRoutes(
+          Handler.fromFunctionZIO[Request](_ => ZIO.succeed(Response.text("nope").status(Status.BadRequest))).toRoutes,
+        )
+        client <- ZIO.service[AuthClient]
+        exit <- client.getUserRoles(userId, tenantId).exit
+      yield assert(exit)(fails(isSubtype[RuntimeException](hasMessage(containsString("400")) && hasMessage(containsString("nope")))))
+    }.provide(TestClient.layer, ZLayer.succeed(TestCentralConfig.config), tokenServiceLayer, authClientLayer),
+    test("sendReceive fails when the response body isn't valid JSON") {
+      for
+        _ <- TestClient.addRoutes(
+          Handler.fromFunctionZIO[Request](_ => ZIO.succeed(Response.text("not-json"))).toRoutes,
+        )
+        client <- ZIO.service[AuthClient]
+        exit <- client.getUserRoles(userId, tenantId).exit
+      yield assert(exit)(fails(isSubtype[RuntimeException](hasMessage(containsString("decode")))))
+    }.provide(TestClient.layer, ZLayer.succeed(TestCentralConfig.config), tokenServiceLayer, authClientLayer),
+    test("sendReceiveOptional fails with the status and body when the server returns a non-success, non-204 status") {
+      for
+        _ <- TestClient.addRoutes(
+          Handler.fromFunctionZIO[Request](_ => ZIO.succeed(Response.text("denied").status(Status.Forbidden))).toRoutes,
+        )
+        client <- ZIO.service[AuthClient]
+        exit <- client.getUserClaims(userId).exit
+      yield assert(exit)(fails(isSubtype[RuntimeException](hasMessage(containsString("403")) && hasMessage(containsString("denied")))))
+    }.provide(TestClient.layer, ZLayer.succeed(TestCentralConfig.config), tokenServiceLayer, authClientLayer),
+    test("sendReceiveOptional fails when a 200 response body isn't valid JSON") {
+      for
+        _ <- TestClient.addRoutes(
+          Handler.fromFunctionZIO[Request](_ => ZIO.succeed(Response.text("not-json"))).toRoutes,
+        )
+        client <- ZIO.service[AuthClient]
+        exit <- client.getUserClaims(userId).exit
+      yield assert(exit)(fails(isSubtype[RuntimeException](hasMessage(containsString("decode")))))
+    }.provide(TestClient.layer, ZLayer.succeed(TestCentralConfig.config), tokenServiceLayer, authClientLayer),
   )
 
   // ── withConnectionRetry ─────────────────────────────────────────────────────
