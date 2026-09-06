@@ -9,7 +9,7 @@ import versola.central.configuration.permissions.Permission
 import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.tenants.TenantId
 import versola.util.http.Observability
-import versola.util.{Base64, Base64Url, JWT, Patch, RedirectUri, RsaKeyPair, Secret, SecurityService}
+import versola.util.{Base64, Base64Url, JWT, Patch, RedirectUri, RsaKeyPair, Secret, SecureRandom, SecurityService}
 import zio.*
 import zio.http.*
 import zio.json.*
@@ -381,16 +381,24 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
     // encryption for edge-issued tokens) was never exercised; every other sync test uses a
     // central-signed token, which takes the `None` (AES) branch.
     test("return synced tenant clients encrypted via edge RSA key when request is signed by an edge") {
-      val edgeSecurity = new SecurityService:
-        override def encryptAes256(data: Array[Byte], key: javax.crypto.SecretKey) = ZIO.succeed(data)
+      // Delegates to the real RSA implementation, so the emitted secret is genuine ciphertext
+      // that only the edge's private key can open, and records which public key was used.
+      // The AES path dies: for an edge-issued token it must not be taken at all.
+      def edgeSecurity(realSecurity: SecurityService, rsaKeys: Ref[Vector[java.security.PublicKey]]) = new SecurityService:
+        override def encryptAes256(data: Array[Byte], key: javax.crypto.SecretKey) =
+          ZIO.dieMessage("AES transport encryption must not be used for an edge-issued token")
         override def decryptAes256(data: Array[Byte], key: javax.crypto.SecretKey) = ZIO.succeed(data)
-        override def encryptRsa(data: Array[Byte], key: java.security.PublicKey) = ZIO.succeed(data)
-        override def decryptRsa(data: Array[Byte], key: java.security.PrivateKey) = ZIO.dieMessage("Unused in test")
+        override def encryptRsa(data: Array[Byte], key: java.security.PublicKey) =
+          rsaKeys.update(_ :+ key) *> realSecurity.encryptRsa(data, key)
+        override def decryptRsa(data: Array[Byte], key: java.security.PrivateKey) = realSecurity.decryptRsa(data, key)
         override def mac(secret: versola.util.Secret, key: Array[Byte]) = ZIO.dieMessage("Unused in test")
         override def hashPassword(password: versola.util.Secret, salt: versola.util.Salt, pepper: versola.util.Secret.Bytes16) = ZIO.dieMessage("Unused in test")
         override def generateRsaKeyPair = ZIO.dieMessage("Unused in test")
       for
         client <- ZIO.service[Client]
+        security <- (SecureRandom.live >>> SecurityService.live).build
+        realSecurity = security.get[SecurityService]
+        rsaKeys <- Ref.make(Vector.empty[java.security.PublicKey])
         service = stub[OAuthClientService]
         resourceService = stub[versola.central.configuration.resources.ResourceService]
         edgeService = stub[EdgeService]
@@ -407,7 +415,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
           Observability.handleErrors(
             ClientController.routes.provideEnvironment(
               ZEnvironment[OAuthClientService](service) ++ ZEnvironment[versola.central.configuration.resources.ResourceService](resourceService) ++ ZEnvironment[CentralConfig](config) ++ tracing ++
-                ZEnvironment[SecurityService](edgeSecurity) ++ ZEnvironment[EdgeService](edgeService),
+                ZEnvironment[SecurityService](edgeSecurity(realSecurity, rsaKeys)) ++ ZEnvironment[EdgeService](edgeService),
             ),
           ),
         )
@@ -416,13 +424,19 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
             .addHeader(Header.Authorization.Bearer(token)),
         )
         payload <- response.body.asJson[GetOAuthClientsSyncResponse]
+        rsaKeysUsed <- rsaKeys.get
+        wireSecret = payload.clients.head.secret
+        recovered <- ZIO.foreach(wireSecret)(s => realSecurity.decryptRsa(Base64.urlDecode(s), edgeKeyPair.privateKey))
+        plaintext = clients.head.secret
       yield assertTrue(
         response.status == Status.Ok,
         // authorizeInternal verifies the token's issuing edge, then the sync endpoint looks
         // up the edge again to pick its RSA public key for transport encryption.
         edgeService.find.calls == List(edgeId, edgeId),
         service.getClientsForSync.calls == List(Some(edgeId)),
-        payload.clients.head.secret.isDefined,
+        rsaKeysUsed == Vector(edgeRecord.activeRsaPublicKey),
+        wireSecret.exists(_ != Base64Url.encode(plaintext.get)),
+        recovered.map(_.toVector) == plaintext.map(_.toVector),
       )
     }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging,
     controllerTestCase(
