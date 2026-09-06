@@ -385,4 +385,80 @@ object LogoutControllerSpec extends UnitSpecBase:
           logoutService.logout.calls === List((Right(rawSessionId), None, None)),
         )),
     ),
+    controllerTestCase(
+      description = "POST /logout with a valid csrf_token but an unknown session still logs out and clears the cookie",
+      // Also carries post_logout_redirect_uri so this exercises the same-branch URL.decode(...)
+      // call, not just the case None => performLogout(...) match arm.
+      request = Request.post(
+        URL.root / "logout",
+        Body.fromURLEncodedForm(Form.fromStrings(
+          "csrf_token" -> csrfToken(rawSessionId, Some(redirectUri.encode)),
+          "post_logout_redirect_uri" -> redirectUri.encode,
+        )),
+      ).addHeader(sessionCookieHeader()),
+      expectedStatus = Status.Ok,
+      setup = (logoutService, renderService, sessionService) =>
+        sessionService.find.succeedsWith(None) *>
+          logoutService.logout.succeedsWith(logoutResult) *>
+          renderService.renderLogout.succeedsWith(Response.text("<html>logout</html>")),
+      verify = (response, logoutService, _, sessionService) =>
+        ZIO.succeed(assertTrue(
+          sessionService.find.calls === List(rawSessionId),
+          logoutService.logout.calls === List((Right(rawSessionId), Some(redirectUri), None)),
+          response.headers.get(Header.SetCookie).exists { h =>
+            h.renderedValue.contains(SessionCookie.name) && h.renderedValue.contains("Max-Age=0")
+          },
+        )),
+    ),
+    controllerTestCase(
+      description = "POST /logout with a session cookie and a matching id_token_hint logs out immediately without csrf",
+      request = Request.post((URL.root / "logout").addQueryParam("id_token_hint", idTokenHint(sid = publicSessionId)), Body.empty)
+        .addHeader(sessionCookieHeader()),
+      expectedStatus = Status.Ok,
+      setup = (logoutService, renderService, sessionService) =>
+        sessionService.find.succeedsWith(Some(sessionInfo)) *>
+          logoutService.logout.succeedsWith(logoutResult) *>
+          renderService.renderLogout.succeedsWith(Response.text("<html>logout</html>")),
+      verify = (_, logoutService, _, sessionService) =>
+        ZIO.succeed(assertTrue(
+          sessionService.find.calls === List(rawSessionId),
+          logoutService.logout.calls === List((Right(rawSessionId), None, None)),
+        )),
+    ),
+    controllerTestCase(
+      description = "POST /logout with a session cookie and a mismatched id_token_hint does not log out immediately",
+      request = Request.post((URL.root / "logout").addQueryParam("id_token_hint", idTokenHint(sid = "other-sid")), Body.empty)
+        .addHeader(sessionCookieHeader()),
+      expectedStatus = Status.Ok,
+      setup = (_, renderService, sessionService) =>
+        sessionService.find.succeedsWith(Some(sessionInfo)) *>
+          renderService.renderLogout.succeedsWith(Response.text("<html>logout</html>")),
+      verify = (response, logoutService, renderService, _) =>
+        ZIO.succeed(assertTrue(
+          logoutService.logout.calls.isEmpty,
+          renderService.renderLogout.calls === List((Nil, None, None)),
+          response.headers.get(Header.SetCookie).isEmpty,
+        )),
+    ),
+    controllerTestCase(
+      description = "POST /logout resolves identifier from id_token_hint when no session cookie is present",
+      request = Request.post((URL.root / "logout").addQueryParam("id_token_hint", idTokenHint()), Body.empty),
+      expectedStatus = Status.Ok,
+      setup = (logoutService, renderService, _) =>
+        logoutService.logout.succeedsWith(logoutResult) *>
+          renderService.renderLogout.succeedsWith(Response.text("<html>logout</html>")),
+      verify = (_, logoutService, _, _) =>
+        ZIO.succeed(assertTrue(logoutService.logout.calls === List((Left(publicSessionId), None, None)))),
+    ),
+    controllerTestCase(
+      description = "POST /logout returns 200 OK without calling LogoutService when no identifier is present",
+      request = Request.post(URL.root / "logout", Body.empty),
+      expectedStatus = Status.Ok,
+      setup = (_, renderService, _) => renderService.renderLogout.succeedsWith(Response.text("<html>logout</html>")),
+      verify = (_, logoutService, renderService, _) =>
+        ZIO.succeed(assertTrue(
+          logoutService.logout.calls.isEmpty,
+          renderService.renderLogout.calls == List((Nil, None, None)),
+        )),
+    ),
   )

@@ -197,6 +197,39 @@ object ConversationServiceSpec extends UnitSpecBase:
     yield ()
 
   def spec = suite("ConversationService")(
+    // Covers ConversationService.live (the ZLayer.fromFunction wiring): every other test builds
+    // Impl directly, so nothing else exercises the layer construction itself.
+    suite("live")(
+      test("wires Impl from its dependencies and delegates find") {
+        val env = Env()
+        for
+          service <- ZIO.service[ConversationService].provide(
+            ZLayer.succeed(env.otpService),
+            ZLayer.succeed(env.passwordService),
+            ZLayer.succeed(env.conversationRepository),
+            ZLayer.succeed(env.userRepository),
+            ZLayer.succeed(env.authorizationCodeRepository),
+            ZLayer.succeed(env.sessionRepository),
+            ZLayer.succeed(env.authPropertyGenerator),
+            ZLayer.succeed(env.securityService),
+            ZLayer.succeed(env.userInfoService),
+            ZLayer.succeed(TestEnvConfig.coreConfig),
+            ZLayer.succeed(env.submissionLimiter),
+            ZLayer.succeed(env.webAuthnService),
+            ZLayer.succeed(env.passkeyRepository),
+            ZLayer.succeed(env.configService),
+            ZLayer.succeed(env.acrResolver),
+            ZLayer.succeed(env.userAgentRepository),
+            ZLayer.succeed(env.secureRandom),
+            ZLayer.succeed(env.userService),
+            ZLayer.succeed(env.consentService),
+            ConversationService.live,
+          )
+          _ <- env.conversationRepository.find.succeedsWith(Some(conversationRecord))
+          result <- service.find(authId)
+        yield assertTrue(result == Some(conversationRecord))
+      },
+    ),
     suite("find")(
       test("delegates to the conversation repository") {
         val env = Env()
