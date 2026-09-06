@@ -107,12 +107,18 @@ object VirtualAuthenticator:
       challenge: String,
       credentialId: Array[Byte],
       pub: ECPublicKey,
+      // Non-empty to make the fabricated response report authenticator transports, so tests can
+      // reach WebAuthnService.Impl.fromYubico's per-transport mapping.
+      transports: List[String] = Nil,
   ): String =
     val clientData = s"""{"type":"webauthn.create","challenge":"$challenge","origin":"$origin"}"""
     val authData = authenticatorData(rpId, credentialId, pub, attested = true)
+    val transportsJson =
+      if transports.isEmpty then ""
+      else s""","transports":[${transports.map(t => s"\"$t\"").mkString(",")}]"""
     s"""{"id":"${b64Url(credentialId)}","rawId":"${b64Url(credentialId)}","response":{"clientDataJSON":"${b64Url(
         clientData.getBytes("UTF-8"),
-      )}","attestationObject":"${b64Url(attestationObject(authData))}"},"type":"public-key","clientExtensionResults":{}}"""
+      )}","attestationObject":"${b64Url(attestationObject(authData))}"$transportsJson},"type":"public-key","clientExtensionResults":{}}"""
 
   /** Builds a `response` JSON accepted by `PublicKeyCredential.parseAssertionResponseJson`,
     * simulating an authenticator asserting `credentialId`, signed with its private key.
@@ -461,5 +467,187 @@ object WebAuthnServiceSpec extends UnitSpecBase:
         _ <- repository.updateUsage.succeedsWith(false)
         result <- service.finishAssertion(settings, ceremony.request, response).exit
       yield assert(result)(fails(equalTo(WebAuthnError.AssertionFailed)))
+    },
+
+    // Covers WebAuthnService.Impl.fromYubico (every explicit case plus the INTERNAL default):
+    // reached only when the authenticator's response reports transports, which none of the
+    // other tests' fabricated responses do.
+    test("finishRegistration maps every reported transport back from the Yubico transport type") {
+      val repository = stub[PasskeyRepository]
+      val configService = stub[OAuthConfigurationService]
+      val credentialId = "test-credential-5".getBytes("UTF-8")
+      val keyPair = VirtualAuthenticator.keyPair()
+
+      for
+        service <- ZIO.service[WebAuthnService].provide(
+          ZLayer.succeed(repository),
+          ZLayer.succeed(configService),
+          WebAuthnService.live,
+        )
+        _ <- repository.listByUser.succeedsWith(Vector.empty)
+        ceremony <- service.startRegistration(settings, userId, "Test User")
+        challenge = VirtualAuthenticator.extractChallenge(ceremony.publicKeyOptions)
+        response = VirtualAuthenticator.registrationResponse(
+          rpId = settings.rpId,
+          origin = settings.origins.head,
+          challenge = challenge,
+          credentialId = credentialId,
+          pub = keyPair.getPublic.asInstanceOf[java.security.interfaces.ECPublicKey],
+          transports = List("ble", "hybrid", "nfc", "usb", "internal"),
+        )
+        _ <- configService.getPasskeySettings.succeedsWith(Some(settings))
+        _ <- repository.findByCredentialId.succeedsWith(Vector.empty)
+        _ <- repository.insert.succeedsWith(())
+        record <- service.finishRegistration(clientId, userId, ceremony.request, response, None)
+      yield assertTrue(
+        record.transports.toSet == Set(
+          AuthenticatorTransport.Ble,
+          AuthenticatorTransport.Hybrid,
+          AuthenticatorTransport.Nfc,
+          AuthenticatorTransport.Usb,
+          AuthenticatorTransport.Internal,
+        ),
+      )
+    },
+
+    // Covers startRegistration's own `.mapError`: the ceremony-building step can throw before
+    // any repository call happens (an invalid identity here), independent of a repository failure.
+    test("startRegistration fails with CeremonyFailed when the user identity cannot be built") {
+      val repository = stub[PasskeyRepository]
+      val configService = stub[OAuthConfigurationService]
+      for
+        service <- ZIO.service[WebAuthnService].provide(
+          ZLayer.succeed(repository),
+          ZLayer.succeed(configService),
+          WebAuthnService.live,
+        )
+        result <- service.startRegistration(settings, userId, null).exit
+      yield assert(result)(fails(isSubtype[WebAuthnError.CeremonyFailed](anything)))
+    },
+
+    // Covers startAssertion's own `.mapError`, the mirror of the above for the assertion ceremony.
+    test("startAssertion fails with CeremonyFailed when the relying party identity is invalid") {
+      val repository = stub[PasskeyRepository]
+      val configService = stub[OAuthConfigurationService]
+      for
+        service <- ZIO.service[WebAuthnService].provide(
+          ZLayer.succeed(repository),
+          ZLayer.succeed(configService),
+          WebAuthnService.live,
+        )
+        result <- service.startAssertion(settings.copy(rpId = null)).exit
+      yield assert(result)(fails(isSubtype[WebAuthnError.CeremonyFailed](anything)))
+    },
+
+    // Covers the `.mapError` on the `updateUsage` call itself: a genuine repository failure (not
+    // just "no row updated") must surface as CeremonyFailed.
+    test("finishAssertion fails with CeremonyFailed when updateUsage fails") {
+      val repository = stub[PasskeyRepository]
+      val configService = stub[OAuthConfigurationService]
+      val keyPair = VirtualAuthenticator.keyPair()
+      val pub = keyPair.getPublic.asInstanceOf[java.security.interfaces.ECPublicKey]
+      val priv = keyPair.getPrivate.asInstanceOf[java.security.interfaces.ECPrivateKey]
+      val credId = CredentialId("test-credential-6".getBytes("UTF-8"))
+      val record = passkeyRecord(credId, userId).copy(publicKey = VirtualAuthenticator.publicKeyCose(pub))
+
+      for
+        service <- ZIO.service[WebAuthnService].provide(
+          ZLayer.succeed(repository),
+          ZLayer.succeed(configService),
+          WebAuthnService.live,
+        )
+        ceremony <- service.startAssertion(settings)
+        challenge = VirtualAuthenticator.extractChallenge(ceremony.publicKeyOptions)
+        response = VirtualAuthenticator.assertionResponse(
+          rpId = settings.rpId,
+          origin = settings.origins.head,
+          challenge = challenge,
+          credentialId = credId,
+          userHandle = VirtualAuthenticator.userHandle(userId),
+          pub = pub,
+          priv = priv,
+        )
+        _ <- repository.findByCredentialId.succeedsWith(Vector(record))
+        _ <- repository.findByCredentialIdAndUser.succeedsWith(Some(record))
+        _ <- repository.updateUsage.failsWith(new RuntimeException("db unavailable"))
+        result <- service.finishAssertion(settings, ceremony.request, response).exit
+      yield assert(result)(fails(isSubtype[WebAuthnError.CeremonyFailed](anything)))
+    },
+
+    // repository.findByCredentialIdAndUser also backs the RP's own signature-verification lookup
+    // (call #1, which must keep succeeding for the ceremony to verify at all); only the fallback
+    // call after `updateUsage` reports no row (call #2) is made to fail here, to reach the
+    // `.mapError` guarding that specific lookup.
+    test("finishAssertion fails with CeremonyFailed when the post-updateUsage lookup fails") {
+      val repository = stub[PasskeyRepository]
+      val configService = stub[OAuthConfigurationService]
+      val keyPair = VirtualAuthenticator.keyPair()
+      val pub = keyPair.getPublic.asInstanceOf[java.security.interfaces.ECPublicKey]
+      val priv = keyPair.getPrivate.asInstanceOf[java.security.interfaces.ECPrivateKey]
+      val credId = CredentialId("test-credential-7".getBytes("UTF-8"))
+      val record = passkeyRecord(credId, userId).copy(publicKey = VirtualAuthenticator.publicKeyCose(pub))
+
+      for
+        service <- ZIO.service[WebAuthnService].provide(
+          ZLayer.succeed(repository),
+          ZLayer.succeed(configService),
+          WebAuthnService.live,
+        )
+        ceremony <- service.startAssertion(settings)
+        challenge = VirtualAuthenticator.extractChallenge(ceremony.publicKeyOptions)
+        response = VirtualAuthenticator.assertionResponse(
+          rpId = settings.rpId,
+          origin = settings.origins.head,
+          challenge = challenge,
+          credentialId = credId,
+          userHandle = VirtualAuthenticator.userHandle(userId),
+          pub = pub,
+          priv = priv,
+        )
+        _ <- repository.findByCredentialId.succeedsWith(Vector(record))
+        _ <- repository.findByCredentialIdAndUser.returnsZIOOnCall:
+          case 1 => ZIO.succeed(Some(record))
+          case _ => ZIO.fail(new RuntimeException("db unavailable"))
+        _ <- repository.updateUsage.succeedsWith(false)
+        result <- service.finishAssertion(settings, ceremony.request, response).exit
+      yield assert(result)(fails(isSubtype[WebAuthnError.CeremonyFailed](anything)))
+    },
+
+    // Mirrors the test above, but the fallback lookup succeeds with no record: the passkey was
+    // deleted between the signature check and here, so this must fail typed as CredentialNotFound
+    // rather than the generic AssertionFailed used when the record is still present.
+    test("finishAssertion fails with CredentialNotFound when the record vanished after updateUsage reported no row") {
+      val repository = stub[PasskeyRepository]
+      val configService = stub[OAuthConfigurationService]
+      val keyPair = VirtualAuthenticator.keyPair()
+      val pub = keyPair.getPublic.asInstanceOf[java.security.interfaces.ECPublicKey]
+      val priv = keyPair.getPrivate.asInstanceOf[java.security.interfaces.ECPrivateKey]
+      val credId = CredentialId("test-credential-8".getBytes("UTF-8"))
+      val record = passkeyRecord(credId, userId).copy(publicKey = VirtualAuthenticator.publicKeyCose(pub))
+
+      for
+        service <- ZIO.service[WebAuthnService].provide(
+          ZLayer.succeed(repository),
+          ZLayer.succeed(configService),
+          WebAuthnService.live,
+        )
+        ceremony <- service.startAssertion(settings)
+        challenge = VirtualAuthenticator.extractChallenge(ceremony.publicKeyOptions)
+        response = VirtualAuthenticator.assertionResponse(
+          rpId = settings.rpId,
+          origin = settings.origins.head,
+          challenge = challenge,
+          credentialId = credId,
+          userHandle = VirtualAuthenticator.userHandle(userId),
+          pub = pub,
+          priv = priv,
+        )
+        _ <- repository.findByCredentialId.succeedsWith(Vector(record))
+        _ <- repository.findByCredentialIdAndUser.returnsZIOOnCall:
+          case 1 => ZIO.succeed(Some(record))
+          case _ => ZIO.succeed(None)
+        _ <- repository.updateUsage.succeedsWith(false)
+        result <- service.finishAssertion(settings, ceremony.request, response).exit
+      yield assert(result)(fails(equalTo(WebAuthnError.CredentialNotFound)))
     },
   )
