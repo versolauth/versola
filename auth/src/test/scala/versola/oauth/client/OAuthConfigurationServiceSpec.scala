@@ -1,12 +1,13 @@
 package versola.oauth.client
 
 import versola.oauth.client.model.*
+import versola.oauth.conversation.otp.model.OtpTemplate
 import versola.oauth.metadata.MetadataSyncClient
 import versola.util.*
 import zio.*
 import zio.durationInt
 import zio.json.ast.Json
-import zio.prelude.NonEmptySet
+import zio.prelude.{NonEmptyList, NonEmptySet}
 import zio.test.*
 
 object OAuthConfigurationServiceSpec extends UnitSpecBase:
@@ -220,10 +221,59 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
         result <- env.getOtpSettings(clientId1)
       yield assertTrue(result.length == 6, result.resendAfter == 60)
     },
+    test("getOtpSettings returns default settings for unknown client") {
+      for
+        env <- makeEnv()
+        result <- env.getOtpSettings(ClientId("missing"))
+      yield assertTrue(result == OtpSettings.default)
+    },
+    test("getSubmissionLimits returns limits from challenge settings for known client") {
+      val limits = SubmissionLimits(banDurationSeconds = 30)
+      for
+        env <- makeEnv(challengeSettingsVec = Vector(challengeSettings.copy(submissionLimits = limits)))
+        result <- env.getSubmissionLimits(clientId1)
+      yield assertTrue(result == limits)
+    },
+    test("getSubmissionLimits returns empty for unknown client") {
+      for
+        env <- makeEnv()
+        result <- env.getSubmissionLimits(ClientId("missing"))
+      yield assertTrue(result == SubmissionLimits.empty)
+    },
+    test("getIpHeader returns header from challenge settings for known client") {
+      for
+        env <- makeEnv(challengeSettingsVec = Vector(challengeSettings.copy(ipHeader = "X-Custom-IP")))
+        result <- env.getIpHeader(clientId1)
+      yield assertTrue(result == "X-Custom-IP")
+    },
+    test("getIpHeader returns default header for unknown client") {
+      for
+        env <- makeEnv()
+        result <- env.getIpHeader(ClientId("missing"))
+      yield assertTrue(result == "X-Real-IP")
+    },
+    test("getPasskeySettings returns settings for known client") {
+      for
+        env <- makeEnv()
+        result <- env.getPasskeySettings(clientId1)
+      yield assertTrue(result.contains(challengeSettings.passkeySettings))
+    },
+    test("getPasskeySettings returns None for unknown client") {
+      for
+        env <- makeEnv()
+        result <- env.getPasskeySettings(ClientId("missing"))
+      yield assertTrue(result.isEmpty)
+    },
     test("getAuthConversationTtl returns duration from challenge settings") {
       for
         env <- makeEnv()
         result <- env.getAuthConversationTtl(clientId1)
+      yield assertTrue(result == Duration.fromSeconds(900))
+    },
+    test("getAuthConversationTtl returns default when client not found") {
+      for
+        env <- makeEnv()
+        result <- env.getAuthConversationTtl(ClientId("missing"))
       yield assertTrue(result == Duration.fromSeconds(900))
     },
     test("getSessionTtl returns duration from challenge settings") {
@@ -232,11 +282,23 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
         result <- env.getSessionTtl(clientId1)
       yield assertTrue(result == Duration.fromSeconds(86400))
     },
+    test("getSessionTtl returns default when client not found") {
+      for
+        env <- makeEnv()
+        result <- env.getSessionTtl(ClientId("missing"))
+      yield assertTrue(result == Duration.fromSeconds(86400))
+    },
     test("getSessionIdleTtl returns Some when set") {
       for
         env <- makeEnv()
         result <- env.getSessionIdleTtl(clientId1)
       yield assertTrue(result.contains(Duration.fromSeconds(3600)))
+    },
+    test("getSessionIdleTtl returns None when client not found") {
+      for
+        env <- makeEnv()
+        result <- env.getSessionIdleTtl(ClientId("missing"))
+      yield assertTrue(result.isEmpty)
     },
     test("getUserAgentTtl returns duration from challenge settings") {
       for
@@ -299,6 +361,61 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
         unknown.isEmpty,
       )
     },
+    suite("getAcrVocabulary")(
+      test("returns empty map for unknown client") {
+        for
+          env <- makeEnv()
+          result <- env.getAcrVocabulary(ClientId("missing"))
+        yield assertTrue(result.isEmpty)
+      },
+      test("returns empty map when challenge settings carry no vocabulary") {
+        for
+          env <- makeEnv()
+          result <- env.getAcrVocabulary(clientId1)
+        yield assertTrue(result.isEmpty)
+      },
+      test("converts the configured vocabulary to non-empty factor lists") {
+        val vocabulary = Map("urn:mfa" -> List(PassedAuthFactor.otp, PassedAuthFactor.password))
+        for
+          env <- makeEnv(challengeSettingsVec = Vector(challengeSettings.copy(acrVocabulary = Some(vocabulary))))
+          result <- env.getAcrVocabulary(clientId1)
+        yield assertTrue(result == Map(Acr("urn:mfa") -> NonEmptyList(PassedAuthFactor.otp, PassedAuthFactor.password)))
+      },
+    ),
+    suite("getPasswordTemplate")(
+      test("fails when no global template matches the purpose and channel") {
+        for
+          env <- makeEnv()
+          result <- env.getPasswordTemplate(OtpTemplateChannel.email, None).either
+        yield assertTrue(result.left.map(_.getMessage) == Left("No global password template configured"))
+      },
+      test("falls back to any localization when uiLocales and default locale don't match") {
+        val template = OtpTemplateRecord(
+          id = "password-template",
+          tenantId = tenantId,
+          localizations = Map("fr" -> "Corps FR"),
+          purpose = OtpTemplatePurpose.password,
+          channel = OtpTemplateChannel.email,
+        )
+        for
+          env <- makeEnv(otpTemplates = Vector(template))
+          result <- env.getPasswordTemplate(OtpTemplateChannel.email, Some(List("de")))
+        yield assertTrue(result == OtpTemplate("Corps FR"))
+      },
+      test("fails when the matching template has no localizations") {
+        val template = OtpTemplateRecord(
+          id = "password-template",
+          tenantId = tenantId,
+          localizations = Map.empty,
+          purpose = OtpTemplatePurpose.password,
+          channel = OtpTemplateChannel.sms,
+        )
+        for
+          env <- makeEnv(otpTemplates = Vector(template))
+          result <- env.getPasswordTemplate(OtpTemplateChannel.sms, None).either
+        yield assertTrue(result.left.map(_.getMessage) == Left("Password template has no localizations"))
+      },
+    ),
     suite("resources")(
       test("findResource matches on tenant and resource URI") {
         for
@@ -344,6 +461,114 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
           loaded <- env.accountResourceSecrets
           none <- empty.accountResourceSecrets
         yield assertTrue(loaded.map(_.toSeq) == secrets.map(_.toSeq), none.isEmpty)
+      },
+    ),
+    suite("syncConfiguration")(
+      test("refreshes every cache from its repository") {
+        val newClients = Map(clientId1 -> privateClient)
+        val newScopes = Vector(ScopeRecord(ScopeToken("write"), Map("en" -> "Write access"), Vector.empty))
+        val newForms = Vector(testForm.copy(id = "form-2"))
+        val newThemes = Vector(testTheme.copy(id = "dark"))
+        val newLocales = Locales(Vector(LocaleRecord("fr", "Français")), "fr")
+        val newOtpTemplates = Vector(
+          OtpTemplateRecord("tmpl-2", tenantId, Map("en" -> "code"), OtpTemplatePurpose.otp, OtpTemplateChannel.sms),
+        )
+        val newChallengeSettings = Vector(challengeSettings.copy(ipHeader = "X-Forwarded-For"))
+        val newSystemSettings = systemSettings.copy(identityProviderLogo = Some("new-logo.svg"))
+        val newMetadata = Json.Obj("issuer" -> Json.Str("https://idp.example"))
+        val newResources = Vector(resourceRecord)
+        val newSecrets = List(Secret(Array.fill(16)(3.toByte)))
+        val newAuthorizationDetailTypes = Vector(
+          AuthorizationDetailTypeRecord(tenantId, AuthorizationDetailType("payment"), Json.Obj()),
+        )
+
+        // `makeEnv` builds its stubs inline as constructor args, typed away to their trait
+        // (Impl's field types), so `.succeedsWith` isn't reachable through `env.xRepository`
+        // -- keep typed handles to the stubs here instead and build Impl directly.
+        val clientRepository = stub[OAuthClientSyncClient]
+        val scopeRepository = stub[OAuthScopeSyncClient]
+        val formRepository = stub[FormSyncClient]
+        val themeRepository = stub[ThemeSyncClient]
+        val localeRepository = stub[LocaleSyncClient]
+        val otpTemplateRepository = stub[OtpTemplateSyncClient]
+        val challengeSettingsRepository = stub[ChallengeSettingsSyncClient]
+        val systemSettingsRepository = stub[SystemSettingsSyncClient]
+        val metadataRepository = stub[MetadataSyncClient]
+        val resourceRepository = stub[ResourceSyncClient]
+        val authorizationDetailTypeRepository = stub[AuthorizationDetailTypeSyncClient]
+
+        for
+          clientRef <- Ref.make(Map(clientId1 -> privateClient, publicClientId -> publicClient))
+          scopeRef <- Ref.make(testScopes)
+          formRef <- Ref.make(Vector(testForm))
+          themeRef <- Ref.make(Vector(testTheme))
+          localeRef <- Ref.make(testLocales)
+          otpRef <- Ref.make(Vector.empty[OtpTemplateRecord])
+          challengeRef <- Ref.make(Vector(challengeSettings))
+          sysRef <- Ref.make(systemSettings)
+          metadataRef <- Ref.make(Json.Obj())
+          resourceRef <- Ref.make(ResourceSyncClient.SyncResult(Vector.empty, Nil))
+          authDetailTypeRef <- Ref.make(Vector.empty[AuthorizationDetailTypeRecord])
+          env = OAuthConfigurationService.Impl(
+            clientCache = ReloadingCache(clientRef),
+            clientRepository = clientRepository,
+            scopeCache = ReloadingCache(scopeRef),
+            scopeRepository = scopeRepository,
+            formCache = ReloadingCache(formRef),
+            formRepository = formRepository,
+            themeCache = ReloadingCache(themeRef),
+            themeRepository = themeRepository,
+            localeCache = ReloadingCache(localeRef),
+            localeRepository = localeRepository,
+            otpTemplateCache = ReloadingCache(otpRef),
+            otpTemplateRepository = otpTemplateRepository,
+            challengeSettingsCache = ReloadingCache(challengeRef),
+            challengeSettingsRepository = challengeSettingsRepository,
+            systemSettingsCache = ReloadingCache(sysRef),
+            systemSettingsRepository = systemSettingsRepository,
+            metadataCache = ReloadingCache(metadataRef),
+            metadataRepository = metadataRepository,
+            resourceCache = ReloadingCache(resourceRef),
+            resourceRepository = resourceRepository,
+            authorizationDetailTypeCache = ReloadingCache(authDetailTypeRef),
+            authorizationDetailTypeRepository = authorizationDetailTypeRepository,
+          )
+          _ <- clientRepository.getAll.succeedsWith(newClients)
+          _ <- scopeRepository.getAll.succeedsWith(newScopes)
+          _ <- formRepository.getAll.succeedsWith(newForms)
+          _ <- themeRepository.getAll.succeedsWith(newThemes)
+          _ <- localeRepository.getAll.succeedsWith(newLocales)
+          _ <- otpTemplateRepository.getAll.succeedsWith(newOtpTemplates)
+          _ <- challengeSettingsRepository.getAll.succeedsWith(newChallengeSettings)
+          _ <- systemSettingsRepository.getAll.succeedsWith(newSystemSettings)
+          _ <- metadataRepository.getAll.succeedsWith(newMetadata)
+          _ <- resourceRepository.getAll.succeedsWith(ResourceSyncClient.SyncResult(newResources, newSecrets))
+          _ <- authorizationDetailTypeRepository.getAll.succeedsWith(newAuthorizationDetailTypes)
+          _ <- env.syncConfiguration
+          clients <- env.clientCache.get
+          scopes <- env.scopeCache.get
+          forms <- env.formCache.get
+          themes <- env.themeCache.get
+          locales <- env.localeCache.get
+          otpTemplates <- env.otpTemplateCache.get
+          challengeSettingsResult <- env.challengeSettingsCache.get
+          sysSettings <- env.systemSettingsCache.get
+          metadata <- env.metadataCache.get
+          resources <- env.resourceCache.get
+          authorizationDetailTypes <- env.authorizationDetailTypeCache.get
+        yield assertTrue(
+          clients == newClients,
+          scopes == newScopes,
+          forms == newForms,
+          themes == newThemes,
+          locales == newLocales,
+          otpTemplates == newOtpTemplates,
+          challengeSettingsResult == newChallengeSettings,
+          sysSettings == newSystemSettings,
+          metadata == newMetadata,
+          resources == ResourceSyncClient.SyncResult(newResources, newSecrets),
+          authorizationDetailTypes == newAuthorizationDetailTypes,
+        )
       },
     ),
   )

@@ -33,14 +33,59 @@ object JWTSpec extends ZIOSpecDefault:
   keyGenerator.init(256)
   private val symmetricKey = keyGenerator.generateKey()
 
+  // Test EC key pair, registered under its own kid so `verifySignature`'s ECKey branch
+  // (as opposed to the RSAKey branch every other asymmetric test exercises) gets hit.
+  private val ecKeyPairGenerator = KeyPairGenerator.getInstance("EC")
+  ecKeyPairGenerator.initialize(com.nimbusds.jose.jwk.Curve.P_256.toECParameterSpec)
+  private val ecKeyPair = ecKeyPairGenerator.generateKeyPair()
+  private val ecPublicKeys = JWT.PublicKeys(
+    com.nimbusds.jose.jwk.JWKSet(
+      new com.nimbusds.jose.jwk.ECKey.Builder(
+        com.nimbusds.jose.jwk.Curve.P_256,
+        ecKeyPair.getPublic.asInstanceOf[java.security.interfaces.ECPublicKey],
+      ).keyID("ec-key-1").build(),
+    ),
+  )
+
+  // Test HMAC key registered as an octet-sequence JWK (rather than passed directly), so
+  // `verifySignature`'s OctetSequenceKey branch gets hit via the [[JWT.PublicKeys]] path.
+  private val octetPublicKeys = JWT.PublicKeys(
+    com.nimbusds.jose.jwk.JWKSet(
+      new com.nimbusds.jose.jwk.OctetSequenceKey.Builder(symmetricKey.getEncoded)
+        .keyID("hmac-key-1").build(),
+    ),
+  )
+
   // Test claims
   case class TestClaims(sub: String, name: String, admin: Boolean) derives JsonCodec
+
+  private def signRawWithHeader(
+      keyId: String,
+      algorithm: com.nimbusds.jose.JWSAlgorithm,
+      signer: com.nimbusds.jose.JWSSigner,
+  )(build: com.nimbusds.jwt.JWTClaimsSet.Builder => com.nimbusds.jwt.JWTClaimsSet.Builder) =
+    ZIO.attempt {
+      val claims = build(
+        com.nimbusds.jwt.JWTClaimsSet.Builder()
+          .jwtID("jti-1")
+          .expirationTime(java.util.Date.from(java.time.Instant.parse("2100-01-01T00:00:00Z"))),
+      ).build()
+      val header = com.nimbusds.jose.JWSHeader.Builder(algorithm)
+        .keyID(keyId)
+        .`type`(com.nimbusds.jose.JOSEObjectType.JWT)
+        .build()
+      val jwt = com.nimbusds.jwt.SignedJWT(header, claims)
+      jwt.sign(signer)
+      jwt.serialize()
+    }
 
   def spec = suite("JWT")(
     asymmetricTests,
     symmetricTests,
     claimConversionTests,
     parseClaimsTests,
+    signatureAlgorithmTests,
+    headerTests,
   )
 
   /** Signs an arbitrary Nimbus claims set so claim values of Java types that zio-json would
@@ -186,6 +231,71 @@ object JWTSpec extends ZIOSpecDefault:
         _ <- TestClock.adjust(2.hours)
         result <- JWT.deserialize[TestClaims](token, publicKeys, JWT.Type.JWT).either
       yield assertTrue(result.left.exists { case _: JWT.Error.Expired => true; case _ => false })
+    },
+    test("serializes nested-object and null custom claims") {
+      val claims = JWT.Claims(
+        issuer = "test-issuer",
+        subject = "user123",
+        audience = List("api"),
+        custom = Json.Obj("meta" -> Json.Obj("k" -> Json.Str("v")), "nothing" -> Json.Null),
+      )
+
+      for
+        token <- JWT.serialize(
+          claims = claims,
+          ttl = 1.hour,
+          signature = JWT.Signature.Asymmetric(JWT.Algorithm.RS256, "test-key-1", privateKey),
+        )
+        result <- JWT.deserialize[Json.Obj](token, publicKeys, JWT.Type.JWT)
+      yield assertTrue(
+        result.get("meta") == Some(Json.Obj("k" -> Json.Str("v"))),
+        result.get("nothing").forall(_ == Json.Null),
+      )
+    },
+    test("verifies against an EC key served from the JWKS (not just RSA)") {
+      for
+        token <- signRawWithHeader(
+          "ec-key-1",
+          com.nimbusds.jose.JWSAlgorithm.ES256,
+          com.nimbusds.jose.crypto.ECDSASigner(ecKeyPair.getPrivate.asInstanceOf[java.security.interfaces.ECPrivateKey]),
+        )(_.subject("user123"))
+        result <- JWT.deserialize[Json.Obj](token, ecPublicKeys, JWT.Type.JWT)
+      yield assertTrue(result.get("sub") == Some(Json.Str("user123")))
+    },
+    test("verifies against an octet-sequence key served from the JWKS (not passed directly)") {
+      for
+        token <- signRawWithHeader(
+          "hmac-key-1",
+          com.nimbusds.jose.JWSAlgorithm.HS256,
+          com.nimbusds.jose.crypto.MACSigner(symmetricKey),
+        )(_.subject("user123"))
+        result <- JWT.deserialize[Json.Obj](token, octetPublicKeys, JWT.Type.JWT)
+      yield assertTrue(result.get("sub") == Some(Json.Str("user123")))
+    },
+  )
+
+  private val signatureAlgorithmTests = suite("signature/algorithm mismatch")(
+    test("fails to serialize when an asymmetric signature declares a non-RS256 algorithm") {
+      val claims = JWT.Claims("test-issuer", "user123", List("api"), Json.Obj())
+      for result <- JWT.serialize(
+          claims = claims,
+          ttl = 1.hour,
+          signature = JWT.Signature.Asymmetric(JWT.Algorithm.HS256, "test-key-1", privateKey),
+        ).exit
+      yield assertTrue(result.isFailure)
+    },
+  )
+
+  private val headerTests = suite("Header")(
+    test("get returns the custom param when present and None otherwise") {
+      val header = com.nimbusds.jose.JWSHeader.Builder(com.nimbusds.jose.JWSAlgorithm.RS256)
+        .customParam("eid", "edge-1")
+        .build()
+      val jwtHeader = JWT.Header(header)
+      assertTrue(
+        jwtHeader.get("eid") == Some("edge-1"),
+        jwtHeader.get("missing") == None,
+      )
     },
   )
 
