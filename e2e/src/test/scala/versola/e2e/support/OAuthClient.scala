@@ -1,5 +1,8 @@
 package versola.e2e.support
 
+import com.nimbusds.jose.crypto.RSASSAVerifier
+import com.nimbusds.jose.jwk.{JWKSet, RSAKey}
+import com.nimbusds.jwt.SignedJWT
 import zio.*
 import zio.http.*
 import zio.http.Header.Authorization
@@ -1242,6 +1245,70 @@ final class OAuthClient(client: Client, config: E2EConfig):
       response <- Client.batched(request).provide(ZLayer.succeed(client))
       text <- response.body.asString
     yield AccountResult(response, text)
+
+  // ── Discovery & JWKS ───────────────────────────────────────────────────────
+
+  /** Auth's public base URL — what the discovery document must advertise its endpoints on. */
+  val authBaseUrl: String = config.authUrl
+
+  /** Issues an unauthenticated request at an arbitrary URL, so tests can check that an
+    * endpoint a metadata document advertises is actually served (anything but a 404).
+    */
+  def probe(method: Method, url: String): Task[Response] =
+    for
+      target <- ZIO.fromEither(URL.decode(url)).mapError(new RuntimeException(_))
+      response <- Client.batched(Request(method = method, url = target)).provide(ZLayer.succeed(client))
+    yield response
+
+  /** GET /.well-known/openid-configuration — auth's OIDC discovery document (OIDC Discovery
+    * 1.0 §4). Unrelated to [[serverMetadata]], which reads central's admin configuration API.
+    */
+  def discoveryDocument: Task[Json.Obj] =
+    probe(Method.GET, s"${config.authUrl}/.well-known/openid-configuration")
+      .flatMap(parseJsonObject("discovery document", _))
+
+  /** GET the published JWK Set (RFC 7517) — auth's own endpoint by default, or whichever URL
+    * the discovery document advertises as `jwks_uri`.
+    */
+  def jwks(url: String = s"${config.authUrl}/.well-known/jwks.json"): Task[Json.Obj] =
+    probe(Method.GET, url).flatMap(parseJsonObject("JWK Set", _))
+
+  /** Verifies a JWT the way a relying party does: resolve the signing key in `jwkSet` by the
+    * token header's `kid`, require the JWK to name the same `alg` the header does, and check
+    * the signature with it.
+    *
+    * Fails when the token is unparseable or the set holds no usable key for it; answers
+    * `false` only when the signature itself does not verify.
+    */
+  def verifyJwtSignature(token: String, jwkSet: Json.Obj): Task[Boolean] =
+    ZIO.attempt:
+      val jwt = SignedJWT.parse(token)
+      val keyId = jwt.getHeader.getKeyID
+      val key = Option(JWKSet.parse(jwkSet.toJson).getKeyByKeyId(keyId))
+        .getOrElse(throw RuntimeException(s"JWK Set has no key with kid='$keyId'"))
+      if key.getAlgorithm != jwt.getHeader.getAlgorithm then
+        throw RuntimeException(
+          s"JWK for kid='$keyId' declares alg=${key.getAlgorithm}, token header names ${jwt.getHeader.getAlgorithm}",
+        )
+      key match
+        case rsa: RSAKey => jwt.verify(RSASSAVerifier(rsa.toRSAPublicKey))
+        case other => throw RuntimeException(s"Unsupported key type '${other.getKeyType}' for kid='$keyId'")
+
+  /** POST /token with an arbitrary form — used to probe which `grant_type` values the endpoint
+    * accepts, which the typed helpers above cannot express.
+    */
+  def tokenRaw(fields: Map[String, String], clientId: String, clientSecret: String): Task[Response] =
+    val req = Request.post(s"${config.authUrl}/token", formBody(fields))
+      .addHeader(Authorization.Basic(clientId, clientSecret))
+      .addHeader(Header.ContentType(MediaType.application.`x-www-form-urlencoded`))
+    Client.batched(req).provide(ZLayer.succeed(client))
+
+  private def parseJsonObject(what: String, response: Response): Task[Json.Obj] =
+    response.body.asString.flatMap: body =>
+      if response.status.isSuccess then
+        ZIO.fromEither(body.fromJson[Json.Obj])
+          .mapError(error => RuntimeException(s"$what is not a JSON object [$error]: $body"))
+      else ZIO.fail(RuntimeException(s"$what request failed: status=${response.status} body=$body"))
 
   // ── helpers ────────────────────────────────────────────────────────────────
 
