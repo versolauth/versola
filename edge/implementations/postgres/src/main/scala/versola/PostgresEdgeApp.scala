@@ -69,6 +69,7 @@ object PostgresEdgeApp extends VersolaApp("edge"):
       CentralSyncTokenService.live >+>
       AuthorizationPresetsSyncClient.live >+>
       OAuthClientsSyncClient.live >+>
+      CelEvaluator.live >+>
       ResourcesSyncClient.live >+>
       RolesSyncClient.live >+>
       PermissionsSyncClient.live >+>
@@ -78,7 +79,6 @@ object PostgresEdgeApp extends VersolaApp("edge"):
       PermissionService.live >+>
       JwksService.live >+>
       TokenRevocationService.live >+>
-      CelEvaluator.live >+>
       SSOClient.live >+>
       EdgeService.live
 

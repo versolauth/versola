@@ -1,6 +1,7 @@
 package versola.edge
 
-import versola.edge.model.{EdgeId, ResourceId}
+import versola.edge.model.{EdgeId, ResourceEndpointId, ResourceId}
+import versola.util.cel.CelEvaluator
 import versola.util.{Base64, Secret, SecurityService}
 import zio.*
 import zio.http.*
@@ -43,6 +44,20 @@ object ResourcesSyncClientSpec extends ZIOSpecDefault:
   private val centralSyncTokenService = new CentralSyncTokenService:
     override def getToken: UIO[String] = ZIO.succeed(token)
 
+  private val dummyProgram: CelEvaluator.Program = new CelEvaluator.Program:
+    override def evaluateBoolean(context: Map[String, AnyRef]) = ZIO.succeed(true)
+    override def evaluateString(context: Map[String, AnyRef]) = ZIO.succeed(None)
+
+  /** Records every expression handed to `compile`, so a test can assert precompilation reached
+    * every rule on a synced endpoint without depending on `CelEvaluator`'s own compile cache. */
+  private def trackingEvaluator(compiled: Ref[Vector[String]]): CelEvaluator = new CelEvaluator:
+    override def compile(expression: String): UIO[CelEvaluator.Program] =
+      compiled.update(_ :+ expression).as(dummyProgram)
+    override def validate(expression: String, expectedType: Option[dev.cel.common.types.CelType]) =
+      ZIO.succeed(dummyProgram)
+
+  private val celEvaluator = CelEvaluator.Impl(Unsafe.unsafe(unsafe ?=> Ref.unsafe.make(Map.empty)))
+
   def spec = suite("ResourcesSyncClient")(
     test("decrypts synced resource secrets") {
       for
@@ -57,7 +72,7 @@ object ResourcesSyncClientSpec extends ZIOSpecDefault:
           }.toRoutes
         )
         client <- ZIO.service[Client]
-        service = ResourcesSyncClient.Impl(client, config, securityService, centralSyncTokenService)
+        service = ResourcesSyncClient.Impl(client, config, securityService, centralSyncTokenService, celEvaluator)
         resources <- service.getAll
         request <- seen.get.someOrFail(RuntimeException("Central sync request was not captured"))
       yield assertTrue(
@@ -65,6 +80,32 @@ object ResourcesSyncClientSpec extends ZIOSpecDefault:
         request.url.encode.contains("configuration/resources/sync"),
         request.header(Header.Authorization).contains(Header.Authorization.Bearer(token)),
         resources(ResourceId("central")).secret.exists(_.sameElements(decryptedSecret)),
+      )
+    },
+    test("precompiles allow, step-up and inject expressions from every synced endpoint") {
+      val endpointId = ResourceEndpointId(java.util.UUID.fromString("018f0f2a-1c7b-7000-8000-000000000001"))
+      for
+        compiled <- Ref.make(Vector.empty[String])
+        _ <- TestClient.addRoutes(
+          Handler.fromFunctionZIO[Request] { _ =>
+            ZIO.succeed(
+              Response.json(
+                s"""{"resources":[{"resourceId":"central","resource":"https://central.example","endpoints":[
+                  |{"id":"$endpointId","method":"GET","path":"/orders","fetchUserInfo":false,
+                  |"allow":"request.body.total <= 50000",
+                  |"inject":[{"target":"header","name":"X-User","expression":"token.sub"}],
+                  |"stepUpCondition":"user.subscription == 'premium'",
+                  |"stepUpAcr":null,"maxAge":null}],"secret":null}]}""".stripMargin,
+              )
+            )
+          }.toRoutes
+        )
+        client <- ZIO.service[Client]
+        service = ResourcesSyncClient.Impl(client, config, securityService, centralSyncTokenService, trackingEvaluator(compiled))
+        _ <- service.getAll
+        expressions <- compiled.get
+      yield assertTrue(
+        expressions.toSet == Set("request.body.total <= 50000", "user.subscription == 'premium'", "token.sub"),
       )
     },
   ).provide(TestClient.layer)
