@@ -2,13 +2,13 @@ package versola.oauth.conversation
 
 import org.scalamock.stubs.Stub
 import versola.auth.TestEnvConfig
-import versola.auth.model.{OtpCode, Password}
-import versola.user.model.Login
+import versola.auth.model.{OtpCode, PasskeyName, Password}
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.jwks.JwksService
 import versola.oauth.client.model.{AuthFlow, ClientId, ScopeToken}
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep, Error}
+import versola.oauth.jwks.JwksService
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, ConversationCookie}
+import versola.user.model.Login
 import versola.util.http.{ControllerSpec, NoopTracing, Observability}
 import versola.util.{Email, Phone, UnitSpecBase}
 import zio.*
@@ -67,7 +67,15 @@ object ConversationControllerSpec extends UnitSpecBase:
     state = None,
     userId = None,
     credential = None,
-    step = ConversationStep.Otp(real = None, timesRequested = 1, timesSubmitted = 0, factorIndex = 0, rateLimitExceeded = false, lockedSeconds = 0, lastSentAt = None),
+    step = ConversationStep.Otp(
+      real = None,
+      timesRequested = 1,
+      timesSubmitted = 0,
+      factorIndex = 0,
+      rateLimitExceeded = false,
+      lockedSeconds = 0,
+      lastSentAt = None,
+    ),
     requestedClaims = None,
     uiLocales = None,
     nonce = None,
@@ -126,8 +134,8 @@ object ConversationControllerSpec extends UnitSpecBase:
                   ++ ZEnvironment(configuration)
                   ++ formService
                   ++ tracing,
-              )
-          )
+              ),
+          ),
         )
         _ <- configuration.getAllowedPhonePrefixes.succeedsWith(List.empty)
         _ <- configuration.getPasswordRegex.succeedsWith(".*")
@@ -175,8 +183,8 @@ object ConversationControllerSpec extends UnitSpecBase:
                   ++ ZEnvironment(configuration)
                   ++ formService
                   ++ tracing,
-              )
-          )
+              ),
+          ),
         )
         _ <- configuration.getPasswordRegex.succeedsWith(passwordRegex)
         _ <- configuration.getIpHeader.succeedsWith("X-Real-IP")
@@ -196,7 +204,7 @@ object ConversationControllerSpec extends UnitSpecBase:
         url = URL.empty / "challenge" / "email",
         body = Body.fromURLEncodedForm(
           Form(FormField.Text("email", email, MediaType.text.plain), FormField.Text("csrf", "", MediaType.text.plain)),
-        )
+        ),
       ).addHeader(conversationCookie),
       submission = (authId, EmailSubmission(email, ""), None, None),
     ),
@@ -206,7 +214,7 @@ object ConversationControllerSpec extends UnitSpecBase:
         url = URL.empty / "challenge" / "phone",
         body = Body.fromURLEncodedForm(
           Form.fromStrings("phone" -> phone, "csrf" -> ""),
-        )
+        ),
       ).addHeader(conversationCookie),
       submission = (authId, PhoneSubmission(phone, ""), None, None),
     ),
@@ -216,7 +224,7 @@ object ConversationControllerSpec extends UnitSpecBase:
         url = URL.empty / "challenge" / "otp",
         body = Body.fromURLEncodedForm(
           Form.fromStrings("code" -> otpCode.toString, "csrf" -> ""),
-        )
+        ),
       ).addHeader(conversationCookie),
       submission = (authId, OtpSubmission(otpCode, ""), None, None),
     ),
@@ -226,7 +234,7 @@ object ConversationControllerSpec extends UnitSpecBase:
         url = URL.empty / "challenge" / "otp" / "resend",
         body = Body.fromURLEncodedForm(
           Form.fromStrings("csrf" -> ""),
-        )
+        ),
       ).addHeader(conversationCookie),
       submission = (authId, OtpResendSubmission(""), None, None),
     ),
@@ -236,7 +244,7 @@ object ConversationControllerSpec extends UnitSpecBase:
         url = (URL.empty / "challenge" / "otp").addQueryParam("ui_locale", "ru"),
         body = Body.fromURLEncodedForm(
           Form.fromStrings("code" -> otpCode.toString, "csrf" -> ""),
-        )
+        ),
       ).addHeader(conversationCookie),
       submission = (authId, OtpSubmission(otpCode, ""), Some("ru"), None),
     ),
@@ -246,7 +254,7 @@ object ConversationControllerSpec extends UnitSpecBase:
         url = URL.empty / "challenge" / "otp",
         body = Body.fromURLEncodedForm(
           Form.fromStrings("code" -> otpCode.toString, "csrf" -> ""),
-        )
+        ),
       ).addHeader(conversationCookie).addHeader("X-Real-IP", "9.9.9.9"),
       submission = (authId, OtpSubmission(otpCode, ""), None, Some("9.9.9.9")),
     ),
@@ -256,7 +264,7 @@ object ConversationControllerSpec extends UnitSpecBase:
         url = URL.empty / "challenge" / "otp",
         body = Body.fromURLEncodedForm(
           Form.fromStrings("code" -> otpCode.toString, "csrf" -> ""),
-        )
+        ),
       ).addHeader(conversationCookie).addHeader("X-Forwarded-For", "7.7.7.7, 10.0.0.1"),
       submission = (authId, OtpSubmission(otpCode, ""), None, Some("7.7.7.7")),
       ipHeader = "X-Forwarded-For",
@@ -267,7 +275,7 @@ object ConversationControllerSpec extends UnitSpecBase:
         url = URL.empty / "challenge" / "otp",
         body = Body.fromURLEncodedForm(
           Form.fromStrings("code" -> otpCode.toString, "csrf" -> ""),
-        )
+        ),
       ).addHeader(conversationCookie),
       submission = (authId, OtpSubmission(otpCode, ""), None, None),
     ),
@@ -277,7 +285,7 @@ object ConversationControllerSpec extends UnitSpecBase:
         url = URL.empty / "challenge" / "otp",
         body = Body.fromURLEncodedForm(
           Form.fromStrings("code" -> otpCode.toString, "csrf" -> ""),
-        )
+        ),
       ).addHeader(conversationCookie).addHeader("X-Real-IP", "9.9.9.9"),
       submission = (authId, OtpSubmission(otpCode, ""), None, None),
       ipHeader = "X-Forwarded-For",
@@ -288,10 +296,274 @@ object ConversationControllerSpec extends UnitSpecBase:
         url = URL.empty / "challenge" / "login-password",
         body = Body.fromURLEncodedForm(
           Form.fromStrings("login" -> "user", "password" -> "s3cret", "csrf" -> ""),
-        )
+        ),
       ).addHeader(conversationCookie),
       submission = (authId, LoginPasswordSubmission(Login("user"), Password("s3cret"), ""), None, None),
     ),
+    successfulSubmitTestCase(
+      description = "submit passkey assertion",
+      request = Request.post(
+        url = URL.empty / "challenge" / "passkey",
+        body = Body.fromURLEncodedForm(
+          Form.fromStrings("response" -> "{\"id\":\"cred-1\"}", "csrf" -> ""),
+        ),
+      ).addHeader(conversationCookie),
+      submission = (authId, PasskeyAssertionSubmission("{\"id\":\"cred-1\"}", ""), None, None),
+    ),
+    successfulSubmitTestCase(
+      description = "submit passkey enroll",
+      request = Request.post(
+        url = URL.empty / "challenge" / "passkey" / "enroll",
+        body = Body.fromURLEncodedForm(
+          Form.fromStrings("response" -> "{\"id\":\"cred-1\"}", "name" -> "My Phone", "csrf" -> ""),
+        ),
+      ).addHeader(conversationCookie),
+      submission = (authId, PasskeyEnrollSubmission("{\"id\":\"cred-1\"}", PasskeyName("My Phone"), ""), None, None),
+    ),
+    successfulSubmitTestCase(
+      description = "submit passkey skip",
+      request = Request.post(
+        url = URL.empty / "challenge" / "passkey" / "skip",
+        body = Body.fromURLEncodedForm(Form.fromStrings("csrf" -> "")),
+      ).addHeader(conversationCookie),
+      submission = (authId, PasskeySkipSubmission(""), None, None),
+    ),
+    successfulSubmitTestCase(
+      description = "submit set-password",
+      request = Request.post(
+        url = URL.empty / "challenge" / "set-password",
+        body = Body.fromURLEncodedForm(
+          Form.fromStrings("password" -> "s3cret!", "csrf" -> ""),
+        ),
+      ).addHeader(conversationCookie),
+      submission = (authId, SetPasswordSubmission(Password("s3cret!"), ""), None, None),
+    ),
+    successfulSubmitTestCase(
+      description = "submit consent allow with the selected scope",
+      request = Request.post(
+        url = URL.empty / "challenge" / "consent",
+        body = Body.fromURLEncodedForm(
+          Form.fromStrings("scope" -> "profile email", "csrf" -> ""),
+        ),
+      ).addHeader(conversationCookie),
+      submission = (authId, ConsentAllowSubmission(Set(ScopeToken("profile"), ScopeToken("email")), ""), None, None),
+    ),
+    successfulSubmitTestCase(
+      description = "submit consent allow with no scope selected",
+      request = Request.post(
+        url = URL.empty / "challenge" / "consent",
+        body = Body.fromURLEncodedForm(Form.fromStrings("csrf" -> "")),
+      ).addHeader(conversationCookie),
+      submission = (authId, ConsentAllowSubmission(Set.empty, ""), None, None),
+    ),
+    successfulSubmitTestCase(
+      description = "submit consent deny",
+      request = Request.post(
+        url = URL.empty / "challenge" / "consent" / "deny",
+        body = Body.fromURLEncodedForm(Form.fromStrings("csrf" -> "")),
+      ).addHeader(conversationCookie),
+      submission = (authId, ConsentDenySubmission(""), None, None),
+    ),
+    test("GET /challenge sends the render service's ETag when If-None-Match is present") {
+      for
+        client <- ZIO.service[Client]
+        router = stub[ConversationRouter]
+        configuration = stub[OAuthConfigurationService]
+        renderService = stub[ConversationRenderService]
+        tracing <- NoopTracing.layer.build
+        _ <- TestClient.addRoutes(
+          Observability.handleErrors(
+            ConversationController.routes.provideEnvironment(
+              ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ ZEnvironment(renderService) ++ tracing,
+            ),
+          ),
+        )
+        _ <- router.getConversation.succeedsWith(Some(record))
+        _ <- renderService.renderStep.succeedsWith(Response.text("<html>Step</html>"))
+
+        response <- client.batched(
+          Request.get(URL.empty / "challenge")
+            .addHeader(conversationCookie)
+            .addHeader(Header.IfNoneMatch.ETags(NonEmptyChunk("\"abc\""))),
+        )
+        calls = renderService.renderStep.calls
+      yield assertTrue(
+        response.status == Status.Ok,
+        calls == List((record, Some("\"abc\""), None)),
+      )
+    }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging,
+    test("GET /challenge renders conversation expired when the lookup fails with ConversationExpired") {
+      for
+        client <- ZIO.service[Client]
+        router = stub[ConversationRouter]
+        configuration = stub[OAuthConfigurationService]
+        renderService = stub[ConversationRenderService]
+        tracing <- NoopTracing.layer.build
+        _ <- TestClient.addRoutes(
+          Observability.handleErrors(
+            ConversationController.routes.provideEnvironment(
+              ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ ZEnvironment(renderService) ++ tracing,
+            ),
+          ),
+        )
+        _ <- router.getConversation.failsWith(Error.ConversationExpired)
+        _ <- renderService.renderExpired.succeedsWith(Response.text("<html>Expired</html>"))
+
+        response <- client.batched(Request.get(URL.empty / "challenge").addHeader(conversationCookie))
+        body <- response.body.asString
+      yield assertTrue(response.status == Status.Ok, body == "<html>Expired</html>")
+    }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging,
+    test("GET /challenge returns 400 when the lookup fails with a plain Error") {
+      for
+        client <- ZIO.service[Client]
+        router = stub[ConversationRouter]
+        configuration = stub[OAuthConfigurationService]
+        renderService = stub[ConversationRenderService]
+        tracing <- NoopTracing.layer.build
+        _ <- TestClient.addRoutes(
+          Observability.handleErrors(
+            ConversationController.routes.provideEnvironment(
+              ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ ZEnvironment(renderService) ++ tracing,
+            ),
+          ),
+        )
+        _ <- router.getConversation.failsWith(Error.BadRequest)
+
+        response <- client.batched(Request.get(URL.empty / "challenge").addHeader(conversationCookie))
+      yield assertTrue(response.status == Status.BadRequest)
+    }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging,
+    test("GET /challenge surfaces an unexpected failure as 500") {
+      for
+        client <- ZIO.service[Client]
+        router = stub[ConversationRouter]
+        configuration = stub[OAuthConfigurationService]
+        renderService = stub[ConversationRenderService]
+        tracing <- NoopTracing.layer.build
+        _ <- TestClient.addRoutes(
+          Observability.handleErrors(
+            ConversationController.routes.provideEnvironment(
+              ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ ZEnvironment(renderService) ++ tracing,
+            ),
+          ),
+        )
+        _ <- router.getConversation.failsWith(new RuntimeException("boom"))
+
+        response <- client.batched(Request.get(URL.empty / "challenge").addHeader(conversationCookie))
+      yield assertTrue(response.status == Status.InternalServerError)
+    }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging,
+    test("POST /challenge renders conversation expired when submit fails with ConversationExpired") {
+      for
+        client <- ZIO.service[Client]
+        router = stub[ConversationRouter]
+        configuration = stub[OAuthConfigurationService]
+        renderService = stub[ConversationRenderService]
+        tracing <- NoopTracing.layer.build
+        _ <- TestClient.addRoutes(
+          Observability.handleErrors(
+            ConversationController.routes.provideEnvironment(
+              ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ ZEnvironment(renderService) ++ tracing,
+            ),
+          ),
+        )
+        _ <- configuration.getIpHeader.succeedsWith("X-Real-IP")
+        _ <- router.submit.failsWith(Error.ConversationExpired)
+        _ <- renderService.renderExpired.succeedsWith(Response.text("<html>Expired</html>"))
+
+        response <- client.batched(
+          Request.post(
+            url = URL.empty / "challenge" / "email",
+            body = Body.fromURLEncodedForm(Form.fromStrings("email" -> email, "csrf" -> "")),
+          ).addHeader(conversationCookie),
+        )
+        body <- response.body.asString
+      yield assertTrue(response.status == Status.Ok, body == "<html>Expired</html>")
+    }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging,
+    test("POST /challenge surfaces an unexpected submit failure as 500") {
+      for
+        client <- ZIO.service[Client]
+        router = stub[ConversationRouter]
+        configuration = stub[OAuthConfigurationService]
+        renderService = stub[ConversationRenderService]
+        tracing <- NoopTracing.layer.build
+        _ <- TestClient.addRoutes(
+          Observability.handleErrors(
+            ConversationController.routes.provideEnvironment(
+              ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ ZEnvironment(renderService) ++ tracing,
+            ),
+          ),
+        )
+        _ <- configuration.getIpHeader.succeedsWith("X-Real-IP")
+        _ <- router.submit.failsWith(new RuntimeException("boom"))
+
+        response <- client.batched(
+          Request.post(
+            url = URL.empty / "challenge" / "email",
+            body = Body.fromURLEncodedForm(Form.fromStrings("email" -> email, "csrf" -> "")),
+          ).addHeader(conversationCookie),
+        )
+      yield assertTrue(response.status == Status.InternalServerError)
+    }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging,
+    test("requests without a conversation cookie are rejected with 400") {
+      for
+        client <- ZIO.service[Client]
+        router = stub[ConversationRouter]
+        configuration = stub[OAuthConfigurationService]
+        renderService = stub[ConversationRenderService]
+        tracing <- NoopTracing.layer.build
+        _ <- TestClient.addRoutes(
+          Observability.handleErrors(
+            ConversationController.routes.provideEnvironment(
+              ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ ZEnvironment(renderService) ++ tracing,
+            ),
+          ),
+        )
+        response <- client.batched(Request.get(URL.empty / "challenge"))
+      yield assertTrue(response.status == Status.BadRequest)
+    }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging,
+    test("GET /challenge/passkey/options returns 400 when the router yields no options") {
+      for
+        client <- ZIO.service[Client]
+        router = stub[ConversationRouter]
+        configuration = stub[OAuthConfigurationService]
+        renderService = stub[ConversationRenderService]
+        tracing <- NoopTracing.layer.build
+        _ <- TestClient.addRoutes(
+          Observability.handleErrors(
+            ConversationController.routes.provideEnvironment(
+              ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ ZEnvironment(renderService) ++ tracing,
+            ),
+          ),
+        )
+        _ <- router.startPasskeyOptions.succeedsWith(None)
+
+        response <- client.batched(Request.get(URL.empty / "challenge" / "passkey" / "options").addHeader(conversationCookie))
+      yield assertTrue(
+        response.status == Status.BadRequest,
+        response.headers.get(Header.CacheControl).contains(Header.CacheControl.NoStore),
+      )
+    }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging,
+    test("GET /challenge/passkey/options returns 500 with no-store when the lookup fails with ServiceUnavailable") {
+      for
+        client <- ZIO.service[Client]
+        router = stub[ConversationRouter]
+        configuration = stub[OAuthConfigurationService]
+        renderService = stub[ConversationRenderService]
+        tracing <- NoopTracing.layer.build
+        _ <- TestClient.addRoutes(
+          Observability.handleErrors(
+            ConversationController.routes.provideEnvironment(
+              ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ ZEnvironment(renderService) ++ tracing,
+            ),
+          ),
+        )
+        _ <- router.startPasskeyOptions.failsWith(Error.ServiceUnavailable)
+
+        response <- client.batched(Request.get(URL.empty / "challenge" / "passkey" / "options").addHeader(conversationCookie))
+      yield assertTrue(
+        response.status == Status.InternalServerError,
+        response.headers.get(Header.CacheControl).contains(Header.CacheControl.NoStore),
+      )
+    }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging,
     test("POST /challenge renders service unavailable when conversation lookup fails") {
       for
         client <- ZIO.service[Client]
@@ -302,9 +574,9 @@ object ConversationControllerSpec extends UnitSpecBase:
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             ConversationController.routes.provideEnvironment(
-              ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ ZEnvironment(renderService) ++ tracing
-            )
-          )
+              ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ ZEnvironment(renderService) ++ tracing,
+            ),
+          ),
         )
         _ <- configuration.getIpHeader.succeedsWith("X-Real-IP")
         _ <- router.submit.failsWith(Error.ServiceUnavailable)
@@ -314,7 +586,7 @@ object ConversationControllerSpec extends UnitSpecBase:
           Request.post(
             url = URL.empty / "challenge" / "email",
             body = Body.fromURLEncodedForm(Form.fromStrings("email" -> email, "csrf" -> "test-csrf")),
-          ).addHeader(conversationCookie)
+          ).addHeader(conversationCookie),
         )
         body <- response.body.asString
       yield assertTrue(
@@ -333,9 +605,9 @@ object ConversationControllerSpec extends UnitSpecBase:
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             ConversationController.routes.provideEnvironment(
-              ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ ZEnvironment(renderService) ++ tracing
-            )
-          )
+              ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ ZEnvironment(renderService) ++ tracing,
+            ),
+          ),
         )
         _ <- router.getConversation.succeedsWith(Some(record))
         _ <- renderService.renderStep.succeedsWith(Response.text("<html>Step</html>"))
@@ -343,10 +615,9 @@ object ConversationControllerSpec extends UnitSpecBase:
         response <- client.batched(Request.get(URL.empty / "challenge").addHeader(conversationCookie))
       yield assertTrue(
         response.status == Status.Ok,
-        response.headers.get(Header.ContentType).exists(_.mediaType == MediaType.text.plain) // text() defaults to text/plain in tests
+        response.headers.get(Header.ContentType).exists(_.mediaType == MediaType.text.plain), // text() defaults to text/plain in tests
       )
     }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging,
-
     test("GET /challenge renders conversation expired when the record is missing") {
       for
         client <- ZIO.service[Client]
@@ -357,9 +628,9 @@ object ConversationControllerSpec extends UnitSpecBase:
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             ConversationController.routes.provideEnvironment(
-              ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ ZEnvironment(renderService) ++ tracing
-            )
-          )
+              ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ ZEnvironment(renderService) ++ tracing,
+            ),
+          ),
         )
         _ <- router.getConversation.succeedsWith(None)
         _ <- renderService.renderExpired.succeedsWith(Response.text("<html>Expired</html>"))
@@ -372,7 +643,6 @@ object ConversationControllerSpec extends UnitSpecBase:
         renderService.renderExpired.calls == List((clientId, "https://example.com/callback", Some("test-state"), false)),
       )
     }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging,
-
     test("GET /challenge renders service unavailable when conversation lookup fails") {
       for
         client <- ZIO.service[Client]
@@ -383,9 +653,9 @@ object ConversationControllerSpec extends UnitSpecBase:
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             ConversationController.routes.provideEnvironment(
-              ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ ZEnvironment(renderService) ++ tracing
-            )
-          )
+              ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ ZEnvironment(renderService) ++ tracing,
+            ),
+          ),
         )
         _ <- router.getConversation.failsWith(Error.ServiceUnavailable)
         _ <- renderService.renderServiceUnavailable.succeedsWith(Response.text("<html>Unavailable</html>"))
@@ -398,7 +668,6 @@ object ConversationControllerSpec extends UnitSpecBase:
         renderService.renderServiceUnavailable.calls == List((clientId, "https://example.com/callback", Some("test-state"), false)),
       )
     }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging,
-
     test("GET /challenge/passkey/options returns options") {
       for
         client <- ZIO.service[Client]
@@ -409,9 +678,9 @@ object ConversationControllerSpec extends UnitSpecBase:
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             ConversationController.routes.provideEnvironment(
-              ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ ZEnvironment(renderService) ++ tracing
-            )
-          )
+              ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ ZEnvironment(renderService) ++ tracing,
+            ),
+          ),
         )
         _ <- router.startPasskeyOptions.succeedsWith(Some("{\"opt\":1}"))
 
@@ -422,7 +691,6 @@ object ConversationControllerSpec extends UnitSpecBase:
         response.headers.get(Header.CacheControl).contains(Header.CacheControl.NoStore),
       )
     }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging,
-
     test("GET /challenge/passkey/options returns 410 with no-store when conversation expired") {
       for
         client <- ZIO.service[Client]
@@ -433,9 +701,9 @@ object ConversationControllerSpec extends UnitSpecBase:
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             ConversationController.routes.provideEnvironment(
-              ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ ZEnvironment(renderService) ++ tracing
-            )
-          )
+              ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ ZEnvironment(renderService) ++ tracing,
+            ),
+          ),
         )
         _ <- router.startPasskeyOptions.failsWith(Error.ConversationExpired)
 
@@ -445,7 +713,6 @@ object ConversationControllerSpec extends UnitSpecBase:
         response.headers.get(Header.CacheControl).contains(Header.CacheControl.NoStore),
       )
     }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging,
-
     test("GET /challenge/passkey/options returns 500 with no-store on unexpected failure") {
       for
         client <- ZIO.service[Client]
@@ -456,9 +723,9 @@ object ConversationControllerSpec extends UnitSpecBase:
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             ConversationController.routes.provideEnvironment(
-              ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ ZEnvironment(renderService) ++ tracing
-            )
-          )
+              ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ ZEnvironment(renderService) ++ tracing,
+            ),
+          ),
         )
         _ <- router.startPasskeyOptions.failsWith(new RuntimeException("boom"))
 
@@ -468,13 +735,111 @@ object ConversationControllerSpec extends UnitSpecBase:
         response.headers.get(Header.CacheControl).contains(Header.CacheControl.NoStore),
       )
     }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging,
+    test("reject password that fails the configured regex, once the request itself is well-formed") {
+      for
+        client <- ZIO.service[Client]
+        router = stub[ConversationRouter]
+        configuration = stub[OAuthConfigurationService]
+        renderService = stub[ConversationRenderService]
+        tracing <- NoopTracing.layer.build
+        _ <- TestClient.addRoutes(
+          Observability.handleErrors(
+            ConversationController.routes.provideEnvironment(
+              ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ ZEnvironment(renderService) ++ tracing,
+            ),
+          ),
+        )
+        _ <- configuration.getIpHeader.succeedsWith("X-Real-IP")
+        _ <- configuration.getPasswordRegex.succeedsWith("^[0-9]+$")
+
+        response <- client.batched(
+          Request.post(
+            url = URL.empty / "challenge" / "password",
+            body = Body.fromURLEncodedForm(Form.fromStrings("password" -> "abc", "csrf" -> "")),
+          ).addHeader(conversationCookie),
+        )
+      yield assertTrue(response.status == Status.BadRequest, router.submit.calls.isEmpty)
+    }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging,
+    test("reject a phone number that doesn't match any configured prefix, once the request itself is well-formed") {
+      for
+        client <- ZIO.service[Client]
+        router = stub[ConversationRouter]
+        configuration = stub[OAuthConfigurationService]
+        renderService = stub[ConversationRenderService]
+        tracing <- NoopTracing.layer.build
+        _ <- TestClient.addRoutes(
+          Observability.handleErrors(
+            ConversationController.routes.provideEnvironment(
+              ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ ZEnvironment(renderService) ++ tracing,
+            ),
+          ),
+        )
+        _ <- configuration.getIpHeader.succeedsWith("X-Real-IP")
+        _ <- configuration.getAllowedPhonePrefixes.succeedsWith(List("+44"))
+
+        response <- client.batched(
+          Request.post(
+            url = URL.empty / "challenge" / "phone",
+            body = Body.fromURLEncodedForm(Form.fromStrings("phone" -> phone, "csrf" -> "")),
+          ).addHeader(conversationCookie),
+        )
+      yield assertTrue(response.status == Status.BadRequest, router.submit.calls.isEmpty)
+    }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging,
+    test("accepts a password when the configured regex is invalid, failing open") {
+      for
+        client <- ZIO.service[Client]
+        router = stub[ConversationRouter]
+        configuration = stub[OAuthConfigurationService]
+        renderService = stub[ConversationRenderService]
+        tracing <- NoopTracing.layer.build
+        _ <- TestClient.addRoutes(
+          Observability.handleErrors(
+            ConversationController.routes.provideEnvironment(
+              ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ ZEnvironment(renderService) ++ tracing,
+            ),
+          ),
+        )
+        _ <- configuration.getIpHeader.succeedsWith("X-Real-IP")
+        _ <- configuration.getPasswordRegex.succeedsWith("[") // invalid regex syntax
+        _ <- router.submit.succeedsWith((conversationResult, record))
+        _ <- renderService.renderSubmit.succeedsWith(Response.seeOther(URL.decode("/challenge").toOption.get))
+
+        response <- client.batched(
+          Request.post(
+            url = URL.empty / "challenge" / "password",
+            body = Body.fromURLEncodedForm(Form.fromStrings("password" -> "abc", "csrf" -> "")),
+          ).addHeader(conversationCookie),
+        )
+      yield assertTrue(response.status == Status.SeeOther, router.submit.calls.nonEmpty)
+    }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging,
+    test("GET /challenge with a malformed conversation cookie is rejected with 400") {
+      for
+        client <- ZIO.service[Client]
+        router = stub[ConversationRouter]
+        configuration = stub[OAuthConfigurationService]
+        renderService = stub[ConversationRenderService]
+        tracing <- NoopTracing.layer.build
+        _ <- TestClient.addRoutes(
+          Observability.handleErrors(
+            ConversationController.routes.provideEnvironment(
+              ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ ZEnvironment(renderService) ++ tracing,
+            ),
+          ),
+        )
+        response <- client.batched(
+          Request.get(URL.empty / "challenge").addHeader(
+            Header.Cookie(NonEmptyChunk(Cookie.Request(ConversationCookie.name, "not-a-valid-cookie"))),
+          ),
+        )
+      yield assertTrue(response.status == Status.BadRequest)
+    }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging,
     rejectedSubmitTestCase(
       description = "reject login-password violating configured password regex",
       request = Request.post(
         url = URL.empty / "challenge" / "login-password",
         body = Body.fromURLEncodedForm(
           Form.fromStrings("login" -> "user", "password" -> "abc"),
-        )
+        ),
       ).addHeader(conversationCookie),
     ),
     rejectedSubmitTestCase(
@@ -483,7 +848,7 @@ object ConversationControllerSpec extends UnitSpecBase:
         url = URL.empty / "challenge" / "password",
         body = Body.fromURLEncodedForm(
           Form.fromStrings("password" -> "abc"),
-        )
+        ),
       ).addHeader(conversationCookie),
     ),
   )
