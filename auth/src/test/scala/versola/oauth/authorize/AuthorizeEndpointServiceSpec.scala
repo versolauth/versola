@@ -1,12 +1,30 @@
 package versola.oauth.authorize
 
+import com.nimbusds.jose.crypto.RSASSASigner
+import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm, JWSHeader}
+import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 import versola.auth.TestEnvConfig
 import versola.oauth.authorize.model.{AuthorizeRequest, AuthorizeResponse, Error, Prompt, ResponseTypeEntry}
-import versola.oauth.jwks.JwksService
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{Acr, AuthFactor, AuthFactorType, AuthFlow, AuthMethodRef, ClientId, OAuthClientRecord, OtpType, PassedAuthFactor, PassedFactorRecord, PrimaryAuthFlow, PrimaryCredential, ScopeToken, TenantId}
+import versola.oauth.client.model.{
+  Acr,
+  AuthFactor,
+  AuthFactorType,
+  AuthFlow,
+  AuthMethodRef,
+  ClientId,
+  OAuthClientRecord,
+  OtpType,
+  PassedAuthFactor,
+  PassedFactorRecord,
+  PrimaryAuthFlow,
+  PrimaryCredential,
+  ScopeToken,
+  TenantId,
+}
 import versola.oauth.consent.{ConsentDecision, ConsentService}
 import versola.oauth.conversation.{ConversationRepository, ConversationResult, ConversationRouter, EmailSubmission, PhoneSubmission}
+import versola.oauth.jwks.JwksService
 import versola.oauth.model.{AccessToken, AuthorizationCode, CodeChallenge, CodeChallengeMethod, State}
 import versola.oauth.session.SessionService
 import versola.oauth.session.model.{ClientEntry, PublicSessionId, SessionId, SessionInfo, SessionRecord, UserAgentId}
@@ -15,18 +33,14 @@ import versola.oauth.userinfo.UserInfoService
 import versola.user.UserRepository
 import versola.user.model.UserRecord
 import versola.util.{AuthPropertyGenerator, Email, MAC, Phone, Secret, SecureRandom, SecurityService, UnitSpecBase}
-import zio.{ZIO, Exit}
+import zio.*
 import zio.http.URL
 import zio.prelude.{NonEmptyList, NonEmptySet}
-import zio.*
 import zio.test.*
-
+import zio.{Exit, ZIO}
 
 import java.time.Instant
 import java.util.UUID
-import com.nimbusds.jose.crypto.RSASSASigner
-import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm, JWSHeader}
-import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 
 object AuthorizeEndpointServiceSpec extends UnitSpecBase:
 
@@ -263,7 +277,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
         _ <- env.sessionService.find.succeedsWith(None)
         result <- env.service.authorize(
-          baseRequest.copy(sessionId = Some(rawSessionId), prompt = Set(Prompt.none))
+          baseRequest.copy(sessionId = Some(rawSessionId), prompt = Set(Prompt.none)),
         ).exit
       yield assertTrue(result.isFailure)
     },
@@ -324,7 +338,8 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
       val code = AuthorizationCode(Array.fill(16)(3.toByte))
       val accessToken = AccessToken(Array.fill(16)(4.toByte))
       val codeMac = MAC(Array.fill(32)(2.toByte))
-      val session = sessionWithAmr(Map(PassedAuthFactor.passkey -> PassedFactorRecord(now, Set(AuthMethodRef.swk, AuthMethodRef.user, AuthMethodRef.mfa))))
+      val session =
+        sessionWithAmr(Map(PassedAuthFactor.passkey -> PassedFactorRecord(now, Set(AuthMethodRef.swk, AuthMethodRef.user, AuthMethodRef.mfa))))
       for
         _ <- env.configurationService.find.succeedsWith(Some(clientWithEquivalents))
         _ <- env.sessionService.find.succeedsWith(Some(SessionInfo(sessionMac, session)))
@@ -525,7 +540,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         _ <- env.sessionService.find.succeedsWith(Some(SessionInfo(sessionMac, oldSession)))
         _ <- env.configurationService.getAcrVocabulary.succeedsWith(Map.empty)
         result <- env.service.authorize(
-          baseRequest.copy(sessionId = Some(rawSessionId), maxAge = Some(0), prompt = Set(Prompt.none))
+          baseRequest.copy(sessionId = Some(rawSessionId), maxAge = Some(0), prompt = Set(Prompt.none)),
         ).exit
       yield assertTrue(result.isFailure)
     },
@@ -590,7 +605,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         _ <- env.configurationService.getAcrVocabulary.succeedsWith(Map.empty)
         _ <- env.acrResolver.checkAcrSatisfaction.succeedsWith(None)
         result <- env.service.authorize(
-          baseRequest.copy(sessionId = Some(rawSessionId), acrValues = Some(NonEmptyList(Acr("mfa"))), prompt = Set(Prompt.none))
+          baseRequest.copy(sessionId = Some(rawSessionId), acrValues = Some(NonEmptyList(Acr("mfa"))), prompt = Set(Prompt.none)),
         ).exit
       yield assertTrue(result.isFailure)
     },
@@ -624,7 +639,10 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
         _ <- env.configurationService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
         _ <- env.sessionService.find.succeedsWith(Some(SessionInfo(sessionMac, session)))
-        _ <- env.configurationService.getAcrVocabulary.succeedsWith(Map(Acr("company_mfa") -> NonEmptyList(PassedAuthFactor.password, PassedAuthFactor.otp)))
+        _ <- env.configurationService.getAcrVocabulary.succeedsWith(Map(Acr("company_mfa") -> NonEmptyList(
+          PassedAuthFactor.password,
+          PassedAuthFactor.otp,
+        )))
         _ <- env.acrResolver.checkAcrSatisfaction.succeedsWith(None)
         _ <- env.acrResolver.resolveAchievableAcr.succeedsWith(Some(Acr("company_mfa")))
         _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
@@ -727,7 +745,8 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         _ <- env.sessionService.find.succeedsWith(Some(SessionInfo(sessionMac, session)))
         _ <- env.configurationService.getAcrVocabulary.succeedsWith(Map.empty)
         _ <- env.acrResolver.resolveAchievableAcr.succeedsWith(None)
-        result <- env.service.authorize(baseRequest.copy(sessionId = Some(rawSessionId), acrValues = Some(NonEmptyList(Acr("completely_unknown_acr"))))).exit
+        result <-
+          env.service.authorize(baseRequest.copy(sessionId = Some(rawSessionId), acrValues = Some(NonEmptyList(Acr("completely_unknown_acr"))))).exit
       yield assertTrue(result.isFailure)
     },
     test("accept expired id_token_hint and force re-authentication when subject differs") {
@@ -782,7 +801,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
         _ <- env.acrResolver.resolveAchievableAcr.succeedsWith(None)
         result <- env.service.authorize(
-          baseRequest.copy(idTokenHint = Some(idTokenHintStr), acrValues = Some(NonEmptyList(Acr("mfa"))))
+          baseRequest.copy(idTokenHint = Some(idTokenHintStr), acrValues = Some(NonEmptyList(Acr("mfa")))),
         ).exit
       yield assertTrue(result.isFailure)
     },
@@ -813,7 +832,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         _ <- env.userRepository.find.succeedsWith(Some(UserRecord.empty(hintUserId)))
         _ <- env.conversationRouter.advance.succeedsWith(())
         result <- env.service.authorize(
-          baseRequest.copy(idTokenHint = Some(idTokenHintStr), acrValues = Some(NonEmptyList(targetAcr)))
+          baseRequest.copy(idTokenHint = Some(idTokenHintStr), acrValues = Some(NonEmptyList(targetAcr))),
         )
         createCalls = env.conversationRepository.create.calls
       yield assertTrue(
@@ -882,7 +901,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
             sessionId = Some(rawSessionId),
             idTokenHint = Some(idTokenHintStr),
             acrValues = Some(NonEmptyList(Acr("mfa"))),
-          )
+          ),
         ).exit
       yield assertTrue(result.isFailure)
     },
@@ -920,7 +939,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
             sessionId = Some(rawSessionId),
             idTokenHint = Some(idTokenHintStr),
             acrValues = Some(NonEmptyList(targetAcr)),
-          )
+          ),
         )
         createCalls = env.conversationRepository.create.calls
       yield assertTrue(
@@ -1039,7 +1058,6 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         advanceCalls.isEmpty,
       )
     },
-
     test("skip the consent decision entirely for a client without a consent flow") {
       val env = Env()
       val session = sessionWithAmr(Map(PassedAuthFactor.otp -> PassedFactorRecord(now, Set(AuthMethodRef.otp))))
@@ -1217,5 +1235,332 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         result == Error.ConsentRequired(redirectUri, baseRequest.state, useFragment = true),
         createTimes == 0,
       )
+    },
+    // ── client / hint validation gaps ─────────────────────────────────────────
+    test("fail with AuthFlowMissing when client is not found") {
+      val env = Env()
+      for
+        _ <- env.secureRandom.nextUUIDv7.succeedsWith(UUID.randomUUID())
+        _ <- env.configurationService.find.succeedsWith(None)
+        result <- env.service.authorize(baseRequest).flip
+      yield assertTrue(result == Error.AuthFlowMissing(redirectUri, baseRequest.state, useFragment = false))
+    },
+    test("fail with ConflictingHints when both login_hint and id_token_hint are provided") {
+      val env = Env()
+      for
+        _ <- env.secureRandom.nextUUIDv7.succeedsWith(UUID.randomUUID())
+        _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
+        result <- env.service.authorize(
+          baseRequest.copy(loginHint = Some(Left(emailHint)), idTokenHint = Some("dummy-token")),
+        ).flip
+      yield assertTrue(result == Error.ConflictingHints(redirectUri, baseRequest.state, useFragment = false))
+    },
+    test("fail with IdTokenHintInvalid when id_token_hint is not a valid JWT") {
+      val env = Env()
+      for
+        _ <- env.secureRandom.nextUUIDv7.succeedsWith(UUID.randomUUID())
+        _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
+        result <- env.service.authorize(baseRequest.copy(idTokenHint = Some("not-a-valid-jwt"))).flip
+      yield assertTrue(result == Error.IdTokenHintInvalid(redirectUri, baseRequest.state, useFragment = false))
+    },
+    test("fail with IdTokenHintInvalid when id_token_hint has no audience claim") {
+      val env = Env()
+      val header = new JWSHeader.Builder(JWSAlgorithm.RS256)
+        .keyID("test-key-id")
+        .`type`(JOSEObjectType.JWT)
+        .build()
+      val hintClaims = new JWTClaimsSet.Builder()
+        .subject(UUID.randomUUID().toString)
+        .issuer("https://versolauth.com")
+        .build()
+      val jwtToken = new SignedJWT(header, hintClaims)
+      jwtToken.sign(new RSASSASigner(TestEnvConfig.privateKey))
+      for
+        _ <- env.secureRandom.nextUUIDv7.succeedsWith(UUID.randomUUID())
+        _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
+        result <- env.service.authorize(baseRequest.copy(idTokenHint = Some(jwtToken.serialize()))).flip
+      yield assertTrue(result == Error.IdTokenHintInvalid(redirectUri, baseRequest.state, useFragment = false))
+    },
+    test("resolve id_token_hint subject when audience claim is a JSON array containing this client") {
+      val env = Env()
+      val uuid = UUID.randomUUID()
+      val hintUserId = versola.user.model.UserId(UUID.randomUUID())
+      val header = new JWSHeader.Builder(JWSAlgorithm.RS256)
+        .keyID("test-key-id")
+        .`type`(JOSEObjectType.JWT)
+        .build()
+      val hintClaims = new JWTClaimsSet.Builder()
+        .subject(hintUserId.toString)
+        .audience(java.util.List.of(clientId.toString, "other-client"))
+        .issuer("https://versolauth.com")
+        .build()
+      val jwtToken = new SignedJWT(header, hintClaims)
+      jwtToken.sign(new RSASSASigner(TestEnvConfig.privateKey))
+      val idTokenHintStr = jwtToken.serialize()
+      for
+        _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
+        _ <- env.configurationService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
+        _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
+        _ <- env.secureRandom.nextAlphanumeric.succeedsWith("testcsrf1")
+        _ <- env.conversationRepository.create.succeedsWith(())
+        _ <- env.userRepository.find.succeedsWith(Some(UserRecord.empty(hintUserId)))
+        _ <- env.conversationRouter.advance.succeedsWith(())
+        result <- env.service.authorize(baseRequest.copy(idTokenHint = Some(idTokenHintStr)))
+        createCalls = env.conversationRepository.create.calls
+      yield assertTrue(
+        result == AuthorizeResponse.Initialize(versola.oauth.conversation.model.AuthId(uuid)),
+        createCalls.nonEmpty,
+        createCalls.head._2.userId == Some(hintUserId),
+      )
+    },
+    // ── acr resolution failure branches without forceReauth ───────────────────
+    test("fail with UnmetAuthenticationRequirements when no session, id_token_hint resolves a user, and acr not achievable") {
+      val env = Env()
+      val hintUserId = versola.user.model.UserId(UUID.randomUUID())
+      val header = new JWSHeader.Builder(JWSAlgorithm.RS256)
+        .keyID("test-key-id")
+        .`type`(JOSEObjectType.JWT)
+        .build()
+      val hintClaims = new JWTClaimsSet.Builder()
+        .subject(hintUserId.toString)
+        .audience(clientId.toString)
+        .issuer("https://versolauth.com")
+        .build()
+      val jwtToken = new SignedJWT(header, hintClaims)
+      jwtToken.sign(new RSASSASigner(TestEnvConfig.privateKey))
+      val idTokenHintStr = jwtToken.serialize()
+      for
+        _ <- env.secureRandom.nextUUIDv7.succeedsWith(UUID.randomUUID())
+        _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
+        _ <- env.acrResolver.resolveAchievableAcr.succeedsWith(None)
+        result <- env.service.authorize(
+          baseRequest.copy(idTokenHint = Some(idTokenHintStr), acrValues = Some(NonEmptyList(Acr("mfa")))),
+        ).flip
+      yield assertTrue(result == Error.UnmetAuthenticationRequirements(redirectUri, baseRequest.state, useFragment = false))
+    },
+    test("fail with UnmetAuthenticationRequirements when forceReauth and ACR not achievable for the known user") {
+      val env = Env()
+      val session = sessionWithAmr(Map(PassedAuthFactor.otp -> PassedFactorRecord(now, Set(AuthMethodRef.otp))))
+      val differentUserId = versola.user.model.UserId(UUID.randomUUID())
+      val header = new JWSHeader.Builder(JWSAlgorithm.RS256)
+        .keyID("test-key-id")
+        .`type`(JOSEObjectType.JWT)
+        .build()
+      val hintClaims = new JWTClaimsSet.Builder()
+        .subject(differentUserId.toString)
+        .audience(clientId.toString)
+        .issuer("https://versolauth.com")
+        .build()
+      val jwtToken = new SignedJWT(header, hintClaims)
+      jwtToken.sign(new RSASSASigner(TestEnvConfig.privateKey))
+      val idTokenHintStr = jwtToken.serialize()
+      for
+        _ <- env.secureRandom.nextUUIDv7.succeedsWith(UUID.randomUUID())
+        _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
+        _ <- env.sessionService.find.succeedsWith(Some(SessionInfo(sessionMac, session)))
+        _ <- env.acrResolver.checkAcrSatisfaction.succeedsWith(None)
+        _ <- env.acrResolver.resolveAchievableAcr.succeedsWith(None)
+        result <- env.service.authorize(
+          baseRequest.copy(
+            sessionId = Some(rawSessionId),
+            idTokenHint = Some(idTokenHintStr),
+            acrValues = Some(NonEmptyList(Acr("mfa"))),
+          ),
+        ).flip
+      yield assertTrue(result == Error.UnmetAuthenticationRequirements(redirectUri, baseRequest.state, useFragment = false))
+    },
+    test("fail with AccessDenied when acr not satisfied by session and session user no longer exists") {
+      val env = Env()
+      val session = sessionWithAmr(Map(PassedAuthFactor.otp -> PassedFactorRecord(now, Set(AuthMethodRef.otp))))
+      for
+        _ <- env.secureRandom.nextUUIDv7.succeedsWith(UUID.randomUUID())
+        _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
+        _ <- env.sessionService.find.succeedsWith(Some(SessionInfo(sessionMac, session)))
+        _ <- env.acrResolver.checkAcrSatisfaction.succeedsWith(None)
+        _ <- env.userRepository.find.succeedsWith(None)
+        result <- env.service.authorize(
+          baseRequest.copy(sessionId = Some(rawSessionId), acrValues = Some(NonEmptyList(Acr("mfa")))),
+        ).flip
+      yield assertTrue(result == Error.AccessDenied(redirectUri, baseRequest.state, useFragment = false))
+    },
+    test("fail with UnmetAuthenticationRequirements when acr not satisfied by session but user still exists") {
+      val env = Env()
+      val session = sessionWithAmr(Map(PassedAuthFactor.otp -> PassedFactorRecord(now, Set(AuthMethodRef.otp))))
+      for
+        _ <- env.secureRandom.nextUUIDv7.succeedsWith(UUID.randomUUID())
+        _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
+        _ <- env.sessionService.find.succeedsWith(Some(SessionInfo(sessionMac, session)))
+        _ <- env.acrResolver.checkAcrSatisfaction.succeedsWith(None)
+        _ <- env.userRepository.find.succeedsWith(Some(UserRecord.empty(session.userId)))
+        _ <- env.acrResolver.resolveAchievableAcr.succeedsWith(None)
+        result <- env.service.authorize(
+          baseRequest.copy(sessionId = Some(rawSessionId), acrValues = Some(NonEmptyList(Acr("mfa")))),
+        ).flip
+      yield assertTrue(result == Error.UnmetAuthenticationRequirements(redirectUri, baseRequest.state, useFragment = false))
+    },
+    // ── createConversation field population branches ──────────────────────────
+    test("mark the credential step as offering registration when the client has a registration flow and no known user") {
+      val env = Env()
+      val uuid = UUID.randomUUID()
+      val clientWithRegistration = clientWithOtpFlow.copy(
+        registrationFlow = Some(versola.oauth.client.model.RegistrationFlow(
+          credential = versola.oauth.client.model.RegistrationCredential.phone,
+          steps = List(versola.oauth.client.model.RegistrationStep.Otp()),
+          roleIds = Set.empty,
+        )),
+      )
+      for
+        _ <- env.configurationService.find.succeedsWith(Some(clientWithRegistration))
+        _ <- env.configurationService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
+        _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
+        _ <- env.secureRandom.nextAlphanumeric.succeedsWith("testcsrf1")
+        _ <- env.conversationRepository.create.succeedsWith(())
+        result <- env.service.authorize(baseRequest)
+        createCalls = env.conversationRepository.create.calls
+      yield assertTrue(
+        result == AuthorizeResponse.Initialize(versola.oauth.conversation.model.AuthId(uuid)),
+        createCalls.nonEmpty,
+        createCalls.head._2.step.asInstanceOf[versola.oauth.conversation.model.ConversationStep.Credential].registration,
+      )
+    },
+    test("sanitize non-printable characters from user agent when starting a new conversation") {
+      val env = Env()
+      val uuid = UUID.randomUUID()
+      for
+        _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
+        _ <- env.configurationService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
+        _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
+        _ <- env.secureRandom.nextAlphanumeric.succeedsWith("testcsrf1")
+        _ <- env.conversationRepository.create.succeedsWith(())
+        result <- env.service.authorize(baseRequest.copy(userAgent = Some("Mozilla/5.0\u0007")))
+        createCalls = env.conversationRepository.create.calls
+      yield assertTrue(
+        result == AuthorizeResponse.Initialize(versola.oauth.conversation.model.AuthId(uuid)),
+        createCalls.head._2.userAgent == Some("Mozilla/5.0"),
+      )
+    },
+    test("skip login hint application when a step-up hint fails to resolve to a user") {
+      val env = Env()
+      val uuid = UUID.randomUUID()
+      val hintUserId = versola.user.model.UserId(UUID.randomUUID())
+      val targetAcr = Acr("mfa")
+      val header = new JWSHeader.Builder(JWSAlgorithm.RS256)
+        .keyID("test-key-id")
+        .`type`(JOSEObjectType.JWT)
+        .build()
+      val hintClaims = new JWTClaimsSet.Builder()
+        .subject(hintUserId.toString)
+        .audience(clientId.toString)
+        .issuer("https://versolauth.com")
+        .build()
+      val jwtToken = new SignedJWT(header, hintClaims)
+      jwtToken.sign(new RSASSASigner(TestEnvConfig.privateKey))
+      val idTokenHintStr = jwtToken.serialize()
+      for
+        _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
+        _ <- env.configurationService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
+        _ <- env.acrResolver.resolveAchievableAcr.succeedsWith(Some(targetAcr))
+        _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
+        _ <- env.secureRandom.nextAlphanumeric.succeedsWith("testcsrf1")
+        _ <- env.conversationRepository.create.succeedsWith(())
+        _ <- env.userRepository.find.succeedsWith(None)
+        result <- env.service.authorize(
+          baseRequest.copy(idTokenHint = Some(idTokenHintStr), acrValues = Some(NonEmptyList(targetAcr))),
+        )
+        createCalls = env.conversationRepository.create.calls
+        submitCalls = env.conversationRouter.submit.calls
+        advanceCalls = env.conversationRouter.advance.calls
+      yield assertTrue(
+        result == AuthorizeResponse.Initialize(versola.oauth.conversation.model.AuthId(uuid)),
+        createCalls.nonEmpty,
+        createCalls.head._2.userId == None,
+        submitCalls.isEmpty,
+        advanceCalls.isEmpty,
+      )
+    },
+    // ── silent authorization side effects and hybrid id_token issuance ────────
+    test("prolong the session idle ttl when configured for a client without offline access") {
+      val env = Env()
+      val code = AuthorizationCode(Array.fill(16)(3.toByte))
+      val accessToken = AccessToken(Array.fill(16)(4.toByte))
+      val codeMac = MAC(Array.fill(32)(2.toByte))
+      val session = sessionWithAmr(Map(PassedAuthFactor.otp -> PassedFactorRecord(now, Set(AuthMethodRef.otp))))
+      val idleTtl = zio.durationInt(30).minutes
+      for
+        _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
+        _ <- env.sessionService.find.succeedsWith(Some(SessionInfo(sessionMac, session)))
+        _ <- env.configurationService.getAcrVocabulary.succeedsWith(Map.empty)
+        _ <- env.configurationService.getSessionIdleTtl.succeedsWith(Some(idleTtl))
+        _ <- env.sessionService.registerClient.succeedsWith(())
+        _ <- env.sessionService.prolongIdle.succeedsWith(())
+        _ <- env.authPropertyGenerator.nextAuthorizationCode.succeedsWith(code)
+        _ <- env.authPropertyGenerator.nextAccessToken.succeedsWith(accessToken)
+        _ <- env.securityService.mac.succeedsWith(codeMac)
+        _ <- env.authorizationCodeRepository.create.succeedsWith(())
+        _ <- env.secureRandom.nextUUIDv7.succeedsWith(UUID.randomUUID())
+        result <- env.service.authorize(baseRequest.copy(sessionId = Some(rawSessionId)))
+        prolongCalls = env.sessionService.prolongIdle.calls
+      yield assertTrue(
+        result == AuthorizeResponse.Authorized(code, None),
+        prolongCalls.nonEmpty,
+        prolongCalls.head._2 == idleTtl,
+      )
+    },
+    test("issue a signed id_token for a hybrid silent authorization") {
+      val env = Env()
+      val session = sessionWithAmr(Map(PassedAuthFactor.otp -> PassedFactorRecord(now, Set(AuthMethodRef.otp))))
+      val user = UserRecord.empty(session.userId)
+      val hybridRequest = baseRequest.copy(
+        sessionId = Some(rawSessionId),
+        responseType = NonEmptySet(ResponseTypeEntry.Code, ResponseTypeEntry.IdToken),
+      )
+      for
+        _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
+        _ <- env.sessionService.find.succeedsWith(Some(SessionInfo(sessionMac, session)))
+        _ <- silentAuthorizeStubs(env)
+        _ <- env.userRepository.find.succeedsWith(Some(user))
+        _ <- env.userInfoService.getUserInfoForIdToken.succeedsWith(versola.oauth.userinfo.model.UserInfoResponse(Map.empty))
+        result <- env.service.authorize(hybridRequest)
+      yield result match
+        case AuthorizeResponse.Authorized(_, Some(idToken)) => assertTrue(idToken.nonEmpty)
+        case _ => assertTrue(false)
+    },
+    // ── ui_locales negotiation ─────────────────────────────────────────────────
+    test("resolve ui_locales to the intersection with configured locales") {
+      val env = Env()
+      val uuid = UUID.randomUUID()
+      for
+        _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
+        _ <- env.configurationService.getLocales.succeedsWith(
+          versola.oauth.client.model.Locales(
+            Vector(
+              versola.oauth.client.model.LocaleRecord("en", "English"),
+              versola.oauth.client.model.LocaleRecord("fr", "French"),
+            ),
+            "en",
+          ),
+        )
+        _ <- env.configurationService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
+        _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
+        _ <- env.secureRandom.nextAlphanumeric.succeedsWith("testcsrf1")
+        _ <- env.conversationRepository.create.succeedsWith(())
+        result <- env.service.authorize(baseRequest.copy(uiLocales = Some(List("fr", "de"))))
+        createCalls = env.conversationRepository.create.calls
+      yield assertTrue(
+        result == AuthorizeResponse.Initialize(versola.oauth.conversation.model.AuthId(uuid)),
+        createCalls.nonEmpty,
+        createCalls.head._2.uiLocales == Some(List("fr")),
+      )
+    },
+    test("fail with UnsupportedUiLocales when requested locales don't overlap with configured locales") {
+      val env = Env()
+      for
+        _ <- env.secureRandom.nextUUIDv7.succeedsWith(UUID.randomUUID())
+        _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
+        _ <- env.configurationService.getLocales.succeedsWith(
+          versola.oauth.client.model.Locales(Vector(versola.oauth.client.model.LocaleRecord("en", "English")), "en"),
+        )
+        result <- env.service.authorize(baseRequest.copy(uiLocales = Some(List("de")))).flip
+      yield assertTrue(result == Error.UnsupportedUiLocales(redirectUri, baseRequest.state, useFragment = false))
     },
   )
