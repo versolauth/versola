@@ -1,9 +1,9 @@
 package versola.oauth.conversation
 
 import versola.auth.TestEnvConfig
+import versola.auth.model.OtpCode
 import versola.oauth.authorize.AcrResolutionService
 import versola.oauth.challenge.passkey.{PasskeyRepository, WebAuthnService}
-import versola.auth.model.OtpCode
 import versola.oauth.challenge.password.PasswordService
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{AuthFlow, AuthMethodRef, ClientId, PassedAuthFactor, PassedFactorRecord, PrimaryCredential, ScopeToken}
@@ -17,13 +17,13 @@ import versola.oauth.session.{SessionRepository, UserAgentRepository}
 import versola.oauth.token.AuthorizationCodeRepository
 import versola.oauth.userinfo.UserInfoService
 import versola.oauth.userinfo.model.UserInfoResponse
-import versola.user.{UserRepository, UserService}
 import versola.user.model.{UserId, UserRecord}
+import versola.user.{UserRepository, UserService}
 import versola.util.{AuthPropertyGenerator, CoreConfig, Email, EnvName, Secret, SecureRandom, SecurityService, UnitSpecBase}
-import zio.{Ref, ZIO}
 import zio.http.URL
 import zio.json.ast
 import zio.test.*
+import zio.{Ref, ZIO}
 
 import java.security.KeyFactory
 import java.security.spec.RSAPublicKeySpec
@@ -316,7 +316,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           registrationStep = None,
           userAgent = None,
           userAgentCookie = None,
-                    version = 0,
+          version = 0,
           amr = Map.empty,
           needsPasswordChange = false,
           targetAcr = None,
@@ -333,6 +333,15 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
           result <- env.service.checkOtp(record, otp, otpCode, authId)
         yield assertTrue(result.isInstanceOf[ConversationResult.StepPassed])
+      },
+      test("reports a write conflict when the conversation moved on") {
+        val env = Env()
+        for
+          _ <- env.submissionLimiter.isBanned.succeedsWith(LimitStatus.Allowed)
+          _ <- env.otpService.checkOtp.succeedsWith(SubmitOtpResult.Success)
+          _ <- env.conversationRepository.overwrite.succeedsWith(false)
+          result <- env.service.checkOtp(otpRecord, submittedOtp, otpCode, authId)
+        yield assertTrue(result == ConversationResult.WriteConflict)
       },
       test("return AccessDenied when subject is banned") {
         val env = Env()
@@ -360,7 +369,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           registrationStep = None,
           userAgent = None,
           userAgentCookie = None,
-                    version = 0,
+          version = 0,
           amr = Map.empty,
           needsPasswordChange = false,
           targetAcr = None,
@@ -469,7 +478,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           _ <- env.userInfoService.getUserInfoForIdToken.succeedsWith(
             UserInfoResponse(
               claims = Map("sub" -> ast.Json.Str(userId.toString), "email" -> ast.Json.Str(userEmail)),
-            )
+            ),
           )
           result <- env.service.finish(authId, conversation)
         yield result match
