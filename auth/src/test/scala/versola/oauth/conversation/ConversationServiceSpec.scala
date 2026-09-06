@@ -1,31 +1,31 @@
 package versola.oauth.conversation
 
 import versola.auth.TestEnvConfig
-import versola.auth.model.{CredentialId, CredentialDeviceType, OtpCode, PasskeyRecord, Password}
+import versola.auth.model.{CredentialDeviceType, CredentialId, OtpCode, PasskeyRecord, Password}
 import versola.oauth.authorize.AcrResolutionService
 import versola.oauth.authorize.model.{Prompt, ResponseTypeEntry}
-import versola.oauth.consent.ConsentDecision
-import zio.prelude.NonEmptyList
 import versola.oauth.challenge.passkey.PasskeyRepository
 import versola.oauth.challenge.password.PasswordService
 import versola.oauth.challenge.password.model.CheckPassword
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.*
+import versola.oauth.consent.ConsentDecision
 import versola.oauth.conversation.limit.{ChallengeType, LimitStatus, SubmissionLimiter}
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
 import versola.oauth.conversation.otp.OtpService
 import versola.oauth.conversation.otp.model.SubmitOtpResult
 import versola.oauth.model.*
-import versola.oauth.session.{SessionRepository, UserAgentRepository}
-import versola.oauth.session.model.PriorSession
 import versola.oauth.session.model.*
+import versola.oauth.session.model.PriorSession
+import versola.oauth.session.{SessionRepository, UserAgentRepository}
 import versola.oauth.token.AuthorizationCodeRepository
 import versola.oauth.userinfo.UserInfoService
-import versola.user.{UserRepository, UserService}
 import versola.user.model.*
+import versola.user.{UserRepository, UserService}
 import versola.util.*
 import zio.*
 import zio.json.ast.Json
+import zio.prelude.NonEmptyList
 import zio.test.*
 
 import java.time.Instant
@@ -47,7 +47,7 @@ object ConversationServiceSpec extends UnitSpecBase:
     phone = None,
     login = Some(Login("testuser")),
     claims = Json.Obj("name" -> Json.Str("Test User")),
-    uiLocales = None
+    uiLocales = None,
   )
 
   private val conversationRecord = ConversationRecord(
@@ -73,7 +73,7 @@ object ConversationServiceSpec extends UnitSpecBase:
     registrationStep = None,
     userAgent = None,
     userAgentCookie = None,
-        version = 1,
+    version = 1,
     amr = Map.empty,
     needsPasswordChange = false,
     targetAcr = None,
@@ -197,6 +197,15 @@ object ConversationServiceSpec extends UnitSpecBase:
     yield ()
 
   def spec = suite("ConversationService")(
+    suite("find")(
+      test("delegates to the conversation repository") {
+        val env = Env()
+        for
+          _ <- env.conversationRepository.find.succeedsWith(Some(conversationRecord))
+          result <- env.service.find(authId)
+        yield assertTrue(result == Some(conversationRecord), env.conversationRepository.find.calls == List(authId))
+      },
+    ),
     suite("prepareInitialOtp")(
       test("prepares and sends OTP when allowed") {
         val env = Env()
@@ -222,8 +231,7 @@ object ConversationServiceSpec extends UnitSpecBase:
             Left(email),
             0,
           )
-        yield
-          assertTrue(result == ConversationResult.RenderStep(otpStep))
+        yield assertTrue(result == ConversationResult.RenderStep(otpStep))
       },
       test("denies access when rate limited") {
         val env = Env()
@@ -231,9 +239,8 @@ object ConversationServiceSpec extends UnitSpecBase:
           _ <- env.submissionLimiter.statusFor.succeedsWith(LimitStatus.Banned)
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
           result <- env.service.prepareInitialOtp(authId, conversationRecord, Left(email), 0)
-        yield
-          assertTrue(result == ConversationResult.RenderStep(ConversationStep.AccessDenied))
-      }
+        yield assertTrue(result == ConversationResult.RenderStep(ConversationStep.AccessDenied))
+      },
     ),
     suite("startRegistration")(
       test("enters the flow without creating or reserving an account") {
@@ -322,6 +329,17 @@ object ConversationServiceSpec extends UnitSpecBase:
           env.userService.register.calls.map(_._3) == List(roleIds),
         )
       },
+      test("reports a write conflict when the conversation moved on") {
+        val env = Env()
+        val pending = registrationConversation.copy(registrationStep = Some(1))
+        val newUser = UserRecord(userId, Some(email), None, None, Json.Obj(), None)
+        for
+          _ <- env.configService.get.succeedsWith(registrationClient)
+          _ <- env.userService.register.succeedsWith(newUser)
+          _ <- env.conversationRepository.overwrite.succeedsWith(false)
+          result <- env.service.registerVerifiedUser(authId, pending, registrationFlow, Left(email))
+        yield assertTrue(result == ConversationResult.WriteConflict)
+      },
     ),
     suite("checkOtp")(
       test("returns StepPassed on successful OTP check") {
@@ -336,11 +354,10 @@ object ConversationServiceSpec extends UnitSpecBase:
           _ <- env.otpService.checkOtp.succeedsWith(SubmitOtpResult.Success)
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
           result <- env.service.checkOtp(record, otpStep, OtpCode("123456"), authId)
-        yield
-          result match
-            case ConversationResult.StepPassed(updated) =>
-              assertTrue(updated.amr.contains(PassedAuthFactor.otp))
-            case _ => assertTrue(false)
+        yield result match
+          case ConversationResult.StepPassed(updated) =>
+            assertTrue(updated.amr.contains(PassedAuthFactor.otp))
+          case _ => assertTrue(false)
       },
       test("records limit and re-renders on OTP failure") {
         val env = Env()
@@ -353,12 +370,11 @@ object ConversationServiceSpec extends UnitSpecBase:
           _ <- env.submissionLimiter.recordLimit.succeedsWith(LimitStatus.Allowed)
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
           result <- env.service.checkOtp(record, otpStep, OtpCode("wrong"), authId)
-        yield
-          result match
-            case ConversationResult.RenderStep(step: ConversationStep.Otp) =>
-              assertTrue(step.timesSubmitted == 1)
-            case _ => assertTrue(false)
-      }
+        yield result match
+          case ConversationResult.RenderStep(step: ConversationStep.Otp) =>
+            assertTrue(step.timesSubmitted == 1)
+          case _ => assertTrue(false)
+      },
     ),
     suite("checkPassword")(
       test("returns StepPassed on successful password check") {
@@ -373,14 +389,51 @@ object ConversationServiceSpec extends UnitSpecBase:
           _ <- env.passwordService.verifyPassword.succeedsWith(CheckPassword.Success)
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
           result <- env.service.checkPassword(record, passStep, Password("secret"), authId)
-        yield
-          result match
-            case ConversationResult.StepPassed(updated) =>
-              assertTrue(updated.amr.contains(PassedAuthFactor.password))
-            case _ => assertTrue(false)
-      }
+        yield result match
+          case ConversationResult.StepPassed(updated) =>
+            assertTrue(updated.amr.contains(PassedAuthFactor.password))
+          case _ => assertTrue(false)
+      },
     ),
     suite("finish")(
+      test("denies access when the conversation never resolved a user") {
+        val env = Env()
+        for
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          result <- env.service.finish(authId, conversationRecord)
+        yield assertTrue(result == ConversationResult.RenderStep(ConversationStep.AccessDenied))
+      },
+      test("reports a write conflict when the conversation was already claimed") {
+        val env = Env()
+        val now = Instant.parse("2026-07-13T10:00:00Z")
+        val record = consentedRecord.copy(userId = Some(userId))
+        for
+          _ <- TestClock.setTime(now)
+          _ <- issueCodeStubs(env)
+          _ <- env.conversationRepository.delete.succeedsWith(false)
+          result <- env.service.finish(authId, record)
+        yield assertTrue(result == ConversationResult.WriteConflict)
+      },
+      test("migrates the prior session's tokens instead of invalidating it when offline_access is granted") {
+        val env = Env()
+        val now = Instant.parse("2026-07-13T10:00:00Z")
+        val priorSessionIdMac = MAC(Array.fill(32)(2.toByte))
+        val record = consentedRecord.copy(
+          userId = Some(userId),
+          priorSessionId = Some(priorSessionIdMac),
+          scope = consentedRecord.scope + ScopeToken.OfflineAccess,
+          grantedScope = Some(consentedRecord.scope + ScopeToken.OfflineAccess),
+        )
+        for
+          _ <- TestClock.setTime(now)
+          _ <- issueCodeStubs(env)
+          result <- env.service.finish(authId, record)
+          sessionCalls = env.sessionRepository.create.calls
+        yield assertTrue(
+          result.isInstanceOf[ConversationResult.Complete],
+          sessionCalls.head._5 == Some(PriorSession.MigrateTokens(priorSessionIdMac, Set.empty, now, None)),
+        )
+      },
       test("completes conversation and creates session/code") {
         val env = Env()
         val now = Instant.parse("2026-07-13T10:00:00Z")
@@ -407,13 +460,12 @@ object ConversationServiceSpec extends UnitSpecBase:
           _ <- env.secureRandom.nextUUIDv7.succeedsWith(UUID.randomUUID())
           _ <- env.userAgentRepository.create.succeedsWith(())
           result <- env.service.finish(authId, record)
-        yield
-          result match
-            case ConversationResult.Complete(uri, _, c, s, _, _, _) =>
-              assertTrue(uri == redirectUri) &&
-              assertTrue(c == code) &&
-              assertTrue(s == sessionId)
-            case _ => assertTrue(false)
+        yield result match
+          case ConversationResult.Complete(uri, _, c, s, _, _, _) =>
+            assertTrue(uri == redirectUri) &&
+            assertTrue(c == code) &&
+            assertTrue(s == sessionId)
+          case _ => assertTrue(false)
       },
       test("creates new session and issues cookie during step-up") {
         val env = Env()
@@ -449,14 +501,13 @@ object ConversationServiceSpec extends UnitSpecBase:
           _ <- env.userAgentRepository.create.succeedsWith(())
           result <- env.service.finish(authId, record)
           createCalls = env.sessionRepository.create.calls
-        yield
-          result match
-            case ConversationResult.Complete(_, _, _, s, _, _, _) =>
-              assertTrue(s == sessionId) &&
-              assertTrue(createCalls.nonEmpty) &&
-              assertTrue(createCalls.head._1 == sessionIdMac) &&
-              assertTrue(createCalls.head._5 == Some(PriorSession.Invalidate(priorSessionIdMac)))
-            case _ => assertTrue(false)
+        yield result match
+          case ConversationResult.Complete(_, _, _, s, _, _, _) =>
+            assertTrue(s == sessionId) &&
+            assertTrue(createCalls.nonEmpty) &&
+            assertTrue(createCalls.head._1 == sessionIdMac) &&
+            assertTrue(createCalls.head._5 == Some(PriorSession.Invalidate(priorSessionIdMac)))
+          case _ => assertTrue(false)
       },
       test("invalidates prior session and creates new one during re-auth") {
         val env = Env()
@@ -492,14 +543,13 @@ object ConversationServiceSpec extends UnitSpecBase:
           _ <- env.userAgentRepository.create.succeedsWith(())
           result <- env.service.finish(authId, record)
           createCalls = env.sessionRepository.create.calls
-        yield
-          result match
-            case ConversationResult.Complete(_, _, _, s, _, _, _) =>
-              assertTrue(s == sessionId) &&
-              assertTrue(createCalls.nonEmpty) &&
-              assertTrue(createCalls.head._1 == sessionIdMac) &&
-              assertTrue(createCalls.head._5 == Some(PriorSession.Invalidate(priorSessionIdMac)))
-            case _ => assertTrue(false)
+        yield result match
+          case ConversationResult.Complete(_, _, _, s, _, _, _) =>
+            assertTrue(s == sessionId) &&
+            assertTrue(createCalls.nonEmpty) &&
+            assertTrue(createCalls.head._1 == sessionIdMac) &&
+            assertTrue(createCalls.head._5 == Some(PriorSession.Invalidate(priorSessionIdMac)))
+          case _ => assertTrue(false)
       },
       test("reuses the cookie's user agent id when the row is still present") {
         val env = Env()
@@ -536,13 +586,12 @@ object ConversationServiceSpec extends UnitSpecBase:
           result <- env.service.finish(authId, record)
           sessionCalls = env.sessionRepository.create.calls
           createCalls = env.userAgentRepository.create.calls
-        yield
-          result match
-            case ConversationResult.Complete(_, _, _, _, _, uaId, _) =>
-              assertTrue(uaId == cookieUserAgentId) &&
-              assertTrue(createCalls.isEmpty) &&
-              assertTrue(sessionCalls.head._2.userAgentId == cookieUserAgentId)
-            case _ => assertTrue(false)
+        yield result match
+          case ConversationResult.Complete(_, _, _, _, _, uaId, _) =>
+            assertTrue(uaId == cookieUserAgentId) &&
+            assertTrue(createCalls.isEmpty) &&
+            assertTrue(sessionCalls.head._2.userAgentId == cookieUserAgentId)
+          case _ => assertTrue(false)
       },
       test("recreates the user agent row when the cookie points at a swept id") {
         val env = Env()
@@ -582,16 +631,14 @@ object ConversationServiceSpec extends UnitSpecBase:
           result <- env.service.finish(authId, record)
           sessionCalls = env.sessionRepository.create.calls
           createCalls = env.userAgentRepository.create.calls
-        yield
-          result match
-            case ConversationResult.Complete(_, _, _, _, _, uaId, _) =>
-              assertTrue(uaId == UserAgentId(freshUserAgentId)) &&
-              assertTrue(createCalls.map(_._1) == List(UserAgentId(freshUserAgentId))) &&
-              assertTrue(sessionCalls.head._2.userAgentId == UserAgentId(freshUserAgentId))
-            case _ => assertTrue(false)
+        yield result match
+          case ConversationResult.Complete(_, _, _, _, _, uaId, _) =>
+            assertTrue(uaId == UserAgentId(freshUserAgentId)) &&
+            assertTrue(createCalls.map(_._1) == List(UserAgentId(freshUserAgentId))) &&
+            assertTrue(sessionCalls.head._2.userAgentId == UserAgentId(freshUserAgentId))
+          case _ => assertTrue(false)
       },
     ),
-
     suite("consent")(
       test("finish renders the consent step when a grant is still needed") {
         val env = Env()
@@ -719,7 +766,6 @@ object ConversationServiceSpec extends UnitSpecBase:
         )
       },
     ),
-
     suite("checkLoginPassword")(
       test("authenticates login+password and returns StepPassed") {
         val env = Env()
@@ -732,15 +778,13 @@ object ConversationServiceSpec extends UnitSpecBase:
           _ <- env.passwordService.verifyPassword.succeedsWith(CheckPassword.Success)
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
           result <- env.service.checkLoginPassword(authId, conversationRecord, Login("testuser"), Password("secret"))
-        yield
-          result match
-            case ConversationResult.StepPassed(updated) =>
-              assertTrue(updated.userId.contains(userId)) &&
-              assertTrue(updated.amr.contains(PassedAuthFactor.password))
-            case _ => assertTrue(false)
-      }
+        yield result match
+          case ConversationResult.StepPassed(updated) =>
+            assertTrue(updated.userId.contains(userId)) &&
+            assertTrue(updated.amr.contains(PassedAuthFactor.password))
+          case _ => assertTrue(false)
+      },
     ),
-
     suite("offerPasskeyEnroll")(
       test("starts registration if user has no passkeys") {
         val env = Env()
@@ -754,11 +798,10 @@ object ConversationServiceSpec extends UnitSpecBase:
           _ <- env.webAuthnService.startRegistration.succeedsWith(ceremony)
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
           result <- env.service.offerPasskeyEnroll(authId, record)
-        yield
-          result match
-            case ConversationResult.RenderStep(ConversationStep.PasskeyEnroll(req, opt, _)) =>
-              assertTrue(req == "request") && assertTrue(opt == "options")
-            case _ => assertTrue(false)
+        yield result match
+          case ConversationResult.RenderStep(ConversationStep.PasskeyEnroll(req, opt, _)) =>
+            assertTrue(req == "request") && assertTrue(opt == "options")
+          case _ => assertTrue(false)
       },
       test("skips enrollment if user already has passkeys") {
         val env = Env()
@@ -803,8 +846,7 @@ object ConversationServiceSpec extends UnitSpecBase:
           _ <- env.secureRandom.nextUUIDv7.succeedsWith(UUID.randomUUID())
           _ <- env.userAgentRepository.create.succeedsWith(())
           result <- env.service.offerPasskeyEnroll(authId, record)
-        yield
-          assertTrue(result.isInstanceOf[ConversationResult.Complete])
-      }
-    )
+        yield assertTrue(result.isInstanceOf[ConversationResult.Complete])
+      },
+    ),
   )

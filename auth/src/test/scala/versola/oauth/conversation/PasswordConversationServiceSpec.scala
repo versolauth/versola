@@ -210,6 +210,13 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
           checkedSubjects == Set(userId.toString, email.toString),
         )
       },
+      test("reports a write conflict when the conversation moved on") {
+        val env = Env()
+        for
+          _ <- env.conversationRepository.overwrite.succeedsWith(false)
+          result <- env.service.prepareInitialPassword(authId, baseRecord, Left(email), factorIndex = 0)
+        yield assertTrue(result == ConversationResult.WriteConflict)
+      },
     ),
     suite("preparePasswordStep")(
       test("render fresh password step") {
@@ -218,6 +225,13 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
           result <- env.service.preparePasswordStep(authId, passwordRecord, factorIndex = 0)
         yield assertTrue(result == ConversationResult.RenderStep(passwordStep))
+      },
+      test("reports a write conflict when the conversation moved on") {
+        val env = Env()
+        for
+          _ <- env.conversationRepository.overwrite.succeedsWith(false)
+          result <- env.service.preparePasswordStep(authId, passwordRecord, factorIndex = 0)
+        yield assertTrue(result == ConversationResult.WriteConflict)
       },
     ),
     suite("checkPassword")(
@@ -310,6 +324,105 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
           ),
         )
       },
+      test("re-render step with oldPasswordChangedAt and rate limit flag when old password is rate limited") {
+        val env = Env()
+        val changedAt = Instant.parse("2024-01-01T00:00:00Z")
+        for
+          _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.Allowed)
+          _ <- env.passwordService.verifyPassword.succeedsWith(CheckPassword.OldPassword(changedAt))
+          _ <- env.submissionLimiter.recordLimitAll.succeedsWith(LimitStatus.RateLimited(30L))
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          result <- env.service.checkPassword(passwordRecord, passwordStep, password, authId)
+        yield assertTrue(
+          result == ConversationResult.RenderStep(
+            passwordStep.copy(
+              timesSubmitted = 1,
+              oldPasswordChangedAt = Some(changedAt),
+              rateLimitExceeded = true,
+            ),
+          ),
+        )
+      },
+      test("return AccessDenied when recording an old-password failure applies a ban") {
+        val env = Env()
+        val changedAt = Instant.parse("2024-01-01T00:00:00Z")
+        for
+          _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.Allowed)
+          _ <- env.passwordService.verifyPassword.succeedsWith(CheckPassword.OldPassword(changedAt))
+          _ <- env.submissionLimiter.recordLimitAll.succeedsWith(LimitStatus.Banned)
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          result <- env.service.checkPassword(passwordRecord, passwordStep, password, authId)
+        yield assertTrue(result == ConversationResult.RenderStep(ConversationStep.AccessDenied))
+      },
+      test("return StepPassed with needsPasswordChange when a temporary password is correct") {
+        val env = Env()
+        for
+          _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.Allowed)
+          _ <- env.passwordService.verifyPassword.succeedsWith(CheckPassword.Temporary)
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          result <- env.service.checkPassword(passwordRecord, passwordStep, password, authId)
+        yield assertTrue(
+          result match
+            case ConversationResult.StepPassed(updated) => updated.needsPasswordChange
+            case _ => false,
+        )
+      },
+      test("reports a write conflict when accepting a temporary password cannot be persisted") {
+        val env = Env()
+        for
+          _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.Allowed)
+          _ <- env.passwordService.verifyPassword.succeedsWith(CheckPassword.Temporary)
+          _ <- env.conversationRepository.overwrite.succeedsWith(false)
+          result <- env.service.checkPassword(passwordRecord, passwordStep, password, authId)
+        yield assertTrue(result == ConversationResult.WriteConflict)
+      },
+      test("reports a write conflict when accepting a correct password cannot be persisted") {
+        val env = Env()
+        for
+          _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.Allowed)
+          _ <- env.passwordService.verifyPassword.succeedsWith(CheckPassword.Success)
+          _ <- env.conversationRepository.overwrite.succeedsWith(false)
+          result <- env.service.checkPassword(passwordRecord, passwordStep, password, authId)
+        yield assertTrue(result == ConversationResult.WriteConflict)
+      },
+      test("re-render step with temporaryExpired flag when the temporary password has expired") {
+        val env = Env()
+        for
+          _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.Allowed)
+          _ <- env.passwordService.verifyPassword.succeedsWith(CheckPassword.TemporaryExpired)
+          _ <- env.submissionLimiter.recordLimitAll.succeedsWith(LimitStatus.Allowed)
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          result <- env.service.checkPassword(passwordRecord, passwordStep, password, authId)
+        yield assertTrue(
+          result == ConversationResult.RenderStep(
+            passwordStep.copy(timesSubmitted = 1, temporaryExpired = true, rateLimitExceeded = false),
+          ),
+        )
+      },
+      test("re-render step with temporaryExpired and rate limit flags when rate limited") {
+        val env = Env()
+        for
+          _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.Allowed)
+          _ <- env.passwordService.verifyPassword.succeedsWith(CheckPassword.TemporaryExpired)
+          _ <- env.submissionLimiter.recordLimitAll.succeedsWith(LimitStatus.RateLimited(30L))
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          result <- env.service.checkPassword(passwordRecord, passwordStep, password, authId)
+        yield assertTrue(
+          result == ConversationResult.RenderStep(
+            passwordStep.copy(timesSubmitted = 1, temporaryExpired = true, rateLimitExceeded = true),
+          ),
+        )
+      },
+      test("return AccessDenied when recording a temporary-expired failure applies a ban") {
+        val env = Env()
+        for
+          _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.Allowed)
+          _ <- env.passwordService.verifyPassword.succeedsWith(CheckPassword.TemporaryExpired)
+          _ <- env.submissionLimiter.recordLimitAll.succeedsWith(LimitStatus.Banned)
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          result <- env.service.checkPassword(passwordRecord, passwordStep, password, authId)
+        yield assertTrue(result == ConversationResult.RenderStep(ConversationStep.AccessDenied))
+      },
       test("deny access when only the credential subject is banned") {
         val env = Env()
         for
@@ -373,6 +486,40 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
           overwriteCalls.head._2.userLogin.contains(login),
           overwriteCalls.head._2.userClaims.contains(loginUser.claims),
         )
+      },
+      test("reports a write conflict when accepting a correct password cannot be persisted") {
+        val env = Env()
+        for
+          _ <- env.userRepository.findByLogin.succeedsWith(Some(loginUser))
+          _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.Allowed)
+          _ <- env.passwordService.verifyPassword.succeedsWith(CheckPassword.Success)
+          _ <- env.conversationRepository.overwrite.succeedsWith(false)
+          result <- env.service.checkLoginPassword(authId, baseRecord, login, password)
+        yield assertTrue(result == ConversationResult.WriteConflict)
+      },
+      test("return StepPassed with needsPasswordChange when a temporary password is correct") {
+        val env = Env()
+        for
+          _ <- env.userRepository.findByLogin.succeedsWith(Some(loginUser))
+          _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.Allowed)
+          _ <- env.passwordService.verifyPassword.succeedsWith(CheckPassword.Temporary)
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          result <- env.service.checkLoginPassword(authId, baseRecord, login, password)
+        yield assertTrue(
+          result match
+            case ConversationResult.StepPassed(updated) => updated.needsPasswordChange && updated.userId.contains(userId)
+            case _ => false,
+        )
+      },
+      test("reports a write conflict when accepting a temporary password cannot be persisted") {
+        val env = Env()
+        for
+          _ <- env.userRepository.findByLogin.succeedsWith(Some(loginUser))
+          _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.Allowed)
+          _ <- env.passwordService.verifyPassword.succeedsWith(CheckPassword.Temporary)
+          _ <- env.conversationRepository.overwrite.succeedsWith(false)
+          result <- env.service.checkLoginPassword(authId, baseRecord, login, password)
+        yield assertTrue(result == ConversationResult.WriteConflict)
       },
       test("deny access when either subject is banned, checking both subjects in one query") {
         val env = Env()
