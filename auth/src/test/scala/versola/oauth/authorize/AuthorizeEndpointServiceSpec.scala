@@ -25,7 +25,7 @@ import versola.oauth.client.model.{
 import versola.oauth.consent.{ConsentDecision, ConsentService}
 import versola.oauth.conversation.{ConversationRepository, ConversationResult, ConversationRouter, EmailSubmission, PhoneSubmission}
 import versola.oauth.jwks.JwksService
-import versola.oauth.model.{AccessToken, AuthorizationCode, CodeChallenge, CodeChallengeMethod, State}
+import versola.oauth.model.{AccessToken, AuthorizationCode, CodeChallenge, CodeChallengeMethod, Nonce, State}
 import versola.oauth.session.SessionService
 import versola.oauth.session.model.{ClientEntry, PublicSessionId, SessionId, SessionInfo, SessionRecord, UserAgentId}
 import versola.oauth.token.AuthorizationCodeRepository
@@ -1513,6 +1513,9 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
       val hybridRequest = baseRequest.copy(
         sessionId = Some(rawSessionId),
         responseType = NonEmptySet(ResponseTypeEntry.Code, ResponseTypeEntry.IdToken),
+        // OIDC requires nonce whenever response_type includes id_token; a hybrid request
+        // without one is not spec-compliant, so it shouldn't be what this success case models.
+        nonce = Some(Nonce("test-nonce")),
       )
       for
         _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
