@@ -1188,6 +1188,24 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         env.sessionRepository.findByAccessTokenId.calls.isEmpty,
       )
     },
+    // Distinct from the expired-token case above: a token that fails to parse or verify at
+    // all (JWT.Error other than Expired) takes the catch-all `case _` branch, which never
+    // attempts a refresh even over a cookie -- there is no accessTokenId to look up by.
+    test("returns 401 when bearer token is not a valid JWT at all") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(usersEndpoint()))
+        request = Request.get(URL.empty / "users").addHeader(Header.Authorization.Bearer("not-a-jwt"))
+        service = env.buildService(client, security)
+        response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
+      yield assertTrue(
+        response.status == Status.Unauthorized,
+        env.sessionRepository.findByAccessTokenId.calls.isEmpty,
+      )
+    },
     test("forwards request when user role grants access to the endpoint") {
       val env = new Env
       val endpoint = usersEndpoint()
@@ -1372,6 +1390,27 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         upstream.exists(_.url.queryParams.getAll("actor") == Chunk("user-1")),
       )
     },
+    // Mirrors "returns 500 when an allow expression cannot be evaluated at all", but for the
+    // inject-rule evaluator: a rule that cannot be evaluated is a configuration error, so
+    // it fails the whole request with 500 rather than silently omitting the header.
+    test("returns 500 when an inject rule cannot be evaluated at all") {
+      val env = new Env
+      val endpoint = usersEndpoint(
+        inject = Vector(InjectRule(InjectTarget.header, "X-Broken", "1 / 0 == 0")),
+      )
+      for
+        _ <- env.setupDefaults()
+        capture <- captureUpstream()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(endpoint))
+        token <- env.signToken()
+        request = Request.get(URL.empty / "users").addCookie(sessionCookie(token))
+        service = env.buildService(client, security)
+        response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
+        upstream <- capture.get
+      yield assertTrue(response.status == Status.InternalServerError, upstream.isEmpty)
+    },
     test("skips allow check when expression is empty or whitespace") {
       val env = new Env
       val endpoint = usersEndpoint(allow = Some("   "))
@@ -1551,6 +1590,157 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         response.header(Header.Location).exists(_.url.encode == s"/login/${presetId}"),
         setCookieHeader.exists(c => c.name == EdgeSessionCookie.name && c.content.isEmpty),
       )
+    },
+    // The preset lookup uses cookiePresetId (from the cookie itself), not the record's own
+    // presetId, and clears the cookie with no domain/path since there is no preset left to
+    // supply them.
+    test("returns 401 with Location /login/<preset> when the session's preset has been removed") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(usersEndpoint()))
+        expiredToken <- env.signToken(jti = "old-jti", ttlSeconds = 1L)
+        _ <- TestClock.adjust(2.seconds)
+        now <- Clock.instant
+        record = session.EdgeSessionRecord(
+          publicSessionId = SessionId("sso-session-1"),
+          presetId = presetId,
+          accessTokenId = AccessTokenId("old-jti"),
+          encryptedRefreshToken = Some(Secret(Array.fill(16)(1.toByte))),
+          expiresAt = now.plusSeconds(3600),
+        )
+        _ <- env.sessionRepository.findByAccessTokenId.succeedsWith(Some(record))
+        // No env.withPresets(preset): clientService.findPreset(record.presetId) misses.
+        request = Request.get(URL.empty / "users").addCookie(sessionCookie(expiredToken))
+        service = env.buildService(client, security)
+        response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
+      yield assertTrue(
+        response.status == Status.Unauthorized,
+        response.header(Header.Location).exists(_.url.encode == s"/login/${presetId}"),
+        response.header(Header.SetCookie).map(_.value) == Some(EdgeSessionCookie.clear(None, None)),
+      )
+    },
+    // Distinct from the "no refresh token record exists" case above: here the session row and
+    // its preset are both found, but the row itself never received a refresh token. The
+    // fallback cookie then carries the preset's own domain/path, not None/None.
+    test("returns 401 with the preset's cookie domain/path when the session record has no refresh token") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(usersEndpoint()))
+        _ <- env.withPresets(preset)
+        expiredToken <- env.signToken(jti = "old-jti", ttlSeconds = 1L)
+        _ <- TestClock.adjust(2.seconds)
+        now <- Clock.instant
+        record = session.EdgeSessionRecord(
+          publicSessionId = SessionId("sso-session-1"),
+          presetId = presetId,
+          accessTokenId = AccessTokenId("old-jti"),
+          encryptedRefreshToken = None,
+          expiresAt = now.plusSeconds(3600),
+        )
+        _ <- env.sessionRepository.findByAccessTokenId.succeedsWith(Some(record))
+        request = Request.get(URL.empty / "users").addCookie(sessionCookie(expiredToken))
+        service = env.buildService(client, security)
+        response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
+      yield assertTrue(
+        response.status == Status.Unauthorized,
+        response.header(Header.Location).exists(_.url.encode == s"/login/${presetId}"),
+        response.header(Header.SetCookie).map(_.value) ==
+          Some(EdgeSessionCookie.clear(preset.cookieDomain, preset.cookiePath)),
+      )
+    },
+    // `rotate` looks the current key set up twice (once via storeSession, once to build the
+    // new cookie's claims): if it changed in between -- e.g. a JWKS reload dropped the
+    // signing key -- the freshly-minted token from the OP itself can fail the second check.
+    test("returns 401 when the rotated access token fails verification against a key set that changed mid-refresh") {
+      val env = new Env
+      val refreshTokenValue = "rt-secret"
+      for
+        _ <- env.setupDefaults()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(usersEndpoint()))
+        _ <- env.withPresets(preset)
+        _ <- env.withClients(oauthClient)
+        expiredToken <- env.signToken(jti = "old-jti", ttlSeconds = 1L)
+        _ <- TestClock.adjust(2.seconds)
+        encryptionKey = SecretKeySpec(env.edgeConfig.security.tokenEncryption.key, "AES")
+        encryptedRefresh <- security.encryptAes256(refreshTokenValue.getBytes("UTF-8"), encryptionKey)
+        now <- Clock.instant
+        record = session.EdgeSessionRecord(
+          publicSessionId = SessionId("sso-session-1"),
+          presetId = presetId,
+          accessTokenId = AccessTokenId("old-jti"),
+          encryptedRefreshToken = Some(Secret(encryptedRefresh)),
+          expiresAt = now.plusSeconds(3600),
+        )
+        _ <- env.sessionRepository.findByAccessTokenId.succeedsWith(Some(record))
+        newAccessToken <- env.signToken(jti = "new-jti", ttlSeconds = 600L)
+        newTokens = TokenResponse(
+          accessToken = newAccessToken,
+          tokenType = "Bearer",
+          expiresIn = 600L,
+          refreshToken = None,
+          refreshTokenExpiresIn = None,
+          scope = None,
+          idToken = None,
+        )
+        _ <- env.ssoClient.exchangeRefreshToken.succeedsWith(newTokens)
+        _ <- env.sessionRepository.create.succeedsWith(())
+        otherKeyPair = {
+          val gen = KeyPairGenerator.getInstance("RSA").nn
+          gen.initialize(2048)
+          gen.generateKeyPair().nn
+        }
+        // Same key id as the real signing key, but a different key pair: the rotated token's
+        // signature was made with the real key, so verifying it against this one fails.
+        mismatchedKeys = JWT.PublicKeys(JWKSet(
+          RSAKey.Builder(otherKeyPair.getPublic.asInstanceOf[RSAPublicKey]).keyID(env.edgeConfig.keyId).build(),
+        ))
+        _ <- env.jwksService.getPublicKeys.returnsZIOOnCall:
+          case 1 => ZIO.succeed(env.publicKeys) // proxyInternal validating the incoming expired token
+          case 2 => ZIO.succeed(env.publicKeys) // storeSession/extractTokenIds validating the rotated token
+          case _ => ZIO.succeed(mismatchedKeys) // rotate's own check right after, key set has since changed
+        request = Request.get(URL.empty / "users").addCookie(sessionCookie(expiredToken))
+        service = env.buildService(client, security)
+        response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
+      yield assertTrue(response.status == Status.Unauthorized)
+    },
+    // Any Throwable that isn't SSOClient.InvalidGrant or an Outcome propagates unchanged,
+    // first out of `rotate`'s own catchAll, then out of `proxy`'s -- covering both re-raises.
+    test("propagates a generic Throwable from a failed token refresh") {
+      val env = new Env
+      val failure = RuntimeException("sso token endpoint unreachable")
+      for
+        _ <- env.setupDefaults()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(usersEndpoint()))
+        _ <- env.withPresets(preset)
+        _ <- env.withClients(oauthClient)
+        expiredToken <- env.signToken(jti = "old-jti", ttlSeconds = 1L)
+        _ <- TestClock.adjust(2.seconds)
+        encryptionKey = SecretKeySpec(env.edgeConfig.security.tokenEncryption.key, "AES")
+        encryptedRefresh <- security.encryptAes256("rt-secret".getBytes("UTF-8"), encryptionKey)
+        now <- Clock.instant
+        record = session.EdgeSessionRecord(
+          publicSessionId = SessionId("sso-session-1"),
+          presetId = presetId,
+          accessTokenId = AccessTokenId("old-jti"),
+          encryptedRefreshToken = Some(Secret(encryptedRefresh)),
+          expiresAt = now.plusSeconds(3600),
+        )
+        _ <- env.sessionRepository.findByAccessTokenId.succeedsWith(Some(record))
+        _ <- env.ssoClient.exchangeRefreshToken.failsWith(failure)
+        request = Request.get(URL.empty / "users").addCookie(sessionCookie(expiredToken))
+        service = env.buildService(client, security)
+        result <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request).either
+      yield assertTrue(result == Left(failure))
     },
     test("exposes user info in CEL allow and inject rules") {
       val env = new Env

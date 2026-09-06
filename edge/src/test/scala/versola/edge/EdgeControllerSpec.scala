@@ -5,6 +5,7 @@ import org.scalamock.stubs.{Stub, ZIOStubs}
 import versola.edge.model.{
   AccessToken,
   AuthConversationNotFound,
+  AuthorizationPreset,
   ClientId,
   EdgeId,
   InvalidLogoutToken,
@@ -84,6 +85,9 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       request: Request,
       setup: (Stub[EdgeService], Stub[JwksService]) => UIO[Unit] = (_, _) => ZIO.unit,
       revoked: Boolean = false,
+      // Only the `logout` endpoint reads presets directly (every other route goes through
+      // EdgeService), so it is left unconfigured by default and opted into per test.
+      presetsSetup: Stub[AuthorizationPresetsSyncClient] => UIO[Unit] = _ => ZIO.unit,
   ): ZIO[TestClient & Client & Scope, Throwable, (Response, Stub[EdgeService], Stub[JwksService])] =
     for
       client  <- ZIO.service[Client]
@@ -107,6 +111,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       _        <- jwks.getPublicKeys.succeedsWith(publicKeys)
       _        <- revocation.isRevoked.succeedsWith(revoked)
       _        <- setup(service, jwks)
+      _        <- presetsSetup(presets)
       response <- client.batched(request)
     yield (response, service, jwks)
 
@@ -239,6 +244,96 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         )
       yield assertTrue(response.status == Status.NotFound)
     },
+    // Covers the generic-Throwable branch of authorize's error match, distinct from the
+    // PresetNotFound one above: anything else propagates as a 500.
+    test("returns 500 when authorize fails with an error other than PresetNotFound") {
+      for
+        (response, _, _) <- run(
+          Request.get(URL.decode("/login/preset-1").toOption.get),
+          (s, _) => s.authorize.failsWith(RuntimeException("sso client unreachable")),
+        )
+      yield assertTrue(response.status == Status.InternalServerError)
+    },
+  )
+
+  // The endpoint reads AuthorizationPresetsSyncClient directly (not through EdgeService),
+  // so every case here is driven via `presetsSetup` rather than the `setup` callback.
+  private val logoutSuite = suite("GET /logout/{presetId}")(
+    test("redirects to /logout with post_logout_redirect_uri appended when the preset has one") {
+      val preset = AuthorizationPreset(
+        id = PresetId("preset-1"),
+        clientId = ClientId("web-app"),
+        description = "default",
+        redirectUri = RedirectUri("https://app.example/complete"),
+        postLoginRedirectUri = RedirectUri("https://app.example/home"),
+        postLogoutRedirectUri = Some(RedirectUri("https://app.example/bye")),
+        scope = Set("openid"),
+        responseType = "code",
+        uiLocales = None,
+        customParameters = Map.empty,
+        cookieDomain = None,
+        cookiePath = None,
+      )
+      val expected = URL.decode("https://idp.example/logout").toOption.get
+        .addQueryParam("post_logout_redirect_uri", "https://app.example/bye")
+      for
+        (response, _, _) <- run(
+          Request.get(URL.decode("/logout/preset-1").toOption.get),
+          presetsSetup = presets => presets.getAll.succeedsWith(Map(preset.id -> preset)),
+        )
+      yield assertTrue(
+        response.status == Status.SeeOther,
+        response.header(Header.Location).map(_.url).contains(expected),
+      )
+    },
+    test("redirects to /logout with no query param when the preset has none") {
+      val preset = AuthorizationPreset(
+        id = PresetId("preset-1"),
+        clientId = ClientId("web-app"),
+        description = "default",
+        redirectUri = RedirectUri("https://app.example/complete"),
+        postLoginRedirectUri = RedirectUri("https://app.example/home"),
+        postLogoutRedirectUri = None,
+        scope = Set("openid"),
+        responseType = "code",
+        uiLocales = None,
+        customParameters = Map.empty,
+        cookieDomain = None,
+        cookiePath = None,
+      )
+      val expected = URL.decode("https://idp.example/logout").toOption.get
+      for
+        (response, _, _) <- run(
+          Request.get(URL.decode("/logout/preset-1").toOption.get),
+          presetsSetup = presets => presets.getAll.succeedsWith(Map(preset.id -> preset)),
+        )
+      yield assertTrue(
+        response.status == Status.SeeOther,
+        response.header(Header.Location).map(_.url).contains(expected),
+      )
+    },
+    // someOrFail(PresetNotFound) is fed through a `mapError` that only recognizes Throwable,
+    // so a missing preset surfaces as a plain RuntimeException, not PresetNotFound -- there is
+    // no dedicated 404 branch here as there is for /login, so it propagates as a 500.
+    test("returns 500 when the preset is unknown") {
+      for
+        (response, _, _) <- run(
+          Request.get(URL.decode("/logout/missing").toOption.get),
+          presetsSetup = presets => presets.getAll.succeedsWith(Map.empty),
+        )
+      yield assertTrue(response.status == Status.InternalServerError)
+    },
+    // Distinct from the missing-preset case above: here presets.getAll itself fails, so the
+    // `mapError` on `someOrFail` takes its `case error: Throwable => error` branch and
+    // re-raises the original error unchanged, rather than wrapping a RuntimeException.
+    test("returns 500 when presets.getAll itself fails") {
+      for
+        (response, _, _) <- run(
+          Request.get(URL.decode("/logout/preset-1").toOption.get),
+          presetsSetup = presets => presets.getAll.failsWith(RuntimeException("sync client unreachable")),
+        )
+      yield assertTrue(response.status == Status.InternalServerError)
+    },
   )
 
   private val completeSuite = suite("GET /complete")(
@@ -269,6 +364,32 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
           (s, _) => s.complete.failsWith(AuthConversationNotFound()),
         )
       yield assertTrue(response.status == Status.BadRequest)
+    },
+    test("returns 500 when complete fails with an error other than AuthConversationNotFound") {
+      for
+        (response, _, _) <- run(
+          Request.get(URL.decode("/complete?code=c-1&state=s-1").toOption.get),
+          (s, _) => s.complete.failsWith(RuntimeException("sso token exchange failed")),
+        )
+      yield assertTrue(response.status == Status.InternalServerError)
+    },
+    // Mirrors the AuthConversationNotFound case above, but on the completeError branch of
+    // the (code, error) match rather than the complete one.
+    test("returns 400 when completeError reports the auth conversation is unknown") {
+      for
+        (response, _, _) <- run(
+          Request.get(URL.decode("/complete?error=access_denied&state=s-1").toOption.get),
+          (s, _) => s.completeError.failsWith(AuthConversationNotFound()),
+        )
+      yield assertTrue(response.status == Status.BadRequest)
+    },
+    test("returns 500 when completeError fails with an error other than AuthConversationNotFound") {
+      for
+        (response, _, _) <- run(
+          Request.get(URL.decode("/complete?error=access_denied&state=s-1").toOption.get),
+          (s, _) => s.completeError.failsWith(RuntimeException("sso token exchange failed")),
+        )
+      yield assertTrue(response.status == Status.InternalServerError)
     },
     test("redirects OAuth errors to the post-login URL without setting a session cookie") {
       val redirectUrl = URL.decode("https://app.example/home?from=login").toOption.get.addQueryParams(
@@ -406,6 +527,19 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
           .contains("logout token must not carry a nonce"),
       )
     },
+    // Only InvalidLogoutToken gets the JSON error-body treatment; anything else falls
+    // through to the generic 500 handler with no JSON body at all.
+    test("returns 500 (not a JSON 400 body) when backChannelLogout fails with an unrelated error") {
+      for
+        (response, _, _) <- run(
+          Request.post(
+            URL.decode("/logout/backchannel").toOption.get,
+            Body.fromURLEncodedForm(Form.fromStrings("logout_token" -> "header.payload.sig")),
+          ),
+          (s, _) => s.backChannelLogout.failsWith(RuntimeException("revocation store unreachable")),
+        )
+      yield assertTrue(response.status == Status.InternalServerError)
+    },
   )
 
   private val proxySuite = suite("proxy routes")(
@@ -531,6 +665,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
   def spec = suite("EdgeController")(
     permissionsSuite,
     loginSuite,
+    logoutSuite,
     completeSuite,
     frontChannelLogoutSuite,
     backChannelLogoutSuite,

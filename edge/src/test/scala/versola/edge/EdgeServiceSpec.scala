@@ -169,7 +169,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
       */
     def signRevocationToken(
         revokedJti: Option[String],
-        revokedExpiresAt: Instant,
+        revokedExpiresAt: Option[Instant],
         events: java.util.Map[String, ?],
         audience: String = "web-app",
     ): Task[String] =
@@ -186,7 +186,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
             .issueTime(Date.from(now))
             .expirationTime(Date.from(now.plusSeconds(120)))
             .claim("events", events)
-            .claim("revoked_exp", revokedExpiresAt.getEpochSecond)
+          revokedExpiresAt.foreach(exp => builder.claim("revoked_exp", exp.getEpochSecond))
           revokedJti.foreach(builder.claim("revoked_jti", _))
           val jwt = SignedJWT(header, builder.build())
           jwt.sign(RSASSASigner(edgeConfig.privateKey))
@@ -356,6 +356,57 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
           env.loginRepository.deleteByState.calls == List(Fixtures.state),
         )
       },
+      test("completeError fails with AuthConversationNotFound when the login record is absent") {
+        val env = new Env
+        for
+          _ <- env.loginRepository.findByState.succeedsWith(None)
+          security <- ZIO.service[SecurityService]
+          client <- ZIO.service[Client]
+          service = env.buildService(client, security)
+          result <- service.completeError(Fixtures.state, "access_denied", None, None).either
+        yield assertTrue(result == Left(AuthConversationNotFound()))
+      },
+      // Distinct from the login-record-absent case above: here the record is found but its
+      // preset has since been removed from the cache.
+      test("completeError fails with AuthConversationNotFound when the preset has been removed") {
+        val env = new Env
+        for
+          _ <- env.loginRepository.findByState.succeedsWith(Some(LoginRecord(
+            codeVerifier = CodeVerifier.fromBytes(Fixtures.codeVerifierBytes),
+            presetId = Fixtures.presetId,
+            state = Fixtures.state,
+          )))
+          security <- ZIO.service[SecurityService]
+          client <- ZIO.service[Client]
+          service = env.buildService(client, security)
+          result <- service.completeError(Fixtures.state, "access_denied", None, None).either
+        yield assertTrue(result == Left(AuthConversationNotFound()))
+      },
+      test("completeError includes error_uri in the redirect when supplied") {
+        val env = new Env
+        for
+          _ <- env.withPresets(Fixtures.preset)
+          _ <- env.loginRepository.findByState.succeedsWith(Some(LoginRecord(
+            codeVerifier = CodeVerifier.fromBytes(Fixtures.codeVerifierBytes),
+            presetId = Fixtures.presetId,
+            state = Fixtures.state,
+          )))
+          _ <- env.loginRepository.deleteByState.succeedsWith(())
+          security <- ZIO.service[SecurityService]
+          client <- ZIO.service[Client]
+          service = env.buildService(client, security)
+          redirectUrl <- service.completeError(
+            Fixtures.state,
+            "access_denied",
+            None,
+            Some("https://idp.example/errors/access_denied"),
+          )
+        yield assertTrue(
+          redirectUrl == URL.decode(Fixtures.postLoginUri).toOption.get.addQueryParams(
+            List("error" -> "access_denied", "error_uri" -> "https://idp.example/errors/access_denied"),
+          ),
+        )
+      },
       test("fails with AuthConversationNotFound when preset has been removed") {
         val env = new Env
         for
@@ -461,6 +512,33 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
           createCalls.head.accessTokenId == AccessTokenId("jti-no-refresh"),
           createCalls.head.presetId == Fixtures.presetId,
           createCalls.head.encryptedRefreshToken.isEmpty,
+        )
+      },
+      // extractTokenIds wraps a JWT decode failure of the *returned* access token (as
+      // opposed to one presented by a caller) in a plain RuntimeException, since the OP
+      // misbehaving is not a well-formed domain error the caller could act on.
+      test("fails with a wrapped RuntimeException when the returned access token is not a valid JWT") {
+        val env = new Env
+        for
+          _ <- env.withPresets(Fixtures.preset)
+          _ <- env.withClients(Fixtures.client)
+          _ <- env.loginRepository.findByState.succeedsWith(Some(LoginRecord(
+            codeVerifier = CodeVerifier.fromBytes(Fixtures.codeVerifierBytes),
+            presetId = Fixtures.presetId,
+            state = Fixtures.state,
+          )))
+          _ <- env.loginRepository.deleteByState.succeedsWith(())
+          _ <- env.jwksService.getPublicKeys.succeedsWith(env.publicKeys)
+          security <- ZIO.service[SecurityService]
+          client <- ZIO.service[Client]
+          _ <- env.ssoClient.exchangeAuthorizationCode.succeedsWith(
+            Fixtures.tokens.copy(accessToken = AccessToken("not-a-jwt")),
+          )
+          service = env.buildService(client, security)
+          result <- service.complete(code, Fixtures.state).either
+        yield assertTrue(
+          result.swap.toOption.collect { case ex: Throwable => ex.getMessage }.exists(_.contains("Failed to validate JWT")),
+          env.sessionRepository.create.calls.isEmpty,
         )
       },
     )
@@ -844,7 +922,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
         client <- ZIO.service[Client]
         service = env.buildService(client, security)
         now <- Clock.instant
-        token <- env.signRevocationToken(revokedJti = Some("revoked-token"), revokedExpiresAt = now.plusSeconds(300), events = revocationEvent)
+        token <- env.signRevocationToken(revokedJti = Some("revoked-token"), revokedExpiresAt = Some(now.plusSeconds(300)), events = revocationEvent)
         _ <- service.backChannelLogout(token)
       yield assertTrue(
         // A client revoking one of its own tokens must not log every other client of that
@@ -863,10 +941,26 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
         client <- ZIO.service[Client]
         service = env.buildService(client, security)
         now <- Clock.instant
-        token <- env.signRevocationToken(revokedJti = None, revokedExpiresAt = now.plusSeconds(300), events = revocationEvent)
+        token <- env.signRevocationToken(revokedJti = None, revokedExpiresAt = Some(now.plusSeconds(300)), events = revocationEvent)
         result <- service.backChannelLogout(token).either
       yield assertTrue(
         rejection(result).contains("access token revocation carries no revoked_jti claim"),
+        env.revocationService.revokeToken.calls.isEmpty,
+      )
+    },
+    test("rejects an access token revocation event that names no revoked_exp") {
+      val env = new Env
+      val revocationEvent = Collections.singletonMap(accessTokenRevocationEvent, Collections.emptyMap())
+      for
+        _ <- env.withClients(Fixtures.client)
+        _ <- env.jwksService.getPublicKeys.succeedsWith(env.publicKeys)
+        security <- ZIO.service[SecurityService]
+        client <- ZIO.service[Client]
+        service = env.buildService(client, security)
+        token <- env.signRevocationToken(revokedJti = Some("revoked-token"), revokedExpiresAt = None, events = revocationEvent)
+        result <- service.backChannelLogout(token).either
+      yield assertTrue(
+        rejection(result).contains("access token revocation carries no revoked_exp claim"),
         env.revocationService.revokeToken.calls.isEmpty,
       )
     },
