@@ -186,9 +186,11 @@ object AuthorizeRequestParser:
               ZIO.none
           }
 
+        // OIDC Core §3.1.2.1: nonce is REQUIRED when the response type includes id_token.
         nonce <- getParam(params, "nonce")
           .orElseFail(Error.MultipleValuesProvided(redirectUri, state, "nonce", useFragment = useFragment))
           .map(_.map(Nonce(_)))
+          .filterOrFail(_.isDefined || !responseTypeEntries.contains(ResponseTypeEntry.IdToken))(Error.NonceMissing(redirectUri, state, useFragment = useFragment))
 
         prompt <- getParam(params, "prompt")
           .orElseFail(Error.MultipleValuesProvided(redirectUri, state, "prompt", useFragment = useFragment))

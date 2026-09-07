@@ -22,11 +22,10 @@ import java.util.UUID
   * registered client may request either supported value, so a "client not registered
   * for hybrid" rejection does not exist in this implementation and is not tested here.
   *
-  * `nonce` is parsed as optional (`AuthorizeRequestParser`) and is never required:
-  * `UserInfoService.getUserInfoInternal` simply omits the `nonce` claim when none was
-  * supplied (`auth/.../UserInfoService.scala`). This is the same gap the unit-test
-  * analog (`AuthorizeEndpointServiceSpec`) recently had to correct for — hybrid requests
-  * without a nonce are OIDC-non-compliant, but the server does not reject them.
+  * `nonce` is REQUIRED whenever the response type includes `id_token` (OIDC Core
+  * §3.1.2.1): `AuthorizeRequestParser` rejects a hybrid request without one with
+  * `invalid_request`, delivered in the fragment like every other hybrid error. It stays
+  * optional for the plain `code` flow.
   */
 object HybridFlowSpec extends E2ESpec:
 
@@ -86,22 +85,15 @@ object HybridFlowSpec extends E2ESpec:
           .label("the code exchanged at /token must resolve to the same 'sub' as the fragment id_token")
     },
 
-    test("hybrid without nonce is accepted but the id_token omits the nonce claim") {
+    test("hybrid without nonce is rejected with invalid_request in the fragment") {
       for
         (s, auth) <- setup(Flows.Id.LoginPassword)
-        authorize <- auth.authorizeRaw(
+        _ <- auth.authorizeRaw(
           clientId = s.clientId,
           redirectUri = s.redirectUri,
           responseType = Some("code id_token"),
-        ).assertChallengeRedirect
-        cookie = authorize.conversationCookie.get
-        challenge <- auth.getChallenge(cookie).assertStep(ConversationStep.Credential)
-        (_, idToken) <- auth.submitLoginPassword(cookie, s.login.get, s.password, challenge.csrf)
-          .assertFragmentRedirect
-        claims <- ZIO.fromEither(decodeJwtPayload(idToken).fromJson[HybridIdTokenClaims])
-          .mapError(error => RuntimeException(s"Could not decode hybrid id_token claims [$error]"))
-      yield assertTrue(claims.nonce.isEmpty)
-        .label(s"a hybrid request with no nonce must not fabricate one; got ${claims.nonce}")
+        ).assertFragmentErrorRedirect("invalid_request")
+      yield assertCompletes
     },
 
     test("a protocol error during a hybrid request is returned in the fragment, never the query") {

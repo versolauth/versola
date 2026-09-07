@@ -70,6 +70,12 @@ private[authorize] object Error:
       errorUri = Some("https://datatracker.ietf.org/doc/html/draft-ietf-oauth-v2-1#name-authorization-request"),
     )
 
+  case class NonceMissing(uri: URL, state: Option[State], useFragment: Boolean) extends RedirectError(
+      error = ErrorCode.InvalidRequest,
+      errorDescription = "Missing required parameter - nonce",
+      errorUri = Some("https://openid.net/specs/openid-connect-core-1_0.html#AuthRequest"),
+    )
+
   case class CodeChallengeMethodMissing(uri: URL, state: Option[State], useFragment: Boolean) extends RedirectError(
       error = ErrorCode.InvalidRequest,
       errorDescription = "Missing required parameter - code_challenge_method",
