@@ -311,8 +311,29 @@ case class SubmitResult(response: Response):
           .orElseFail(RuntimeException(s"Expected code in redirect location, got: $location"))
     else ZIO.fail(RuntimeException(s"Expected redirect with code, got status=${response.status} location=$location"))
 
+  /** Like [[assertRedirect]], but for hybrid/implicit flows (OIDC Core §3.3) where `code`
+    * (and `id_token`) travel in the URL FRAGMENT rather than the query string.
+    */
+  def assertFragmentRedirect: Task[(String, String)] =
+    if response.status != Status.SeeOther then
+      ZIO.fail(RuntimeException(s"Expected 303 fragment redirect, got status=${response.status} location=$location"))
+    else
+      val fragmentPart = location.dropWhile(_ != '#').drop(1)
+      if fragmentPart.isEmpty then
+        ZIO.fail(RuntimeException(s"Expected fragment in redirect location, got: $location"))
+      else
+        val params = fragmentPart.split('&').collect:
+          case s if s.contains('=') =>
+            val i = s.indexOf('=')
+            s.substring(0, i) -> java.net.URLDecoder.decode(s.substring(i + 1), "UTF-8")
+        .toMap
+        (params.get("code"), params.get("id_token")) match
+          case (Some(code), Some(idToken)) => ZIO.succeed((code, idToken))
+          case _ => ZIO.fail(RuntimeException(s"Expected 'code' and 'id_token' in fragment, got: $location"))
+
 extension (task: Task[SubmitResult])
   def assertRedirect: Task[String] = task.flatMap(_.assertRedirect)
+  def assertFragmentRedirect: Task[(String, String)] = task.flatMap(_.assertFragmentRedirect)
 
   /** Like [[assertRedirect]], but when the redirect goes to `/challenge` it
     * fetches the current challenge step and includes it in the failure message.
@@ -486,6 +507,8 @@ final class OAuthClient(client: Client, config: E2EConfig):
       omitClientId: Boolean = false,
       /** RFC 9396 §2: the raw JSON value of the `authorization_details` request parameter. */
       authorizationDetails: Option[String] = None,
+      /** OIDC Core §3.3.2.11: required whenever `response_type` includes `id_token` (hybrid/implicit). */
+      nonce: Option[String] = None,
   ): Task[AuthorizeResult] =
     val (verifier, challenge) = PkceHelper.generate()
     val state = java.util.UUID.randomUUID().toString
@@ -505,6 +528,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
           "acr_values"           -> acrValues,
           "id_token_hint"        -> idTokenHint,
           "authorization_details" -> authorizationDetails,
+          "nonce"                -> nonce,
         ),
       )(uri =>
         List(
