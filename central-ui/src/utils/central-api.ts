@@ -3,6 +3,7 @@ import type {
   AuthorizationDetailType,
   AuthorizationPreset,
   BackendProperty,
+  ClientType,
   Edge,
   Locale,
   FormRecord,
@@ -45,6 +46,7 @@ type ConsoleMode = 'prefix' | 'direct';
 type CentralApiConfig = { baseUrl: string | null; loginUrl: string; consoleMode: ConsoleMode };
 
 type ClientSecretResponse = { secret: string };
+type CreateClientResponse = { secret?: string | null };
 type AuthorizationPresetResponse = {
   id: string;
   clientId: string;
@@ -117,6 +119,7 @@ type ClientsResponse = {
     scope: string[];
     permissions: string[];
     secretRotation: boolean;
+    clientType?: ClientType;
     accessTokenTtl: number;
     theme: string;
     otpTemplateId: string;
@@ -681,6 +684,7 @@ export async function fetchClients(tenantId: string, offset = 0, limit = DEFAULT
         clientName: clientNameFromBackend(client.clientName),
         redirectUris: [...client.redirectUris],
         scope: [...client.scope],
+        clientType: client.clientType ?? 'web',
         hasPreviousSecret: supplement?.hasPreviousSecret ?? client.secretRotation,
         // The backend now returns the real value directly (previously it didn't, and this
         // fell back to a page-memory-only cache that was empty — and silently wrong — after
@@ -1041,8 +1045,9 @@ export async function deleteRole(tenantId: string, roleId: string): Promise<void
   invalidateRefData(rolesStore, tenantId);
 }
 
-export async function createClient(tenantId: string, client: OAuthClient): Promise<string> {
-  const response = await request<ClientSecretResponse>('/configuration/clients', {
+/** Resolves to the generated secret, or to `null` for a native client, which has none. */
+export async function createClient(tenantId: string, client: OAuthClient): Promise<string | null> {
+  const response = await request<CreateClientResponse>('/configuration/clients', {
     method: 'POST',
     body: {
       tenantId,
@@ -1064,6 +1069,7 @@ export async function createClient(tenantId: string, client: OAuthClient): Promi
       policyUri: client.policyUri ?? null,
       tosUri: client.tosUri ?? null,
       consentFlow: consentFlowToBackend(client.consentFlow),
+      clientType: client.clientType ?? 'web',
     },
   });
 
@@ -1073,7 +1079,7 @@ export async function createClient(tenantId: string, client: OAuthClient): Promi
     hasPreviousSecret: client.hasPreviousSecret,
   });
 
-  return response.secret;
+  return response.secret ?? null;
 }
 
 export async function rotateClientSecret(tenantId: string, clientId: string): Promise<string> {

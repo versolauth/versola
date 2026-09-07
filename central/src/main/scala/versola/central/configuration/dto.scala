@@ -1,6 +1,6 @@
 package versola.central.configuration
 
-import versola.central.configuration.clients.{AuthFlow, ClientId, ConsentFlow, PresetId, RegistrationFlow, ResponseType}
+import versola.central.configuration.clients.{AuthFlow, ClientId, ClientType, ConsentFlow, PresetId, RegistrationFlow, ResponseType}
 import versola.central.configuration.details.AuthorizationDetailType
 import versola.central.configuration.permissions.Permission
 import versola.central.configuration.resources.{ResourceEndpointId, ResourceId}
@@ -295,6 +295,7 @@ case class OAuthClientResponse(
     scope: Set[ScopeToken],
     permissions: Set[Permission],
     secretRotation: Boolean,
+    clientType: ClientType,
     accessTokenTtl: Long,
     refreshTokenTtl: Long,
     theme: String,
@@ -351,10 +352,15 @@ case class CreateClientRequest(
     policyUri: Option[String] = None,
     tosUri: Option[String] = None,
     consentFlow: Option[ConsentFlowDto] = None,
+    /** Defaults to `web` so that a caller written before native clients existed keeps
+      * getting the confidential client it has always got.
+      */
+    clientType: ClientType = ClientType.web,
 ) derives Schema, JsonCodec
 
+/** `secret` is absent for a native client - there is none to hand back. */
 case class CreateClientResponse(
-    secret: String,
+    secret: Option[String],
 ) derives Schema, JsonEncoder
 
 case class RotateSecretResponse(

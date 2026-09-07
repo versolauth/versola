@@ -202,9 +202,26 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         created = env.repository.createClient.calls.head
         encryptCall = env.securityService.encryptAes256.calls.head
       yield assertTrue(
-        result.sameElements(secretBytes),
+        result.exists(_.sameElements(secretBytes)),
         encryptCall._1.sameElements(secretBytes),
         created === expectedClient,
+      )
+    },
+    test("registerClient stores no secret for a native client") {
+      val env = new Env()
+
+      for
+        _ <- env.repository.createClient.succeedsWith(())
+        result <- env.service.registerClient(createRequest.copy(clientType = ClientType.native))
+        created = env.repository.createClient.calls.head
+        generatedSecrets = env.secureRandom.nextBytes.times
+        encryptions = env.securityService.encryptAes256.times
+      yield assertTrue(
+        result.isEmpty,
+        created.secret.isEmpty,
+        created.isPublic,
+        generatedSecrets == 0,
+        encryptions == 0,
       )
     },
     test("updateClient maps request to repository call") {
@@ -546,6 +563,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val storedSecret = Secret(encryptedBytes)
 
       for
+        _ <- env.repository.find.succeedsWith(Some(cachedClient))
         _ <- env.secureRandom.nextBytes.succeedsWith(secretBytes)
         _ <- env.securityService.encryptAes256.succeedsWith(encryptedBytes)
         _ <- env.repository.rotateClientSecret.succeedsWith(())
@@ -563,6 +581,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val env = new Env()
 
       for
+        _ <- env.repository.find.succeedsWith(Some(cachedClient))
         _ <- env.repository.deletePreviousClientSecret.succeedsWith(())
         _ <- env.repository.deleteClient.succeedsWith(())
         _ <- env.service.deletePreviousClientSecret(clientId)
@@ -570,6 +589,30 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
       yield assertTrue(
         env.repository.deletePreviousClientSecret.calls === List(clientId),
         env.repository.deleteClient.calls === List(clientId),
+      )
+    },
+    test("rotateClientSecret is rejected for a native client") {
+      val env = new Env()
+
+      for
+        _ <- env.repository.find.succeedsWith(Some(cachedClient.copy(secret = None)))
+        result <- env.service.rotateClientSecret(clientId).either
+        rotations = env.repository.rotateClientSecret.times
+      yield assertTrue(
+        result == Left(ClientHasNoSecret(clientId)),
+        rotations == 0,
+      )
+    },
+    test("deletePreviousClientSecret is rejected for a native client") {
+      val env = new Env()
+
+      for
+        _ <- env.repository.find.succeedsWith(Some(cachedClient.copy(secret = None)))
+        result <- env.service.deletePreviousClientSecret(clientId).either
+        deletions = env.repository.deletePreviousClientSecret.times
+      yield assertTrue(
+        result == Left(ClientHasNoSecret(clientId)),
+        deletions == 0,
       )
     },
     test("sync removes cached client on delete event") {

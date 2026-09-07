@@ -28,18 +28,21 @@ trait OAuthClientService:
       limit: Option[Int],
   ): Task[Vector[OAuthClientRecord]]
 
+  /** Returns the generated secret for a `web` client, and `None` for a `native` one -
+    * a public client is registered without a secret and can never be given one.
+    */
   def registerClient(
       request: CreateClientRequest,
       presetSecret: Option[Secret] = None,
-  ): IO[ClientAlreadyExists | InvalidRegistrationConfiguration | Throwable, Secret]
+  ): IO[ClientAlreadyExists | InvalidRegistrationConfiguration | Throwable, Option[Secret]]
 
   def updateClient(
       request: UpdateClientRequest,
   ): IO[InvalidRegistrationConfiguration | Throwable, Unit]
 
-  def rotateClientSecret(clientId: ClientId): Task[Secret]
+  def rotateClientSecret(clientId: ClientId): IO[ClientHasNoSecret | Throwable, Secret]
 
-  def deletePreviousClientSecret(clientId: ClientId): Task[Unit]
+  def deletePreviousClientSecret(clientId: ClientId): IO[ClientHasNoSecret | Throwable, Unit]
 
   def deleteClient(clientId: ClientId): Task[Unit]
 
@@ -123,7 +126,7 @@ object OAuthClientService:
     override def registerClient(
         request: CreateClientRequest,
         presetSecret: Option[Secret] = None,
-    ): IO[ClientAlreadyExists | InvalidRegistrationConfiguration | Throwable, Secret] =
+    ): IO[ClientAlreadyExists | InvalidRegistrationConfiguration | Throwable, Option[Secret]] =
       for
         _ <- validateConsentUris(
           "logoUri" -> request.logoUri,
@@ -133,15 +136,17 @@ object OAuthClientService:
         frontChannelLogoutUrl <- validateLogoutUri("frontChannelLogoutUri", request.frontChannelLogoutUri)
         backChannelLogoutUrl <- validateLogoutUri("backChannelLogoutUri", request.backChannelLogoutUri)
         _ <- validateRegistration(request.id, request.tenantId, request.authFlow, request.registrationFlow)
-        secret <- presetSecret.fold(generateSecret)(ZIO.succeed(_))
-        encryptedSecret <- encryptRawSecret(secret)
+        secret <- request.clientType match
+          case ClientType.web    => presetSecret.fold(generateSecret)(ZIO.succeed(_)).asSome
+          case ClientType.native => ZIO.none
+        encryptedSecret <- ZIO.foreach(secret)(encryptRawSecret)
         client = OAuthClientRecord(
           id = request.id,
           tenantId = request.tenantId,
           clientName = request.clientName,
           redirectUris = request.redirectUris,
           scope = request.allowedScopes,
-          secret = Some(encryptedSecret),
+          secret = encryptedSecret,
           previousSecret = None,
           accessTokenTtl = Duration.fromSeconds(request.accessTokenTtl),
           refreshTokenTtl = Duration.fromSeconds(request.refreshTokenTtl.getOrElse(7776000)),
@@ -202,15 +207,24 @@ object OAuthClientService:
         )
       yield ()
 
-    override def rotateClientSecret(clientId: ClientId): Task[Secret] =
+    override def rotateClientSecret(clientId: ClientId): IO[ClientHasNoSecret | Throwable, Secret] =
       for
+        _ <- rejectPublicClient(clientId)
         newSecret <- generateSecret
         encryptedSecret <- encryptRawSecret(newSecret)
         _ <- clientRepository.rotateClientSecret(clientId, encryptedSecret)
       yield newSecret
 
-    override def deletePreviousClientSecret(clientId: ClientId): Task[Unit] =
-      clientRepository.deletePreviousClientSecret(clientId)
+    override def deletePreviousClientSecret(clientId: ClientId): IO[ClientHasNoSecret | Throwable, Unit] =
+      rejectPublicClient(clientId) *> clientRepository.deletePreviousClientSecret(clientId)
+
+    /** Reads the client from the repository rather than the cache: a client registered a
+      * moment ago may not have reached the cache yet, and a stale miss would let a public
+      * client through. An unknown client is left to the repository, which ignores it.
+      */
+    private def rejectPublicClient(clientId: ClientId): IO[ClientHasNoSecret | Throwable, Unit] =
+      clientRepository.find(clientId).flatMap: client =>
+        ZIO.fail(ClientHasNoSecret(clientId)).when(client.exists(_.isPublic)).unit
 
     override def deleteClient(clientId: ClientId): Task[Unit] =
       clientRepository.deleteClient(clientId)

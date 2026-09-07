@@ -23,7 +23,7 @@ type TenantDto = { id: string; description: string; edgeId?: string | null };
 type BackendAuthFactor = { type: string; required: boolean };
 type BackendAuthFlow = { primary: { credentials: string[]; inlinePassword: boolean; factors: BackendAuthFactor[] }; passkey?: { factors: BackendAuthFactor[] } | null; otpType: 'sms' | 'email' };
 type BackendConsentFlow = { allowPartial: boolean; rememberDuration: number | null };
-type ClientDto = { id: string; clientName: Record<string, string>; redirectUris: string[]; scope: string[]; permissions: string[]; secretRotation: boolean; refreshTokenTtl?: number; edgeId?: string; authFlow?: BackendAuthFlow | null; consentFlow?: BackendConsentFlow | null; theme?: string; otpTemplateId?: string; registrationFlow?: { credential: string; steps: Array<{ type: string }>; roleIds: string[] } | null; frontChannelLogoutUri?: string | null; frontChannelLogoutSessionRequired?: boolean; backChannelLogoutUri?: string | null };
+type ClientDto = { id: string; clientName: Record<string, string>; redirectUris: string[]; scope: string[]; permissions: string[]; secretRotation: boolean; clientType?: 'web' | 'native'; refreshTokenTtl?: number; edgeId?: string; authFlow?: BackendAuthFlow | null; consentFlow?: BackendConsentFlow | null; theme?: string; otpTemplateId?: string; registrationFlow?: { credential: string; steps: Array<{ type: string }>; roleIds: string[] } | null; frontChannelLogoutUri?: string | null; frontChannelLogoutSessionRequired?: boolean; backChannelLogoutUri?: string | null };
 type ScopeDto = { scope: string; description: Record<string, string>; claims: Array<{ claim: string; description: Record<string, string> }> };
 type PermissionDto = { permission: string; description: Record<string, string>; endpointIds: ResourceEndpointId[] };
 type InjectTargetDto = 'header' | 'query' | 'body';
@@ -79,6 +79,7 @@ type CreateClientRequest = {
   refreshTokenTtl?: number;
   authFlow?: BackendAuthFlow | null;
   consentFlow?: BackendConsentFlow | null;
+  clientType?: 'web' | 'native';
 };
 type UpdateClientRequest = {
   clientId: string;
@@ -501,13 +502,16 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
           scope: [...payload.allowedScopes],
           permissions: [...payload.permissions],
           secretRotation: false,
+          clientType: payload.clientType ?? 'web',
           refreshTokenTtl: payload.refreshTokenTtl ?? 90 * 24 * 60 * 60,
           authFlow: payload.authFlow ?? null,
           consentFlow: payload.consentFlow ?? null,
         };
 
         state.clients[payload.tenantId] = [createdClient, ...tenantClients];
-        await route.fulfill(json({ secret: `secret-${payload.id}` }, 201));
+        // A native client is registered without a secret, so the response carries none.
+        const createResponse = createdClient.clientType === 'native' ? {} : { secret: `secret-${payload.id}` };
+        await route.fulfill(json(createResponse, 201));
         return;
       }
 
@@ -561,6 +565,11 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
 
       if (!client || !clientId) {
         await route.fulfill(json({ message: `Client ${clientId} was not found` }, 404));
+        return;
+      }
+
+      if (client.clientType === 'native') {
+        await route.fulfill(json({ message: `Client ${clientId} is a native (public) client and has no secret` }, 409));
         return;
       }
 

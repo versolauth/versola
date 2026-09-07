@@ -225,17 +225,18 @@ sealed trait RegisterClientResult:
       ZIO.fail(RuntimeException(s"Expected registerClient success but got: status=${resp.status} body=$body"))
 
 object RegisterClientResult:
+  /** `secret` is empty for a native (public) client - central issues none. */
   case class Success(response: Response, secret: String) extends RegisterClientResult
   case class Failure(response: Response, body: String) extends RegisterClientResult
 
-  private case class Raw(secret: String) derives JsonDecoder
+  private case class Raw(secret: Option[String]) derives JsonDecoder
 
   def parse(response: Response): Task[RegisterClientResult] =
     response.body.asString.map: body =>
       if response.status.isSuccess then
         body.fromJson[Raw].fold(
           err => Failure(response, s"JSON parse error [$err] body=$body"),
-          raw => Success(response, raw.secret),
+          raw => Success(response, raw.secret.getOrElse("")),
         )
       else Failure(response, body)
 
@@ -695,16 +696,20 @@ final class OAuthClient(client: Client, config: E2EConfig):
       scope: Option[String] = None,
       resources: Option[List[String]] = None,
       authorizationDetails: Option[String] = None,
+      useBasicAuth: Boolean = true,
   ): Task[TokenResult] =
+    // With `useBasicAuth = false` the client only names itself, in `client_id`, and sends
+    // no secret at all - the one way a public client can present itself at /token.
     val body = formBody(
       Map("grant_type" -> "client_credentials")
         ++ scope.map("scope" -> _)
         ++ resources.map("resource" -> _.mkString(","))
-        ++ authorizationDetails.map("authorization_details" -> _),
+        ++ authorizationDetails.map("authorization_details" -> _)
+        ++ (if useBasicAuth then Map.empty else Map("client_id" -> clientId)),
     )
-    val req = Request.post(s"${config.authUrl}/token", body)
-      .addHeader(Authorization.Basic(clientId, clientSecret))
+    val req0 = Request.post(s"${config.authUrl}/token", body)
       .addHeader(Header.ContentType(MediaType.application.`x-www-form-urlencoded`))
+    val req = if useBasicAuth then req0.addHeader(Authorization.Basic(clientId, clientSecret)) else req0
     Client.batched(req).provide(ZLayer.succeed(client)).flatMap(TokenResult.parse)
 
   /** POST /introspect — introspects a token (access or refresh) per RFC 7662. */
@@ -926,6 +931,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
       registrationFlow: Option[zio.json.ast.Json] = None,
       consentFlow: Option[zio.json.ast.Json] = None,
       backChannelLogoutUri: Option[String] = None,
+      clientType: String = "web",
   ): Task[RegisterClientResult] =
     val body = Body.fromString(OAuthClient.RegisterClientBody(
       tenantId = tenantId,
@@ -945,6 +951,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
       frontChannelLogoutUri = None,
       frontChannelLogoutSessionRequired = false,
       backChannelLogoutUri = backChannelLogoutUri,
+      clientType = clientType,
     ).toJson)
     val req = Request.post(s"${config.centralUrl}/configuration/clients", body)
       .addHeader(centralAuthorization)
@@ -1445,4 +1452,5 @@ object OAuthClient:
       frontChannelLogoutUri: Option[String],
       frontChannelLogoutSessionRequired: Boolean,
       backChannelLogoutUri: Option[String],
+      clientType: String,
   ) derives JsonEncoder

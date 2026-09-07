@@ -2,7 +2,7 @@ import { LitElement, html, css } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
 import { buttonStyles, cardStyles, formStyles, iconActionStyles } from '../styles/components';
-import { AuthFactorType, AuthFlow, ConsentFlow, Locale, OAuthClient, OAuthScope, OtpTemplateRecord, Permission, RegistrationCredential, RegistrationFlow, RegistrationStepType, Resource, Role, ThemeRecord } from '../types';
+import { AuthFactorType, AuthFlow, ClientType, ConsentFlow, Locale, OAuthClient, OAuthScope, OtpTemplateRecord, Permission, RegistrationCredential, RegistrationFlow, RegistrationStepType, Resource, Role, ThemeRecord } from '../types';
 import { createDefaultAuthFlow, createDefaultConsentFlow, createDefaultRegistrationFlow, getLocalizedDescription, resolvePermissionEndpointGroups } from '../utils/helpers';
 import './nav-toggle';
 import './localized-text-editor';
@@ -38,6 +38,7 @@ export class VersolaClientForm extends LitElement {
     refreshTokenTtl: daysToSeconds(90),
     permissions: [],
     theme: 'default',
+    clientType: 'web',
     authFlow: createDefaultAuthFlow(),
     registrationFlow: null,
     consentFlow: null,
@@ -507,6 +508,25 @@ export class VersolaClientForm extends LitElement {
         background: rgba(var(--accent-tint), 0.12);
       }
 
+      .cred-mode-card:disabled {
+        cursor: default;
+        opacity: 0.5;
+      }
+
+      .cred-mode-card:disabled:hover {
+        border-color: var(--border-dark);
+        background: transparent;
+      }
+
+      .cred-mode-card.selected:disabled {
+        opacity: 1;
+      }
+
+      .cred-mode-card.selected:disabled:hover {
+        border-color: var(--accent);
+        background: rgba(var(--accent-tint), 0.12);
+      }
+
       .cred-options {
         margin-top: 0.75rem;
         padding-top: 0.75rem;
@@ -792,6 +812,7 @@ export class VersolaClientForm extends LitElement {
     this.authFlowError = '';
 
     const logoutEnabled = authFlow !== null;
+    const clientType = authFlow ? this.clientType : 'web';
     const authFlowTheme = authFlow ? (this.formData.theme || 'default') : 'default';
     const authFlowRedirectUris = authFlow ? (this.formData.redirectUris || []) : [];
     const authFlowOtpTemplateId = authFlow ? this.selectedOtpTemplateId : 'default';
@@ -850,6 +871,7 @@ export class VersolaClientForm extends LitElement {
       clientName: this.formData.clientName!,
       redirectUris: authFlowRedirectUris,
       scope,
+      clientType,
       hasPreviousSecret: false,
       accessTokenTtl: ttlToSeconds(this.ttlValue, this.ttlUnit),
       refreshTokenTtl: hasOfflineAccess
@@ -1218,6 +1240,19 @@ export class VersolaClientForm extends LitElement {
 
   private get hasAuthFlow(): boolean {
     return this.formData.authFlow != null;
+  }
+
+  /** Fixed once the client exists: a secret can never be added to, or taken from, one. */
+  private get clientType(): ClientType {
+    return this.client ? this.client.clientType : this.formData.clientType ?? 'web';
+  }
+
+  private selectClientType(clientType: ClientType) {
+    if (this.client) {
+      return;
+    }
+
+    this.formData = { ...this.formData, clientType };
   }
 
   private toggleAuthFlowEnabled() {
@@ -1712,6 +1747,28 @@ export class VersolaClientForm extends LitElement {
               </div>
 
               ${this.hasAuthFlow ? html`
+              <div class="flow-subsection">
+                <div class="flow-subtitle">Client type</div>
+                <div class="cred-mode-cards">
+                  ${(['web', 'native'] as const).map(clientType => html`
+                    <button
+                      type="button"
+                      class=${`cred-mode-card ${this.clientType === clientType ? 'selected' : ''}`}
+                      ?disabled=${!!this.client}
+                      aria-pressed=${this.clientType === clientType}
+                      @click=${() => this.selectClientType(clientType)}
+                    >${clientType}</button>
+                  `)}
+                </div>
+                <div class="helper-text">
+                  ${this.client
+                    ? 'Fixed when the client was created and cannot be changed.'
+                    : this.clientType === 'native'
+                      ? 'Public client: no secret is issued, and none can be added later.'
+                      : 'Confidential client: a secret is issued once, and can be rotated later.'}
+                </div>
+              </div>
+
               <div class="flow-subsection">
                 <div class="flow-subtitle">Primary credentials</div>
                 <div class="cred-mode-cards">
@@ -2224,7 +2281,7 @@ export class VersolaClientForm extends LitElement {
           </div>
 
           <div class="form-actions">
-            ${this.client && this.canManageSecrets ? html`
+            ${this.client && this.canManageSecrets && this.client.clientType !== 'native' ? html`
               ${this.client.hasPreviousSecret ? html`
                 <button
                   type="button"

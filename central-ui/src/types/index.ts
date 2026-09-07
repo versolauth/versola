@@ -65,12 +65,17 @@ export interface ConsentFlow {
   rememberDurationDays: number | null;  // how long a grant is reused; null = until revoked
 }
 
+// Whether a client can hold a secret. Chosen once, at creation: a web client is
+// confidential and is issued one, a native client is public and never has one.
+export type ClientType = 'web' | 'native';
+
 // OAuth Client
 export interface OAuthClient {
   id: string;
   clientName: Record<string, string>;
   redirectUris: string[];
   scope: string[];
+  clientType: ClientType;
   hasPreviousSecret: boolean;
   accessTokenTtl: number;
   refreshTokenTtl?: number;
