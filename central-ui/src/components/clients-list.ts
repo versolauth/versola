@@ -159,6 +159,18 @@ export class VersolaClientsList extends LitElement {
         flex: 1;
       }
 
+      .badge-native {
+        border: 1px solid rgba(var(--accent-tint), 0.28);
+        background: rgba(var(--accent-tint), 0.12);
+        color: var(--accent);
+      }
+
+      .badge-web {
+        border: 1px solid rgba(147, 147, 147, 0.28);
+        background: rgba(147, 147, 147, 0.12);
+        color: var(--text-secondary);
+      }
+
       .client-name {
         font-size: 1.125rem;
         font-weight: 600;
@@ -1096,6 +1108,7 @@ export class VersolaClientsList extends LitElement {
                   <div class="client-info">
                     <div class="client-name">
                       ${getLocalizedDescription(client.clientName)}
+                      <span class="badge ${client.clientType === 'native' ? 'badge-native' : 'badge-web'}">${client.clientType === 'native' ? 'Native' : 'Web'}</span>
                       ${client.hasPreviousSecret ? html`
                         <span class="badge badge-warning">Secret Rotation</span>
                       ` : ''}

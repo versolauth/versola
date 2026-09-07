@@ -220,6 +220,9 @@ test('creates a native client without a secret and without rotation controls', a
   await expect(page.getByRole('button', { name: 'Copy secret', exact: true })).toHaveCount(0);
   await expect(page.locator('.secret-banner')).toContainText('no secret was issued');
 
+  // The list itself shows the client type, so it's discoverable without opening the edit form.
+  await expect(clientCard(page, 'Mobile App').locator('.badge-native')).toHaveText('Native');
+
   await clientCard(page, 'Mobile App').getByRole('button', { name: 'Edit client mobile-app' }).click();
   await expect(page.getByRole('button', { name: 'Rotate Secret', exact: true })).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Delete old secret', exact: true })).toHaveCount(0);
@@ -242,6 +245,7 @@ test('offers the client type only while the auth flow is on, and fixes it once c
   // An existing client keeps whatever it was registered as - a secret can neither be
   // added to a native client nor taken away from a web one.
   await page.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(clientCard(page, 'Alpha Web').locator('.badge-web')).toHaveText('Web');
   await clientCard(page, 'Alpha Web').getByRole('button', { name: 'Edit client alpha-web' }).click();
   await expect(page.getByText('Client type', { exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'web', exact: true })).toBeDisabled();
