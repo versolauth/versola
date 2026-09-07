@@ -683,6 +683,30 @@ final class OAuthClient(client: Client, config: E2EConfig):
       .addHeader(Header.ContentType(MediaType.application.`x-www-form-urlencoded`))
     Client.batched(req).provide(ZLayer.succeed(client)).flatMap(TokenResult.parse)
 
+  /** POST /token — obtains a token for the client itself (RFC 6749 §4.4).
+    *
+    * `resources` (RFC 8707) travel as a single comma-joined `resource` field, which is how
+    * zio-http presents repeated form fields to the server; pass `Some(Nil)` to send the
+    * parameter empty. `authorizationDetails` is the raw RFC 9396 JSON array.
+    */
+  def clientCredentials(
+      clientId: String,
+      clientSecret: String,
+      scope: Option[String] = None,
+      resources: Option[List[String]] = None,
+      authorizationDetails: Option[String] = None,
+  ): Task[TokenResult] =
+    val body = formBody(
+      Map("grant_type" -> "client_credentials")
+        ++ scope.map("scope" -> _)
+        ++ resources.map("resource" -> _.mkString(","))
+        ++ authorizationDetails.map("authorization_details" -> _),
+    )
+    val req = Request.post(s"${config.authUrl}/token", body)
+      .addHeader(Authorization.Basic(clientId, clientSecret))
+      .addHeader(Header.ContentType(MediaType.application.`x-www-form-urlencoded`))
+    Client.batched(req).provide(ZLayer.succeed(client)).flatMap(TokenResult.parse)
+
   /** POST /introspect — introspects a token (access or refresh) per RFC 7662. */
   def introspect(
       token: String,
@@ -926,6 +950,36 @@ final class OAuthClient(client: Client, config: E2EConfig):
       .addHeader(centralAuthorization)
       .addHeader(Header.ContentType(MediaType.application.json))
     Client.batched(req).provide(ZLayer.succeed(client)).flatMap(RegisterClientResult.parse)
+
+  /** POST /configuration/resources — registers a protected resource via the Central API, so
+    * that `resource` (RFC 8707) can name it and introspection can resolve it for `audience`.
+    * `resource` must be an absolute URI with no path, query or fragment.
+    */
+  def registerResource(
+      resourceId: String,
+      resource: String,
+      audience: Set[String],
+      tenantId: String = "default",
+      internal: Boolean = false,
+  ): Task[Unit] =
+    val body = Body.fromString(
+      Json.Obj(
+        "tenantId" -> Json.Str(tenantId),
+        "resourceId" -> Json.Str(resourceId),
+        "resource" -> Json.Str(resource),
+        "audience" -> Json.Arr(Chunk.fromIterable(audience.map(Json.Str(_)))),
+        "endpoints" -> Json.Arr(),
+        "internal" -> Json.Bool(internal),
+      ).toJson,
+    )
+    val req = Request.post(s"${config.centralUrl}/configuration/resources", body)
+      .addHeader(centralAuthorization)
+      .addHeader(Header.ContentType(MediaType.application.json))
+    Client.batched(req).provide(ZLayer.succeed(client)).flatMap: resp =>
+      if resp.status.isSuccess then ZIO.unit
+      else
+        resp.body.asString.flatMap: bodyStr =>
+          ZIO.fail(RuntimeException(s"registerResource failed: status=${resp.status} body=$bodyStr"))
 
   /** POST /configuration/authorization-detail-types — registers an RFC 9396 authorization detail
     * type via the Central API. `schema` is the raw JSON Schema (as a JSON string) that requested
