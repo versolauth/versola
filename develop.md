@@ -294,13 +294,58 @@ counterparts elsewhere that a fresh one won't match:
   same way gen-env.scala's `jwks` value is (`{"keys":[<jwk>]}`) -- its
   `kid` has to match the `JWT_PRIVATE_KEY` seeded above, for the same
   reason that key has to match auth's active-key table.
+- **`PASSWORDS_SECRET`** -- **added 2026-09-07, missing from this list until
+  now.** `auth.conf`'s `security.passwords-secret`, fed into
+  `PasswordService.hashPassword` (see
+  `oauth/challenge/password/PasswordService.scala`) as a pepper alongside
+  each user's own per-row salt when *verifying* a submitted password
+  against `user_passwords`. This isn't "sign a token, worst case someone
+  re-logs in" the way most of `security {}` is -- a fresh value here makes
+  every already-hashed password in the table unverifiable, permanently
+  (there's no "recompute the old hash" recovery short of a password reset
+  for every affected user). Of everything on this page, this is the one
+  most likely to be missed, because nothing about it fails at startup or
+  even at the moment `configure` runs -- it only surfaces later, one failed
+  login at a time, for whoever happens to use a password instead of
+  phone/SMS.
+- **`EDGE_TOKEN_ENC_KEY`** -- also missing until 2026-09-07. `edge.conf`'s
+  `security.token-encryption.key`, an AES key `EdgeService` uses to encrypt
+  the user's refresh token before persisting it on the edge session record,
+  and decrypt it again later to actually rotate that session (see
+  `encryptRefreshToken`/`decryptRefreshToken` in `EdgeService.scala`). Edge
+  sessions live up to `edge-sessions.ttl` (30 days) -- reseed this wrong and
+  every session already on disk when the new key takes over silently loses
+  the ability to refresh itself the next time it tries, for as long as 30
+  days after the fact, not at deploy time.
+- **`ACCOUNT_RESOURCE_SECRET`** -- checked and lower risk than the above,
+  but seed it anyway rather than rely on the reasoning: central's
+  `seedAuthResource` only calls `resourceRepo.initializeSecret` when
+  `existing.secret.isEmpty` (see `BootstrapService.scala`), so a fresh value
+  here can't overwrite or corrupt what's already encrypted and stored --
+  but whatever service actually calls this internal resource (the
+  edge-proxied Account Settings surface) still authenticates with the
+  *plaintext* value from its own config, and that has to match what
+  central already has on file. A fresh value here would 401 that one
+  feature specifically, not corrupt anything -- narrower blast radius than
+  the others, still worth getting right the first time instead of
+  discovering it's broken later.
 
 Left alone, the first `configure vps` against an empty OpenBao generates
 and stores WRONG values for all of these -- and each fails differently and
 confusingly once actually exercised (wrong Postgres password → connection
-refused at startup; wrong JWT key or edge key → tokens/sync calls rejected
-downstream, not at startup, so it looks like everything came up fine).
-Pull the real current values from wherever the VPS's pre-migration
+refused at startup; wrong JWT/edge/token-encryption key → failures
+rejected downstream, sometimes much later, not at startup, so it looks
+like everything came up fine). The rest of `security {}` in each conf file
+(`ACCESS_TOKENS_SECRET`, `REFRESH_TOKENS_SECRET`, `AUTH_CODES_SECRET`,
+`SESSIONS_SECRET`, the three cookie secrets, `PAR_REQUESTS_SECRET`,
+`CENTRAL_SECRET_KEY`, `EDGE_SESSIONS_SECRET`, `EDGE_INTERNAL_SECRET`) signs
+or encrypts only short-lived, self-healing state -- a fresh value there
+just forces whoever's mid-flow to log in again, nothing is stuck
+unrecoverable the way the fields above are. Still: don't try to reason out
+case by case which of these are "safe" to let regenerate, the way this
+page used to stop short at just the handful above -- it already missed two
+genuinely bad ones once. **Seed the real, current value for every field in
+this section, full stop.** Pull them from wherever the VPS's pre-migration
 auth.conf/central.conf/edge.conf (or equivalent) already keeps them, and
 seed all of them by hand before the very first
 `versola configure vps <version>` -- one combined `kv put` per path, since
@@ -312,26 +357,64 @@ docker exec -it -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=<root token> vers
   bao kv put -mount=secret versola/vps/auth \
     POSTGRES_PASSWORD='<real password>' \
     JWT_PRIVATE_KEY='<real private key, base64>' \
-    CLIENT_SECRETS_SECRET='<real value>'
+    CLIENT_SECRETS_SECRET='<real value>' \
+    PASSWORDS_SECRET='<real value>' \
+    ACCESS_TOKENS_SECRET='<real value>' \
+    REFRESH_TOKENS_SECRET='<real value>' \
+    AUTH_CODES_SECRET='<real value>' \
+    SESSIONS_SECRET='<real value>' \
+    CONVERSATION_COOKIE_SECRET='<real value>' \
+    SESSION_COOKIE_SECRET='<real value>' \
+    USER_AGENT_COOKIE_SECRET='<real value>' \
+    PAR_REQUESTS_SECRET='<real value>' \
+    CENTRAL_SECRET_KEY='<real value>'
 
 docker exec -it -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=<root token> versola-openbao-vps \
   bao kv put -mount=secret versola/vps/central \
     POSTGRES_PASSWORD='<real password>' \
     CLIENT_SECRETS_SECRET='<real value>' \
     EDGE_PUBLIC_JWK='<real public JWK, as a single-line JSON string>' \
-    JWKS_JSON='{"keys":[<real auth JWT public JWK>]}'
+    JWKS_JSON='{"keys":[<real auth JWT public JWK>]}' \
+    ACCOUNT_RESOURCE_SECRET='<real value>' \
+    CENTRAL_SECRET_KEY='<real value>'
 
 docker exec -it -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=<root token> versola-openbao-vps \
   bao kv put -mount=secret versola/vps/edge \
     POSTGRES_PASSWORD='<real password>' \
     EDGE_PRIVATE_KEY='<real private key, base64>' \
-    EDGE_KEY_ID='<real kid>'
+    EDGE_KEY_ID='<real kid>' \
+    EDGE_TOKEN_ENC_KEY='<real value>' \
+    EDGE_SESSIONS_SECRET='<real value>' \
+    EDGE_INTERNAL_SECRET='<real value>'
 ```
+
+`CENTRAL_SECRET_KEY` is listed under both `auth` and `central` above
+because both conf files reference it (auth's `central.secret-key`, an
+internal-JWT signing/verification key -- see `auth.scala`'s
+`JWT.deserialize[InternalAuthClaims]` -- shared with central's own
+top-level `secret-key`) and both resolve the same OpenBao value for it,
+same as `POSTGRES_PASSWORD`/`CLIENT_SECRETS_SECRET` above. Checked and
+lower-risk on its own (only signs short-lived internal admin-console
+tokens, not persisted data), included here anyway for the same
+"stop guessing" reasoning as everything else on this page.
 
 `ADMIN_BOOTSTRAP_PASSWORD` is deliberately not in this list -- nothing
 outside this script already owns that value (see `bootstrapPasswordDefault`
 in gen-env.scala), so there's no real one to seed; letting OpenBao generate
 and keep the first one it sees is correct as-is.
+
+**Separately from all of the above (added 2026-09-07): `gen-env.scala` also
+prompts interactively** -- "Configure OTP provider?" and "Configure
+SMTP?" (`promptYN`/`prompt` calls, not flags) -- while `configure` runs.
+This isn't an OpenBao-managed secret at all, so nothing above seeds it;
+whoever runs the very first `versola configure vps` against an
+already-running deployment has to answer these from the VPS's *current*
+real otp-provider/smtp settings (or deliberately decline, matching
+whatever's actually live today), or a fresh, blank answer silently
+replaces working OTP/SMTP config with nothing. Check the current
+`auth.conf`'s own `otp-provider {}`/`smtp {}` blocks (commented out means
+currently unconfigured -- decline the prompt to match) before running this
+for real.
 
 Each `kv put` above is safe as a single combined write because nothing else
 has been written to that path yet. Running any of these again later, once
