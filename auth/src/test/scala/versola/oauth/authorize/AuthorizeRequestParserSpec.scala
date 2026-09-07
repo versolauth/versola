@@ -821,7 +821,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
     suite("response_type")(
       test("accepts code id_token") {
         val env = Env()
-        val request = Request.get(URL.root.addQueryParams(validParams ++ Map("response_type" -> "code id_token")))
+        val request = Request.get(URL.root.addQueryParams(validParams ++ Map("response_type" -> "code id_token", "nonce" -> "abc123")))
         for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
           result <- env.parser.parse(request)
@@ -880,6 +880,22 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
           result <- env.parser.parse(request)
         yield assertTrue(result.nonce == Some(Nonce("abc123")))
+      },
+      test("rejects a hybrid request without a nonce, reporting the error in the fragment") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(validParams ++ Map("response_type" -> "code id_token")))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request).either
+        yield assertTrue(result == Left(Error.NonceMissing(redirectUri, Some(State("test-state")), useFragment = true)))
+      },
+      test("accepts a code flow request without a nonce") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(validParams))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request)
+        yield assertTrue(result.nonce.isEmpty)
       },
     ),
     suite("prompt")(

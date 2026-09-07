@@ -91,6 +91,7 @@ object AuthorizeNegativeSpec extends E2ESpec:
           clientId = s.clientId,
           redirectUri = s.redirectUri,
           responseType = Some("code id_token"),
+          nonce = Some("e2e-nonce"),
           prompt = Some("none"),
         ).assertFragmentErrorRedirect("login_required")
       yield assertCompletes

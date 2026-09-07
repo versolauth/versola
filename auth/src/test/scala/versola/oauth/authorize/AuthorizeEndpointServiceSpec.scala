@@ -315,6 +315,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
       val hybridRequest = baseRequest.copy(
         sessionId = Some(rawSessionId),
         responseType = NonEmptySet(ResponseTypeEntry.Code, ResponseTypeEntry.IdToken),
+        nonce = Some(Nonce("test-nonce")),
       )
       for
         _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
@@ -1191,6 +1192,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
       val hybridRequest = baseRequest.copy(
         prompt = Set(Prompt.none),
         responseType = NonEmptySet(ResponseTypeEntry.Code, ResponseTypeEntry.IdToken),
+        nonce = Some(Nonce("test-nonce")),
       )
       for
         _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
@@ -1205,6 +1207,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         sessionId = Some(rawSessionId),
         prompt = Set(Prompt.none),
         responseType = NonEmptySet(ResponseTypeEntry.Code, ResponseTypeEntry.IdToken),
+        nonce = Some(Nonce("test-nonce")),
       )
       for
         _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
@@ -1221,6 +1224,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         sessionId = Some(rawSessionId),
         prompt = Set(Prompt.none),
         responseType = NonEmptySet(ResponseTypeEntry.Code, ResponseTypeEntry.IdToken),
+        nonce = Some(Nonce("test-nonce")),
       )
       for
         _ <- env.configurationService.find.succeedsWith(Some(clientWithConsent))
