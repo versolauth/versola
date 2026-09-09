@@ -101,12 +101,21 @@ final class EdgeApi(client: Client, config: E2EConfig):
     * role and permission caches from central at once, instead of waiting out
     * `configurationCacheRefreshInterval`. Every fixture a test registers in central has to
     * be followed by one of these before the edge will act on it.
+    *
+    * Retried on a 5xx: the sync makes the edge call central over a pooled connection, and one
+    * that central closed while it sat idle surfaces here as a 500 on the first attempt.
     */
   def syncConfiguration: Task[Unit] =
     for
-      url <- ZIO.fromEither(URL.decode(s"${config.edgeUrl}/service/configuration/sync")).mapError(RuntimeException(_))
-      response <- Client.batched(Request.post(url, Body.empty).addHeader(edgeAuthorization))
+      url <- ZIO.fromEither(URL.decode(s"${config.edgeUrl}/service/configuration/sync"))
+        .mapError(RuntimeException(_))
+      post = Client.batched(Request.post(url, Body.empty).addHeader(edgeAuthorization))
         .provide(ZLayer.succeed(client))
+      response <- post
+        .repeat(Schedule.spaced(500.millis) *> Schedule.recurUntil[Response](!_.status.isServerError))
+        .timeout(5.seconds)
+        .someOrElseZIO(post)
+        .withClock(Clock.ClockLive)
       _ <- ZIO.unless(response.status.isSuccess)(
         response.body.asString.flatMap(body =>
           ZIO.fail(RuntimeException(s"edge sync failed: status=${response.status} body=$body")),

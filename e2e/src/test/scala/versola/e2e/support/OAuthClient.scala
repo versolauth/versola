@@ -1072,12 +1072,19 @@ final class OAuthClient(client: Client, config: E2EConfig):
     * `configurationCacheRefreshInterval`. Call this right after registering or updating a
     * client that a test needs edge to recognize straight away, e.g. one it back-channel
     * logs out through.
+    *
+    * Retried on a 5xx: the sync makes the edge call central over a pooled connection, and one
+    * that central closed while it sat idle surfaces here as a 500 on the first attempt.
     */
   def syncEdgeConfiguration(): Task[Unit] =
     val req = Request.post(s"${config.edgeUrl}/service/configuration/sync", Body.empty)
       .addHeader(edgeAuthorization)
-    Client.batched(req)
-      .provide(ZLayer.succeed(client))
+    val post = Client.batched(req).provide(ZLayer.succeed(client))
+    post
+      .repeat(Schedule.spaced(500.millis) *> Schedule.recurUntil[Response](!_.status.isServerError))
+      .timeout(5.seconds)
+      .someOrElseZIO(post)
+      .withClock(Clock.ClockLive)
       .flatMap: resp =>
         if resp.status.isSuccess then ZIO.unit
         else

@@ -52,6 +52,15 @@ final class CentralApi(client: Client, val config: E2EConfig, credentials: Optio
   def deleteWithBody(path: String, body: Json): Task[ApiResult] =
     send(Method.DELETE, path, Nil, Some(body.toJson))
 
+  /** Drains central's user outbox into auth.
+    *
+    * A user created through the admin API exists in central's index immediately but only
+    * reaches auth when the outbox is dispatched, and auth is where claims and credentials
+    * live. Anything a test wants to write against the user itself has to wait for this.
+    */
+  def flushUserOutbox: Task[ApiResult] =
+    postEmpty("/service/users/outbox/flush")
+
   /** Sends a body verbatim rather than through an encoder, so a test can present something
     * that is not valid JSON, or JSON of the wrong shape, without the client correcting it.
     */
@@ -112,11 +121,12 @@ object CentralApi:
   def login(prefix: String = "user"): UIO[String] =
     suffix.map(s => s"$prefix-$s")
 
-  /** A distinct, well-formed international number. Derived from a random UUID rather than a
-    * counter so that parallel spec runs cannot mint the same one.
+  /** A distinct German mobile number. Central parses these with libphonenumber and rejects
+    * anything of the wrong length, so the prefix and the digit count are both load-bearing.
+    * Derived from a random UUID rather than a counter so parallel runs cannot collide.
     */
   def phone: UIO[String] =
-    ZIO.succeed(UUID.randomUUID()).map(uuid => f"+49157${uuid.getLeastSignificantBits.abs % 100_000_000L}%08d")
+    ZIO.succeed(UUID.randomUUID()).map(uuid => f"+49151${uuid.getLeastSignificantBits.abs % 100_000_000L}%08d")
 
   def uuid: UIO[UUID] =
     ZIO.succeed(UUID.randomUUID())

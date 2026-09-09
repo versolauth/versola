@@ -16,13 +16,22 @@ object TenantApiSpec extends CentralApiSpec:
 
   private val path = "/configuration/tenants"
 
+  private def find(central: CentralApi): Task[Chunk[Json.Obj]] =
+    central.get(path).flatMap(_.items("tenants"))
+
+  /** The tenant listing once the write has landed. `expect` is what the test is waiting for:
+    * without it a listing read straight after a write can still answer the state from before.
+    */
+  private def listed(central: CentralApi)(expect: Chunk[Json.Obj] => Boolean): Task[Chunk[Json.Obj]] =
+    eventually(find(central))(expect)
+
   def spec = suite("Central API: tenants")(
     test("a created tenant is listed with the description it was given") {
       for
         central <- api
         id <- CentralApi.id("e2e-tenant")
         created <- central.post(path, Fixtures.tenant(id, description = "billing department"))
-        listed <- central.get(path).flatMap(_.items("tenants"))
+        listed <- listed(central)(_.exists(t => t.str("id").contains(id) && t.str("description").contains("billing department")))
         _ <- central.delete(path, "tenantId" -> id)
       yield assertTrue(created.status == Status.Created) &&
         assertTrue(listed.exists(t => t.str("id").contains(id) && t.str("description").contains("billing department")))
@@ -40,7 +49,7 @@ object TenantApiSpec extends CentralApiSpec:
     test("the seeded default tenant is present") {
       for
         central <- api
-        listed <- central.get(path).flatMap(_.items("tenants"))
+        listed <- find(central)
       yield assertTrue(listed.exists(_.str("id").contains(Fixtures.defaultTenant)))
         .label("every deployment is bootstrapped with a 'default' tenant")
     },
@@ -50,7 +59,7 @@ object TenantApiSpec extends CentralApiSpec:
         id <- CentralApi.id("e2e-tenant")
         _ <- central.post(path, Fixtures.tenant(id, description = "before"))
         updated <- central.put(path, Fixtures.tenant(id, description = "after"))
-        listed <- central.get(path).flatMap(_.items("tenants"))
+        listed <- listed(central)(_.exists(t => t.str("id").contains(id) && t.str("description").contains("after")))
         _ <- central.delete(path, "tenantId" -> id)
       yield assertTrue(updated.status == Status.NoContent) &&
         assertTrue(listed.exists(t => t.str("id").contains(id) && t.str("description").contains("after")))
@@ -64,7 +73,7 @@ object TenantApiSpec extends CentralApiSpec:
         _ <- central.post("/configuration/edges", Json.Obj("id" -> Json.Str(edgeId)))
         _ <- central.post(path, Fixtures.tenant(tenantId))
         updated <- central.put(path, Fixtures.tenant(tenantId, edgeId = Some(edgeId)))
-        listed <- central.get(path).flatMap(_.items("tenants"))
+        listed <- listed(central)(_.exists(t => t.str("id").contains(tenantId) && t.str("edgeId").contains(edgeId)))
         _ <- central.delete(path, "tenantId" -> tenantId)
         _ <- central.delete("/configuration/edges", "edgeId" -> edgeId)
       yield assertTrue(updated.status == Status.NoContent) &&
@@ -76,7 +85,7 @@ object TenantApiSpec extends CentralApiSpec:
         central <- api
         id <- CentralApi.id("e2e-tenant")
         _ <- central.post(path, Fixtures.tenant(id))
-        listed <- central.get(path).flatMap(_.items("tenants"))
+        listed <- listed(central)(_.exists(_.str("id").contains(id)))
         _ <- central.delete(path, "tenantId" -> id)
       yield assertTrue(listed.find(_.str("id").contains(id)).exists(t => t.str("edgeId").isEmpty))
         .label("a tenant no edge serves must not name one")
@@ -87,7 +96,7 @@ object TenantApiSpec extends CentralApiSpec:
         id <- CentralApi.id("e2e-tenant")
         _ <- central.post(path, Fixtures.tenant(id))
         deleted <- central.delete(path, "tenantId" -> id)
-        listed <- central.get(path).flatMap(_.items("tenants"))
+        listed <- listed(central)(!_.exists(_.str("id").contains(id)))
       yield assertTrue(deleted.status == Status.NoContent) &&
         assertTrue(!listed.exists(_.str("id").contains(id)))
           .label("the deleted tenant must be gone from the listing")
@@ -106,7 +115,7 @@ object TenantApiSpec extends CentralApiSpec:
         id <- CentralApi.id("e2e-tenant")
         first <- central.post(path, Fixtures.tenant(id, description = "first"))
         second <- central.post(path, Fixtures.tenant(id, description = "second"))
-        listed <- central.get(path).flatMap(_.items("tenants"))
+        listed <- listed(central)(_.exists(_.str("id").contains(id)))
         _ <- central.delete(path, "tenantId" -> id)
       yield assertTrue(first.status == Status.Created) &&
         assertTrue(second.status != Status.Created || listed.count(_.str("id").contains(id)) == 1)

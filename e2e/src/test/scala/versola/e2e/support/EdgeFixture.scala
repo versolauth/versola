@@ -1,7 +1,7 @@
 package versola.e2e.support
 
 import zio.*
-import zio.http.Client
+import zio.http.{Client, Method, Status}
 import zio.json.ast.Json
 import zio.test.ZIOSpec
 
@@ -22,6 +22,8 @@ case class EdgeFixture(
     login: String,
     password: String,
     roleId: String,
+    /** The single permission the role carries, which is what `/permissions/me` reports. */
+    permission: String,
     resourceId: String,
     resourceUri: String,
     /** Endpoint ids by the name the spec gave them, so tests never spell out a UUID. */
@@ -56,6 +58,13 @@ object EdgeFixture:
     *                    resolves a token's audience by looking a resource up by URI, so two
     *                    resources sharing one would be ambiguous.
     */
+  /** @param awaitProxyReady waits until the edge actually proxies to this resource before the
+    *                        first test runs. Edge's `/service/configuration/sync` reloads only
+    *                        its client and preset caches; resources, roles and permissions
+    *                        arrive on `configurationCacheRefreshInterval`, so a proxy test
+    *                        starting immediately would assert against the previous run's
+    *                        configuration and see a 404 or a 403.
+    */
   case class Config(
       resourceId: String,
       resourceUri: String,
@@ -64,6 +73,7 @@ object EdgeFixture:
       presetScope: Set[String] = Set("openid"),
       postLogoutRedirectUri: Option[String] = None,
       cookiePath: Option[String] = None,
+      awaitProxyReady: Boolean = false,
   )
 
   def layer(config: Config): ZLayer[OAuthClient & CentralApi & EdgeApi, Throwable, EdgeFixture] =
@@ -156,6 +166,10 @@ object EdgeFixture:
 
       _ <- auth.syncConfiguration()
       _ <- edge.syncConfiguration
+
+      _ <- ZIO.when(config.awaitProxyReady)(
+        awaitProxy(auth, edge, presetId, login, password, config, byName),
+      )
     yield EdgeFixture(
       clientId = clientId,
       clientSecret = registered.secret,
@@ -165,6 +179,7 @@ object EdgeFixture:
       login = login,
       password = password,
       roleId = roleId,
+      permission = permission,
       resourceId = config.resourceId,
       resourceUri = config.resourceUri,
       endpoints = byName,
@@ -174,6 +189,45 @@ object EdgeFixture:
     * be redirected to works; this one is the app origin the rest of the e2e setup uses.
     */
   val postLoginRedirectUri = "http://localhost:3000"
+
+  /** Blocks until the edge's resource and permission caches carry this fixture.
+    *
+    * Convergence is observed through the proxy itself rather than through a cache endpoint,
+    * because the proxy is what the tests assert on: a 404 means the resource is not there yet,
+    * a 403 means the permission is not, and anything else means both arrived. The cap is
+    * generous on purpose — it is bounded by the edge's refresh interval, not by the network.
+    */
+  private def awaitProxy(
+      auth: OAuthClient,
+      edge: EdgeApi,
+      presetId: String,
+      login: String,
+      password: String,
+      config: Config,
+      endpointIds: Map[String, String],
+  ): Task[Unit] =
+    // A templated path would have to be filled in to route, so probe a literal one.
+    val probe = config.endpoints.find(endpoint => endpoint.permitted && !endpoint.path.contains("{"))
+      .getOrElse(
+        throw IllegalArgumentException("awaitProxyReady needs a permitted endpoint with a literal path to probe"),
+      )
+    for
+      session <- edge.browserLogin(auth, presetId, login, password)
+      settled <- edge
+        .proxy(Method.fromString(probe.method), config.resourceId, probe.path, session.auth)
+        .map(result => result.status != Status.NotFound && result.status != Status.Forbidden)
+        .repeat(Schedule.spaced(1.second) *> Schedule.recurUntilEquals(true))
+        .timeout(90.seconds)
+        .withClock(Clock.ClockLive)
+      _ <- ZIO.unless(settled.contains(true))(
+        ZIO.fail(
+          RuntimeException(
+            s"edge never picked up resource '${config.resourceId}': its configuration caches still " +
+              "answer 404/403 for a permitted endpoint",
+          ),
+        ),
+      )
+    yield ()
 
   private def expect(what: String)(result: ApiResult): Task[Unit] =
     ZIO.unless(result.status.isSuccess)(
@@ -185,7 +239,7 @@ object EdgeFixture:
   * the whole suite.
   */
 abstract class EdgeSpec(config: EdgeFixture.Config)
-    extends ZIOSpec[OAuthClient & CentralApi & EdgeApi & EdgeFixture]:
+  extends ZIOSpec[OAuthClient & CentralApi & EdgeApi & EdgeFixture]:
 
   override val bootstrap: ZLayer[Any, Any, OAuthClient & CentralApi & EdgeApi & EdgeFixture] =
     val clients = (E2EConfig.live ++ Client.default) >>> (OAuthClient.live ++ CentralApi.live ++ EdgeApi.live)

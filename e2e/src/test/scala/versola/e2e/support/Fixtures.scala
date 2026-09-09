@@ -90,16 +90,20 @@ object Fixtures:
 
   /** An `UpdateClientRequest` whose three required patches are all no-ops, so a test only
     * has to supply the member it is actually changing.
+    *
+    * A named change replaces the default rather than being appended next to it: central
+    * rejects a document with a repeated member, so appending would turn every patch test
+    * into a 400 that says nothing about the behaviour under test.
     */
   def clientUpdate(clientId: String, changes: (String, Json)*): Json.Obj =
-    Json.Obj(
-      Chunk[(String, Json)](
-        "clientId" -> Json.Str(clientId),
-        "redirectUris" -> patch(),
-        "scope" -> patch(),
-        "permissions" -> patch(),
-      ) ++ Chunk.fromIterable(changes),
+    val defaults = Chunk[(String, Json)](
+      "clientId" -> Json.Str(clientId),
+      "redirectUris" -> patch(),
+      "scope" -> patch(),
+      "permissions" -> patch(),
     )
+    val overridden = changes.map(_._1).toSet
+    Json.Obj(defaults.filterNot((name, _) => overridden.contains(name)) ++ Chunk.fromIterable(changes))
 
   def preset(
       id: String,
@@ -215,6 +219,12 @@ object Fixtures:
 
   def claim(id: String, description: String = "e2e claim"): Json.Obj =
     Json.Obj("id" -> Json.Str(id), "description" -> text(description))
+
+  /** A `PatchClaim`: unlike a created claim, an updated one carries a description *patch*
+    * rather than a replacement.
+    */
+  def claimPatch(id: String, add: Map[String, String] = Map.empty, delete: Set[String] = Set.empty): Json.Obj =
+    Json.Obj("id" -> Json.Str(id), "description" -> patchText(add, delete))
 
   def scope(
       id: String,
