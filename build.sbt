@@ -165,6 +165,20 @@ lazy val e2e = project
     libraryDependencies ++= Dependencies.http,
     // Not part of the normal test run — only executed explicitly via `e2e/test`
     Test / fork := true,
+    // Every spec drives the same running auth/central/edge stack, and central answers reads
+    // from caches a Postgres notification refreshes just after the write commits. Run in
+    // parallel, suites read each other's load as lag and see a write that has not landed yet.
+    Test / parallelExecution := false,
+    // One JVM per spec. zio-test merges the `bootstrap` layers of every spec it runs in a JVM
+    // into a single shared environment, so two specs asking for the same service — the edge
+    // specs all build an `EdgeFixture` — would silently be handed one another's fixture.
+    Test / testGrouping := (Test / definedTests).value.map { spec =>
+      Tests.Group(
+        name = spec.name,
+        tests = Seq(spec),
+        runPolicy = Tests.SubProcess((Test / forkOptions).value),
+      )
+    },
   )
 
 // versola-tools: packages scripts/gen-env.scala as a plain JVM app instead

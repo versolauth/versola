@@ -304,10 +304,12 @@ object PostgresNotificationListenerSpec extends ZIOSpecDefault:
         _ <- fiber.interrupt
         collected <- events.get
       yield assertTrue(
-        // Two of them, so the failure got out of a full queue at all: pollLoop stops after
+        // At least two, so the failure got out of a full queue at all: pollLoop stops after
         // the failure, so one that was dropped for want of room would leave the subscriber
-        // waiting on a queue nothing will ever fill again.
-        collected.count(_ == NotificationEvent.Resubscribed) == 2,
+        // waiting on a queue nothing will ever fill again. Not exactly two: the rest of the
+        // window is long enough for the heartbeat to find another connection wanting, and a
+        // reconnect the listener decides on for its own reasons is not this test's subject.
+        collected.count(_ == NotificationEvent.Resubscribed) >= 2,
         // And immediately, with none of the dead connection's notifications in between.
         collected.take(2) == Chunk(NotificationEvent.Resubscribed, NotificationEvent.Resubscribed),
       )
