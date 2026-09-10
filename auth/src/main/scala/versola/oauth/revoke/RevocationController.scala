@@ -28,16 +28,23 @@ object RevocationController extends Controller:
         revocationService <- ZIO.service[RevocationService]
         config <- ZIO.service[CoreConfig]
         publicKeys <- ZIO.serviceWithZIO[JwksService](_.getPublicKeys)
-        form <- request.body.asURLEncodedForm.orElseFail(RevocationError.InvalidClient)
+        form <- request.body.asURLEncodedForm.orElseFail(RevocationError.InvalidRequest)
         credentials <- request.extractCredentials(form).orElseFail(RevocationError.InvalidClient)
         _ <- credentials match
           case ClientIdWithSecret(clientId, _) => Observability.setClientId(clientId)
 
-        token <- tokenDecoder.decode(form)
-          .orElseFail(RevocationError.InvalidClient)
+        token <- FormDecoder.single(form, "token", (s: String) => Right(s))
+          .orElseFail(RevocationError.InvalidRequest)
 
-        _ <- token match
-          case Right(accessToken) =>
+        _ <- classify(token) match
+          // RFC 7009 §2.2: a value this server could never have issued is not reported as an
+          // error - the caller's goal, that the token not be usable, already holds. Only client
+          // authentication and token ownership are refusable (§2.1), and those failures come
+          // out of RevocationService as a RevocationError below.
+          case None =>
+            Observability.setError("invalid_token", Some("The presented token is not of a recognized form"))
+
+          case Some(Right(accessToken)) =>
             Observability.setRouteLabel("token_type", "access") *>
               JWT.deserialize[AccessTokenPayload](accessToken, publicKeys, JWT.Type.AccessToken)
                 .tap(payload =>
@@ -46,22 +53,14 @@ object RevocationController extends Controller:
                 )
                 .flatMap(revocationService.revokeAccessToken(_, credentials))
                 .catchSome {
-                  case error: RevocationError =>
-                    val response = RevocationErrorResponse.fromError(error)
-                    Observability.setError(response.error, response.errorDescription)
                   case _: JWT.Error =>
                     Observability.setError("invalid_token", Some("The presented access token could not be verified"))
                 }
 
-          case Left(refreshToken) =>
+          case Some(Left(refreshToken)) =>
             Observability.setRouteLabel("token_type", "refresh") *>
               Observability.setRefreshToken(Base64.urlEncode(refreshToken)) *>
               revocationService.revokeRefreshToken(refreshToken, credentials)
-                .catchSome {
-                  case error: RevocationError =>
-                    val response = RevocationErrorResponse.fromError(error)
-                    Observability.setError(response.error, response.errorDescription)
-                }
       yield Response.ok)
         .catchAll {
           case error: RevocationError =>
@@ -78,11 +77,11 @@ object RevocationController extends Controller:
         }
     }
 
-  private given tokenDecoder: FormDecoder[Either[RefreshToken, String]] = form =>
-    val parse = (s: String) =>
-      if s.isJWT then
-        Right(Right(s))
-      else
-        RefreshToken.fromBase64Url(s).map(Left(_))
-    FormDecoder.single(form, "token", parse)
+  /** Classifies the presented token by its own shape: a JWT is an access token, any other
+    * base64url value is taken for a refresh token, and a value that is neither is one no client
+    * could hold. `token_type_hint` is deliberately not consulted - RFC 7009 §2.1 makes it a
+    * lookup optimization, not a declaration the server may trust. */
+  private def classify(token: String): Option[Either[RefreshToken, String]] =
+    if token.isJWT then Some(Right(token))
+    else RefreshToken.fromBase64Url(token).toOption.map(Left(_))
 
