@@ -35,4 +35,7 @@ case class RefreshTokenRecord(
     amr: Set[AuthMethodRef],
     authTime: Instant,
     acr: Option[Acr],
+    /** RFC 9449 §5: the JWK thumbprint this grant is bound to, `None` for a bearer grant.
+      * A bound grant may only be refreshed by a proof carrying the same thumbprint. */
+    cnfJkt: Option[String],
 ) derives CanEqual, Equal

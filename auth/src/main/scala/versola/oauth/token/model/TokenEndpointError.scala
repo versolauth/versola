@@ -53,3 +53,17 @@ object TokenEndpointError:
     val error = ErrorCode.InvalidAuthorizationDetails
     val errorDescription = Some(s"The requested authorization details are invalid or exceed the grant: $reason")
     val errorUri = Some("https://datatracker.ietf.org/doc/html/rfc9396#section-6")
+
+  case class InvalidDpopProof(reason: String) extends TokenEndpointError:
+    val status = Status.BadRequest
+    val error = ErrorCode.InvalidDpopProof
+    val errorDescription = Some(s"The DPoP proof is invalid: $reason")
+    val errorUri = Some("https://datatracker.ietf.org/doc/html/rfc9449#section-5")
+
+  /** RFC 9449 §8: the accompanying `nonce` is served in the response's `DPoP-Nonce` header,
+    * which the client echoes in its next proof. */
+  case class UseDpopNonce(nonce: String) extends TokenEndpointError:
+    val status = Status.BadRequest
+    val error = ErrorCode.UseDpopNonce
+    val errorDescription = Some("Authorization server requires a nonce in the DPoP proof")
+    val errorUri = Some("https://datatracker.ietf.org/doc/html/rfc9449#section-8")

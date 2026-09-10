@@ -7,6 +7,8 @@ import com.nimbusds.jose.crypto.RSASSAVerifier
 import com.nimbusds.jose.jwk.{KeyUse, RSAKey}
 import com.nimbusds.jwt.SignedJWT
 import versola.oauth.client.OAuthConfigurationService
+import versola.oauth.dpop.DpopService
+import versola.util.Dpop
 import versola.oauth.jwks.JwksService
 import versola.oauth.client.model.{AuthMethodRef, ClientId, ClientIdWithSecret, ResourceUri, ScopeToken, TenantId}
 import versola.oauth.model.{AccessToken, AuthorizationCode, CodeVerifier, Nonce, RefreshToken}
@@ -56,15 +58,41 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
     amr = Set(AuthMethodRef.pwd),
     authTime = Some(java.time.Instant.ofEpochSecond(1700000000)),
     acr = None,
+    cnfJkt = None,
+  )
+
+  val jkt1 = "0ZcOCORZNYy-DWpqq30jZyJGHTN0d2HglBV3uiguA4I"
+
+  val proof1 = Dpop.Proof(
+    jkt = jkt1,
+    jti = "jti-1",
+    iat = java.time.Instant.ofEpochSecond(1700000000),
+    nonce = None,
+    ath = None,
   )
 
   def authHeader(clientId: ClientId, secret: Option[Secret]): Header.Authorization =
     val secretStr = secret.map(s => Base64.urlEncode(s)).getOrElse("")
     Header.Authorization.Basic(clientId, secretStr)
 
+  val codeExchangeRequest = Request.post(
+    url = URL.empty / "token",
+    body = Body.fromURLEncodedForm(
+      Form.fromStrings(
+        "grant_type" -> "authorization_code",
+        "code" -> Base64.urlEncode(authCode1),
+        "redirect_uri" -> redirectUri,
+        "code_verifier" -> codeVerifier1,
+      ),
+    ),
+  ).addHeader(authHeader(clientId1, Some(clientSecret1)))
+
+  val dpopCodeExchangeRequest = codeExchangeRequest.addHeader(Header.Custom("DPoP", "a.b.c"))
+
   case class Services(
       oauthTokenService: Stub[OAuthTokenService],
       userInfoService: Stub[UserInfoService],
+      dpopService: Stub[DpopService],
   )
 
   def tokenEndpointTestCase(
@@ -73,6 +101,7 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
       expectedStatus: Status,
       setup: Services => UIO[Unit] = _ => ZIO.unit,
       verify: Response => Task[TestResult] = _ => ZIO.succeed(assertTrue(true)),
+      verifyServices: Services => Task[TestResult] = _ => ZIO.succeed(assertTrue(true)),
   ) =
     test(description) {
       for
@@ -82,21 +111,23 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
         userInfoService = stub[UserInfoService]
         config = TestEnvConfig.coreConfig
         jwksService = TestEnvConfig.jwksService
+        dpopService = stub[DpopService]
         tracing <- NoopTracing.layer.build
 
-        services = Services(tokenService, userInfoService)
+        services = Services(tokenService, userInfoService, dpopService)
 
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             TokenEndpointController.routes
-              .provideEnvironment(ZEnvironment(tokenService) ++ ZEnvironment(clientService) ++ ZEnvironment(userInfoService) ++ ZEnvironment(jwksService) ++ ZEnvironment(config) ++ tracing)
+              .provideEnvironment(ZEnvironment(tokenService) ++ ZEnvironment(clientService) ++ ZEnvironment(userInfoService) ++ ZEnvironment(jwksService) ++ ZEnvironment(config) ++ ZEnvironment(dpopService) ++ tracing)
           )
         )
         _ <- setup(services)
 
         response <- client.batched(request)
         verifyResult <- verify(response)
-      yield assertTrue(response.status == expectedStatus) && verifyResult
+        verifyServicesResult <- verifyServices(services)
+      yield assertTrue(response.status == expectedStatus) && verifyResult && verifyServicesResult
     }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging
 
   val spec = suite("TokenEndpointController")(
@@ -817,7 +848,7 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
               TokenEndpointController.routes
                 .provideEnvironment(
                   ZEnvironment(tokenService) ++ ZEnvironment(clientService) ++ ZEnvironment(userInfoService) ++
-                    ZEnvironment(driftedJwksService) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ tracing,
+                    ZEnvironment(driftedJwksService) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(stub[DpopService]) ++ tracing,
                 )
             )
           )
@@ -868,7 +899,7 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
               TokenEndpointController.routes
                 .provideEnvironment(
                   ZEnvironment(tokenService) ++ ZEnvironment(clientService) ++ ZEnvironment(userInfoService) ++
-                    ZEnvironment(noSigningKeyJwksService) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ tracing,
+                    ZEnvironment(noSigningKeyJwksService) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(stub[DpopService]) ++ tracing,
                 )
             )
           )
@@ -920,6 +951,85 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
         TokenEndpointController.refreshTokenRequestDecoder.decode(form).either.map: result =>
           assertTrue(result.isLeft)
       },
+    ),
+    suite("POST /token - DPoP")(
+      tokenEndpointTestCase(
+        description = "issues a DPoP-bound token and echoes the binding in cnf.jkt",
+        request = dpopCodeExchangeRequest,
+        expectedStatus = Status.Ok,
+        setup = services =>
+          services.dpopService.verify.succeedsWith(proof1) *>
+            services.oauthTokenService.exchangeAuthorizationCode.succeedsWith(
+              issuedTokens.copy(cnfJkt = Some(jkt1)),
+            ),
+        verify = response =>
+          for
+            body <- response.body.asString
+            tokenResponse <- ZIO.fromEither(body.fromJson[TokenResponse]).mapError(new RuntimeException(_))
+            claims = SignedJWT.parse(tokenResponse.accessToken).getJWTClaimsSet
+          yield assertTrue(
+            tokenResponse.tokenType == "DPoP",
+            claims.getJSONObjectClaim("cnf").get("jkt") == jkt1,
+          ),
+        verifyServices = services =>
+          ZIO.succeed(assertTrue(
+            services.oauthTokenService.exchangeAuthorizationCode.calls.head._3.contains(jkt1),
+          )),
+      ),
+      tokenEndpointTestCase(
+        description = "leaves a request without a proof as an unbound Bearer token",
+        request = codeExchangeRequest,
+        expectedStatus = Status.Ok,
+        setup = services =>
+          services.oauthTokenService.exchangeAuthorizationCode.succeedsWith(issuedTokens),
+        verify = response =>
+          for
+            body <- response.body.asString
+            tokenResponse <- ZIO.fromEither(body.fromJson[TokenResponse]).mapError(new RuntimeException(_))
+            claims = SignedJWT.parse(tokenResponse.accessToken).getJWTClaimsSet
+          yield assertTrue(
+            tokenResponse.tokenType == "Bearer",
+            claims.getJSONObjectClaim("cnf") == null,
+          ),
+        verifyServices = services =>
+          ZIO.succeed(assertTrue(
+            services.dpopService.verify.calls.isEmpty,
+            services.oauthTokenService.exchangeAuthorizationCode.calls.head._3.isEmpty,
+          )),
+      ),
+      tokenEndpointTestCase(
+        description = "rejects a proof that does not validate with invalid_dpop_proof",
+        request = dpopCodeExchangeRequest,
+        expectedStatus = Status.BadRequest,
+        setup = services =>
+          services.dpopService.verify.failsWith(DpopService.Error.InvalidProof(Dpop.Error.UriMismatch)),
+        verify = response =>
+          for body <- response.body.asString
+          yield assertTrue(body.contains("invalid_dpop_proof")),
+      ),
+      tokenEndpointTestCase(
+        description = "rejects a replayed proof with invalid_dpop_proof",
+        request = dpopCodeExchangeRequest,
+        expectedStatus = Status.BadRequest,
+        setup = services =>
+          services.dpopService.verify.failsWith(DpopService.Error.Replayed),
+        verify = response =>
+          for body <- response.body.asString
+          yield assertTrue(body.contains("invalid_dpop_proof")),
+      ),
+      tokenEndpointTestCase(
+        description = "answers a nonce challenge with use_dpop_nonce and serves the nonce in the DPoP-Nonce header",
+        request = dpopCodeExchangeRequest,
+        expectedStatus = Status.BadRequest,
+        setup = services =>
+          services.dpopService.verify.failsWith(DpopService.Error.NonceRequired("fresh-nonce")),
+        verify = response =>
+          for body <- response.body.asString
+          yield assertTrue(
+            body.contains("use_dpop_nonce"),
+            response.headers.get("DPoP-Nonce").contains("fresh-nonce"),
+          ),
+      ),
     ),
   )
 
