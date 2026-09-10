@@ -115,9 +115,22 @@ services:
     # Postgres user/password are fixed, non-secret literals (matching
     # postgres's own POSTGRES_USER/POSTGRES_PASSWORD above and what's
     # already written literally into auth.conf/central.conf/edge.conf's own
-    # postgres blocks for this target) -- no OpenBao resolution needed here,
-    # unlike vps's counterpart in compose.fragment.vps.yml.template.
+    # postgres blocks for this target) -- that part needs no OpenBao
+    # resolution, unlike vps's counterpart. But every OTHER secret field
+    # (JWT_PRIVATE_KEY, AUTH_CODES_SECRET, EDGE_PRIVATE_KEY, ...) IS an
+    # OpenBao-resolved placeholder here too (gen-env.scala's useOpenBao is
+    # true for docker-local, not just vps) -- and this container mounts all
+    # three services' config files below, resolving each one whole
+    # (Typesafe Config's resolve() requires every ${VAR} in the document to
+    # resolve, not just the ones actually read). Without env_file here, the
+    # first real `migrate` run on a fresh docker-local deployment hits the
+    # same ConfigException.UnresolvedSubstitution vps's did before this was
+    # added (see compose.fragment.vps.yml.template's own comment).
     command: ["migrate"]
+    env_file:
+      - ./auth.secrets.env
+      - ./central.secrets.env
+      - ./edge.secrets.env
     volumes:
       - ./auth.conf:/opt/versola-tools/config/auth.conf:ro
       - ./central.conf:/opt/versola-tools/config/central.conf:ro
