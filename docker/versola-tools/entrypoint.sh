@@ -12,7 +12,13 @@ set -eu
 # genEnv below) -- see Dockerfile.tools' own comment on why the two jar
 # sets are kept apart instead of merged onto one classpath.
 if [ "${1:-}" = "migrate" ]; then
-  exec java -cp 'migrate-lib/*' versola.migrate.MigrateTool
+  # Shift the dispatch token itself off before exec'ing -- MigrateTool's own
+  # `main` reads argv looking for `--dry-run`/`--service <name>` (see its own
+  # doc comment); without this shift, those would always be one position off
+  # (argv(0) == "migrate", not the first real flag), and MigrateTool would
+  # never see them at all.
+  shift
+  exec java -cp 'migrate-lib/*' versola.migrate.MigrateTool "$@"
 fi
 
 OUT_DIR="${OUT_DIR:-/out}"

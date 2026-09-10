@@ -17,6 +17,14 @@ import java.io.File
   * files the real services will start from means there is no way for what this applies to drift
   * from what they expect to find already there.
   *
+  * Two optional args, forwarded here by entrypoint.sh's own "migrate" dispatch branch (which
+  * shifts argv[0] off before exec'ing this): `--dry-run` reports each target's pending migrations
+  * via Flyway's own `info()` without applying anything, and `--service <name>` restricts either
+  * mode to one of "auth"/"central"/"edge" instead of all three. Both back versola-cli's own
+  * `--dry-run`/`--service` flags on `versola migrate` -- see its own comment for why a CI
+  * pipeline needs both (checking what WOULD apply without a human in the loop, and being able to
+  * fail on just one service's migrations rather than all three at once).
+  *
   * A plain synchronous `main`, not a ZIO app, and Flyway is handed a raw JDBC URL/user/password
   * rather than going through `PostgresHikariDataSource`/HikariCP (see build.sbt's `migrateTool`
   * project for the full reasoning) -- this runs once, sequentially, applying at most a handful of
@@ -72,11 +80,14 @@ object MigrateTool:
       password = conf.getString("postgres.password"),
     )
 
-  private def migrate(target: Target): Unit =
-    println(s"${target.serviceName}: applying migrations from ${target.configPath}")
+  /** Builds the one Flyway instance both `migrate` and `checkPending` need --
+    * identical configuration either way, since a dry run has to validate
+    * against the exact same migration history and connection a real one
+    * would, or "what would apply" stops meaning anything.
+    */
+  private def buildFlyway(target: Target): Flyway =
     val connection = readConnection(target.configPath)
-
-    val flyway = Flyway
+    Flyway
       .configure()
       .locations(target.migrationsLocation)
       .dataSource(connection.url, connection.user, connection.password)
@@ -100,11 +111,54 @@ object MigrateTool:
       .outOfOrder(true)
       .load()
 
+  private def migrate(target: Target): Unit =
+    println(s"${target.serviceName}: applying migrations from ${target.configPath}")
+    val flyway = buildFlyway(target)
     flyway.migrate()
     println(s"${target.serviceName}: migrations complete")
 
+  /** `--dry-run`'s own path: validates the same way `migrate` would, then
+    * lists what Flyway's own history table says is still pending, via
+    * `info().pending()` -- standard OSS Flyway, not a Teams-only feature
+    * (unlike `dryRunOutput`, which generates SQL and IS Teams-only) --
+    * without ever calling `.migrate()`, so nothing here touches the schema.
+    */
+  private def checkPending(target: Target): Unit =
+    println(s"${target.serviceName}: checking pending migrations against ${target.configPath}")
+    val flyway = buildFlyway(target)
+    flyway.validate()
+    val pending = flyway.info().pending()
+    if pending.isEmpty then println(s"${target.serviceName}: up to date, nothing to apply")
+    else
+      println(s"${target.serviceName}: ${pending.length} pending migration(s):")
+      pending.foreach(m => println(s"  ${m.getVersion} - ${m.getDescription}"))
+
+  /** `--service <name>` restricts `targets` to just that one -- validated
+    * against the fixed list above rather than trusting the string, so a
+    * typo fails with a clear message instead of quietly matching nothing
+    * and reporting "0 targets" as if that were a success.
+    */
+  private def selectTargets(serviceArg: Option[String]): List[Target] =
+    serviceArg match
+      case None => targets
+      case Some(name) =>
+        targets.find(_.serviceName == name) match
+          case Some(t) => List(t)
+          case None =>
+            System.err.println(
+              s"versola-tools migrate: unknown --service '$name' (expected one of ${targets.map(_.serviceName).mkString(", ")})"
+            )
+            sys.exit(1)
+
   def main(args: Array[String]): Unit =
-    try targets.foreach(migrate)
+    val dryRun = args.contains("--dry-run")
+    val serviceIdx = args.indexOf("--service")
+    val serviceArg =
+      if serviceIdx >= 0 && serviceIdx + 1 < args.length then Some(args(serviceIdx + 1)) else None
+
+    val selected = selectTargets(serviceArg)
+
+    try selected.foreach(t => if dryRun then checkPending(t) else migrate(t))
     catch
       case t: Throwable =>
         System.err.println(s"versola-tools migrate: failed -- ${t.getMessage}")
