@@ -42,7 +42,11 @@ object RevocationController extends Controller:
           // authentication and token ownership are refusable (§2.1), and those failures come
           // out of RevocationService as a RevocationError below.
           case None =>
-            Observability.setError("invalid_token", Some("The presented token is not of a recognized form"))
+            // RFC 7009 §2.1 requires the client to be authenticated regardless of whether the
+            // token turns out to be one it could ever have held -- so wrong credentials must
+            // still fail here rather than being short-circuited by the §2.2 exemption below.
+            revocationService.authenticateClient(credentials) *>
+              Observability.setError("invalid_token", Some("The presented token is not of a recognized form"))
 
           case Some(Right(accessToken)) =>
             Observability.setRouteLabel("token_type", "access") *>
@@ -54,7 +58,11 @@ object RevocationController extends Controller:
                 .flatMap(revocationService.revokeAccessToken(_, credentials))
                 .catchSome {
                   case _: JWT.Error =>
-                    Observability.setError("invalid_token", Some("The presented access token could not be verified"))
+                    // Deserialization failed before RevocationService (and its client
+                    // authentication) was ever reached -- authenticate explicitly so wrong
+                    // credentials still fail per §2.1, as with the unrecognized-shape case above.
+                    revocationService.authenticateClient(credentials) *>
+                      Observability.setError("invalid_token", Some("The presented access token could not be verified"))
                 }
 
           case Some(Left(refreshToken)) =>

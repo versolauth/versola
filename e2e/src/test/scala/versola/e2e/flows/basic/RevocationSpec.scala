@@ -119,6 +119,30 @@ object RevocationSpec extends E2ESpec:
         response <- auth.revoke("not-a-jwt-and-not-base64!!", s.clientId, s.clientSecret)
       yield assertTrue(response.status == Status.Ok)
     },
+    test("wrong client credentials are rejected even when the token is a value no client could hold") {
+      // RFC 7009 \u00a72.1's client-authentication requirement applies regardless of the token's own
+      // disposition: a value no client could hold must not let wrong credentials slip through the
+      // \u00a72.2 exemption above.
+      for
+        (s, auth) <- setup(Flows.Id.LoginPassword)
+        response <- auth.revoke("not-a-jwt-and-not-base64!!", s.clientId, "wrong-secret-wrong-secret-wrong-secret")
+        error <- errorOf(response)
+      yield assertTrue(response.status == Status.Unauthorized) &&
+        assertTrue(error.contains("invalid_client"))
+    },
+    test("wrong client credentials are rejected even when the access token JWT does not verify") {
+      // Same requirement as above, for the other unrecognized-token path: an unverifiable JWT is
+      // exempt from RFC 7009 \u00a72.2 error reporting, but that must not bypass \u00a72.1's client
+      // authentication.
+      for
+        (s, auth) <- setup(Flows.Id.LoginPassword)
+        token <- login(s, auth)
+        corrupted = token.accessToken.dropRight(4) + "AAAA"
+        response <- auth.revoke(corrupted, s.clientId, "wrong-secret-wrong-secret-wrong-secret")
+        error <- errorOf(response)
+      yield assertTrue(response.status == Status.Unauthorized) &&
+        assertTrue(error.contains("invalid_client"))
+    },
     test("token_type_hint is advisory only: an access token submitted with token_type_hint=refresh_token still revokes") {
       for
         (s, auth) <- setup(Flows.Id.LoginPassword)

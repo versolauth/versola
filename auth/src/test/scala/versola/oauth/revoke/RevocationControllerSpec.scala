@@ -5,13 +5,14 @@ import com.nimbusds.jose.crypto.RSASSASigner
 import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 import org.scalamock.stubs.Stub
 import versola.auth.TestEnvConfig
-import versola.oauth.client.model.ClientId
+import versola.oauth.client.model.{ClientId, OAuthClientRecord, ScopeToken, TenantId}
 import versola.oauth.model.{AccessToken, RefreshToken}
 import versola.oauth.revoke.model.RevocationError
 import versola.util.{Base64, Secret, UnitSpecBase}
 import versola.util.http.{NoopTracing, Observability}
 import zio.*
 import zio.http.*
+import zio.prelude.NonEmptySet
 import zio.test.*
 import zio.test.TestAspect
 
@@ -24,6 +25,32 @@ object RevocationControllerSpec extends UnitSpecBase:
   val clientSecret1     = Secret(Array.fill(32)(4.toByte))
   val refreshToken1     = RefreshToken(Array.fill(32)(10.toByte))
   val accessTokenBytes1 = AccessToken(Array.fill(32)(20.toByte))
+
+  /** Only used to satisfy `authenticateClient`'s return type -- these tests never inspect it,
+    * since it is [[RevocationController]]'s use of the credentials, not this record, under test.
+    */
+  val testClient = OAuthClientRecord(
+    id = clientId1,
+    tenantId = TenantId("default"),
+    clientName = Map("en" -> "Test Client"),
+    redirectUris = NonEmptySet("https://example.com/callback"),
+    scope = Set(ScopeToken("read")),
+    secret = Some(clientSecret1),
+    previousSecret = None,
+    accessTokenTtl = 10.minutes,
+    refreshTokenTtl = 7776000.seconds,
+    theme = "default",
+    authFlow = None,
+    registrationFlow = None,
+    otpTemplateId = "default",
+    frontChannelLogoutUri = None,
+    frontChannelLogoutSessionRequired = false,
+    backChannelLogoutUri = None,
+    logoUri = None,
+    policyUri = None,
+    tosUri = None,
+    consentFlow = None,
+  )
 
   def authHeader(clientId: ClientId, secret: Secret): Header.Authorization =
     Header.Authorization.Basic(clientId, Base64.urlEncode(secret))
@@ -162,6 +189,21 @@ object RevocationControllerSpec extends UnitSpecBase:
           body = Body.fromURLEncodedForm(Form.fromStrings("token" -> "not-a-jwt-and-not-base64!!")),
         ).addHeader(authHeader(clientId1, clientSecret1)),
         expectedStatus = Status.Ok,
+        setup = revocationService =>
+          revocationService.authenticateClient.succeedsWith(testClient),
+      ),
+      controllerTestCase(
+        description = "return 401 invalid_client when credentials are wrong, even for a token no client could hold (RFC 7009 \u00a72.1)",
+        request = Request.post(
+          url = URL.root / "revoke",
+          body = Body.fromURLEncodedForm(Form.fromStrings("token" -> "not-a-jwt-and-not-base64!!")),
+        ).addHeader(authHeader(clientId1, clientSecret1)),
+        expectedStatus = Status.Unauthorized,
+        setup = revocationService =>
+          revocationService.authenticateClient.failsWith(RevocationError.InvalidClient),
+        verify = response =>
+          for body <- response.body.asString
+          yield assertTrue(body.contains("invalid_client")),
       ),
       controllerTestCase(
         description = "return 200 OK when access token JWT has invalid signature (JWT.Error silently ignored)",
@@ -172,6 +214,23 @@ object RevocationControllerSpec extends UnitSpecBase:
           ),
         ).addHeader(authHeader(clientId1, clientSecret1)),
         expectedStatus = Status.Ok,
+        setup = revocationService =>
+          revocationService.authenticateClient.succeedsWith(testClient),
+      ),
+      controllerTestCase(
+        description = "return 401 invalid_client when credentials are wrong and the access token JWT does not verify (RFC 7009 \u00a72.1)",
+        request = Request.post(
+          url = URL.root / "revoke",
+          body = Body.fromURLEncodedForm(
+            Form.fromStrings("token" -> (createValidAccessToken().dropRight(4) + "AAAA"))
+          ),
+        ).addHeader(authHeader(clientId1, clientSecret1)),
+        expectedStatus = Status.Unauthorized,
+        setup = revocationService =>
+          revocationService.authenticateClient.failsWith(RevocationError.InvalidClient),
+        verify = response =>
+          for body <- response.body.asString
+          yield assertTrue(body.contains("invalid_client")),
       ),
       controllerTestCase(
         description = "return 200 OK when the client authenticates with client_secret_post",
