@@ -309,10 +309,21 @@ object ClientApiSpec extends CentralApiSpec:
     test("offset moves the window without overlapping it") {
       for
         central <- api
-        first <- central.get(path, "tenantId" -> Fixtures.defaultTenant, "offset" -> "0", "limit" -> "1")
-          .flatMap(_.items("clients"))
-        second <- central.get(path, "tenantId" -> Fixtures.defaultTenant, "offset" -> "1", "limit" -> "1")
-          .flatMap(_.items("clients"))
+        idA <- CentralApi.id("e2e-client")
+        idB <- CentralApi.id("e2e-client")
+        result <- withClient(central, Fixtures.client(idA)) { _ =>
+          withClient(central, Fixtures.client(idB)) { _ =>
+            for
+              _ <- read(central, idA)
+              _ <- read(central, idB)
+              first <- central.get(path, "tenantId" -> Fixtures.defaultTenant, "offset" -> "0", "limit" -> "1")
+                .flatMap(_.items("clients"))
+              second <- central.get(path, "tenantId" -> Fixtures.defaultTenant, "offset" -> "1", "limit" -> "1")
+                .flatMap(_.items("clients"))
+            yield (first, second)
+          }
+        }
+        (first, second) = result
       yield assertTrue(first.size == 1 && second.size == 1) &&
         assertTrue(first.head.str("id") != second.head.str("id"))
           .label("a second page repeating the first would make paging unusable")

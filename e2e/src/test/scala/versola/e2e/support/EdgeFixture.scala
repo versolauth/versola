@@ -52,18 +52,17 @@ object EdgeFixture:
       maxAge: Option[Int] = None,
   )
 
-  /** @param resourceId  a stable id, so a run that failed before cleaning up cannot leave a
-    *                    second resource behind under a fresh name.
-    * @param resourceUri the upstream origin. Every spec must claim a different one: auth
-    *                    resolves a token's audience by looking a resource up by URI, so two
-    *                    resources sharing one would be ambiguous.
-    */
-  /** @param awaitProxyReady waits until the edge actually proxies to this resource before the
-    *                        first test runs. Edge's `/service/configuration/sync` reloads only
-    *                        its client and preset caches; resources, roles and permissions
-    *                        arrive on `configurationCacheRefreshInterval`, so a proxy test
-    *                        starting immediately would assert against the previous run's
-    *                        configuration and see a 404 or a 403.
+  /** @param resourceId       a stable id, so a run that failed before cleaning up cannot leave a
+    *                         second resource behind under a fresh name.
+    * @param resourceUri      the upstream origin. Every spec must claim a different one: auth
+    *                         resolves a token's audience by looking a resource up by URI, so
+    *                         two resources sharing one would be ambiguous.
+    * @param awaitProxyReady  waits until the edge actually proxies to this resource before the
+    *                         first test runs. Edge's `/service/configuration/sync` reloads only
+    *                         its client and preset caches; resources, roles and permissions
+    *                         arrive on `configurationCacheRefreshInterval`, so a proxy test
+    *                         starting immediately would assert against the previous run's
+    *                         configuration and see a 404 or a 403.
     */
   case class Config(
       resourceId: String,

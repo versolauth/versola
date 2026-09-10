@@ -119,9 +119,11 @@ object PermissionApiSpec extends CentralApiSpec:
     test("a segmented permission name is accepted") {
       for
         central <- api
-        created <- central.post(path, Fixtures.permission("probe:orders.read_all"))
-        record <- read(central, "probe:orders.read_all")
-        _ <- cleanup(central, "probe:orders.read_all")
+        base <- CentralApi.permission("probe")
+        permission = s"$base:orders.read_all"
+        created <- central.post(path, Fixtures.permission(permission))
+        record <- read(central, permission)
+        _ <- cleanup(central, permission)
       yield assertTrue(created.status == Status.Created) && assertTrue(record.nonEmpty)
         .label("`resource:action` and dotted namespaces are the documented naming convention")
     },

@@ -14,7 +14,7 @@ import zio.test.*
   * forwarded path, the surviving headers, and above all whether the browser's session cookie
   * stays on edge's side of the hop.
   */
-object EdgeProxySpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi & EdgeFixture & UpstreamStub]:
+object EdgeProxySpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi & EdgeFixture & UpstreamStub & EdgeSession]:
 
   private val config = EdgeFixture.Config(
     resourceId = "e2e-edge-proxy",
@@ -32,9 +32,10 @@ object EdgeProxySpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi & EdgeFi
   )
 
   override val bootstrap
-      : ZLayer[Any, Any, OAuthClient & CentralApi & EdgeApi & EdgeFixture & UpstreamStub] =
+      : ZLayer[Any, Any, OAuthClient & CentralApi & EdgeApi & EdgeFixture & UpstreamStub & EdgeSession] =
     val clients = (E2EConfig.live ++ Client.default) >>> (OAuthClient.live ++ CentralApi.live ++ EdgeApi.live)
-    (clients ++ UpstreamStub.live) >+> EdgeFixture.layer(config)
+    val fixtured = (clients ++ UpstreamStub.live) >+> EdgeFixture.layer(config)
+    fixtured >+> ZLayer.fromZIO(sessionEffect)
 
   override val aspects: Chunk[TestAspectAtLeastR[TestEnvironment]] =
     Chunk(TestAspect.withLiveClock)
@@ -43,16 +44,21 @@ object EdgeProxySpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi & EdgeFi
   private val fixture = ZIO.service[EdgeFixture]
   private val upstream = ZIO.service[UpstreamStub]
 
-  /** One signed-in browser session, reused by every test that does not need a fresh one:
-    * a full authorization code flow per test would dominate the runtime of the suite.
+  /** Signs in once, before any test runs: `ZLayer.fromZIO` in `bootstrap` runs this exactly
+    * once per spec, however many tests read the resulting `EdgeSession` from the environment.
     */
-  private val session: ZIO[EdgeApi & OAuthClient & EdgeFixture, Throwable, EdgeSession] =
+  private val sessionEffect: ZIO[EdgeApi & OAuthClient & EdgeFixture, Throwable, EdgeSession] =
     for
       edgeApi <- edge
       authApi <- ZIO.service[OAuthClient]
       f <- fixture
       established <- edgeApi.browserLogin(authApi, f.presetId, f.login, f.password)
     yield established
+
+  /** One signed-in browser session, reused by every test that does not need a fresh one:
+    * a full authorization code flow per test would dominate the runtime of the suite.
+    */
+  private val session: URIO[EdgeSession, EdgeSession] = ZIO.service[EdgeSession]
 
   private def clean[R, A](effect: ZIO[R, Throwable, A]): ZIO[R & UpstreamStub, Throwable, A] =
     upstream.flatMap(_.reset) *> effect
