@@ -37,6 +37,14 @@ target/
 !migrate-tool/target/universal
 !migrate-tool/target/universal/stage
 !migrate-tool/target/universal/stage/**
+!loadgen/target
+!loadgen/target/universal
+!loadgen/target/universal/stage
+!loadgen/target/universal/stage/**
+!mockapi/target
+!mockapi/target/universal
+!mockapi/target/universal/stage
+!mockapi/target/universal/stage/**
 
 # Dockerfile.gateway needs the built SPA in its build context -- everything
 # else (Dockerfile.central, which only needs central-ui's separately-built
