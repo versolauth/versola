@@ -67,16 +67,22 @@ services:
     # No `platform:` pin, same reasoning as central/auth/edge below.
     network_mode: host
     command: ["migrate"]
-    # auth.conf/central.conf/edge.conf's postgres.password field is an
-    # OpenBao-resolved ${POSTGRES_PASSWORD} placeholder here (unlike
-    # docker-local's literal value -- see gen-env.scala's secretField call
-    # on that field), so it needs env_file the same way central's own
-    # service does below. All three services' passwords are the one value
-    # gen-env.scala generates and reuses (see pgPassDefault), so any one of
-    # the three secrets files would do; central.secrets.env is picked
-    # because central is already the first service this file starts.
+    # This one container mounts all three services' config files below and
+    # resolves each in turn (see MigrateTool.readConnection) -- and Typesafe
+    # Config's own resolve() requires every ${VAR} substitution in a config
+    # document to resolve, not just the ones a given code path actually
+    # reads. That means this needs every secret any of the three configs
+    # placeholders out, not just postgres.password (the one field that's
+    # the same value shared across all three, and the only one this used to
+    # list a secrets file for -- auth.conf's and edge.conf's OWN secrets,
+    # e.g. AUTH_CODES_SECRET, EDGE_PRIVATE_KEY, aren't in central.secrets.env
+    # and were left unresolved by that, which is exactly what broke the
+    # first real `versola migrate vps` run: ConfigException.
+    # UnresolvedSubstitution on auth.conf's AUTH_CODES_SECRET).
     env_file:
+      - ./auth.secrets.env
       - ./central.secrets.env
+      - ./edge.secrets.env
     volumes:
       - ./auth.conf:/opt/versola-tools/config/auth.conf:ro
       - ./central.conf:/opt/versola-tools/config/central.conf:ro
