@@ -159,16 +159,14 @@ export class VersolaClientsList extends LitElement {
         flex: 1;
       }
 
-      .badge-native {
+      /* Web and native are just the two client-type values, not a
+         status distinction (like the warning badge next to it) — same
+         accent styling for both, distinguished only by their label text. */
+      .badge-native,
+      .badge-web {
         border: 1px solid rgba(var(--accent-tint), 0.28);
         background: rgba(var(--accent-tint), 0.12);
         color: var(--accent);
-      }
-
-      .badge-web {
-        border: 1px solid rgba(147, 147, 147, 0.28);
-        background: rgba(147, 147, 147, 0.12);
-        color: var(--text-secondary);
       }
 
       .client-name {

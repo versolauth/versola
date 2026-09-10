@@ -412,14 +412,17 @@ export class VersolaClientForm extends LitElement {
         -moz-appearance: textfield;
       }
 
-      /* Custom select styling - remove arrow, add custom indicator */
+      /* Custom select styling - remove arrow, add custom indicator.
+         Uses --surface-inset (a subtle recessed tint, already themed for
+         light/dark) instead of a flat black overlay, which read as a hard
+         grey box that didn't track the rest of the palette. */
       .ttl-unit-select {
         appearance: none;
         -webkit-appearance: none;
         -moz-appearance: none;
         cursor: pointer;
         padding-right: 2.5rem;
-        background: rgba(0, 0, 0, 0.2);
+        background: var(--surface-inset);
         position: relative;
       }
 
@@ -428,7 +431,7 @@ export class VersolaClientForm extends LitElement {
       }
 
       .ttl-unit-select:focus {
-        background: rgba(0, 0, 0, 0.3);
+        background: rgba(var(--accent-tint), 0.16);
       }
 
       /* Custom dropdown indicator using pseudo-element */
