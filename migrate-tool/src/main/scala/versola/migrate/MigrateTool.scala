@@ -154,7 +154,19 @@ object MigrateTool:
     val dryRun = args.contains("--dry-run")
     val serviceIdx = args.indexOf("--service")
     val serviceArg =
-      if serviceIdx >= 0 && serviceIdx + 1 < args.length then Some(args(serviceIdx + 1)) else None
+      if serviceIdx < 0 then None
+      else if serviceIdx + 1 < args.length then Some(args(serviceIdx + 1))
+      else
+        // "--service" present with nothing after it (e.g. it's the last
+        // token) is a malformed command, not "no --service given" -- that
+        // distinction matters because None means "every target" (see
+        // selectTargets below). Falling through to None here would turn a
+        // typo'd/truncated production command into migrations against
+        // every schema instead of failing loudly, the same failure mode
+        // selectTargets' own unknown-name branch exists to avoid for a bad
+        // value.
+        System.err.println("versola-tools migrate: --service requires a value")
+        sys.exit(1)
 
     val selected = selectTargets(serviceArg)
 
