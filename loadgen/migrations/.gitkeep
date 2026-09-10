@@ -1,0 +1,3 @@
+Flyway migrations for the emulator's own Postgres state store (vu_users, vu_sessions, vu_events
+-- see versola-loadgen-dev-spec.md §6). Land with the `store` track (C); this placeholder keeps
+the directory present so Dockerfile.loadgen's COPY has something to copy from the start.

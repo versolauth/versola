@@ -1,0 +1,30 @@
+# versola-mockapi: no sbt in this image. Expects the staged tree `sbt mockapi/stage` produces,
+# downloaded as an artifact before this Dockerfile ever runs -- same shape as Dockerfile.auth.
+# The CI job that stages and uploads it does not exist yet (see build.sbt's comment on the
+# `mockapi` project); until it does, this image is buildable only from a local `sbt mockapi/stage`.
+#
+# Deliberately the plainest image in docker/: mockapi has no config file, no migrations, no
+# database -- it is a pure delay generator with its own minimal boot sequence rather than
+# `VersolaApp`'s (see build.sbt's comment on the `mockapi` project and
+# versola-loadgen-dev-spec.md §9). PORT/DPORT/BIND_HOST are read directly from the environment.
+#
+# Pinned by digest, not just `:25-jre` -- see Dockerfile.auth's comment for why.
+FROM eclipse-temurin:25-jre@sha256:f19dbf0a22d0b3658fda48ce7d7181df05ad14bda151dd5ad12cc09d1451c70e
+
+WORKDIR /app
+
+# Staged application (see ci-cd.yml) -- carved back out of .dockerignore's blanket `target/`
+# exclusion for exactly this path.
+COPY mockapi/target/universal/stage /app
+
+# See Dockerfile.auth's comment: actions/upload-artifact normalizes file modes on upload,
+# losing bin/mockapi's executable bit along the way.
+RUN chmod +x /app/bin/*
+
+# Application port, diagnostics port (/liveness, /readiness -- no /metrics on this service,
+# which is not a VersolaApp).
+EXPOSE 8100 8101
+
+ENV JAVA_OPTS="-XX:+UseG1GC -XX:MaxRAMPercentage=75.0 -XX:+UseCompactObjectHeaders --enable-native-access=ALL-UNNAMED"
+
+ENTRYPOINT ["/bin/sh", "-c", "/app/bin/mockapi $JAVA_OPTS"]

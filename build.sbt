@@ -213,6 +213,77 @@ lazy val tools = project
     Compile / mainClass := Some("genEnv"),
   )
 
+// versola-loadgen: coordinator + driver for the load emulator (see
+// versola-loadgen-dev-spec.md). Depends on `util`/`util-postgres` for `VersolaApp` (diagnostics
+// port, `/liveness`, `/readiness`, graceful shutdown) and `PostgresHikariDataSource` -- the
+// emulator's own state store, not the SUT's. Not part of `root`'s aggregate, same reasoning as
+// `e2e`/`tools` above: staged explicitly (`sbt loadgen/stage`), not part of the default
+// `sbt compile`/`sbt test` loop. ci-cd.yml does NOT yet compile or stage this project -- that
+// change to the "Compile" step needs the `workflow` token scope, tracked on #268; until it lands
+// nothing here is validated by CI (the same gap `tools` closed for itself by naming itself in
+// that step).
+lazy val loadgen = project
+  .in(file("loadgen"))
+  .enablePlugins(JavaAppPackaging)
+  .settings(
+    name := "loadgen",
+    commonSettings,
+    libraryDependencies ++= Dependencies.http ++ Dependencies.database.postgres ++ Seq(
+      "org.hdrhistogram" % "HdrHistogram" % Versions.hdrHistogram,
+    ),
+    Compile / mainClass := Some("versola.loadgen.Main"),
+    // Not aggregated by root, so `sbt coverage test coverageReport coverageAggregate`
+    // (the "Run tests with coverage" CI step) never touches this project anyway -- explicit
+    // here so that stays true even if someone runs `loadgen/coverage loadgen/test` directly.
+    coverageEnabled := false,
+  )
+  .dependsOn(
+    util % CompileTest,
+    `util-postgres` % CompileTest,
+  )
+
+// versola-mockapi: the load emulator's mock protected-resource backend (see
+// versola-loadgen-dev-spec.md §9). Deliberately does NOT depend on `util` and deliberately does
+// NOT use `commonSettings` -- both pull in `Dependencies.core` regardless of `dependsOn` (see
+// `migrateTool`'s comment above for the same reasoning), none of which a pure delay generator has
+// any use for. Measured, not assumed: staging with `Dependencies.http` alone gives 89 jars, and
+// drops BouncyCastle, the WebAuthn server, nimbus-jose-jwt, Flyway, HikariCP, magnum, the
+// Postgres driver, CEL, json-schema-validator, libphonenumber and angus-mail. Note what it does
+// NOT drop: `Dependencies.http` carries the OpenTelemetry SDK and the OTLP exporter itself, so
+// okhttp/okio are on this classpath either way -- the win here is that no middleware uses them
+// per request, not that they're absent.
+//
+// The classpath is only half of it: depending on `util` is what makes `VersolaApp` available, and
+// `VersolaApp` mounts `Observability.middleware` in front of every route -- a span, the RED
+// counters, request/response serialisation and one unfiltered `receive-http` JSON log line per
+// request. At ~8,400 rps that is a constant latency bias on the process the whole campaign's
+// latency numbers are measured against, so `mockapi` owns its own (much smaller) boot sequence
+// instead. The cost of that choice is real and worth stating: no tracing, no `/metrics`, no
+// shared graceful-shutdown behaviour, and a `/liveness`+`/readiness` surface that has to stay
+// correct here on its own. Not part of `root`'s aggregate, and -- like `loadgen` above -- not yet
+// named in ci-cd.yml's "Compile" step either; see that comment.
+lazy val mockapi = project
+  .in(file("mockapi"))
+  .enablePlugins(JavaAppPackaging)
+  .settings(
+    name := "mockapi",
+    scalaVersion := "3.8.1",
+    scalacOptions ++= Seq(
+      "-deprecation",
+      "-source:future",
+      "-new-syntax",
+      "-indent",
+    ),
+    libraryDependencies ++= Dependencies.http ++ Seq(
+      "dev.zio" %% "zio-test" % Versions.zio % Test,
+      "dev.zio" %% "zio-test-sbt" % Versions.zio % Test,
+    ),
+    testFrameworks += new TestFramework("zio.test.sbt.ZTestFramework"),
+    Compile / mainClass := Some("versola.mockapi.Main"),
+    // Same reasoning as loadgen's coverageEnabled above.
+    coverageEnabled := false,
+  )
+
 lazy val sbtForkSettings = Seq(
   fork := true,
   run / baseDirectory := (ThisBuild / baseDirectory).value,

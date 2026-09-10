@@ -28,6 +28,7 @@ object Versions {
   val cel = "0.12.0"
   val jsonSchemaValidator = "2.0.4"
   val typesafeConfig = "1.4.3"
+  val hdrHistogram = "2.2.2"
 }
 
 object Dependencies {
