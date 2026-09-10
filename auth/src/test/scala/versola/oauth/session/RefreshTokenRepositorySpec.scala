@@ -64,6 +64,7 @@ trait RefreshTokenRepositorySpec extends DatabaseSpecBase[RefreshTokenRepository
     amr = Set(AuthMethodRef.pwd),
     authTime = now,
     acr = None,
+    cnfJkt = None,
   )
 
   def tokenRecord2(now: Instant, ttl: Duration) = RefreshTokenRecord(
@@ -84,6 +85,7 @@ trait RefreshTokenRepositorySpec extends DatabaseSpecBase[RefreshTokenRepository
     amr = Set(AuthMethodRef.pwd),
     authTime = now,
     acr = None,
+    cnfJkt = None,
   )
 
   def testCases(env: RefreshTokenRepositorySpec.Env): List[Spec[RefreshTokenRepositorySpec.Env & Scope, Any]] =
@@ -113,6 +115,23 @@ trait RefreshTokenRepositorySpec extends DatabaseSpecBase[RefreshTokenRepository
           _ <- env.repository.createRefreshToken(refreshToken1, record)
           found <- env.repository.findToken(refreshToken1)
         yield assertTrue(found.map(_.authorizationDetails) == Some(Some(List(detail))))
+      },
+      test("persist and retrieve the DPoP binding thumbprint") {
+        val jkt = "0ZcOCORZNYy-DWpqq30jZyJGHTN0d2HglBV3uiguA4I"
+        for
+          now <- Clock.instant
+          record = tokenRecord1(now, refreshTtl).copy(cnfJkt = Some(jkt))
+          _ <- env.repository.createRefreshToken(refreshToken1, record)
+          found <- env.repository.findToken(refreshToken1)
+        yield assertTrue(found.map(_.cnfJkt) == Some(Some(jkt)))
+      },
+      test("an unbound grant round-trips with no thumbprint") {
+        for
+          now <- Clock.instant
+          record = tokenRecord1(now, refreshTtl)
+          _ <- env.repository.createRefreshToken(refreshToken1, record)
+          found <- env.repository.findToken(refreshToken1)
+        yield assertTrue(found.map(_.cnfJkt) == Some(None))
       },
       test("find returns None for non-existent refresh token") {
         for

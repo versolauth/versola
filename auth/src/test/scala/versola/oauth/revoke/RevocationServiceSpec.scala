@@ -77,6 +77,7 @@ object RevocationServiceSpec extends UnitSpecBase:
     amr = Set(AuthMethodRef.pwd),
     authTime = now,
     acr = None,
+    cnfJkt = None,
   )
 
   def accessTokenPayload(now: Instant) = AccessTokenPayload(
@@ -92,6 +93,7 @@ object RevocationServiceSpec extends UnitSpecBase:
     id = accessToken1,
     authorizationDetails = None,
     sessionId = None,
+    confirmation = None,
   )
 
   class Env:

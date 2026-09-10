@@ -15,19 +15,24 @@ import zio.{Duration, IO, Task, ZIO, ZLayer}
 
 trait OAuthTokenService:
 
+  /** @param dpopJkt thumbprint of the key that proved possession on this request, `None` when
+    *   the request carried no DPoP proof and the issued tokens are therefore bearer tokens. */
   def exchangeAuthorizationCode(
       codeExchangeRequest: CodeExchangeRequest,
       tokenCredentials: ClientCredentials,
+      dpopJkt: Option[String],
   ): IO[Throwable | TokenEndpointError, IssuedTokens]
 
   def refreshAccessToken(
       refreshTokenRequest: RefreshTokenRequest,
       tokenCredentials: ClientCredentials,
+      dpopJkt: Option[String],
   ): IO[Throwable | TokenEndpointError, IssuedTokens]
 
   def clientCredentials(
       clientCredentialsRequest: ClientCredentialsRequest,
       tokenCredentials: ClientCredentials,
+      dpopJkt: Option[String],
   ): IO[Throwable | TokenEndpointError, IssuedTokens]
 
 object OAuthTokenService:
@@ -54,6 +59,7 @@ object OAuthTokenService:
     override def exchangeAuthorizationCode(
         codeExchangeRequest: CodeExchangeRequest,
         tokenCredentials: ClientCredentials,
+        dpopJkt: Option[String],
     ): IO[Throwable | TokenEndpointError, IssuedTokens] =
       import codeExchangeRequest.{code, codeVerifier, redirectUri}
       for
@@ -117,6 +123,7 @@ object OAuthTokenService:
             amr = codeRecord.amr,
             authTime = codeRecord.authTime,
             acr = codeRecord.acr,
+            cnfJkt = dpopJkt,
           ),
           accessTokenAudience = codeRecord.resources,
           accessTokenAuthorizationDetails = codeRecord.authorizationDetails.getOrElse(Nil),
@@ -132,6 +139,7 @@ object OAuthTokenService:
     override def refreshAccessToken(
         refreshTokenRequest: RefreshTokenRequest,
         tokenCredentials: ClientCredentials,
+        dpopJkt: Option[String],
     ): IO[Throwable | TokenEndpointError, IssuedTokens] =
       import refreshTokenRequest.{authorizationDetails, refreshToken, resources, scope}
       for
@@ -151,6 +159,13 @@ object OAuthTokenService:
 
         _ <- Observability.setSessionId(tokenRecord.publicSessionId)
         _ <- Observability.setUserId(tokenRecord.userId.toString)
+
+        // RFC 9449 §5: a bound grant stays bound to the key it was issued to, so the proof on
+        // this request has to carry that same thumbprint. The binding is fixed at issuance and
+        // never re-derived from the current proof -- otherwise presenting a stolen unbound
+        // refresh token with any key of one's own would "upgrade" it into a bound one.
+        _ <- ZIO.fail(TokenEndpointError.InvalidGrant)
+          .when(tokenRecord.cnfJkt.exists(!dpopJkt.contains(_)))
 
         // RFC 6749 §6: the request may narrow the underlying grant but never widen it, so the
         // comparison is against what was granted, not against the client's registration —
@@ -242,6 +257,7 @@ object OAuthTokenService:
     override def clientCredentials(
         request: ClientCredentialsRequest,
         tokenCredentials: ClientCredentials,
+        dpopJkt: Option[String],
     ): IO[Throwable | TokenEndpointError, IssuedTokens] =
       for
         client <- tokenCredentials match
@@ -294,6 +310,7 @@ object OAuthTokenService:
         amr = Set.empty,
         authTime = None,
         acr = None,
+        cnfJkt = dpopJkt,
       )
 
     /** Orchestrates token issuance for a specific authentication session.
@@ -344,4 +361,5 @@ object OAuthTokenService:
         amr = record.amr,
         authTime = Some(record.authTime),
         acr = record.acr,
+        cnfJkt = record.cnfJkt,
       )

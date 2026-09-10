@@ -35,3 +35,9 @@ object ErrorCode:
     /** The requested RFC 9396 authorization details are invalid, unknown, or exceed the grant */
     val InvalidAuthorizationDetails: ErrorCode = "invalid_authorization_details"
 
+  /** The RFC 9449 DPoP proof accompanying the request is missing, malformed, or replayed */
+  val InvalidDpopProof: ErrorCode = "invalid_dpop_proof"
+
+  /** The request needs to be retried carrying the server-supplied RFC 9449 DPoP nonce */
+  val UseDpopNonce: ErrorCode = "use_dpop_nonce"
+

@@ -247,7 +247,8 @@ class PostgresSessionRepository(xa: TransactorZIO)
           nonce,
           amr,
           auth_time,
-          acr
+          acr,
+          cnf_jkt
         )
         VALUES (
           $refreshToken,
@@ -267,7 +268,8 @@ class PostgresSessionRepository(xa: TransactorZIO)
           ${record.nonce},
           ${record.amr},
           ${record.authTime},
-          ${record.acr}
+          ${record.acr},
+          ${record.cnfJkt}
         )
         """.update.run()
       ()
@@ -284,7 +286,7 @@ class PostgresSessionRepository(xa: TransactorZIO)
           SELECT session_id, public_session_id, access_token, user_id, client_id,
                  audience, authorization_details, scope, issued_at,
                  expires_at, requested_claims, ui_locales, nonce, previous_id,
-                 amr, auth_time, acr
+                 amr, auth_time, acr, cnf_jkt
           FROM refresh_tokens
           WHERE id = $token AND expires_at > $now"""
           .query[RefreshTokenRecord]

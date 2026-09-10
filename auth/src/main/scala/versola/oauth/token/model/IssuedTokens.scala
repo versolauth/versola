@@ -31,4 +31,7 @@ case class IssuedTokens(
     amr: Set[AuthMethodRef],
     authTime: Option[Instant], // None for client_credentials grant
     acr: Option[Acr],
+    /** RFC 9449 §6: the JWK thumbprint the access token is bound to, carried as its `cnf.jkt`
+      * claim; `None` for a bearer token. */
+    cnfJkt: Option[String],
 )

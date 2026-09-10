@@ -27,9 +27,18 @@ case class AccessTokenPayload(
     /** The session this token was issued under, absent for grants that have none
       * (client_credentials). Same value as the id token's `sid`. */
     @jsonField("sid") sessionId: Option[PublicSessionId],
+    /** RFC 9449 §6 confirmation claim, present only on a DPoP-bound token. A resource server
+      * must check the accompanying proof's thumbprint against `cnf.jkt`. */
+    @jsonField("cnf") confirmation: Option[Confirmation],
 ):
   /** Parse userId from subject if it's a valid UUID, otherwise None (for client_credentials tokens) */
   def userId: Option[UserId] = UserId.parse(subject).toOption
+
+/** RFC 7800 confirmation claim; only the RFC 9449 `jkt` member is used. */
+case class Confirmation(jkt: String)
+
+object Confirmation:
+  given JsonDecoder[Confirmation] = DeriveJsonDecoder.gen[Confirmation]
 
 object AccessTokenPayload:
 
