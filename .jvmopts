@@ -1,0 +1,8 @@
+# JVM options for sbt, read by the launcher in this directory.
+#
+# sbt otherwise runs with a 1G heap, which `sbt test` no longer fits into: it compiles
+# central's, edge's and e2e's test sources and runs the unit tests in one JVM, and e2e is
+# ~500 specs. On CI that heap spent its last minute at 90-110% GC before dying with an
+# OutOfMemoryError mid-compile.
+-Xmx4G
+-Xss8M
