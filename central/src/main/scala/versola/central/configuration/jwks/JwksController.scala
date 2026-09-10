@@ -8,6 +8,7 @@ import zio.http.{Method, Request, Response, Routes, Status, handler}
 import zio.json.EncoderOps
 import zio.json.ast.Json
 import zio.{Task, ZIO}
+import versola.util.JWT
 
 /** Endpoints for the central-owned JWKS.
   *
@@ -26,6 +27,7 @@ object JwksController extends Controller:
     updateJwkEndpoint,
     deleteJwkEndpoint,
     getJwksSyncEndpoint,
+    generateJwkEndpoint,
   )
 
   val getJwksEndpoint =
@@ -76,6 +78,21 @@ object JwksController extends Controller:
         service <- ZIO.service[JwksService]
         jwks <- service.getRaw
       yield Response.json(jwks.toJson)
+    }
+
+  val generateJwkEndpoint =
+    Method.POST / "configuration" / "jwks" / "generate" -> handler { (request: Request) =>
+      for
+        _ <- authorizeBasic(request)
+        service <- ZIO.service[JwksService]
+        algorithmStr <- request.url.queryZIO[String]("algorithm")
+        algorithm <- algorithmStr match
+          case "RS256" => ZIO.succeed(JWT.Algorithm.RS256)
+          case "PS256" => ZIO.succeed(JWT.Algorithm.PS256)
+          case "ES256" => ZIO.succeed(JWT.Algorithm.ES256)
+          case other   => ZIO.fail(new IllegalArgumentException(s"Unsupported algorithm: $other"))
+        _ <- service.generateKey(algorithm)
+      yield Response.status(Status.Created)
     }
 
   /** Parses the request body as a JWK and extracts its `kid`, replying with

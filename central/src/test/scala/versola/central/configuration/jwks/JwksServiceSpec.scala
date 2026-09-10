@@ -7,6 +7,9 @@ import zio.*
 import zio.json.*
 import zio.json.ast.Json
 import zio.test.*
+import versola.util.{EcKeyPair, MAC, RsaKeyPair, Secret, Salt, SecurityService}
+import java.security.{PrivateKey, PublicKey}
+import javax.crypto.SecretKey as JSecretKey
 
 import java.security.KeyPairGenerator
 import java.security.interfaces.RSAPublicKey
@@ -38,12 +41,25 @@ object JwksServiceSpec extends ZIOSpecDefault:
       def update(kid: String, jwk: Json.Obj): Task[Unit] = ZIO.unit
       def delete(kid: String): Task[Unit]                = ZIO.unit
     )
+    
+  private val stubSecurity: ULayer[SecurityService] =
+    ZLayer.succeed(new SecurityService:
+      def encryptAes256(data: Array[Byte], key: JSecretKey): Task[Array[Byte]]         = ZIO.dieMessage("not used")
+      def decryptAes256(data: Array[Byte], key: JSecretKey): Task[Array[Byte]]         = ZIO.dieMessage("not used")
+      def encryptRsa(data: Array[Byte], key: PublicKey): Task[Array[Byte]]             = ZIO.dieMessage("not used")
+      def decryptRsa(data: Array[Byte], key: PrivateKey): Task[Array[Byte]]            = ZIO.dieMessage("not used")
+      def mac(secret: Secret, key: Array[Byte]): Task[MAC]                             = ZIO.dieMessage("not used")
+      def hashPassword(p: Secret, s: Salt, pepper: Secret.Bytes16): Task[MAC]          = ZIO.dieMessage("not used")
+      def generateRsaKeyPair: UIO[RsaKeyPair]                                          = ZIO.dieMessage("not used")
+      def generateEcKeyPair: UIO[EcKeyPair]                                            = ZIO.dieMessage("not used")
+    )
 
   private def serviceFrom(records: Vector[JwksRecord]) =
     ZLayer.make[JwksService](
       inMemoryRepo(records),
       Scope.default,
       ZLayer.succeed(TestCentralConfig.config),
+      stubSecurity,
       JwksService.live,
     )
 

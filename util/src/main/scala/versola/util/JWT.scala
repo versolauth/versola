@@ -1,6 +1,6 @@
 package versola.util
 
-import com.nimbusds.jose.crypto.{ECDSAVerifier, MACSigner, MACVerifier, RSASSASigner, RSASSAVerifier}
+import com.nimbusds.jose.crypto.{ECDSASigner, ECDSAVerifier, MACSigner, MACVerifier, RSASSASigner, RSASSAVerifier}
 import com.nimbusds.jose.jwk.*
 import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm, JWSHeader, JWSSigner}
 import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
@@ -55,8 +55,11 @@ object JWT:
 
         val jwt = new com.nimbusds.jwt.SignedJWT(header, claimsSet)
         val signer = signature match {
-          case Signature.Asymmetric(_, _, privateKey) if signature.algorithm == Algorithm.RS256 =>
+          case Signature.Asymmetric(_, _, privateKey)
+              if signature.algorithm == Algorithm.RS256 || signature.algorithm == Algorithm.PS256 =>
             new RSASSASigner(privateKey)
+          case Signature.Asymmetric(_, _, privateKey) if signature.algorithm == Algorithm.ES256 =>
+            new ECDSASigner(privateKey.asInstanceOf[java.security.interfaces.ECPrivateKey])
           case Signature.Symmetric(key) =>
             new MACSigner(key)
           case _ =>
@@ -73,7 +76,7 @@ object JWT:
     */
   def leftHalfHash(value: String, algorithm: Algorithm): String =
     val digestName = algorithm match
-      case Algorithm.RS256 | Algorithm.HS256 => "SHA-256"
+      case Algorithm.RS256 | Algorithm.HS256 | Algorithm.PS256 | Algorithm.ES256 => "SHA-256"
     val digest = java.security.MessageDigest.getInstance(digestName)
       .digest(value.getBytes(StandardCharsets.UTF_8))
     Base64.urlEncode(digest.take(digest.length / 2))
@@ -114,6 +117,8 @@ object JWT:
   enum Algorithm(val jwsAlgorithm: JWSAlgorithm):
     case RS256 extends Algorithm(JWSAlgorithm.RS256)
     case HS256 extends Algorithm(JWSAlgorithm.HS256)
+    case PS256 extends Algorithm(JWSAlgorithm.PS256)
+    case ES256 extends Algorithm(JWSAlgorithm.ES256)
 
   case class PublicKeys(keys: JWKSet):
     def active: PublicKey = PublicKey(keys.getKeys.get(0))
@@ -130,6 +135,8 @@ object JWT:
     def id: String = key.getKeyID
     def algorithm: Algorithm = key.getAlgorithm.getName match
       case "RS256" => Algorithm.RS256
+      case "PS256" => Algorithm.PS256
+      case "ES256" => Algorithm.ES256
 
   case class Header(header: JWSHeader):
     def get(name: String): Option[String] =

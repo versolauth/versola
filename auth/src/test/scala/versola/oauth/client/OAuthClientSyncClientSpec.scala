@@ -65,6 +65,7 @@ object OAuthClientSyncClientSpec extends ZIOSpecDefault:
     override def mac(secret: Secret, key: Array[Byte]) = ZIO.dieMessage("Unused in test")
     override def hashPassword(password: Secret, salt: versola.util.Salt, pepper: Secret.Bytes16) = ZIO.dieMessage("Unused in test")
     override def generateRsaKeyPair = ZIO.dieMessage("Unused in test")
+    override def generateEcKeyPair: UIO[EcKeyPair] = ZIO.dieMessage("not used in test")
   )
 
   def spec = suite("OAuthClientsClient")(

@@ -7,7 +7,7 @@ import versola.central.configuration.edges.{EdgeId, EdgeRecord, EdgeService}
 import versola.central.configuration.clients.ClientId
 import versola.central.configuration.tenants.TenantId
 import versola.central.configuration.*
-import versola.util.{Base64Url, JWT, RsaKeyPair, Secret, SecurityService}
+import versola.util.{Base64Url, EcKeyPair, JWT, RsaKeyPair, Secret, SecurityService}
 import versola.util.http.Observability
 import zio.*
 import zio.http.*
@@ -110,6 +110,7 @@ object ResourceControllerSpec extends ZIOSpecDefault, ZIOStubs:
       override def mac(secret: versola.util.Secret, key: Array[Byte]) = ZIO.dieMessage("Unused in test")
       override def hashPassword(password: versola.util.Secret, salt: versola.util.Salt, pepper: versola.util.Secret.Bytes16) = ZIO.dieMessage("Unused in test")
       override def generateRsaKeyPair = ZIO.dieMessage("Unused in test")
+      override def generateEcKeyPair: UIO[EcKeyPair] = ZIO.dieMessage("Unused in test")
     )
 
   private def controllerTestCase(
