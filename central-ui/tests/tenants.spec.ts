@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { findRequest, loadAdminApp, openTenantDropdown, tenantSelectorButton } from './fixtures';
+import { ACCENT_COLOR, INVALID_FIELD_BORDER, findRequest, loadAdminApp, openTenantDropdown, tenantSelectorButton } from './fixtures';
 
 test('filters tenants, switches the active tenant, and persists it across reloads', async ({ page }) => {
   await loadAdminApp(page, { path: '/?view=clients' });
@@ -53,7 +53,7 @@ test('shows tenant id validation before submitting', async ({ page }) => {
   await page.getByLabel('Description').fill('Broken Tenant');
 
   await expect(tenantIdField).toHaveClass(/input-error/);
-  await expect(tenantIdField).toHaveCSS('border-top-color', 'rgb(248, 81, 73)');
+  await expect(tenantIdField).toHaveCSS('border-top-color', INVALID_FIELD_BORDER);
   await expect(page.locator('.error-message')).toHaveCount(0);
 
   await page.getByRole('button', { name: 'Create Tenant', exact: true }).click();
@@ -71,7 +71,7 @@ test('edits a tenant description and keeps the id secondary on the card', async 
   const updatedCard = page.locator('.tenant-card').filter({ hasText: 'Alpha Platform' }).first();
   await expect(updatedCard).toContainText('Alpha Platform');
   await expect(updatedCard).toContainText('tenant-alpha');
-  await expect(updatedCard.locator('.tenant-id')).toHaveCSS('color', 'rgb(88, 166, 255)');
+  await expect(updatedCard.locator('.tenant-id')).toHaveCSS('color', ACCENT_COLOR);
   await expect(updatedCard.getByText('Selected')).toBeVisible();
   await expect(tenantSelectorButton(page)).toContainText('tenant-alpha');
   await openTenantDropdown(page);

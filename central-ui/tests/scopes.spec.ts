@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-import { findRequest, loadAdminApp } from './fixtures';
+import { INVALID_FIELD_BORDER, findRequest, loadAdminApp } from './fixtures';
 
 const scopesPath = '/?view=scopes&tenant=tenant-alpha';
 
@@ -163,7 +163,7 @@ test('shows scope validation before submitting', async ({ page }) => {
   await scopeIdField.fill('BadScope');
   await page.locator('#scope-description').fill('Broken scope');
   await expect(scopeIdField).toHaveClass(/input-error/);
-  await expect(scopeIdField).toHaveCSS('border-top-color', 'rgb(248, 81, 73)');
+  await expect(scopeIdField).toHaveCSS('border-top-color', INVALID_FIELD_BORDER);
   await page.getByRole('button', { name: 'Create Scope', exact: true }).click();
 
   expect(api.requests.some(request => request.method === 'POST' && request.pathname === '/configuration/scopes')).toBeFalsy();

@@ -26,7 +26,7 @@ function distIndexHtmlPlugin(): Plugin {
       // dist/index.html with a dangling /src/index.ts reference or an
       // un-prefixed favicon path, and nothing would fail the build to say so.
       const scriptMarker = '/src/index.ts';
-      const faviconMarker = 'href="/logo-shield.svg"';
+      const faviconMarker = 'href="/logo-shield-light.svg"';
       if (!source.includes(scriptMarker)) {
         throw new Error(`dist-index-html: expected to find "${scriptMarker}" in index.html — update this plugin if index.html's shape changed.`);
       }
@@ -36,7 +36,7 @@ function distIndexHtmlPlugin(): Plugin {
 
       const html = source
         .replace(scriptMarker, `${BASE_PATH}versola-admin.js`)
-        .replace(faviconMarker, `href="${BASE_PATH}logo-shield.svg"`);
+        .replace(faviconMarker, `href="${BASE_PATH}logo-shield-light.svg"`);
 
       await mkdir(outputDir, { recursive: true });
       await writeFile(outputPath, html, 'utf8');

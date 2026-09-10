@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-import { findRequest, loadAdminApp } from './fixtures';
+import { INVALID_FIELD_BORDER, findRequest, loadAdminApp } from './fixtures';
 
 const clientsPath = '/?view=clients&tenant=tenant-alpha';
 
@@ -612,7 +612,7 @@ test('shows client form validation before submitting', async ({ page }) => {
   await clientIdField.fill('Bad-client');
   await page.getByLabel('Client Name').fill('Broken Client');
   await expect(clientIdField).toHaveClass(/input-error/);
-  await expect(clientIdField).toHaveCSS('border-top-color', 'rgb(248, 81, 73)');
+  await expect(clientIdField).toHaveCSS('border-top-color', INVALID_FIELD_BORDER);
   await page.getByRole('button', { name: 'Create Client', exact: true }).click();
 
   expect(api.requests.some(request => request.method === 'POST' && request.pathname === '/configuration/clients')).toBeFalsy();
@@ -677,7 +677,7 @@ test('shows redirect URI validation with a red input border', async ({ page }) =
   await redirectUriField.fill('not-a-uri');
 
   await expect(redirectUriField).toHaveClass(/input-error/);
-  await expect(redirectUriField).toHaveCSS('border-top-color', 'rgb(248, 81, 73)');
+  await expect(redirectUriField).toHaveCSS('border-top-color', INVALID_FIELD_BORDER);
 });
 
 test('updates a client and sends patch-style changes', async ({ page }) => {

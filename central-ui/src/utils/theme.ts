@@ -14,10 +14,10 @@ const FAVICON_PATHS: Record<ThemeName, string> = {
   light: 'logo-shield-light.svg',
 };
 
-/** Dark is the original console look and stays the default for anyone who
-  * hasn't made an explicit choice yet. Mirrors the fallback baked into
-  * index.html's inline pre-paint script — keep both in sync if this changes. */
-const DEFAULT_THEME: ThemeName = 'dark';
+/** Light is the default for anyone who hasn't made an explicit choice yet,
+  * matching the marketing site. Mirrors the fallback baked into index.html's
+  * inline pre-paint script — keep both in sync if this changes. */
+const DEFAULT_THEME: ThemeName = 'light';
 let sessionTheme: ThemeName = DEFAULT_THEME;
 
 function isThemeName(value: string | null): value is ThemeName {

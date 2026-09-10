@@ -256,8 +256,8 @@ export class VersolaResourcesList extends LitElement {
       padding:0.75rem;
       border:1px solid rgba(var(--accent-tint), 0.28);
       border-radius:var(--radius-md);
-      background:linear-gradient(180deg, rgba(22, 27, 34, 0.98), rgba(13, 17, 23, 0.98));
-      box-shadow:0 10px 24px rgba(0, 0, 0, 0.35);
+      background:var(--surface-overlay);
+      box-shadow:var(--surface-overlay-shadow);
       display:none;
     }
     .option-info.option-info-open .option-tooltip { display:block; }

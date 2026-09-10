@@ -314,9 +314,14 @@ export class VersolaClientForm extends LitElement {
         padding: 0.75rem;
         border: 1px solid rgba(var(--accent-tint), 0.28);
         border-radius: var(--radius-md);
-        background: linear-gradient(180deg, rgba(22, 27, 34, 0.98), rgba(13, 17, 23, 0.98));
-        box-shadow: 0 10px 24px rgba(0, 0, 0, 0.35);
+        background: var(--surface-overlay);
+        box-shadow: var(--surface-overlay-shadow);
         display: none;
+      }
+
+      .option-tooltip-start {
+        right: auto;
+        left: 0;
       }
 
       .option-info.option-info-open .option-tooltip {
@@ -358,7 +363,7 @@ export class VersolaClientForm extends LitElement {
       .option-tooltip-group {
         border: 1px solid var(--border-dark);
         border-radius: var(--radius-sm);
-        background: rgba(255, 255, 255, 0.03);
+        background: var(--surface-inset);
         padding: 0.625rem 0.75rem;
       }
 
@@ -473,6 +478,19 @@ export class VersolaClientForm extends LitElement {
         font-weight: 600;
         color: var(--text-secondary);
         margin-bottom: 0.5rem;
+      }
+
+      /* Keeps an info button on the subtitle's baseline; the subtitle's own
+         bottom margin would otherwise push the button below it. */
+      .flow-subtitle-row {
+        display: flex;
+        align-items: center;
+        gap: 0.4rem;
+        margin-bottom: 0.5rem;
+      }
+
+      .flow-subtitle-row .flow-subtitle {
+        margin-bottom: 0;
       }
 
       .cred-mode-cards {
@@ -729,7 +747,7 @@ export class VersolaClientForm extends LitElement {
         content: '';
         position: absolute;
         inset: 0;
-        background: rgba(255,255,255,0.12);
+        background: var(--toggle-track-off);
         border: 1px solid var(--border-dark);
         border-radius: 9999px;
         transition: background 0.2s, border-color 0.2s;
@@ -745,7 +763,7 @@ export class VersolaClientForm extends LitElement {
         left: 2px;
         width: 14px;
         height: 14px;
-        background: rgba(255,255,255,0.5);
+        background: var(--toggle-knob-off);
         border-radius: 50%;
         transition: transform 0.18s, background 0.18s;
       }
@@ -1147,7 +1165,17 @@ export class VersolaClientForm extends LitElement {
     this.openInfoKey = this.openInfoKey === key ? null : key;
   }
 
-  private renderOptionInfo(key: string, title: string, content: unknown, ariaLabel: string) {
+  /** `placement` picks which edge of the button the tooltip is anchored to.
+    * Buttons sitting at the right of a wide row keep the default 'end'; one
+    * sitting near the left of the form needs 'start', or a tooltip wider than
+    * the button's offset would spill past the card's left edge. */
+  private renderOptionInfo(
+    key: string,
+    title: string,
+    content: unknown,
+    ariaLabel: string,
+    placement: 'start' | 'end' = 'end',
+  ) {
     return html`
       <div class=${`option-info ${this.openInfoKey === key ? 'option-info-open' : ''}`} @click=${(e: Event) => e.stopPropagation()}>
         <button
@@ -1157,7 +1185,7 @@ export class VersolaClientForm extends LitElement {
           aria-expanded=${this.openInfoKey === key ? 'true' : 'false'}
           @click=${() => this.toggleInfo(key)}
         >i</button>
-        <div class="option-tooltip" role="tooltip">
+        <div class=${`option-tooltip ${placement === 'start' ? 'option-tooltip-start' : ''}`} role="tooltip">
           <div class="option-tooltip-title">${title}</div>
           ${content}
         </div>
@@ -1748,7 +1776,28 @@ export class VersolaClientForm extends LitElement {
 
               ${this.hasAuthFlow ? html`
               <div class="flow-subsection">
-                <div class="flow-subtitle">Client type</div>
+                <div class="flow-subtitle-row">
+                  <div class="flow-subtitle">Client type</div>
+                  ${this.renderOptionInfo(
+                    'client-type',
+                    'Client types',
+                    html`
+                      <div class="option-tooltip-groups">
+                        <div class="option-tooltip-group">
+                          <div class="option-tooltip-group-title">web</div>
+                          <div class="option-tooltip-item">Confidential client: a secret is issued once, and can be rotated later. For apps that can keep a secret, such as a server-rendered or backend-for-frontend app.</div>
+                        </div>
+                        <div class="option-tooltip-group">
+                          <div class="option-tooltip-group-title">native</div>
+                          <div class="option-tooltip-item">Public client: no secret is issued, and none can be added later. For apps whose code ships to the user, such as mobile, desktop, or single-page apps.</div>
+                        </div>
+                        <div class="option-tooltip-item">Fixed when the client is created and cannot be changed afterwards.</div>
+                      </div>
+                    `,
+                    'Client type info',
+                    'start',
+                  )}
+                </div>
                 <div class="cred-mode-cards">
                   ${(['web', 'native'] as const).map(clientType => html`
                     <button
@@ -1759,13 +1808,6 @@ export class VersolaClientForm extends LitElement {
                       @click=${() => this.selectClientType(clientType)}
                     >${clientType}</button>
                   `)}
-                </div>
-                <div class="helper-text">
-                  ${this.client
-                    ? 'Fixed when the client was created and cannot be changed.'
-                    : this.clientType === 'native'
-                      ? 'Public client: no secret is issued, and none can be added later.'
-                      : 'Confidential client: a secret is issued once, and can be rotated later.'}
                 </div>
               </div>
 

@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Versola Central</title>
-  <link rel="icon" type="image/svg+xml" href="/logo-shield.svg">
+  <link rel="icon" type="image/svg+xml" href="/logo-shield-light.svg">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
@@ -18,9 +18,10 @@
      * do inherit through shadow boundaries, so every component's shadow root
      * picks up whichever theme is current without redeclaring anything.
      *
-     * Dark is the original/default console palette (unchanged). Light reuses
-     * the marketing site's warm palette (versola-website: style.css) and
-     * Petrol Blue accent, so the console and the site read as one product.
+     * Light is the default console palette, reusing the marketing site's warm
+     * palette (versola-website: style.css) and Petrol Blue accent, so the
+     * console and the site read as one product. Dark is the original console
+     * palette, kept for anyone who picks it.
      */
     :root,
     :root[data-theme='dark'] {
@@ -74,6 +75,20 @@
 
       --cel-keyword: #ff7b72;
       --cel-ctxvar: #d2a8ff;
+
+      /* Popover/tooltip surfaces (info cards). Kept as tokens because a
+         popover floats above a card and needs its own opaque background and
+         shadow rather than inheriting the card's. */
+      --surface-overlay: linear-gradient(180deg, rgba(22, 27, 34, 0.98), rgba(13, 17, 23, 0.98));
+      --surface-overlay-shadow: 0 10px 24px rgba(0, 0, 0, 0.35);
+      /* Nested rows inside a popover (claim rows, endpoint groups). */
+      --surface-inset: rgba(255, 255, 255, 0.03);
+
+      /* Switch track/knob in the off position — the on position uses
+         --accent. Tokenized because both need to contrast against the
+         surface behind them, which inverts between themes. */
+      --toggle-track-off: rgba(255, 255, 255, 0.12);
+      --toggle-knob-off: rgba(255, 255, 255, 0.5);
     }
 
     :root[data-theme='light'] {
@@ -114,6 +129,13 @@
 
       --cel-keyword: #cf222e;
       --cel-ctxvar: #8250df;
+
+      --surface-overlay: linear-gradient(180deg, #ffffff, #faf9f7);
+      --surface-overlay-shadow: 0 10px 24px rgba(21, 23, 28, 0.12);
+      --surface-inset: rgba(21, 23, 28, 0.035);
+
+      --toggle-track-off: rgba(21, 23, 28, 0.18);
+      --toggle-knob-off: #ffffff;
     }
 
     html {
@@ -129,8 +151,8 @@
     }
   </style>
   <script>
-    // Applied before first paint so a visitor who previously chose light mode
-    // never sees a flash of the dark default. Deliberately plain, inline JS
+    // Applied before first paint so a visitor who previously chose dark mode
+    // never sees a flash of the light default. Deliberately plain, inline JS
     // (not a module import) — module scripts execute after the parser has
     // already built the render tree for everything above them, which is too
     // late to avoid the flash this exists to prevent. Keep the fallback here
@@ -138,12 +160,12 @@
     (function () {
       try {
         var stored = localStorage.getItem('versola-theme');
-        var theme = stored === 'light' ? 'light' : 'dark';
+        var theme = stored === 'dark' ? 'dark' : 'light';
         document.documentElement.setAttribute('data-theme', theme);
         var favicon = document.querySelector('link[rel="icon"]');
-        if (favicon && theme === 'light') favicon.setAttribute('href', 'logo-shield-light.svg');
+        if (favicon && theme === 'dark') favicon.setAttribute('href', 'logo-shield.svg');
       } catch (e) {
-        document.documentElement.setAttribute('data-theme', 'dark');
+        document.documentElement.setAttribute('data-theme', 'light');
       }
     })();
   </script>
