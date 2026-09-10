@@ -178,6 +178,7 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
   val edgeSessionsSecret        = rand(rng, 32)
   val edgeInternalSecret        = rand(rng, 32) // authorizes edge's non-prod /service/configuration/sync
   val parRequestsSecret         = rand(rng, 32) // auth only: keys the stored request_uri references
+  val dpopNoncesSecret          = rand(rng, 32) // auth only: authenticates DPoP-Nonce values
   val accountResourceSecretGenerated = rand(rng, 32) // central: seeds the "auth" resource record; auth fetches it decrypted via registry sync
 
   // ── Environment ───────────────────────────────────────────────────────────────
@@ -536,6 +537,7 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
        |  session-cookie-secret        = ${secretField(useOpenBao, sessionCookieSecret, "SESSION_COOKIE_SECRET")}
        |  user-agent-cookie-secret     = ${secretField(useOpenBao, userAgentCookieSecret, "USER_AGENT_COOKIE_SECRET")}
        |  par-requests-secret          = ${secretField(useOpenBao, parRequestsSecret, "PAR_REQUESTS_SECRET")}
+       |  dpop-nonces-secret           = ${secretField(useOpenBao, dpopNoncesSecret, "DPOP_NONCES_SECRET")}
        |}
        |
        |par {
@@ -594,6 +596,12 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
        |      batch-size = 1000
        |      interval   = "5 minutes"
        |      key-column = "request_uri"
+       |    }
+       |    {
+       |      table-name = "dpop_proofs"
+       |      batch-size = 10000
+       |      interval   = "5 minutes"
+       |      key-column = "ctid"
        |    }
        |    {
        |      table-name = "refresh_tokens"
@@ -829,6 +837,7 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
         "SESSION_COOKIE_SECRET"      -> sessionCookieSecret,
         "USER_AGENT_COOKIE_SECRET"   -> userAgentCookieSecret,
         "PAR_REQUESTS_SECRET"        -> parRequestsSecret,
+        "DPOP_NONCES_SECRET"         -> dpopNoncesSecret,
         "JWT_PRIVATE_KEY"            -> jwtKey.privateB64,
         "CENTRAL_SECRET_KEY"         -> centralSecretKey,
       ) ++ authExtras)
