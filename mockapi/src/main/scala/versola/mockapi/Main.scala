@@ -2,6 +2,8 @@ package versola.mockapi
 
 import zio.*
 import zio.http.*
+import zio.metrics.connectors.MetricsConfig
+import zio.metrics.connectors.prometheus.{PrometheusPublisher, prometheusLayer, publisherLayer}
 
 /** Entry point for the load emulator's mock protected-resource backend (see
   * `versola-loadgen-dev-spec.md` §9). Deliberately does not extend `VersolaApp` or depend on
@@ -12,9 +14,9 @@ import zio.http.*
   * calibration gate would then have to unpick. See build.sbt's comment on the `mockapi` project
   * for what that costs in exchange (this file, rather than `VersolaApp`, owns the boot sequence).
   *
-  * This is the skeleton commit only: it wires `mockapi` into the build with a plain
-  * liveness/readiness surface. The ten business routes and `DelaySampler` land with Phase 1
-  * track A.
+  * No access logging and no per-request middleware on the business routes for the same reason:
+  * the only work a business request does is one array lookup, one `ZIO.sleep`, a counter and a
+  * histogram update.
   */
 object Main extends ZIOAppDefault:
 
@@ -31,19 +33,26 @@ object Main extends ZIOAppDefault:
   private def bindHost: String =
     Option(java.lang.System.getenv("BIND_HOST")).getOrElse("0.0.0.0")
 
-  private val routes: Routes[Any, Nothing] =
+  private val rootRoutes: Routes[Any, Nothing] =
     Routes(
       Method.GET / "" -> handler { (_: Request) =>
         ZIO.succeed(Response.text("mockapi"))
       },
     )
 
+  private val selfCheckDraws: Int = 1000000
+
+  private val selfCheckTolerance: Double = 0.10
+
   /** `/readiness` answers 503 until the application listener is actually installed, matching what
     * `VersolaApp` does: a probe that reported ready earlier than that would route traffic at a
     * port nothing is bound to yet.
     */
-  private def diagnosticsRoutes(ready: Ref[Boolean]): Routes[Any, Nothing] =
+  private def diagnosticsRoutes(ready: Ref[Boolean], publisher: PrometheusPublisher): Routes[Any, Nothing] =
     Routes(
+      Method.GET / "metrics" -> handler { (_: Request) =>
+        publisher.get.map(Response.text(_))
+      },
       Method.GET / "liveness" -> handler { (_: Request) => ZIO.succeed(Response.ok) },
       Method.GET / "readiness" -> handler { (_: Request) =>
         ready.get.map(if _ then Response.ok else Response.status(Status.ServiceUnavailable))
@@ -66,13 +75,58 @@ object Main extends ZIOAppDefault:
       ZLayer.succeed(Server.Config.default.binding(bindHost, boundPort)),
     )
 
+  /** A miscalibrated backend does not fail visibly: every request still returns 200, and the
+    * only symptom is that every latency conclusion the campaign draws about edge and auth is
+    * measured against a reference that is not the one the report claims. A run like that is
+    * discovered, if at all, days later and has to be repeated in full. So a failed self-check
+    * aborts startup: in Kubernetes that is a CrashLoopBackOff before any traffic is generated,
+    * which is the cheapest possible moment to find out. A warning in the log is not an option --
+    * the log of a 72-hour campaign is exactly where a warning goes unread.
+    */
+  private def selfCheck(profile: DelayProfile, sampler: DelaySampler): Task[Unit] =
+    for
+      achieved <- ZIO.succeed(DelaySampler.sampleQuantiles(sampler, selfCheckDraws))
+      targets = DelaySampler.targetsFor(profile)
+      _ <- ZIO.logInfo(
+        f"mockapi delay self-check ($profile, $selfCheckDraws draws): " +
+          f"p50 ${achieved.p50Millis}%.2f ms (target ${targets.p50Millis}%.2f), " +
+          f"p90 ${achieved.p90Millis}%.2f ms, " +
+          f"p95 ${achieved.p95Millis}%.2f ms (target ${targets.p95Millis}%.2f), " +
+          f"p99 ${achieved.p99Millis}%.2f ms (target ${targets.p99Millis}%.2f), " +
+          f"mean ${achieved.meanMillis}%.2f ms",
+      )
+      failures = DelaySampler.deviations(achieved, targets, selfCheckTolerance)
+      _ <- ZIO
+        .fail(new IllegalStateException(s"mockapi delay self-check failed for $profile: ${failures.mkString("; ")}"))
+        .when(failures.nonEmpty)
+    yield ()
+
   // `zipPar`, not `fork`: a bind failure on either port has to take the process down. Forking the
   // diagnostics server and dropping its fiber would leave a live application server with no
   // liveness or readiness surface at all -- a pod that never gets restarted and never gets
   // traffic, which during a campaign reads as capacity that silently isn't there.
-  override val run: ZIO[Any, Throwable, Unit] =
+  private val program: ZIO[PrometheusPublisher, Throwable, Unit] =
     for
+      readSampler <- ZIO.succeed(DelaySampler.make(MixtureWeights.read))
+      writeSampler <- ZIO.succeed(DelaySampler.make(MixtureWeights.write))
+      _ <- selfCheck(DelayProfile.Read, readSampler)
+      _ <- selfCheck(DelayProfile.Write, writeSampler)
+      samplers = (profile: DelayProfile) =>
+        profile match
+          case DelayProfile.Read => readSampler
+          case DelayProfile.Write => writeSampler
+      publisher <- ZIO.service[PrometheusPublisher]
       ready <- Ref.make(false)
-      _ <- serve("diagnostics", diagnosticsPort, diagnosticsRoutes(ready), ZIO.unit)
-        .zipPar(serve("application", port, routes, ready.set(true)))
+      _ <- serve("diagnostics", diagnosticsPort, diagnosticsRoutes(ready, publisher), ZIO.unit)
+        .zipPar(serve("application", port, rootRoutes ++ Endpoints.routes(samplers), ready.set(true)))
     yield ()
+
+  // The metric listener has to be composed explicitly rather than handed to `provide`: only the
+  // publisher is a service the routes ask for, while `prometheusLayer` is a scoped side effect
+  // (it installs the listener and its polling fiber) whose Unit output nothing depends on.
+  private val metricsLayer: ZLayer[Any, Nothing, PrometheusPublisher] =
+    (ZLayer.succeed(MetricsConfig(1.second)) >>> (publisherLayer >+> prometheusLayer))
+      .map(env => ZEnvironment(env.get[PrometheusPublisher]))
+
+  override val run: ZIO[Any, Throwable, Unit] =
+    program.provide(metricsLayer)
