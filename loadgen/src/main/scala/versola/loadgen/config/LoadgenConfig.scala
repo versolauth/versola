@@ -1,5 +1,7 @@
 package versola.loadgen.config
 
+import versola.util.postgres.PostgresConfig
+import versola.util.postgres.given
 import zio.Config
 import zio.Duration
 import zio.config.magnolia.DeriveConfig
@@ -72,12 +74,30 @@ case class CoordinatorClientConfig(url: String, pollInterval: Duration)
 
 case class WriteBehindConfig(flushInterval: Duration, batchSize: Int)
 
-/** The emulator's own Postgres -- its bookkeeping, never the SUT's (§6). */
+/** The emulator's own Postgres -- its bookkeeping, never the SUT's (§6).
+  *
+  * `postgres` is `util-postgres`' own [[versola.util.postgres.PostgresConfig]] rather than the
+  * `url` + `maximum-pool-size` pair dev spec §5 sketches, which could not build a pool at all:
+  * no user, no password, no timeouts. Reusing the full block also reuses its pool-tuning
+  * validation and its `Secret`-typed password, and `PostgresHikariDataSource.transactor` reads
+  * it straight out of `store.postgres` via that function's `configPath`.
+  *
+  * The block is nested here rather than being the ambient top-level `postgres { }` precisely
+  * because the seeder role (§10) writes into a *second* database -- the SUT's -- and one
+  * unnamed block cannot name both.
+  */
 case class StoreConfig(
-    url: String,
-    maximumPoolSize: Int,
+    postgres: PostgresConfig,
     writeBehind: WriteBehindConfig,
 )
+
+object StoreConfig:
+  /** Anchored in the companion rather than left to the use site: deriving this needs
+    * `DeriveConfig[Secret]` for the password, which `versola.util.postgres` declares top-level
+    * and which is therefore *not* in scope wherever `deriveConfig[LoadgenConfig]` happens to be
+    * called. Here it is, so every caller gets the derivation without knowing that.
+    */
+  given DeriveConfig[StoreConfig] = DeriveConfig.derived
 
 case class PopulationClassConfig(
     name: String,
