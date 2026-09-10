@@ -8,10 +8,11 @@ import zio.json.{JsonCodec, JsonDecoder, JsonEncoder}
  * Per RFC 7009, most errors should return HTTP 200 with success.
  */
 enum RevocationError:
-  case InvalidClient, UnsupportedTokenType
+  case InvalidClient, InvalidRequest, UnsupportedTokenType
 
   def status: Status = this match
     case InvalidClient => Status.Unauthorized
+    case InvalidRequest => Status.BadRequest
     case UnsupportedTokenType => Status.BadRequest
 
 
@@ -29,6 +30,11 @@ object RevocationErrorResponse:
         RevocationErrorResponse(
           error = "invalid_client",
           errorDescription = Some("Client authentication failed"),
+        )
+      case RevocationError.InvalidRequest =>
+        RevocationErrorResponse(
+          error = "invalid_request",
+          errorDescription = Some("The request is missing the required 'token' parameter"),
         )
       case RevocationError.UnsupportedTokenType =>
         RevocationErrorResponse(

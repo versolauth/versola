@@ -736,6 +736,15 @@ final class OAuthClient(client: Client, config: E2EConfig):
       .addHeader(Header.ContentType(MediaType.application.`x-www-form-urlencoded`))
     Client.batched(req).provide(ZLayer.succeed(client))
 
+  /** POST /revoke with an arbitrary form body, bypassing [[revoke]]'s required `token` field --
+    * lets tests exercise malformed requests, e.g. one missing `token` entirely.
+    */
+  def revokeRaw(fields: Map[String, String], clientId: String, clientSecret: String): Task[Response] =
+    val req = Request.post(s"${config.authUrl}/revoke", formBody(fields))
+      .addHeader(Authorization.Basic(clientId, clientSecret))
+      .addHeader(Header.ContentType(MediaType.application.`x-www-form-urlencoded`))
+    Client.batched(req).provide(ZLayer.succeed(client))
+
   /** GET /logout?id_token_hint=… — ends the session the id token names (OIDC RP-Initiated
     * Logout §2). No cookie is sent, so the hint alone identifies the session and auth logs it
     * out without asking the user to confirm.

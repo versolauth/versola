@@ -19,6 +19,13 @@ trait RevocationService:
       credentials: ClientCredentials,
   ): IO[Throwable | RevocationError, Unit]
 
+  /** Validates the client credentials alone, with no token involved. RFC 7009 §2.1 requires the
+    * server to authenticate the client independently of whether the presented token turns out to
+    * be one it could ever have issued -- so a value no client could hold must still fail with
+    * `InvalidClient` if the credentials presenting it are themselves wrong.
+    */
+  def authenticateClient(credentials: ClientCredentials): IO[RevocationError, OAuthClientRecord]
+
 object RevocationService:
   def live: ZLayer[
     OAuthConfigurationService & SessionRepository & AccessTokenRevocationService & SecurityService & CoreConfig,
@@ -83,7 +90,7 @@ object RevocationService:
         )
       yield ()
 
-    private def authenticateClient(
+    override def authenticateClient(
         credentials: ClientCredentials,
     ): IO[RevocationError, OAuthClientRecord] =
       credentials match
