@@ -36,6 +36,7 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
   val redirectUri = "https://example.com/callback"
   val accessToken1 = AccessToken(Array.fill(32)(2.toByte))
   val refreshToken1 = RefreshToken(Array.fill(32)(3.toByte))
+  val refreshToken2 = RefreshToken(Array.fill(32)(4.toByte))
   val scope1 = Set(ScopeToken("read"), ScopeToken("write"), ScopeToken.OfflineAccess)
   val clientSecret1 = Secret(Array.fill(32)(4.toByte))
 
@@ -95,6 +96,30 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
       dpopService: Stub[DpopService],
   )
 
+  /** Stands the endpoint up over stubbed services and hands back the client and the stubs, so
+    * a test can drive more than one request against the same server. */
+  def withTokenEndpoint[A](use: (Client, Services) => ZIO[Scope, Throwable, A]): ZIO[Client & TestClient & Scope, Throwable, A] =
+    for
+      client <- ZIO.service[Client]
+      tokenService = stub[OAuthTokenService]
+      clientService = stub[OAuthConfigurationService]
+      userInfoService = stub[UserInfoService]
+      config = TestEnvConfig.coreConfig
+      jwksService = TestEnvConfig.jwksService
+            dpopService     = stub[DpopService]
+      tracing <- NoopTracing.layer.build
+
+      services = Services(tokenService, userInfoService, dpopService)
+
+      _ <- TestClient.addRoutes(
+        Observability.handleErrors(
+          TokenEndpointController.routes
+            .provideEnvironment(ZEnvironment(tokenService) ++ ZEnvironment(clientService) ++ ZEnvironment(userInfoService) ++ ZEnvironment(jwksService) ++ ZEnvironment(config) ++ ZEnvironment(dpopService) ++ tracing)
+        )
+      )
+      result <- use(client, services)
+    yield result
+
   def tokenEndpointTestCase(
       description: String,
       request: Request,
@@ -104,30 +129,13 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
       verifyServices: Services => Task[TestResult] = _ => ZIO.succeed(assertTrue(true)),
   ) =
     test(description) {
-      for
-        client <- ZIO.service[Client]
-        tokenService = stub[OAuthTokenService]
-        clientService = stub[OAuthConfigurationService]
-        userInfoService = stub[UserInfoService]
-        config = TestEnvConfig.coreConfig
-        jwksService = TestEnvConfig.jwksService
-        dpopService = stub[DpopService]
-        tracing <- NoopTracing.layer.build
-
-        services = Services(tokenService, userInfoService, dpopService)
-
-        _ <- TestClient.addRoutes(
-          Observability.handleErrors(
-            TokenEndpointController.routes
-              .provideEnvironment(ZEnvironment(tokenService) ++ ZEnvironment(clientService) ++ ZEnvironment(userInfoService) ++ ZEnvironment(jwksService) ++ ZEnvironment(config) ++ ZEnvironment(dpopService) ++ tracing)
-          )
-        )
-        _ <- setup(services)
-
-        response <- client.batched(request)
-        verifyResult <- verify(response)
-        verifyServicesResult <- verifyServices(services)
-      yield assertTrue(response.status == expectedStatus) && verifyResult && verifyServicesResult
+            withTokenEndpoint: (client, services) =>
+                for
+                    _ <- setup(services)
+                    response <- client.batched(request)
+                    verifyResult <- verify(response)
+                    verifyServicesResult <- verifyServices(services)
+                yield assertTrue(response.status == expectedStatus) && verifyResult && verifyServicesResult
     }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging
 
   val spec = suite("TokenEndpointController")(
@@ -200,7 +208,7 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
         ).addHeader(authHeader(clientId1, Some(clientSecret1))),
         expectedStatus = Status.BadRequest,
         setup = services =>
-          services.oauthTokenService.exchangeAuthorizationCode.failsWith(TokenEndpointError.InvalidGrant),
+          services.oauthTokenService.exchangeAuthorizationCode.failsWith(TokenEndpointError.InvalidGrant.CodeNotFound),
         verify = response =>
           for
             body <- response.body.asString
@@ -269,7 +277,7 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
         ).addHeader(authHeader(clientId1, Some(clientSecret1))),
         expectedStatus = Status.BadRequest,
         setup = services =>
-          services.oauthTokenService.refreshAccessToken.failsWith(TokenEndpointError.InvalidGrant),
+          services.oauthTokenService.refreshAccessToken.failsWith(TokenEndpointError.InvalidGrant.RefreshTokenNotFound),
         verify = response =>
           for
             body <- response.body.asString
@@ -312,7 +320,7 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
         ).addHeader(authHeader(clientId1, Some(clientSecret1))),
         expectedStatus = Status.BadRequest,
         setup = services =>
-          services.oauthTokenService.refreshAccessToken.failsWith(TokenEndpointError.InvalidGrant),
+          services.oauthTokenService.refreshAccessToken.failsWith(TokenEndpointError.InvalidGrant.RefreshTokenReplayed),
         verify = response =>
           for
             body <- response.body.asString
@@ -320,6 +328,63 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
             body.contains("invalid_grant"),
           ),
       ),
+    ),
+    suite("POST /token - Idempotency-Key")(
+      {
+        def refreshRequest(idempotencyKey: Option[String]) =
+          val request = Request.post(
+            url = URL.empty / "token",
+            body = Body.fromURLEncodedForm(
+              Form.fromStrings(
+                "grant_type" -> "refresh_token",
+                "refresh_token" -> Base64.urlEncode(refreshToken1),
+              )
+            ),
+          ).addHeader(authHeader(clientId1, Some(clientSecret1)))
+          idempotencyKey.fold(request)(request.addHeader("Idempotency-Key", _))
+
+        def headerTest(description: String)(
+            run: (Client, Services) => ZIO[Scope, Throwable, TestResult],
+        ) =
+          test(description) {
+            withTokenEndpoint(run)
+          }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging
+
+        List(
+          headerTest("the header reaches the service, which decides what it means") { (client, services) =>
+            for
+              _ <- services.oauthTokenService.refreshAccessToken.succeedsWith(issuedTokens)
+              response <- client.batched(refreshRequest(Some("key-1")))
+              keys = services.oauthTokenService.refreshAccessToken.calls.map(_._4)
+            yield assertTrue(response.status == Status.Ok, keys == List(Some("key-1")))
+          },
+          headerTest("no header means no key") { (client, services) =>
+            for
+              _ <- services.oauthTokenService.refreshAccessToken.succeedsWith(issuedTokens)
+              _ <- client.batched(refreshRequest(None))
+              keys = services.oauthTokenService.refreshAccessToken.calls.map(_._4)
+            yield assertTrue(keys == List(None))
+          },
+          headerTest("the header is ignored for grants other than refresh_token") { (client, services) =>
+            val codeRequest = Request.post(
+              url = URL.empty / "token",
+              body = Body.fromURLEncodedForm(
+                Form.fromStrings(
+                  "grant_type" -> "authorization_code",
+                  "code" -> Base64.urlEncode(authCode1),
+                  "redirect_uri" -> "https://client.example.com/callback",
+                  "code_verifier" -> codeVerifier1,
+                )
+              ),
+            ).addHeader(authHeader(clientId1, Some(clientSecret1))).addHeader("Idempotency-Key", "key-1")
+
+            for
+              _ <- services.oauthTokenService.exchangeAuthorizationCode.succeedsWith(issuedTokens)
+              response <- client.batched(codeRequest)
+            yield assertTrue(response.status == Status.Ok)
+          },
+        )
+      }*
     ),
     suite("POST /token - client_credentials grant")(
       tokenEndpointTestCase(

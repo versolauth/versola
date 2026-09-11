@@ -31,6 +31,35 @@ paths:
       security:
         - clientSecretBasic: []
         - {}
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: false
+          schema:
+            type: string
+          description: |
+            Makes a `refresh_token` request safely retryable; ignored for other grants.
+
+            Rotation is single-use, so a response lost in flight leaves the client holding a
+            token the server has already retired. Presenting it again is indistinguishable
+            from a replay: the whole rotation family is revoked and the user has to sign in
+            again. Repeating the request with the same key and the same refresh token instead
+            continues the chain, and may be repeated as often as the client needs to.
+
+            The reply to a retry carries a **new** refresh token, not the one the lost response
+            contained -- that token is never stored and cannot be reproduced. Use whatever the
+            latest reply gives you and discard earlier ones: acting on a response that arrives
+            late, after a retry already succeeded, means presenting a superseded token, which
+            is a replay and does revoke the chain.
+
+            Generate one value per logical attempt and reuse it for every retry of that
+            attempt. Treat it as secret: together with the refresh token it is what proves the
+            retry came from the original caller, and a request presenting the token without
+            the matching key is still treated as a replay.
+
+            A key is honoured only until the chain moves on. As soon as a refresh succeeds
+            under a different key -- the client having got through -- the old key stops working
+            and reuse detection applies to it again. Nothing has to expire for that to happen.
       requestBody:
         required: true
         content:

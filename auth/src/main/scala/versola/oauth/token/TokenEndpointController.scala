@@ -35,6 +35,10 @@ object TokenEndpointController extends Controller:
   private def tokenEndpointUri(config: CoreConfig): String =
     s"${config.jwt.issuer.stripSuffix("/")}/token"
 
+  /** draft-ietf-httpapi-idempotency-key-header. Only honoured for `refresh_token`: that is
+    * the grant where losing a response costs the client its session rather than one request. */
+  private val IdempotencyKeyHeader = "Idempotency-Key"
+
   def routes: Routes[Env, Throwable] = Routes(
     tokenEndpoint,
   )
@@ -53,14 +57,19 @@ object TokenEndpointController extends Controller:
           case codeExchangeRequest: CodeExchangeRequest =>
             oauthTokenService.exchangeAuthorizationCode(codeExchangeRequest, credentials, dpopJkt)
           case refreshTokenRequest: RefreshTokenRequest =>
-            oauthTokenService.refreshAccessToken(refreshTokenRequest, credentials, dpopJkt)
+            oauthTokenService.refreshAccessToken(
+                refreshTokenRequest,
+                credentials,
+                dpopJkt,
+                request.headers.get(IdempotencyKeyHeader),
+            )
           case clientCredentialsRequest: ClientCredentialsRequest =>
             oauthTokenService.clientCredentials(clientCredentialsRequest, credentials, dpopJkt)
         response <- toTokenResponse(issuedTokens, config, signingKey)
       yield Response.json(response.toJson))
         .catchAll {
           case error: TokenEndpointError =>
-            Observability.setError(error.error, error.errorDescription).as:
+            Observability.setError(error.error, error.logDescription).as:
               val errorResponse = TokenErrorResponse.from(error)
               val response = Response
                 .json(errorResponse.toJson)

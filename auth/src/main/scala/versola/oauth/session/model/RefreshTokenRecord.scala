@@ -31,7 +31,6 @@ case class RefreshTokenRecord(
     requestedClaims: Option[RequestedClaims],
     uiLocales: Option[List[String]],
     nonce: Option[Nonce],
-    previousRefreshToken: Option[MAC.Of[RefreshToken]],
     amr: Set[AuthMethodRef],
     authTime: Instant,
     acr: Option[Acr],
