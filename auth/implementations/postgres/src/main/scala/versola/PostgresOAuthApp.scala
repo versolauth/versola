@@ -114,7 +114,6 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       PostgresConsentRepository.live >+>
       PostgresAuthorizationCodeRepository.live >+>
       PostgresPushedAuthorizationRepository.live >+>
-      PostgresDpopProofRepository.live >+>
       PostgresSessionRepository.live >+>
       PostgresUserAgentRepository.live >+>
       PostgresPasswordRepository.live >+>
@@ -136,6 +135,8 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       parseConfig[CoreConfig] >+>
       SecureRandom.live >+>
       securityService >+>
+      // Sizes its own expiry ring from `dpop.iat-leeway`, so it has to follow the config.
+      PostgresDpopProofRepository.live >+>
       DpopNonceService.live >+>
       DpopService.live >+>
       JsonSchemaValidator.live >+>

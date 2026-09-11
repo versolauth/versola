@@ -5,48 +5,59 @@ import versola.util.DatabaseSpecBase
 import zio.*
 import zio.test.*
 
+import java.time.Instant
+
 trait DpopProofRepositorySpec extends DatabaseSpecBase[DpopProofRepositorySpec.Env]:
   self: ZIOSpec[TransactorZIO] =>
 
-  val ttl = 60.seconds
+  val iat: Instant = Instant.parse("2024-01-01T00:00:00Z")
 
   def testCases(env: DpopProofRepositorySpec.Env): List[Spec[DpopProofRepositorySpec.Env & Scope, Any]] =
     List(
       test("records a new (jkt, jti) pair and reports it as fresh") {
-        for fresh <- env.repository.recordIfAbsent("jkt-1", "jti-1", ttl)
+        for fresh <- env.repository.recordIfAbsent("jkt-1", "jti-1", iat)
         yield assertTrue(fresh)
       },
       test("reports a replay for the same (jkt, jti) pair recorded twice") {
         for
-          first <- env.repository.recordIfAbsent("jkt-1", "jti-1", ttl)
-          second <- env.repository.recordIfAbsent("jkt-1", "jti-1", ttl)
+          first <- env.repository.recordIfAbsent("jkt-1", "jti-1", iat)
+          second <- env.repository.recordIfAbsent("jkt-1", "jti-1", iat)
         yield assertTrue(first, !second)
       },
       test("treats the same jti under a different jkt as a distinct, fresh pair") {
         for
-          first <- env.repository.recordIfAbsent("jkt-1", "jti-1", ttl)
-          second <- env.repository.recordIfAbsent("jkt-2", "jti-1", ttl)
+          first <- env.repository.recordIfAbsent("jkt-1", "jti-1", iat)
+          second <- env.repository.recordIfAbsent("jkt-2", "jti-1", iat)
         yield assertTrue(first, second)
       },
       test("treats a different jti under the same jkt as a distinct, fresh pair") {
         for
-          first <- env.repository.recordIfAbsent("jkt-1", "jti-1", ttl)
-          second <- env.repository.recordIfAbsent("jkt-1", "jti-2", ttl)
+          first <- env.repository.recordIfAbsent("jkt-1", "jti-1", iat)
+          second <- env.repository.recordIfAbsent("jkt-1", "jti-2", iat)
         yield assertTrue(first, second)
       },
-      test("an expired record no longer counts as a replay") {
+      test("detects a replay however much later in the window it arrives") {
+        // The record is placed by the proof's own `iat`, not by the time it shows up, so a
+        // captured proof cannot be held back and replayed into a record of its own.
         for
-          _ <- env.repository.recordIfAbsent("jkt-1", "jti-1", 0.seconds)
-          _ <- TestClock.adjust(1.second)
-          fresh <- env.repository.recordIfAbsent("jkt-1", "jti-1", ttl)
-        yield assertTrue(fresh)
+          first <- env.repository.recordIfAbsent("jkt-1", "jti-1", iat)
+          _ <- TestClock.adjust(59.seconds)
+          second <- env.repository.recordIfAbsent("jkt-1", "jti-1", iat)
+        yield assertTrue(first, !second)
       },
       test("concurrent attempts to record the same pair -- only one should see it as fresh") {
         for
-          results <- ZIO.collectAllPar(List.fill(10)(env.repository.recordIfAbsent("jkt-1", "jti-1", ttl)))
+          results <- ZIO.collectAllPar(List.fill(10)(env.repository.recordIfAbsent("jkt-1", "jti-1", iat)))
         yield assertTrue(results.count(identity) == 1)
       },
     )
 
 object DpopProofRepositorySpec:
-  case class Env(repository: DpopProofRepository)
+  /** @param evictStale reclaims the space held by records whose proofs can no longer be
+    *   presented, given the `iat` leeway the server is running with. How much it reclaims per
+    *   call is up to the implementation, so the cases that pin it down live alongside one.
+    */
+  case class Env(
+      repository: DpopProofRepository,
+      evictStale: (Instant, Duration) => Task[Unit],
+  )

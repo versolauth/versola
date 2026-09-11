@@ -598,12 +598,6 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
        |      key-column = "request_uri"
        |    }
        |    {
-       |      table-name = "dpop_proofs"
-       |      batch-size = 10000
-       |      interval   = "5 minutes"
-       |      key-column = "ctid"
-       |    }
-       |    {
        |      table-name = "refresh_tokens"
        |      batch-size = 1000
        |      interval   = "10 minutes"

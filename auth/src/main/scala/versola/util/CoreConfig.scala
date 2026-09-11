@@ -88,16 +88,13 @@ object CoreConfig:
     *   (`dpop_signing_alg_values_supported`); the client picks based on the key it holds, so
     *   this is independent of [[JwtConfig]] / this server's own signing algorithm.
     * @param iatLeeway maximum allowed distance between a proof's `iat` and the time it's
-    *   checked, in either direction.
-    * @param proofRetention how long a proof's `(jkt, jti)` pair is kept for replay detection.
-    *   Must be at least `2 * iatLeeway`, otherwise a proof could be replayed once its `jti`
-    *   record has been forgotten but before it would fail the `iat` window check on its own.
+    *   checked, in either direction. This is also the window a proof has to be remembered for,
+    *   so widening it costs storage on the replay guard; implementations may cap it.
     * @param nonceTtl how long a server-issued `DPoP-Nonce` remains acceptable.
     */
   case class DpopConfig(
       allowedAlgorithms: Set[Dpop.Algorithm],
       iatLeeway: Duration,
-      proofRetention: Duration,
       nonceTtl: Duration,
   )
 
@@ -108,6 +105,5 @@ object CoreConfig:
     val default: DpopConfig = DpopConfig(
       allowedAlgorithms = Set(Dpop.Algorithm.ES256, Dpop.Algorithm.PS256),
       iatLeeway = Duration.fromSeconds(60),
-      proofRetention = Duration.fromSeconds(300),
       nonceTtl = Duration.fromSeconds(300),
     )
