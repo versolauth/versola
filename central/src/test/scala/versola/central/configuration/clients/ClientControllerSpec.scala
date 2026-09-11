@@ -268,6 +268,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
                 scope = Set(readScope),
                 permissions = Set(readPermission),
                 secretRotation = false,
+                clientType = ClientType.web,
                 accessTokenTtl = 300L,
                 refreshTokenTtl = 7776000L,
                 theme = "",
@@ -291,6 +292,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
                 scope = Set(writeScope),
                 permissions = Set(writePermission),
                 secretRotation = true,
+                clientType = ClientType.web,
                 accessTokenTtl = 600L,
                 refreshTokenTtl = 7776000L,
                 theme = "",
@@ -448,13 +450,34 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.Created,
       setup = service =>
-        service.registerClient.succeedsWith(rotatedSecret),
+        service.registerClient.succeedsWith(Some(rotatedSecret)),
       verify = (response, service, _) =>
         for
           body <- response.body.asJson[CreateClientResponse]
         yield assertTrue(
           service.registerClient.calls == List((createRequest, None)),
-          body == CreateClientResponse(Base64Url.encode(rotatedSecret)),
+          body == CreateClientResponse(Some(Base64Url.encode(rotatedSecret))),
+        ),
+    ),
+    controllerTestCase(
+      description = "create native client and return no secret",
+      request = Request(
+        method = Method.POST,
+        url = URL.empty / "configuration" / "clients",
+        body = Body.fromString(createRequest.copy(clientType = ClientType.native).toJson),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.Created,
+      setup = service =>
+        service.registerClient.succeedsWith(None),
+      verify = (response, service, _) =>
+        for
+          raw <- response.body.asString
+          body <- response.body.asJson[CreateClientResponse]
+        yield assertTrue(
+          service.registerClient.calls == List((createRequest.copy(clientType = ClientType.native), None)),
+          body == CreateClientResponse(None),
+          // Absent rather than empty: a caller must not mistake "" for a usable secret.
+          !raw.contains("secret"),
         ),
     ),
     controllerTestCase(
@@ -674,6 +697,31 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
           service.rotateClientSecret.calls == List(clientId),
           body == RotateSecretResponse(Base64Url.encode(rotatedSecret)),
         ),
+    ),
+    controllerTestCase(
+      description = "rotate client secret returns 409 for a native client",
+      request = Request(
+        method = Method.POST,
+        url = (URL.empty / "configuration" / "clients" / "rotate-secret")
+          .addQueryParams(Map("tenantId" -> tenantId.toString, "clientId" -> clientId.toString)),
+      ),
+      expectedStatus = Status.Conflict,
+      setup = service =>
+        service.rotateClientSecret.failsWith(ClientHasNoSecret(clientId)),
+      verify = (response, _, _) =>
+        for body <- response.body.asString
+        yield assertTrue(body == s"Client '$clientId' is a native (public) client and has no secret"),
+    ),
+    controllerTestCase(
+      description = "delete previous client secret returns 409 for a native client",
+      request = Request(
+        method = Method.DELETE,
+        url = (URL.empty / "configuration" / "clients" / "previous-secret")
+          .addQueryParams(Map("tenantId" -> tenantId.toString, "clientId" -> clientId.toString)),
+      ),
+      expectedStatus = Status.Conflict,
+      setup = service =>
+        service.deletePreviousClientSecret.failsWith(ClientHasNoSecret(clientId)),
     ),
     controllerTestCase(
       description = "delete previous client secret",

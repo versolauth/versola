@@ -117,9 +117,9 @@ export class VersolaFormEdit extends LitElement {
       .toggle-wrap { display: inline-flex; align-items: center; gap: 0.5rem; height: 28px; }
       .toggle { position: relative; display: inline-block; width: 34px; height: 18px; flex-shrink: 0; cursor: pointer; }
       .toggle input { opacity: 0; position: absolute; width: 0; height: 0; }
-      .toggle::before { content: ''; position: absolute; inset: 0; background: rgba(255,255,255,0.12); border: 1px solid var(--border-dark); border-radius: 9999px; transition: background 0.18s, border-color 0.18s; }
+      .toggle::before { content: ''; position: absolute; inset: 0; background: var(--toggle-track-off); border: 1px solid var(--border-dark); border-radius: 9999px; transition: background 0.18s, border-color 0.18s; }
       .toggle:has(input:checked)::before { background: var(--accent); border-color: var(--accent); }
-      .toggle::after { content: ''; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; background: rgba(255,255,255,0.5); border-radius: 50%; transition: transform 0.18s, background 0.18s; }
+      .toggle::after { content: ''; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; background: var(--toggle-knob-off); border-radius: 50%; transition: transform 0.18s, background 0.18s; }
       .toggle:has(input:checked)::after { transform: translateX(16px); background: #fff; }
       .toggle-val { font-size: 0.8125rem; color: var(--text-secondary); min-width: 2rem; transition: color var(--transition-fast); }
       .toggle:has(input:checked) + .toggle-val { color: var(--text-primary); }

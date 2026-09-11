@@ -2,7 +2,7 @@ import { LitElement, html, css } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
 import { buttonStyles, cardStyles, formStyles, iconActionStyles } from '../styles/components';
-import { AuthFactorType, AuthFlow, ConsentFlow, Locale, OAuthClient, OAuthScope, OtpTemplateRecord, Permission, RegistrationCredential, RegistrationFlow, RegistrationStepType, Resource, Role, ThemeRecord } from '../types';
+import { AuthFactorType, AuthFlow, ClientType, ConsentFlow, Locale, OAuthClient, OAuthScope, OtpTemplateRecord, Permission, RegistrationCredential, RegistrationFlow, RegistrationStepType, Resource, Role, ThemeRecord } from '../types';
 import { createDefaultAuthFlow, createDefaultConsentFlow, createDefaultRegistrationFlow, getLocalizedDescription, resolvePermissionEndpointGroups } from '../utils/helpers';
 import './nav-toggle';
 import './localized-text-editor';
@@ -38,6 +38,7 @@ export class VersolaClientForm extends LitElement {
     refreshTokenTtl: daysToSeconds(90),
     permissions: [],
     theme: 'default',
+    clientType: 'web',
     authFlow: createDefaultAuthFlow(),
     registrationFlow: null,
     consentFlow: null,
@@ -313,9 +314,14 @@ export class VersolaClientForm extends LitElement {
         padding: 0.75rem;
         border: 1px solid rgba(var(--accent-tint), 0.28);
         border-radius: var(--radius-md);
-        background: linear-gradient(180deg, rgba(22, 27, 34, 0.98), rgba(13, 17, 23, 0.98));
-        box-shadow: 0 10px 24px rgba(0, 0, 0, 0.35);
+        background: var(--surface-overlay);
+        box-shadow: var(--surface-overlay-shadow);
         display: none;
+      }
+
+      .option-tooltip-start {
+        right: auto;
+        left: 0;
       }
 
       .option-info.option-info-open .option-tooltip {
@@ -357,7 +363,7 @@ export class VersolaClientForm extends LitElement {
       .option-tooltip-group {
         border: 1px solid var(--border-dark);
         border-radius: var(--radius-sm);
-        background: rgba(255, 255, 255, 0.03);
+        background: var(--surface-inset);
         padding: 0.625rem 0.75rem;
       }
 
@@ -406,14 +412,17 @@ export class VersolaClientForm extends LitElement {
         -moz-appearance: textfield;
       }
 
-      /* Custom select styling - remove arrow, add custom indicator */
+      /* Custom select styling - remove arrow, add custom indicator.
+         Uses --surface-inset (a subtle recessed tint, already themed for
+         light/dark) instead of a flat black overlay, which read as a hard
+         grey box that didn't track the rest of the palette. */
       .ttl-unit-select {
         appearance: none;
         -webkit-appearance: none;
         -moz-appearance: none;
         cursor: pointer;
         padding-right: 2.5rem;
-        background: rgba(0, 0, 0, 0.2);
+        background: var(--surface-inset);
         position: relative;
       }
 
@@ -422,7 +431,7 @@ export class VersolaClientForm extends LitElement {
       }
 
       .ttl-unit-select:focus {
-        background: rgba(0, 0, 0, 0.3);
+        background: rgba(var(--accent-tint), 0.16);
       }
 
       /* Custom dropdown indicator using pseudo-element */
@@ -474,6 +483,19 @@ export class VersolaClientForm extends LitElement {
         margin-bottom: 0.5rem;
       }
 
+      /* Keeps an info button on the subtitle's baseline; the subtitle's own
+         bottom margin would otherwise push the button below it. */
+      .flow-subtitle-row {
+        display: flex;
+        align-items: center;
+        gap: 0.4rem;
+        margin-bottom: 0.5rem;
+      }
+
+      .flow-subtitle-row .flow-subtitle {
+        margin-bottom: 0;
+      }
+
       .cred-mode-cards {
         display: grid;
         grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
@@ -503,6 +525,25 @@ export class VersolaClientForm extends LitElement {
       }
 
       .cred-mode-card.selected {
+        border-color: var(--accent);
+        background: rgba(var(--accent-tint), 0.12);
+      }
+
+      .cred-mode-card:disabled {
+        cursor: default;
+        opacity: 0.5;
+      }
+
+      .cred-mode-card:disabled:hover {
+        border-color: var(--border-dark);
+        background: transparent;
+      }
+
+      .cred-mode-card.selected:disabled {
+        opacity: 1;
+      }
+
+      .cred-mode-card.selected:disabled:hover {
         border-color: var(--accent);
         background: rgba(var(--accent-tint), 0.12);
       }
@@ -709,7 +750,7 @@ export class VersolaClientForm extends LitElement {
         content: '';
         position: absolute;
         inset: 0;
-        background: rgba(255,255,255,0.12);
+        background: var(--toggle-track-off);
         border: 1px solid var(--border-dark);
         border-radius: 9999px;
         transition: background 0.2s, border-color 0.2s;
@@ -725,7 +766,7 @@ export class VersolaClientForm extends LitElement {
         left: 2px;
         width: 14px;
         height: 14px;
-        background: rgba(255,255,255,0.5);
+        background: var(--toggle-knob-off);
         border-radius: 50%;
         transition: transform 0.18s, background 0.18s;
       }
@@ -792,6 +833,7 @@ export class VersolaClientForm extends LitElement {
     this.authFlowError = '';
 
     const logoutEnabled = authFlow !== null;
+    const clientType = authFlow ? this.clientType : 'web';
     const authFlowTheme = authFlow ? (this.formData.theme || 'default') : 'default';
     const authFlowRedirectUris = authFlow ? (this.formData.redirectUris || []) : [];
     const authFlowOtpTemplateId = authFlow ? this.selectedOtpTemplateId : 'default';
@@ -850,6 +892,7 @@ export class VersolaClientForm extends LitElement {
       clientName: this.formData.clientName!,
       redirectUris: authFlowRedirectUris,
       scope,
+      clientType,
       hasPreviousSecret: false,
       accessTokenTtl: ttlToSeconds(this.ttlValue, this.ttlUnit),
       refreshTokenTtl: hasOfflineAccess
@@ -1125,7 +1168,17 @@ export class VersolaClientForm extends LitElement {
     this.openInfoKey = this.openInfoKey === key ? null : key;
   }
 
-  private renderOptionInfo(key: string, title: string, content: unknown, ariaLabel: string) {
+  /** `placement` picks which edge of the button the tooltip is anchored to.
+    * Buttons sitting at the right of a wide row keep the default 'end'; one
+    * sitting near the left of the form needs 'start', or a tooltip wider than
+    * the button's offset would spill past the card's left edge. */
+  private renderOptionInfo(
+    key: string,
+    title: string,
+    content: unknown,
+    ariaLabel: string,
+    placement: 'start' | 'end' = 'end',
+  ) {
     return html`
       <div class=${`option-info ${this.openInfoKey === key ? 'option-info-open' : ''}`} @click=${(e: Event) => e.stopPropagation()}>
         <button
@@ -1135,7 +1188,7 @@ export class VersolaClientForm extends LitElement {
           aria-expanded=${this.openInfoKey === key ? 'true' : 'false'}
           @click=${() => this.toggleInfo(key)}
         >i</button>
-        <div class="option-tooltip" role="tooltip">
+        <div class=${`option-tooltip ${placement === 'start' ? 'option-tooltip-start' : ''}`} role="tooltip">
           <div class="option-tooltip-title">${title}</div>
           ${content}
         </div>
@@ -1218,6 +1271,19 @@ export class VersolaClientForm extends LitElement {
 
   private get hasAuthFlow(): boolean {
     return this.formData.authFlow != null;
+  }
+
+  /** Fixed once the client exists: a secret can never be added to, or taken from, one. */
+  private get clientType(): ClientType {
+    return this.client ? this.client.clientType : this.formData.clientType ?? 'web';
+  }
+
+  private selectClientType(clientType: ClientType) {
+    if (this.client) {
+      return;
+    }
+
+    this.formData = { ...this.formData, clientType };
   }
 
   private toggleAuthFlowEnabled() {
@@ -1712,6 +1778,42 @@ export class VersolaClientForm extends LitElement {
               </div>
 
               ${this.hasAuthFlow ? html`
+              <div class="flow-subsection">
+                <div class="flow-subtitle-row">
+                  <div class="flow-subtitle">Client type</div>
+                  ${this.renderOptionInfo(
+                    'client-type',
+                    'Client types',
+                    html`
+                      <div class="option-tooltip-groups">
+                        <div class="option-tooltip-group">
+                          <div class="option-tooltip-group-title">web</div>
+                          <div class="option-tooltip-item">Confidential client: a secret is issued once, and can be rotated later. For apps that can keep a secret, such as a server-rendered or backend-for-frontend app.</div>
+                        </div>
+                        <div class="option-tooltip-group">
+                          <div class="option-tooltip-group-title">native</div>
+                          <div class="option-tooltip-item">Public client: no secret is issued, and none can be added later. For apps whose code ships to the user, such as mobile, desktop, or single-page apps.</div>
+                        </div>
+                        <div class="option-tooltip-item">Fixed when the client is created and cannot be changed afterwards.</div>
+                      </div>
+                    `,
+                    'Client type info',
+                    'start',
+                  )}
+                </div>
+                <div class="cred-mode-cards">
+                  ${(['web', 'native'] as const).map(clientType => html`
+                    <button
+                      type="button"
+                      class=${`cred-mode-card ${this.clientType === clientType ? 'selected' : ''}`}
+                      ?disabled=${!!this.client}
+                      aria-pressed=${this.clientType === clientType}
+                      @click=${() => this.selectClientType(clientType)}
+                    >${clientType}</button>
+                  `)}
+                </div>
+              </div>
+
               <div class="flow-subsection">
                 <div class="flow-subtitle">Primary credentials</div>
                 <div class="cred-mode-cards">
@@ -2224,7 +2326,7 @@ export class VersolaClientForm extends LitElement {
           </div>
 
           <div class="form-actions">
-            ${this.client && this.canManageSecrets ? html`
+            ${this.client && this.canManageSecrets && this.client.clientType !== 'native' ? html`
               ${this.client.hasPreviousSecret ? html`
                 <button
                   type="button"

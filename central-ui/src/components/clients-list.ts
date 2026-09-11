@@ -55,7 +55,9 @@ export class VersolaClientsList extends LitElement {
   @state() private availableLocales: Locale[] = [];
   @state() private availablePostLogoutRedirectUris: string[] = [];
   @state() private isPreparingForm = false;
-  @state() private createdSecret: { clientName: string; secret: string; action: 'created' | 'rotated' } | null = null;
+  // `secret` is null for a native client, which is created without one; the banner then
+  // confirms the creation instead of offering something to copy.
+  @state() private createdSecret: { clientName: string; secret: string | null; action: 'created' | 'rotated' } | null = null;
   @state() private copyFeedback = '';
   @state() private editingPresetsForClient: OAuthClient | null = null;
   @state() private presetDrafts: AuthorizationPreset[] = [];
@@ -155,6 +157,16 @@ export class VersolaClientsList extends LitElement {
 
       .client-info {
         flex: 1;
+      }
+
+      /* Web and native are just the two client-type values, not a
+         status distinction (like the warning badge next to it) — same
+         accent styling for both, distinguished only by their label text. */
+      .badge-native,
+      .badge-web {
+        border: 1px solid rgba(var(--accent-tint), 0.28);
+        background: rgba(var(--accent-tint), 0.12);
+        color: var(--accent);
       }
 
       .client-name {
@@ -777,7 +789,7 @@ export class VersolaClientsList extends LitElement {
   }
 
   private async handleCopySecret() {
-    if (!this.createdSecret) {
+    if (!this.createdSecret?.secret) {
       return;
     }
 
@@ -903,6 +915,7 @@ export class VersolaClientsList extends LitElement {
     const client = e.detail.client as OAuthClient;
 
     try {
+      let created = false;
       let generatedSecret: string | null = null;
 
       if (this.editingClient) {
@@ -912,11 +925,12 @@ export class VersolaClientsList extends LitElement {
       } else {
         generatedSecret = await createClient(this.tenantId, client);
         this.addClientToState(client);
+        created = true;
       }
 
       this.handleFormClose();
 
-      if (generatedSecret) {
+      if (created) {
         this.createdSecret = {
           clientName: getLocalizedDescription(client.clientName),
           secret: generatedSecret,
@@ -945,7 +959,9 @@ export class VersolaClientsList extends LitElement {
         : '';
     const secretText = this.createdSecret?.action === 'rotated'
       ? 'Copy the new client secret now. It may not be shown again.'
-      : 'Copy this secret now. It may not be shown again.';
+      : this.createdSecret && !this.createdSecret.secret
+        ? 'This is a native (public) client, so no secret was issued and none can be added later.'
+        : 'Copy this secret now. It may not be shown again.';
 
     if (this.isPreparingForm && !this.showCreateForm) {
       return html`
@@ -993,12 +1009,14 @@ export class VersolaClientsList extends LitElement {
               <button class="btn btn-ghost btn-sm" @click=${this.dismissCreatedSecret}>Dismiss</button>
             </div>
 
-            <pre class="secret-value">${this.createdSecret.secret}</pre>
+            ${this.createdSecret.secret ? html`
+              <pre class="secret-value">${this.createdSecret.secret}</pre>
 
-            <div class="secret-banner-actions">
-              <button class="btn btn-primary btn-sm" @click=${this.handleCopySecret}>Copy secret</button>
-              ${this.copyFeedback ? html`<span class="copy-feedback">${this.copyFeedback}</span>` : ''}
-            </div>
+              <div class="secret-banner-actions">
+                <button class="btn btn-primary btn-sm" @click=${this.handleCopySecret}>Copy secret</button>
+                ${this.copyFeedback ? html`<span class="copy-feedback">${this.copyFeedback}</span>` : ''}
+              </div>
+            ` : ''}
           </div>
         ` : ''}
         <versola-client-form
@@ -1040,12 +1058,14 @@ export class VersolaClientsList extends LitElement {
             <button class="btn btn-ghost btn-sm" @click=${this.dismissCreatedSecret}>Dismiss</button>
           </div>
 
-          <pre class="secret-value">${this.createdSecret.secret}</pre>
+          ${this.createdSecret.secret ? html`
+            <pre class="secret-value">${this.createdSecret.secret}</pre>
 
-          <div class="secret-banner-actions">
-            <button class="btn btn-primary btn-sm" @click=${this.handleCopySecret}>Copy secret</button>
-            ${this.copyFeedback ? html`<span class="copy-feedback">${this.copyFeedback}</span>` : ''}
-          </div>
+            <div class="secret-banner-actions">
+              <button class="btn btn-primary btn-sm" @click=${this.handleCopySecret}>Copy secret</button>
+              ${this.copyFeedback ? html`<span class="copy-feedback">${this.copyFeedback}</span>` : ''}
+            </div>
+          ` : ''}
         </div>
       ` : ''}
 
@@ -1086,6 +1106,7 @@ export class VersolaClientsList extends LitElement {
                   <div class="client-info">
                     <div class="client-name">
                       ${getLocalizedDescription(client.clientName)}
+                      <span class="badge ${client.clientType === 'native' ? 'badge-native' : 'badge-web'}">${client.clientType === 'native' ? 'Native' : 'Web'}</span>
                       ${client.hasPreviousSecret ? html`
                         <span class="badge badge-warning">Secret Rotation</span>
                       ` : ''}

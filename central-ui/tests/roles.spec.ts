@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-import { findRequest, loadAdminApp } from './fixtures';
+import { INVALID_FIELD_BORDER, findRequest, loadAdminApp } from './fixtures';
 
 const rolesPath = '/?view=roles&tenant=tenant-alpha';
 const alphaRead = { permission: 'alpha.read', description: { en: 'Read alpha resources' }, endpointIds: [101] };
@@ -54,7 +54,7 @@ test('shows role validation with a red input border before submitting', async ({
   await page.getByLabel('Description *').fill('Broken role');
 
   await expect(roleIdField).toHaveClass(/input-error/);
-  await expect(roleIdField).toHaveCSS('border-top-color', 'rgb(248, 81, 73)');
+  await expect(roleIdField).toHaveCSS('border-top-color', INVALID_FIELD_BORDER);
   await page.getByRole('button', { name: 'Create Role', exact: true }).click();
 
   expect(api.requests.some(request => request.method === 'POST' && request.pathname === '/configuration/roles')).toBeFalsy();

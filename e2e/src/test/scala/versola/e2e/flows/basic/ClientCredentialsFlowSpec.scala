@@ -150,6 +150,27 @@ object ClientCredentialsFlowSpec extends E2ESpec:
         .label(s"expected invalid_client, got $result")
     },
 
+    test("a native (public) client is refused the grant even though it names itself") {
+      for
+        (_, auth) <- setup(Flows.Id.LoginPassword)
+        clientId = s"cc-native-${UUID.randomUUID().toString.replace("-", "").take(8)}"
+        registered <- auth.registerClient(
+          clientId,
+          "Client Credentials Native Client",
+          Set("http://localhost:3000"),
+          clientType = "native",
+        ).success
+        _ <- auth.syncConfiguration()
+        // A public client has nothing to authenticate with, so naming itself is all it can
+        // do - and RFC 6749 §4.4 does not open the grant to a client that cannot be
+        // authenticated, however correctly it identifies itself.
+        result <- auth.clientCredentials(clientId, "", useBasicAuth = false)
+      yield assertTrue(registered.secret.isEmpty)
+        .label("central must not issue a secret to a native client") &&
+        assertTrue(errorCode(result).contains("invalid_client"))
+          .label(s"expected invalid_client, got $result")
+    },
+
     test("an empty resource parameter is rejected") {
       for
         (_, auth) <- setup(Flows.Id.LoginPassword)

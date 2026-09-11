@@ -504,8 +504,8 @@ export class VersolaUsersList extends LitElement {
         padding: 0.75rem;
         border: 1px solid rgba(var(--accent-tint), 0.28);
         border-radius: var(--radius-md);
-        background: linear-gradient(180deg, rgba(22, 27, 34, 0.98), rgba(13, 17, 23, 0.98));
-        box-shadow: 0 10px 24px rgba(0, 0, 0, 0.35);
+        background: var(--surface-overlay);
+        box-shadow: var(--surface-overlay-shadow);
         display: none;
       }
 
@@ -525,7 +525,7 @@ export class VersolaUsersList extends LitElement {
       .option-tooltip-group {
         border: 1px solid var(--border-dark);
         border-radius: var(--radius-sm);
-        background: rgba(255, 255, 255, 0.03);
+        background: var(--surface-inset);
         padding: 0.5rem 0.625rem;
         margin-bottom: 0.375rem;
       }

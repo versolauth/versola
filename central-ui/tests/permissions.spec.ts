@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-import { findRequest, loadAdminApp } from './fixtures';
+import { INVALID_FIELD_BORDER, findRequest, loadAdminApp } from './fixtures';
 
 const permissionsPath = '/?view=permissions&tenant=tenant-alpha';
 const alphaResource = { resourceId: 'alpha', resource: 'https://alpha.example', endpoints: [{ id: 101, method: 'GET', path: '/alpha/items', fetchUserInfo: false, allow: 'true', inject: [] }, { id: 102, method: 'POST', path: '/alpha/items', fetchUserInfo: false, allow: 'true', inject: [] }] };
@@ -58,7 +58,7 @@ test('shows permission id validation with a red input border before submitting',
   await page.getByLabel('English description').fill('Broken permission');
 
   await expect(permissionIdField).toHaveClass(/input-error/);
-  await expect(permissionIdField).toHaveCSS('border-top-color', 'rgb(248, 81, 73)');
+  await expect(permissionIdField).toHaveCSS('border-top-color', INVALID_FIELD_BORDER);
   await page.getByRole('button', { name: 'Create Permission', exact: true }).click();
 
   expect(api.requests.some(request => request.method === 'POST' && request.pathname === '/configuration/permissions')).toBeFalsy();

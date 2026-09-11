@@ -45,6 +45,7 @@ object ClientController extends Controller:
               scope = client.scope,
               permissions = client.permissions,
               secretRotation = client.previousSecret.nonEmpty,
+              clientType = if client.isConfidential then ClientType.web else ClientType.native,
               accessTokenTtl = client.accessTokenTtl.toSeconds,
               refreshTokenTtl = client.refreshTokenTtl.toSeconds,
               theme = client.theme,
@@ -122,7 +123,7 @@ object ClientController extends Controller:
         _ <- ZIO.when(body.frontChannelLogoutUri.isDefined && body.backChannelLogoutUri.isDefined):
           ZIO.fail(InvalidClientLogoutConfiguration(body.id))
         secret <- service.registerClient(body)
-        response = CreateClientResponse(Base64Url.encode(secret))
+        response = CreateClientResponse(secret.map(Base64Url.encode))
       yield Response.json(response.toJson).status(Status.Created))
         .catchAll {
           case error: ClientAlreadyExists =>
@@ -175,25 +176,40 @@ object ClientController extends Controller:
       case Patch.Modified(_) => true
       case Patch.Deleted     => false
 
+  /** A native client has no secret to rotate or forget. Like an already-taken client id,
+    * this is a conflict with the client's own state rather than a malformed request.
+    */
+  private def secretlessClientConflict(error: ClientHasNoSecret): Response =
+    Response.text(s"Client '${error.clientId}' is a native (public) client and has no secret")
+      .status(Status.Conflict)
+
   val rotateSecretEndpoint =
     Method.POST / "configuration" / "clients" / "rotate-secret" -> handler { (request: Request) =>
-      for
+      (for
         _ <- authorizeBasic(request)
         service <- ZIO.service[OAuthClientService]
         clientId <- request.url.queryZIO[ClientId]("clientId")
         newSecret <- service.rotateClientSecret(clientId)
         response = RotateSecretResponse(Base64Url.encode(newSecret))
-      yield Response.json(response.toJson)
+      yield Response.json(response.toJson))
+        .catchAll {
+          case error: ClientHasNoSecret => ZIO.succeed(secretlessClientConflict(error))
+          case error: Throwable         => ZIO.fail(error)
+        }
     }
 
   val deletePreviousSecretEndpoint =
     Method.DELETE / "configuration" / "clients" / "previous-secret" -> handler { (request: Request) =>
-      for
+      (for
         _ <- authorizeBasic(request)
         service <- ZIO.service[OAuthClientService]
         clientId <- request.url.queryZIO[ClientId]("clientId")
         _ <- service.deletePreviousClientSecret(clientId)
-      yield Response.status(Status.NoContent)
+      yield Response.status(Status.NoContent))
+        .catchAll {
+          case error: ClientHasNoSecret => ZIO.succeed(secretlessClientConflict(error))
+          case error: Throwable         => ZIO.fail(error)
+        }
     }
 
   val deleteClientEndpoint =

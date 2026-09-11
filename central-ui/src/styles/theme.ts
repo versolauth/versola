@@ -16,9 +16,10 @@ import { css } from 'lit';
  * redeclaring them. See src/utils/theme.ts for the get/set/toggle API and
  * index.html for the actual color values.
  *
- * Dark is the original/default palette (unchanged). Light reuses the
- * marketing site's warm palette (versola-website: public/css/style.css) and
- * Petrol Blue accent, so the console and the site read as one product.
+ * Light is the default palette, reusing the marketing site's warm palette
+ * (versola-website: public/css/style.css) and Petrol Blue accent, so the
+ * console and the site read as one product. Dark is the original console
+ * palette, kept for anyone who picks it.
  */
 
 export const theme = css`

@@ -69,7 +69,7 @@ export const mockTenants: Tenant[] = [
   },
 ];
 
-const baseClients: Omit<OAuthClient, 'authFlow' | 'registrationFlow'>[] = [
+const baseClients: Omit<OAuthClient, 'authFlow' | 'registrationFlow' | 'clientType'>[] = [
   {
     id: 'web-app',
     clientName: { en: 'Web Application' },
@@ -206,6 +206,7 @@ const baseClients: Omit<OAuthClient, 'authFlow' | 'registrationFlow'>[] = [
 
 export const mockClients: OAuthClient[] = baseClients.map(client => ({
   ...client,
+  clientType: 'web',
   authFlow: createDefaultAuthFlow(),
   registrationFlow: null,
 }));

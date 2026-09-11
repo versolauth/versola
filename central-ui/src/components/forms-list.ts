@@ -213,7 +213,7 @@ export class VersolaFormsList extends LitElement {
         content: '';
         position: absolute;
         inset: 0;
-        background: rgba(255,255,255,0.12);
+        background: var(--toggle-track-off);
         border: 1px solid var(--border-dark);
         border-radius: 9999px;
         transition: background 0.2s, border-color 0.2s;
@@ -229,7 +229,7 @@ export class VersolaFormsList extends LitElement {
         left: 2px;
         width: 14px;
         height: 14px;
-        background: rgba(255,255,255,0.5);
+        background: var(--toggle-knob-off);
         border-radius: 50%;
         transition: transform 0.18s, background 0.18s;
       }

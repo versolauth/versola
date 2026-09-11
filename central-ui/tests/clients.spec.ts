@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-import { findRequest, loadAdminApp } from './fixtures';
+import { INVALID_FIELD_BORDER, findRequest, loadAdminApp } from './fixtures';
 
 const clientsPath = '/?view=clients&tenant=tenant-alpha';
 
@@ -191,7 +191,65 @@ test('creates a client and shows the generated secret banner', async ({ page }) 
     policyUri: null,
     tosUri: null,
     consentFlow: null,
+    clientType: 'web',
   });
+});
+
+test('creates a native client without a secret and without rotation controls', async ({ page }) => {
+  const api = await loadAdminApp(page, {
+    path: clientsPath,
+    state: { clients: { 'tenant-alpha': [] } },
+  });
+
+  await page.getByRole('button', { name: '+ Create Client', exact: true }).click();
+  await page.getByLabel('Client ID').fill('mobile-app');
+  await page.getByLabel('Client Name').fill('Mobile App');
+  await page.getByPlaceholder('https://app.example.com/callback').fill('com.example.app://callback');
+  await page.getByPlaceholder('https://app.example.com/callback').press('Enter');
+  await page.getByRole('button', { name: 'native', exact: true }).click();
+  await page.getByRole('button', { name: 'Create Client', exact: true }).click();
+
+  expect(findRequest(api.requests, 'POST', '/configuration/clients').body).toMatchObject({
+    id: 'mobile-app',
+    clientType: 'native',
+  });
+
+  // There is no secret to copy, so the banner says so instead of rendering an empty value.
+  await expect(page.getByRole('heading', { name: 'Client created: Mobile App', exact: true })).toBeVisible();
+  await expect(page.locator('.secret-banner .secret-value')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Copy secret', exact: true })).toHaveCount(0);
+  await expect(page.locator('.secret-banner')).toContainText('no secret was issued');
+
+  // The list itself shows the client type, so it's discoverable without opening the edit form.
+  await expect(clientCard(page, 'Mobile App').locator('.badge-native')).toHaveText('Native');
+
+  await clientCard(page, 'Mobile App').getByRole('button', { name: 'Edit client mobile-app' }).click();
+  await expect(page.getByRole('button', { name: 'Rotate Secret', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Delete old secret', exact: true })).toHaveCount(0);
+});
+
+test('offers the client type only while the auth flow is on, and fixes it once created', async ({ page }) => {
+  await loadAdminApp(page, {
+    path: clientsPath,
+    state: { clients: { 'tenant-alpha': [alphaClient] } },
+  });
+
+  await page.getByRole('button', { name: '+ Create Client', exact: true }).click();
+  await expect(page.getByText('Client type', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'web', exact: true })).toBeEnabled();
+
+  const authFlowRow = page.getByText('Authorization Flow', { exact: true }).locator('..');
+  await authFlowRow.locator('label.toggle').click();
+  await expect(page.getByText('Client type', { exact: true })).toHaveCount(0);
+
+  // An existing client keeps whatever it was registered as - a secret can neither be
+  // added to a native client nor taken away from a web one.
+  await page.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(clientCard(page, 'Alpha Web').locator('.badge-web')).toHaveText('Web');
+  await clientCard(page, 'Alpha Web').getByRole('button', { name: 'Edit client alpha-web' }).click();
+  await expect(page.getByText('Client type', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'web', exact: true })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'native', exact: true })).toBeDisabled();
 });
 
 test('creates a client with localized consent name', async ({ page }) => {
@@ -554,7 +612,7 @@ test('shows client form validation before submitting', async ({ page }) => {
   await clientIdField.fill('Bad-client');
   await page.getByLabel('Client Name').fill('Broken Client');
   await expect(clientIdField).toHaveClass(/input-error/);
-  await expect(clientIdField).toHaveCSS('border-top-color', 'rgb(248, 81, 73)');
+  await expect(clientIdField).toHaveCSS('border-top-color', INVALID_FIELD_BORDER);
   await page.getByRole('button', { name: 'Create Client', exact: true }).click();
 
   expect(api.requests.some(request => request.method === 'POST' && request.pathname === '/configuration/clients')).toBeFalsy();
@@ -619,7 +677,7 @@ test('shows redirect URI validation with a red input border', async ({ page }) =
   await redirectUriField.fill('not-a-uri');
 
   await expect(redirectUriField).toHaveClass(/input-error/);
-  await expect(redirectUriField).toHaveCSS('border-top-color', 'rgb(248, 81, 73)');
+  await expect(redirectUriField).toHaveCSS('border-top-color', INVALID_FIELD_BORDER);
 });
 
 test('updates a client and sends patch-style changes', async ({ page }) => {
@@ -819,6 +877,7 @@ test('shows error alert when creating a client with duplicate ID', async ({ page
     policyUri: null,
     tosUri: null,
     consentFlow: null,
+    clientType: 'web',
   });
 
   // The client should NOT be added to the list

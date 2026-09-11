@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-import { findRequest, loadAdminApp } from './fixtures';
+import { INVALID_FIELD_BORDER, findRequest, loadAdminApp } from './fixtures';
 
 const resourcesPath = '/?view=resources&tenant=tenant-alpha';
 
@@ -228,7 +228,7 @@ test('shows resource validation errors before saving', async ({ page }) => {
   const resourceUriField = page.getByLabel('Absolute resource URI');
   await resourceUriField.fill('https://alpha.example/api');
   await expect(resourceUriField).toHaveClass(/input-error/);
-  await expect(resourceUriField).toHaveCSS('border-top-color', 'rgb(248, 81, 73)');
+  await expect(resourceUriField).toHaveCSS('border-top-color', INVALID_FIELD_BORDER);
   await page.getByRole('button', { name: 'Create Resource', exact: true }).click();
   await expect(page.getByText('Resource URI path must be empty', { exact: true })).toBeVisible();
 
@@ -242,7 +242,7 @@ test('shows resource validation errors before saving', async ({ page }) => {
   const relativePathField = page.locator('.endpoint-editor').last().getByPlaceholder('/users');
   await relativePathField.fill('users');
   await expect(relativePathField).toHaveClass(/input-error/);
-  await expect(relativePathField).toHaveCSS('border-top-color', 'rgb(248, 81, 73)');
+  await expect(relativePathField).toHaveCSS('border-top-color', INVALID_FIELD_BORDER);
   await page.getByRole('button', { name: 'Create Resource', exact: true }).click();
   await expect(page.getByText('Endpoint path must start with "/" and contain only latin letters, digits, "-", or a "{name}" parameter per segment (no consecutive "/", no repeated parameter names): GET users', { exact: true })).toBeVisible();
 
