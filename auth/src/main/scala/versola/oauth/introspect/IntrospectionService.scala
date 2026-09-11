@@ -107,10 +107,17 @@ object IntrospectionService:
           .when(tokenRecord.exists(_.clientId != client.id))
       yield buildIntrospectionResponse(tokenRecord)
 
+    // RFC 7662 requires the introspection endpoint to authenticate the caller. A public
+    // (native) client has no secret, so `OAuthConfigurationService.verifySecret` treats a
+    // bare `client_id` as "authenticated" for it -- that's fine for the token endpoint's
+    // PKCE-based exchange, but here it would let anyone who merely knows a native client's
+    // public id introspect tokens for that client's audience. Require an actual secret.
     private def authenticateClient(
         credentials: ClientCredentials,
     ): IO[IntrospectionError, OAuthClientRecord] =
       credentials match
+        case ClientIdWithSecret(_, None) =>
+          ZIO.fail(IntrospectionError.InvalidClient)
         case ClientIdWithSecret(clientId, clientSecret) =>
           oauthClientService.verifySecret(clientId, clientSecret)
             .someOrFail(IntrospectionError.InvalidClient)
