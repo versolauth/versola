@@ -63,7 +63,7 @@ object DpopService:
 
         _ <- checkNonce(proof, requireNonce, now)
 
-        fresh <- proofRepository.recordIfAbsent(proof.jkt, proof.jti, dpopConfig.proofRetention)
+        fresh <- proofRepository.recordIfAbsent(proof.jkt, proof.jti, proof.iat)
         _ <- ZIO.fail(Error.Replayed).unless(fresh)
       yield proof
 
