@@ -21,8 +21,9 @@ COPY mockapi/target/universal/stage /app
 # losing bin/mockapi's executable bit along the way.
 RUN chmod +x /app/bin/*
 
-# Application port, diagnostics port (/liveness, /readiness -- no /metrics on this service,
-# which is not a VersolaApp).
+# Application port, diagnostics port (/liveness, /readiness, /metrics -- the last is this
+# service's own narrow Prometheus surface, not VersolaApp's; see build.sbt's comment on the
+# `mockapi` project).
 EXPOSE 8100 8101
 
 ENV JAVA_OPTS="-XX:+UseG1GC -XX:MaxRAMPercentage=75.0 -XX:+UseCompactObjectHeaders --enable-native-access=ALL-UNNAMED"
