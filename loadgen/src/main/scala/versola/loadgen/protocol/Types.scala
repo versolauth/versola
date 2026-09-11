@@ -57,6 +57,16 @@ object EdgeSession:
   def apply(value: String): EdgeSession = value
   extension (s: EdgeSession) def value: String = s
 
+/** The auth-side `SSO_SESSION` cookie (§3.2, §7.4). Set once a conversation completes; a driver
+  * must hold onto it to re-run `/authorize` on the *same* SSO session for a silent
+  * reauthorization or an ACR step-up (§7.4: "re-run `/authorize` with `acr_values` on the same
+  * SSO session") -- without it, those flows have no way to avoid restarting at credentials.
+  */
+opaque type SsoSession = String
+object SsoSession:
+  def apply(value: String): SsoSession = value
+  extension (s: SsoSession) def value: String = s
+
 case class ClientCreds(clientId: String, clientSecret: Option[String])
 
 case class Tokens(
@@ -90,9 +100,14 @@ case class ChallengePage(
   * redirected out (to the code redirect URI, an error redirect, or -- mid-flow -- to
   * `/challenge` again for the next step, which `Redirected` alone deliberately does not
   * distinguish; the caller re-fetches via `challenge` to see which).
+  *
+  * `ssoSession` carries the `SSO_SESSION` cookie when this response set one (a completed
+  * conversation, §3.2) -- `None` on every intermediate redirect. The caller must retain it and
+  * feed it back into a later [[AuthClient.authorize]] call to reauthorize silently or step up on
+  * the same SSO session (§7.4); without it, both flows would incorrectly restart at credentials.
   */
 enum SubmitOutcome:
-  case Redirected(location: String)
+  case Redirected(location: String, ssoSession: Option[SsoSession])
   case Rendered(page: ChallengePage)
 
 case class EdgeLoginStarted(conversation: ConversationCookie, codeVerifier: CodeVerifier, state: String)

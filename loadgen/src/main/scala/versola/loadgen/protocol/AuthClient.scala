@@ -12,10 +12,16 @@ import zio.IO
   * compiles against in the meantime.
   */
 trait AuthClient:
+  /** `sessionCookie` is the `SSO_SESSION` from a prior [[SubmitOutcome.Redirected]] (§3.2), sent
+    * as a cookie on this request when present. Passing it is what makes silent reauthorization
+    * and an ACR step-up (§7.4: "re-run `/authorize` ... on the same SSO session") land on the
+    * caller's own existing session instead of starting a fresh one.
+    */
   def authorize(
       scope: String,
       clientId: Option[String],
       acrValues: Option[List[String]],
+      sessionCookie: Option[SsoSession],
   ): IO[ProtocolError, AuthorizeStarted]
 
   def challenge(conversation: ConversationCookie): IO[ProtocolError, ChallengePage]
