@@ -115,7 +115,7 @@ object OAuthTokenService:
                 expiresAt = replayedAt.plus(client.accessTokenTtl),
               )
             *>
-              sessionRepository.deleteByAccessToken(at) *>
+              sessionRepository.deleteByAccessToken(codeRecord.sessionId, at) *>
               ZIO.fail(TokenEndpointError.InvalidGrant.CodeReplayed)
 
           case Right(_) =>

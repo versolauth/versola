@@ -444,7 +444,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           // client's access token TTL rather than read from the token itself.
           env.accessTokenRevocationService.revoke.calls ==
             List((testClient, accessToken1, userId1.toString, now.plus(testClient.accessTokenTtl))),
-          env.tokenRepo.deleteByAccessToken.calls == List(accessToken1),
+          env.tokenRepo.deleteByAccessToken.calls == List((sessionId1, accessToken1)),
           env.tokenRepo.createRefreshToken.calls.isEmpty,
         )
       },
