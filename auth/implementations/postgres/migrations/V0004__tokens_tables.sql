@@ -12,7 +12,11 @@ CREATE TABLE refresh_tokens(
     -- the chain instead of being read as a replay. Only honoured while this row is the
     -- family's most recent exchange, so the key stops working the moment the chain moves on.
     idempotency_key BYTEA,
-    access_token BYTEA UNIQUE NOT NULL,
+    -- Not indexed: the only lookup against this column (revoking the token issued by a
+    -- replayed authorization code) is narrowed by session_id first, see
+    -- PostgresSessionRepository.deleteByAccessToken. Indexing it would tax every rotation and
+    -- every bound-token renewal to serve a rare admin-adjacent path.
+    access_token BYTEA NOT NULL,
     session_id BYTEA NOT NULL,
     public_session_id TEXT NOT NULL,
     user_id UUID NOT NULL,
@@ -34,6 +38,9 @@ CREATE TABLE refresh_tokens(
 );
 
 CREATE INDEX refresh_tokens_family_id_idx ON refresh_tokens (family_id);
-CREATE INDEX refresh_tokens_user_id_idx ON refresh_tokens (user_id);
 CREATE INDEX refresh_tokens_session_id_idx ON refresh_tokens (session_id);
 CREATE INDEX refresh_tokens_expires_at_idx ON refresh_tokens (expires_at) where expires_at is not null;
+-- No index on user_id: invalidateByUserId reaches refresh_tokens through the session ids it
+-- just expired on sso_sessions (which is indexed on user_id), rather than filtering this
+-- table directly. That is a rare, admin-adjacent path; every other index here is paid on
+-- every refresh.

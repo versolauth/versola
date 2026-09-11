@@ -125,4 +125,9 @@ trait SessionRepository:
 
   def delete(token: MAC.Of[RefreshToken]): Task[Unit]
 
-  def deleteByAccessToken(token: AccessToken): Task[Unit]
+  /** Revokes the one refresh token issued alongside `token`, an access token being rejected as
+    * the product of a replayed authorization code. `sessionId` narrows the search to a handful
+    * of rows before `token` is checked, since `access_token` carries no index of its own -- see
+    * the schema comment on `refresh_tokens.access_token`.
+    */
+  def deleteByAccessToken(sessionId: MAC.Of[SessionId], token: AccessToken): Task[Unit]

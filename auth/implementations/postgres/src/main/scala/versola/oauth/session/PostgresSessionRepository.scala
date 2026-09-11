@@ -159,22 +159,28 @@ class PostgresSessionRepository(xa: TransactorZIO)
         """.query[SessionRecord].run().toList
     yield result
 
-  /** Atomically expires all active sessions and refresh tokens for the given user. */
+  /** Atomically expires all active sessions and refresh tokens for the given user.
+    *
+    * Reaches refresh_tokens through the session ids just expired above rather than filtering
+    * it by user_id directly, so this rare admin path does not have to be served by an index
+    * paid for on every refresh -- see the schema comment on refresh_tokens.user_id.
+    */
   override def invalidateByUserId(userId: UserId): Task[List[SessionRecord]] =
     Clock.instant.flatMap: now =>
       xa.transactMeasured("invalidate-sessions-by-user"):
-        val sessions = sql"""
-          UPDATE sso_sessions
-          SET expires_at = $now
-          WHERE user_id = $userId AND expires_at > $now
-          RETURNING user_id, clients, user_agent_id, created_at, amr, public_id, expires_at
-        """.query[SessionRecord].run().toList
         sql"""
-          UPDATE refresh_tokens
-          SET expires_at = $now
-          WHERE user_id = $userId
-        """.update.run()
-        sessions
+          WITH expired AS (
+            UPDATE sso_sessions
+            SET expires_at = $now
+            WHERE user_id = $userId AND expires_at > $now
+            RETURNING id, user_id, clients, user_agent_id, created_at, amr, public_id, expires_at
+          ),
+          revoked_tokens AS (
+            UPDATE refresh_tokens SET expires_at = $now
+            WHERE session_id IN (SELECT id FROM expired)
+          )
+          SELECT user_id, clients, user_agent_id, created_at, amr, public_id, expires_at FROM expired
+        """.query[SessionRecord].run().toList
 
   override def invalidate(id: MAC.Of[SessionId]): Task[Option[SessionRecord]] =
     Clock.instant.flatMap: now =>
@@ -454,10 +460,15 @@ class PostgresSessionRepository(xa: TransactorZIO)
         sql"""UPDATE refresh_tokens SET expires_at = $now WHERE id = $token""".update.run()
       .unit
 
-  override def deleteByAccessToken(token: AccessToken): Task[Unit] =
+  override def deleteByAccessToken(sessionId: MAC.Of[SessionId], token: AccessToken): Task[Unit] =
     Clock.instant.flatMap: now =>
       xa.connectMeasured("delete-refresh-token-by-access-token"):
-        sql"""UPDATE refresh_tokens SET expires_at = $now WHERE access_token = $token""".update.run()
+        // access_token carries no index of its own; session_id does, and narrows this to a
+        // handful of rows before the residual access_token check runs.
+        sql"""
+          UPDATE refresh_tokens SET expires_at = $now
+          WHERE session_id = $sessionId AND access_token = $token
+        """.update.run()
       .unit
 
 object PostgresSessionRepository:
