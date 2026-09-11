@@ -11,6 +11,7 @@ trait DpopProofRepositorySpec extends DatabaseSpecBase[DpopProofRepositorySpec.E
   self: ZIOSpec[TransactorZIO] =>
 
   val iat: Instant = Instant.parse("2024-01-01T00:00:00Z")
+  val leeway: Duration = 60.seconds
 
   def testCases(env: DpopProofRepositorySpec.Env): List[Spec[DpopProofRepositorySpec.Env & Scope, Any]] =
     List(
@@ -49,6 +50,23 @@ trait DpopProofRepositorySpec extends DatabaseSpecBase[DpopProofRepositorySpec.E
         for
           results <- ZIO.collectAllPar(List.fill(10)(env.repository.recordIfAbsent("jkt-1", "jti-1", iat)))
         yield assertTrue(results.count(identity) == 1)
+      },
+      test("reclaims the slot holding a proof once that proof has left the iat window") {
+        // A slot becomes reclaimable a leeway plus one slot width after the proofs it holds
+        // were created -- by then none of them would pass the `iat` check anyway.
+        for
+          recorded <- env.repository.recordIfAbsent("jkt-1", "jti-1", iat)
+          _ <- env.evictStale(iat.plusSeconds(90), leeway)
+          afterEviction <- env.repository.recordIfAbsent("jkt-1", "jti-1", iat)
+        yield assertTrue(recorded, afterEviction)
+      },
+      test("never reclaims a record while its proof could still be presented") {
+        // The dangerous direction: dropping this record early would make the proof replayable.
+        for
+          recorded <- env.repository.recordIfAbsent("jkt-1", "jti-1", iat)
+          _ <- env.evictStale(iat.plusSeconds(59), leeway)
+          replay <- env.repository.recordIfAbsent("jkt-1", "jti-1", iat)
+        yield assertTrue(recorded, !replay)
       },
     )
 
