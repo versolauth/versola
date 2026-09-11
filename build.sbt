@@ -272,9 +272,11 @@ lazy val loadgen = project
 // counters, request/response serialisation and one unfiltered `receive-http` JSON log line per
 // request. At ~8,400 rps that is a constant latency bias on the process the whole campaign's
 // latency numbers are measured against, so `mockapi` owns its own (much smaller) boot sequence
-// instead. The cost of that choice is real and worth stating: no tracing, no `/metrics`, no
-// shared graceful-shutdown behaviour, and a `/liveness`+`/readiness` surface that has to stay
-// correct here on its own. Not part of `root`'s aggregate, and -- like `loadgen` above -- not yet
+// instead. The cost of that choice is real and worth stating: no tracing, no auto-instrumented
+// per-route spans/RED counters, no shared graceful-shutdown behaviour, and a `/liveness`+
+// `/readiness` surface that has to stay correct here on its own. It does publish its own narrow
+// `/metrics` -- per-endpoint request counters and the read/write delay histograms (#270) -- via
+// `zio-metrics-connectors-prometheus`, already on this classpath through `Dependencies.http`. Not part of `root`'s aggregate, and -- like `loadgen` above -- not yet
 // named in ci-cd.yml's "Compile" step either; see that comment.
 lazy val mockapi = project
   .in(file("mockapi"))
