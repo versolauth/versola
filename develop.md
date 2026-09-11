@@ -178,6 +178,8 @@ container mask the other's fresh volume. The steps below are otherwise
 identical for both; only the address differs — `localhost:8200` (published to
 the host by `compose.fragment.yml.template`) for `local`, `127.0.0.1:8200` for
 `vps` (via `network_mode: host`, running these directly on the VPS itself).
+Every command below uses `<address>` for this reason -- substitute whichever
+of the two actually applies, not a literal copy-paste of either.
 
 TLS is disabled (see `openbao.hcl.template`), but `bao`'s own default is
 https — every command below needs `BAO_ADDR` set explicitly, or it fails
@@ -189,21 +191,21 @@ with "server gave HTTP response to HTTPS client".
 #    tool, not a system that needs to survive one key-holder disappearing.
 #    Save BOTH the unseal key and the root token this prints; neither is
 #    recoverable if lost.
-docker exec -it -e BAO_ADDR=http://127.0.0.1:8200 versola-openbao-<target> \
+docker exec -it -e BAO_ADDR=http://<address> versola-openbao-<target> \
   bao operator init -key-shares=1 -key-threshold=1
 
 # 2. Unseal. Needed again after every fresh container start/recreation —
 #    seal state does NOT persist on the storage volume, even though the
 #    data itself does. There's no auto-unseal configured, so this is a
 #    standing manual step, not just a first-run thing.
-docker exec -it -e BAO_ADDR=http://127.0.0.1:8200 versola-openbao-<target> \
+docker exec -it -e BAO_ADDR=http://<address> versola-openbao-<target> \
   bao operator unseal <unseal key from step 1>
 
 # Steps 3-7 need the root token from step 1 as well:
-docker exec -it -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=<root token> versola-openbao-<target> \
+docker exec -it -e BAO_ADDR=http://<address> -e BAO_TOKEN=<root token> versola-openbao-<target> \
   bao secrets enable -path=secret kv-v2        # 3. KV v2 -- `server` mode doesn't
                                                 #    enable this by default (unlike -dev)
-docker exec -it -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=<root token> versola-openbao-<target> \
+docker exec -it -e BAO_ADDR=http://<address> -e BAO_TOKEN=<root token> versola-openbao-<target> \
   bao auth enable approle                      # 4. AppRole auth method
 ```
 
@@ -212,7 +214,7 @@ docker exec -it -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=<root token> vers
    able to. On Linux/macOS this can be piped in directly:
 
    ```bash
-   docker exec -i -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=<root token> versola-openbao-<target> \
+   docker exec -i -e BAO_ADDR=http://<address> -e BAO_TOKEN=<root token> versola-openbao-<target> \
      bao policy write versola-<target> - <<'EOF'
    path "secret/data/versola/<target>/*" {
      capabilities = ["create", "read", "update"]
@@ -229,27 +231,31 @@ docker exec -it -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=<root token> vers
 # 6. An AppRole role bound to that policy. secret_id_ttl=0/token_num_uses=0:
 #    no expiry -- this is a long-lived credential for an unattended deploy
 #    tool, not a human's short-lived session.
-docker exec -it -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=<root token> versola-openbao-<target> \
+docker exec -it -e BAO_ADDR=http://<address> -e BAO_TOKEN=<root token> versola-openbao-<target> \
   bao write auth/approle/role/versola-<target> \
     token_policies="versola-<target>" \
     token_ttl=1h token_max_ttl=4h \
     secret_id_ttl=0 token_num_uses=0
 
 # 7. Get the credentials versola-cli needs.
-docker exec -it -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=<root token> versola-openbao-<target> \
+docker exec -it -e BAO_ADDR=http://<address> -e BAO_TOKEN=<root token> versola-openbao-<target> \
   bao read auth/approle/role/versola-<target>/role-id
-docker exec -it -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=<root token> versola-openbao-<target> \
+docker exec -it -e BAO_ADDR=http://<address> -e BAO_TOKEN=<root token> versola-openbao-<target> \
   bao write -f auth/approle/role/versola-<target>/secret-id
 ```
 
 Then, on the machine that will run `versola configure <target> ...` (the VPS
-itself, for `vps` — see the note below), store them:
+itself, for `vps` — see the note below), store them. `versola secrets login`
+takes exactly `<target> <address> <role-id>` -- three positional args, not
+four: `<secret-id>` is deliberately a separate, masked prompt rather than a
+fourth positional one (it's effectively this AppRole's password, and a
+positional arg would land it in shell history and in anything that can read
+this process's argument list, e.g. `ps` -- see versola-cli's own
+`cmd/secrets.go`):
 
 ```bash
-versola secrets login <target> http://127.0.0.1:8200 <role-id> <secret-id>
+versola secrets login <target> http://<address> <role-id>
 ```
-
-(`http://localhost:8200` for `docker-local`.)
 
 ### vps-specific: seeding real values from the already-running VPS
 
