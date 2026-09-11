@@ -1,6 +1,17 @@
 CREATE TABLE refresh_tokens(
     id BYTEA PRIMARY KEY,
-    previous_id BYTEA UNIQUE,
+    -- Root token of the rotation chain this token belongs to; a freshly issued token is its
+    -- own family. Kept on rotated-away rows so a token replayed any number of generations
+    -- later still resolves to the family that has to be revoked.
+    family_id BYTEA NOT NULL,
+    -- Set when the token is exchanged for its successor. The row stays behind as the record
+    -- of that exchange: unusable, but still resolvable to its family.
+    rotated_at TIMESTAMP WITH TIME ZONE,
+    -- MAC of the Idempotency-Key the exchange carried, if any. Lets the client that never
+    -- received its response retry: presenting this token again with the same key continues
+    -- the chain instead of being read as a replay. Only honoured while this row is the
+    -- family's most recent exchange, so the key stops working the moment the chain moves on.
+    idempotency_key BYTEA,
     access_token BYTEA UNIQUE NOT NULL,
     session_id BYTEA NOT NULL,
     public_session_id TEXT NOT NULL,
@@ -15,9 +26,14 @@ CREATE TABLE refresh_tokens(
     nonce TEXT,
     acr TEXT,
     amr JSONB NOT NULL,
-    auth_time TIMESTAMP WITH TIME ZONE NOT NULL
+    auth_time TIMESTAMP WITH TIME ZONE NOT NULL,
+    -- RFC 9449 §5: the JWK thumbprint this grant is bound to, NULL for a bearer grant.
+    -- A bound token is never rotated: a copy of it is inert without the private key, so the
+    -- family/rotated_at machinery above applies only to rows where this is NULL.
+    cnf_jkt TEXT
 );
 
+CREATE INDEX refresh_tokens_family_id_idx ON refresh_tokens (family_id);
 CREATE INDEX refresh_tokens_user_id_idx ON refresh_tokens (user_id);
 CREATE INDEX refresh_tokens_session_id_idx ON refresh_tokens (session_id);
 CREATE INDEX refresh_tokens_expires_at_idx ON refresh_tokens (expires_at) where expires_at is not null;

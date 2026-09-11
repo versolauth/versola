@@ -27,6 +27,11 @@ trait OAuthTokenService:
       refreshTokenRequest: RefreshTokenRequest,
       tokenCredentials: ClientCredentials,
       dpopJkt: Option[String],
+      /** `Idempotency-Key` header, when the client sent one. Lets a client that never received
+        * the response to an exchange repeat it instead of being read as replaying the token.
+        * Only meaningful for a bearer grant: a bound one is not rotated, so a retry of it is
+        * idempotent already. */
+      idempotencyKey: Option[String],
   ): IO[Throwable | TokenEndpointError, IssuedTokens]
 
   def clientCredentials(
@@ -36,6 +41,24 @@ trait OAuthTokenService:
   ): IO[Throwable | TokenEndpointError, IssuedTokens]
 
 object OAuthTokenService:
+
+  /** Which token the refresh actually continues from, and whether getting there needed the
+    * idempotency key. Normally the one presented; for a retry, the family's live tip, since
+    * the token the original response carried is not recoverable.
+    */
+  /** A sender-constrained refresh token being renewed rather than rotated. The client keeps
+    * the value it already holds, so the response echoes that same value back.
+    */
+  private case class BoundRenewal(
+      token: RefreshToken,
+      mac: MAC.Of[RefreshToken],
+  )
+
+  private case class Resolved(
+      previousToken: MAC.Of[RefreshToken],
+      record: RefreshTokenRecord,
+      retried: Boolean,
+  )
   /** Admin-console client; admin roles are only embedded in tokens issued for it. */
   val centralAdminClientId: ClientId = ClientId("central-admin")
 
@@ -72,10 +95,10 @@ object OAuthTokenService:
         codeMac <- securityService.mac(Secret(code), config.security.authCodesSecret)
 
         codeRecord <- authorizationCodeRepository.find(codeMac)
-          .someOrFail(TokenEndpointError.InvalidGrant)
-          .filterOrFail(_.clientId == client.id)(TokenEndpointError.InvalidGrant)
-          .filterOrFail(_.redirectUri == redirectUri)(TokenEndpointError.InvalidGrant)
-          .filterOrFail(_.verify(codeVerifier))(TokenEndpointError.InvalidGrant)
+          .someOrFail(TokenEndpointError.InvalidGrant.CodeNotFound)
+          .filterOrFail(_.clientId == client.id)(TokenEndpointError.InvalidGrant.CodeClientMismatch)
+          .filterOrFail(_.redirectUri == redirectUri)(TokenEndpointError.InvalidGrant.RedirectUriMismatch)
+          .filterOrFail(_.verify(codeVerifier))(TokenEndpointError.InvalidGrant.PkceMismatch)
 
         _ <- Observability.setSessionId(codeRecord.publicSessionId)
         _ <- Observability.setUserId(codeRecord.userId.toString)
@@ -93,7 +116,7 @@ object OAuthTokenService:
               )
             *>
               sessionRepository.deleteByAccessToken(at) *>
-              ZIO.fail(TokenEndpointError.InvalidGrant)
+              ZIO.fail(TokenEndpointError.InvalidGrant.CodeReplayed)
 
           case Right(_) =>
             ZIO.unit
@@ -119,17 +142,19 @@ object OAuthTokenService:
             requestedClaims = codeRecord.requestedClaims,
             uiLocales = codeRecord.uiLocales,
             nonce = codeRecord.nonce,
-            previousRefreshToken = None,
             amr = codeRecord.amr,
             authTime = codeRecord.authTime,
             acr = codeRecord.acr,
             cnfJkt = dpopJkt,
           ),
+          previousRefreshToken = None,
+          idempotencyKey = None,
+          boundRenewal = None,
           accessTokenAudience = codeRecord.resources,
           accessTokenAuthorizationDetails = codeRecord.authorizationDetails.getOrElse(Nil),
         ).mapError {
           case ex: Throwable => ex
-          case _ => TokenEndpointError.InvalidGrant // illegal state
+          case _ => TokenEndpointError.InvalidGrant.RefreshChainAlreadyExchanged // illegal state
         }
       yield issuedTokens
 
@@ -140,6 +165,7 @@ object OAuthTokenService:
         refreshTokenRequest: RefreshTokenRequest,
         tokenCredentials: ClientCredentials,
         dpopJkt: Option[String],
+        idempotencyKey: Option[String],
     ): IO[Throwable | TokenEndpointError, IssuedTokens] =
       import refreshTokenRequest.{authorizationDetails, refreshToken, resources, scope}
       for
@@ -153,9 +179,17 @@ object OAuthTokenService:
 
         refreshTokenMac <- securityService.mac(Secret(refreshToken), config.security.refreshTokensSecret)
 
-        tokenRecord <- sessionRepository.findToken(refreshTokenMac)
-          .someOrFail(TokenEndpointError.InvalidGrant)
-          .filterOrFail(_.clientId == client.id)(TokenEndpointError.InvalidGrant)
+        idempotencyKeyMac <- ZIO.foreach(idempotencyKey)(macOfIdempotencyKey)
+
+        resolved <- sessionRepository.findToken(refreshTokenMac).flatMap:
+          case Some(record) if record.clientId == client.id =>
+            ZIO.succeed(Resolved(refreshTokenMac, record, retried = false))
+          case Some(_) =>
+            ZIO.fail(TokenEndpointError.InvalidGrant.RefreshTokenClientMismatch)
+          case None =>
+            resolveRetry(client, refreshTokenMac, idempotencyKeyMac)
+
+        tokenRecord = resolved.record
 
         _ <- Observability.setSessionId(tokenRecord.publicSessionId)
         _ <- Observability.setUserId(tokenRecord.userId.toString)
@@ -164,7 +198,7 @@ object OAuthTokenService:
         // this request has to carry that same thumbprint. The binding is fixed at issuance and
         // never re-derived from the current proof -- otherwise presenting a stolen unbound
         // refresh token with any key of one's own would "upgrade" it into a bound one.
-        _ <- ZIO.fail(TokenEndpointError.InvalidGrant)
+        _ <- ZIO.fail(TokenEndpointError.InvalidGrant.RefreshTokenKeyMismatch)
           .when(tokenRecord.cnfJkt.exists(!dpopJkt.contains(_)))
 
         // RFC 6749 §6: the request may narrow the underlying grant but never widen it, so the
@@ -188,14 +222,99 @@ object OAuthTokenService:
           record = tokenRecord.copy(
             accessToken = accessToken,
             scope = scope.getOrElse(tokenRecord.scope),
-            previousRefreshToken = Some(refreshTokenMac),
             issuedAt = now,
             expiresAt = now.plusSeconds(client.refreshTokenTtl.toSeconds),
           ),
+          previousRefreshToken = Some(resolved.previousToken),
+          idempotencyKey = idempotencyKeyMac,
+          // A bound grant is renewed in place instead of rotated. Rotation exists to detect a
+          // stolen token being used, and a copy of this one is inert without the private key
+          // the proof above just demonstrated -- so the chain, the generations it retains and
+          // the idempotency key that makes rotation retryable all stop paying for themselves.
+          // A retry can only be reached through a retired row, which a bound token never has.
+          boundRenewal = Option.when(tokenRecord.cnfJkt.isDefined && !resolved.retried)(
+            BoundRenewal(refreshToken, resolved.previousToken),
+          ),
           accessTokenAudience = audience,
           accessTokenAuthorizationDetails = details,
-        )
+        ).catchSome:
+          // Losing the rotation race means this token was presented twice concurrently: the
+          // winner's successor is live and the leak is just as proven as a sequential replay,
+          // so it goes the same way rather than failing with a bare invalid_grant.
+          //
+          // Not so when the key already identified this as a retry: the request that beat us
+          // is another attempt at the very same exchange, which proves nothing was leaked.
+          case TokenEndpointError.InvalidGrant.RefreshChainAlreadyExchanged if !resolved.retried =>
+            detectReplay(client, refreshTokenMac).flatMap: replayed =>
+              ZIO.fail:
+                if replayed then TokenEndpointError.InvalidGrant.RefreshTokenReplayed
+                else TokenEndpointError.InvalidGrant.RefreshChainAlreadyExchanged
       yield issuedTokens
+
+    /** Distinguishes a repeat of an exchange the client never saw the response to from a
+      * genuine replay, when the presented token is no longer live.
+      *
+      * A matching key continues the chain from the family's live tip: the response cannot be
+      * reproduced -- the token in it was never stored -- so the client is given a fresh one
+      * instead. Without a key, or with one that no longer names the family's latest exchange,
+      * this is reuse of a retired token and goes to [[detectReplay]].
+      */
+    private def resolveRetry(
+        client: OAuthClientRecord,
+        refreshTokenMac: MAC.Of[RefreshToken],
+        idempotencyKeyMac: Option[MAC],
+    ): IO[Throwable | TokenEndpointError, Resolved] =
+      idempotencyKeyMac
+        .fold(ZIO.none)(sessionRepository.findIdempotentRetry(refreshTokenMac, client.id, _))
+        .flatMap:
+          case Some((tip, record)) =>
+            ZIO.succeed(Resolved(tip, record, retried = true))
+          case None =>
+            detectReplay(client, refreshTokenMac).flatMap: replayed =>
+              ZIO.fail:
+                if replayed then TokenEndpointError.InvalidGrant.RefreshTokenReplayed
+                else TokenEndpointError.InvalidGrant.RefreshTokenNotFound
+
+    /** Labelled so a key can never collide with the MAC of a refresh token under the same
+      * secret, which is what the same column is compared against elsewhere. */
+    private def macOfIdempotencyKey(key: String): Task[MAC] =
+      securityService.mac(
+        Secret("idempotency-key:".getBytes("UTF-8") ++ key.getBytes("UTF-8")),
+        config.security.refreshTokensSecret,
+      )
+
+    /** RFC 9700 §4.14.2: a refresh token presented after it was already rotated away means the
+      * chain leaked -- to an attacker who redeemed it first, or back to its rightful owner
+      * after an attacker's redemption already won the rotation race. Either way neither party
+      * can be trusted with the chain's live end anymore, so it is expired and its access token
+      * pushed to the client's back channel, forcing a full re-authorization instead of leaving
+      * a live session for whoever asks next.
+      *
+      * Scoped to the leaked family, not the wider SSO session: one client's leak should not
+      * log the user out of every other client sharing the session. Within the family it is
+      * total -- every generation is expired, however far the chain has rotated since the
+      * replayed token was retired, because any of them could be the one in the wrong hands.
+      *
+      * Returns whether a family was found and revoked, so the caller can tell a replay apart
+      * from a token that never existed -- both fail the request identically, but only the
+      * former is worth surfacing in the request's error context.
+      */
+    private def detectReplay(client: OAuthClientRecord, replayed: MAC.Of[RefreshToken]): Task[Boolean] =
+      zio.Clock.instant.flatMap: now =>
+        sessionRepository.revokeFamily(replayed, client.id, now.minus(client.accessTokenTtl)).flatMap:
+          case Some(family) =>
+            ZIO.foreachDiscard(family.accessTokens): accessToken =>
+              // As with authorization-code replay, the live access tokens are not in hand
+              // here, only their ids, so their lifetime is bounded by the client's TTL.
+              accessTokenRevocationService.revoke(
+                client = client,
+                token = accessToken,
+                subject = family.userId.toString,
+                expiresAt = now.plus(client.accessTokenTtl),
+              )
+            .as(true)
+          case None =>
+            ZIO.succeed(false)
 
     /** RFC 9396 §6: a token request may ask for the authorization details of the underlying
       * grant or fewer of them, never for more; §6.1 compares the requested objects with the
@@ -320,20 +439,34 @@ object OAuthTokenService:
         accessToken: AccessToken,
         client: OAuthClientRecord,
         record: RefreshTokenRecord,
+        previousRefreshToken: Option[MAC.Of[RefreshToken]],
+        idempotencyKey: Option[MAC],
+        boundRenewal: Option[BoundRenewal],
         accessTokenAudience: List[ResourceUri],
         accessTokenAuthorizationDetails: List[AuthorizationDetail],
     ): IO[Throwable | TokenEndpointError, IssuedTokens] =
       for
         refreshToken <- ZIO.when(record.scope.contains(ScopeToken.OfflineAccess))(
-          for
-            token <- authPropertyGenerator.nextRefreshToken
-            _ <- Observability.setRefreshToken(Base64.urlEncode(token))
-            mac <- securityService.mac(Secret(token), config.security.refreshTokensSecret)
-            _ <- sessionRepository.createRefreshToken(mac, record)
-              .mapError:
-                case ex: Throwable => ex
-                case _ => TokenEndpointError.InvalidGrant
-          yield token,
+          boundRenewal match
+            // Sender-constrained: nothing is rotated, so the client keeps the token it already
+            // has and the row is only re-pointed at the access token just issued. The single
+            // failure mode is the grant having been revoked between the read and this write.
+            case Some(renewal) =>
+              Observability.setRefreshToken(Base64.urlEncode(renewal.token)) *>
+                sessionRepository.renewBoundToken(renewal.mac, record.accessToken, record.expiresAt)
+                  .filterOrFail(identity)(TokenEndpointError.InvalidGrant.RefreshTokenNotFound)
+                  .as(renewal.token)
+
+            case None =>
+              for
+                token <- authPropertyGenerator.nextRefreshToken
+                _ <- Observability.setRefreshToken(Base64.urlEncode(token))
+                mac <- securityService.mac(Secret(token), config.security.refreshTokensSecret)
+                _ <- sessionRepository.createRefreshToken(mac, previousRefreshToken, record, idempotencyKey)
+                  .mapError:
+                    case ex: Throwable => ex
+                    case _ => TokenEndpointError.InvalidGrant.RefreshChainAlreadyExchanged
+              yield token,
         )
 
         // Fetch user if openid scope is present (needed for ID token generation)
