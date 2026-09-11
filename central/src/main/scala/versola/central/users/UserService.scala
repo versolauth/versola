@@ -22,6 +22,11 @@ trait UserService:
 
   def invalidateSession(userId: UserId): Task[Unit]
 
+  /** Every currently-live refresh token issued to the user, independent of
+    * [[getSessions]]: a refresh token's expiry slides forward on every use while a
+    * session's does not, so a token routinely outlives the session it was issued under. */
+  def getRefreshTokens(id: UserId): Task[List[RefreshTokenResponse]]
+
   def create(request: CreateUserRequest): IO[UserConflict | Throwable, UserId]
 
   /** Claim credentials and return the canonical ID for self-service registration. */
@@ -111,6 +116,18 @@ object UserService:
 
     override def invalidateSession(userId: UserId): Task[Unit] =
       authClient.invalidateSession(userId)
+
+    override def getRefreshTokens(id: UserId): Task[List[RefreshTokenResponse]] =
+      authClient.getUserRefreshTokens(id).map(_.map { token =>
+        RefreshTokenResponse(
+          sessionId = token.sessionId,
+          clientId = token.clientId,
+          scope = token.scope,
+          issuedAt = token.issuedAt,
+          expiresAt = token.expiresAt,
+          dpopBound = token.dpopBound,
+        )
+      })
 
     override def create(request: CreateUserRequest): IO[UserConflict | Throwable, UserId] =
       for

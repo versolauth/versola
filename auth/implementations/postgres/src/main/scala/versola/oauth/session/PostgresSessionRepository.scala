@@ -161,9 +161,10 @@ class PostgresSessionRepository(xa: TransactorZIO)
 
   /** Atomically expires all active sessions and refresh tokens for the given user.
     *
-    * Reaches refresh_tokens through the session ids just expired above rather than filtering
-    * it by user_id directly, so this rare admin path does not have to be served by an index
-    * paid for on every refresh -- see the schema comment on refresh_tokens.user_id.
+    * Reaches refresh_tokens by user_id directly rather than through the session ids just
+    * expired above: a refresh token's expiry slides forward on every use while a session's
+    * does not, so a token can still be live long after its session expired on its own, and
+    * force-logout has to revoke those too, not only the ones under a still-active session.
     */
   override def invalidateByUserId(userId: UserId): Task[List[SessionRecord]] =
     Clock.instant.flatMap: now =>
@@ -173,14 +174,27 @@ class PostgresSessionRepository(xa: TransactorZIO)
             UPDATE sso_sessions
             SET expires_at = $now
             WHERE user_id = $userId AND expires_at > $now
-            RETURNING id, user_id, clients, user_agent_id, created_at, amr, public_id, expires_at
+            RETURNING user_id, clients, user_agent_id, created_at, amr, public_id, expires_at
           ),
           revoked_tokens AS (
             UPDATE refresh_tokens SET expires_at = $now
-            WHERE session_id IN (SELECT id FROM expired)
+            WHERE user_id = $userId AND expires_at > $now
           )
           SELECT user_id, clients, user_agent_id, created_at, amr, public_id, expires_at FROM expired
         """.query[SessionRecord].run().toList
+
+  override def findRefreshTokensByUserId(userId: UserId): Task[List[RefreshTokenRecord]] =
+    Clock.instant.flatMap: now =>
+      xa.connectMeasured("find-refresh-tokens-by-user"):
+        sql"""
+          SELECT session_id, public_session_id, access_token, user_id, client_id,
+                 audience, authorization_details, scope, issued_at,
+                 expires_at, requested_claims, ui_locales, nonce,
+                 amr, auth_time, acr, cnf_jkt
+          FROM refresh_tokens
+          WHERE user_id = $userId AND expires_at > $now AND rotated_at IS NULL
+          ORDER BY issued_at DESC
+        """.query[RefreshTokenRecord].run().toList
 
   override def invalidate(id: MAC.Of[SessionId]): Task[Option[SessionRecord]] =
     Clock.instant.flatMap: now =>

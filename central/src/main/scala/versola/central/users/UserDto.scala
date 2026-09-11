@@ -127,3 +127,17 @@ case class SessionResponse(
     version: Option[String],
     createdAt: String,
 ) derives JsonCodec, Schema
+
+case class RefreshTokenResponse(
+    /** The session this token was issued under. May no longer resolve to a live session:
+     *  a refresh token's expiry slides forward on every use while a session's does not,
+     *  so a token routinely outlives it. */
+    sessionId: String,
+    clientId: ClientId,
+    scope: List[String],
+    issuedAt: Instant,
+    expiresAt: Instant,
+    /** RFC 9449: true once this grant is bound to a DPoP key and can no longer be
+     *  refreshed by anyone else who obtains a copy of it. */
+    dpopBound: Boolean,
+) derives JsonCodec, Schema
