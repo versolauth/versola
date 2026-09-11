@@ -37,10 +37,24 @@ trait SessionRepository:
       userId: UserId,
   ): Task[List[SessionRecord]]
 
+  /** Every currently-live refresh token issued to a user, for admin-panel display. Looked up
+    * directly by `user_id` rather than through the user's sessions: a refresh token's expiry
+    * slides forward on every use while a session's does not, so a token routinely outlives the
+    * session it was issued under, and one whose session has already expired (or been swept)
+    * must still show up here.
+    */
+  def findRefreshTokensByUserId(
+      userId: UserId,
+  ): Task[List[RefreshTokenRecord]]
+
   /** Atomically expires all active sessions and refresh tokens for the given user,
    *  returning the sessions that were invalidated so callers (e.g. admin-panel
    *  force-logout) can fan out back-channel logout to their participating clients
-   *  without a separate lookup. Intended for admin-panel use (e.g. force-logout). */
+   *  without a separate lookup. Intended for admin-panel use (e.g. force-logout).
+   *
+   *  Reaches refresh_tokens by user_id directly rather than through the sessions just
+   *  expired above -- a token can be live long after its session expired (see
+   *  [[findRefreshTokensByUserId]]), and force-logout has to revoke those too. */
   def invalidateByUserId(
       userId: UserId,
   ): Task[List[SessionRecord]]

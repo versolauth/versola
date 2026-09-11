@@ -32,6 +32,7 @@ object UserController extends Controller:
     findRolesEndpoint,
     findSessionsEndpoint,
     invalidateSessionEndpoint,
+    findRefreshTokensEndpoint,
     resetLimitsEndpoint,
     listPasskeysEndpoint,
     renamePasskeyEndpoint,
@@ -123,6 +124,29 @@ object UserController extends Controller:
           _ <- logoutService.invalidateAllSessions(userId)
         yield Response.status(Status.NoContent)
       }
+
+  /** Independent of findSessionsEndpoint: a refresh token's expiry slides forward on every
+    * use while a session's does not, so a token routinely outlives the session it was issued
+    * under and would be invisible to an admin working from the session list alone. */
+  val findRefreshTokensEndpoint =
+    Method.GET / "users" / "refresh-tokens" -> handler { (request: Request) =>
+      for
+        _ <- authorizeInternal(request)
+        sessionService <- ZIO.service[SessionService]
+        userId <- request.url.queryZIO[UserId]("id")
+        tokens <- sessionService.listRefreshTokensByUser(userId)
+        responses = tokens.map { token =>
+          RefreshTokenResponse(
+            sessionId = token.publicSessionId,
+            clientId = token.clientId,
+            scope = token.scope.toList,
+            issuedAt = token.issuedAt,
+            expiresAt = token.expiresAt,
+            dpopBound = token.cnfJkt.isDefined,
+          )
+        }
+      yield Response.json(RefreshTokenListResponse(responses).toJson)
+    }
 
   val resetLimitsEndpoint =
     Method.POST / "users" / "limits" / "reset" -> handler { (request: Request) =>

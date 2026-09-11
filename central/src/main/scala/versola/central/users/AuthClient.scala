@@ -41,6 +41,11 @@ trait AuthClient:
   def getUserSessions(id: UserId): Task[List[AuthClient.SessionDto]]
 
   def invalidateSession(userId: UserId): Task[Unit]
+
+  /** Every currently-live refresh token issued to the user. Not derivable from
+    * [[getUserSessions]]: a refresh token's expiry slides forward on every use while a
+    * session's does not, so a token routinely outlives the session it was issued under. */
+  def getUserRefreshTokens(id: UserId): Task[List[AuthClient.RefreshTokenDto]]
   def resetUserLimits(
       userId: UserId,
       tenantId: TenantId,
@@ -114,6 +119,17 @@ object AuthClient:
 
   case class SessionListResponse(sessions: List[SessionDto]) derives JsonCodec
 
+  case class RefreshTokenDto(
+      sessionId: String,
+      clientId: ClientId,
+      scope: List[String],
+      issuedAt: Instant,
+      expiresAt: Instant,
+      dpopBound: Boolean,
+  ) derives JsonCodec
+
+  case class RefreshTokenListResponse(refreshTokens: List[RefreshTokenDto]) derives JsonCodec
+
   private case class ResetUserLimitsPayload(
       userId: UserId,
       tenantId: TenantId,
@@ -147,6 +163,7 @@ object AuthClient:
     private val rolesUrl: URL = usersUrl / "roles"
     private val claimsUrl: URL = usersUrl / "claims"
     private val sessionsUrl: URL = usersUrl / "sessions"
+    private val refreshTokensUrl: URL = usersUrl / "refresh-tokens"
     private val limitsResetUrl: URL = usersUrl / "limits" / "reset"
     private val passkeysUrl: URL = usersUrl / "passkeys"
     private val passwordResetUrl: URL = usersUrl / "password" / "reset"
@@ -215,6 +232,11 @@ object AuthClient:
           body = Body.empty,
         ),
       )
+
+    override def getUserRefreshTokens(id: UserId): Task[List[RefreshTokenDto]] =
+      sendReceive[RefreshTokenListResponse](
+        Request.get(refreshTokensUrl.addQueryParam("id", id.toString)),
+      ).map(_.refreshTokens)
     override def resetUserLimits(
         userId: UserId,
         tenantId: TenantId,

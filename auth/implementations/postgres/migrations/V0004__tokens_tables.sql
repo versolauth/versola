@@ -40,7 +40,9 @@ CREATE TABLE refresh_tokens(
 CREATE INDEX refresh_tokens_family_id_idx ON refresh_tokens (family_id);
 CREATE INDEX refresh_tokens_session_id_idx ON refresh_tokens (session_id);
 CREATE INDEX refresh_tokens_expires_at_idx ON refresh_tokens (expires_at) where expires_at is not null;
--- No index on user_id: invalidateByUserId reaches refresh_tokens through the session ids it
--- just expired on sso_sessions (which is indexed on user_id), rather than filtering this
--- table directly. That is a rare, admin-adjacent path; every other index here is paid on
--- every refresh.
+-- Needed independent of sso_sessions: a refresh token's expiry slides forward on every use
+-- while a session's does not, so a refresh token routinely outlives the session it was
+-- issued under. Both invalidateByUserId (force-logout must reach tokens whose session has
+-- already expired) and findRefreshTokensByUserId (admin-panel listing, same reason) require
+-- refresh_tokens to be queryable by user_id on its own, not by joining through sso_sessions.
+CREATE INDEX refresh_tokens_user_id_idx ON refresh_tokens (user_id);

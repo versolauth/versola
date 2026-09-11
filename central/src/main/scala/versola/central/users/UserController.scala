@@ -18,6 +18,7 @@ object UserController extends Controller:
     findUsersEndpoint,
     getUserRolesEndpoint,
     getUserSessionsEndpoint,
+    getUserRefreshTokensEndpoint,
     createUserEndpoint,
     registeredUserEndpoint,
     patchUserEndpoint,
@@ -72,6 +73,19 @@ object UserController extends Controller:
         id <- request.queryZIO[UserId]("id")
         sessions <- service.getSessions(id)
       yield Response.json(sessions.toJson)
+    }
+
+  /** Independent of getUserSessionsEndpoint: a refresh token's expiry slides forward on every
+    * use while a session's does not, so a token routinely outlives the session it was issued
+    * under and would be invisible to an admin working from the session list alone. */
+  val getUserRefreshTokensEndpoint =
+    Method.GET / "users" / "refresh-tokens" -> handler { (request: Request) =>
+      for
+        _ <- authorizeBasic(request)
+        service <- ZIO.service[UserService]
+        id <- request.queryZIO[UserId]("id")
+        tokens <- service.getRefreshTokens(id)
+      yield Response.json(tokens.toJson)
     }
 
   val createUserEndpoint =
