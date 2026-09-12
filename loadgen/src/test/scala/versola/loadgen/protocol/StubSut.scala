@@ -78,10 +78,19 @@ object StubSut:
   /** `steps` is the conversation the stub will render, one page per entry; each submit consumes
     * one and redirects back to `/challenge`, and the last one redirects to the code.
     */
-  def routes(steps: List[String], recorder: Recorder, remaining: Ref[List[String]]): Routes[Any, Nothing] =
+  def routes(
+      steps: List[String],
+      recorder: Recorder,
+      remaining: Ref[List[String]],
+      silentReauthorize: Boolean = false,
+  ): Routes[Any, Nothing] =
     val challengeRedirect = Response
       .seeOther(URL.decode("/challenge").toOption.get)
       .addCookie(Cookie.Response("SSO_CONVERSATION", conversation))
+
+    // A silent reauthorization (design doc §7.4): the SUT recognized the SSO_SESSION already
+    // satisfies the request and answers straight with the code, no conversation started.
+    val silentReauthorizeRedirect = Response.seeOther(URL.decode(codeRedirect).toOption.get)
 
     def advance: UIO[Response] =
       remaining.modify:
@@ -95,7 +104,10 @@ object StubSut:
         else challengeRedirect
 
     val handled = Routes(
-      Method.GET / "authorize" -> handler((_: Request) => remaining.set(steps).as(challengeRedirect)),
+      Method.GET / "authorize" -> handler((_: Request) =>
+        if silentReauthorize then ZIO.succeed(silentReauthorizeRedirect)
+        else remaining.set(steps).as(challengeRedirect),
+      ),
       Method.GET / "challenge" -> handler: (_: Request) =>
         remaining.get.map(pending => Response.text(page(pending.headOption.getOrElse("credential")))),
       Method.POST / "challenge" / "phone" -> handler((_: Request) => advance),
@@ -113,9 +125,9 @@ object StubSut:
     // a path the stub does not serve is still visible to the assertions.
     handled.transform(_.contramapZIO(request => recorder.seen.update(_ :+ request).as(request)))
 
-  def make(steps: List[String]): ZIO[Any, Nothing, (Recorder, Routes[Any, Nothing])] =
+  def make(steps: List[String], silentReauthorize: Boolean = false): ZIO[Any, Nothing, (Recorder, Routes[Any, Nothing])] =
     for
       seen <- Ref.make(Vector.empty[Request])
       remaining <- Ref.make(steps)
       recorder = Recorder(seen)
-    yield (recorder, routes(steps, recorder, remaining))
+    yield (recorder, routes(steps, recorder, remaining, silentReauthorize))

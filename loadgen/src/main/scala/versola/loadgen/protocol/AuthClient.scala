@@ -22,7 +22,7 @@ trait AuthClient:
       clientId: Option[String],
       acrValues: Option[List[String]],
       sessionCookie: Option[SsoSession],
-  ): IO[ProtocolError, AuthorizeStarted]
+  ): IO[ProtocolError, AuthorizeOutcome]
 
   def challenge(conversation: ConversationCookie): IO[ProtocolError, ChallengePage]
 

@@ -43,19 +43,23 @@ final class MobileFlows(
     observer: FlowObserver,
     otpCode: String,
     origin: String,
-) :
+):
   import MobileFlows.*
 
   /** §8.1 */
-  def mobileOtp(request: LoginRequest, phone: String): IO[ProtocolError, Tokens] =
+  def mobileOtp(request: LoginRequest, phone: String): IO[ProtocolError, (Tokens, Option[SsoSession])] =
     login(FlowName.MobileOtp, request, Credentials.PhoneOtp(phone))
 
   /** §8.2 -- the Argon2 path, tagged as its own flow so its latency is separable. */
-  def mobileOtpPassword(request: LoginRequest, phone: String, password: String): IO[ProtocolError, Tokens] =
+  def mobileOtpPassword(request: LoginRequest, phone: String, password: String): IO[ProtocolError, (Tokens, Option[SsoSession])] =
     login(FlowName.MobileOtpPassword, request, Credentials.PhoneOtpPassword(phone, password))
 
   /** §8.3 */
-  def mobilePasskey(request: LoginRequest, credential: SoftAuthenticator.Credential, sutUserId: UUID): IO[ProtocolError, Tokens] =
+  def mobilePasskey(
+      request: LoginRequest,
+      credential: SoftAuthenticator.Credential,
+      sutUserId: UUID,
+  ): IO[ProtocolError, (Tokens, Option[SsoSession])] =
     login(FlowName.MobilePasskey, request, Credentials.Passkey(credential, sutUserId))
 
   /** §8.5. One hop, but still a flow of its own: it is the single most frequent thing the
@@ -78,15 +82,26 @@ final class MobileFlows(
     timedFlow(FlowName.Logout):
       timedStep(FlowName.Logout, StepName.Logout)(auth.logout(idToken))
 
-  private def login(flow: FlowName, request: LoginRequest, credentials: Credentials): IO[ProtocolError, Tokens] =
+  private def login(
+      flow: FlowName,
+      request: LoginRequest,
+      credentials: Credentials,
+  ): IO[ProtocolError, (Tokens, Option[SsoSession])] =
     timedFlow(flow):
       for
         registration <- ZIO.fromEither(clients.resolve(request.clientId))
-        started <- timedStep(flow, StepName.Authorize):
+        outcome <- timedStep(flow, StepName.Authorize):
           auth.authorize(request.scope, request.clientId, request.acrValues, request.sessionCookie)
-        code <- converse(flow, credentials, started.conversation, None, maxSteps)
-        tokens <- timedStep(flow, StepName.TokenCode)(auth.exchangeCode(code, started.codeVerifier, registration.creds))
-      yield tokens
+        result <- outcome match
+          case AuthorizeOutcome.Started(started) =>
+            for
+              (code, ssoSession) <- converse(flow, credentials, started.conversation, None, maxSteps)
+              tokens <- timedStep(flow, StepName.TokenCode)(auth.exchangeCode(code, started.codeVerifier, registration.creds))
+            yield (tokens, ssoSession)
+          case AuthorizeOutcome.Authorized(code, codeVerifier) =>
+            timedStep(flow, StepName.TokenCode)(auth.exchangeCode(code, codeVerifier, registration.creds))
+              .map(tokens => (tokens, request.sessionCookie))
+      yield result
 
   /** Walks the conversation until it redirects to the code. `page` is the one already in hand
     * when a submit answered `200` with the next step rendered inline instead of redirecting
@@ -98,7 +113,7 @@ final class MobileFlows(
       conversation: ConversationCookie,
       page: Option[ChallengePage],
       remaining: Int,
-  ): IO[ProtocolError, AuthCode] =
+  ): IO[ProtocolError, (AuthCode, Option[SsoSession])] =
     if remaining <= 0 then ZIO.fail(ProtocolError.MalformedResponse(challengeEndpoint, "conversation never reached the code redirect"))
     else
       for
@@ -106,20 +121,21 @@ final class MobileFlows(
         csrf <- HttpExchange.required(current.csrf, challengeEndpoint, "no csrf token in the rendered form")
         step <- HttpExchange.required(current.step, challengeEndpoint, "no versola-step meta tag on the page")
         outcome <- submit(flow, credentials, conversation, step, csrf)
-        code <- outcome match
+        result <- outcome match
           case SubmitOutcome.Rendered(next) => converse(flow, credentials, conversation, Some(next), remaining - 1)
-          case SubmitOutcome.Redirected(location, _) => follow(flow, credentials, conversation, location, remaining)
-      yield code
+          case SubmitOutcome.Redirected(location, ssoSession) => follow(flow, credentials, conversation, location, ssoSession, remaining)
+      yield result
 
   private def follow(
       flow: FlowName,
       credentials: Credentials,
       conversation: ConversationCookie,
       location: String,
+      ssoSession: Option[SsoSession],
       remaining: Int,
-  ): IO[ProtocolError, AuthCode] =
+  ): IO[ProtocolError, (AuthCode, Option[SsoSession])] =
     HttpExchange.redirectParam(location, "code") match
-      case Some(code) => ZIO.succeed(AuthCode(code))
+      case Some(code) => ZIO.succeed((AuthCode(code), ssoSession))
       case None =>
         HttpExchange.redirectParam(location, "error") match
           // The SUT refused the authorization outright (`access_denied`, `login_required`, ...).

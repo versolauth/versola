@@ -1,8 +1,8 @@
 package versola.loadgen.protocol
 
 import versola.loadgen.config.TargetsConfig
-import zio.http.Header.Authorization
 import zio.http.*
+import zio.http.Header.Authorization
 import zio.{Duration, IO, ZIO, ZLayer}
 
 /** The business-action half of §8.6: a call through the edge's resource proxy, with either the
@@ -33,6 +33,11 @@ final class EdgeActionClient(exchange: HttpExchange, resources: URL) extends Act
   /** The three outcomes that are outcomes and not failures (§4): a step-up demand, a `403` a
     * `retail-basic` user is expected to collect, and an expired access token. Each is a branch
     * the scenario engine takes, and none of them touches the error budget.
+    *
+    * Anything else that isn't a `2xx` success -- a `404`/`500` from edge or the upstream
+    * `mockapi`, say -- is not a fourth outcome: it has no scenario-engine branch and no error
+    * this client can attribute to a documented cause, so it fails as `UnexpectedStatus` rather
+    * than being recorded as a normal `ActionOutcome`.
     */
   private def outcome(received: Received, action: ActionCall, credential: EdgeCredential): IO[ProtocolError, ActionOutcome] =
     if received.status == Status.Forbidden then ZIO.fail(ProtocolError.Forbidden(action.path))
@@ -40,17 +45,21 @@ final class EdgeActionClient(exchange: HttpExchange, resources: URL) extends Act
       stepUpAcrValues(received) match
         case Some(acrValues) => ZIO.fail(ProtocolError.StepUpRequired(acrValues, action.path))
         case None => ZIO.fail(ProtocolError.Unauthorized(action.path))
-    else
+    else if received.status.isSuccess then
       // Edge rotates EDGE_SESSION whenever it refreshes behind the cookie; a caller that does
       // not adopt the new value loses the session mid-run and reads it as an SUT failure (§8.4).
+      // Only the success path has a session to rotate -- an error response has no reason to
+      // carry one, and applying this on that path would not be a decision.
       val rotated = credential match
         case EdgeCredential.Cookie(_) => HttpExchange.setCookie(received.response, edgeSessionCookie).map(EdgeSession.apply)
         case EdgeCredential.Bearer(_) => None
       ZIO.succeed(ActionOutcome(received.status, received.body, rotated))
+    else ZIO.fail(HttpExchange.unexpected(expectedSuccess, received.status, action.path))
 
 object EdgeActionClient:
   private val edgeSessionCookie = "EDGE_SESSION"
   private val jsonContentType = Header.ContentType(MediaType.application.json)
+  private val expectedSuccess: Set[Status] = Set(Status.Ok)
 
   private val insufficientAuthentication = "insufficient_user_authentication"
   private val acrValuesParameter = java.util.regex.Pattern.compile("""acr_values="([^"]*)"""")

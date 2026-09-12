@@ -73,6 +73,22 @@ object EdgeActionClientSpec extends ZIOSpecDefault:
         failure <- actions.call(EdgeCredential.Bearer(AccessToken("at-1")), accounts).either
       yield assertTrue(failure == Left(ProtocolError.Forbidden(accounts.path)))
     },
+    test("a 404 from edge or the upstream is an UnexpectedStatus, not a successful ActionOutcome") {
+      for
+        seen <- Ref.make(Option.empty[Request])
+        actions <- clientFor(Response.status(Status.NotFound), seen)
+        failure <- actions.call(EdgeCredential.Bearer(AccessToken("at-1")), accounts).either
+      yield assertTrue(failure == Left(ProtocolError.UnexpectedStatus(Set(Status.Ok), Status.NotFound, accounts.path)))
+    },
+    test("a 500 from edge or the upstream is an UnexpectedStatus, not a successful ActionOutcome") {
+      for
+        seen <- Ref.make(Option.empty[Request])
+        actions <- clientFor(Response.status(Status.InternalServerError), seen)
+        failure <- actions.call(EdgeCredential.Bearer(AccessToken("at-1")), accounts).either
+      yield assertTrue(
+        failure == Left(ProtocolError.UnexpectedStatus(Set(Status.Ok), Status.InternalServerError, accounts.path)),
+      )
+    },
     test("a body is sent as JSON") {
       for
         seen <- Ref.make(Option.empty[Request])

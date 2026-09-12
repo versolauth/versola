@@ -15,7 +15,7 @@ object MobileFlowsSpec extends ZIOSpecDefault:
 
   /** Collects what a [[FlowObserver]] would have fed the histograms. */
   private final class RecordingObserver(steps: Ref[Vector[(FlowName, StepName, Option[ProtocolError])]], flows: Ref[Vector[FlowName]])
-      extends FlowObserver:
+    extends FlowObserver:
     override def step(flow: FlowName, step: StepName, elapsedNanos: Long, error: Option[ProtocolError]): UIO[Unit] =
       steps.update(_ :+ (flow, step, error))
 
@@ -52,12 +52,15 @@ object MobileFlowsSpec extends ZIOSpecDefault:
         (sut, routes) = stub
         recorder <- observer
         flows <- flowsFor(routes, recorder)
-        tokens <- flows.mobileOtp(request("mobile-otp"), "+70000000001")
+        (tokens, ssoSession) <- flows.mobileOtp(request("mobile-otp"), "+70000000001")
         hops <- sut.paths
         steps <- recorder.stepNames
         flowNames <- recorder.flowNames
       yield assertTrue(
         tokens == expectedTokens,
+        // The newly-issued SSO_SESSION cookie (§7.4) must reach the caller, not just get
+        // consumed and dropped somewhere in `converse`/`follow`.
+        ssoSession == Some(SsoSession(StubSut.ssoSession)),
         hops == Vector(
           "GET /authorize",
           "GET /challenge",
@@ -76,7 +79,7 @@ object MobileFlowsSpec extends ZIOSpecDefault:
         (sut, routes) = stub
         recorder <- observer
         flows <- flowsFor(routes, recorder)
-        tokens <- flows.mobileOtpPassword(request("mobile-otp-password"), "+70000000002", "hunter2")
+        (tokens, _) <- flows.mobileOtpPassword(request("mobile-otp-password"), "+70000000002", "hunter2")
         hops <- sut.paths
         form <- sut.formOf("/challenge/password")
         steps <- recorder.stepNames
@@ -106,7 +109,7 @@ object MobileFlowsSpec extends ZIOSpecDefault:
         recorder <- observer
         flows <- flowsFor(routes, recorder)
         credential <- SoftAuthenticator.create(StubSut.creationOptions("Y2hhbGxlbmdl"), StubSut.origin)
-        tokens <- flows.mobilePasskey(request("mobile-passkey"), credential, sutUserId)
+        (tokens, _) <- flows.mobilePasskey(request("mobile-passkey"), credential, sutUserId)
         hops <- sut.paths
         form <- sut.formOf("/challenge/passkey")
         steps <- recorder.stepNames
@@ -121,7 +124,7 @@ object MobileFlowsSpec extends ZIOSpecDefault:
         ),
         // The signing itself is not a hop: no step sits between the two measured ones.
         steps == Vector("authorize", "challenge", "passkey-options", "submit-passkey", "token-code"),
-        form.exists(_.get("response").exists(_.contains("\"signature\"" ))),
+        form.exists(_.get("response").exists(_.contains("\"signature\""))),
         form.exists(_.get("csrf") == Some(StubSut.csrf)),
       )
     },
@@ -175,8 +178,7 @@ object MobileFlowsSpec extends ZIOSpecDefault:
         failure <- flows.mobileOtp(request("mobile-otp"), "+70000000004").either
       yield assertTrue(failure.left.exists:
         case ProtocolError.Misconfigured(_) => true
-        case _ => false,
-      )
+        case _ => false)
     },
     test("an error redirect out of the conversation ends the flow instead of re-fetching forever") {
       for

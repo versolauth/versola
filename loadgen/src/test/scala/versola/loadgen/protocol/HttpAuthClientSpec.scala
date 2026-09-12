@@ -1,9 +1,9 @@
 package versola.loadgen.protocol
 
 import versola.loadgen.config.TargetsConfig
+import zio.ZIO
 import zio.http.*
 import zio.test.*
-import zio.ZIO
 
 object HttpAuthClientSpec extends ZIOSpecDefault:
 
@@ -24,19 +24,32 @@ object HttpAuthClientSpec extends ZIOSpecDefault:
         stub <- StubSut.make(List("credential"))
         (recorder, routes) = stub
         auth <- clientFor(routes)
-        started <- auth.authorize("openid phone", None, Some(List(Acr.OtpLevel)), None)
+        outcome <- auth.authorize("openid phone", None, Some(List(Acr.OtpLevel)), None)
         query <- recorder.seen.get.map(_.head.url.queryParams)
+        started = outcome match
+          case AuthorizeOutcome.Started(started) => Some(started)
+          case AuthorizeOutcome.Authorized(_, _) => None
       yield assertTrue(
-        started.conversation == ConversationCookie(StubSut.conversation),
-        started.state.length == 32,
+        started.exists(_.conversation == ConversationCookie(StubSut.conversation)),
+        started.exists(_.state.length == 32),
         queryParam(query, "response_type") == Some("code"),
         queryParam(query, "client_id") == Some("mobile-otp"),
         queryParam(query, "redirect_uri") == Some(StubSut.redirectUri),
         queryParam(query, "scope") == Some("openid phone"),
         queryParam(query, "code_challenge_method") == Some("S256"),
         queryParam(query, "acr_values") == Some(Acr.OtpLevel),
-        queryParam(query, "state") == Some(started.state),
+        started.exists(s => queryParam(query, "state") == Some(s.state)),
       )
+    },
+    test("authorize recognizes a silent reauthorization when the SUT answers with a code-bearing redirect and no conversation cookie") {
+      for
+        stub <- StubSut.make(Nil, silentReauthorize = true)
+        (_, routes) = stub
+        auth <- clientFor(routes)
+        outcome <- auth.authorize("openid", None, None, Some(SsoSession(StubSut.ssoSession)))
+      yield assertTrue(outcome match
+        case AuthorizeOutcome.Authorized(code, _) => code == AuthCode(StubSut.code)
+        case AuthorizeOutcome.Started(_) => false)
     },
     test("authorize carries an existing SSO session when one is passed, for a step-up") {
       for
@@ -133,6 +146,34 @@ object HttpAuthClientSpec extends ZIOSpecDefault:
         )
         failure <- auth.exchangeRefresh(RefreshToken("rt-1"), StubSut.publicClient.creds).either
       yield assertTrue(failure == Left(ProtocolError.RefreshRejected(RefreshRejection.Unknown("invalid_grant"))))
+    },
+    test("a 401 on refresh is the emulator's own client credentials, not a refresh rejection") {
+      for
+        stub <- StubSut.make(List("otp"))
+        (_, routes) = stub
+        auth <- clientFor(
+          routes.transform(_ =>
+            handler((_: Request) =>
+              ZIO.succeed(
+                Response.json("""{"error":"invalid_client"}""").status(Status.Unauthorized),
+              ),
+            ),
+          ),
+        )
+        failure <- auth.exchangeRefresh(RefreshToken("rt-1"), StubSut.publicClient.creds).either
+      yield assertTrue(
+        failure == Left(ProtocolError.Misconfigured("token endpoint rejected client credentials on refresh")),
+      )
+    },
+    test("a 500 on refresh is an UnexpectedStatus, not a refresh rejection") {
+      for
+        stub <- StubSut.make(List("otp"))
+        (_, routes) = stub
+        auth <- clientFor(routes.transform(_ => handler((_: Request) => ZIO.succeed(Response.status(Status.InternalServerError)))))
+        failure <- auth.exchangeRefresh(RefreshToken("rt-1"), StubSut.publicClient.creds).either
+      yield assertTrue(
+        failure == Left(ProtocolError.UnexpectedStatus(Set(Status.Ok), Status.InternalServerError, "/token")),
+      )
     },
     test("a token body that is not the expected shape is a MalformedResponse, not a decoding defect") {
       for

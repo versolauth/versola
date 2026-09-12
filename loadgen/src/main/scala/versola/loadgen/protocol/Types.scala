@@ -85,6 +85,17 @@ case class AuthorizeStarted(
     state: String,
 )
 
+/** Outcome of [[AuthClient.authorize]]: either a conversation actually started, or the SUT
+  * recognized the supplied `SSO_SESSION` as already satisfying the request and answered a
+  * silent reauthorization (design doc §7.4) -- a redirect straight to the code, with no
+  * `SSO_CONVERSATION` cookie and no conversation to walk. `codeVerifier` is still required in
+  * both cases: the code was issued for the `code_challenge` this call sent to `/authorize`
+  * regardless of which path answered it.
+  */
+enum AuthorizeOutcome:
+  case Started(started: AuthorizeStarted)
+  case Authorized(code: AuthCode, codeVerifier: CodeVerifier)
+
 /** A fetched challenge page. `step`/`csrf` are `None` when the page carries neither (e.g. an
   * error page) -- callers that require one assert on it explicitly rather than this type
   * throwing, unlike the e2e original's `ChallengeResult.csrf` (§3.2).

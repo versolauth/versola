@@ -1,8 +1,8 @@
 package versola.loadgen.protocol
 
 import versola.loadgen.config.TargetsConfig
-import zio.http.Header.Authorization
 import zio.http.*
+import zio.http.Header.Authorization
 import zio.json.*
 import zio.{Duration, IO, ZIO, ZLayer}
 
@@ -90,7 +90,7 @@ final class HttpAuthClient(exchange: HttpExchange, endpoints: AuthEndpoints, cli
       clientId: Option[String],
       acrValues: Option[List[String]],
       sessionCookie: Option[SsoSession],
-  ): IO[ProtocolError, AuthorizeStarted] =
+  ): IO[ProtocolError, AuthorizeOutcome] =
     for
       registration <- ZIO.fromEither(clients.resolve(clientId))
       pkce = Pkce.generate()
@@ -107,12 +107,23 @@ final class HttpAuthClient(exchange: HttpExchange, endpoints: AuthEndpoints, cli
       request = Request.get(endpoints.authorize.addQueryParams(params))
       withSession = sessionCookie.fold(request)(session => request.addHeader(HttpExchange.cookieHeader(ssoSessionCookie, session.value)))
       received <- exchange.send(withSession)
-      conversation <- HttpExchange.required(
-        HttpExchange.setCookie(received.response, conversationCookie),
-        authorizeEndpoint,
-        "no " + conversationCookie + " cookie on the /authorize response",
-      )
-    yield AuthorizeStarted(ConversationCookie(conversation), pkce.verifier, state)
+      outcome <- HttpExchange.setCookie(received.response, conversationCookie) match
+        case Some(cookie) =>
+          ZIO.succeed(AuthorizeOutcome.Started(AuthorizeStarted(ConversationCookie(cookie), pkce.verifier, state)))
+        case None =>
+          for
+            location <- HttpExchange.required(
+              received.location,
+              authorizeEndpoint,
+              "no " + conversationCookie + " cookie and no redirect Location on the /authorize response",
+            )
+            code <- HttpExchange.required(
+              HttpExchange.redirectParam(location, "code"),
+              authorizeEndpoint,
+              "no " + conversationCookie + " cookie and no code on the /authorize redirect",
+            )
+          yield AuthorizeOutcome.Authorized(AuthCode(code), pkce.verifier)
+    yield outcome
 
   override def challenge(conversation: ConversationCookie): IO[ProtocolError, ChallengePage] =
     exchange
@@ -180,7 +191,15 @@ final class HttpAuthClient(exchange: HttpExchange, endpoints: AuthEndpoints, cli
       .send(tokenRequest(List("grant_type" -> "refresh_token", "refresh_token" -> token.value), client))
       .flatMap: received =>
         if received.status == Status.Ok then decodeTokens(received.body)
-        else ZIO.fail(ProtocolError.RefreshRejected(refreshRejection(received)))
+        // A 400 is the token endpoint rejecting the refresh grant itself (RFC 6749 §5.2) --
+        // the only thing `loadgen_refresh_rejected_total` (§11) is supposed to measure.
+        else if received.status == Status.BadRequest then ZIO.fail(ProtocolError.RefreshRejected(refreshRejection(received)))
+        // A 401 here is `invalid_client`: the emulator's own client credentials are wrong or
+        // stale, not the SUT rejecting a refresh -- polluting the RefreshRejected metric with
+        // this would defeat its purpose (§7.4).
+        else if received.status == Status.Unauthorized then
+          ZIO.fail(ProtocolError.Misconfigured("token endpoint rejected client credentials on refresh"))
+        else ZIO.fail(HttpExchange.unexpected(expectedOk, received.status, tokenEndpoint))
 
   override def logout(idToken: IdToken): IO[ProtocolError, Unit] =
     exchange
