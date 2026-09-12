@@ -9,7 +9,7 @@ import zio.telemetry.opentelemetry.tracing.Tracing
 import java.security.MessageDigest
 
 object ServiceController extends Controller:
-  type Env = Tracing & OAuthClientService & EdgeConfig & EnvName
+  type Env = Tracing & OAuthClientService & ResourceService & PermissionService & EdgeConfig & EnvName
 
   def routes: Routes[Env, Throwable] = Routes(syncEndpoint)
 
@@ -20,7 +20,9 @@ object ServiceController extends Controller:
         else
           for
             _ <- authorizeInternal(request)
-            _ <- ZIO.serviceWithZIO[OAuthClientService](_.refreshNow)
+            _ <- ZIO.serviceWithZIO[OAuthClientService](_.refreshNow) <&>
+              ZIO.serviceWithZIO[ResourceService](_.refreshNow) <&>
+              ZIO.serviceWithZIO[PermissionService](_.refreshNow)
           yield Response.ok
     }
 

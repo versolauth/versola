@@ -2,7 +2,7 @@ package versola.edge
 
 import versola.edge.model.{ClientId, OAuthClient, PermissionId, ResourceEndpointId, RoleId, TenantId}
 import versola.util.ReloadingCache
-import zio.{Schedule, Scope, UIO, ZIO, ZLayer}
+import zio.{Schedule, Scope, Task, UIO, ZIO, ZLayer}
 
 trait PermissionService:
   def getAllowedEndpointsForRoles(tenantId: TenantId, roles: List[RoleId]): UIO[Set[ResourceEndpointId]]
@@ -14,6 +14,11 @@ trait PermissionService:
       roles: List[RoleId],
       endpointIds: Set[ResourceEndpointId],
   ): UIO[Set[PermissionId]]
+
+  /** Reloads all three caches from central now, instead of waiting for
+    * `configurationCacheRefreshInterval`. Backs the non-prod `/service/configuration/sync`
+    * endpoint; nothing in request handling calls this. */
+  def refreshNow: Task[Unit]
 
 object PermissionService:
   def live: ZLayer[RolesSyncClient & PermissionsSyncClient & OAuthClientsSyncClient & Scope & EdgeConfig, Throwable, PermissionService] =
@@ -32,13 +37,19 @@ object PermissionService:
         ZIO.serviceWithZIO[EdgeConfig](config =>
           ReloadingCache.make[Map[ClientId, OAuthClient]](config.configurationCacheRefreshInterval),
         )
-      )           // clientId → OAuthClient
-    ) >>> ZLayer.fromFunction(Impl(_, _, _))
+      ) ++          // clientId → OAuthClient
+      ZLayer.service[RolesSyncClient] ++
+      ZLayer.service[PermissionsSyncClient] ++
+      ZLayer.service[OAuthClientsSyncClient]
+    ) >>> ZLayer.fromFunction(Impl(_, _, _, _, _, _))
 
   class Impl(
       rolesCache: ReloadingCache[Map[(TenantId, RoleId), Set[PermissionId]]],
       permissionsCache: ReloadingCache[Map[PermissionId, Set[ResourceEndpointId]]],
       clientsCache: ReloadingCache[Map[ClientId, OAuthClient]],
+      rolesSource: RolesSyncClient,
+      permissionsSource: PermissionsSyncClient,
+      clientsSource: OAuthClientsSyncClient,
   ) extends PermissionService:
 
     private def permissionsFor(
@@ -72,3 +83,10 @@ object PermissionService:
         permMap <- permissionsCache.get
         permIds = permissionsFor(tenantId, roles, roleMap)
       yield permIds.filter(permId => permMap.getOrElse(permId, Set.empty).exists(endpointIds.contains))
+
+    override def refreshNow: Task[Unit] =
+      (
+        rolesSource.getAll.flatMap(rolesCache.set) <&>
+          permissionsSource.getAll.flatMap(permissionsCache.set) <&>
+          clientsSource.getAll.flatMap(clientsCache.set)
+      ).unit

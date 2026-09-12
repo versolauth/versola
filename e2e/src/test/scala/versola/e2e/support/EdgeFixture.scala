@@ -58,11 +58,11 @@ object EdgeFixture:
     *                         resolves a token's audience by looking a resource up by URI, so
     *                         two resources sharing one would be ambiguous.
     * @param awaitProxyReady  waits until the edge actually proxies to this resource before the
-    *                         first test runs. Edge's `/service/configuration/sync` reloads only
-    *                         its client and preset caches; resources, roles and permissions
-    *                         arrive on `configurationCacheRefreshInterval`, so a proxy test
-    *                         starting immediately would assert against the previous run's
-    *                         configuration and see a 404 or a 403.
+    *                         first test runs. `/service/configuration/sync` refreshes every
+    *                         edge cache this fixture writes to, but it pulls from central,
+    *                         whose own caches are brought up to date by a notification the
+    *                         registering request does not wait for -- so a sync issued right
+    *                         after a write can still carry the previous snapshot.
     */
   case class Config(
       resourceId: String,
@@ -193,8 +193,12 @@ object EdgeFixture:
     *
     * Convergence is observed through the proxy itself rather than through a cache endpoint,
     * because the proxy is what the tests assert on: a 404 means the resource is not there yet,
-    * a 403 means the permission is not, and anything else means both arrived. The cap is
-    * generous on purpose — it is bounded by the edge's refresh interval, not by the network.
+    * a 403 means the permission is not, and anything else means both arrived.
+    *
+    * Each attempt re-issues the edge sync rather than only re-probing: what it is waiting out
+    * is central's own notification-driven cache update, so a probe that fails means the last
+    * pull was too early and the next one has to be a fresh pull, not a re-read of the same
+    * cached answer.
     */
   private def awaitProxy(
       auth: OAuthClient,
@@ -212,8 +216,8 @@ object EdgeFixture:
       )
     for
       session <- edge.browserLogin(auth, presetId, login, password)
-      settled <- edge
-        .proxy(Method.fromString(probe.method), config.resourceId, probe.path, session.auth)
+      settled <- (edge.syncConfiguration *> edge
+        .proxy(Method.fromString(probe.method), config.resourceId, probe.path, session.auth))
         .map(result => result.status != Status.NotFound && result.status != Status.Forbidden)
         .repeat(Schedule.spaced(1.second) *> Schedule.recurUntilEquals(true))
         .timeout(90.seconds)
