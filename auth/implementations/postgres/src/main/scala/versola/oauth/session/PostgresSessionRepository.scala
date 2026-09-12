@@ -241,6 +241,32 @@ class PostgresSessionRepository(xa: TransactorZIO)
 
   // ── refresh token methods ─────────────────────────────────────────────────
 
+  /** Serialises every rotation and revocation of the family `token` belongs to, for the rest of
+    * the transaction.
+    *
+    * An advisory lock rather than a row lock on the family's live tip -- the one row both
+    * operations have to go through -- because `WHERE rotated_at IS NULL FOR UPDATE` cannot lock
+    * that row reliably. At READ COMMITTED a rotation committing while the lock is waited for
+    * makes the row stop matching, and Postgres then skips it: the waiter proceeds having locked
+    * nothing, and its family-wide update can run beside a later rotation whose successor its
+    * snapshot never sees. A lock that names a key instead of a row has nothing to lose that way.
+    *
+    * Transaction-level, so it is released on commit or rollback and is safe behind a connection
+    * pooler in transaction mode -- unlike session-level `pg_advisory_lock`, whose lifetime would
+    * outlive the transaction and so leak across a pooler's server-connection reuse.
+    *
+    * An unknown token leaves the second key NULL, which takes no lock. Nothing is lost: the
+    * caller's own statements find no row either way.
+    */
+  private def lockFamily(token: MAC.Of[RefreshToken])(using DbCon): Unit =
+    sql"""
+      SELECT 1 FROM pg_advisory_xact_lock(
+        ${PostgresSessionRepository.RefreshTokenFamilyLockNamespace},
+        (SELECT hashtext(encode(family_id, 'hex')) FROM refresh_tokens WHERE id = $token)
+      )
+    """.query[Int].run()
+    ()
+
   override def createRefreshToken(
       refreshToken: MAC.Of[RefreshToken],
       previous: Option[MAC.Of[RefreshToken]],
@@ -282,16 +308,16 @@ class PostgresSessionRepository(xa: TransactorZIO)
             """.update.run()
 
           case Some(previousToken) =>
+            lockFamily(previousToken)
+
             // Retire the predecessor, move the idempotency key onto it, and insert the
             // successor -- one statement, one round trip.
             //
-            // `retired` takes the predecessor's row lock, and that is the whole concurrency
-            // story: a second rotation of the same token blocks there and then matches no row,
-            // and `revokeFamily` locks the same row before expiring a family, so a rotation
-            // cannot slip a successor past a revocation running beside it. Nothing has to be
-            // locked family-wide, and no row has to be kept alive to be lockable -- which is
-            // why the root needs no expiry bump and is retained on the same terms as any other
-            // retired generation.
+            // `retired`'s row lock is what orders two rotations of the same token against each
+            // other: the second blocks there and then matches no row. Ordering a rotation
+            // against a revocation is the family lock's job (see `lockFamily`), not this row's.
+            // Nothing here has to be kept alive to be lockable -- which is why the root needs
+            // no expiry bump and is retained on the same terms as any other retired generation.
             //
             // `expires_at` on the retired row is not "when this token stops working" --
             // rotated_at already means that -- it is how long the row survives the cleanup
@@ -384,6 +410,12 @@ class PostgresSessionRepository(xa: TransactorZIO)
         // only ever on one. Requiring the presented token to share its family stops a leaked
         // key from being usable on its own, and scoping to the client stops one client from
         // reaching into another's chain.
+        //
+        // `presented` and `exchanged` are both gated on `expires_at > now`, unlike the family
+        // lookup in `revokeFamily`: this query *grants* the caller the live tip, so how long
+        // that grant remains available has to be the recorded `ReplayDetectionWindow`, not
+        // whatever the cleanup sweep's cadence happens to be. A row past its `expires_at` is
+        // physically present until swept, but must stop being honoured now.
         sql"""
           SELECT tip.id, tip.session_id, tip.public_session_id, tip.access_token, tip.user_id,
                  tip.client_id, tip.audience, tip.authorization_details, tip.scope,
@@ -394,11 +426,13 @@ class PostgresSessionRepository(xa: TransactorZIO)
             ON exchanged.family_id = presented.family_id
            AND exchanged.idempotency_key = $idempotencyKey
            AND exchanged.rotated_at IS NOT NULL
+           AND exchanged.expires_at > $now
           JOIN refresh_tokens tip
             ON tip.family_id = presented.family_id
            AND tip.rotated_at IS NULL
            AND tip.expires_at > $now
           WHERE presented.id = $token AND presented.client_id = $clientId
+            AND presented.expires_at > $now
         """
           .query[(MAC.Of[RefreshToken], RefreshTokenRecord)]
           .run()
@@ -411,6 +445,12 @@ class PostgresSessionRepository(xa: TransactorZIO)
   ): Task[Option[RevokedFamily]] =
     Clock.instant.flatMap: now =>
       xa.transactMeasured("revoke-refresh-token-family") {
+        // Taken before the family is even read, so everything below runs on a snapshot no
+        // rotation of this family can still be about to change: one in flight either commits
+        // first -- and has its freshly inserted successor expired by the update below -- or
+        // waits, and then finds the token it meant to rotate already dead.
+        lockFamily(token)
+
         sql"""
           SELECT family_id, user_id
           FROM refresh_tokens
@@ -419,18 +459,6 @@ class PostgresSessionRepository(xa: TransactorZIO)
           .run()
           .headOption
           .map: (family, userId) =>
-            // The live tip is the row a rotation of this family has to retire, so locking it
-            // is what serialises the two: a rotation in flight either commits first -- and has
-            // its freshly inserted successor expired by the update below, which runs after the
-            // lock is granted and therefore sees it -- or waits, and then finds the token it
-            // meant to rotate already dead. Locking the tip rather than the root is what frees
-            // the root from having to outlive the family it anchors.
-            sql"""
-              SELECT 1 FROM refresh_tokens
-              WHERE family_id = $family AND rotated_at IS NULL
-              FOR UPDATE
-            """.query[Int].run()
-
             val revoked = sql"""
               UPDATE refresh_tokens
               SET expires_at = $now
@@ -489,25 +517,53 @@ object PostgresSessionRepository:
   def live: ZLayer[TransactorZIO, Throwable, SessionRepository] =
     ZLayer.fromFunction(PostgresSessionRepository(_))
 
+  /** Namespace (first key) for the transaction-level advisory lock that serialises rotation
+    * against revocation within one refresh token family. Advisory-lock keys are global to the
+    * entire database, so this must be unique DB-wide: the only other one is
+    * `PostgresPasswordRepository.PasswordHistoryLockNamespace` (92). It is `237` (the issue
+    * number) by the same convention.
+    *
+    * The second key is derived from `family_id` via `hashtext`, which is 32-bit, so two families
+    * can collide and briefly serialize each other. Like the password-history lock, that costs a
+    * short wait and never correctness. Cross-version instability of `hashtext` does not matter
+    * here either: the lock never outlives a transaction, and every contending transaction asks
+    * the same server for the same value at the same time.
+    */
+  private val RefreshTokenFamilyLockNamespace: Int = 237
+
   /** Signals a rotation that lost its race, from inside the transaction body. */
   private case object RotationLost extends RuntimeException("refresh token already exchanged")
 
-  /** How long a retired token's row is kept around after rotation so a replay of that
-    * generation still resolves to its family. Independent of refresh_token_ttl on purpose:
-    * that value governs how long an *unused* token stays valid, not how far back a replay
-    * has to be detectable. A replay older than this window falls back to a plain
-    * invalid_grant with no revocation -- the pre-fix behavior -- which is an accepted
-    * trade-off for keeping the table's steady-state size bounded by rotation frequency
-    * times this window rather than times the (typically much longer) refresh-token TTL.
+  /** The guaranteed *minimum* time a retired token's row survives rotation so a replay of that
+    * generation still resolves to its family -- not a cutoff, because the two callers that read
+    * a retired row treat expiry past this point differently:
+    *
+    *   - `findIdempotentRetry` *grants* the caller the family's live tip, so it is strict:
+    *     `presented`/`exchanged` are gated on `expires_at > now`, and a row past that instant is
+    *     refused even if the cleanup sweep hasn't reclaimed it yet.
+    *   - `revokeFamily`'s own family lookup *takes access away*, so it is best-effort: it carries
+    *     no expiry check at all and keeps working for as long as the row physically exists.
+    *     Detecting a replay late and revoking anyway is strictly safer than not revoking, so
+    *     there is nothing to gain from cutting it off at exactly this window -- how far past it
+    *     detection still works is however long the cleanup sweep takes to physically delete the
+    *     row, not a value this code promises.
+    *
+    * Independent of refresh_token_ttl on purpose: that value governs how long an *unused* token
+    * stays valid, not how far back a replay has to be detectable. Once the row is gone, both
+    * callers fall back to a plain invalid_grant with no revocation -- the pre-fix behavior --
+    * which is an accepted trade-off for keeping the table's steady-state size bounded by
+    * rotation frequency times this window rather than times the (typically much longer)
+    * refresh-token TTL.
     *
     * The case this exists for is an attacker rotating a stolen token before the legitimate
     * client wakes up and presents the one it still holds -- that presentation is the only
     * signal the chain leaked. 24h covers the common absence pattern (overnight, a closed
     * laptop) at a bounded cost: retained rows per family are window / refresh interval, so
     * this is ~1 row/family/day at an hourly refresh cadence rather than ~90 at the full
-    * refresh-token TTL. A client that goes quiet for longer than this loses detection for
-    * that gap; if that matters, retaining a narrow tombstone (id, family_id, user_id,
-    * client_id, issued_at) instead of the full row would make a much longer window cheap.
+    * refresh-token TTL. A client that goes quiet for longer than this loses guaranteed
+    * detection for that gap; if that matters, retaining a narrow tombstone (id, family_id,
+    * user_id, client_id, issued_at) instead of the full row would make a much longer window
+    * cheap.
     */
   private val ReplayDetectionWindow: Duration = Duration.fromSeconds(24 * 3600)
 
