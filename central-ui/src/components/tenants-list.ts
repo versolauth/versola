@@ -2,43 +2,12 @@ import { LitElement, html, css } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
 import { buttonStyles, cardStyles, formStyles, iconActionStyles } from '../styles/components';
-import type { Edge, SubmissionLimits, Tenant } from '../types';
+import type { Edge, Tenant } from '../types';
 import { createTenant, deleteTenant, fetchTenants, updateTenant, fetchEdges } from '../utils/central-api';
 import { confirmDestructiveAction } from '../utils/confirm-dialog';
 import { validateTenantId } from '../utils/validators';
 import './content-header';
 import './loading-cards';
-
-type LimitCategory = 'otpRequest' | 'otpSubmit' | 'passwordSubmit' | 'passkeyAssertion';
-
-/** Mirrors `SubmissionLimits.recommended` in `central`'s `SubmissionLimits.scala` -- keep the
-  * two in sync. Pre-fills the create-tenant form; the operator can edit or approve it before
-  * submitting, but every category must stay non-empty (the server rejects an empty one).
-  */
-const RECOMMENDED_SUBMISSION_LIMITS: SubmissionLimits = {
-  otpRequest: [{ maxAttempts: 2, windowSeconds: 60 }, { maxAttempts: 5, windowSeconds: 3600 }],
-  otpSubmit: [{ maxAttempts: 3, windowSeconds: 120 }, { maxAttempts: 5, windowSeconds: 3600 }],
-  passwordSubmit: [{ maxAttempts: 5, windowSeconds: 900 }, { maxAttempts: 10, windowSeconds: 3600 }],
-  passkeyAssertion: [{ maxAttempts: 5, windowSeconds: 300 }, { maxAttempts: 10, windowSeconds: 3600 }],
-  banDurationSeconds: 1800,
-};
-
-function cloneSubmissionLimits(limits: SubmissionLimits): SubmissionLimits {
-  return {
-    otpRequest: limits.otpRequest.map(tier => ({ ...tier })),
-    otpSubmit: limits.otpSubmit.map(tier => ({ ...tier })),
-    passwordSubmit: limits.passwordSubmit.map(tier => ({ ...tier })),
-    passkeyAssertion: limits.passkeyAssertion.map(tier => ({ ...tier })),
-    banDurationSeconds: limits.banDurationSeconds,
-  };
-}
-
-const LIMIT_CATEGORY_LABELS: Record<LimitCategory, string> = {
-  otpRequest: 'OTP request',
-  otpSubmit: 'OTP submit',
-  passwordSubmit: 'Password submit',
-  passkeyAssertion: 'Passkey assertion',
-};
 
 @customElement('versola-tenants-list')
 export class VersolaTenantsList extends LitElement {
@@ -56,7 +25,6 @@ export class VersolaTenantsList extends LitElement {
   @state() private tenantIdInput = '';
   @state() private tenantDescriptionInput = '';
   @state() private selectedEdgeId: string = '';
-  @state() private submissionLimits: SubmissionLimits = cloneSubmissionLimits(RECOMMENDED_SUBMISSION_LIMITS);
 
   connectedCallback() {
     super.connectedCallback();
@@ -149,39 +117,6 @@ export class VersolaTenantsList extends LitElement {
         padding-top: var(--spacing-lg);
         border-top: 1px solid var(--border-dark);
       }
-      .limits-header {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: var(--spacing-md);
-      }
-      .limit-row {
-        display: flex;
-        flex-wrap: wrap;
-        gap: var(--spacing-md);
-        align-items: center;
-        margin-top: var(--spacing-sm);
-      }
-      .limit-label {
-        font-size: 0.8125rem;
-        color: var(--text-secondary);
-        width: 120px;
-      }
-      .limit-tier {
-        display: flex;
-        align-items: center;
-        gap: 0.375rem;
-      }
-      .limit-input {
-        width: 80px;
-      }
-      .limit-sep {
-        color: var(--text-secondary);
-      }
-      .limit-hint {
-        font-size: 0.75rem;
-        color: var(--text-secondary);
-      }
       .empty-state {
         text-align: center;
         padding: var(--spacing-xl);
@@ -271,7 +206,6 @@ export class VersolaTenantsList extends LitElement {
     this.tenantIdInput = '';
     this.tenantDescriptionInput = '';
     this.selectedEdgeId = '';
-    this.submissionLimits = cloneSubmissionLimits(RECOMMENDED_SUBMISSION_LIMITS);
     this.formError = '';
   }
 
@@ -290,22 +224,7 @@ export class VersolaTenantsList extends LitElement {
     this.tenantIdInput = '';
     this.tenantDescriptionInput = '';
     this.selectedEdgeId = '';
-    this.submissionLimits = cloneSubmissionLimits(RECOMMENDED_SUBMISSION_LIMITS);
     this.formError = '';
-  }
-
-  private resetSubmissionLimits() {
-    this.submissionLimits = cloneSubmissionLimits(RECOMMENDED_SUBMISSION_LIMITS);
-  }
-
-  private updateLimitTier(category: LimitCategory, index: number, field: 'maxAttempts' | 'windowSeconds', raw: string) {
-    const value = Math.max(1, parseInt(raw, 10) || 1);
-    const tiers = this.submissionLimits[category].map((tier, i) => i === index ? { ...tier, [field]: value } : tier);
-    this.submissionLimits = { ...this.submissionLimits, [category]: tiers };
-  }
-
-  private updateBanDuration(raw: string) {
-    this.submissionLimits = { ...this.submissionLimits, banDurationSeconds: Math.max(0, parseInt(raw, 10) || 0) };
   }
 
   private get isTenantIdInvalid(): boolean {
@@ -331,10 +250,6 @@ export class VersolaTenantsList extends LitElement {
       this.formError = 'Tenant description is required';
       return;
     }
-    if (!this.editingTenantId && this.submissionLimits.banDurationSeconds <= 0) {
-      this.formError = 'Ban duration must be greater than zero';
-      return;
-    }
     const edgeId = this.selectedEdgeId || null;
     this.isSubmitting = true;
     this.formError = '';
@@ -345,7 +260,7 @@ export class VersolaTenantsList extends LitElement {
           tenant.id === tenantId ? this.makeTenant(tenantId, description, edgeId) : tenant
         ));
       } else {
-        await createTenant(tenantId, description, edgeId, this.submissionLimits);
+        await createTenant(tenantId, description, edgeId);
         this.selectedTenantId = tenantId;
         localStorage.setItem('selectedTenantId', tenantId);
         this.dispatchTenantChange(tenantId);
@@ -426,39 +341,6 @@ export class VersolaTenantsList extends LitElement {
                 </select>
                 <div class="hint">Assign this tenant to an edge infrastructure endpoint</div>
               </div>
-              ${!this.editingTenantId ? html`
-                <div class="form-group">
-                  <div class="limits-header">
-                    <label>Security limits *</label>
-                    <button type="button" class="btn btn-secondary btn-sm" @click=${this.resetSubmissionLimits} ?disabled=${this.isSubmitting}>Reset to recommended</button>
-                  </div>
-                  <div class="hint">Rate limits on password, OTP and passkey submission attempts. Pre-filled with recommended values -- review, edit or approve before creating.</div>
-                  ${(Object.keys(LIMIT_CATEGORY_LABELS) as LimitCategory[]).map(category => html`
-                    <div class="limit-row">
-                      <span class="limit-label">${LIMIT_CATEGORY_LABELS[category]}</span>
-                      ${this.submissionLimits[category].map((tier, i) => html`
-                        <span class="limit-tier">
-                          <input type="number" min="1" class="compact-input limit-input" title="Max attempts"
-                            .value=${String(tier.maxAttempts)} ?disabled=${this.isSubmitting}
-                            @input=${(e: Event) => this.updateLimitTier(category, i, 'maxAttempts', (e.target as HTMLInputElement).value)} />
-                          <span class="limit-sep">/</span>
-                          <input type="number" min="1" class="compact-input limit-input" title="Window (seconds)"
-                            .value=${String(tier.windowSeconds)} ?disabled=${this.isSubmitting}
-                            @input=${(e: Event) => this.updateLimitTier(category, i, 'windowSeconds', (e.target as HTMLInputElement).value)} />
-                          <span class="limit-hint">sec</span>
-                        </span>
-                      `)}
-                    </div>
-                  `)}
-                  <div class="limit-row">
-                    <span class="limit-label">Ban duration</span>
-                    <input type="number" min="1" class="compact-input limit-input" title="Ban duration (seconds)"
-                      .value=${String(this.submissionLimits.banDurationSeconds)} ?disabled=${this.isSubmitting}
-                      @input=${(e: Event) => this.updateBanDuration((e.target as HTMLInputElement).value)} />
-                    <span class="limit-hint">sec</span>
-                  </div>
-                </div>
-              ` : ''}
               ${this.formError ? html`<div class="error-banner">${this.formError}</div>` : ''}
               <div class="form-actions">
                 ${this.tenants.length > 0 ? html`<button type="button" class="btn btn-secondary" @click=${this.closeForm} ?disabled=${this.isSubmitting}>Cancel</button>` : ''}
