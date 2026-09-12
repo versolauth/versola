@@ -16,7 +16,7 @@ import java.time.Instant
   * time.
   */
 class PostgresDpopProofRepository(xa: TransactorZIO) extends DpopProofRepository, BasicCodecs:
-  import PostgresDpopProofRepository.{digestOf, slotOf, SlotWidth}
+  import PostgresDpopProofRepository.{digestOf, slotOf, MaxClockSkew, SlotWidth}
 
   override def recordIfAbsent(jkt: String, jti: String, iat: Instant): Task[Boolean] =
     xa.connectMeasured("record-dpop-proof-if-absent"):
@@ -39,30 +39,60 @@ class PostgresDpopProofRepository(xa: TransactorZIO) extends DpopProofRepository
     * record left behind can only ever reject, never admit. That asymmetry is why this is a
     * background job whose failure is logged rather than something the request path depends on.
     *
-    * Every instance runs it, and they all pick the same slot from the same clock, so the
-    * redundant runs find the slot already empty. They never contend with the request path
-    * either: the slot being truncated is, by the bound on `MaxIatLeeway`, never one that a proof
-    * arriving now could be routed to.
+    * Every instance runs it, but each picks its slot from *its own* clock, not a shared one --
+    * so the anchor is pushed a further `2 * MaxClockSkew` into the past. Without that, an
+    * instance running ahead of its peers truncates at the exact instant its own acceptance
+    * window ends, which at an unlucky slot phase is still inside a slower peer's window: the
+    * proofs in that slot would be replayable against the slower instance. Twice the skew
+    * because the two clocks can be off in opposite directions.
+    *
+    * The redundant runs find the slot already empty, and none of them contend with the request
+    * path: the slot being truncated is, by the bound on `MaxIatLeeway`, never one that a proof
+    * arriving at any instance could be routed to.
     */
   def evictStaleSlot(now: Instant, iatLeeway: Duration): Task[Unit] =
-    val slot = slotOf(now.minus(iatLeeway).minusSeconds(SlotWidth.toSeconds))
+    val slot = slotOf(
+      now.minus(iatLeeway)
+        .minusSeconds(SlotWidth.toSeconds)
+        .minus(MaxClockSkew.multipliedBy(2)),
+    )
     xa.connectMeasured("evict-dpop-proof-slot"):
       sql"TRUNCATE TABLE ${SqlLiteral(s"dpop_proofs_$slot")}".update.run()
     .unit
 
 object PostgresDpopProofRepository:
   /** Ring geometry. Must match the partitions created in `V0014__dpop_proofs_table.sql`. */
-  val SlotCount = 8
+  val SlotCount = 12
   val SlotWidth: Duration = 30.seconds
 
-  /** Dropping a slot is safe at any geometry -- everything in it is already outside the `iat`
-    * window, whatever the ring looks like. What the geometry has to guarantee is the other
-    * direction: that the slot being truncated is not one still being written to. Writes land
-    * anywhere in `[now - leeway, now + leeway]` and the truncation targets a window ending at
-    * `now - leeway`, so the two together span `2 * (leeway + SlotWidth)`, which has to fit in a
-    * lap of `SlotCount * SlotWidth`.
+  /** How far apart two instances' clocks may be before the ring stops being safe.
+    *
+    * Nothing here can be derived from a shared clock: a proof is routed to a slot by an `iat`
+    * the issuing client stamped, accepted against the receiving instance's clock, and evicted
+    * against the evicting instance's clock. Any `iat`-partitioned ring therefore rests on a
+    * bound like this one; the alternative is a per-row expiry and the delete-per-insert churn
+    * this design exists to avoid. 30s is far past what a synchronised fleet drifts to, and an
+    * instance further out than this has a broken clock -- which breaks token lifetimes and
+    * `iat` acceptance long before it breaks eviction.
     */
-  val MaxIatLeeway: Duration = Duration.fromSeconds(SlotWidth.toSeconds * (SlotCount - 2) / 2)
+  val MaxClockSkew: Duration = 30.seconds
+
+  /** Dropping a slot is safe at any geometry -- everything in it is already outside every
+    * instance's `iat` window, whatever the ring looks like. What the geometry has to guarantee
+    * is the other direction: that the slot being truncated is not one still being written to.
+    *
+    * Reading the ring as a timeline, the span that must fit in one lap of `SlotCount *
+    * SlotWidth` runs from the start of the slot being truncated to the newest `iat` any
+    * instance would accept:
+    *   - `2 * leeway`, the width of the acceptance window itself;
+    *   - `2 * SlotWidth`, since each end of that span sits at an arbitrary phase within its
+    *     own slot;
+    *   - `4 * MaxClockSkew`: `2 *` for the eviction anchor's own margin (see `evictStaleSlot`)
+    *     and `2 *` because the evicting and the writing instance can be skewed apart.
+    */
+  val MaxIatLeeway: Duration = Duration.fromSeconds(
+    (SlotCount * SlotWidth.toSeconds - 2 * SlotWidth.toSeconds - 4 * MaxClockSkew.toSeconds) / 2,
+  )
 
   def live: ZLayer[TransactorZIO & CoreConfig & Scope, Throwable, DpopProofRepository] =
     ZLayer:
