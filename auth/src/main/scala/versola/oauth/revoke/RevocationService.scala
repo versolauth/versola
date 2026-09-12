@@ -6,7 +6,7 @@ import versola.oauth.model.{AccessTokenPayload, RefreshToken}
 import versola.oauth.revoke.model.RevocationError
 import versola.oauth.session.SessionRepository
 import versola.util.{CoreConfig, Secret, SecurityService}
-import zio.{Clock, IO, Task, ZIO, ZLayer}
+import zio.{Clock, IO, NonEmptyChunk, Task, ZIO, ZLayer}
 
 trait RevocationService:
   def revokeRefreshToken(
@@ -65,7 +65,7 @@ object RevocationService:
               // revocation by at most one TTL and never under-retains it.
               _ <- accessTokenRevocationService.revoke(
                 client = client,
-                token = record.accessToken,
+                tokens = NonEmptyChunk(record.accessToken),
                 subject = record.userId.toString,
                 expiresAt = now.plus(client.accessTokenTtl),
               )
@@ -84,7 +84,7 @@ object RevocationService:
         // The token was presented and parsed, so its own `exp` is exact.
         _ <- accessTokenRevocationService.revoke(
           client = client,
-          token = token.id,
+          tokens = NonEmptyChunk(token.id),
           subject = token.subject,
           expiresAt = token.expiresAt,
         )

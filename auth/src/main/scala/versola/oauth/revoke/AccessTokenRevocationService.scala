@@ -9,14 +9,21 @@ import zio.{NonEmptyChunk, Task, ZIO, ZLayer}
 import java.time.Instant
 
 trait AccessTokenRevocationService:
-  /** Tells the client's back channel to stop accepting one access token before its `exp`.
+  /** Tells the client's back channel to stop accepting one or more access tokens before
+    * `expiresAt`.
     *
-    * @param subject  whom the token was issued to — the user, or the client itself for a
+    * `expiresAt` is shared by every token in the batch rather than given per token: every
+    * call site either has one token's real `exp` or is bounding a whole family/session of
+    * them by the client's TTL from the same instant, so a single value is never a loss of
+    * precision. That is what lets a family with several access tokens be named in one
+    * event instead of one push per token.
+    *
+    * @param subject  whom the tokens were issued to — the user, or the client itself for a
     *                 `client_credentials` token.
-    * @param expiresAt when the token expires on its own, after which the revocation stops
+    * @param expiresAt when the tokens expire on their own, after which the revocation stops
     *                  mattering and can be forgotten.
     */
-  def revoke(client: OAuthClientRecord, token: AccessToken, subject: String, expiresAt: Instant): Task[Unit]
+  def revoke(client: OAuthClientRecord, tokens: NonEmptyChunk[AccessToken], subject: String, expiresAt: Instant): Task[Unit]
 
   def isActive(token: AccessToken): Task[Boolean]
 
@@ -42,7 +49,7 @@ object AccessTokenRevocationService:
       * is already committed, and a token cannot be guaranteed to be rejected everywhere
       * unless the client registered an endpoint for exactly that.
       */
-    override def revoke(client: OAuthClientRecord, token: AccessToken, subject: String, expiresAt: Instant): Task[Unit] =
+    override def revoke(client: OAuthClientRecord, tokens: NonEmptyChunk[AccessToken], subject: String, expiresAt: Instant): Task[Unit] =
       ZIO
         .foreachDiscard(client.backChannelLogoutUri): uri =>
           dispatcher.dispatch(
@@ -51,9 +58,11 @@ object AccessTokenRevocationService:
             subject = subject,
             // Not `jti`/`exp`: those are the event token's own id and lifetime (two minutes),
             // and overwriting them would both strip the event of a replay id and leave the
-            // recipient reading the event's expiry as the revoked token's.
+            // recipient reading the event's expiry as the revoked token's. `revoked_jti` is
+            // always an array, even for one token, so the recipient has one shape to parse
+            // rather than a singular-or-array ambiguity.
             customClaims = Json.Obj(
-              "revoked_jti" -> Json.Str(token.encoded),
+              "revoked_jti" -> Json.Arr(tokens.toChunk.map(t => Json.Str(t.encoded))),
               "revoked_exp" -> Json.Num(expiresAt.getEpochSecond),
               "events" -> Json.Obj(AccessTokenRevocationEvent -> Json.Obj()),
             ),
@@ -74,7 +83,7 @@ object AccessTokenRevocationService:
     ZLayer.succeed(NoopImpl())
 
   private class NoopImpl extends AccessTokenRevocationService:
-    override def revoke(client: OAuthClientRecord, token: AccessToken, subject: String, expiresAt: Instant): Task[Unit] =
+    override def revoke(client: OAuthClientRecord, tokens: NonEmptyChunk[AccessToken], subject: String, expiresAt: Instant): Task[Unit] =
       ZIO.unit
 
     override def isActive(token: AccessToken): Task[Boolean] =

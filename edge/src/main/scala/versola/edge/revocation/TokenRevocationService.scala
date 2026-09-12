@@ -14,6 +14,12 @@ trait TokenRevocationService:
     */
   def revokeToken(jti: AccessTokenId, expiresAt: Instant): Task[Unit]
 
+  /** As [[revokeToken]], for several tokens sharing one `expiresAt` -- a leaked refresh-token
+    * family's access tokens, all bounded by the same client TTL from the same instant. One
+    * durable write covers the whole batch instead of one per token.
+    */
+  def revokeTokens(jtis: NonEmptyChunk[AccessTokenId], expiresAt: Instant): Task[Unit]
+
   /** One SSO session ends: every token bearing this `sid`, including bearer tokens this
     * edge has no session row for and ones superseded by rotation.
     */
@@ -120,7 +126,10 @@ object TokenRevocationService:
   ) extends TokenRevocationService:
 
     override def revokeToken(jti: AccessTokenId, expiresAt: Instant): Task[Unit] =
-      revoke(Revocation(RevocationKey.Jti(jti), expiresAt, issuedBefore = None))
+      revokeTokens(NonEmptyChunk.single(jti), expiresAt)
+
+    override def revokeTokens(jtis: NonEmptyChunk[AccessTokenId], expiresAt: Instant): Task[Unit] =
+      repository.revokeAll(jtis.map(jti => Revocation(RevocationKey.Jti(jti), expiresAt, issuedBefore = None)).toList)
 
     /** The entry only has to outlive the longest-lived token the session could have been
       * issued. Edge never sees a token's `iat`, but `exp = iat + accessTokenTtl` and
