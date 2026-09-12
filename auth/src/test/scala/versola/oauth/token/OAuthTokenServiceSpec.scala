@@ -1369,6 +1369,31 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           result.refreshToken.contains(refreshToken1),
         )
       },
+      test("narrowing the scope of a bound grant narrows the row it is renewed from") {
+        val env = new Env
+        val reducedScope = Set(ScopeToken("read"), ScopeToken.OfflineAccess)
+        for
+          now <- Clock.instant
+          _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
+          _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
+          _ <- env.securityService.mac.succeedsWith(MAC(Array.fill(32)(11.toByte)))
+          _ <- env.tokenRepo.findToken.succeedsWith(Some(boundRecord(now, Some(jkt1))))
+          _ <- env.propertyGenerator.nextAccessToken.succeedsWith(accessToken1)
+          _ <- env.tokenRepo.renewBoundToken.succeedsWith(true)
+          _ <- env.userRepo.findRolesByUserAndTenant.succeedsWith(List.empty)
+
+          request = RefreshTokenRequest(refreshToken1, Some(reducedScope), None, None)
+          credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
+
+          result <- env.service.refreshAccessToken(request, credentials, Some(jkt1), None)
+        yield assertTrue(
+          result.scope == reducedScope,
+          // Renewal is in place, so this row is the grant's only record: the narrowing has to
+          // reach it or the next refresh hands back the scope just dropped.
+          env.tokenRepo.renewBoundToken.calls.head._3 == reducedScope,
+          reducedScope != scope1,
+        )
+      },
       test("rejects a refresh whose proof carries a different thumbprint") {
         val env = new Env
         for

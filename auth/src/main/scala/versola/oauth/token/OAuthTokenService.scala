@@ -456,7 +456,7 @@ object OAuthTokenService:
             // failure mode is the grant having been revoked between the read and this write.
             case Some(renewal) =>
               Observability.setRefreshToken(Base64.urlEncode(renewal.token)) *>
-                sessionRepository.renewBoundToken(renewal.mac, record.accessToken, record.expiresAt)
+                sessionRepository.renewBoundToken(renewal.mac, record.accessToken, record.scope, record.expiresAt)
                   .filterOrFail(identity)(TokenEndpointError.InvalidGrant.RefreshTokenNotFound)
                   .as(renewal.token)
 
