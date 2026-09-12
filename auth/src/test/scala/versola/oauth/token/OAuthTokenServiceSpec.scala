@@ -831,7 +831,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           result <- env.service.refreshAccessToken(request, credentials, None, Some("key-1")).either
         yield assertTrue(result == Left(TokenEndpointError.InvalidGrant.RefreshTokenReplayed))
       },
-      test("do not revoke when two retries of the same request race each other") {
+      test("revoke the family when a retry recovered via resolveRetry loses the race again") {
         val env = new Env
         for
           now <- Clock.instant
@@ -864,18 +864,23 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.propertyGenerator.nextAccessToken.succeedsWith(accessToken2)
           _ <- env.propertyGenerator.nextRefreshToken.succeedsWith(refreshToken2)
           _ <- env.tokenRepo.createRefreshToken.failsWith(RefreshAlreadyExchanged())
-          _ <- env.userRepo.findRolesByUserAndTenant.succeedsWith(List.empty)
+          _ <- env.tokenRepo.revokeFamily.succeedsWith(Some(RevokedFamily(userId1, List(accessToken1), Some(now.plusSeconds(1800)))))
+          _ <- env.accessTokenRevocationService.revoke.succeedsWith(())
 
           request = RefreshTokenRequest(refreshToken1, None, None, None)
           credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
 
           result <- env.service.refreshAccessToken(request, credentials, None, Some("key-1")).either
         yield assertTrue(
-          // Whoever got there first is another attempt at the very same exchange, which the
-          // key already established, so nothing was leaked and the family must survive.
-          result == Left(TokenEndpointError.InvalidGrant.RefreshChainAlreadyExchanged),
-          env.tokenRepo.revokeFamily.calls.isEmpty,
-          env.accessTokenRevocationService.revoke.calls.isEmpty,
+          // `resolveRetry` already spent this request's one recovery lookup getting here, so a
+          // second loss on the tip it returned is not re-verified against the key a second
+          // time -- it is treated exactly as any other unrecovered loss would be, on the same
+          // reasoning as the `continueRefresh`-recovered case above: without re-checking, this
+          // could just as easily be someone else's proven competing use of that tip as it could
+          // be a third racing retry of our own.
+          result == Left(TokenEndpointError.InvalidGrant.RefreshTokenReplayed),
+          env.tokenRepo.revokeFamily.calls.nonEmpty,
+          env.accessTokenRevocationService.revoke.calls.nonEmpty,
         )
       },
       test("fail with InvalidScope when requested scope was never granted") {
@@ -1119,6 +1124,69 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           // token this request presented -- that one is already retired.
           createCalls.size == 2,
           createCalls(1)._2.exists(mac => java.util.Arrays.equals(mac, refreshTokenMac2)),
+        )
+      },
+      test("revoke the family when the tip recovered via the idempotency key is itself " +
+        "already exchanged by someone else") {
+        val env = new Env
+        for
+          now <- Clock.instant
+
+          tokenRecord = RefreshTokenRecord(
+            sessionId = sessionId1,
+            publicSessionId = publicSessionId1,
+            accessToken = accessToken1,
+            accessTokenExpiresAt = now.plus(testClient.accessTokenTtl),
+            userId = userId1,
+            clientId = clientId1,
+            audience = List.empty,
+            authorizationDetails = None,
+            scope = scope1,
+            issuedAt = now.minusSeconds(3600),
+            expiresAt = now.plusSeconds(testClient.refreshTokenTtl.toSeconds),
+            requestedClaims = Some(requestedClaims1),
+            uiLocales = Some(uiLocales1),
+            nonce = None,
+            amr = amr1,
+            authTime = authTime1,
+            acr = None,
+            cnfJkt = None,
+          )
+
+          // The tip `findIdempotentRetry` hands back -- but by the time this request tries to
+          // rotate it, a third party has already exchanged it too.
+          tipRecord = tokenRecord.copy(issuedAt = now.minusSeconds(1))
+
+          newRefreshToken = RefreshToken(Array.fill(32)(7.toByte))
+
+          _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
+          _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
+          _ <- env.tokenRepo.findToken.succeedsWith(Some(tokenRecord))
+          _ <- env.propertyGenerator.nextAccessToken.succeedsWith(accessToken1)
+          _ <- env.propertyGenerator.nextRefreshToken.succeedsWith(newRefreshToken)
+          // Both the original attempt and the one retried from the recovered tip lose the
+          // rotation race: the tip was live only long enough for `findIdempotentRetry` to see
+          // it, not for this request to rotate it.
+          _ <- env.tokenRepo.createRefreshToken.returnsZIOWith(ZIO.fail(RefreshAlreadyExchanged()))
+          _ <- env.tokenRepo.findIdempotentRetry.succeedsWith(Some((refreshTokenMac2, tipRecord)))
+          _ <- env.tokenRepo.revokeFamily.succeedsWith(Some(RevokedFamily(userId1, List(accessToken1), Some(now.plusSeconds(1800)))))
+          _ <- env.accessTokenRevocationService.revoke.succeedsWith(())
+
+          request = RefreshTokenRequest(refreshToken1, None, None, None)
+          credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
+
+          result <- env.service.refreshAccessToken(request, credentials, None, Some("key-1")).either
+        yield assertTrue(
+          // A second loss on the recovered tip is someone else's proven competing use of it,
+          // not this request racing itself again -- its own idempotency key was already spent
+          // reaching that tip -- so it revokes the family exactly as an unrecovered loss would.
+          result == Left(TokenEndpointError.InvalidGrant.RefreshTokenReplayed),
+          env.tokenRepo.revokeFamily.calls.nonEmpty,
+          env.accessTokenRevocationService.revoke.calls.nonEmpty,
+          // Only one recovery attempt is made -- the retried request does not chase a second
+          // `findIdempotentRetry` lookup indefinitely.
+          env.tokenRepo.createRefreshToken.calls.size == 2,
+          env.tokenRepo.findIdempotentRetry.calls.size == 1,
         )
       },
     ),

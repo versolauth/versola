@@ -284,9 +284,15 @@ object OAuthTokenService:
           // sequential replay -- but it can just as well mean the same client racing itself
           // with a retry, which the idempotency key, when the request carried one, tells
           // apart from an actual leak before this falls back to treating it as one.
-          case TokenEndpointError.InvalidGrant.RefreshChainAlreadyExchanged if !resolved.retried =>
-            idempotencyKeyMac
-              .fold(ZIO.none)(sessionRepository.findIdempotentRetry(refreshTokenMac, client.id, _))
+          //
+          // That lookup only runs once (`!resolved.retried`): a second loss, on the recovered
+          // tip this same request just re-issued from, is not this request racing itself again
+          // -- its own idempotency key was already spent reaching that tip -- so it is someone
+          // else's proven competing use of that same tip and goes straight to `detectReplay`
+          // rather than escaping this `catchSome` unhandled.
+          case TokenEndpointError.InvalidGrant.RefreshChainAlreadyExchanged =>
+            (if resolved.retried then ZIO.none
+             else idempotencyKeyMac.fold(ZIO.none)(sessionRepository.findIdempotentRetry(refreshTokenMac, client.id, _)))
               .flatMap:
                 case Some((tip, record)) =>
                   continueRefresh(
