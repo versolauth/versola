@@ -2,7 +2,7 @@ package versola.edge.dpop
 
 import versola.edge.EdgeConfig
 import versola.util.{Base64, Dpop, DpopNonce}
-import zio.http.{Method, Path, QueryParams, URL}
+import zio.http.{Method, Path, QueryParams, Request, URL}
 import zio.{Clock, IO, ZIO, ZLayer}
 
 import java.security.MessageDigest
@@ -42,6 +42,8 @@ object DpopVerifier:
     case InvalidProof(reason: Dpop.Error)
     /** The `DPoP` scheme was used without a `DPoP` header to go with it. */
     case ProofMissing
+    /** §4.3(1): "the request contains at most one DPoP header field value". */
+    case MultipleProofs
     case AthMismatch
     case AthMissing
     case KeyMismatch
@@ -51,6 +53,18 @@ object DpopVerifier:
     /** No `dpop` block in the edge's configuration, so a proof cannot be checked at all. A
       * `DPoP`-scheme request is refused rather than waved through. */
     case NotConfigured
+
+  /** RFC 9449 §4.3(1): a second `DPoP` header must refuse the request, not be dropped in
+    * favor of the first. `Request.rawHeader` picks a single value off `Headers.get`, which
+    * silently discards every other occurrence -- exactly what would let a proof smuggled in
+    * behind a valid one go unseen. `rawHeaders` surfaces all of them, so cardinality can be
+    * checked before any proof is read.
+    */
+  def proofHeader(request: Request): IO[Error, String] =
+    request.rawHeaders(Scheme) match
+      case values if values.isEmpty => ZIO.fail(Error.ProofMissing)
+      case values if values.size > 1 => ZIO.fail(Error.MultipleProofs)
+      case values => ZIO.succeed(values.head)
 
   def live: ZLayer[EdgeConfig & DpopReplayGuard, Nothing, DpopVerifier] =
     ZLayer.fromFunction(Impl(_, _))

@@ -67,7 +67,7 @@ private def verifyProof(
   (claims.confirmation.map(_.jkt), dpopScheme) match
     case (Some(jkt), true) =>
       ZIO.serviceWithZIO[DpopVerifier]: verifier =>
-        ZIO.fromOption(request.rawHeader(DpopVerifier.Scheme))
+        DpopVerifier.proofHeader(request)
           .orElseFail(Unauthorized)
           .flatMap: proof =>
             verifier.verify(

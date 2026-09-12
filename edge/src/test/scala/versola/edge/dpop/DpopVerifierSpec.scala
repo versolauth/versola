@@ -7,7 +7,7 @@ import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 import versola.edge.{EdgeConfig, model}
 import versola.util.{Base64, Dpop, DpopNonce, Secret}
 import zio.*
-import zio.http.{Method, Path, URL}
+import zio.http.{Header, Method, Path, Request, URL}
 import zio.test.*
 
 import java.security.MessageDigest
@@ -229,6 +229,29 @@ object DpopVerifierSpec extends ZIOSpecDefault:
           now <- Clock.instant
           result <- verify(service, proof(iat = now))
         yield assertTrue(result.isRight)
+      },
+    ),
+    // §4.3(1): "the request contains at most one DPoP header field value". `rawHeader`
+    // answers with a single value regardless, so cardinality has to be checked separately
+    // before any proof is read.
+    suite("proofHeader")(
+      test("reads the sole DPoP header") {
+        val request = Request.get(URL.empty).addHeader(Header.Custom("DPoP", "proof-value"))
+        assertZIO(DpopVerifier.proofHeader(request).either)(Assertion.equalTo(Right("proof-value")))
+      },
+      test("fails with ProofMissing when there is no DPoP header") {
+        val request = Request.get(URL.empty)
+        assertZIO(DpopVerifier.proofHeader(request).either)(
+          Assertion.equalTo(Left(DpopVerifier.Error.ProofMissing)),
+        )
+      },
+      test("fails with MultipleProofs rather than pick one, when the request carries two") {
+        val request = Request.get(URL.empty)
+          .addHeader(Header.Custom("DPoP", "proof-a"))
+          .addHeader(Header.Custom("DPoP", "proof-b"))
+        assertZIO(DpopVerifier.proofHeader(request).either)(
+          Assertion.equalTo(Left(DpopVerifier.Error.MultipleProofs)),
+        )
       },
     ),
   ) @@ TestAspect.silentLogging
