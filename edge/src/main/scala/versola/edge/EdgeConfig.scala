@@ -117,7 +117,7 @@ object EdgeConfig:
       requireNonce: Boolean = false,
       allowedAlgorithms: Set[versola.util.Dpop.Algorithm] = Dpop.DefaultAlgorithms,
       iatLeeway: Duration = Duration.fromSeconds(60),
-      nonceTtl: Duration = Duration.fromSeconds(300),
+      nonceTtl: Duration = Duration.fromSeconds(600),
   )
 
   object Dpop:

@@ -792,7 +792,7 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
        |  require-nonce = false
        |  allowed-algorithms = ["ES256", "PS256"]
        |  iat-leeway = "60 seconds"
-       |  nonce-ttl = "300 seconds"
+       |  nonce-ttl = "600 seconds"
        |}
        |
        |central {
