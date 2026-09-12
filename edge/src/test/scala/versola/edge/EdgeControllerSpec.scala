@@ -50,6 +50,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
     ),
     central = EdgeConfig.CentralConfig(url = URL.decode("https://central.example").toOption.get),
     versolaUrl = URL.decode("https://idp.example").toOption.get,
+    edgeUrl = URL.decode("https://edge.example").toOption.get,
     configurationCacheRefreshInterval = 5.minutes,
   )
 
@@ -61,10 +62,12 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       clientId: String = "web-app",
       tenantId: Option[String] = None,
       roles: Option[List[String]] = None,
+      cnfJkt: Option[String] = None,
   ): Task[AccessToken] =
     val fields =
       Chunk(Some("client_id" -> Json.Str(clientId))) ++
         Chunk(tenantId.map(tid => "tenant_id" -> Json.Str(tid))) ++
+        Chunk(cnfJkt.map(jkt => "cnf" -> Json.Obj("jkt" -> Json.Str(jkt)))) ++
         Chunk(roles.map(rs => "roles" -> Json.Arr(rs.map(Json.Str(_))*))
           .orElse(Some("roles" -> Json.Arr())))
     JWT.serialize(
@@ -88,6 +91,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       // Only the `logout` endpoint reads presets directly (every other route goes through
       // EdgeService), so it is left unconfigured by default and opted into per test.
       presetsSetup: Stub[AuthorizationPresetsSyncClient] => UIO[Unit] = _ => ZIO.unit,
+      dpopSetup: Stub[versola.edge.dpop.DpopVerifier] => UIO[Unit] = _ => ZIO.unit,
   ): ZIO[TestClient & Client & Scope, Throwable, (Response, Stub[EdgeService], Stub[JwksService])] =
     for
       client  <- ZIO.service[Client]
@@ -95,6 +99,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       jwks    =  stub[JwksService]
       presets =  stub[AuthorizationPresetsSyncClient]
       revocation = stub[TokenRevocationService]
+      dpopVerifier = stub[versola.edge.dpop.DpopVerifier]
       tracing <- tracingLayer.build
       _ <- TestClient.addRoutes(
         Observability.handleErrors(
@@ -104,6 +109,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
               ZEnvironment[TokenRevocationService](revocation) ++
               ZEnvironment[AuthorizationPresetsSyncClient](presets) ++
               ZEnvironment[EdgeConfig](edgeConfig) ++
+              ZEnvironment[versola.edge.dpop.DpopVerifier](dpopVerifier) ++
               tracing,
           ),
         ),
@@ -112,6 +118,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       _        <- revocation.isRevoked.succeedsWith(revoked)
       _        <- setup(service, jwks)
       _        <- presetsSetup(presets)
+      _        <- dpopSetup(dpopVerifier)
       response <- client.batched(request)
     yield (response, service, jwks)
 
@@ -130,6 +137,66 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       yield assertTrue(
         response.status == Status.Unauthorized,
         service.getMyPermissions.calls.isEmpty,
+      )
+    },
+    // The edge's own endpoints answer on the same tokens the proxy accepts, so a key-bound
+    // one must not be honoured here without proof of that key either -- otherwise this route
+    // is a way around the binding (RFC 9449 §7.2).
+    test("returns 401 when a DPoP-bound token is presented under the Bearer scheme") {
+      for
+        accessToken <- token(cnfJkt = Some("some-thumbprint"))
+        (response, service, _) <- run(
+          Request.get(URL.decode("/permissions/me?resource=central").toOption.get)
+            .addHeader(Header.Authorization.Bearer(accessToken)),
+        )
+      yield assertTrue(
+        response.status == Status.Unauthorized,
+        service.getMyPermissions.calls.isEmpty,
+      )
+    },
+    // Same route, the DPoP side of RFC 9449 §4.3(1)/§7.1: a proof has to be present, singular,
+    // and valid before the token is honoured at all.
+    test("returns 401 when a DPoP-scheme request carries no DPoP header") {
+      for
+        accessToken <- token(cnfJkt = Some("some-thumbprint"))
+        (response, service, _) <- run(
+          Request.get(URL.decode("/permissions/me?resource=central").toOption.get)
+            .addHeader(Header.Custom("Authorization", s"DPoP $accessToken")),
+        )
+      yield assertTrue(
+        response.status == Status.Unauthorized,
+        service.getMyPermissions.calls.isEmpty,
+      )
+    },
+    test("returns 401 when a DPoP-scheme request carries more than one DPoP header") {
+      for
+        accessToken <- token(cnfJkt = Some("some-thumbprint"))
+        (response, service, _) <- run(
+          Request.get(URL.decode("/permissions/me?resource=central").toOption.get)
+            .addHeader(Header.Custom("Authorization", s"DPoP $accessToken"))
+            .addHeader(Header.Custom("DPoP", "proof-a"))
+            .addHeader(Header.Custom("DPoP", "proof-b")),
+        )
+      yield assertTrue(
+        response.status == Status.Unauthorized,
+        service.getMyPermissions.calls.isEmpty,
+      )
+    },
+    test("honours a DPoP-bound token presented with a single valid proof") {
+      for
+        accessToken <- token(clientId = "web-app", tenantId = Some("default"), roles = Some(List("member")), cnfJkt = Some("thumb-1"))
+        (response, service, _) <- run(
+          Request.get(URL.decode("/permissions/me?resource=central").toOption.get)
+            .addHeader(Header.Custom("Authorization", s"DPoP $accessToken"))
+            .addHeader(Header.Custom("DPoP", "the-one-proof")),
+          (s, _) => s.getMyPermissions.succeedsWith(sampleResponse),
+          dpopSetup = _.verify.succeedsWith(
+            versola.util.Dpop.Proof(jkt = "thumb-1", jti = "jti-1", iat = Instant.EPOCH, nonce = None, ath = None),
+          ),
+        )
+      yield assertTrue(
+        response.status == Status.Ok,
+        service.getMyPermissions.calls.nonEmpty,
       )
     },
     test("passes empty resource list when resource query param is absent") {

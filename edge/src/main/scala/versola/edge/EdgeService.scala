@@ -1,5 +1,6 @@
 package versola.edge
 
+import versola.edge.dpop.DpopVerifier
 import versola.edge.login.{LoginRecord, LoginRepository}
 import versola.edge.model.{
   AccessToken,
@@ -121,6 +122,8 @@ object EdgeService:
     */
   private val AccessTokenRevocationEvent = "versola:event:access-token-revocation"
 
+  private val DpopScheme = DpopVerifier.Scheme
+
   /** The claims of a security event token the OP pushes to this edge — an OIDC Back-Channel
     * Logout token (spec §2.4) or an access token revocation. Back-Channel Logout requires a
     * `sub`, a `sid` or both, and reads a token without a `sid` as covering every session of
@@ -161,11 +164,11 @@ object EdgeService:
   ) derives JsonCodec
 
   def live: ZLayer[
-    OAuthClientService & ResourceService & CelEvaluator & SecureRandom & LoginRepository & SSOClient & SecurityService & Client & EdgeConfig & session.EdgeSessionRepository & TokenRevocationService & JwksService & PermissionService & EnvName,
+    OAuthClientService & ResourceService & CelEvaluator & SecureRandom & LoginRepository & SSOClient & SecurityService & Client & EdgeConfig & session.EdgeSessionRepository & TokenRevocationService & JwksService & PermissionService & DpopVerifier & EnvName,
     Nothing,
     EdgeService,
   ] =
-    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _))
+    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _))
 
   class Impl(
       clientService: OAuthClientService,
@@ -181,6 +184,7 @@ object EdgeService:
       revocationService: TokenRevocationService,
       jwksService: JwksService,
       permissionService: PermissionService,
+      dpopVerifier: DpopVerifier,
       env: EnvName,
   ) extends EdgeService:
 
@@ -334,6 +338,19 @@ object EdgeService:
             Response.status(Status.Unauthorized)
               .addHeader(Header.Custom("WWW-Authenticate", s"Bearer $params")),
           )
+        case Outcome.InvalidDpopProof =>
+          ZIO.succeed(
+            Response.status(Status.Unauthorized)
+              .addHeader(Header.Custom("WWW-Authenticate", """DPoP error="invalid_dpop_proof"""")),
+          )
+        // §9: the nonce goes in its own header, and the challenge tells the client why to
+        // look for it. The client is expected to retry once with a proof made over it.
+        case Outcome.UseDpopNonce(nonce) =>
+          ZIO.succeed(
+            Response.status(Status.Unauthorized)
+              .addHeader(Header.Custom("WWW-Authenticate", """DPoP error="use_dpop_nonce""""))
+              .addHeader(Header.Custom("DPoP-Nonce", nonce)),
+          )
         case ex: Throwable => ZIO.fail(ex)
 
     override def getMyPermissions(
@@ -472,7 +489,7 @@ object EdgeService:
               case JWT.Error.Expired(jti) =>
                 authSource match
                   case AuthSource.Cookie(presetId) => refreshSession(AccessTokenId(jti), presetId, now)
-                  case AuthSource.Header =>
+                  case AuthSource.Header(_) =>
                     Observability.setError("token_expired") *> ZIO.fail(Outcome.Unauthorized)
               case _ =>
                 Observability.setError("token_invalid") *> ZIO.fail(Outcome.Unauthorized)
@@ -482,6 +499,7 @@ object EdgeService:
         typedClaims <- ZIO.fromEither(session.claims.as[AccessTokenClaims]).orElseFail(Outcome.Unauthorized)
         _ <- logAccessTokenClaims(typedClaims)
         _ <- checkRevoked(typedClaims)
+        _ <- checkDpop(request, session.accessToken, typedClaims, authSource)
 
         resource <- resourceService.findByResourceId(resourceId).someOrFail(Outcome.NotFound)
         endpoint <- findEndpoint(resource.endpoints, request.method.name, restPath)
@@ -515,13 +533,24 @@ object EdgeService:
 
     private enum AuthSource:
       case Cookie(presetId: PresetId)
-      case Header
+      case Header(scheme: AuthScheme)
+
+    /** Which RFC 9449 §7.1 / RFC 6750 scheme the caller presented its token under. The token
+      * itself is the same either way; the scheme decides whether a proof is demanded. */
+    private enum AuthScheme:
+      case Bearer
+      case Dpop
 
     private def extractAccessToken(request: Request): IO[Outcome, (AccessToken, AuthSource)] =
       ZIO.fromOption(
         request.header(Header.Authorization)
-          .collect { case Header.Authorization.Bearer(token) =>
-            (AccessToken(token.stringValue), AuthSource.Header)
+          .collect {
+            case Header.Authorization.Bearer(token) =>
+              (AccessToken(token.stringValue), AuthSource.Header(AuthScheme.Bearer))
+            // zio-http has no `DPoP` case, so the scheme arrives unparsed with the token as
+            // its parameters. RFC 9110 §11.1 makes scheme matching case-insensitive.
+            case Header.Authorization.Unparsed(scheme, token) if scheme.equalsIgnoreCase(DpopScheme) =>
+              (AccessToken(token.stringValue), AuthSource.Header(AuthScheme.Dpop))
           }
           .orElse(
             request.cookie(EdgeSessionCookie.name).map { cookie =>
@@ -540,6 +569,58 @@ object EdgeService:
       Observability.setToken(claims.jti) *>
         Observability.setUserId(claims.subject) *>
         ZIO.foreachDiscard(claims.sid)(Observability.setSessionId)
+
+    /** RFC 9449 §7.1: decides what the presented token and scheme oblige the caller to prove,
+      * and holds the request until it has.
+      *
+      * The `cnf.jkt` claim, not the scheme, is what makes a proof mandatory. A caller
+      * choosing `Bearer` for a key-bound token is exactly the downgrade §7.2 exists to
+      * refuse, so that refusal is unconditional -- it holds whether or not this edge has a
+      * `dpop` block configured, and for a token arriving in the session cookie too.
+      */
+    private def checkDpop(
+        request: Request,
+        accessToken: AccessToken,
+        claims: AccessTokenClaims,
+        authSource: AuthSource,
+    ): IO[Outcome, Unit] =
+      (claims.confirmation.map(_.jkt), authSource) match
+        case (Some(jkt), AuthSource.Header(AuthScheme.Dpop)) =>
+          val verified =
+            for
+              proof <- DpopVerifier.proofHeader(request)
+              _ <- dpopVerifier.verify(
+                proofHeader = proof,
+                accessToken = accessToken,
+                boundKeyThumbprint = jkt,
+                method = request.method,
+                // The path the client addressed, not the rest-path forwarded upstream: the
+                // proof was signed over the URI the client called this edge on.
+                path = request.url.path,
+              )
+            yield ()
+          verified.catchAll:
+            case DpopVerifier.Error.NonceRequired(nonce) =>
+              Observability.setError("dpop_nonce_required") *> ZIO.fail(Outcome.UseDpopNonce(nonce))
+            // Named down to which check the proof failed: every one of these answers the
+            // same 401, so the metric is the only thing that tells them apart.
+            case DpopVerifier.Error.InvalidProof(reason) =>
+              Observability.setError(s"dpop_proof_${reason.productPrefix.toLowerCase}") *>
+                ZIO.fail(Outcome.InvalidDpopProof)
+            case error =>
+              Observability.setError(s"dpop_${error.productPrefix.toLowerCase}") *>
+                ZIO.fail(Outcome.InvalidDpopProof)
+
+        case (Some(_), _) =>
+          Observability.setError("dpop_downgrade") *> ZIO.fail(Outcome.InvalidDpopProof)
+
+        // A proof signed with some key says nothing about a token that was never bound to
+        // one: anyone holding the token could have produced it. §7.1 has the resource server
+        // treat the token as invalid rather than fall back to bearer semantics.
+        case (None, AuthSource.Header(AuthScheme.Dpop)) =>
+          Observability.setError("dpop_unbound_token") *> ZIO.fail(Outcome.Unauthorized)
+
+        case (None, _) => ZIO.unit
 
     /** A signed, unexpired token is not necessarily still valid: it may have been revoked on
       * its own, or its whole session logged out. Both are answered from memory, so this costs
@@ -805,6 +886,10 @@ object EdgeService:
         .removeHeader(Header.Cookie)
         .removeHeader(Header.Host)
         .removeHeader(Header.Authorization)
+        // The proof is signed over this edge's own method and URI and is single-use here,
+        // so it is meaningless upstream -- and upstream is not the audience that was asked
+        // to hold it.
+        .removeHeader(DpopScheme)
         // The body may be reconstructed/transformed (tenant-check parsing, inject rules),
         // so the incoming Content-Length no longer matches. Drop it and let the client
         // recompute it from the outgoing Body.
@@ -943,3 +1028,10 @@ object EdgeService:
     /** The token is valid but its authentication does not meet what this endpoint
       * requires (RFC 9470 §2): ACR too low (`acr`) and/or too old (`maxAge`). */
     case InsufficientAuthentication(acr: Option[String], maxAge: Option[Int])
+
+    /** RFC 9449 §7.1: the token is sender-constrained and the accompanying proof of that
+      * key was absent, malformed, bound elsewhere, or already used. */
+    case InvalidDpopProof
+
+    /** RFC 9449 §9: the proof has to be re-made over a nonce this edge issued. */
+    case UseDpopNonce(nonce: String)

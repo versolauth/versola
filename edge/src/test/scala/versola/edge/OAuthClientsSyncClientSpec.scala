@@ -28,6 +28,7 @@ object OAuthClientsSyncClientSpec extends ZIOSpecDefault:
     ),
     EdgeConfig.CentralConfig(URL.decode("https://central.example").toOption.get),
     URL.decode("https://idp.example").toOption.get,
+    edgeUrl = URL.decode("https://edge.example").toOption.get,
     configurationCacheRefreshInterval = 5.minutes,
   )
 

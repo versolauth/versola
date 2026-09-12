@@ -9,7 +9,9 @@ import zio.http.*
 import zio.json.{EncoderOps, JsonEncoder, jsonField}
 
 object EdgeController extends Controller:
-  type Env = Tracing & EdgeService & EdgeConfig & JwksService & TokenRevocationService & AuthorizationPresetsSyncClient
+  type Env =
+    Tracing & EdgeService & EdgeConfig & JwksService & TokenRevocationService & AuthorizationPresetsSyncClient &
+      dpop.DpopVerifier
 
   /** OIDC Back-Channel Logout §2.8 error response body. */
   private case class LogoutError(

@@ -1,16 +1,17 @@
 package versola.edge
 
-import com.nimbusds.jose.crypto.RSASSASigner
-import com.nimbusds.jose.jwk.{JWKSet, RSAKey}
+import com.nimbusds.jose.crypto.{ECDSASigner, RSASSASigner}
+import com.nimbusds.jose.jwk.{Curve, ECKey, JWKSet, RSAKey}
 import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm, JWSHeader}
 import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 import org.scalamock.stubs.ZIOStubs
+import versola.edge.dpop.{DpopReplayGuard, DpopVerifier}
 import versola.edge.login.LoginRepository
 import versola.edge.model.*
 import versola.edge.revocation.{RevocationKey, TokenRevocationService}
 import versola.util.cel.CelEvaluator
 import versola.util.http.Observability
-import versola.util.{EnvName, JWT, ReloadingCache, Secret, SecureRandom, SecurityService}
+import versola.util.{DpopNonce, EnvName, JWT, ReloadingCache, Secret, SecureRandom, SecurityService}
 import zio.*
 import zio.http.*
 import zio.json.ast.Json
@@ -18,7 +19,7 @@ import zio.json.{DecoderOps, EncoderOps}
 import zio.test.*
 
 import java.security.KeyPairGenerator
-import java.security.interfaces.RSAPublicKey
+import java.security.interfaces.{ECPrivateKey, ECPublicKey, RSAPublicKey}
 import java.util.{Date, UUID}
 import javax.crypto.spec.SecretKeySpec
 import scala.jdk.CollectionConverters.SeqHasAsJava
@@ -29,6 +30,9 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
   private val clientId = ClientId("web-app")
   private val backendUrl = URL.decode("http://backend.local").toOption.get
   private val centralUrl = URL.decode("https://central.example").toOption.get
+  /** The origin clients reach the edge on, and so the base of every `htu` a proof is
+    * checked against. Deliberately neither the upstream's nor auth's. */
+  private val edgePublicUrl = URL.decode("https://edge.example").toOption.get
   private val centralClientId = ClientId("central-admin")
 
   private val preset = AuthorizationPreset(
@@ -82,8 +86,17 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         url = URL.decode("https://central.example").toOption.get,
       ),
       versolaUrl = URL.decode("https://idp.example").toOption.get,
+      edgeUrl = edgePublicUrl,
       configurationCacheRefreshInterval = 5.minutes,
+      dpop = Some(
+        EdgeConfig.Dpop(
+          nonceSalt = dpopNonceSalt,
+        ),
+      ),
     )
+
+    val replayGuard = DpopReplayGuard.Impl()
+    val dpopVerifier: DpopVerifier = DpopVerifier.Impl(edgeConfig, replayGuard)
 
     val publicKeys: JWT.PublicKeys =
       val rsaKey = RSAKey.Builder(keyPair.getPublic.asInstanceOf[RSAPublicKey]).keyID(edgeConfig.keyId).build()
@@ -101,6 +114,7 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         authTime: Option[Long] = None,
         sid: String = "sso-session-1",
         audience: List[String] = List(backendUrl.encode),
+        cnfJkt: Option[String] = None,
     ): Task[AccessToken] =
       Clock.instant.flatMap { now =>
         ZIO.attemptBlocking {
@@ -119,6 +133,7 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
             .claim("role", role)
             .claim("sid", sid)
             .claim("tenant_id", tenantId)
+          cnfJkt.foreach(v => builder.claim("cnf", java.util.Map.of("jkt", v)))
           acr.foreach(v => builder.claim("acr", v))
           authTime.foreach(v => builder.claim("auth_time", v))
           val javaRoles = new java.util.ArrayList[String]()
@@ -149,7 +164,11 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
     def withClients(values: OAuthClient*): UIO[Unit] =
       clientCache.set(values.map(c => c.id -> c).toMap)
 
-    def buildService(httpClient: Client, security: SecurityService): EdgeService =
+    def buildService(
+        httpClient: Client,
+        security: SecurityService,
+        verifier: DpopVerifier = dpopVerifier,
+    ): EdgeService =
       EdgeService.Impl(
         clientService,
         resourceService,
@@ -164,6 +183,7 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         revocationService,
         jwksService,
         permissionService,
+        verifier,
         EnvName.Test("test"),
       )
 
@@ -317,6 +337,54 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
 
   private def sessionCookie(value: String): Cookie.Request =
     Cookie.Request(EdgeSessionCookie.name, s"${presetId}:$value")
+
+  private val dpopKeyPair =
+    val generator = KeyPairGenerator.getInstance("EC").nn
+    generator.initialize(Curve.P_256.toECParameterSpec)
+    generator.generateKeyPair().nn
+  private val dpopJwk =
+    ECKey.Builder(Curve.P_256, dpopKeyPair.getPublic.asInstanceOf[ECPublicKey]).build()
+  private val dpopJkt = dpopJwk.computeThumbprint().toString
+  private val dpopNonceSalt = Secret.Bytes32(Array.fill(32)(7.toByte))
+
+  /** The proof a DPoP client sends alongside its token, over this edge's public origin
+    * and the path the client called, and naming the token via `ath`. A nonce is always
+    * attached -- this edge always requires one -- unless a test overrides it with `None`
+    * to exercise that rejection specifically.
+    */
+  private def dpopProof(
+      accessToken: String,
+      path: String,
+      method: Method = Method.GET,
+      jti: String = "proof-1",
+      htu: Option[String] = None,
+      nonce: Task[Option[String]] = Clock.instant.map(now => Some(DpopNonce.issue(dpopNonceSalt, now))),
+  ): Task[String] =
+    Clock.instant.zip(nonce).flatMap: (now, resolvedNonce) =>
+      ZIO.attemptBlocking:
+        val header = JWSHeader.Builder(JWSAlgorithm.ES256)
+          .`type`(versola.util.Dpop.JwtType)
+          .jwk(dpopJwk)
+          .build()
+        val ath = versola.util.Base64.urlEncode(
+          java.security.MessageDigest.getInstance("SHA-256").nn
+            .digest(accessToken.getBytes("US-ASCII")).nn,
+        )
+        val claims = JWTClaimsSet.Builder()
+          .claim("htm", method.name)
+          .claim("htu", htu.getOrElse(s"${edgePublicUrl.encode}$path"))
+          .claim("ath", ath)
+          .jwtID(jti)
+          .issueTime(Date.from(now))
+        resolvedNonce.foreach(claims.claim("nonce", _))
+        val jwt = SignedJWT(header, claims.build())
+        jwt.sign(ECDSASigner(dpopKeyPair.getPrivate.asInstanceOf[ECPrivateKey]))
+        jwt.serialize()
+
+  private def dpopRequest(path: String, token: AccessToken, proof: String): Request =
+    Request.get(URL.decode(path).toOption.get)
+      .addHeader(Header.Custom("Authorization", s"DPoP $token"))
+      .addHeader(Header.Custom("DPoP", proof))
 
   private val proxySuite = suite("scenarios")(
     test("returns 401 when EDGE_SESSION cookie is missing") {
@@ -2023,6 +2091,181 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         )),
         upstream.exists(_.url.queryParams.getAll("userId") == Chunk("user-1")),
       )
+    },
+
+    // ── RFC 9449 ──────────────────────────────────────────────────────────────
+    test("forwards a DPoP-bound token's request when the proof checks out") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        capture <- captureUpstream()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(usersEndpoint()))
+        token <- env.signToken(cnfJkt = Some(dpopJkt))
+        proof <- dpopProof(token, "/users")
+        service = env.buildService(client, security)
+        response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), dpopRequest("/users", token, proof))
+        upstream <- capture.get
+      yield assertTrue(
+        response.status == Status.Ok,
+        // The proof is signed over this edge's own method and URI and is spent here, so
+        // upstream has no use for it and never sees it.
+        upstream.exists(_.rawHeader("DPoP").isEmpty),
+      )
+    },
+    // The downgrade this exists to close: holding a key-bound token is not enough, whoever
+    // presents it has to prove the key too.
+    test("refuses a DPoP-bound token presented under the Bearer scheme") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        capture <- captureUpstream()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(usersEndpoint()))
+        token <- env.signToken(cnfJkt = Some(dpopJkt))
+        request = Request.get(URL.empty / "users").addHeader(Header.Authorization.Bearer(token))
+        service = env.buildService(client, security)
+        response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
+        upstream <- capture.get
+      yield assertTrue(
+        response.status == Status.Unauthorized,
+        response.rawHeader("WWW-Authenticate").contains("""DPoP error="invalid_dpop_proof""""),
+        upstream.isEmpty,
+      )
+    },
+    // Same refusal over the session cookie, which carries a token and no proof at all.
+    test("refuses a DPoP-bound token arriving in the session cookie") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        capture <- captureUpstream()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(usersEndpoint()))
+        token <- env.signToken(cnfJkt = Some(dpopJkt))
+        request = Request.get(URL.empty / "users").addCookie(sessionCookie(token))
+        service = env.buildService(client, security)
+        response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
+        upstream <- capture.get
+      yield assertTrue(response.status == Status.Unauthorized, upstream.isEmpty)
+    },
+    test("refuses a DPoP-scheme request whose proof is missing") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        capture <- captureUpstream()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(usersEndpoint()))
+        token <- env.signToken(cnfJkt = Some(dpopJkt))
+        request = Request.get(URL.empty / "users").addHeader(Header.Custom("Authorization", s"DPoP $token"))
+        service = env.buildService(client, security)
+        response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
+        upstream <- capture.get
+      yield assertTrue(response.status == Status.Unauthorized, upstream.isEmpty)
+    },
+    // RFC 9449 §4.3(1): a second header must not be a way to slip a proof past the first --
+    // rawHeader would silently answer with just one of them.
+    test("refuses a DPoP-scheme request carrying more than one DPoP header") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        capture <- captureUpstream()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(usersEndpoint()))
+        token <- env.signToken(cnfJkt = Some(dpopJkt))
+        proof <- dpopProof(token, "/users")
+        request = dpopRequest("/users", token, proof).addHeader(Header.Custom("DPoP", proof))
+        service = env.buildService(client, security)
+        response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
+        upstream <- capture.get
+      yield assertTrue(response.status == Status.Unauthorized, upstream.isEmpty)
+    },
+    // The htu is rebuilt from the configured public URL, so a proof made over the address a
+    // forwarding hop knows this edge by does not open the door.
+    test("refuses a proof made over an origin other than the configured public URL") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        capture <- captureUpstream()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(usersEndpoint()))
+        token <- env.signToken(cnfJkt = Some(dpopJkt))
+        proof <- dpopProof(token, "/users", htu = Some("http://internal.local/users"))
+        service = env.buildService(client, security)
+        response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), dpopRequest("/users", token, proof))
+        upstream <- capture.get
+      yield assertTrue(response.status == Status.Unauthorized, upstream.isEmpty)
+    },
+    test("refuses a proof that has already been spent") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        _ <- captureUpstream()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(usersEndpoint()))
+        token <- env.signToken(cnfJkt = Some(dpopJkt))
+        proof <- dpopProof(token, "/users")
+        service = env.buildService(client, security)
+        first <- service.proxy(ResourceId("users-api"), Path.decode("/users"), dpopRequest("/users", token, proof))
+        replay <- service.proxy(ResourceId("users-api"), Path.decode("/users"), dpopRequest("/users", token, proof))
+      yield assertTrue(first.status == Status.Ok, replay.status == Status.Unauthorized)
+    },
+    // A proof proves possession of some key; it says nothing about a token that was never
+    // bound to one, so §7.1 has the token treated as invalid rather than as a bearer token.
+    test("refuses the DPoP scheme for a token that carries no cnf claim") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        capture <- captureUpstream()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(usersEndpoint()))
+        token <- env.signToken()
+        proof <- dpopProof(token, "/users")
+        service = env.buildService(client, security)
+        response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), dpopRequest("/users", token, proof))
+        upstream <- capture.get
+      yield assertTrue(response.status == Status.Unauthorized, upstream.isEmpty)
+    },
+    // A plain bearer token is unaffected by any of this, which is what keeps the browser
+    // and the existing mobile clients working.
+    test("leaves a token with no cnf claim to bearer semantics") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        capture <- captureUpstream()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(usersEndpoint()))
+        token <- env.signToken()
+        request = Request.get(URL.empty / "users").addHeader(Header.Authorization.Bearer(token))
+        service = env.buildService(client, security)
+        response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
+        upstream <- capture.get
+      yield assertTrue(response.status == Status.Ok, upstream.isDefined)
+    },
+    // Turning the feature off must not turn the binding off with it.
+    test("refuses a DPoP request when this edge has no dpop block configured") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        capture <- captureUpstream()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(usersEndpoint()))
+        token <- env.signToken(cnfJkt = Some(dpopJkt))
+        proof <- dpopProof(token, "/users")
+        unconfigured = DpopVerifier.Impl(env.edgeConfig.copy(dpop = None), DpopReplayGuard.Impl())
+        service = env.buildService(client, security, unconfigured)
+        response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), dpopRequest("/users", token, proof))
+        upstream <- capture.get
+      yield assertTrue(response.status == Status.Unauthorized, upstream.isEmpty)
     },
   )
 end EdgeServiceProxySpec

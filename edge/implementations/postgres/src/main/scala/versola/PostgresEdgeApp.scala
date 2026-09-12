@@ -4,6 +4,7 @@ package versola
 import com.augustnagro.magnum.magzio.TransactorZIO
 import com.typesafe.config.ConfigFactory
 import versola.cleanup.PostgresCleanupManager
+import versola.edge.dpop.{DpopReplayGuard, DpopVerifier}
 import versola.edge.login.LoginRepository
 import versola.edge.revocation.{RevocationNotifications, RevocationRepository, TokenRevocationService}
 import versola.edge.session.EdgeSessionRepository
@@ -46,6 +47,8 @@ object PostgresEdgeApp extends VersolaApp("edge"):
     TokenRevocationService &
     JwksService &
     SSOClient &
+    DpopReplayGuard &
+    DpopVerifier &
     EdgeService
 
   override def routes: Routes[Dependencies & Tracing & EnvName, Throwable] =
@@ -80,6 +83,8 @@ object PostgresEdgeApp extends VersolaApp("edge"):
       JwksService.live >+>
       TokenRevocationService.live >+>
       SSOClient.live >+>
+      DpopReplayGuard.live >+>
+      DpopVerifier.live >+>
       EdgeService.live
 
 
@@ -98,6 +103,11 @@ object PostgresEdgeApp extends VersolaApp("edge"):
 
   given DeriveConfig[URL] = DeriveConfig[String]
     .mapOrFail(URL.decode(_).left.map(ex => zio.Config.Error.InvalidData(message = ex.getMessage)))
+
+  given DeriveConfig[Dpop.Algorithm] = DeriveConfig[String]
+    .mapOrFail: str =>
+      Dpop.Algorithm.values.find(_.toString == str)
+        .toRight(zio.Config.Error.InvalidData(message = s"Unknown DPoP signing algorithm: '$str'"))
 
   given DeriveConfig[java.security.PrivateKey] = DeriveConfig[String]
     .mapOrFail: str =>
