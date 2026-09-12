@@ -29,6 +29,11 @@ object PostgresConfigSpec extends ZIOSpecDefault:
       |  leak-detection-threshold = "0 seconds"
       |}""".stripMargin
 
+  private val nestedHocon =
+    s"""store {
+       |${fullHocon.linesIterator.map("  " + _).mkString("\n")}
+       |}""".stripMargin
+
   private val validConfig = PostgresConfig(
     url = "jdbc:postgresql://localhost:5432/auth",
     notificationsUrl = None,
@@ -64,6 +69,20 @@ object PostgresConfigSpec extends ZIOSpecDefault:
             |  password = "1234"
             |}""".stripMargin
         for result <- TypesafeConfigProvider.fromHoconString(incompleteHocon).kebabCase.load(postgresConfig).exit
+        yield assertTrue(result.isFailure)
+      },
+      test("reads the same block from a nested path, for a process with more than one pool") {
+        for config <- TypesafeConfigProvider
+            .fromHoconString(nestedHocon)
+            .kebabCase
+            .load(PostgresHikariDataSource.nestedConfig(Seq("store", "postgres")))
+        yield assertTrue(
+          config.url == "jdbc:postgresql://localhost:5432/auth",
+          config.maximumPoolSize == 15,
+        )
+      },
+      test("does not find a nested block at the default top-level path") {
+        for result <- TypesafeConfigProvider.fromHoconString(nestedHocon).kebabCase.load(postgresConfig).exit
         yield assertTrue(result.isFailure)
       },
       test("does not leak the raw password through toString (regression for #64)") {
