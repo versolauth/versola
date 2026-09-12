@@ -17,6 +17,11 @@ CREATE TABLE refresh_tokens(
     -- PostgresSessionRepository.deleteByAccessToken. Indexing it would tax every rotation and
     -- every bound-token renewal to serve a rare admin-adjacent path.
     access_token BYTEA NOT NULL,
+    -- When the access token named above expires. Recorded per row -- not derived from the
+    -- client's current access_token_ttl -- because that TTL is mutable: a family-revocation
+    -- push has to know how long the specific token it is revoking was actually valid for, not
+    -- how long a token minted today would be. See PostgresSessionRepository.revokeFamily.
+    access_token_expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
     session_id BYTEA NOT NULL,
     public_session_id TEXT NOT NULL,
     user_id UUID NOT NULL,

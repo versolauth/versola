@@ -132,6 +132,7 @@ object OAuthTokenService:
             sessionId = codeRecord.sessionId,
             publicSessionId = codeRecord.publicSessionId,
             accessToken = accessToken,
+            accessTokenExpiresAt = now.plus(client.accessTokenTtl),
             userId = codeRecord.userId,
             clientId = codeRecord.clientId,
             audience = codeRecord.resources,
@@ -260,6 +261,7 @@ object OAuthTokenService:
           client = client,
           record = tokenRecord.copy(
             accessToken = accessToken,
+            accessTokenExpiresAt = now.plus(client.accessTokenTtl),
             scope = scope.getOrElse(tokenRecord.scope),
             issuedAt = now,
             expiresAt = now.plusSeconds(client.refreshTokenTtl.toSeconds),
@@ -347,24 +349,30 @@ object OAuthTokenService:
       * former is worth surfacing in the request's error context.
       */
     private def detectReplay(client: OAuthClientRecord, replayed: MAC.Of[RefreshToken]): Task[Boolean] =
-      zio.Clock.instant.flatMap: now =>
-        sessionRepository.revokeFamily(replayed, client.id, now.minus(client.accessTokenTtl)).flatMap:
-          case Some(family) =>
-            // As with authorization-code replay, the live access tokens are not in hand
-            // here, only their ids, so their lifetime is bounded by the client's TTL. One
-            // event names every one of them, rather than one push per token: the whole
-            // family shares this `expiresAt` bound already, so nothing is lost by batching.
-            ZIO
-              .foreachDiscard(NonEmptyChunk.fromIterableOption(family.accessTokens)): tokens =>
-                accessTokenRevocationService.revoke(
-                  client = client,
-                  tokens = tokens,
-                  subject = family.userId.toString,
-                  expiresAt = now.plus(client.accessTokenTtl),
-                )
-              .as(true)
-          case None =>
-            ZIO.succeed(false)
+      sessionRepository.revokeFamily(replayed, client.id).flatMap:
+        case Some(family) =>
+          // As with authorization-code replay, the live access tokens are not in hand here,
+          // only their ids -- but unlike that path, each one's actual expiry already sits on
+          // the row `revokeFamily` read it from, not derived from the client's current
+          // accessTokenTtl, which is mutable and could misjudge a token minted under a
+          // different one. One event names every one of them, rather than one push per
+          // token, bounded by the furthest of their expiries so the batch still covers all.
+          val revocation = for
+            tokens <- NonEmptyChunk.fromIterableOption(family.accessTokens)
+            expiresAt <- family.accessTokensExpireBy
+          yield (tokens, expiresAt)
+
+          ZIO
+            .foreachDiscard(revocation): (tokens, expiresAt) =>
+              accessTokenRevocationService.revoke(
+                client = client,
+                tokens = tokens,
+                subject = family.userId.toString,
+                expiresAt = expiresAt,
+              )
+            .as(true)
+        case None =>
+          ZIO.succeed(false)
 
     /** RFC 9396 §6: a token request may ask for the authorization details of the underlying
       * grant or fewer of them, never for more; §6.1 compares the requested objects with the
@@ -503,7 +511,9 @@ object OAuthTokenService:
             // failure mode is the grant having been revoked between the read and this write.
             case Some(renewal) =>
               Observability.setRefreshToken(Base64.urlEncode(renewal.token)) *>
-                sessionRepository.renewBoundToken(renewal.mac, record.accessToken, record.scope, record.expiresAt)
+                sessionRepository.renewBoundToken(
+                  renewal.mac, record.accessToken, record.scope, record.expiresAt, record.accessTokenExpiresAt,
+                )
                   .filterOrFail(identity)(TokenEndpointError.InvalidGrant.RefreshTokenNotFound)
                   .as(renewal.token)
 

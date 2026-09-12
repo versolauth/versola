@@ -111,9 +111,11 @@ trait SessionRepository:
     * the family can be trusted anymore, however many generations have passed since.
     *
     * Every member is expired in place (collected by the cleanup manager's `expires_at` sweep
-    * like any other expiry in this table, rather than deleted inline). Members issued after
-    * `accessTokensIssuedAfter` are returned so the caller can push their access tokens to the
-    * client's back channel; older ones are past their access-token TTL and not worth pushing.
+    * like any other expiry in this table, rather than deleted inline). Members whose access
+    * token has not yet expired -- per each row's own `access_token_expires_at`, not the
+    * client's current `accessTokenTtl`, which is mutable -- are returned so the caller can
+    * push their access tokens to the client's back channel; the rest are already dead and not
+    * worth pushing.
     *
     * Returns `None` when `token` is not a retired member of a family owned by `clientId`:
     * unknown, still live, or belonging to someone else. Scoping to `clientId` keeps one
@@ -122,7 +124,6 @@ trait SessionRepository:
   def revokeFamily(
       token: MAC.Of[RefreshToken],
       clientId: ClientId,
-      accessTokensIssuedAfter: Instant,
   ): Task[Option[RevokedFamily]]
 
   /** Refreshes a sender-constrained (DPoP-bound) token in place: re-points `access_token` at
@@ -137,6 +138,10 @@ trait SessionRepository:
     * row is the grant's only record, so leaving it alone would keep the wider scope
     * authoritative.
     *
+    * `accessTokenExpiresAt` is written for the same reason: a family revocation reads this
+    * row's own expiry, not the client's current `accessTokenTtl`, to decide whether the token
+    * it names is still worth pushing to the edge.
+    *
     * Returns false when the token is gone, expired or retired.
     */
   def renewBoundToken(
@@ -144,6 +149,7 @@ trait SessionRepository:
       accessToken: AccessToken,
       scope: Set[ScopeToken],
       expiresAt: Instant,
+      accessTokenExpiresAt: Instant,
   ): Task[Boolean]
 
   def delete(token: MAC.Of[RefreshToken]): Task[Unit]

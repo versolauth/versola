@@ -152,6 +152,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
     sessionId = sessionId1,
     publicSessionId = publicSessionId1,
     accessToken = accessToken1,
+    accessTokenExpiresAt = now.plus(testClient.accessTokenTtl),
     userId = userId1,
     clientId = clientId1,
     audience = List.empty,
@@ -181,6 +182,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
         sessionId = sessionId1,
         publicSessionId = publicSessionId1,
         accessToken = accessToken1,
+        accessTokenExpiresAt = now.plus(testClient.accessTokenTtl),
         userId = userId1,
         clientId = clientId1,
         audience = Nil,
@@ -581,6 +583,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             sessionId = sessionId1,
             publicSessionId = publicSessionId1,
             accessToken = accessToken1,
+            accessTokenExpiresAt = now.plus(testClient.accessTokenTtl),
             userId = userId1,
             clientId = clientId1,
             audience = List(ResourceUri("resource://edge"), ResourceUri("https://api.example.com")),
@@ -643,6 +646,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             sessionId = sessionId1,
             publicSessionId = publicSessionId1,
             accessToken = accessToken1,
+            accessTokenExpiresAt = now.plus(testClient.accessTokenTtl),
             userId = userId1,
             clientId = clientId1,
             audience = List.empty,
@@ -719,7 +723,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
           _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
           _ <- env.tokenRepo.findToken.succeedsWith(None)
-          _ <- env.tokenRepo.revokeFamily.succeedsWith(Some(RevokedFamily(userId1, List(accessToken1, accessToken2))))
+          _ <- env.tokenRepo.revokeFamily.succeedsWith(Some(RevokedFamily(userId1, List(accessToken1, accessToken2), Some(now.plusSeconds(1800)))))
           _ <- env.accessTokenRevocationService.revoke.succeedsWith(())
 
           request = RefreshTokenRequest(refreshToken1, None, None, None)
@@ -728,14 +732,13 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           result <- env.service.refreshAccessToken(request, credentials, None, None).either
         yield assertTrue(
           result == Left(TokenEndpointError.InvalidGrant.RefreshTokenReplayed),
-          // Generations older than the access-token TTL are not worth pushing to the client,
-          // so the repository is asked only for those issued since.
           env.tokenRepo.revokeFamily.calls ==
-            List((refreshTokenMac1, clientId1, now.minus(testClient.accessTokenTtl))),
-          // Every access token the family issued goes, not just the tip's. None of them is in
-          // hand here, only their ids, so each lifetime is bounded by the client's TTL.
+            List((refreshTokenMac1, clientId1)),
+          // Every access token the family issued goes, not just the tip's, pushed under the
+          // furthest of their own recorded expiries -- not the client's current TTL, which the
+          // repository already filtered by and is not consulted again here.
           env.accessTokenRevocationService.revoke.calls == List(
-            (testClient, NonEmptyChunk(accessToken1, accessToken2), userId1.toString, now.plus(testClient.accessTokenTtl)),
+            (testClient, NonEmptyChunk(accessToken1, accessToken2), userId1.toString, now.plusSeconds(1800)),
           ),
         )
       },
@@ -748,6 +751,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             sessionId = sessionId1,
             publicSessionId = publicSessionId1,
             accessToken = accessToken1,
+            accessTokenExpiresAt = now.plus(testClient.accessTokenTtl),
             userId = userId1,
             clientId = clientId1,
             audience = List.empty,
@@ -795,7 +799,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
           _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
           _ <- env.tokenRepo.findToken.succeedsWith(None)
-          _ <- env.tokenRepo.revokeFamily.succeedsWith(Some(RevokedFamily(userId1, List(accessToken1))))
+          _ <- env.tokenRepo.revokeFamily.succeedsWith(Some(RevokedFamily(userId1, List(accessToken1), Some(Instant.EPOCH))))
           _ <- env.accessTokenRevocationService.revoke.succeedsWith(())
 
           request = RefreshTokenRequest(refreshToken1, None, None, None)
@@ -818,7 +822,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.tokenRepo.findToken.succeedsWith(None)
           // The chain moved on under a different key, so this is reuse of a retired token.
           _ <- env.tokenRepo.findIdempotentRetry.succeedsWith(None)
-          _ <- env.tokenRepo.revokeFamily.succeedsWith(Some(RevokedFamily(userId1, List(accessToken1))))
+          _ <- env.tokenRepo.revokeFamily.succeedsWith(Some(RevokedFamily(userId1, List(accessToken1), Some(Instant.EPOCH))))
           _ <- env.accessTokenRevocationService.revoke.succeedsWith(())
 
           request = RefreshTokenRequest(refreshToken1, None, None, None)
@@ -836,6 +840,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             sessionId = sessionId1,
             publicSessionId = publicSessionId1,
             accessToken = accessToken1,
+            accessTokenExpiresAt = now.plus(testClient.accessTokenTtl),
             userId = userId1,
             clientId = clientId1,
             audience = List.empty,
@@ -883,6 +888,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             sessionId = sessionId1,
             publicSessionId = publicSessionId1,
             accessToken = accessToken1,
+            accessTokenExpiresAt = now.plus(testClient.accessTokenTtl),
             userId = userId1,
             clientId = clientId1,
             audience = List.empty,
@@ -924,6 +930,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             sessionId = sessionId1,
             publicSessionId = publicSessionId1,
             accessToken = accessToken1,
+            accessTokenExpiresAt = now.plus(testClient.accessTokenTtl),
             userId = userId1,
             clientId = clientId1,
             audience = List.empty,
@@ -963,6 +970,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             sessionId = sessionId1,
             publicSessionId = publicSessionId1,
             accessToken = accessToken1,
+            accessTokenExpiresAt = now.plus(testClient.accessTokenTtl),
             userId = userId1,
             clientId = clientId1,
             audience = List.empty,
@@ -987,7 +995,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.propertyGenerator.nextAccessToken.succeedsWith(accessToken1)
           _ <- env.propertyGenerator.nextRefreshToken.succeedsWith(newRefreshToken)
           _ <- env.tokenRepo.createRefreshToken.failsWith(RefreshAlreadyExchanged())
-          _ <- env.tokenRepo.revokeFamily.succeedsWith(Some(RevokedFamily(userId1, List(accessToken1))))
+          _ <- env.tokenRepo.revokeFamily.succeedsWith(Some(RevokedFamily(userId1, List(accessToken1), Some(now.plusSeconds(1800)))))
           _ <- env.accessTokenRevocationService.revoke.succeedsWith(())
 
           request = RefreshTokenRequest(refreshToken1, None, None, None)
@@ -999,9 +1007,9 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           // successor is live, and the leak is as proven as a sequential replay.
           result == Left(TokenEndpointError.InvalidGrant.RefreshTokenReplayed),
           env.tokenRepo.revokeFamily.calls ==
-            List((refreshTokenMac1, clientId1, now.minus(testClient.accessTokenTtl))),
+            List((refreshTokenMac1, clientId1)),
           env.accessTokenRevocationService.revoke.calls ==
-            List((testClient, NonEmptyChunk(accessToken1), userId1.toString, now.plus(testClient.accessTokenTtl))),
+            List((testClient, NonEmptyChunk(accessToken1), userId1.toString, now.plusSeconds(1800))),
         )
       },
       test("fail with InvalidGrant when the rotation loses a race and the family is already gone") {
@@ -1013,6 +1021,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             sessionId = sessionId1,
             publicSessionId = publicSessionId1,
             accessToken = accessToken1,
+            accessTokenExpiresAt = now.plus(testClient.accessTokenTtl),
             userId = userId1,
             clientId = clientId1,
             audience = List.empty,
@@ -1057,6 +1066,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             sessionId = sessionId1,
             publicSessionId = publicSessionId1,
             accessToken = accessToken1,
+            accessTokenExpiresAt = now.plus(testClient.accessTokenTtl),
             userId = userId1,
             clientId = clientId1,
             audience = List.empty,

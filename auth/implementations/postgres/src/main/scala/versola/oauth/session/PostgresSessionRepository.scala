@@ -187,7 +187,8 @@ class PostgresSessionRepository(xa: TransactorZIO)
     Clock.instant.flatMap: now =>
       xa.connectMeasured("find-refresh-tokens-by-user"):
         sql"""
-          SELECT session_id, public_session_id, access_token, user_id, client_id,
+          SELECT session_id, public_session_id, access_token, access_token_expires_at,
+                 user_id, client_id,
                  audience, authorization_details, scope, issued_at,
                  expires_at, requested_claims, ui_locales, nonce,
                  amr, auth_time, acr, cnf_jkt
@@ -280,7 +281,8 @@ class PostgresSessionRepository(xa: TransactorZIO)
             // A fresh chain: the token is the root of its own family.
             sql"""
               INSERT INTO refresh_tokens (
-                id, family_id, session_id, public_session_id, access_token, user_id, client_id,
+                id, family_id, session_id, public_session_id, access_token,
+                access_token_expires_at, user_id, client_id,
                 audience, authorization_details, scope, issued_at, expires_at, requested_claims,
                 ui_locales, nonce, amr, auth_time, acr, cnf_jkt
               )
@@ -290,6 +292,7 @@ class PostgresSessionRepository(xa: TransactorZIO)
                 ${record.sessionId},
                 ${record.publicSessionId},
                 ${record.accessToken},
+                ${record.accessTokenExpiresAt},
                 ${record.userId},
                 ${record.clientId},
                 ${record.audience},
@@ -345,7 +348,8 @@ class PostgresSessionRepository(xa: TransactorZIO)
                   AND idempotency_key IS NOT NULL
               )
               INSERT INTO refresh_tokens (
-                id, family_id, session_id, public_session_id, access_token, user_id, client_id,
+                id, family_id, session_id, public_session_id, access_token,
+                access_token_expires_at, user_id, client_id,
                 audience, authorization_details, scope, issued_at, expires_at, requested_claims,
                 ui_locales, nonce, amr, auth_time, acr, cnf_jkt
               )
@@ -355,6 +359,7 @@ class PostgresSessionRepository(xa: TransactorZIO)
                 ${record.sessionId},
                 ${record.publicSessionId},
                 ${record.accessToken},
+                ${record.accessTokenExpiresAt},
                 ${record.userId},
                 ${record.clientId},
                 ${record.audience},
@@ -388,7 +393,8 @@ class PostgresSessionRepository(xa: TransactorZIO)
       now    <- Clock.instant
       result <- xa.connectMeasured("find-refresh-token"):
         sql"""
-          SELECT session_id, public_session_id, access_token, user_id, client_id,
+          SELECT session_id, public_session_id, access_token, access_token_expires_at,
+                 user_id, client_id,
                  audience, authorization_details, scope, issued_at,
                  expires_at, requested_claims, ui_locales, nonce,
                  amr, auth_time, acr, cnf_jkt
@@ -417,7 +423,8 @@ class PostgresSessionRepository(xa: TransactorZIO)
         // whatever the cleanup sweep's cadence happens to be. A row past its `expires_at` is
         // physically present until swept, but must stop being honoured now.
         sql"""
-          SELECT tip.id, tip.session_id, tip.public_session_id, tip.access_token, tip.user_id,
+          SELECT tip.id, tip.session_id, tip.public_session_id, tip.access_token,
+                 tip.access_token_expires_at, tip.user_id,
                  tip.client_id, tip.audience, tip.authorization_details, tip.scope,
                  tip.issued_at, tip.expires_at, tip.requested_claims, tip.ui_locales,
                  tip.nonce, tip.amr, tip.auth_time, tip.acr, tip.cnf_jkt
@@ -441,7 +448,6 @@ class PostgresSessionRepository(xa: TransactorZIO)
   override def revokeFamily(
       token: MAC.Of[RefreshToken],
       clientId: ClientId,
-      accessTokensIssuedAfter: Instant,
   ): Task[Option[RevokedFamily]] =
     Clock.instant.flatMap: now =>
       xa.transactMeasured("revoke-refresh-token-family") {
@@ -463,17 +469,21 @@ class PostgresSessionRepository(xa: TransactorZIO)
               UPDATE refresh_tokens
               SET expires_at = $now
               WHERE family_id = $family AND expires_at > $now
-              RETURNING access_token, issued_at
+              RETURNING access_token, access_token_expires_at
             """.query[(AccessToken, Instant)].run()
+
+            // Each row's own access-token expiry, not the client's current accessTokenTtl
+            // (mutable, so it would misjudge a token minted under a different one): a token
+            // already past it is dead already, and pushing it to the client's back channel
+            // would revoke nothing.
+            val live = revoked.view.filter(_._2.isAfter(now)).toList
 
             RevokedFamily(
               userId = userId,
-              // Older generations are past their access-token TTL, so pushing them to the
-              // client's back channel would revoke nothing.
-              accessTokens = revoked.view
-                .filter(_._2.isAfter(accessTokensIssuedAfter))
-                .map(_._1)
-                .toList,
+              accessTokens = live.map(_._1),
+              // The whole batch is pushed as one edge event under a single expiresAt (see the
+              // caller), so that bound has to cover the furthest of them, not any one token's.
+              accessTokensExpireBy = live.map(_._2).maxOption,
             )
       }
 
@@ -482,6 +492,7 @@ class PostgresSessionRepository(xa: TransactorZIO)
       accessToken: AccessToken,
       scope: Set[ScopeToken],
       expiresAt: Instant,
+      accessTokenExpiresAt: Instant,
   ): Task[Boolean] =
     Clock.instant.flatMap: now =>
       xa.connectMeasured("renew-bound-refresh-token"):
@@ -494,9 +505,14 @@ class PostgresSessionRepository(xa: TransactorZIO)
         // `scope` is written for the same reason the rotating path carries it into the
         // successor: this row is the grant's only record, so a narrowing that is not persisted
         // here is one the next refresh silently undoes.
+        //
+        // `access_token_expires_at` is replaced outright, not `GREATEST`-guarded like
+        // `expires_at`: it describes the access token this row now names, and that token's own
+        // expiry never needs to be the max of itself and a stale prior value.
         sql"""
           UPDATE refresh_tokens
           SET access_token = $accessToken,
+              access_token_expires_at = $accessTokenExpiresAt,
               scope = $scope,
               expires_at = GREATEST(expires_at, $expiresAt)
           WHERE id = $token AND rotated_at IS NULL AND expires_at > $now
