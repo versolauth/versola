@@ -2,7 +2,7 @@ package versola.loadgen.store
 
 import com.augustnagro.magnum.DbCodec
 import versola.loadgen.model.*
-import versola.loadgen.protocol.{EdgeSession, RefreshToken}
+import versola.loadgen.protocol.{EdgeSession, RefreshToken, SsoSession}
 import versola.util.postgres.BasicCodecs
 
 import java.time.Instant
@@ -24,6 +24,7 @@ private[store] trait StoreCodecs extends BasicCodecs:
 
   given DbCodec[RefreshToken] = DbCodec.StringCodec.biMap(RefreshToken(_), _.value)
   given DbCodec[EdgeSession] = DbCodec.StringCodec.biMap(EdgeSession(_), _.value)
+  given DbCodec[SsoSession] = DbCodec.StringCodec.biMap(SsoSession(_), _.value)
 
 private[store] object StoreCodecs:
   private def smallInt[A](codes: StoreCodes.Codes[A]): DbCodec[A] =

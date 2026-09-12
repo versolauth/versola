@@ -3,7 +3,7 @@ package versola.loadgen.store
 import com.augustnagro.magnum.*
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.loadgen.model.DeviceSession
-import versola.loadgen.protocol.{EdgeSession, RefreshToken}
+import versola.loadgen.protocol.{EdgeSession, RefreshToken, SsoSession}
 import zio.{Chunk, Task, ZIO, ZLayer}
 
 import java.time.Instant
@@ -16,13 +16,13 @@ class PostgresDeviceSessionRepository(xa: TransactorZIO) extends DeviceSessionRe
     xa.connectMeasured("insert-device-session"):
       sql"""
         INSERT INTO vu_sessions (
-          id, user_id, kind, client_id, refresh_token, edge_cookie, access_expires_at,
-          refresh_expires_at, acr, auth_time, generation, shard
+          id, user_id, kind, client_id, refresh_token, edge_cookie, sso_session,
+          access_expires_at, refresh_expires_at, acr, auth_time, generation, shard
         ) VALUES (
           ${session.id}, ${session.userId}, ${session.kind}, ${session.clientId},
-          ${session.refreshToken}, ${session.edgeCookie}, ${session.accessExpiresAt},
-          ${session.refreshExpiresAt}, ${session.acr}, ${session.authTime},
-          ${session.generation}, ${session.shard}
+          ${session.refreshToken}, ${session.edgeCookie}, ${session.ssoSession},
+          ${session.accessExpiresAt}, ${session.refreshExpiresAt}, ${session.acr},
+          ${session.authTime}, ${session.generation}, ${session.shard}
         )
       """.update.run()
     .unit
@@ -30,27 +30,31 @@ class PostgresDeviceSessionRepository(xa: TransactorZIO) extends DeviceSessionRe
   override def find(id: Long): Task[Option[DeviceSession]] =
     xa.connectMeasured("find-device-session"):
       sql"""
-        SELECT id, user_id, kind, client_id, refresh_token, edge_cookie, access_expires_at,
-               refresh_expires_at, acr, auth_time, generation, shard
+        SELECT id, user_id, kind, client_id, refresh_token, edge_cookie, sso_session,
+               access_expires_at, refresh_expires_at, acr, auth_time, generation, shard
         FROM vu_sessions WHERE id = $id
       """.query[DeviceSession].run().headOption
 
   override def listByUser(userId: Long): Task[Vector[DeviceSession]] =
     xa.connectMeasured("list-device-sessions-by-user"):
       sql"""
-        SELECT id, user_id, kind, client_id, refresh_token, edge_cookie, access_expires_at,
-               refresh_expires_at, acr, auth_time, generation, shard
+        SELECT id, user_id, kind, client_id, refresh_token, edge_cookie, sso_session,
+               access_expires_at, refresh_expires_at, acr, auth_time, generation, shard
         FROM vu_sessions WHERE user_id = $userId ORDER BY id
       """.query[DeviceSession].run()
 
+  /** The `COALESCE` is written identically in the predicate, the sort and
+    * `vu_sessions_shard_idx`. Written any other way -- `OR`, a `CASE` on `kind` -- it stops
+    * matching the index expression and the startup load becomes a shard-wide sort.
+    */
   override def listLive(shard: Int, liveAt: Instant, limit: Int): Task[Vector[DeviceSession]] =
     xa.connectMeasured("list-live-device-sessions"):
       sql"""
-        SELECT id, user_id, kind, client_id, refresh_token, edge_cookie, access_expires_at,
-               refresh_expires_at, acr, auth_time, generation, shard
+        SELECT id, user_id, kind, client_id, refresh_token, edge_cookie, sso_session,
+               access_expires_at, refresh_expires_at, acr, auth_time, generation, shard
         FROM vu_sessions
-        WHERE shard = $shard AND refresh_expires_at > $liveAt
-        ORDER BY refresh_expires_at
+        WHERE shard = $shard AND COALESCE(refresh_expires_at, access_expires_at) > $liveAt
+        ORDER BY COALESCE(refresh_expires_at, access_expires_at)
         LIMIT $limit
       """.query[DeviceSession].run()
 
@@ -87,8 +91,9 @@ class PostgresDeviceSessionRepository(xa: TransactorZIO) extends DeviceSessionRe
       """.update.run()
     .unit
 
-  /** `COALESCE` on the incoming value, so a session whose refresh expiry is unknown keeps what
-    * the row already holds rather than being nulled by a touch that had no opinion about it.
+  /** `COALESCE` on each incoming value, so a step-up that rotated neither the refresh token,
+    * its expiry, nor the `SSO_SESSION` keeps what the row already holds rather than nulling a
+    * credential it had no opinion about.
     *
     * Batched into one round trip for the same reason as
     * [[PostgresVirtualUserRepository.touchAll]].
@@ -100,6 +105,7 @@ class PostgresDeviceSessionRepository(xa: TransactorZIO) extends DeviceSessionRe
       accessExpiresAt: Instant,
       refreshToken: Option[RefreshToken],
       refreshExpiresAt: Option[Instant],
+      ssoSession: Option[SsoSession],
   ): Task[Unit] =
     xa.connectMeasured("store-device-session-step-up"):
       sql"""
@@ -108,7 +114,8 @@ class PostgresDeviceSessionRepository(xa: TransactorZIO) extends DeviceSessionRe
             auth_time = $authTime,
             access_expires_at = $accessExpiresAt,
             refresh_token = COALESCE(${refreshToken}::text, refresh_token),
-            refresh_expires_at = COALESCE(${refreshExpiresAt}::timestamptz, refresh_expires_at)
+            refresh_expires_at = COALESCE(${refreshExpiresAt}::timestamptz, refresh_expires_at),
+            sso_session = COALESCE(${ssoSession}::text, sso_session)
         WHERE id = $id
       """.update.run()
     .unit

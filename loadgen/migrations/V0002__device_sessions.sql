@@ -10,6 +10,11 @@ CREATE UNLOGGED TABLE vu_sessions (
     client_id          TEXT        NOT NULL,
     refresh_token      TEXT,
     edge_cookie        TEXT,
+    -- The auth-side SSO_SESSION (§3.2, §7.4). Persisted beside the other credentials because a
+    -- session restored without it cannot re-run /authorize on its own SSO session: a silent
+    -- reauthorization degrades into a full credential login and an ACR step-up is impossible,
+    -- either of which changes the scenario mix the driver reports it ran.
+    sso_session        TEXT,
     access_expires_at  TIMESTAMPTZ,
     refresh_expires_at TIMESTAMPTZ,
     acr                TEXT,
@@ -26,7 +31,14 @@ CREATE UNLOGGED TABLE vu_sessions (
 CREATE INDEX vu_sessions_user_idx ON vu_sessions (user_id);
 
 -- Serves the driver's startup load of its own live sessions:
--- `WHERE shard = ? AND refresh_expires_at > now() ORDER BY refresh_expires_at LIMIT ?`.
+-- `WHERE shard = ? AND COALESCE(refresh_expires_at, access_expires_at) > now() ORDER BY 2 LIMIT ?`.
 -- Leading `shard` keeps it to one driver's slice; the trailing expiry both filters the dead
 -- sessions inside the index and gives the scan its order.
-CREATE INDEX vu_sessions_shard_idx ON vu_sessions (shard, refresh_expires_at);
+--
+-- The expiry is a COALESCE rather than refresh_expires_at alone because which credential bounds
+-- resumability depends on the kind: a mobile session outlives its access token for as long as
+-- its refresh token is valid, while a web-cookie session has no refresh token at all and lives
+-- exactly as long as its EDGE_SESSION, whose expiry is access_expires_at. Indexing the bare
+-- column would make every still-live web session invisible to the startup load (NULL > now() is
+-- NULL), sending its traffic to a fresh login instead of a resume.
+CREATE INDEX vu_sessions_shard_idx ON vu_sessions (shard, COALESCE(refresh_expires_at, access_expires_at));

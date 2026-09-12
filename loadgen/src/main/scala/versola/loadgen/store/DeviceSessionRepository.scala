@@ -1,7 +1,7 @@
 package versola.loadgen.store
 
 import versola.loadgen.model.DeviceSession
-import versola.loadgen.protocol.{EdgeSession, RefreshToken}
+import versola.loadgen.protocol.{EdgeSession, RefreshToken, SsoSession}
 import zio.{Chunk, Task}
 
 import java.time.Instant
@@ -18,9 +18,15 @@ trait DeviceSessionRepository:
 
   def listByUser(userId: Long): Task[Vector[DeviceSession]]
 
-  /** This driver's sessions whose refresh token is still valid at `liveAt`, oldest expiry
-    * first, served by `vu_sessions_shard_idx`. What a driver loads at startup to decide which
-    * users can resume rather than log in again.
+  /** This driver's sessions still resumable at `liveAt`, oldest expiry first, served by
+    * `vu_sessions_shard_idx`. What a driver loads at startup to decide which users can resume
+    * rather than log in again.
+    *
+    * Resumable means whichever credential the session's kind depends on has not expired: the
+    * refresh token for a mobile session, and for a web-cookie session -- which has no refresh
+    * token -- the `EDGE_SESSION` itself, whose expiry is `accessExpiresAt`. Filtering on
+    * `refreshExpiresAt` alone would drop every live web session at startup and shift its
+    * traffic to fresh logins, changing the scenario mix the driver reports it ran.
     */
   def listLive(shard: Int, liveAt: Instant, limit: Int): Task[Vector[DeviceSession]]
 
@@ -58,7 +64,11 @@ trait DeviceSessionRepository:
   def storeEdgeCookie(id: Long, cookie: EdgeSession, accessExpiresAt: Instant): Task[Unit]
 
   /** What a completed step-up leaves behind (§7.4): the session's assurance level, the fresh
-    * `auth_time` behind it, and the token pair the new code exchange produced.
+    * `auth_time` behind it, the token pair the new code exchange produced, and the
+    * `SSO_SESSION` if auth re-set it on the way through.
+    *
+    * `ssoSession` is `None` when the response carried no new cookie, which leaves the stored
+    * one alone rather than clearing it -- the same `COALESCE` rule as the token pair.
     *
     * The step-up path's counterpart to [[storeRotatedRefresh]], and deliberately not guarded by
     * a generation: a step-up is an authorization-code exchange on the same SSO session, not a
@@ -78,6 +88,7 @@ trait DeviceSessionRepository:
       accessExpiresAt: Instant,
       refreshToken: Option[RefreshToken],
       refreshExpiresAt: Option[Instant],
+      ssoSession: Option[SsoSession],
   ): Task[Unit]
 
   /** Deferred write path -- `access_expires_at` only (§7.5, less `acr`; see [[SessionTouch]]). */

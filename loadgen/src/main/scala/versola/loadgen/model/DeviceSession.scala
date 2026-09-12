@@ -1,6 +1,6 @@
 package versola.loadgen.model
 
-import versola.loadgen.protocol.{EdgeSession, RefreshToken}
+import versola.loadgen.protocol.{EdgeSession, RefreshToken, SsoSession}
 
 import java.time.Instant
 
@@ -23,6 +23,11 @@ enum SessionKind:
   * -- the session would simply never authenticate again and read as a phantom SUT failure
   * (§8.4).
   *
+  * `ssoSession` is the auth-side `SSO_SESSION` the conversation left behind (§3.2). It is a
+  * credential like the other two, not a convenience: `AuthClient.authorize` takes it to re-run
+  * on the *same* SSO session, which is what a silent reauthorization and an ACR step-up are
+  * (§7.4). A session resumed without it can only start over at credentials.
+  *
   * `acr` is the assurance level the session currently holds, written on the critical path by
   * every occasion that changes it (a refresh exchange or a completed step-up), not on the
   * deferred one. See `DeviceSessionRepository.storeStepUp`.
@@ -34,6 +39,7 @@ case class DeviceSession(
     clientId: String,
     refreshToken: Option[RefreshToken],
     edgeCookie: Option[EdgeSession],
+    ssoSession: Option[SsoSession],
     accessExpiresAt: Option[Instant],
     refreshExpiresAt: Option[Instant],
     acr: Option[String],
