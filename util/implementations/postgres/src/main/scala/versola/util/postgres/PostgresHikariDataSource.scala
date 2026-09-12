@@ -11,15 +11,31 @@ import java.nio.file.{Files, Paths}
 import java.util.concurrent.locks.ReentrantLock
 
 object PostgresHikariDataSource:
+  /** @param configPath
+    *   where this pool's `PostgresConfig` lives in the config file, as nested block names.
+    *   Defaults to the top-level `postgres { }` block every service uses. A process that talks
+    *   to more than one database needs one pool per database and therefore one block per pool:
+    *   `loadgen` has its own bookkeeping store (`store { postgres { } }`) *and*, in its seeder
+    *   role, the system under test's database -- two different hosts, users and pool sizes that
+    *   a single `postgres { }` block cannot express.
+    */
   def transactor(
       serviceName: Option[String],
       migrate: Boolean,
       validateOnMigrate: Boolean = true,
       migrationLocations: Option[Seq[String]] = None,
+      configPath: Seq[String] = Seq("postgres"),
   ): ZLayer[Scope & ConfigProvider, Throwable, TransactorZIO & HikariDataSource & PostgresConfig] =
-    ZLayer(ZIO.serviceWithZIO[ConfigProvider](_.load(Config.Nested("postgres", deriveConfig[PostgresConfig])))) >+>
+    ZLayer(ZIO.serviceWithZIO[ConfigProvider](_.load(nestedConfig(configPath)))) >+>
       layer(serviceName, migrate, validateOnMigrate, migrationLocations) >+>
       TransactorZIO.layer
+
+  /** `Config.Nested` applied right-to-left, so `Seq("store", "postgres")` reads
+    * `store.postgres`. An empty path reads a `PostgresConfig` at the root of the file, which no
+    * caller wants today but is the only sensible reading of "no enclosing blocks".
+    */
+  private[postgres] def nestedConfig(configPath: Seq[String]): Config[PostgresConfig] =
+    configPath.foldRight(deriveConfig[PostgresConfig])((name, inner) => Config.Nested(name, inner))
 
   /** Create a HikariDataSource layer with optional Flyway migration.
     *
