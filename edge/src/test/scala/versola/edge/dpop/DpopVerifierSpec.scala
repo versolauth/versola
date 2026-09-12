@@ -186,18 +186,42 @@ object DpopVerifierSpec extends ZIOSpecDefault:
         )
         for
           now <- Clock.instant
-          nonce <- service.issueNonce
-          result <- verify(service, proof(iat = now, nonce = Some(nonce)))
+          result <- verify(service, proof(iat = now, nonce = Some(DpopNonce.issue(nonceSalt, now))))
         yield assertTrue(result.isRight)
       },
-      // A nonce names a space this edge owns, so a value it never issued is a failed check
-      // rather than a field to ignore -- even where a nonce wasn't demanded.
-      test("rejects a nonce it never issued even when nonces aren't required") {
-        val service = verifier()
+      test("rejects a nonce it never issued") {
+        val service = verifier(
+          Some(EdgeConfig.Dpop(publicUrl = PublicUrl, nonceSalt = nonceSalt, requireNonce = true)),
+        )
         for
           now <- Clock.instant
           result <- verify(service, proof(iat = now, nonce = Some("not-mine")))
         yield assertTrue(result.left.toOption.exists(_.isInstanceOf[DpopVerifier.Error.NonceRequired]))
+      },
+      // §11.3: dropping the nonce after being challenged for one must not be a way back to
+      // nonce-less proofs. Every refusal in this mode hands out a nonce, so a nonce-less
+      // proof is, by construction, one from a client that has already been given one.
+      test("refuses a nonce-less retry after the challenge that handed out a nonce") {
+        val service = verifier(
+          Some(EdgeConfig.Dpop(publicUrl = PublicUrl, nonceSalt = nonceSalt, requireNonce = true)),
+        )
+        for
+          now <- Clock.instant
+          challenged <- verify(service, proof(iat = now, jti = "proof-1"))
+          retried <- verify(service, proof(iat = now, jti = "proof-2"))
+        yield assertTrue(
+          challenged.left.toOption.exists(_.isInstanceOf[DpopVerifier.Error.NonceRequired]),
+          retried.left.toOption.exists(_.isInstanceOf[DpopVerifier.Error.NonceRequired]),
+        )
+      },
+      // The other side of that rule: where nonces aren't in use, none is ever handed out, so
+      // §11.3 never engages and a nonce this edge didn't issue carries no weight to check.
+      test("ignores the nonce claim entirely when nonces aren't in use") {
+        val service = verifier()
+        for
+          now <- Clock.instant
+          result <- verify(service, proof(iat = now, nonce = Some("not-mine")))
+        yield assertTrue(result.isRight)
       },
       test("accepts a proof with no nonce when the deployment doesn't require one") {
         val service = verifier()
