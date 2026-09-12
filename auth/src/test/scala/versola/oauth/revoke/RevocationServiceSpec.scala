@@ -127,10 +127,12 @@ object RevocationServiceSpec extends UnitSpecBase:
           result <- service.revokeRefreshToken(refreshToken1, credentials)
         yield assertTrue(
           result == (),
-          // The access token itself was never presented, so its lifetime is bounded by the
-          // client's TTL rather than read off the token.
+          // The access token itself was never presented, but the record carries its exact
+          // expiry -- fixture deliberately sets this to 3600s while the client's own TTL is
+          // 10 minutes, so a regression back to deriving from `client.accessTokenTtl` would
+          // fail this assertion.
           env.accessTokenRevocationService.revoke.calls ==
-            List((testClient, NonEmptyChunk(accessToken1), userId1.toString, now.plus(testClient.accessTokenTtl))),
+            List((testClient, NonEmptyChunk(accessToken1), userId1.toString, tokenRecord(now).accessTokenExpiresAt)),
         )).provide(env.layer)
       },
       test("fail with InvalidClient when client authentication fails") {
