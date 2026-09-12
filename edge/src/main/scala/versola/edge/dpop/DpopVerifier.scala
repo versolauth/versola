@@ -3,7 +3,7 @@ package versola.edge.dpop
 import versola.edge.EdgeConfig
 import versola.util.{Base64, Dpop, DpopNonce}
 import zio.http.{Method, Path, QueryParams, URL}
-import zio.{Clock, IO, UIO, ZIO, ZLayer}
+import zio.{Clock, IO, ZIO, ZLayer}
 
 import java.security.MessageDigest
 import java.time.Instant
@@ -30,9 +30,6 @@ trait DpopVerifier:
       method: Method,
       path: Path,
   ): IO[DpopVerifier.Error, Dpop.Proof]
-
-  /** A nonce for a client that has to be told to start sending one (§9). */
-  def issueNonce: UIO[String]
 
 object DpopVerifier:
 
@@ -96,29 +93,31 @@ object DpopVerifier:
             _ <- ZIO.fail(Error.Replayed).unless(fresh)
           yield proof
 
-    override def issueNonce: UIO[String] =
-      config.dpop match
-        case Some(dpop) => Clock.instant.map(DpopNonce.issue(dpop.nonceSalt, _))
-        // Only reachable if a caller asks for a nonce without a `dpop` block, which
-        // `verify` already refuses; an empty value is never accepted back.
-        case None => ZIO.succeed("")
-
-    /** §4.3 step 10: a nonce is checked when the proof carries one, and demanded only when
-      * this deployment requires it. An unrequired but invalid nonce still fails -- it names a
-      * nonce space this edge owns, so a value it never issued is not something to ignore.
+    /** §4.3 step 10: the nonce claim is consulted only where this deployment requires one.
+      *
+      * Where it does not, the claim is ignored and no nonce is ever issued. §11.3 forbids
+      * accepting a nonce-less proof from a client that has been handed a nonce, and a
+      * stateless resource server cannot tell which client that was -- so a challenge raised
+      * over an unrequired nonce would be one a nonce-less retry then walks straight past,
+      * which is the downgrade §11.3 names. Handing out no nonce at all is the only coherent
+      * choice without per-client state, and matches what `require-nonce = false` says: this
+      * edge does not use nonces.
       */
     private def checkNonce(
         dpop: EdgeConfig.Dpop,
         proof: Dpop.Proof,
         now: Instant,
     ): IO[Error, Unit] =
-      proof.nonce match
-        case Some(nonce) =>
-          DpopNonce.verify(dpop.nonceSalt, nonce, now, dpop.nonceTtl) match
-            case Right(_) => ZIO.unit
-            case Left(_) => freshNonceRequired(dpop, now)
-        case None if dpop.requireNonce => freshNonceRequired(dpop, now)
-        case None => ZIO.unit
+      if !dpop.requireNonce then ZIO.unit
+      else
+        proof.nonce match
+          case Some(nonce) =>
+            DpopNonce.verify(dpop.nonceSalt, nonce, now, dpop.nonceTtl) match
+              case Right(_) => ZIO.unit
+              case Left(_) => freshNonceRequired(dpop, now)
+          // §11.3: never accepted once a nonce has been issued, and in this mode one always
+          // has been -- every refusal here carries a fresh one.
+          case None => freshNonceRequired(dpop, now)
 
     private def freshNonceRequired(dpop: EdgeConfig.Dpop, now: Instant): IO[Error, Nothing] =
       ZIO.fail(Error.NonceRequired(DpopNonce.issue(dpop.nonceSalt, now)))

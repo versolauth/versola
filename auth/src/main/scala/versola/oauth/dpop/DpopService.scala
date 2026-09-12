@@ -16,9 +16,10 @@ trait DpopService:
    * @param token the raw `DPoP` request header value
    * @param method the current request's HTTP method
    * @param uri the current request's URI, scheme+host+path only (see [[Dpop.verify]])
-   * @param requireNonce RFC 9449 \u00a79: when true, a request without a valid, fresh nonce
+   * @param requireNonce RFC 9449 §9: when true, a request without a valid, fresh nonce
    *   fails with [[DpopService.Error.NonceRequired]] carrying a freshly issued one for the
-   *   caller to return via the `DPoP-Nonce` response header.
+   *   caller to return via the `DPoP-Nonce` response header. When false the nonce claim is
+   *   not consulted at all -- see `checkNonce`.
    */
   def verify(
       token: String,
@@ -67,21 +68,32 @@ object DpopService:
         _ <- ZIO.fail(Error.Replayed).unless(fresh)
       yield proof
 
+    /** §4.3 step 10: the nonce claim is consulted only where the endpoint requires one.
+      *
+      * Where it does not, the claim is ignored and no nonce is ever issued. §11.3 forbids
+      * accepting a nonce-less proof from a client that has been handed a nonce, and nothing
+      * here is per-client state -- so a challenge raised over an unrequired nonce would be
+      * one a nonce-less retry then walks straight past, which is the downgrade §11.3 names.
+      * Issuing no nonce at all is the only coherent choice, and is what an endpoint not
+      * requiring one says in the first place.
+      */
     private def checkNonce(
         proof: Dpop.Proof,
         requireNonce: Boolean,
         now: Instant,
     ): IO[Throwable | Error, Unit] =
-      proof.nonce match
-        case Some(nonce) =>
-          nonceService.verify(nonce, now).foldZIO(
-            _ => freshNonceRequired,
-            _ => ZIO.unit,
-          )
-        case None if requireNonce =>
-          freshNonceRequired
-        case None =>
-          ZIO.unit
+      if !requireNonce then ZIO.unit
+      else
+        proof.nonce match
+          case Some(nonce) =>
+            nonceService.verify(nonce, now).foldZIO(
+              _ => freshNonceRequired,
+              _ => ZIO.unit,
+            )
+          // §11.3: never accepted once a nonce has been issued, and in this mode one always
+          // has been -- every refusal here carries a fresh one.
+          case None =>
+            freshNonceRequired
 
     private def freshNonceRequired: IO[Throwable | Error, Nothing] =
       nonceService.issue.flatMap(nonce => ZIO.fail(Error.NonceRequired(nonce)))

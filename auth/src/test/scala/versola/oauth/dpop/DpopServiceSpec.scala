@@ -111,13 +111,31 @@ object DpopServiceSpec extends UnitSpecBase:
         result <- env.service.verify(proof(iat = now, nonce = Some("stale-nonce")), Htm, Htu, requireNonce = true).either
       yield assertTrue(result == Left(DpopService.Error.NonceRequired("fresh-nonce")))
     },
-    test("still validates a present nonce even when the endpoint doesn't require one") {
+    // §11.3: dropping the nonce after being challenged for one must not be a way back to
+    // nonce-less proofs. Every refusal in this mode hands out a nonce, so a nonce-less proof
+    // is, by construction, one from a client that has already been given one.
+    test("refuses a nonce-less retry after the challenge that handed out a nonce") {
       val env = Env()
       for
         now <- Clock.instant
-        _ <- env.nonceService.verify.succeedsWith(())
+        _ <- env.nonceService.issue.succeedsWith("fresh-nonce")
+        _ <- env.proofRepository.recordIfAbsent.succeedsWith(true)
+        challenged <- env.service.verify(proof(iat = now), Htm, Htu, requireNonce = true).either
+        retried <- env.service.verify(proof(iat = now), Htm, Htu, requireNonce = true).either
+      yield assertTrue(
+        challenged == Left(DpopService.Error.NonceRequired("fresh-nonce")),
+        retried == Left(DpopService.Error.NonceRequired("fresh-nonce")),
+      )
+    },
+    // The other side of that rule: an endpoint that doesn't require a nonce never hands one
+    // out, so §11.3 never engages and there is nothing a present nonce could be checked
+    // against that would carry any weight.
+    test("ignores a present nonce entirely when the endpoint doesn't require one") {
+      val env = Env()
+      for
+        now <- Clock.instant
         _ <- env.proofRepository.recordIfAbsent.succeedsWith(true)
         result <- env.service.verify(proof(iat = now, nonce = Some("srv-nonce")), Htm, Htu, requireNonce = false).either
-      yield assertTrue(env.nonceService.verify.calls.nonEmpty, result.isRight)
+      yield assertTrue(env.nonceService.verify.calls.isEmpty, result.isRight)
     },
   )
