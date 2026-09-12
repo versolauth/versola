@@ -25,7 +25,10 @@ class PostgresTenantRepository(xa: TransactorZIO) extends TenantRepository, Basi
       edgeId: Option[EdgeId],
   ): Task[Unit] =
     xa.connectMeasured("create-tenant"):
-      sql"""INSERT INTO tenants (id, description, edge_id) VALUES ($id, $description, $edgeId)""".update.run()
+      sql"""
+        INSERT INTO tenants (id, description, edge_id) VALUES ($id, $description, $edgeId)
+        ON CONFLICT (id) DO UPDATE SET description = EXCLUDED.description, edge_id = EXCLUDED.edge_id
+      """.update.run()
     .unit
 
   override def updateTenant(

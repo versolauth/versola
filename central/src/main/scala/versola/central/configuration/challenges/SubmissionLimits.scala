@@ -31,11 +31,18 @@ object SubmissionLimits:
   )
 
   /** A category left empty provides no throttling at all for that submission type, so it
-    * fails closed rather than being accepted as a deliberate "no limit" choice.
+    * fails closed rather than being accepted as a deliberate "no limit" choice. A non-positive
+    * `maxAttempts`/`windowSeconds` on any tier is rejected the same way -- auth's
+    * `ThrottlePolicy.requireValid` throws on those at evaluation time, so letting one through
+    * here would crash that tenant's submission checks instead of falling back to a safe
+    * default.
     */
   def isConfigured(limits: SubmissionLimits): Boolean =
-    limits.otpRequest.nonEmpty &&
-      limits.otpSubmit.nonEmpty &&
-      limits.passwordSubmit.nonEmpty &&
-      limits.passkeyAssertion.nonEmpty &&
+    def tiersConfigured(tiers: List[RateLimit]): Boolean =
+      tiers.nonEmpty && tiers.forall(tier => tier.maxAttempts > 0 && tier.windowSeconds > 0)
+
+    tiersConfigured(limits.otpRequest) &&
+      tiersConfigured(limits.otpSubmit) &&
+      tiersConfigured(limits.passwordSubmit) &&
+      tiersConfigured(limits.passkeyAssertion) &&
       limits.banDurationSeconds > 0

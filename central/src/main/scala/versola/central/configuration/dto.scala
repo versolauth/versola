@@ -1,6 +1,5 @@
 package versola.central.configuration
 
-import versola.central.configuration.challenges.SubmissionLimits
 import versola.central.configuration.clients.{AuthFlow, ClientId, ClientType, ConsentFlow, PresetId, RegistrationFlow, ResponseType}
 import versola.central.configuration.details.AuthorizationDetailType
 import versola.central.configuration.permissions.Permission
@@ -277,19 +276,15 @@ case class GetAllTenantsResponse(
     tenants: Vector[TenantResponse],
 ) derives Schema, JsonCodec
 
+/** Deliberately takes no `submissionLimits` field -- every tenant is seeded with
+  * `SubmissionLimits.recommended` (see `TenantService.createTenant`) and that's never a
+  * caller-supplied choice, so there's no per-request rate-limit configuration to validate
+  * or fall back on here.
+  */
 case class CreateTenantRequest(
     id: TenantId,
     description: String,
     edgeId: Option[String],
-    /** Optional: a caller that omits this, or leaves a category empty, gets
-      * `SubmissionLimits.recommended` instead of a rejected request -- a tenant is never
-      * created with no submission-rate protection on password/OTP/passkey attempts, but
-      * that protection is a safe default rather than something every caller must supply
-      * (see `SubmissionLimits.isConfigured`). The console pre-fills this from
-      * `SubmissionLimits.recommended` and lets the caller edit or approve it before
-      * submitting.
-      */
-    submissionLimits: SubmissionLimits = SubmissionLimits.empty,
 ) derives Schema, JsonCodec
 
 case class UpdateTenantRequest(

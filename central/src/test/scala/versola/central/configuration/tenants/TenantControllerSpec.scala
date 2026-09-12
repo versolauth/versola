@@ -4,7 +4,6 @@ import io.opentelemetry.api
 import org.scalamock.stubs.{Stub, ZIOStubs}
 import versola.central.{CentralConfig, TestAdminAuth, TestCentralConfig}
 import versola.central.configuration.*
-import versola.central.configuration.challenges.SubmissionLimits
 import versola.central.configuration.resources.ResourceService
 import versola.util.http.Observability
 import zio.*
@@ -28,7 +27,6 @@ object TenantControllerSpec extends ZIOSpecDefault, ZIOStubs:
     id = tenantId1,
     description = "Tenant A",
     edgeId = None,
-    submissionLimits = SubmissionLimits.recommended,
   )
 
   private val updateRequest = UpdateTenantRequest(
@@ -107,21 +105,6 @@ object TenantControllerSpec extends ZIOSpecDefault, ZIOStubs:
         service.createTenant.succeedsWith(()),
       verify = (_, service) =>
         ZIO.succeed(assertTrue(service.createTenant.calls == List(createRequest))),
-    ),
-    controllerTestCase(
-      description = "create tenant with unconfigured submission limits (the service applies the recommended default, not the controller)",
-      request = Request(
-        method = Method.POST,
-        url = URL.empty / "configuration" / "tenants",
-        body = Body.fromString(createRequest.copy(submissionLimits = SubmissionLimits.empty).toJson),
-      ).addHeader(Header.ContentType(MediaType.application.json)),
-      expectedStatus = Status.Created,
-      setup = service =>
-        service.createTenant.succeedsWith(()),
-      verify = (_, service) =>
-        ZIO.succeed(assertTrue(
-          service.createTenant.calls == List(createRequest.copy(submissionLimits = SubmissionLimits.empty)),
-        )),
     ),
     controllerTestCase(
       description = "update tenant",

@@ -10,10 +10,9 @@ import zio.{Schedule, Scope, Task, ZIO, ZLayer, durationInt}
 trait TenantService:
   def getAllTenants: Task[Vector[TenantRecord]]
 
-  /** Falls back to `SubmissionLimits.recommended` -- rather than failing the request --
-    * when `request.submissionLimits` is missing or leaves a category unconfigured, so a
-    * tenant is never created with no submission-rate protection at all (see
-    * `SubmissionLimits.isConfigured`).
+  /** Always seeds the new tenant's challenge settings with `SubmissionLimits.recommended` --
+    * `CreateTenantRequest` takes no override for this, so a tenant is never created with a
+    * caller-supplied (and potentially invalid) rate-limit configuration.
     */
   def createTenant(
       request: CreateTenantRequest,
@@ -52,12 +51,9 @@ object TenantService:
     override def createTenant(
         request: CreateTenantRequest,
     ): Task[Unit] =
-      val submissionLimits =
-        if SubmissionLimits.isConfigured(request.submissionLimits) then request.submissionLimits
-        else SubmissionLimits.recommended
       for
         _ <- tenantRepository.createTenant(request.id, request.description, request.edgeId.map(EdgeId(_)))
-        _ <- challengeSettingsService.upsertSettings(defaultChallengeSettings(request.id, submissionLimits))
+        _ <- challengeSettingsService.upsertSettings(defaultChallengeSettings(request.id, SubmissionLimits.recommended))
       yield ()
 
     override def updateTenant(

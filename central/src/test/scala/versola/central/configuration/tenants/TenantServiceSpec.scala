@@ -15,7 +15,7 @@ object TenantServiceSpec extends ZIOSpecDefault, ZIOStubs:
   private val tenantRecord1 = TenantRecord(tenant1, "Tenant A", None)
   private val tenantRecord2 = TenantRecord(tenant2, "Tenant B", None)
 
-  private val createRequest = CreateTenantRequest(tenant1, "Tenant A", None, SubmissionLimits.recommended)
+  private val createRequest = CreateTenantRequest(tenant1, "Tenant A", None)
   private val updateRequest = UpdateTenantRequest(tenant1, "Updated Tenant A", None)
 
   class Env(initial: Vector[TenantRecord] = Vector.empty):
@@ -59,26 +59,13 @@ object TenantServiceSpec extends ZIOSpecDefault, ZIOStubs:
           )),
       )
     },
-    test("createTenant falls back to the recommended submission limits, instead of failing, when the request's limits are not fully configured") {
-      val env = new Env()
-      val incomplete = SubmissionLimits.recommended.copy(passwordSubmit = Nil)
-
-      for
-        _ <- env.repository.createTenant.succeedsWith(())
-        _ <- env.challengeSettingsService.upsertSettings.succeedsWith(())
-        _ <- env.service.createTenant(createRequest.copy(submissionLimits = incomplete))
-      yield assertTrue(
-        env.repository.createTenant.calls == List((tenant1, "Tenant A", None)),
-        env.challengeSettingsService.upsertSettings.calls.map(_.submissionLimits) == List(SubmissionLimits.recommended),
-      )
-    },
-    test("createTenant falls back to the recommended submission limits when the request omits them entirely") {
+    test("createTenant always seeds the recommended submission limits -- the request has no override for them") {
       val env = new Env()
 
       for
         _ <- env.repository.createTenant.succeedsWith(())
         _ <- env.challengeSettingsService.upsertSettings.succeedsWith(())
-        _ <- env.service.createTenant(createRequest.copy(submissionLimits = SubmissionLimits.empty))
+        _ <- env.service.createTenant(createRequest)
       yield assertTrue(
         env.challengeSettingsService.upsertSettings.calls.map(_.submissionLimits) == List(SubmissionLimits.recommended),
       )
