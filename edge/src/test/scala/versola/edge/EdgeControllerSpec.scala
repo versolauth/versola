@@ -61,10 +61,12 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       clientId: String = "web-app",
       tenantId: Option[String] = None,
       roles: Option[List[String]] = None,
+      cnfJkt: Option[String] = None,
   ): Task[AccessToken] =
     val fields =
       Chunk(Some("client_id" -> Json.Str(clientId))) ++
         Chunk(tenantId.map(tid => "tenant_id" -> Json.Str(tid))) ++
+        Chunk(cnfJkt.map(jkt => "cnf" -> Json.Obj("jkt" -> Json.Str(jkt)))) ++
         Chunk(roles.map(rs => "roles" -> Json.Arr(rs.map(Json.Str(_))*))
           .orElse(Some("roles" -> Json.Arr())))
     JWT.serialize(
@@ -95,6 +97,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       jwks    =  stub[JwksService]
       presets =  stub[AuthorizationPresetsSyncClient]
       revocation = stub[TokenRevocationService]
+      dpopVerifier = stub[versola.edge.dpop.DpopVerifier]
       tracing <- tracingLayer.build
       _ <- TestClient.addRoutes(
         Observability.handleErrors(
@@ -104,6 +107,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
               ZEnvironment[TokenRevocationService](revocation) ++
               ZEnvironment[AuthorizationPresetsSyncClient](presets) ++
               ZEnvironment[EdgeConfig](edgeConfig) ++
+              ZEnvironment[versola.edge.dpop.DpopVerifier](dpopVerifier) ++
               tracing,
           ),
         ),
@@ -127,6 +131,21 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
     test("returns 401 when no token is supplied") {
       for
         (response, service, _) <- run(Request.get(URL.decode("/permissions/me?resource=central").toOption.get))
+      yield assertTrue(
+        response.status == Status.Unauthorized,
+        service.getMyPermissions.calls.isEmpty,
+      )
+    },
+    // The edge's own endpoints answer on the same tokens the proxy accepts, so a key-bound
+    // one must not be honoured here without proof of that key either -- otherwise this route
+    // is a way around the binding (RFC 9449 §7.2).
+    test("returns 401 when a DPoP-bound token is presented under the Bearer scheme") {
+      for
+        accessToken <- token(cnfJkt = Some("some-thumbprint"))
+        (response, service, _) <- run(
+          Request.get(URL.decode("/permissions/me?resource=central").toOption.get)
+            .addHeader(Header.Authorization.Bearer(accessToken)),
+        )
       yield assertTrue(
         response.status == Status.Unauthorized,
         service.getMyPermissions.calls.isEmpty,

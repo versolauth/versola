@@ -1,6 +1,7 @@
 package versola.oauth.dpop
 
 import versola.auth.TestEnvConfig
+import versola.util.DpopNonce
 import versola.util.UnitSpecBase
 import zio.*
 import zio.test.*
@@ -30,14 +31,14 @@ object DpopNonceServiceSpec extends UnitSpecBase:
         now <- Clock.instant
         nonce <- service.issue
         result <- service.verify(nonce, now.plus(config.dpopOrDefault.nonceTtl).plusSeconds(1)).either
-      yield assertTrue(result == Left(DpopNonceService.Error.Expired))
+      yield assertTrue(result == Left(DpopNonce.Error.Expired))
     },
     test("fails for a nonce issued in the future relative to now (clock skew guard)") {
       for
         now <- Clock.instant
         nonce <- service.issue
         result <- service.verify(nonce, now.minusSeconds(1)).either
-      yield assertTrue(result == Left(DpopNonceService.Error.Expired))
+      yield assertTrue(result == Left(DpopNonce.Error.Expired))
     },
     test("fails for a nonce with the right shape but a forged mac") {
       for
@@ -45,25 +46,25 @@ object DpopNonceServiceSpec extends UnitSpecBase:
         nonce <- service.issue
         tampered = nonce.split('.').nn.updated(1, "forged").mkString(".")
         result <- service.verify(tampered, now).either
-      yield assertTrue(result == Left(DpopNonceService.Error.Malformed))
+      yield assertTrue(result == Left(DpopNonce.Error.Malformed))
     },
     test("fails for a nonce with an unparseable timestamp") {
       for
         now <- Clock.instant
         result <- service.verify("not-a-number.abc", now).either
-      yield assertTrue(result == Left(DpopNonceService.Error.Malformed))
+      yield assertTrue(result == Left(DpopNonce.Error.Malformed))
     },
     test("fails for a nonce whose timestamp parses but is not a point in time") {
       for
         now <- Clock.instant
         result <- service.verify(s"${Long.MaxValue}.abc", now).either
-      yield assertTrue(result == Left(DpopNonceService.Error.Malformed))
+      yield assertTrue(result == Left(DpopNonce.Error.Malformed))
     },
     test("fails for a nonce with no separator at all") {
       for
         now <- Clock.instant
         result <- service.verify("garbage", now).either
-      yield assertTrue(result == Left(DpopNonceService.Error.Malformed))
+      yield assertTrue(result == Left(DpopNonce.Error.Malformed))
     },
     test("fails when a mac is spliced onto a different nonce's timestamp") {
       for
@@ -76,6 +77,6 @@ object DpopNonceServiceSpec extends UnitSpecBase:
         timestampOfB = nonceB.split('.').nn(0)
         spliced = s"$timestampOfB.$macOfA"
         result <- service.verify(spliced, laterNow).either
-      yield assertTrue(nonceA != nonceB, result == Left(DpopNonceService.Error.Malformed))
+      yield assertTrue(nonceA != nonceB, result == Left(DpopNonce.Error.Malformed))
     },
   )

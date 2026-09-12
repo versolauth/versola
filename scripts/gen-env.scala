@@ -179,6 +179,9 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
   val edgeInternalSecret        = rand(rng, 32) // authorizes edge's non-prod /service/configuration/sync
   val parRequestsSecret         = rand(rng, 32) // auth only: keys the stored request_uri references
   val dpopNoncesSecret          = rand(rng, 32) // auth only: authenticates DPoP-Nonce values
+  // Edge's own nonce space, kept apart from auth's: RFC 9449 §9 has the resource server
+  // issue nonces under its own key, so a nonce minted by auth is not valid at edge.
+  val edgeDpopNonceSalt         = rand(rng, 32)
   val accountResourceSecretGenerated = rand(rng, 32) // central: seeds the "auth" resource record; auth fetches it decrypted via registry sync
 
   // ── Environment ───────────────────────────────────────────────────────────────
@@ -775,6 +778,23 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
        |  ]
        |}
        |
+       |# RFC 9449 proof validation on proxied calls. public-url is what a client
+       |# reaches this edge on, and is what every proof's htu is rebuilt from --
+       |# a forwarded Host header is not trusted for it, since whatever last
+       |# handled the request could then choose the URI the proof is checked
+       |# against. Remove this block to turn DPoP off; a key-bound token is still
+       |# refused over Bearer either way.
+       |dpop {
+       |  public-url = "$edgeUrl"
+       |  nonce-salt = ${secretField(useOpenBao, edgeDpopNonceSalt, "EDGE_DPOP_NONCE_SALT")}
+       |  # Off: requiring a nonce costs every client an extra round trip per
+       |  # nonce lifetime, which §9 leaves to the deployment to decide.
+       |  require-nonce = false
+       |  allowed-algorithms = ["ES256", "PS256"]
+       |  iat-leeway = "60 seconds"
+       |  nonce-ttl = "300 seconds"
+       |}
+       |
        |central {
        |  url = "$centralUrl"
        |}
@@ -865,6 +885,7 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
         "EDGE_TOKEN_ENC_KEY"   -> edgeTokenEncKey,
         "EDGE_SESSIONS_SECRET" -> edgeSessionsSecret,
         "EDGE_INTERNAL_SECRET" -> edgeInternalSecret,
+        "EDGE_DPOP_NONCE_SALT" -> edgeDpopNonceSalt,
       ) ++ edgeExtras)
 
     println(

@@ -32,6 +32,12 @@ case class EdgeConfig(
     versolaInternalUrl: Option[URL] = None,
     configurationCacheRefreshInterval: Duration,
     revocation: EdgeConfig.Revocation = EdgeConfig.Revocation(),
+    // RFC 9449 enforcement on proxied calls. Absent leaves it off entirely: a
+    // `DPoP`-scheme request is then refused rather than half-checked, while a
+    // token carrying `cnf.jkt` is still refused over `Bearer` regardless (see
+    // EdgeService.extractAccessToken), so the downgrade this exists to close
+    // cannot reopen just because the block is missing.
+    dpop: Option[EdgeConfig.Dpop] = None,
 ):
   def internalUrl: URL = versolaInternalUrl.getOrElse(versolaUrl)
 
@@ -85,3 +91,37 @@ object EdgeConfig:
       batchSize: Int = 50000,
   )
 
+  /** RFC 9449 proof validation at the resource server.
+    *
+    * @param publicUrl the origin clients reach this edge on, used to rebuild the `htu` a proof
+    *   is checked against. Taken from configuration rather than from the request's `Host` or
+    *   `X-Forwarded-*`: those are set by whatever last handled the request, so trusting them
+    *   would let a hop choose the URI the proof is validated against and defeat the binding.
+    *   Path and query are ignored -- the proxied request's own path is appended.
+    * @param nonceSalt keys this edge's `DPoP-Nonce` space. §9 keeps the resource server's nonces
+    *   separate from the authorization server's, so this is deliberately not auth's
+    *   `dpop-nonces-secret`: a nonce minted by auth is not valid here.
+    * @param requireNonce whether a proof must carry a valid nonce. §9 leaves this optional for a
+    *   resource server. Off by default: turning it on costs every client one extra round trip
+    *   per nonce lifetime, so it is a deployment decision rather than a default.
+    * @param allowedAlgorithms signing algorithms an incoming proof's `alg` may use. Kept
+    *   independent of auth's list so a deployment can tighten the resource server without
+    *   having to re-issue tokens.
+    * @param iatLeeway maximum distance between a proof's `iat` and now, in either direction.
+    *   Also the window a proof is remembered for, so it sizes the replay guard.
+    * @param nonceTtl how long a nonce this edge issued stays acceptable.
+    */
+  case class Dpop(
+      publicUrl: URL,
+      nonceSalt: Secret.Bytes32,
+      requireNonce: Boolean = false,
+      allowedAlgorithms: Set[versola.util.Dpop.Algorithm] = Dpop.DefaultAlgorithms,
+      iatLeeway: Duration = Duration.fromSeconds(60),
+      nonceTtl: Duration = Duration.fromSeconds(300),
+  )
+
+  object Dpop:
+    /** RFC 9449 §5 mandates `ES256`; `PS256` is included for FAPI 2.0. `RS256` is verifiable
+      * but left out, matching auth's default -- a deployment can opt back in explicitly. */
+    val DefaultAlgorithms: Set[versola.util.Dpop.Algorithm] =
+      Set(versola.util.Dpop.Algorithm.ES256, versola.util.Dpop.Algorithm.PS256)
