@@ -42,9 +42,13 @@ object DpopNonceService:
           for
             issuedAtSeconds <- ZIO.attempt(issuedAtStr.toLong).orElseFail(Error.Malformed)
             sigBytes <- ZIO.attempt(Base64.urlDecode(sigB64)).orElseFail(Error.Malformed)
-            issuedAt = Instant.ofEpochSecond(issuedAtSeconds)
             _ <- ZIO.fail(Error.Malformed)
               .unless(MessageDigest.isEqual(mac(issuedAtSeconds), sigBytes))
+            // Only past the MAC check is the value one this server wrote from its own clock,
+            // and so within `Instant`'s range. Built before the check, an unsigned timestamp
+            // like `Long.MaxValue` would parse and then throw out of here as a defect instead
+            // of being rejected as malformed.
+            issuedAt = Instant.ofEpochSecond(issuedAtSeconds)
             _ <- ZIO.fail(Error.Expired)
               .unless(!issuedAt.isAfter(now) && !issuedAt.isBefore(now.minus(config.dpopOrDefault.nonceTtl)))
           yield ()

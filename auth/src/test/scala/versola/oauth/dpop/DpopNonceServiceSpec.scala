@@ -53,6 +53,12 @@ object DpopNonceServiceSpec extends UnitSpecBase:
         result <- service.verify("not-a-number.abc", now).either
       yield assertTrue(result == Left(DpopNonceService.Error.Malformed))
     },
+    test("fails for a nonce whose timestamp parses but is not a point in time") {
+      for
+        now <- Clock.instant
+        result <- service.verify(s"${Long.MaxValue}.abc", now).either
+      yield assertTrue(result == Left(DpopNonceService.Error.Malformed))
+    },
     test("fails for a nonce with no separator at all") {
       for
         now <- Clock.instant
