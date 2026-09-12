@@ -64,6 +64,7 @@ object Dpop:
     case MissingJwk
     case InvalidSignature
     case MissingClaim(name: String)
+    case MalformedClaim(name: String)
     case MethodMismatch
     case UriMismatch
     case IatOutOfWindow
@@ -101,7 +102,10 @@ object Dpop:
       jwk <- ZIO.fromOption(Option(jwt.getHeader.getJWK)).orElseFail(Error.MissingJwk)
       _ <- verifySignature(jwt, jwk)
 
-      claims = jwt.getJWTClaimsSet
+      // Nimbus lazily parses the payload into a claims set; a compact JWS whose payload isn't a
+      // JSON object (still a valid JWS otherwise, e.g. signed by the caller's own valid key)
+      // throws here rather than at `parse` above, so this needs the same typed guard.
+      claims <- ZIO.attempt(jwt.getJWTClaimsSet).orElseFail(Error.NotJWT)
       htm <- requireClaim(claims.getStringClaim("htm"), "htm")
       htu <- requireClaim(claims.getStringClaim("htu"), "htu")
       jti <- requireClaim(claims.getStringClaim("jti"), "jti")
@@ -115,16 +119,25 @@ object Dpop:
         .unless(!iat.isBefore(now.minus(iatLeeway)) && !iat.isAfter(now.plus(iatLeeway)))
 
       jkt <- ZIO.attempt(jwk.computeThumbprint().toString).orElseFail(Error.MissingJwk)
+      nonce <- optionalClaim(claims.getStringClaim("nonce"), "nonce")
+      ath <- optionalClaim(claims.getStringClaim("ath"), "ath")
     yield Proof(
       jkt = jkt,
       jti = jti,
       iat = iat,
-      nonce = Option(claims.getStringClaim("nonce")),
-      ath = Option(claims.getStringClaim("ath")),
+      nonce = nonce,
+      ath = ath,
     )
 
   private def requireClaim[A](value: => A, name: String): IO[Error, A] =
-    ZIO.attempt(Option(value)).orElseFail(Error.MissingClaim(name)).someOrFail(Error.MissingClaim(name))
+    ZIO.attempt(Option(value)).orElseFail(Error.MalformedClaim(name)).someOrFail(Error.MissingClaim(name))
+
+  /** Like [[requireClaim]] but for a claim RFC 9449 allows to be absent -- a present-but-wrongly-
+    * typed claim (e.g. `nonce` as a JSON object) is malformed, not absent, so it fails rather
+    * than silently reading as `None`.
+    */
+  private def optionalClaim[A](value: => A, name: String): IO[Error, Option[A]] =
+    ZIO.attempt(Option(value)).orElseFail(Error.MalformedClaim(name))
 
   private def verifyType(jwt: SignedJWT): IO[Error, Unit] =
     ZIO.attempt(Option(jwt.getHeader.getType))

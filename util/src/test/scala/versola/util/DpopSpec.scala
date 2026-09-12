@@ -202,4 +202,28 @@ object DpopSpec extends ZIOSpecDefault:
       for result <- verify(token).either
       yield assertTrue(result.isRight)
     },
+    test("rejects a proof whose payload isn't a JSON object, signed by an otherwise valid key -- " +
+      "Nimbus only fails parsing the claims set lazily, so this can only be hand-assembled") {
+      val headerJson = s"""{"typ":"dpop+jwt","alg":"ES256","jwk":${ecJwk.toString}}"""
+      val claimsJson = "[1,2,3]"
+      val raw = rawEcToken(headerJson, claimsJson, ecPrivateKey)
+      for result <- verify(raw).either
+      yield assertTrue(result == Left(Dpop.Error.NotJWT))
+    },
+    test("rejects a proof whose nonce claim isn't a string") {
+      val headerJson = s"""{"typ":"dpop+jwt","alg":"ES256","jwk":${ecJwk.toString}}"""
+      val claimsJson =
+        s"""{"htm":"${Htm.name}","htu":"$Htu","jti":"jti-1","iat":${now.getEpochSecond},"nonce":{}}"""
+      val raw = rawEcToken(headerJson, claimsJson, ecPrivateKey)
+      for result <- verify(raw).either
+      yield assertTrue(result == Left(Dpop.Error.MalformedClaim("nonce")))
+    },
+    test("rejects a proof whose ath claim isn't a string") {
+      val headerJson = s"""{"typ":"dpop+jwt","alg":"ES256","jwk":${ecJwk.toString}}"""
+      val claimsJson =
+        s"""{"htm":"${Htm.name}","htu":"$Htu","jti":"jti-1","iat":${now.getEpochSecond},"ath":[]}"""
+      val raw = rawEcToken(headerJson, claimsJson, ecPrivateKey)
+      for result <- verify(raw).either
+      yield assertTrue(result == Left(Dpop.Error.MalformedClaim("ath")))
+    },
   )
