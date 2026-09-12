@@ -30,6 +30,11 @@ case class EdgeConfig(
     // (correct wherever edge/auth/the browser all share one network, as
     // in prod and plain local dev).
     versolaInternalUrl: Option[URL] = None,
+    // The origin clients reach this edge on. Used to build the `htu` a DPoP proof is checked
+    // against (DpopVerifier) -- taken from configuration rather than from the request's own
+    // `Host` or `X-Forwarded-*`, since those are set by whatever last handled the request and
+    // trusting them would let a hop choose the URI a proof is validated against.
+    edgeUrl: URL,
     configurationCacheRefreshInterval: Duration,
     revocation: EdgeConfig.Revocation = EdgeConfig.Revocation(),
     // RFC 9449 enforcement on proxied calls. Absent leaves it off entirely: a
@@ -91,19 +96,14 @@ object EdgeConfig:
       batchSize: Int = 50000,
   )
 
-  /** RFC 9449 proof validation at the resource server.
+  /** RFC 9449 proof validation at the resource server. A proof must always carry a valid
+    * nonce (§9) once this block is present -- there is no way to configure this edge to skip
+    * that check, so a nonce is unconditionally handed out on a proof's first rejection and
+    * checked on every one after.
     *
-    * @param publicUrl the origin clients reach this edge on, used to rebuild the `htu` a proof
-    *   is checked against. Taken from configuration rather than from the request's `Host` or
-    *   `X-Forwarded-*`: those are set by whatever last handled the request, so trusting them
-    *   would let a hop choose the URI the proof is validated against and defeat the binding.
-    *   Path and query are ignored -- the proxied request's own path is appended.
     * @param nonceSalt keys this edge's `DPoP-Nonce` space. §9 keeps the resource server's nonces
     *   separate from the authorization server's, so this is deliberately not auth's
     *   `dpop-nonces-secret`: a nonce minted by auth is not valid here.
-    * @param requireNonce whether a proof must carry a valid nonce. §9 leaves this optional for a
-    *   resource server. Off by default: turning it on costs every client one extra round trip
-    *   per nonce lifetime, so it is a deployment decision rather than a default.
     * @param allowedAlgorithms signing algorithms an incoming proof's `alg` may use. Kept
     *   independent of auth's list so a deployment can tighten the resource server without
     *   having to re-issue tokens.
@@ -112,9 +112,7 @@ object EdgeConfig:
     * @param nonceTtl how long a nonce this edge issued stays acceptable.
     */
   case class Dpop(
-      publicUrl: URL,
       nonceSalt: Secret.Bytes32,
-      requireNonce: Boolean = false,
       allowedAlgorithms: Set[versola.util.Dpop.Algorithm] = Dpop.DefaultAlgorithms,
       iatLeeway: Duration = Duration.fromSeconds(60),
       nonceTtl: Duration = Duration.fromSeconds(600),
