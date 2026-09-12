@@ -250,6 +250,10 @@ lazy val loadgen = project
     // (the "Run tests with coverage" CI step) never touches this project anyway -- explicit
     // here so that stays true even if someone runs `loadgen/coverage loadgen/test` directly.
     coverageEnabled := false,
+    // The store specs share one database (LoadgenPostgresSpec), each truncating its own table
+    // between tests, and each builds a pool that runs Flyway against it on first use. Same
+    // reasoning as the three *-postgres-impl projects above.
+    Test / parallelExecution := false,
   )
   .dependsOn(
     util % CompileTest,
