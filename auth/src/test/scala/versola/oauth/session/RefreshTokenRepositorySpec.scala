@@ -316,14 +316,9 @@ trait RefreshTokenRepositorySpec extends DatabaseSpecBase[RefreshTokenRepository
       test("revokeFamily leaves out access tokens already past their TTL") {
         for
           now <- Clock.instant
-          record1 = tokenRecord1(now, refreshTtl)
+          record1 = tokenRecord1(now, refreshTtl).copy(accessTokenExpiresAt = now.minusSeconds(1))
           _ <- env.repository.createRefreshToken(refreshToken1, None, record1, None)
-          _ <- env.repository.createRefreshToken(
-            refreshToken2,
-            Some(refreshToken1),
-            record1.copy(accessToken = accessToken2, accessTokenExpiresAt = now.minusSeconds(1)),
-            None,
-          )
+          _ <- env.repository.createRefreshToken(refreshToken2, Some(refreshToken1), record1.copy(accessToken = accessToken2), None)
 
           revoked <- env.repository.revokeFamily(refreshToken1, clientId1)
           tipAfter <- env.repository.findToken(refreshToken2)
