@@ -5,7 +5,7 @@ import com.nimbusds.jose.jwk.{Curve, ECKey}
 import com.nimbusds.jose.{JWSAlgorithm, JWSHeader}
 import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 import versola.auth.TestEnvConfig
-import versola.util.{Dpop, UnitSpecBase}
+import versola.util.{Dpop, DpopNonce, UnitSpecBase}
 import zio.*
 import zio.http.Method
 import zio.test.*
@@ -106,7 +106,7 @@ object DpopServiceSpec extends UnitSpecBase:
       val env = Env()
       for
         now <- Clock.instant
-        _ <- env.nonceService.verify.failsWith(DpopNonceService.Error.Expired)
+        _ <- env.nonceService.verify.failsWith(DpopNonce.Error.Expired)
         _ <- env.nonceService.issue.succeedsWith("fresh-nonce")
         result <- env.service.verify(proof(iat = now, nonce = Some("stale-nonce")), Htm, Htu, requireNonce = true).either
       yield assertTrue(result == Left(DpopService.Error.NonceRequired("fresh-nonce")))

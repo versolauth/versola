@@ -76,6 +76,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
     val sessionRepository = stub[session.EdgeSessionRepository]
     val revocationService = stub[TokenRevocationService]
     val permissionService = stub[PermissionService]
+    val dpopVerifier = stub[versola.edge.dpop.DpopVerifier]
 
     val presetCache = ReloadingCache(Unsafe.unsafe(unsafe ?=> Ref.unsafe.make(Map.empty[PresetId, AuthorizationPreset])))
     val clientCache = ReloadingCache(Unsafe.unsafe(unsafe ?=> Ref.unsafe.make(Map.empty[ClientId, OAuthClient])))
@@ -229,6 +230,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
         revocationService,
         jwksService,
         permissionService,
+        dpopVerifier,
         env,
       )
 
