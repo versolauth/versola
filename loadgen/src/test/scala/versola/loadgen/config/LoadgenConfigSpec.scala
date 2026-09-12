@@ -17,7 +17,10 @@ object LoadgenConfigSpec extends ZIOSpecDefault:
 
   private val loadgenConfigDescriptor = deriveConfig[LoadgenConfig]
 
-  private val hocon: String =
+  /** Not private: [[versola.loadgen.provision.ProvisionerSpec]] loads role dispatch's input from
+    * the same tree, and a second copy of it would drift the moment a field is added.
+    */
+  val hocon: String =
     """role = driver
       |shard { index = 0, count = 8 }
       |
@@ -75,7 +78,30 @@ object LoadgenConfigSpec extends ZIOSpecDefault:
       |  { name = balance, weight = 0.4, method = GET, path = "/accounts/balance" },
       |  { name = pay,     weight = 0.1, method = POST, path = "/payments", acr = "password-level" },
       |]
+      |
+      |provision {
+      |  tenant-id = default
+      |  central-secret = "central-secret"
+      |  edge-secret = "edge-secret"
+      |  mobile-redirect-uri = "versola://callback"
+      |  resources {
+      |    core-uri   = "http://mockapi-core:8100"
+      |    pay-uri    = "http://mockapi-pay:8100"
+      |    notify-uri = "http://mockapi-notify:8100"
+      |  }
+      |  preset {
+      |    id = web-otp
+      |    cookie-domain = "bank.example.test"
+      |    cookie-path = "/"
+      |    post-logout-redirect-uri = "https://bank.example.test/goodbye"
+      |  }
+      |  passkey { rp-id = "bank.example.test", rp-name = "Versola Bank", user-verification = preferred }
+      |  payment-amount-threshold = 1000000
+      |}
       |""".stripMargin
+
+  /** The provision block dropped, as a driver's or coordinator's config file leaves it. */
+  val hoconWithoutProvision: String = hocon.substring(0, hocon.indexOf("provision {"))
 
   def spec = suite("LoadgenConfig")(
     suite("parsing")(
@@ -99,7 +125,21 @@ object LoadgenConfigSpec extends ZIOSpecDefault:
           config.actions.map(_.name) == List("balance", "pay"),
           config.actions(1).acr == Some("password-level"),
           config.actions(0).acr == None,
+          config.provision.map(_.tenantId) == Some("default"),
+          config.provision.map(_.resources.coreUri) == Some("http://mockapi-core:8100"),
+          config.provision.flatMap(_.preset.cookieDomain) == Some("bank.example.test"),
+          config.provision.map(_.passkey.rpId) == Some("bank.example.test"),
+          config.provision.map(_.paymentAmountThreshold) == Some(1000000L),
         )
+      },
+      // A driver holds no admin credentials, so requiring the block here would fail its decode
+      // before `role` was ever read.
+      test("decodes a config that omits the provision block") {
+        for config <- TypesafeConfigProvider
+            .fromHoconString(hoconWithoutProvision)
+            .kebabCase
+            .load(loadgenConfigDescriptor)
+        yield assertTrue(config.provision == None)
       },
       test("decodes a coordinator config, which owns no shard") {
         for config <- TypesafeConfigProvider

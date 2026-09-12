@@ -24,6 +24,7 @@ case class LoadgenConfig(
     session: SessionConfig,
     campaign: CampaignConfig,
     actions: List[BusinessActionConfig],
+    provision: Option[ProvisionConfig],
 )
 
 /** Which half of the `loadgen` binary this process runs. Same binary and image serve all four --
@@ -154,6 +155,62 @@ case class CampaignConfig(
     diurnal: DiurnalConfig,
     registration: RegistrationConfig,
 )
+
+/** What `loadgen provision` needs beyond [[TargetsConfig]] to write the campaign's configuration
+  * into central (versola-load-emulator-design.md §3). Optional for the same reason [[ShardConfig]]
+  * is: a driver or coordinator process holds no admin credentials and its config file omits the
+  * block entirely, which requiring it here would turn into a decode failure before role dispatch
+  * ever read `role`.
+  *
+  * Only what a deployment actually varies lives here. The campaign's own shape -- which clients
+  * exist, the ten endpoints, the permissions and the two roles -- is fixed by the design doc and
+  * lives in [[versola.loadgen.provision.CampaignBlueprint]], not in HOCON: it is the definition of
+  * the campaign, not a knob.
+  *
+  * @param paymentAmountThreshold the amount above which the payment endpoints' CEL access rule
+  *                               denies, in the minor unit the campaign's bodies carry
+  */
+case class ProvisionConfig(
+    tenantId: String,
+    /** Presented as the HTTP Basic password on central's configuration API -- the same base64url
+      * value e2e's `RESOURCE_SECRET` carries.
+      */
+    centralSecret: Config.Secret,
+    /** Presented as the HTTP Basic password on edge's service API. */
+    edgeSecret: Config.Secret,
+    /** Where the three mobile clients' authorization codes are redirected -- an app scheme, which
+      * central accepts for a native client but not over plain HTTP on a non-loopback host.
+      */
+    mobileRedirectUri: String,
+    resources: ProvisionResourcesConfig,
+    preset: ProvisionPresetConfig,
+    passkey: ProvisionPasskeyConfig,
+    paymentAmountThreshold: Long,
+)
+
+/** The three `mockapi`-backed resources' RFC 8707 identifiers, which are also the base URIs edge
+  * proxies to. One per resource rather than derived from `targets.mock-url`: central requires each
+  * to be absolute and path-less, so three resources on one `mockapi` need three authorities
+  * resolving to it, which only the deployment knows.
+  */
+case class ProvisionResourcesConfig(coreUri: String, payUri: String, notifyUri: String)
+
+/** The one edge login preset, for the `web-otp` client (design doc §2.2). `cookieDomain`/
+  * `cookiePath` scope the `EDGE_SESSION` cookie; both are optional in central, so both are
+  * `Option` here rather than silently defaulted to the whole origin.
+  */
+case class ProvisionPresetConfig(
+    id: String,
+    cookieDomain: Option[String],
+    cookiePath: Option[String],
+    postLogoutRedirectUri: Option[String],
+)
+
+/** WebAuthn relying-party settings for the tenant. `rpId` is a registrable domain suffix of
+  * `targets.origin`, which the authenticator signs against, so it cannot be derived from the
+  * origin URL without guessing where the site's boundary is.
+  */
+case class ProvisionPasskeyConfig(rpId: String, rpName: String, userVerification: String)
 
 /** One of the ten protected-resource actions of versola-load-emulator-design.md §3: a relative
   * weight, the HTTP method/path against edge, and the ACR it requires (`None` for actions with
