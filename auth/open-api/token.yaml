@@ -32,6 +32,18 @@ paths:
         - clientSecretBasic: []
         - {}
       parameters:
+        - name: DPoP
+          in: header
+          required: false
+          schema:
+            type: string
+          description: |
+            RFC 9449 proof-of-possession JWT. Optional per request: a request without one
+            yields a bearer access token; a valid proof binds the issued access token (and, for
+            `refresh_token`, a fresh grant) to the proof's key, after which only proofs from
+            that same key are accepted for it. May be rejected with `invalid_dpop_proof`
+            (malformed, wrong key, or already used) or `use_dpop_nonce` (retry with the nonce
+            from the accompanying `DPoP-Nonce` response header).
         - name: Idempotency-Key
           in: header
           required: false
@@ -228,7 +240,11 @@ components:
             and `acr`.
         token_type:
           type: string
-          const: Bearer
+          enum: [Bearer, DPoP]
+          description: |
+            `DPoP` when the access token is bound to the key that proved possession on this
+            request (RFC 9449 §5), presented with the `DPoP` auth scheme rather than `Bearer`;
+            `Bearer` otherwise.
         expires_in:
           type: integer
           format: int64
@@ -268,6 +284,8 @@ components:
             - invalid_scope
             - invalid_target
             - invalid_authorization_details
+            - invalid_dpop_proof
+            - use_dpop_nonce
         error_description:
           type: string
         error_uri:
@@ -302,6 +320,10 @@ components:
         - `invalid_authorization_details` — an `authorization_details` object is unknown for
           the client's tenant, fails its type's schema, or (for `refresh_token`) does not
           exactly match one already granted.
+        - `invalid_dpop_proof` — the `DPoP` header is malformed, signed by the wrong key,
+          or has already been used (RFC 9449 §5).
+        - `use_dpop_nonce` — retry with the nonce carried in the `DPoP-Nonce` header of this
+          response (RFC 9449 §8).
       headers:
         Cache-Control:
           schema:
@@ -311,6 +333,13 @@ components:
           schema:
             type: string
             const: no-cache
+        DPoP-Nonce:
+          required: false
+          schema:
+            type: string
+          description: |
+            Present only for `use_dpop_nonce`. Echo this value in the `DPoP` proof of the
+            retried request.
       content:
         application/json:
           schema:
