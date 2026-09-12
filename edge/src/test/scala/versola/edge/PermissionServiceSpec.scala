@@ -221,17 +221,27 @@ object PermissionServiceSpec extends ZIOSpecDefault:
       },
     ),
     test("refreshNow replaces every cache with what central serves") {
+      val client =
+        OAuthClient(id = serviceClient, secret = Secret(Array.fill(8)(1.toByte)), permissions = Set(writePerm), accessTokenTtl = 15.minutes)
       val service = buildService(
         roles = Map.empty,
         permissions = Map.empty,
         rolesFromCentral = rolesMap,
         permissionsFromCentral = permissionsMap,
+        clientsFromCentral = Map(serviceClient -> client),
       )
       for
-        before <- service.getAllowedEndpointsForRoles(defaultTenant, List(editorRole))
-        _      <- service.refreshNow
-        after  <- service.getAllowedEndpointsForRoles(defaultTenant, List(editorRole))
-      yield assertTrue(before.isEmpty, after == Set(listUsersEndpoint, createUserEndpoint))
+        beforeRoles  <- service.getAllowedEndpointsForRoles(defaultTenant, List(editorRole))
+        beforeClient <- service.getAllowedEndpointsForClient(serviceClient)
+        _            <- service.refreshNow
+        afterRoles   <- service.getAllowedEndpointsForRoles(defaultTenant, List(editorRole))
+        afterClient  <- service.getAllowedEndpointsForClient(serviceClient)
+      yield assertTrue(
+        beforeRoles.isEmpty,
+        beforeClient.isEmpty,
+        afterRoles == Set(listUsersEndpoint, createUserEndpoint),
+        afterClient == Set(createUserEndpoint),
+      )
     },
     suite("live")(
       test("wires the three sync clients into caches the service reads from") {
