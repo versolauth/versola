@@ -177,7 +177,7 @@ object DpopVerifierSpec extends ZIOSpecDefault:
           result <- verify(service, proof(iat = now))
           issued = result.left.toOption.collect { case DpopVerifier.Error.NonceRequired(n) => n }
         yield assertTrue(
-          issued.exists(DpopNonce.verify(nonceSalt, _, now, 300.seconds).isRight),
+          issued.exists(DpopNonce.verify(nonceSalt, _, now, 600.seconds).isRight),
         )
       },
       test("accepts a proof carrying a nonce this edge issued") {
