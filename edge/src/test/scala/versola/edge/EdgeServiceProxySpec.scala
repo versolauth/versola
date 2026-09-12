@@ -11,7 +11,7 @@ import versola.edge.model.*
 import versola.edge.revocation.{RevocationKey, TokenRevocationService}
 import versola.util.cel.CelEvaluator
 import versola.util.http.Observability
-import versola.util.{EnvName, JWT, ReloadingCache, Secret, SecureRandom, SecurityService}
+import versola.util.{DpopNonce, EnvName, JWT, ReloadingCache, Secret, SecureRandom, SecurityService}
 import zio.*
 import zio.http.*
 import zio.json.ast.Json
@@ -86,11 +86,11 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         url = URL.decode("https://central.example").toOption.get,
       ),
       versolaUrl = URL.decode("https://idp.example").toOption.get,
+      edgeUrl = edgePublicUrl,
       configurationCacheRefreshInterval = 5.minutes,
       dpop = Some(
         EdgeConfig.Dpop(
-          publicUrl = edgePublicUrl,
-          nonceSalt = Secret.Bytes32(Array.fill(32)(7.toByte)),
+          nonceSalt = dpopNonceSalt,
         ),
       ),
     )
@@ -345,17 +345,22 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
   private val dpopJwk =
     ECKey.Builder(Curve.P_256, dpopKeyPair.getPublic.asInstanceOf[ECPublicKey]).build()
   private val dpopJkt = dpopJwk.computeThumbprint().toString
+  private val dpopNonceSalt = Secret.Bytes32(Array.fill(32)(7.toByte))
 
-  /** The proof a DPoP client sends alongside its token: signed over this edge's public
-    * origin and the path the client called, and naming the token via `ath`. */
+  /** The proof a DPoP client sends alongside its token, over this edge's public origin
+    * and the path the client called, and naming the token via `ath`. A nonce is always
+    * attached -- this edge always requires one -- unless a test overrides it with `None`
+    * to exercise that rejection specifically.
+    */
   private def dpopProof(
       accessToken: String,
       path: String,
       method: Method = Method.GET,
       jti: String = "proof-1",
       htu: Option[String] = None,
+      nonce: Task[Option[String]] = Clock.instant.map(now => Some(DpopNonce.issue(dpopNonceSalt, now))),
   ): Task[String] =
-    Clock.instant.flatMap: now =>
+    Clock.instant.zip(nonce).flatMap: (now, resolvedNonce) =>
       ZIO.attemptBlocking:
         val header = JWSHeader.Builder(JWSAlgorithm.ES256)
           .`type`(versola.util.Dpop.JwtType)
@@ -371,8 +376,8 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
           .claim("ath", ath)
           .jwtID(jti)
           .issueTime(Date.from(now))
-          .build()
-        val jwt = SignedJWT(header, claims)
+        resolvedNonce.foreach(claims.claim("nonce", _))
+        val jwt = SignedJWT(header, claims.build())
         jwt.sign(ECDSASigner(dpopKeyPair.getPrivate.asInstanceOf[ECPrivateKey]))
         jwt.serialize()
 

@@ -778,18 +778,14 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
        |  ]
        |}
        |
-       |# RFC 9449 proof validation on proxied calls. public-url is what a client
-       |# reaches this edge on, and is what every proof's htu is rebuilt from --
-       |# a forwarded Host header is not trusted for it, since whatever last
-       |# handled the request could then choose the URI the proof is checked
-       |# against. Remove this block to turn DPoP off; a key-bound token is still
+       |# RFC 9449 proof validation on proxied calls, against edge-url below. Every
+       |# proof must carry a valid nonce (§9) once this block is present -- there is
+       |# no setting that turns that off; the round trip it costs a client on its
+       |# first request (or after nonce-ttl) is the price of using DPoP here at all.
+       |# Remove this block entirely to turn DPoP off; a key-bound token is still
        |# refused over Bearer either way.
        |dpop {
-       |  public-url = "$edgeUrl"
        |  nonce-salt = ${secretField(useOpenBao, edgeDpopNonceSalt, "EDGE_DPOP_NONCE_SALT")}
-       |  # Off: requiring a nonce costs every client an extra round trip per
-       |  # nonce lifetime, which §9 leaves to the deployment to decide.
-       |  require-nonce = false
        |  allowed-algorithms = ["ES256", "PS256"]
        |  iat-leeway = "60 seconds"
        |  nonce-ttl = "600 seconds"
@@ -801,6 +797,9 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
        |
        |versola-url = "$authUrl"
        |versola-internal-url = "$authInternalUrl"
+       |# The origin clients reach this edge on -- what a DPoP proof's htu is
+       |# rebuilt against (DpopVerifier), not trusting a forwarded Host header.
+       |edge-url = "$edgeUrl"
        |""".stripMargin
 
   // ── Write files ───────────────────────────────────────────────────────────────

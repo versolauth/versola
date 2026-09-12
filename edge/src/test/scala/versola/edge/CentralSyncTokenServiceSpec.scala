@@ -31,6 +31,7 @@ object CentralSyncTokenServiceSpec extends ZIOSpecDefault:
     ),
     central = EdgeConfig.CentralConfig(url = URL.decode("https://central.example").toOption.get),
     versolaUrl = URL.decode("https://idp.example").toOption.get,
+    edgeUrl = URL.decode("https://edge.example").toOption.get,
     configurationCacheRefreshInterval = 5.minutes,
   )
 

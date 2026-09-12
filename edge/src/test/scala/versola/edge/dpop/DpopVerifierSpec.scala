@@ -64,7 +64,7 @@ object DpopVerifierSpec extends ZIOSpecDefault:
 
   private def verifier(
       dpop: Option[EdgeConfig.Dpop] = Some(
-        EdgeConfig.Dpop(publicUrl = PublicUrl, nonceSalt = nonceSalt),
+        EdgeConfig.Dpop(nonceSalt = nonceSalt),
       ),
   ): DpopVerifier =
     DpopVerifier.Impl(config(dpop), DpopReplayGuard.Impl())
@@ -75,6 +75,7 @@ object DpopVerifierSpec extends ZIOSpecDefault:
     EdgeConfig(
       id = model.EdgeId("edge-1"),
       keyId = "kid-1",
+      edgeUrl = PublicUrl,
       privateKey = generator.generateKeyPair().nn.getPrivate.nn,
       security = EdgeConfig.Security(
         tokenEncryption = EdgeConfig.Security.TokenEncryption(Secret.Bytes32(Array.fill(32)(3.toByte))),
@@ -101,14 +102,14 @@ object DpopVerifierSpec extends ZIOSpecDefault:
       val service = verifier()
       for
         now <- Clock.instant
-        result <- verify(service, proof(iat = now))
+        result <- verify(service, proof(iat = now, nonce = Some(DpopNonce.issue(nonceSalt, now))))
       yield assertTrue(result.map(_.jkt) == Right(jkt))
     },
     test("rejects a second use of the same proof") {
       val service = verifier()
       for
         now <- Clock.instant
-        replayed = proof(iat = now)
+        replayed = proof(iat = now, nonce = Some(DpopNonce.issue(nonceSalt, now)))
         first <- verify(service, replayed)
         second <- verify(service, replayed)
       yield assertTrue(first.isRight, second == Left(DpopVerifier.Error.Replayed))
@@ -170,7 +171,7 @@ object DpopVerifierSpec extends ZIOSpecDefault:
     suite("nonce")(
       test("demands one, and supplies it, when the deployment requires a nonce") {
         val service = verifier(
-          Some(EdgeConfig.Dpop(publicUrl = PublicUrl, nonceSalt = nonceSalt, requireNonce = true)),
+          Some(EdgeConfig.Dpop(nonceSalt = nonceSalt)),
         )
         for
           now <- Clock.instant
@@ -182,7 +183,7 @@ object DpopVerifierSpec extends ZIOSpecDefault:
       },
       test("accepts a proof carrying a nonce this edge issued") {
         val service = verifier(
-          Some(EdgeConfig.Dpop(publicUrl = PublicUrl, nonceSalt = nonceSalt, requireNonce = true)),
+          Some(EdgeConfig.Dpop(nonceSalt = nonceSalt)),
         )
         for
           now <- Clock.instant
@@ -191,7 +192,7 @@ object DpopVerifierSpec extends ZIOSpecDefault:
       },
       test("rejects a nonce it never issued") {
         val service = verifier(
-          Some(EdgeConfig.Dpop(publicUrl = PublicUrl, nonceSalt = nonceSalt, requireNonce = true)),
+          Some(EdgeConfig.Dpop(nonceSalt = nonceSalt)),
         )
         for
           now <- Clock.instant
@@ -203,7 +204,7 @@ object DpopVerifierSpec extends ZIOSpecDefault:
       // proof is, by construction, one from a client that has already been given one.
       test("refuses a nonce-less retry after the challenge that handed out a nonce") {
         val service = verifier(
-          Some(EdgeConfig.Dpop(publicUrl = PublicUrl, nonceSalt = nonceSalt, requireNonce = true)),
+          Some(EdgeConfig.Dpop(nonceSalt = nonceSalt)),
         )
         for
           now <- Clock.instant
@@ -213,22 +214,6 @@ object DpopVerifierSpec extends ZIOSpecDefault:
           challenged.left.toOption.exists(_.isInstanceOf[DpopVerifier.Error.NonceRequired]),
           retried.left.toOption.exists(_.isInstanceOf[DpopVerifier.Error.NonceRequired]),
         )
-      },
-      // The other side of that rule: where nonces aren't in use, none is ever handed out, so
-      // §11.3 never engages and a nonce this edge didn't issue carries no weight to check.
-      test("ignores the nonce claim entirely when nonces aren't in use") {
-        val service = verifier()
-        for
-          now <- Clock.instant
-          result <- verify(service, proof(iat = now, nonce = Some("not-mine")))
-        yield assertTrue(result.isRight)
-      },
-      test("accepts a proof with no nonce when the deployment doesn't require one") {
-        val service = verifier()
-        for
-          now <- Clock.instant
-          result <- verify(service, proof(iat = now))
-        yield assertTrue(result.isRight)
       },
     ),
     // §4.3(1): "the request contains at most one DPoP header field value". `rawHeader`
