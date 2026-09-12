@@ -480,6 +480,7 @@ class PostgresSessionRepository(xa: TransactorZIO)
   override def renewBoundToken(
       token: MAC.Of[RefreshToken],
       accessToken: AccessToken,
+      scope: Set[ScopeToken],
       expiresAt: Instant,
   ): Task[Boolean] =
     Clock.instant.flatMap: now =>
@@ -489,9 +490,14 @@ class PostgresSessionRepository(xa: TransactorZIO)
         // once per refresh regardless, because `access_token` has to keep naming the token
         // currently outstanding for revocation to be able to reach it -- so sliding `expires_at`
         // in the same statement is free, and `GREATEST` keeps that idempotent under a retry.
+        //
+        // `scope` is written for the same reason the rotating path carries it into the
+        // successor: this row is the grant's only record, so a narrowing that is not persisted
+        // here is one the next refresh silently undoes.
         sql"""
           UPDATE refresh_tokens
           SET access_token = $accessToken,
+              scope = $scope,
               expires_at = GREATEST(expires_at, $expiresAt)
           WHERE id = $token AND rotated_at IS NULL AND expires_at > $now
         """.update.run() > 0
