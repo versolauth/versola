@@ -426,6 +426,25 @@ trait RefreshTokenRepositorySpec extends DatabaseSpecBase[RefreshTokenRepository
           secondRetry.exists(found => java.util.Arrays.equals(found._1, refreshToken3)),
         )
       },
+      test("a retry is refused once the presented generation has passed the replay-detection window") {
+        for
+          now <- Clock.instant
+          record1 = tokenRecord1(now, refreshTtl)
+          _ <- env.repository.createRefreshToken(refreshToken1, None, record1, None)
+          _ <- env.repository.createRefreshToken(
+            refreshToken2,
+            Some(refreshToken1),
+            record1.copy(accessToken = AccessToken(Array.fill(16)(30.toByte))),
+            Some(idempotencyKey1),
+          )
+          // The row survives physically -- the cleanup sweep is a separate, asynchronous
+          // process this test never runs -- but the credential's validity is bounded by the
+          // recorded expiry, not by when a sweep eventually deletes the row.
+          _ <- TestClock.adjust(25.hours)
+
+          retry <- env.repository.findIdempotentRetry(refreshToken1, clientId1, idempotencyKey1)
+        yield assertTrue(retry.isEmpty)
+      },
       test("a key stops being honoured once the chain moves on under a different one") {
         for
           now <- Clock.instant
