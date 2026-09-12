@@ -391,6 +391,9 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
   val centralPgPass       = prompt(s"  Postgres password [$pgPassDefault]: ", pgPassDefault)
 
 
+  // "dpop_signing_alg_values_supported" below (RFC 9449 §5.1) is a static mirror of
+  // CoreConfig.DpopConfig.default.allowedAlgorithms -- this script has no access to that type,
+  // so if the server-side default ever changes, update both.
   val metadata =
     s"""{
        |  "issuer": "$authUrl",
@@ -409,6 +412,7 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
        |  "subject_types_supported": ["public", "pairwise"],
        |  "id_token_signing_alg_values_supported": ["RS256"],
        |  "token_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post"],
+       |  "dpop_signing_alg_values_supported": ["ES256", "PS256"],
        |  "claims_supported": ["sub", "iss", "aud", "exp", "iat", "jti", "nonce", "auth_time", "acr", "amr", "sid"],
        |  "frontchannel_logout_supported": true,
        |  "frontchannel_logout_session_supported": true,
