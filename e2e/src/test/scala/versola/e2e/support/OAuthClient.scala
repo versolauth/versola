@@ -666,12 +666,18 @@ final class OAuthClient(client: Client, config: E2EConfig):
       .addHeader(Header.ContentType(MediaType.application.`x-www-form-urlencoded`))
     Client.batched(req).provide(ZLayer.succeed(client)).flatMap(TokenResult.parse)
 
-  /** POST /token — refreshes an access token. */
+  /** POST /token — refreshes an access token.
+    *
+    * `idempotencyKey` travels as the `Idempotency-Key` header
+    * (draft-ietf-httpapi-idempotency-key-header), which marks a repeat of an exchange the
+    * client never saw the response to as such, rather than as a replay of a spent token.
+    */
   def refresh(
       refreshToken: String,
       clientId: Option[String] = None,
       clientSecret: Option[String] = None,
       scope: Option[String] = None,
+      idempotencyKey: Option[String] = None,
   ): Task[TokenResult] =
     val effectiveClientId = clientId.getOrElse(config.clientId)
     val effectiveClientSecret = clientSecret.getOrElse(throw IllegalArgumentException("clientSecret must be provided for token requests"))
@@ -682,7 +688,8 @@ final class OAuthClient(client: Client, config: E2EConfig):
     val req = Request.post(s"${config.authUrl}/token", body)
       .addHeader(Authorization.Basic(effectiveClientId, effectiveClientSecret))
       .addHeader(Header.ContentType(MediaType.application.`x-www-form-urlencoded`))
-    Client.batched(req).provide(ZLayer.succeed(client)).flatMap(TokenResult.parse)
+    val withKey = idempotencyKey.fold(req)(req.addHeader("Idempotency-Key", _))
+    Client.batched(withKey).provide(ZLayer.succeed(client)).flatMap(TokenResult.parse)
 
   /** POST /token — obtains a token for the client itself (RFC 6749 §4.4).
     *

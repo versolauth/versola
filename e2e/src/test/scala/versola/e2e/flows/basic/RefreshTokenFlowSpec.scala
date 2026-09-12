@@ -171,6 +171,119 @@ object RefreshTokenFlowSpec extends E2ESpec:
           .label(s"the whole rotation family must be revoked after a replay, got $againStatus/$againError")
     },
 
+    // draft-ietf-httpapi-idempotency-key-header. A client that never received the response to
+    // an exchange holds only the token it already spent; without the key that reads as the
+    // replay of a rotated-away token and costs it the whole family (the test above), which is
+    // the wrong answer for a dropped response.
+    test("a spent refresh token repeated under its Idempotency-Key continues the chain instead of revoking it") {
+      for
+        (s, auth) <- setup(Flows.Id.EmailOtp)
+        first <- login(s, auth)
+        refreshToken <- refreshTokenOf(first.tokens)
+        key = s"idem-${java.util.UUID.randomUUID}"
+        // The exchange whose response never made it back to the client.
+        refreshed <- auth.refresh(
+          refreshToken,
+          clientId = Some(s.clientId),
+          clientSecret = Some(s.clientSecret),
+          idempotencyKey = Some(key),
+        ).success
+        unseen <- refreshTokenOf(refreshed)
+        // Byte-for-byte the same request again, since the spent token is all the client has.
+        retried <- auth.refresh(
+          refreshToken,
+          clientId = Some(s.clientId),
+          clientSecret = Some(s.clientSecret),
+          idempotencyKey = Some(key),
+        ).success
+        reissued <- refreshTokenOf(retried)
+        live <- auth.introspect(
+          reissued,
+          clientId = Some(s.clientId),
+          clientSecret = Some(s.clientSecret),
+        ).success
+      yield assertTrue(retried.response.status == Status.Ok)
+        .label(s"the repeat must be honoured, got ${retried.response.status}") &&
+        assertTrue(reissued != unseen)
+          .label("the repeat must mint a fresh token: the one the client missed was never stored, only its successor") &&
+        assertTrue(live.active)
+          .label("the token the repeat handed back must be the family's live tip")
+    },
+
+    test("a spent refresh token repeated under a different Idempotency-Key is still a replay") {
+      for
+        (s, auth) <- setup(Flows.Id.EmailOtp)
+        first <- login(s, auth)
+        refreshToken <- refreshTokenOf(first.tokens)
+        refreshed <- auth.refresh(
+          refreshToken,
+          clientId = Some(s.clientId),
+          clientSecret = Some(s.clientSecret),
+          idempotencyKey = Some(s"idem-${java.util.UUID.randomUUID}"),
+        ).success
+        rotated <- refreshTokenOf(refreshed)
+        // A key that names no exchange in this family proves nothing about who is presenting
+        // the spent token, so reuse detection stands exactly as it does with no key at all.
+        replay <- auth.refresh(
+          refreshToken,
+          clientId = Some(s.clientId),
+          clientSecret = Some(s.clientSecret),
+          idempotencyKey = Some(s"idem-${java.util.UUID.randomUUID}"),
+        )
+        (replayStatus, replayError) <- rejection(replay)
+        again <- auth.refresh(
+          rotated,
+          clientId = Some(s.clientId),
+          clientSecret = Some(s.clientSecret),
+        )
+        (againStatus, againError) <- rejection(again)
+      yield assertTrue(replayStatus == Status.BadRequest && replayError == "invalid_grant")
+        .label(s"an unrelated key must not rescue a replayed token, got $replayStatus/$replayError") &&
+        assertTrue(againStatus == Status.BadRequest && againError == "invalid_grant")
+          .label(s"the family must still be revoked on that replay, got $againStatus/$againError")
+    },
+
+    // The retry does not have to arrive after the original finished. Copies of it racing each
+    // other all pass the liveness check on the token they present, then lose the rotation one
+    // by one to whichever copy got there first -- and a loser that reads its own retry as a
+    // leak would log the user out over its own network's flakiness.
+    test("concurrent copies of one idempotent refresh are all honoured and leave the family live") {
+      val copies = 3
+      for
+        (s, auth) <- setup(Flows.Id.EmailOtp)
+        first <- login(s, auth)
+        refreshToken <- refreshTokenOf(first.tokens)
+        key = s"idem-${java.util.UUID.randomUUID}"
+        results <- ZIO.foreachPar(1 to copies): _ =>
+          auth.refresh(
+            refreshToken,
+            clientId = Some(s.clientId),
+            clientSecret = Some(s.clientSecret),
+            idempotencyKey = Some(key),
+          )
+        statuses = results.map:
+          case success: TokenResult.Success => success.response.status
+          case TokenResult.Failure(response, _) => response.status
+        issued <- ZIO.foreach(results.toList):
+          case success: TokenResult.Success => refreshTokenOf(success)
+          case TokenResult.Failure(_, body) => ZIO.fail(RuntimeException(s"A concurrent copy was rejected: $body"))
+        // Introspection rather than a refresh: presenting a rotated-away generation would
+        // revoke the family, which is the very thing being asserted not to have happened.
+        introspected <- ZIO.foreach(issued): token =>
+          auth.introspect(
+            token,
+            clientId = Some(s.clientId),
+            clientSecret = Some(s.clientSecret),
+          ).success.map(_.active)
+      yield assertTrue(statuses.forall(_ == Status.Ok))
+        .label(s"every concurrent copy must be honoured, got $statuses") &&
+        assertTrue(issued.distinct.size == copies)
+          .label("each copy must get its own token: the chain rotates once per copy") &&
+        assertTrue(introspected.count(identity) == 1)
+          .label(s"exactly one generation may be left live, got ${introspected.count(identity)} of $copies")
+    },
+
+
     test("a refresh may narrow the granted scope") {
       for
         (s, auth) <- setup(Flows.Id.EmailOtp)

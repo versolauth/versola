@@ -76,6 +76,14 @@ object OAuthTokenService:
       config: CoreConfig,
   ) extends OAuthTokenService:
 
+    /** Bounds how many concurrent copies of the same idempotent refresh request
+      * [[continueRefresh]] will chase through the rotation chain before giving up and treating
+      * a loss as a genuine replay. Real recovery chains are as long as the actual number of
+      * racing duplicates, which in practice is a handful at most -- this only guards against
+      * an attacker manufacturing many concurrent duplicates to keep a single request recursing.
+      */
+    private val MaxIdempotentRecoveryHops = 8
+
     /** Completes the OAuth 2.0 Authorization Code exchange.
      * Propagates AMR and ACR from the authorization code record to the issued tokens.
      */
@@ -196,9 +204,10 @@ object OAuthTokenService:
         )
       yield issuedTokens
 
-    /** Validates the resolved record and issues against it, recovering once via the
-      * idempotency key if the rotation this attempt is riding on turns out to have already
-      * been won by a concurrent presentation of the very same token.
+    /** Validates the resolved record and issues against it, recovering via the idempotency
+      * key -- chasing forward through as many hops as concurrent copies of this same request
+      * actually raced through -- if the rotation this attempt is riding on turns out to have
+      * already been won by a concurrent presentation of the very same token.
       *
       * That race is real, not hypothetical: two requests carrying the same still-live token
       * both pass `findToken` above -- neither has rotated it yet -- then race to rotate it.
@@ -209,13 +218,21 @@ object OAuthTokenService:
       * double-submission instead of recognizing its own retry, exactly the outcome the
       * idempotency key exists to prevent.
       *
-      * The recovery is [[resolveRetry]]'s own lookup, run lazily instead of eagerly: a match
-      * proves this request and the one that won the race carried the same key, so it is the
-      * same exchange, not a leak, and gets a fresh token off the tip precisely as `findToken`
-      * having observed the rotation up front would have. `retried = true` on the recursive
-      * call closes off chasing this a second time -- a match already proves this caller's own
-      * retry, so a further loss here is treated as the plain replay-or-exchanged outcome
-      * [[resolveRetry]] itself would give, rather than being retried indefinitely.
+      * The recovery is [[resolveRetry]]'s own lookup, run lazily instead of eagerly, keyed on
+      * `resolved.previousToken` -- the tip this attempt just failed to rotate, not the token
+      * the client originally presented -- since that tip's own retirement row, not the
+      * original token's, is what a concurrent winner would have stamped. A match proves this
+      * request and the one that won the race carried the same key, so it is the same exchange,
+      * not a leak, and gets a fresh token off the new tip precisely as `findToken` having
+      * observed the rotation up front would have.
+      *
+      * More than two genuinely concurrent copies of the same idempotent request can lose this
+      * way more than once in a row -- each loser recovers onto the tip the next winner just
+      * created, only to find that tip already gone too -- so this keeps chasing rather than
+      * treating a second loss as decisive proof of a leak. `recoveryHops` bounds it anyway:
+      * every hop still requires a genuinely-won, idempotency-key-stamped rotation to exist, so
+      * it cannot cycle, but an unbounded chase is still not something a single request should
+      * offer an attacker able to force many concurrent duplicates.
       */
     private def continueRefresh(
         client: OAuthClientRecord,
@@ -227,6 +244,7 @@ object OAuthTokenService:
         refreshTokenMac: MAC.Of[RefreshToken],
         idempotencyKeyMac: Option[MAC],
         resolved: Resolved,
+        recoveryHops: Int = 0,
     ): IO[Throwable | TokenEndpointError, IssuedTokens] =
       for
         tokenRecord = resolved.record
@@ -285,19 +303,21 @@ object OAuthTokenService:
           // with a retry, which the idempotency key, when the request carried one, tells
           // apart from an actual leak before this falls back to treating it as one.
           //
-          // That lookup only runs once (`!resolved.retried`): a second loss, on the recovered
-          // tip this same request just re-issued from, is not this request racing itself again
-          // -- its own idempotency key was already spent reaching that tip -- so it is someone
-          // else's proven competing use of that same tip and goes straight to `detectReplay`
-          // rather than escaping this `catchSome` unhandled.
+          // Keyed on `resolved.previousToken`, the tip this exact attempt just lost the race
+          // to rotate -- not the token the client originally presented, whose retirement row
+          // only ever records the *first* hop. Chasing more hops than that is what lets a
+          // third (or later) concurrent copy of the same idempotent request recover onto a tip
+          // a second concurrent winner only just created, instead of reading its own retry as
+          // a leak. `recoveryHops` still caps it: past the limit this falls through to
+          // `detectReplay` exactly as a genuine replay would.
           case TokenEndpointError.InvalidGrant.RefreshChainAlreadyExchanged =>
-            (if resolved.retried then ZIO.none
-             else idempotencyKeyMac.fold(ZIO.none)(sessionRepository.findIdempotentRetry(refreshTokenMac, client.id, _)))
+            (if recoveryHops >= MaxIdempotentRecoveryHops then ZIO.none
+             else idempotencyKeyMac.fold(ZIO.none)(sessionRepository.findIdempotentRetry(resolved.previousToken, client.id, _)))
               .flatMap:
                 case Some((tip, record)) =>
                   continueRefresh(
                     client, refreshToken, dpopJkt, scope, resources, authorizationDetails,
-                    refreshTokenMac, idempotencyKeyMac, Resolved(tip, record, retried = true),
+                    refreshTokenMac, idempotencyKeyMac, Resolved(tip, record, retried = true), recoveryHops + 1,
                   )
                 case None =>
                   detectReplay(client, refreshTokenMac).flatMap: replayed =>
