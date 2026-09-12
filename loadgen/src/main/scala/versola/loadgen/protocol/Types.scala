@@ -6,7 +6,7 @@ import zio.http.{Method, Status}
 // accident (a CSRF token passed where a conversation cookie was expected fails silently as a
 // wrong-parameter bug, not a compile error, without this). Kept to plain `String` underneath --
 // no validation here, that belongs to whatever produced the value (auth's response, or
-// `PkceHelper`/`SoftAuthenticator` once track B ports them).
+// [[Pkce]]/[[SoftAuthenticator]]).
 
 opaque type ConversationCookie = String
 object ConversationCookie:
@@ -96,6 +96,23 @@ case class ChallengePage(
     csrf: Option[Csrf],
 )
 
+object ChallengePage:
+  /** The form state auth inlines into the page as `window.__VERSOLA_FORM__ = {...}` carries the
+    * CSRF token; this picks it out of the raw body.
+    *
+    * Compiled once, here, rather than per page as `ChallengeResult.csrf` does -- the single
+    * worst hot-path defect in the e2e client (§3.2). A regex over the body and not an HTML
+    * parser is a requirement, not an optimization (design doc §6.3, ~40x cheaper), and the
+    * match is found in the head of the document, so the inlined script bundle further down is
+    * never scanned.
+    */
+  private val csrfField = java.util.regex.Pattern.compile("\"csrf\"\\s*:\\s*\"([^\"]+)\"")
+
+  def parse(conversation: ConversationCookie, html: String): ChallengePage =
+    val matcher = csrfField.matcher(html)
+    val csrf = if matcher.find() then Some(Csrf(matcher.group(1))) else None
+    ChallengePage(conversation, html, ConversationStep.fromHtml(html), csrf)
+
 /** Outcome of a challenge submission: either the conversation advanced to another page, or it
   * redirected out (to the code redirect URI, an error redirect, or -- mid-flow -- to
   * `/challenge` again for the next step, which `Redirected` alone deliberately does not
@@ -112,6 +129,11 @@ enum SubmitOutcome:
 
 case class EdgeLoginStarted(conversation: ConversationCookie, codeVerifier: CodeVerifier, state: String)
 
+/** `path` is the whole path under the edge origin, including the `/resources/{resourceId}`
+  * prefix of §8.6 (`/resources/core/accounts`) -- the resource id is not a separate field
+  * because §5's `BusinessActionConfig` does not carry one either, and splitting it here would
+  * mean re-joining it on every call.
+  */
 case class ActionCall(method: Method, path: String, body: Option[String])
 
 /** What a business action is authenticated with. An ADT rather than two `Option`s on
