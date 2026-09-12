@@ -138,7 +138,7 @@ object RefreshTokenFlowSpec extends E2ESpec:
           .label(s"'sub' must survive the refresh: expected ${original.sub}, got ${userinfo.sub}")
     },
 
-    test("a refresh token is single-use: the second redemption is rejected") {
+    test("a refresh token is single-use: replaying a spent token revokes the whole rotation family") {
       for
         (s, auth) <- setup(Flows.Id.EmailOtp)
         first <- login(s, auth)
@@ -154,17 +154,21 @@ object RefreshTokenFlowSpec extends E2ESpec:
           clientId = Some(s.clientId),
           clientSecret = Some(s.clientSecret),
         )
-        (status, error) <- rejection(replay)
-        // The rotated token is the live one, so the replay must not have taken it down with it.
+        (replayStatus, replayError) <- rejection(replay)
+        // RFC 9700 §4.14.2: a replayed generation means the chain leaked, and the AS cannot
+        // tell the thief from the rightful owner, so neither can be trusted with the chain's
+        // live end -- the just-rotated tip is revoked along with the rest of the family, not
+        // just the token that was replayed.
         again <- auth.refresh(
           rotated,
           clientId = Some(s.clientId),
           clientSecret = Some(s.clientSecret),
-        ).success
-      yield assertTrue(status == Status.BadRequest && error == "invalid_grant")
-        .label(s"replaying a spent refresh token must be 400 invalid_grant, got $status/$error") &&
-        assertTrue(again.accessToken.nonEmpty)
-          .label("the rotated refresh token must still be redeemable after the replay was refused")
+        )
+        (againStatus, againError) <- rejection(again)
+      yield assertTrue(replayStatus == Status.BadRequest && replayError == "invalid_grant")
+        .label(s"replaying a spent refresh token must be 400 invalid_grant, got $replayStatus/$replayError") &&
+        assertTrue(againStatus == Status.BadRequest && againError == "invalid_grant")
+          .label(s"the whole rotation family must be revoked after a replay, got $againStatus/$againError")
     },
 
     test("a refresh may narrow the granted scope") {
