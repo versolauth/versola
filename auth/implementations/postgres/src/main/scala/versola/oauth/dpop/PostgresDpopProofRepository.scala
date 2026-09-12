@@ -75,7 +75,9 @@ object PostgresDpopProofRepository:
               s"$SlotCount-slot dpop_proofs ring can hold without reusing a slot that still " +
               "guards an acceptable proof",
           ),
-        ).when(iatLeeway.toSeconds > MaxIatLeeway.toSeconds)
+          // Compared whole, not in seconds: truncation would admit a leeway of 90.5s under a
+          // 90s bound, which is exactly the geometry this guard exists to keep inviolable.
+        ).when(iatLeeway.compareTo(MaxIatLeeway) > 0)
 
         repository = PostgresDpopProofRepository(xa)
         _ <- Clock.instant
