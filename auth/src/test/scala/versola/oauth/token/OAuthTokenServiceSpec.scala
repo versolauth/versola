@@ -1048,6 +1048,69 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           env.accessTokenRevocationService.revoke.calls.isEmpty,
         )
       },
+      test("recognize a rotation-race loser as its own retry when the idempotency key matches") {
+        val env = new Env
+        for
+          now <- Clock.instant
+
+          tokenRecord = RefreshTokenRecord(
+            sessionId = sessionId1,
+            publicSessionId = publicSessionId1,
+            accessToken = accessToken1,
+            userId = userId1,
+            clientId = clientId1,
+            audience = List.empty,
+            authorizationDetails = None,
+            scope = scope1,
+            issuedAt = now.minusSeconds(3600),
+            expiresAt = now.plusSeconds(testClient.refreshTokenTtl.toSeconds),
+            requestedClaims = Some(requestedClaims1),
+            uiLocales = Some(uiLocales1),
+            nonce = None,
+            amr = amr1,
+            authTime = authTime1,
+            acr = None,
+            cnfJkt = None,
+          )
+
+          // The tip left behind by the concurrent request that won the rotation race.
+          tipRecord = tokenRecord.copy(issuedAt = now.minusSeconds(1))
+
+          newRefreshToken = RefreshToken(Array.fill(32)(7.toByte))
+
+          _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
+          _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
+          _ <- env.tokenRepo.findToken.succeedsWith(Some(tokenRecord))
+          _ <- env.propertyGenerator.nextAccessToken.succeedsWith(accessToken1)
+          _ <- env.propertyGenerator.nextRefreshToken.succeedsWith(newRefreshToken)
+          // `findToken` above read the presented token while it was still live -- neither
+          // request had rotated it yet -- so this attempt only discovers it lost the race to
+          // rotate it once it tries to write. The retry that triggers continues the chain from
+          // the winner's tip instead, which is the call that succeeds.
+          _ <- env.tokenRepo.createRefreshToken.returnsZIOOnCall:
+            case 1 => ZIO.fail(RefreshAlreadyExchanged())
+            case _ => ZIO.unit
+          _ <- env.tokenRepo.findIdempotentRetry.succeedsWith(Some((refreshTokenMac2, tipRecord)))
+          _ <- env.userRepo.findRolesByUserAndTenant.succeedsWith(List.empty)
+
+          request = RefreshTokenRequest(refreshToken1, None, None, None)
+          credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
+
+          result <- env.service.refreshAccessToken(request, credentials, None, Some("key-1")).either
+
+          createCalls = env.tokenRepo.createRefreshToken.calls
+        yield assertTrue(
+          // The loser recognizes its own retry instead of reading the race as a leak: nothing
+          // is revoked, and the request still gets a token back.
+          result.isRight,
+          env.tokenRepo.revokeFamily.calls.isEmpty,
+          env.accessTokenRevocationService.revoke.calls.isEmpty,
+          // Recovery continues the chain from the tip the winner left behind, not from the
+          // token this request presented -- that one is already retired.
+          createCalls.size == 2,
+          createCalls(1)._2.exists(mac => java.util.Arrays.equals(mac, refreshTokenMac2)),
+        )
+      },
     ),
     suite("clientCredentials")(
       test("successfully issue access token for confidential client") {

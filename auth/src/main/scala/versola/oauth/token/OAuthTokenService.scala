@@ -189,6 +189,45 @@ object OAuthTokenService:
           case None =>
             resolveRetry(client, refreshTokenMac, idempotencyKeyMac)
 
+        issuedTokens <- continueRefresh(
+          client, refreshToken, dpopJkt, scope, resources, authorizationDetails,
+          refreshTokenMac, idempotencyKeyMac, resolved,
+        )
+      yield issuedTokens
+
+    /** Validates the resolved record and issues against it, recovering once via the
+      * idempotency key if the rotation this attempt is riding on turns out to have already
+      * been won by a concurrent presentation of the very same token.
+      *
+      * That race is real, not hypothetical: two requests carrying the same still-live token
+      * both pass `findToken` above -- neither has rotated it yet -- then race to rotate it.
+      * The loser's write fails with `RefreshChainAlreadyExchanged` despite having just read a
+      * live row, and reaches here with `resolved.retried == false` because `findToken`, not
+      * [[resolveRetry]], is what produced it. Without this recovery that loser reads as a
+      * genuine replay and revokes the whole family -- logging the user out over a routine
+      * double-submission instead of recognizing its own retry, exactly the outcome the
+      * idempotency key exists to prevent.
+      *
+      * The recovery is [[resolveRetry]]'s own lookup, run lazily instead of eagerly: a match
+      * proves this request and the one that won the race carried the same key, so it is the
+      * same exchange, not a leak, and gets a fresh token off the tip precisely as `findToken`
+      * having observed the rotation up front would have. `retried = true` on the recursive
+      * call closes off chasing this a second time -- a match already proves this caller's own
+      * retry, so a further loss here is treated as the plain replay-or-exchanged outcome
+      * [[resolveRetry]] itself would give, rather than being retried indefinitely.
+      */
+    private def continueRefresh(
+        client: OAuthClientRecord,
+        refreshToken: RefreshToken,
+        dpopJkt: Option[String],
+        scope: Option[Set[ScopeToken]],
+        resources: Option[List[ResourceUri]],
+        authorizationDetails: Option[List[AuthorizationDetail]],
+        refreshTokenMac: MAC.Of[RefreshToken],
+        idempotencyKeyMac: Option[MAC],
+        resolved: Resolved,
+    ): IO[Throwable | TokenEndpointError, IssuedTokens] =
+      for
         tokenRecord = resolved.record
 
         _ <- Observability.setSessionId(tokenRecord.publicSessionId)
@@ -238,17 +277,25 @@ object OAuthTokenService:
           accessTokenAudience = audience,
           accessTokenAuthorizationDetails = details,
         ).catchSome:
-          // Losing the rotation race means this token was presented twice concurrently: the
-          // winner's successor is live and the leak is just as proven as a sequential replay,
-          // so it goes the same way rather than failing with a bare invalid_grant.
-          //
-          // Not so when the key already identified this as a retry: the request that beat us
-          // is another attempt at the very same exchange, which proves nothing was leaked.
+          // Losing the rotation race can mean this token was presented twice concurrently by
+          // an attacker and its rightful owner alike -- proven as much of a leak as a
+          // sequential replay -- but it can just as well mean the same client racing itself
+          // with a retry, which the idempotency key, when the request carried one, tells
+          // apart from an actual leak before this falls back to treating it as one.
           case TokenEndpointError.InvalidGrant.RefreshChainAlreadyExchanged if !resolved.retried =>
-            detectReplay(client, refreshTokenMac).flatMap: replayed =>
-              ZIO.fail:
-                if replayed then TokenEndpointError.InvalidGrant.RefreshTokenReplayed
-                else TokenEndpointError.InvalidGrant.RefreshChainAlreadyExchanged
+            idempotencyKeyMac
+              .fold(ZIO.none)(sessionRepository.findIdempotentRetry(refreshTokenMac, client.id, _))
+              .flatMap:
+                case Some((tip, record)) =>
+                  continueRefresh(
+                    client, refreshToken, dpopJkt, scope, resources, authorizationDetails,
+                    refreshTokenMac, idempotencyKeyMac, Resolved(tip, record, retried = true),
+                  )
+                case None =>
+                  detectReplay(client, refreshTokenMac).flatMap: replayed =>
+                    ZIO.fail:
+                      if replayed then TokenEndpointError.InvalidGrant.RefreshTokenReplayed
+                      else TokenEndpointError.InvalidGrant.RefreshChainAlreadyExchanged
       yield issuedTokens
 
     /** Distinguishes a repeat of an exchange the client never saw the response to from a
