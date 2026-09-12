@@ -42,10 +42,6 @@ trait OAuthTokenService:
 
 object OAuthTokenService:
 
-  /** Which token the refresh actually continues from, and whether getting there needed the
-    * idempotency key. Normally the one presented; for a retry, the family's live tip, since
-    * the token the original response carried is not recoverable.
-    */
   /** A sender-constrained refresh token being renewed rather than rotated. The client keeps
     * the value it already holds, so the response echoes that same value back.
     */
@@ -54,6 +50,10 @@ object OAuthTokenService:
       mac: MAC.Of[RefreshToken],
   )
 
+  /** Which token the refresh actually continues from, and whether getting there needed the
+    * idempotency key. Normally the one presented; for a retry, the family's live tip, since
+    * the token the original response carried is not recoverable.
+    */
   private case class Resolved(
       previousToken: MAC.Of[RefreshToken],
       record: RefreshTokenRecord,
