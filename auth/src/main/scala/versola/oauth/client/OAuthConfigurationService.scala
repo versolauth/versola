@@ -296,8 +296,11 @@ object OAuthConfigurationService:
         case None => ZIO.succeed(SubmissionLimits.empty)
         case Some(client) =>
           challengeSettingsCache.get.map(
+            // A tenant with no settings row at all (never configured, e.g. seeded before
+            // this became a required create-tenant field) still gets throttled, rather
+            // than accepting unlimited submission attempts.
             _.find(_.tenantId == client.tenantId)
-              .fold(SubmissionLimits.empty)(_.submissionLimits),
+              .fold(SubmissionLimits.recommended)(_.submissionLimits),
           )
 
     override def getIpHeader(id: ClientId): UIO[String] =

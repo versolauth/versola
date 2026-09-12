@@ -1816,7 +1816,15 @@ components:
           oneOf:
             - $ref: '#/components/schemas/EdgeId'
             - type: 'null'
-      required: [id, description]
+        submissionLimits:
+          allOf:
+            - $ref: '#/components/schemas/SubmissionLimits'
+          description: >-
+            Required: a tenant cannot be created with no submission-rate protection on
+            password/OTP/passkey attempts. Every category and banDurationSeconds must be
+            non-empty/positive. The console pre-fills this from a recommended default that
+            the caller may edit or approve before submitting.
+      required: [id, description, submissionLimits]
     UpdateTenantRequest:
       type: object
       properties:

@@ -240,6 +240,12 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
         result <- env.getSubmissionLimits(ClientId("missing"))
       yield assertTrue(result == SubmissionLimits.empty)
     },
+    test("getSubmissionLimits falls back to the recommended default when the client's tenant has no challenge settings row") {
+      for
+        env <- makeEnv(challengeSettingsVec = Vector.empty)
+        result <- env.getSubmissionLimits(clientId1)
+      yield assertTrue(result == SubmissionLimits.recommended)
+    },
     test("getIpHeader returns header from challenge settings for known client") {
       for
         env <- makeEnv(challengeSettingsVec = Vector(challengeSettings.copy(ipHeader = "X-Custom-IP")))

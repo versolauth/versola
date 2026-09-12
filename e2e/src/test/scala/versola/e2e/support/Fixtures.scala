@@ -21,11 +21,27 @@ object Fixtures:
   def text(value: String): Json.Obj =
     Json.Obj("en" -> Json.Str(value))
 
-  def tenant(id: String, description: String = "e2e tenant", edgeId: Option[String] = None): Json.Obj =
+  /** `submissionLimits` defaults to a fully-configured value -- `createTenant` rejects any
+    * category left empty, unlike `submissionLimits()` itself which defaults to empty for
+    * the (separate) challenge-settings endpoint that doesn't require it.
+    */
+  def tenant(
+      id: String,
+      description: String = "e2e tenant",
+      edgeId: Option[String] = None,
+      submissionLimits: Json = submissionLimits(
+        otpRequest = List(rateLimit(2, 60)),
+        otpSubmit = List(rateLimit(3, 120)),
+        passwordSubmit = List(rateLimit(5, 900)),
+        passkeyAssertion = List(rateLimit(5, 300)),
+        banDurationSeconds = 1800,
+      ),
+  ): Json.Obj =
     Json.Obj(
       Chunk[(String, Json)](
         "id" -> Json.Str(id),
         "description" -> Json.Str(description),
+        "submissionLimits" -> submissionLimits,
       ) ++ Chunk.fromIterable(edgeId.map(value => "edgeId" -> Json.Str(value))),
     )
 

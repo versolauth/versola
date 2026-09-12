@@ -1,5 +1,6 @@
 package versola.central.configuration
 
+import versola.central.configuration.challenges.SubmissionLimits
 import versola.central.configuration.clients.{AuthFlow, ClientId, ClientType, ConsentFlow, PresetId, RegistrationFlow, ResponseType}
 import versola.central.configuration.details.AuthorizationDetailType
 import versola.central.configuration.permissions.Permission
@@ -280,6 +281,12 @@ case class CreateTenantRequest(
     id: TenantId,
     description: String,
     edgeId: Option[String],
+    /** Required, not defaulted: a tenant is not allowed to exist with no submission-rate
+      * protection on password/OTP/passkey attempts (see `SubmissionLimits.isConfigured`).
+      * The console pre-fills this from `SubmissionLimits.recommended` and lets the caller
+      * edit or approve it before submitting.
+      */
+    submissionLimits: SubmissionLimits,
 ) derives Schema, JsonCodec
 
 case class UpdateTenantRequest(
