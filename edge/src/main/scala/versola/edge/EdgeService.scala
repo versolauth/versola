@@ -588,8 +588,7 @@ object EdgeService:
         case (Some(jkt), AuthSource.Header(AuthScheme.Dpop)) =>
           val verified =
             for
-              proof <- ZIO.fromOption(request.rawHeader(DpopScheme))
-                .orElseFail(DpopVerifier.Error.ProofMissing)
+              proof <- DpopVerifier.proofHeader(request)
               _ <- dpopVerifier.verify(
                 proofHeader = proof,
                 accessToken = accessToken,

@@ -2161,6 +2161,24 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         upstream <- capture.get
       yield assertTrue(response.status == Status.Unauthorized, upstream.isEmpty)
     },
+    // RFC 9449 §4.3(1): a second header must not be a way to slip a proof past the first --
+    // rawHeader would silently answer with just one of them.
+    test("refuses a DPoP-scheme request carrying more than one DPoP header") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        capture <- captureUpstream()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(usersEndpoint()))
+        token <- env.signToken(cnfJkt = Some(dpopJkt))
+        proof <- dpopProof(token, "/users")
+        request = dpopRequest("/users", token, proof).addHeader(Header.Custom("DPoP", proof))
+        service = env.buildService(client, security)
+        response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
+        upstream <- capture.get
+      yield assertTrue(response.status == Status.Unauthorized, upstream.isEmpty)
+    },
     // The htu is rebuilt from the configured public URL, so a proof made over the address a
     // forwarding hop knows this edge by does not open the door.
     test("refuses a proof made over an origin other than the configured public URL") {
