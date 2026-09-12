@@ -1019,6 +1019,13 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
     ),
     suite("POST /token - DPoP")(
       tokenEndpointTestCase(
+        description = "rejects requests carrying multiple DPoP headers",
+        request = dpopCodeExchangeRequest.addHeader(Header.Custom("DPoP", "second-proof")),
+        expectedStatus = Status.BadRequest,
+        verify = response =>
+          response.body.asString.map(body => assertTrue(body.contains("invalid_dpop_proof"))),
+      ),
+      tokenEndpointTestCase(
         description = "issues a DPoP-bound token and echoes the binding in cnf.jkt",
         request = dpopCodeExchangeRequest,
         expectedStatus = Status.Ok,

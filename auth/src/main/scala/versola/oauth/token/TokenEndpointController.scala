@@ -94,10 +94,12 @@ object TokenEndpointController extends Controller:
       request: Request,
       config: CoreConfig,
   ): ZIO[DpopService, Throwable | TokenEndpointError, Option[String]] =
-    request.headers.get(DpopHeader) match
-      case None =>
+    request.headers.toList.filter(_.headerName.equalsIgnoreCase(DpopHeader)).map(_.renderedValue) match
+      case Nil =>
         ZIO.none
-      case Some(proof) =>
+      case proofs if proofs.size != 1 =>
+        ZIO.fail(TokenEndpointError.InvalidDpopProof("request must contain exactly one DPoP header"))
+      case proof :: Nil =>
         ZIO.serviceWithZIO[DpopService](
           _.verify(
             token = proof,
