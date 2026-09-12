@@ -7,7 +7,9 @@ import com.nimbusds.jwt.SignedJWT
 import zio.http.Method
 import zio.{Duration, IO, ZIO}
 
+import java.net.URI
 import java.time.Instant
+import scala.util.Try
 
 /** RFC 9449 DPoP proof JWTs.
   *
@@ -112,7 +114,10 @@ object Dpop:
       iatDate <- requireClaim(claims.getDateClaim("iat"), "iat")
 
       _ <- ZIO.fail(Error.MethodMismatch).unless(htm == expectedMethod.name)
-      _ <- ZIO.fail(Error.UriMismatch).unless(htu == expectedUri)
+      // RFC 9449 §4.3 step 9: compare against the request URI "ignoring any query and
+      // fragment parts" -- normalization is this side's job, since a compliant client is free
+      // to stamp `htu` with the full URL it actually called, query string and all.
+      _ <- ZIO.fail(Error.UriMismatch).unless(normalizeHtu(htu).contains(expectedUri))
 
       iat = iatDate.toInstant
       _ <- ZIO.fail(Error.IatOutOfWindow)
@@ -128,6 +133,13 @@ object Dpop:
       nonce = nonce,
       ath = ath,
     )
+
+  /** Strips the query and fragment from an `htu` claim before comparing it against
+    * `expectedUri`, per RFC 9449 §4.3 step 9. `None` if `htu` isn't a valid URI at all, which
+    * simply fails the comparison rather than the whole proof crashing.
+    */
+  private def normalizeHtu(htu: String): Option[String] =
+    Try(new URI(htu)).toOption.map(uri => new URI(uri.getScheme, uri.getAuthority, uri.getPath, null, null).toString)
 
   private def requireClaim[A](value: => A, name: String): IO[Error, A] =
     ZIO.attempt(Option(value)).orElseFail(Error.MalformedClaim(name)).someOrFail(Error.MissingClaim(name))

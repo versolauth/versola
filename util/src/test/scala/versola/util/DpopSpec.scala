@@ -187,6 +187,26 @@ object DpopSpec extends ZIOSpecDefault:
       for result <- verify(token).either
       yield assertTrue(result == Left(Dpop.Error.UriMismatch))
     },
+    test("accepts an htu carrying a query string, ignoring it per RFC 9449 §4.3 step 9") {
+      val token = proof(htu = s"$Htu?foo=bar")
+      for result <- verify(token).either
+      yield assertTrue(result.isRight)
+    },
+    test("accepts an htu carrying a fragment, ignoring it per RFC 9449 §4.3 step 9") {
+      val token = proof(htu = s"$Htu#section")
+      for result <- verify(token).either
+      yield assertTrue(result.isRight)
+    },
+    test("still rejects a different path once the query string is stripped") {
+      val token = proof(htu = "https://auth.example.com/other?foo=bar")
+      for result <- verify(token).either
+      yield assertTrue(result == Left(Dpop.Error.UriMismatch))
+    },
+    test("rejects an htu that is not a valid URI at all") {
+      val token = proof(htu = "://not a uri")
+      for result <- verify(token).either
+      yield assertTrue(result == Left(Dpop.Error.UriMismatch))
+    },
     test("rejects an iat too far in the past") {
       val token = proof(iat = now.minusSeconds(120))
       for result <- verify(token).either
