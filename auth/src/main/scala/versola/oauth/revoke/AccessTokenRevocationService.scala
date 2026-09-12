@@ -12,16 +12,17 @@ trait AccessTokenRevocationService:
   /** Tells the client's back channel to stop accepting one or more access tokens before
     * `expiresAt`.
     *
-    * `expiresAt` is shared by every token in the batch rather than given per token: every
-    * call site either has one token's real `exp` or is bounding a whole family/session of
-    * them by the client's TTL from the same instant, so a single value is never a loss of
-    * precision. That is what lets a family with several access tokens be named in one
-    * event instead of one push per token.
+    * `expiresAt` is shared by every token in the batch rather than given per token, and is
+    * an upper bound rather than each token's own `exp`: one token's real expiry when the
+    * batch holds one, the furthest among them when it holds several. A token whose own `exp`
+    * came earlier is then held at the edge past it -- over-retained, never under-retained.
+    * That is what lets a family with several access tokens be named in one event instead of
+    * one push per token.
     *
     * @param subject  whom the tokens were issued to — the user, or the client itself for a
     *                 `client_credentials` token.
-    * @param expiresAt when the tokens expire on their own, after which the revocation stops
-    *                  mattering and can be forgotten.
+    * @param expiresAt when the last of the tokens expires on its own, after which the
+    *                  revocation stops mattering and can be forgotten.
     */
   def revoke(client: OAuthClientRecord, tokens: NonEmptyChunk[AccessToken], subject: String, expiresAt: Instant): Task[Unit]
 

@@ -66,8 +66,9 @@ trait SessionRepository:
   def invalidateByPublicIdForUser(publicId: PublicSessionId, userId: UserId): Task[Boolean]
 
   /** Issues `refreshToken`. With `previous` set this is a rotation: the presented token is
-    * retired in place and the new one joins its family, both under the family's row lock, so
-    * a rotation cannot interleave with a [[revokeFamily]] and leave its successor behind.
+    * retired in place and the new one joins its family, both under the family's advisory
+    * lock, so a rotation cannot interleave with a [[revokeFamily]] and leave its successor
+    * behind.
     * Fails with `RefreshAlreadyExchanged` when the presented token was already retired --
     * either sequentially or by a concurrent request that won the lock first.
     *
