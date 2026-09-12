@@ -870,6 +870,33 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
 
+  /users/refresh-tokens:
+    get:
+      tags: [Users]
+      summary: List a user's refresh tokens
+      description: |
+        Independent of `GET /users/sessions`: a refresh token's expiry slides forward on every
+        use while a session's does not, so a token routinely outlives the session it was issued
+        under and would be invisible to an admin working from the session list alone.
+      operationId: getUserRefreshTokens
+      parameters:
+        - name: id
+          in: query
+          required: true
+          schema:
+            $ref: '#/components/schemas/UserId'
+      responses:
+        '200':
+          description: This user's live refresh tokens, one per grant.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/RefreshTokenResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
   /users/limits/reset:
     post:
       tags: [Users]
@@ -2965,6 +2992,33 @@ components:
           type: string
           format: date-time
       required: [publicId, clients, createdAt]
+    RefreshTokenResponse:
+      type: object
+      properties:
+        sessionId:
+          type: string
+          description: |
+            The session this token was issued under. May no longer resolve to a live session:
+            a refresh token's expiry slides forward on every use while a session's does not,
+            so a token routinely outlives it.
+        clientId:
+          $ref: '#/components/schemas/ClientId'
+        scope:
+          type: array
+          items:
+            type: string
+        issuedAt:
+          type: string
+          format: date-time
+        expiresAt:
+          type: string
+          format: date-time
+        dpopBound:
+          type: boolean
+          description: |
+            RFC 9449: true once this grant is bound to a DPoP key and can no longer be
+            refreshed by anyone else who obtains a copy of it.
+      required: [sessionId, clientId, scope, issuedAt, expiresAt, dpopBound]
 
     # ──────────────────────────── Challenges ────────────────────────────
     OtpTemplatePurpose:

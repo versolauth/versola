@@ -40,16 +40,21 @@ trait RefreshTokenRepositorySpec extends DatabaseSpecBase[RefreshTokenRepository
 
   val accessToken1 = AccessToken(Array.fill(16)(10.toByte))
   val accessToken2 = AccessToken(Array.fill(16)(11.toByte))
+  val accessToken3 = AccessToken(Array.fill(16)(12.toByte))
 
   val scope1 = Set(ScopeToken("read"), ScopeToken("write"))
   val scope2 = Set(ScopeToken("admin"))
 
   val refreshTtl = 30.days
 
+  val idempotencyKey1 = MAC(Array.fill(32)(40.toByte))
+  val idempotencyKey2 = MAC(Array.fill(32)(41.toByte))
+
   def tokenRecord1(now: Instant, ttl: Duration) = RefreshTokenRecord(
     sessionId = sessionId1,
     publicSessionId = publicSessionId1,
     accessToken = accessToken1,
+    accessTokenExpiresAt = now.plusSeconds(3600),
     userId = userId1,
     clientId = clientId1,
     audience = List.empty,
@@ -60,16 +65,17 @@ trait RefreshTokenRepositorySpec extends DatabaseSpecBase[RefreshTokenRepository
     requestedClaims = None,
     uiLocales = None,
     nonce = None,
-    previousRefreshToken = None,
     amr = Set(AuthMethodRef.pwd),
     authTime = now,
     acr = None,
+    cnfJkt = None,
   )
 
   def tokenRecord2(now: Instant, ttl: Duration) = RefreshTokenRecord(
     sessionId = sessionId2,
     publicSessionId = publicSessionId2,
     accessToken = accessToken2,
+    accessTokenExpiresAt = now.plusSeconds(3600),
     userId = userId2,
     clientId = clientId2,
     audience = List.empty,
@@ -80,10 +86,10 @@ trait RefreshTokenRepositorySpec extends DatabaseSpecBase[RefreshTokenRepository
     requestedClaims = None,
     uiLocales = None,
     nonce = None,
-    previousRefreshToken = None,
     amr = Set(AuthMethodRef.pwd),
     authTime = now,
     acr = None,
+    cnfJkt = None,
   )
 
   def testCases(env: RefreshTokenRepositorySpec.Env): List[Spec[RefreshTokenRepositorySpec.Env & Scope, Any]] =
@@ -93,8 +99,8 @@ trait RefreshTokenRepositorySpec extends DatabaseSpecBase[RefreshTokenRepository
           now <- Clock.instant
           record1 = tokenRecord1(now, refreshTtl)
           record2 = tokenRecord2(now, refreshTtl)
-          _ <- env.repository.createRefreshToken(refreshToken1, record1)
-          _ <- env.repository.createRefreshToken(refreshToken2, record2)
+          _ <- env.repository.createRefreshToken(refreshToken1, None, record1, None)
+          _ <- env.repository.createRefreshToken(refreshToken2, None, record2, None)
           found1 <- env.repository.findToken(refreshToken1)
           found2 <- env.repository.findToken(refreshToken2)
         yield assertTrue(
@@ -110,9 +116,26 @@ trait RefreshTokenRepositorySpec extends DatabaseSpecBase[RefreshTokenRepository
         for
           now <- Clock.instant
           record = tokenRecord1(now, refreshTtl).copy(authorizationDetails = Some(List(detail)))
-          _ <- env.repository.createRefreshToken(refreshToken1, record)
+          _ <- env.repository.createRefreshToken(refreshToken1, None, record, None)
           found <- env.repository.findToken(refreshToken1)
         yield assertTrue(found.map(_.authorizationDetails) == Some(Some(List(detail))))
+      },
+      test("persist and retrieve the DPoP binding thumbprint") {
+        val jkt = "0ZcOCORZNYy-DWpqq30jZyJGHTN0d2HglBV3uiguA4I"
+        for
+          now <- Clock.instant
+          record = tokenRecord1(now, refreshTtl).copy(cnfJkt = Some(jkt))
+          _ <- env.repository.createRefreshToken(refreshToken1, None, record, None)
+          found <- env.repository.findToken(refreshToken1)
+        yield assertTrue(found.map(_.cnfJkt) == Some(Some(jkt)))
+      },
+      test("an unbound grant round-trips with no thumbprint") {
+        for
+          now <- Clock.instant
+          record = tokenRecord1(now, refreshTtl)
+          _ <- env.repository.createRefreshToken(refreshToken1, None, record, None)
+          found <- env.repository.findToken(refreshToken1)
+        yield assertTrue(found.map(_.cnfJkt) == Some(None))
       },
       test("find returns None for non-existent refresh token") {
         for
@@ -124,7 +147,7 @@ trait RefreshTokenRepositorySpec extends DatabaseSpecBase[RefreshTokenRepository
         for
           now <- Clock.instant
           record = tokenRecord1(now, shortTtl)
-          _ <- env.repository.createRefreshToken(refreshToken1, record)
+          _ <- env.repository.createRefreshToken(refreshToken1, None, record, None)
           foundBefore <- env.repository.findToken(refreshToken1)
           _ <- TestClock.adjust(3.minutes)
           foundAfter <- env.repository.findToken(refreshToken1)
@@ -137,21 +160,82 @@ trait RefreshTokenRepositorySpec extends DatabaseSpecBase[RefreshTokenRepository
         for
           now <- Clock.instant
           record1 = tokenRecord1(now, refreshTtl)
-          record2 = record1.copy(previousRefreshToken = Some(refreshToken1))
-          _ <- env.repository.createRefreshToken(refreshToken1, record1)
-          _ <- env.repository.createRefreshToken(refreshToken2, record2)
+          _ <- env.repository.createRefreshToken(refreshToken1, None, record1, None)
+          _ <- env.repository.createRefreshToken(refreshToken2, Some(refreshToken1), record1.copy(accessToken = accessToken2), None)
           oldTokenFound <- env.repository.findToken(refreshToken1)
           newTokenFound <- env.repository.findToken(refreshToken2)
         yield assertTrue(
+          // Retired rather than deleted: the row stays behind so a later replay of it still
+          // resolves to its family, but it is no longer usable.
           oldTokenFound.isEmpty,
           newTokenFound.isDefined,
+        )
+      },
+      test("a bound token is renewed in place: same token, new access token, slid expiry") {
+        for
+          now <- Clock.instant
+          record1 = tokenRecord1(now, refreshTtl).copy(cnfJkt = Some("thumbprint-1"))
+          _ <- env.repository.createRefreshToken(refreshToken1, None, record1, None)
+
+          renewed <- env.repository.renewBoundToken(refreshToken1, accessToken2, scope1, now.plus(60.days), now.plusSeconds(600))
+          found <- env.repository.findToken(refreshToken1)
+        yield assertTrue(
+          renewed,
+          // Still the same token -- nothing was rotated, so the client keeps what it has.
+          found.isDefined,
+          found.exists(_.accessToken === accessToken2),
+          found.exists(_.expiresAt == now.plus(60.days)),
+          found.exists(_.accessTokenExpiresAt == now.plusSeconds(600)),
+          found.exists(_.cnfJkt.contains("thumbprint-1")),
+        )
+      },
+      test("renewing a bound token never shortens its expiry") {
+        for
+          now <- Clock.instant
+          record1 = tokenRecord1(now, refreshTtl).copy(cnfJkt = Some("thumbprint-1"))
+          _ <- env.repository.createRefreshToken(refreshToken1, None, record1, None)
+
+          // A retry arriving late must not pull the expiry back in.
+          renewed <- env.repository.renewBoundToken(refreshToken1, accessToken2, scope1, now, now.plusSeconds(600))
+          found <- env.repository.findToken(refreshToken1)
+        yield assertTrue(
+          renewed,
+          found.exists(_.expiresAt == record1.expiresAt),
+        )
+      },
+      test("renewing reports failure once the grant is revoked") {
+        for
+          now <- Clock.instant
+          record1 = tokenRecord1(now, refreshTtl).copy(cnfJkt = Some("thumbprint-1"))
+          _ <- env.repository.createRefreshToken(refreshToken1, None, record1, None)
+          _ <- env.repository.delete(refreshToken1)
+
+          renewed <- env.repository.renewBoundToken(refreshToken1, accessToken2, scope1, now.plus(60.days), now.plusSeconds(600))
+        yield assertTrue(!renewed)
+      },
+      test("renewing a bound token in place persists a narrowed scope") {
+        for
+          now <- Clock.instant
+          record1 = tokenRecord1(now, refreshTtl).copy(cnfJkt = Some("thumbprint-1"))
+          _ <- env.repository.createRefreshToken(refreshToken1, None, record1, None)
+
+          // RFC 6749 §6 narrowing has to stick to the grant, as it does when a bearer token
+          // rotates: the next refresh names no scope, so an unpersisted narrowing would be
+          // silently undone and hand back what the client dropped.
+          narrowed = record1.scope.take(1)
+          renewed <- env.repository.renewBoundToken(refreshToken1, accessToken2, narrowed, now.plus(60.days), now.plusSeconds(600))
+          found <- env.repository.findToken(refreshToken1)
+        yield assertTrue(
+          renewed,
+          narrowed.size < record1.scope.size,
+          found.exists(_.scope == narrowed),
         )
       },
       test("refresh token rotation: fail when old token already used") {
         for
           now <- Clock.instant
           record1 = tokenRecord1(now, refreshTtl)
-          _ <- env.repository.createRefreshToken(refreshToken1, record1)
+          _ <- env.repository.createRefreshToken(refreshToken1, None, record1, None)
 
           refreshTokens = List(
             refreshToken2,
@@ -161,14 +245,266 @@ trait RefreshTokenRepositorySpec extends DatabaseSpecBase[RefreshTokenRepository
             refreshToken6,
             refreshToken7,
           )
-          results <- ZIO.foreachPar(refreshTokens)(token =>
-            env.repository.createRefreshToken(token, record1.copy(previousRefreshToken = Some(refreshToken1))).either,
+          results <- ZIO.foreachPar(refreshTokens.zipWithIndex)((token, i) =>
+            env.repository
+              .createRefreshToken(token, Some(refreshToken1), record1.copy(accessToken = AccessToken(Array.fill(16)((30 + i).toByte))), None)
+              .either,
           )
 
         yield assertTrue(
           results.count(_.isRight) == 1,
           results.count(_.left.toOption.contains(())) == 5
         )
+      },
+      test("revokeFamily revokes the whole family when a token retired generations ago is replayed") {
+        for
+          now <- Clock.instant
+          record1 = tokenRecord1(now, refreshTtl)
+          _ <- env.repository.createRefreshToken(refreshToken1, None, record1, None)
+          _ <- env.repository.createRefreshToken(refreshToken2, Some(refreshToken1), record1.copy(accessToken = accessToken2), None)
+          _ <- env.repository.createRefreshToken(refreshToken3, Some(refreshToken2), record1.copy(accessToken = accessToken3), None)
+
+          // The replayed token was retired two rotations ago, so a lookup that only knew the
+          // immediately following generation would have missed it and left the tip live.
+          revoked <- env.repository.revokeFamily(refreshToken1, clientId1)
+          tipAfter <- env.repository.findToken(refreshToken3)
+        yield assertTrue(
+          revoked.exists(_.userId == userId1),
+          // Array-backed AccessToken has reference equality under `==`, hence `===`.
+          revoked.exists(_.accessTokens.exists(_ === accessToken3)),
+          // Expired, not deleted: the cleanup manager's expires_at sweep collects the family
+          // later, rather than this call issuing its own DELETE inline.
+          tipAfter.isEmpty,
+        )
+      },
+      test("revokeFamily ignores a token that was never issued") {
+        for
+          now <- Clock.instant
+          _ <- env.repository.createRefreshToken(refreshToken1, None, tokenRecord1(now, refreshTtl), None)
+
+          revoked <- env.repository.revokeFamily(refreshToken2, clientId1)
+        yield assertTrue(revoked.isEmpty)
+      },
+      test("revokeFamily ignores a token that is still live") {
+        for
+          now <- Clock.instant
+          _ <- env.repository.createRefreshToken(refreshToken1, None, tokenRecord1(now, refreshTtl), None)
+
+          // Presenting a token that was never rotated away is not a replay, whatever else is
+          // wrong with the request.
+          revoked <- env.repository.revokeFamily(refreshToken1, clientId1)
+          stillLive <- env.repository.findToken(refreshToken1)
+        yield assertTrue(
+          revoked.isEmpty,
+          stillLive.isDefined,
+        )
+      },
+      test("revokeFamily does not act on a family owned by a different client") {
+        for
+          now <- Clock.instant
+          record1 = tokenRecord1(now, refreshTtl)
+          _ <- env.repository.createRefreshToken(refreshToken1, None, record1, None)
+          _ <- env.repository.createRefreshToken(refreshToken2, Some(refreshToken1), record1.copy(accessToken = accessToken2), None)
+
+          revoked <- env.repository.revokeFamily(refreshToken1, clientId2)
+          tipAfter <- env.repository.findToken(refreshToken2)
+        yield assertTrue(
+          revoked.isEmpty,
+          tipAfter.isDefined,
+        )
+      },
+      test("revokeFamily leaves out access tokens already past their TTL") {
+        for
+          now <- Clock.instant
+          record1 = tokenRecord1(now, refreshTtl).copy(accessTokenExpiresAt = now.minusSeconds(1))
+          _ <- env.repository.createRefreshToken(refreshToken1, None, record1, None)
+          _ <- env.repository.createRefreshToken(refreshToken2, Some(refreshToken1), record1.copy(accessToken = accessToken2), None)
+
+          revoked <- env.repository.revokeFamily(refreshToken1, clientId1)
+          tipAfter <- env.repository.findToken(refreshToken2)
+        yield assertTrue(
+          // The family still dies; there is just nothing left worth pushing to the client.
+          revoked.exists(_.accessTokens.isEmpty),
+          tipAfter.isEmpty,
+        )
+      },
+      test("rotation of a family that was already revoked fails") {
+        for
+          now <- Clock.instant
+          record1 = tokenRecord1(now, refreshTtl)
+          _ <- env.repository.createRefreshToken(refreshToken1, None, record1, None)
+          _ <- env.repository.createRefreshToken(refreshToken2, Some(refreshToken1), record1.copy(accessToken = accessToken2), None)
+          _ <- env.repository.revokeFamily(refreshToken1, clientId1)
+
+          rotated <- env.repository.createRefreshToken(refreshToken3, Some(refreshToken2), record1.copy(accessToken = accessToken3), None).either
+        yield assertTrue(rotated.isLeft)
+      },
+      test("a rotation racing a revocation never leaves a live successor behind") {
+        for
+          now <- Clock.instant
+          record1 = tokenRecord1(now, refreshTtl)
+          _ <- env.repository.createRefreshToken(refreshToken1, None, record1, None)
+          _ <- env.repository.createRefreshToken(refreshToken2, Some(refreshToken1), record1.copy(accessToken = accessToken2), None)
+
+          // Whichever wins the family lock, the invariant holds: either the rotation commits
+          // first and its successor is expired by the revocation, or it finds the token it
+          // meant to rotate already dead.
+          _ <- env.repository.createRefreshToken(refreshToken3, Some(refreshToken2), record1.copy(accessToken = accessToken3), None).either
+            .zipPar(env.repository.revokeFamily(refreshToken1, clientId1))
+
+          live <- ZIO.foreach(List(refreshToken1, refreshToken2, refreshToken3))(env.repository.findToken)
+        yield assertTrue(live.forall(_.isEmpty))
+      },
+      test("revokeFamily is idempotent: a second replay finds the family already dead") {
+        for
+          now <- Clock.instant
+          record1 = tokenRecord1(now, refreshTtl)
+          _ <- env.repository.createRefreshToken(refreshToken1, None, record1, None)
+          _ <- env.repository.createRefreshToken(refreshToken2, Some(refreshToken1), record1.copy(accessToken = accessToken2), None)
+
+          _ <- env.repository.revokeFamily(refreshToken1, clientId1)
+          second <- env.repository.revokeFamily(refreshToken1, clientId1)
+        yield assertTrue(second.exists(_.accessTokens.isEmpty))
+      },
+      test("findIdempotentRetry returns the live tip when the key names the family's last exchange") {
+        for
+          now <- Clock.instant
+          record1 = tokenRecord1(now, refreshTtl)
+          _ <- env.repository.createRefreshToken(refreshToken1, None, record1, None)
+          // The exchange whose response the client never saw.
+          _ <- env.repository.createRefreshToken(
+            refreshToken2,
+            Some(refreshToken1),
+            record1.copy(accessToken = accessToken2),
+            Some(idempotencyKey1),
+          )
+
+          retry <- env.repository.findIdempotentRetry(refreshToken1, clientId1, idempotencyKey1)
+        yield assertTrue(
+          // The tip, not the token presented: the one the lost response carried cannot be
+          // reproduced, so the caller continues the chain from here.
+          retry.exists(found => java.util.Arrays.equals(found._1, refreshToken2)),
+          retry.exists(_._2.accessToken.sameElements(accessToken2)),
+        )
+      },
+      test("findIdempotentRetry ignores a key that was never used") {
+        for
+          now <- Clock.instant
+          record1 = tokenRecord1(now, refreshTtl)
+          _ <- env.repository.createRefreshToken(refreshToken1, None, record1, None)
+          _ <- env.repository.createRefreshToken(
+            refreshToken2,
+            Some(refreshToken1),
+            record1.copy(accessToken = accessToken2),
+            Some(idempotencyKey1),
+          )
+
+          // Holding the token without the key it was exchanged under is a replay, not a retry.
+          retry <- env.repository.findIdempotentRetry(refreshToken1, clientId1, idempotencyKey2)
+        yield assertTrue(retry.isEmpty)
+      },
+      test("findIdempotentRetry ignores a key belonging to another client") {
+        for
+          now <- Clock.instant
+          record1 = tokenRecord1(now, refreshTtl)
+          _ <- env.repository.createRefreshToken(refreshToken1, None, record1, None)
+          _ <- env.repository.createRefreshToken(
+            refreshToken2,
+            Some(refreshToken1),
+            record1.copy(accessToken = accessToken2),
+            Some(idempotencyKey1),
+          )
+
+          retry <- env.repository.findIdempotentRetry(refreshToken1, clientId2, idempotencyKey1)
+        yield assertTrue(retry.isEmpty)
+      },
+      test("the key survives repeated retries, each carrying it to the newest exchange") {
+        for
+          now <- Clock.instant
+          record1 = tokenRecord1(now, refreshTtl)
+          _ <- env.repository.createRefreshToken(refreshToken1, None, record1, None)
+          _ <- env.repository.createRefreshToken(
+            refreshToken2,
+            Some(refreshToken1),
+            record1.copy(accessToken = accessToken2),
+            Some(idempotencyKey1),
+          )
+
+          // First retry: continues from the tip, and the key moves onto that exchange.
+          firstRetry <- env.repository.findIdempotentRetry(refreshToken1, clientId1, idempotencyKey1)
+          _ <- env.repository.createRefreshToken(
+            refreshToken3,
+            Some(refreshToken2),
+            record1.copy(accessToken = accessToken3),
+            Some(idempotencyKey1),
+          )
+
+          // Second retry, because that response was lost too. A backoff loop routinely gets
+          // this far, so failing here would mean the feature only ever worked once.
+          secondRetry <- env.repository.findIdempotentRetry(refreshToken1, clientId1, idempotencyKey1)
+        yield assertTrue(
+          firstRetry.exists(found => java.util.Arrays.equals(found._1, refreshToken2)),
+          secondRetry.exists(found => java.util.Arrays.equals(found._1, refreshToken3)),
+        )
+      },
+      test("a retry is refused once the presented generation has passed the replay-detection window") {
+        for
+          now <- Clock.instant
+          record1 = tokenRecord1(now, refreshTtl)
+          _ <- env.repository.createRefreshToken(refreshToken1, None, record1, None)
+          _ <- env.repository.createRefreshToken(
+            refreshToken2,
+            Some(refreshToken1),
+            record1.copy(accessToken = AccessToken(Array.fill(16)(30.toByte))),
+            Some(idempotencyKey1),
+          )
+          // The row survives physically -- the cleanup sweep is a separate, asynchronous
+          // process this test never runs -- but the credential's validity is bounded by the
+          // recorded expiry, not by when a sweep eventually deletes the row.
+          _ <- TestClock.adjust(25.hours)
+
+          retry <- env.repository.findIdempotentRetry(refreshToken1, clientId1, idempotencyKey1)
+        yield assertTrue(retry.isEmpty)
+      },
+      test("a key stops being honoured once the chain moves on under a different one") {
+        for
+          now <- Clock.instant
+          record1 = tokenRecord1(now, refreshTtl)
+          _ <- env.repository.createRefreshToken(refreshToken1, None, record1, None)
+          _ <- env.repository.createRefreshToken(
+            refreshToken2,
+            Some(refreshToken1),
+            record1.copy(accessToken = accessToken2),
+            Some(idempotencyKey1),
+          )
+          // The client got through and refreshed normally: the earlier attempt is finished
+          // business, and reuse detection takes the token back.
+          _ <- env.repository.createRefreshToken(
+            refreshToken3,
+            Some(refreshToken2),
+            record1.copy(accessToken = accessToken3),
+            Some(idempotencyKey2),
+          )
+
+          stale <- env.repository.findIdempotentRetry(refreshToken1, clientId1, idempotencyKey1)
+        yield assertTrue(stale.isEmpty)
+      },
+      test("a key is not honoured once the family has been revoked") {
+        for
+          now <- Clock.instant
+          record1 = tokenRecord1(now, refreshTtl)
+          _ <- env.repository.createRefreshToken(refreshToken1, None, record1, None)
+          _ <- env.repository.createRefreshToken(
+            refreshToken2,
+            Some(refreshToken1),
+            record1.copy(accessToken = accessToken2),
+            Some(idempotencyKey1),
+          )
+          _ <- env.repository.revokeFamily(refreshToken1, clientId1)
+
+          // No live tip left to continue from, so there is nothing to hand back.
+          retry <- env.repository.findIdempotentRetry(refreshToken1, clientId1, idempotencyKey1)
+        yield assertTrue(retry.isEmpty)
       },
     )
 

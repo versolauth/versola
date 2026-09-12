@@ -1,7 +1,7 @@
 package versola.oauth.session
 
 import versola.oauth.client.model.ClientId
-import versola.oauth.session.model.{PublicSessionId, SessionId, SessionInfo, SessionRecord, SessionUnderUserAgent, UserAgentDetails}
+import versola.oauth.session.model.{PublicSessionId, RefreshTokenRecord, SessionId, SessionInfo, SessionRecord, SessionUnderUserAgent, UserAgentDetails}
 import versola.user.model.UserId
 import versola.util.{CoreConfig, MAC, Secret, SecurityService}
 import zio.{Duration, Task, ZLayer}
@@ -31,6 +31,12 @@ trait SessionService:
    *  each session's record so callers (e.g. [[versola.oauth.logout.LogoutService]]) can
    *  fan out back-channel logout to its participating clients without a separate lookup. */
   def invalidateAllByUser(userId: UserId): Task[List[SessionRecord]]
+
+  /** Every currently-live refresh token issued to a user, for admin-panel display. Not
+   *  derived from [[listByUser]]'s sessions: a refresh token's expiry slides forward on
+   *  every use while a session's does not, so a token routinely outlives the session it
+   *  was issued under and must still be listed once that session is gone. */
+  def listRefreshTokensByUser(userId: UserId): Task[List[RefreshTokenRecord]]
 
 object SessionService:
   def live = ZLayer.fromFunction(Impl(_, _, _, _))
@@ -89,3 +95,6 @@ object SessionService:
 
     override def invalidateAllByUser(userId: UserId): Task[List[SessionRecord]] =
       repository.invalidateByUserId(userId)
+
+    override def listRefreshTokensByUser(userId: UserId): Task[List[RefreshTokenRecord]] =
+      repository.findRefreshTokensByUserId(userId)

@@ -15,6 +15,10 @@ case class RefreshTokenRecord(
     sessionId: MAC.Of[SessionId],
     publicSessionId: PublicSessionId,
     accessToken: AccessToken,
+    /** When `accessToken` expires. Carried on the row -- not recomputed from the client's
+      * current `accessTokenTtl` -- because that TTL is mutable and this has to describe the
+      * token actually issued, not one issued under today's configuration. */
+    accessTokenExpiresAt: Instant,
     userId: UserId,
     clientId: ClientId,
     /** The resolved resource audience carried into access tokens issued from this refresh token
@@ -31,8 +35,10 @@ case class RefreshTokenRecord(
     requestedClaims: Option[RequestedClaims],
     uiLocales: Option[List[String]],
     nonce: Option[Nonce],
-    previousRefreshToken: Option[MAC.Of[RefreshToken]],
     amr: Set[AuthMethodRef],
     authTime: Instant,
     acr: Option[Acr],
+    /** RFC 9449 §5: the JWK thumbprint this grant is bound to, `None` for a bearer grant.
+      * A bound grant may only be refreshed by a proof carrying the same thumbprint. */
+    cnfJkt: Option[String],
 ) derives CanEqual, Equal

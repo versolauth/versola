@@ -178,6 +178,7 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
   val edgeSessionsSecret        = rand(rng, 32)
   val edgeInternalSecret        = rand(rng, 32) // authorizes edge's non-prod /service/configuration/sync
   val parRequestsSecret         = rand(rng, 32) // auth only: keys the stored request_uri references
+  val dpopNoncesSecret          = rand(rng, 32) // auth only: authenticates DPoP-Nonce values
   val accountResourceSecretGenerated = rand(rng, 32) // central: seeds the "auth" resource record; auth fetches it decrypted via registry sync
 
   // ── Environment ───────────────────────────────────────────────────────────────
@@ -390,6 +391,9 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
   val centralPgPass       = prompt(s"  Postgres password [$pgPassDefault]: ", pgPassDefault)
 
 
+  // "dpop_signing_alg_values_supported" below (RFC 9449 §5.1) is a static mirror of
+  // CoreConfig.DpopConfig.default.allowedAlgorithms -- this script has no access to that type,
+  // so if the server-side default ever changes, update both.
   val metadata =
     s"""{
        |  "issuer": "$authUrl",
@@ -408,6 +412,7 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
        |  "subject_types_supported": ["public", "pairwise"],
        |  "id_token_signing_alg_values_supported": ["RS256"],
        |  "token_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post"],
+       |  "dpop_signing_alg_values_supported": ["ES256", "PS256"],
        |  "claims_supported": ["sub", "iss", "aud", "exp", "iat", "jti", "nonce", "auth_time", "acr", "amr", "sid"],
        |  "frontchannel_logout_supported": true,
        |  "frontchannel_logout_session_supported": true,
@@ -536,6 +541,7 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
        |  session-cookie-secret        = ${secretField(useOpenBao, sessionCookieSecret, "SESSION_COOKIE_SECRET")}
        |  user-agent-cookie-secret     = ${secretField(useOpenBao, userAgentCookieSecret, "USER_AGENT_COOKIE_SECRET")}
        |  par-requests-secret          = ${secretField(useOpenBao, parRequestsSecret, "PAR_REQUESTS_SECRET")}
+       |  dpop-nonces-secret           = ${secretField(useOpenBao, dpopNoncesSecret, "DPOP_NONCES_SECRET")}
        |}
        |
        |par {
@@ -829,6 +835,7 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
         "SESSION_COOKIE_SECRET"      -> sessionCookieSecret,
         "USER_AGENT_COOKIE_SECRET"   -> userAgentCookieSecret,
         "PAR_REQUESTS_SECRET"        -> parRequestsSecret,
+        "DPOP_NONCES_SECRET"         -> dpopNoncesSecret,
         "JWT_PRIVATE_KEY"            -> jwtKey.privateB64,
         "CENTRAL_SECRET_KEY"         -> centralSecretKey,
       ) ++ authExtras)

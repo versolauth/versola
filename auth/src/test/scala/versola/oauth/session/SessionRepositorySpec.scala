@@ -198,6 +198,7 @@ trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
             sessionId            = atomicSessionId,
             publicSessionId      = atomicPublicId,
             accessToken          = AccessToken(Array.fill(16)(1.toByte)),
+            accessTokenExpiresAt = now.plusSeconds(3600),
             userId               = userId1,
             clientId             = clientId1,
             audience             = List.empty,
@@ -208,17 +209,143 @@ trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
             requestedClaims      = None,
             uiLocales            = None,
             nonce                = None,
-            previousRefreshToken = None,
             amr                  = Set(AuthMethodRef.pwd),
             authTime             = now,
             acr                  = None,
+            cnfJkt               = None,
           )
           _            <- env.repository.create(atomicSessionId, session1, 5.minutes, None, None)
-          _            <- env.repository.createRefreshToken(atomicTokenId, record)
+          _            <- env.repository.createRefreshToken(atomicTokenId, None, record, None)
           _            <- env.repository.invalidateByUserId(userId1)
           sessionAfter <- env.repository.findSession(atomicSessionId)
           tokenAfter   <- env.repository.findToken(atomicTokenId)
         yield assertTrue(sessionAfter.isEmpty, tokenAfter.isEmpty)
+      },
+      test("invalidateByUserId revokes a refresh token whose own session already expired") {
+        // A refresh token's expiry slides forward on every use while a session's does not,
+        // so a live token routinely outlives the session it was issued under. Force-logout
+        // has to reach that token too, not only ones under a still-active session.
+        for
+          now    <- Clock.instant
+          record  = RefreshTokenRecord(
+            sessionId            = atomicSessionId,
+            publicSessionId      = atomicPublicId,
+            accessToken          = AccessToken(Array.fill(32)(1.toByte)),
+            accessTokenExpiresAt = now.plusSeconds(3600),
+            userId               = userId1,
+            clientId             = clientId1,
+            audience             = List.empty,
+            authorizationDetails = None,
+            scope                = Set(ScopeToken("read")),
+            issuedAt             = now,
+            expiresAt            = now.plusSeconds(30.days.toSeconds),
+            requestedClaims      = None,
+            uiLocales            = None,
+            nonce                = None,
+            amr                  = Set(AuthMethodRef.pwd),
+            authTime             = now,
+            acr                  = None,
+            cnfJkt               = None,
+          )
+          _            <- env.repository.create(atomicSessionId, session1, 0.seconds, None, None)
+          _            <- env.repository.createRefreshToken(atomicTokenId, None, record, None)
+          _            <- TestClock.adjust(1.second)
+          sessionGone  <- env.repository.findSession(atomicSessionId)
+          tokenBefore  <- env.repository.findToken(atomicTokenId)
+          _            <- env.repository.invalidateByUserId(userId1)
+          tokenAfter   <- env.repository.findToken(atomicTokenId)
+        yield assertTrue(
+          sessionGone.isEmpty,
+          tokenBefore.isDefined,
+          tokenAfter.isEmpty,
+        )
+      },
+      test("findRefreshTokensByUserId finds a live token whose own session already expired") {
+        for
+          now    <- Clock.instant
+          record  = RefreshTokenRecord(
+            sessionId            = atomicSessionId,
+            publicSessionId      = atomicPublicId,
+            accessToken          = AccessToken(Array.fill(32)(1.toByte)),
+            accessTokenExpiresAt = now.plusSeconds(3600),
+            userId               = userId1,
+            clientId             = clientId1,
+            audience             = List.empty,
+            authorizationDetails = None,
+            scope                = Set(ScopeToken("read")),
+            issuedAt             = now,
+            expiresAt            = now.plusSeconds(30.days.toSeconds),
+            requestedClaims      = None,
+            uiLocales            = None,
+            nonce                = None,
+            amr                  = Set(AuthMethodRef.pwd),
+            authTime             = now,
+            acr                  = None,
+            cnfJkt               = None,
+          )
+          _           <- env.repository.create(atomicSessionId, session1, 0.seconds, None, None)
+          _           <- env.repository.createRefreshToken(atomicTokenId, None, record, None)
+          _           <- TestClock.adjust(1.second)
+          sessionGone <- env.repository.findSession(atomicSessionId)
+          found       <- env.repository.findRefreshTokensByUserId(userId1)
+        yield assertTrue(
+          sessionGone.isEmpty,
+          found.exists(_.accessToken.encoded == record.accessToken.encoded),
+        )
+      },
+      test("findRefreshTokensByUserId excludes another user's tokens, expired tokens, and rotated-away ones") {
+        for
+          now    <- Clock.instant
+          record  = RefreshTokenRecord(
+            sessionId            = atomicSessionId,
+            publicSessionId      = atomicPublicId,
+            accessToken          = AccessToken(Array.fill(32)(1.toByte)),
+            accessTokenExpiresAt = now.plusSeconds(3600),
+            userId               = userId1,
+            clientId             = clientId1,
+            audience             = List.empty,
+            authorizationDetails = None,
+            scope                = Set(ScopeToken("read")),
+            issuedAt             = now,
+            expiresAt            = now.plusSeconds(30.days.toSeconds),
+            requestedClaims      = None,
+            uiLocales            = None,
+            nonce                = None,
+            amr                  = Set(AuthMethodRef.pwd),
+            authTime             = now,
+            acr                  = None,
+            cnfJkt               = None,
+          )
+          liveToken        = MAC(Array.fill(32)(79.toByte))
+          otherUserToken   = MAC(Array.fill(32)(80.toByte))
+          expiredToken     = MAC(Array.fill(32)(81.toByte))
+          rotatedAwayToken = MAC(Array.fill(32)(82.toByte))
+          successorToken   = MAC(Array.fill(32)(83.toByte))
+          liveAccessToken       = AccessToken(Array.fill(32)(2.toByte))
+          expiredAccessToken    = AccessToken(Array.fill(32)(3.toByte))
+          rotatedAccessToken    = AccessToken(Array.fill(32)(4.toByte))
+          successorAccessToken  = AccessToken(Array.fill(32)(5.toByte))
+          _ <- env.repository.create(atomicSessionId, session1, ttl, None, None)
+          _ <- env.repository.createRefreshToken(liveToken, None, record.copy(accessToken = liveAccessToken), None)
+          _ <- env.repository.createRefreshToken(otherUserToken, None, record.copy(userId = userId2), None)
+          _ <- env.repository.createRefreshToken(
+            expiredToken,
+            None,
+            record.copy(accessToken = expiredAccessToken, expiresAt = now.plusSeconds(1)),
+            None,
+          )
+          _ <- env.repository.createRefreshToken(rotatedAwayToken, None, record.copy(accessToken = rotatedAccessToken), None)
+          _ <- env.repository.createRefreshToken(
+            successorToken,
+            Some(rotatedAwayToken),
+            record.copy(accessToken = successorAccessToken),
+            None,
+          )
+          _     <- TestClock.adjust(2.seconds)
+          found <- env.repository.findRefreshTokensByUserId(userId1)
+        yield assertTrue(
+          found.map(_.accessToken.encoded).toSet == Set(liveAccessToken.encoded, successorAccessToken.encoded),
+        )
       },
       test("invalidate returns the deleted session and removes it") {
         for
@@ -245,6 +372,7 @@ trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
             sessionId            = atomicSessionId,
             publicSessionId      = atomicPublicId,
             accessToken          = AccessToken(Array.fill(16)(1.toByte)),
+            accessTokenExpiresAt = now.plusSeconds(3600),
             userId               = userId1,
             clientId             = clientId1,
             audience             = List.empty,
@@ -255,13 +383,13 @@ trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
             requestedClaims      = None,
             uiLocales            = None,
             nonce                = None,
-            previousRefreshToken = None,
             amr                  = Set(AuthMethodRef.pwd),
             authTime             = now,
             acr                  = None,
+            cnfJkt               = None,
           )
           _          <- env.repository.create(atomicSessionId, session1, 5.minutes, None, None)
-          _          <- env.repository.createRefreshToken(atomicTokenId, record)
+          _          <- env.repository.createRefreshToken(atomicTokenId, None, record, None)
           _          <- env.repository.invalidate(atomicSessionId)
           tokenAfter <- env.repository.findToken(atomicTokenId)
         yield assertTrue(tokenAfter.isEmpty)
@@ -308,6 +436,7 @@ trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
             sessionId            = atomicSessionId,
             publicSessionId      = atomicPublicId,
             accessToken          = AccessToken(Array.fill(16)(1.toByte)),
+            accessTokenExpiresAt = now.plusSeconds(3600),
             userId               = userId1,
             clientId             = clientId1,
             audience             = List.empty,
@@ -318,13 +447,13 @@ trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
             requestedClaims      = None,
             uiLocales            = None,
             nonce                = None,
-            previousRefreshToken = None,
             amr                  = Set(AuthMethodRef.pwd),
             authTime             = now,
             acr                  = None,
+            cnfJkt               = None,
           )
           _          <- env.repository.create(atomicSessionId, session1.copy(publicId = atomicPublicId), 5.minutes, None, None)
-          _          <- env.repository.createRefreshToken(atomicTokenId, record)
+          _          <- env.repository.createRefreshToken(atomicTokenId, None, record, None)
           _          <- env.repository.invalidateByPublicId(atomicPublicId)
           tokenAfter <- env.repository.findToken(atomicTokenId)
         yield assertTrue(tokenAfter.isEmpty)

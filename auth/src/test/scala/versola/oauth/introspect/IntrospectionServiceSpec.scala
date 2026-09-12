@@ -62,6 +62,7 @@ object IntrospectionServiceSpec extends UnitSpecBase:
     sessionId = sessionId1,
     publicSessionId = publicSessionId1,
     accessToken = accessToken1,
+    accessTokenExpiresAt = now.plusSeconds(3600),
     userId = userId1,
     clientId = clientId1,
     audience = List.empty,
@@ -72,10 +73,10 @@ object IntrospectionServiceSpec extends UnitSpecBase:
     requestedClaims = None,
     uiLocales = None,
     nonce = None,
-    previousRefreshToken = None,
     amr = Set(AuthMethodRef.pwd),
     authTime = now,
     acr = None,
+    cnfJkt = None,
   )
 
   def accessTokenPayload(now: Instant, audience: Vector[ResourceUri] = Vector.empty) = AccessTokenPayload(
@@ -91,6 +92,7 @@ object IntrospectionServiceSpec extends UnitSpecBase:
     id = accessToken1,
     authorizationDetails = None,
     sessionId = None,
+    confirmation = None,
   )
 
   val paymentDetail = AuthorizationDetail.parse(

@@ -5,6 +5,7 @@ import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm, JWSHeader}
 import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{AuthMethodRef, AuthorizationDetail, ResourceUri, ScopeToken}
+import versola.oauth.dpop.DpopService
 import versola.oauth.jwks.JwksService
 import versola.oauth.model.{AccessToken, AuthorizationCode, CodeVerifier, RefreshToken}
 import versola.oauth.token.model.{ClientCredentialsRequest, CodeExchangeRequest, IssuedTokens, RefreshTokenRequest, TokenEndpointError, TokenErrorResponse, TokenRequest, TokenResponse}
@@ -23,7 +24,20 @@ import java.time.Instant
 import java.util.Date
 
 object TokenEndpointController extends Controller:
-  type Env = Tracing & OAuthTokenService & OAuthConfigurationService & UserInfoService & JwksService & CoreConfig
+  type Env = Tracing & OAuthTokenService & OAuthConfigurationService & UserInfoService & JwksService & DpopService & CoreConfig
+
+  private val DpopHeader = "DPoP"
+  private val DpopNonceHeader = "DPoP-Nonce"
+
+  /** RFC 9449 §4.3 compares a proof's `htu` against the endpoint's own URI. It is derived from
+    * the configured issuer rather than from the inbound request, so a forwarded host header
+    * can't be used to make a proof minted for some other origin validate here. */
+  private def tokenEndpointUri(config: CoreConfig): String =
+    s"${config.jwt.issuer.stripSuffix("/")}/token"
+
+  /** draft-ietf-httpapi-idempotency-key-header. Only honoured for `refresh_token`: that is
+    * the grant where losing a response costs the client its session rather than one request. */
+  private val IdempotencyKeyHeader = "Idempotency-Key"
 
   def routes: Routes[Env, Throwable] = Routes(
     tokenEndpoint,
@@ -38,29 +52,71 @@ object TokenEndpointController extends Controller:
         form <- request.body.asURLEncodedForm.orElseFail(TokenEndpointError.InvalidRequest)
         tokenRequest <- parseRequest(form)
         credentials <- request.extractCredentials(form).orElseFail(TokenEndpointError.InvalidClient)
+        dpopJkt <- verifyDpopProof(request, config)
         issuedTokens <- tokenRequest match
           case codeExchangeRequest: CodeExchangeRequest =>
-            oauthTokenService.exchangeAuthorizationCode(codeExchangeRequest, credentials)
+            oauthTokenService.exchangeAuthorizationCode(codeExchangeRequest, credentials, dpopJkt)
           case refreshTokenRequest: RefreshTokenRequest =>
-            oauthTokenService.refreshAccessToken(refreshTokenRequest, credentials)
+            oauthTokenService.refreshAccessToken(
+                refreshTokenRequest,
+                credentials,
+                dpopJkt,
+                request.headers.get(IdempotencyKeyHeader),
+            )
           case clientCredentialsRequest: ClientCredentialsRequest =>
-            oauthTokenService.clientCredentials(clientCredentialsRequest, credentials)
+            oauthTokenService.clientCredentials(clientCredentialsRequest, credentials, dpopJkt)
         response <- toTokenResponse(issuedTokens, config, signingKey)
       yield Response.json(response.toJson))
         .catchAll {
           case error: TokenEndpointError =>
-            Observability.setError(error.error, error.errorDescription).as:
+            Observability.setError(error.error, error.logDescription).as:
               val errorResponse = TokenErrorResponse.from(error)
-              Response
+              val response = Response
                 .json(errorResponse.toJson)
                 .status(error.status)
                 .addHeader(Header.CacheControl.NoStore)
                 .addHeader(Header.Pragma.NoCache)
+              error match
+                case TokenEndpointError.UseDpopNonce(nonce) =>
+                  response.addHeader(Header.Custom(DpopNonceHeader, nonce))
+                case _ => response
 
           case error: Throwable =>
             ZIO.fail(error)
         }
     }
+
+  /** RFC 9449 §5: DPoP is opt-in per request here -- a request without a proof still yields
+    * bearer tokens. Whether a given client is *required* to use DPoP is a separate, per-client
+    * policy decision that isn't wired up yet.
+    */
+  private def verifyDpopProof(
+      request: Request,
+      config: CoreConfig,
+  ): ZIO[DpopService, Throwable | TokenEndpointError, Option[String]] =
+    request.headers.toList.filter(_.headerName.equalsIgnoreCase(DpopHeader)).map(_.renderedValue) match
+      case Nil =>
+        ZIO.none
+      case proofs if proofs.size != 1 =>
+        ZIO.fail(TokenEndpointError.InvalidDpopProof("request must contain exactly one DPoP header"))
+      case proof :: Nil =>
+        ZIO.serviceWithZIO[DpopService](
+          _.verify(
+            token = proof,
+            method = Method.POST,
+            uri = tokenEndpointUri(config),
+            requireNonce = false,
+          ),
+        )
+          .mapBoth(
+            {
+              case DpopService.Error.InvalidProof(reason) => TokenEndpointError.InvalidDpopProof(reason.toString)
+              case DpopService.Error.Replayed => TokenEndpointError.InvalidDpopProof("proof has already been used")
+              case DpopService.Error.NonceRequired(nonce) => TokenEndpointError.UseDpopNonce(nonce)
+              case error: Throwable => error
+            },
+            verified => Some(verified.jkt),
+          )
 
   private def toTokenResponse(
       tokens: IssuedTokens,
@@ -79,6 +135,7 @@ object TokenEndpointController extends Controller:
         "tenant_id" -> Json.Str(tokens.tenantId),
       ) ++
         tokens.sessionId.map(sid => "sid" -> Json.Str(sid)) ++
+        tokens.cnfJkt.map(jkt => "cnf" -> Json.Obj("jkt" -> Json.Str(jkt))) ++
         tokens.requestedClaims.map(rc => "requested_claims" -> rc.toJsonAST.toOption.get) ++
         authorizationDetailsClaim(tokens).map("authorization_details" -> _) ++
         AuthMethodRef.idTokenClaims(tokens.amr, tokens.authTime, tokens.acr)
@@ -105,7 +162,8 @@ object TokenEndpointController extends Controller:
       idToken <- generateIdToken(tokens, config, signingKey, serializedAT)
     yield TokenResponse(
       accessToken = serializedAT,
-      tokenType = "Bearer",
+      // RFC 9449 §5: a bound token is presented with the `DPoP` scheme, not `Bearer`.
+      tokenType = if tokens.cnfJkt.isDefined then "DPoP" else "Bearer",
       expiresIn = tokens.accessTokenTtl.toSeconds,
       refreshToken = tokens.refreshToken.map(Base64.urlEncode),
       scope = Option.when(tokens.scope.nonEmpty)(tokens.scope.mkString(" ")),

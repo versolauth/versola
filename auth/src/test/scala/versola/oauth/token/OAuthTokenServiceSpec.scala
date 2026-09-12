@@ -7,7 +7,7 @@ import versola.oauth.client.model.{AuthMethodRef, AuthorizationDetail, Authoriza
 import versola.oauth.model.{AccessToken, AuthorizationCode, AuthorizationCodeRecord, CodeChallenge, CodeChallengeMethod, CodeVerifier, RefreshToken}
 import versola.oauth.revoke.AccessTokenRevocationService
 import versola.oauth.session.SessionRepository
-import versola.oauth.session.model.{PublicSessionId, RefreshAlreadyExchanged, RefreshTokenRecord, SessionId}
+import versola.oauth.session.model.{PublicSessionId, RefreshAlreadyExchanged, RefreshTokenRecord, RevokedFamily, SessionId}
 import versola.oauth.token.model.{ClientCredentialsRequest, CodeExchangeRequest, IssuedTokens, RefreshTokenRequest, TokenEndpointError}
 import versola.oauth.client.model.Claim
 import versola.oauth.userinfo.model.{ClaimRequest, RequestedClaims}
@@ -48,8 +48,12 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
   val authCode1 = AuthorizationCode(Array.fill(16)(1.toByte))
   val codeMac1 = MAC(Array.fill(32)(2.toByte))
   val accessToken1 = AccessToken(Array.fill(32)(3.toByte))
+  val accessToken2 = AccessToken(Array.fill(32)(4.toByte))
   val refreshToken1 = RefreshToken(Array.fill(32)(4.toByte))
   val refreshTokenMac1 = MAC(Array.fill(32)(5.toByte))
+  val refreshToken2 = RefreshToken(Array.fill(32)(9.toByte))
+  val refreshTokenMac2 = MAC(Array.fill(32)(10.toByte))
+  val refreshTokenMac3 = MAC(Array.fill(32)(11.toByte))
 
   val clientSecret1 = Secret(Array.fill(32)(6.toByte))
 
@@ -141,6 +145,31 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
     authorizationDetails = None,
   )
 
+  val jkt1 = "0ZcOCORZNYy-DWpqq30jZyJGHTN0d2HglBV3uiguA4I"
+  val jkt2 = "R0NfNEZOWnR5LURXcHFxMzBqWnlKR0hUTjBkMkhnbEI"
+
+  /** A refresh token record bound to `cnfJkt`, or unbound when it is `None`. */
+  def boundRecord(now: Instant, cnfJkt: Option[String]) = RefreshTokenRecord(
+    sessionId = sessionId1,
+    publicSessionId = publicSessionId1,
+    accessToken = accessToken1,
+    accessTokenExpiresAt = now.plus(testClient.accessTokenTtl),
+    userId = userId1,
+    clientId = clientId1,
+    audience = List.empty,
+    authorizationDetails = None,
+    scope = scope1,
+    issuedAt = now.minusSeconds(3600),
+    expiresAt = now.plusSeconds(testClient.refreshTokenTtl.toSeconds),
+    requestedClaims = None,
+    uiLocales = None,
+    nonce = None,
+    amr = amr1,
+    authTime = authTime1,
+    acr = None,
+    cnfJkt = cnfJkt,
+  )
+
   /** Runs a refresh with the given granted/requested authorization details. */
   def refresh(
       env: Env,
@@ -154,6 +183,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
         sessionId = sessionId1,
         publicSessionId = publicSessionId1,
         accessToken = accessToken1,
+        accessTokenExpiresAt = now.plus(testClient.accessTokenTtl),
         userId = userId1,
         clientId = clientId1,
         audience = Nil,
@@ -164,10 +194,10 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
         requestedClaims = None,
         uiLocales = None,
         nonce = None,
-        previousRefreshToken = None,
         amr = amr1,
         authTime = authTime1,
         acr = None,
+        cnfJkt = None,
       )
 
       _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
@@ -181,6 +211,8 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
       result <- env.service.refreshAccessToken(
         RefreshTokenRequest(refreshToken1, None, None, requested),
         ClientIdWithSecret(clientId1, Some(clientSecret1)),
+        None,
+        None,
       ).either
     yield result
 
@@ -250,7 +282,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           )
           credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
 
-          result <- env.service.exchangeAuthorizationCode(request, credentials)
+          result <- env.service.exchangeAuthorizationCode(request, credentials, None)
           createCalls = env.tokenRepo.createRefreshToken.calls
         yield assertTrue(
           result.accessToken == accessToken1,
@@ -263,7 +295,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           result.audience == List(ResourceUri("https://api.example.com"), ResourceUri("resource://edge")),
           result.amr == amr1,
           result.authTime.contains(authTime1),
-          createCalls.head._2.audience == List(ResourceUri("https://api.example.com"), ResourceUri("resource://edge")),
+          createCalls.head._3.audience == List(ResourceUri("https://api.example.com"), ResourceUri("resource://edge")),
           env.clientService.getResourcesForClient.calls.isEmpty,
           env.clientService.findResource.calls.isEmpty,
           env.clientService.findResourceById.calls.isEmpty,
@@ -303,7 +335,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           request = CodeExchangeRequest(authCode1, redirectUri1, codeVerifier1)
           credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
 
-          result <- env.service.exchangeAuthorizationCode(request, credentials)
+          result <- env.service.exchangeAuthorizationCode(request, credentials, None)
         yield assertTrue(
           result.accessToken == accessToken1,
           result.refreshToken.isEmpty,
@@ -318,7 +350,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           request = CodeExchangeRequest(authCode1, redirectUri1, codeVerifier1)
           credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
 
-          result <- env.service.exchangeAuthorizationCode(request, credentials).either
+          result <- env.service.exchangeAuthorizationCode(request, credentials, None).either
         yield assertTrue(
           result == Left(TokenEndpointError.InvalidClient),
         )
@@ -333,9 +365,9 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           request = CodeExchangeRequest(authCode1, redirectUri1, codeVerifier1)
           credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
 
-          result <- env.service.exchangeAuthorizationCode(request, credentials).either
+          result <- env.service.exchangeAuthorizationCode(request, credentials, None).either
         yield assertTrue(
-          result == Left(TokenEndpointError.InvalidGrant),
+          result == Left(TokenEndpointError.InvalidGrant.CodeNotFound),
         )
       },
       test("fail with InvalidGrant when redirect_uri doesn't match") {
@@ -369,9 +401,9 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           request = CodeExchangeRequest(authCode1, wrongRedirectUri, codeVerifier1)
           credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
 
-          result <- env.service.exchangeAuthorizationCode(request, credentials).either
+          result <- env.service.exchangeAuthorizationCode(request, credentials, None).either
         yield assertTrue(
-          result == Left(TokenEndpointError.InvalidGrant),
+          result == Left(TokenEndpointError.InvalidGrant.RedirectUriMismatch),
         )
       },
       test("fail with InvalidGrant and revoke the previously issued token when code is reused (double-spend)") {
@@ -408,14 +440,14 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
 
           now <- Clock.instant
-          result <- env.service.exchangeAuthorizationCode(request, credentials).either
+          result <- env.service.exchangeAuthorizationCode(request, credentials, None).either
         yield assertTrue(
-          result == Left(TokenEndpointError.InvalidGrant),
+          result == Left(TokenEndpointError.InvalidGrant.CodeReplayed),
           // The replayed code's token is not in hand, so its lifetime is bounded by the
           // client's access token TTL rather than read from the token itself.
           env.accessTokenRevocationService.revoke.calls ==
-            List((testClient, accessToken1, userId1.toString, now.plus(testClient.accessTokenTtl))),
-          env.tokenRepo.deleteByAccessToken.calls == List(accessToken1),
+            List((testClient, NonEmptyChunk(accessToken1), userId1.toString, now.plus(testClient.accessTokenTtl))),
+          env.tokenRepo.deleteByAccessToken.calls == List((sessionId1, accessToken1)),
           env.tokenRepo.createRefreshToken.calls.isEmpty,
         )
       },
@@ -453,7 +485,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           request = CodeExchangeRequest(authCode1, redirectUri1, codeVerifier1)
           credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
 
-          result <- env.service.exchangeAuthorizationCode(request, credentials)
+          result <- env.service.exchangeAuthorizationCode(request, credentials, None)
         yield assertTrue(
           result.accessToken == accessToken1,
           result.accessToken != freshAccessToken,
@@ -493,7 +525,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           request = CodeExchangeRequest(authCode1, redirectUri1, codeVerifier1)
           credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
 
-          result <- env.service.exchangeAuthorizationCode(request, credentials)
+          result <- env.service.exchangeAuthorizationCode(request, credentials, None)
         yield assertTrue(
           result.tenantId.contains("default"),
           result.roles.isEmpty,
@@ -534,7 +566,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           request = CodeExchangeRequest(authCode1, redirectUri1, codeVerifier1)
           credentials = ClientIdWithSecret(OAuthTokenService.centralAdminClientId, Some(clientSecret1))
 
-          result <- env.service.exchangeAuthorizationCode(request, credentials)
+          result <- env.service.exchangeAuthorizationCode(request, credentials, None)
         yield assertTrue(
           env.userRepo.findRolesByUserAndTenant.calls.nonEmpty,
           result.tenantId.contains("default"),
@@ -552,6 +584,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             sessionId = sessionId1,
             publicSessionId = publicSessionId1,
             accessToken = accessToken1,
+            accessTokenExpiresAt = now.plus(testClient.accessTokenTtl),
             userId = userId1,
             clientId = clientId1,
             audience = List(ResourceUri("resource://edge"), ResourceUri("https://api.example.com")),
@@ -562,10 +595,10 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             requestedClaims = Some(requestedClaims1),
             uiLocales = Some(uiLocales1),
             nonce = None,
-            previousRefreshToken = None,
             amr = amr1,
             authTime = authTime1,
             acr = None,
+            cnfJkt = None,
           )
 
           newRefreshToken = RefreshToken(Array.fill(32)(7.toByte))
@@ -588,7 +621,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           )
           credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
 
-          result <- env.service.refreshAccessToken(request, credentials)
+          result <- env.service.refreshAccessToken(request, credentials, None, None)
 
           createCalls = env.tokenRepo.createRefreshToken.calls
         yield assertTrue(
@@ -600,8 +633,8 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           result.amr == amr1,
           result.authTime.contains(authTime1),
           createCalls.length == 1,
-          createCalls.head._2.previousRefreshToken.exists(mac => java.util.Arrays.equals(mac, refreshTokenMac1)),
-          createCalls.head._2.audience == List(ResourceUri("resource://edge"), ResourceUri("https://api.example.com")),
+          createCalls.head._2.exists(mac => java.util.Arrays.equals(mac, refreshTokenMac1)),
+          createCalls.head._3.audience == List(ResourceUri("resource://edge"), ResourceUri("https://api.example.com")),
         )
       },
       test("successfully refresh with reduced scope") {
@@ -614,6 +647,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             sessionId = sessionId1,
             publicSessionId = publicSessionId1,
             accessToken = accessToken1,
+            accessTokenExpiresAt = now.plus(testClient.accessTokenTtl),
             userId = userId1,
             clientId = clientId1,
             audience = List.empty,
@@ -624,10 +658,10 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             requestedClaims = None,
             uiLocales = None,
             nonce = None,
-            previousRefreshToken = None,
             amr = amr1,
             authTime = authTime1,
             acr = None,
+            cnfJkt = None,
           )
 
           newRefreshToken = RefreshToken(Array.fill(32)(9.toByte))
@@ -645,12 +679,12 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           request = RefreshTokenRequest(refreshToken1, Some(reducedScope), None, None)
           credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
 
-          result <- env.service.refreshAccessToken(request, credentials)
+          result <- env.service.refreshAccessToken(request, credentials, None, None)
 
           createCalls = env.tokenRepo.createRefreshToken.calls
         yield assertTrue(
           result.scope == reducedScope,
-          createCalls.head._2.scope == reducedScope,
+          createCalls.head._3.scope == reducedScope,
         )
       },
       test("fail with InvalidClient when client verification fails") {
@@ -661,7 +695,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           request = RefreshTokenRequest(refreshToken1, None, None, None)
           credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
 
-          result <- env.service.refreshAccessToken(request, credentials).either
+          result <- env.service.refreshAccessToken(request, credentials, None, None).either
         yield assertTrue(
           result == Left(TokenEndpointError.InvalidClient),
         )
@@ -672,13 +706,192 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
           _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
           _ <- env.tokenRepo.findToken.succeedsWith(None)
+          _ <- env.tokenRepo.revokeFamily.succeedsWith(None)
 
           request = RefreshTokenRequest(refreshToken1, None, None, None)
           credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
 
-          result <- env.service.refreshAccessToken(request, credentials).either
+          result <- env.service.refreshAccessToken(request, credentials, None, None).either
         yield assertTrue(
-          result == Left(TokenEndpointError.InvalidGrant),
+          result == Left(TokenEndpointError.InvalidGrant.RefreshTokenNotFound),
+          env.accessTokenRevocationService.revoke.calls.isEmpty,
+        )
+      },
+      test("fail with InvalidGrant and revoke the whole family when a rotated-away refresh token is replayed") {
+        val env = new Env
+        for
+          now <- Clock.instant
+          _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
+          _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
+          _ <- env.tokenRepo.findToken.succeedsWith(None)
+          _ <- env.tokenRepo.revokeFamily.succeedsWith(Some(RevokedFamily(userId1, List(accessToken1, accessToken2), Some(now.plusSeconds(1800)))))
+          _ <- env.accessTokenRevocationService.revoke.succeedsWith(())
+
+          request = RefreshTokenRequest(refreshToken1, None, None, None)
+          credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
+
+          result <- env.service.refreshAccessToken(request, credentials, None, None).either
+        yield assertTrue(
+          result == Left(TokenEndpointError.InvalidGrant.RefreshTokenReplayed),
+          env.tokenRepo.revokeFamily.calls ==
+            List((refreshTokenMac1, clientId1)),
+          // Every access token the family issued goes, not just the tip's, pushed under the
+          // furthest of their own recorded expiries -- not the client's current TTL, which the
+          // repository already filtered by and is not consulted again here.
+          env.accessTokenRevocationService.revoke.calls == List(
+            (testClient, NonEmptyChunk(accessToken1, accessToken2), userId1.toString, now.plusSeconds(1800)),
+          ),
+        )
+      },
+      test("continue the chain from the tip when a rotated-away token is retried under its key") {
+        val env = new Env
+        for
+          now <- Clock.instant
+
+          tipRecord = RefreshTokenRecord(
+            sessionId = sessionId1,
+            publicSessionId = publicSessionId1,
+            accessToken = accessToken1,
+            accessTokenExpiresAt = now.plus(testClient.accessTokenTtl),
+            userId = userId1,
+            clientId = clientId1,
+            audience = List.empty,
+            authorizationDetails = None,
+            scope = scope1,
+            issuedAt = now.minusSeconds(60),
+            expiresAt = now.plusSeconds(testClient.refreshTokenTtl.toSeconds),
+            requestedClaims = Some(requestedClaims1),
+            uiLocales = Some(uiLocales1),
+            nonce = None,
+            amr = amr1,
+            authTime = authTime1,
+            acr = None,
+                        cnfJkt = None,
+          )
+
+          _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
+          _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
+          _ <- env.tokenRepo.findToken.succeedsWith(None)
+          _ <- env.tokenRepo.findIdempotentRetry.succeedsWith(Some((refreshTokenMac2, tipRecord)))
+          _ <- env.propertyGenerator.nextAccessToken.succeedsWith(accessToken2)
+          _ <- env.propertyGenerator.nextRefreshToken.succeedsWith(refreshToken2)
+          _ <- env.tokenRepo.createRefreshToken.succeedsWith(())
+          _ <- env.userRepo.findRolesByUserAndTenant.succeedsWith(List.empty)
+
+          request = RefreshTokenRequest(refreshToken1, None, None, None)
+          credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
+
+          result <- env.service.refreshAccessToken(request, credentials, None, Some("key-1")).either
+
+          createCalls = env.tokenRepo.createRefreshToken.calls
+        yield assertTrue(
+          result.isRight,
+          // A fresh token, not the one the client missed: that was never stored, so the
+          // rotation continues from the tip rather than from what was presented.
+          createCalls.head._2.exists(mac => java.util.Arrays.equals(mac, refreshTokenMac2)),
+          // Nothing here looks like a leak, so the family stands.
+          env.tokenRepo.revokeFamily.calls.isEmpty,
+          env.accessTokenRevocationService.revoke.calls.isEmpty,
+        )
+      },
+      test("revoke the family when a rotated-away token is presented without a key") {
+        val env = new Env
+        for
+          _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
+          _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
+          _ <- env.tokenRepo.findToken.succeedsWith(None)
+          _ <- env.tokenRepo.revokeFamily.succeedsWith(Some(RevokedFamily(userId1, List(accessToken1), Some(Instant.EPOCH))))
+          _ <- env.accessTokenRevocationService.revoke.succeedsWith(())
+
+          request = RefreshTokenRequest(refreshToken1, None, None, None)
+          credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
+
+          result <- env.service.refreshAccessToken(request, credentials, None, None).either
+
+          retries = env.tokenRepo.findIdempotentRetry.calls
+        yield assertTrue(
+          // Reuse detection is untouched for everyone who does not present a key.
+          result == Left(TokenEndpointError.InvalidGrant.RefreshTokenReplayed),
+          retries.isEmpty,
+        )
+      },
+      test("revoke the family when the key no longer names the family's last exchange") {
+        val env = new Env
+        for
+          _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
+          _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
+          _ <- env.tokenRepo.findToken.succeedsWith(None)
+          // The chain moved on under a different key, so this is reuse of a retired token.
+          _ <- env.tokenRepo.findIdempotentRetry.succeedsWith(None)
+          _ <- env.tokenRepo.revokeFamily.succeedsWith(Some(RevokedFamily(userId1, List(accessToken1), Some(Instant.EPOCH))))
+          _ <- env.accessTokenRevocationService.revoke.succeedsWith(())
+
+          request = RefreshTokenRequest(refreshToken1, None, None, None)
+          credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
+
+          result <- env.service.refreshAccessToken(request, credentials, None, Some("key-1")).either
+        yield assertTrue(result == Left(TokenEndpointError.InvalidGrant.RefreshTokenReplayed))
+      },
+      test("revoke the family when a retry recovered via resolveRetry loses the race to a chain that moved on") {
+        val env = new Env
+        for
+          now <- Clock.instant
+
+          tipRecord = RefreshTokenRecord(
+            sessionId = sessionId1,
+            publicSessionId = publicSessionId1,
+            accessToken = accessToken1,
+            accessTokenExpiresAt = now.plus(testClient.accessTokenTtl),
+            userId = userId1,
+            clientId = clientId1,
+            audience = List.empty,
+            authorizationDetails = None,
+            scope = scope1,
+            issuedAt = now.minusSeconds(60),
+            expiresAt = now.plusSeconds(testClient.refreshTokenTtl.toSeconds),
+            requestedClaims = Some(requestedClaims1),
+            uiLocales = Some(uiLocales1),
+            nonce = None,
+            amr = amr1,
+            authTime = authTime1,
+            acr = None,
+                        cnfJkt = None,
+          )
+
+          _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
+          _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
+          _ <- env.tokenRepo.findToken.succeedsWith(None)
+          // The tip `resolveRetry` recovers is gone by the time this request tries to rotate
+          // it, and the exchange that took it did not carry this key -- so the chain has
+          // genuinely moved on rather than this request racing another copy of itself.
+          _ <- env.tokenRepo.findIdempotentRetry.returnsZIOOnCall:
+            case 1 => ZIO.succeed(Some((refreshTokenMac2, tipRecord)))
+            case _ => ZIO.none
+          _ <- env.propertyGenerator.nextAccessToken.succeedsWith(accessToken2)
+          _ <- env.propertyGenerator.nextRefreshToken.succeedsWith(refreshToken2)
+          _ <- env.tokenRepo.createRefreshToken.failsWith(RefreshAlreadyExchanged())
+          _ <- env.tokenRepo.revokeFamily.succeedsWith(Some(RevokedFamily(userId1, List(accessToken1), Some(now.plusSeconds(1800)))))
+          _ <- env.accessTokenRevocationService.revoke.succeedsWith(())
+
+          request = RefreshTokenRequest(refreshToken1, None, None, None)
+          credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
+
+          result <- env.service.refreshAccessToken(request, credentials, None, Some("key-1")).either
+
+          retries = env.tokenRepo.findIdempotentRetry.calls
+        yield assertTrue(
+          // Reaching the tip through `resolveRetry` does not exempt the loss from being
+          // re-checked against the key, but nothing here answers for it, so this is a loss to
+          // someone else's proven competing use of that tip rather than to another copy of
+          // this same request -- and the family goes.
+          result == Left(TokenEndpointError.InvalidGrant.RefreshTokenReplayed),
+          env.tokenRepo.revokeFamily.calls.nonEmpty,
+          env.accessTokenRevocationService.revoke.calls.nonEmpty,
+          // The re-check asks about the tip that was just lost, not the token the client
+          // presented -- that one's retirement row only ever records the first hop.
+          retries.size == 2,
+          retries.headOption.exists(call => java.util.Arrays.equals(call._1, refreshTokenMac1)),
+          retries.lift(1).exists(call => java.util.Arrays.equals(call._1, refreshTokenMac2)),
         )
       },
       test("fail with InvalidScope when requested scope was never granted") {
@@ -691,6 +904,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             sessionId = sessionId1,
             publicSessionId = publicSessionId1,
             accessToken = accessToken1,
+            accessTokenExpiresAt = now.plus(testClient.accessTokenTtl),
             userId = userId1,
             clientId = clientId1,
             audience = List.empty,
@@ -701,10 +915,10 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             requestedClaims = None,
             uiLocales = None,
             nonce = None,
-            previousRefreshToken = None,
             amr = amr1,
             authTime = authTime1,
             acr = None,
+            cnfJkt = None,
           )
 
           _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
@@ -714,7 +928,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           request = RefreshTokenRequest(refreshToken1, Some(invalidScope), None, None)
           credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
 
-          result <- env.service.refreshAccessToken(request, credentials).either
+          result <- env.service.refreshAccessToken(request, credentials, None, None).either
         yield assertTrue(
           result == Left(TokenEndpointError.InvalidScope),
         )
@@ -732,6 +946,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             sessionId = sessionId1,
             publicSessionId = publicSessionId1,
             accessToken = accessToken1,
+            accessTokenExpiresAt = now.plus(testClient.accessTokenTtl),
             userId = userId1,
             clientId = clientId1,
             audience = List.empty,
@@ -742,10 +957,10 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             requestedClaims = None,
             uiLocales = None,
             nonce = None,
-            previousRefreshToken = None,
             amr = amr1,
             authTime = authTime1,
             acr = None,
+            cnfJkt = None,
           )
 
           _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
@@ -755,14 +970,14 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           request = RefreshTokenRequest(refreshToken1, Some(widenedScope), None, None)
           credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
 
-          result <- env.service.refreshAccessToken(request, credentials).either
+          result <- env.service.refreshAccessToken(request, credentials, None, None).either
         yield assertTrue(
           // `write` is registered for the client, so only the grant can reject it
           widenedScope.subsetOf(testClient.scope),
           result == Left(TokenEndpointError.InvalidScope),
         )
       },
-      test("fail with InvalidGrant when race condition occurs (create returns RefreshAlreadyExchanged)") {
+      test("fail with InvalidGrant and revoke the family when the rotation loses a concurrent race") {
         val env = new Env
         for
           now <- Clock.instant
@@ -771,6 +986,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             sessionId = sessionId1,
             publicSessionId = publicSessionId1,
             accessToken = accessToken1,
+            accessTokenExpiresAt = now.plus(testClient.accessTokenTtl),
             userId = userId1,
             clientId = clientId1,
             audience = List.empty,
@@ -781,29 +997,277 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             requestedClaims = Some(requestedClaims1),
             uiLocales = Some(uiLocales1),
             nonce = None,
-            previousRefreshToken = None,
             amr = amr1,
             authTime = authTime1,
             acr = None,
+                        cnfJkt = None,
           )
 
           newRefreshToken = RefreshToken(Array.fill(32)(7.toByte))
-          newRefreshTokenMac = MAC(Array.fill(32)(8.toByte))
 
           _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
           _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
-          _ <- env.securityService.mac.succeedsWith(newRefreshTokenMac)
           _ <- env.tokenRepo.findToken.succeedsWith(Some(tokenRecord))
           _ <- env.propertyGenerator.nextAccessToken.succeedsWith(accessToken1)
           _ <- env.propertyGenerator.nextRefreshToken.succeedsWith(newRefreshToken)
           _ <- env.tokenRepo.createRefreshToken.failsWith(RefreshAlreadyExchanged())
+          _ <- env.tokenRepo.revokeFamily.succeedsWith(Some(RevokedFamily(userId1, List(accessToken1), Some(now.plusSeconds(1800)))))
+          _ <- env.accessTokenRevocationService.revoke.succeedsWith(())
 
           request = RefreshTokenRequest(refreshToken1, None, None, None)
           credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
 
-          result <- env.service.refreshAccessToken(request, credentials).either
+          result <- env.service.refreshAccessToken(request, credentials, None, None).either
         yield assertTrue(
-          result == Left(TokenEndpointError.InvalidGrant),
+          // Losing the race means the same token was presented twice at once: the winner's
+          // successor is live, and the leak is as proven as a sequential replay.
+          result == Left(TokenEndpointError.InvalidGrant.RefreshTokenReplayed),
+          env.tokenRepo.revokeFamily.calls ==
+            List((refreshTokenMac1, clientId1)),
+          env.accessTokenRevocationService.revoke.calls ==
+            List((testClient, NonEmptyChunk(accessToken1), userId1.toString, now.plusSeconds(1800))),
+        )
+      },
+      test("fail with InvalidGrant when the rotation loses a race and the family is already gone") {
+        val env = new Env
+        for
+          now <- Clock.instant
+
+          tokenRecord = RefreshTokenRecord(
+            sessionId = sessionId1,
+            publicSessionId = publicSessionId1,
+            accessToken = accessToken1,
+            accessTokenExpiresAt = now.plus(testClient.accessTokenTtl),
+            userId = userId1,
+            clientId = clientId1,
+            audience = List.empty,
+            authorizationDetails = None,
+            scope = scope1,
+            issuedAt = now.minusSeconds(3600),
+            expiresAt = now.plusSeconds(testClient.refreshTokenTtl.toSeconds),
+            requestedClaims = Some(requestedClaims1),
+            uiLocales = Some(uiLocales1),
+            nonce = None,
+            amr = amr1,
+            authTime = authTime1,
+            acr = None,
+            cnfJkt = None,
+          )
+
+          newRefreshToken = RefreshToken(Array.fill(32)(7.toByte))
+
+          _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
+          _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
+          _ <- env.tokenRepo.findToken.succeedsWith(Some(tokenRecord))
+          _ <- env.propertyGenerator.nextAccessToken.succeedsWith(accessToken1)
+          _ <- env.propertyGenerator.nextRefreshToken.succeedsWith(newRefreshToken)
+          _ <- env.tokenRepo.createRefreshToken.failsWith(RefreshAlreadyExchanged())
+          _ <- env.tokenRepo.revokeFamily.succeedsWith(None)
+
+          request = RefreshTokenRequest(refreshToken1, None, None, None)
+          credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
+
+          result <- env.service.refreshAccessToken(request, credentials, None, None).either
+        yield assertTrue(
+          result == Left(TokenEndpointError.InvalidGrant.RefreshChainAlreadyExchanged),
+          env.accessTokenRevocationService.revoke.calls.isEmpty,
+        )
+      },
+      test("recognize a rotation-race loser as its own retry when the idempotency key matches") {
+        val env = new Env
+        for
+          now <- Clock.instant
+
+          tokenRecord = RefreshTokenRecord(
+            sessionId = sessionId1,
+            publicSessionId = publicSessionId1,
+            accessToken = accessToken1,
+            accessTokenExpiresAt = now.plus(testClient.accessTokenTtl),
+            userId = userId1,
+            clientId = clientId1,
+            audience = List.empty,
+            authorizationDetails = None,
+            scope = scope1,
+            issuedAt = now.minusSeconds(3600),
+            expiresAt = now.plusSeconds(testClient.refreshTokenTtl.toSeconds),
+            requestedClaims = Some(requestedClaims1),
+            uiLocales = Some(uiLocales1),
+            nonce = None,
+            amr = amr1,
+            authTime = authTime1,
+            acr = None,
+            cnfJkt = None,
+          )
+
+          // The tip left behind by the concurrent request that won the rotation race.
+          tipRecord = tokenRecord.copy(issuedAt = now.minusSeconds(1))
+
+          newRefreshToken = RefreshToken(Array.fill(32)(7.toByte))
+
+          _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
+          _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
+          _ <- env.tokenRepo.findToken.succeedsWith(Some(tokenRecord))
+          _ <- env.propertyGenerator.nextAccessToken.succeedsWith(accessToken1)
+          _ <- env.propertyGenerator.nextRefreshToken.succeedsWith(newRefreshToken)
+          // `findToken` above read the presented token while it was still live -- neither
+          // request had rotated it yet -- so this attempt only discovers it lost the race to
+          // rotate it once it tries to write. The retry that triggers continues the chain from
+          // the winner's tip instead, which is the call that succeeds.
+          _ <- env.tokenRepo.createRefreshToken.returnsZIOOnCall:
+            case 1 => ZIO.fail(RefreshAlreadyExchanged())
+            case _ => ZIO.unit
+          _ <- env.tokenRepo.findIdempotentRetry.succeedsWith(Some((refreshTokenMac2, tipRecord)))
+          _ <- env.userRepo.findRolesByUserAndTenant.succeedsWith(List.empty)
+
+          request = RefreshTokenRequest(refreshToken1, None, None, None)
+          credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
+
+          result <- env.service.refreshAccessToken(request, credentials, None, Some("key-1")).either
+
+          createCalls = env.tokenRepo.createRefreshToken.calls
+        yield assertTrue(
+          // The loser recognizes its own retry instead of reading the race as a leak: nothing
+          // is revoked, and the request still gets a token back.
+          result.isRight,
+          env.tokenRepo.revokeFamily.calls.isEmpty,
+          env.accessTokenRevocationService.revoke.calls.isEmpty,
+          // Recovery continues the chain from the tip the winner left behind, not from the
+          // token this request presented -- that one is already retired.
+          createCalls.size == 2,
+          createCalls(1)._2.exists(mac => java.util.Arrays.equals(mac, refreshTokenMac2)),
+        )
+      },
+      test("chase the chain again when a third concurrent copy of the same request won the recovered tip") {
+        val env = new Env
+        for
+          now <- Clock.instant
+
+          tokenRecord = RefreshTokenRecord(
+            sessionId = sessionId1,
+            publicSessionId = publicSessionId1,
+            accessToken = accessToken1,
+            accessTokenExpiresAt = now.plus(testClient.accessTokenTtl),
+            userId = userId1,
+            clientId = clientId1,
+            audience = List.empty,
+            authorizationDetails = None,
+            scope = scope1,
+            issuedAt = now.minusSeconds(3600),
+            expiresAt = now.plusSeconds(testClient.refreshTokenTtl.toSeconds),
+            requestedClaims = Some(requestedClaims1),
+            uiLocales = Some(uiLocales1),
+            nonce = None,
+            amr = amr1,
+            authTime = authTime1,
+            acr = None,
+            cnfJkt = None,
+          )
+
+          // Two tips in a row, each left by the next concurrent copy of this same request to
+          // win a rotation this one was also trying for.
+          firstTip = tokenRecord.copy(issuedAt = now.minusSeconds(2))
+          secondTip = tokenRecord.copy(issuedAt = now.minusSeconds(1))
+
+          newRefreshToken = RefreshToken(Array.fill(32)(7.toByte))
+
+          _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
+          _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
+          _ <- env.tokenRepo.findToken.succeedsWith(Some(tokenRecord))
+          _ <- env.propertyGenerator.nextAccessToken.succeedsWith(accessToken1)
+          _ <- env.propertyGenerator.nextRefreshToken.succeedsWith(newRefreshToken)
+          // The presented token and the first tip recovered from it are both rotated away
+          // before this request can write; the second tip is still live when it gets there.
+          _ <- env.tokenRepo.createRefreshToken.returnsZIOOnCall:
+            case 1 | 2 => ZIO.fail(RefreshAlreadyExchanged())
+            case _ => ZIO.unit
+          _ <- env.tokenRepo.findIdempotentRetry.returnsZIOOnCall:
+            case 1 => ZIO.succeed(Some((refreshTokenMac2, firstTip)))
+            case _ => ZIO.succeed(Some((refreshTokenMac3, secondTip)))
+          _ <- env.userRepo.findRolesByUserAndTenant.succeedsWith(List.empty)
+
+          request = RefreshTokenRequest(refreshToken1, None, None, None)
+          credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
+
+          result <- env.service.refreshAccessToken(request, credentials, None, Some("key-1")).either
+
+          createCalls = env.tokenRepo.createRefreshToken.calls
+          retries = env.tokenRepo.findIdempotentRetry.calls
+        yield assertTrue(
+          // Losing twice in a row is what more than two concurrent copies of one idempotent
+          // request look like, not proof of a leak: the request still gets its token and the
+          // family stands.
+          result.isRight,
+          env.tokenRepo.revokeFamily.calls.isEmpty,
+          env.accessTokenRevocationService.revoke.calls.isEmpty,
+          createCalls.size == 3,
+          createCalls(2)._2.exists(mac => java.util.Arrays.equals(mac, refreshTokenMac3)),
+          // Each hop asks about the tip that hop just failed to rotate. Keyed on the presented
+          // token instead, the second lookup would re-read the first hop's answer and retry a
+          // tip already known to be gone.
+          retries.size == 2,
+          retries.headOption.exists(call => java.util.Arrays.equals(call._1, refreshTokenMac1)),
+          retries.lift(1).exists(call => java.util.Arrays.equals(call._1, refreshTokenMac2)),
+        )
+      },
+      test("revoke the family when the chase outlives its hop budget without ever winning a rotation") {
+        val env = new Env
+        for
+          now <- Clock.instant
+
+          tokenRecord = RefreshTokenRecord(
+            sessionId = sessionId1,
+            publicSessionId = publicSessionId1,
+            accessToken = accessToken1,
+            accessTokenExpiresAt = now.plus(testClient.accessTokenTtl),
+            userId = userId1,
+            clientId = clientId1,
+            audience = List.empty,
+            authorizationDetails = None,
+            scope = scope1,
+            issuedAt = now.minusSeconds(3600),
+            expiresAt = now.plusSeconds(testClient.refreshTokenTtl.toSeconds),
+            requestedClaims = Some(requestedClaims1),
+            uiLocales = Some(uiLocales1),
+            nonce = None,
+            amr = amr1,
+            authTime = authTime1,
+            acr = None,
+            cnfJkt = None,
+          )
+
+          // The tip `findIdempotentRetry` hands back -- but by the time this request tries to
+          // rotate it, a third party has already exchanged it too.
+          tipRecord = tokenRecord.copy(issuedAt = now.minusSeconds(1))
+
+          newRefreshToken = RefreshToken(Array.fill(32)(7.toByte))
+
+          _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
+          _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
+          _ <- env.tokenRepo.findToken.succeedsWith(Some(tokenRecord))
+          _ <- env.propertyGenerator.nextAccessToken.succeedsWith(accessToken1)
+          _ <- env.propertyGenerator.nextRefreshToken.succeedsWith(newRefreshToken)
+          // Every attempt loses, and every lookup answers with a tip that is gone again by the
+          // time it is tried -- the shape an attacker able to force arbitrarily many concurrent
+          // duplicates would need to keep one request recursing.
+          _ <- env.tokenRepo.createRefreshToken.returnsZIOWith(ZIO.fail(RefreshAlreadyExchanged()))
+          _ <- env.tokenRepo.findIdempotentRetry.succeedsWith(Some((refreshTokenMac2, tipRecord)))
+          _ <- env.tokenRepo.revokeFamily.succeedsWith(Some(RevokedFamily(userId1, List(accessToken1), Some(now.plusSeconds(1800)))))
+          _ <- env.accessTokenRevocationService.revoke.succeedsWith(())
+
+          request = RefreshTokenRequest(refreshToken1, None, None, None)
+          credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
+
+          result <- env.service.refreshAccessToken(request, credentials, None, Some("key-1")).either
+        yield assertTrue(
+          // Past the budget the loss is treated exactly as an unrecovered one: whatever it is,
+          // it is no longer worth chasing on this request's behalf.
+          result == Left(TokenEndpointError.InvalidGrant.RefreshTokenReplayed),
+          env.tokenRepo.revokeFamily.calls.nonEmpty,
+          env.accessTokenRevocationService.revoke.calls.nonEmpty,
+          // The chase is bounded: eight recoveries, the ninth write giving up rather than
+          // looking the tip up a ninth time.
+          env.tokenRepo.findIdempotentRetry.calls.size == 8,
+          env.tokenRepo.createRefreshToken.calls.size == 9,
         )
       },
     ),
@@ -817,7 +1281,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           request = ClientCredentialsRequest(scope = None, resources = None, authorizationDetails = None)
           credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
 
-          result <- env.service.clientCredentials(request, credentials)
+          result <- env.service.clientCredentials(request, credentials, None)
         yield assertTrue(
           result.accessToken == accessToken1,
           result.clientId == clientId1,
@@ -838,7 +1302,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           request = ClientCredentialsRequest(scope = requestedScope, resources = None, authorizationDetails = None)
           credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
 
-          result <- env.service.clientCredentials(request, credentials)
+          result <- env.service.clientCredentials(request, credentials, None)
         yield assertTrue(
           result.scope == scope2,
         )
@@ -858,6 +1322,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             result <- env.service.clientCredentials(
               ClientCredentialsRequest(scope = None, resources = None, authorizationDetails = None),
               ClientIdWithSecret(clientId1, Some(clientSecret1)),
+              None,
             )
           yield assertTrue(result.audience == List(publicResource, ResourceUri("resource://edge")))
         },
@@ -868,6 +1333,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             result <- env.service.clientCredentials(
               ClientCredentialsRequest(scope = None, resources = Some(Nil), authorizationDetails = None),
               ClientIdWithSecret(clientId1, Some(clientSecret1)),
+              None,
             ).either
           yield assertTrue(result == Left(TokenEndpointError.InvalidRequest))
         },
@@ -882,7 +1348,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
 
             request = ClientCredentialsRequest(scope = None, resources = Some(List(publicResource, edgeResource)), authorizationDetails = None)
             credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
-            result <- env.service.clientCredentials(request, credentials)
+            result <- env.service.clientCredentials(request, credentials, None)
           yield assertTrue(
             result.audience == List(publicResource, edgeResource),
             env.clientService.findResource.calls == List((testClient.tenantId, publicResource)),
@@ -906,6 +1372,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             result <- env.service.clientCredentials(
               ClientCredentialsRequest(scope = None, resources = Some(List(internalResource)), authorizationDetails = None),
               ClientIdWithSecret(clientId1, Some(clientSecret1)),
+              None,
             )
           yield assertTrue(
             result.audience == List(internalResource),
@@ -923,6 +1390,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             result <- env.service.clientCredentials(
               ClientCredentialsRequest(scope = None, resources = Some(List(edgeResource, internalResource)), authorizationDetails = None),
               ClientIdWithSecret(clientId1, Some(clientSecret1)),
+              None,
             ).either
           yield assertTrue(result == Left(TokenEndpointError.InvalidTarget(edgeResource)))
         },
@@ -935,6 +1403,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             result <- env.service.clientCredentials(
               ClientCredentialsRequest(scope = None, resources = Some(List(resource)), authorizationDetails = None),
               ClientIdWithSecret(clientId1, Some(clientSecret1)),
+              None,
             ).either
           yield assertTrue(result == Left(TokenEndpointError.InvalidTarget(resource)))
         },
@@ -946,7 +1415,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           request = ClientCredentialsRequest(scope = None, resources = None, authorizationDetails = None)
           credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
 
-          result <- env.service.clientCredentials(request, credentials).either
+          result <- env.service.clientCredentials(request, credentials, None).either
         yield assertTrue(
           result == Left(TokenEndpointError.InvalidClient),
         )
@@ -959,7 +1428,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           request = ClientCredentialsRequest(scope = None, resources = None, authorizationDetails = None)
           credentials = ClientIdWithSecret(publicClientId, None)
 
-          result <- env.service.clientCredentials(request, credentials).either
+          result <- env.service.clientCredentials(request, credentials, None).either
         yield assertTrue(
           result == Left(TokenEndpointError.InvalidClient),
         )
@@ -973,7 +1442,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           request = ClientCredentialsRequest(scope = invalidScope, resources = None, authorizationDetails = None)
           credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
 
-          result <- env.service.clientCredentials(request, credentials).either
+          result <- env.service.clientCredentials(request, credentials, None).either
         yield assertTrue(
           result == Left(TokenEndpointError.InvalidScope),
         )
@@ -996,6 +1465,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           result <- env.service.exchangeAuthorizationCode(
             CodeExchangeRequest(authCode1, redirectUri1, codeVerifier1),
             ClientIdWithSecret(clientId1, Some(clientSecret1)),
+            None,
           )
         yield assertTrue(result.authorizationDetails == List(paymentDetail))
       },
@@ -1044,10 +1514,172 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           result <- env.service.clientCredentials(
             ClientCredentialsRequest(scope = None, resources = None, authorizationDetails = Some(List(paymentDetail))),
             ClientIdWithSecret(clientId1, Some(clientSecret1)),
+            None,
           ).either
         yield assertTrue(result == Left(TokenEndpointError.InvalidAuthorizationDetails(
           "payment_initiation - unknown authorization details type",
         )))
+      },
+    ),
+    suite("DPoP binding")(
+      test("binds the issued tokens to the proof's thumbprint on the authorization_code grant") {
+        val env = new Env
+        for
+          _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
+          _ <- env.securityService.mac.succeedsWith(codeMac1)
+          _ <- env.authCodeRepo.find.succeedsWith(Some(authorizationCodeRecord.copy(scope = scope1)))
+          _ <- env.authCodeRepo.markAsUsed.succeedsWith(Right(()))
+          _ <- env.propertyGenerator.nextAccessToken.succeedsWith(accessToken1)
+          _ <- env.propertyGenerator.nextRefreshToken.succeedsWith(refreshToken1)
+          _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
+          _ <- env.tokenRepo.createRefreshToken.succeedsWith(())
+          _ <- env.userRepo.findRolesByUserAndTenant.succeedsWith(List.empty)
+
+          request = CodeExchangeRequest(authCode1, redirectUri1, codeVerifier1)
+          credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
+
+          result <- env.service.exchangeAuthorizationCode(request, credentials, Some(jkt1))
+        yield assertTrue(
+          result.cnfJkt.contains(jkt1),
+          env.tokenRepo.createRefreshToken.calls.head._3.cnfJkt.contains(jkt1),
+        )
+      },
+      test("leaves the grant unbound when the code exchange carries no proof") {
+        val env = new Env
+        for
+          _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
+          _ <- env.securityService.mac.succeedsWith(codeMac1)
+          _ <- env.authCodeRepo.find.succeedsWith(Some(authorizationCodeRecord.copy(scope = scope1)))
+          _ <- env.authCodeRepo.markAsUsed.succeedsWith(Right(()))
+          _ <- env.propertyGenerator.nextAccessToken.succeedsWith(accessToken1)
+          _ <- env.propertyGenerator.nextRefreshToken.succeedsWith(refreshToken1)
+          _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
+          _ <- env.tokenRepo.createRefreshToken.succeedsWith(())
+          _ <- env.userRepo.findRolesByUserAndTenant.succeedsWith(List.empty)
+
+          request = CodeExchangeRequest(authCode1, redirectUri1, codeVerifier1)
+          credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
+
+          result <- env.service.exchangeAuthorizationCode(request, credentials, None)
+        yield assertTrue(
+          result.cnfJkt.isEmpty,
+          env.tokenRepo.createRefreshToken.calls.head._3.cnfJkt.isEmpty,
+        )
+      },
+      test("refreshes a bound grant when the proof carries the same thumbprint") {
+        val env = new Env
+        for
+          now <- Clock.instant
+          _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
+          _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
+          _ <- env.securityService.mac.succeedsWith(MAC(Array.fill(32)(11.toByte)))
+          _ <- env.tokenRepo.findToken.succeedsWith(Some(boundRecord(now, Some(jkt1))))
+          _ <- env.propertyGenerator.nextAccessToken.succeedsWith(accessToken1)
+          _ <- env.tokenRepo.renewBoundToken.succeedsWith(true)
+          _ <- env.userRepo.findRolesByUserAndTenant.succeedsWith(List.empty)
+
+          request = RefreshTokenRequest(refreshToken1, None, None, None)
+          credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
+
+          result <- env.service.refreshAccessToken(request, credentials, Some(jkt1), None)
+        yield assertTrue(
+          result.cnfJkt.contains(jkt1),
+          // A bound grant is renewed in place: nothing is rotated, and the client keeps the
+          // token it already holds rather than being handed a successor.
+          env.tokenRepo.createRefreshToken.calls.isEmpty,
+          env.tokenRepo.renewBoundToken.calls.nonEmpty,
+          result.refreshToken.contains(refreshToken1),
+        )
+      },
+      test("narrowing the scope of a bound grant narrows the row it is renewed from") {
+        val env = new Env
+        val reducedScope = Set(ScopeToken("read"), ScopeToken.OfflineAccess)
+        for
+          now <- Clock.instant
+          _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
+          _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
+          _ <- env.securityService.mac.succeedsWith(MAC(Array.fill(32)(11.toByte)))
+          _ <- env.tokenRepo.findToken.succeedsWith(Some(boundRecord(now, Some(jkt1))))
+          _ <- env.propertyGenerator.nextAccessToken.succeedsWith(accessToken1)
+          _ <- env.tokenRepo.renewBoundToken.succeedsWith(true)
+          _ <- env.userRepo.findRolesByUserAndTenant.succeedsWith(List.empty)
+
+          request = RefreshTokenRequest(refreshToken1, Some(reducedScope), None, None)
+          credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
+
+          result <- env.service.refreshAccessToken(request, credentials, Some(jkt1), None)
+        yield assertTrue(
+          result.scope == reducedScope,
+          // Renewal is in place, so this row is the grant's only record: the narrowing has to
+          // reach it or the next refresh hands back the scope just dropped.
+          env.tokenRepo.renewBoundToken.calls.head._3 == reducedScope,
+          reducedScope != scope1,
+        )
+      },
+      test("rejects a refresh whose proof carries a different thumbprint") {
+        val env = new Env
+        for
+          now <- Clock.instant
+          _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
+          _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
+          _ <- env.tokenRepo.findToken.succeedsWith(Some(boundRecord(now, Some(jkt1))))
+
+          request = RefreshTokenRequest(refreshToken1, None, None, None)
+          credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
+
+          result <- env.service.refreshAccessToken(request, credentials, Some(jkt2), None).either
+        yield assertTrue(
+          result == Left(TokenEndpointError.InvalidGrant.RefreshTokenKeyMismatch),
+          env.tokenRepo.createRefreshToken.calls.isEmpty,
+        )
+      },
+      test("rejects a refresh of a bound grant presented without any proof") {
+        val env = new Env
+        for
+          now <- Clock.instant
+          _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
+          _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
+          _ <- env.tokenRepo.findToken.succeedsWith(Some(boundRecord(now, Some(jkt1))))
+
+          request = RefreshTokenRequest(refreshToken1, None, None, None)
+          credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
+
+          result <- env.service.refreshAccessToken(request, credentials, None, None).either
+        yield assertTrue(result == Left(TokenEndpointError.InvalidGrant.RefreshTokenKeyMismatch))
+      },
+      test("will not promote an unbound grant to a bound one just because a proof is presented") {
+        val env = new Env
+        for
+          now <- Clock.instant
+          _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
+          _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
+          _ <- env.securityService.mac.succeedsWith(MAC(Array.fill(32)(11.toByte)))
+          _ <- env.tokenRepo.findToken.succeedsWith(Some(boundRecord(now, None)))
+          _ <- env.propertyGenerator.nextAccessToken.succeedsWith(accessToken1)
+          _ <- env.propertyGenerator.nextRefreshToken.succeedsWith(refreshToken1)
+          _ <- env.tokenRepo.createRefreshToken.succeedsWith(())
+          _ <- env.userRepo.findRolesByUserAndTenant.succeedsWith(List.empty)
+
+          request = RefreshTokenRequest(refreshToken1, None, None, None)
+          credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
+
+          result <- env.service.refreshAccessToken(request, credentials, Some(jkt1), None)
+        yield assertTrue(
+          result.cnfJkt.isEmpty,
+          env.tokenRepo.createRefreshToken.calls.head._3.cnfJkt.isEmpty,
+        )
+      },
+      test("binds a client_credentials token to the proof's thumbprint") {
+        val env = new Env
+        for
+          _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
+          _ <- env.propertyGenerator.nextAccessToken.succeedsWith(accessToken1)
+
+          request = ClientCredentialsRequest(scope = None, resources = None, authorizationDetails = None)
+          credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
+
+          result <- env.service.clientCredentials(request, credentials, Some(jkt1))
+        yield assertTrue(result.cnfJkt.contains(jkt1))
       },
     ),
   ) 

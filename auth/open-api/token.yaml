@@ -31,6 +31,47 @@ paths:
       security:
         - clientSecretBasic: []
         - {}
+      parameters:
+        - name: DPoP
+          in: header
+          required: false
+          schema:
+            type: string
+          description: |
+            RFC 9449 proof-of-possession JWT. Optional per request: a request without one
+            yields a bearer access token; a valid proof binds the issued access token (and, for
+            `refresh_token`, a fresh grant) to the proof's key, after which only proofs from
+            that same key are accepted for it. May be rejected with `invalid_dpop_proof`
+            (malformed, wrong key, or already used) or `use_dpop_nonce` (retry with the nonce
+            from the accompanying `DPoP-Nonce` response header).
+        - name: Idempotency-Key
+          in: header
+          required: false
+          schema:
+            type: string
+          description: |
+            Makes a `refresh_token` request safely retryable; ignored for other grants.
+
+            Rotation is single-use, so a response lost in flight leaves the client holding a
+            token the server has already retired. Presenting it again is indistinguishable
+            from a replay: the whole rotation family is revoked and the user has to sign in
+            again. Repeating the request with the same key and the same refresh token instead
+            continues the chain, and may be repeated as often as the client needs to.
+
+            The reply to a retry carries a **new** refresh token, not the one the lost response
+            contained -- that token is never stored and cannot be reproduced. Use whatever the
+            latest reply gives you and discard earlier ones: acting on a response that arrives
+            late, after a retry already succeeded, means presenting a superseded token, which
+            is a replay and does revoke the chain.
+
+            Generate one value per logical attempt and reuse it for every retry of that
+            attempt. Treat it as secret: together with the refresh token it is what proves the
+            retry came from the original caller, and a request presenting the token without
+            the matching key is still treated as a replay.
+
+            A key is honoured only until the chain moves on. As soon as a refresh succeeds
+            under a different key -- the client having got through -- the old key stops working
+            and reuse detection applies to it again. Nothing has to expire for that to happen.
       requestBody:
         required: true
         content:
@@ -199,7 +240,11 @@ components:
             and `acr`.
         token_type:
           type: string
-          const: Bearer
+          enum: [Bearer, DPoP]
+          description: |
+            `DPoP` when the access token is bound to the key that proved possession on this
+            request (RFC 9449 §5), presented with the `DPoP` auth scheme rather than `Bearer`;
+            `Bearer` otherwise.
         expires_in:
           type: integer
           format: int64
@@ -239,6 +284,8 @@ components:
             - invalid_scope
             - invalid_target
             - invalid_authorization_details
+            - invalid_dpop_proof
+            - use_dpop_nonce
         error_description:
           type: string
         error_uri:
@@ -273,6 +320,10 @@ components:
         - `invalid_authorization_details` — an `authorization_details` object is unknown for
           the client's tenant, fails its type's schema, or (for `refresh_token`) does not
           exactly match one already granted.
+        - `invalid_dpop_proof` — the `DPoP` header is malformed, signed by the wrong key,
+          or has already been used (RFC 9449 §5).
+        - `use_dpop_nonce` — retry with the nonce carried in the `DPoP-Nonce` header of this
+          response (RFC 9449 §8).
       headers:
         Cache-Control:
           schema:
@@ -282,6 +333,13 @@ components:
           schema:
             type: string
             const: no-cache
+        DPoP-Nonce:
+          required: false
+          schema:
+            type: string
+          description: |
+            Present only for `use_dpop_nonce`. Echo this value in the `DPoP` proof of the
+            retried request.
       content:
         application/json:
           schema:

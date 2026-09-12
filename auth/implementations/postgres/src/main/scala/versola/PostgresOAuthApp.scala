@@ -9,6 +9,7 @@ import versola.oauth.challenge.passkey.{PasskeyRepository, PostgresPasskeyReposi
 import versola.oauth.challenge.password.{PasswordRepository, PasswordService, PostgresPasswordRepository}
 import versola.oauth.client.{ServiceController, OAuthClientSyncClient, OAuthConfigurationService, OAuthScopeSyncClient}
 import versola.oauth.consent.{ConsentRepository, ConsentService, PostgresConsentRepository}
+import versola.oauth.dpop.{DpopNonceService, DpopProofRepository, DpopService, PostgresDpopProofRepository}
 import versola.oauth.conversation.otp.{EmailOtpProvider, SmsOtpProvider, OtpGenerationService, OtpService}
 import versola.oauth.conversation.limit.{ChallengeThrottleRepository, PostgresChallengeThrottleRepository, SubmissionLimiter}
 import versola.oauth.conversation.{ConversationController, ConversationRenderService, ConversationRepository, ConversationRouter, ConversationService, PostgresConversationRepository}
@@ -43,6 +44,9 @@ object PostgresOAuthApp extends VersolaApp("auth"):
 
   type Dependencies =
     CoreConfig &
+      DpopProofRepository &
+      DpopNonceService &
+      DpopService &
       UserRepository &
       UserService &
       OAuthConfigurationService &
@@ -131,6 +135,10 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       parseConfig[CoreConfig] >+>
       SecureRandom.live >+>
       securityService >+>
+      // Sizes its own expiry ring from `dpop.iat-leeway`, so it has to follow the config.
+      PostgresDpopProofRepository.live >+>
+      DpopNonceService.live >+>
+      DpopService.live >+>
       JsonSchemaValidator.live >+>
       OAuthConfigurationService.live >+>
       CentralSyncTokenService.live >+>
@@ -186,6 +194,11 @@ object PostgresOAuthApp extends VersolaApp("auth"):
     .mapOrFail(URL.decode(_).left.map(ex => zio.Config.Error.InvalidData(message = ex.getMessage)))
 
   given DeriveConfig[Method] = DeriveConfig[String].map(Method.fromString)
+
+  given DeriveConfig[Dpop.Algorithm] = DeriveConfig[String]
+    .mapOrFail: str =>
+      Dpop.Algorithm.values.find(_.toString == str)
+        .toRight(zio.Config.Error.InvalidData(message = s"Unknown DPoP signing algorithm: '$str'"))
 
   given DeriveConfig[Email] = DeriveConfig[String]
     .mapOrFail(Email.from(_).left.map(message => zio.Config.Error.InvalidData(message = message)))
