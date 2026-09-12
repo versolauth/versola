@@ -52,11 +52,12 @@ trait DpopProofRepositorySpec extends DatabaseSpecBase[DpopProofRepositorySpec.E
         yield assertTrue(results.count(identity) == 1)
       },
       test("reclaims the slot holding a proof once that proof has left the iat window") {
-        // A slot becomes reclaimable a leeway plus one slot width after the proofs it holds
-        // were created -- by then none of them would pass the `iat` check anyway.
+        // A slot becomes reclaimable a leeway, one slot width and the tolerated clock skew
+        // after the proofs it holds were created -- by then no instance would pass any of them
+        // through the `iat` check.
         for
           recorded <- env.repository.recordIfAbsent("jkt-1", "jti-1", iat)
-          _ <- env.evictStale(iat.plusSeconds(90), leeway)
+          _ <- env.evictStale(iat.plusSeconds(150), leeway)
           afterEviction <- env.repository.recordIfAbsent("jkt-1", "jti-1", iat)
         yield assertTrue(recorded, afterEviction)
       },
@@ -65,6 +66,17 @@ trait DpopProofRepositorySpec extends DatabaseSpecBase[DpopProofRepositorySpec.E
         for
           recorded <- env.repository.recordIfAbsent("jkt-1", "jti-1", iat)
           _ <- env.evictStale(iat.plusSeconds(59), leeway)
+          replay <- env.repository.recordIfAbsent("jkt-1", "jti-1", iat)
+        yield assertTrue(recorded, !replay)
+      },
+      test("never reclaims a record an instance behind the evicting one would still accept") {
+        // Eviction reads the clock of whichever instance runs it, acceptance the clock of
+        // whichever instance the proof reaches. An instance running ahead must not truncate a
+        // slot at the moment its own window ends: a peer that far behind still accepts the
+        // `iat`s in it, and would then have no record to reject the replay against.
+        for
+          recorded <- env.repository.recordIfAbsent("jkt-1", "jti-1", iat)
+          _ <- env.evictStale(iat.plusSeconds(149), leeway)
           replay <- env.repository.recordIfAbsent("jkt-1", "jti-1", iat)
         yield assertTrue(recorded, !replay)
       },

@@ -13,7 +13,9 @@
 -- proof's signature, so it cannot be moved to a fresh slot without invalidating the proof.
 --
 -- The geometry is fixed here rather than configured, so that it cannot drift out of step with
--- the code; it must match PostgresDpopProofRepository.{SlotCount, SlotWidth}.
+-- the code; it must match PostgresDpopProofRepository.{SlotCount, SlotWidth}. The ring holds
+-- more slots than the acceptance window needs, because acceptance and eviction are decided
+-- against different instances' clocks -- see PostgresDpopProofRepository.MaxClockSkew.
 
 CREATE TABLE dpop_proofs (
     slot INTEGER NOT NULL,
@@ -34,3 +36,7 @@ CREATE TABLE dpop_proofs_4 PARTITION OF dpop_proofs FOR VALUES IN (4);
 CREATE TABLE dpop_proofs_5 PARTITION OF dpop_proofs FOR VALUES IN (5);
 CREATE TABLE dpop_proofs_6 PARTITION OF dpop_proofs FOR VALUES IN (6);
 CREATE TABLE dpop_proofs_7 PARTITION OF dpop_proofs FOR VALUES IN (7);
+CREATE TABLE dpop_proofs_8 PARTITION OF dpop_proofs FOR VALUES IN (8);
+CREATE TABLE dpop_proofs_9 PARTITION OF dpop_proofs FOR VALUES IN (9);
+CREATE TABLE dpop_proofs_10 PARTITION OF dpop_proofs FOR VALUES IN (10);
+CREATE TABLE dpop_proofs_11 PARTITION OF dpop_proofs FOR VALUES IN (11);
