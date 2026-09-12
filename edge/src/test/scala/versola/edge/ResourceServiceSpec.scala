@@ -33,8 +33,15 @@ object ResourceServiceSpec extends ZIOSpecDefault:
     resource = URL.decode("https://beta.example").toOption.get,
   )
 
-  private def env(initial: Map[ResourceId, Resource] = Map.empty): UIO[ResourceService] =
-    Ref.make(initial).map(ref => ResourceService.Impl(ReloadingCache(ref)))
+  private def syncClient(resources: Map[ResourceId, Resource]): ResourcesSyncClient =
+    new ResourcesSyncClient:
+      override def getAll: Task[Map[ResourceId, Resource]] = ZIO.succeed(resources)
+
+  private def env(
+      initial: Map[ResourceId, Resource] = Map.empty,
+      fromCentral: Map[ResourceId, Resource] = Map.empty,
+  ): UIO[ResourceService] =
+    Ref.make(initial).map(ref => ResourceService.Impl(ReloadingCache(ref), syncClient(fromCentral)))
 
   def spec = suite("edge.ResourceService")(
     test("findByResourceId returns cached resource when resourceId is known") {
@@ -54,5 +61,13 @@ object ResourceServiceSpec extends ZIOSpecDefault:
         service <- env()
         result  <- service.findByResourceId(ResourceId("alpha"))
       yield assertTrue(result.isEmpty)
+    },
+    test("refreshNow replaces the cache with what central serves") {
+      for
+        service <- env(initial = Map(ResourceId("alpha") -> alpha), fromCentral = Map(ResourceId("beta") -> beta))
+        _       <- service.refreshNow
+        added   <- service.findByResourceId(ResourceId("beta"))
+        removed <- service.findByResourceId(ResourceId("alpha"))
+      yield assertTrue(added.contains(beta), removed.isEmpty)
     },
   )

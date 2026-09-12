@@ -56,15 +56,37 @@ object PermissionServiceSpec extends ZIOSpecDefault:
     adminPerm -> Set(deleteUserEndpoint),
   )
 
+  private def rolesClient(value: Map[(TenantId, RoleId), Set[PermissionId]]): RolesSyncClient =
+    new RolesSyncClient:
+      override def getAll: Task[Map[(TenantId, RoleId), Set[PermissionId]]] = ZIO.succeed(value)
+
+  private def permissionsClient(value: Map[PermissionId, Set[ResourceEndpointId]]): PermissionsSyncClient =
+    new PermissionsSyncClient:
+      override def getAll: Task[Map[PermissionId, Set[ResourceEndpointId]]] = ZIO.succeed(value)
+
+  private def clientsClient(value: Map[ClientId, OAuthClient]): OAuthClientsSyncClient =
+    new OAuthClientsSyncClient:
+      override def getAll: Task[Map[ClientId, OAuthClient]] = ZIO.succeed(value)
+
   private def buildService(
       roles: Map[(TenantId, RoleId), Set[PermissionId]] = rolesMap,
       permissions: Map[PermissionId, Set[ResourceEndpointId]] = permissionsMap,
       clients: Map[ClientId, OAuthClient] = Map.empty,
+      rolesFromCentral: Map[(TenantId, RoleId), Set[PermissionId]] = Map.empty,
+      permissionsFromCentral: Map[PermissionId, Set[ResourceEndpointId]] = Map.empty,
+      clientsFromCentral: Map[ClientId, OAuthClient] = Map.empty,
   ): PermissionService =
     val rolesCache = ReloadingCache(Unsafe.unsafe(unsafe ?=> Ref.unsafe.make(roles)))
     val permissionsCache = ReloadingCache(Unsafe.unsafe(unsafe ?=> Ref.unsafe.make(permissions)))
     val clientsCache = ReloadingCache(Unsafe.unsafe(unsafe ?=> Ref.unsafe.make(clients)))
-    PermissionService.Impl(rolesCache, permissionsCache, clientsCache)
+    PermissionService.Impl(
+      rolesCache,
+      permissionsCache,
+      clientsCache,
+      rolesClient(rolesFromCentral),
+      permissionsClient(permissionsFromCentral),
+      clientsClient(clientsFromCentral),
+    )
 
   def spec = suite("PermissionService")(
     suite("getAllowedEndpointsForRoles")(
@@ -198,21 +220,37 @@ object PermissionServiceSpec extends ZIOSpecDefault:
         yield assertTrue(permissions == Set(readPerm))
       },
     ),
+    test("refreshNow replaces every cache with what central serves") {
+      val client =
+        OAuthClient(id = serviceClient, secret = Secret(Array.fill(8)(1.toByte)), permissions = Set(writePerm), accessTokenTtl = 15.minutes)
+      val service = buildService(
+        roles = Map.empty,
+        permissions = Map.empty,
+        rolesFromCentral = rolesMap,
+        permissionsFromCentral = permissionsMap,
+        clientsFromCentral = Map(serviceClient -> client),
+      )
+      for
+        beforeRoles  <- service.getAllowedEndpointsForRoles(defaultTenant, List(editorRole))
+        beforeClient <- service.getAllowedEndpointsForClient(serviceClient)
+        _            <- service.refreshNow
+        afterRoles   <- service.getAllowedEndpointsForRoles(defaultTenant, List(editorRole))
+        afterClient  <- service.getAllowedEndpointsForClient(serviceClient)
+      yield assertTrue(
+        beforeRoles.isEmpty,
+        beforeClient.isEmpty,
+        afterRoles == Set(listUsersEndpoint, createUserEndpoint),
+        afterClient == Set(createUserEndpoint),
+      )
+    },
     suite("live")(
       test("wires the three sync clients into caches the service reads from") {
-        val rolesClient = new RolesSyncClient:
-          override def getAll: Task[Map[(TenantId, RoleId), Set[PermissionId]]] = ZIO.succeed(rolesMap)
-        val permissionsClient = new PermissionsSyncClient:
-          override def getAll: Task[Map[PermissionId, Set[ResourceEndpointId]]] = ZIO.succeed(permissionsMap)
-        val clientsClient = new OAuthClientsSyncClient:
-          override def getAll: Task[Map[ClientId, OAuthClient]] = ZIO.succeed(Map.empty)
-
         ZIO.scoped:
           for
             service <- ZIO.service[PermissionService].provideSome[Scope](
-              ZLayer.succeed(rolesClient),
-              ZLayer.succeed(permissionsClient),
-              ZLayer.succeed(clientsClient),
+              ZLayer.succeed(rolesClient(rolesMap)),
+              ZLayer.succeed(permissionsClient(permissionsMap)),
+              ZLayer.succeed(clientsClient(Map.empty)),
               ZLayer.succeed(edgeConfig),
               PermissionService.live,
             )

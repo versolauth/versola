@@ -58,11 +58,11 @@ object EdgeFixture:
     *                         resolves a token's audience by looking a resource up by URI, so
     *                         two resources sharing one would be ambiguous.
     * @param awaitProxyReady  waits until the edge actually proxies to this resource before the
-    *                         first test runs. Edge's `/service/configuration/sync` reloads only
-    *                         its client and preset caches; resources, roles and permissions
-    *                         arrive on `configurationCacheRefreshInterval`, so a proxy test
-    *                         starting immediately would assert against the previous run's
-    *                         configuration and see a 404 or a 403.
+    *                         first test runs. `/service/configuration/sync` refreshes every
+    *                         edge cache this fixture writes to, but it pulls from central,
+    *                         whose own caches are brought up to date by a notification the
+    *                         registering request does not wait for -- so a sync issued right
+    *                         after a write can still carry the previous snapshot.
     */
   case class Config(
       resourceId: String,
@@ -193,8 +193,17 @@ object EdgeFixture:
     *
     * Convergence is observed through the proxy itself rather than through a cache endpoint,
     * because the proxy is what the tests assert on: a 404 means the resource is not there yet,
-    * a 403 means the permission is not, and anything else means both arrived. The cap is
-    * generous on purpose — it is bounded by the edge's refresh interval, not by the network.
+    * a 403 means the permission is not, and anything else means both arrived.
+    *
+    * Each attempt re-issues the edge sync rather than only re-probing: what it is waiting out
+    * is central's own notification-driven cache update, so a probe that fails means the last
+    * pull was too early and the next one has to be a fresh pull, not a re-read of the same
+    * cached answer.
+    *
+    * The login is inside the attempt for the same reason: the preset is read from the very
+    * caches that may still be stale, so an early pull makes `/login` fail rather than the
+    * probe. A failed attempt counts as not settled yet and is retried; its error is kept so
+    * that a window that expires still names what went wrong last.
     */
   private def awaitProxy(
       auth: OAuthClient,
@@ -211,18 +220,24 @@ object EdgeFixture:
         throw IllegalArgumentException("awaitProxyReady needs a permitted endpoint with a literal path to probe"),
       )
     for
-      session <- edge.browserLogin(auth, presetId, login, password)
-      settled <- edge
-        .proxy(Method.fromString(probe.method), config.resourceId, probe.path, session.auth)
+      lastError <- Ref.make(Option.empty[Throwable])
+      probeOnce = edge.browserLogin(auth, presetId, login, password)
+        .flatMap(session =>
+          edge.proxy(Method.fromString(probe.method), config.resourceId, probe.path, session.auth),
+        )
         .map(result => result.status != Status.NotFound && result.status != Status.Forbidden)
+      settled <- (edge.syncConfiguration *> probeOnce)
+        .catchAll(error => lastError.set(Some(error)).as(false))
         .repeat(Schedule.spaced(1.second) *> Schedule.recurUntilEquals(true))
         .timeout(90.seconds)
         .withClock(Clock.ClockLive)
+      error <- lastError.get
       _ <- ZIO.unless(settled.contains(true))(
         ZIO.fail(
           RuntimeException(
             s"edge never picked up resource '${config.resourceId}': its configuration caches still " +
-              "answer 404/403 for a permitted endpoint",
+              "answer 404/403 for a permitted endpoint, or do not carry the login preset yet",
+            error.orNull,
           ),
         ),
       )
