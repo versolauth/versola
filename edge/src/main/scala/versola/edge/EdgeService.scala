@@ -125,8 +125,11 @@ object EdgeService:
     * Logout token (spec §2.4) or an access token revocation. Back-Channel Logout requires a
     * `sub`, a `sid` or both, and reads a token without a `sid` as covering every session of
     * that subject, which is what an administrator ending a user's access sends.
-    * `revoked_jti`/`revoked_exp` describe the token a revocation names; they are deliberately
-    * not `jti`/`exp`, which belong to the event token itself.
+    * `revoked_jti`/`revoked_exp` describe the token(s) a revocation names; they are
+    * deliberately not `jti`/`exp`, which belong to the event token itself. `revoked_jti` is
+    * always a JSON array, even when it names one token, so there is one shape to decode
+    * rather than a singular-or-array ambiguity; every token it names shares the one
+    * `revoked_exp` bound.
     */
   private case class LogoutTokenClaims(
       @jsonField("iss") issuer: String,
@@ -139,7 +142,7 @@ object EdgeService:
         * thing to it available.
         */
       @jsonField("toe") timeOfEvent: Option[Long],
-      @jsonField("revoked_jti") revokedTokenId: Option[AccessTokenId],
+      @jsonField("revoked_jti") revokedTokenIds: Option[List[AccessTokenId]],
       @jsonField("revoked_exp") revokedTokenExpiresAt: Option[Long],
       nonce: Option[String],
       events: Map[String, Json],
@@ -418,11 +421,11 @@ object EdgeService:
 
     private def revokeToken(claims: EdgeService.LogoutTokenClaims): IO[Throwable | InvalidLogoutToken, Unit] =
       for
-        jti <- ZIO.fromOption(claims.revokedTokenId)
+        jtis <- ZIO.fromOption(claims.revokedTokenIds.flatMap(NonEmptyChunk.fromIterableOption))
           .orElseFail(InvalidLogoutToken("access token revocation carries no revoked_jti claim"))
         expiresAt <- ZIO.fromOption(claims.revokedTokenExpiresAt)
           .orElseFail(InvalidLogoutToken("access token revocation carries no revoked_exp claim"))
-        _ <- revocationService.revokeToken(jti, Instant.ofEpochSecond(expiresAt))
+        _ <- revocationService.revokeTokens(jtis, Instant.ofEpochSecond(expiresAt))
       yield ()
 
     /** OIDC Back-Channel Logout §2.6: the token must come from the configured OP, be

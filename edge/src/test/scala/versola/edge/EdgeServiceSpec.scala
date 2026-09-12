@@ -18,6 +18,7 @@ import zio.test.*
 
 import java.security.KeyPairGenerator
 import java.security.interfaces.RSAPublicKey
+import scala.jdk.CollectionConverters.*
 import java.time.Instant
 import java.util.{Collections, Date, UUID}
 import javax.crypto.spec.SecretKeySpec
@@ -165,10 +166,11 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
       }
 
     /** An access token revocation event: same signing and transport as a logout token, but it
-      * names one token (`revoked_jti`/`revoked_exp`) instead of a session.
+      * names one or more tokens (`revoked_jti`/`revoked_exp`) instead of a session.
+      * `revoked_jti` is always a JSON array on the wire, even for one token.
       */
     def signRevocationToken(
-        revokedJti: Option[String],
+        revokedJti: Option[List[String]],
         revokedExpiresAt: Option[Instant],
         events: java.util.Map[String, ?],
         audience: String = "web-app",
@@ -187,7 +189,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
             .expirationTime(Date.from(now.plusSeconds(120)))
             .claim("events", events)
           revokedExpiresAt.foreach(exp => builder.claim("revoked_exp", exp.getEpochSecond))
-          revokedJti.foreach(builder.claim("revoked_jti", _))
+          revokedJti.foreach(jtis => builder.claim("revoked_jti", jtis.asJava))
           val jwt = SignedJWT(header, builder.build())
           jwt.sign(RSASSASigner(edgeConfig.privateKey))
           jwt.serialize()
@@ -200,7 +202,8 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
     def stubRevocations: UIO[Unit] =
       revocationService.revokeSession.succeedsWith(()) *>
         revocationService.revokeUser.succeedsWith(()) *>
-        revocationService.revokeToken.succeedsWith(())
+        revocationService.revokeToken.succeedsWith(()) *>
+        revocationService.revokeTokens.succeedsWith(())
 
     def withPresets(values: AuthorizationPreset*): UIO[Unit] =
       presetCache.set(values.map(p => p.id -> p).toMap)
@@ -922,13 +925,35 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
         client <- ZIO.service[Client]
         service = env.buildService(client, security)
         now <- Clock.instant
-        token <- env.signRevocationToken(revokedJti = Some("revoked-token"), revokedExpiresAt = Some(now.plusSeconds(300)), events = revocationEvent)
+        token <- env.signRevocationToken(revokedJti = Some(List("revoked-token")), revokedExpiresAt = Some(now.plusSeconds(300)), events = revocationEvent)
         _ <- service.backChannelLogout(token)
       yield assertTrue(
         // A client revoking one of its own tokens must not log every other client of that
         // SSO session out, which revoking the session would do.
         env.revocationService.revokeSession.calls.isEmpty,
-        env.revocationService.revokeToken.calls == List((AccessTokenId("revoked-token"), now.plusSeconds(300))),
+        env.revocationService.revokeTokens.calls == List((NonEmptyChunk(AccessTokenId("revoked-token")), now.plusSeconds(300))),
+      )
+    },
+    test("revokes every named token on an access token revocation event naming several") {
+      val env = new Env
+      val revocationEvent = Collections.singletonMap(accessTokenRevocationEvent, Collections.emptyMap())
+      for
+        _ <- env.withClients(Fixtures.client)
+        _ <- env.jwksService.getPublicKeys.succeedsWith(env.publicKeys)
+        _ <- env.stubRevocations
+        security <- ZIO.service[SecurityService]
+        client <- ZIO.service[Client]
+        service = env.buildService(client, security)
+        now <- Clock.instant
+        token <- env.signRevocationToken(
+          revokedJti = Some(List("revoked-token-1", "revoked-token-2")),
+          revokedExpiresAt = Some(now.plusSeconds(300)),
+          events = revocationEvent,
+        )
+        _ <- service.backChannelLogout(token)
+      yield assertTrue(
+        env.revocationService.revokeTokens.calls ==
+          List((NonEmptyChunk(AccessTokenId("revoked-token-1"), AccessTokenId("revoked-token-2")), now.plusSeconds(300))),
       )
     },
     test("rejects an access token revocation event that names no token") {
@@ -945,7 +970,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
         result <- service.backChannelLogout(token).either
       yield assertTrue(
         rejection(result).contains("access token revocation carries no revoked_jti claim"),
-        env.revocationService.revokeToken.calls.isEmpty,
+        env.revocationService.revokeTokens.calls.isEmpty,
       )
     },
     test("rejects an access token revocation event that names no revoked_exp") {
@@ -957,11 +982,11 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
         security <- ZIO.service[SecurityService]
         client <- ZIO.service[Client]
         service = env.buildService(client, security)
-        token <- env.signRevocationToken(revokedJti = Some("revoked-token"), revokedExpiresAt = None, events = revocationEvent)
+        token <- env.signRevocationToken(revokedJti = Some(List("revoked-token")), revokedExpiresAt = None, events = revocationEvent)
         result <- service.backChannelLogout(token).either
       yield assertTrue(
         rejection(result).contains("access token revocation carries no revoked_exp claim"),
-        env.revocationService.revokeToken.calls.isEmpty,
+        env.revocationService.revokeTokens.calls.isEmpty,
       )
     },
     test("rejects a token that is not a valid JWT") {

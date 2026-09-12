@@ -11,7 +11,7 @@ import versola.user.UserRepository
 import versola.util.{AuthPropertyGenerator, Base64, CoreConfig, JsonSchemaValidator, MAC, Secret, SecurityService}
 import versola.util.http.Observability
 import zio.prelude.These
-import zio.{Duration, IO, Task, ZIO, ZLayer}
+import zio.{Duration, IO, NonEmptyChunk, Task, ZIO, ZLayer}
 
 trait OAuthTokenService:
 
@@ -110,7 +110,7 @@ object OAuthTokenService:
               // lifetime is bounded by the client's TTL rather than read from the token.
               accessTokenRevocationService.revoke(
                 client = client,
-                token = at,
+                tokens = NonEmptyChunk(at),
                 subject = codeRecord.userId.toString,
                 expiresAt = replayedAt.plus(client.accessTokenTtl),
               )
@@ -303,16 +303,19 @@ object OAuthTokenService:
       zio.Clock.instant.flatMap: now =>
         sessionRepository.revokeFamily(replayed, client.id, now.minus(client.accessTokenTtl)).flatMap:
           case Some(family) =>
-            ZIO.foreachDiscard(family.accessTokens): accessToken =>
-              // As with authorization-code replay, the live access tokens are not in hand
-              // here, only their ids, so their lifetime is bounded by the client's TTL.
-              accessTokenRevocationService.revoke(
-                client = client,
-                token = accessToken,
-                subject = family.userId.toString,
-                expiresAt = now.plus(client.accessTokenTtl),
-              )
-            .as(true)
+            // As with authorization-code replay, the live access tokens are not in hand
+            // here, only their ids, so their lifetime is bounded by the client's TTL. One
+            // event names every one of them, rather than one push per token: the whole
+            // family shares this `expiresAt` bound already, so nothing is lost by batching.
+            ZIO
+              .foreachDiscard(NonEmptyChunk.fromIterableOption(family.accessTokens)): tokens =>
+                accessTokenRevocationService.revoke(
+                  client = client,
+                  tokens = tokens,
+                  subject = family.userId.toString,
+                  expiresAt = now.plus(client.accessTokenTtl),
+                )
+              .as(true)
           case None =>
             ZIO.succeed(false)
 

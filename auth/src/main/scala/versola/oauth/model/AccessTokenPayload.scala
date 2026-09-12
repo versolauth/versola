@@ -35,10 +35,7 @@ case class AccessTokenPayload(
   def userId: Option[UserId] = UserId.parse(subject).toOption
 
 /** RFC 7800 confirmation claim; only the RFC 9449 `jkt` member is used. */
-case class Confirmation(jkt: String)
-
-object Confirmation:
-  given JsonDecoder[Confirmation] = DeriveJsonDecoder.gen[Confirmation]
+case class Confirmation(jkt: String) derives JsonDecoder
 
 object AccessTokenPayload:
 

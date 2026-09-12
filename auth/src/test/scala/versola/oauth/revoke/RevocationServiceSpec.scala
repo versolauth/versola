@@ -129,7 +129,7 @@ object RevocationServiceSpec extends UnitSpecBase:
           // The access token itself was never presented, so its lifetime is bounded by the
           // client's TTL rather than read off the token.
           env.accessTokenRevocationService.revoke.calls ==
-            List((testClient, accessToken1, userId1.toString, now.plus(testClient.accessTokenTtl))),
+            List((testClient, NonEmptyChunk(accessToken1), userId1.toString, now.plus(testClient.accessTokenTtl))),
         )).provide(env.layer)
       },
       test("fail with InvalidClient when client authentication fails") {
@@ -190,7 +190,7 @@ object RevocationServiceSpec extends UnitSpecBase:
           result == (),
           // The token was parsed here, so its own `exp` is used rather than an upper bound.
           env.accessTokenRevocationService.revoke.calls ==
-            List((testClient, accessToken1, userId1.toString, payload.expiresAt)),
+            List((testClient, NonEmptyChunk(accessToken1), userId1.toString, payload.expiresAt)),
         )).provide(env.layer)
       },
       test("fail with InvalidClient when client authentication fails") {
@@ -231,13 +231,13 @@ object RevocationServiceSpec extends UnitSpecBase:
           now <- Clock.instant
           _ <- dispatcher.dispatch.succeedsWith(())
           // Awaited, not forked: one client, one call, so there is nothing to fan out.
-          _ <- service.revoke(client, accessToken1, userId1.toString, now.plusSeconds(300))
+          _ <- service.revoke(client, NonEmptyChunk(accessToken1), userId1.toString, now.plusSeconds(300))
           calls = dispatcher.dispatch.calls
         yield assertTrue(
           calls.map((audience, uri, subject, _) => (audience.toList, uri, subject)) == List((List(client.id), backChannelUri, userId1.toString)),
           // No `sid`: this must not end the SSO session the token belongs to.
           calls.head._4 == Json.Obj(
-            "revoked_jti" -> Json.Str(accessToken1.encoded),
+            "revoked_jti" -> Json.Arr(Json.Str(accessToken1.encoded)),
             "revoked_exp" -> Json.Num(now.plusSeconds(300).getEpochSecond),
             "events" -> Json.Obj("versola:event:access-token-revocation" -> Json.Obj()),
           ),
@@ -248,7 +248,7 @@ object RevocationServiceSpec extends UnitSpecBase:
         val service = AccessTokenRevocationService.Impl(dispatcher)
         for
           now <- Clock.instant
-          _ <- service.revoke(testClient, accessToken1, userId1.toString, now.plusSeconds(300))
+          _ <- service.revoke(testClient, NonEmptyChunk(accessToken1), userId1.toString, now.plusSeconds(300))
         yield assertTrue(dispatcher.dispatch.calls.isEmpty)
       },
       test("still succeeds when the push fails, since the revocation itself is already done") {
@@ -258,7 +258,7 @@ object RevocationServiceSpec extends UnitSpecBase:
         for
           now <- Clock.instant
           _ <- dispatcher.dispatch.failsWith(RuntimeException("connection refused"))
-          result <- service.revoke(client, accessToken1, userId1.toString, now.plusSeconds(300)).either
+          result <- service.revoke(client, NonEmptyChunk(accessToken1), userId1.toString, now.plusSeconds(300)).either
         yield assertTrue(result == Right(()))
       },
     ),

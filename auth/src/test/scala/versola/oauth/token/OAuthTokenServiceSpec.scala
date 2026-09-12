@@ -443,7 +443,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           // The replayed code's token is not in hand, so its lifetime is bounded by the
           // client's access token TTL rather than read from the token itself.
           env.accessTokenRevocationService.revoke.calls ==
-            List((testClient, accessToken1, userId1.toString, now.plus(testClient.accessTokenTtl))),
+            List((testClient, NonEmptyChunk(accessToken1), userId1.toString, now.plus(testClient.accessTokenTtl))),
           env.tokenRepo.deleteByAccessToken.calls == List((sessionId1, accessToken1)),
           env.tokenRepo.createRefreshToken.calls.isEmpty,
         )
@@ -735,8 +735,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           // Every access token the family issued goes, not just the tip's. None of them is in
           // hand here, only their ids, so each lifetime is bounded by the client's TTL.
           env.accessTokenRevocationService.revoke.calls == List(
-            (testClient, accessToken1, userId1.toString, now.plus(testClient.accessTokenTtl)),
-            (testClient, accessToken2, userId1.toString, now.plus(testClient.accessTokenTtl)),
+            (testClient, NonEmptyChunk(accessToken1, accessToken2), userId1.toString, now.plus(testClient.accessTokenTtl)),
           ),
         )
       },
@@ -1002,7 +1001,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           env.tokenRepo.revokeFamily.calls ==
             List((refreshTokenMac1, clientId1, now.minus(testClient.accessTokenTtl))),
           env.accessTokenRevocationService.revoke.calls ==
-            List((testClient, accessToken1, userId1.toString, now.plus(testClient.accessTokenTtl))),
+            List((testClient, NonEmptyChunk(accessToken1), userId1.toString, now.plus(testClient.accessTokenTtl))),
         )
       },
       test("fail with InvalidGrant when the rotation loses a race and the family is already gone") {
