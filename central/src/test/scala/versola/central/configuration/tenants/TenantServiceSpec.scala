@@ -38,9 +38,8 @@ object TenantServiceSpec extends ZIOSpecDefault, ZIOStubs:
       for
         _ <- env.repository.createTenant.succeedsWith(())
         _ <- env.challengeSettingsService.upsertSettings.succeedsWith(())
-        result <- env.service.createTenant(createRequest)
+        _ <- env.service.createTenant(createRequest)
       yield assertTrue(
-        result.isRight,
         env.repository.createTenant.calls == List((tenant1, "Tenant A", None)),
         env.challengeSettingsService.upsertSettings.calls ==
           List(ChallengeSettingsRecord(
@@ -60,16 +59,28 @@ object TenantServiceSpec extends ZIOSpecDefault, ZIOStubs:
           )),
       )
     },
-    test("createTenant fails without touching the repository when submissionLimits is not fully configured") {
+    test("createTenant falls back to the recommended submission limits, instead of failing, when the request's limits are not fully configured") {
       val env = new Env()
       val incomplete = SubmissionLimits.recommended.copy(passwordSubmit = Nil)
 
       for
-        result <- env.service.createTenant(createRequest.copy(submissionLimits = incomplete))
+        _ <- env.repository.createTenant.succeedsWith(())
+        _ <- env.challengeSettingsService.upsertSettings.succeedsWith(())
+        _ <- env.service.createTenant(createRequest.copy(submissionLimits = incomplete))
       yield assertTrue(
-        result == Left(TenantValidationError.InvalidSubmissionLimits),
-        env.repository.createTenant.calls.isEmpty,
-        env.challengeSettingsService.upsertSettings.calls.isEmpty,
+        env.repository.createTenant.calls == List((tenant1, "Tenant A", None)),
+        env.challengeSettingsService.upsertSettings.calls.map(_.submissionLimits) == List(SubmissionLimits.recommended),
+      )
+    },
+    test("createTenant falls back to the recommended submission limits when the request omits them entirely") {
+      val env = new Env()
+
+      for
+        _ <- env.repository.createTenant.succeedsWith(())
+        _ <- env.challengeSettingsService.upsertSettings.succeedsWith(())
+        _ <- env.service.createTenant(createRequest.copy(submissionLimits = SubmissionLimits.empty))
+      yield assertTrue(
+        env.challengeSettingsService.upsertSettings.calls.map(_.submissionLimits) == List(SubmissionLimits.recommended),
       )
     },
     test("updateTenant delegates request fields to repository") {

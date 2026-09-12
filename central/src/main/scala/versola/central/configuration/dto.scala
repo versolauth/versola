@@ -281,12 +281,15 @@ case class CreateTenantRequest(
     id: TenantId,
     description: String,
     edgeId: Option[String],
-    /** Required, not defaulted: a tenant is not allowed to exist with no submission-rate
-      * protection on password/OTP/passkey attempts (see `SubmissionLimits.isConfigured`).
-      * The console pre-fills this from `SubmissionLimits.recommended` and lets the caller
-      * edit or approve it before submitting.
+    /** Optional: a caller that omits this, or leaves a category empty, gets
+      * `SubmissionLimits.recommended` instead of a rejected request -- a tenant is never
+      * created with no submission-rate protection on password/OTP/passkey attempts, but
+      * that protection is a safe default rather than something every caller must supply
+      * (see `SubmissionLimits.isConfigured`). The console pre-fills this from
+      * `SubmissionLimits.recommended` and lets the caller edit or approve it before
+      * submitting.
       */
-    submissionLimits: SubmissionLimits,
+    submissionLimits: SubmissionLimits = SubmissionLimits.empty,
 ) derives Schema, JsonCodec
 
 case class UpdateTenantRequest(

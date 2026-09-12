@@ -1820,11 +1820,12 @@ components:
           allOf:
             - $ref: '#/components/schemas/SubmissionLimits'
           description: >-
-            Required: a tenant cannot be created with no submission-rate protection on
-            password/OTP/passkey attempts. Every category and banDurationSeconds must be
-            non-empty/positive. The console pre-fills this from a recommended default that
-            the caller may edit or approve before submitting.
-      required: [id, description, submissionLimits]
+            Optional. A tenant is never created with no submission-rate protection on
+            password/OTP/passkey attempts: if this is omitted, or leaves a category
+            empty, a recommended default is used instead. The console pre-fills this
+            from that same recommended default and lets the caller edit or approve it
+            before submitting.
+      required: [id, description]
     UpdateTenantRequest:
       type: object
       properties:

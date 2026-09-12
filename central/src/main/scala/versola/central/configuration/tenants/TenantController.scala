@@ -35,10 +35,8 @@ object TenantController extends Controller:
         _ <- authorizeBasic(request)
         service <- ZIO.service[TenantService]
         body <- request.bodyAs[CreateTenantRequest]
-        result <- service.createTenant(body)
-      yield result match
-        case Right(_) => Response.status(Status.Created)
-        case Left(error) => Response.text(error.getMessage).status(Status.BadRequest)
+        _ <- service.createTenant(body)
+      yield Response.status(Status.Created)
     }
 
   val updateTenantEndpoint =

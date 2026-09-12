@@ -10,12 +10,14 @@ import zio.{Schedule, Scope, Task, ZIO, ZLayer, durationInt}
 trait TenantService:
   def getAllTenants: Task[Vector[TenantRecord]]
 
-  /** Fails with `TenantValidationError.InvalidSubmissionLimits` rather than creating a
-    * tenant with no submission-rate protection -- see `SubmissionLimits.isConfigured`.
+  /** Falls back to `SubmissionLimits.recommended` -- rather than failing the request --
+    * when `request.submissionLimits` is missing or leaves a category unconfigured, so a
+    * tenant is never created with no submission-rate protection at all (see
+    * `SubmissionLimits.isConfigured`).
     */
   def createTenant(
       request: CreateTenantRequest,
-  ): Task[Either[TenantValidationError, Unit]]
+  ): Task[Unit]
 
   def updateTenant(
       request: UpdateTenantRequest,
@@ -49,14 +51,14 @@ object TenantService:
 
     override def createTenant(
         request: CreateTenantRequest,
-    ): Task[Either[TenantValidationError, Unit]] =
-      if !SubmissionLimits.isConfigured(request.submissionLimits) then
-        ZIO.left(TenantValidationError.InvalidSubmissionLimits)
-      else
-        for
-          _ <- tenantRepository.createTenant(request.id, request.description, request.edgeId.map(EdgeId(_)))
-          _ <- challengeSettingsService.upsertSettings(defaultChallengeSettings(request.id, request.submissionLimits))
-        yield Right(())
+    ): Task[Unit] =
+      val submissionLimits =
+        if SubmissionLimits.isConfigured(request.submissionLimits) then request.submissionLimits
+        else SubmissionLimits.recommended
+      for
+        _ <- tenantRepository.createTenant(request.id, request.description, request.edgeId.map(EdgeId(_)))
+        _ <- challengeSettingsService.upsertSettings(defaultChallengeSettings(request.id, submissionLimits))
+      yield ()
 
     override def updateTenant(
         request: UpdateTenantRequest,
@@ -102,13 +104,3 @@ object TenantService:
         acrVocabulary = None,
         postLogoutRedirectUris = Nil,
       )
-
-sealed trait TenantValidationError extends RuntimeException
-
-object TenantValidationError:
-  case object InvalidSubmissionLimits
-      extends RuntimeException(
-        "submissionLimits must configure at least one rate limit for otpRequest, otpSubmit, " +
-          "passwordSubmit and passkeyAssertion, and a positive banDurationSeconds",
-      )
-      with TenantValidationError

@@ -21,9 +21,11 @@ object Fixtures:
   def text(value: String): Json.Obj =
     Json.Obj("en" -> Json.Str(value))
 
-  /** `submissionLimits` defaults to a fully-configured value -- `createTenant` rejects any
-    * category left empty, unlike `submissionLimits()` itself which defaults to empty for
-    * the (separate) challenge-settings endpoint that doesn't require it.
+  /** `submissionLimits` defaults to a fully-configured value here so a test that inspects
+    * it (rather than a test that just needs a tenant to exist) doesn't have to know that
+    * `createTenant` silently swaps an unconfigured value for a recommended default --
+    * matching `submissionLimits()` itself, which defaults to empty for the (separate)
+    * challenge-settings endpoint.
     */
   def tenant(
       id: String,

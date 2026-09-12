@@ -104,20 +104,24 @@ object TenantControllerSpec extends ZIOSpecDefault, ZIOStubs:
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.Created,
       setup = service =>
-        service.createTenant.succeedsWith(Right(())),
+        service.createTenant.succeedsWith(()),
       verify = (_, service) =>
         ZIO.succeed(assertTrue(service.createTenant.calls == List(createRequest))),
     ),
     controllerTestCase(
-      description = "reject tenant creation with unconfigured submission limits",
+      description = "create tenant with unconfigured submission limits (the service applies the recommended default, not the controller)",
       request = Request(
         method = Method.POST,
         url = URL.empty / "configuration" / "tenants",
         body = Body.fromString(createRequest.copy(submissionLimits = SubmissionLimits.empty).toJson),
       ).addHeader(Header.ContentType(MediaType.application.json)),
-      expectedStatus = Status.BadRequest,
+      expectedStatus = Status.Created,
       setup = service =>
-        service.createTenant.succeedsWith(Left(TenantValidationError.InvalidSubmissionLimits)),
+        service.createTenant.succeedsWith(()),
+      verify = (_, service) =>
+        ZIO.succeed(assertTrue(
+          service.createTenant.calls == List(createRequest.copy(submissionLimits = SubmissionLimits.empty)),
+        )),
     ),
     controllerTestCase(
       description = "update tenant",
