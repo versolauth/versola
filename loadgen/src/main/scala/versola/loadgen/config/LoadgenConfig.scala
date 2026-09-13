@@ -10,11 +10,17 @@ import zio.config.magnolia.DeriveConfig
   * (see versola-loadgen-dev-spec.md §5). One process, one file, one binary: `role` picks which
   * half runs; `shard` is present only when `role = driver`.
   *
-  * Deviates from the dev spec in one respect: the spec's HOCON sketch uses `actions` for two
-  * unrelated things (`session.actions` -- the NegBinomial action-count distribution -- and a
-  * top-level `actions` list -- the ten business action definitions). Renamed the former to
-  * `session.action-count` / [[ActionCountConfig]] here to remove the collision; the field
-  * still means exactly what §5 describes.
+  * Deviates from the dev spec in two respects, both on `session.actions`:
+  *   - Renamed to `session.action-count` / [[ActionCountConfig]]. The spec's HOCON sketch uses
+  *     `actions` for two unrelated things -- this distribution and, separately, a top-level
+  *     `actions` list of the ten business action definitions -- and the two would collide under
+  *     one key.
+  *   - Its `mobile-mean`/`web-mean` are the *user-driven* actions only, one short of the spec's
+  *     6.0/10.0 session mean (5.0/9.0), because [[versola.loadgen.scheduler.ActionCount]] adds
+  *     the app's own opening call outside the draw. See that object's doc for why. A config file
+  *     written against §5's literal example (6/10) decodes without error but understates the
+  *     session mean by one action -- the dev spec's own worked example needs updating to 5/9
+  *     to match.
   */
 case class LoadgenConfig(
     role: LoadgenRole,

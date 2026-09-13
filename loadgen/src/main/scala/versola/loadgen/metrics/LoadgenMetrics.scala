@@ -69,6 +69,14 @@ object LoadgenMetrics:
     * counted (or the reverse) leaves the report's rate and its error budget describing different
     * populations -- a discrepancy that is very hard to spot after the fact and impossible to
     * repair.
+    *
+    * `outcome` must never be `Failed(FailedOutcome.RefreshRejected)`: dev spec §11 fixes
+    * `loadgen_outcomes_total`'s label set to exactly `ok`/`stepup`/`forbidden`/`unauthorized`/
+    * `transport`/`unexpected_status`/`malformed`, and [[refreshRejected]] is the dedicated call
+    * for that eighth case, into its own `loadgen_refresh_rejected_total` counter -- §7.4's
+    * refresh discipline treats a rejection as ending the session, not as one more step outcome.
+    * Nothing in the type of `StepOutcome` rules this case out, so this is a caller obligation:
+    * see [[LoadgenMetricsSpec]]'s closed-set test for what would need to change if it grows.
     */
   def stepCompleted(scenario: String, step: String, outcome: StepOutcome, latency: IntendedLatency): UIO[Unit] =
     stepDuration

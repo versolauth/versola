@@ -126,4 +126,20 @@ object ErrorTaxonomySpec extends ZIOSpecDefault:
         RefreshRejectionLabel.of(RefreshRejection.Unknown("invalid_grant: whatever the SUT said")) == "unknown",
       )
     },
+    test("loadgen_outcomes_total's label set is exactly dev spec section 11's seven values, once" +
+      " RefreshRejected is excluded") {
+      // `LoadgenMetrics.stepCompleted` tags `loadgen_outcomes_total` with `outcome.label` for
+      // whatever `StepOutcome` it is handed, and nothing in `StepOutcome`'s type stops a caller
+      // from passing `Failed(FailedOutcome.RefreshRejected)` -- the one label the metric's own
+      // doc comment says must never reach it (refresh rejections have their own counter, per
+      // section 7.4). This pins the set track I's caller has to keep honouring, and fails loudly
+      // if a case is ever added to either enum without a matching decision about which side of
+      // that boundary it falls on.
+      val reachableLabels = PlannedOutcome.values.map(_.label).toSet ++
+        FailedOutcome.values.filterNot(_ == FailedOutcome.RefreshRejected).map(_.label).toSet
+      assertTrue(
+        reachableLabels == Set("ok", "stepup", "forbidden", "unauthorized", "transport", "unexpected_status", "malformed"),
+        FailedOutcome.values.map(_.label).toSet -- reachableLabels == Set("refresh_rejected"),
+      )
+    },
   )
