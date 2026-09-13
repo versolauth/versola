@@ -24,12 +24,24 @@ enum ProtocolError:
   case Transport(cause: Throwable)
   case UnexpectedStatus(expected: Set[Status], got: Status, endpoint: String)
   case MalformedResponse(endpoint: String, detail: String)
+
   /** `401 WWW-Authenticate: ...insufficient_user_authentication, acr_values="..."` -- expected,
     * drives the step-up re-authentication flow (§7.4).
     */
   case StepUpRequired(acrValues: List[String], endpoint: String)
+
   /** Expected for `retail-basic` users on actions their role doesn't cover. */
   case Forbidden(endpoint: String)
+
   /** Expected once an access token's TTL (§5's `session.access-token-ttl`) has elapsed. */
   case Unauthorized(endpoint: String)
   case RefreshRejected(reason: RefreshRejection)
+
+  /** The emulator's own fault, not the SUT's: a `client_id` no provisioning run registered, a
+    * base URL that does not parse, a crypto provider that will not sign. Kept in the same
+    * channel because the alternative is what the e2e client does -- throw from a constructor
+    * `val` or from configuration handling, killing the fiber before any metric is recorded
+    * (§3.2) -- but it belongs to neither the error budget nor the expected-outcome counters:
+    * every occurrence is a campaign that is measuring something other than what it claims.
+    */
+  case Misconfigured(detail: String)

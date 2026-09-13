@@ -6,7 +6,7 @@ import zio.http.{Method, Status}
 // accident (a CSRF token passed where a conversation cookie was expected fails silently as a
 // wrong-parameter bug, not a compile error, without this). Kept to plain `String` underneath --
 // no validation here, that belongs to whatever produced the value (auth's response, or
-// `PkceHelper`/`SoftAuthenticator` once track B ports them).
+// [[Pkce]]/[[SoftAuthenticator]]).
 
 opaque type ConversationCookie = String
 object ConversationCookie:
@@ -85,6 +85,17 @@ case class AuthorizeStarted(
     state: String,
 )
 
+/** Outcome of [[AuthClient.authorize]]: either a conversation actually started, or the SUT
+  * recognized the supplied `SSO_SESSION` as already satisfying the request and answered a
+  * silent reauthorization (design doc §7.4) -- a redirect straight to the code, with no
+  * `SSO_CONVERSATION` cookie and no conversation to walk. `codeVerifier` is still required in
+  * both cases: the code was issued for the `code_challenge` this call sent to `/authorize`
+  * regardless of which path answered it.
+  */
+enum AuthorizeOutcome:
+  case Started(started: AuthorizeStarted)
+  case Authorized(code: AuthCode, codeVerifier: CodeVerifier)
+
 /** A fetched challenge page. `step`/`csrf` are `None` when the page carries neither (e.g. an
   * error page) -- callers that require one assert on it explicitly rather than this type
   * throwing, unlike the e2e original's `ChallengeResult.csrf` (§3.2).
@@ -95,6 +106,23 @@ case class ChallengePage(
     step: Option[ConversationStep],
     csrf: Option[Csrf],
 )
+
+object ChallengePage:
+  /** The form state auth inlines into the page as `window.__VERSOLA_FORM__ = {...}` carries the
+    * CSRF token; this picks it out of the raw body.
+    *
+    * Compiled once, here, rather than per page as `ChallengeResult.csrf` does -- the single
+    * worst hot-path defect in the e2e client (§3.2). A regex over the body and not an HTML
+    * parser is a requirement, not an optimization (design doc §6.3, ~40x cheaper), and the
+    * match is found in the head of the document, so the inlined script bundle further down is
+    * never scanned.
+    */
+  private val csrfField = java.util.regex.Pattern.compile("\"csrf\"\\s*:\\s*\"([^\"]+)\"")
+
+  def parse(conversation: ConversationCookie, html: String): ChallengePage =
+    val matcher = csrfField.matcher(html)
+    val csrf = if matcher.find() then Some(Csrf(matcher.group(1))) else None
+    ChallengePage(conversation, html, ConversationStep.fromHtml(html), csrf)
 
 /** Outcome of a challenge submission: either the conversation advanced to another page, or it
   * redirected out (to the code redirect URI, an error redirect, or -- mid-flow -- to
@@ -112,6 +140,11 @@ enum SubmitOutcome:
 
 case class EdgeLoginStarted(conversation: ConversationCookie, codeVerifier: CodeVerifier, state: String)
 
+/** `path` is the whole path under the edge origin, including the `/resources/{resourceId}`
+  * prefix of §8.6 (`/resources/core/accounts`) -- the resource id is not a separate field
+  * because §5's `BusinessActionConfig` does not carry one either, and splitting it here would
+  * mean re-joining it on every call.
+  */
 case class ActionCall(method: Method, path: String, body: Option[String])
 
 /** What a business action is authenticated with. An ADT rather than two `Option`s on

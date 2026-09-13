@@ -22,13 +22,26 @@ trait AuthClient:
       clientId: Option[String],
       acrValues: Option[List[String]],
       sessionCookie: Option[SsoSession],
-  ): IO[ProtocolError, AuthorizeStarted]
+  ): IO[ProtocolError, AuthorizeOutcome]
 
   def challenge(conversation: ConversationCookie): IO[ProtocolError, ChallengePage]
 
   def submitPhone(conversation: ConversationCookie, phone: String, csrf: Csrf): IO[ProtocolError, SubmitOutcome]
 
   def submitOtp(conversation: ConversationCookie, code: String, csrf: Csrf): IO[ProtocolError, SubmitOutcome]
+
+  /** `POST /challenge/password` -- the inline password factor of §8.2's `mobile-otp-password`
+    * client, and the Argon2 path the campaign measures separately. Distinct from
+    * [[submitSetPassword]] (`/challenge/set-password`, which enrolls a password the account does
+    * not yet have) and from [[submitLoginPassword]] (`/challenge/login-password`, which carries
+    * the login too and is a primary factor rather than a second one). The W1 trait had the other
+    * two but not this one, and §8.2 cannot be driven without it.
+    */
+  def submitPassword(
+      conversation: ConversationCookie,
+      password: String,
+      csrf: Csrf,
+  ): IO[ProtocolError, SubmitOutcome]
 
   def submitSetPassword(
       conversation: ConversationCookie,
