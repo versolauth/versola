@@ -91,12 +91,44 @@ object HistogramWire:
       for
         bytes <- decodeBase64(encoded.encoding)
         histogram <- decodeHistogram(bytes)
+        _ <- sameGeometry(histogram)
         _ <- Either.cond(
           histogram.getTotalCount == encoded.count,
           (),
           s"histogram count mismatch: envelope says ${encoded.count}, payload holds ${histogram.getTotalCount}",
         )
       yield HistogramSample(encoded.id, histogram)
+
+  /** [[merge]] is only plain addition of bucket counts -- the property the whole "lossless" claim
+    * rests on -- when every input has the geometry [[LatencyRecorder.emptyHistogram]] was built
+    * with. `decodeFromCompressedByteBuffer`'s second argument is a *floor* on the highest
+    * trackable value, not an assertion about it, so a payload declaring a wider range or a
+    * different precision decodes without complaint and then fails in one of two ways: `add`
+    * throws on a value past the fixed target's range, taking the whole campaign report with it,
+    * or the counts are re-bucketed into the target's precision and the quantiles quietly stop
+    * being the ones the driver measured.
+    *
+    * A driver on a different build is the realistic source, which is the same failure the report
+    * `version` guards against and deserves the same treatment: reject the payload rather than
+    * merge it.
+    */
+  private def sameGeometry(histogram: Histogram): Either[String, Unit] =
+    if histogram.getLowestDiscernibleValue != LatencyRecorder.lowestDiscernibleMicros then
+      Left(
+        s"histogram lowest discernible value is ${histogram.getLowestDiscernibleValue}µs, " +
+          s"expected ${LatencyRecorder.lowestDiscernibleMicros}µs",
+      )
+    else if histogram.getHighestTrackableValue != LatencyRecorder.highestTrackableMicros then
+      Left(
+        s"histogram highest trackable value is ${histogram.getHighestTrackableValue}µs, " +
+          s"expected ${LatencyRecorder.highestTrackableMicros}µs",
+      )
+    else if histogram.getNumberOfSignificantValueDigits != LatencyRecorder.significantDigits then
+      Left(
+        s"histogram precision is ${histogram.getNumberOfSignificantValueDigits} significant digits, " +
+          s"expected ${LatencyRecorder.significantDigits}",
+      )
+    else Right(())
 
   def report(
       campaign: String,

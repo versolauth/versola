@@ -126,7 +126,7 @@ object CampaignReport:
       thresholds: AcceptanceThresholds,
   ): (List[ReportCheck], List[String]) =
     val absolute = thresholds.latency.map: threshold =>
-      merged.get(threshold.id) match
+      measured(merged, threshold.id) match
         case None => Right(s"p99 of ${threshold.id}")
         case Some(histogram) =>
           val measured = histogram.getValueAtPercentile(99.0)
@@ -140,7 +140,7 @@ object CampaignReport:
           )
 
     val relative = thresholds.relativeLatency.map: threshold =>
-      (merged.get(threshold.id), merged.get(threshold.relativeTo)) match
+      (measured(merged, threshold.id), measured(merged, threshold.relativeTo)) match
         case (Some(subject), Some(baseline)) =>
           val measured = subject.getValueAtPercentile(99.0)
           val limit = baseline.getValueAtPercentile(99.0) + HistogramWire.micros(threshold.margin)
@@ -197,3 +197,19 @@ object CampaignReport:
 
     val outcomes = absolute ++ relative ++ List(health1, health2)
     (outcomes.collect { case Left(check) => check } ++ counters, outcomes.collect { case Right(missing) => missing })
+
+  /** A measurement is only evaluable if something was actually recorded into it.
+    *
+    * HdrHistogram answers every percentile query on an empty histogram with 0, so a threshold
+    * checked against one passes on a measured p99 of 0 rather than landing in `notEvaluated`. The
+    * map having a key for the measurement is not enough: a driver that registered a recorder and
+    * never recorded a sample -- a scenario that was configured but never ran, a step every attempt
+    * failed before reaching -- reports a present, empty histogram. A campaign that measured
+    * nothing at all would then report `passed = true`, which is the one answer the report must
+    * never give by default.
+    */
+  private def measured(
+      merged: Map[MeasurementId, org.HdrHistogram.Histogram],
+      id: MeasurementId,
+  ): Option[org.HdrHistogram.Histogram] =
+    merged.get(id).filter(_.getTotalCount > 0L)

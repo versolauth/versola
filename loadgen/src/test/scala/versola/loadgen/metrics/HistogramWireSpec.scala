@@ -133,6 +133,36 @@ object HistogramWireSpec extends ZIOSpecDefault:
         HistogramWire.decode(encoded.copy(encoding = "not-a-histogram")).isLeft,
       )
     },
+    test("rejects a payload whose range or precision is not the one merge assumes") {
+      // `decodeFromCompressedByteBuffer` takes a *floor* on the highest trackable value, so a
+      // wider or differently-quantised histogram -- a driver on another build -- decodes happily
+      // and only fails later: `add` throws on a value past the fixed merge target's range, and a
+      // precision mismatch re-buckets the counts, so the merged quantiles stop being the measured
+      // ones while still being reported as lossless.
+      def encodeOf(histogram: org.HdrHistogram.Histogram) =
+        HistogramWire.encode(HistogramSample(proxyStep, histogram))
+
+      val wider = org.HdrHistogram.Histogram(
+        LatencyRecorder.lowestDiscernibleMicros,
+        LatencyRecorder.highestTrackableMicros * 10L,
+        LatencyRecorder.significantDigits,
+      )
+      wider.recordValue(LatencyRecorder.highestTrackableMicros * 5L)
+
+      val coarser = org.HdrHistogram.Histogram(
+        LatencyRecorder.lowestDiscernibleMicros,
+        LatencyRecorder.highestTrackableMicros,
+        LatencyRecorder.significantDigits - 1,
+      )
+      coarser.recordValue(1000L)
+
+      assertTrue(
+        HistogramWire.decode(encodeOf(wider)).isLeft,
+        HistogramWire.decode(encodeOf(coarser)).isLeft,
+        // The geometry this build writes still round-trips.
+        HistogramWire.decode(HistogramWire.encode(driverOne)).isRight,
+      )
+    },
     test("summing consecutive interval snapshots equals one histogram over the whole run") {
       val values = (1L to 200L).toList
       val whole = LatencyRecorder.emptyHistogram

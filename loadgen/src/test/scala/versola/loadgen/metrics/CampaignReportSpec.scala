@@ -128,6 +128,47 @@ object CampaignReportSpec extends ZIOSpecDefault:
         report.map(_.checks.forall(_.passed)) == Right(true),
       )
     },
+    test("a present but empty histogram is not evaluated, so a zero-sample campaign cannot pass") {
+      // A recorder registered and never written to: HdrHistogram answers p99 with 0, which clears
+      // every ceiling. Absence and emptiness have to reach the same branch or the report's worst
+      // failure mode is available -- a campaign that measured nothing reporting success.
+      val empty = HistogramSample(tokenRefresh, LatencyRecorder.emptyHistogram)
+      val reports = List(
+        driverReport(
+          "c3",
+          "driver-0",
+          empty,
+          HistogramSample(edgeProxy, LatencyRecorder.emptyHistogram),
+          HistogramSample(mockBackend, LatencyRecorder.emptyHistogram),
+        ),
+      )
+      val report = CampaignReport.assemble("c3", reports, ErrorTaxonomy.empty, healthyRun, thresholds)
+      assertTrue(
+        report.map(_.passed) == Right(false),
+        report.map(_.notEvaluated.sorted) == Right(
+          List(s"p99 of $edgeProxy relative to $mockBackend", s"p99 of $tokenRefresh").sorted,
+        ),
+      )
+    },
+    test("an empty baseline does not silently become a zero-microsecond relative ceiling") {
+      // The subject has real samples; only the baseline is empty. Evaluating it would compare a
+      // measured p99 against `0 + margin` and fail the campaign for the wrong reason.
+      val reports = List(
+        driverReport(
+          "c3",
+          "driver-0",
+          sample(tokenRefresh, 90_000L, 10L),
+          sample(edgeProxy, 40_000L, 10L),
+          HistogramSample(mockBackend, LatencyRecorder.emptyHistogram),
+        ),
+      )
+      val report = CampaignReport.assemble("c3", reports, ErrorTaxonomy.empty, healthyRun, thresholds)
+      assertTrue(
+        report.map(_.notEvaluated) == Right(List(s"p99 of $edgeProxy relative to $mockBackend")),
+        report.map(_.checks.forall(_.passed)) == Right(true),
+        report.map(_.passed) == Right(false),
+      )
+    },
     test("merges every driver's histograms into one set of quantiles") {
       val reports = List(
         driverReport("c3", "driver-1", sample(tokenRefresh, 1000L, 100L)),
