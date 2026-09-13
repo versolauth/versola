@@ -6,7 +6,8 @@ import org.bouncycastle.crypto.params.Argon2Parameters
 import zio.{Clock, Semaphore, Task, UIO, URLayer, ZIO, ZLayer}
 
 import java.security.{KeyPairGenerator, PrivateKey, PublicKey}
-import java.security.interfaces.{RSAPrivateKey, RSAPublicKey}
+import java.security.interfaces.{ECPrivateKey, ECPublicKey, RSAPrivateKey, RSAPublicKey}
+import java.security.spec.ECGenParameterSpec
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 import javax.crypto.spec.GCMParameterSpec
@@ -24,6 +25,7 @@ trait SecurityService:
   def hashPassword(password: Secret, salt: Salt, pepper: Secret.Bytes16): Task[MAC]
 
   def generateRsaKeyPair: UIO[RsaKeyPair]
+  def generateEcKeyPair: UIO[EcKeyPair]
 
 object SecurityService:
   /** Used by services that never hash passwords (central, edge); auth passes its configured
@@ -139,11 +141,30 @@ object SecurityService:
         val publicKey = keyPair.getPublic.asInstanceOf[RSAPublicKey]
         val privateKey = keyPair.getPrivate.asInstanceOf[RSAPrivateKey]
 
-        // Format timestamp as YYYY-MM-DD_HH-MM-SS (up to seconds precision)
         val formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss")
         val keyId = formatter.format(now.atZone(ZoneOffset.UTC))
 
         RsaKeyPair(
+          keyId = keyId,
+          publicKey = publicKey,
+          privateKey = privateKey,
+        )
+
+    override def generateEcKeyPair: UIO[EcKeyPair] =
+      for
+        now <- Clock.instant
+        keyPair <- ZIO.succeedBlocking:
+          val gen = KeyPairGenerator.getInstance("EC")
+          gen.initialize(new ECGenParameterSpec("secp256r1"))
+          gen.generateKeyPair()
+      yield
+        val publicKey = keyPair.getPublic.asInstanceOf[ECPublicKey]
+        val privateKey = keyPair.getPrivate.asInstanceOf[ECPrivateKey]
+
+        val formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss")
+        val keyId = formatter.format(now.atZone(ZoneOffset.UTC))
+
+        EcKeyPair(
           keyId = keyId,
           publicKey = publicKey,
           privateKey = privateKey,

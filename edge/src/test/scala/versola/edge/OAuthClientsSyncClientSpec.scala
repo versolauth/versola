@@ -1,7 +1,7 @@
 package versola.edge
 
 import versola.edge.model.{ClientId, EdgeId, PermissionId}
-import versola.util.{Base64, Secret, SecurityService}
+import versola.util.{Base64, EcKeyPair, Secret, SecurityService}
 import zio.*
 import zio.http.*
 import zio.json.*
@@ -42,6 +42,7 @@ object OAuthClientsSyncClientSpec extends ZIOSpecDefault:
       override def hashPassword(pw: Secret, salt: versola.util.Salt, pepper: Secret.Bytes16) =
         ZIO.dieMessage("Unused in test")
       override def generateRsaKeyPair = ZIO.dieMessage("Unused in test")
+      override def generateEcKeyPair: UIO[EcKeyPair] = ZIO.dieMessage("not used in test")
 
   private val centralSyncTokenService = new CentralSyncTokenService:
     override def getToken: UIO[String] = ZIO.succeed(syncToken)

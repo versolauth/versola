@@ -2,7 +2,7 @@ package versola.edge
 
 import versola.edge.model.{EdgeId, ResourceEndpointId, ResourceId}
 import versola.util.cel.CelEvaluator
-import versola.util.{Base64, Secret, SecurityService}
+import versola.util.{Base64, EcKeyPair, Secret, SecurityService}
 import zio.*
 import zio.http.*
 import zio.test.*
@@ -40,6 +40,7 @@ object ResourcesSyncClientSpec extends ZIOSpecDefault:
     override def mac(secret: Secret, key: Array[Byte]) = ZIO.dieMessage("Unused in test")
     override def hashPassword(password: Secret, salt: versola.util.Salt, pepper: Secret.Bytes16) = ZIO.dieMessage("Unused in test")
     override def generateRsaKeyPair = ZIO.dieMessage("Unused in test")
+    override def generateEcKeyPair: UIO[EcKeyPair] = ZIO.dieMessage("not used in test")
 
   private val centralSyncTokenService = new CentralSyncTokenService:
     override def getToken: UIO[String] = ZIO.succeed(token)
