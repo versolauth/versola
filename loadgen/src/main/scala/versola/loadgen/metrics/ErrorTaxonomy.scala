@@ -73,30 +73,48 @@ enum StepOutcome derives JsonCodec:
     case Planned(outcome) => outcome.label
     case Failed(outcome)  => outcome.label
 
+/** A campaign that cannot produce a defensible number, and so must stop rather than carry on
+  * measuring: `detail` is the misconfiguration that made it so.
+  *
+  * Separate from the taxonomy on purpose. An unregistered `client_id` or an endpoint URL that
+  * does not parse is a fault in the emulator, not a measurement of the SUT, so counting it would
+  * put our own bugs in the error budget's denominator -- which is the thing that makes a budget
+  * meaningless. There is also nothing to preserve by continuing: whatever the run measured, it
+  * measured against something other than what it claims.
+  */
+final case class CampaignAbort(detail: String)
+
 object StepOutcome:
   val ok: StepOutcome = Planned(PlannedOutcome.Ok)
 
-  /** The single place [[ProtocolError]]'s shape is turned into a taxonomy class.
+  /** The single place [[ProtocolError]]'s shape is turned into a taxonomy class, or into a reason
+    * to stop.
     *
     * No `case _` fallthrough on purpose. A wildcard would quietly file a future ADT case into
     * whichever bucket it happened to be written next to -- and the direction that mistake takes
     * matters: a new expected outcome landing in the error budget makes a healthy campaign look
     * failed, and a new failure landing among the planned outcomes hides a real defect. With an
     * exhaustive match, adding a case to `ProtocolError` produces a compiler warning here and a
-    * `MatchError` at the first call, both of which demand an explicit decision.
+    * `MatchError` at the first call, both of which demand an explicit decision. That is what
+    * `Misconfigured` did when track B added it, rather than arriving as a mislabelled bucket.
+    *
+    * The `Left` is the answer to it. Returning it rather than throwing keeps the decision on the
+    * caller's type: an abort cannot be recorded as an outcome, and it cannot be dropped without
+    * the compiler saying so.
     */
-  def of(error: ProtocolError): StepOutcome = error match
-    case _: ProtocolError.Transport         => Failed(FailedOutcome.Transport)
-    case _: ProtocolError.UnexpectedStatus  => Failed(FailedOutcome.UnexpectedStatus)
-    case _: ProtocolError.MalformedResponse => Failed(FailedOutcome.Malformed)
-    case _: ProtocolError.StepUpRequired    => Planned(PlannedOutcome.StepUp)
-    case _: ProtocolError.Forbidden         => Planned(PlannedOutcome.Forbidden)
-    case _: ProtocolError.Unauthorized      => Planned(PlannedOutcome.Unauthorized)
-    case _: ProtocolError.RefreshRejected   => Failed(FailedOutcome.RefreshRejected)
+  def of(error: ProtocolError): Either[CampaignAbort, StepOutcome] = error match
+    case _: ProtocolError.Transport          => Right(Failed(FailedOutcome.Transport))
+    case _: ProtocolError.UnexpectedStatus   => Right(Failed(FailedOutcome.UnexpectedStatus))
+    case _: ProtocolError.MalformedResponse  => Right(Failed(FailedOutcome.Malformed))
+    case _: ProtocolError.StepUpRequired     => Right(Planned(PlannedOutcome.StepUp))
+    case _: ProtocolError.Forbidden          => Right(Planned(PlannedOutcome.Forbidden))
+    case _: ProtocolError.Unauthorized       => Right(Planned(PlannedOutcome.Unauthorized))
+    case _: ProtocolError.RefreshRejected    => Right(Failed(FailedOutcome.RefreshRejected))
+    case ProtocolError.Misconfigured(detail) => Left(CampaignAbort(detail))
 
-  def of[A](result: Either[ProtocolError, A]): StepOutcome = result match
+  def of[A](result: Either[ProtocolError, A]): Either[CampaignAbort, StepOutcome] = result match
     case Left(error) => of(error)
-    case Right(_)    => ok
+    case Right(_)    => Right(ok)
 
 /** The campaign's error taxonomy: two disjoint tallies, and the arithmetic the verdict is drawn
   * from.
@@ -117,7 +135,7 @@ case class ErrorTaxonomy(
   def recordMany(outcome: StepOutcome, count: Long): ErrorTaxonomy =
     outcome match
       case StepOutcome.Planned(o) => copy(planned = planned.updatedWith(o)(c => Some(c.getOrElse(0L) + count)))
-      case StepOutcome.Failed(o)  => copy(failed = failed.updatedWith(o)(c => Some(c.getOrElse(0L) + count)))
+      case StepOutcome.Failed(o) => copy(failed = failed.updatedWith(o)(c => Some(c.getOrElse(0L) + count)))
 
   /** Per-driver tallies add: every step is counted by exactly one driver (a virtual user is owned
     * by exactly one shard, §6.2), so summing across drivers double-counts nothing.
@@ -164,6 +182,6 @@ object ErrorTaxonomy:
 object RefreshRejectionLabel:
   def of(rejection: RefreshRejection): String = rejection match
     case RefreshRejection.AlreadyExchanged => "already_exchanged"
-    case RefreshRejection.SessionRevoked   => "session_revoked"
-    case RefreshRejection.Expired          => "expired"
-    case RefreshRejection.Unknown(_)       => "unknown"
+    case RefreshRejection.SessionRevoked => "session_revoked"
+    case RefreshRejection.Expired => "expired"
+    case RefreshRejection.Unknown(_) => "unknown"

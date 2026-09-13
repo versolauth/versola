@@ -110,7 +110,7 @@ object LoadgenMetricsSpec extends ZIOSpecDefault:
           busyUsers = 4_200,
           inflightRequests = 93,
           storeFlushDroppedTotal = 0L,
-          cpuUtilisation = Some(0.31),
+          cpuRatio = Some(0.31),
         )
         for
           reporter <- DriverHealthReporter.make(healthSource(ZIO.succeed(sample)))
@@ -118,7 +118,7 @@ object LoadgenMetricsSpec extends ZIOSpecDefault:
           lag <- gauge("loadgen_schedule_lag_seconds", "scenario" -> "steady-mobile")
           busy <- gauge("loadgen_busy_users")
           inflight <- gauge("loadgen_inflight_requests")
-          cpu <- gauge("loadgen_driver_cpu_utilisation")
+          cpu <- gauge("loadgen_driver_cpu_ratio")
         yield assertTrue(lag == 0.12, busy == 4200.0, inflight == 93.0, cpu == 0.31)
       },
       test("turns the store's cumulative dropped count into counter increments") {
@@ -153,12 +153,20 @@ object LoadgenMetricsSpec extends ZIOSpecDefault:
           )
           _ <- LoadgenMetrics.driverCpu(0.77)
           _ <- reporter.publish
-          cpu <- gauge("loadgen_driver_cpu_utilisation")
+          cpu <- gauge("loadgen_driver_cpu_ratio")
         yield assertTrue(cpu == 0.77)
       },
-      test("the process CPU reading, when present, is a fraction of one pod") {
-        for reading <- ProcessCpu.utilisation
-        yield assertTrue(reading.forall(load => load >= 0.0 && load <= 1.0))
+      test("the process CPU reading needs two samples, and is a fraction of this pod's allocation") {
+        // A single reading has nothing to difference, so the honest answer is None rather than a
+        // 0.0 that would read as a perfectly idle driver. The magnitude cannot be asserted on a
+        // shared build box; the scale can -- and the scale is the point, since the old
+        // `getProcessCpuLoad` divided by every core on the node and so could never reach the 40%
+        // gate on a large one.
+        for
+          cpu <- ProcessCpu.make
+          first <- cpu.ratio
+          second <- cpu.ratio
+        yield assertTrue(first.isEmpty, second.forall(ratio => ratio >= 0.0 && ratio <= 1.0))
       },
     ) @@ TestAspect.sequential,
   ) @@ TestAspect.sequential

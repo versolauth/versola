@@ -28,6 +28,7 @@ case class AcceptanceThresholds(
     maxFlushDropped: Long,
     maxDriverCpu: Double,
     maxErrorBudgetRatio: Double,
+    maxLatencyClamped: Long,
 )
 
 object AcceptanceThresholds:
@@ -49,6 +50,12 @@ object AcceptanceThresholds:
       maxFlushDropped = 0L,
       maxDriverCpu = 0.4,
       maxErrorBudgetRatio = 0.0,
+      // A clamped sample is an instrument failure, not a slow SUT: the reported tail becomes a
+      // floor rather than a measurement, and §6.7 rests the whole report's credibility on the
+      // recorder being in range. One is enough to fail the campaign. With the driver's request
+      // timeout at 30 s against a 60 s recorder ceiling, a clamp is structurally unreachable
+      // without a bug in the driver, which is the correct reading of the signal.
+      maxLatencyClamped = 0L,
     )
 
 /** Fleet-wide driver-health figures at the end of a campaign, as the coordinator has them.
@@ -62,6 +69,7 @@ case class CampaignHealth(
     flushDroppedTotal: Long,
     maxDriverCpu: Option[Double],
     scheduleLagP99: Option[Duration],
+    latencyClampedTotal: Long,
 ) derives JsonCodec
 
 /** One line of the verdict. `detail` carries the measured value so a failed check is actionable
@@ -185,6 +193,11 @@ object CampaignReport:
         name = "dropped write-behind rows",
         passed = health.flushDroppedTotal <= thresholds.maxFlushDropped,
         detail = s"${health.flushDroppedTotal} against a limit of ${thresholds.maxFlushDropped}",
+      ),
+      ReportCheck(
+        name = "clamped latencies",
+        passed = health.latencyClampedTotal <= thresholds.maxLatencyClamped,
+        detail = s"${health.latencyClampedTotal} against a limit of ${thresholds.maxLatencyClamped}",
       ),
       ReportCheck(
         name = "error budget",

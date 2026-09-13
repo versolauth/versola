@@ -27,6 +27,7 @@ object CampaignReportSpec extends ZIOSpecDefault:
     flushDroppedTotal = 0L,
     maxDriverCpu = Some(0.29),
     scheduleLagP99 = Some(Duration.fromMillis(180)),
+    latencyClampedTotal = 0L,
   )
 
   private val allMeasured = List(
@@ -48,6 +49,7 @@ object CampaignReportSpec extends ZIOSpecDefault:
         thresholds.maxRefreshRejected == 0L,
         thresholds.maxFlushDropped == 0L,
         thresholds.maxDriverCpu == 0.4,
+        thresholds.maxLatencyClamped == 0L,
       )
     },
     test("passes a campaign that meets every criterion") {
@@ -55,7 +57,7 @@ object CampaignReportSpec extends ZIOSpecDefault:
       assertTrue(
         report.map(_.passed) == Right(true),
         report.map(_.notEvaluated) == Right(Nil),
-        report.map(_.checks.size) == Right(7),
+        report.map(_.checks.size) == Right(8),
         report.map(_.drivers) == Right(List("driver-0")),
         report.map(_.latency.map(_.count)) == Right(List(100L, 100L, 100L)),
       )
@@ -110,6 +112,7 @@ object CampaignReportSpec extends ZIOSpecDefault:
         flushDroppedTotal = 41L,
         maxDriverCpu = Some(0.62),
         scheduleLagP99 = Some(Duration.fromMillis(900)),
+        latencyClampedTotal = 0L,
       )
       val report = CampaignReport.assemble("c3-10m-steady", allMeasured, ErrorTaxonomy.empty, unhealthy, thresholds)
       assertTrue(
@@ -126,6 +129,19 @@ object CampaignReportSpec extends ZIOSpecDefault:
         report.map(_.passed) == Right(false),
         report.map(_.notEvaluated) == Right(List(s"p99 of $edgeProxy relative to $mockBackend")),
         report.map(_.checks.forall(_.passed)) == Right(true),
+      )
+    },
+    test("a single clamped latency fails the campaign") {
+      // A clamped sample means the reported tail is a floor rather than a measurement, so the
+      // report's headline number is no longer the thing it claims to be. With the driver timing
+      // out at 30 s against a 60 s recorder ceiling it also cannot happen without a bug in the
+      // driver -- so one is the limit, and everything else about the run being healthy is exactly
+      // when this needs to still fail.
+      val clamped = healthyRun.copy(latencyClampedTotal = 1L)
+      val report = CampaignReport.assemble("c3-10m-steady", allMeasured, ErrorTaxonomy.empty, clamped, thresholds)
+      assertTrue(
+        report.map(_.passed) == Right(false),
+        report.map(_.checks.filterNot(_.passed).map(_.name)) == Right(List("clamped latencies")),
       )
     },
     test("a present but empty histogram is not evaluated, so a zero-sample campaign cannot pass") {

@@ -11,16 +11,16 @@ import zio.{Duration, Ref, Schedule, UIO, ZIO}
   * queueing is inside the latencies it is reporting (design doc §6.5 sizes the fleet at 30% CPU
   * precisely so this cannot happen).
   *
-  * `cpuUtilisation` is optional because the JVM genuinely cannot always answer -- `getProcessCpuLoad`
-  * returns a negative value until it has two samples to difference. A `0.0` there would read as a
-  * perfectly idle driver, which is the one answer that must not be guessed.
+  * `cpuRatio` is optional because it takes two readings to difference before there is an answer
+  * at all -- see [[ProcessCpu]]. A `0.0` in the meantime would read as a perfectly idle driver,
+  * which is the one answer that must not be guessed.
   */
 case class DriverHealthSample(
     scheduleLagByScenario: Map[String, Duration],
     busyUsers: Int,
     inflightRequests: Int,
     storeFlushDroppedTotal: Long,
-    cpuUtilisation: Option[Double],
+    cpuRatio: Option[Double],
 )
 
 /** This package's side of the driver-health contract.
@@ -44,31 +44,71 @@ object DriverHealthSource:
       busyUsers: UIO[Int],
       inflightRequests: UIO[Int],
       storeFlushDroppedTotal: UIO[Long],
-  ): DriverHealthSource =
-    new DriverHealthSource:
-      override def sample: UIO[DriverHealthSample] =
-        for
-          lag <- scheduleLagByScenario
-          busy <- busyUsers
-          inflight <- inflightRequests
-          dropped <- storeFlushDroppedTotal
-          cpu <- ProcessCpu.utilisation
-        yield DriverHealthSample(lag, busy, inflight, dropped, cpu)
+  ): UIO[DriverHealthSource] =
+    ProcessCpu.make.map: processCpu =>
+      new DriverHealthSource:
+        override def sample: UIO[DriverHealthSample] =
+          for
+            lag <- scheduleLagByScenario
+            busy <- busyUsers
+            inflight <- inflightRequests
+            dropped <- storeFlushDroppedTotal
+            cpu <- processCpu.ratio
+          yield DriverHealthSample(lag, busy, inflight, dropped, cpu)
 
-/** Process CPU load from the JVM's own platform bean.
+/** This driver's CPU use as a fraction of **its own allocation**, which is what the definition of
+  * done's "driver CPU < 40%" is stated against.
   *
-  * Deliberately the *process* load, not the machine's: a driver pod shares its node with other
-  * drivers, and the number the definition of done is stated against ("driver CPU < 40%") is this
-  * driver's share of its own allocation.
+  * Not `getProcessCpuLoad`, despite the name. That returns the process's use as a fraction of all
+  * host CPUs: on a 64-core node with a 2-core cgroup quota, a driver pegged at 100% of its quota
+  * reports about 0.03. The gate would then never fire, and the one check that proves the
+  * instrument was not itself the bottleneck would silently always pass -- which is exactly the
+  * class of failure this track exists to catch.
+  *
+  * Computed from CPU-time deltas against the allocation instead:
+  * {{{ratio = ΔprocessCpuTime / (ΔwallClock × availableProcessors)}}}
+  * `availableProcessors` is cgroup-aware under `UseContainerSupport`, so it already equals the
+  * quota rather than the node's core count.
   */
+final class ProcessCpu private (previous: Ref[Option[ProcessCpu.Reading]]):
+
+  /** `None` until there are two readings to difference -- the same reason the bean's own load is
+    * negative at first. A `0.0` there would read as a perfectly idle driver, which is the one
+    * answer that must not be guessed.
+    *
+    * Also `None` if the clock has not advanced between two calls, since the ratio would divide by
+    * zero. Clamped to 1.0 at the top: rounding between two clocks sampled a few nanoseconds apart
+    * can put a fully busy process marginally over.
+    */
+  def ratio: UIO[Option[Double]] =
+    ProcessCpu.read.flatMap:
+      case None => ZIO.none
+      case Some(current) =>
+        previous.modify: before =>
+          val computed = before.flatMap: earlier =>
+            val cpuNanos = (current.cpuTimeNanos - earlier.cpuTimeNanos).toDouble
+            val wallNanos = (current.wallNanos - earlier.wallNanos).toDouble
+            val capacity = wallNanos * ProcessCpu.availableProcessors
+            if capacity <= 0.0 || cpuNanos < 0.0 then None
+            else Some(math.min(cpuNanos / capacity, 1.0))
+          (computed, Some(current))
+
 object ProcessCpu:
 
-  val utilisation: UIO[Option[Double]] =
+  private[metrics] final case class Reading(cpuTimeNanos: Long, wallNanos: Long)
+
+  val make: UIO[ProcessCpu] =
+    Ref.make(Option.empty[Reading]).map(ProcessCpu(_))
+
+  private def availableProcessors: Int =
+    Runtime.getRuntime.availableProcessors
+
+  private val read: UIO[Option[Reading]] =
     ZIO.succeed:
       java.lang.management.ManagementFactory.getOperatingSystemMXBean match
         case bean: com.sun.management.OperatingSystemMXBean =>
-          val load = bean.getProcessCpuLoad
-          if load < 0.0 then None else Some(math.min(load, 1.0))
+          val cpuTime = bean.getProcessCpuTime
+          if cpuTime < 0L then None else Some(Reading(cpuTime, java.lang.System.nanoTime()))
         case _ => None
 
 /** Publishes [[DriverHealthSample]]s onto the Prometheus surface on a timer. */
@@ -83,7 +123,7 @@ final class DriverHealthReporter private (source: DriverHealthSource, lastFlushD
       _ <- LoadgenMetrics.busyUsers(sample.busyUsers)
       _ <- LoadgenMetrics.inflightRequests(sample.inflightRequests)
       _ <- flushDroppedDelta(sample.storeFlushDroppedTotal).flatMap(LoadgenMetrics.storeFlushDropped)
-      _ <- ZIO.foreachDiscard(sample.cpuUtilisation)(LoadgenMetrics.driverCpu)
+      _ <- ZIO.foreachDiscard(sample.cpuRatio)(LoadgenMetrics.driverCpu)
     yield ()
 
   def run(interval: Duration): UIO[Unit] =

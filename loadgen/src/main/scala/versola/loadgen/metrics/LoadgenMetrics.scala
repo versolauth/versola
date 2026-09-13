@@ -48,10 +48,11 @@ object LoadgenMetrics:
   private val populationGauge = Metric.gauge("loadgen_population")
 
   /** Not in §11's table, but named by the definition of done ("driver CPU < 40%"). A fraction in
-    * `[0, 1]` of one whole pod's CPU allocation, matching `getProcessCpuLoad`'s own scale, so the
-    * threshold can be read off the graph without knowing the pod's core count.
+    * `[0, 1]` of the pod's own CPU allocation -- see [[ProcessCpu]] -- so the threshold can be
+    * read off the graph without knowing the node's core count. `_ratio` rather than
+    * `_utilisation` because that is Prometheus's suffix for a unitless `[0, 1]` gauge.
     */
-  private val driverCpuGauge = Metric.gauge("loadgen_driver_cpu_utilisation")
+  private val driverCpuGauge = Metric.gauge("loadgen_driver_cpu_ratio")
 
   /** Recorded latencies above [[LatencyRecorder.highestTrackableMicros]] are clamped before they
     * reach the HdrHistogram. That is invisible in the quantiles, so it is counted here: any

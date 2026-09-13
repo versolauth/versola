@@ -20,34 +20,52 @@ object ErrorTaxonomySpec extends ZIOSpecDefault:
   private val forbidden = ProtocolError.Forbidden("/resources/pay/templates")
   private val unauthorized = ProtocolError.Unauthorized("/resources/core/cards")
   private val refreshRejected = ProtocolError.RefreshRejected(RefreshRejection.AlreadyExchanged)
+  private val misconfigured = ProtocolError.Misconfigured("client_id 'loadgen' is not registered")
 
   private val everyError = List(transport, unexpectedStatus, malformed, stepUp, forbidden, unauthorized, refreshRejected)
+
+  /** The classification, for the cases that have one. Every call below is on an error the match
+    * maps to a `Right`; `Misconfigured` is asserted separately, as the one that does not.
+    */
+  private def classify(error: ProtocolError): StepOutcome =
+    StepOutcome.of(error).toOption.get
 
   def spec = suite("ErrorTaxonomy")(
     test("classifies step-up, forbidden and unauthorized as planned outcomes") {
       assertTrue(
-        StepOutcome.of(stepUp) == StepOutcome.Planned(PlannedOutcome.StepUp),
-        StepOutcome.of(forbidden) == StepOutcome.Planned(PlannedOutcome.Forbidden),
-        StepOutcome.of(unauthorized) == StepOutcome.Planned(PlannedOutcome.Unauthorized),
+        classify(stepUp) == StepOutcome.Planned(PlannedOutcome.StepUp),
+        classify(forbidden) == StepOutcome.Planned(PlannedOutcome.Forbidden),
+        classify(unauthorized) == StepOutcome.Planned(PlannedOutcome.Unauthorized),
       )
     },
     test("classifies transport, status, malformed and refresh rejection as failures") {
       assertTrue(
-        StepOutcome.of(transport) == StepOutcome.Failed(FailedOutcome.Transport),
-        StepOutcome.of(unexpectedStatus) == StepOutcome.Failed(FailedOutcome.UnexpectedStatus),
-        StepOutcome.of(malformed) == StepOutcome.Failed(FailedOutcome.Malformed),
-        StepOutcome.of(refreshRejected) == StepOutcome.Failed(FailedOutcome.RefreshRejected),
+        classify(transport) == StepOutcome.Failed(FailedOutcome.Transport),
+        classify(unexpectedStatus) == StepOutcome.Failed(FailedOutcome.UnexpectedStatus),
+        classify(malformed) == StepOutcome.Failed(FailedOutcome.Malformed),
+        classify(refreshRejected) == StepOutcome.Failed(FailedOutcome.RefreshRejected),
+      )
+    },
+    test("a misconfiguration aborts the campaign instead of becoming an outcome") {
+      // An unregistered client_id or an unparseable endpoint is our fault, not a reading of the
+      // SUT. Tallying it would put emulator bugs in the error budget's denominator, and there is
+      // nothing to salvage by continuing: the run measured something other than what it claims.
+      // The `Left` keeps that on the caller's type, so the abort cannot be recorded or dropped.
+      assertTrue(
+        StepOutcome.of(misconfigured) == Left(CampaignAbort("client_id 'loadgen' is not registered")),
+        StepOutcome.of(Left(misconfigured)).isLeft,
+        everyError.forall(StepOutcome.of(_).isRight),
       )
     },
     test("classifies a successful result as ok") {
-      assertTrue(StepOutcome.of(Right(())) == StepOutcome.ok, StepOutcome.ok.label == "ok")
+      assertTrue(StepOutcome.of(Right(())) == Right(StepOutcome.ok), StepOutcome.ok.label == "ok")
     },
     test("no protocol error is left unclassified") {
-      val classified = everyError.map(StepOutcome.of)
+      val classified = everyError.map(classify)
       assertTrue(classified.size == everyError.size, classified.forall(_.label.nonEmpty))
     },
     test("planned outcomes never consume the error budget") {
-      val taxonomy = everyError.foldLeft(ErrorTaxonomy.empty)((acc, error) => acc.record(StepOutcome.of(error)))
+      val taxonomy = everyError.foldLeft(ErrorTaxonomy.empty)((acc, error) => acc.record(classify(error)))
       // Seven errors in, three of them planned: the budget must see exactly the other four.
       assertTrue(
         taxonomy.total == 7L,
@@ -59,7 +77,7 @@ object ErrorTaxonomySpec extends ZIOSpecDefault:
     },
     test("a campaign of nothing but step-ups and 403s consumes no budget at all") {
       val taxonomy = List.fill(500)(stepUp).appendedAll(List.fill(120)(forbidden))
-        .foldLeft(ErrorTaxonomy.empty)((acc, error) => acc.record(StepOutcome.of(error)))
+        .foldLeft(ErrorTaxonomy.empty)((acc, error) => acc.record(classify(error)))
       assertTrue(taxonomy.total == 620L, taxonomy.budgetConsumed == 0L, taxonomy.budgetRatio == 0.0)
     },
     test("the budget ratio is failures over all steps") {
