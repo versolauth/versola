@@ -276,6 +276,11 @@ case class GetAllTenantsResponse(
     tenants: Vector[TenantResponse],
 ) derives Schema, JsonCodec
 
+/** Deliberately takes no `submissionLimits` field -- every tenant is seeded with
+  * `SubmissionLimits.recommended` (see `TenantService.createTenant`) and that's never a
+  * caller-supplied choice, so there's no per-request rate-limit configuration to validate
+  * or fall back on here.
+  */
 case class CreateTenantRequest(
     id: TenantId,
     description: String,

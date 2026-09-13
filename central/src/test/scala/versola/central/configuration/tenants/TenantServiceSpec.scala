@@ -1,7 +1,9 @@
 package versola.central.configuration.tenants
 
 import org.scalamock.stubs.{Stub, ZIOStubs}
+import versola.central.TestCentralConfig
 import versola.central.configuration.{CreateTenantRequest, UpdateTenantRequest}
+import versola.central.configuration.challenges.{ChallengeSettingsRecord, ChallengeSettingsService, PasskeySettings, SubmissionLimits}
 import versola.util.ReloadingCache
 import zio.*
 import zio.test.*
@@ -19,7 +21,8 @@ object TenantServiceSpec extends ZIOSpecDefault, ZIOStubs:
   class Env(initial: Vector[TenantRecord] = Vector.empty):
     val cache = ReloadingCache(Unsafe.unsafe(unsafe ?=> Ref.unsafe.make(initial)))
     val repository = stub[TenantRepository]
-    val service = TenantService.Impl(cache, repository)
+    val challengeSettingsService = stub[ChallengeSettingsService]
+    val service = TenantService.Impl(cache, repository, challengeSettingsService, TestCentralConfig.config)
 
   def spec = suite("TenantService")(
     test("getAllTenants returns cached tenants sorted by id") {
@@ -29,13 +32,43 @@ object TenantServiceSpec extends ZIOSpecDefault, ZIOStubs:
         result <- env.service.getAllTenants
       yield assertTrue(result == Vector(tenantRecord1, tenantRecord2))
     },
-    test("createTenant delegates request fields to repository") {
+    test("createTenant delegates request fields to repository and seeds challenge settings") {
       val env = new Env()
 
       for
         _ <- env.repository.createTenant.succeedsWith(())
+        _ <- env.challengeSettingsService.upsertSettings.succeedsWith(())
         _ <- env.service.createTenant(createRequest)
-      yield assertTrue(env.repository.createTenant.calls == List((tenant1, "Tenant A", None)))
+      yield assertTrue(
+        env.repository.createTenant.calls == List((tenant1, "Tenant A", None)),
+        env.challengeSettingsService.upsertSettings.calls ==
+          List(ChallengeSettingsRecord(
+            tenantId = tenant1,
+            allowedPrefixes = Nil,
+            submissionLimits = SubmissionLimits.recommended,
+            otpLength = 6,
+            otpResendAfter = 60,
+            passkeySettings = PasskeySettings("", "Versola", Nil, "preferred"),
+            authConversationTtlSeconds = 900,
+            sessionTtlSeconds = 86400,
+            sessionIdleTtlSeconds = None,
+            userAgentTtlSeconds = 15552000,
+            ipHeader = "X-Real-IP",
+            acrVocabulary = None,
+            postLogoutRedirectUris = Nil,
+          )),
+      )
+    },
+    test("createTenant always seeds the recommended submission limits -- the request has no override for them") {
+      val env = new Env()
+
+      for
+        _ <- env.repository.createTenant.succeedsWith(())
+        _ <- env.challengeSettingsService.upsertSettings.succeedsWith(())
+        _ <- env.service.createTenant(createRequest)
+      yield assertTrue(
+        env.challengeSettingsService.upsertSettings.calls.map(_.submissionLimits) == List(SubmissionLimits.recommended),
+      )
     },
     test("updateTenant delegates request fields to repository") {
       val env = new Env()

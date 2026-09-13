@@ -35,6 +35,15 @@ trait TenantRepositorySpec extends DatabaseSpecBase[TenantRepositorySpec.Env]:
           ),
         )
       },
+      test("createTenant upserts: calling it again for an existing id overwrites the row instead of failing") {
+        for
+          _ <- env.repository.createTenant(tenant1, "Tenant A", None)
+          _ <- env.repository.createTenant(tenant1, "Retried description", None)
+          tenants <- env.repository.getAll
+        yield assertTrue(
+          tenants == Vector(TenantRecord(tenant1, "Retried description", None)),
+        )
+      },
     )
 
 object TenantRepositorySpec:

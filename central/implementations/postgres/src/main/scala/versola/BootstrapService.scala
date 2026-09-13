@@ -1,7 +1,7 @@
 package versola
 
 import versola.central.CentralConfig
-import versola.central.configuration.challenges.{ChallengeSettingsRecord, ChallengeSettingsRepository, OtpChallengeRepository, OtpTemplateChannel, OtpTemplatePurpose, OtpTemplateRecord, PasskeySettings, RateLimit, SubmissionLimits}
+import versola.central.configuration.challenges.{ChallengeSettingsRecord, ChallengeSettingsRepository, OtpChallengeRepository, OtpTemplateChannel, OtpTemplatePurpose, OtpTemplateRecord, PasskeySettings, SubmissionLimits}
 import versola.central.configuration.system.{SystemSettingsRecord, SystemSettingsRepository}
 import versola.central.configuration.clients.{AuthFactor, AuthFactorType, AuthFlow, AuthorizationPreset, AuthorizationPresetRepository, ClientAlreadyExists, ClientId, InvalidRegistrationConfiguration, OAuthClientService, OtpType, PasskeyAuthFlow, PresetId, PrimaryAuthFlow, PrimaryCredential, RegistrationFlow, ResponseType}
 import versola.central.configuration.edges.{EdgeId, EdgeRepository}
@@ -474,13 +474,7 @@ object BootstrapService:
     ChallengeSettingsRecord(
       tenantId = tenantId,
       allowedPrefixes = List.empty,
-      submissionLimits = SubmissionLimits(
-        otpRequest = List(RateLimit(2, 60), RateLimit(5, 3600)),
-        otpSubmit = List(RateLimit(3, 120), RateLimit(5, 3600)),
-        passwordSubmit = List(RateLimit(5, 900), RateLimit(10, 3600)),
-        passkeyAssertion = List(RateLimit(5, 300), RateLimit(10, 3600)),
-        banDurationSeconds = 1800,
-      ),
+      submissionLimits = SubmissionLimits.recommended,
       otpLength = 6,
       otpResendAfter = 60,
       passkeySettings = PasskeySettings(

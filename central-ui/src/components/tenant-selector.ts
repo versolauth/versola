@@ -106,8 +106,8 @@ export class TenantSelector extends LitElement {
         width: 100%;
         box-sizing: border-box;
         padding: 0.5rem 0.75rem;
-        background: rgba(0, 0, 0, 0.4);
-        border: 1px solid transparent;
+        background: var(--bg-dark);
+        border: 1px solid var(--border-dark);
         border-radius: var(--radius-md);
         color: var(--text-primary);
         font-size: 0.8125rem;
@@ -118,12 +118,12 @@ export class TenantSelector extends LitElement {
       .search-input:focus {
         outline: none;
         border-color: var(--accent);
-        background: rgba(0, 0, 0, 0.6);
+        box-shadow: 0 0 0 2px rgba(var(--accent-tint), 0.15);
       }
 
       .search-input::placeholder {
         color: var(--text-secondary);
-        opacity: 0.5;
+        opacity: 0.7;
       }
 
       .tenant-list {

@@ -624,7 +624,11 @@ export async function fetchTenants(): Promise<Tenant[]> {
   })));
 }
 
-export async function createTenant(id: string, description: string, edgeId: string | null = null): Promise<void> {
+export async function createTenant(
+  id: string,
+  description: string,
+  edgeId: string | null = null,
+): Promise<void> {
   await requestVoid('/configuration/tenants', {
     method: 'POST',
     body: { id, description, edgeId },
