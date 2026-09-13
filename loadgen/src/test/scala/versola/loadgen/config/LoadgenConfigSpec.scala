@@ -32,8 +32,16 @@ object LoadgenConfigSpec extends ZIOSpecDefault:
       |coordinator { url = "http://loadgen-coordinator:8100", poll-interval = 10s }
       |
       |store {
-      |  url = "jdbc:postgresql://loadgen-db:5432/loadgen"
-      |  maximum-pool-size = 16
+      |  postgres {
+      |    url = "jdbc:postgresql://loadgen-db:5432/loadgen"
+      |    user = "loadgen"
+      |    password = "loadgen"
+      |    maximum-pool-size = 16
+      |    minimum-idle = 16
+      |    connection-timeout = 30s
+      |    max-lifetime = 30m
+      |    leak-detection-threshold = 0s
+      |  }
       |  write-behind { flush-interval = 200ms, batch-size = 500 }
       |}
       |
@@ -88,6 +96,8 @@ object LoadgenConfigSpec extends ZIOSpecDefault:
           config.role == LoadgenRole.Driver,
           config.shard == Some(ShardConfig(index = 0, count = 8)),
           config.targets.mockUrl == "http://mockapi:8100",
+          config.store.postgres.url == "jdbc:postgresql://loadgen-db:5432/loadgen",
+          config.store.postgres.maximumPoolSize == 16,
           config.store.writeBehind.batchSize == 500,
           config.population.target == 10000000L,
           config.population.classes.map(_.name) == List("heavy", "regular", "light", "dormant"),
