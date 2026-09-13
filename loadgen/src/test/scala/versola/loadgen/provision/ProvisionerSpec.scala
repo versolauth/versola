@@ -59,6 +59,40 @@ object ProvisionerSpec extends ZIOSpecDefault:
         lastResource = state.calls.lastIndexWhere(_.path == "/configuration/resources")
       yield assertTrue(granted == declared, granted.size == 10, lastResource < firstPermission)
     },
+    // A client's registration flow grants a role by id, and central validates that the role
+    // exists while saving the client -- a pass that wrote the clients first would be rejected
+    // with a 400 on the very first one.
+    test("creates the roles a client's registration flow grants before the client") {
+      for
+        (admin, fake) <- fakeAdmin
+        _ <- Provisioner.run(admin, blueprint)
+        state <- fake.snapshot
+        granted = blueprint.clients.flatMap(_.registrationFlow).flatMap(_.asObject)
+          .flatMap(flow => FakeCentral.strings(flow, "roleIds"))
+        lastRole = state.calls.lastIndexWhere(_.path == "/configuration/roles")
+        firstClient = state.calls.indexWhere(_.path == "/configuration/clients")
+      yield assertTrue(
+        granted.toSet == Set(CampaignBlueprint.retailUserRoleId),
+        granted.toSet.subsetOf(state.roles.keySet),
+        lastRole < firstClient,
+      )
+    },
+    // The listings the create-or-update choices are made on are cached, so a pass retried
+    // straight after a partial one can be told that what it just wrote is not there.
+    test("converges when the listings have not caught up with what a previous pass wrote") {
+      for
+        (admin, fake) <- fakeAdmin
+        _ <- Provisioner.run(admin, blueprint)
+        first <- fake.snapshot
+        _ <- fake.staleListings
+        _ <- Provisioner.run(admin, blueprint)
+        second <- fake.snapshot
+      yield assertTrue(
+        second.resources.view.mapValues(_.endpointIds).toMap == first.resources.view.mapValues(_.endpointIds).toMap,
+        second.permissions == first.permissions,
+        second.roles == first.roles,
+      )
+    },
     // Edge reads client and preset state from central, so a sync that ran before the writes
     // leaves edge serving the previous campaign's configuration.
     test("syncs auth and then edge, after every write") {
@@ -101,8 +135,10 @@ object ProvisionerSpec extends ZIOSpecDefault:
     test("finishes a run that died halfway") {
       for
         (admin, fake) <- fakeAdmin
-        _ <- ZIO.foreachDiscard(blueprint.clients)(admin.registerClient)
-        _ <- ZIO.foreachDiscard(blueprint.resources.take(1))(admin.registerResource)
+        _ <- ZIO.foreachDiscard(blueprint.resources)(admin.registerResource)
+        _ <- admin.upsertPermissions(blueprint.permissions)
+        _ <- admin.upsertRoles(blueprint.roles)
+        _ <- ZIO.foreachDiscard(blueprint.clients.take(1))(admin.registerClient)
         _ <- Provisioner.run(admin, blueprint)
         state <- fake.snapshot
       yield assertTrue(

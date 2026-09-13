@@ -26,6 +26,31 @@ final class FakeCentral(state: Ref[FakeCentral.State], staleClientListing: Boole
 
   def snapshot: UIO[State] = state.get
 
+  /** Pre-creates roles, for the specs that write a client on its own: central validates the
+    * roles a registration flow grants while saving the client, so a client-only test would
+    * otherwise be rejected the way the provisioner's ordering was.
+    */
+  def withRoles(roleIds: Set[String]): UIO[FakeCentral] =
+    state.update(s => s.copy(roles = s.roles ++ roleIds.map(_ -> Set.empty[String]))).as(this)
+
+  /** Grants a permission directly to a stored client -- something the campaign's blueprint never
+    * asks for, and therefore the only way to test that the desired-state update takes away what
+    * a previous configuration left behind.
+    */
+  def grantClientPermissions(clientId: String, permissions: Set[String]): UIO[Unit] =
+    state.update: s =>
+      s.copy(clients = s.clients.updatedWith(clientId)(_.map(c => c.copy(permissions = c.permissions ++ permissions))))
+
+  /** Puts the listing caches back the way a run that lost a race sees them: the next read of
+    * each configuration listing answers as if nothing were there, though every write is
+    * committed, and catches up on the read after it. The window in which a create-if-missing
+    * check takes the create branch for something that is already there.
+    */
+  def staleListings: UIO[Unit] = state.update(_.copy(coldPaths = coldListingPaths))
+
+  private def cold(path: String): UIO[Boolean] =
+    state.modify(s => (s.coldPaths.contains(path), s.copy(coldPaths = s.coldPaths - path)))
+
   private def respond(request: Request, body: String): UIO[Response] =
     val path = request.url.path.encode
     val record = state.update(s => s.copy(calls = s.calls :+ Call(request.method, path, body)))
@@ -39,27 +64,43 @@ final class FakeCentral(state: Ref[FakeCentral.State], staleClientListing: Boole
         // the listing is served from a cache a PostgreSQL notification refreshes, so a peer's
         // client can be absent from it and still conflict on create.
         state.get.map: s =>
-          val visible = if staleClientListing then Nil else s.clients.keys.toList.sorted
-          json(Json.Obj("clients" -> array(visible.map(idObject))))
+          val visible = if staleClientListing then Nil else s.clients.toList.sortBy(_._1)
+          json(Json.Obj("clients" -> array(visible.map { (clientId, stored) =>
+            Json.Obj(
+              "id" -> Json.Str(clientId),
+              "redirectUris" -> array(stored.redirectUris.toList.sorted.map(Json.Str(_))),
+              "scope" -> array(stored.scopes.toList.sorted.map(Json.Str(_))),
+              "permissions" -> array(stored.permissions.toList.sorted.map(Json.Str(_))),
+            )
+          })))
 
       case (Method.POST, "/configuration/clients") =>
         val spec = parse(body)
         val clientId = str(spec, "id")
-        state.modify: s =>
+        val create = state.modify: s =>
           if s.clients.contains(clientId) then (Response.status(Status.Conflict), s)
           else
             val secret = if str(spec, "clientType") == "web" then Some(s"secret-$clientId-0") else None
             val response = json(Json.Obj(secret.map(v => "secret" -> Json.Str(v)).toList*), Status.Created)
-            (response, s.copy(clients = s.clients.updated(clientId, StoredClient(spec, secret))))
+            val stored = StoredClient(
+              spec = spec,
+              secret = secret,
+              redirectUris = strings(spec, "redirectUris").toSet,
+              scopes = strings(spec, "allowedScopes").toSet,
+              permissions = strings(spec, "permissions").toSet,
+            )
+            (response, s.copy(clients = s.clients.updated(clientId, stored)))
+        unknownRole(spec).someOrElseZIO(create)
 
       case (Method.PUT, "/configuration/clients") =>
         val spec = parse(body)
         val clientId = str(spec, "clientId")
-        state.modify: s =>
+        val update = state.modify: s =>
           s.clients.get(clientId) match
             case None => (Response.status(Status.NoContent), s)
             case Some(stored) =>
               (Response.status(Status.NoContent), s.copy(clients = s.clients.updated(clientId, stored.updated(spec))))
+        unknownRole(spec).someOrElseZIO(update)
 
       case (Method.POST, "/configuration/clients/rotate-secret") =>
         val clientId = request.url.queryParams.queryParam("clientId").getOrElse("")
@@ -74,8 +115,9 @@ final class FakeCentral(state: Ref[FakeCentral.State], staleClientListing: Boole
               )
 
       case (Method.GET, "/configuration/resources") =>
-        state.get.map: s =>
-          json(Json.Obj("resources" -> array(s.resources.toList.sortBy(_._1).map { (resourceId, stored) =>
+        cold(path).zip(state.get).map: (stale, s) =>
+          val visible = if stale then Nil else s.resources.toList.sortBy(_._1)
+          json(Json.Obj("resources" -> array(visible.map { (resourceId, stored) =>
             Json.Obj(
               "resourceId" -> Json.Str(resourceId),
               "endpoints" -> array(stored.endpointIds.toList.sortBy(_.toString).map(idObject)),
@@ -107,8 +149,9 @@ final class FakeCentral(state: Ref[FakeCentral.State], staleClientListing: Boole
               )
 
       case (Method.GET, "/configuration/permissions") =>
-        state.get.map: s =>
-          json(Json.Obj("permissions" -> array(s.permissions.keys.toList.sorted.map: permission =>
+        cold(path).zip(state.get).map: (stale, s) =>
+          val visible = if stale then Nil else s.permissions.keys.toList.sorted
+          json(Json.Obj("permissions" -> array(visible.map: permission =>
             Json.Obj("permission" -> Json.Str(permission)))))
 
       case (Method.POST, "/configuration/permissions") =>
@@ -130,8 +173,9 @@ final class FakeCentral(state: Ref[FakeCentral.State], staleClientListing: Boole
             (Response.status(Status.NoContent), s.copy(permissions = s.permissions.updated(permission, endpointIds)))
 
       case (Method.GET, "/configuration/roles") =>
-        state.get.map: s =>
-          json(Json.Obj("roles" -> array(s.roles.toList.sortBy(_._1).map { (roleId, granted) =>
+        cold(path).zip(state.get).map: (stale, s) =>
+          val visible = if stale then Nil else s.roles.toList.sortBy(_._1)
+          json(Json.Obj("roles" -> array(visible.map { (roleId, granted) =>
             Json.Obj("id" -> Json.Str(roleId), "permissions" -> array(granted.toList.sorted.map(Json.Str(_))))
           })))
 
@@ -177,6 +221,18 @@ final class FakeCentral(state: Ref[FakeCentral.State], staleClientListing: Boole
 
       case _ => ZIO.succeed(Response.status(Status.NotFound)))
 
+  /** Central validates the roles a client's registration flow grants while saving the client and
+    * answers a `400` for one that does not exist yet -- the reason roles are provisioned before
+    * any client that names them.
+    */
+  private def unknownRole(spec: Json.Obj): UIO[Option[Response]] =
+    val granted = field(spec, "registrationFlow").collect { case flow: Json.Obj => strings(flow, "roleIds") }
+      .getOrElse(Nil)
+    state.get.map: s =>
+      granted.find(!s.roles.contains(_)).map: roleId =>
+        Response.text(s"Invalid registration configuration: role '$roleId' does not exist")
+          .status(Status.BadRequest)
+
 object FakeCentral:
 
   case class Call(method: Method, path: String, body: String)
@@ -192,11 +248,38 @@ object FakeCentral:
     "/configuration/roles",
   )
 
-  case class StoredClient(spec: Json.Obj, secret: Option[String], rotations: Int = 0):
-    def updated(spec: Json.Obj): StoredClient = copy(spec = spec)
+  case class StoredClient(
+      spec: Json.Obj,
+      secret: Option[String],
+      redirectUris: Set[String] = Set.empty,
+      scopes: Set[String] = Set.empty,
+      permissions: Set[String] = Set.empty,
+      rotations: Int = 0,
+  ):
+    /** Applies the update's patch sets the way central's repository does, removals before
+      * additions, so a client whose configuration was narrowed really does lose what the
+      * update takes away.
+      */
+    def updated(spec: Json.Obj): StoredClient =
+      copy(
+        spec = spec,
+        redirectUris = patched(redirectUris, obj(spec, "redirectUris")),
+        scopes = patched(scopes, obj(spec, "scope")),
+        permissions = patched(permissions, obj(spec, "permissions")),
+      )
+
     def rotated(secret: String): StoredClient = copy(secret = Some(secret), rotations = rotations + 1)
 
+    private def patched(current: Set[String], patch: Json.Obj): Set[String] =
+      current -- strings(patch, "remove") ++ strings(patch, "add")
+
   case class StoredResource(spec: Json.Obj, endpointIds: Set[UUID])
+
+  /** The listings [[FakeCentral.staleListings]] serves cold. Clients are not among them: their
+    * listing has its own flag, because the provisioner's 409 fallback needs it stale throughout.
+    */
+  val coldListingPaths: Set[String] =
+    Set("/configuration/resources", "/configuration/permissions", "/configuration/roles")
 
   case class State(
       clients: Map[String, StoredClient],
@@ -208,6 +291,7 @@ object FakeCentral:
       authSyncs: Int,
       edgeSyncs: Int,
       outboxFlushes: Int,
+      coldPaths: Set[String],
       calls: Chunk[Call],
   ):
     def callsTo(method: Method, path: String): Chunk[Call] =
@@ -223,6 +307,7 @@ object FakeCentral:
     authSyncs = 0,
     edgeSyncs = 0,
     outboxFlushes = 0,
+    coldPaths = Set.empty,
     calls = Chunk.empty,
   )
 
@@ -314,7 +399,12 @@ object ProvisionFixtures:
     phoneOtpAuthFlow = Json.Obj("primary" -> Json.Str("phone-otp")),
     phoneOtpPasswordAuthFlow = Json.Obj("primary" -> Json.Str("phone-otp-password")),
     phonePasskeyAuthFlow = Json.Obj("primary" -> Json.Str("phone-passkey")),
-    registrationFlow = Json.Obj("credential" -> Json.Str("phone")),
+    // Carries `roleIds` because the real document does: central validates the roles a
+    // registration flow grants while saving the client that names it.
+    registrationFlow = Json.Obj(
+      "credential" -> Json.Str("phone"),
+      "roleIds" -> Json.Arr(Json.Str(CampaignBlueprint.retailUserRoleId)),
+    ),
   )
 
   val blueprint: CampaignBlueprint = CampaignBlueprint(targets, provision, flows)

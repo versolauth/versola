@@ -18,17 +18,19 @@ object Provisioner:
 
   /** The order is not cosmetic. Resources come before permissions because a permission grants an
     * endpoint id the resource has to have declared; permissions before roles because a role
-    * grants a permission; clients before presets and resources because a preset is validated
-    * against its client's redirect URIs and a resource's audience names clients. The syncs come
-    * last, and edge's after auth's, because edge reads client and preset state from central.
+    * grants a permission; roles before clients because a client's registration flow grants a
+    * role by id and central rejects the write with a `400` if that role does not exist yet;
+    * clients before presets because a preset is validated against its client's redirect URIs.
+    * The syncs come last, and edge's after auth's, because edge reads client and preset state
+    * from central.
     */
   def run(admin: AdminClient, blueprint: CampaignBlueprint): Task[Map[String, ClientCreds]] =
     for
       _ <- ZIO.logInfo("Provisioning campaign configuration")
-      creds <- ZIO.foreach(blueprint.clients)(spec => admin.registerClient(spec).map(spec.clientId -> _))
       _ <- ZIO.foreachDiscard(blueprint.resources)(admin.registerResource)
       _ <- admin.upsertPermissions(blueprint.permissions)
       _ <- admin.upsertRoles(blueprint.roles)
+      creds <- ZIO.foreach(blueprint.clients)(spec => admin.registerClient(spec).map(spec.clientId -> _))
       _ <- ZIO.foreachDiscard(blueprint.presets)(admin.upsertAuthRequestPresets)
       _ <- admin.upsertChallengeSettings(blueprint.challengeSettings)
       // The outbox carries user writes to auth. Nothing here creates a user, but the seeder (§10)

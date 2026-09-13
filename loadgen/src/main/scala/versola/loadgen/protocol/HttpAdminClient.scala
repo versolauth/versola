@@ -16,9 +16,9 @@ import java.util.UUID
   * Each `upsert` reads the current state first and then creates or updates, rather than creating
   * and treating the failure as "already there": only `/configuration/clients` reports a duplicate
   * as a `409`, while roles, permissions and resources surface theirs as a unique-violation `500`,
-  * which is indistinguishable from central actually being broken. The client listing is served
-  * from a cache a PostgreSQL notification refreshes, so a stale read can still lose the race --
-  * hence the `409` fallback on the one operation that reports it.
+  * which is indistinguishable from central actually being broken. Every listing is served from a
+  * cache a PostgreSQL notification refreshes, so a stale read can still lose the race -- hence
+  * the `409` fallback on clients, and [[convergeAfterFailedCreate]] on the rest.
   *
   * Not a hot path: this runs once per campaign, so unlike the driver-facing clients (§3.3) it
   * parses whole bodies and builds request objects per call.
@@ -40,12 +40,15 @@ final class HttpAdminClient(
   override def registerClient(spec: ClientSpec): Task[ClientCreds] =
     for
       existing <- listClients
-      creds <-
-        if existing.contains(spec.clientId) then adoptClient(spec)
-        else
+      creds <- existing.get(spec.clientId) match
+        case Some(current) => adoptClient(spec, current)
+        case None =>
           createClient(spec).flatMap:
             case Some(secret) => ZIO.succeed(ClientCreds(spec.clientId, secret))
-            case None => adoptClient(spec)
+            // The listing that said the client was absent was stale, so the state the blueprint
+            // is diffed against has to be read again rather than assumed empty.
+            case None =>
+              listClients.flatMap(fresh => adoptClient(spec, fresh.getOrElse(spec.clientId, ClientState.empty)))
     yield creds
 
   /** Brings a client that already exists up to the blueprint and answers usable credentials.
@@ -56,8 +59,8 @@ final class HttpAdminClient(
     * breaks at the moment of the rotation, and the rotation itself has no in-progress guard --
     * which is what makes a third and fourth `provision` run work the same as the second.
     */
-  private def adoptClient(spec: ClientSpec): Task[ClientCreds] =
-    updateClient(spec) *>
+  private def adoptClient(spec: ClientSpec, current: ClientState): Task[ClientCreds] =
+    updateClient(spec, current) *>
       (if spec.publicClient then ZIO.none else rotateClientSecret(spec.clientId).asSome)
         .map(ClientCreds(spec.clientId, _))
 
@@ -85,13 +88,20 @@ final class HttpAdminClient(
         expectSuccess("registerClient", response)
           *> decode[CreateClientResponseBody]("registerClient", response).map(raw => Some(raw.secret))
 
-  private def updateClient(spec: ClientSpec): Task[Unit] =
+  /** The multi-value fields are patched rather than replaced, so the removal half has to be
+    * computed from what central currently holds: a redirect URI, scope or client permission the
+    * blueprint narrowed away would otherwise stay active on the target, leaving an obsolete
+    * OAuth redirect target or privilege behind every re-run.
+    */
+  private def updateClient(spec: ClientSpec, current: ClientState): Task[Unit] =
     val body = UpdateClientBody(
       clientId = spec.clientId,
       clientName = Map(englishTag -> spec.clientName),
-      redirectUris = PatchSet(add = spec.redirectUris, remove = Set.empty),
-      scope = PatchSet(add = spec.allowedScopes, remove = Set.empty),
-      permissions = PatchSet(add = Set.empty, remove = Set.empty),
+      redirectUris = PatchSet(add = spec.redirectUris, remove = current.redirectUris -- spec.redirectUris),
+      scope = PatchSet(add = spec.allowedScopes, remove = current.scopes -- spec.allowedScopes),
+      // The campaign grants its permissions through roles, so a client that carries one directly
+      // carries it from a configuration nothing names any more.
+      permissions = PatchSet(add = Set.empty, remove = current.permissions),
       accessTokenTtl = Some(spec.accessTokenTtlSeconds.toLong),
       refreshTokenTtl = spec.refreshTokenTtlSeconds.map(_.toLong),
       theme = Some(defaultTheme),
@@ -112,11 +122,13 @@ final class HttpAdminClient(
       expectSuccess("rotateClientSecret", response)
         *> decode[RotateSecretResponseBody]("rotateClientSecret", response).map(_.secret)
 
-  private def listClients: Task[Set[String]] =
+  private def listClients: Task[Map[String, ClientState]] =
     val url = central("configuration", "clients").addQueryParam("tenantId", tenantId)
     send(Method.GET, url, None).flatMap: response =>
       expectSuccess("listClients", response)
-        *> decode[ClientListBody]("listClients", response).map(_.clients.map(_.id).toSet)
+        *> decode[ClientListBody]("listClients", response).map(_.clients.map { entry =>
+          entry.id -> ClientState(entry.redirectUris, entry.scope, entry.permissions)
+        }.toMap)
 
   override def registerResource(spec: ResourceSpec): Task[Unit] =
     listResources.flatMap: existing =>
@@ -136,8 +148,9 @@ final class HttpAdminClient(
       // one hop the campaign is meant to measure end to end.
       internal = false,
     )
-    send(Method.POST, central("configuration", "resources"), Some(body.toJson))
-      .flatMap(expectSuccess("registerResource", _))
+    send(Method.POST, central("configuration", "resources"), Some(body.toJson)).flatMap: response =>
+      convergeAfterFailedCreate("registerResource", response, listResources.map(_.get(spec.resourceId))): endpointIds =>
+        updateResource(spec, endpointIds)
 
   /** Endpoints are replaced by id, and central's update deletes every id it is about to create
     * before creating it, so sending the full desired set is a single atomic desired-state apply:
@@ -166,24 +179,29 @@ final class HttpAdminClient(
   override def upsertPermissions(specs: List[PermissionSpec]): Task[Unit] =
     listPermissions.flatMap: existing =>
       ZIO.foreachDiscard(specs): spec =>
-        if existing.contains(spec.permission) then
-          val body = UpdatePermissionBody(
-            tenantId = tenantId,
-            permission = spec.permission,
-            description = PatchText(add = Map(englishTag -> spec.description), delete = Set.empty),
-            endpointIds = Some(spec.endpointIds),
-          )
-          send(Method.PUT, central("configuration", "permissions"), Some(body.toJson))
-            .flatMap(expectSuccess("upsertPermissions", _))
-        else
-          val body = CreatePermissionBody(
-            tenantId = tenantId,
-            permission = spec.permission,
-            description = Map(englishTag -> spec.description),
-            endpointIds = spec.endpointIds,
-          )
-          send(Method.POST, central("configuration", "permissions"), Some(body.toJson))
-            .flatMap(expectSuccess("upsertPermissions", _))
+        if existing.contains(spec.permission) then updatePermission(spec)
+        else createPermission(spec)
+
+  private def createPermission(spec: PermissionSpec): Task[Unit] =
+    val body = CreatePermissionBody(
+      tenantId = tenantId,
+      permission = spec.permission,
+      description = Map(englishTag -> spec.description),
+      endpointIds = spec.endpointIds,
+    )
+    send(Method.POST, central("configuration", "permissions"), Some(body.toJson)).flatMap: response =>
+      val present = listPermissions.map(existing => Option.when(existing.contains(spec.permission))(()))
+      convergeAfterFailedCreate("upsertPermissions", response, present)(_ => updatePermission(spec))
+
+  private def updatePermission(spec: PermissionSpec): Task[Unit] =
+    val body = UpdatePermissionBody(
+      tenantId = tenantId,
+      permission = spec.permission,
+      description = PatchText(add = Map(englishTag -> spec.description), delete = Set.empty),
+      endpointIds = Some(spec.endpointIds),
+    )
+    send(Method.PUT, central("configuration", "permissions"), Some(body.toJson))
+      .flatMap(expectSuccess("upsertPermissions", _))
 
   private def listPermissions: Task[Set[String]] =
     val url = central("configuration", "permissions").addQueryParam("tenantId", tenantId)
@@ -195,27 +213,33 @@ final class HttpAdminClient(
     listRoles.flatMap: existing =>
       ZIO.foreachDiscard(specs): spec =>
         existing.get(spec.roleId) match
-          case Some(granted) =>
-            // A role's permissions are patched, not replaced, so the revocation half has to be
-            // computed here -- a permission the blueprint moved from `retail-user` to
-            // `retail-basic` would otherwise stay granted on both.
-            val body = UpdateRoleBody(
-              tenantId = tenantId,
-              id = spec.roleId,
-              description = PatchText(add = Map(englishTag -> spec.description), delete = Set.empty),
-              permissions = PatchSet(add = spec.permissions -- granted, remove = granted -- spec.permissions),
-            )
-            send(Method.PUT, central("configuration", "roles"), Some(body.toJson))
-              .flatMap(expectSuccess("upsertRoles", _))
-          case None =>
-            val body = CreateRoleBody(
-              tenantId = tenantId,
-              id = spec.roleId,
-              description = Map(englishTag -> spec.description),
-              permissions = spec.permissions,
-            )
-            send(Method.POST, central("configuration", "roles"), Some(body.toJson))
-              .flatMap(expectSuccess("upsertRoles", _))
+          case Some(granted) => updateRole(spec, granted)
+          case None => createRole(spec)
+
+  private def createRole(spec: RoleSpec): Task[Unit] =
+    val body = CreateRoleBody(
+      tenantId = tenantId,
+      id = spec.roleId,
+      description = Map(englishTag -> spec.description),
+      permissions = spec.permissions,
+    )
+    send(Method.POST, central("configuration", "roles"), Some(body.toJson)).flatMap: response =>
+      convergeAfterFailedCreate("upsertRoles", response, listRoles.map(_.get(spec.roleId))): granted =>
+        updateRole(spec, granted)
+
+  /** A role's permissions are patched, not replaced, so the revocation half has to be computed
+    * here -- a permission the blueprint moved from `retail-user` to `retail-basic` would
+    * otherwise stay granted on both.
+    */
+  private def updateRole(spec: RoleSpec, granted: Set[String]): Task[Unit] =
+    val body = UpdateRoleBody(
+      tenantId = tenantId,
+      id = spec.roleId,
+      description = PatchText(add = Map(englishTag -> spec.description), delete = Set.empty),
+      permissions = PatchSet(add = spec.permissions -- granted, remove = granted -- spec.permissions),
+    )
+    send(Method.PUT, central("configuration", "roles"), Some(body.toJson))
+      .flatMap(expectSuccess("upsertRoles", _))
 
   private def listRoles: Task[Map[String, Set[String]]] =
     val url = central("configuration", "roles").addQueryParam("tenantId", tenantId)
@@ -326,6 +350,24 @@ final class HttpAdminClient(
       client.request(request).flatMap: response =>
         response.body.asString.map(AdminResponse(response.status, _))
 
+  /** Finishes a create central refused, by re-reading and applying the desired-state update when
+    * the id turns out to be there after all.
+    *
+    * The create-or-update choice is made on a cached listing, so a concurrent run -- or the one
+    * that died halfway and is being retried -- can commit the same id between that read and this
+    * write. Central reports it as the unique violation's bare `500`, indistinguishable from being
+    * broken, so what tells the two apart is the fresh read rather than the status: an id that is
+    * there now was committed by someone and the update converges on it, and one that is not
+    * leaves the create's failure to stop the run.
+    */
+  private def convergeAfterFailedCreate[A](
+      operation: String,
+      response: AdminResponse,
+      current: Task[Option[A]],
+  )(update: A => Task[Unit]): Task[Unit] =
+    if response.status.isSuccess then ZIO.unit
+    else current.flatMap(_.fold(expectSuccess(operation, response))(update))
+
   private def expectSuccess(operation: String, response: AdminResponse): Task[Unit] =
     ZIO.unless(response.status.isSuccess)(ZIO.fail(AdminCallFailed(operation, response.status, response.body))).unit
 
@@ -409,7 +451,20 @@ object HttpAdminClient:
 
   private case class RotateSecretResponseBody(secret: String) derives JsonDecoder
 
-  private case class ClientListEntry(id: String) derives JsonDecoder
+  private case class ClientListEntry(
+      id: String,
+      redirectUris: Set[String],
+      scope: Set[String],
+      permissions: Set[String],
+  ) derives JsonDecoder
+
+  /** A client's patched, multi-value state as central's listing reports it -- what a
+    * desired-state update has to diff the blueprint against to know what to remove.
+    */
+  private case class ClientState(redirectUris: Set[String], scopes: Set[String], permissions: Set[String])
+
+  private object ClientState:
+    val empty: ClientState = ClientState(Set.empty, Set.empty, Set.empty)
 
   private case class ClientListBody(clients: List[ClientListEntry]) derives JsonDecoder
 

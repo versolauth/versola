@@ -25,9 +25,12 @@ object HttpAdminClientSpec extends ZIOSpecDefault:
   private def passkeyClient = blueprint.clients.find(_.clientId == CampaignBlueprint.mobilePasskeyClientId).get
   private def coreResource = blueprint.resources.find(_.resourceId == CampaignBlueprint.coreResourceId).get
 
+  /** Seeds the role the blueprint's registration flows grant: central rejects a client naming a
+    * role that does not exist, and these specs write clients without provisioning first.
+    */
   private def fakeAdmin(staleClientListing: Boolean = false): ZIO[TestClient & Client, Throwable, (AdminClient, FakeCentral)] =
     for
-      fake <- FakeCentral.make(staleClientListing)
+      fake <- FakeCentral.make(staleClientListing).flatMap(_.withRoles(Set(CampaignBlueprint.retailUserRoleId)))
       _ <- TestClient.addRoutes(fake.handler.toRoutes)
       client <- ZIO.service[Client]
       admin <- HttpAdminClient.make(client, ProvisionFixtures.targets, ProvisionFixtures.provision)
@@ -139,6 +142,47 @@ object HttpAdminClientSpec extends ZIOSpecDefault:
           field(update, "backChannelLogoutUri").contains(Json.Null),
         )
       },
+      // The multi-value fields are patched, not replaced, so a redirect URI or scope the
+      // blueprint narrowed away stays active on central unless the update names it -- an
+      // obsolete OAuth redirect target surviving every re-run.
+      test("takes away a redirect URI, scope and permission the blueprint no longer wants") {
+        val widened = webClient.copy(
+          redirectUris = webClient.redirectUris + "https://bank.example.test/stale",
+          allowedScopes = webClient.allowedScopes + "stale:scope",
+        )
+        for
+          (admin, fake) <- fakeAdmin()
+          _ <- admin.registerClient(widened)
+          _ <- fake.grantClientPermissions(webClient.clientId, Set("stale:permission"))
+          _ <- admin.registerClient(webClient)
+          state <- fake.snapshot
+          update = parse(state.callsTo(Method.PUT, "/configuration/clients").head.body)
+          stored = state.clients(webClient.clientId)
+        yield assertTrue(
+          strings(obj(update, "redirectUris"), "remove") == List("https://bank.example.test/stale"),
+          strings(obj(update, "scope"), "remove") == List("stale:scope"),
+          strings(obj(update, "permissions"), "remove") == List("stale:permission"),
+          stored.redirectUris == webClient.redirectUris,
+          stored.scopes == webClient.allowedScopes,
+          stored.permissions.isEmpty,
+        )
+      },
+      // Central validates the roles a registration flow grants while saving the client, so a
+      // pass that wrote the clients before the roles would be rejected outright.
+      test("is refused when the role its registration flow grants does not exist yet") {
+        for
+          fake <- FakeCentral.make()
+          _ <- TestClient.addRoutes(fake.handler.toRoutes)
+          client <- ZIO.service[Client]
+          admin <- HttpAdminClient.make(client, ProvisionFixtures.targets, ProvisionFixtures.provision)
+          error <- admin.registerClient(webClient).flip
+        yield assert(error)(
+          isSubtype[AdminCallFailed](
+            hasField[AdminCallFailed, String]("operation", _.operation, equalTo("registerClient")) &&
+              hasField[AdminCallFailed, Status]("status", _.status, equalTo(Status.BadRequest)),
+          ),
+        )
+      },
       test("sends the blueprint's flow as a patch when the client keeps one") {
         for
           (admin, fake) <- fakeAdmin()
@@ -192,6 +236,21 @@ object HttpAdminClientSpec extends ZIOSpecDefault:
           state.resources(coreResource.resourceId).endpointIds == coreResource.endpoints.map(_.id).toSet,
         )
       },
+      // The listing the create-or-update choice is made on is cached, so a retry after a partial
+      // run can be told the resource is absent and have the create rejected as a duplicate.
+      test("converges on a resource a concurrent run committed behind a stale listing") {
+        for
+          (admin, fake) <- fakeAdmin()
+          _ <- admin.registerResource(coreResource)
+          _ <- fake.staleListings
+          _ <- admin.registerResource(coreResource)
+          state <- fake.snapshot
+        yield assertTrue(
+          state.callsTo(Method.POST, "/configuration/resources").size == 2,
+          state.callsTo(Method.PUT, "/configuration/resources").size == 1,
+          state.resources(coreResource.resourceId).endpointIds == coreResource.endpoints.map(_.id).toSet,
+        )
+      },
     ),
     suite("permissions and roles")(
       test("creates a permission once and updates it thereafter") {
@@ -235,6 +294,29 @@ object HttpAdminClientSpec extends ZIOSpecDefault:
           strings(obj(update, "permissions"), "remove") == List("cards:read"),
           strings(obj(update, "permissions"), "add").isEmpty,
           !state.roles(granted.roleId).contains("cards:read"),
+        )
+      },
+      // Same race as the resources': a unique-violation 500 on a create whose listing was stale
+      // must not fail the pass, because the id it names is already there.
+      test("converges on a permission and a role a concurrent run committed behind a stale listing") {
+        for
+          (admin, fake) <- fakeAdmin()
+          _ <- admin.upsertPermissions(blueprint.permissions)
+          _ <- admin.upsertRoles(blueprint.roles)
+          first <- fake.snapshot
+          _ <- fake.staleListings
+          _ <- admin.upsertPermissions(blueprint.permissions)
+          _ <- admin.upsertRoles(blueprint.roles)
+          second <- fake.snapshot
+        yield assertTrue(
+          // The cold listing sends the second pass down the create branch for everything, and
+          // every one of those creates is refused as a duplicate.
+          second.callsTo(Method.POST, "/configuration/permissions").size ==
+            first.callsTo(Method.POST, "/configuration/permissions").size + blueprint.permissions.size,
+          second.callsTo(Method.POST, "/configuration/roles").size ==
+            first.callsTo(Method.POST, "/configuration/roles").size + blueprint.roles.size,
+          second.permissions == first.permissions,
+          second.roles == first.roles,
         )
       },
     ),
