@@ -1,0 +1,10 @@
+{
+  "primary": {
+    "credentials": ["phone"],
+    "inlinePassword": false,
+    "factors": [{ "type": "otp", "required": true }]
+  },
+  "passkey": null,
+  "equivalents": {},
+  "otpType": "sms"
+}

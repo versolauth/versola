@@ -1,7 +1,6 @@
 package versola.loadgen.protocol
 
 import zio.Task
-import zio.json.ast.Json
 
 /** Bootstraps and administers the SUT's configuration -- clients, resources, roles,
   * permissions, auth-request presets, challenge settings -- plus the sync/outbox calls a
@@ -9,19 +8,22 @@ import zio.json.ast.Json
   * (§10); never wired into a driver, which is why this lives on its own trait rather than
   * folded into [[AuthClient]].
   *
-  * Request/response shapes are `Json.Obj` placeholders for now, not the ~55 concrete admin
-  * payloads e2e's `OAuthClient`/`Flows.scala` already encode. Track E replaces every one of
-  * these with a typed request built from the shared flow resource files under `flows`
-  * (§3.4) once it ports them; the point of this trait for now is the set of admin operations
-  * a campaign needs, not their exact wire shape.
+  * Every operation is a desired-state apply, not a create: `provision` runs against
+  * environments that are already provisioned at least as often as against empty ones, and one
+  * that failed halfway through has to be re-runnable. The `upsert*` names are the dev spec's
+  * (§4); `registerClient`/`registerResource` keep theirs but behave the same way.
   */
 trait AdminClient:
-  def registerClient(spec: Json.Obj): Task[ClientCreds]
-  def registerResource(spec: Json.Obj): Task[Unit]
-  def upsertRoles(spec: Json.Obj): Task[Unit]
-  def upsertPermissions(spec: Json.Obj): Task[Unit]
-  def upsertAuthRequestPresets(spec: Json.Obj): Task[Unit]
-  def upsertChallengeSettings(spec: Json.Obj): Task[Unit]
+  /** Answers the credentials a driver authenticates with, which for a confidential client means
+    * a secret this call is the only source of -- central hands one back on registration and
+    * never again.
+    */
+  def registerClient(spec: ClientSpec): Task[ClientCreds]
+  def registerResource(spec: ResourceSpec): Task[Unit]
+  def upsertRoles(specs: List[RoleSpec]): Task[Unit]
+  def upsertPermissions(specs: List[PermissionSpec]): Task[Unit]
+  def upsertAuthRequestPresets(spec: AuthRequestPresetsSpec): Task[Unit]
+  def upsertChallengeSettings(spec: ChallengeSettingsSpec): Task[Unit]
   def syncConfiguration(): Task[Unit]
   def syncEdgeConfiguration(): Task[Unit]
   def flushUserOutbox(): Task[Unit]
