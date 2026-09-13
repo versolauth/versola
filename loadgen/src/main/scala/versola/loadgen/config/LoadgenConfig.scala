@@ -105,6 +105,15 @@ case class FullLoginProbabilityConfig(mobile: Double, web: Double)
 /** NegBinomial parameters for actions-per-session. Named `action-count` in HOCON, not
   * `actions`, to avoid colliding with the top-level business-action list -- see this file's
   * top comment.
+  *
+  * The means count the **user-driven** actions only. `GET /accounts` is issued by the app on
+  * open, not chosen by the user, so `ActionCount` adds it outside the draw: a session averages
+  * `1 + mean` actions, and design doc §2.3's 6.0 / 10.0 correspond to 5.0 / 9.0 here.
+  *
+  * `dispersion` is NB2 α, so `Var = mean × (1 + α × mean)`. Stated here and not only in the test
+  * because one dispersion serving two different means only works if the parameter is
+  * dimensionless; read as the size `r` instead, the same 0.6 would put the mode at 0, which is
+  * the failure this parameterisation exists to avoid.
   */
 case class ActionCountConfig(mobileMean: Double, webMean: Double, dispersion: Double)
 
@@ -122,10 +131,16 @@ case class SessionConfig(
     accessTokenTtl: Duration,
 )
 
-/** One phase of the campaign's arrival-rate envelope (§7.3). `scale` is used by flat phases
-  * (`warmup`, `steady`, `spike`, `recover`); `scaleFrom`/`scaleTo` by the linear `ramp` phase.
-  * All three are optional and mutually informative rather than mutually exclusive in the
-  * schema -- the scheduler (track D) decides which apply per phase `name`.
+/** One phase of the campaign's arrival-rate envelope (§7.3). Which kind of phase it is, is
+  * decided by **which fields are present**: `scale` alone is flat (`warmup`, `steady`, `spike`,
+  * `recover`), `scaleFrom` + `scaleTo` is the linear `ramp`. Deliberately not decided by `name`,
+  * which is a free-text metric label -- renaming `ramp` would otherwise silently change what the
+  * phase does.
+  *
+  * Expressing that in the types (a sealed `Flat | Ramp`) is the better shape and is deferred: it
+  * is a change to shared config surface with several tracks in flight. Until then the ambiguous
+  * and incomplete combinations are rejected here rather than at first use, so a campaign that
+  * cannot be represented fails the layer at boot instead of some minutes into a run.
   */
 case class CampaignPhaseConfig(
     name: String,
@@ -134,6 +149,41 @@ case class CampaignPhaseConfig(
     scaleFrom: Option[Double],
     scaleTo: Option[Double],
 )
+
+object CampaignPhaseConfig:
+  /** Same idiom as [[LoadgenRole]]'s: validate during decode and fail the layer, rather than hand
+    * a shape the scheduler will have to reject onwards.
+    *
+    * A duration is rejected below zero but allowed at zero -- `CampaignSchedule.scaleAt` handles
+    * an empty phase, whereas a negative one puts the phase's end before its start, so it can never
+    * match and its negative offset drags every later phase into an overlapping range. Scales are
+    * rejected unless finite and non-negative, because `CampaignSchedule.rateAt` collapses any
+    * non-positive scale to a rate of 0: a negative one would silently run a phase at no load, and
+    * NaN passes that guard entirely and reaches the sampler as the rate itself. Zero is left legal
+    * as the one honest way to say a phase generates nothing.
+    */
+  def validate(phase: CampaignPhaseConfig): Either[String, CampaignPhaseConfig] =
+    def scaleOk(field: String, value: Double): Either[String, Unit] =
+      if value.isNaN || value.isInfinite then Left(s"campaign phase '${phase.name}' has a non-finite $field")
+      else if value < 0.0 then Left(s"campaign phase '${phase.name}' has a negative $field: $value")
+      else Right(())
+
+    for
+      _ <- Either.cond(
+        !phase.duration.isNegative,
+        (),
+        s"campaign phase '${phase.name}' has a negative duration: ${phase.duration}",
+      )
+      _ <- (phase.scale, phase.scaleFrom, phase.scaleTo) match
+        case (Some(scale), None, None) => scaleOk("scale", scale)
+        case (None, Some(from), Some(to)) => scaleOk("scale-from", from).flatMap(_ => scaleOk("scale-to", to))
+        case (Some(_), _, _) => Left(s"campaign phase '${phase.name}' sets both scale and scale-from/scale-to")
+        case _ => Left(s"campaign phase '${phase.name}' must set either scale, or both scale-from and scale-to")
+    yield phase
+
+  given DeriveConfig[CampaignPhaseConfig] = DeriveConfig
+    .derived[CampaignPhaseConfig]
+    .mapOrFail(phase => validate(phase).left.map(message => Config.Error.InvalidData(message = message)))
 
 case class DiurnalConfig(
     enabled: Boolean,

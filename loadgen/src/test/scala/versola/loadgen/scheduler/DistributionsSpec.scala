@@ -21,7 +21,9 @@ object DistributionsSpec extends ZIOSpecDefault:
   private val samples = 100_000
 
   private val thinkTime = ThinkTimeConfig(median = 4.seconds, sigma = 0.8)
-  private val actionCount = ActionCountConfig(mobileMean = 6.0, webMean = 10.0, dispersion = 0.6)
+  // Means of the user-driven actions only: a session is these plus the app's mandatory opening
+  // `GET /accounts`, so the totals are still design doc §2.3's 6.0 mobile and 10.0 web.
+  private val actionCount = ActionCountConfig(mobileMean = 5.0, webMean = 9.0, dispersion = 0.6)
 
   private def moments(draws: IndexedSeq[Double]): (Double, Double) =
     val mean = draws.sum / draws.size
@@ -70,24 +72,27 @@ object DistributionsSpec extends ZIOSpecDefault:
         val (mobileMean, mobileVariance) = moments(mobile)
         val (webMean, webVariance) = moments(web)
         assertTrue(
+          // The session totals of §2.3, reached as 1 + NegBinomial(5.0) and 1 + NegBinomial(9.0).
           relative(mobileMean, 6.0) < 0.015,
           relative(webMean, 10.0) < 0.015,
-          // Var = mean × (1 + dispersion × mean): 27.6 mobile, 70.0 web. Same tolerance
-          // reasoning as LogNormal above; the alternative parameterisation (dispersion read as
-          // the size r) would put these at 66.0 and 176.7, i.e. 2.4x out.
-          relative(mobileVariance, 27.6) < 0.10,
-          relative(webVariance, 70.0) < 0.10,
-          relative(ActionCount.varianceFor(actionCount, Platform.Mobile), 27.6) < 1e-12,
+          // Var = mean × (1 + dispersion × mean) of the *draw*: 20.0 mobile, 57.6 web. The
+          // mandatory action shifts the distribution and so leaves the variance alone. Same
+          // tolerance reasoning as LogNormal above; the alternative parameterisation (dispersion
+          // read as the size r) would put these at 45.0 and 138.6, i.e. 2.3x out.
+          relative(mobileVariance, 20.0) < 0.10,
+          relative(webVariance, 57.6) < 0.10,
+          relative(ActionCount.varianceFor(actionCount, Platform.Mobile), 20.0) < 1e-12,
         )
       },
-      test("draws zero for the documented share of sessions") {
+      test("every session performs at least the app's opening call, without the draw being clamped") {
         val random = RandomSource.seeded(20260913L)
         val draws = IndexedSeq.fill(samples)(ActionCount.sample(actionCount, Platform.Mobile, random))
-        // P(N = 0) = (r/(r+mean))^r with r = 1/0.6: 7.86%. Asserted rather than clamped away,
-        // because clamping to a minimum of one action would move the realised mean off the
-        // configured 6.0 without saying so.
-        val zeroShare = draws.count(_ == 0).toDouble / samples
-        assertTrue(math.abs(zeroShare - 0.0786) < 0.005, draws.forall(_ >= 0))
+        // P(N' = 0) = (r/(r+mean))^r with r = 1/0.6 and mean 5: 9.87% -- a user who opens the app,
+        // sees their balance and closes it. Those sessions still perform one action, because §3's
+        // `GET /accounts` is the app's call and was never part of the draw. Asserting the share
+        // rather than clamping keeps the low tail unbiased and the realised mean exactly 6.0.
+        val singleActionShare = draws.count(_ == 1).toDouble / samples
+        assertTrue(math.abs(singleActionShare - 0.0987) < 0.005, draws.forall(_ >= ActionCount.mandatoryActions))
       },
       test("a dispersion above 1 (size below 1) still samples -- the Gamma boost branch") {
         val random = RandomSource.seeded(20260914L)
@@ -126,10 +131,12 @@ object DistributionsSpec extends ZIOSpecDefault:
       },
     ),
     suite("ActionCount")(
-      test("maps platform to the configured mean") {
+      test("maps platform to the configured mean, and adds the mandatory action to it") {
         assertTrue(
-          ActionCount.meanFor(actionCount, Platform.Mobile) == 6.0,
-          ActionCount.meanFor(actionCount, Platform.Web) == 10.0,
+          ActionCount.additionalMeanFor(actionCount, Platform.Mobile) == 5.0,
+          ActionCount.additionalMeanFor(actionCount, Platform.Web) == 9.0,
+          ActionCount.sessionMeanFor(actionCount, Platform.Mobile) == 6.0,
+          ActionCount.sessionMeanFor(actionCount, Platform.Web) == 10.0,
         )
       },
     ),

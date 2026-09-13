@@ -110,46 +110,20 @@ object CampaignSchedule:
           case (Left(error), _) => Left(error)
           case (Right((acc, offset)), phase) =>
             for
-              _ <- durationOf(phase)
+              _ <- CampaignPhaseConfig.validate(phase)
               scale <- scaleOf(phase)
             yield (acc :+ CampaignPhase(phase.name, offset, phase.duration, scale), offset.plus(phase.duration))
         .map((phases, _) => phases)
 
-  /** A negative duration puts `endsAt` before `startsAt`, so `phaseAt`'s half-open test can never
-    * match the phase, and the negative offset it contributes drags every later phase backwards
-    * into a range overlapping the ones already placed. The result is a schedule that is wrong
-    * rather than one that is rejected.
+  /** The phase's shape, once [[CampaignPhaseConfig.validate]] has ruled out the combinations that
+    * have none and the durations and scales that cannot be represented.
     *
-    * Zero stays legal: `scaleAt` already handles a zero-length phase explicitly, and configuring a
-    * phase away to nothing is a reasonable thing to express.
+    * Decoding runs the same validation, so for a campaign that came from HOCON this cannot fail.
+    * It is re-run here because a `CampaignConfig` can also be built in code, and the point of
+    * rejecting these configs is that nothing downstream should have to assume someone else did.
     */
-  private def durationOf(phase: CampaignPhaseConfig): Either[String, Duration] =
-    if phase.duration.isNegative then
-      Left(s"campaign phase '${phase.name}' must not have a negative duration, got ${phase.duration}")
-    else Right(phase.duration)
-
   private def scaleOf(phase: CampaignPhaseConfig): Either[String, PhaseScale] =
     (phase.scale, phase.scaleFrom, phase.scaleTo) match
-      case (None, Some(from), Some(to)) =>
-        for
-          _ <- finiteScale(phase.name, "scale-from", from)
-          _ <- finiteScale(phase.name, "scale-to", to)
-        yield PhaseScale.Ramp(from, to)
-      case (Some(scale), None, None) => finiteScale(phase.name, "scale", scale).map(PhaseScale.Flat.apply)
-      case (Some(_), _, _) => Left(s"campaign phase '${phase.name}' sets both scale and scale-from/scale-to")
+      case (Some(scale), None, None) => Right(PhaseScale.Flat(scale))
+      case (None, Some(from), Some(to)) => Right(PhaseScale.Ramp(from, to))
       case _ => Left(s"campaign phase '${phase.name}' must set either scale, or both scale-from and scale-to")
-
-  /** `rateAt` collapses any non-positive scale to a rate of 0, so a negative scale never surfaces
-    * as an error -- it silently generates no load for as long as it applies, and on a ramp it
-    * takes part of the ramp down with it. A non-finite scale is worse: NaN passes `scale <= 0.0`
-    * and reaches `Exponential.sample` as the rate, where it yields a NaN gap and a schedule that
-    * cannot be ordered.
-    *
-    * Zero is allowed, and is the one legitimate way to express a phase that generates nothing.
-    */
-  private def finiteScale(phaseName: String, field: String, value: Double): Either[String, Double] =
-    if value.isNaN || value.isInfinite then
-      Left(s"campaign phase '$phaseName' must have a finite $field, got $value")
-    else if value < 0.0 then
-      Left(s"campaign phase '$phaseName' must not have a negative $field, got $value")
-    else Right(value)
