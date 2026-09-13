@@ -52,7 +52,7 @@ object LoadgenConfigSpec extends ZIOSpecDefault:
       |
       |session {
       |  full-login-probability { mobile = 0.033, web = 0.85 }
-      |  action-count { mobile-mean = 6, web-mean = 10, dispersion = 0.6 }
+      |  action-count { mobile-mean = 5, web-mean = 9, dispersion = 0.6 }
       |  think-time { median = 4s, sigma = 0.8 }
       |  payment-probability = 0.25
       |  extra-refresh-probability = 0.25
@@ -91,7 +91,7 @@ object LoadgenConfigSpec extends ZIOSpecDefault:
           config.store.writeBehind.batchSize == 500,
           config.population.target == 10000000L,
           config.population.classes.map(_.name) == List("heavy", "regular", "light", "dormant"),
-          config.session.actionCount.webMean == 10,
+          config.session.actionCount.webMean == 9,
           config.campaign.phases.map(_.name) == List("warmup", "ramp", "steady"),
           config.campaign.phases(1).scaleFrom == Some(0.1),
           config.campaign.phases(1).scale == None,
@@ -124,4 +124,38 @@ object LoadgenConfigSpec extends ZIOSpecDefault:
         yield assertTrue(exit.isFailure)
       },
     ),
+    suite("campaign phases")(
+      // Each of these decodes into a `CampaignPhaseConfig` the schedule cannot represent. Rejecting
+      // them here rather than at first use is the point: a campaign whose volume is wrong is
+      // indistinguishable from a slow SUT once it is running, so it has to be impossible to boot.
+      test("rejects a phase that sets neither scale nor both ramp ends, and one that sets both") {
+        for
+          neither <- decodePhase("{ name = warmup, duration = 15m, scale-from = 0.1 }").exit
+          both <- decodePhase("{ name = warmup, duration = 15m, scale = 0.5, scale-from = 0.1, scale-to = 1.0 }").exit
+        yield assertTrue(neither.isFailure, both.isFailure)
+      },
+      test("rejects a negative duration but accepts a zero-length phase") {
+        for
+          negative <- decodePhase("{ name = warmup, duration = -10m, scale = 1.0 }").exit
+          zero <- decodePhase("{ name = warmup, duration = 0s, scale = 1.0 }").exit
+        yield assertTrue(negative.isFailure, zero.isSuccess)
+      },
+      test("rejects a negative or non-finite scale but accepts zero") {
+        for
+          negativeFlat <- decodePhase("{ name = warmup, duration = 15m, scale = -1.0 }").exit
+          negativeRamp <- decodePhase("{ name = ramp, duration = 15m, scale-from = 0.1, scale-to = -1.0 }").exit
+          nonFinite <- decodePhase("{ name = warmup, duration = 15m, scale = NaN }").exit
+          idle <- decodePhase("{ name = idle, duration = 15m, scale = 0.0 }").exit
+        yield assertTrue(negativeFlat.isFailure, negativeRamp.isFailure, nonFinite.isFailure, idle.isSuccess)
+      },
+    ),
   )
+
+  /** Decodes `hocon` with its first campaign phase replaced, so the assertions above exercise the
+    * real `deriveConfig[LoadgenConfig]` path rather than calling the validator directly.
+    */
+  private def decodePhase(phase: String) =
+    TypesafeConfigProvider
+      .fromHoconString(hocon.replaceFirst("\\{ name = warmup,  duration = 15m, scale = 0.1 \\}", phase))
+      .kebabCase
+      .load(loadgenConfigDescriptor)
