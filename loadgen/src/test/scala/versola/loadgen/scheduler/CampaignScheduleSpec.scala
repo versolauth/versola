@@ -92,6 +92,36 @@ object CampaignScheduleSpec extends ZIOSpecDefault:
         val broken = List(phase("warmup", 15, Some(0.5), Some(0.1), Some(1.0)))
         assertTrue(CampaignSchedule.from(campaign(broken, diurnal = false), startedAt).isLeft)
       },
+      test("rejects a negative phase duration rather than building an unreachable phase") {
+        // `endsAt` would precede `startsAt`, so `phaseAt`'s half-open test never matches the
+        // phase, and the negative offset drags every later phase back into an overlapping range.
+        val broken = List(
+          phase("warmup", 15, Some(0.1), None, None),
+          CampaignPhaseConfig("backwards", (-10).minutes, Some(1.0), None, None),
+          phase("steady", 60, Some(1.0), None, None),
+        )
+        assertTrue(CampaignSchedule.from(campaign(broken, diurnal = false), startedAt).isLeft)
+      },
+      test("accepts a zero-length phase, which scaleAt already handles") {
+        val zero = List(phase("instant", 0, Some(1.0), None, None), phase("steady", 60, Some(1.0), None, None))
+        assertTrue(CampaignSchedule.from(campaign(zero, diurnal = false), startedAt).isRight)
+      },
+      test("rejects a negative or non-finite scale instead of silently generating no load") {
+        // `rateAt` turns any non-positive scale into a rate of 0, so without this the campaign
+        // runs a phase at zero load and reports success. NaN is worse: it passes `scale <= 0.0`
+        // and reaches the sampler as the rate itself.
+        def rejected(phases: List[CampaignPhaseConfig]) =
+          CampaignSchedule.from(campaign(phases, diurnal = false), startedAt).isLeft
+        assertTrue(
+          rejected(List(phase("negative-flat", 15, Some(-1.0), None, None))),
+          rejected(List(phase("negative-ramp-start", 15, None, Some(-0.1), Some(1.0)))),
+          rejected(List(phase("negative-ramp-end", 15, None, Some(0.1), Some(-1.0)))),
+          rejected(List(phase("nan", 15, Some(Double.NaN), None, None))),
+          rejected(List(phase("infinite", 15, Some(Double.PositiveInfinity), None, None))),
+          // Zero is the one legitimate way to say "this phase generates nothing".
+          CampaignSchedule.from(campaign(List(phase("idle", 15, Some(0.0), None, None)), diurnal = false), startedAt).isRight,
+        )
+      },
       test("rejects an empty phase list and an unusable diurnal block") {
         assertTrue(
           CampaignSchedule.from(campaign(Nil, diurnal = false), startedAt).isLeft,
@@ -99,6 +129,32 @@ object CampaignScheduleSpec extends ZIOSpecDefault:
             .from(campaign(phases, diurnal = true).copy(diurnal = DiurnalConfig(true, 3.0, 20, "Mars/Olympus")), startedAt)
             .isLeft,
         )
+      },
+    ),
+    suite("envelope")(
+      test("the ceiling is never exceeded by the rate anywhere in the campaign") {
+        // Swept at 30 s across the whole campaign, including the ramp and the diurnal peak. A
+        // ceiling that holds only usually is not a ceiling: thinning drops whatever rises above it.
+        val schedule = CampaignSchedule.from(campaign(phases, diurnal = true), startedAt).toOption.get
+        val base = 2_650.0
+        val ceiling = schedule.rateCeiling(base)
+        val steps = (0L to schedule.totalDuration.toSeconds by 30L).map(startedAt.plusSeconds)
+        assertTrue(
+          steps.forall(instant => schedule.rateAt(base, instant) <= ceiling),
+          steps.map(instant => schedule.rateAt(base, instant)).max > ceiling * 0.5,
+          schedule.endsAt == startedAt.plus(schedule.totalDuration),
+        )
+      },
+      test("the diurnal peak is the envelope's maximum") {
+        val schedule = CampaignSchedule.from(campaign(phases, diurnal = true), startedAt).toOption.get
+        val sampled = (0 until 24 * 60).map(minute => schedule.diurnal.atHour(minute / 60.0)).max
+        assertTrue(schedule.diurnal.peak >= sampled, schedule.diurnal.peak - sampled < 1e-6)
+      },
+      test("envelope() carries the horizon, so a campaign that has ended schedules nothing") {
+        val schedule = CampaignSchedule.from(campaign(phases, diurnal = false), startedAt).toOption.get
+        val envelope = schedule.envelope(2_650.0)
+        val process = ArrivalProcess.startingAt(schedule.endsAt, RandomSource.seeded(4L))
+        assertTrue(envelope.endsAt == schedule.endsAt, process.next(envelope).isEmpty)
       },
     ),
   )

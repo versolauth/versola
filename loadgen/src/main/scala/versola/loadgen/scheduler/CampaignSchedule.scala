@@ -67,6 +67,34 @@ final class CampaignSchedule private (val phases: Vector[CampaignPhase], val diu
     val scale = scaleAt(now)
     if scale <= 0.0 then 0.0 else baseRatePerSecond * scale * diurnal.at(now)
 
+  /** The instant the last phase ends. From here on `scaleAt` is 0, which is what bounds the
+    * thinning loop in [[ArrivalProcess.next]]: without it, a campaign whose rate has fallen to
+    * zero would be searched for an arrival that can never be accepted.
+    */
+  val endsAt: Instant = startedAt.plus(totalDuration)
+
+  /** An upper bound on [[rateAt]] across the whole campaign: the largest scale any phase reaches,
+    * times the diurnal peak.
+    *
+    * Thinning is only correct if the ceiling is one λ(t) provably never exceeds; a ceiling that is
+    * merely usually right does not degrade gracefully, it drops the arrivals that would have been
+    * accepted above it. Both factors are therefore maxima of closed forms rather than samples: a
+    * ramp's extreme is at one of its endpoints, and the diurnal's is at its peak hour.
+    */
+  def rateCeiling(baseRatePerSecond: Double): Double =
+    val peakScale = phases.foldLeft(0.0): (highest, phase) =>
+      val phasePeak = phase.scale match
+        case PhaseScale.Flat(value) => value
+        case PhaseScale.Ramp(from, to) => math.max(from, to)
+      math.max(highest, phasePeak)
+    baseRatePerSecond * peakScale * diurnal.peak
+
+  /** [[rateAt]] packaged for [[ArrivalProcess.next]]: the rate function, the ceiling it respects
+    * and the horizon past which there is nothing left to schedule.
+    */
+  def envelope(baseRatePerSecond: Double): VaryingRate =
+    VaryingRate(rateCeiling(baseRatePerSecond), endsAt, rateAt(baseRatePerSecond, _))
+
 object CampaignSchedule:
   def from(config: CampaignConfig, startedAt: Instant): Either[String, CampaignSchedule] =
     for
@@ -81,13 +109,47 @@ object CampaignSchedule:
         .foldLeft[Either[String, (Vector[CampaignPhase], Duration)]](Right((Vector.empty, Duration.Zero))):
           case (Left(error), _) => Left(error)
           case (Right((acc, offset)), phase) =>
-            scaleOf(phase).map: scale =>
-              (acc :+ CampaignPhase(phase.name, offset, phase.duration, scale), offset.plus(phase.duration))
+            for
+              _ <- durationOf(phase)
+              scale <- scaleOf(phase)
+            yield (acc :+ CampaignPhase(phase.name, offset, phase.duration, scale), offset.plus(phase.duration))
         .map((phases, _) => phases)
+
+  /** A negative duration puts `endsAt` before `startsAt`, so `phaseAt`'s half-open test can never
+    * match the phase, and the negative offset it contributes drags every later phase backwards
+    * into a range overlapping the ones already placed. The result is a schedule that is wrong
+    * rather than one that is rejected.
+    *
+    * Zero stays legal: `scaleAt` already handles a zero-length phase explicitly, and configuring a
+    * phase away to nothing is a reasonable thing to express.
+    */
+  private def durationOf(phase: CampaignPhaseConfig): Either[String, Duration] =
+    if phase.duration.isNegative then
+      Left(s"campaign phase '${phase.name}' must not have a negative duration, got ${phase.duration}")
+    else Right(phase.duration)
 
   private def scaleOf(phase: CampaignPhaseConfig): Either[String, PhaseScale] =
     (phase.scale, phase.scaleFrom, phase.scaleTo) match
-      case (None, Some(from), Some(to)) => Right(PhaseScale.Ramp(from, to))
-      case (Some(scale), None, None) => Right(PhaseScale.Flat(scale))
+      case (None, Some(from), Some(to)) =>
+        for
+          _ <- finiteScale(phase.name, "scale-from", from)
+          _ <- finiteScale(phase.name, "scale-to", to)
+        yield PhaseScale.Ramp(from, to)
+      case (Some(scale), None, None) => finiteScale(phase.name, "scale", scale).map(PhaseScale.Flat.apply)
       case (Some(_), _, _) => Left(s"campaign phase '${phase.name}' sets both scale and scale-from/scale-to")
       case _ => Left(s"campaign phase '${phase.name}' must set either scale, or both scale-from and scale-to")
+
+  /** `rateAt` collapses any non-positive scale to a rate of 0, so a negative scale never surfaces
+    * as an error -- it silently generates no load for as long as it applies, and on a ramp it
+    * takes part of the ramp down with it. A non-finite scale is worse: NaN passes `scale <= 0.0`
+    * and reaches `Exponential.sample` as the rate, where it yields a NaN gap and a schedule that
+    * cannot be ordered.
+    *
+    * Zero is allowed, and is the one legitimate way to express a phase that generates nothing.
+    */
+  private def finiteScale(phaseName: String, field: String, value: Double): Either[String, Double] =
+    if value.isNaN || value.isInfinite then
+      Left(s"campaign phase '$phaseName' must have a finite $field, got $value")
+    else if value < 0.0 then
+      Left(s"campaign phase '$phaseName' must not have a negative $field, got $value")
+    else Right(value)

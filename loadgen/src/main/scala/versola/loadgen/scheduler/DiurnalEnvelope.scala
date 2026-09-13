@@ -39,6 +39,13 @@ final class DiurnalEnvelope private (
     */
   def normalisationFactor: Double = dailyMean
 
+  /** The largest value [[at]] can return, exactly rather than by search: §7.3's Gaussian term is
+    * maximal where its wrapped distance is zero, which is the peak hour. Used as the diurnal
+    * factor of `CampaignSchedule.rateCeiling`, where an under-estimate would silently lose
+    * arrivals.
+    */
+  def peak: Double = atHour(peakHour)
+
 object DiurnalEnvelope:
   /** Width of the peak in hours, from §7.3's `2 × 3.5²`. Not configurable there, so not
     * configurable here -- a second knob that changes total volume, with no plan to set it from,
