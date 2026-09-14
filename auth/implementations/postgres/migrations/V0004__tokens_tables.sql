@@ -39,7 +39,10 @@ CREATE TABLE refresh_tokens(
     -- RFC 9449 §5: the JWK thumbprint this grant is bound to, NULL for a bearer grant.
     -- A bound token is never rotated: a copy of it is inert without the private key, so the
     -- family/rotated_at machinery above applies only to rows where this is NULL.
-    cnf_jkt TEXT
+    -- RFC 7800 confirmation claim. An object rather than a bare thumbprint because its
+    -- members name the mechanism that produced them: `jkt` for an RFC 9449 DPoP key,
+    -- `x5t#S256` for an RFC 8705 client certificate.
+    cnf JSONB
 );
 
 CREATE INDEX refresh_tokens_family_id_idx ON refresh_tokens (family_id);

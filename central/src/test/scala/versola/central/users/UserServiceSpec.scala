@@ -93,6 +93,8 @@ object UserServiceSpec extends UnitSpecBase:
         policyUri = None,
         tosUri = None,
         consentFlow = None,
+        mtlsAuth = None,
+        certificateBoundAccessTokens = false,
       )
       val sessionDto = AuthClient.SessionDto(
         publicId = "public-session-1",
@@ -143,6 +145,8 @@ object UserServiceSpec extends UnitSpecBase:
         policyUri = None,
         tosUri = None,
         consentFlow = None,
+        mtlsAuth = None,
+        certificateBoundAccessTokens = false,
       )
       val sessionDto = AuthClient.SessionDto(
         publicId = "public-session-1",

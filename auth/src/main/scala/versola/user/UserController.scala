@@ -142,7 +142,7 @@ object UserController extends Controller:
             scope = token.scope.toList,
             issuedAt = token.issuedAt,
             expiresAt = token.expiresAt,
-            dpopBound = token.cnfJkt.isDefined,
+            dpopBound = token.cnf.exists(_.jkt.isDefined),
           )
         }
       yield Response.json(RefreshTokenListResponse(responses).toJson)

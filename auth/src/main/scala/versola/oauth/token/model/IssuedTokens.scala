@@ -1,7 +1,7 @@
 package versola.oauth.token.model
 
 import versola.oauth.client.model.{Acr, AuthMethodRef, AuthorizationDetail, ClientId, ResourceUri, ScopeToken, TenantId}
-import versola.oauth.model.{AccessToken, Nonce, RefreshToken}
+import versola.oauth.model.{AccessToken, Cnf, Nonce, RefreshToken}
 import versola.oauth.userinfo.model.RequestedClaims
 import versola.role.model.RoleId
 import versola.oauth.session.model.PublicSessionId
@@ -31,7 +31,7 @@ case class IssuedTokens(
     amr: Set[AuthMethodRef],
     authTime: Option[Instant], // None for client_credentials grant
     acr: Option[Acr],
-    /** RFC 9449 §6: the JWK thumbprint the access token is bound to, carried as its `cnf.jkt`
-      * claim; `None` for a bearer token. */
-    cnfJkt: Option[String],
+    /** RFC 7800: the confirmation these tokens are bound to, `None` when they are bearer.
+      * Carried as the access token's `cnf` claim. */
+    cnf: Option[Cnf],
 )

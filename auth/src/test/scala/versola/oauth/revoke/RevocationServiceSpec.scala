@@ -57,6 +57,8 @@ object RevocationServiceSpec extends UnitSpecBase:
     policyUri = None,
     tosUri = None,
     consentFlow = None,
+    mtlsAuth = None,
+    certificateBoundAccessTokens = false,
   )
 
   def tokenRecord(now: Instant) = RefreshTokenRecord(
@@ -77,7 +79,7 @@ object RevocationServiceSpec extends UnitSpecBase:
     amr = Set(AuthMethodRef.pwd),
     authTime = now,
     acr = None,
-    cnfJkt = None,
+    cnf = None,
   )
 
   def accessTokenPayload(now: Instant) = AccessTokenPayload(

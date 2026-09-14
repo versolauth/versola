@@ -820,6 +820,8 @@ object BootstrapService:
         frontChannelLogoutUri = config.frontChannelLogoutUri,
         frontChannelLogoutSessionRequired = true,
         backChannelLogoutUri = None,
+        mtlsAuth = None,
+        certificateBoundAccessTokens = false,
       )
       clientService.registerClient(request).foldZIO(
         {
@@ -840,6 +842,8 @@ object BootstrapService:
                 frontChannelLogoutUri = None,
                 frontChannelLogoutSessionRequired = None,
                 backChannelLogoutUri = None,
+                mtlsAuth = None,
+                certificateBoundAccessTokens = None,
               ),
             ).mapError(registrationConfigurationError)
           case e: InvalidRegistrationConfiguration => ZIO.fail(registrationConfigurationError(e))

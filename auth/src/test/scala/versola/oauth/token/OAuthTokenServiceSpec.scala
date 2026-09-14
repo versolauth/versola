@@ -4,7 +4,7 @@ import org.scalamock.stubs.{Stub, ZIOStubs}
 import versola.auth.TestEnvConfig
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{AuthMethodRef, AuthorizationDetail, AuthorizationDetailType, AuthorizationDetailTypeRecord, ClientId, ClientIdWithSecret, OAuthClientRecord, ResourceId, ResourceRecord, ResourceUri, ScopeToken, TenantId}
-import versola.oauth.model.{AccessToken, AuthorizationCode, AuthorizationCodeRecord, CodeChallenge, CodeChallengeMethod, CodeVerifier, RefreshToken}
+import versola.oauth.model.{AccessToken, AuthorizationCode, AuthorizationCodeRecord, Cnf, CodeChallenge, CodeChallengeMethod, CodeVerifier, RefreshToken}
 import versola.oauth.revoke.AccessTokenRevocationService
 import versola.oauth.session.SessionRepository
 import versola.oauth.session.model.{PublicSessionId, RefreshAlreadyExchanged, RefreshTokenRecord, RevokedFamily, SessionId}
@@ -81,6 +81,8 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
     policyUri = None,
     tosUri = None,
     consentFlow = None,
+    mtlsAuth = None,
+    certificateBoundAccessTokens = false,
   )
 
   val publicClientId = ClientId("public-client-1")
@@ -105,6 +107,8 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
     policyUri = None,
     tosUri = None,
     consentFlow = None,
+    mtlsAuth = None,
+    certificateBoundAccessTokens = false,
   )
 
   val adminClient = testClient.copy(id = OAuthTokenService.centralAdminClientId)
@@ -148,8 +152,8 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
   val jkt1 = "0ZcOCORZNYy-DWpqq30jZyJGHTN0d2HglBV3uiguA4I"
   val jkt2 = "R0NfNEZOWnR5LURXcHFxMzBqWnlKR0hUTjBkMkhnbEI"
 
-  /** A refresh token record bound to `cnfJkt`, or unbound when it is `None`. */
-  def boundRecord(now: Instant, cnfJkt: Option[String]) = RefreshTokenRecord(
+  /** A refresh token record bound to `cnf`, or unbound when it is `None`. */
+  def boundRecord(now: Instant, cnf: Option[Cnf]) = RefreshTokenRecord(
     sessionId = sessionId1,
     publicSessionId = publicSessionId1,
     accessToken = accessToken1,
@@ -167,7 +171,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
     amr = amr1,
     authTime = authTime1,
     acr = None,
-    cnfJkt = cnfJkt,
+    cnf = cnf,
   )
 
   /** Runs a refresh with the given granted/requested authorization details. */
@@ -197,7 +201,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
         amr = amr1,
         authTime = authTime1,
         acr = None,
-        cnfJkt = None,
+        cnf = None,
       )
 
       _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
@@ -598,7 +602,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             amr = amr1,
             authTime = authTime1,
             acr = None,
-            cnfJkt = None,
+            cnf = None,
           )
 
           newRefreshToken = RefreshToken(Array.fill(32)(7.toByte))
@@ -661,7 +665,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             amr = amr1,
             authTime = authTime1,
             acr = None,
-            cnfJkt = None,
+            cnf = None,
           )
 
           newRefreshToken = RefreshToken(Array.fill(32)(9.toByte))
@@ -766,7 +770,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             amr = amr1,
             authTime = authTime1,
             acr = None,
-                        cnfJkt = None,
+                        cnf = None,
           )
 
           _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
@@ -855,7 +859,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             amr = amr1,
             authTime = authTime1,
             acr = None,
-                        cnfJkt = None,
+                        cnf = None,
           )
 
           _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
@@ -918,7 +922,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             amr = amr1,
             authTime = authTime1,
             acr = None,
-            cnfJkt = None,
+            cnf = None,
           )
 
           _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
@@ -960,7 +964,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             amr = amr1,
             authTime = authTime1,
             acr = None,
-            cnfJkt = None,
+            cnf = None,
           )
 
           _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
@@ -1000,7 +1004,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             amr = amr1,
             authTime = authTime1,
             acr = None,
-                        cnfJkt = None,
+                        cnf = None,
           )
 
           newRefreshToken = RefreshToken(Array.fill(32)(7.toByte))
@@ -1051,7 +1055,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             amr = amr1,
             authTime = authTime1,
             acr = None,
-            cnfJkt = None,
+            cnf = None,
           )
 
           newRefreshToken = RefreshToken(Array.fill(32)(7.toByte))
@@ -1096,7 +1100,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             amr = amr1,
             authTime = authTime1,
             acr = None,
-            cnfJkt = None,
+            cnf = None,
           )
 
           // The tip left behind by the concurrent request that won the rotation race.
@@ -1160,7 +1164,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             amr = amr1,
             authTime = authTime1,
             acr = None,
-            cnfJkt = None,
+            cnf = None,
           )
 
           // Two tips in a row, each left by the next concurrent copy of this same request to
@@ -1232,7 +1236,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             amr = amr1,
             authTime = authTime1,
             acr = None,
-            cnfJkt = None,
+            cnf = None,
           )
 
           // The tip `findIdempotentRetry` hands back -- but by the time this request tries to
@@ -1540,8 +1544,8 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
 
           result <- env.service.exchangeAuthorizationCode(request, credentials, Some(jkt1))
         yield assertTrue(
-          result.cnfJkt.contains(jkt1),
-          env.tokenRepo.createRefreshToken.calls.head._3.cnfJkt.contains(jkt1),
+          result.cnf.flatMap(_.jkt).contains(jkt1),
+          env.tokenRepo.createRefreshToken.calls.head._3.cnf.flatMap(_.jkt).contains(jkt1),
         )
       },
       test("leaves the grant unbound when the code exchange carries no proof") {
@@ -1562,8 +1566,8 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
 
           result <- env.service.exchangeAuthorizationCode(request, credentials, None)
         yield assertTrue(
-          result.cnfJkt.isEmpty,
-          env.tokenRepo.createRefreshToken.calls.head._3.cnfJkt.isEmpty,
+          result.cnf.isEmpty,
+          env.tokenRepo.createRefreshToken.calls.head._3.cnf.isEmpty,
         )
       },
       test("refreshes a bound grant when the proof carries the same thumbprint") {
@@ -1573,7 +1577,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
           _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
           _ <- env.securityService.mac.succeedsWith(MAC(Array.fill(32)(11.toByte)))
-          _ <- env.tokenRepo.findToken.succeedsWith(Some(boundRecord(now, Some(jkt1))))
+          _ <- env.tokenRepo.findToken.succeedsWith(Some(boundRecord(now, Some(Cnf.dpop(jkt1)))))
           _ <- env.propertyGenerator.nextAccessToken.succeedsWith(accessToken1)
           _ <- env.tokenRepo.renewBoundToken.succeedsWith(true)
           _ <- env.userRepo.findRolesByUserAndTenant.succeedsWith(List.empty)
@@ -1583,7 +1587,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
 
           result <- env.service.refreshAccessToken(request, credentials, Some(jkt1), None)
         yield assertTrue(
-          result.cnfJkt.contains(jkt1),
+          result.cnf.flatMap(_.jkt).contains(jkt1),
           // A bound grant is renewed in place: nothing is rotated, and the client keeps the
           // token it already holds rather than being handed a successor.
           env.tokenRepo.createRefreshToken.calls.isEmpty,
@@ -1599,7 +1603,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
           _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
           _ <- env.securityService.mac.succeedsWith(MAC(Array.fill(32)(11.toByte)))
-          _ <- env.tokenRepo.findToken.succeedsWith(Some(boundRecord(now, Some(jkt1))))
+          _ <- env.tokenRepo.findToken.succeedsWith(Some(boundRecord(now, Some(Cnf.dpop(jkt1)))))
           _ <- env.propertyGenerator.nextAccessToken.succeedsWith(accessToken1)
           _ <- env.tokenRepo.renewBoundToken.succeedsWith(true)
           _ <- env.userRepo.findRolesByUserAndTenant.succeedsWith(List.empty)
@@ -1622,7 +1626,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           now <- Clock.instant
           _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
           _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
-          _ <- env.tokenRepo.findToken.succeedsWith(Some(boundRecord(now, Some(jkt1))))
+          _ <- env.tokenRepo.findToken.succeedsWith(Some(boundRecord(now, Some(Cnf.dpop(jkt1)))))
 
           request = RefreshTokenRequest(refreshToken1, None, None, None)
           credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
@@ -1639,7 +1643,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           now <- Clock.instant
           _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
           _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
-          _ <- env.tokenRepo.findToken.succeedsWith(Some(boundRecord(now, Some(jkt1))))
+          _ <- env.tokenRepo.findToken.succeedsWith(Some(boundRecord(now, Some(Cnf.dpop(jkt1)))))
 
           request = RefreshTokenRequest(refreshToken1, None, None, None)
           credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
@@ -1665,8 +1669,8 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
 
           result <- env.service.refreshAccessToken(request, credentials, Some(jkt1), None)
         yield assertTrue(
-          result.cnfJkt.isEmpty,
-          env.tokenRepo.createRefreshToken.calls.head._3.cnfJkt.isEmpty,
+          result.cnf.isEmpty,
+          env.tokenRepo.createRefreshToken.calls.head._3.cnf.isEmpty,
         )
       },
       test("binds a client_credentials token to the proof's thumbprint") {
@@ -1679,7 +1683,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
 
           result <- env.service.clientCredentials(request, credentials, Some(jkt1))
-        yield assertTrue(result.cnfJkt.contains(jkt1))
+        yield assertTrue(result.cnf.flatMap(_.jkt).contains(jkt1))
       },
     ),
   ) 

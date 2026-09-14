@@ -2,7 +2,7 @@ package versola.oauth.token
 
 import versola.oauth.client.{AuthorizationDetailResolver, OAuthConfigurationService, ResourceResolver}
 import versola.oauth.client.model.{AuthorizationDetail, ClientCredentials, ClientId, ClientIdWithSecret, OAuthClientRecord, ResourceUri, ScopeToken, TenantId}
-import versola.oauth.model.{AccessToken, AuthorizationCodeRecord, RefreshToken}
+import versola.oauth.model.{AccessToken, AuthorizationCodeRecord, Cnf, RefreshToken}
 import versola.oauth.revoke.AccessTokenRevocationService
 import versola.oauth.session.model.{RefreshAlreadyExchanged, RefreshTokenRecord, WithTtl}
 import versola.oauth.session.SessionRepository
@@ -154,7 +154,7 @@ object OAuthTokenService:
             amr = codeRecord.amr,
             authTime = codeRecord.authTime,
             acr = codeRecord.acr,
-            cnfJkt = dpopJkt,
+            cnf = dpopJkt.map(Cnf.dpop),
           ),
           previousRefreshToken = None,
           idempotencyKey = None,
@@ -257,7 +257,7 @@ object OAuthTokenService:
         // never re-derived from the current proof -- otherwise presenting a stolen unbound
         // refresh token with any key of one's own would "upgrade" it into a bound one.
         _ <- ZIO.fail(TokenEndpointError.InvalidGrant.RefreshTokenKeyMismatch)
-          .when(tokenRecord.cnfJkt.exists(!dpopJkt.contains(_)))
+          .when(tokenRecord.cnf.flatMap(_.jkt).exists(!dpopJkt.contains(_)))
 
         // RFC 6749 §6: the request may narrow the underlying grant but never widen it, so the
         // comparison is against what was granted, not against the client's registration —
@@ -288,10 +288,11 @@ object OAuthTokenService:
           idempotencyKey = idempotencyKeyMac,
           // A bound grant is renewed in place instead of rotated. Rotation exists to detect a
           // stolen token being used, and a copy of this one is inert without the private key
-          // the proof above just demonstrated -- so the chain, the generations it retains and
-          // the idempotency key that makes rotation retryable all stop paying for themselves.
+          // its confirmation just required the presenter to hold -- so the chain, the
+          // generations it retains and the idempotency key that makes rotation retryable all
+          // stop paying for themselves.
           // A retry can only be reached through a retired row, which a bound token never has.
-          boundRenewal = Option.when(tokenRecord.cnfJkt.isDefined && !resolved.retried)(
+          boundRenewal = Option.when(tokenRecord.cnf.isDefined && !resolved.retried)(
             BoundRenewal(refreshToken, resolved.previousToken),
           ),
           accessTokenAudience = audience,
@@ -513,7 +514,7 @@ object OAuthTokenService:
         amr = Set.empty,
         authTime = None,
         acr = None,
-        cnfJkt = dpopJkt,
+        cnf = dpopJkt.map(Cnf.dpop),
       )
 
     /** Orchestrates token issuance for a specific authentication session.
@@ -580,5 +581,5 @@ object OAuthTokenService:
         amr = record.amr,
         authTime = Some(record.authTime),
         acr = record.acr,
-        cnfJkt = record.cnfJkt,
+        cnf = record.cnf,
       )

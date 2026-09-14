@@ -163,6 +163,8 @@ object ConversationServiceSpec extends UnitSpecBase:
     policyUri = None,
     tosUri = None,
     consentFlow = None,
+    mtlsAuth = None,
+    certificateBoundAccessTokens = false,
   )
 
   private val consentingClient = registrationClient.copy(

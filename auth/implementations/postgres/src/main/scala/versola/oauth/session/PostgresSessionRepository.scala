@@ -5,7 +5,7 @@ import com.augustnagro.magnum.magzio.TransactorZIO
 import com.augustnagro.magnum.pg.json.JsonBDbCodec
 import com.augustnagro.magnum.pg.{PgCodec, SqlArrayCodec}
 import versola.oauth.client.model.{Acr, AuthMethodRef, AuthorizationDetail, ClientId, PassedAuthFactor, PassedFactorRecord, ResourceUri, ScopeToken}
-import versola.oauth.model.{AccessToken, Nonce, RefreshToken}
+import versola.oauth.model.{AccessToken, Cnf, Nonce, RefreshToken}
 import versola.oauth.session.model.{ClientEntry, PriorSession, PublicSessionId, RefreshAlreadyExchanged, RefreshTokenRecord, RevokedFamily, SessionId, SessionRecord, UserAgentId}
 import versola.oauth.userinfo.model.RequestedClaims
 import versola.user.model.UserId
@@ -50,6 +50,7 @@ class PostgresSessionRepository(xa: TransactorZIO)
   given DbCodec[RequestedClaims]               = jsonCodec[RequestedClaims]
   given DbCodec[Set[AuthMethodRef]]            = jsonBCodec[Set[AuthMethodRef]]
   given DbCodec[Acr]                           = DbCodec.StringCodec.biMap(Acr(_), identity[String])
+  given DbCodec[Cnf]                           = jsonBCodec[Cnf]
   given JsonBDbCodec[AuthorizationDetail]      = jsonBCodec
   // The column is a nullable array; the model's `Option[List[...]]` maps onto it directly via
   // the generic `DbCodec.OptionCodec` (NULL <-> None) wrapping this element codec.
@@ -191,7 +192,7 @@ class PostgresSessionRepository(xa: TransactorZIO)
                  user_id, client_id,
                  audience, authorization_details, scope, issued_at,
                  expires_at, requested_claims, ui_locales, nonce,
-                 amr, auth_time, acr, cnf_jkt
+                 amr, auth_time, acr, cnf
           FROM refresh_tokens
           WHERE user_id = $userId AND expires_at > $now AND rotated_at IS NULL
           ORDER BY issued_at DESC
@@ -284,7 +285,7 @@ class PostgresSessionRepository(xa: TransactorZIO)
                 id, family_id, session_id, public_session_id, access_token,
                 access_token_expires_at, user_id, client_id,
                 audience, authorization_details, scope, issued_at, expires_at, requested_claims,
-                ui_locales, nonce, amr, auth_time, acr, cnf_jkt
+                ui_locales, nonce, amr, auth_time, acr, cnf
               )
               VALUES (
                 $refreshToken,
@@ -306,7 +307,7 @@ class PostgresSessionRepository(xa: TransactorZIO)
                 ${record.amr},
                 ${record.authTime},
                 ${record.acr},
-                ${record.cnfJkt}
+                ${record.cnf}
               )
             """.update.run()
 
@@ -351,7 +352,7 @@ class PostgresSessionRepository(xa: TransactorZIO)
                 id, family_id, session_id, public_session_id, access_token,
                 access_token_expires_at, user_id, client_id,
                 audience, authorization_details, scope, issued_at, expires_at, requested_claims,
-                ui_locales, nonce, amr, auth_time, acr, cnf_jkt
+                ui_locales, nonce, amr, auth_time, acr, cnf
               )
               SELECT
                 $refreshToken,
@@ -373,7 +374,7 @@ class PostgresSessionRepository(xa: TransactorZIO)
                 ${record.amr},
                 ${record.authTime},
                 ${record.acr},
-                ${record.cnfJkt}
+                ${record.cnf}
               FROM retired
             """.update.run()
 
@@ -397,7 +398,7 @@ class PostgresSessionRepository(xa: TransactorZIO)
                  user_id, client_id,
                  audience, authorization_details, scope, issued_at,
                  expires_at, requested_claims, ui_locales, nonce,
-                 amr, auth_time, acr, cnf_jkt
+                 amr, auth_time, acr, cnf
           FROM refresh_tokens
           WHERE id = $token AND expires_at > $now AND rotated_at IS NULL"""
           .query[RefreshTokenRecord]
@@ -427,7 +428,7 @@ class PostgresSessionRepository(xa: TransactorZIO)
                  tip.access_token_expires_at, tip.user_id,
                  tip.client_id, tip.audience, tip.authorization_details, tip.scope,
                  tip.issued_at, tip.expires_at, tip.requested_claims, tip.ui_locales,
-                 tip.nonce, tip.amr, tip.auth_time, tip.acr, tip.cnf_jkt
+                 tip.nonce, tip.amr, tip.auth_time, tip.acr, tip.cnf
           FROM refresh_tokens presented
           JOIN refresh_tokens exchanged
             ON exchanged.family_id = presented.family_id
