@@ -1,7 +1,7 @@
 package versola.edge.dpop
 
 import versola.edge.EdgeConfig
-import versola.util.{Base64, Dpop, DpopNonce}
+import versola.util.{Dpop, DpopNonce}
 import zio.http.{Method, Path, QueryParams, Request, URL}
 import zio.{Clock, IO, ZIO, ZLayer}
 
@@ -95,7 +95,7 @@ object DpopVerifier:
             // §7: the proof must name the token it accompanies. Without this a proof captured
             // from one request could be paired with any other token held by the same client.
             ath <- ZIO.fromOption(proof.ath).orElseFail(Error.AthMissing)
-            _ <- ZIO.fail(Error.AthMismatch).unless(constantTimeEquals(ath, athOf(accessToken)))
+            _ <- ZIO.fail(Error.AthMismatch).unless(constantTimeEquals(ath, Dpop.ath(accessToken)))
 
             // §6.1/§7.1: and it must be signed with the key the token was bound to at issuance.
             _ <- ZIO.fail(Error.KeyMismatch)
@@ -126,13 +126,6 @@ object DpopVerifier:
 
     private def freshNonceRequired(dpop: EdgeConfig.Dpop, now: Instant): IO[Error, Nothing] =
       ZIO.fail(Error.NonceRequired(DpopNonce.issue(dpop.nonceSalt, now)))
-
-  /** §4.2: `ath` is base64url(SHA-256(ASCII(access token))). */
-  private def athOf(accessToken: String): String =
-    Base64.urlEncode(
-      MessageDigest.getInstance("SHA-256")
-        .digest(accessToken.getBytes(java.nio.charset.StandardCharsets.US_ASCII)),
-    )
 
   /** §4.3: the target URI with no query or fragment. Built from the configured public origin
     * and the request's own path, so a forwarded `Host` cannot change what is compared.

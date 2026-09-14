@@ -80,7 +80,9 @@ object IntrospectionService:
         clientId = Some(token.clientId),
         scope = Some(token.scope.mkString(" ")),
         username = None,
-        tokenType = Some("Bearer"),
+        // RFC 9449 §6.2: a DPoP-bound token introspects as such, echoing its confirmation.
+        tokenType = Some(if token.confirmation.isDefined then "DPoP" else "Bearer"),
+        cnf = token.confirmation.map(c => Json.Obj("jkt" -> Json.Str(c.jkt))),
         exp = Some(token.expiresAt.getEpochSecond),
         iat = Some(token.issuedAt.getEpochSecond),
         nbf = token.notBefore.map(_.getEpochSecond),
@@ -130,7 +132,9 @@ object IntrospectionService:
             scope = Some(record.scope.mkString(" ")),
             clientId = Some(record.clientId),
             sub = Some(record.userId.toString),
-            tokenType = Some("Bearer"),
+            // RFC 9449 §6.2: same as above, for a refresh-token-derived introspection.
+            tokenType = Some(if record.cnfJkt.isDefined then "DPoP" else "Bearer"),
+            cnf = record.cnfJkt.map(jkt => Json.Obj("jkt" -> Json.Str(jkt))),
             username = None,
             exp = Some(record.expiresAt.getEpochSecond),
             nbf = None,

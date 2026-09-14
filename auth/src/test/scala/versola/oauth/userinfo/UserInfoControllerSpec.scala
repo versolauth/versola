@@ -6,12 +6,13 @@ import com.nimbusds.jose.jwk.RSAKey
 import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 import org.scalamock.stubs.Stub
 import versola.auth.TestEnvConfig
+import versola.oauth.dpop.DpopService
 import versola.oauth.jwks.JwksService
 import versola.oauth.client.model.{ClientId, ScopeToken}
 import versola.oauth.userinfo.model.{UserInfoError, UserInfoResponse}
 import versola.user.model.UserId
 import versola.util.http.{ControllerSpec, NoopTracing, Observability}
-import versola.util.{CoreConfig, UnitSpecBase}
+import versola.util.{CoreConfig, Dpop, UnitSpecBase}
 import zio.*
 import zio.http.*
 import zio.json.*
@@ -27,6 +28,7 @@ object UserInfoControllerSpec extends UnitSpecBase:
 
   val userId1 = UserId(UUID.fromString("f077fb08-9935-4a6d-8643-bf97c073bf0f"))
   val clientId1 = ClientId("test-client-1")
+  val boundJkt1 = "0ZcOCORZNYy-DWpqq30jZyJGHTN0d2HglBV3uiguA4I"
 
   val userInfoResponse = UserInfoResponse(
     claims = Map(
@@ -41,9 +43,10 @@ object UserInfoControllerSpec extends UnitSpecBase:
       clientId: ClientId,
       scope: Set[ScopeToken],
       config: CoreConfig,
+      cnfJkt: Option[String] = None,
   ): String =
     val now = Instant.now()
-    val claims = new JWTClaimsSet.Builder()
+    val builder = new JWTClaimsSet.Builder()
       .subject(userId.toString)
       .claim("client_id", clientId.toString)
       .claim("scope", scope.map(_.toString).mkString(" "))
@@ -52,7 +55,8 @@ object UserInfoControllerSpec extends UnitSpecBase:
       .issuer(config.jwt.issuer)
       .issueTime(Date.from(now))
       .expirationTime(Date.from(now.plusSeconds(3600)))
-      .build()
+    cnfJkt.foreach(jkt => builder.claim("cnf", java.util.Map.of("jkt", jkt)))
+    val claims = builder.build()
 
     val header = new com.nimbusds.jose.JWSHeader.Builder(JWSAlgorithm.RS256)
       .keyID("test-key-id")
@@ -69,12 +73,14 @@ object UserInfoControllerSpec extends UnitSpecBase:
       request: Request,
       expectedStatus: Status,
       setup: Stub[UserInfoService] => UIO[Unit] = _ => ZIO.unit,
+      dpopSetup: Stub[DpopService] => UIO[Unit] = _ => ZIO.unit,
       verify: Response => Task[TestResult] = _ => ZIO.succeed(assertTrue(true)),
   ) =
     test(description) {
       for
         client <- ZIO.service[Client]
         userInfoService = stub[UserInfoService]
+        dpopService = stub[DpopService]
         config = TestEnvConfig.coreConfig
         jwksService = TestEnvConfig.jwksService
         tracing <- NoopTracing.layer.build
@@ -82,10 +88,14 @@ object UserInfoControllerSpec extends UnitSpecBase:
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             UserInfoController.routes
-              .provideEnvironment(ZEnvironment(userInfoService) ++ ZEnvironment(config) ++ ZEnvironment(jwksService) ++ tracing)
+              .provideEnvironment(
+                ZEnvironment(userInfoService) ++ ZEnvironment(config) ++ ZEnvironment(jwksService) ++
+                  ZEnvironment(dpopService) ++ tracing,
+              )
           )
         )
         _ <- setup(userInfoService)
+        _ <- dpopSetup(dpopService)
 
         response <- client.batched(request)
         verifyResult <- verify(response)
@@ -201,6 +211,119 @@ object UserInfoControllerSpec extends UnitSpecBase:
               .orElseFail(new RuntimeException("Missing WWW-Authenticate header"))
           yield assertTrue(
             wwwAuth.renderedValue.contains("insufficient_scope"),
+          ),
+      ),
+      locally {
+        val boundAccessToken = createAccessToken(
+          userId1,
+          clientId1,
+          Set(ScopeToken.OpenId),
+          TestEnvConfig.coreConfig,
+          cnfJkt = Some(boundJkt1),
+        )
+        userInfoTestCase(
+          description = "successfully return user info for a DPoP-bound token presented with a valid proof",
+          request = Request.get(url = URL.empty / "userinfo")
+            .addHeader(Header.Custom("Authorization", s"DPoP $boundAccessToken"))
+            .addHeader(Header.Custom("DPoP", "proof-jwt-placeholder")),
+          expectedStatus = Status.Ok,
+          setup = userInfoService => userInfoService.getUserInfo.succeedsWith(userInfoResponse),
+          dpopSetup = dpopService =>
+            dpopService.verify.succeedsWith(
+              Dpop.Proof(
+                jkt = boundJkt1,
+                jti = "proof-jti-1",
+                iat = Instant.now(),
+                nonce = None,
+                ath = Some(Dpop.ath(boundAccessToken)),
+              ),
+            ),
+          verify = response =>
+            for
+              body <- response.body.asString
+              userInfo <- ZIO.fromEither(body.fromJson[UserInfoResponse]).mapError(new RuntimeException(_))
+            yield assertTrue(userInfo.claims.contains("sub")),
+        )
+      },
+      userInfoTestCase(
+        description = "fail with invalid_dpop_proof when a DPoP-bound token is presented under the Bearer scheme",
+        request = Request.get(url = URL.empty / "userinfo")
+          .addHeader(
+            Header.Authorization.Bearer(
+              createAccessToken(
+                userId1,
+                clientId1,
+                Set(ScopeToken.OpenId),
+                TestEnvConfig.coreConfig,
+                cnfJkt = Some(boundJkt1),
+              ),
+            ),
+          ),
+        expectedStatus = Status.Unauthorized,
+        verify = response =>
+          for
+            wwwAuth <- ZIO.fromOption(response.rawHeader("WWW-Authenticate"))
+              .orElseFail(new RuntimeException("Missing WWW-Authenticate header"))
+          yield assertTrue(
+            wwwAuth.contains("DPoP"),
+            wwwAuth.contains("invalid_dpop_proof"),
+          ),
+      ),
+      userInfoTestCase(
+        description = "fail with invalid_dpop_proof when a DPoP-scheme request for a bound token carries no proof header",
+        request =
+          val accessToken = createAccessToken(
+            userId1,
+            clientId1,
+            Set(ScopeToken.OpenId),
+            TestEnvConfig.coreConfig,
+            cnfJkt = Some(boundJkt1),
+          )
+          Request.get(url = URL.empty / "userinfo")
+            .addHeader(Header.Custom("Authorization", s"DPoP $accessToken"))
+        ,
+        expectedStatus = Status.Unauthorized,
+        verify = response =>
+          for
+            wwwAuth <- ZIO.fromOption(response.rawHeader("WWW-Authenticate"))
+              .orElseFail(new RuntimeException("Missing WWW-Authenticate header"))
+          yield assertTrue(
+            wwwAuth.contains("invalid_dpop_proof"),
+          ),
+      ),
+      userInfoTestCase(
+        description = "fail with invalid_dpop_proof when the proof's ath names a different access token",
+        request =
+          val accessToken = createAccessToken(
+            userId1,
+            clientId1,
+            Set(ScopeToken.OpenId),
+            TestEnvConfig.coreConfig,
+            cnfJkt = Some(boundJkt1),
+          )
+          Request.get(url = URL.empty / "userinfo")
+            .addHeader(Header.Custom("Authorization", s"DPoP $accessToken"))
+            .addHeader(Header.Custom("DPoP", "proof-jwt-placeholder"))
+        ,
+        expectedStatus = Status.Unauthorized,
+        dpopSetup = dpopService =>
+          dpopService.verify.succeedsWith(
+            Dpop.Proof(
+              jkt = boundJkt1,
+              jti = "proof-jti-1",
+              iat = Instant.now(),
+              nonce = None,
+              // A genuine proof, but made over a different access token -- exactly what a
+              // stolen bound token paired with an unrelated valid proof looks like.
+              ath = Some(Dpop.ath("some-other-access-token")),
+            ),
+          ),
+        verify = response =>
+          for
+            wwwAuth <- ZIO.fromOption(response.rawHeader("WWW-Authenticate"))
+              .orElseFail(new RuntimeException("Missing WWW-Authenticate header"))
+          yield assertTrue(
+            wwwAuth.contains("invalid_dpop_proof"),
           ),
       ),
     ),

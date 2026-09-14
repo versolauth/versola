@@ -260,4 +260,13 @@ object DpopSpec extends ZIOSpecDefault:
       for result <- verify(raw).either
       yield assertTrue(result == Left(Dpop.Error.MalformedClaim("ath")))
     },
+    test("ath is the base64url(SHA-256) digest of the access token, RFC 9449 §4.2") {
+      val digest = java.security.MessageDigest.getInstance("SHA-256")
+        .digest("an-access-token".getBytes(java.nio.charset.StandardCharsets.US_ASCII))
+      val expected = java.util.Base64.getUrlEncoder.withoutPadding().encodeToString(digest)
+      assertTrue(Dpop.ath("an-access-token") == expected)
+    },
+    test("ath differs for different access tokens") {
+      assertTrue(Dpop.ath("token-a") != Dpop.ath("token-b"))
+    },
   )
