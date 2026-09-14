@@ -40,6 +40,12 @@ case class OAuthClientRecord(
     /** RFC 9449 §5.2 `dpop_bound_access_tokens`: the client always uses DPoP, so a token
       * request from it without a proof is refused rather than answered with a bearer token. */
     dpopBoundAccessTokens: Boolean,
+    /** RFC 8705 §2.1 mutual-TLS client authentication; `None` when the client authenticates
+      * with a secret. */
+    mtlsAuth: Option[MutualTlsAuth],
+    /** RFC 8705 §3.4: whether access tokens issued to this client are bound to the
+      * certificate it presented, independently of how it authenticated. */
+    certificateBoundAccessTokens: Boolean,
 ) derives Schema, CanEqual, Equal:
 
   def isConfidential: Boolean = secret.nonEmpty

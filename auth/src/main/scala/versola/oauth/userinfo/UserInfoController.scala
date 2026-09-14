@@ -203,7 +203,7 @@ object UserInfoController extends Controller:
       scheme: AuthScheme,
       config: CoreConfig,
   ): ZIO[DpopService & EdgeAssertionService & OAuthConfigurationService, Throwable | UserInfoError, Unit] =
-    (token.confirmation.map(_.jkt), scheme) match
+    (token.confirmation.flatMap(_.jkt), scheme) match
       case (Some(jkt), AuthScheme.Dpop) =>
         verifyDpopProof(request, tokenString, jkt, token.clientId, config)
 

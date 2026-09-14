@@ -37,6 +37,8 @@ object LocaleCompletenessValidatorSpec extends ZIOSpecDefault, ZIOStubs:
     tosUri = None,
     consentFlow = None,
     dpopBoundAccessTokens = false,
+    mtlsAuth = None,
+    certificateBoundAccessTokens = false,
   )
   private val scope = ScopeRecord(
     tenantId,
