@@ -40,6 +40,7 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
     consentFlow = None,
     dpopBoundAccessTokens = false,
     mtlsAuth = None,
+    certificateBoundAccessTokens = false,
   )
   val publicClient = OAuthClientRecord(
     id = publicClientId,
@@ -64,6 +65,7 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
     consentFlow = None,
     dpopBoundAccessTokens = false,
     mtlsAuth = None,
+    certificateBoundAccessTokens = false,
   )
 
   val testScopes = Vector(ScopeRecord(ScopeToken("read"), Map("en" -> "Read access"), Vector.empty))

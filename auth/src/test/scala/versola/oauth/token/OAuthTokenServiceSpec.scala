@@ -84,6 +84,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
     consentFlow = None,
     dpopBoundAccessTokens = false,
     mtlsAuth = None,
+    certificateBoundAccessTokens = false,
   )
 
   val publicClientId = ClientId("public-client-1")
@@ -110,6 +111,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
     consentFlow = None,
     dpopBoundAccessTokens = false,
     mtlsAuth = None,
+    certificateBoundAccessTokens = false,
   )
 
   val adminClient = testClient.copy(id = OAuthTokenService.centralAdminClientId)

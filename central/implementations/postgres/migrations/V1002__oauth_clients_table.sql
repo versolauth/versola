@@ -14,8 +14,10 @@ CREATE TABLE oauth_clients (
     front_channel_logout_uri TEXT,
     front_channel_logout_session_required BOOLEAN NOT NULL DEFAULT FALSE,
     back_channel_logout_uri TEXT,
-    -- RFC 8705 §2.1 `tls_client_auth`. NULL means the client authenticates with a secret;
-    -- set means it authenticates with a certificate, and its tokens are bound to that
-    -- certificate per §3.
-    mtls_auth JSONB
+    -- RFC 8705 §2.1 `tls_client_auth`. NULL means the client does not authenticate with a
+    -- certificate.
+    mtls_auth JSONB,
+    -- RFC 8705 §3.4. Only consulted for clients that authenticate some other way: a client
+    -- with mtls_auth set binds regardless, see OAuthClientRecord.bindsAccessTokens.
+    certificate_bound_access_tokens BOOLEAN NOT NULL DEFAULT FALSE
 );

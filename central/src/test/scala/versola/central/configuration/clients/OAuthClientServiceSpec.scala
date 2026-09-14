@@ -60,6 +60,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     consentFlow = None,
     dpopBoundAccessTokens = false,
     mtlsAuth = None,
+    certificateBoundAccessTokens = false,
   )
 
   private val otherTenantClient = OAuthClientRecord(
@@ -86,6 +87,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     consentFlow = None,
     dpopBoundAccessTokens = false,
     mtlsAuth = None,
+    certificateBoundAccessTokens = false,
   )
 
   private val createRequest = CreateClientRequest(
@@ -198,7 +200,8 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         consentFlow = Some(ConsentFlow(allowPartial = true, rememberDuration = Some(14.days))),
         dpopBoundAccessTokens = false,
         mtlsAuth = None,
-          )
+        certificateBoundAccessTokens = false,
+      )
 
       for
         _ <- env.secureRandom.nextBytes.succeedsWith(secretBytes)
@@ -303,7 +306,35 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         created = env.repository.createClient.calls.head
       yield assertTrue(
         created.mtlsAuth == Some(MutualTlsAuth(MutualTlsSubjectType.subject_dn, "CN=client,O=Example")),
+        // registered without the §3.4 flag, yet still bound: §2 implies §3
+        !created.certificateBoundAccessTokens,
+        created.bindsAccessTokens,
       )
+    },
+    test("registerClient binds a client that asked for §3 binding without authenticating by certificate") {
+      val env = new Env()
+
+      for
+        _ <- env.secureRandom.nextBytes.succeedsWith(Array.fill(32)(11.toByte))
+        _ <- env.securityService.encryptAes256.succeedsWith(Array.fill(48)(17.toByte))
+        _ <- env.repository.createClient.succeedsWith(())
+        _ <- env.service.registerClient(createRequest.copy(certificateBoundAccessTokens = true))
+        created = env.repository.createClient.calls.head
+      yield assertTrue(
+        created.mtlsAuth.isEmpty,
+        created.bindsAccessTokens,
+      )
+    },
+    test("registerClient leaves a plain secret client unbound") {
+      val env = new Env()
+
+      for
+        _ <- env.secureRandom.nextBytes.succeedsWith(Array.fill(32)(11.toByte))
+        _ <- env.securityService.encryptAes256.succeedsWith(Array.fill(48)(17.toByte))
+        _ <- env.repository.createClient.succeedsWith(())
+        _ <- env.service.registerClient(createRequest)
+        created = env.repository.createClient.calls.head
+      yield assertTrue(!created.bindsAccessTokens)
     },
     test("updateClient trims an mtlsAuth subject value and passes a deletion through untouched") {
       val env = new Env()
