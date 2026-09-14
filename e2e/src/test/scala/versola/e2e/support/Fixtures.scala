@@ -49,6 +49,8 @@ object Fixtures:
       logoUri: Option[String] = None,
       policyUri: Option[String] = None,
       tosUri: Option[String] = None,
+      mtlsAuth: Option[Json] = None,
+      certificateBoundAccessTokens: Boolean = false,
   ): Json.Obj =
     Json.Obj(
       Chunk[(String, Json)](
@@ -62,6 +64,7 @@ object Fixtures:
         "theme" -> Json.Str(theme),
         "otpTemplateId" -> Json.Str(otpTemplateId),
         "frontChannelLogoutSessionRequired" -> Json.Bool(frontChannelLogoutSessionRequired),
+        "certificateBoundAccessTokens" -> Json.Bool(certificateBoundAccessTokens),
       ) ++ Chunk.fromIterable(
         List(
           refreshTokenTtl.map(value => "refreshTokenTtl" -> Json.Num(value)),
@@ -73,9 +76,16 @@ object Fixtures:
           logoUri.map(value => "logoUri" -> Json.Str(value)),
           policyUri.map(value => "policyUri" -> Json.Str(value)),
           tosUri.map(value => "tosUri" -> Json.Str(value)),
+          mtlsAuth.map("mtlsAuth" -> _),
         ).flatten,
       ),
     )
+
+  /** The `MutualTlsAuth` shape RFC 8705 §2.1 registration expects: a discriminator naming
+    * which certificate attribute is checked, and the literal value it must carry.
+    */
+  def mutualTlsAuth(subjectType: String, subjectValue: String): Json.Obj =
+    Json.Obj("subjectType" -> Json.Str(subjectType), "subjectValue" -> Json.Str(subjectValue))
 
   /** The add/remove patch shape `PUT /configuration/clients` requires for its list members. */
   def patch(add: Set[String] = Set.empty, remove: Set[String] = Set.empty): Json.Obj =

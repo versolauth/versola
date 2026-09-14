@@ -13,9 +13,9 @@ import zio.prelude.Equal
   */
 case class Cnf(
     /** RFC 9449 §6: JWK SHA-256 thumbprint of the client's DPoP public key. */
-    jkt: Option[String] = None,
+    jkt: Option[String],
     /** RFC 8705 §3.1: base64url-encoded SHA-256 hash of the DER client certificate. */
-    @jsonField("x5t#S256") x5tS256: Option[String] = None,
+    @jsonField("x5t#S256") x5tS256: Option[String],
 ) derives JsonCodec, CanEqual, Equal:
 
   /** The claim as it appears in an access token, omitting absent members. */
@@ -25,6 +25,6 @@ case class Cnf(
     )
 
 object Cnf:
-  def dpop(jkt: String): Cnf = Cnf(jkt = Some(jkt))
+  def dpop(jkt: String): Cnf = Cnf(jkt = Some(jkt), x5tS256 = None)
 
-  def certificate(x5tS256: String): Cnf = Cnf(x5tS256 = Some(x5tS256))
+  def certificate(x5tS256: String): Cnf = Cnf(jkt = None, x5tS256 = Some(x5tS256))
