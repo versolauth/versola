@@ -13,6 +13,16 @@ enum FlowName(val value: String):
   case BusinessAction extends FlowName("business-action")
   case Logout extends FlowName("logout")
 
+  /** §8.4's login through edge, ending in an `EDGE_SESSION` cookie. Its own flow rather than a
+    * variant of [[MobileOtp]] even though the conversation in the middle is the same: it is two
+    * hops longer, three of its hops are edge's and not auth's, and the campaign's whole reason
+    * for running it is to measure what fronting auth with edge costs.
+    */
+  case WebOtp extends FlowName("web-otp")
+
+  /** The web counterpart of [[Logout]]: edge's own two hops, not auth's one. */
+  case WebLogout extends FlowName("web-logout")
+
 /** One measured hop. Every `/challenge` fetch is the same step name regardless of which step of
   * the conversation it rendered -- the hop is the HTTP round trip, and what the SUT spent it on
   * is the next submit's business.
@@ -29,6 +39,20 @@ enum StepName(val value: String):
   case TokenRefresh extends StepName("token-refresh")
   case Action extends StepName("action")
   case Logout extends StepName("logout")
+
+  /** `GET {edge}/login/{presetId}` -- §8.4 hop 1. */
+  case EdgeLogin extends StepName("edge-login")
+
+  /** `GET {edge}/complete?code=&state=` -- §8.4's last hop, the one that sets the cookie. */
+  case EdgeComplete extends StepName("edge-complete")
+
+  /** `GET {edge}/logout/{presetId}` -- the browser being handed on to auth's RP-initiated
+    * logout.
+    */
+  case EdgeLogout extends StepName("edge-logout")
+
+  /** `GET {edge}/logout/frontchannel` -- the hop that actually revokes the edge session. */
+  case EdgeEndSession extends StepName("edge-end-session")
 
 /** Where the timings of §8 ("each hop a separately timed step; each flow also timed end to end")
   * go.

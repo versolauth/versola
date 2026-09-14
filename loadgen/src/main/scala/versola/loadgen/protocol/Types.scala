@@ -1,5 +1,6 @@
 package versola.loadgen.protocol
 
+import zio.Duration
 import zio.http.{Method, Status}
 
 // Opaque wrappers over the handful of protocol-level strings that must never be interchanged by
@@ -138,7 +139,36 @@ enum SubmitOutcome:
   case Redirected(location: String, ssoSession: Option[SsoSession])
   case Rendered(page: ChallengePage)
 
-case class EdgeLoginStarted(conversation: ConversationCookie, codeVerifier: CodeVerifier, state: String)
+/** What `GET {edge}/login/{presetId}` leaves the driver holding (§8.4 hop 1): where edge sent it
+  * next, and the `state` edge minted for the login it just recorded.
+  *
+  * Deliberately neither of the two fields W1 gave this type. There is no `ConversationCookie`
+  * yet -- hop 1 answers a redirect to auth and starts no conversation, which only hop 2 does --
+  * and there is no `CodeVerifier` at all on this path: edge mints the PKCE pair, keeps the
+  * verifier in `pending_logins` and exchanges the code itself, so a driver that held one would
+  * be holding a value it invented and can never use.
+  *
+  * `state` is kept because it is the one thing the driver can check: auth must echo edge's own
+  * `state` back, and a mismatch means this flow is about to complete another virtual user's
+  * login. Nothing else in §8.4 would notice.
+  */
+case class EdgeLoginStarted(authorizeUrl: String, state: String)
+
+/** An `EDGE_SESSION` cookie as edge just set it -- on `/complete` at login, or on a proxied
+  * action when it refreshed behind the cookie (§8.4's "edge rotates the cookie on refresh").
+  *
+  * The `Max-Age` travels with the value rather than being left for the caller to guess from
+  * `session.access-token-ttl`, because edge sets it from the *refresh* token's lifetime when it
+  * has one, and it is what `vu_sessions.access_expires_at` must hold: that column is the
+  * liveness boundary the driver's startup load filters a web session on (migration V0002), so
+  * an expiry guessed long makes the driver resume dead sessions and report the resulting 401s
+  * as the SUT's. `None` when the header carried no `Max-Age`, which leaves the decision with the
+  * caller instead of inventing one here.
+  */
+case class EdgeCookie(session: EdgeSession, maxAge: Option[Duration])
+
+object EdgeCookie:
+  def of(cookie: zio.http.Cookie.Response): EdgeCookie = EdgeCookie(EdgeSession(cookie.content), cookie.maxAge)
 
 /** `path` is the whole path under the edge origin, including the `/resources/{resourceId}`
   * prefix of §8.6 (`/resources/core/accounts`) -- the resource id is not a separate field
@@ -161,4 +191,4 @@ enum EdgeCredential:
   * call or the session dies mid-run and reads as a phantom SUT failure (§8.4). Always `None` on
   * the bearer path, which has no cookie to rotate.
   */
-case class ActionOutcome(status: Status, body: String, rotatedSession: Option[EdgeSession])
+case class ActionOutcome(status: Status, body: String, rotatedSession: Option[EdgeCookie])

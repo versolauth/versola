@@ -109,7 +109,7 @@ final class HttpAuthClient(exchange: HttpExchange, endpoints: AuthEndpoints, cli
       received <- exchange.send(withSession)
       outcome <- HttpExchange.setCookie(received.response, conversationCookie) match
         case Some(cookie) =>
-          ZIO.succeed(AuthorizeOutcome.Started(AuthorizeStarted(ConversationCookie(cookie), pkce.verifier, state)))
+          ZIO.succeed(AuthorizeOutcome.Started(AuthorizeStarted(ConversationCookie(cookie.content), pkce.verifier, state)))
         case None =>
           for
             location <- HttpExchange.required(
@@ -224,7 +224,8 @@ final class HttpAuthClient(exchange: HttpExchange, endpoints: AuthEndpoints, cli
       if HttpExchange.isRedirect(received.status) then
         HttpExchange
           .required(received.location, endpoint, "redirect without a Location header")
-          .map(location => SubmitOutcome.Redirected(location, HttpExchange.setCookie(received.response, ssoSessionCookie).map(SsoSession.apply)))
+          .map: location =>
+            SubmitOutcome.Redirected(location, HttpExchange.setCookie(received.response, ssoSessionCookie).map(cookie => SsoSession(cookie.content)))
       else if received.status == Status.Ok then ZIO.succeed(SubmitOutcome.Rendered(ChallengePage.parse(conversation, received.body)))
       else ZIO.fail(HttpExchange.unexpected(expectedSubmit, received.status, endpoint))
     }
@@ -254,8 +255,8 @@ final class HttpAuthClient(exchange: HttpExchange, endpoints: AuthEndpoints, cli
       )
 
 object HttpAuthClient:
-  private val conversationCookie = "SSO_CONVERSATION"
-  private val ssoSessionCookie = "SSO_SESSION"
+  private[protocol] val conversationCookie = "SSO_CONVERSATION"
+  private[protocol] val ssoSessionCookie = "SSO_SESSION"
 
   // Endpoint labels and expected-status sets are values, not interpolations built per failure:
   // the failure path allocates nothing beyond the error itself.

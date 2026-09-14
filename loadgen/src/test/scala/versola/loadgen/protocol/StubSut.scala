@@ -23,6 +23,30 @@ object StubSut:
   val code = "authorization-code-1"
   val requestTimeout: Duration = 2.seconds
 
+  // The edge half of the stub (§8.4). `edgeSession` is shaped the way edge shapes the cookie's
+  // content -- `<presetId>:<accessToken>` -- because the driver passes it back opaquely and a
+  // value that did not look like one would hide a client that tried to parse it.
+  val preset = "web-preset"
+  val edgeState = "edge-state-1"
+  val edgeSession = "web-preset:access-token-1"
+  val rotatedEdgeSession = "web-preset:access-token-2"
+  val edgeCookieTtl: Duration = 30.minutes
+  val postLoginRedirect = "https://app.test/home"
+
+  /** What edge's `/login/{presetId}` redirects to: an `/authorize` URL edge built, carrying
+    * edge's own `state` and `/complete` as the `redirect_uri`. Percent-encoded, as a real
+    * `Location` header is -- the driver reads this value back off a parsed URL, so an
+    * unencoded literal here would not round-trip and the test would be asserting on the
+    * encoder rather than on the flow.
+    */
+  val authorizeUrl: String =
+    authUrl + "/authorize?response_type=code&client_id=web-otp&redirect_uri=" +
+      java.net.URLEncoder.encode(edgeUrl + "/complete", "UTF-8") +
+      "&scope=openid+phone&state=" + edgeState + "&code_challenge=Y2hhbGxlbmdl&code_challenge_method=S256"
+
+  /** Where auth ends a web conversation: back at edge, not at a client redirect URI. */
+  val edgeCodeRedirect: String = edgeUrl + "/complete?code=" + code + "&state=" + edgeState
+
   val publicClient: ClientRegistration = ClientRegistration(ClientCreds("mobile-otp", None), redirectUri)
   val confidentialClient: ClientRegistration = ClientRegistration(ClientCreds("web-otp", Some("s3cret")), redirectUri)
 
@@ -82,7 +106,8 @@ object StubSut:
       steps: List[String],
       recorder: Recorder,
       remaining: Ref[List[String]],
-      silentReauthorize: Boolean = false,
+      silentReauthorize: Boolean,
+      codeRedirectTo: String,
   ): Routes[Any, Nothing] =
     val challengeRedirect = Response
       .seeOther(URL.decode("/challenge").toOption.get)
@@ -90,7 +115,7 @@ object StubSut:
 
     // A silent reauthorization (design doc §7.4): the SUT recognized the SSO_SESSION already
     // satisfies the request and answers straight with the code, no conversation started.
-    val silentReauthorizeRedirect = Response.seeOther(URL.decode(codeRedirect).toOption.get)
+    val silentReauthorizeRedirect = Response.seeOther(URL.decode(codeRedirectTo).toOption.get)
 
     def advance: UIO[Response] =
       remaining.modify:
@@ -99,7 +124,7 @@ object StubSut:
       .map: finished =>
         if finished then
           Response
-            .seeOther(URL.decode(codeRedirect).toOption.get)
+            .seeOther(URL.decode(codeRedirectTo).toOption.get)
             .addCookie(Cookie.Response("SSO_SESSION", ssoSession))
         else challengeRedirect
 
@@ -119,6 +144,41 @@ object StubSut:
       Method.POST / "challenge" / "passkey" -> handler((_: Request) => advance),
       Method.POST / "token" -> handler((_: Request) => ZIO.succeed(Response.json(tokenBody))),
       Method.GET / "logout" -> handler((_: Request) => ZIO.succeed(Response.ok)),
+      // §8.4 hop 1: edge minted the PKCE pair and the state, recorded the pending login, and
+      // hands the browser on to auth. A preset it does not know is a 404, as `EdgeController`'s
+      // `PresetNotFound` branch answers.
+      Method.GET / "login" / string("presetId") -> handler: (presetId: String, request: Request) =>
+        if presetId != preset then ZIO.succeed(Response.notFound)
+        else
+          val forwarded = request.url.queryParams.getAll("acr_values").headOption
+          val target = URL.decode(authorizeUrl).toOption.get
+          ZIO.succeed(Response.seeOther(forwarded.fold(target)(values => target.addQueryParam("acr_values", values))))
+      ,
+      // §8.4's last hop. Edge exchanges the code itself and answers the cookie; a state it has
+      // no pending login for is a 400 (`AuthConversationNotFound`).
+      Method.GET / "complete" -> handler: (request: Request) =>
+        val state = request.url.queryParams.getAll("state").headOption
+        val returned = request.url.queryParams.getAll("code").headOption
+        if !state.contains(edgeState) || returned.isEmpty then ZIO.succeed(Response.badRequest)
+        else
+          ZIO.succeed(
+            Response
+              .seeOther(URL.decode(postLoginRedirect).toOption.get)
+              .addCookie(Cookie.Response("EDGE_SESSION", edgeSession, maxAge = Some(edgeCookieTtl))),
+          )
+      ,
+      Method.GET / "logout" / "frontchannel" -> handler: (_: Request) =>
+        ZIO.succeed(Response.ok.addCookie(Cookie.Response("EDGE_SESSION", "", maxAge = Some(Duration.Zero)))),
+      Method.GET / "logout" / string("presetId") -> handler: (_: String, _: Request) =>
+        ZIO.succeed(Response.seeOther(URL.decode(authUrl + "/logout").toOption.get)),
+      // §8.6 through the proxy. Rotates the cookie on every call, which is the behaviour the
+      // driver has to adopt or lose the session (§8.4).
+      Method.GET / "resources" / trailing -> handler: (_: Path, _: Request) =>
+        ZIO.succeed(
+          Response
+            .json("""{"ok":true}""")
+            .addCookie(Cookie.Response("EDGE_SESSION", rotatedEdgeSession, maxAge = Some(edgeCookieTtl))),
+        ),
     )
 
     // Recording is a transform over every handler, the not-found one included, so a request to
@@ -126,8 +186,21 @@ object StubSut:
     handled.transform(_.contramapZIO(request => recorder.seen.update(_ :+ request).as(request)))
 
   def make(steps: List[String], silentReauthorize: Boolean = false): ZIO[Any, Nothing, (Recorder, Routes[Any, Nothing])] =
+    started(steps, silentReauthorize, codeRedirect)
+
+  /** The same stub with auth ending its conversation at edge's `/complete` instead of at a
+    * client redirect URI -- which is the only difference §8.4 makes to auth's half of it.
+    */
+  def makeWeb(steps: List[String]): ZIO[Any, Nothing, (Recorder, Routes[Any, Nothing])] =
+    started(steps, false, edgeCodeRedirect)
+
+  private def started(
+      steps: List[String],
+      silentReauthorize: Boolean,
+      codeRedirectTo: String,
+  ): ZIO[Any, Nothing, (Recorder, Routes[Any, Nothing])] =
     for
       seen <- Ref.make(Vector.empty[Request])
       remaining <- Ref.make(steps)
       recorder = Recorder(seen)
-    yield (recorder, routes(steps, recorder, remaining, silentReauthorize))
+    yield (recorder, routes(steps, recorder, remaining, silentReauthorize, codeRedirectTo))

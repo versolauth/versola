@@ -51,13 +51,13 @@ final class EdgeActionClient(exchange: HttpExchange, resources: URL) extends Act
       // Only the success path has a session to rotate -- an error response has no reason to
       // carry one, and applying this on that path would not be a decision.
       val rotated = credential match
-        case EdgeCredential.Cookie(_) => HttpExchange.setCookie(received.response, edgeSessionCookie).map(EdgeSession.apply)
+        case EdgeCredential.Cookie(_) => HttpExchange.setCookie(received.response, edgeSessionCookie).map(EdgeCookie.of)
         case EdgeCredential.Bearer(_) => None
       ZIO.succeed(ActionOutcome(received.status, received.body, rotated))
     else ZIO.fail(HttpExchange.unexpected(expectedSuccess, received.status, action.path))
 
 object EdgeActionClient:
-  private val edgeSessionCookie = "EDGE_SESSION"
+  private[protocol] val edgeSessionCookie = "EDGE_SESSION"
   private val jsonContentType = Header.ContentType(MediaType.application.json)
   private val expectedSuccess: Set[Status] = Set(Status.Ok)
 
