@@ -3,6 +3,7 @@ package versola.loadgen.seed
 import com.augustnagro.magnum.DbCon
 import com.augustnagro.magnum.magzio.TransactorZIO
 import org.postgresql.PGConnection
+import versola.util.postgres.BasicCodecs
 import zio.{Chunk, Task, ZIO}
 
 import java.io.ByteArrayInputStream
@@ -72,15 +73,15 @@ object CopySink:
     * The `COPY` runs *inside* `connect`, not on a connection borrowed out of it, so the pool's
     * lifecycle is unchanged.
     */
-  final class OfTransactor(xa: TransactorZIO) extends CopySink:
+  final class OfTransactor(xa: TransactorZIO) extends CopySink, BasicCodecs:
     override def copyIn(statement: String, rows: Chunk[String]): Task[Long] =
       if rows.isEmpty then ZIO.succeed(0L)
       else
-        xa.connect:
+        xa.connectMeasured("seed-copy-in"):
           summon[DbCon].connection.unwrap(classOf[PGConnection]).getCopyAPI.copyIn(statement, payload(rows))
 
     override def execute(statement: String): Task[Unit] =
-      xa.connect:
+      xa.connectMeasured("seed-execute"):
         val prepared = summon[DbCon].connection.prepareStatement(statement)
         try prepared.execute()
         finally prepared.close()

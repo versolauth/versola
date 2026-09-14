@@ -2,6 +2,7 @@ package versola.loadgen.seed
 
 import com.augustnagro.magnum.magzio.TransactorZIO
 import com.augustnagro.magnum.sql
+import versola.util.postgres.BasicCodecs
 import zio.Task
 
 /** The one read the seeder makes of the emulator's own store: where to resume.
@@ -11,11 +12,11 @@ import zio.Task
   * shard's slice, the coordinator counts states) and adding it there would widen an interface two
   * other tracks implement against for one caller's benefit.
   */
-final class StoreQueries(xa: TransactorZIO):
+final class StoreQueries(xa: TransactorZIO) extends BasicCodecs:
 
   /** `None` on an empty table, so the caller starts at id 1. An index-only scan of the `(shard,
     * id)` index's rightmost leaf, not a table scan, which is why this is affordable at 20M rows.
     */
   def maxVirtualUserId: Task[Option[Long]] =
-    xa.connect:
+    xa.connectMeasured("seed-max-virtual-user-id"):
       sql"SELECT max(id) FROM vu_users".query[Option[Long]].run().headOption.flatten
