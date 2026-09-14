@@ -317,9 +317,9 @@ case class OAuthClientResponse(
     dpopBoundAccessTokens: Boolean,
     /** RFC 8705 §2.1 mutual-TLS client authentication; `None` when the client
       * authenticates with a secret. */
-    mtlsAuth: Option[MutualTlsAuth] = None,
+    mtlsAuth: Option[MutualTlsAuth],
     /** RFC 8705 §3.4: bind this client's access tokens to the certificate it presents. */
-    certificateBoundAccessTokens: Boolean = false,
+    certificateBoundAccessTokens: Boolean,
 ) derives Schema, JsonCodec
 
 case class ConsentFlowDto(
@@ -372,9 +372,9 @@ case class CreateClientRequest(
     clientType: ClientType = ClientType.web,
     /** RFC 8705 §2.1 mutual-TLS client authentication; `None` when the client
       * authenticates with a secret. */
-    mtlsAuth: Option[MutualTlsAuth] = None,
+    mtlsAuth: Option[MutualTlsAuth],
     /** RFC 8705 §3.4: bind this client's access tokens to the certificate it presents. */
-    certificateBoundAccessTokens: Boolean = false,
+    certificateBoundAccessTokens: Boolean,
 ) derives Schema, JsonCodec
 
 /** `secret` is absent for a native client - there is none to hand back. */
@@ -406,8 +406,8 @@ case class UpdateClientRequest(
     tosUri: Option[Patch[String]] = None,
     consentFlow: Option[Patch[ConsentFlowDto]] = None,
     dpopBoundAccessTokens: Option[Boolean] = None,
-    mtlsAuth: Option[Patch[MutualTlsAuth]] = None,
-    certificateBoundAccessTokens: Option[Boolean] = None,
+    mtlsAuth: Option[Patch[MutualTlsAuth]],
+    certificateBoundAccessTokens: Option[Boolean],
 ) derives Schema, JsonCodec
 
 case class AuthorizationPresetInput(
@@ -583,9 +583,9 @@ case class SyncOAuthClientRecord(
     dpopBoundAccessTokens: Boolean,
     /** RFC 8705 §2.1 mutual-TLS client authentication; `None` when the client
       * authenticates with a secret. */
-    mtlsAuth: Option[MutualTlsAuth] = None,
+    mtlsAuth: Option[MutualTlsAuth],
     /** RFC 8705 §3.4: bind this client's access tokens to the certificate it presents. */
-    certificateBoundAccessTokens: Boolean = false,
+    certificateBoundAccessTokens: Boolean,
 ) derives JsonCodec, Schema
 
 case class GetOAuthClientsSyncResponse(

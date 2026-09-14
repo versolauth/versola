@@ -209,6 +209,106 @@ object ClientApiSpec extends CentralApiSpec:
         assertTrue(rejected.body.contains("one of"))
           .label("the two channels are alternatives; accepting both leaves the OP no rule to pick by")
     },
+    test("a registered client reads back its mutual-TLS auth configuration") {
+      for
+        central <- api
+        id <- CentralApi.id("e2e-client")
+        body = Fixtures.client(id, mtlsAuth = Some(Fixtures.mutualTlsAuth("subject_dn", "CN=e2e-client,O=Example")))
+        record <- withClient(central, body)(_ => read(central, id))
+        mtlsAuth = record.flatMap(_.obj("mtlsAuth"))
+      yield assertTrue(mtlsAuth.flatMap(_.str("subjectType")).contains("subject_dn")) &&
+        assertTrue(mtlsAuth.flatMap(_.str("subjectValue")).contains("CN=e2e-client,O=Example"))
+    },
+    test("a registered mutual-TLS subject value is stored trimmed") {
+      for
+        central <- api
+        id <- CentralApi.id("e2e-client")
+        body = Fixtures.client(id, mtlsAuth = Some(Fixtures.mutualTlsAuth("san_dns", "  client.example.com  ")))
+        record <- withClient(central, body)(_ => read(central, id))
+      yield assertTrue(record.flatMap(_.obj("mtlsAuth")).flatMap(_.str("subjectValue")).contains("client.example.com"))
+        .label("RFC 8705 \u00a72.1.2 compares this literally, so pasted whitespace must not survive registration")
+    },
+    test("a client not configured for mutual TLS reads back no mtlsAuth") {
+      for
+        central <- api
+        id <- CentralApi.id("e2e-client")
+        record <- withClient(central, Fixtures.client(id))(_ => read(central, id))
+      yield assertTrue(record.exists(!_.has("mtlsAuth")) || record.exists(_.isNull("mtlsAuth")))
+    },
+    test("certificateBoundAccessTokens is stored as registered") {
+      for
+        central <- api
+        id <- CentralApi.id("e2e-client")
+        body = Fixtures.client(id, certificateBoundAccessTokens = true)
+        record <- withClient(central, body)(_ => read(central, id, _.bool("certificateBoundAccessTokens").contains(true)))
+      yield assertTrue(record.flatMap(_.bool("certificateBoundAccessTokens")).contains(true))
+        .label("RFC 8705 \u00a73.4 lets a client bind its tokens without authenticating by certificate")
+    },
+    test("an unrecognised mtlsAuth subjectType is refused") {
+      for
+        central <- api
+        id <- CentralApi.id("e2e-client")
+        rejected <- central.post(
+          path,
+          Fixtures.client(id, mtlsAuth = Some(Fixtures.mutualTlsAuth("not_a_subject_type", "CN=x"))),
+        )
+        _ <- central.delete(path, "clientId" -> id)
+      yield assertTrue(rejected.status == Status.BadRequest)
+    },
+    test("an update sets mtlsAuth on a client that had none") {
+      for
+        central <- api
+        id <- CentralApi.id("e2e-client")
+        outcome <- withClient(central, Fixtures.client(id)) { clientId =>
+          central.put(
+            path,
+            Fixtures.clientUpdate(
+              clientId,
+              "mtlsAuth" -> Fixtures.mutualTlsAuth("subject_dn", "CN=updated,O=Example"),
+            ),
+          ).zip(read(central, id, _.obj("mtlsAuth").isDefined))
+        }
+        (updated, record) = outcome
+      yield assertTrue(updated.status == Status.NoContent) &&
+        assertTrue(record.flatMap(_.obj("mtlsAuth")).flatMap(_.str("subjectValue")).contains("CN=updated,O=Example"))
+    },
+    test("an update clears mtlsAuth with an explicit null") {
+      for
+        central <- api
+        id <- CentralApi.id("e2e-client")
+        body = Fixtures.client(id, mtlsAuth = Some(Fixtures.mutualTlsAuth("subject_dn", "CN=e2e-client,O=Example")))
+        outcome <- withClient(central, body) { clientId =>
+          central.put(path, Fixtures.clientUpdate(clientId, "mtlsAuth" -> Json.Null))
+            .zip(read(central, id, r => !r.has("mtlsAuth") || r.isNull("mtlsAuth")))
+        }
+        (updated, record) = outcome
+      yield assertTrue(updated.status == Status.NoContent) &&
+        assertTrue(record.exists(!_.has("mtlsAuth")) || record.exists(_.isNull("mtlsAuth")))
+          .label("a `null` patch is how this API spells deleting an optional member, same as consentFlow")
+    },
+    test("an update leaving mtlsAuth unmentioned does not disturb it") {
+      for
+        central <- api
+        id <- CentralApi.id("e2e-client")
+        body = Fixtures.client(id, mtlsAuth = Some(Fixtures.mutualTlsAuth("subject_dn", "CN=untouched,O=Example")))
+        record <- withClient(central, body) { clientId =>
+          central.put(path, Fixtures.clientUpdate(clientId, "accessTokenTtl" -> Json.Num(60)))
+            *> read(central, id, _.int("accessTokenTtl").contains(60))
+        }
+      yield assertTrue(record.flatMap(_.obj("mtlsAuth")).flatMap(_.str("subjectValue")).contains("CN=untouched,O=Example"))
+    },
+    test("an update changes certificateBoundAccessTokens on its own") {
+      for
+        central <- api
+        id <- CentralApi.id("e2e-client")
+        outcome <- withClient(central, Fixtures.client(id)) { clientId =>
+          central.put(path, Fixtures.clientUpdate(clientId, "certificateBoundAccessTokens" -> Json.Bool(true)))
+            .zip(read(central, id, _.bool("certificateBoundAccessTokens").contains(true)))
+        }
+        (updated, record) = outcome
+      yield assertTrue(updated.status == Status.NoContent) &&
+        assertTrue(record.flatMap(_.bool("certificateBoundAccessTokens")).contains(true))
+    },
     test("a back-channel logout URI alone is accepted") {
       for
         central <- api

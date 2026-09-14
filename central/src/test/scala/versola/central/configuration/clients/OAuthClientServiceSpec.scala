@@ -106,6 +106,8 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
     backChannelLogoutUri = None,
+    mtlsAuth = None,
+    certificateBoundAccessTokens = false,
   )
 
   private val updateRequest = UpdateClientRequest(
@@ -123,6 +125,8 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = None,
     backChannelLogoutUri = None,
+    mtlsAuth = None,
+    certificateBoundAccessTokens = None,
   )
 
   class Env(initial: Vector[OAuthClientRecord] = Vector.empty):

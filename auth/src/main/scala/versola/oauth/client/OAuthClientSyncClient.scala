@@ -89,8 +89,8 @@ object OAuthClientSyncClient:
         tosUri: Option[String],
         consentFlow: Option[ConsentFlow],
         dpopBoundAccessTokens: Boolean,
-        mtlsAuth: Option[MutualTlsAuth] = None,
-        certificateBoundAccessTokens: Boolean = false,
+        mtlsAuth: Option[MutualTlsAuth],
+        certificateBoundAccessTokens: Boolean,
     ) derives JsonCodec
 
     private case class OAuthClientsSyncResponse(
