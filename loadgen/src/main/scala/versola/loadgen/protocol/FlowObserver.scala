@@ -51,6 +51,19 @@ enum StepName(val value: String):
     */
   case EdgeLogout extends StepName("edge-logout")
 
+  /** `GET {edge}/complete?error=...` -- the refusal branch, which consumes the pending login
+    * edge would otherwise keep until its TTL.
+    */
+  case EdgeCompleteError extends StepName("edge-complete-error")
+
+  /** `GET {auth}/logout` with the `SSO_SESSION` -- the confirmation page a browser lands on,
+    * auth having been given no `id_token_hint` to act on directly.
+    */
+  case AuthLogout extends StepName("auth-logout")
+
+  /** `POST {auth}/logout` -- the hop that actually ends the SSO session. */
+  case AuthLogoutConfirm extends StepName("auth-logout-confirm")
+
   /** `GET {edge}/logout/frontchannel` -- the hop that actually revokes the edge session. */
   case EdgeEndSession extends StepName("edge-end-session")
 

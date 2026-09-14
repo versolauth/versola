@@ -69,3 +69,24 @@ trait AuthClient:
   def exchangeRefresh(token: RefreshToken, client: ClientCreds): IO[ProtocolError, Tokens]
 
   def logout(idToken: IdToken): IO[ProtocolError, Unit]
+
+  /** `GET {auth}/logout` with the `SSO_SESSION` and no `id_token_hint`: the confirmation page a
+    * browser lands on when it follows edge's logout redirect. Edge holds the id token and its
+    * redirect carries no hint, so the web path always takes auth's `cookie` branch and always
+    * gets this page -- [[logout]]'s hint-only shortcut is the mobile path's.
+    *
+    * The location is edge's own `Location`, followed verbatim: auth binds the confirmation token
+    * to the `post_logout_redirect_uri` and `state` it was called with, so a reconstructed URL
+    * would produce a token the submission cannot match. [[LogoutConfirmation]] carries that URL
+    * back out for the same reason -- the submission has to reach the address the token is bound
+    * to, not one rebuilt beside it.
+    */
+  def logoutConfirmation(location: String, ssoSession: SsoSession): IO[ProtocolError, LogoutConfirmation]
+
+  /** `POST {auth}/logout` with the confirmation the page carried: the hop that actually ends the
+    * SSO session. Auth treats the `GET` as a render and nothing more -- "the session survives an
+    * unverified confirmation" (`LogoutController`) -- so a driver that stops at the page has
+    * measured a logout that did not happen and leaves a session behind that will silently
+    * satisfy its next login.
+    */
+  def confirmLogout(ssoSession: SsoSession, confirmation: LogoutConfirmation): IO[ProtocolError, Unit]

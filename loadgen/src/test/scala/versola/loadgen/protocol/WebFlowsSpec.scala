@@ -119,6 +119,30 @@ object WebFlowsSpec extends ZIOSpecDefault:
         flowNames == Vector("web-otp", "business-action"),
       )
     },
+    test("adopting the rotation is what keeps the session alive, and replaying a superseded cookie is planned") {
+      for
+        stub <- StubSut.makeWeb(List("credential", "otp"))
+        (sut, routes) = stub
+        recorder <- observer
+        flows <- flowsFor(routes, recorder)
+        (cookie, _) <- flows.webOtp(request, credentials)
+        (_, next) <- flows.businessAction(cookie.session, accounts)
+        // Sufficient: the stub honours only the value it last issued, so this call succeeding is
+        // the adoption working rather than the stub being permissive.
+        (second, afterSecond) <- flows.businessAction(next, accounts)
+        // Necessary: the same call a driver that dropped the rotation would have made. Edge's
+        // cookie is the access token it rotated away from, and the refresh behind it is spent.
+        replayed <- flows.businessAction(cookie.session, accounts).either
+        sent <- sut.headerOf("/resources/core/accounts", "cookie")
+      yield assertTrue(
+        second.status == Status.Ok,
+        afterSecond == EdgeSession(StubSut.rotatedEdgeSession),
+        sent == Some("EDGE_SESSION=" + StubSut.edgeSession),
+        // A dead cookie is the session ending, not the SUT failing: it stays out of the error
+        // budget and the scenario renews with a fresh §8.4.
+        replayed == Left(ProtocolError.Unauthorized(accounts.path)),
+      )
+    },
     test("an expired cookie is a planned Unauthorized, not a failure, and a fresh login renews it") {
       for
         stub <- StubSut.makeWeb(List("credential", "otp"))
@@ -151,22 +175,111 @@ object WebFlowsSpec extends ZIOSpecDefault:
         flowNames == Vector("web-otp", "business-action", "web-otp"),
       )
     },
-    test("a web logout is both hops: the navigation and the front-channel call that revokes") {
+    test("a web logout is all four hops, and it is the confirmation that ends the SSO session") {
       for
         stub <- StubSut.makeWeb(List("credential", "otp"))
         (sut, routes) = stub
         recorder <- observer
         flows <- flowsFor(routes, recorder)
-        (cookie, _) <- flows.webOtp(request, credentials)
-        _ <- flows.logout(request, cookie.session)
+        (cookie, ssoSession) <- flows.webOtp(request, credentials)
+        sso <- ZIO.fromOption(ssoSession).orElseFail(new AssertionError("login left no SSO_SESSION"))
+        liveBefore <- sut.ssoLive
+        _ <- flows.logout(request, cookie.session, sso)
+        liveAfter <- sut.ssoLive
         hops <- sut.paths
         steps <- recorder.stepNames
         flowNames <- recorder.flowNames
+        submitted <- sut.formOf("/logout")
+        sent <- sut.headerOf("/logout", "cookie")
       yield assertTrue(
-        hops.takeRight(2) == Vector("GET /logout/" + StubSut.preset, "GET /logout/frontchannel"),
-        steps.takeRight(2) == Vector("edge-logout", "edge-end-session"),
+        liveBefore,
+        // The session is actually gone at auth, not merely navigated away from. Edge's redirect
+        // carries no `id_token_hint`, so auth renders rather than acts and only the submission
+        // ends it -- the hop a two-hop logout skipped, leaving a session that would have
+        // silently satisfied the next login. The test below is the other half: without a valid
+        // confirmation the session survives.
+        !liveAfter,
+        hops.takeRight(4) == Vector(
+          "GET /logout/" + StubSut.preset,
+          "GET /logout",
+          "POST /logout",
+          "GET /logout/frontchannel",
+        ),
+        steps.takeRight(4) == Vector("edge-logout", "auth-logout", "auth-logout-confirm", "edge-end-session"),
         flowNames == Vector("web-otp", "web-logout"),
+        // The token is bound to the parameters edge put on the redirect, so they are carried
+        // through the page and posted back rather than rebuilt.
+        submitted.flatMap(_.get("csrf_token")) == Some(StubSut.logoutCsrf),
+        submitted.flatMap(_.get("post_logout_redirect_uri")) == Some(StubSut.postLogoutRedirect),
+        sent == Some("SSO_SESSION=" + StubSut.ssoSession),
       )
+    },
+    test("a confirmation that lost the parameters it was bound to fails instead of reporting a logout") {
+      for
+        stub <- StubSut.makeWeb(List("credential", "otp"))
+        (sut, routes) = stub
+        recorder <- observer
+        // A driver that posted the token back without the `post_logout_redirect_uri` it was
+        // minted against: auth answers 403 and the session stays live.
+        stripped = routes.transform[Any](route =>
+          route.contramapZIO(request =>
+            if request.method == Method.POST && request.url.path.toString == "/logout" then
+              request.body.asString.orDie.map(body =>
+                request.withBody(Body.fromString(body.split('&').filterNot(_.startsWith("post_logout_redirect_uri")).mkString("&"))),
+              )
+            else ZIO.succeed(request),
+          ),
+        )
+        flows <- flowsFor(stripped, recorder)
+        (cookie, ssoSession) <- flows.webOtp(request, credentials)
+        sso <- ZIO.fromOption(ssoSession).orElseFail(new AssertionError("login left no SSO_SESSION"))
+        failure <- flows.logout(request, cookie.session, sso).either
+        live <- sut.ssoLive
+      yield assertTrue(
+        failure.isLeft,
+        // The session really is still there, so the failure is the truth and not a false alarm:
+        // a logout reported as done here would be a session the campaign thinks it closed.
+        live,
+      )
+    },
+    test("a refused authorization still consumes edge's pending login, and reports the SUT's error") {
+      for
+        stub <- StubSut.makeWebRefused(List("credential", "otp"))
+        (sut, routes) = stub
+        recorder <- observer
+        flows <- flowsFor(routes, recorder)
+        pendingBefore <- sut.pendingLogin
+        failure <- flows.webOtp(request, credentials).either
+        pendingAfter <- sut.pendingLogin
+        hops <- sut.paths
+        steps <- recorder.stepNames
+      yield assertTrue(
+        pendingBefore,
+        // What the report needs is the SUT's own error code, unchanged by the cleanup hop.
+        failure == Left(ProtocolError.MalformedResponse("/authorize", StubSut.refusalError)),
+        // Edge is not left holding the record it wrote when the login started: a driver that
+        // stopped at the refusal would add one row to the SUT per refused login.
+        !pendingAfter,
+        hops.takeRight(1) == Vector("GET /complete"),
+        // The refusal is its own step, and the success step it replaces was never measured.
+        steps.takeRight(1) == Vector("edge-complete-error"),
+        !steps.contains("edge-complete"),
+      )
+    },
+    test("a cleanup hop that fails does not replace the refusal the SUT reported") {
+      for
+        stub <- StubSut.makeWebRefused(List("credential", "otp"))
+        (_, routes) = stub
+        recorder <- observer
+        broken = routes.transform[Any](route =>
+          route.contramapZIO(request =>
+            if request.url.path.toString == "/complete" then ZIO.fail(Response.status(Status.InternalServerError))
+            else ZIO.succeed(request),
+          ),
+        )
+        flows <- flowsFor(broken, recorder)
+        failure <- flows.webOtp(request, credentials).either
+      yield assertTrue(failure == Left(ProtocolError.MalformedResponse("/authorize", StubSut.refusalError)))
     },
     test("a state auth did not echo back stops the flow instead of completing someone else's login") {
       for

@@ -1,7 +1,7 @@
 package versola.loadgen.protocol
 
 import zio.Duration
-import zio.http.{Method, Status}
+import zio.http.{Method, Status, URL}
 
 // Opaque wrappers over the handful of protocol-level strings that must never be interchanged by
 // accident (a CSRF token passed where a conversation cookie was expected fails silently as a
@@ -124,6 +124,24 @@ object ChallengePage:
     val matcher = csrfField.matcher(html)
     val csrf = if matcher.find() then Some(Csrf(matcher.group(1))) else None
     ChallengePage(conversation, html, ConversationStep.fromHtml(html), csrf)
+
+  /** The same `window.__VERSOLA_FORM__` blob carries the logout confirmation's token, so the
+    * one compiled pattern serves both pages rather than a second one being added for a form
+    * that differs only in which fields it posts back.
+    */
+  def csrfOf(html: String): Option[Csrf] =
+    val matcher = csrfField.matcher(html)
+    if matcher.find() then Some(Csrf(matcher.group(1))) else None
+
+/** Auth's logout confirmation page: what `GET /logout` renders when it is called with only a
+  * session cookie and no `id_token_hint` -- which is every web logout, since edge holds the id
+  * token and its redirect carries no hint.
+  *
+  * The URL and the two parameters travel with the token because auth binds the token to all of
+  * them (`csrfToken` in `LogoutController`): they are read off the URL edge redirected to and
+  * posted back unchanged, and altering any of them invalidates the confirmation.
+  */
+case class LogoutConfirmation(url: URL, csrf: Csrf, postLogoutRedirectUri: Option[String], state: Option[String])
 
 /** Outcome of a challenge submission: either the conversation advanced to another page, or it
   * redirected out (to the code redirect URI, an error redirect, or -- mid-flow -- to

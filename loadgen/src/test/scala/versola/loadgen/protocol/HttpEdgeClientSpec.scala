@@ -121,16 +121,45 @@ object HttpEdgeClientSpec extends ZIOSpecDefault:
         case ProtocolError.MalformedResponse("/complete", detail) => detail.contains("EDGE_SESSION")
         case _ => false)
     },
-    test("logout sends the cookie a browser would send, and endSession is the hop that revokes") {
+    test("completeError names the pending login edge must drop, and a second call is tolerated") {
       for
         both <- edgeForStub
         (recorder, edge) = both
-        _ <- edge.logout(preset, EdgeSession(StubSut.edgeSession))
+        _ <- edge.completeError(StubSut.edgeState, StubSut.refusalError)
+        // Edge answers the second one 400 (`AuthConversationNotFound`). Nothing is left to
+        // consume, which is the only thing this hop is for, so it is not a failure.
+        _ <- edge.completeError(StubSut.edgeState, StubSut.refusalError)
+        paths <- recorder.paths
+        params <- recorder.queryOf("/complete")
+      yield assertTrue(
+        paths == Vector("GET /complete", "GET /complete"),
+        params.flatMap(_.get("error")) == Some(StubSut.refusalError),
+        params.flatMap(_.get("state")) == Some(StubSut.edgeState),
+      )
+    },
+    test("a completeError answered with neither a redirect nor a 400 is an unexpected status") {
+      for
+        edge <- edgeAnswering(Response.status(Status.InternalServerError))
+        failure <- edge.completeError(StubSut.edgeState, StubSut.refusalError).either
+      yield assertTrue(
+        failure == Left(
+          ProtocolError.UnexpectedStatus(Set(Status.SeeOther, Status.BadRequest), Status.InternalServerError, "/complete"),
+        ),
+      )
+    },
+    test("logout reports the auth logout edge redirected to, cookie sent as a browser sends it") {
+      for
+        both <- edgeForStub
+        (recorder, edge) = both
+        target <- edge.logout(preset, EdgeSession(StubSut.edgeSession))
         _ <- edge.endSession(EdgeSession(StubSut.edgeSession))
         paths <- recorder.paths
         onLogout <- recorder.headerOf("/logout/" + StubSut.preset, "cookie")
         onEndSession <- recorder.headerOf("/logout/frontchannel", "cookie")
       yield assertTrue(
+        // The URL is edge's, not one rebuilt from the auth base: it carries the preset's
+        // post-logout URI, which auth binds its confirmation token to.
+        target == StubSut.authLogoutUrl,
         paths == Vector("GET /logout/" + StubSut.preset, "GET /logout/frontchannel"),
         onLogout == Some("EDGE_SESSION=" + StubSut.edgeSession),
         onEndSession == Some("EDGE_SESSION=" + StubSut.edgeSession),

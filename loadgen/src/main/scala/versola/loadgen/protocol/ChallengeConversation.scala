@@ -23,6 +23,20 @@ enum Credentials:
   */
 case class ConversationCompleted(code: AuthCode, state: Option[String], ssoSession: Option[SsoSession])
 
+/** How a conversation ended. A refusal is reported rather than failed here because the two
+  * flows owe the SUT different things afterwards: a mobile refusal redirects to the client's
+  * own `redirect_uri` and there is nothing to clean up, while a web refusal redirects to edge's
+  * `/complete`, whose error branch consumes the `pending_logins` record. Failing in the walker
+  * would make that hop unreachable and leave a row in the SUT for every refused web login until
+  * its TTL -- the emulator distorting the system it measures.
+  *
+  * Both flows end in the same typed failure regardless (see [[ChallengeConversation.orFail]]);
+  * the difference is only whether a hop is made first.
+  */
+enum ConversationOutcome:
+  case Completed(conversation: ConversationCompleted)
+  case Refused(error: String, state: Option[String])
+
 /** The `/challenge` conversation -- hops 2-5 of §8.1, which are also hops 3-6 of §8.4 -- walked
   * until it redirects out of the conversation with an authorization code.
   *
@@ -49,7 +63,7 @@ private[protocol] final class ChallengeConversation(
       flow: FlowName,
       credentials: Credentials,
       conversation: ConversationCookie,
-  ): IO[ProtocolError, ConversationCompleted] =
+  ): IO[ProtocolError, ConversationOutcome] =
     converse(flow, credentials, conversation, None, maxSteps)
 
   /** Walks the conversation until it redirects to the code. `page` is the one already in hand
@@ -62,7 +76,7 @@ private[protocol] final class ChallengeConversation(
       conversation: ConversationCookie,
       page: Option[ChallengePage],
       remaining: Int,
-  ): IO[ProtocolError, ConversationCompleted] =
+  ): IO[ProtocolError, ConversationOutcome] =
     if remaining <= 0 then ZIO.fail(ProtocolError.MalformedResponse(challengeEndpoint, "conversation never reached the code redirect"))
     else
       for
@@ -82,15 +96,18 @@ private[protocol] final class ChallengeConversation(
       location: String,
       ssoSession: Option[SsoSession],
       remaining: Int,
-  ): IO[ProtocolError, ConversationCompleted] =
+  ): IO[ProtocolError, ConversationOutcome] =
     HttpExchange.redirectParam(location, "code") match
-      case Some(code) => ZIO.succeed(ConversationCompleted(AuthCode(code), HttpExchange.redirectParam(location, stateParam), ssoSession))
+      case Some(code) =>
+        ZIO.succeed(
+          ConversationOutcome.Completed(ConversationCompleted(AuthCode(code), HttpExchange.redirectParam(location, stateParam), ssoSession)),
+        )
       case None =>
         HttpExchange.redirectParam(location, "error") match
           // The SUT refused the authorization outright (`access_denied`, `login_required`, ...).
           // Not a malformed page in the literal sense, but it is the conversation ending in a
           // way the flow cannot continue from, and the `error` code is what a report needs.
-          case Some(error) => ZIO.fail(ProtocolError.MalformedResponse(authorizeEndpoint, error))
+          case Some(error) => ZIO.succeed(ConversationOutcome.Refused(error, HttpExchange.redirectParam(location, stateParam)))
           case None => converse(flow, credentials, conversation, None, remaining - 1)
 
   private def submit(
@@ -139,6 +156,15 @@ private[protocol] object ChallengeConversation:
   private val challengeEndpoint = "/challenge"
   private val authorizeEndpoint = "/authorize"
   private val stateParam = "state"
+
+  /** The refusal as a failure, which is what both flows ultimately report -- the same error on
+    * the mobile path as before this outcome was made visible, so nothing downstream of it
+    * changed.
+    */
+  def orFail(outcome: ConversationOutcome): IO[ProtocolError, ConversationCompleted] =
+    outcome match
+      case ConversationOutcome.Completed(conversation) => ZIO.succeed(conversation)
+      case ConversationOutcome.Refused(error, _) => ZIO.fail(ProtocolError.MalformedResponse(authorizeEndpoint, error))
 
   /** A conversation that has not produced a code after this many pages is stuck. The longest
     * flow in §8 is phone + OTP + password at three submits and four pages; the bound exists so

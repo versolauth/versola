@@ -47,7 +47,8 @@ final class WebFlows(
       for
         started <- FlowTiming.step(observer, FlowName.WebOtp, StepName.EdgeLogin)(edge.login(request.preset, request.acrValues))
         conversationCookie <- FlowTiming.step(observer, FlowName.WebOtp, StepName.Authorize)(edge.startConversation(started))
-        completed <- conversation.walk(FlowName.WebOtp, credentials, conversationCookie)
+        outcome <- conversation.walk(FlowName.WebOtp, credentials, conversationCookie)
+        completed <- refusalCompleted(outcome)
         state <- echoedState(started, completed)
         cookie <- FlowTiming.step(observer, FlowName.WebOtp, StepName.EdgeComplete)(edge.complete(state, completed.code))
       yield (cookie, completed.ssoSession)
@@ -64,6 +65,17 @@ final class WebFlows(
     * not a failure: on the cookie path it means edge could not refresh either, so the session is
     * finished and the caller re-runs [[webOtp]]. Turning it into a success value here would take
     * it out of the taxonomy that counts it.
+    *
+    * The rotation is a two-phase step like §7.4's refresh -- the SUT has moved the session on
+    * before the row knows -- but it needs no generation column to be recoverable, and the
+    * difference is in what a superseded cookie is. Edge's cookie carries the access token
+    * itself, and edge rotates only once that token has expired, so the value a crash leaves in
+    * the row is one whose token is already dead and whose refresh has already been spent. A
+    * driver that resumes on it cannot succeed, cannot rotate again, and cannot provoke the reuse
+    * detection a replayed *refresh* token would: it gets one `401`, counted as the planned
+    * outcome above, and re-runs [[webOtp]]. One wasted action per interrupted session is the
+    * whole blast radius, which is why [[DeviceSessionRepository.storeEdgeCookie]] guards nothing
+    * and takes no expected generation.
     */
   def businessAction(session: EdgeSession, action: ActionCall): IO[ProtocolError, (ActionOutcome, EdgeSession)] =
     FlowTiming.flow(observer, FlowName.BusinessAction):
@@ -71,18 +83,55 @@ final class WebFlows(
         .step(observer, FlowName.BusinessAction, StepName.Action)(edge.call(EdgeCredential.Cookie(session), action))
         .map(outcome => (outcome, outcome.rotatedSession.fold(session)(_.session)))
 
-  /** A web logout, which is two hops and not one: the navigation to edge's
-    * `/logout/{presetId}`, and the front-channel call that actually revokes the session edge
-    * side. A browser makes both -- the second from the iframe auth's logout page renders -- so
-    * the driver makes both, or it leaves behind a cookie edge would still honour and measures a
-    * logout that did not happen.
+  /** A web logout, which is four hops: edge hands the browser to auth, auth renders a
+    * confirmation, the confirmation is submitted, and only then does the front-channel call the
+    * signed-out page triggers revoke the session edge side. A browser makes all four, so the
+    * driver makes all four.
+    *
+    * Each of the middle two is load-bearing. Edge's redirect carries no `id_token_hint` -- it
+    * keeps the id token -- so auth takes its `cookie` branch and renders rather than acts, and
+    * "the session survives an unverified confirmation" (`LogoutController`). A driver that
+    * stopped at edge would therefore leave the SSO session live, and the next [[webOtp]] for
+    * that user would be satisfied silently: a full OTP conversation replaced by a short
+    * reauthorization, which is the scenario mix being misreported rather than merely a session
+    * outliving its logout.
+    *
+    * The `SSO_SESSION` is a parameter because auth identifies the session to end by that cookie
+    * alone on this path, and it is the credential [[webOtp]] returns and the row persists
+    * precisely so a later logout can present it.
+    *
+    * `endSession` comes last, not first: in a browser it is the OP's own signed-out page that
+    * triggers it from an iframe, so making that call before auth has logged out reproduces the
+    * effect without its cause.
     */
-  def logout(request: WebLoginRequest, session: EdgeSession): IO[ProtocolError, Unit] =
+  def logout(request: WebLoginRequest, session: EdgeSession, ssoSession: SsoSession): IO[ProtocolError, Unit] =
     FlowTiming.flow(observer, FlowName.WebLogout):
       for
-        _ <- FlowTiming.step(observer, FlowName.WebLogout, StepName.EdgeLogout)(edge.logout(request.preset, session))
+        authLogout <- FlowTiming.step(observer, FlowName.WebLogout, StepName.EdgeLogout)(edge.logout(request.preset, session))
+        confirmation <- FlowTiming.step(observer, FlowName.WebLogout, StepName.AuthLogout)(auth.logoutConfirmation(authLogout, ssoSession))
+        _ <- FlowTiming.step(observer, FlowName.WebLogout, StepName.AuthLogoutConfirm)(
+          auth.confirmLogout(ssoSession, confirmation),
+        )
         _ <- FlowTiming.step(observer, FlowName.WebLogout, StepName.EdgeEndSession)(edge.endSession(session))
       yield ()
+
+  /** A refusal on the web path still owes edge a hop. Auth ends a refused web authorization at
+    * `/complete?error=...&state=...`, and that branch is what consumes the `pending_logins`
+    * record edge wrote when it started the login; a driver that stopped at the refusal would
+    * leave one behind per refused login until its TTL, which is the emulator adding rows to the
+    * system it is measuring.
+    *
+    * The hop is skipped when there is no `state` to name the record with, and its own failure is
+    * not allowed to replace the refusal: what the report needs is the SUT's `error` code, not a
+    * secondary complaint about the cleanup.
+    */
+  private def refusalCompleted(outcome: ConversationOutcome): IO[ProtocolError, ConversationCompleted] =
+    outcome match
+      case ConversationOutcome.Refused(error, Some(state)) =>
+        FlowTiming
+          .step(observer, FlowName.WebOtp, StepName.EdgeCompleteError)(edge.completeError(state, error))
+          .ignore *> ChallengeConversation.orFail(outcome)
+      case other => ChallengeConversation.orFail(other)
 
   /** The `state` on the redirect back must be the one edge minted, or `/complete` is about to
     * hand edge a code against another virtual user's pending login -- with many of them logging

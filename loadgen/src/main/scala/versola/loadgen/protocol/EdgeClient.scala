@@ -41,14 +41,28 @@ trait EdgeClient extends ActionClient:
     */
   def complete(state: String, code: AuthCode): IO[ProtocolError, EdgeCookie]
 
+  /** `GET {edge}/complete?error=...&state=...`: the other redirect auth can end a web
+    * conversation with, and the branch of edge's `/complete` that consumes the `pending_logins`
+    * record the login created. A browser follows it for the same reason it follows the code.
+    *
+    * Not a way to report the refusal -- the flow fails with the SUT's `error` either way. This
+    * exists so the refusal does not also leave a row behind in the SUT.
+    */
+  def completeError(state: String, error: String): IO[ProtocolError, Unit]
+
   /** `GET {edge}/logout/{presetId}`: the browser being handed on to auth's RP-initiated logout.
     *
     * The cookie is sent because a browser sends it -- `EDGE_SESSION` is `SameSite=Strict` and
     * this is a same-site navigation -- even though this endpoint does not read it. What actually
     * ends the edge session is [[endSession]]; a driver that stops here leaves a cookie edge will
     * still honour.
+    *
+    * Returns the `Location` edge redirected to rather than discarding it, because that URL is
+    * where the SSO session is actually ended and it is not reconstructible: edge appends the
+    * preset's `post_logout_redirect_uri` when it has one, and auth binds the confirmation token
+    * to the exact value it was called with.
     */
-  def logout(preset: PresetId, session: EdgeSession): IO[ProtocolError, Unit]
+  def logout(preset: PresetId, session: EdgeSession): IO[ProtocolError, String]
 
   /** `GET {edge}/logout/frontchannel` with the cookie: the hop that revokes the session edge
     * side. In a browser the OP triggers it from a hidden iframe on its logout page; the driver

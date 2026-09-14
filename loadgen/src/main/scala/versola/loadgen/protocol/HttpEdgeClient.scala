@@ -98,11 +98,21 @@ final class HttpEdgeClient(exchange: HttpExchange, endpoints: EdgeEndpoints, act
           )
           .map(EdgeCookie.of)
 
-  override def logout(preset: PresetId, session: EdgeSession): IO[ProtocolError, Unit] =
+  override def completeError(state: String, error: String): IO[ProtocolError, Unit] =
+    val url = endpoints.complete.addQueryParam(errorParam, error).addQueryParam(stateParam, state)
+    exchange.send(Request.get(url)).flatMap: received =>
+      // A redirect is the record consumed and the app told; a 400 is `AuthConversationNotFound`,
+      // meaning there was nothing left to consume. Both satisfy the only reason for this hop, so
+      // neither is a failure -- the refusal the caller is about to report is the outcome.
+      if HttpExchange.isRedirect(received.status) || received.status == Status.BadRequest then ZIO.unit
+      else ZIO.fail(HttpExchange.unexpected(expectedCompleteError, received.status, completeEndpoint))
+
+  override def logout(preset: PresetId, session: EdgeSession): IO[ProtocolError, String] =
     val url = endpoints.logout.copy(path = endpoints.logout.path / preset.value)
     val request = Request.get(url).addHeader(HttpExchange.cookieHeader(EdgeActionClient.edgeSessionCookie, session.value))
     exchange.send(request).flatMap: received =>
-      if HttpExchange.isRedirect(received.status) then ZIO.unit
+      if HttpExchange.isRedirect(received.status) then
+        HttpExchange.required(received.location, logoutEndpoint, "redirect without a Location header")
       else ZIO.fail(HttpExchange.unexpected(expectedRedirect, received.status, logoutEndpoint))
 
   override def endSession(session: EdgeSession): IO[ProtocolError, Unit] =
@@ -120,6 +130,7 @@ object HttpEdgeClient:
   private val acrValuesParam = "acr_values"
   private val stateParam = "state"
   private val codeParam = "code"
+  private val errorParam = "error"
 
   private val unknownPreset = "edge has no login preset "
 
@@ -131,6 +142,7 @@ object HttpEdgeClient:
 
   private val expectedOk: Set[Status] = Set(Status.Ok)
   private val expectedRedirect: Set[Status] = Set(Status.SeeOther)
+  private val expectedCompleteError: Set[Status] = Set(Status.SeeOther, Status.BadRequest)
 
   /** Auth answers the authorize hop with a redirect to `/challenge` in the ordinary case, and
     * the conversation cookie is what this hop is for -- but a deployment that renders the first

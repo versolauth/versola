@@ -60,6 +60,27 @@ object WebSessionPersistenceSpec extends LoadgenPostgresSpec:
   private def repository: ZIO[TransactorZIO, Nothing, DeviceSessionRepository] =
     ZIO.serviceWith[TransactorZIO](PostgresDeviceSessionRepository(_))
 
+  /** The row §8.4 produces, written the moment the login returns. */
+  private def store(
+      repo: DeviceSessionRepository,
+      cookie: EdgeCookie,
+      ssoSession: Option[SsoSession],
+      expiresAt: Instant,
+  ): Task[Unit] =
+    repo.insert(
+      DeviceSession.webCookie(
+        id = sessionId,
+        userId = userId,
+        clientId = "web-otp",
+        cookie = cookie.session,
+        ssoSession = ssoSession,
+        accessExpiresAt = expiresAt,
+        acr = Some(Acr.OtpLevel),
+        authTime = loggedInAt,
+        shard = shard,
+      ),
+    )
+
   private def truncate: ZIO[TransactorZIO, Throwable, Unit] =
     ZIO.serviceWithZIO[TransactorZIO](_.connect(sql"TRUNCATE TABLE vu_sessions".update.run()).unit)
 
@@ -113,19 +134,7 @@ object WebSessionPersistenceSpec extends LoadgenPostgresSpec:
         web <- flows
         (cookie, ssoSession) <- web.webOtp(request, credentials)
         expiresAt <- expiryOf(cookie, loggedInAt)
-        _ <- repo.insert(
-          DeviceSession.webCookie(
-            id = sessionId,
-            userId = userId,
-            clientId = "web-otp",
-            cookie = cookie.session,
-            ssoSession = ssoSession,
-            accessExpiresAt = expiresAt,
-            acr = Some(Acr.OtpLevel),
-            authTime = loggedInAt,
-            shard = shard,
-          ),
-        )
+        _ <- store(repo, cookie, ssoSession, expiresAt)
         (outcome, next) <- web.businessAction(cookie.session, accounts)
         rotatedExpiry <- expiryOf(
           outcome.rotatedSession.getOrElse(cookie),
@@ -148,21 +157,70 @@ object WebSessionPersistenceSpec extends LoadgenPostgresSpec:
         web <- flows
         (cookie, ssoSession) <- web.webOtp(request, credentials)
         expiresAt <- expiryOf(cookie, loggedInAt)
-        _ <- repo.insert(
-          DeviceSession.webCookie(
-            id = sessionId,
-            userId = userId,
-            clientId = "web-otp",
-            cookie = cookie.session,
-            ssoSession = ssoSession,
-            accessExpiresAt = expiresAt,
-            acr = Some(Acr.OtpLevel),
-            authTime = loggedInAt,
-            shard = shard,
-          ),
-        )
+        _ <- store(repo, cookie, ssoSession, expiresAt)
         stillLive <- repo.listLive(shard, expiresAt.minusSeconds(1), 10)
         expired <- repo.listLive(shard, expiresAt.plusSeconds(1), 10)
       yield assertTrue(stillLive.map(_.id) == Vector(sessionId), expired.isEmpty)
+    },
+    // The two below are the durability half of §8.4's rotation: what a crash between edge's
+    // response and [[DeviceSessionRepository.storeEdgeCookie]] leaves behind, and what a driver
+    // that restarts into it does next. Both were raised in review of #307 against the shape of
+    // #305's refresh-rotation finding.
+    test("a rotation lost to a crash leaves the row wholly un-rotated, never half") {
+      for
+        _ <- truncate
+        repo <- repository
+        web <- flows
+        (cookie, ssoSession) <- web.webOtp(request, credentials)
+        expiresAt <- expiryOf(cookie, loggedInAt)
+        _ <- store(repo, cookie, ssoSession, expiresAt)
+        // Edge rotated and the driver adopted it in memory; the process dies here, before the
+        // critical write.
+        (_, next) <- web.businessAction(cookie.session, accounts)
+        found <- repo.find(sessionId)
+      yield assertTrue(
+        next == EdgeSession(StubSut.rotatedEdgeSession),
+        // `storeEdgeCookie` puts the cookie and its `access_expires_at` in one UPDATE, so the
+        // liveness bound cannot survive without the credential it describes, nor the reverse.
+        // The recoverable states are therefore two, not four, and this is the un-rotated one.
+        found.exists(_.edgeCookie.contains(cookie.session)),
+        found.exists(_.accessExpiresAt.contains(expiresAt)),
+      )
+    },
+    test("a session resumed on the cookie a lost rotation left behind renews instead of blaming the SUT") {
+      for
+        _ <- truncate
+        repo <- repository
+        web <- flows
+        (cookie, ssoSession) <- web.webOtp(request, credentials)
+        expiresAt <- expiryOf(cookie, loggedInAt)
+        _ <- store(repo, cookie, ssoSession, expiresAt)
+        _ <- web.businessAction(cookie.session, accounts)
+        // A restarted driver resumes from the row, which still holds the superseded cookie.
+        resumed <- repo.listLive(shard, loggedInAt.plusSeconds(60), 10)
+        stale <- ZIO.fromOption(resumed.headOption.flatMap(_.edgeCookie)).orElseFail(new AssertionError("row not resumable"))
+        replayed <- web.businessAction(stale, accounts).either
+        // What the scenario does with that: a fresh §8.4, then the row carries a live cookie again.
+        (renewed, renewedSso) <- web.webOtp(request, credentials)
+        renewedExpiry <- expiryOf(renewed, loggedInAt.plusSeconds(120))
+        _ <- repo.storeEdgeCookie(sessionId, renewed.session, renewedExpiry)
+        found <- repo.find(sessionId)
+        live <- repo.listLive(shard, loggedInAt.plusSeconds(180), 10)
+        // And the renewed cookie is one the SUT actually honours, not just one the row holds.
+        afterRenewal <- web.businessAction(renewed.session, accounts)
+      yield assertTrue(
+        stale == cookie.session,
+        afterRenewal._1.status == Status.Ok,
+        // The whole blast radius of a lost rotation: one action spent on a dead cookie, reported
+        // as the planned outcome it is. Edge's cookie is the access token it rotated away from
+        // and the refresh behind it is already spent, so a replay cannot succeed, cannot rotate
+        // again, and cannot be mistaken for a SUT failure -- which is why the web path needs no
+        // generation column to make this recoverable, unlike §7.4's refresh rotation.
+        replayed == Left(ProtocolError.Unauthorized(accounts.path)),
+        renewedSso.isDefined,
+        found.exists(_.edgeCookie.contains(renewed.session)),
+        found.exists(_.accessExpiresAt.contains(renewedExpiry)),
+        live.map(_.id) == Vector(sessionId),
+      )
     },
   ).provideSome[TransactorZIO](TestClient.layer) @@ TestAspect.sequential

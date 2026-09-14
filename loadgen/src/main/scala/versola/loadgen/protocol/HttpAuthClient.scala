@@ -210,6 +210,47 @@ final class HttpAuthClient(exchange: HttpExchange, endpoints: AuthEndpoints, cli
         if received.status == Status.Ok || HttpExchange.isRedirect(received.status) then ZIO.unit
         else ZIO.fail(HttpExchange.unexpected(expectedLogout, received.status, logoutEndpoint))
 
+  override def logoutConfirmation(location: String, ssoSession: SsoSession): IO[ProtocolError, LogoutConfirmation] =
+    for
+      url <- ZIO
+        .fromEither(URL.decode(location))
+        .mapError(error => ProtocolError.MalformedResponse(logoutEndpoint, error.getMessage))
+      received <- exchange.send(Request.get(url).addHeader(HttpExchange.cookieHeader(ssoSessionCookie, ssoSession.value)))
+      confirmation <-
+        if received.status != Status.Ok then ZIO.fail(HttpExchange.unexpected(expectedOk, received.status, logoutEndpoint))
+        else
+          // No token means auth found no session to confirm away and rendered the signed-out
+          // page instead. Typed rather than tolerated: submitting without one is a 403, and a
+          // driver that treated the render as a logout would report one that never happened.
+          HttpExchange
+            .required(ChallengePage.csrfOf(received.body), logoutEndpoint, "confirmation page without a csrf token")
+            .map(csrf =>
+              LogoutConfirmation(
+                url,
+                csrf,
+                url.queryParams.getAll(postLogoutRedirectUriParam).headOption,
+                url.queryParams.getAll(stateParam).headOption,
+              ),
+            )
+    yield confirmation
+
+  override def confirmLogout(ssoSession: SsoSession, confirmation: LogoutConfirmation): IO[ProtocolError, Unit] =
+    val fields = List(csrfField -> confirmation.csrf.value) ++
+      confirmation.postLogoutRedirectUri.map(postLogoutRedirectUriParam -> _) ++
+      confirmation.state.map(stateParam -> _)
+    val request = Request
+      .post(confirmation.url, HttpExchange.formBody(fields))
+      .addHeader(HttpExchange.cookieHeader(ssoSessionCookie, ssoSession.value))
+      .addHeader(HttpExchange.formContentType)
+    exchange.send(request).flatMap: received =>
+      // The signed-out page, or a redirect to the post-logout URI when one was posted back.
+      if received.status == Status.Ok || HttpExchange.isRedirect(received.status) then ZIO.unit
+      // A 403 is the confirmation not matching -- the session is still live, so this is the one
+      // status here that must not read as a completed logout.
+      else if received.status == Status.Forbidden then
+        ZIO.fail(ProtocolError.MalformedResponse(logoutEndpoint, "confirmation rejected, the session is still live"))
+      else ZIO.fail(HttpExchange.unexpected(expectedLogout, received.status, logoutEndpoint))
+
   private def submit(
       url: URL,
       endpoint: String,
@@ -271,6 +312,12 @@ object HttpAuthClient:
   private val passkeyOptionsEndpoint = "/challenge/passkey/options"
   private val tokenEndpoint = "/token"
   private val logoutEndpoint = "/logout"
+
+  // The confirmation posts back the two parameters auth bound its token to, under the names
+  // `LogoutController`'s form decoder reads.
+  private val csrfField = "csrf_token"
+  private val postLogoutRedirectUriParam = "post_logout_redirect_uri"
+  private val stateParam = "state"
 
   private val expectedOk: Set[Status] = Set(Status.Ok)
   private val expectedSubmit: Set[Status] = Set(Status.Ok, Status.SeeOther)

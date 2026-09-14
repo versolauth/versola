@@ -85,7 +85,7 @@ final class MobileFlows(
         result <- outcome match
           case AuthorizeOutcome.Started(started) =>
             for
-              completed <- conversation.walk(flow, credentials, started.conversation)
+              completed <- conversation.walk(flow, credentials, started.conversation).flatMap(ChallengeConversation.orFail)
               tokens <- FlowTiming.step(observer, flow, StepName.TokenCode):
                 auth.exchangeCode(completed.code, started.codeVerifier, registration.creds)
             yield (tokens, completed.ssoSession)
