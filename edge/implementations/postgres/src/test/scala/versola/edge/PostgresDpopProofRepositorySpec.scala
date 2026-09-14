@@ -29,7 +29,7 @@ object PostgresDpopProofRepositorySpec extends PostgresSpec, DatabaseSpecBase[Dp
 
   override def beforeEach(env: DpopProofEnv) =
     ZIO.serviceWithZIO[TransactorZIO]: xa =>
-      xa.connect(sql"TRUNCATE TABLE dpop_proofs".update.run())
+      xa.connect(sql"TRUNCATE TABLE edge_dpop_proofs".update.run())
     .unit
 
   def testCases(env: DpopProofEnv): List[Spec[DpopProofEnv & Scope, Any]] =
@@ -116,7 +116,7 @@ object PostgresDpopProofRepositorySpec extends PostgresSpec, DatabaseSpecBase[Dp
               FROM pg_class c
               JOIN pg_inherits i ON i.inhrelid = c.oid
               JOIN pg_class p ON p.oid = i.inhparent
-              WHERE p.relname = 'dpop_proofs' AND c.relpersistence <> 'u'
+              WHERE p.relname = 'edge_dpop_proofs' AND c.relpersistence <> 'u'
             """.query[String].run()
         yield assertTrue(logged.isEmpty)
       },
@@ -131,7 +131,7 @@ object PostgresDpopProofRepositorySpec extends PostgresSpec, DatabaseSpecBase[Dp
         val releaseLock = java.util.concurrent.CountDownLatch(1)
         for
           locker <- env.xa.transact:
-            sql"LOCK TABLE dpop_proofs IN ACCESS EXCLUSIVE MODE".update.run()
+            sql"LOCK TABLE edge_dpop_proofs IN ACCESS EXCLUSIVE MODE".update.run()
             lockAcquired.countDown()
             releaseLock.await(10, java.util.concurrent.TimeUnit.SECONDS)
           .fork

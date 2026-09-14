@@ -34,7 +34,7 @@
 -- PostgresDpopProofRepositorySpec asserts none has been missed. The parent itself cannot be
 -- unlogged; PostgreSQL rejects `CREATE UNLOGGED TABLE ... PARTITION BY`.
 
-CREATE TABLE dpop_proofs (
+CREATE TABLE edge_dpop_proofs (
     slot INTEGER NOT NULL,
     -- RFC 9449 §11.1 asks servers tracking `jti` values to "store only a hash thereof". A
     -- 128-bit BLAKE3 digest over `jkt` and `jti` also caps the row at a fixed width, so an
@@ -45,15 +45,15 @@ CREATE TABLE dpop_proofs (
     PRIMARY KEY (slot, digest)
 ) PARTITION BY LIST (slot);
 
-CREATE UNLOGGED TABLE dpop_proofs_0 PARTITION OF dpop_proofs FOR VALUES IN (0);
-CREATE UNLOGGED TABLE dpop_proofs_1 PARTITION OF dpop_proofs FOR VALUES IN (1);
-CREATE UNLOGGED TABLE dpop_proofs_2 PARTITION OF dpop_proofs FOR VALUES IN (2);
-CREATE UNLOGGED TABLE dpop_proofs_3 PARTITION OF dpop_proofs FOR VALUES IN (3);
-CREATE UNLOGGED TABLE dpop_proofs_4 PARTITION OF dpop_proofs FOR VALUES IN (4);
-CREATE UNLOGGED TABLE dpop_proofs_5 PARTITION OF dpop_proofs FOR VALUES IN (5);
-CREATE UNLOGGED TABLE dpop_proofs_6 PARTITION OF dpop_proofs FOR VALUES IN (6);
-CREATE UNLOGGED TABLE dpop_proofs_7 PARTITION OF dpop_proofs FOR VALUES IN (7);
-CREATE UNLOGGED TABLE dpop_proofs_8 PARTITION OF dpop_proofs FOR VALUES IN (8);
-CREATE UNLOGGED TABLE dpop_proofs_9 PARTITION OF dpop_proofs FOR VALUES IN (9);
-CREATE UNLOGGED TABLE dpop_proofs_10 PARTITION OF dpop_proofs FOR VALUES IN (10);
-CREATE UNLOGGED TABLE dpop_proofs_11 PARTITION OF dpop_proofs FOR VALUES IN (11);
+CREATE UNLOGGED TABLE edge_dpop_proofs_0 PARTITION OF edge_dpop_proofs FOR VALUES IN (0);
+CREATE UNLOGGED TABLE edge_dpop_proofs_1 PARTITION OF edge_dpop_proofs FOR VALUES IN (1);
+CREATE UNLOGGED TABLE edge_dpop_proofs_2 PARTITION OF edge_dpop_proofs FOR VALUES IN (2);
+CREATE UNLOGGED TABLE edge_dpop_proofs_3 PARTITION OF edge_dpop_proofs FOR VALUES IN (3);
+CREATE UNLOGGED TABLE edge_dpop_proofs_4 PARTITION OF edge_dpop_proofs FOR VALUES IN (4);
+CREATE UNLOGGED TABLE edge_dpop_proofs_5 PARTITION OF edge_dpop_proofs FOR VALUES IN (5);
+CREATE UNLOGGED TABLE edge_dpop_proofs_6 PARTITION OF edge_dpop_proofs FOR VALUES IN (6);
+CREATE UNLOGGED TABLE edge_dpop_proofs_7 PARTITION OF edge_dpop_proofs FOR VALUES IN (7);
+CREATE UNLOGGED TABLE edge_dpop_proofs_8 PARTITION OF edge_dpop_proofs FOR VALUES IN (8);
+CREATE UNLOGGED TABLE edge_dpop_proofs_9 PARTITION OF edge_dpop_proofs FOR VALUES IN (9);
+CREATE UNLOGGED TABLE edge_dpop_proofs_10 PARTITION OF edge_dpop_proofs FOR VALUES IN (10);
+CREATE UNLOGGED TABLE edge_dpop_proofs_11 PARTITION OF edge_dpop_proofs FOR VALUES IN (11);

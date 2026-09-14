@@ -12,8 +12,13 @@ import java.time.Instant
 
 /** Records proofs into a fixed ring of partitions keyed by the proof's own `iat`, so that expiry
   * is a truncate of a whole slot rather than a delete per proof. See
-  * `V2004__dpop_proofs_table.sql` for why the slot is derived from `iat` and not from arrival
-  * time.
+  * `V2004__edge_dpop_proofs_table.sql` for why the slot is derived from `iat` and not from
+  * arrival time.
+  *
+  * The table is `edge_dpop_proofs`, not `dpop_proofs` -- auth already owns that name for its own
+  * ring, and `sbt test` from the repo root has both migrations land in the same test database
+  * (Flyway auto-discovers every service's migrations directory there; see
+  * `PostgresHikariDataSource.detectMigrationDirectories`).
   *
   * A deliberate copy of auth's repository of the same name rather than a shared abstraction:
   * the two rings guard different endpoints at different rates, and the next change to either --
@@ -29,7 +34,7 @@ class PostgresDpopProofRepository(xa: TransactorZIO) extends DpopProofRepository
       // the `iat` window, so a proof whose record is gone has already been rejected by
       // `Dpop.verify` before reaching this point -- a surviving record can never be stale.
       sql"""
-        INSERT INTO dpop_proofs (slot, digest)
+        INSERT INTO edge_dpop_proofs (slot, digest)
         VALUES (${slotOf(iat)}, ${digestOf(jkt, jti)})
         ON CONFLICT (slot, digest) DO NOTHING
         RETURNING 1
@@ -68,11 +73,11 @@ class PostgresDpopProofRepository(xa: TransactorZIO) extends DpopProofRepository
     // transaction, so the pooled connection carries no leftover session state once returned.
     xa.transactMeasured("evict-dpop-proof-slot"):
       sql"SET LOCAL lock_timeout = ${SqlLiteral(EvictionLockTimeout.toMillis.toString)}".update.run()
-      sql"TRUNCATE TABLE ${SqlLiteral(s"dpop_proofs_$slot")}".update.run()
+      sql"TRUNCATE TABLE ${SqlLiteral(s"edge_dpop_proofs_$slot")}".update.run()
     .unit
 
 object PostgresDpopProofRepository:
-  /** Ring geometry. Must match the partitions created in `V2004__dpop_proofs_table.sql`. */
+  /** Ring geometry. Must match the partitions created in `V2004__edge_dpop_proofs_table.sql`. */
   val SlotCount = 12
   val SlotWidth: Duration = 30.seconds
 
@@ -126,7 +131,7 @@ object PostgresDpopProofRepository:
         _ <- ZIO.fail(
           IllegalArgumentException(
             s"dpop.iat-leeway of $iatLeeway exceeds $MaxIatLeeway, the longest window the " +
-              s"$SlotCount-slot dpop_proofs ring can hold without reusing a slot that still " +
+              s"$SlotCount-slot edge_dpop_proofs ring can hold without reusing a slot that still " +
               "guards an acceptable proof",
           ),
           // Compared whole, not in seconds: truncation would admit a leeway of 90.5s under a
@@ -136,7 +141,7 @@ object PostgresDpopProofRepository:
         repository = PostgresDpopProofRepository(xa)
         _ <- Clock.instant
           .flatMap(repository.evictStaleSlot(_, iatLeeway))
-          .catchAllCause(cause => ZIO.logWarningCause("failed to evict a dpop_proofs slot", cause))
+          .catchAllCause(cause => ZIO.logWarningCause("failed to evict an edge_dpop_proofs slot", cause))
           .repeat(Schedule.spaced(SlotWidth))
           .forkScoped
       yield repository
