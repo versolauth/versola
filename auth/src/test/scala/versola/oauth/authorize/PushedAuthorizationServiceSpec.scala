@@ -40,6 +40,7 @@ object PushedAuthorizationServiceSpec extends UnitSpecBase:
     tosUri = None,
     consentFlow = None,
     mtlsAuth = None,
+    certificateBoundAccessTokens = false,
   )
 
   private val parsedRequest: AuthorizeRequest = AuthorizeRequest(

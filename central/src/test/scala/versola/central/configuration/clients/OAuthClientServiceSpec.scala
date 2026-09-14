@@ -59,6 +59,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     tosUri = None,
     consentFlow = None,
     mtlsAuth = None,
+    certificateBoundAccessTokens = false,
   )
 
   private val otherTenantClient = OAuthClientRecord(
@@ -84,6 +85,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     tosUri = None,
     consentFlow = None,
     mtlsAuth = None,
+    certificateBoundAccessTokens = false,
   )
 
   private val createRequest = CreateClientRequest(
@@ -195,7 +197,8 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         tosUri = None,
         consentFlow = Some(ConsentFlow(allowPartial = true, rememberDuration = Some(14.days))),
         mtlsAuth = None,
-          )
+        certificateBoundAccessTokens = false,
+      )
 
       for
         _ <- env.secureRandom.nextBytes.succeedsWith(secretBytes)
@@ -258,6 +261,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
             None,
             Some(Patch.Modified(ConsentFlow(allowPartial = false, rememberDuration = Some(30.days)))),
             None,
+            None,
           ),
         ),
       )
@@ -299,7 +303,35 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         created = env.repository.createClient.calls.head
       yield assertTrue(
         created.mtlsAuth == Some(MutualTlsAuth(MutualTlsSubjectType.subject_dn, "CN=client,O=Example")),
+        // registered without the §3.4 flag, yet still bound: §2 implies §3
+        !created.certificateBoundAccessTokens,
+        created.bindsAccessTokens,
       )
+    },
+    test("registerClient binds a client that asked for §3 binding without authenticating by certificate") {
+      val env = new Env()
+
+      for
+        _ <- env.secureRandom.nextBytes.succeedsWith(Array.fill(32)(11.toByte))
+        _ <- env.securityService.encryptAes256.succeedsWith(Array.fill(48)(17.toByte))
+        _ <- env.repository.createClient.succeedsWith(())
+        _ <- env.service.registerClient(createRequest.copy(certificateBoundAccessTokens = true))
+        created = env.repository.createClient.calls.head
+      yield assertTrue(
+        created.mtlsAuth.isEmpty,
+        created.bindsAccessTokens,
+      )
+    },
+    test("registerClient leaves a plain secret client unbound") {
+      val env = new Env()
+
+      for
+        _ <- env.secureRandom.nextBytes.succeedsWith(Array.fill(32)(11.toByte))
+        _ <- env.securityService.encryptAes256.succeedsWith(Array.fill(48)(17.toByte))
+        _ <- env.repository.createClient.succeedsWith(())
+        _ <- env.service.registerClient(createRequest)
+        created = env.repository.createClient.calls.head
+      yield assertTrue(!created.bindsAccessTokens)
     },
     test("updateClient trims an mtlsAuth subject value and passes a deletion through untouched") {
       val env = new Env()
@@ -446,7 +478,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
             consentFlow = Some(Patch.Deleted),
           ),
         )
-        (_, _, _, _, _, _, _, _, _, _, _, frontChannelLogoutUri, _, _, _, _, _, consentFlow, _) = env.repository.updateClient.calls.head
+        (_, _, _, _, _, _, _, _, _, _, _, frontChannelLogoutUri, _, _, _, _, _, consentFlow, _, _) = env.repository.updateClient.calls.head
       yield assertTrue(frontChannelLogoutUri == Some(Patch.Deleted), consentFlow == Some(Patch.Deleted))
     },
     test("updateClient stores a frontChannelLogoutUri with surrounding whitespace instead of clearing it") {

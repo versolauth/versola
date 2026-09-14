@@ -52,6 +52,7 @@ object OAuthClientSyncClient:
             tosUri = client.tosUri,
             consentFlow = client.consentFlow,
             mtlsAuth = client.mtlsAuth,
+            certificateBoundAccessTokens = client.certificateBoundAccessTokens,
           )
         }
       yield decryptedClients.map(it => it.id -> it).toMap
@@ -87,6 +88,7 @@ object OAuthClientSyncClient:
         tosUri: Option[String],
         consentFlow: Option[ConsentFlow],
         mtlsAuth: Option[MutualTlsAuth] = None,
+        certificateBoundAccessTokens: Boolean = false,
     ) derives JsonCodec
 
     private case class OAuthClientsSyncResponse(
