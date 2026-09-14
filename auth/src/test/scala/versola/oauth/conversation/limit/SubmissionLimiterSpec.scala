@@ -39,7 +39,6 @@ object SubmissionLimiterSpec extends UnitSpecBase:
     consentFlow = None,
     dpopBoundAccessTokens = false,
     mtlsAuth = None,
-    certificateBoundAccessTokens = false,
   )
 
   // Short window 3/min acts as an immediate rate limit; the broadest 9/hour window applies the ban.

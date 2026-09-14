@@ -33,7 +33,7 @@ class PostgresOAuthClientRepository(
 
   private def findClient(clientId: ClientId) =
     sql"""
-      SELECT id, tenant_id, client_name, redirect_uris, scope, secret, previous_secret, access_token_ttl, refresh_token_ttl, permissions, theme, auth_flow, registration_flow, otp_template_id, front_channel_logout_uri, front_channel_logout_session_required, back_channel_logout_uri, logo_uri, policy_uri, tos_uri, consent_flow, dpop_bound_access_tokens, mtls_auth, certificate_bound_access_tokens
+      SELECT id, tenant_id, client_name, redirect_uris, scope, secret, previous_secret, access_token_ttl, refresh_token_ttl, permissions, theme, auth_flow, registration_flow, otp_template_id, front_channel_logout_uri, front_channel_logout_session_required, back_channel_logout_uri, logo_uri, policy_uri, tos_uri, consent_flow, dpop_bound_access_tokens, mtls_auth
       FROM oauth_clients
       WHERE id = $clientId
     """
@@ -41,7 +41,7 @@ class PostgresOAuthClientRepository(
   override def getAll: Task[Vector[OAuthClientRecord]] =
     xa.connectMeasured("get-all-clients"):
       sql"""
-        SELECT id, tenant_id, client_name, redirect_uris, scope, secret, previous_secret, access_token_ttl, refresh_token_ttl, permissions, theme, auth_flow, registration_flow, otp_template_id, front_channel_logout_uri, front_channel_logout_session_required, back_channel_logout_uri, logo_uri, policy_uri, tos_uri, consent_flow, dpop_bound_access_tokens, mtls_auth, certificate_bound_access_tokens
+        SELECT id, tenant_id, client_name, redirect_uris, scope, secret, previous_secret, access_token_ttl, refresh_token_ttl, permissions, theme, auth_flow, registration_flow, otp_template_id, front_channel_logout_uri, front_channel_logout_session_required, back_channel_logout_uri, logo_uri, policy_uri, tos_uri, consent_flow, dpop_bound_access_tokens, mtls_auth
         FROM oauth_clients
       """
         .query[OAuthClientRecord].run()
@@ -53,9 +53,9 @@ class PostgresOAuthClientRepository(
   override def createClient(client: OAuthClientRecord): IO[ClientAlreadyExists | Throwable, Unit] =
     xa.connectMeasured("create-client"):
       sql"""
-        INSERT INTO oauth_clients (id, tenant_id, client_name, redirect_uris, scope, secret, previous_secret, access_token_ttl, refresh_token_ttl, permissions, theme, auth_flow, registration_flow, otp_template_id, front_channel_logout_uri, front_channel_logout_session_required, back_channel_logout_uri, logo_uri, policy_uri, tos_uri, consent_flow, dpop_bound_access_tokens, mtls_auth, certificate_bound_access_tokens)
+        INSERT INTO oauth_clients (id, tenant_id, client_name, redirect_uris, scope, secret, previous_secret, access_token_ttl, refresh_token_ttl, permissions, theme, auth_flow, registration_flow, otp_template_id, front_channel_logout_uri, front_channel_logout_session_required, back_channel_logout_uri, logo_uri, policy_uri, tos_uri, consent_flow, dpop_bound_access_tokens, mtls_auth)
         VALUES (${client.id}, ${client.tenantId}, ${client.clientName}, ${client.redirectUris}, ${client.scope},
-                ${client.secret}, ${client.previousSecret}, ${client.accessTokenTtl}, ${client.refreshTokenTtl}, ${client.permissions}, ${client.theme}, ${client.authFlow}, ${client.registrationFlow}, ${client.otpTemplateId}, ${client.frontChannelLogoutUri}, ${client.frontChannelLogoutSessionRequired}, ${client.backChannelLogoutUri}, ${client.logoUri}, ${client.policyUri}, ${client.tosUri}, ${client.consentFlow}, ${client.dpopBoundAccessTokens}, ${client.mtlsAuth}, ${client.certificateBoundAccessTokens})
+                ${client.secret}, ${client.previousSecret}, ${client.accessTokenTtl}, ${client.refreshTokenTtl}, ${client.permissions}, ${client.theme}, ${client.authFlow}, ${client.registrationFlow}, ${client.otpTemplateId}, ${client.frontChannelLogoutUri}, ${client.frontChannelLogoutSessionRequired}, ${client.backChannelLogoutUri}, ${client.logoUri}, ${client.policyUri}, ${client.tosUri}, ${client.consentFlow}, ${client.dpopBoundAccessTokens}, ${client.mtlsAuth})
       """.update.run()
     .unit
     .mapError {
@@ -84,12 +84,11 @@ class PostgresOAuthClientRepository(
       consentFlow: Option[Patch[ConsentFlow]] = None,
       dpopBoundAccessTokens: Option[Boolean] = None,
       mtlsAuth: Option[Patch[MutualTlsAuth]] = None,
-      certificateBoundAccessTokens: Option[Boolean] = None,
   ): Task[Unit] =
     xa.transactMeasured("update-client"):
       // Lock the row (READ_COMMITTED + FOR UPDATE) to prevent lost updates from concurrent writers.
       val client = sql"""
-        SELECT id, tenant_id, client_name, redirect_uris, scope, secret, previous_secret, access_token_ttl, refresh_token_ttl, permissions, theme, auth_flow, registration_flow, otp_template_id, front_channel_logout_uri, front_channel_logout_session_required, back_channel_logout_uri, logo_uri, policy_uri, tos_uri, consent_flow, dpop_bound_access_tokens, mtls_auth, certificate_bound_access_tokens
+        SELECT id, tenant_id, client_name, redirect_uris, scope, secret, previous_secret, access_token_ttl, refresh_token_ttl, permissions, theme, auth_flow, registration_flow, otp_template_id, front_channel_logout_uri, front_channel_logout_session_required, back_channel_logout_uri, logo_uri, policy_uri, tos_uri, consent_flow, dpop_bound_access_tokens, mtls_auth
         FROM oauth_clients
         WHERE id = $clientId
         FOR UPDATE
@@ -113,7 +112,6 @@ class PostgresOAuthClientRepository(
       val newConsentFlow = consentFlow.applyTo(client.consentFlow)
       val newDpopBoundAccessTokens = dpopBoundAccessTokens.getOrElse(client.dpopBoundAccessTokens)
       val newMtlsAuth = mtlsAuth.applyTo(client.mtlsAuth)
-      val newCertificateBound = certificateBoundAccessTokens.getOrElse(client.certificateBoundAccessTokens)
       sql"""
         UPDATE oauth_clients SET
           client_name = $newClientName,
@@ -134,8 +132,7 @@ class PostgresOAuthClientRepository(
           tos_uri = $newTosUri,
           consent_flow = $newConsentFlow,
           dpop_bound_access_tokens = $newDpopBoundAccessTokens,
-          mtls_auth = $newMtlsAuth,
-          certificate_bound_access_tokens = $newCertificateBound
+          mtls_auth = $newMtlsAuth
         WHERE id = $clientId
       """.update.run()
     .unit

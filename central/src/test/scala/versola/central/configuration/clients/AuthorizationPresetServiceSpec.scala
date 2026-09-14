@@ -48,7 +48,6 @@ object AuthorizationPresetServiceSpec extends ZIOSpecDefault, ZIOStubs:
     consentFlow = None,
     dpopBoundAccessTokens = false,
     mtlsAuth = None,
-    certificateBoundAccessTokens = false,
   )
 
   private val validRequest = SaveAuthorizationPresetsRequest(

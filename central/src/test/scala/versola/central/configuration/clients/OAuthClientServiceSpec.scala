@@ -60,7 +60,6 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     consentFlow = None,
     dpopBoundAccessTokens = false,
     mtlsAuth = None,
-    certificateBoundAccessTokens = false,
   )
 
   private val otherTenantClient = OAuthClientRecord(
@@ -87,7 +86,6 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     consentFlow = None,
     dpopBoundAccessTokens = false,
     mtlsAuth = None,
-    certificateBoundAccessTokens = false,
   )
 
   private val createRequest = CreateClientRequest(
@@ -200,8 +198,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         consentFlow = Some(ConsentFlow(allowPartial = true, rememberDuration = Some(14.days))),
         dpopBoundAccessTokens = false,
         mtlsAuth = None,
-        certificateBoundAccessTokens = false,
-      )
+          )
 
       for
         _ <- env.secureRandom.nextBytes.succeedsWith(secretBytes)
@@ -265,7 +262,6 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
             Some(Patch.Modified(ConsentFlow(allowPartial = false, rememberDuration = Some(30.days)))),
             None,
             None,
-            None,
           ),
         ),
       )
@@ -303,12 +299,10 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- env.repository.createClient.succeedsWith(())
         _ <- env.service.registerClient(createRequest.copy(
           mtlsAuth = Some(MutualTlsAuth(MutualTlsSubjectType.subject_dn, "  CN=client,O=Example  ")),
-          certificateBoundAccessTokens = true,
         ))
         created = env.repository.createClient.calls.head
       yield assertTrue(
         created.mtlsAuth == Some(MutualTlsAuth(MutualTlsSubjectType.subject_dn, "CN=client,O=Example")),
-        created.certificateBoundAccessTokens,
       )
     },
     test("updateClient trims an mtlsAuth subject value and passes a deletion through untouched") {
@@ -456,7 +450,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
             consentFlow = Some(Patch.Deleted),
           ),
         )
-        (_, _, _, _, _, _, _, _, _, _, _, frontChannelLogoutUri, _, _, _, _, _, consentFlow, _, _, _) = env.repository.updateClient.calls.head
+        (_, _, _, _, _, _, _, _, _, _, _, frontChannelLogoutUri, _, _, _, _, _, consentFlow, _, _) = env.repository.updateClient.calls.head
       yield assertTrue(frontChannelLogoutUri == Some(Patch.Deleted), consentFlow == Some(Patch.Deleted))
     },
     test("updateClient stores a frontChannelLogoutUri with surrounding whitespace instead of clearing it") {

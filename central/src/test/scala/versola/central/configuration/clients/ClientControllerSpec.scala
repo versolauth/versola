@@ -129,8 +129,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       consentFlow = Some(ConsentFlow(allowPartial = true, rememberDuration = Some(14.days))),
       dpopBoundAccessTokens = false,
       mtlsAuth = None,
-      certificateBoundAccessTokens = false,
-    ),
+      ),
     OAuthClientRecord(
       id = ClientId("mobile-app"),
       tenantId = tenantId,
@@ -155,8 +154,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       consentFlow = None,
       dpopBoundAccessTokens = false,
       mtlsAuth = None,
-      certificateBoundAccessTokens = false,
-    ),
+      ),
   )
 
   private val tracingLayer: ULayer[Tracing] =
