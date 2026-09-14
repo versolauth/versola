@@ -128,11 +128,10 @@ object ErrorTaxonomySpec extends ZIOSpecDefault:
     },
     test("loadgen_outcomes_total's label set is exactly dev spec section 11's seven values, once" +
       " RefreshRejected is excluded") {
-      // `LoadgenMetrics.stepCompleted` tags `loadgen_outcomes_total` with `outcome.label` for
-      // whatever `StepOutcome` it is handed, and nothing in `StepOutcome`'s type stops a caller
-      // from passing `Failed(FailedOutcome.RefreshRejected)` -- the one label the metric's own
-      // doc comment says must never reach it (refresh rejections have their own counter, per
-      // section 7.4). This pins the set track I's caller has to keep honouring, and fails loudly
+      // The set `StepOutcome.metricLabel` may answer with, and which `LoadgenMetrics` tags
+      // `loadgen_outcomes_total` with -- `Failed(FailedOutcome.RefreshRejected)` is the one it
+      // withholds, because refresh rejections have their own counter (section 7.4).
+      // `LoadgenMetricsSpec` covers that call path; this pins the set itself, and fails loudly
       // if a case is ever added to either enum without a matching decision about which side of
       // that boundary it falls on.
       val reachableLabels = PlannedOutcome.values.map(_.label).toSet ++

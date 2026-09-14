@@ -17,12 +17,14 @@ class PostgresDeviceSessionRepository(xa: TransactorZIO) extends DeviceSessionRe
       sql"""
         INSERT INTO vu_sessions (
           id, user_id, kind, client_id, refresh_token, edge_cookie, sso_session,
-          access_expires_at, refresh_expires_at, acr, auth_time, generation, shard
+          access_expires_at, refresh_expires_at, acr, auth_time, generation,
+          refresh_generation, shard
         ) VALUES (
           ${session.id}, ${session.userId}, ${session.kind}, ${session.clientId},
           ${session.refreshToken}, ${session.edgeCookie}, ${session.ssoSession},
           ${session.accessExpiresAt}, ${session.refreshExpiresAt}, ${session.acr},
-          ${session.authTime}, ${session.generation}, ${session.shard}
+          ${session.authTime}, ${session.generation}, ${session.refreshGeneration},
+          ${session.shard}
         )
       """.update.run()
     .unit
@@ -31,7 +33,8 @@ class PostgresDeviceSessionRepository(xa: TransactorZIO) extends DeviceSessionRe
     xa.connectMeasured("find-device-session"):
       sql"""
         SELECT id, user_id, kind, client_id, refresh_token, edge_cookie, sso_session,
-               access_expires_at, refresh_expires_at, acr, auth_time, generation, shard
+               access_expires_at, refresh_expires_at, acr, auth_time, generation,
+               refresh_generation, shard
         FROM vu_sessions WHERE id = $id
       """.query[DeviceSession].run().headOption
 
@@ -39,22 +42,42 @@ class PostgresDeviceSessionRepository(xa: TransactorZIO) extends DeviceSessionRe
     xa.connectMeasured("list-device-sessions-by-user"):
       sql"""
         SELECT id, user_id, kind, client_id, refresh_token, edge_cookie, sso_session,
-               access_expires_at, refresh_expires_at, acr, auth_time, generation, shard
+               access_expires_at, refresh_expires_at, acr, auth_time, generation,
+               refresh_generation, shard
         FROM vu_sessions WHERE user_id = $userId ORDER BY id
       """.query[DeviceSession].run()
 
   /** The `COALESCE` is written identically in the predicate, the sort and
     * `vu_sessions_shard_idx`. Written any other way -- `OR`, a `CASE` on `kind` -- it stops
     * matching the index expression and the startup load becomes a shard-wide sort.
+    *
+    * `generation = refresh_generation` excludes the sessions §7.4 says must be retired rather
+    * than resumed -- see [[DeviceSessionRepository.listInterruptedRotations]]. It is a filter on
+    * top of the index scan rather than part of the index: only a crash can leave such a row
+    * behind, so there are never enough of them for an index to pay for itself.
     */
   override def listLive(shard: Int, liveAt: Instant, limit: Int): Task[Vector[DeviceSession]] =
     xa.connectMeasured("list-live-device-sessions"):
       sql"""
         SELECT id, user_id, kind, client_id, refresh_token, edge_cookie, sso_session,
-               access_expires_at, refresh_expires_at, acr, auth_time, generation, shard
+               access_expires_at, refresh_expires_at, acr, auth_time, generation,
+               refresh_generation, shard
         FROM vu_sessions
         WHERE shard = $shard AND COALESCE(refresh_expires_at, access_expires_at) > $liveAt
+          AND generation = refresh_generation
         ORDER BY COALESCE(refresh_expires_at, access_expires_at)
+        LIMIT $limit
+      """.query[DeviceSession].run()
+
+  override def listInterruptedRotations(shard: Int, limit: Int): Task[Vector[DeviceSession]] =
+    xa.connectMeasured("list-interrupted-rotations"):
+      sql"""
+        SELECT id, user_id, kind, client_id, refresh_token, edge_cookie, sso_session,
+               access_expires_at, refresh_expires_at, acr, auth_time, generation,
+               refresh_generation, shard
+        FROM vu_sessions
+        WHERE shard = $shard AND generation <> refresh_generation
+        ORDER BY id
         LIMIT $limit
       """.query[DeviceSession].run()
 
@@ -76,9 +99,10 @@ class PostgresDeviceSessionRepository(xa: TransactorZIO) extends DeviceSessionRe
       sql"""
         UPDATE vu_sessions
         SET refresh_token = $refreshToken,
+            refresh_generation = generation,
             refresh_expires_at = $refreshExpiresAt,
             access_expires_at = $accessExpiresAt,
-            acr = $acr,
+            acr = COALESCE(${acr}::text, acr),
             auth_time = $authTime
         WHERE id = $id AND generation = $expectedGeneration
       """.update.run() > 0
@@ -129,7 +153,9 @@ class PostgresDeviceSessionRepository(xa: TransactorZIO) extends DeviceSessionRe
       xa.transactMeasured("touch-device-sessions"):
         batchUpdate(touches): touch =>
           sql"""
-            UPDATE vu_sessions SET access_expires_at = ${touch.accessExpiresAt}
+            UPDATE vu_sessions
+            SET access_expires_at =
+                  GREATEST(access_expires_at, ${touch.accessExpiresAt}::timestamptz)
             WHERE id = ${touch.sessionId}
           """.update
       .unit

@@ -23,6 +23,13 @@ CREATE UNLOGGED TABLE vu_sessions (
     -- with `DEFAULT 0`; dropped per versolauth/versola#267 -- the generation of a new session is
     -- a decision its creator makes, and a session inserted without one is a bug worth failing on.
     generation         INT         NOT NULL,
+    -- The generation refresh_token was written at. Equal to generation on a settled row; one
+    -- behind it between the bump of step 2 and the store of step 4, which is the only way to
+    -- tell a rotation that succeeded from a driver that died mid-exchange -- generation alone
+    -- reads the same in both cases, and replaying the predecessor token trips the SUT's reuse
+    -- detection. Not in the dev spec's column list; added per the review of
+    -- versolauth/versola#305.
+    refresh_generation INT         NOT NULL,
     shard              SMALLINT    NOT NULL
 );
 

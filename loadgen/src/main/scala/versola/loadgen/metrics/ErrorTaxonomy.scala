@@ -73,6 +73,20 @@ enum StepOutcome derives JsonCodec:
     case Planned(outcome) => outcome.label
     case Failed(outcome)  => outcome.label
 
+  /** The label this outcome may be tagged onto `loadgen_outcomes_total` and the duration
+    * histograms with, or `None` for the one outcome dev spec §11 keeps out of their label set.
+    *
+    * §11 fixes that set at seven values and gives refresh rejections a counter of their own,
+    * because §7.4's discipline ends the session on one rather than treating it as one more step
+    * outcome. [[label]] still answers `refresh_rejected` -- the taxonomy and the report do count
+    * it, and the error budget is defined over it -- so the restriction has to live between the
+    * two, and a total function the metric layer has to match on is the one place a caller
+    * cannot walk past. See [[LoadgenMetrics.stepCompleted]].
+    */
+  def metricLabel: Option[String] = this match
+    case Failed(FailedOutcome.RefreshRejected) => None
+    case other => Some(other.label)
+
 /** A campaign that cannot produce a defensible number, and so must stop rather than carry on
   * measuring: `detail` is the misconfiguration that made it so.
   *

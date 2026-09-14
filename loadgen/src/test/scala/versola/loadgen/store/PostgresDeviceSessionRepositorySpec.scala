@@ -38,6 +38,7 @@ object PostgresDeviceSessionRepositorySpec extends LoadgenPostgresSpec, Database
       acr = Some("L1"),
       authTime = Some(now.minusSeconds(600)),
       generation = 0,
+      refreshGeneration = 0,
       shard = shard,
     )
 
@@ -58,6 +59,7 @@ object PostgresDeviceSessionRepositorySpec extends LoadgenPostgresSpec, Database
       acr = Some("L1"),
       authTime = Some(now.minusSeconds(600)),
       generation = 0,
+      refreshGeneration = 0,
       shard = shard,
     )
 
@@ -261,6 +263,120 @@ object PostgresDeviceSessionRepositorySpec extends LoadgenPostgresSpec, Database
     },
     test("touchAll on an empty batch is a no-op, not an empty round trip") {
       env.repository.touchAll(Chunk.empty).as(assertCompletes)
+    },
+    test("a session left mid-rotation is kept out of listLive rather than resumed on the token it may have spent") {
+      // The crash this is about: generation was bumped (step 2 of section 7.4), the driver died,
+      // and the row still holds the predecessor token. The generation alone cannot say so -- it
+      // reads exactly as it does after a rotation that completed -- so resuming on what is
+      // stored risks presenting a token the SUT has already rotated, which is reuse.
+      for
+        _ <- env.repository.insert(mobile(1, shard = 3, refreshExpiresAt = now.plusSeconds(2592000)))
+        _ <- env.repository.insert(mobile(2, shard = 3, refreshExpiresAt = now.plusSeconds(2592000)))
+        _ <- env.repository.bumpGeneration(2)
+        live <- env.repository.listLive(shard = 3, liveAt = now, limit = 10)
+        stranded <- env.repository.listInterruptedRotations(shard = 3, limit = 10)
+        found <- env.repository.find(2)
+      yield assertTrue(
+        live.map(_.id) == Vector(1L),
+        stranded.map(_.id) == Vector(2L),
+        found.exists(_.rotationInFlight),
+        live.forall(!_.rotationInFlight),
+      )
+    },
+    test("a rotation that completed leaves nothing for recovery to retire") {
+      for
+        _ <- env.repository.insert(mobile(1, shard = 3, refreshExpiresAt = now.plusSeconds(600)))
+        generation <- env.repository.bumpGeneration(1)
+        _ <- env.repository.storeRotatedRefresh(
+          id = 1,
+          expectedGeneration = generation.get,
+          refreshToken = RefreshToken("rotated"),
+          refreshExpiresAt = now.plusSeconds(2592000),
+          accessExpiresAt = now.plusSeconds(900),
+          acr = None,
+          authTime = now,
+        )
+        live <- env.repository.listLive(shard = 3, liveAt = now, limit = 10)
+        stranded <- env.repository.listInterruptedRotations(shard = 3, limit = 10)
+        found <- env.repository.find(1)
+      yield assertTrue(
+        live.map(_.id) == Vector(1L),
+        stranded.isEmpty,
+        found.exists(!_.rotationInFlight),
+      )
+    },
+    test("listInterruptedRotations is confined to the driver's own shard") {
+      for
+        _ <- env.repository.insert(mobile(1, shard = 3, refreshExpiresAt = now.plusSeconds(600)))
+        _ <- env.repository.insert(mobile(2, shard = 4, refreshExpiresAt = now.plusSeconds(600)))
+        _ <- env.repository.bumpGeneration(1)
+        _ <- env.repository.bumpGeneration(2)
+        stranded <- env.repository.listInterruptedRotations(shard = 3, limit = 10)
+      yield assertTrue(stranded.map(_.id) == Vector(1L))
+    },
+    test("storeRotatedRefresh keeps the assurance level when the exchange said nothing about it") {
+      // The token response carries no ACR and a refresh cannot lower assurance, so None means
+      // "unchanged" here exactly as it does in storeStepUp -- writing it through would demote a
+      // stepped-up session and have the driver step it up again after a restart.
+      for
+        _ <- env.repository.insert(mobile(1, shard = 3, refreshExpiresAt = now.plusSeconds(600)))
+        _ <- env.repository.storeStepUp(
+          id = 1,
+          acr = "L2",
+          authTime = now,
+          accessExpiresAt = now.plusSeconds(900),
+          refreshToken = None,
+          refreshExpiresAt = None,
+          ssoSession = None,
+        )
+        generation <- env.repository.bumpGeneration(1)
+        wrote <- env.repository.storeRotatedRefresh(
+          id = 1,
+          expectedGeneration = generation.get,
+          refreshToken = RefreshToken("rotated"),
+          refreshExpiresAt = now.plusSeconds(2592000),
+          accessExpiresAt = now.plusSeconds(1200),
+          acr = None,
+          authTime = now,
+        )
+        found <- env.repository.find(1)
+      yield assertTrue(wrote, found.flatMap(_.acr).contains("L2"))
+    },
+    test("a deferred touch cannot pull the access expiry back over a critical write that overtook it") {
+      // A touch is queued before it is applied, so one queued ahead of a rotation can reach the
+      // table after it. access_expires_at is a web session's liveness boundary in listLive, so a
+      // regression here discards sessions that are still resumable.
+      val rotatedTo = now.plusSeconds(1800)
+      for
+        _ <- env.repository.insert(mobile(1, shard = 3, refreshExpiresAt = now.plusSeconds(2592000)))
+        generation <- env.repository.bumpGeneration(1)
+        _ <- env.repository.storeRotatedRefresh(
+          id = 1,
+          expectedGeneration = generation.get,
+          refreshToken = RefreshToken("rotated"),
+          refreshExpiresAt = now.plusSeconds(2592000),
+          accessExpiresAt = rotatedTo,
+          acr = None,
+          authTime = now,
+        )
+        _ <- env.repository.touchAll(Chunk(SessionTouch(1, now.plusSeconds(600))))
+        stale <- env.repository.find(1)
+        _ <- env.repository.touchAll(Chunk(SessionTouch(1, now.plusSeconds(3600))))
+        ahead <- env.repository.find(1)
+      yield assertTrue(
+        stale.flatMap(_.accessExpiresAt).contains(rotatedTo),
+        ahead.flatMap(_.accessExpiresAt).contains(now.plusSeconds(3600)),
+      )
+    },
+    test("a touch is still the first value a session with no access expiry gets") {
+      val touchedTo = now.plusSeconds(1800)
+      for
+        _ <- env.repository.insert(
+          mobile(1, shard = 3, refreshExpiresAt = now.plusSeconds(600)).copy(accessExpiresAt = None),
+        )
+        _ <- env.repository.touchAll(Chunk(SessionTouch(1, touchedTo)))
+        found <- env.repository.find(1)
+      yield assertTrue(found.flatMap(_.accessExpiresAt).contains(touchedTo))
     },
     test("delete removes the session the recovery path retired") {
       for

@@ -17,6 +17,18 @@ enum DeferredUpdate:
   case SessionTouched(touch: SessionTouch)
   case EventSampled(event: EventRow)
 
+  def section: DeferredSection = this match
+    case UserSeen(_, _) => DeferredSection.Users
+    case SessionTouched(_) => DeferredSection.Sessions
+    case EventSampled(_) => DeferredSection.Events
+
+/** Which of a [[DeferredBatch]]'s three tables an update belongs to. A flush applies the three
+  * independently, so this is also the granularity at which one can fail while the others are
+  * durably applied -- see [[DeferredWriteFailed]].
+  */
+enum DeferredSection:
+  case Users, Sessions, Events
+
 /** A flushable batch: one write per table, per flush.
   *
   * @param userTouches

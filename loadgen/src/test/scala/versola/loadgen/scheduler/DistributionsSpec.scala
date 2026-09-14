@@ -139,5 +139,16 @@ object DistributionsSpec extends ZIOSpecDefault:
           ActionCount.sessionMeanFor(actionCount, Platform.Web) == 10.0,
         )
       },
+      test("the dev spec's literal 6/10 overshoots its own session means, which is what LoadgenConfig warns about") {
+        // Not a property of the sampler but of the configuration around it: a file written
+        // against the spec's worked example runs longer sessions than the spec asks for,
+        // because the opening action is added on top of the configured mean rather than
+        // included in it. The direction matters -- LoadgenConfig's doc said `understates`.
+        val asWritten = ActionCountConfig(mobileMean = 6.0, webMean = 10.0, dispersion = 0.6)
+        assertTrue(
+          ActionCount.sessionMeanFor(asWritten, Platform.Mobile) == 7.0,
+          ActionCount.sessionMeanFor(asWritten, Platform.Web) == 11.0,
+        )
+      },
     ),
   )

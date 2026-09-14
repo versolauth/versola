@@ -30,6 +30,21 @@ trait DeviceSessionRepository:
     */
   def listLive(shard: Int, liveAt: Instant, limit: Int): Task[Vector[DeviceSession]]
 
+  /** The sessions this driver left between step 2 and step 4 of [[bumpGeneration]]'s discipline:
+    * `generation` was bumped, but the refresh token beside it is still the predecessor, because
+    * the driver died before [[storeRotatedRefresh]] ran.
+    *
+    * They are deliberately absent from [[listLive]]. The generation alone cannot tell a
+    * completed rotation from an interrupted one -- both leave the row at the bumped value -- so
+    * the row also records the generation its token was written at, and the two agreeing is what
+    * makes a session resumable. Without that, recovery would resume a session on a token the
+    * SUT may have already rotated, which is exactly the reuse the discipline exists to avoid.
+    *
+    * What recovery does with these is [[delete]] them: the user logs in again, which costs one
+    * login and keeps `refresh_rejected` at zero.
+    */
+  def listInterruptedRotations(shard: Int, limit: Int): Task[Vector[DeviceSession]]
+
   /** Step 2 of §7.4, executed and awaited *before* the token request goes out. Returns the new
     * generation, or `None` if the session is gone.
     *
@@ -38,6 +53,10 @@ trait DeviceSessionRepository:
     * unknown state on restart and must be retired rather than replayed -- replaying it trips
     * the SUT's reuse detection and produces a fake `refresh_rejected`, the one metric the
     * campaign is not allowed to have.
+    *
+    * Only `generation` moves here; the row's `refresh_generation` stays where the stored token
+    * was written, which is what makes the two states distinguishable after a crash. See
+    * [[listInterruptedRotations]].
     */
   def bumpGeneration(id: Long): Task[Option[Int]]
 
@@ -47,6 +66,15 @@ trait DeviceSessionRepository:
     * on it, so a response that arrives after the session was retired and re-bumped by the
     * recovery path cannot resurrect a token nobody owns any more. Returns whether the row was
     * still at that generation, i.e. whether the write took.
+    *
+    * It also carries the row's `refresh_generation` up to the bumped `generation`, in the same
+    * statement as the token it describes: the two cannot disagree, so a row that survives a
+    * crash is either wholly rotated or wholly un-rotated.
+    *
+    * `acr` is `COALESCE`d like [[storeStepUp]]'s optional fields rather than written blindly. A
+    * refresh does not lower assurance and the token response carries no ACR, so `None` means
+    * "the exchange said nothing about it" -- writing it through would silently demote a stepped
+    * -up session to its login assurance and have the driver step it up again after a restart.
     */
   def storeRotatedRefresh(
       id: Long,
@@ -91,7 +119,14 @@ trait DeviceSessionRepository:
       ssoSession: Option[SsoSession],
   ): Task[Unit]
 
-  /** Deferred write path -- `access_expires_at` only (§7.5, less `acr`; see [[SessionTouch]]). */
+  /** Deferred write path -- `access_expires_at` only (§7.5, less `acr`; see [[SessionTouch]]).
+    *
+    * The column only ever moves forward here. A touch is queued before it is applied, so one
+    * queued ahead of a rotation or a step-up can reach the table after it, and a plain
+    * assignment would then put a stale expiry back over the fresh one that critical write just
+    * persisted. For a web session that column is [[listLive]]'s liveness boundary, so the
+    * regression would discard a session that is still perfectly resumable.
+    */
   def touchAll(touches: Chunk[SessionTouch]): Task[Unit]
 
   /** Removes a session that was logged out, expired, or retired by the recovery path above. */

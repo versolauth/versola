@@ -18,9 +18,9 @@ import zio.config.magnolia.DeriveConfig
   *   - Its `mobile-mean`/`web-mean` are the *user-driven* actions only, one short of the spec's
   *     6.0/10.0 session mean (5.0/9.0), because [[versola.loadgen.scheduler.ActionCount]] adds
   *     the app's own opening call outside the draw. See that object's doc for why. A config file
-  *     written against §5's literal example (6/10) decodes without error but understates the
-  *     session mean by one action -- the dev spec's own worked example needs updating to 5/9
-  *     to match.
+  *     written against §5's literal example (6/10) decodes without error but *overstates* the
+  *     session mean by one action -- the opening call is added on top, so 6/10 here run sessions
+  *     of 7.0/11.0 actions. The dev spec's own worked example needs updating to 5/9 to match.
   */
 case class LoadgenConfig(
     role: LoadgenRole,

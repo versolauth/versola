@@ -9,6 +9,17 @@ import zio.*
 trait DeferredWriteSink:
   def write(batch: DeferredBatch): Task[Unit]
 
+/** A flush that did not fully apply, and which of the batch's tables it did not apply to.
+  *
+  * A sink writes the three tables independently, so "the write failed" is not the same as
+  * "nothing was written": the sections not named here are durable. Reporting the whole window as
+  * dropped would make `loadgen_store_flush_dropped_total` -- a metric that must stay at 0 and
+  * whose non-zero value invalidates a campaign -- describe bookkeeping that is sitting in the
+  * table.
+  */
+final case class DeferredWriteFailed(sections: Set[DeferredSection], cause: Throwable)
+  extends Exception(s"deferred write failed for ${sections.mkString(", ")}", cause)
+
 /** The deferred write path of dev spec §7.5: scenario fibers hand their bookkeeping over and
   * continue, and a single background fiber applies it every `flush-interval` or every
   * `batch-size` rows, whichever comes first.
@@ -125,12 +136,18 @@ private final class LiveWriteBehindBuffer(
 
   private def writeBatch(taken: Chunk[DeferredUpdate]): UIO[Unit] =
     sink.write(DeferredBatch.coalesce(taken)).catchAllCause: cause =>
+      // Only what the sink says it did not apply. Anything else -- a defect, or a sink that
+      // does not report sections -- is counted whole, which is the safe direction: the counter
+      // may overstate a loss, never hide one.
+      val lost = cause.failureOption match
+        case Some(failed: DeferredWriteFailed) => taken.count(update => failed.sections(update.section))
+        case _ => taken.size
       // Deliberately not retried: the batch is superseded by whatever the same users and
       // sessions do next, so re-sending stale values behind a store that is already struggling
       // buys nothing. It is counted, because a campaign whose store dropped writes cannot be
       // reconciled afterwards and the report has to say so.
-      droppedFlush.update(_ + taken.size) *>
-        ZIO.logWarningCause(s"Write-behind flush of ${taken.size} updates failed; dropped", cause)
+      ZIO.when(lost > 0)(droppedFlush.update(_ + lost)) *>
+        ZIO.logWarningCause(s"Write-behind flush of ${taken.size} updates failed; dropped $lost", cause)
 
   private[store] def flushLoop(interval: Duration): UIO[Nothing] =
     // Whichever comes first: the batch-size doorbell or the interval. The loser is interrupted,

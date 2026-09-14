@@ -14,6 +14,10 @@ enum SessionKind:
   * exchange, not after -- see §7.4's refresh discipline -- so a crash between the bump and the
   * exchange retires the session on restart instead of replaying it into reuse detection.
   *
+  * `refreshGeneration` is what makes that decidable: it is the generation `refreshToken` was
+  * written at, so a row whose two generations differ is one whose stored token is the
+  * predecessor of an exchange nobody knows the outcome of. See [[rotationInFlight]].
+  *
   * Field order matches V0002's column order for the same reason [[VirtualUser]]'s does, and this
   * is likewise the persisted shape rather than a projection of it: a session without its
   * credentials cannot be resumed, which is the only reason a driver loads one at startup.
@@ -45,5 +49,12 @@ case class DeviceSession(
     acr: Option[String],
     authTime: Option[Instant],
     generation: Int,
+    refreshGeneration: Int,
     shard: Int,
-)
+):
+
+  /** Whether the session was left between step 2 and step 4 of §7.4's refresh discipline. Such a
+    * session must be retired rather than resumed: its `refreshToken` is the one the SUT may have
+    * already rotated, and presenting it again is indistinguishable from reuse.
+    */
+  def rotationInFlight: Boolean = generation != refreshGeneration
