@@ -106,6 +106,20 @@ object CampaignReportSpec extends ZIOSpecDefault:
         report.map(_.taxonomy.budgetConsumed) == Right(0L),
       )
     },
+    test("a single failure exhausts a zero error budget and fails the campaign") {
+      // designDefaults sets maxErrorBudgetRatio = 0.0, so this is the one check every other test
+      // in this file leaves unexercised by keeping budgetConsumed at 0 -- without this test a
+      // regression that stopped comparing budgetRatio against the threshold at all would still
+      // pass the whole suite.
+      val taxonomy = ErrorTaxonomy.empty
+        .recordMany(StepOutcome.ok, 99_999L)
+        .record(StepOutcome.Failed(FailedOutcome.Transport))
+      val report = CampaignReport.assemble("c3-10m-steady", allMeasured, taxonomy, healthyRun, thresholds)
+      assertTrue(
+        report.map(_.passed) == Right(false),
+        report.map(_.checks.filterNot(_.passed).map(_.name)) == Right(List("error budget")),
+      )
+    },
     test("fails on driver health rather than blaming the SUT") {
       val unhealthy = CampaignHealth(
         refreshRejectedTotal = 3L,

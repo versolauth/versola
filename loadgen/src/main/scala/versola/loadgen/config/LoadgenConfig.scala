@@ -1,5 +1,7 @@
 package versola.loadgen.config
 
+import versola.util.postgres.PostgresConfig
+import versola.util.postgres.given
 import zio.Config
 import zio.Duration
 import zio.config.magnolia.DeriveConfig
@@ -8,11 +10,17 @@ import zio.config.magnolia.DeriveConfig
   * (see versola-loadgen-dev-spec.md §5). One process, one file, one binary: `role` picks which
   * half runs; `shard` is present only when `role = driver`.
   *
-  * Deviates from the dev spec in one respect: the spec's HOCON sketch uses `actions` for two
-  * unrelated things (`session.actions` -- the NegBinomial action-count distribution -- and a
-  * top-level `actions` list -- the ten business action definitions). Renamed the former to
-  * `session.action-count` / [[ActionCountConfig]] here to remove the collision; the field
-  * still means exactly what §5 describes.
+  * Deviates from the dev spec in two respects, both on `session.actions`:
+  *   - Renamed to `session.action-count` / [[ActionCountConfig]]. The spec's HOCON sketch uses
+  *     `actions` for two unrelated things -- this distribution and, separately, a top-level
+  *     `actions` list of the ten business action definitions -- and the two would collide under
+  *     one key.
+  *   - Its `mobile-mean`/`web-mean` are the *user-driven* actions only, one short of the spec's
+  *     6.0/10.0 session mean (5.0/9.0), because [[versola.loadgen.scheduler.ActionCount]] adds
+  *     the app's own opening call outside the draw. See that object's doc for why. A config file
+  *     written against §5's literal example (6/10) decodes without error but *overstates* the
+  *     session mean by one action -- the opening call is added on top, so 6/10 here run sessions
+  *     of 7.0/11.0 actions. The dev spec's own worked example needs updating to 5/9 to match.
   */
 case class LoadgenConfig(
     role: LoadgenRole,
@@ -73,12 +81,30 @@ case class CoordinatorClientConfig(url: String, pollInterval: Duration)
 
 case class WriteBehindConfig(flushInterval: Duration, batchSize: Int)
 
-/** The emulator's own Postgres -- its bookkeeping, never the SUT's (§6). */
+/** The emulator's own Postgres -- its bookkeeping, never the SUT's (§6).
+  *
+  * `postgres` is `util-postgres`' own [[versola.util.postgres.PostgresConfig]] rather than the
+  * `url` + `maximum-pool-size` pair dev spec §5 sketches, which could not build a pool at all:
+  * no user, no password, no timeouts. Reusing the full block also reuses its pool-tuning
+  * validation and its `Secret`-typed password, and `PostgresHikariDataSource.transactor` reads
+  * it straight out of `store.postgres` via that function's `configPath`.
+  *
+  * The block is nested here rather than being the ambient top-level `postgres { }` precisely
+  * because the seeder role (§10) writes into a *second* database -- the SUT's -- and one
+  * unnamed block cannot name both.
+  */
 case class StoreConfig(
-    url: String,
-    maximumPoolSize: Int,
+    postgres: PostgresConfig,
     writeBehind: WriteBehindConfig,
 )
+
+object StoreConfig:
+  /** Anchored in the companion rather than left to the use site: deriving this needs
+    * `DeriveConfig[Secret]` for the password, which `versola.util.postgres` declares top-level
+    * and which is therefore *not* in scope wherever `deriveConfig[LoadgenConfig]` happens to be
+    * called. Here it is, so every caller gets the derivation without knowing that.
+    */
+  given DeriveConfig[StoreConfig] = DeriveConfig.derived
 
 case class PopulationClassConfig(
     name: String,

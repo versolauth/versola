@@ -1,6 +1,6 @@
 package versola.loadgen.metrics
 
-import versola.loadgen.protocol.RefreshRejection
+import versola.loadgen.protocol.{ProtocolError, RefreshRejection}
 import zio.metrics.{Metric, MetricLabel}
 import zio.test.*
 import zio.{Duration, Ref, UIO, ZIO}
@@ -58,6 +58,34 @@ object LoadgenMetricsSpec extends ZIOSpecDefault:
         transport <- counter("loadgen_outcomes_total", "scenario" -> scenario, "outcome" -> "transport")
         unexpected <- counter("loadgen_outcomes_total", "scenario" -> scenario, "outcome" -> "unexpected_status")
       yield assertTrue(stepup == 1.0, transport == 0.0, unexpected == 0.0)
+    },
+    test("the outcome section 11 keeps out of the label set never reaches either metric") {
+      // `StepOutcome.of` really does produce this value -- it is the taxonomy's own class for a
+      // refresh rejection, and the error budget is defined over it -- so the only place the
+      // metric's seven-value label set can be held is here, on the call path. The enum-set test
+      // in `ErrorTaxonomySpec` cannot see this: it asserts what the labels are, not what
+      // `stepCompleted` does when handed the eighth.
+      val rejected = StepOutcome.of(ProtocolError.RefreshRejected(RefreshRejection.AlreadyExchanged))
+      for
+        scenario <- unique("rejected")
+        _ <- ZIO.foreachDiscard(rejected.toOption): outcome =>
+          LoadgenMetrics.stepCompleted(scenario, "refresh", outcome, IntendedLatency.unsafe(Duration.fromMillis(20))) *>
+            LoadgenMetrics.flowCompleted(scenario, outcome, IntendedLatency.unsafe(Duration.fromMillis(20)))
+        counted <- counter("loadgen_outcomes_total", "scenario" -> scenario, "outcome" -> "refresh_rejected")
+        timed <- histogramCount(
+          "loadgen_step_duration_seconds",
+          "scenario" -> scenario,
+          "step" -> "refresh",
+          "outcome" -> "refresh_rejected",
+        )
+        flowTimed <- histogramCount("loadgen_flow_duration_seconds", "flow" -> scenario, "outcome" -> "refresh_rejected")
+      yield assertTrue(
+        rejected == Right(StepOutcome.Failed(FailedOutcome.RefreshRejected)),
+        rejected.toOption.flatMap(_.metricLabel).isEmpty,
+        counted == 0.0,
+        timed == 0.0,
+        flowTimed == 0.0,
+      )
     },
     test("a completed flow is timed but stays out of the step taxonomy") {
       for

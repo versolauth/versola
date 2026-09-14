@@ -3,7 +3,7 @@ package versola.loadgen.metrics
 import versola.loadgen.protocol.RefreshRejection
 import zio.metrics.MetricKeyType.Histogram.Boundaries
 import zio.metrics.{Metric, MetricLabel}
-import zio.{Chunk, Duration, UIO}
+import zio.{Chunk, Duration, UIO, ZIO}
 
 /** Which slice of the population a `loadgen_population` reading describes. `Broken` is the count
   * of virtual users the driver has retired -- a lost refresh rotation, a dead cookie session --
@@ -69,19 +69,42 @@ object LoadgenMetrics:
     * counted (or the reverse) leaves the report's rate and its error budget describing different
     * populations -- a discrepancy that is very hard to spot after the fact and impossible to
     * repair.
+    *
+    * `Failed(FailedOutcome.RefreshRejected)` records nothing here, rather than being trusted not
+    * to arrive. Dev spec §11 fixes `loadgen_outcomes_total`'s label set to exactly
+    * `ok`/`stepup`/`forbidden`/`unauthorized`/`transport`/`unexpected_status`/`malformed`, and
+    * [[refreshRejected]] is the dedicated call for that eighth case, into its own
+    * `loadgen_refresh_rejected_total` counter -- §7.4's refresh discipline treats a rejection as
+    * ending the session, not as one more step outcome. `StepOutcome.of` produces the value all
+    * the same, so the restriction is applied here via [[StepOutcome.metricLabel]] instead of
+    * being written down and hoped for.
+    *
+    * Dropped rather than relabelled: every legal label already means something else, and
+    * borrowing one would put a budget-consuming failure in a planned bucket. Nothing is lost --
+    * the rejection's own counter carries the reason this type does not, the taxonomy still
+    * counts it against the error budget, and the campaign's latency comes from
+    * [[LatencyRecorder]]. It is logged because a caller reaching this branch has skipped
+    * [[refreshRejected]], and a rejection nobody counted is the one thing §7.4 cannot afford.
     */
   def stepCompleted(scenario: String, step: String, outcome: StepOutcome, latency: IntendedLatency): UIO[Unit] =
-    stepDuration
-      .tagged(labels("scenario" -> scenario, "step" -> step, "outcome" -> outcome.label))
-      .update(latency.seconds) *>
-      outcomesTotal.tagged(labels("scenario" -> scenario, "outcome" -> outcome.label)).increment
+    outcome.metricLabel match
+      case Some(label) =>
+        stepDuration
+          .tagged(labels("scenario" -> scenario, "step" -> step, "outcome" -> label))
+          .update(latency.seconds) *>
+          outcomesTotal.tagged(labels("scenario" -> scenario, "outcome" -> label)).increment
+      case None => unlabelled(s"step $step of scenario $scenario", outcome)
 
   /** Records one completed flow (login, refresh, step-up, ...). Deliberately does not touch
     * `loadgen_outcomes_total`: the taxonomy counts steps, and counting flows there too would
     * inflate the denominator of the error budget with the steps they are made of.
     */
   def flowCompleted(flow: String, outcome: StepOutcome, latency: IntendedLatency): UIO[Unit] =
-    flowDuration.tagged(labels("flow" -> flow, "outcome" -> outcome.label)).update(latency.seconds)
+    outcome.metricLabel match
+      case Some(label) => flowDuration.tagged(labels("flow" -> flow, "outcome" -> label)).update(latency.seconds)
+      // The same closed label set, for the same reason: a refresh rejection is not one of this
+      // histogram's outcomes either, and it has a counter of its own.
+      case None => unlabelled(s"flow $flow", outcome)
 
   def scheduleLag(scenario: String, lag: Duration): UIO[Unit] =
     scheduleLagSeconds.tagged(labels("scenario" -> scenario)).set(lag.toNanos.toDouble / 1e9)
@@ -110,6 +133,10 @@ object LoadgenMetrics:
 
   def latencyClamped: UIO[Unit] =
     latencyClampedTotal.increment
+
+  private def unlabelled(what: String, outcome: StepOutcome): UIO[Unit] =
+    ZIO.logWarning(s"${outcome.label} has no label on this metric and was not recorded for $what; " +
+      "it belongs in loadgen_refresh_rejected_total")
 
   private def labels(pairs: (String, String)*): Set[MetricLabel] =
     Chunk.fromIterable(pairs).map { case (name, value) => MetricLabel(name, value) }.toSet
