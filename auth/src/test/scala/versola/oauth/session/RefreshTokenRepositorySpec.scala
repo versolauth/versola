@@ -2,7 +2,7 @@ package versola.oauth.session
 
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.oauth.client.model.{Acr, AuthMethodRef, AuthorizationDetail, ClientId, ScopeToken}
-import versola.oauth.model.{AccessToken, RefreshToken}
+import versola.oauth.model.{AccessToken, Cnf, RefreshToken}
 import versola.oauth.session.model.{PublicSessionId, RefreshTokenRecord, SessionId}
 import versola.user.model.UserId
 import versola.util.{DatabaseSpecBase, MAC}
@@ -68,7 +68,7 @@ trait RefreshTokenRepositorySpec extends DatabaseSpecBase[RefreshTokenRepository
     amr = Set(AuthMethodRef.pwd),
     authTime = now,
     acr = None,
-    cnfJkt = None,
+    cnf = None,
   )
 
   def tokenRecord2(now: Instant, ttl: Duration) = RefreshTokenRecord(
@@ -89,7 +89,7 @@ trait RefreshTokenRepositorySpec extends DatabaseSpecBase[RefreshTokenRepository
     amr = Set(AuthMethodRef.pwd),
     authTime = now,
     acr = None,
-    cnfJkt = None,
+    cnf = None,
   )
 
   def testCases(env: RefreshTokenRepositorySpec.Env): List[Spec[RefreshTokenRepositorySpec.Env & Scope, Any]] =
@@ -124,10 +124,10 @@ trait RefreshTokenRepositorySpec extends DatabaseSpecBase[RefreshTokenRepository
         val jkt = "0ZcOCORZNYy-DWpqq30jZyJGHTN0d2HglBV3uiguA4I"
         for
           now <- Clock.instant
-          record = tokenRecord1(now, refreshTtl).copy(cnfJkt = Some(jkt))
+          record = tokenRecord1(now, refreshTtl).copy(cnf = Some(Cnf.dpop(jkt)))
           _ <- env.repository.createRefreshToken(refreshToken1, None, record, None)
           found <- env.repository.findToken(refreshToken1)
-        yield assertTrue(found.map(_.cnfJkt) == Some(Some(jkt)))
+        yield assertTrue(found.map(_.cnf) == Some(Some(Cnf.dpop(jkt))))
       },
       test("an unbound grant round-trips with no thumbprint") {
         for
@@ -135,7 +135,7 @@ trait RefreshTokenRepositorySpec extends DatabaseSpecBase[RefreshTokenRepository
           record = tokenRecord1(now, refreshTtl)
           _ <- env.repository.createRefreshToken(refreshToken1, None, record, None)
           found <- env.repository.findToken(refreshToken1)
-        yield assertTrue(found.map(_.cnfJkt) == Some(None))
+        yield assertTrue(found.map(_.cnf) == Some(None))
       },
       test("find returns None for non-existent refresh token") {
         for
@@ -174,7 +174,7 @@ trait RefreshTokenRepositorySpec extends DatabaseSpecBase[RefreshTokenRepository
       test("a bound token is renewed in place: same token, new access token, slid expiry") {
         for
           now <- Clock.instant
-          record1 = tokenRecord1(now, refreshTtl).copy(cnfJkt = Some("thumbprint-1"))
+          record1 = tokenRecord1(now, refreshTtl).copy(cnf = Some(Cnf.dpop("thumbprint-1")))
           _ <- env.repository.createRefreshToken(refreshToken1, None, record1, None)
 
           renewed <- env.repository.renewBoundToken(refreshToken1, accessToken2, scope1, now.plus(60.days), now.plusSeconds(600))
@@ -186,13 +186,13 @@ trait RefreshTokenRepositorySpec extends DatabaseSpecBase[RefreshTokenRepository
           found.exists(_.accessToken === accessToken2),
           found.exists(_.expiresAt == now.plus(60.days)),
           found.exists(_.accessTokenExpiresAt == now.plusSeconds(600)),
-          found.exists(_.cnfJkt.contains("thumbprint-1")),
+          found.exists(_.cnf.flatMap(_.jkt).contains("thumbprint-1")),
         )
       },
       test("renewing a bound token never shortens its expiry") {
         for
           now <- Clock.instant
-          record1 = tokenRecord1(now, refreshTtl).copy(cnfJkt = Some("thumbprint-1"))
+          record1 = tokenRecord1(now, refreshTtl).copy(cnf = Some(Cnf.dpop("thumbprint-1")))
           _ <- env.repository.createRefreshToken(refreshToken1, None, record1, None)
 
           // A retry arriving late must not pull the expiry back in.
@@ -206,7 +206,7 @@ trait RefreshTokenRepositorySpec extends DatabaseSpecBase[RefreshTokenRepository
       test("renewing reports failure once the grant is revoked") {
         for
           now <- Clock.instant
-          record1 = tokenRecord1(now, refreshTtl).copy(cnfJkt = Some("thumbprint-1"))
+          record1 = tokenRecord1(now, refreshTtl).copy(cnf = Some(Cnf.dpop("thumbprint-1")))
           _ <- env.repository.createRefreshToken(refreshToken1, None, record1, None)
           _ <- env.repository.delete(refreshToken1)
 
@@ -216,7 +216,7 @@ trait RefreshTokenRepositorySpec extends DatabaseSpecBase[RefreshTokenRepository
       test("renewing a bound token in place persists a narrowed scope") {
         for
           now <- Clock.instant
-          record1 = tokenRecord1(now, refreshTtl).copy(cnfJkt = Some("thumbprint-1"))
+          record1 = tokenRecord1(now, refreshTtl).copy(cnf = Some(Cnf.dpop("thumbprint-1")))
           _ <- env.repository.createRefreshToken(refreshToken1, None, record1, None)
 
           // RFC 6749 §6 narrowing has to stick to the grant, as it does when a bearer token

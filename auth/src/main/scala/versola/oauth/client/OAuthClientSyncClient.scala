@@ -1,6 +1,6 @@
 package versola.oauth.client
 
-import versola.oauth.client.model.{AuthFlow, ClientId, ConsentFlow, OAuthClientRecord, RegistrationFlow, ScopeToken, TenantId}
+import versola.oauth.client.model.{AuthFlow, ClientId, ConsentFlow, MutualTlsAuth, OAuthClientRecord, RegistrationFlow, ScopeToken, TenantId}
 import versola.util.{Base64, CacheSource, CoreConfig, Secret, SecurityService}
 import zio.http.{Request, URL}
 import zio.json.JsonCodec
@@ -51,6 +51,8 @@ object OAuthClientSyncClient:
             policyUri = client.policyUri,
             tosUri = client.tosUri,
             consentFlow = client.consentFlow,
+            mtlsAuth = client.mtlsAuth,
+            certificateBoundAccessTokens = client.certificateBoundAccessTokens,
           )
         }
       yield decryptedClients.map(it => it.id -> it).toMap
@@ -85,6 +87,8 @@ object OAuthClientSyncClient:
         policyUri: Option[String],
         tosUri: Option[String],
         consentFlow: Option[ConsentFlow],
+        mtlsAuth: Option[MutualTlsAuth] = None,
+        certificateBoundAccessTokens: Boolean = false,
     ) derives JsonCodec
 
     private case class OAuthClientsSyncResponse(

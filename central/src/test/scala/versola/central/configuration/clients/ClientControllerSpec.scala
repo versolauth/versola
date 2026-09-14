@@ -127,6 +127,8 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       policyUri = None,
       tosUri = None,
       consentFlow = Some(ConsentFlow(allowPartial = true, rememberDuration = Some(14.days))),
+      mtlsAuth = None,
+      certificateBoundAccessTokens = false,
     ),
     OAuthClientRecord(
       id = ClientId("mobile-app"),
@@ -150,6 +152,8 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       policyUri = None,
       tosUri = None,
       consentFlow = None,
+      mtlsAuth = None,
+      certificateBoundAccessTokens = false,
     ),
   )
 

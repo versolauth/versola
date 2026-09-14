@@ -37,6 +37,12 @@ case class OAuthClientRecord(
     policyUri: Option[String],
     tosUri: Option[String],
     consentFlow: Option[ConsentFlow],
+    /** RFC 8705 §2.1 mutual-TLS client authentication; `None` when the client authenticates
+      * with a secret. */
+    mtlsAuth: Option[MutualTlsAuth],
+    /** RFC 8705 §3.4: whether access tokens issued to this client are bound to the
+      * certificate it presented, independently of how it authenticated. */
+    certificateBoundAccessTokens: Boolean,
 ) derives Schema, CanEqual, Equal:
 
   def isConfidential: Boolean = secret.nonEmpty

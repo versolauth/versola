@@ -1,6 +1,6 @@
 package versola.central.configuration
 
-import versola.central.configuration.clients.{AuthFlow, ClientId, ClientType, ConsentFlow, PresetId, RegistrationFlow, ResponseType}
+import versola.central.configuration.clients.{AuthFlow, ClientId, ClientType, ConsentFlow, MutualTlsAuth, PresetId, RegistrationFlow, ResponseType}
 import versola.central.configuration.details.AuthorizationDetailType
 import versola.central.configuration.permissions.Permission
 import versola.central.configuration.resources.{ResourceEndpointId, ResourceId}
@@ -309,6 +309,11 @@ case class OAuthClientResponse(
     policyUri: Option[String],
     tosUri: Option[String],
     consentFlow: Option[ConsentFlowDto],
+    /** RFC 8705 §2.1 mutual-TLS client authentication; `None` when the client
+      * authenticates with a secret. */
+    mtlsAuth: Option[MutualTlsAuth] = None,
+    /** RFC 8705 §3.4: bind this client's access tokens to the certificate it presents. */
+    certificateBoundAccessTokens: Boolean = false,
 ) derives Schema, JsonCodec
 
 case class ConsentFlowDto(
@@ -356,6 +361,11 @@ case class CreateClientRequest(
       * getting the confidential client it has always got.
       */
     clientType: ClientType = ClientType.web,
+    /** RFC 8705 §2.1 mutual-TLS client authentication; `None` when the client
+      * authenticates with a secret. */
+    mtlsAuth: Option[MutualTlsAuth] = None,
+    /** RFC 8705 §3.4: bind this client's access tokens to the certificate it presents. */
+    certificateBoundAccessTokens: Boolean = false,
 ) derives Schema, JsonCodec
 
 /** `secret` is absent for a native client - there is none to hand back. */
@@ -386,6 +396,8 @@ case class UpdateClientRequest(
     policyUri: Option[Patch[String]] = None,
     tosUri: Option[Patch[String]] = None,
     consentFlow: Option[Patch[ConsentFlowDto]] = None,
+    mtlsAuth: Option[Patch[MutualTlsAuth]] = None,
+    certificateBoundAccessTokens: Option[Boolean] = None,
 ) derives Schema, JsonCodec
 
 case class AuthorizationPresetInput(
@@ -558,6 +570,11 @@ case class SyncOAuthClientRecord(
     policyUri: Option[String],
     tosUri: Option[String],
     consentFlow: Option[ConsentFlow],
+    /** RFC 8705 §2.1 mutual-TLS client authentication; `None` when the client
+      * authenticates with a secret. */
+    mtlsAuth: Option[MutualTlsAuth] = None,
+    /** RFC 8705 §3.4: bind this client's access tokens to the certificate it presents. */
+    certificateBoundAccessTokens: Boolean = false,
 ) derives JsonCodec, Schema
 
 case class GetOAuthClientsSyncResponse(

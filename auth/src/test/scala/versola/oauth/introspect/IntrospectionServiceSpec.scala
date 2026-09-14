@@ -56,6 +56,8 @@ object IntrospectionServiceSpec extends UnitSpecBase:
     policyUri = None,
     tosUri = None,
     consentFlow = None,
+    mtlsAuth = None,
+    certificateBoundAccessTokens = false,
   )
 
   def tokenRecord(now: Instant) = RefreshTokenRecord(
@@ -76,7 +78,7 @@ object IntrospectionServiceSpec extends UnitSpecBase:
     amr = Set(AuthMethodRef.pwd),
     authTime = now,
     acr = None,
-    cnfJkt = None,
+    cnf = None,
   )
 
   def accessTokenPayload(now: Instant, audience: Vector[ResourceUri] = Vector.empty) = AccessTokenPayload(
