@@ -21,7 +21,7 @@ import java.time.Instant
   * statement are the same today, and the tests on both sides are what keep that honest.
   */
 class PostgresDpopProofRepository(xa: TransactorZIO) extends DpopProofRepository, BasicCodecs:
-  import PostgresDpopProofRepository.{digestOf, slotOf, MaxClockSkew, SlotWidth}
+  import PostgresDpopProofRepository.{digestOf, slotOf, EvictionLockTimeout, MaxClockSkew, SlotWidth}
 
   override def recordIfAbsent(jkt: String, jti: String, iat: Instant): Task[Boolean] =
     xa.connectMeasured("record-dpop-proof-if-absent"):
@@ -57,7 +57,17 @@ class PostgresDpopProofRepository(xa: TransactorZIO) extends DpopProofRepository
         .minusSeconds(SlotWidth.toSeconds)
         .minus(MaxClockSkew.multipliedBy(2)),
     )
-    xa.connectMeasured("evict-dpop-proof-slot"):
+    // Every pod targets the same partition in the same tick, contending only with each other's
+    // routine truncate -- cheap, measured at low milliseconds even under a full fleet.
+    // `lock_timeout` bounds the one case that isn't: something else holding a conflicting lock
+    // long enough that the slot number above, computed from `now` before the wait, goes stale
+    // by the time the statement would run -- indistinguishable from the early-truncate hazard
+    // this method's own contract calls dangerous. Timing out hands the failure to the
+    // `catchAllCause` + `repeat` in `live`/`shared`, which recomputes the slot on the next tick
+    // instead of acting on a stale one. `SET LOCAL` keeps the change scoped to this
+    // transaction, so the pooled connection carries no leftover session state once returned.
+    xa.transactMeasured("evict-dpop-proof-slot"):
+      sql"SET LOCAL lock_timeout = ${SqlLiteral(EvictionLockTimeout.toMillis.toString)}".update.run()
       sql"TRUNCATE TABLE ${SqlLiteral(s"dpop_proofs_$slot")}".update.run()
     .unit
 
@@ -77,6 +87,13 @@ object PostgresDpopProofRepository:
     * acceptance itself long before it breaks eviction.
     */
   val MaxClockSkew: Duration = 30.seconds
+
+  /** How long `evictStaleSlot` waits for its `TRUNCATE` before giving up and letting the next
+    * tick retry with a freshly computed slot, rather than risk acting on the one computed
+    * `SlotWidth` or more ago. Sized well above what contending pods cost each other (single
+    * digits of milliseconds even fleet-wide) and well below `SlotWidth` itself, so a timeout
+    * still leaves room to retry before the ring would have wrapped onto the slot anyway. */
+  val EvictionLockTimeout: Duration = 2.seconds
 
   /** Dropping a slot is safe at any geometry -- everything in it is already outside every
     * pod's `iat` window, whatever the ring looks like. What the geometry has to guarantee is

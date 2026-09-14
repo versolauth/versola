@@ -120,4 +120,34 @@ object PostgresDpopProofRepositorySpec extends PostgresSpec, DatabaseSpecBase[Dp
             """.query[String].run()
         yield assertTrue(logged.isEmpty)
       },
+      // A lock on the parent is held by Postgres on every partition too, so this stands in
+      // for anything that could hold the one partition being truncated -- a stuck backend, a
+      // manual VACUUM FULL. The slot number is computed from `now` before the wait, so a
+      // truncate left blocked long enough would act on a decision that's gone stale by the
+      // time it finally runs; `lock_timeout` is what keeps that window bounded instead of open
+      // for as long as whatever's holding the lock takes.
+      test("gives up waiting on a held lock instead of blocking indefinitely, and recovers once it clears") {
+        val lockAcquired = java.util.concurrent.CountDownLatch(1)
+        val releaseLock = java.util.concurrent.CountDownLatch(1)
+        for
+          locker <- env.xa.transact:
+            sql"LOCK TABLE dpop_proofs IN ACCESS EXCLUSIVE MODE".update.run()
+            lockAcquired.countDown()
+            releaseLock.await(10, java.util.concurrent.TimeUnit.SECONDS)
+          .fork
+          _ <- ZIO.attemptBlocking(lockAcquired.await(5, java.util.concurrent.TimeUnit.SECONDS))
+          start <- Clock.instant
+          blocked <- env.repository.evictStaleSlot(iat, leeway).either
+          elapsed <- Clock.instant.map(now => java.time.Duration.between(start, now))
+          _ <- ZIO.succeed(releaseLock.countDown())
+          _ <- locker.join
+          recovered <- env.repository.evictStaleSlot(iat, leeway).either
+        yield assertTrue(
+          blocked.isLeft,
+          // Well under the 10s the lock holder would otherwise sit for -- proof this failed on
+          // its own timeout rather than waiting the lock out.
+          elapsed.toMillis < 5000L,
+          recovered.isRight,
+        )
+      },
     )

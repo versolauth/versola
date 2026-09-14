@@ -16,7 +16,7 @@ import java.time.Instant
   * time.
   */
 class PostgresDpopProofRepository(xa: TransactorZIO) extends DpopProofRepository, BasicCodecs:
-  import PostgresDpopProofRepository.{digestOf, slotOf, MaxClockSkew, SlotWidth}
+  import PostgresDpopProofRepository.{digestOf, slotOf, EvictionLockTimeout, MaxClockSkew, SlotWidth}
 
   override def recordIfAbsent(jkt: String, jti: String, iat: Instant): Task[Boolean] =
     xa.connectMeasured("record-dpop-proof-if-absent"):
@@ -48,7 +48,21 @@ class PostgresDpopProofRepository(xa: TransactorZIO) extends DpopProofRepository
     *
     * The redundant runs find the slot already empty, and none of them contend with the request
     * path: the slot being truncated is, by the bound on `MaxIatLeeway`, never one that a proof
-    * arriving at any instance could be routed to.
+    * arriving at any instance could be routed to. They do contend with *each other* -- every
+    * instance targets the same partition in the same tick -- but that's a single-table
+    * `TRUNCATE` queuing behind others of the same kind, measured at low milliseconds even
+    * under a full fleet.
+    *
+    * `lock_timeout` bounds the one case that isn't cheap: something other than a peer's
+    * routine truncate holding a conflicting lock on this partition (a stuck backend, a manual
+    * `VACUUM FULL`, ...). The slot number above is computed from `now` before this can block,
+    * so a truncate left waiting long enough executes a decision that's gone stale by the time
+    * it runs -- indistinguishable from running early, which is the one direction this method's
+    * own contract calls dangerous. Timing out hands the failure to the same `catchAllCause` +
+    * `repeat` in `live` that already covers every other way this can fail, which recomputes
+    * the slot from a fresh `now` on the next tick rather than act on a stale one. `SET LOCAL`
+    * keeps the change scoped to this transaction, so the pooled connection carries no
+    * leftover session state once it's returned.
     */
   def evictStaleSlot(now: Instant, iatLeeway: Duration): Task[Unit] =
     val slot = slotOf(
@@ -56,7 +70,8 @@ class PostgresDpopProofRepository(xa: TransactorZIO) extends DpopProofRepository
         .minusSeconds(SlotWidth.toSeconds)
         .minus(MaxClockSkew.multipliedBy(2)),
     )
-    xa.connectMeasured("evict-dpop-proof-slot"):
+    xa.transactMeasured("evict-dpop-proof-slot"):
+      sql"SET LOCAL lock_timeout = ${SqlLiteral(EvictionLockTimeout.toMillis.toString)}".update.run()
       sql"TRUNCATE TABLE ${SqlLiteral(s"dpop_proofs_$slot")}".update.run()
     .unit
 
@@ -76,6 +91,13 @@ object PostgresDpopProofRepository:
     * `iat` acceptance long before it breaks eviction.
     */
   val MaxClockSkew: Duration = 30.seconds
+
+  /** How long `evictStaleSlot` waits for its `TRUNCATE` before giving up and letting the next
+    * tick retry with a freshly computed slot, rather than risk acting on the one computed
+    * `SlotWidth` or more ago. Sized well above what contending peers cost each other (single
+    * digits of milliseconds even fleet-wide) and well below `SlotWidth` itself, so a timeout
+    * still leaves room to retry before the ring would have wrapped onto the slot anyway. */
+  val EvictionLockTimeout: Duration = 2.seconds
 
   /** Dropping a slot is safe at any geometry -- everything in it is already outside every
     * instance's `iat` window, whatever the ring looks like. What the geometry has to guarantee
