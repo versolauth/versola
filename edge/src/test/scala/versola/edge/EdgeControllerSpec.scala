@@ -182,6 +182,26 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         service.getMyPermissions.calls.isEmpty,
       )
     },
+    // A bare 401 here would give a DPoP-scheme caller nothing to retry with -- unlike every
+    // other refusal on this route, this one needs the nonce to reach the response headers.
+    test("returns the nonce for a client to retry with when the proof needs one") {
+      for
+        accessToken <- token(cnfJkt = Some("thumb-1"))
+        (response, service, _) <- run(
+          Request.get(URL.decode("/permissions/me?resource=central").toOption.get)
+            .addHeader(Header.Custom("Authorization", s"DPoP $accessToken"))
+            .addHeader(Header.Custom("DPoP", "proof-without-a-nonce")),
+          dpopSetup = _.verify.failsWith(
+            versola.edge.dpop.DpopVerifier.Error.NonceRequired("fresh-nonce"),
+          ),
+        )
+      yield assertTrue(
+        response.status == Status.Unauthorized,
+        response.rawHeader("DPoP-Nonce").contains("fresh-nonce"),
+        response.rawHeader("WWW-Authenticate").contains("""DPoP error="use_dpop_nonce""""),
+        service.getMyPermissions.calls.isEmpty,
+      )
+    },
     test("honours a DPoP-bound token presented with a single valid proof") {
       for
         accessToken <- token(clientId = "web-app", tenantId = Some("default"), roles = Some(List("member")), cnfJkt = Some("thumb-1"))

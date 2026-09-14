@@ -3,7 +3,7 @@ package versola.edge
 import versola.edge.model.{AuthConversationNotFound, Code, InvalidLogoutToken, PresetId, PresetNotFound, ResourceId, SessionId, State}
 import versola.edge.revocation.TokenRevocationService
 import versola.util.FormDecoder
-import versola.util.http.Controller
+import versola.util.http.{Controller, Unauthorized}
 import zio.*
 import zio.http.*
 import zio.json.{EncoderOps, JsonEncoder, jsonField}
@@ -174,12 +174,22 @@ object EdgeController extends Controller:
 
   val permissionsEndpoint =
     Method.GET / "permissions" / "me" -> handler { (request: Request) =>
-      for
+      (for
         claims <- authorize(request)
         service <- ZIO.service[EdgeService]
         resourceIds <- request.queryZIO[List[ResourceId]]("resource")
         response <- service.getMyPermissions(claims, resourceIds)
-      yield Response.json(response.toJson)
+      yield Response.json(response.toJson)).catchAll {
+        // §9: the same challenge shape as the proxy's Outcome.UseDpopNonce -- a bare 401 here
+        // would give a DPoP-scheme caller no way to learn the nonce it must retry with.
+        case AuthorizeOutcome.NonceRequired(nonce) =>
+          ZIO.succeed(
+            Response.status(Status.Unauthorized)
+              .addHeader(Header.Custom("WWW-Authenticate", """DPoP error="use_dpop_nonce""""))
+              .addHeader(Header.Custom("DPoP-Nonce", nonce)),
+          )
+        case AuthorizeOutcome.Denied => ZIO.fail(Unauthorized)
+      }
     }
 
   val proxyGetEndpoint = proxy(Method.GET)
