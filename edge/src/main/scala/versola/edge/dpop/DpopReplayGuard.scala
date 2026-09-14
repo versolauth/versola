@@ -11,27 +11,26 @@ import java.util.concurrent.ConcurrentHashMap
 /** RFC 9449 §4.3 step 12 / §11.1: rejects a proof whose `jti` has already been seen inside the
   * `iat` window.
   *
-  * Deliberately in memory, not in Postgres. The edge proxies every API call in the system,
-  * and today it does so without touching the database at all -- the JWKS is cached, the
-  * revocation list is in memory, permissions are cached. Recording a `jti` per request would
-  * put one write transaction on the critical path of every business call, which at the volumes
-  * this fleet is sized for is several times the total write load of the rest of the system,
-  * and would make the edge's tail latency a function of the database's. §11.1 anticipates
-  * exactly this trade-off: a strict single-use check "may not always be feasible in practice,
-  * e.g., when multiple servers behind a single endpoint have no shared state."
+  * The in-memory ring below was the first cut, and on a single instance it is correct. Edge
+  * runs as a fleet with no session affinity, so on its own it answers "have I seen this?"
+  * rather than "has anyone?": the same proof sent to two replicas inside the window misses
+  * both rings and is admitted twice, for an exposure of `2 * iat-leeway`. §11.1 names that
+  * situation exactly -- a strict single-use check "may not always be feasible in practice,
+  * e.g., when multiple servers behind a single endpoint have no shared state" -- and the
+  * conclusion drawn here is to give the servers shared state, not to accept the gap.
   *
-  * What the per-pod cache gives up is a proof replayed to a *different* replica within the
-  * window. Three things bound that: `ath` ties the proof to one access token, `htm`/`htu` tie
-  * it to one method and URI, so the only thing a successful replay achieves is re-sending a
-  * request the holder of the key already sent; and a required nonce (§9, off by default) caps
-  * the window at the nonce TTL. Routing by `jkt` at the ingress closes it outright, since one
-  * key then only ever reaches one replica.
+  * [[DpopReplayGuard.Shared]] is therefore what runs in production: the local ring first, and
+  * [[DpopProofRepository]] behind it for everything the local ring cannot answer. The local
+  * ring is not a cache of the shared one -- a fresh proof carries a fresh `jti`, so legitimate
+  * traffic misses it by construction -- it is the part that keeps working when the database
+  * does not, and it removes the round trip for a replay that lands back on the pod that saw
+  * the original.
   *
-  * What it gains, beyond the write, is that one clock governs both admission and eviction.
-  * A shared store is evicted by whichever replica's timer fires first, so a replica running
-  * fast can drop a record while a slower one would still accept the proof it belonged to --
-  * which is why auth's ring has to hold each slot open across an assumed skew bound. Here
-  * the pod that accepted a proof is the pod that forgets it.
+  * The two rings keep different geometries on purpose: this one is written and evicted by the
+  * same pod, so one clock governs both admission and eviction, while the shared ring is
+  * evicted by whichever replica's timer fires first and has to hold each slot open across the
+  * tolerated skew. That is the whole difference between 8 slots here and 12 there, and
+  * unifying the constants would silently reopen the cross-replica gap.
   */
 trait DpopReplayGuard:
   /** True when this `(jkt, jti)` had not been seen; false when it is a replay. */
@@ -61,7 +60,28 @@ object DpopReplayGuard:
     (SlotCount * SlotWidth.toSeconds - 2 * SlotWidth.toSeconds) / 2,
   )
 
-  def live: ZLayer[EdgeConfig & Scope, IllegalArgumentException, DpopReplayGuard] =
+  /** Per-slot ceiling on how many distinct `(jkt, jti)` digests a slot will hold.
+    *
+    * Nothing else here bounds slot size: a slot is cleared as a whole once it ages out, not
+    * as entries are added, so its memory otherwise grows with however many distinct proofs
+    * land in it before that clear -- request volume the guard has no say over. This is the
+    * backstop against that, independent of the RFC 9449 §11.1 guidance already followed for
+    * per-entry cost (a fixed-width hash, not the `jti` itself).
+    *
+    * Reaching it does not weaken the check, only its fast path: past the ceiling, [[Impl]]
+    * stops adding new digests to that slot and answers as if it had not seen them (see
+    * `recordIfAbsent`), which is exactly what it would answer about a proof a *different* pod
+    * had recorded -- [[Shared]] already has to treat that as inconclusive and confirm against
+    * the fleet-wide record. A sustained non-zero [[DpopMetrics.localRingAtCapacity]] means
+    * that path is being taken for real traffic, not that anything is being admitted wrongly.
+    */
+  val MaxSlotEntries = 100000
+
+  /** The only wiring offered: the local ring is not a guard on its own anywhere a fleet serves
+    * the traffic, so it is not exposed as one. [[Impl]] stays public for the tests that pin
+    * down its own behaviour.
+    */
+  def shared: ZLayer[EdgeConfig & DpopProofRepository & Scope, IllegalArgumentException, DpopReplayGuard] =
     ZLayer.fromZIO:
       for
         config <- ZIO.serviceWith[EdgeConfig](_.dpop)
@@ -75,12 +95,13 @@ object DpopReplayGuard:
           // Compared whole rather than in seconds: truncating would admit a leeway of 90.5s
           // under a 90s bound, which is the one thing this guard's geometry depends on.
         ).when(iatLeeway.compareTo(MaxIatLeeway) > 0)
-        guard = Impl()
+        local = Impl()
         _ <- Clock.instant
-          .flatMap(now => guard.evictStaleSlot(now, iatLeeway))
+          .flatMap(now => local.evictStaleSlot(now, iatLeeway))
           .repeat(Schedule.spaced(SlotWidth))
           .forkScoped
-      yield guard
+        repository <- ZIO.service[DpopProofRepository]
+      yield Shared(local, repository)
 
   /** Which slot a proof created at `iat` belongs to. Laps the ring, so two proofs a full lap
     * apart share a slot -- by then the earlier one's slot has been cleared.
@@ -101,16 +122,54 @@ object DpopReplayGuard:
       .doFinalize(digest)
     digest.toList
 
-  class Impl extends DpopReplayGuard:
+  /** The local ring first, then the fleet-wide record for anything it could not settle alone.
+    *
+    * The order is what makes the shared write skippable: a local hit is already proof of a
+    * replay -- records are only ever added -- so it is rejected without a round trip. A local
+    * miss proves nothing, since the original may have been seen by a different pod, and is the
+    * only case the database is asked about. For legitimate traffic that is every request, each
+    * proof carrying a `jti` no pod has seen.
+    *
+    * Fail-degraded when the shared record is unreachable: the local ring's answer stands. That
+    * reopens the cross-replica window for as long as the outage lasts, which is the same
+    * exposure the local ring carried on its own, so an outage can never make this worse than
+    * not having built it -- but it is invisible unless [[DpopMetrics.sharedRingUnavailable]]
+    * is alerted on, not merely collected.
+    */
+  class Shared(local: Impl, repository: DpopProofRepository) extends DpopReplayGuard:
+    override def recordIfAbsent(jkt: String, jti: String, iat: Instant): UIO[Boolean] =
+      local.recordIfAbsent(jkt, jti, iat).flatMap:
+        case false => ZIO.succeed(false)
+        case true =>
+          repository.recordIfAbsent(jkt, jti, iat)
+            .catchAllCause: cause =>
+              ZIO.logWarningCause("dpop replay guard fell back to its local ring", cause)
+                *> DpopMetrics.sharedRingUnavailable
+                *> ZIO.succeed(true)
+
+  /** @param maxSlotEntries overridable only for tests that need to reach the ceiling without
+    *   actually filling a slot with [[MaxSlotEntries]] digests; production wiring always takes
+    *   the default.
+    */
+  class Impl(maxSlotEntries: Int = MaxSlotEntries) extends DpopReplayGuard:
     private val slots: Array[java.util.Set[List[Byte]]] =
       Array.fill(SlotCount)(ConcurrentHashMap.newKeySet[List[Byte]]())
 
     override def recordIfAbsent(jkt: String, jti: String, iat: Instant): UIO[Boolean] =
-      ZIO.succeed:
-        // No expiry is compared here. A slot is only cleared once everything it holds has left
-        // the `iat` window, so a proof whose record is gone has already been rejected by the
-        // `iat` check in `Dpop.verify` before reaching this point.
-        slots(slotOf(iat)).add(digestOf(jkt, jti))
+      val slot = slots(slotOf(iat))
+      val digest = digestOf(jkt, jti)
+      // No expiry is compared here. A slot is only cleared once everything it holds has left
+      // the `iat` window, so a proof whose record is gone has already been rejected by the
+      // `iat` check in `Dpop.verify` before reaching this point.
+      if slot.size() < maxSlotEntries then ZIO.succeed(slot.add(digest))
+      else if slot.contains(digest) then ZIO.succeed(false)
+      else
+        // Below the ceiling this never runs; at it, growing the slot further is refused, and
+        // this digest is left for the fleet-wide record to settle rather than misreported as
+        // fresh here. `contains` above still catches a replay of anything the slot was already
+        // holding when it filled -- the ceiling stops the slot from growing, it doesn't forget
+        // what's already in it.
+        DpopMetrics.localRingAtCapacity *> ZIO.succeed(true)
 
     /** Clears the slot that has just fallen out of reach of any acceptable `iat`.
       *

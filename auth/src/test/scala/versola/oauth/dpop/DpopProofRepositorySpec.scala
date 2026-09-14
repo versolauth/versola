@@ -86,8 +86,11 @@ object DpopProofRepositorySpec:
   /** @param evictStale reclaims the space held by records whose proofs can no longer be
     *   presented, given the `iat` leeway the server is running with. How much it reclaims per
     *   call is up to the implementation, so the cases that pin it down live alongside one.
+    * @param xa for the cases an implementation adds about its own storage, which the shared
+    *   behaviour here has no way to express.
     */
   case class Env(
       repository: DpopProofRepository,
       evictStale: (Instant, Duration) => Task[Unit],
+      xa: TransactorZIO,
   )

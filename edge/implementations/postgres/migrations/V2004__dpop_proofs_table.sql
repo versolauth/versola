@@ -1,11 +1,16 @@
--- Single-use enforcement for DPoP proofs (RFC 9449 §11.1).
+-- Cross-replica single-use enforcement for DPoP proofs at the resource server (RFC 9449 §11.1).
 --
--- A proof is only ever accepted while its `iat` sits inside the configured leeway, so a record
--- has to outlive the proof it guards by that leeway and not a moment longer. Stamping each row
--- with an expiry and sweeping it costs a delete for every insert, at the token endpoint's full
--- request rate, plus the vacuum that churn implies. Instead a row is placed in one of a fixed
--- ring of partitions chosen from the proof's own `iat`, and a slot is reclaimed by truncating
--- it once every proof it could hold has fallen outside the acceptance window.
+-- Edge runs as a fleet with no session affinity, so a per-pod record of seen proofs answers
+-- "have *I* seen this?" and not "has anyone?". A proof replayed to a second replica inside the
+-- `iat` window misses both local rings and is admitted twice; the exposure is `2 * iat-leeway`.
+-- The in-memory ring stays in front of this table as an L1 -- it still short-circuits a replay
+-- that lands on the pod that saw the original -- but the exact answer lives here.
+--
+-- The design is auth's `dpop_proofs` ring, deliberately unchanged: a row is placed in one of a
+-- fixed ring of partitions chosen from the proof's own `iat`, and a slot is reclaimed by
+-- truncating it once every proof it could hold has fallen outside the acceptance window. That
+-- costs one truncate per slot instead of a delete per insert at the full rate of every proxied
+-- request, and no vacuum churn.
 --
 -- The slot comes from the signed `iat` rather than from arrival time, which is what keeps the
 -- check exact: a unique index on a partitioned table is only unique within a partition, so a
@@ -13,18 +18,21 @@
 -- proof's signature, so it cannot be moved to a fresh slot without invalidating the proof.
 --
 -- The geometry is fixed here rather than configured, so that it cannot drift out of step with
--- the code; it must match PostgresDpopProofRepository.{SlotCount, SlotWidth}. The ring holds
--- more slots than the acceptance window needs, because acceptance and eviction are decided
--- against different instances' clocks -- see PostgresDpopProofRepository.MaxClockSkew.
+-- the code; it must match PostgresDpopProofRepository.{SlotCount, SlotWidth}. It is auth's
+-- 12-slot geometry and not the 8 slots of the in-memory ring: this ring is written by one pod
+-- and evicted by another, so it has to hold each slot open across the tolerated clock skew,
+-- which the local ring needs no margin for -- there, the pod that accepted a proof is the pod
+-- that forgets it. The two geometries are both correct and must not be "unified".
 --
 -- Every partition is UNLOGGED, individually: `iat` has already put an upper bound on how long
 -- a record can matter, and `Dpop.verify` rejects on `iat` before this table is ever consulted,
 -- so WAL would be buying durability for rows engineered to expire within the minute. A crash
--- empties the ring and costs one `iat-leeway` window of replay protection, which is the same
--- exposure a restart already carries. Persistence is NOT inherited from the parent -- a
--- partition added later without the keyword silently reverts to full WAL logging, so any new
--- one must repeat it, and PostgresDpopProofRepositorySpec asserts none has been missed. The
--- parent itself cannot be unlogged; PostgreSQL rejects `CREATE UNLOGGED TABLE ... PARTITION BY`.
+-- empties the ring, which degrades to exactly the in-memory guard's answer for one
+-- `iat-leeway` window -- the same floor the fail-degraded fallback already accepts. Persistence
+-- is NOT inherited from the parent: a partition added later without the keyword silently
+-- reverts to full WAL logging, so any new one must repeat it, and
+-- PostgresDpopProofRepositorySpec asserts none has been missed. The parent itself cannot be
+-- unlogged; PostgreSQL rejects `CREATE UNLOGGED TABLE ... PARTITION BY`.
 
 CREATE TABLE dpop_proofs (
     slot INTEGER NOT NULL,
