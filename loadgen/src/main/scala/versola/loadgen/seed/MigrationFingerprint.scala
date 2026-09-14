@@ -100,18 +100,49 @@ object MigrationFingerprint:
               case _ => throw IllegalStateException(s"Malformed fingerprint line: '$line'")
           .toMap
 
-  /** Every covered directory's fingerprint against its recorded value. An unrecorded directory is
-    * a mismatch, not a pass -- adding a seeded table in a new service must fail until its
-    * fingerprint is recorded.
+  /** What [[check]] found: the directories that disagree with their recorded value, and the ones
+    * that are not on this filesystem to be checked at all.
+    *
+    * Two fields rather than one list because they call for opposite responses, and a caller that
+    * has to name both cannot quietly forget the second -- see [[Seeder.preflight]].
     */
-  def mismatches: Task[Chunk[Mismatch]] =
+  case class Check(mismatches: Chunk[Mismatch], absent: List[String]):
+    def checked: Boolean = absent.isEmpty
+
+  /** Every covered directory's fingerprint against its recorded value, and which directories are
+    * absent. An unrecorded but present directory is a mismatch, not a pass -- adding a seeded
+    * table in a new service must fail until its fingerprint is recorded.
+    *
+    * Absence is reported rather than raised, and that is the one concession this layer makes to
+    * where it runs. The fingerprint reads the SUT's *source* migrations, which exist in a
+    * checkout and in CI but not in `versola-loadgen`'s image -- that stages `/app` and
+    * `loadgen/migrations`, and carrying auth's and central's source trees into it would be a
+    * second copy of two schemas nobody would keep current. Raising here instead would make the
+    * mandatory pre-flight fail in the only place the seeder is meant to run. [[of]] still
+    * refuses a directory it is asked for and cannot find, so a half-present tree cannot pass
+    * vacuously, and layer 2 -- `SutSchemaGuard`, which reads the live database rather than any
+    * file -- is unconditional either way.
+    */
+  def check: Task[Check] =
     for
       expectations <- recorded
-      results <- ZIO.foreach(Chunk.fromIterable(SutSchema.fingerprintedMigrationDirectories)): directory =>
+      directories = SutSchema.fingerprintedMigrationDirectories
+      absent = directories.filterNot(directory => Files.isDirectory(resolve(directory)))
+      results <- ZIO.foreach(Chunk.fromIterable(directories.filterNot(absent.contains))): directory =>
         of(directory).map(actual => (directory, expectations.get(directory), actual))
-    yield results.collect:
-      case (directory, expected, actual) if !expected.contains(actual) =>
-        Mismatch(directory, expected, actual)
+    yield Check(
+      mismatches = results.collect:
+        case (directory, expected, actual) if !expected.contains(actual) =>
+          Mismatch(directory, expected, actual)
+      ,
+      absent = absent,
+    )
+
+  def absentReport(absent: List[String]): String =
+    "Skipping the SUT migration fingerprint (dev spec §3.4 layer 1): not on this filesystem -- " +
+      absent.mkString(", ") +
+      ". Expected in a repository checkout and in CI, absent in the staged image; the live schema " +
+      "check runs either way and is the layer that refuses a drifted column."
 
   def report(mismatches: Chunk[Mismatch]): String =
     "The SUT migrations the seeder is coupled to have changed (dev spec §3.4):\n" +

@@ -63,15 +63,28 @@ object Seeder:
 
   /** The pre-flight the §3.4 guard exists for. Both layers, both fatal, and both before the
     * expensive part: the entire value of catching a schema change is catching it at minute zero.
+    *
+    * Layer 1 is fatal where it applies, which is wherever the SUT's source migrations are on
+    * disk -- a checkout and CI, not the staged image (see [[MigrationFingerprint.check]]).
+    * Where they are absent it says so, loudly, rather than failing a pre-flight it has nothing
+    * to read; layer 2 reads the live database and is unconditional.
     */
   def preflight(auth: Connection, central: Connection): Task[Unit] =
     for
-      fingerprints <- MigrationFingerprint.mismatches
-      _ <- ZIO.fail(SutSchemaDrifted(MigrationFingerprint.report(fingerprints))).when(fingerprints.nonEmpty)
+      fingerprints <- MigrationFingerprint.check
+      _ <- ZIO
+        .fail(SutSchemaDrifted(MigrationFingerprint.report(fingerprints.mismatches)))
+        .when(fingerprints.mismatches.nonEmpty)
+      _ <- ZIO
+        .logWarning(MigrationFingerprint.absentReport(fingerprints.absent))
+        .when(fingerprints.absent.nonEmpty)
       _ <- ZIO.foreachDiscard(List(SchemaOwner.Auth -> auth, SchemaOwner.Central -> central)): (owner, connection) =>
         SutSchemaGuard.check(connection, owner).flatMap: findings =>
           ZIO.fail(SutSchemaDrifted(SutSchemaGuard.report(owner, findings))).when(findings.nonEmpty)
-      _ <- ZIO.logInfo("SUT schema pre-flight passed (dev spec §3.4)")
+      _ <- ZIO.logInfo(
+        if fingerprints.checked then "SUT schema pre-flight passed (dev spec §3.4, both layers)"
+        else "SUT schema pre-flight passed (dev spec §3.4, live schema only)",
+      )
     yield ()
 
   /** The seeding loop itself, taking its collaborators rather than building them, so
@@ -81,7 +94,8 @@ object Seeder:
   private[seed] def run(services: SeedServices, population: PopulationConfig, seedConfig: SeedConfig): Task[Unit] =
     val target = population.target
     for
-      resume <- services.storeQueries.maxVirtualUserId.map(_.fold(1L)(_ + 1L))
+      seeded <- services.storeQueries.maxVirtualUserId
+      resume <- ZIO.fromEither(resumeFrom(seeded, target))
       _ <- ZIO.logInfo(
         s"Seeding ${target - resume + 1} users (ids $resume..$target) across ${seedConfig.shardCount} shards, " +
           s"batch ${seedConfig.batchSize}, Argon2 parallelism ${seedConfig.hashParallelism}",
@@ -91,6 +105,21 @@ object Seeder:
       _ <- analyze(services)
       _ <- ZIO.logInfo("Seed complete")
     yield ()
+
+  /** Where a run picks up: `max(vu_users.id) + 1`, or 1 on an empty store.
+    *
+    * A store that already holds *more* users than the target is refused rather than resumed.
+    * Resuming it computes an empty batch list, and the run then logs "Seed complete" over a
+    * population that is the wrong size -- the campaign afterwards reports a user count nobody
+    * asked for, and nothing in the report says so. The seeder cannot fix it either: it is
+    * resumable, not idempotent, and deleting the excess would mean deleting SUT rows outside
+    * any batch it owns. So it says what is wrong and leaves the choice to the operator.
+    */
+  private[seed] def resumeFrom(seeded: Option[Long], target: Long): Either[PopulationLargerThanTarget, Long] =
+    seeded match
+      case Some(highest) if highest > target => Left(PopulationLargerThanTarget(highest, target))
+      case Some(highest) => Right(highest + 1L)
+      case None => Right(1L)
 
   /** `[from, until)` id ranges. The list is `target / batchSize` long -- 2,000 entries at 20M
     * users and a batch of 10,000 -- so it is the one thing here allowed to be materialised;
@@ -228,3 +257,10 @@ case class SutSchemaDrifted(report: String) extends RuntimeException(report)
 
 case class ShortCopy(table: String, sent: Long, accepted: Long)
     extends RuntimeException(s"COPY into $table accepted $accepted of $sent rows")
+
+case class PopulationLargerThanTarget(seeded: Long, target: Long)
+    extends RuntimeException(
+      s"vu_users already holds ids up to $seeded, beyond the configured population.target of $target. " +
+        "The seeder resumes, it does not shrink: raise the target back, or clear the emulator store and " +
+        "the SUT's seeded rows before seeding a smaller population.",
+    )

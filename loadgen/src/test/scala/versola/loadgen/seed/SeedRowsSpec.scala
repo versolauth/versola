@@ -199,4 +199,25 @@ object SeedRowsSpec extends ZIOSpecDefault:
         assertTrue(Seeder.batches(1_001L, 1_000L, 250).isEmpty)
       },
     ),
+    suite("where a run resumes")(
+      test("an empty store starts at the first id, a partial one after its highest") {
+        assertTrue(
+          Seeder.resumeFrom(None, 1_000L) == Right(1L),
+          Seeder.resumeFrom(Some(640_000L), 1_000_000L) == Right(640_001L),
+        )
+      },
+      test("a population seeded exactly to the target resumes past it, seeding nothing") {
+        val resume = Seeder.resumeFrom(Some(1_000L), 1_000L)
+        assertTrue(
+          resume == Right(1_001L),
+          resume.toOption.map(Seeder.batches(_, 1_000L, 250)).contains(Nil),
+        )
+      },
+      test("a store larger than the target is refused rather than reported complete") {
+        // Without this the batch list comes out empty and the run logs "Seed complete" over a
+        // population of the wrong size -- the campaign then measures 2,000 users while its
+        // report says 1,000, and nothing anywhere says which.
+        assertTrue(Seeder.resumeFrom(Some(2_000L), 1_000L) == Left(PopulationLargerThanTarget(2_000L, 1_000L)))
+      },
+    ),
   )

@@ -197,6 +197,28 @@ object LoadgenConfigSpec extends ZIOSpecDefault:
             .exit
         yield assertTrue(tooShort.isFailure, notBase64.isFailure)
       },
+      // Both hang rather than fail when they reach the seeder: hash-parallelism = 0 builds a
+      // zero-permit semaphore in SecurityService and every Argon2 hash waits on it forever,
+      // and batch-size = 0 iterates the same id range forever.
+      test("rejects a non-positive hash-parallelism or batch-size, which would hang the seeder") {
+        for
+          noHashers <- TypesafeConfigProvider
+            .fromHoconString(hocon.replaceFirst("hash-parallelism = 16", "hash-parallelism = 0"))
+            .kebabCase
+            .load(loadgenConfigDescriptor)
+            .exit
+          negativeHashers <- TypesafeConfigProvider
+            .fromHoconString(hocon.replaceFirst("hash-parallelism = 16", "hash-parallelism = -1"))
+            .kebabCase
+            .load(loadgenConfigDescriptor)
+            .exit
+          noBatch <- TypesafeConfigProvider
+            .fromHoconString(hocon.replaceFirst("batch-size       = 10000", "batch-size       = 0"))
+            .kebabCase
+            .load(loadgenConfigDescriptor)
+            .exit
+        yield assertTrue(noHashers.isFailure, negativeHashers.isFailure, noBatch.isFailure)
+      },
       test("decodes a coordinator config, which owns no shard") {
         for config <- TypesafeConfigProvider
             .fromHoconString(

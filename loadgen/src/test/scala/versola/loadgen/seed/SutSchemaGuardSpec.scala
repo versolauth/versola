@@ -18,7 +18,9 @@ object SutSchemaGuardSpec extends ZIOSpecDefault:
   def spec = suite("SutSchemaGuard")(
     suite("the recorded migration fingerprint (layer 1: the tripwire)")(
       test("matches auth's and central's migrations as checked in") {
-        MigrationFingerprint.mismatches.map(mismatches => assertTrue(mismatches.isEmpty))
+        // Both directories are on disk here, so this is also the assertion that the check ran at
+        // all: an empty `mismatches` beside a non-empty `absent` would mean it skipped them.
+        MigrationFingerprint.check.map(check => assertTrue(check.mismatches.isEmpty, check.checked))
       },
       // Derived from SutSchema, so seeding a table in a service whose migrations are not
       // fingerprinted cannot be added without the guard failing first.

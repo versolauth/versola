@@ -322,6 +322,29 @@ case class SeedConfig(
 )
 
 object SeedConfig:
+  /** Same idiom as [[CampaignPhaseConfig.validate]]'s: reject at decode time rather than hand the
+    * seeder a number it cannot act on.
+    *
+    * Both are counts that fail silently rather than loudly when non-positive.
+    * `hash-parallelism` is the worse of them: it is handed to `Argon2Config.maxConcurrent`, so a
+    * zero builds a zero-permit semaphore inside `SecurityService` and every password hash then
+    * waits on it forever -- `role = seed` hangs rather than failing, and it hangs at the first
+    * batch containing a password user, well after two SUT connections and a migration.
+    * `batch-size` at zero makes `Seeder.batches` iterate the same id forever; that one has its
+    * own `require`, but it fires at the same late point, so it is hoisted here too.
+    *
+    * `shard-count` is deliberately absent: `PopulationPlan.validate` already rejects it, and one
+    * rule stated twice is one rule that can come to disagree with itself.
+    */
+  def validate(config: SeedConfig): Either[String, SeedConfig] =
+    def positive(field: String, value: Int): Either[String, Unit] =
+      Either.cond(value > 0, (), s"seed.$field must be positive, got $value")
+
+    for
+      _ <- positive("hash-parallelism", config.hashParallelism)
+      _ <- positive("batch-size", config.batchSize)
+    yield config
+
   /** Anchored in the companion for the same reason [[StoreConfig]]'s is: deriving this needs a
     * `DeriveConfig` for `Secret.Bytes16` and one for `Config.Secret`, neither of which is in
     * scope wherever `deriveConfig[LoadgenConfig]` is called.
@@ -342,7 +365,9 @@ object SeedConfig:
           Config.Error.InvalidData(message = "seed.passwords-secret must be 16 base64url-encoded bytes"),
         )
 
-  given DeriveConfig[SeedConfig] = DeriveConfig.derived
+  given DeriveConfig[SeedConfig] = DeriveConfig
+    .derived[SeedConfig]
+    .mapOrFail(config => validate(config).left.map(message => Config.Error.InvalidData(message = message)))
 
 /** The one edge login preset, for the `web-otp` client (design doc §2.2). `cookieDomain`/
   * `cookiePath` scope the `EDGE_SESSION` cookie; both are optional in central, so both are
