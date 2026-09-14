@@ -186,6 +186,41 @@ object HttpAuthClientSpec extends ZIOSpecDefault:
           case _ => false
       yield assertTrue(malformed)
     },
+    test("the logout confirmation carries the token and the parameters auth bound it to") {
+      for
+        stub <- StubSut.makeWeb(List("credential"))
+        (recorder, routes) = stub
+        auth <- clientFor(routes)
+        confirmation <- auth.logoutConfirmation(StubSut.authLogoutUrl, SsoSession(StubSut.ssoSession))
+        _ <- auth.confirmLogout(SsoSession(StubSut.ssoSession), confirmation)
+        live <- recorder.ssoLive
+        sent <- recorder.headerOf("/logout", "cookie")
+      yield assertTrue(
+        confirmation.csrf == Csrf(StubSut.logoutCsrf),
+        // Read off the URL edge redirected to, which is what auth signed the token against.
+        confirmation.postLogoutRedirectUri == Some(StubSut.postLogoutRedirect),
+        confirmation.url.encode.startsWith(StubSut.authUrl + "/logout"),
+        !live,
+        sent == Some("SSO_SESSION=" + StubSut.ssoSession),
+      )
+    },
+    test("a logout page auth rendered for no session carries no token, and is not submittable") {
+      for
+        stub <- StubSut.makeWeb(List("credential"))
+        (recorder, routes) = stub
+        auth <- clientFor(routes)
+        // Auth answers 200 with the signed-out page when the cookie names no session it holds,
+        // so the status cannot distinguish this from a real confirmation -- only the token can.
+        failure <- auth.logoutConfirmation(StubSut.authLogoutUrl, SsoSession("not-a-session")).either
+        live <- recorder.ssoLive
+      yield assertTrue(
+        failure.left.exists:
+          case ProtocolError.MalformedResponse("/logout", detail) => detail.contains("csrf")
+          case _ => false,
+        // And nothing was submitted on the strength of it: the session is still there.
+        live,
+      )
+    },
     test("an unexpected status names the endpoint and what was expected") {
       for
         stub <- StubSut.make(List("otp"))

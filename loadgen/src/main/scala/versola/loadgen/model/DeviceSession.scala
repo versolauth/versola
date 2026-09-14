@@ -58,3 +58,44 @@ case class DeviceSession(
     * already rotated, and presenting it again is indistinguishable from reuse.
     */
   def rotationInFlight: Boolean = generation != refreshGeneration
+
+object DeviceSession:
+  /** The row a completed §8.4 web login produces: `versola.loadgen.protocol.WebFlows.webOtp`
+    * hands back exactly the cookie and the SSO session this needs, and `accessExpiresAt` is the
+    * cookie's own `Max-Age` resolved against the clock (see
+    * `versola.loadgen.protocol.EdgeCookie`).
+    *
+    * The four fields it does not take are not defaults filled in on the caller's behalf -- they
+    * are the values [[SessionKind.WebCookie]] admits at all. A web session holds no refresh
+    * token, so it has no refresh expiry either; and §7.4's generation discipline exists to make
+    * a refresh rotation crash-recoverable, so with nothing to rotate the pair stays at zero and
+    * equal, which is what keeps the row out of `listInterruptedRotations` and inside
+    * `listLive`. A web session that renews does so by logging in again, producing a new row.
+    */
+  def webCookie(
+      id: Long,
+      userId: Long,
+      clientId: String,
+      cookie: EdgeSession,
+      ssoSession: Option[SsoSession],
+      accessExpiresAt: Instant,
+      acr: Option[String],
+      authTime: Instant,
+      shard: Int,
+  ): DeviceSession =
+    DeviceSession(
+      id = id,
+      userId = userId,
+      kind = SessionKind.WebCookie,
+      clientId = clientId,
+      refreshToken = None,
+      edgeCookie = Some(cookie),
+      ssoSession = ssoSession,
+      accessExpiresAt = Some(accessExpiresAt),
+      refreshExpiresAt = None,
+      acr = acr,
+      authTime = Some(authTime),
+      generation = 0,
+      refreshGeneration = 0,
+      shard = shard,
+    )

@@ -57,8 +57,13 @@ private[protocol] object HttpExchange:
   def cookieHeader(name: String, value: String): Header.Cookie =
     Header.Cookie(NonEmptyChunk(Cookie.Request(name, value)))
 
-  def setCookie(response: Response, name: String): Option[String] =
-    response.headers.getAll(Header.SetCookie).collectFirst { case header if header.value.name == name => header.value.content }
+  /** The whole `Set-Cookie` a response carries under `name`, not just its value: `EDGE_SESSION`
+    * arrives with the `Max-Age` that is the web session's expiry (see [[EdgeCookie]]), and the
+    * header is parsed either way, so returning the value alone would throw away the one field
+    * the caller cannot reconstruct.
+    */
+  def setCookie(response: Response, name: String): Option[Cookie.Response] =
+    response.headers.getAll(Header.SetCookie).collectFirst { case header if header.value.name == name => header.value }
 
   /** Query parameters on the redirect the SUT answered with. Decoding the whole URL costs one
     * parse, but a redirect happens once per conversation, not once per hop.

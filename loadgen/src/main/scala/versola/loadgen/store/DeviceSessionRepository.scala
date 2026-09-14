@@ -88,6 +88,15 @@ trait DeviceSessionRepository:
 
   /** The cookie half of the same rule (§8.4): edge rotates `EDGE_SESSION` on refresh, and a
     * driver that loses the rotated value loses the session. Critical, not deferred.
+    *
+    * `access_expires_at` is a deferred column in §7.5's table, but it moves here in the same
+    * statement as the cookie rather than through the batch -- the same reason §7.5 gives for
+    * `acr`: a credential is being written anyway, so the column is free, and the two cannot
+    * then disagree. Deferred, it could be dropped on queue overflow or reordered behind a
+    * later touch, leaving a rotated cookie described by the expiry of the one it replaced --
+    * and since a web session's whole liveness test is this column, a driver restarting would
+    * either skip a session that is alive or resume one that is not. Neither is a distortion the
+    * emulator is allowed to introduce into the load it reports (§7.5).
     */
   def storeEdgeCookie(id: Long, cookie: EdgeSession, accessExpiresAt: Instant): Task[Unit]
 

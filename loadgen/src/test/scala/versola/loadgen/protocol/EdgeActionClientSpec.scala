@@ -46,7 +46,7 @@ object EdgeActionClientSpec extends ZIOSpecDefault:
         outcome <- actions.call(EdgeCredential.Cookie(EdgeSession("original")), accounts)
         request <- seen.get
       yield assertTrue(
-        outcome.rotatedSession == Some(EdgeSession("rotated")),
+        outcome.rotatedSession == Some(EdgeCookie(EdgeSession("rotated"), None)),
         request.flatMap(_.rawHeader("cookie")) == Some("EDGE_SESSION=original"),
       )
     },
