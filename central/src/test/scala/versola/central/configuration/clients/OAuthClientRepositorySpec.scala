@@ -50,7 +50,6 @@ trait OAuthClientRepositorySpec extends DatabaseSpecBase[OAuthClientRepositorySp
     tosUri = None,
     consentFlow = None,
     mtlsAuth = None,
-    certificateBoundAccessTokens = false,
   )
 
   /** Applies a registration-flow patch, leaving every other field of the client alone. */

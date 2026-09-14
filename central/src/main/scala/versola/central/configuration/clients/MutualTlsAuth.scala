@@ -14,7 +14,12 @@ enum MutualTlsSubjectType derives JsonCodec, Schema, Equal:
   case subject_dn, san_dns, san_uri, san_ip, san_email
 
 /** RFC 8705 §2.1 `tls_client_auth`: the client authenticates with a certificate validated to a
-  * trusted CA and carrying this exact subject value.
+  * trusted CA and carrying this exact subject value. Its access tokens are bound to that
+  * certificate per §3; there is no separate switch, because a client that already proves
+  * itself with a certificate gains nothing from tokens that anyone who steals one can replay.
+  * §3.4's `tls_client_certificate_bound_access_tokens` exists for binding *without* §2 client
+  * authentication, which needs `private_key_jwt` to be reachable at all — so the flag belongs
+  * to that change, not this one.
   *
   * §2.2 `self_signed_tls_client_auth` is deliberately absent. It matches the certificate
   * against the client's registered JWKS rather than a subject value, and per-client JWKS

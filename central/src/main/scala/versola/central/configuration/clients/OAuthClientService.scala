@@ -163,7 +163,6 @@ object OAuthClientService:
           tosUri = request.tosUri,
           consentFlow = request.consentFlow.map(_.toDomain),
           mtlsAuth = request.mtlsAuth.map(normaliseMtlsAuth),
-          certificateBoundAccessTokens = request.certificateBoundAccessTokens,
         )
         _ <- clientRepository.createClient(client)
       yield secret
@@ -207,7 +206,6 @@ object OAuthClientService:
           tosUri = request.tosUri,
           consentFlow = request.consentFlow.map(toConsentFlowPatch),
           mtlsAuth = request.mtlsAuth.map(toMtlsAuthPatch),
-          certificateBoundAccessTokens = request.certificateBoundAccessTokens,
         )
       yield ()
 
